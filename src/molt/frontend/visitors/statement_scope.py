@@ -12,6 +12,7 @@ import ast
 from typing import TYPE_CHECKING
 
 from molt.compiler_analysis import native_support_slice as _native_support_slice
+from molt.compiler_analysis.static_truth import static_if_live_branch
 from molt.frontend._types import (
     MoltOp,
     MoltValue,
@@ -28,6 +29,99 @@ else:
 
 
 class StatementScopeVisitorMixin(_MixinBase):
+    @staticmethod
+    def _module_static_sys_aliases(node: ast.Module) -> frozenset[str]:
+        aliases: set[str] = set()
+        for stmt in node.body:
+            if isinstance(stmt, ast.Import):
+                for alias in stmt.names:
+                    if alias.name == "sys":
+                        aliases.add(alias.asname or alias.name)
+        return frozenset(aliases)
+
+    def _module_live_statements_for_target(
+        self, statements: list[ast.stmt], *, sys_aliases: frozenset[str]
+    ) -> list[ast.stmt]:
+        live: list[ast.stmt] = []
+        for stmt in statements:
+            if isinstance(stmt, ast.If):
+                branch = static_if_live_branch(
+                    stmt,
+                    **self._sys_platform_static_truth_kwargs(sys_aliases),
+                )
+                if branch is not None:
+                    live.extend(
+                        self._module_live_statements_for_target(
+                            list(branch), sys_aliases=sys_aliases
+                        )
+                    )
+                    continue
+            live.append(stmt)
+        return live
+
+    @staticmethod
+    def _side_effect_free_module_function_def(node: ast.FunctionDef) -> bool:
+        if node.decorator_list:
+            return False
+        if node.returns is not None or node.type_comment is not None:
+            return False
+        args = node.args
+        annotated_args = (
+            list(args.posonlyargs)
+            + list(args.args)
+            + list(args.kwonlyargs)
+            + ([args.vararg] if args.vararg is not None else [])
+            + ([args.kwarg] if args.kwarg is not None else [])
+        )
+        if any(
+            arg.annotation is not None or arg.type_comment is not None
+            for arg in annotated_args
+        ):
+            return False
+        if args.defaults or any(default is not None for default in args.kw_defaults):
+            return False
+        return True
+
+    def _module_elidable_deleted_functions(self, node: ast.Module) -> frozenset[str]:
+        if self._module_globals_dict_escapes(node):
+            return frozenset()
+        candidates = {
+            stmt.name
+            for stmt in node.body
+            if isinstance(stmt, ast.FunctionDef)
+            and self._side_effect_free_module_function_def(stmt)
+        }
+        if not candidates:
+            return frozenset()
+        sys_aliases = self._module_static_sys_aliases(node)
+        live = self._module_live_statements_for_target(
+            list(node.body), sys_aliases=sys_aliases
+        )
+        deleted: set[str] = set()
+        for stmt in live:
+            if not isinstance(stmt, ast.Delete):
+                continue
+            for target in stmt.targets:
+                if isinstance(target, ast.Name):
+                    deleted.add(target.id)
+
+        class LoadCollector(ast.NodeVisitor):
+            def __init__(self) -> None:
+                self.loads: set[str] = set()
+
+            def visit_Name(self, name_node: ast.Name) -> None:
+                if isinstance(name_node.ctx, ast.Load):
+                    self.loads.add(name_node.id)
+
+        collector = LoadCollector()
+        for stmt in live:
+            collector.visit(stmt)
+        return frozenset(
+            name
+            for name in candidates
+            if name in deleted and name not in collector.loads
+        )
+
     def _native_support_function_roots(self) -> frozenset[str]:
         roots: set[str] = {
             name
@@ -93,6 +187,7 @@ class StatementScopeVisitorMixin(_MixinBase):
         prev_module_intrinsic_globals = self.module_intrinsic_globals
         prev_reserved_external = self.reserved_external_func_symbols
         prev_module_chunk_globals = self.module_chunk_globals
+        prev_elided_deleted_funcs = self.module_elided_deleted_funcs
         prev_pending_classes = self.class_definition_pending
         self.stable_module_funcs = self._module_stable_funcs(node)
         self.mutated_classes = self._collect_module_class_mutations(node)
@@ -129,6 +224,9 @@ class StatementScopeVisitorMixin(_MixinBase):
         self.module_global_mutations = set()
         self.module_globals_dict_escaped = self._module_globals_dict_escapes(node)
         self.module_chunk_globals = set()
+        self.module_elided_deleted_funcs = set(
+            self._module_elidable_deleted_functions(node)
+        )
         self._ensure_globals_builtin()
         if not self.future_annotations and not self.eager_annotations:
             items, id_map = self._collect_module_annotation_items(node)
@@ -297,6 +395,7 @@ class StatementScopeVisitorMixin(_MixinBase):
         self.module_intrinsic_globals = prev_module_intrinsic_globals
         self.reserved_external_func_symbols = prev_reserved_external
         self.module_chunk_globals = prev_module_chunk_globals
+        self.module_elided_deleted_funcs = prev_elided_deleted_funcs
         return None
 
     def visit_Global(self, node: ast.Global) -> None:
