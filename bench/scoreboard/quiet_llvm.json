@@ -8,8 +8,8 @@
     "mark": "<!-- PERF-AUTHORITY:stale -->",
     "stale": true,
     "authoritative": false,
-    "authoritative_reason": "historical perf snapshot; the only citable perf source is `tools/perf_scoreboard.py --set core --backend native --backend llvm --profile release-fast --samples 5 --warmup 2 --repeat 5 --classify --require-quiescent`",
-    "canonical_gate": "tools/perf_scoreboard.py --set core --backend native --backend llvm --profile release-fast --samples 5 --warmup 2 --repeat 5 --classify --require-quiescent",
+    "authoritative_reason": "historical perf snapshot; the only citable perf source is `tools/perf_scoreboard.py --set core --backend native --backend llvm --profile release-fast --samples 5 --warmup 2 --repeat 5 --classify --require-quiescent --quiescence-wait-s 180 --quiescence-poll-s 15`",
+    "canonical_gate": "tools/perf_scoreboard.py --set core --backend native --backend llvm --profile release-fast --samples 5 --warmup 2 --repeat 5 --classify --require-quiescent --quiescence-wait-s 180 --quiescence-poll-s 15",
     "generated_at": "2026-06-08T23:45:03.871754+00:00",
     "git_rev": "f33caead157c287a2bf49910102ad3f7d495cec1"
   },
