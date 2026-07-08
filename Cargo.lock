@@ -2986,6 +2986,7 @@ dependencies = [
  "molt-runtime-math",
  "molt-runtime-net",
  "molt-runtime-path",
+ "molt-runtime-platform",
  "molt-runtime-regex",
  "molt-runtime-resource",
  "molt-runtime-serial",
@@ -3172,6 +3173,14 @@ dependencies = [
  "molt-lang-obj-model",
  "molt-runtime-core",
  "num_cpus",
+]
+
+[[package]]
+name = "molt-runtime-platform"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.4.3",
+ "libc",
 ]
 
 [[package]]
