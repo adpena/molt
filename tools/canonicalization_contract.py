@@ -41,6 +41,7 @@ Modes (mirrors tools/gen_op_kinds.py / structural_audit.py CI convention):
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import sys
 import tomllib
@@ -61,9 +62,10 @@ LAYERS: dict[str, dict] = {
     "runtime": {"rank": 3, "may_depend_on": {"core", "stdlib", "third_party"}},
 }
 
-# Explicit crate (directory-name) -> layer. Stdlib crates are matched by the
-# rule below rather than enumerated, so a new stdlib crate is governed
-# automatically.
+# Explicit crate (directory-name) -> layer. Canonical `molt-stdlib-*` crates are
+# matched by prefix; legacy `molt-runtime-*` stdlib satellites are classified by
+# their `runtime/crate_graph.toml` role so runtime-support satellites do not get
+# mistaken for Python stdlib modules.
 CRATE_LAYER: dict[str, str] = {
     "molt-obj-model": "core",
     "molt-codegen-abi": "core",
@@ -71,9 +73,8 @@ CRATE_LAYER: dict[str, str] = {
     "molt-cpython-abi": "third_party",
     "molt-runtime": "runtime",
 }
-# Any workspace crate whose dir name starts with this prefix and is not already
-# assigned above is a STDLIB-layer crate. (Rename target: molt-stdlib-*.)
-STDLIB_PREFIX = "molt-runtime-"
+STDLIB_PREFIX = "molt-stdlib-"
+LEGACY_RUNTIME_STDLIB_PREFIX = "molt-runtime-"
 
 # Stdlib-domain implementations that MUST live in their own crate, never as a
 # large non-bridge module inside the god-crate `builtins/`. A large builtins
@@ -106,6 +107,20 @@ class Violation:
 def _load_toml(path: Path) -> dict:
     with path.open("rb") as fh:
         return tomllib.load(fh)
+
+
+@functools.cache
+def _crate_graph_roles() -> dict[str, str]:
+    data = _load_toml(ROOT / "runtime" / "crate_graph.toml")
+    out: dict[str, str] = {}
+    for item in data.get("crate", []):
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        role = item.get("role")
+        if isinstance(name, str) and isinstance(role, str):
+            out[name] = role
+    return out
 
 
 def _members_of(cargo_path: Path, base: Path) -> list[Path]:
@@ -178,7 +193,23 @@ def layer_of(cid: str) -> str | None:
         return CRATE_LAYER[cid]
     if cid.startswith(STDLIB_PREFIX):
         return "stdlib"
+    role = _crate_graph_roles().get(cid, "")
+    if "stdlib satellite" in role:
+        return "stdlib"
+    if role.startswith("runtime ") and "satellite" in role:
+        return "core"
     return None  # unclassified (backends/ir/passes/tooling) -- not layer-governed
+
+
+def _stdlib_domain(cid: str) -> str | None:
+    if cid.startswith(STDLIB_PREFIX):
+        return cid[len(STDLIB_PREFIX):]
+    if (
+        cid.startswith(LEGACY_RUNTIME_STDLIB_PREFIX)
+        and "stdlib satellite" in _crate_graph_roles().get(cid, "")
+    ):
+        return cid[len(LEGACY_RUNTIME_STDLIB_PREFIX):]
+    return None
 
 
 # --- checks ---------------------------------------------------------------
@@ -244,7 +275,9 @@ def check_duplicate_authority(root: Path, crates: dict[str, Path]) -> list[Viola
     for cid, cdir in sorted(crates.items()):
         if layer_of(cid) != "stdlib":
             continue
-        domain = cid[len(STDLIB_PREFIX):]
+        domain = _stdlib_domain(cid)
+        if domain is None:
+            continue
         crate_lines = sum(_rs_line_count(p) for p in (cdir / "src").rglob("*.rs")) if (cdir / "src").is_dir() else 0
         impl = _builtins_domain_impl(root, domain)
         god_lines = sum(n for _p, n in impl)
