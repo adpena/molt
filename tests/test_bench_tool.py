@@ -227,18 +227,18 @@ def test_canonical_bench_env_preserves_explicit_roots_and_session(
         }
     )
 
-    resolved_root = artifact_root.resolve()
-    assert env["MOLT_EXT_ROOT"] == str(resolved_root)
+    selected_root = artifact_root.resolve()
+    assert env["MOLT_EXT_ROOT"] == str(selected_root)
     assert env["CARGO_TARGET_DIR"] == str(
         molt_dx.cargo_target_dir_for_artifact_root(
-            resolved_root,
+            selected_root,
             env["MOLT_SESSION_ID"],
         )
     )
-    assert env["MOLT_CACHE"] == str(resolved_root / ".molt_cache")
-    assert env["MOLT_DIFF_ROOT"] == str(resolved_root / "tmp" / "diff")
-    assert env["TMPDIR"] == str(resolved_root / "tmp")
-    assert env["MOLT_BENCH_TMP_ROOT"] == str(resolved_root / "tmp" / "bench")
+    assert env["MOLT_CACHE"] == str(selected_root / ".molt_cache")
+    assert env["MOLT_DIFF_ROOT"] == str(selected_root / "tmp" / "diff")
+    assert env["TMPDIR"] == str(selected_root / "tmp")
+    assert env["MOLT_BENCH_TMP_ROOT"] == str(selected_root / "tmp" / "bench")
     assert env["PYTHONPATH"] == str(bench_tool.REPO_ROOT / "src")
     assert env["MOLT_SESSION_ID"] == "bench-review"
 
@@ -269,7 +269,10 @@ def test_canonical_bench_env_preserves_independent_explicit_artifact_env(
         "caller-session",
     )
     for key, value in explicit.items():
-        if key in conformance_defaults and key != "MOLT_SESSION_ID":
+        if key in conformance_defaults and key not in {
+            "CARGO_INCREMENTAL",
+            "MOLT_SESSION_ID",
+        }:
             assert env[key] != conformance_defaults[key]
     assert env["PYTHONPATH"] == str(bench_tool.REPO_ROOT / "src")
 
@@ -289,7 +292,7 @@ def test_canonical_bench_env_empty_base_ignores_ambient_artifact_env(
     assert env["CARGO_TARGET_DIR"] == str(
         molt_dx.cargo_target_dir_for_artifact_root(
             Path(env["MOLT_EXT_ROOT"]),
-            env["MOLT_SESSION_ID"],
+            None,
         )
     )
 
@@ -632,7 +635,16 @@ def test_bench_cli_passes_molt_profile(monkeypatch, tmp_path: Path) -> None:
         ),
     )
     monkeypatch.setattr(bench_tool, "_git_rev", lambda: "deadbeef")
-    monkeypatch.setattr(bench_tool, "write_json", lambda path, payload: None)
+
+    def fail_platform_platform() -> str:
+        raise AssertionError("platform.platform() shells out on Windows")
+
+    monkeypatch.setattr(bench_tool.platform, "platform", fail_platform_platform)
+    monkeypatch.setattr(
+        bench_tool,
+        "write_json",
+        lambda path, payload: captured.update({"payload": payload}),
+    )
     monkeypatch.setattr(
         sys,
         "argv",
@@ -653,6 +665,8 @@ def test_bench_cli_passes_molt_profile(monkeypatch, tmp_path: Path) -> None:
     assert captured["molt_profile"] == "release"
     assert captured["benchmarks"] == [str(tmp_path / "bench_sample.py")]
     assert captured["use_molt_build_cache"] is True
+    payload = captured["payload"]
+    assert payload["system"]["platform"] == bench_tool._platform_label()
 
 
 def test_bench_cli_defaults_molt_profile_to_release(
@@ -978,6 +992,70 @@ def test_prepare_molt_binary_restarts_batch_server_after_protocol_desync(
     try:
         assert restarts == [True]
         assert len(requests) == 2
+    finally:
+        binary.temp_dir.cleanup()
+
+
+def test_prepare_molt_binary_logs_and_restarts_after_classified_retry(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    script = tmp_path / "bench_sample.py"
+    script.write_text("print(1)\n", encoding="utf-8")
+    requests: list[dict[str, object]] = []
+    restarts: list[bool] = []
+
+    class _DaemonFailureThenSuccessBatchServer:
+        def request_build(
+            self, params: dict[str, object], *, timeout_s: float
+        ) -> dict[str, object]:
+            del timeout_s
+            requests.append(params)
+            if len(requests) == 1:
+                return {
+                    "ok": False,
+                    "returncode": 1,
+                    "stdout": "",
+                    "stderr": (
+                        "Backend daemon compile failed: "
+                        "backend daemon returned empty response"
+                    ),
+                }
+            out_dir = Path(str(params["out_dir"]))
+            output = out_dir / "bench_sample_molt"
+            output.write_bytes(b"binary")
+            return {
+                "ok": True,
+                "returncode": 0,
+                "stdout": json.dumps({"data": {"output": str(output)}}),
+                "stderr": "",
+            }
+
+        def restart(self) -> None:
+            restarts.append(True)
+
+    monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: {"BASE": "1"})
+    monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda env=None: None)
+    monkeypatch.setattr(bench_tool.time, "sleep", lambda seconds: None)
+
+    binary = bench_tool.prepare_molt_binary(
+        str(script),
+        env={},
+        batch_server=_DaemonFailureThenSuccessBatchServer(),
+    )
+
+    assert isinstance(binary, bench_tool.MoltBinary)
+    try:
+        assert restarts == [True]
+        assert len(requests) == 2
+        captured = capsys.readouterr()
+        assert "status=daemon_crash" in captured.err
+        assert "detail=backend_daemon_empty_response" in captured.err
+        assert "backend daemon returned empty response" in captured.err
+        assert (
+            "Backend build failed (status=daemon_crash "
+            "detail=backend_daemon_empty_response); "
+            "pruning stale daemons and retrying..."
+        ) in captured.err
     finally:
         binary.temp_dir.cleanup()
 

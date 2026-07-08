@@ -26,6 +26,11 @@ MAX_FAILURE_DETAIL_RECORDS = 32
 MAX_FAILURE_MESSAGE_CHARS = 4000
 
 
+def _platform_label() -> str:
+    machine = platform.machine() or "unknown-machine"
+    return f"{sys.platform}-{machine}"
+
+
 def _chmod_tree_readable(root: Path) -> None:
     try:
         root.chmod(0o755)
@@ -903,6 +908,60 @@ def _emit_molt_build_failure(
         print(f"--- Molt build {label} ---\n{body}", file=sys.stderr)
 
 
+def _emit_molt_failure_summary(
+    script: str,
+    failure: MoltFailure,
+    *,
+    prefix: str = "Molt build failed",
+) -> None:
+    parts = [
+        f"phase={failure.phase}",
+        f"status={failure.status}",
+    ]
+    if failure.detail:
+        parts.append(f"detail={failure.detail}")
+    if failure.returncode is not None:
+        parts.append(f"returncode={failure.returncode}")
+    if failure.timed_out:
+        parts.append("timed_out=true")
+    if failure.elapsed_s is not None:
+        parts.append(f"elapsed_s={failure.elapsed_s:.3f}")
+    print(
+        f"{prefix} for {Path(script).name}: " + " ".join(parts),
+        file=sys.stderr,
+    )
+    message = _bounded_failure_text(failure.message)
+    if message:
+        print(f"--- Molt failure message ---\n{message}", file=sys.stderr)
+
+
+def _failure_should_restart_batch_server(failure: MoltFailure) -> bool:
+    return (
+        failure.phase == "build"
+        and failure.detail is not None
+        and failure.detail.startswith("backend_daemon_")
+    )
+
+
+def _restart_batch_server_for_retry(
+    batch_server: _BenchBatchBuildServer | object | None,
+    failure: MoltFailure,
+) -> None:
+    if batch_server is None or not _failure_should_restart_batch_server(failure):
+        return
+    restart = getattr(batch_server, "restart", None)
+    if not callable(restart):
+        return
+    try:
+        restart()
+    except Exception as restart_exc:  # noqa: BLE001
+        print(
+            "warning: failed to restart batch compile server after "
+            f"{failure.detail or failure.status}: {restart_exc}",
+            file=sys.stderr,
+        )
+
+
 def prepare_molt_binary(
     script: str,
     extra_args: list[str] | None = None,
@@ -976,6 +1035,7 @@ def prepare_molt_binary(
                 elapsed_s=time.perf_counter() - start,
                 default_status="build_failed",
             )
+            _emit_molt_failure_summary(script, failure)
             temp_dir.cleanup()
             return failure
         build_s = time.perf_counter() - start
@@ -996,6 +1056,7 @@ def prepare_molt_binary(
                 ),
                 default_status="build_failed",
             )
+            _emit_molt_failure_summary(script, failure)
             temp_dir.cleanup()
             return failure
 
@@ -1012,6 +1073,7 @@ def prepare_molt_binary(
                 default_status="build_output_invalid",
                 detail="build_json_invalid",
             )
+            _emit_molt_failure_summary(script, failure)
             temp_dir.cleanup()
             return failure
 
@@ -1026,6 +1088,7 @@ def prepare_molt_binary(
                 default_status="build_artifact_missing",
                 detail="build_output_missing",
             )
+            _emit_molt_failure_summary(script, failure)
             temp_dir.cleanup()
             return failure
 
@@ -1036,8 +1099,13 @@ def prepare_molt_binary(
     if isinstance(result, MoltBinary):
         return result
 
+    _restart_batch_server_for_retry(batch_server, result)
     print(
-        "Backend build failed; pruning stale daemons and retrying...", file=sys.stderr
+        "Backend build failed "
+        f"(status={result.status}"
+        f"{f' detail={result.detail}' if result.detail else ''}); "
+        "pruning stale daemons and retrying...",
+        file=sys.stderr,
     )
     _prune_backend_daemons(env)
     time.sleep(1)
@@ -2376,7 +2444,7 @@ def main():
         "warmup": warmup,
         "timing_mode": "warm_throughput" if warmup > 0 else "cold_first_run",
         "system": {
-            "platform": platform.platform(),
+            "platform": _platform_label(),
             "python": platform.python_version(),
             "machine": platform.machine(),
             "cpu_count": os.cpu_count(),
