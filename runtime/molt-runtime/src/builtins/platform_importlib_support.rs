@@ -1,4 +1,5 @@
 use super::*;
+use digest::Digest;
 pub(super) use molt_runtime_platform::importlib_support::{
     importlib_is_archive_member_path, importlib_metadata_first_nonempty,
     importlib_metadata_header_values, importlib_metadata_normalize_name,
@@ -6,6 +7,8 @@ pub(super) use molt_runtime_platform::importlib_support::{
     importlib_metadata_parse_headers, importlib_package_root_from_origin, split_zip_archive_path,
     zip_entry_join,
 };
+use sha2::Sha256;
+use std::time::UNIX_EPOCH;
 
 pub(super) struct SourceLoaderResolution {
     pub(super) is_package: bool,

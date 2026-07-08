@@ -3,13 +3,8 @@ use std::io::Read;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use digest::Digest;
-use md5::Md5;
 use serde_json::Value as JsonValue;
-use sha1::Sha1;
-use sha2::Sha256;
 
 use crate::audit::{AuditArgs, AuditDecision, AuditEvent, audit_capability_decision, audit_emit};
 use crate::builtins::exceptions::molt_exception_last_pending;
@@ -22,6 +17,9 @@ use crate::libc_compat as libc;
 use crate::object::ops_sys::runtime_target_minor;
 use crate::randomness::fill_os_random;
 use crate::*;
+use molt_runtime_platform::uuid_support::{
+    uuid_node, uuid_v1_bytes, uuid_v3_bytes, uuid_v4_bytes, uuid_v5_bytes,
+};
 
 // --- Platform constants ---
 
@@ -101,14 +99,11 @@ pub(crate) fn platform_clear_runtime_state(_py: &PyToken<'_>, state: &crate::sta
 static ENV_STATE: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
 static PROCESS_ENV_STATE: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
 static LOCALE_STATE: OnceLock<Mutex<String>> = OnceLock::new();
-static UUID_NODE_STATE: OnceLock<Mutex<Option<u64>>> = OnceLock::new();
-static UUID_V1_STATE: OnceLock<Mutex<(Option<u16>, u64)>> = OnceLock::new();
 static EXTENSION_METADATA_OK_CACHE: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
 #[cfg(all(feature = "source_extension_loader", not(target_arch = "wasm32")))]
 static SOURCE_EXTENSION_LIBRARIES: OnceLock<Mutex<Vec<libloading::Library>>> = OnceLock::new();
 static EXTENSION_METADATA_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
 static EXTENSION_METADATA_CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
-const UUID_EPOCH_100NS: u64 = 0x01B21DD213814000;
 
 fn trace_env_get() -> bool {
     static TRACE: OnceLock<bool> = OnceLock::new();
@@ -139,14 +134,6 @@ fn locale_state() -> &'static Mutex<String> {
     LOCALE_STATE.get_or_init(|| Mutex::new(String::from("C")))
 }
 
-fn uuid_node_state() -> &'static Mutex<Option<u64>> {
-    UUID_NODE_STATE.get_or_init(|| Mutex::new(None))
-}
-
-fn uuid_v1_state() -> &'static Mutex<(Option<u16>, u64)> {
-    UUID_V1_STATE.get_or_init(|| Mutex::new((None, 0)))
-}
-
 fn extension_metadata_ok_cache() -> &'static Mutex<BTreeMap<String, String>> {
     EXTENSION_METADATA_OK_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
@@ -157,124 +144,6 @@ fn extension_metadata_cache_stats() -> (u64, u64) {
         EXTENSION_METADATA_CACHE_HITS.load(Ordering::Relaxed),
         EXTENSION_METADATA_CACHE_MISSES.load(Ordering::Relaxed),
     )
-}
-
-fn uuid_random_bytes<const N: usize>() -> Result<[u8; N], String> {
-    let mut out = [0u8; N];
-    fill_os_random(&mut out).map_err(|err| format!("os randomness unavailable: {err}"))?;
-    Ok(out)
-}
-
-fn uuid_node() -> Result<u64, String> {
-    let mut guard = uuid_node_state()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(node) = *guard {
-        return Ok(node);
-    }
-    let mut bytes = uuid_random_bytes::<6>()?;
-    // Match CPython behavior: set multicast bit on a random node id.
-    bytes[0] |= 0x01;
-    let mut node = 0u64;
-    for byte in bytes {
-        node = (node << 8) | u64::from(byte);
-    }
-    *guard = Some(node);
-    Ok(node)
-}
-
-fn uuid_apply_version_and_variant(bytes: &mut [u8; 16], version: u8) {
-    bytes[6] = (bytes[6] & 0x0F) | ((version & 0x0F) << 4);
-    bytes[8] = (bytes[8] & 0x3F) | 0x80;
-}
-
-fn uuid_v4_bytes() -> Result<[u8; 16], String> {
-    let mut bytes = uuid_random_bytes::<16>()?;
-    uuid_apply_version_and_variant(&mut bytes, 4);
-    Ok(bytes)
-}
-
-fn uuid_v3_bytes(namespace: &[u8], name: &[u8]) -> [u8; 16] {
-    let mut hasher = Md5::new();
-    hasher.update(namespace);
-    hasher.update(name);
-    let digest = hasher.finalize();
-    let mut out = [0u8; 16];
-    out.copy_from_slice(&digest[..16]);
-    uuid_apply_version_and_variant(&mut out, 3);
-    out
-}
-
-fn uuid_v5_bytes(namespace: &[u8], name: &[u8]) -> [u8; 16] {
-    let mut hasher = Sha1::new();
-    hasher.update(namespace);
-    hasher.update(name);
-    let digest = hasher.finalize();
-    let mut out = [0u8; 16];
-    out.copy_from_slice(&digest[..16]);
-    uuid_apply_version_and_variant(&mut out, 5);
-    out
-}
-
-fn uuid_timestamp_100ns() -> u64 {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let ticks = now / 100;
-    UUID_EPOCH_100NS.saturating_add(ticks as u64)
-}
-
-fn uuid_v1_bytes(
-    node_override: Option<u64>,
-    clock_seq_override: Option<u16>,
-) -> Result<[u8; 16], String> {
-    let node = match node_override {
-        Some(value) => value,
-        None => uuid_node()?,
-    };
-    let mut state = uuid_v1_state()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if state.0.is_none() {
-        let seed = uuid_random_bytes::<2>()?;
-        state.0 = Some((u16::from(seed[0]) << 8 | u16::from(seed[1])) & 0x3FFF);
-    }
-    let mut timestamp = uuid_timestamp_100ns();
-    let mut clock_seq = clock_seq_override.unwrap_or_else(|| state.0.unwrap_or(0));
-    if timestamp <= state.1 {
-        timestamp = state.1.saturating_add(1);
-        if clock_seq_override.is_none() {
-            clock_seq = (clock_seq + 1) & 0x3FFF;
-        }
-    }
-    if clock_seq_override.is_none() {
-        state.0 = Some(clock_seq);
-    }
-    state.1 = timestamp;
-    drop(state);
-
-    let time_low = (timestamp & 0xFFFF_FFFF) as u32;
-    let time_mid = ((timestamp >> 32) & 0xFFFF) as u16;
-    let mut time_hi_and_version = ((timestamp >> 48) & 0x0FFF) as u16;
-    time_hi_and_version |= 1 << 12;
-    let clock_seq_low = (clock_seq & 0xFF) as u8;
-    let mut clock_seq_hi_and_reserved = ((clock_seq >> 8) & 0x3F) as u8;
-    clock_seq_hi_and_reserved |= 0x80;
-
-    let mut out = [0u8; 16];
-    out[0..4].copy_from_slice(&time_low.to_be_bytes());
-    out[4..6].copy_from_slice(&time_mid.to_be_bytes());
-    out[6..8].copy_from_slice(&time_hi_and_version.to_be_bytes());
-    out[8] = clock_seq_hi_and_reserved;
-    out[9] = clock_seq_low;
-    out[10] = ((node >> 40) & 0xFF) as u8;
-    out[11] = ((node >> 32) & 0xFF) as u8;
-    out[12] = ((node >> 24) & 0xFF) as u8;
-    out[13] = ((node >> 16) & 0xFF) as u8;
-    out[14] = ((node >> 8) & 0xFF) as u8;
-    out[15] = (node & 0xFF) as u8;
-    Ok(out)
 }
 
 fn collect_env_state() -> BTreeMap<String, String> {
