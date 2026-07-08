@@ -186,18 +186,23 @@ is reconciled.
 
 - Use `uv run --active --project . --python 3.12 ...` for Python commands.
   Non-active `uv run` creates throwaway environments and is not acceptable.
-- On this Windows workstation, APDataStore is the preferred maintainer/agent
-  artifact volume. Fresh DX/proof-queue builds must go through RunContext
-  (`tools/run_context_env.py --prefer-external-artifacts --dx`,
-  `tools/throughput_env.sh`, `tools/dev.py`, or the proof queue) so build,
-  cache, temp, and managed toolchain paths resolve under `D:\Molt` when that
-  volume is healthy. `MOLT_TARGET_ROOT` defaults to
-  `D:\Molt\target-root`; stale `E:\molt-target`, `E:\Molt\target-root`, and
-  `D:\molt-target` defaults are legacy evidence/fallbacks, not script-local
-  discovery defaults. Preserve an intentional off-default toolchain root only
-  with `MOLT_PRESERVE_TARGET_ROOT=1`, or override artifact selection with
-  `MOLT_EXTERNAL_ARTIFACT_ROOTS`. RunContext emits `UV_LINK_MODE=copy` for
-  exFAT APDataStore roots unless an explicit operator value is present.
+- On this Windows workstation the PRIMARY fast artifact volume is now `C:\Molt`
+  (internal NVMe) — set via persistent `MOLT_EXTERNAL_ARTIFACT_ROOTS=C:\Molt` +
+  `MOLT_ALLOW_C_DRIVE_ARTIFACTS=1` (2026-07-08; freed by deleting games). It beats
+  the external USB `D:` (exFAT: no hard links, 128 KB clusters, metadata-slow) for
+  the git+cargo small-file workload. **Do NOT override the artifact root back to
+  `D:`/`E:`** — they are exFAT fallback/overflow only. Stale artifacts self-clean
+  BY DEFAULT (dx.py auto-janitor, throttled/detached, `--free-below-gb 80`; opt out
+  `MOLT_DISABLE_AUTO_JANITOR=1`). See docs/agent/ORCHESTRATION.md DEV-VELOCITY
+  PROTOCOL for the current, binding operational rules. Fresh DX/proof-queue builds
+  still go through RunContext (`tools/run_context_env.py --prefer-external-artifacts
+  --dx`, `tools/throughput_env.sh`, `tools/dev.py`, or the proof queue) so build,
+  cache, temp, and managed toolchain paths resolve under the selected root
+  (`MOLT_EXT_ROOT=C:\Molt`, `CARGO_TARGET_DIR=C:\Molt\target` — a STABLE persistent
+  target; do NOT set `MOLT_SESSION_ID` for ordinary builds). `MOLT_TARGET_ROOT` is
+  derived from the selected root; preserve an intentional off-default toolchain
+  root only with `MOLT_PRESERVE_TARGET_ROOT=1`. RunContext emits `UV_LINK_MODE=copy`
+  for exFAT fallback roots unless an explicit operator value is present.
 - Bootstrap RunContext before the first `uv` command in a fresh checkout or
   worktree. Use an already-installed host Python 3.12+ for this dependency-free
   resolver script, for example
