@@ -86,6 +86,10 @@ pub(in crate::native_backend::function_compiler) fn scan_loop_hoistable_lists(
     let mut list_int_accessed: BTreeSet<String> = BTreeSet::new();
     let mut list_generic_accessed: BTreeSet<String> = BTreeSet::new();
     let mut mutated: BTreeSet<String> = BTreeSet::new();
+    // Aliasing: copy_var/copy/alias make two names reference the SAME underlying
+    // list buffer, so mutating (or escaping) either end invalidates a hoisted
+    // data_ptr/len for BOTH. Record the edges and close `mutated` over them below.
+    let mut alias_edges: Vec<(String, String)> = Vec::new();
 
     let mut depth = 0i32;
     for idx in (start_idx + 1)..ops.len() {
@@ -118,13 +122,56 @@ pub(in crate::native_backend::function_compiler) fn scan_loop_hoistable_lists(
                     list_generic_accessed.insert(args[0].clone());
                 }
             }
+            // In-place mutations invalidate a hoisted data_ptr/len for the receiver.
             "store_index" | "list_append" | "list_pop" | "list_extend" | "list_insert"
             | "list_remove" | "list_clear" => {
                 mutated.insert(args[0].clone());
             }
+            // Storing the list as a value escapes it into a container from which
+            // opaque code may later mutate it; the container operand also escapes.
+            "store_attr" | "store_subscript" | "store_global" => {
+                for operand in args.iter() {
+                    mutated.insert(operand.clone());
+                }
+            }
+            // A call can hand the list to opaque code that mutates or reallocates
+            // it (e.g. `list.append` inside a callee), which would leave a hoisted
+            // data_ptr/len stale — a silent wrong answer or a use-after-free after a
+            // reallocation. Every operand is conservatively treated as escaped.
+            "call" | "call_method" | "call_function" | "call_kw" | "invoke" => {
+                for operand in args.iter() {
+                    mutated.insert(operand.clone());
+                }
+            }
+            // Aliasing edge: destination shares the source list's buffer.
+            "copy_var" | "copy" | "load_var" | "identity_alias" | "alias" => {
+                if let Some(dest) = op.out.as_ref().or(op.var.as_ref()) {
+                    alias_edges.push((dest.clone(), args[0].clone()));
+                }
+            }
             _ => {}
         }
     }
+
+    // Close `mutated` over alias edges to a fixpoint. Aliases are undirected (both
+    // ends are the same buffer), so mutation of either end marks the other.
+    if !alias_edges.is_empty() {
+        loop {
+            let mut changed = false;
+            for (a, b) in &alias_edges {
+                if mutated.contains(a) && mutated.insert(b.clone()) {
+                    changed = true;
+                }
+                if mutated.contains(b) && mutated.insert(a.clone()) {
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+    }
+
     list_int_accessed.retain(|v| !mutated.contains(v) && pre_loop_defined.contains(v));
     list_generic_accessed.retain(|v| !mutated.contains(v) && pre_loop_defined.contains(v));
     (list_int_accessed, list_generic_accessed)
