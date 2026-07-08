@@ -14,7 +14,7 @@ from molt.cli.target_python import (
     _DEFAULT_TARGET_PYTHON_VERSION,
     _parse_source_for_target,
 )
-from molt.cli.setup_readiness import _is_path_within
+from molt.cli.project_roots import _is_path_within
 
 _ModuleRootAliases = tuple[tuple[str, Path], ...]
 

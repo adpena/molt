@@ -14,6 +14,15 @@ from typing import Any, Collection, Iterator, Mapping, Sequence, cast
 import uuid
 
 from molt.cli.artifact_state import _artifact_state_path
+from molt.cli.artifact_sync import (
+    _ARTIFACT_SYNC_STATE_CACHE,
+    _artifact_sync_state_matches,
+    _artifact_sync_state_matches_stat,
+    _artifact_sync_state_path,
+    _read_artifact_sync_state,
+    _write_artifact_sync_payload,
+    _write_artifact_sync_state,
+)
 from molt.cli.atomic_io import (
     _atomic_link_or_copy_file,
     _atomic_write_json,
@@ -41,8 +50,6 @@ _emitted_name_matches_module_symbol = (
 _is_protected_runtime_entrypoint = _function_references.is_protected_runtime_entrypoint
 _module_symbol_name = _function_references.module_symbol_name
 reachable_function_names = _function_references.reachable_function_names
-
-_ARTIFACT_SYNC_STATE_CACHE: dict[Path, tuple[int, int, dict[str, Any] | None]] = {}
 
 
 def _is_valid_cached_backend_artifact(path: Path, *, is_wasm: bool) -> bool:
@@ -1023,127 +1030,6 @@ def _shared_stdlib_cache_matches_key_locked(
             stdlib_object_manifest=stdlib_object_manifest,
             stdlib_module_symbols=stdlib_module_symbols,
         )
-
-
-def _artifact_sync_state_path(project_root: Path, artifact: Path) -> Path:
-    return _artifact_state_path(
-        project_root,
-        artifact,
-        subdir="artifact_sync",
-        stem_suffix="",
-        extension="json",
-    )
-
-
-def _read_artifact_sync_state(path: Path) -> dict[str, Any] | None:
-    try:
-        stat = path.stat()
-    except OSError:
-        _ARTIFACT_SYNC_STATE_CACHE.pop(path, None)
-        return None
-    cached = _ARTIFACT_SYNC_STATE_CACHE.get(path)
-    if cached is not None:
-        cached_size, cached_mtime_ns, cached_payload = cached
-        if cached_size == stat.st_size and cached_mtime_ns == stat.st_mtime_ns:
-            return cached_payload
-    try:
-        text = path.read_text().strip()
-    except OSError:
-        _ARTIFACT_SYNC_STATE_CACHE.pop(path, None)
-        return None
-    if not text:
-        _ARTIFACT_SYNC_STATE_CACHE[path] = (stat.st_size, stat.st_mtime_ns, None)
-        return None
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        _ARTIFACT_SYNC_STATE_CACHE[path] = (stat.st_size, stat.st_mtime_ns, None)
-        return None
-    payload = data if isinstance(data, dict) else None
-    _ARTIFACT_SYNC_STATE_CACHE[path] = (stat.st_size, stat.st_mtime_ns, payload)
-    return payload
-
-
-def _write_artifact_sync_state(
-    path: Path,
-    *,
-    source_key: str,
-    tier: str,
-    artifact: Path,
-) -> None:
-    stat = artifact.stat()
-    payload = {
-        "version": 1,
-        "source_key": source_key,
-        "tier": tier,
-        "size": stat.st_size,
-        "mtime_ns": stat.st_mtime_ns,
-    }
-    _atomic_write_json(path, payload, indent=2)
-    try:
-        written_stat = path.stat()
-    except OSError:
-        _ARTIFACT_SYNC_STATE_CACHE.pop(path, None)
-    else:
-        _ARTIFACT_SYNC_STATE_CACHE[path] = (
-            written_stat.st_size,
-            written_stat.st_mtime_ns,
-            dict(payload),
-        )
-
-
-def _write_artifact_sync_payload(
-    path: Path,
-    payload: dict[str, Any],
-    *,
-    default: Any | None = None,
-) -> None:
-    _atomic_write_json(path, payload, indent=2, default=default)
-    try:
-        written_stat = path.stat()
-    except OSError:
-        _ARTIFACT_SYNC_STATE_CACHE.pop(path, None)
-    else:
-        _ARTIFACT_SYNC_STATE_CACHE[path] = (
-            written_stat.st_size,
-            written_stat.st_mtime_ns,
-            dict(payload),
-        )
-
-
-def _artifact_sync_state_matches(
-    state: dict[str, Any] | None,
-    *,
-    source_key: str,
-    tier: str,
-    artifact: Path,
-) -> bool:
-    try:
-        stat = artifact.stat()
-    except OSError:
-        return False
-    return _artifact_sync_state_matches_stat(
-        state,
-        source_key=source_key,
-        tier=tier,
-        stat=stat,
-    )
-
-
-def _artifact_sync_state_matches_stat(
-    state: dict[str, Any] | None,
-    *,
-    source_key: str,
-    tier: str,
-    stat: os.stat_result,
-) -> bool:
-    if state is None:
-        return False
-    if state.get("source_key") != source_key or state.get("tier") != tier:
-        return False
-    return (
-        state.get("size") == stat.st_size and state.get("mtime_ns") == stat.st_mtime_ns
-    )
 
 
 def _native_stdlib_object_split_enabled(*, target: str, emit_mode: str) -> bool:

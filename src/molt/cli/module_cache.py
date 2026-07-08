@@ -16,7 +16,7 @@ from molt.frontend.sema.funcmeta import collect_module_func_defaults
 from molt.type_facts import TypeFacts
 
 from molt.cli.artifact_state import _build_state_subdir_cached
-from molt.cli.backend_cache import (
+from molt.cli.artifact_sync import (
     _read_artifact_sync_state,
     _write_artifact_sync_payload,
 )

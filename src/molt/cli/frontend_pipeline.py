@@ -14,7 +14,6 @@ from molt.type_facts import TypeFacts, load_type_facts
 from molt.cli import frontend_execution as _frontend_execution
 from molt.cli import frontend_parallel as _frontend_parallel
 from molt.cli import typecheck as _typecheck
-from molt.cli.binary_image_analysis import _frontend_binary_image_analysis_payload
 from molt.cli.build_diagnostics import (
     _build_build_diagnostics_payload,
     _record_frontend_timing_item,
@@ -79,7 +78,6 @@ from molt.cli.models import (
 from molt.cli.output import CliFailure as _CliFailure
 from molt.cli.output import fail as _fail
 from molt.cli.target_python import TargetPythonVersion
-from molt.cli.setup_readiness import _ensure_rustup_target
 
 _PreparedFrontendPipelineBundle = tuple[
     _PreparedFrontendRunTicket,
@@ -494,6 +492,11 @@ def _prepare_frontend_lowering_config(
                 warnings.append("Invalid MOLT_MODULE_CHUNK_OPS; using default of 3000.")
     module_chunking = module_chunk_max_ops > 0
     if target_triple:
+        # setup_readiness is part of the post-lowering toolchain-provisioning layer;
+        # import it lazily so this frontend driver stays off the backend import path
+        # (keeps the lowering cache fingerprint scope backend-free).
+        from molt.cli.setup_readiness import _ensure_rustup_target
+
         _ensure_rustup_target(target_triple, warnings)
 
     frontend_parallel_config = _frontend_parallel._resolve_frontend_parallel_config(
@@ -1078,6 +1081,13 @@ def _prepare_frontend_pipeline(
         )
     set_binary_image_closure_payload(import_plan.closure_payload())
     if prepared_build_preamble.diagnostics_enabled:
+        # binary_image_analysis inspects a compiled binary image -- a post-lowering
+        # concern. Import it lazily so this frontend driver does not pull the
+        # backend onto the frontend import path.
+        from molt.cli.binary_image_analysis import (
+            _frontend_binary_image_analysis_payload,
+        )
+
         record_binary_image_analysis(
             "frontend",
             _frontend_binary_image_analysis_payload(
