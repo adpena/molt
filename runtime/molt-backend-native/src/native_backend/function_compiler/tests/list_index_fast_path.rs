@@ -524,3 +524,112 @@ fn scan_loop_hoistable_lists_treats_store_index_as_mutation() {
         "store_index must invalidate generic-list hoisting"
     );
 }
+
+#[test]
+fn scan_loop_hoistable_lists_treats_call_and_alias_escape_as_mutation() {
+    // A list handed to an opaque call inside the loop can be mutated/reallocated by
+    // the callee (e.g. list.append), leaving a hoisted data_ptr/len stale — a silent
+    // wrong answer or use-after-free. It must NOT be hoistable.
+    let call_ops = vec![
+        list_int_new("lst"),
+        OpIR {
+            kind: "loop_start".to_string(),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "index".to_string(),
+            args: Some(vec!["lst".to_string(), "idx".to_string()]),
+            out: Some("cur".to_string()),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "call".to_string(),
+            s_value: Some("opaque_mutator".to_string()),
+            args: Some(vec!["lst".to_string()]),
+            out: Some("ignored".to_string()),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "loop_end".to_string(),
+            ..OpIR::default()
+        },
+    ];
+    let plan = representation_plan_for_ops(&call_ops);
+    let pre = collect_pre_loop_defined_names(&call_ops, 1);
+    let (flat_hoist, _generic) = scan_loop_hoistable_lists(&call_ops, 1, &pre, &plan);
+    assert!(
+        !flat_hoist.contains("lst"),
+        "a list passed to an opaque call must not be hoistable (callee may realloc it)"
+    );
+
+    // Aliasing: `alias = copy_var(lst); alias.append(cur)` mutates the shared
+    // buffer, so `lst` (indexed hoist candidate) must be non-hoistable too.
+    let alias_ops = vec![
+        list_int_new("lst"),
+        OpIR {
+            kind: "loop_start".to_string(),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "index".to_string(),
+            args: Some(vec!["lst".to_string(), "idx".to_string()]),
+            out: Some("cur".to_string()),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "copy_var".to_string(),
+            args: Some(vec!["lst".to_string()]),
+            out: Some("alias".to_string()),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "list_append".to_string(),
+            args: Some(vec!["alias".to_string(), "cur".to_string()]),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "loop_end".to_string(),
+            ..OpIR::default()
+        },
+    ];
+    let plan = representation_plan_for_ops(&alias_ops);
+    let pre = collect_pre_loop_defined_names(&alias_ops, 1);
+    let (flat_hoist, _generic) = scan_loop_hoistable_lists(&alias_ops, 1, &pre, &plan);
+    assert!(
+        !flat_hoist.contains("lst"),
+        "mutation of an alias must invalidate hoisting of the original list buffer"
+    );
+
+    // Positive control: a list only READ (index) in the loop stays hoistable — the
+    // escape checks must not over-disable the common case.
+    let read_ops = vec![
+        list_int_new("lst"),
+        OpIR {
+            kind: "loop_start".to_string(),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "index".to_string(),
+            args: Some(vec!["lst".to_string(), "idx".to_string()]),
+            out: Some("cur".to_string()),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "add".to_string(),
+            args: Some(vec!["total".to_string(), "cur".to_string()]),
+            out: Some("total_next".to_string()),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "loop_end".to_string(),
+            ..OpIR::default()
+        },
+    ];
+    let plan = representation_plan_for_ops(&read_ops);
+    let pre = collect_pre_loop_defined_names(&read_ops, 1);
+    let (flat_hoist, _generic) = scan_loop_hoistable_lists(&read_ops, 1, &pre, &plan);
+    assert!(
+        flat_hoist.contains("lst"),
+        "a read-only indexed list must remain hoistable (no false escape)"
+    );
+}
