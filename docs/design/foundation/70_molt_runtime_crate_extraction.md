@@ -329,6 +329,30 @@ runtime fan-in repeated the nested memory-guard orphan-cleanup warning with
 receipt
 `D:\Molt\target\sessions\proof-rust-772c70152a7d-cargo-mo\.molt_state\quarantine\cargo_incremental\20260708-040457-pid23588-orphaned_processes_cleaned\receipt.json`.
 
+2026-07-08 C1 follow-up: UUID byte-generation support now lives in
+`molt-runtime-platform::uuid_support`. The platform satellite owns UUID node
+state, version/variant byte construction, MD5/SHA1 namespace hashing for UUID3
+and UUID5, and UUID1 clock-sequence/timestamp state. `molt-runtime` keeps only
+the Python object-facing entrypoints in `builtins/platform_env_ffi.rs`: argument
+conversion, capability/audit checks, exception raising, and bytes-object
+allocation. The move removes the UUID state and MD5 dependency from the parent
+runtime fan-in while leaving importlib SHA1/SHA256 hashing explicit in the
+runtime importlib files that still own that bootstrap behavior. Queue row
+`20260708T040903-c1-platform-uuid-support-satellite-20260708a-2864faa6fd884035`
+passed `cargo test -p molt-runtime-platform uuid_support -j1` in 25.9s. The
+first parent fan-in row,
+`20260708T040919-c1-platform-uuid-support-fanin-20260708a-8284b97d7465400d`,
+correctly failed before reaching the intended assertion because
+`platform_importlib_support.rs` still inherited `UNIX_EPOCH` from
+`platform.rs`; the extraction made that implicit dependency visible. The
+corrected row,
+`20260708T041320-c1-platform-uuid-support-fanin-20260708b-60537db2c9564f52`,
+passed `cargo check -p molt-runtime -j1` in 72.1s after the importlib support
+file owned its time import explicitly. After rebasing across the WASM constant
+materialization split, row
+`20260708T042038-c1-platform-uuid-support-fanin-post-wasmconst-20260708a-57b38262dd0a4cc2`
+passed the same runtime fan-in proof in 70.2s.
+
 ## Next Decomposition Order
 
 1. Continue legal subsystem extractions that avoid reserved lanes, starting with

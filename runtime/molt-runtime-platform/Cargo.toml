@@ -13,6 +13,11 @@ wasm_freestanding = []
 [lib]
 path = "src/lib.rs"
 
+[dependencies]
+digest = "0.11"
+md-5 = "0.11"
+sha1 = "0.11"
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 getrandom = "0.4"
 libc = "0.2"

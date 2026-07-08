@@ -6,5 +6,6 @@ pub mod libc_compat;
 pub mod randomness;
 pub mod socket_constants;
 pub mod utils;
+pub mod uuid_support;
 #[cfg(windows)]
 pub mod windows_abi;
