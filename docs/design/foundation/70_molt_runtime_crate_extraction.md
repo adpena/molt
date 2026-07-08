@@ -514,6 +514,44 @@ on `origin/main`, post-rebase fan-in row
 `20260708T055613-c1-platform-path-text-fanin-postrebase-20260708a-4a74e5f3bd7b48a4`
 passed `cargo check -p molt-runtime --features stdlib_micro -j1` in 74.7s.
 
+2026-07-08 C1 follow-up: errno generation and socket constant payload authority
+now live in `molt-runtime-platform::socket_constants`. The platform satellite
+owns the non-WASM build-script generation of `errno` constants, the WASM errno
+table, address-family constants, socket type/option/nameinfo/getaddrinfo
+payloads, and the target-gated `SOCK_NONBLOCK`/`SOCK_CLOEXEC` flags.
+`molt-runtime` keeps only `molt_errno_constants` and `molt_socket_constants`:
+Python object allocation, tuple/dict caching, and the exported ABI entrypoints.
+The parent runtime build script no longer emits `errno_constants.rs`.
+
+Proof rows: initial satellite row
+`20260708T052015-c1-platform-socket-constants-satellite-20260708a-47676256d1b34c52`
+passed `cargo test -p molt-runtime-platform -j1` in 39.0s, with the existing
+nested memory-guard orphan-cleanup warning and receipt
+`D:\Molt\target\sessions\proof-rust-c97fcaf95bde-c1-platf\.molt_state\quarantine\cargo_incremental\20260708-052053-pid16864-orphaned_processes_cleaned\receipt.json`.
+Initial parent fan-in row
+`20260708T052025-c1-platform-socket-constants-fanin-20260708a-59b5c97c32774015`
+passed `cargo check -p molt-runtime -j1` in 631.6s after a cold
+compile-dominated path. After rebasing over the resource TempArena and WASM
+dispatch splits on `origin/main`, satellite row
+`20260708T053507-c1-platform-socket-constants-satellite-postrebase-20260708a-46b50befb79a498d`
+passed in 41.9s. The first post-rebase fan-in row
+`20260708T053519-c1-platform-socket-constants-fanin-postrebase-20260708a-dbccd56b726041d1`
+finished the underlying `cargo check` with `guarded_exec` returncode 0, but the
+proof queue terminalized it as `stale` rc=2 with no diagnostic signal; treat
+that as a queue terminalization/diagnosis defect, not a code failure. Warm rerun
+`20260708T054928-c1-platform-socket-constants-fanin-postrebase-20260708b-627ab09c53d4413b`
+reused the same contention key and passed in 89.2s, again with the nested
+memory-guard orphan-cleanup warning and receipt
+`D:\Molt\target\sessions\proof-rust-ab483886f6d0-c1-platf\.molt_state\quarantine\cargo_incremental\20260708-055057-pid16220-orphaned_processes_cleaned\receipt.json`.
+
+DX signal recorded during this cut: changing proof contention keys for adjacent
+post-rebase reruns can accidentally force another cold parent-runtime target,
+turning a small authority move into a 10-11 minute fan-in. Reusing the warmed
+session/key brought the same parent check down to 89.2s. Also, the stale row's
+"no diagnostic signals" result is a deterministic diagnosis gap: the log already
+contained `guarded_exec: ... returncode=0`, but the queue surfaced only stale
+terminalization.
+
 ## Next Decomposition Order
 
 1. Continue legal subsystem extractions that avoid reserved lanes, starting with

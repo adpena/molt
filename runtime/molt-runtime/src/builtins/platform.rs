@@ -9,8 +9,6 @@ use serde_json::Value as JsonValue;
 use crate::audit::{AuditArgs, AuditDecision, AuditEvent, audit_capability_decision, audit_emit};
 use crate::builtins::exceptions::molt_exception_last_pending;
 use crate::builtins::modules::{runpy_exec_restricted_source, sys_modules_dict_bits};
-#[cfg(target_arch = "wasm32")]
-use crate::libc_compat as libc;
 use crate::object::ops_sys::runtime_target_minor;
 use crate::*;
 pub(crate) use molt_runtime_platform::env_support::{
@@ -23,6 +21,7 @@ pub(crate) use molt_runtime_platform::importlib_support::{
 use molt_runtime_platform::path_text::{
     path_basename_text, path_dirname_text, path_join_text, path_normpath_text,
 };
+pub(crate) use molt_runtime_platform::socket_constants::{SOCK_CLOEXEC_FLAG, SOCK_NONBLOCK_FLAG};
 use molt_runtime_platform::uuid_support::{
     uuid_node, uuid_v1_bytes, uuid_v3_bytes, uuid_v4_bytes, uuid_v5_bytes,
 };
@@ -32,15 +31,6 @@ use molt_runtime_platform::uuid_support::{
 pub(crate) const IO_EVENT_READ: u32 = 1;
 pub(crate) const IO_EVENT_WRITE: u32 = 1 << 1;
 pub(crate) const IO_EVENT_ERROR: u32 = 1 << 2;
-
-#[cfg(all(unix, any(target_os = "linux", target_os = "android")))]
-pub(crate) const SOCK_NONBLOCK_FLAG: i32 = libc::SOCK_NONBLOCK;
-#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
-pub(crate) const SOCK_NONBLOCK_FLAG: i32 = 0;
-#[cfg(all(unix, any(target_os = "linux", target_os = "android")))]
-pub(crate) const SOCK_CLOEXEC_FLAG: i32 = libc::SOCK_CLOEXEC;
-#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
-pub(crate) const SOCK_CLOEXEC_FLAG: i32 = 0;
 
 // --- errno/socket/env helpers ---
 
