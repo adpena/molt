@@ -21,7 +21,7 @@
     "molt-runtime-compression": 4,
     "molt-runtime-core": 24,
     "molt-runtime-crypto": 4,
-    "molt-runtime-graphlib": 4,
+    "molt-stdlib-graphlib": 4,
     "molt-runtime-http": 4,
     "molt-runtime-ipaddress": 4,
     "molt-runtime-itertools": 4,

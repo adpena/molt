@@ -1,7 +1,7 @@
 //! FFI bridge to molt-runtime internal functions.
 //!
 //! These `extern "C"` declarations are resolved at link time when
-//! molt-runtime-graphlib is linked into the same binary as molt-runtime.
+//! molt-stdlib-graphlib is linked into the same binary as molt-runtime.
 //! Each function has a corresponding `#[no_mangle]` shim in
 //! `molt-runtime/src/graphlib_bridge.rs`.
 

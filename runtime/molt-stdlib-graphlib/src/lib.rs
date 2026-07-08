@@ -1,5 +1,5 @@
 #![allow(dead_code, unused_imports)]
-//! `molt-runtime-graphlib` -- graphlib intrinsics for the Molt runtime.
+//! `molt-stdlib-graphlib` -- graphlib intrinsics for the Molt runtime.
 //!
 //! Isolates the `graphlib` Python module (`TopologicalSorter`) into a
 //! dedicated crate.
