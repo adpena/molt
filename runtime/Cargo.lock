@@ -2586,7 +2586,7 @@ dependencies = [
  "molt-runtime-compression",
  "molt-runtime-core",
  "molt-runtime-crypto",
- "molt-runtime-graphlib",
+ "molt-stdlib-graphlib",
  "molt-runtime-http",
  "molt-runtime-ipaddress",
  "molt-runtime-itertools",
@@ -2695,7 +2695,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "molt-runtime-graphlib"
+name = "molt-stdlib-graphlib"
 version = "0.1.0"
 dependencies = [
  "molt-lang-obj-model",

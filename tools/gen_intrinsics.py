@@ -36,7 +36,7 @@ DIFFLIB_LEAF_RESOLVERS_DIR = (
 )
 DIFFLIB_LEAF_RESOLVER_INDEX = DIFFLIB_LEAF_RESOLVERS_DIR / "mod.rs"
 GRAPHLIB_LEAF_RESOLVERS_DIR = (
-    ROOT / "runtime/molt-runtime-graphlib/src/intrinsics_generated"
+    ROOT / "runtime/molt-stdlib-graphlib/src/intrinsics_generated"
 )
 GRAPHLIB_LEAF_RESOLVER_INDEX = GRAPHLIB_LEAF_RESOLVERS_DIR / "mod.rs"
 IPADDRESS_LEAF_RESOLVERS_DIR = (
@@ -139,9 +139,9 @@ LEAF_RESOLVER_REGISTRIES = {
     "graphlib": {
         "output": GRAPHLIB_LEAF_RESOLVERS_DIR / "graphlib_resolver.rs",
         "module_index": GRAPHLIB_LEAF_RESOLVER_INDEX,
-        "crate_path": "molt_runtime_graphlib",
-        "crate_resolver_path": "molt_runtime_graphlib::intrinsics_generated::graphlib_resolver",
-        "symbol_path_prefix": "molt_runtime_graphlib::graphlib",
+        "crate_path": "molt_stdlib_graphlib",
+        "crate_resolver_path": "molt_stdlib_graphlib::intrinsics_generated::graphlib_resolver",
+        "symbol_path_prefix": "molt_stdlib_graphlib::graphlib",
         "function_path_prefix": "crate::graphlib",
     },
     "ipaddress": {

@@ -4,7 +4,7 @@
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
     #[cfg(feature = "stdlib_graphlib")]
     {
-        molt_runtime_graphlib::intrinsics_generated::graphlib_resolver::resolve_symbol_with(
+        molt_stdlib_graphlib::intrinsics_generated::graphlib_resolver::resolve_symbol_with(
             symbol,
             crate::builtins::functions::runtime_fn_addr,
         )
