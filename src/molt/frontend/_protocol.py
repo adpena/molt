@@ -152,6 +152,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     state_count: int
     stdlib_allowlist: Any
     stdlib_hint_trust: Any
+    target_sys_platform: str | None
     try_end_labels: list[int]
     try_handler_scopes: list[TryScope]
     try_scopes: list[TryScope]
@@ -184,6 +185,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         native_callable_exports: dict[str, dict[str, Any]] | None = None,
         native_python_exports: set[str] | None = None,
         native_support_function_roots: set[str] | None = None,
+        target_sys_platform: str | None = None,
         module_chunking: bool = False,
         module_chunk_max_ops: int = 0,
         optimization_profile: MidendProfile = "release",

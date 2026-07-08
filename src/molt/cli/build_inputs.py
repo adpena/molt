@@ -451,6 +451,7 @@ def _prepare_build_config(
     project_root: Path,
     warnings: list[str],
     json_output: bool,
+    target: Target,
     profile: BuildProfile,
     pgo_profile: str | None,
     runtime_feedback: str | None,
@@ -626,6 +627,7 @@ def _prepare_build_config(
         manifest_env_vars=manifest_env_vars,
         capability_config_cache_digest=capability_config_cache_digest,
         target_python=target_python,
+        target_sys_platform=_target_sys_platform(target),
     ), None
 
 
@@ -843,6 +845,7 @@ def _prepare_build_inputs(
         project_root=prepared_build_roots.project_root,
         warnings=prepared_build_preamble.warnings,
         json_output=json_output,
+        target=target,
         profile=profile,
         pgo_profile=pgo_profile,
         runtime_feedback=runtime_feedback,
@@ -1171,6 +1174,13 @@ def _parse_type_gate_flag(enabled: bool) -> dict[str, str]:
     if enabled:
         return {"MOLT_TYPE_GATE": "1"}
     return {}
+
+
+def _target_sys_platform(target: Target) -> str | None:
+    normalized = target.strip().lower()
+    if normalized in {"wasm", "wasm-freestanding"} or normalized.startswith("wasm32"):
+        return "wasm"
+    return None
 
 
 @functools.lru_cache(maxsize=32)

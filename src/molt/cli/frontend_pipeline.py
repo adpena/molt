@@ -1167,6 +1167,7 @@ def _prepare_frontend_pipeline(
         midend_policy_outcomes_by_function=midend_policy_outcomes_by_function,
         midend_pass_stats_by_function=midend_pass_stats_by_function,
         target_python=prepared_build_config.target_python,
+        target_sys_platform=prepared_build_config.target_sys_platform,
         scc_serial_modules=prepared_frontend_analysis.scc_serial_modules,
     )
 

@@ -114,6 +114,7 @@ def _lower_entry_module_as_main(
             for name, export in lowering_context.native_callable_exports.items()
         },
         native_python_exports=set(lowering_context.native_python_exports),
+        target_sys_platform=lowering_context.target_sys_platform,
         module_chunking=lowering_context.module_chunking,
         module_chunk_max_ops=lowering_context.module_chunk_max_ops,
         optimization_profile=cast(BuildProfile, lowering_context.optimization_profile),
@@ -232,6 +233,7 @@ def _prepare_frontend_execution(
     midend_policy_outcomes_by_function: dict[str, dict[str, Any]],
     midend_pass_stats_by_function: dict[str, dict[str, dict[str, Any]]],
     target_python: TargetPythonVersion,
+    target_sys_platform: str | None,
     scc_serial_modules: frozenset[str] = frozenset(),
 ) -> tuple[
     _FrontendLayerExecutionContext,
@@ -276,6 +278,7 @@ def _prepare_frontend_execution(
         stdlib_like_by_module=stdlib_like_by_module,
         known_classes=known_classes,
         target_python=target_python,
+        target_sys_platform=target_sys_platform,
         frontend_phase_timeout=frontend_phase_timeout,
         scc_serial_modules=scc_serial_modules,
     )
@@ -315,6 +318,7 @@ def _prepare_frontend_execution(
         known_classes=known_classes,
         frontend_phase_timeout=frontend_phase_timeout,
         target_python=target_python,
+        target_sys_platform=target_sys_platform,
     )
     serial_frontend_lowering_hooks = _SerialFrontendLoweringHooks(
         record_frontend_timing=record_frontend_timing,
@@ -540,6 +544,7 @@ def _run_frontend_parallel_layer_batches(
     scoped_lowering_inputs: _ScopedLoweringInputs | None,
     dirty_lowering_modules: Collection[str],
     target_python: TargetPythonVersion,
+    target_sys_platform: str | None,
     frontend_phase_timeout: float | None = None,
 ) -> tuple[_FrontendParallelLayerState, str | None, str | None, bool]:
     layer_state = _frontend_parallel._fresh_frontend_parallel_layer_state()
@@ -594,6 +599,7 @@ def _run_frontend_parallel_layer_batches(
             scoped_known_classes_by_module=scoped_known_classes_by_module,
             dirty_lowering_modules=dirty_lowering_modules,
             target_python=target_python,
+            target_sys_platform=target_sys_platform,
             frontend_phase_timeout=frontend_phase_timeout,
         )
         if batch_error is not None:
@@ -927,6 +933,7 @@ def _run_frontend_layer(
                 scoped_lowering_inputs=execution_context.scoped_lowering_inputs,
                 dirty_lowering_modules=execution_context.dirty_lowering_modules,
                 target_python=execution_context.target_python,
+                target_sys_platform=execution_context.target_sys_platform,
                 frontend_phase_timeout=execution_context.frontend_phase_timeout,
             )
         )
