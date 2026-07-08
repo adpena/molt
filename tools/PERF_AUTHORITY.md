@@ -13,11 +13,14 @@ and warm timings, native+LLVM backend parity, repeat-CI classification,
 quiescence, provenance, and stale-tree status. It is the only lane allowed to
 publish `authoritative=true`.
 
-`tools/release_exit_gate.py` treats E2 `status: pass` as a typed receipt, not a
-generic file attachment. The evidence must include a canonical
+`tools/release_exit_gate.py` treats every `status: pass` criterion as a typed
+receipt, not a generic file attachment. E1 must include a
+`pact-witness-acceptance` receipt with a real `candidate_outputs.npz` path and a
+`pact witness acceptance PASS` verdict. E2 must include a canonical
 `cpython_floor_scoreboard` JSON artifact that is schema-valid, `authoritative:
 true`, fresh under `DEFAULT_STALE_DAYS`, on `origin/main` ancestry, and has
-`summary.gate_fails == false`.
+`summary.gate_fails == false`. E3 must include a `tools/parity_gate.py` receipt
+with the no-Tier-1-violations PASS verdict.
 
 The same release gate treats E4 `status: pass` as typed structural evidence, not
 a generic JSON attachment. E4 must include the canonicalization contract JSON,

@@ -171,6 +171,107 @@ def _load_text_evidence(path: Path) -> tuple[str | None, str | None]:
         return None, f"invalid UTF-8 text in {path}: {exc}"
 
 
+def _evidence_items(evidence: object) -> Sequence[Mapping[str, Any]]:
+    if not isinstance(evidence, list):
+        return ()
+    return tuple(item for item in evidence if isinstance(item, Mapping))
+
+
+def _entry_command_text(entry: Mapping[str, Any]) -> str:
+    command = entry.get("command")
+    return command if isinstance(command, str) else ""
+
+
+def _candidate_output_path_from_log(text: str, *, log_path: Path) -> Path | None:
+    for line in text.splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key.strip() == "candidate_outputs":
+            raw = value.strip()
+            if not raw:
+                return None
+            path = Path(raw)
+            if not path.is_absolute():
+                path = log_path.parent / path
+            return path
+    return None
+
+
+def _validate_e1_witness_acceptance(
+    evidence: object,
+    *,
+    base_dir: Path,
+) -> list[str]:
+    problems: list[str] = []
+    saw_witness_receipt = False
+    for index, entry in enumerate(_evidence_items(evidence)):
+        resolved = _resolve_evidence_path(entry.get("path"), base_dir=base_dir)
+        if resolved is None or not resolved.exists():
+            continue
+        command_text = _entry_command_text(entry)
+        if (
+            "tools/pact_witness_acceptance.py" not in command_text
+            and "pact-witness-acceptance" not in command_text
+        ):
+            continue
+        text, text_error = _load_text_evidence(resolved)
+        if text_error is not None:
+            problems.append(f"E1: cannot read witness receipt[{index}]: {text_error}")
+            continue
+        assert text is not None
+        saw_witness_receipt = True
+        if "pact witness acceptance PASS" not in text:
+            problems.append(
+                f"E1: pact witness receipt lacks PASS verdict: {resolved}"
+            )
+        candidate = _candidate_output_path_from_log(text, log_path=resolved)
+        if candidate is None:
+            problems.append(
+                f"E1: pact witness receipt lacks candidate_outputs path: {resolved}"
+            )
+        elif not candidate.is_file():
+            problems.append(
+                f"E1: candidate_outputs artifact does not exist: {candidate}"
+            )
+
+    if not saw_witness_receipt:
+        problems.append(
+            "E1: witness green requires a pact-witness-acceptance receipt "
+            "with candidate_outputs and PASS verdict"
+        )
+    return problems
+
+
+def _validate_e3_parity_receipt(
+    evidence: object,
+    *,
+    base_dir: Path,
+) -> list[str]:
+    problems: list[str] = []
+    saw_parity_receipt = False
+    for index, entry in enumerate(_evidence_items(evidence)):
+        resolved = _resolve_evidence_path(entry.get("path"), base_dir=base_dir)
+        if resolved is None or not resolved.exists():
+            continue
+        command_text = _entry_command_text(entry)
+        if "tools/parity_gate.py" not in command_text:
+            continue
+        text, text_error = _load_text_evidence(resolved)
+        if text_error is not None:
+            problems.append(f"E3: cannot read parity receipt[{index}]: {text_error}")
+            continue
+        assert text is not None
+        saw_parity_receipt = True
+        if "PASS: No Tier 1 violations." not in text:
+            problems.append(f"E3: parity receipt lacks PASS verdict: {resolved}")
+
+    if not saw_parity_receipt:
+        problems.append(
+            "E3: parity criteria require a tools/parity_gate.py receipt with "
+            "the no-Tier-1-violations PASS verdict"
+        )
+    return problems
+
+
 def _load_metric_baseline(rel_path: str) -> tuple[Mapping[str, Any] | None, str | None]:
     path = TOOLS_ROOT.parent / rel_path
     doc, error = _load_json_evidence(path)
@@ -277,17 +378,11 @@ def _validate_e4_structural_floor(
 ) -> list[str]:
     problems: list[str] = []
     seen: set[str] = set()
-    items = evidence if isinstance(evidence, list) else []
-
-    for index, raw_entry in enumerate(items):
-        entry = raw_entry if isinstance(raw_entry, Mapping) else None
-        if entry is None:
-            continue
+    for index, entry in enumerate(_evidence_items(evidence)):
         resolved = _resolve_evidence_path(entry.get("path"), base_dir=base_dir)
         if resolved is None or not resolved.exists():
             continue
-        command = entry.get("command")
-        command_text = command if isinstance(command, str) else ""
+        command_text = _entry_command_text(entry)
 
         doc, json_error = _load_json_evidence(resolved)
         if doc is not None:
@@ -448,8 +543,22 @@ def validate_manifest(
                     require_existing_evidence=require_existing_evidence,
                 )
                 item_problems.extend(evidence_problems)
+                if key == "E1" and not evidence_problems:
+                    item_problems.extend(
+                        _validate_e1_witness_acceptance(
+                            item.get("evidence"),
+                            base_dir=base_dir,
+                        )
+                    )
                 if key == "E2" and not evidence_problems:
                     item_problems.extend(_validate_e2_perf_scoreboard(evidence_paths))
+                if key == "E3" and not evidence_problems:
+                    item_problems.extend(
+                        _validate_e3_parity_receipt(
+                            item.get("evidence"),
+                            base_dir=base_dir,
+                        )
+                    )
                 if key == "E4" and not evidence_problems:
                     item_problems.extend(
                         _validate_e4_structural_floor(

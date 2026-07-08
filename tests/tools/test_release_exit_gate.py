@@ -127,6 +127,45 @@ def _scoreboard_evidence(
     }
 
 
+def _witness_evidence(
+    tmp_path: Path,
+    *,
+    ok: bool = True,
+    write_candidate: bool = True,
+) -> dict[str, str]:
+    candidate = tmp_path / "candidate_outputs.npz"
+    if write_candidate:
+        candidate.write_bytes(b"fake-npz-for-release-receipt-test")
+    else:
+        candidate.unlink(missing_ok=True)
+    log = tmp_path / "pact-witness-acceptance.log"
+    text = (
+        f"candidate_outputs={candidate}\n"
+        + ("pact witness acceptance PASS\n" if ok else "pact witness acceptance FAIL\n")
+    )
+    log.write_text(text, encoding="utf-8")
+    return {
+        "path": log.name,
+        "command": "tools/proof_queue.py pact-witness-acceptance",
+        "summary": "pact witness acceptance passed",
+    }
+
+
+def _parity_evidence(tmp_path: Path, *, ok: bool = True) -> dict[str, str]:
+    path = tmp_path / "parity-gate.log"
+    text = (
+        "Parity Gate Summary: 3/3 passed\nPASS: No Tier 1 violations.\n"
+        if ok
+        else "Parity Gate Summary: 2/3 passed\nFAIL: 1 Tier 1 violation(s)\n"
+    )
+    path.write_text(text, encoding="utf-8")
+    return {
+        "path": path.name,
+        "command": "tools/parity_gate.py tests/differential/basic/",
+        "summary": "parity gate passed",
+    }
+
+
 def _canonicalization_evidence(
     tmp_path: Path,
     gate,
@@ -221,10 +260,12 @@ def _manifest(tmp_path: Path, gate, **overrides: object) -> dict[str, object]:
         key: {"status": "pass", "evidence": [_evidence(tmp_path, key)]}
         for key in ("E1", "E2", "E3", "E4")
     }
+    criteria["E1"] = {"status": "pass", "evidence": [_witness_evidence(tmp_path)]}
     criteria["E2"] = {
         "status": "pass",
         "evidence": [_scoreboard_evidence(tmp_path, gate)],
     }
+    criteria["E3"] = {"status": "pass", "evidence": [_parity_evidence(tmp_path)]}
     criteria["E4"] = {"status": "pass", "evidence": _e4_evidence(tmp_path, gate)}
     criteria.update(overrides)
     return {"schema_version": 1, "criteria": criteria}
@@ -353,6 +394,74 @@ def test_release_exit_gate_rejects_stale_or_red_e2_scoreboard(
     assert report.passed is False
     assert any("E2: scoreboard gate_fails is not false" in p for p in report.problems)
     assert any("E2: scoreboard generated_at is 90d old" in p for p in report.problems)
+
+
+def test_release_exit_gate_requires_e1_pact_witness_acceptance_receipt(
+    tmp_path: Path, monkeypatch
+) -> None:
+    gate = _load_gate()
+    monkeypatch.setattr(gate.pa, "git_rev_is_ancestor_of_origin", lambda _: True)
+    doc = _manifest(
+        tmp_path,
+        gate,
+        E1={"status": "pass", "evidence": [_evidence(tmp_path, "generic-e1")]},
+    )
+
+    report = gate.validate_manifest(doc, manifest_path=tmp_path / "release-exit.json")
+
+    assert report.passed is False
+    assert any("E1: witness green requires a pact-witness-acceptance" in p for p in report.problems)
+
+
+def test_release_exit_gate_rejects_e1_missing_candidate_outputs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    gate = _load_gate()
+    monkeypatch.setattr(gate.pa, "git_rev_is_ancestor_of_origin", lambda _: True)
+    doc = _manifest(tmp_path, gate)
+    doc["criteria"]["E1"] = {  # type: ignore[index]
+        "status": "pass",
+        "evidence": [_witness_evidence(tmp_path, write_candidate=False)],
+    }
+
+    report = gate.validate_manifest(doc, manifest_path=tmp_path / "release-exit.json")
+
+    assert report.passed is False
+    assert any("E1: candidate_outputs artifact does not exist" in p for p in report.problems)
+
+
+def test_release_exit_gate_requires_e3_parity_receipt(
+    tmp_path: Path, monkeypatch
+) -> None:
+    gate = _load_gate()
+    monkeypatch.setattr(gate.pa, "git_rev_is_ancestor_of_origin", lambda _: True)
+    doc = _manifest(
+        tmp_path,
+        gate,
+        E3={"status": "pass", "evidence": [_evidence(tmp_path, "generic-e3")]},
+    )
+
+    report = gate.validate_manifest(doc, manifest_path=tmp_path / "release-exit.json")
+
+    assert report.passed is False
+    assert any("E3: parity criteria require a tools/parity_gate.py receipt" in p for p in report.problems)
+
+
+def test_release_exit_gate_rejects_failed_e3_parity_receipt(
+    tmp_path: Path, monkeypatch
+) -> None:
+    gate = _load_gate()
+    monkeypatch.setattr(gate.pa, "git_rev_is_ancestor_of_origin", lambda _: True)
+    doc = _manifest(tmp_path, gate)
+    doc["criteria"]["E3"] = {  # type: ignore[index]
+        "status": "pass",
+        "evidence": [_parity_evidence(tmp_path, ok=False)],
+    }
+
+    report = gate.validate_manifest(doc, manifest_path=tmp_path / "release-exit.json")
+
+    assert report.passed is False
+    assert any("E3: parity receipt lacks PASS verdict" in p for p in report.problems)
 
 
 def test_release_exit_gate_requires_e4_structural_floor_receipts(
