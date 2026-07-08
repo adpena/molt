@@ -78,6 +78,39 @@ def test_cython_build_requirement_from_pyproject() -> None:
     assert requirement.raw == "Cython==3.1.8"
 
 
+def test_parse_cimported_packages_derives_from_source(tmp_path: Path) -> None:
+    # The cimport include surface is DERIVED FROM SOURCE: every top-level name in a
+    # cimport, minus relative cimports and Cython's bundled namespaces. This is what
+    # lets `cimport numpy` resolve numpy/__init__.pxd instead of crashing Cython 3.1+.
+    pyx = tmp_path / "_ni_label.pyx"
+    pyx.write_text(
+        "import numpy as np\n"
+        "cimport numpy as np\n"
+        "from libc.stdlib cimport malloc\n"      # bundled -> excluded
+        "cimport cython\n"                        # bundled -> excluded
+        "from . cimport _helpers\n"               # relative -> excluded
+        "from scipy.ndimage cimport _ni_support\n"  # top-level 'scipy'
+        "cdef int x = 0\n",
+        encoding="utf-8",
+    )
+    # A sibling .pxd contributes its cimports too.
+    (tmp_path / "shared.pxd").write_text("cimport numpy\n", encoding="utf-8")
+    pkgs = cython_authority._parse_cimported_packages(pyx)
+    assert pkgs == ("numpy", "scipy"), pkgs
+    for excluded in ("libc", "cython", "_helpers"):
+        assert excluded not in pkgs
+
+
+def test_cimport_pxd_roots_fail_safe_on_absent_package() -> None:
+    # A package that is not installed (or ships no top-level __init__.pxd) is
+    # silently skipped — never breaking a build for a pure-C/bundled cimport.
+    roots = cython_authority._cimport_pxd_roots(
+        sys.executable, ("molt_definitely_absent_pkg_xyz",)
+    )
+    assert roots == ()
+    assert cython_authority._cimport_pxd_roots(sys.executable, ()) == ()
+
+
 def test_pair_generated_c_with_pyx_matches_by_stem() -> None:
     pyx = Path("/pkg/src/_ni_label.pyx")
     assert (
