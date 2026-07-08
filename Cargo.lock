@@ -2973,6 +2973,7 @@ dependencies = [
  "molt-lang-cpython-abi",
  "molt-lang-obj-model",
  "molt-runtime-asyncio",
+ "molt-runtime-audit",
  "molt-runtime-collections",
  "molt-runtime-compression",
  "molt-runtime-core",
@@ -3034,6 +3035,10 @@ dependencies = [
  "molt-lang-obj-model",
  "molt-runtime-core",
 ]
+
+[[package]]
+name = "molt-runtime-audit"
+version = "0.1.0"
 
 [[package]]
 name = "molt-runtime-collections"
