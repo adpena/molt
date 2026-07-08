@@ -1,4 +1,6 @@
 use super::*;
+use digest::Digest;
+use sha1::Sha1;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_bootstrap_path(module_file_bits: u64) -> u64 {

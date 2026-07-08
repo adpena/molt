@@ -212,7 +212,6 @@ unicode_names2 = { version = "3.1", optional = true }
 # Crypto (always-on subset used directly by molt-runtime internals)
 # Full crypto implementation lives in molt-runtime-crypto, gated by stdlib_crypto.
 digest = "0.11"
-md-5 = "0.11"
 sha1 = "0.11"
 sha2 = "0.11"
 
