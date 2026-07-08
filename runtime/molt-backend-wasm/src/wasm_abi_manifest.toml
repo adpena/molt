@@ -7045,8 +7045,181 @@ name = "__cpp_exception"
 primitive_class = "wasm_toolchain_link_import"
 
 [[external_native_link_import]]
+name = "__dso_handle"
+primitive_class = "wasm_toolchain_link_import"
+symbol_kind = "data"
+
+[[external_native_link_import]]
+name = "_ZNSt11logic_errorC2EPKc"
+primitive_class = "wasm_libcxx_link_import"
+
+[[external_native_link_import]]
+name = "_ZNSt12length_errorD1Ev"
+primitive_class = "wasm_libcxx_link_import"
+
+[[external_native_link_import]]
+name = "_ZNSt13runtime_errorC1EPKc"
+primitive_class = "wasm_libcxx_link_import"
+
+[[external_native_link_import]]
+name = "_ZNSt13runtime_errorD1Ev"
+primitive_class = "wasm_libcxx_link_import"
+
+[[external_native_link_import]]
+name = "_ZNSt20bad_array_new_lengthC1Ev"
+primitive_class = "wasm_libcxx_link_import"
+
+[[external_native_link_import]]
+name = "_ZNSt20bad_array_new_lengthD1Ev"
+primitive_class = "wasm_libcxx_link_import"
+
+[[external_native_link_import]]
+name = "_ZNSt3__212__next_primeEm"
+primitive_class = "wasm_libcxx_link_import"
+
+[[external_native_link_import]]
+name = "_ZNSt3__213__hash_memoryEPKvm"
+primitive_class = "wasm_libcxx_link_import"
+
+[[external_native_link_import]]
+name = "_ZNSt3__217bad_function_callD1Ev"
+primitive_class = "wasm_libcxx_link_import"
+
+[[external_native_link_import]]
+name = "_ZNSt3__222__libcpp_verbose_abortEPKcz"
+primitive_class = "wasm_libcxx_link_import"
+
+[[external_native_link_import]]
+name = "_ZTVN10__cxxabiv117__class_type_infoE"
+primitive_class = "wasm_libcxx_link_import"
+symbol_kind = "data"
+
+[[external_native_link_import]]
+name = "_ZTVN10__cxxabiv120__si_class_type_infoE"
+primitive_class = "wasm_libcxx_link_import"
+symbol_kind = "data"
+
+[[external_native_link_import]]
+name = "_ZTVNSt3__217bad_function_callE"
+primitive_class = "wasm_libcxx_link_import"
+symbol_kind = "data"
+
+[[external_native_link_import]]
+name = "_ZTVSt12length_error"
+primitive_class = "wasm_libcxx_link_import"
+symbol_kind = "data"
+
+[[external_native_link_import]]
+name = "_ZdlPvm"
+primitive_class = "wasm_libcxx_link_import"
+
+[[external_native_link_import]]
+name = "_Znwm"
+primitive_class = "wasm_libcxx_link_import"
+
+[[external_native_link_import]]
 name = "__trunctfdf2"
 primitive_class = "wasm_compiler_rt_link_import"
+
+[[external_native_link_import]]
+name = "__addtf3"
+primitive_class = "wasm_compiler_rt_link_import"
+
+[[external_native_link_import]]
+name = "__divtf3"
+primitive_class = "wasm_compiler_rt_link_import"
+
+[[external_native_link_import]]
+name = "__eqtf2"
+primitive_class = "wasm_compiler_rt_link_import"
+
+[[external_native_link_import]]
+name = "__extenddftf2"
+primitive_class = "wasm_compiler_rt_link_import"
+
+[[external_native_link_import]]
+name = "__extendsftf2"
+primitive_class = "wasm_compiler_rt_link_import"
+
+[[external_native_link_import]]
+name = "__fixtfdi"
+primitive_class = "wasm_compiler_rt_link_import"
+
+[[external_native_link_import]]
+name = "__fixtfsi"
+primitive_class = "wasm_compiler_rt_link_import"
+
+[[external_native_link_import]]
+name = "__fixunstfdi"
+primitive_class = "wasm_compiler_rt_link_import"
+
+[[external_native_link_import]]
+name = "__fixunstfsi"
+primitive_class = "wasm_compiler_rt_link_import"
+
+[[external_native_link_import]]
+name = "__floatditf"
+primitive_class = "wasm_compiler_rt_link_import"
+
+[[external_native_link_import]]
+name = "__floatsitf"
+primitive_class = "wasm_compiler_rt_link_import"
+
+[[external_native_link_import]]
+name = "__floatunditf"
+primitive_class = "wasm_compiler_rt_link_import"
+
+[[external_native_link_import]]
+name = "__floatunsitf"
+primitive_class = "wasm_compiler_rt_link_import"
+
+[[external_native_link_import]]
+name = "__getf2"
+primitive_class = "wasm_compiler_rt_link_import"
+
+[[external_native_link_import]]
+name = "__gttf2"
+primitive_class = "wasm_compiler_rt_link_import"
+
+[[external_native_link_import]]
+name = "__letf2"
+primitive_class = "wasm_compiler_rt_link_import"
+
+[[external_native_link_import]]
+name = "__lttf2"
+primitive_class = "wasm_compiler_rt_link_import"
+
+[[external_native_link_import]]
+name = "__multf3"
+primitive_class = "wasm_compiler_rt_link_import"
+
+[[external_native_link_import]]
+name = "__multi3"
+primitive_class = "wasm_compiler_rt_link_import"
+
+[[external_native_link_import]]
+name = "__netf2"
+primitive_class = "wasm_compiler_rt_link_import"
+
+[[external_native_link_import]]
+name = "__subtf3"
+primitive_class = "wasm_compiler_rt_link_import"
+
+[[external_native_link_import]]
+name = "__trunctfsf2"
+primitive_class = "wasm_compiler_rt_link_import"
+
+[[external_native_link_import]]
+name = "__udivti3"
+primitive_class = "wasm_compiler_rt_link_import"
+
+[[external_native_link_import]]
+name = "__unordtf2"
+primitive_class = "wasm_compiler_rt_link_import"
+
+[[external_native_link_import]]
+name = "__cxa_allocate_exception"
+primitive_class = "wasm_libcxx_link_import"
 
 [[external_native_link_import]]
 name = "__assert_fail"
@@ -7055,6 +7228,10 @@ primitive_class = "wasm_libc_link_import"
 [[external_native_link_import]]
 name = "__cxa_atexit"
 primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "__cxa_throw"
+primitive_class = "wasm_libcxx_link_import"
 
 [[external_native_link_import]]
 name = "abort"
@@ -7225,7 +7402,23 @@ name = "cexpl"
 primitive_class = "wasm_libc_link_import"
 
 [[external_native_link_import]]
+name = "ceil"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "ceilf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "ceill"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
 name = "cos"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "cosf"
 primitive_class = "wasm_libc_link_import"
 
 [[external_native_link_import]]
@@ -7238,6 +7431,10 @@ primitive_class = "wasm_libc_link_import"
 
 [[external_native_link_import]]
 name = "coshl"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "cosl"
 primitive_class = "wasm_libc_link_import"
 
 [[external_native_link_import]]
@@ -7317,6 +7514,26 @@ name = "exp"
 primitive_class = "wasm_libc_link_import"
 
 [[external_native_link_import]]
+name = "exp2"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "exp2f"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "exp2l"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "expf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "expl"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
 name = "expm1"
 primitive_class = "wasm_libc_link_import"
 
@@ -7330,6 +7547,14 @@ primitive_class = "wasm_libc_link_import"
 
 [[external_native_link_import]]
 name = "fabs"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "fabsf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "fabsl"
 primitive_class = "wasm_libc_link_import"
 
 [[external_native_link_import]]
@@ -7358,6 +7583,50 @@ primitive_class = "wasm_libc_link_import"
 
 [[external_native_link_import]]
 name = "floor"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "floorf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "floorl"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "fmax"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "fmaxf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "fmaxl"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "fmin"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "fminf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "fminl"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "fmod"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "fmodf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "fmodl"
 primitive_class = "wasm_libc_link_import"
 
 [[external_native_link_import]]
@@ -7417,6 +7686,11 @@ name = "getenv"
 primitive_class = "wasm_libc_link_import"
 
 [[external_native_link_import]]
+name = "errno"
+primitive_class = "wasm_libc_link_import"
+symbol_kind = "data"
+
+[[external_native_link_import]]
 name = "hypot"
 primitive_class = "wasm_libc_link_import"
 
@@ -7457,6 +7731,18 @@ name = "log"
 primitive_class = "wasm_libc_link_import"
 
 [[external_native_link_import]]
+name = "log10"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "log10f"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "log10l"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
 name = "log1p"
 primitive_class = "wasm_libc_link_import"
 
@@ -7466,6 +7752,26 @@ primitive_class = "wasm_libc_link_import"
 
 [[external_native_link_import]]
 name = "log1pl"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "log2"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "log2f"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "log2l"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "logf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "logl"
 primitive_class = "wasm_libc_link_import"
 
 [[external_native_link_import]]
@@ -7573,6 +7879,14 @@ name = "sin"
 primitive_class = "wasm_libc_link_import"
 
 [[external_native_link_import]]
+name = "sinf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "sinl"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
 name = "sinh"
 primitive_class = "wasm_libc_link_import"
 
@@ -7593,8 +7907,18 @@ name = "sqrt"
 primitive_class = "wasm_libc_link_import"
 
 [[external_native_link_import]]
+name = "sqrtl"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
 name = "stdout"
 primitive_class = "wasm_libc_link_import"
+symbol_kind = "data"
+
+[[external_native_link_import]]
+name = "stderr"
+primitive_class = "wasm_libc_link_import"
+symbol_kind = "data"
 
 [[external_native_link_import]]
 name = "strchr"
@@ -7661,6 +7985,14 @@ name = "tan"
 primitive_class = "wasm_libc_link_import"
 
 [[external_native_link_import]]
+name = "tanf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "tanl"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
 name = "tanh"
 primitive_class = "wasm_libc_link_import"
 
@@ -7682,6 +8014,14 @@ primitive_class = "wasm_libc_link_import"
 
 [[external_native_link_import]]
 name = "ungetc"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "truncf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "truncl"
 primitive_class = "wasm_libc_link_import"
 
 [[external_native_link_import]]

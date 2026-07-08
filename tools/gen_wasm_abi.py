@@ -2588,6 +2588,18 @@ def render_js_abi(data: dict) -> str:
         entry["name"]: _runtime_export_name(entry) for entry in data["import"]
     }
     runtime_import_canonical_names: dict[str, str] = {}
+    external_native_link_imports = {
+        entry["name"]: entry["primitive_class"]
+        for entry in data.get("link_allowed_import", [])
+    }
+    external_native_link_import_symbol_kinds = {
+        name: kind for name, kind in generator_cpython_abi_link_import_kinds()
+    }
+    for entry in data.get("external_native_link_import", []):
+        external_native_link_imports[entry["name"]] = entry["primitive_class"]
+        symbol_kind = entry.get("symbol_kind")
+        if isinstance(symbol_kind, str):
+            external_native_link_import_symbol_kinds[entry["name"]] = symbol_kind
     for name in data["runtime_export_policy"]["host_exports"]:
         runtime_export_by_import.setdefault(name, name)
     for name in generator_cpython_abi_link_import_names():
@@ -2607,6 +2619,10 @@ def render_js_abi(data: dict) -> str:
                 "exports": list(entry["exports"]),
             }
             for entry in data.get("runtime_import_fallback", [])
+        },
+        "external_native_link_imports": {
+            "primitive_classes": external_native_link_imports,
+            "symbol_kinds": external_native_link_import_symbol_kinds,
         },
     }
     return json.dumps(payload, indent=2, sort_keys=True) + "\n"
