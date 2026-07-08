@@ -43,6 +43,10 @@ lane. Orchestrator owns build-throughput + coordinates the E1-adjacent ABI items
   absent). Verified: lld-link LINKS the daemon (queue LINK_OK). 4 teeth.
 - **#4 walrus scope-analysis: LANDED** (`8883a352c`). `_collect_assigned_names` now
   collects `NamedExpr` targets (was dropping them; nested scopes don't leak).
+- **#9 parity gate Molt-only ImportError fail-closed: LANDED** (`e00d69a98d`).
+  STRICT Molt-only import failures now fail instead of skipping; only a same
+  import failure on both CPython and Molt downgrades to skip. Re-verified
+  2026-07-08 with `pytest tests/tools/test_parity_gate.py -q` (`5 passed`).
 - **#11 release-fast debug=0: LANDED** (`f21cf71aa`).
 - NOTE: not in the review but landed same arc — the biggest build-throughput win was
   `ad0cafb82` **adaptive cargo jobs (2→14)**: a hardcoded CARGO_BUILD_JOBS=2 defeated
