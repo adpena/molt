@@ -102,7 +102,12 @@ worktree that vanishes was SUPERSEDED or bundled — do NOT re-create it.
 5. **DRIFT DISCIPLINE (P0, RECURRING — NOW GATED).** Worktree/branch accumulation
    is POISON and terrible OSS hygiene (it hit ~130 + a 165-branch OneDrive `.git`,
    operator-flagged P0, fully retired 2026-07-08). LAND your signal onto main and
-   DELETE your worktree+branch when a lane finishes — do not leave it. Every session
+   DELETE your worktree+branch when a lane finishes — do not leave it. Install the
+   enforcement hook once per clone: **`python tools/install_git_hooks.py`** (idempotent;
+   wires the drift gate into `.git/hooks/pre-push` — NOT `core.hooksPath`, which would
+   also enable the pre-commit type-check and block every commit; preserves+chains a
+   foreign pre-push hook; `--check` for CI). It runs the gate `--no-fetch` in ~3 s on
+   every push. Every session also
    run **`python tools/drift_harvest.py --gate`** — it FAILS (exit 1) on SPRAWL
    (>24 live worktrees) or STALE-SIGNAL (a SIGNAL worktree whose unlanded unique
    commits are older than 72 h). A red gate is a blocker: harvest + prune before new
