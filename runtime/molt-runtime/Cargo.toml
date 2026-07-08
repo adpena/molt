@@ -145,7 +145,7 @@ source_extension_loader = ["dep:libloading"]
 # Reserved for the freestanding wasm target. Keep this feature independent
 # from getrandom Cargo features: getrandom 0.4 selects custom backends via
 # cfg(getrandom_backend = "..."), not via a Cargo feature named "custom".
-wasm_freestanding = []
+wasm_freestanding = ["molt-runtime-platform/wasm_freestanding"]
 vfs_bundle_tar = ["molt-runtime-vfs/vfs_bundle_tar"]
 wasi_host = ["stdlib_fs_extra"]
 
@@ -188,6 +188,7 @@ molt-runtime-zoneinfo = { path = "../molt-runtime-zoneinfo", optional = true }
 molt-runtime-vfs = { path = "../molt-runtime-vfs" }
 molt-runtime-audit = { path = "../molt-runtime-audit" }
 molt-runtime-diagnostics = { path = "../molt-runtime-diagnostics" }
+molt-runtime-platform = { path = "../molt-runtime-platform" }
 molt-runtime-resource = { path = "../molt-runtime-resource" }
 molt-gpu = { path = "../molt-gpu", optional = true, default-features = false, features = ["cpu-backend"] }
 serde_json = { workspace = true }
