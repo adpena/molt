@@ -7,6 +7,7 @@
 // This file adds: fnmatch() and fnmatchcase().
 
 use crate::*;
+use molt_stdlib_text::fnmatch::{fnmatch_match_impl, fnmatch_normcase_text};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -21,27 +22,6 @@ fn require_str(py: &PyToken<'_>, bits: u64, label: &str) -> Result<String, u64> 
             &format!("{label} must be str"),
         )),
     }
-}
-
-/// Match a filename against a pattern (case-sensitive).
-#[cfg(feature = "stdlib_fs_extra")]
-fn fnmatch_impl(name: &str, pattern: &str) -> bool {
-    match glob::Pattern::new(pattern) {
-        Ok(pat) => pat.matches(name),
-        Err(_) => false,
-    }
-}
-
-#[cfg(not(feature = "stdlib_fs_extra"))]
-fn fnmatch_impl(_name: &str, _pattern: &str) -> bool {
-    false
-}
-
-/// Match case-insensitive (normalize both to lowercase).
-fn fnmatch_case_insensitive(name: &str, pattern: &str) -> bool {
-    let name_lower = name.to_lowercase();
-    let pat_lower = pattern.to_lowercase();
-    fnmatch_impl(&name_lower, &pat_lower)
 }
 
 // ---------------------------------------------------------------------------
@@ -64,11 +44,10 @@ pub extern "C" fn molt_fnmatch_fnmatch(filename_bits: u64, pattern_bits: u64) ->
             Ok(s) => s,
             Err(bits) => return bits,
         };
-        // CPython: case-insensitive on Windows/macOS, case-sensitive on Linux
-        #[cfg(any(target_os = "windows", target_os = "macos"))]
-        let result = fnmatch_case_insensitive(&filename, &pattern);
-        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-        let result = fnmatch_impl(&filename, &pattern);
+        let result = fnmatch_match_impl(
+            &fnmatch_normcase_text(&filename),
+            &fnmatch_normcase_text(&pattern),
+        );
         MoltObject::from_bool(result).bits()
     })
 }
@@ -87,6 +66,6 @@ pub extern "C" fn molt_fnmatch_fnmatchcase(filename_bits: u64, pattern_bits: u64
             Ok(s) => s,
             Err(bits) => return bits,
         };
-        MoltObject::from_bool(fnmatch_impl(&filename, &pattern)).bits()
+        MoltObject::from_bool(fnmatch_match_impl(&filename, &pattern)).bits()
     })
 }
