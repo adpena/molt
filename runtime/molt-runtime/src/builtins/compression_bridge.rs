@@ -145,7 +145,7 @@ pub extern "C" fn molt_bridge_string_obj_to_owned(obj_bits: u64, out_len: *mut u
     match string_obj_to_owned(obj) {
         Some(s) => {
             let bytes = s.into_bytes().into_boxed_slice();
-            crate::bridge_buffer::export_u8_box_ptr(bytes, out_len)
+            unsafe { crate::resource::bridge_buffer::export_u8_box_ptr(bytes, out_len) }
         }
         None => {
             unsafe {
@@ -158,7 +158,7 @@ pub extern "C" fn molt_bridge_string_obj_to_owned(obj_bits: u64, out_len: *mut u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bridge_free_string(ptr: *mut u8, len: usize) {
-    crate::bridge_buffer::__molt_bridge_free_u8(ptr, len);
+    unsafe { crate::resource::bridge_buffer::__molt_bridge_free_u8(ptr, len) };
 }
 
 #[unsafe(no_mangle)]

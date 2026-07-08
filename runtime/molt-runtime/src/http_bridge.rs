@@ -144,7 +144,7 @@ pub extern "C" fn __molt_http_string_obj_to_owned(
     match _string_obj_to_owned(obj) {
         Some(s) => {
             let bytes = s.into_bytes().into_boxed_slice();
-            crate::bridge_buffer::export_u8_box(bytes, out_ptr, out_len)
+            unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
         }
         None => 0,
     }
@@ -234,7 +234,9 @@ pub extern "C" fn __molt_http_index_bigint_from_obj(
                     Sign::Plus => 1i32,
                 };
                 let boxed = bytes.into_boxed_slice();
-                let ok = crate::bridge_buffer::export_u8_box(boxed, out_ptr, out_len);
+                let ok = unsafe {
+                    crate::resource::bridge_buffer::export_u8_box(boxed, out_ptr, out_len)
+                };
                 if ok == 0 {
                     return 0;
                 }
@@ -419,7 +421,7 @@ pub extern "C" fn __molt_http_format_obj_str(
         let obj = obj_from_bits(bits);
         let s = crate::format_obj_str(_py, obj);
         let bytes = s.into_bytes().into_boxed_slice();
-        crate::bridge_buffer::export_u8_box(bytes, out_ptr, out_len)
+        unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
     })
 }
 
@@ -524,7 +526,7 @@ pub extern "C" fn __molt_http_env_state_get(
     match crate::builtins::platform::env_state_get(key) {
         Some(s) => {
             let bytes = s.into_bytes().into_boxed_slice();
-            crate::bridge_buffer::export_u8_box(bytes, out_ptr, out_len)
+            unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
         }
         None => 0,
     }
