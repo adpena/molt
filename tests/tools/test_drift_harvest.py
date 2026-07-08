@@ -101,3 +101,33 @@ def test_bundle_signal_captures_detached_head_signal(monkeypatch, tmp_path):
     # if it is in `captured`. An un-captured SIGNAL row must never be prunable.
     uncaptured = {"path": "/orphan", "state": "SIGNAL"}
     assert uncaptured["path"] not in captured
+
+
+def test_gate_fails_on_sprawl_and_aged_signal_but_not_fresh():
+    # The enforcement gate makes drift BLOCKING: worktree sprawl and aged
+    # unlanded SIGNAL both fail; fresh SIGNAL and STALE registrations do not.
+    now = 1_000_000.0
+    hour = 3600.0
+    # Clean: 2 live worktrees, one FRESH-recent SIGNAL (2h old) — under thresholds.
+    clean = [
+        {"path": "/a", "branch": "a", "state": "FRESH", "uniq": 0, "last": now - hour},
+        {"path": "/sig", "branch": "s", "state": "SIGNAL", "uniq": 3, "last": now - 2 * hour},
+    ]
+    assert dh.gate(clean, now, max_worktrees=24, max_signal_age_hours=72.0) == []
+
+    # Sprawl: 3 live worktrees over a max of 2 → one SPRAWL violation.
+    sprawl = [
+        {"path": f"/w{i}", "branch": f"b{i}", "state": "FRESH", "uniq": 0, "last": now}
+        for i in range(3)
+    ]
+    v = dh.gate(sprawl, now, max_worktrees=2, max_signal_age_hours=72.0)
+    assert len(v) == 1 and v[0].startswith("SPRAWL")
+
+    # Aged SIGNAL (100h old) trips STALE-SIGNAL; a STALE registration never counts
+    # as a live worktree and never trips the signal check.
+    aged = [
+        {"path": "/old", "branch": "old", "state": "SIGNAL", "uniq": 5, "last": now - 100 * hour},
+        {"path": "/gone", "branch": "g", "state": "STALE", "uniq": 0, "last": 0},
+    ]
+    v2 = dh.gate(aged, now, max_worktrees=24, max_signal_age_hours=72.0)
+    assert len(v2) == 1 and v2[0].startswith("STALE-SIGNAL")
