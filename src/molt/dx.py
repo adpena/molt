@@ -882,10 +882,21 @@ class RunContext:
             if key in forced or not env.get(key):
                 env[key] = str(value)
 
+        # Session-scope the Cargo target dir ONLY when the caller PINNED an explicit
+        # MOLT_SESSION_ID (perf/bench/test-shard isolation, e.g. perf_scoreboard,
+        # bench_*, molt_dev difftest, development_artifact_env(session_id=...)). The
+        # common interactive/CI build path leaves it unset -> a STABLE persistent
+        # target dir on the fast external volume, so incremental compilation
+        # artifacts SURVIVE across sessions/processes instead of paying a full cold
+        # compile every invocation. Cargo's own build lock plus the compiler-build
+        # resource mutex serialize concurrent writers safely. This is the
+        # cold-every-session killer; do not reintroduce a per-PID default here.
+        session_pinned = "MOLT_SESSION_ID" in forced or bool(env.get("MOLT_SESSION_ID"))
         install_default("MOLT_SESSION_ID", f"{self.session_prefix}-{os.getpid()}")
+        target_session_id = env["MOLT_SESSION_ID"] if session_pinned else None
         install_default(
             "CARGO_TARGET_DIR",
-            cargo_target_dir_for_artifact_root(ext_root, env.get("MOLT_SESSION_ID")),
+            cargo_target_dir_for_artifact_root(ext_root, target_session_id),
         )
         install_default("MOLT_DIFF_CARGO_TARGET_DIR", env["CARGO_TARGET_DIR"])
         # Incremental ON by default (fast warm rebuilds against the persistent
