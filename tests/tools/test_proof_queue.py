@@ -2123,6 +2123,108 @@ def test_proof_queue_prune_stale_terminalizes_dead_nested_guard_child(
     assert row["returncode"] == proof_queue.PROOF_QUEUE_STALE_EXIT_CODE
 
 
+def test_proof_queue_prune_stale_preserves_live_windows_child_runner_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "active.log"
+    summary_path = tmp_path / "active.memory_guard.json"
+    guard_pid = 99_001
+    child_pid = 99_101
+    log_path.write_text(
+        "proof_queue run_id=active-run\n"
+        "dx-build prime: still running elapsed=208s timeout=unbounded pid=18956\n",
+        encoding="utf-8",
+    )
+    stale = time.time() - proof_queue.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
+    os.utime(log_path, (stale, stale))
+    summary_path.write_text(
+        json.dumps(
+            {
+                "status": "child_running",
+                "returncode": None,
+                "repro": {"host": {"platform": "win32"}},
+                "child_process": {
+                    "pid": child_pid,
+                    "command": [
+                        sys.executable,
+                        str(proof_queue.ROOT / "tools" / "memory_guard.py"),
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(proof_queue, "_pid_alive", lambda pid: pid == guard_pid)
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="active-run",
+        logical_id="active",
+        reason="prove live Windows child-runner loss is diagnostic only",
+        command=[sys.executable, "-c", "print('active')"],
+        cwd=proof_queue.ROOT,
+        resource_family="rust",
+        contention_key="e2-build-wallclock",
+        scopes=["tools/proof_queue.py"],
+        log_path=log_path,
+        summary_json=summary_path,
+    )
+    proof_queue._update_run(
+        conn,
+        "active-run",
+        status="running",
+        guard_pid=guard_pid,
+        started_at=proof_queue._utc_now(),
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "prune-stale",
+                "--run-id",
+                "active-run",
+            ]
+        )
+        == 0
+    )
+
+    out = capsys.readouterr().out
+    assert "stale active-run" not in out
+    assert "pruned=0" in out
+    row = _rows(db)[0]
+    assert row["status"] == "running"
+    assert row["returncode"] is None
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "diagnose",
+                "active-run",
+            ]
+        )
+        == 0
+    )
+    diagnose_out = capsys.readouterr().out
+    assert "running-proof-windows-child-runner-missing" in diagnose_out
+    assert "child_process=windows_memory_guard_child_runner" in diagnose_out
+    assert "running-proof-child-missing" not in diagnose_out
+
+
 def test_proof_queue_run_self_terminalizes_dead_nested_guard_child(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2247,6 +2349,121 @@ def test_proof_queue_run_self_terminalizes_dead_nested_guard_child(
         f"proof_queue finished status=stale "
         f"exit_code={proof_queue.PROOF_QUEUE_STALE_EXIT_CODE}" in log_text
     )
+
+
+def test_proof_queue_run_does_not_self_terminalize_windows_child_runner_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+    guard_pid = 91_001
+    child_pid = 91_101
+    popen_instances: list[object] = []
+
+    class FakePopen:
+        pid = guard_pid
+
+        def __init__(self, command: list[str], **kwargs: object) -> None:
+            self.command = command
+            self.kwargs = kwargs
+            self.returncode: int | None = None
+            self.terminated = False
+            self.wait_count = 0
+            summary_path = Path(command[command.index("--summary-json") + 1])
+            summary_path.parent.mkdir(parents=True, exist_ok=True)
+            summary_path.write_text(
+                json.dumps(
+                    {
+                        "status": "child_running",
+                        "returncode": None,
+                        "repro": {"host": {"platform": "win32"}},
+                        "child_process": {
+                            "pid": child_pid,
+                            "command": [
+                                sys.executable,
+                                str(proof_queue.ROOT / "tools" / "memory_guard.py"),
+                            ],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            stdout = kwargs["stdout"]
+            stdout.flush()
+            os.utime(stdout.name, (time.time() - 1.0, time.time() - 1.0))
+            popen_instances.append(self)
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.wait_count += 1
+            if self.wait_count == 1:
+                raise subprocess.TimeoutExpired(self.command, timeout)
+            self.returncode = 0
+            return self.returncode
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def terminate(self) -> None:
+            self.terminated = True
+            self.returncode = 15
+
+    monkeypatch.setattr(proof_queue.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(
+        proof_queue,
+        "_git_snapshot",
+        lambda cwd: {
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+    )
+    monkeypatch.setattr(proof_queue, "_pid_alive", lambda pid: pid == guard_pid)
+    monkeypatch.setattr(proof_queue, "PROOF_QUEUE_ACTIVE_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(proof_queue, "RUNNING_CHILD_MISSING_STALE_LOG_SECONDS", 0.0)
+
+    rc = proof_queue.main(
+        [
+            "--db",
+            str(db),
+            "--logs-root",
+            str(logs),
+            "--repo-root",
+            str(proof_queue.ROOT),
+            "exec",
+            "--id",
+            "windows-child-runner",
+            "--reason",
+            "prove live Windows child-runner loss is not terminal",
+            "--resource-family",
+            "python-tests",
+            "--contention-key",
+            "proof-queue-dx:windows-child-runner",
+            "--scope",
+            "tools/proof_queue.py",
+            "--",
+            sys.executable,
+            "-c",
+            "print('eventual pass')",
+        ]
+    )
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "passed " in out
+    rows = _rows(db)
+    assert rows[0]["status"] == "passed"
+    assert rows[0]["returncode"] == 0
+    assert popen_instances
+    fake_proc = popen_instances[0]
+    assert fake_proc.wait_count == 2
+    assert not fake_proc.terminated
+    log_text = Path(rows[0]["log_path"]).read_text(encoding="utf-8")
+    assert "proof_queue stale-running terminalization" not in log_text
+    assert "running-proof-windows-child-runner-missing" not in log_text
+    assert "proof_queue finished status=passed exit_code=0" in log_text
 
 
 def test_proof_queue_run_does_not_self_terminalize_launch_summary_only(
