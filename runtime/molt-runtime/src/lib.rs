@@ -167,7 +167,7 @@ mod object;
 mod provenance;
 mod randomness;
 pub mod refcount_verify;
-pub mod resource;
+pub use molt_runtime_resource as resource;
 mod socket_constants;
 mod state;
 mod utils;

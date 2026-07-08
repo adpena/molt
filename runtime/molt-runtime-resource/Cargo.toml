@@ -1,0 +1,13 @@
+[package]
+name = "molt-runtime-resource"
+version = "0.1.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+description = "Resource policy and allocation budget tracking for the Molt runtime"
+
+[dependencies]
+
+[target.'cfg(all(unix, not(target_arch = "wasm32")))'.dependencies]
+libc = "0.2"
