@@ -13,6 +13,12 @@ and warm timings, native+LLVM backend parity, repeat-CI classification,
 quiescence, provenance, and stale-tree status. It is the only lane allowed to
 publish `authoritative=true`.
 
+`tools/release_exit_gate.py` treats E2 `status: pass` as a typed receipt, not a
+generic file attachment. The evidence must include a canonical
+`cpython_floor_scoreboard` JSON artifact that is schema-valid, `authoritative:
+true`, fresh under `DEFAULT_STALE_DAYS`, on `origin/main` ancestry, and has
+`summary.gate_fails == false`.
+
 ## Non-Canonical Lanes
 
 `tools/bench.py` and `bench/harness.py` still measure useful development
