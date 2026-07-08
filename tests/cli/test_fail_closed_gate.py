@@ -165,6 +165,49 @@ def test_negative_control_research_quarantine_usage_fails_then_passes(
     assert not gate.check_research_quarantines(tmp_path)
 
 
+def test_negative_control_research_quarantine_loader_import_fails_for_production(
+    tmp_path: Path,
+) -> None:
+    gate = _load_gate_module()
+    quarantine = tmp_path / "demos" / "tinygrad" / "reference_stdlib"
+    (quarantine / "tinygrad").mkdir(parents=True)
+    (quarantine / ".molt-research-quarantine").write_text(
+        "research/reference only\n",
+        encoding="utf-8",
+    )
+    production_consumer = tmp_path / "src" / "molt" / "bad_reference_loader.py"
+    production_consumer.parent.mkdir(parents=True)
+    production_consumer.write_text(
+        "from tests.helpers.tinygrad_stdlib_loader import (\n"
+        "    TINYGRAD_STDLIB,\n"
+        "    tinygrad_stdlib_context,\n"
+        ")\n"
+        "ROOT = TINYGRAD_STDLIB\n"
+        "def load_reference():\n"
+        "    return tinygrad_stdlib_context()\n",
+        encoding="utf-8",
+    )
+    test_consumer = tmp_path / "tests" / "test_reference_loader.py"
+    test_consumer.parent.mkdir(parents=True)
+    test_consumer.write_text(
+        "from tests.helpers.tinygrad_stdlib_loader import tinygrad_stdlib_context\n",
+        encoding="utf-8",
+    )
+
+    fail = gate.check_research_quarantines(tmp_path)
+    assert any(
+        v.kind == "research-quarantine-usage"
+        and "bad_reference_loader.py" in v.detail
+        for v in fail
+    ), f"gate MUST fail on production imports of the quarantine loader; got {fail}"
+    assert not any("test_reference_loader.py" in v.detail for v in fail), (
+        "tests may load the reference clone only through the sanctioned helper"
+    )
+
+    production_consumer.unlink()
+    assert not gate.check_research_quarantines(tmp_path)
+
+
 def test_registry_rows_use_only_known_classes() -> None:
     """Integrity: every registry row names a KNOWN poison class (catches a typo'd
     class in the TOML). A class may legitimately have ZERO rows once its poison is

@@ -524,12 +524,26 @@ _QUARANTINED_REFERENCE_TOKENS = (
     "reference_stdlib/tinygrad",
     r"reference_stdlib\tinygrad",
     "TINYGRAD_STDLIB",
+    "tinygrad_stdlib_context",
+    "tinygrad_stdlib_loader",
     "reference_stdlib",
+)
+_QUARANTINED_TEST_LOADER_TOKENS = frozenset(
+    {
+        "TINYGRAD_STDLIB",
+        "tinygrad_stdlib_context",
+        "tinygrad_stdlib_loader",
+        "tests.helpers.tinygrad_stdlib_loader",
+    }
 )
 _QUARANTINED_REFERENCE_USE_RE = re.compile(
     r"(?:"
     r"demos[\\/]+tinygrad[\\/]+reference_stdlib"
     r"|reference_stdlib[\\/]+tinygrad"
+    r"|tests\.helpers\.tinygrad_stdlib_loader"
+    r"|\bTINYGRAD_STDLIB\b"
+    r"|\btinygrad_stdlib_context\b"
+    r"|\btinygrad_stdlib_loader\b"
     r"|reference_stdlib"
     r")"
 )
@@ -561,6 +575,12 @@ def _iter_quarantine_text_files(root: Path) -> Iterable[Path]:
         for path in _walk_files(base, _QUARANTINE_SCAN_SUFFIXES):
             if path.is_file() and path.suffix in _QUARANTINE_SCAN_SUFFIXES:
                 yield path
+
+
+def _allowed_quarantined_reference_use(rel: str, token: str) -> bool:
+    """Tests may use the sanctioned loader; production paths may not."""
+
+    return rel.startswith("tests/") and token in _QUARANTINED_TEST_LOADER_TOKENS
 
 
 def _git_grep_quarantine_text_files(root: Path) -> list[Path] | None:
@@ -1239,18 +1259,20 @@ def check_research_quarantines(root: Path = REPO_ROOT) -> list[Violation]:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        match = _QUARANTINED_REFERENCE_USE_RE.search(text)
-        if match is None:
-            continue
-        violations.append(
-            Violation(
-                "research-quarantine-usage",
-                f"{rel} references quarantined package-semantics clone token "
-                f"{match.group(0)!r}. Use upstream package custody for package "
-                "semantics; only tests/helpers/tinygrad_stdlib_loader.py may "
-                "explicitly load the reference clone for research/regression.",
+        for match in _QUARANTINED_REFERENCE_USE_RE.finditer(text):
+            token = match.group(0)
+            if _allowed_quarantined_reference_use(rel, token):
+                continue
+            violations.append(
+                Violation(
+                    "research-quarantine-usage",
+                    f"{rel} references quarantined package-semantics clone token "
+                    f"{token!r}. Use upstream package custody for package "
+                    "semantics; only tests/helpers/tinygrad_stdlib_loader.py may "
+                    "explicitly load the reference clone for research/regression.",
+                )
             )
-        )
+            break
     return violations
 
 
