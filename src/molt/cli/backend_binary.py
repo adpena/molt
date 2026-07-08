@@ -394,6 +394,8 @@ def _ensure_backend_binary(
             "build",
             "--package",
             "molt-backend",
+            "--bin",
+            "molt-backend",
             "--profile",
             cargo_profile,
         ]

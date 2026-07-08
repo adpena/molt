@@ -177,6 +177,8 @@ def _build_cmd(args: argparse.Namespace, extra: list[str] | None = None) -> list
         args.profile,
         "-p",
         args.package,
+        "--bin",
+        args.bin_name,
         "--features",
         args.features,
     ]
@@ -248,6 +250,7 @@ def _snapshot_payload(
         "meta": {
             "profile": args.profile,
             "package": args.package,
+            "bin": args.bin_name,
             "features": args.features,
             "runs": args.runs,
             "target_dir": args.target_dir,
@@ -296,6 +299,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--profile", default="release-fast")
     ap.add_argument("--package", default="molt-backend")
+    ap.add_argument("--bin", dest="bin_name", default="molt-backend")
     ap.add_argument("--features", default="native-backend")
     ap.add_argument("--runs", type=int, default=3)
     ap.add_argument("--target-dir", required=True, help="CARGO_TARGET_DIR to use")

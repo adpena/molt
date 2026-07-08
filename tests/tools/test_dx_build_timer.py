@@ -136,6 +136,7 @@ def test_write_snapshot_records_active_command(tmp_path: Path) -> None:
     args = SimpleNamespace(
         profile="release-fast",
         package="molt-backend",
+        bin_name="molt-backend",
         features="native-backend",
         runs=2,
         target_dir=str(tmp_path / "target"),
@@ -152,6 +153,7 @@ def test_write_snapshot_records_active_command(tmp_path: Path) -> None:
 
     payload = json.loads(out.read_text(encoding="utf-8"))
     assert payload["meta"]["target_dir"] == str(tmp_path / "target")
+    assert payload["meta"]["bin"] == "molt-backend"
     assert payload["prime"]["elapsed_sec"] == 0.5
     assert payload["active"] == {
         "label": "test-lib",
@@ -159,3 +161,26 @@ def test_write_snapshot_records_active_command(tmp_path: Path) -> None:
         "cmd": ["cargo", "test"],
     }
     assert payload["results"]["inc-value_range"]["samples_sec"] == [1.25]
+
+
+def test_build_cmd_scopes_to_daemon_binary() -> None:
+    module = _load_dx_build_timer()
+    args = SimpleNamespace(
+        profile="release-fast",
+        package="molt-backend",
+        bin_name="molt-backend",
+        features="native-backend",
+    )
+
+    assert module._build_cmd(args) == [
+        "cargo",
+        "build",
+        "--profile",
+        "release-fast",
+        "-p",
+        "molt-backend",
+        "--bin",
+        "molt-backend",
+        "--features",
+        "native-backend",
+    ]

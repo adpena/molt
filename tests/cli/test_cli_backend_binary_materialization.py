@@ -114,5 +114,6 @@ def test_ensure_backend_binary_returns_cargo_failure_detail(
         "--package",
         "molt-backend",
     )
+    assert result.command[4:6] == ("--bin", "molt-backend")
     assert "Backend cargo build failed (exit 101)" in result.message
     assert "duplicate symbol: PyMemoryView_FromMemory" in result.message
