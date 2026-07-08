@@ -613,6 +613,50 @@
     return importObject;
   };
 
+  const makeManifestLinkImportTrap = (entry, primitiveClass) => {
+    const qualified = `${entry.module}.${entry.name}`;
+    return () => {
+      throw new Error(
+        `WASM link import ${qualified} (${primitiveClass}) was called at runtime; ` +
+          'the symbol is manifest-approved only as an external native link import',
+      );
+    };
+  };
+
+  const installManifestLinkImportTraps = (importObject, imports, linkImportAbi) => {
+    const primitiveClasses = linkImportAbi?.primitive_classes || {};
+    const symbolKinds = linkImportAbi?.symbol_kinds || {};
+    for (const entry of imports.funcImports || []) {
+      if (entry.module !== 'env') {
+        continue;
+      }
+      const primitiveClass = primitiveClasses[entry.name];
+      if (!primitiveClass) {
+        continue;
+      }
+      const symbolKind = symbolKinds[entry.name] || 'function';
+      if (symbolKind !== 'function') {
+        continue;
+      }
+      if (!importObject[entry.module]) {
+        importObject[entry.module] = {};
+      }
+      const moduleImports = importObject[entry.module];
+      const existing = moduleImports[entry.name];
+      if (existing === undefined) {
+        moduleImports[entry.name] = makeManifestLinkImportTrap(entry, primitiveClass);
+        continue;
+      }
+      if (typeof existing !== 'function') {
+        throw new Error(
+          `WASM link import ${entry.module}.${entry.name} (${primitiveClass}) ` +
+            `conflicts with existing non-function import`,
+        );
+      }
+    }
+    return importObject;
+  };
+
   const normalizeI64BridgeValue = (value, label) => {
     if (value === undefined || value === null) {
       return 0n;
@@ -996,6 +1040,7 @@
     callRuntimeObjectArrayArgImport,
     callWithWasmSignature,
     extractWasmTableBase,
+    installManifestLinkImportTraps,
     installWasmTagImports,
     normalizeI64BridgeValue,
     normalizeImportResult,

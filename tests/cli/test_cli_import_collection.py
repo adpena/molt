@@ -5756,6 +5756,49 @@ def test_external_native_artifact_plan_records_external_link_symbol_board(
     ]
 
 
+def test_external_native_artifact_plan_records_libcxx_link_symbol_board(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "site"
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="core._multiarray_umath",
+        artifact_name="_multiarray_umath.molt.wasm",
+        artifact_bytes=_wasm_exporting_i64_unary_symbol(
+            "molt_nativepkg_placeholder",
+            imports=("_ZNSt11logic_errorC2EPKc",),
+        ),
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "object_closure": {
+                "runtime_symbols": ["_ZNSt11logic_errorC2EPKc"],
+                "undefined_symbols": ["_ZNSt11logic_errorC2EPKc"],
+            },
+        },
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        required_modules={"nativepkg.core._multiarray_umath"},
+    )
+
+    assert errors == []
+    assert plan is not None
+    assert [symbol.digest_payload() for symbol in plan.artifacts[0].abi_symbols] == [
+        {
+            "symbol": "_ZNSt11logic_errorC2EPKc",
+            "status": "external_link",
+            "primitive_class": "wasm_libcxx_link_import",
+            "source": "runtime_symbols+undefined_symbols",
+        }
+    ]
+
+
 def test_external_native_artifact_plan_records_cpython_abi_link_symbol_board(
     tmp_path: Path,
 ) -> None:

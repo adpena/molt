@@ -1604,6 +1604,7 @@ def test_wasm_abi_manifest_owns_host_import_policy() -> None:
     assert prefix_rules[("env", "molt_call_indirect")]["category"] == ("indirect_call")
 
     rendered_py = gen.render_py(data)
+    rendered_js_abi = json.loads(gen.render_js_abi(data))
     rendered_rs = _rendered_rs(gen, data)
     assert "CallIndirectImportSpec" in rendered_rs
     assert "CALL_INDIRECT_IMPORTS" in rendered_rs
@@ -1615,6 +1616,11 @@ def test_wasm_abi_manifest_owns_host_import_policy() -> None:
     assert "WASM_CALL_INDIRECT_IMPORTS" in rendered_py
     assert "WASM_STRIP_IMPORT_RULES" in rendered_py
     assert "WASM_STRIP_IMPORT_PREFIX_RULES" in rendered_py
+    js_link_imports = rendered_js_abi["external_native_link_imports"]
+    assert js_link_imports["primitive_classes"]["_ZNSt3__217bad_function_callD1Ev"] == (
+        "wasm_libcxx_link_import"
+    )
+    assert js_link_imports["symbol_kinds"]["_ZTVNSt3__217bad_function_callE"] == "data"
 
     allowlist = gen.OUT_ALLOWED_IMPORTS.read_text(encoding="utf-8")
     assert allowlist == gen.render_allowed_imports(data)
