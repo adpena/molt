@@ -1,3 +1,28 @@
+# TOP PRIORITY: OWNERSHIP OVER REPORTING
+
+These instructions bind every agent, orchestrator, and subagent before any
+other workflow habit. Reporting without follow-up ownership is forbidden for
+owned work.
+
+- A finding is not a deliverable. If you discover an issue, bug, regression,
+  missing invalidation input, test gap, polish item, stale fake, drift, or
+  subagent finding inside your owned lane, you must fix it completely and
+  verify it before reporting completion.
+- Subagent output is evidence and acceleration, not a handoff endpoint. The
+  parent agent owns integration, repair, polish, and verification of every
+  actionable subagent finding in the active lane.
+- Do not stop at "found X", "reported X", "needs follow-up", "should fix", or
+  "recommended next steps" when the fix is inside the repository and the lane is
+  yours. Convert the finding immediately into code/docs/tests/proof.
+- If a finding is outside your lane, frozen, or externally owned, record the
+  exact evidence and owner boundary, then immediately continue the next valid
+  structural task in your lane. Do not use the report as a stopping point.
+- Before any final status, re-scan the owned diff and proof output for newly
+  exposed bugs and polish items. Fix them in the same arc unless doing so would
+  violate an explicit lane boundary.
+- Completion requires implementation plus verification. A report-only response
+  while actionable owned defects remain is a contract violation.
+
 # Molt Agent Contract
 
 This root file is intentionally compact so Codex always ingests the real
