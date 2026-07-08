@@ -4,6 +4,7 @@ pub mod env_support;
 pub mod importlib_support;
 #[cfg(target_arch = "wasm32")]
 pub mod libc_compat;
+pub mod path_text;
 pub mod randomness;
 pub mod socket_constants;
 pub mod stat_support;
