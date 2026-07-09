@@ -800,14 +800,16 @@ def _consume_frontend_serial_layer_result(
     result_timings: _FrontendModuleResultTimings,
     serial_mode: str,
 ) -> _CliFailure | None:
+    timing_mode = "serial_cache_hit" if result_timings.cache_hit else serial_mode
     _frontend_parallel._record_serial_frontend_worker_timing(
         record_frontend_parallel_worker_timing=record_frontend_parallel_worker_timing,
         recorded_worker_timings=layer_state.recorded_worker_timings,
         layer_index=layer_index,
         module_name=module_name,
         module_path=module_path,
-        mode=serial_mode,
+        mode=timing_mode,
         total_s=result_timings.total_s,
+        reused_s=result_timings.reused_s,
     )
     return _consume_frontend_module_result(
         module_name=module_name,

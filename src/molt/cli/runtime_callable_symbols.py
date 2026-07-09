@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 
 from molt.cli.atomic_io import _atomic_write_text
@@ -17,6 +18,19 @@ from molt.cli.models import _RuntimeArtifactState
 from molt.cli.output import CliFailure as _CliFailure
 from molt.cli.output import fail as _fail
 from molt.cli.runtime_build import _ensure_native_runtime_lib_ready_before_link
+
+
+def _record_runtime_callable_stage_ms(
+    stage_timings_ms: dict[str, float] | None,
+    name: str,
+    started_at: float,
+) -> None:
+    if stage_timings_ms is None:
+        return
+    stage_timings_ms[name] = round(
+        max(0.0, (time.perf_counter() - started_at) * 1000.0),
+        6,
+    )
 
 
 def _runtime_callable_symbols_file(
@@ -129,11 +143,13 @@ def _stage_runtime_callable_symbols_for_native_codegen(
     stdlib_profile: str | None = DEFAULT_RUNTIME_STDLIB_PROFILE,
     resolved_modules: set[str] | frozenset[str] | None = None,
     is_wasm_freestanding: bool = False,
+    stage_timings_ms: dict[str, float] | None = None,
 ) -> tuple[str, _CliFailure | None]:
     runtime_lib = runtime_state.runtime_lib
     os.environ.pop("MOLT_RUNTIME_CALLABLE_SYMBOLS", None)
     if runtime_lib is None or is_wasm_freestanding:
         return "", None
+    ensure_start = time.perf_counter()
     runtime_ready = _ensure_native_runtime_lib_ready_before_link(
         runtime_state,
         target_triple=target_triple,
@@ -145,6 +161,12 @@ def _stage_runtime_callable_symbols_for_native_codegen(
         phase_starts={},
         stdlib_profile=stdlib_profile,
         resolved_modules=resolved_modules,
+        stage_timings_ms=stage_timings_ms,
+    )
+    _record_runtime_callable_stage_ms(
+        stage_timings_ms,
+        "runtime_callable_symbols_ensure_runtime_lib",
+        ensure_start,
     )
     if not runtime_ready or not runtime_lib.exists():
         return "", _fail(
@@ -154,7 +176,13 @@ def _stage_runtime_callable_symbols_for_native_codegen(
             json_output,
             command="build",
         )
+    symbol_file_start = time.perf_counter()
     symbols_file, symbols_failure = _runtime_callable_symbols_file(runtime_lib)
+    _record_runtime_callable_stage_ms(
+        stage_timings_ms,
+        "runtime_callable_symbols_file",
+        symbol_file_start,
+    )
     if symbols_file is None:
         return "", _fail(
             "failed to extract the runtime staticlib's molt_* callable "
@@ -167,7 +195,13 @@ def _stage_runtime_callable_symbols_for_native_codegen(
             json_output,
             command="build",
         )
+    digest_start = time.perf_counter()
     digest = _runtime_callable_symbols_digest(symbols_file)
+    _record_runtime_callable_stage_ms(
+        stage_timings_ms,
+        "runtime_callable_symbols_digest",
+        digest_start,
+    )
     if not digest:
         return "", _fail(
             "failed to digest the runtime staticlib callable-symbol set "

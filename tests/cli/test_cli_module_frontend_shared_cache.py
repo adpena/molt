@@ -228,6 +228,61 @@ def test_lowering_reuse_across_sessions_no_relower(
     assert session_slot_b.is_file()
 
 
+def test_lowering_cache_hit_returns_fresh_decoded_payload_each_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_root = tmp_path / "proj"
+    project_root.mkdir()
+    path = _write_module(project_root, "m", "def g():\n    return 41 + 1\n")
+    context_digest = "ab" * 32
+    ir_result = {
+        "functions": [
+            {
+                "name": "m__g",
+                "params": [],
+                "ops": [{"kind": "const", "value": 42}],
+            }
+        ],
+        "profile": "release",
+        "metadata": {"shape": ("module", "lowering")},
+    }
+
+    _use_session(monkeypatch, "A")
+    MC._write_persisted_module_lowering(
+        project_root,
+        path,
+        module_name="m",
+        is_package=False,
+        context_digest=context_digest,
+        result=ir_result,
+    )
+
+    first = MC._read_persisted_module_lowering(
+        project_root,
+        path,
+        module_name="m",
+        is_package=False,
+        context_digest=context_digest,
+    )
+    assert first is not None
+    first["functions"][0]["name"] = "mutated"
+    first["functions"][0]["ops"][0]["value"] = 99
+    first["metadata"]["shape"] = ("mutated",)
+
+    second = MC._read_persisted_module_lowering(
+        project_root,
+        path,
+        module_name="m",
+        is_package=False,
+        context_digest=context_digest,
+    )
+
+    assert second is not None
+    assert second["functions"][0]["name"] == "m__g"
+    assert second["functions"][0]["ops"][0]["value"] == 42
+    assert second["metadata"]["shape"] == ("module", "lowering")
+
+
 # --------------------------------------------------------------------------
 # Correctness (the critical one): a stale shared entry must NEVER be reused.
 # --------------------------------------------------------------------------

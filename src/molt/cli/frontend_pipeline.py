@@ -387,9 +387,13 @@ def _prepare_frontend_lowering_config(
         if not json_output:
             print(warning, file=sys.stderr)
     if type_facts_path is None and type_hint_policy in {"trust", "check"}:
+        type_facts_start = time.perf_counter()
         type_facts, ty_ok = _typecheck._collect_type_facts_for_build(
             list(module_graph.values()), type_hint_policy, source_path
         )
+        frontend_parallel_details.setdefault("pipeline_stage_ms", {})[
+            "collect_type_facts"
+        ] = round(max(0.0, (time.perf_counter() - type_facts_start) * 1000.0), 6)
         if type_facts is None and type_hint_policy == "trust":
             return None, _fail(
                 "Type facts unavailable; refusing trusted build.",
@@ -1088,6 +1092,7 @@ def _prepare_frontend_pipeline(
             _frontend_binary_image_analysis_payload,
         )
 
+        binary_image_analysis_start = time.perf_counter()
         record_binary_image_analysis(
             "frontend",
             _frontend_binary_image_analysis_payload(
@@ -1108,7 +1113,16 @@ def _prepare_frontend_pipeline(
                 compile_module_order=compile_module_order,
                 compile_module_layers=compile_module_layers,
                 target_python=prepared_build_config.target_python,
+                include_source_details=(
+                    prepared_build_preamble.resolved_diagnostics_verbosity == "full"
+                ),
             ),
+        )
+        prepared_build_preamble.frontend_parallel_details.setdefault(
+            "pipeline_stage_ms", {}
+        )["binary_image_analysis"] = round(
+            max(0.0, (time.perf_counter() - binary_image_analysis_start) * 1000.0),
+            6,
         )
     compile_module_graph = {
         name: path
@@ -1120,6 +1134,7 @@ def _prepare_frontend_pipeline(
         for name, path in import_plan.generated_module_source_paths.items()
         if name in import_plan.compile_modules
     }
+    prepare_execution_start = time.perf_counter()
     (
         frontend_layer_execution_context,
         frontend_layer_runtime_hooks,
@@ -1179,6 +1194,12 @@ def _prepare_frontend_pipeline(
         target_python=prepared_build_config.target_python,
         target_sys_platform=prepared_build_config.target_sys_platform,
         scc_serial_modules=prepared_frontend_analysis.scc_serial_modules,
+    )
+    prepared_build_preamble.frontend_parallel_details.setdefault(
+        "pipeline_stage_ms", {}
+    )["prepare_frontend_execution"] = round(
+        max(0.0, (time.perf_counter() - prepare_execution_start) * 1000.0),
+        6,
     )
 
     prepared_frontend_run_ticket = _PreparedFrontendRunTicket(

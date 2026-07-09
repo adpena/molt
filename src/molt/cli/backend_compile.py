@@ -79,6 +79,19 @@ from molt.wasm_artifact import (
 )
 
 
+def _record_pipeline_stage_ms(
+    stage_timings_ms: dict[str, float] | None,
+    name: str,
+    started_at: float,
+) -> None:
+    if stage_timings_ms is None:
+        return
+    stage_timings_ms[name] = round(
+        max(0.0, (time.perf_counter() - started_at) * 1000.0),
+        6,
+    )
+
+
 def _prepare_backend_setup(
     *,
     is_rust_transpile: bool,
@@ -112,6 +125,7 @@ def _prepare_backend_setup(
     capability_profiles: Sequence[str] | None = None,
     manifest_env_vars: Mapping[str, str] | None = None,
     capability_config_digest: str | None = None,
+    stage_timings_ms: dict[str, float] | None = None,
 ) -> tuple[_PreparedBackendSetup | None, _CliFailure | None]:
     extra_runtime_features: tuple[str, ...] = ()
     if native_artifact_plan.artifacts and not is_wasm:
@@ -127,6 +141,7 @@ def _prepare_backend_setup(
         extra_runtime_features=extra_runtime_features,
     )
     runtime_callable_symbols_digest = ""
+    callable_symbols_start = time.perf_counter()
     runtime_callable_symbols_digest, callable_symbols_error = (
         _stage_runtime_callable_symbols_for_native_codegen(
             runtime_state,
@@ -137,10 +152,44 @@ def _prepare_backend_setup(
             cargo_timeout=cargo_timeout,
             stdlib_profile=stdlib_profile,
             resolved_modules=resolved_modules,
+            stage_timings_ms=stage_timings_ms,
         )
+    )
+    _record_pipeline_stage_ms(
+        stage_timings_ms,
+        "backend_setup_runtime_callable_symbols",
+        callable_symbols_start,
     )
     if callable_symbols_error is not None:
         return None, callable_symbols_error
+
+    backend_features = _backend_features_for_target(
+        is_wasm=is_wasm,
+        is_luau_transpile=is_luau_transpile,
+        is_rust_transpile=is_rust_transpile,
+    )
+    backend_bin = _backend_bin_path(molt_root, backend_cargo_profile, backend_features)
+    backend_binary_start = time.perf_counter()
+    backend_ensure_result = _backend_binary._ensure_backend_binary(
+        backend_bin,
+        cargo_timeout=cargo_timeout,
+        json_output=json_output,
+        cargo_profile=backend_cargo_profile,
+        project_root=molt_root,
+        backend_features=backend_features,
+        stage_timings_ms=stage_timings_ms,
+    )
+    _record_pipeline_stage_ms(
+        stage_timings_ms,
+        "backend_setup_ensure_backend_binary",
+        backend_binary_start,
+    )
+    if not backend_ensure_result:
+        return None, _fail(backend_ensure_result.message, json_output, command="build")
+    if not backend_bin.exists():
+        return None, _fail("Backend binary missing", json_output, command="build")
+
+    cache_setup_start = time.perf_counter()
     cache_setup = _backend_cache_setup._prepare_backend_cache_setup(
         cache_enabled=cache,
         ir=ir,
@@ -166,6 +215,13 @@ def _prepare_backend_setup(
         capability_profiles=capability_profiles,
         manifest_env_vars=manifest_env_vars,
         capability_config_digest=capability_config_digest,
+        backend_compiler_fingerprint=backend_ensure_result.cache_compiler_fingerprint,
+        stage_timings_ms=stage_timings_ms,
+    )
+    _record_pipeline_stage_ms(
+        stage_timings_ms,
+        "backend_setup_prepare_cache",
+        cache_setup_start,
     )
     if emit_mode != "obj" and not runtime_callable_symbols_digest:
         _maybe_start_native_runtime_lib_ready_async(
@@ -182,6 +238,7 @@ def _prepare_backend_setup(
         )
     return _PreparedBackendSetup(
         runtime_state=runtime_state,
+        backend_bin=backend_bin,
         cache_setup=cache_setup,
         cache_hit=cache_setup.cache_hit,
         cache_hit_tier=cache_setup.cache_hit_tier,
@@ -191,6 +248,7 @@ def _prepare_backend_setup(
         function_cache_path=cache_setup.function_cache_path,
         stdlib_object_path=cache_setup.stdlib_object_path,
         cache_candidates=list(cache_setup.cache_candidates),
+        runtime_callable_symbols_digest=runtime_callable_symbols_digest,
     ), None
 
 
@@ -245,22 +303,24 @@ def _prepare_backend_runtime_context(
             required_exports=required_exports,
         )
 
-    _, callable_symbols_error = _stage_runtime_callable_symbols_for_native_codegen(
-        runtime_state,
-        target_triple=target_triple,
-        json_output=json_output,
-        runtime_cargo_profile=runtime_cargo_profile,
-        molt_root=molt_root,
-        cargo_timeout=cargo_timeout,
-        stdlib_profile=stdlib_profile,
-        resolved_modules=resolved_modules,
-        is_wasm_freestanding=is_wasm_freestanding,
-    )
-    if callable_symbols_error is not None:
-        return None, callable_symbols_error
+    if not prepared_backend_setup.runtime_callable_symbols_digest:
+        _, callable_symbols_error = _stage_runtime_callable_symbols_for_native_codegen(
+            runtime_state,
+            target_triple=target_triple,
+            json_output=json_output,
+            runtime_cargo_profile=runtime_cargo_profile,
+            molt_root=molt_root,
+            cargo_timeout=cargo_timeout,
+            stdlib_profile=stdlib_profile,
+            resolved_modules=resolved_modules,
+            is_wasm_freestanding=is_wasm_freestanding,
+        )
+        if callable_symbols_error is not None:
+            return None, callable_symbols_error
 
     return _PreparedBackendRuntimeContext(
         runtime_state=runtime_state,
+        backend_bin=prepared_backend_setup.backend_bin,
         runtime_lib=runtime_state.runtime_lib,
         runtime_wasm=runtime_state.runtime_wasm,
         runtime_reloc_wasm=runtime_state.runtime_reloc_wasm,
@@ -301,6 +361,7 @@ def _prepare_backend_dispatch(
     resolved_modules: set[str] | frozenset[str] | None,
     ir: Mapping[str, Any],
     warnings: list[str],
+    backend_bin: Path | None = None,
     start_daemon: bool = True,
 ) -> tuple[_PreparedBackendDispatch | None, _CliFailure | None]:
     backend_env = os.environ.copy() if is_wasm else None
@@ -448,17 +509,22 @@ def _prepare_backend_dispatch(
     if reloc_requested and backend_env is not None:
         backend_env["MOLT_WASM_LINK"] = "1"
 
-    backend_bin = _backend_bin_path(molt_root, backend_cargo_profile, backend_features)
-    backend_ensure_result = _backend_binary._ensure_backend_binary(
-        backend_bin,
-        cargo_timeout=cargo_timeout,
-        json_output=json_output,
-        cargo_profile=backend_cargo_profile,
-        project_root=molt_root,
-        backend_features=backend_features,
-    )
-    if not backend_ensure_result:
-        return None, _fail(backend_ensure_result.message, json_output, command="build")
+    if backend_bin is None:
+        backend_bin = _backend_bin_path(
+            molt_root, backend_cargo_profile, backend_features
+        )
+        backend_ensure_result = _backend_binary._ensure_backend_binary(
+            backend_bin,
+            cargo_timeout=cargo_timeout,
+            json_output=json_output,
+            cargo_profile=backend_cargo_profile,
+            project_root=molt_root,
+            backend_features=backend_features,
+        )
+        if not backend_ensure_result:
+            return None, _fail(
+                backend_ensure_result.message, json_output, command="build"
+            )
     if not backend_bin.exists():
         return None, _fail("Backend binary missing", json_output, command="build")
 
@@ -1021,6 +1087,7 @@ def _prepare_backend_compile(
     backend_daemon_cached: bool | None,
     backend_daemon_cache_tier: str | None,
     backend_daemon_health: dict[str, Any] | None,
+    backend_bin: Path | None = None,
 ) -> tuple[_PreparedBackendCompile | None, _CliFailure | None]:
     if diagnostics_enabled:
         phase_starts["cache_lookup"] = time.perf_counter()
@@ -1060,6 +1127,9 @@ def _prepare_backend_compile(
                 stdlib_object_manifest=cache_setup.stdlib_object_manifest,
                 stdlib_module_symbols=cache_setup.stdlib_module_symbols,
                 warnings=warnings,
+                stdlib_contract_validation_token=(
+                    cache_setup.stdlib_contract_validation_token
+                ),
             )
 
         if not cache_hit:
@@ -1093,6 +1163,7 @@ def _prepare_backend_compile(
                     resolved_modules=resolved_modules,
                     ir=ir,
                     warnings=warnings,
+                    backend_bin=backend_bin,
                 )
             )
             if prepared_backend_dispatch_error is not None:

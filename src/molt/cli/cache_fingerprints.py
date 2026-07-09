@@ -3,17 +3,24 @@ from __future__ import annotations
 import ast
 import functools
 import hashlib
+import json
 import os
 import pathlib
-import tomllib
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Sequence
 
-from molt.cli.compiler_metadata import _compiler_root, _rustc_version
-from molt.cli.file_hashing import _sha256_file
-from molt.cli.runtime_fingerprints import (
+from molt.cli.compiler_metadata import (
+    _compiler_clean_pathspec_source_state,
+    _compiler_root,
+    _rustc_version,
+)
+from molt.cli.default_paths import _default_molt_cache
+from molt.cli.file_hashing import (
     _hash_source_tree_metadata,
-    _runtime_source_paths,
+    _sha256_file,
     _source_fingerprint_files,
 )
 
@@ -34,141 +41,9 @@ _BACKEND_CACHE_ALL_FEATURES = (
 )
 
 
-def _dedupe_source_paths(paths: Sequence[Path]) -> list[Path]:
-    deduped: list[Path] = []
-    seen: set[Path] = set()
-    for path in paths:
-        if path in seen:
-            continue
-        seen.add(path)
-        deduped.append(path)
-    return deduped
-
-
-def _crate_source_paths(crate_root: Path) -> tuple[Path, Path, Path]:
-    return (
-        crate_root / "src",
-        crate_root / "Cargo.toml",
-        crate_root / "build.rs",
-    )
-
-
-def _cargo_manifest_stamp(manifest: Path) -> str:
-    try:
-        stat = manifest.stat()
-    except OSError:
-        return "missing"
-    return f"{stat.st_size}:{stat.st_mtime_ns}:{stat.st_ctime_ns}"
-
-
-@functools.lru_cache(maxsize=512)
-def _read_cargo_manifest_cached(
-    manifest_str: str,
-    manifest_stamp: str,
-) -> dict[str, Any]:
-    manifest = Path(manifest_str)
-    try:
-        data = tomllib.loads(manifest.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def _read_cargo_manifest(manifest: Path) -> dict[str, Any]:
-    return _read_cargo_manifest_cached(
-        os.fspath(manifest),
-        _cargo_manifest_stamp(manifest),
-    )
-
-
-def _manifest_dependency_tables(data: dict[str, Any]) -> list[dict[str, Any]]:
-    tables: list[dict[str, Any]] = []
-    for key in ("dependencies", "build-dependencies"):
-        table = data.get(key)
-        if isinstance(table, dict):
-            tables.append(table)
-    target = data.get("target")
-    if isinstance(target, dict):
-        for target_table in target.values():
-            if not isinstance(target_table, dict):
-                continue
-            for key in ("dependencies", "build-dependencies"):
-                table = target_table.get(key)
-                if isinstance(table, dict):
-                    tables.append(table)
-    return tables
-
-
-def _local_path_dependencies(
-    *,
-    crate_root: Path,
-    data: dict[str, Any],
-    selected_optional_deps: set[str],
-    child_features: dict[str, set[str]],
-) -> list[tuple[str, Path, tuple[str, ...]]]:
-    deps: list[tuple[str, Path, tuple[str, ...]]] = []
-    for table in _manifest_dependency_tables(data):
-        for dep_name, spec in table.items():
-            if not isinstance(spec, dict):
-                continue
-            dep_path = spec.get("path")
-            if not isinstance(dep_path, str) or not dep_path:
-                continue
-            optional = bool(spec.get("optional", False))
-            if optional and dep_name not in selected_optional_deps:
-                continue
-            features = set(child_features.get(dep_name, set()))
-            spec_features = spec.get("features", [])
-            if isinstance(spec_features, list):
-                features.update(
-                    feature for feature in spec_features if isinstance(feature, str)
-                )
-            dep_root = (crate_root / dep_path).resolve()
-            deps.append((dep_name, dep_root, tuple(sorted(features))))
-    return deps
-
-
-def _feature_dependency_selection(
-    data: dict[str, Any],
-    requested_features: tuple[str, ...],
-) -> tuple[set[str], dict[str, set[str]]]:
-    features = data.get("features")
-    if not isinstance(features, dict):
-        return set(), {}
-    if requested_features:
-        pending = list(requested_features)
-    else:
-        default_features = features.get("default", [])
-        pending = [item for item in default_features if isinstance(item, str)]
-    seen_features: set[str] = set()
-    selected_optional_deps: set[str] = set()
-    child_features: dict[str, set[str]] = {}
-    while pending:
-        feature = pending.pop()
-        if feature in seen_features:
-            continue
-        seen_features.add(feature)
-        entries = features.get(feature, [])
-        if not isinstance(entries, list):
-            continue
-        for entry in entries:
-            if not isinstance(entry, str) or not entry:
-                continue
-            if entry.startswith("dep:"):
-                selected_optional_deps.add(entry[4:])
-                continue
-            if "/" in entry:
-                dep_name, child_feature = entry.split("/", 1)
-                child_feature = child_feature.removesuffix("?")
-                if dep_name and child_feature:
-                    selected_optional_deps.add(dep_name)
-                    child_features.setdefault(dep_name, set()).add(child_feature)
-                continue
-            pending.append(entry)
-    return selected_optional_deps, child_features
-
-
 def _backend_source_feature_names(project_root: Path) -> tuple[str, ...]:
+    from molt.cli.cargo_source_closure import _read_cargo_manifest
+
     data = _read_cargo_manifest(project_root / _BACKEND_FACADE_CRATE / "Cargo.toml")
     features = data.get("features")
     if not isinstance(features, dict):
@@ -196,36 +71,14 @@ def _backend_crate_source_closure(
     project_root: Path,
     backend_features: tuple[str, ...],
 ) -> list[Path]:
-    source_paths: list[Path] = []
-    project_root_resolved = project_root.resolve()
-    pending: list[tuple[Path, tuple[str, ...]]] = [
-        (project_root / _BACKEND_FACADE_CRATE, backend_features)
-    ]
-    seen: set[tuple[Path, tuple[str, ...]]] = set()
-    while pending:
-        crate_root, crate_features = pending.pop()
-        key = (crate_root, crate_features)
-        if key in seen:
-            continue
-        seen.add(key)
-        source_paths.extend(_crate_source_paths(crate_root))
-        data = _read_cargo_manifest(crate_root / "Cargo.toml")
-        selected_optional_deps, child_features = _feature_dependency_selection(
-            data, crate_features
-        )
-        for _dep_name, dep_root, dep_features in _local_path_dependencies(
-            crate_root=crate_root,
-            data=data,
-            selected_optional_deps=selected_optional_deps,
-            child_features=child_features,
-        ):
-            if (
-                project_root_resolved in dep_root.parents
-                or dep_root == project_root_resolved
-            ):
-                pending.append((dep_root, dep_features))
-    source_paths.extend((project_root / "Cargo.toml", project_root / "Cargo.lock"))
-    return _dedupe_source_paths(source_paths)
+    from molt.cli.cargo_source_closure import _cargo_crate_source_closure
+
+    return _cargo_crate_source_closure(
+        project_root=project_root,
+        crate_root=project_root / _BACKEND_FACADE_CRATE,
+        crate_features=backend_features,
+        extra_source_paths=(project_root / "Cargo.toml", project_root / "Cargo.lock"),
+    )
 
 
 @functools.lru_cache(maxsize=256)
@@ -298,6 +151,95 @@ _FRONTEND_AUX_SOURCE_RELPATHS: tuple[str, ...] = (
 # backend/link/cargo file is excluded automatically because it is not a seed and
 # is not reachable from one.
 _LOWERING_SCOPE_SEED_CLI_PREFIXES: tuple[str, ...] = ("frontend_", "module_")
+_LOWERING_SCOPE_SOURCE_FILES_CACHE_SCHEMA_VERSION = 1
+
+
+def _lowering_scope_cache_key(
+    project_root: Path,
+    seed_clean_state: dict[str, str | int],
+) -> str:
+    payload = {
+        "version": _LOWERING_SCOPE_SOURCE_FILES_CACHE_SCHEMA_VERSION,
+        "project_root": str(project_root.resolve()),
+        "seed_clean_state": seed_clean_state,
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _lowering_scope_cache_path(
+    project_root: Path,
+    seed_clean_state: dict[str, str | int],
+) -> Path:
+    digest = _lowering_scope_cache_key(project_root, seed_clean_state)
+    return (
+        _default_molt_cache()
+        / "frontend_lowering_scope"
+        / digest[:2]
+        / f"{digest}.json"
+    )
+
+
+def _read_lowering_scope_source_files_cache(
+    project_root: Path,
+    seed_clean_state: dict[str, str | int],
+) -> tuple[str, ...] | None:
+    cache_path = _lowering_scope_cache_path(project_root, seed_clean_state)
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if (
+        not isinstance(payload, dict)
+        or payload.get("version") != _LOWERING_SCOPE_SOURCE_FILES_CACHE_SCHEMA_VERSION
+        or payload.get("seed_clean_state") != seed_clean_state
+    ):
+        return None
+    files = payload.get("files")
+    full_clean_state = payload.get("full_clean_state")
+    if (
+        not isinstance(files, list)
+        or not all(isinstance(item, str) for item in files)
+        or not isinstance(full_clean_state, dict)
+    ):
+        return None
+    current_full_state = _compiler_clean_pathspec_source_state(
+        project_root,
+        _lowering_scope_clean_path_keys(project_root, tuple(files)),
+    )
+    if current_full_state != full_clean_state:
+        return None
+    return tuple(files)
+
+
+def _write_lowering_scope_source_files_cache(
+    project_root: Path,
+    seed_clean_state: dict[str, str | int],
+    full_clean_state: dict[str, str | int],
+    files: tuple[str, ...],
+) -> None:
+    cache_path = _lowering_scope_cache_path(project_root, seed_clean_state)
+    payload = {
+        "version": _LOWERING_SCOPE_SOURCE_FILES_CACHE_SCHEMA_VERSION,
+        "seed_clean_state": seed_clean_state,
+        "full_clean_state": full_clean_state,
+        "files": list(files),
+    }
+    tmp_path = cache_path.with_suffix(cache_path.suffix + f".{os.getpid()}.tmp")
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path.write_text(
+            json.dumps(payload, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        tmp_path.replace(cache_path)
+    except OSError:
+        return
+    finally:
+        with suppress(OSError):
+            if tmp_path.exists():
+                tmp_path.unlink()
 
 
 def _module_level_molt_import_targets(path: Path, src_root: Path) -> set[str]:
@@ -390,6 +332,37 @@ def _resolve_import_targets_to_files(targets: set[str], src_root: Path) -> set[P
     return files
 
 
+def _lowering_scope_seed_paths(project_root: Path) -> tuple[Path, ...]:
+    molt_root = project_root / "src" / "molt"
+    frontend_root = molt_root / "frontend"
+    cli_root = molt_root / "cli"
+    paths: list[Path] = []
+    if frontend_root.exists():
+        paths.append(frontend_root)
+    if cli_root.exists():
+        for source in cli_root.glob("*.py"):
+            if source.name.startswith(_LOWERING_SCOPE_SEED_CLI_PREFIXES):
+                paths.append(source.resolve())
+    paths.extend(molt_root / relpath for relpath in _FRONTEND_AUX_SOURCE_RELPATHS)
+    return tuple(dict.fromkeys(paths))
+
+
+def _lowering_scope_clean_path_keys(
+    project_root: Path,
+    reached_files: tuple[str, ...],
+) -> tuple[str, ...]:
+    molt_root = project_root / "src" / "molt"
+    frontend_root = (molt_root / "frontend").resolve()
+    keys: list[str] = [str(frontend_root)]
+    for path_str in reached_files:
+        source = pathlib.Path(path_str)
+        if frontend_root == source or frontend_root in source.parents:
+            continue
+        keys.append(path_str)
+    keys.extend(str(molt_root / relpath) for relpath in _FRONTEND_AUX_SOURCE_RELPATHS)
+    return tuple(dict.fromkeys(keys))
+
+
 @functools.lru_cache(maxsize=64)
 def _lowering_scope_source_files_cached(project_root_str: str) -> tuple[str, ...]:
     """Module-level import closure of the frontend lowering seeds.
@@ -407,6 +380,17 @@ def _lowering_scope_source_files_cached(project_root_str: str) -> tuple[str, ...
     src_root = (project_root / "src").resolve()
     molt_root = src_root / "molt"
     cli_root = molt_root / "cli"
+    seed_clean_state = _compiler_clean_pathspec_source_state(
+        project_root,
+        tuple(str(path) for path in _lowering_scope_seed_paths(project_root)),
+    )
+    if seed_clean_state is not None:
+        cached = _read_lowering_scope_source_files_cache(
+            project_root,
+            seed_clean_state,
+        )
+        if cached is not None:
+            return cached
 
     seeds: set[Path] = set()
     frontend_root = molt_root / "frontend"
@@ -429,7 +413,20 @@ def _lowering_scope_source_files_cached(project_root_str: str) -> tuple[str, ...
         for source in _resolve_import_targets_to_files(targets, src_root):
             if source not in reached:
                 pending.append(source)
-    return tuple(sorted(str(path) for path in reached))
+    result = tuple(sorted(str(path) for path in reached))
+    if seed_clean_state is not None:
+        full_clean_state = _compiler_clean_pathspec_source_state(
+            project_root,
+            _lowering_scope_clean_path_keys(project_root, result),
+        )
+        if full_clean_state is not None:
+            _write_lowering_scope_source_files_cache(
+                project_root,
+                seed_clean_state,
+                full_clean_state,
+                result,
+            )
+    return result
 
 
 def _frontend_semantic_tooling_source_paths(project_root: Path) -> list[Path]:
@@ -481,6 +478,32 @@ def _source_fingerprint_path_keys(paths: Sequence[Path]) -> tuple[str, ...]:
 # identical trees within one build process.
 _SOURCE_TREE_CONTENT_DIGEST_CACHE: dict[tuple[str, ...], str] = {}
 _SOURCE_TREE_CONTENT_DIGEST_CACHE_LIMIT = 64
+_SOURCE_TREE_FINGERPRINT_TRANSACTION: ContextVar[dict[tuple[str, ...], str] | None] = (
+    ContextVar("_SOURCE_TREE_FINGERPRINT_TRANSACTION", default=None)
+)
+
+
+@contextmanager
+def _source_tree_fingerprint_transaction() -> Iterator[None]:
+    """Share content-complete source-tree fingerprints within one build command.
+
+    The transaction cache is deliberately scoped: long-lived processes still
+    recompute fingerprints between build requests, so in-process edits are
+    observed. Within a single ``molt build`` invocation, every frontend cache key
+    asks the same immutable tooling question dozens of times; computing it once
+    removes that duplicate authority without weakening byte-level invalidation
+    outside the command boundary.
+    """
+
+    current = _SOURCE_TREE_FINGERPRINT_TRANSACTION.get()
+    if current is not None:
+        yield
+        return
+    token = _SOURCE_TREE_FINGERPRINT_TRANSACTION.set({})
+    try:
+        yield
+    finally:
+        _SOURCE_TREE_FINGERPRINT_TRANSACTION.reset(token)
 
 
 def _file_content_signature(path: Path) -> str:
@@ -564,6 +587,19 @@ def _source_tree_content_digest(
     return digest
 
 
+def _source_tree_clean_pathspec_signature(
+    root: Path,
+    path_keys: tuple[str, ...],
+) -> tuple[str, ...] | None:
+    clean_state = _compiler_clean_pathspec_source_state(root, path_keys)
+    if clean_state is None:
+        return None
+    return (
+        "git_clean_pathspec="
+        + json.dumps(clean_state, sort_keys=True, separators=(",", ":")),
+    )
+
+
 def _source_tree_cache_fingerprint(
     *,
     root: Path,
@@ -572,11 +608,28 @@ def _source_tree_cache_fingerprint(
     extra_fingerprint_inputs: str,
 ) -> str:
     path_keys = _source_fingerprint_path_keys(source_paths)
+    transaction = _SOURCE_TREE_FINGERPRINT_TRANSACTION.get()
+    transaction_key = (
+        str(root.resolve()),
+        scope,
+        extra_fingerprint_inputs,
+        *path_keys,
+    )
+    if transaction is not None:
+        cached = transaction.get(transaction_key)
+        if cached is not None:
+            return cached
     normalized_paths = [pathlib.Path(path_key) for path_key in path_keys]
-    metadata = _hash_source_tree_metadata(normalized_paths, root)
-    metadata_digest = metadata[0] if metadata is not None else "metadata-unavailable"
-    file_count = metadata[1] if metadata is not None else -1
-    content_signature = _source_tree_content_signature(root, path_keys)
+    clean_signature = _source_tree_clean_pathspec_signature(root, path_keys)
+    if clean_signature is None:
+        metadata = _hash_source_tree_metadata(normalized_paths, root)
+        metadata_digest = metadata[0] if metadata is not None else "metadata-unavailable"
+        file_count = metadata[1] if metadata is not None else -1
+        content_signature = _source_tree_content_signature(root, path_keys)
+    else:
+        metadata_digest = "git-clean-pathspec"
+        file_count = -1
+        content_signature = clean_signature
     content_digest = _source_tree_content_digest(
         root,
         path_keys,
@@ -594,18 +647,47 @@ def _source_tree_cache_fingerprint(
     hasher.update(metadata_digest.encode("utf-8"))
     hasher.update(b"\0")
     hasher.update(content_digest.encode("utf-8"))
-    return hasher.hexdigest()
+    digest = hasher.hexdigest()
+    if transaction is not None:
+        transaction[transaction_key] = digest
+    return digest
 
 
-def _cache_fingerprint() -> str:
+def _selected_source_features(features: Sequence[str]) -> tuple[str, ...]:
+    return tuple(sorted({feature for feature in features if feature}))
+
+
+def _runtime_source_paths(root: Path, **kwargs: object) -> list[Path]:
+    from molt.cli.runtime_fingerprints import _runtime_source_paths as impl
+
+    return impl(root, **kwargs)
+
+
+def _cache_fingerprint(
+    *,
+    backend_features: Sequence[str] | None = None,
+    runtime_features: Sequence[str] | None = None,
+    include_runtime_sources: bool = True,
+) -> str:
     root = _compiler_root()
     rustc_info = _rustc_version() or ""
     rustflags = os.environ.get("RUSTFLAGS", "")
     # Hash source trees, not backend binaries: binary fingerprints over-invalidate
     # on incremental rebuilds even when source semantics are unchanged.
-    source_paths = _backend_source_paths(
-        root, _backend_source_feature_names(root)
-    ) + _runtime_source_paths(root)
+    selected_backend_features = (
+        _backend_source_feature_names(root)
+        if backend_features is None
+        else _selected_source_features(backend_features)
+    )
+    source_paths = _backend_source_paths(root, selected_backend_features)
+    if include_runtime_sources:
+        if runtime_features is None:
+            source_paths += _runtime_source_paths(root)
+        else:
+            source_paths += _runtime_source_paths(
+                root,
+                runtime_features=_selected_source_features(runtime_features),
+            )
     return _source_tree_cache_fingerprint(
         root=root,
         source_paths=source_paths,

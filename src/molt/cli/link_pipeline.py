@@ -42,10 +42,9 @@ from molt.cli.native_link_deps import _native_target_is_windows
 from molt.cli.native_main_stub import _render_native_main_stub
 from molt.cli.output import CliFailure as _CliFailure
 from molt.cli.output import fail as _fail
+from molt.cli.file_hashing import _hash_source_tree_metadata, _hash_source_tree_paths
 from molt.cli.runtime_fingerprints import (
     _artifact_needs_rebuild,
-    _hash_runtime_file,
-    _hash_source_tree_metadata,
     _read_runtime_fingerprint,
     _stored_fingerprint_matches_source_metadata,
 )
@@ -617,8 +616,7 @@ def _link_fingerprint(
     hasher.update("\0".join(link_cmd).encode("utf-8"))
     hasher.update(b"\0")
     try:
-        for path in inputs:
-            _hash_runtime_file(path, project_root, hasher)
+        _hash_source_tree_paths(inputs, project_root, hasher)
     except OSError:
         return None
     return {

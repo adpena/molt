@@ -92,15 +92,19 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
     '_resolve_binary_output': ('arg_helpers', '_resolve_binary_output'),
     '_strip_leading_double_dash': ('arg_helpers', '_strip_leading_double_dash'),
     'completion': ('arg_helpers', 'completion'),
+    # molt.cli.artifact_sync
+    '_ARTIFACT_SYNC_STATE_CACHE': ('artifact_sync', '_ARTIFACT_SYNC_STATE_CACHE'),
+    '_artifact_sync_state_matches': ('artifact_sync', '_artifact_sync_state_matches'),
+    '_artifact_sync_state_matches_stat': ('artifact_sync', '_artifact_sync_state_matches_stat'),
+    '_artifact_sync_state_path': ('artifact_sync', '_artifact_sync_state_path'),
+    '_read_artifact_sync_state': ('artifact_sync', '_read_artifact_sync_state'),
+    '_write_artifact_sync_payload': ('artifact_sync', '_write_artifact_sync_payload'),
+    '_write_artifact_sync_state': ('artifact_sync', '_write_artifact_sync_state'),
     # molt.cli.backend_cache
-    '_ARTIFACT_SYNC_STATE_CACHE': ('backend_cache', '_ARTIFACT_SYNC_STATE_CACHE'),
     '_DEAD_FUNCTION_ELIM_REFERENCE_KINDS': ('backend_cache', '_DEAD_FUNCTION_ELIM_REFERENCE_KINDS'),
     '_SHARED_STDLIB_CACHE_SCHEMA_VERSION': ('backend_cache', '_SHARED_STDLIB_CACHE_SCHEMA_VERSION'),
     '_SHARED_STDLIB_MANIFEST_SCHEMA_VERSION': ('backend_cache', '_SHARED_STDLIB_MANIFEST_SCHEMA_VERSION'),
     '_SHARED_STDLIB_PARTITION_SCHEMA_VERSION': ('backend_cache', '_SHARED_STDLIB_PARTITION_SCHEMA_VERSION'),
-    '_artifact_sync_state_matches': ('backend_cache', '_artifact_sync_state_matches'),
-    '_artifact_sync_state_matches_stat': ('backend_cache', '_artifact_sync_state_matches_stat'),
-    '_artifact_sync_state_path': ('backend_cache', '_artifact_sync_state_path'),
     '_backend_cache_artifact_path': ('backend_cache', '_backend_cache_artifact_path'),
     '_backend_daemon_skip_output_sync_flags': ('backend_cache', '_backend_daemon_skip_output_sync_flags'),
     '_emitted_name_matches_module_symbol': ('backend_cache', '_emitted_name_matches_module_symbol'),
@@ -117,9 +121,9 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
     '_native_object_global_symbols_result': ('backend_cache', '_native_object_global_symbols_result'),
     '_native_object_has_unresolved_module_chunks': ('backend_cache', '_native_object_has_unresolved_module_chunks'),
     '_native_stdlib_object_split_enabled': ('backend_cache', '_native_stdlib_object_split_enabled'),
+    '_normalize_native_symbol_name': ('backend_cache', '_normalize_native_symbol_name'),
     '_publish_immutable_backend_cache_artifact': ('backend_cache', '_publish_immutable_backend_cache_artifact'),
     '_reachable_function_names_for_stdlib_cache': ('backend_cache', '_reachable_function_names_for_stdlib_cache'),
-    '_read_artifact_sync_state': ('backend_cache', '_read_artifact_sync_state'),
     '_read_shared_stdlib_partition_functions': ('backend_cache', '_read_shared_stdlib_partition_functions'),
     '_read_stdlib_cache_key': ('backend_cache', '_read_stdlib_cache_key'),
     '_remove_shared_stdlib_cache_artifacts': ('backend_cache', '_remove_shared_stdlib_cache_artifacts'),
@@ -148,8 +152,6 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
     '_try_cached_backend_candidates': ('backend_cache', '_try_cached_backend_candidates'),
     '_unresolved_stdlib_module_symbols': ('backend_cache', '_unresolved_stdlib_module_symbols'),
     '_validate_shared_stdlib_cache_contract': ('backend_cache', '_validate_shared_stdlib_cache_contract'),
-    '_write_artifact_sync_payload': ('backend_cache', '_write_artifact_sync_payload'),
-    '_write_artifact_sync_state': ('backend_cache', '_write_artifact_sync_state'),
     # molt.cli.backend_daemon_config
     '_backend_daemon_enabled': ('backend_daemon_config', '_backend_daemon_enabled'),
     '_backend_daemon_enabled_cached': ('backend_daemon_config', '_backend_daemon_enabled_cached'),
@@ -269,6 +271,8 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
     '_commands': ('commands', None),
     # molt.cli.completion
     '_completion_script': ('completion', '_completion_script'),
+    # molt.cli.file_hashing
+    '_hash_source_tree_metadata': ('file_hashing', '_hash_source_tree_metadata'),
     # molt.cli.maintenance
     '_load_artifact_cleanup_module': ('maintenance', '_load_artifact_cleanup_module'),
     'clean': ('maintenance', 'clean'),
@@ -321,6 +325,16 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
     '_initialize_runtime_artifact_state': ('runtime_build', '_initialize_runtime_artifact_state'),
     '_maybe_start_native_runtime_lib_ready_async': ('runtime_build', '_maybe_start_native_runtime_lib_ready_async'),
     '_runtime_build': ('runtime_build', None),
+    # molt.cli.runtime_fingerprints
+    '_artifact_content_looks_valid': ('runtime_fingerprints', '_artifact_content_looks_valid'),
+    '_artifact_needs_rebuild': ('runtime_fingerprints', '_artifact_needs_rebuild'),
+    '_hash_runtime_file': ('runtime_fingerprints', '_hash_runtime_file'),
+    '_is_valid_static_library_artifact': ('runtime_fingerprints', '_is_valid_static_library_artifact'),
+    '_read_runtime_fingerprint': ('runtime_fingerprints', '_read_runtime_fingerprint'),
+    '_runtime_artifact_fingerprint_matches': ('runtime_fingerprints', '_runtime_artifact_fingerprint_matches'),
+    '_runtime_fingerprint': ('runtime_fingerprints', '_runtime_fingerprint'),
+    '_stored_fingerprint_matches_source_metadata': ('runtime_fingerprints', '_stored_fingerprint_matches_source_metadata'),
+    '_write_runtime_fingerprint': ('runtime_fingerprints', '_write_runtime_fingerprint'),
     # molt.cli.runtime_callable_symbols
     '_runtime_callable_symbols_digest': ('runtime_callable_symbols', '_runtime_callable_symbols_digest'),
     '_runtime_callable_symbols_file': ('runtime_callable_symbols', '_runtime_callable_symbols_file'),
@@ -503,6 +517,7 @@ from molt.cli.cache_fingerprints import (
     _cache_fingerprint,
     _cache_tooling_fingerprint,
     _frontend_semantic_tooling_fingerprint,
+    _source_tree_fingerprint_transaction,
 )
 from molt.cli.cache_keys import (
     _cache_backend_payload_ir,
@@ -697,18 +712,6 @@ from molt.cli.runtime_paths import (
     _runtime_staticlib_target_is_windows,
     _runtime_wasm_artifact_path,
     _runtime_wasm_artifact_path_cached,
-)
-from molt.cli.runtime_fingerprints import (
-    _artifact_content_looks_valid,
-    _artifact_needs_rebuild,
-    _hash_runtime_file,
-    _hash_source_tree_metadata,
-    _is_valid_static_library_artifact,
-    _read_runtime_fingerprint,
-    _runtime_artifact_fingerprint_matches,
-    _runtime_fingerprint,
-    _stored_fingerprint_matches_source_metadata,
-    _write_runtime_fingerprint,
 )
 from molt.cli.runtime_features import (
     _runtime_builtin_features_for_profile,
@@ -1001,7 +1004,7 @@ def build(
     # runtime-staticlib selector are derived from the same value. `stdlib_profile`
     # is always concrete here (resolved above), so this export is unconditional.
     env_updates["MOLT_STDLIB_PROFILE"] = stdlib_profile
-    with _scoped_environ_updates(env_updates):
+    with _scoped_environ_updates(env_updates), _source_tree_fingerprint_transaction():
         if file_path and module:
             return _fail(
                 "Use a file path or --module, not both.", json_output, command="build"

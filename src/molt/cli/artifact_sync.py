@@ -18,8 +18,8 @@ from molt.cli.atomic_io import _atomic_write_json
 # the whole native/wasm backend), so any lowering-context module that needed them
 # dragged the backend onto the frontend import path and cold-started the lowering
 # cache on unrelated backend edits. They live here instead: a leaf module that
-# imports only ``artifact_state`` and ``atomic_io``. ``backend_cache`` re-exports
-# them for its own callers, so no public import path changes.
+# imports only ``artifact_state`` and ``atomic_io``. The ``molt.cli`` facade points
+# to this leaf authority, so public imports do not route through backend_cache.
 
 _ARTIFACT_SYNC_STATE_CACHE: dict[Path, tuple[int, int, dict[str, Any] | None]] = {}
 

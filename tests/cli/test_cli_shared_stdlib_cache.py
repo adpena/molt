@@ -83,7 +83,7 @@ def _write_object_digest_sidecar(stdlib_object: Path) -> None:
     )
 
 
-def _legacy_streamed_cache_digest(
+def _payload_digest_cache_key(
     payload_ir: Mapping[str, object],
     *,
     target: str,
@@ -91,17 +91,21 @@ def _legacy_streamed_cache_digest(
     variant: str,
     schema_version: str,
 ) -> str:
-    payload = json.dumps(
-        payload_ir,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=cli._json_ir_default,
-    ).encode("utf-8")
+    payload_digest = hashlib.sha256(
+        json.dumps(
+            payload_ir,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=cli._json_ir_default,
+        ).encode("utf-8")
+    ).hexdigest()
     suffix = target_triple or target
     if variant:
         suffix = f"{suffix}:{variant}"
     return hashlib.sha256(
-        payload
+        b"payload-digest-v1"
+        + b"|"
+        + payload_digest.encode("utf-8")
         + b"|"
         + suffix.encode("utf-8")
         + b"|"
@@ -143,7 +147,7 @@ def test_shared_stdlib_cache_key_ignores_user_only_changes() -> None:
     assert key_a == key_b
 
 
-def test_shared_stdlib_cache_key_streams_legacy_payload_digest() -> None:
+def test_shared_stdlib_cache_key_uses_payload_digest_authority() -> None:
     variant = _cache_variant()
     stdlib_modules = _explicit_stdlib_modules("sys")
     ir = _ir_with_stdlib(
@@ -163,7 +167,7 @@ def test_shared_stdlib_cache_key_streams_legacy_payload_digest() -> None:
         target_triple="aarch64-apple-darwin",
         cache_variant=variant,
         compiler_fingerprint="compiler-fingerprint",
-    ) == _legacy_streamed_cache_digest(
+    ) == _payload_digest_cache_key(
         payload_ir,
         target="native-stdlib",
         target_triple="aarch64-apple-darwin",
@@ -353,6 +357,330 @@ def test_prepare_backend_cache_setup_threads_capability_config_to_stdlib_key(
     assert setup_base.stdlib_object_cache_key is not None
     assert setup_caps.stdlib_object_cache_key is not None
     assert setup_base.stdlib_object_cache_key != setup_caps.stdlib_object_cache_key
+
+
+def test_prepare_backend_cache_setup_reuses_cache_fingerprints_for_backend_keys(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = {"compiler": 0, "tooling": 0}
+    payload_digest_calls = 0
+    function_payload_digests: list[str | None] = []
+    function_tooling_fingerprints: list[str | None] = []
+    stage_timings_ms: dict[str, float] = {}
+    compiler_backend_features: list[tuple[str, ...]] = []
+    compiler_include_runtime_sources: list[object] = []
+
+    def compiler_fingerprint(**kwargs: object) -> str:
+        calls["compiler"] += 1
+        backend_features = kwargs.get("backend_features")
+        runtime_features = kwargs.get("runtime_features")
+        assert backend_features is not None
+        compiler_backend_features.append(tuple(backend_features))  # type: ignore[arg-type]
+        assert runtime_features is None
+        compiler_include_runtime_sources.append(kwargs.get("include_runtime_sources"))
+        return "compiler-fingerprint"
+
+    def unexpected_fingerprint_call() -> str:
+        raise AssertionError("backend cache setup did not reuse fingerprint inputs")
+
+    original_payload_digest = cli_backend_cache_setup._cache_payload_digest
+    original_function_cache_key = cli_backend_cache_setup._function_cache_key
+
+    def counting_payload_digest(payload_ir: dict[str, object]) -> str:
+        nonlocal payload_digest_calls
+        payload_digest_calls += 1
+        return original_payload_digest(payload_ir)
+
+    def recording_function_cache_key(*args: object, **kwargs: object) -> str:
+        payload_digest = kwargs.get("payload_digest")
+        tooling_fingerprint = kwargs.get("tooling_fingerprint")
+        function_payload_digests.append(
+            payload_digest if isinstance(payload_digest, str) else None
+        )
+        function_tooling_fingerprints.append(
+            tooling_fingerprint if isinstance(tooling_fingerprint, str) else None
+        )
+        return original_function_cache_key(*args, **kwargs)
+
+    monkeypatch.setattr(
+        cli_backend_cache_setup,
+        "_cache_fingerprint",
+        compiler_fingerprint,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli_backend_cache_setup,
+        "_cache_payload_digest",
+        counting_payload_digest,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli_backend_cache_setup,
+        "_function_cache_key",
+        recording_function_cache_key,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        CACHE_KEYS,
+        "_cache_fingerprint",
+        unexpected_fingerprint_call,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        CACHE_KEYS,
+        "_cache_tooling_fingerprint",
+        unexpected_fingerprint_call,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        BACKEND_CACHE,
+        "_cache_fingerprint",
+        unexpected_fingerprint_call,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        BACKEND_CACHE,
+        "_cache_tooling_fingerprint",
+        unexpected_fingerprint_call,
+        raising=True,
+    )
+
+    ir = _ir_with_stdlib(
+        user_ops=[{"kind": "call_internal", "s_value": "molt_init_sys"}],
+        stdlib_ops=[{"kind": "code_slot_set", "value": 73}],
+    )
+    module_graph_metadata = cli._ModuleGraphMetadata(
+        logical_source_path_by_module={},
+        entry_override_by_module={},
+        module_is_namespace_by_module={},
+        module_is_package_by_module={},
+        frontend_module_costs=None,
+        stdlib_like_by_module={"sys": True},
+    )
+
+    setup = cli_backend_cache_setup._prepare_backend_cache_setup(
+        cache_enabled=True,
+        ir=ir,
+        target="native",
+        target_triple=None,
+        profile="dev",
+        runtime_cargo_profile="dev-fast",
+        backend_cargo_profile="dev-fast",
+        emit_mode="bin",
+        is_wasm=False,
+        linked=False,
+        project_root=ROOT,
+        cache_dir=str(tmp_path / "cache"),
+        output_artifact=tmp_path / "out.o",
+        warnings=[],
+        entry_module="app",
+        module_graph_metadata=module_graph_metadata,
+        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+        stdlib_profile="micro",
+        stage_timings_ms=stage_timings_ms,
+    )
+
+    assert setup.cache_key is not None
+    assert setup.function_cache_key is not None
+    assert setup.stdlib_object_cache_key is not None
+    assert calls == {"compiler": 1, "tooling": 0}
+    assert compiler_backend_features == [("native-backend",)]
+    assert compiler_include_runtime_sources == [False]
+    assert payload_digest_calls == 1
+    assert function_payload_digests
+    assert function_payload_digests[0] is not None
+    assert function_tooling_fingerprints == [
+        CACHE_KEYS._BACKEND_IR_PAYLOAD_TOOLING_FINGERPRINT
+    ]
+    assert {
+        "backend_cache_stdlib_symbols",
+        "backend_cache_backend_binary_identity",
+        "backend_cache_capability_config_digest",
+        "backend_cache_variant",
+        "backend_cache_payload_digest",
+        "backend_cache_fingerprint_inputs",
+        "backend_cache_module_key",
+        "backend_cache_function_key",
+        "backend_cache_root",
+        "backend_cache_stdlib_key_manifest",
+        "backend_cache_candidate_paths",
+        "backend_cache_stdlib_contract",
+        "backend_cache_try_candidates",
+    }.issubset(stage_timings_ms)
+    assert all(value >= 0.0 for value in stage_timings_ms.values())
+
+
+def test_prepare_backend_cache_setup_caches_stdlib_key_material(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    build_state_root = tmp_path / "build-state"
+    monkeypatch.setattr(
+        cli_backend_cache_setup,
+        "_build_state_root",
+        lambda _project_root: build_state_root,
+        raising=True,
+    )
+    key_calls = 0
+    manifest_calls = 0
+    original_key = cli_backend_cache_setup._shared_stdlib_cache_key
+    original_manifest = cli_backend_cache_setup._shared_stdlib_manifest
+
+    def counting_key(*args: object, **kwargs: object) -> str:
+        nonlocal key_calls
+        key_calls += 1
+        return original_key(*args, **kwargs)
+
+    def counting_manifest(*args: object, **kwargs: object) -> str | None:
+        nonlocal manifest_calls
+        manifest_calls += 1
+        return original_manifest(*args, **kwargs)
+
+    monkeypatch.setattr(
+        cli_backend_cache_setup,
+        "_shared_stdlib_cache_key",
+        counting_key,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli_backend_cache_setup,
+        "_shared_stdlib_manifest",
+        counting_manifest,
+        raising=True,
+    )
+    ir = _ir_with_stdlib(
+        user_ops=[{"kind": "call_internal", "s_value": "molt_init_sys"}],
+        stdlib_ops=[{"kind": "code_slot_set", "value": 73}],
+    )
+    module_graph_metadata = cli._ModuleGraphMetadata(
+        logical_source_path_by_module={},
+        entry_override_by_module={},
+        module_is_namespace_by_module={},
+        module_is_package_by_module={},
+        frontend_module_costs=None,
+        stdlib_like_by_module={"sys": True},
+    )
+    common = dict(
+        cache_enabled=True,
+        ir=ir,
+        target="native",
+        target_triple=None,
+        profile="dev",
+        runtime_cargo_profile="dev-fast",
+        backend_cargo_profile="dev-fast",
+        emit_mode="bin",
+        is_wasm=False,
+        linked=False,
+        project_root=ROOT,
+        cache_dir=str(tmp_path / "cache"),
+        output_artifact=tmp_path / "out.o",
+        warnings=[],
+        entry_module="app",
+        module_graph_metadata=module_graph_metadata,
+        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+        stdlib_profile="micro",
+    )
+
+    first_timings: dict[str, float] = {}
+    first = cli_backend_cache_setup._prepare_backend_cache_setup(
+        stage_timings_ms=first_timings,
+        **common,
+    )
+    second_timings: dict[str, float] = {}
+    second = cli_backend_cache_setup._prepare_backend_cache_setup(
+        stage_timings_ms=second_timings,
+        **common,
+    )
+
+    assert first.stdlib_object_cache_key == second.stdlib_object_cache_key
+    assert first.stdlib_object_manifest == second.stdlib_object_manifest
+    assert key_calls == 1
+    assert manifest_calls == 1
+    assert list(
+        (build_state_root / "backend_cache_stdlib_key_material").rglob("*.json")
+    )
+    assert "backend_cache_stdlib_key_manifest" in second_timings
+
+
+def test_prepare_backend_cache_setup_uses_verified_backend_compiler_fingerprint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_fingerprint_call(*args: object, **kwargs: object) -> str:
+        del args, kwargs
+        raise AssertionError("verified backend fingerprint should be reused")
+
+    monkeypatch.setattr(
+        cli_backend_cache_setup,
+        "_cache_fingerprint",
+        unexpected_fingerprint_call,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        CACHE_KEYS,
+        "_cache_fingerprint",
+        unexpected_fingerprint_call,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        BACKEND_CACHE,
+        "_cache_fingerprint",
+        unexpected_fingerprint_call,
+        raising=True,
+    )
+
+    ir = _ir_with_stdlib(
+        user_ops=[{"kind": "call_internal", "s_value": "molt_init_sys"}],
+        stdlib_ops=[{"kind": "code_slot_set", "value": 73}],
+    )
+    module_graph_metadata = cli._ModuleGraphMetadata(
+        logical_source_path_by_module={},
+        entry_override_by_module={},
+        module_is_namespace_by_module={},
+        module_is_package_by_module={},
+        frontend_module_costs=None,
+        stdlib_like_by_module={"sys": True},
+    )
+
+    def prepare(*, backend_compiler_fingerprint: str, output_name: str):
+        return cli_backend_cache_setup._prepare_backend_cache_setup(
+            cache_enabled=True,
+            ir=ir,
+            target="native",
+            target_triple=None,
+            profile="dev",
+            runtime_cargo_profile="dev-fast",
+            backend_cargo_profile="dev-fast",
+            emit_mode="bin",
+            is_wasm=False,
+            linked=False,
+            project_root=ROOT,
+            cache_dir=str(tmp_path / "cache"),
+            output_artifact=tmp_path / output_name,
+            warnings=[],
+            entry_module="app",
+            module_graph_metadata=module_graph_metadata,
+            target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+            stdlib_profile="micro",
+            backend_compiler_fingerprint=backend_compiler_fingerprint,
+        )
+
+    setup_a = prepare(
+        backend_compiler_fingerprint="verified-backend-compiler-a",
+        output_name="a.o",
+    )
+    setup_b = prepare(
+        backend_compiler_fingerprint="verified-backend-compiler-b",
+        output_name="b.o",
+    )
+
+    assert setup_a.cache_key is not None
+    assert setup_b.cache_key is not None
+    assert setup_a.stdlib_object_cache_key is not None
+    assert setup_b.stdlib_object_cache_key is not None
+    assert setup_a.cache_key != setup_b.cache_key
+    assert setup_a.stdlib_object_cache_key != setup_b.stdlib_object_cache_key
 
 
 def test_prepare_backend_cache_setup_threads_ambient_capability_env_to_stdlib_key(
@@ -925,6 +1253,8 @@ def test_ensure_backend_binary_preserves_repo_local_shared_stdlib_cache(
             "build",
             "--package",
             "molt-backend",
+            "--bin",
+            "molt-backend",
             "--profile",
             "dev-fast",
             "--no-default-features",
@@ -995,6 +1325,75 @@ def test_validate_shared_stdlib_cache_contract_preserves_matching_key_despite_ne
     assert cli._stdlib_object_count_sidecar_path(stdlib_object).exists()
     assert cli._stdlib_object_manifest_sidecar_path(stdlib_object).exists()
     assert cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).exists()
+
+
+def test_validate_shared_stdlib_cache_contract_reuses_symbol_contract_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stdlib_object = tmp_path / ".molt_cache" / "stdlib_shared_active.o"
+    stdlib_object.parent.mkdir(parents=True)
+    stdlib_object.write_bytes(b"stdlib")
+    cli._stdlib_object_key_sidecar_path(stdlib_object).write_text(
+        "active-key\n", encoding="utf-8"
+    )
+    cli._stdlib_object_manifest_sidecar_path(stdlib_object).write_text(
+        _manifest("active-key") + "\n", encoding="utf-8"
+    )
+    cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).write_text(
+        _partition_manifest("partition-a") + "\n", encoding="utf-8"
+    )
+    _write_object_digest_sidecar(stdlib_object)
+    calls = 0
+
+    def fake_symbol_closure_issue(*args: object, **kwargs: object) -> None:
+        nonlocal calls
+        del args, kwargs
+        calls += 1
+        return None
+
+    monkeypatch.setattr(
+        BACKEND_CACHE,
+        "_shared_stdlib_native_symbol_closure_issue",
+        fake_symbol_closure_issue,
+    )
+
+    assert cli._validate_shared_stdlib_cache_contract(
+        stdlib_object,
+        tmp_path,
+        expected_key="active-key",
+        expected_manifest=_manifest("active-key"),
+        stdlib_module_symbols={"sys"},
+    )
+    assert calls == 1
+    assert BACKEND_CACHE._stdlib_object_symbol_contract_sidecar_path(
+        stdlib_object
+    ).exists()
+
+    stage_timings_ms: dict[str, float] = {}
+    assert cli._validate_shared_stdlib_cache_contract(
+        stdlib_object,
+        tmp_path,
+        expected_key="active-key",
+        expected_manifest=_manifest("active-key"),
+        stdlib_module_symbols={"sys"},
+        stage_timings_ms=stage_timings_ms,
+    )
+    assert calls == 1
+    assert "backend_cache_stdlib_contract_symbol_token" in stage_timings_ms
+    assert "backend_cache_stdlib_contract_symbols" not in stage_timings_ms
+
+    cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).write_text(
+        _partition_manifest("partition-b") + "\n", encoding="utf-8"
+    )
+    assert cli._validate_shared_stdlib_cache_contract(
+        stdlib_object,
+        tmp_path,
+        expected_key="active-key",
+        expected_manifest=_manifest("active-key"),
+        stdlib_module_symbols={"sys"},
+    )
+    assert calls == 2
 
 
 def test_validate_shared_stdlib_cache_contract_preserves_matching_key_despite_target_runtime_alias(
@@ -1363,6 +1762,250 @@ def test_stage_shared_stdlib_object_for_link_requires_matching_source_key_sideca
     )
 
 
+def test_try_cached_backend_candidates_reuses_prevalidated_stdlib_contract_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = tmp_path / "cache" / "module.o"
+    candidate.parent.mkdir(parents=True)
+    candidate.write_bytes(b"module-object")
+    stdlib_object = tmp_path / "cache" / "stdlib_shared_test.o"
+    stdlib_object.write_bytes(b"stdlib-object")
+    output_artifact = tmp_path / "dist" / "out.o"
+    warnings: list[str] = []
+
+    monkeypatch.setattr(
+        BACKEND_CACHE,
+        "_is_valid_cached_backend_artifact",
+        lambda path, *, is_wasm: True,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        BACKEND_CACHE,
+        "_native_object_has_unresolved_module_chunks",
+        lambda candidate, stdlib_object_path: False,
+        raising=True,
+    )
+
+    token = ("contract-digest", ())
+
+    def token_matches(*args: object, **kwargs: object) -> bool:
+        del args, kwargs
+        return True
+
+    def unexpected_stdlib_revalidation(*args: object, **kwargs: object) -> bool:
+        del args, kwargs
+        raise AssertionError("prevalidated stdlib contract was revalidated")
+
+    monkeypatch.setattr(
+        BACKEND_CACHE,
+        "_shared_stdlib_cache_validation_token_matches",
+        token_matches,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        BACKEND_CACHE,
+        "_shared_stdlib_cache_matches_key_locked",
+        unexpected_stdlib_revalidation,
+        raising=True,
+    )
+
+    cache_hit, tier = BACKEND_CACHE._try_cached_backend_candidates(
+        project_root=tmp_path,
+        cache_candidates=(("module", candidate),),
+        output_artifact=output_artifact,
+        is_wasm=False,
+        cache_key="module-key",
+        function_cache_key=None,
+        cache_path=candidate,
+        stdlib_object_path=stdlib_object,
+        stdlib_object_cache_key="stdlib-key",
+        stdlib_object_manifest=_manifest("stdlib-key"),
+        warnings=warnings,
+        stdlib_contract_validation_token=token,
+    )
+
+    assert (cache_hit, tier) == (True, "module")
+    assert output_artifact.read_bytes() == b"module-object"
+    assert warnings == []
+
+
+def test_try_cached_backend_candidates_reuses_synced_output_without_candidate_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_artifact = tmp_path / "dist" / "out.o"
+    output_artifact.parent.mkdir(parents=True)
+    output_artifact.write_bytes(b"already-synced")
+    state_path = BACKEND_CACHE._artifact_sync_state_path(tmp_path, output_artifact)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    BACKEND_CACHE._write_artifact_sync_state(
+        state_path,
+        source_key="module-key",
+        tier="module",
+        artifact=output_artifact,
+    )
+    missing_candidate = tmp_path / "cache" / "missing-module.o"
+    warnings: list[str] = []
+    stage_timings_ms: dict[str, float] = {}
+
+    def unexpected_candidate_materialize(*args: object, **kwargs: object) -> bool:
+        del args, kwargs
+        raise AssertionError("synced output should not probe or materialize candidate")
+
+    monkeypatch.setattr(
+        BACKEND_CACHE,
+        "_materialize_cached_backend_artifact",
+        unexpected_candidate_materialize,
+        raising=True,
+    )
+
+    cache_hit, tier = BACKEND_CACHE._try_cached_backend_candidates(
+        project_root=tmp_path,
+        cache_candidates=(("module", missing_candidate),),
+        output_artifact=output_artifact,
+        is_wasm=False,
+        cache_key="module-key",
+        function_cache_key=None,
+        cache_path=missing_candidate,
+        stdlib_object_path=None,
+        stdlib_object_cache_key=None,
+        warnings=warnings,
+        stage_timings_ms=stage_timings_ms,
+    )
+
+    assert (cache_hit, tier) == (True, "module")
+    assert warnings == []
+    assert "backend_cache_try_synced_output" in stage_timings_ms
+    assert "backend_cache_try_candidate_exists" not in stage_timings_ms
+
+
+def test_try_cached_backend_candidates_rejects_synced_output_with_bad_stdlib_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_artifact = tmp_path / "dist" / "out.o"
+    output_artifact.parent.mkdir(parents=True)
+    output_artifact.write_bytes(b"already-synced")
+    state_path = BACKEND_CACHE._artifact_sync_state_path(tmp_path, output_artifact)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    BACKEND_CACHE._write_artifact_sync_state(
+        state_path,
+        source_key="module-key|stdlib:stdlib-key",
+        tier="module",
+        artifact=output_artifact,
+    )
+    stdlib_object = tmp_path / "cache" / "stdlib_shared_current.o"
+    stdlib_object.parent.mkdir(parents=True)
+    stdlib_object.write_bytes(b"stdlib")
+    warnings: list[str] = []
+    stage_timings_ms: dict[str, float] = {}
+
+    monkeypatch.setattr(
+        BACKEND_CACHE,
+        "_shared_stdlib_cache_matches_key_locked",
+        lambda *args, **kwargs: False,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        BACKEND_CACHE,
+        "_shared_stdlib_cache_mismatch_detail",
+        lambda *args, **kwargs: "bad-contract",
+        raising=True,
+    )
+
+    cache_hit, tier = BACKEND_CACHE._try_cached_backend_candidates(
+        project_root=tmp_path,
+        cache_candidates=(("module", tmp_path / "cache" / "missing-module.o"),),
+        output_artifact=output_artifact,
+        is_wasm=False,
+        cache_key="module-key",
+        function_cache_key=None,
+        cache_path=tmp_path / "cache" / "missing-module.o",
+        stdlib_object_path=stdlib_object,
+        stdlib_object_cache_key="stdlib-key",
+        stdlib_object_manifest=_manifest("stdlib-key"),
+        warnings=warnings,
+        stage_timings_ms=stage_timings_ms,
+    )
+
+    assert (cache_hit, tier) == (False, None)
+    assert warnings == [
+        "Ignoring shared stdlib cache with mismatched contract: bad-contract"
+    ]
+    assert "backend_cache_try_synced_output" not in stage_timings_ms
+
+
+def test_try_cached_backend_candidates_revalidates_stale_stdlib_contract_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = tmp_path / "cache" / "module.o"
+    candidate.parent.mkdir(parents=True)
+    candidate.write_bytes(b"module-object")
+    stdlib_object = tmp_path / "cache" / "stdlib_shared_test.o"
+    stdlib_object.write_bytes(b"stdlib-object")
+    output_artifact = tmp_path / "dist" / "out.o"
+    warnings: list[str] = []
+    calls = {"revalidate": 0}
+
+    monkeypatch.setattr(
+        BACKEND_CACHE,
+        "_is_valid_cached_backend_artifact",
+        lambda path, *, is_wasm: True,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        BACKEND_CACHE,
+        "_native_object_has_unresolved_module_chunks",
+        lambda candidate, stdlib_object_path: False,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        BACKEND_CACHE,
+        "_shared_stdlib_cache_validation_token_matches",
+        lambda *args, **kwargs: False,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        BACKEND_CACHE,
+        "_shared_stdlib_cache_validation_token",
+        lambda *args, **kwargs: None,
+        raising=True,
+    )
+
+    def revalidate(*args: object, **kwargs: object) -> bool:
+        del args, kwargs
+        calls["revalidate"] += 1
+        return True
+
+    monkeypatch.setattr(
+        BACKEND_CACHE,
+        "_shared_stdlib_cache_matches_key_locked",
+        revalidate,
+        raising=True,
+    )
+
+    cache_hit, tier = BACKEND_CACHE._try_cached_backend_candidates(
+        project_root=tmp_path,
+        cache_candidates=(("module", candidate),),
+        output_artifact=output_artifact,
+        is_wasm=False,
+        cache_key="module-key",
+        function_cache_key=None,
+        cache_path=candidate,
+        stdlib_object_path=stdlib_object,
+        stdlib_object_cache_key="stdlib-key",
+        stdlib_object_manifest=_manifest("stdlib-key"),
+        warnings=warnings,
+        stdlib_contract_validation_token=("stale-contract-digest", ()),
+    )
+
+    assert (cache_hit, tier) == (True, "module")
+    assert calls == {"revalidate": 1}
+    assert warnings == []
+
+
 def test_native_object_symbol_sets_use_nm_candidate_ladder(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1419,6 +2062,116 @@ def test_native_object_symbol_sets_accept_empty_objects(
     )
 
     assert cli._native_object_global_symbol_sets(obj) == (set(), set())
+
+
+def test_native_object_symbol_sets_reuse_stat_keyed_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    obj = tmp_path / "module.o"
+    obj.write_bytes(b"coff")
+    calls = 0
+
+    def fake_run_completed_command(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        del kwargs
+        calls += 1
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            "00000000 T hello__molt_module_chunk_1\n"
+            "         U molt_runtime_symbol\n",
+            "",
+        )
+
+    monkeypatch.setattr(BACKEND_CACHE, "_nm_candidate_binaries", lambda: ["llvm-nm"])
+    monkeypatch.setattr(
+        BACKEND_CACHE,
+        "_run_completed_command",
+        fake_run_completed_command,
+    )
+
+    assert cli._is_valid_cached_backend_artifact(obj, is_wasm=False)
+    assert not cli._native_object_has_unresolved_module_chunks(obj, None)
+    assert calls == 1
+
+
+def test_native_object_symbol_sets_reuse_persistent_symbol_facts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    obj = tmp_path / "module.o"
+    obj.write_bytes(b"coff")
+    calls = 0
+
+    def fake_run_completed_command(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        del kwargs
+        calls += 1
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            "00000000 T hello__molt_module_chunk_1\n"
+            "         U molt_runtime_symbol\n",
+            "",
+        )
+
+    monkeypatch.setattr(BACKEND_CACHE, "_nm_candidate_binaries", lambda: ["llvm-nm"])
+    monkeypatch.setattr(
+        BACKEND_CACHE,
+        "_run_completed_command",
+        fake_run_completed_command,
+    )
+
+    assert cli._native_object_global_symbol_sets(obj) is not None
+    assert calls == 1
+    assert BACKEND_CACHE._native_object_symbol_facts_sidecar_path(obj).exists()
+
+    BACKEND_CACHE._NATIVE_OBJECT_SYMBOL_SETS_CACHE.clear()
+    assert cli._native_object_global_symbol_sets(obj) is not None
+    assert calls == 1
+
+    obj.write_bytes(b"coff-changed")
+    BACKEND_CACHE._NATIVE_OBJECT_SYMBOL_SETS_CACHE.clear()
+    assert cli._native_object_global_symbol_sets(obj) is not None
+    assert calls == 2
+
+
+def test_stage_backend_output_warms_native_cache_symbol_facts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend_output = tmp_path / "backend.o"
+    backend_output.write_bytes(b"object")
+    output_artifact = tmp_path / "out" / "output.o"
+    cache_path = tmp_path / "cache" / "module.o"
+    function_cache_path = tmp_path / "cache" / "function.o"
+    warmed: list[Path] = []
+
+    monkeypatch.setattr(
+        BACKEND_CACHE,
+        "_native_object_global_symbol_sets",
+        lambda path: warmed.append(path) or (set(), set()),
+    )
+
+    err = BACKEND_CACHE._stage_backend_output_and_caches(
+        tmp_path,
+        backend_output,
+        output_artifact,
+        cache_path=cache_path,
+        cache_key="module-key",
+        stdlib_object_cache_key=None,
+        function_cache_path=function_cache_path,
+        warnings=[],
+    )
+
+    assert err is None
+    assert output_artifact.exists()
+    assert warmed == [cache_path, function_cache_path]
 
 
 def test_native_symbol_normalization_is_platform_explicit(

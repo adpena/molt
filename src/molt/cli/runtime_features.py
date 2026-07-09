@@ -9,6 +9,7 @@ from molt.cli.capability_spec import _dedupe_preserve_order
 from molt.cli.compiler_metadata import _compiler_root
 from molt.cli.config_resolution import (
     AUTO_STDLIB_PROFILE,
+    DEFAULT_RUNTIME_STDLIB_PROFILE,
     DEFAULT_STDLIB_PROFILE,
     RUNTIME_STDLIB_PROFILE_TIERS,
     _coerce_bool,
@@ -268,6 +269,39 @@ def _runtime_builtin_features_for_profile(
     )
     return list(_ALL_BUILTIN_FEATURES) + sorted(
         ladder.difference(_ALL_BUILTIN_FEATURES)
+    )
+
+
+def runtime_fingerprint_features_for_profile(
+    stdlib_profile: str | None,
+    *,
+    target_triple: str | None,
+    extra_runtime_features: Collection[str] | None = None,
+) -> tuple[str, ...]:
+    runtime_features = tuple(
+        _dedupe_preserve_order(
+            list(_runtime_cargo_features(target_triple))
+            + list(extra_runtime_features or ())
+        )
+    )
+    builtin_features = _runtime_builtin_features_for_profile(
+        stdlib_profile,
+        target_triple=target_triple,
+    )
+    concrete_stdlib_profile = stdlib_profile or DEFAULT_RUNTIME_STDLIB_PROFILE
+    concrete_stdlib_feature = runtime_cargo_feature_for_profile(concrete_stdlib_profile)
+    if concrete_stdlib_profile == "full":
+        return tuple(
+            _dedupe_preserve_order(
+                list(runtime_features) + [concrete_stdlib_feature, "default-features"]
+            )
+        )
+    return tuple(
+        _dedupe_preserve_order(
+            list(runtime_features)
+            + sorted(builtin_features)
+            + [concrete_stdlib_feature, "no-default-features"]
+        )
     )
 
 

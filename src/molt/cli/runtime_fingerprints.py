@@ -7,11 +7,37 @@ import os
 from pathlib import Path
 from typing import Any, cast
 
+from molt.cli.cargo_source_closure import _cargo_crate_source_closure
 from molt.cli.capability_spec import _dedupe_preserve_order
-from molt.cli.compiler_metadata import _rustc_version
-from molt.cli.file_hashing import _sha256_file
+from molt.cli.compiler_metadata import _compiler_clean_source_state, _rustc_version
+from molt.cli.file_hashing import (
+    _hash_source_tree_file as _hash_runtime_file,
+    _hash_source_tree_metadata,
+    _hash_source_tree_paths,
+    _sha256_file,
+    _source_fingerprint_files,
+)
 from molt.cli.json_cache import _read_cached_json_object, _write_cached_json_object
 from molt.wasm_artifact import is_valid_wasm_binary
+
+
+def _runtime_artifact_identity(artifact: Path) -> dict[str, object] | None:
+    try:
+        resolved = artifact.resolve()
+    except OSError:
+        resolved = artifact
+    try:
+        stat_result = artifact.stat()
+    except OSError:
+        return None
+    return {
+        "path": os.fspath(resolved),
+        "size": int(stat_result.st_size),
+        "mtime_ns": int(stat_result.st_mtime_ns),
+        "ctime_ns": int(getattr(stat_result, "st_ctime_ns", 0)),
+        "dev": int(getattr(stat_result, "st_dev", 0)),
+        "ino": int(getattr(stat_result, "st_ino", 0)),
+    }
 
 
 def _read_runtime_fingerprint(path: Path) -> dict[str, Any] | None:
@@ -36,10 +62,12 @@ def _read_runtime_fingerprint(path: Path) -> dict[str, Any] | None:
     rustc_value = data.get("rustc")
     inputs_digest = data.get("inputs_digest")
     meta_digest = data.get("meta_digest")
+    source_state = data.get("source_state")
     if (
         (rustc_value is None or isinstance(rustc_value, str))
         and (inputs_digest is None or isinstance(inputs_digest, str))
         and (meta_digest is None or isinstance(meta_digest, str))
+        and (source_state is None or isinstance(source_state, dict))
     ):
         return data
     if rustc_value is not None and not isinstance(rustc_value, str):
@@ -48,17 +76,20 @@ def _read_runtime_fingerprint(path: Path) -> dict[str, Any] | None:
         inputs_digest = None
     if meta_digest is not None and not isinstance(meta_digest, str):
         meta_digest = None
+    if source_state is not None and not isinstance(source_state, dict):
+        source_state = None
     return {
         "hash": hash_value,
         "rustc": rustc_value,
         "inputs_digest": inputs_digest,
         "meta_digest": meta_digest,
+        "source_state": source_state,
     }
 
 
 def _write_runtime_fingerprint(
     path: Path,
-    fingerprint: dict[str, str | None],
+    fingerprint: dict[str, Any],
     *,
     artifact: Path | None = None,
 ) -> None:
@@ -69,81 +100,43 @@ def _write_runtime_fingerprint(
         "inputs_digest": fingerprint.get("inputs_digest"),
         "meta_digest": fingerprint.get("meta_digest"),
     }
+    source_state = fingerprint.get("source_state")
+    if isinstance(source_state, dict):
+        payload["source_state"] = source_state
     if artifact is not None:
         payload["artifact_sha256"] = _sha256_file(artifact)
+        artifact_identity = _runtime_artifact_identity(artifact)
+        if artifact_identity is not None:
+            payload["artifact_identity"] = artifact_identity
     _write_cached_json_object(path, payload)
 
 
-def _hash_runtime_file(path: Path, root: Path, hasher: Any) -> None:
-    try:
-        rel_path = path.relative_to(root)
-        rel_bytes = str(rel_path).encode("utf-8")
-    except ValueError:
-        rel_bytes = str(path).encode("utf-8")
-    hasher.update(rel_bytes)
-    hasher.update(b"\0")
-    with path.open("rb") as handle:
-        while True:
-            chunk = handle.read(65536)
-            if not chunk:
-                break
-            hasher.update(chunk)
-    hasher.update(b"\0")
-
-
-_SOURCE_FINGERPRINT_IGNORED_DIRS = frozenset({"__pycache__"})
-_SOURCE_FINGERPRINT_IGNORED_SUFFIXES = frozenset({".pyc", ".pyo"})
-
-
-def _source_fingerprint_should_skip(path: Path) -> bool:
-    return (
-        any(part in _SOURCE_FINGERPRINT_IGNORED_DIRS for part in path.parts)
-        or path.suffix in _SOURCE_FINGERPRINT_IGNORED_SUFFIXES
+def _refresh_runtime_fingerprint_metadata(
+    path: Path,
+    fingerprint: dict[str, Any],
+) -> None:
+    payload = _read_cached_json_object(path) or {}
+    payload.update(
+        {
+            "version": 2,
+            "hash": fingerprint.get("hash"),
+            "rustc": fingerprint.get("rustc"),
+            "inputs_digest": fingerprint.get("inputs_digest"),
+            "meta_digest": fingerprint.get("meta_digest"),
+        }
     )
+    source_state = fingerprint.get("source_state")
+    if isinstance(source_state, dict):
+        payload["source_state"] = source_state
+    else:
+        payload.pop("source_state", None)
+    _write_cached_json_object(path, payload)
 
 
-def _source_fingerprint_files(path: Path) -> list[Path]:
-    if path.is_dir():
-        return [
-            item
-            for item in sorted(path.rglob("*"), key=lambda p: str(p))
-            if item.is_file() and not _source_fingerprint_should_skip(item)
-        ]
-    if path.exists() and path.is_file() and not _source_fingerprint_should_skip(path):
-        return [path]
-    return []
-
-
-def _hash_source_tree_metadata(
-    paths: list[Path],
-    root: Path,
-) -> tuple[str, int] | None:
-    hasher = hashlib.sha256()
-    file_count = 0
-    try:
-        for path in sorted(paths, key=lambda p: str(p)):
-            for item in _source_fingerprint_files(path):
-                try:
-                    stat = item.stat()
-                except OSError:
-                    return None
-                try:
-                    rel_path = item.relative_to(root)
-                    rel_text = str(rel_path)
-                except ValueError:
-                    rel_text = str(item)
-                hasher.update(rel_text.encode("utf-8"))
-                hasher.update(b"\0")
-                hasher.update(str(stat.st_size).encode("utf-8"))
-                hasher.update(b"\0")
-                hasher.update(str(stat.st_mtime_ns).encode("utf-8"))
-                hasher.update(b"\0")
-                hasher.update(str(stat.st_ctime_ns).encode("utf-8"))
-                hasher.update(b"\0")
-                file_count += 1
-    except OSError:
-        return None
-    return hasher.hexdigest(), file_count
+_RUNTIME_FACADE_CRATE = Path("runtime/molt-runtime")
+_RUNTIME_SOURCE_FEATURE_MARKERS = frozenset(
+    {"default-features", "no-default-features"}
+)
 
 
 def _stored_fingerprint_matches_source_metadata(
@@ -170,6 +163,42 @@ def _stored_fingerprint_matches_source_metadata(
     )
 
 
+def _stored_fingerprint_matches_clean_source_state(
+    stored_fingerprint: dict[str, Any] | None,
+    *,
+    source_state: dict[str, str | int] | None,
+    rustc: str | None,
+    meta_digest: str | None,
+) -> bool:
+    if stored_fingerprint is None or source_state is None:
+        return False
+    if stored_fingerprint.get("source_state") != source_state:
+        return False
+    if meta_digest is not None:
+        stored_meta = stored_fingerprint.get("meta_digest")
+        if stored_meta is None or stored_meta != meta_digest:
+            return False
+    if rustc:
+        stored_rustc = stored_fingerprint.get("rustc")
+        if stored_rustc is None or stored_rustc != rustc:
+            return False
+    return isinstance(stored_fingerprint.get("hash"), str) and bool(
+        stored_fingerprint.get("hash")
+    )
+
+
+def _runtime_fingerprint_metadata_needs_refresh(
+    stored_fingerprint: dict[str, Any] | None,
+    fingerprint: dict[str, Any] | None,
+) -> bool:
+    if stored_fingerprint is None or fingerprint is None:
+        return False
+    for key in ("hash", "rustc", "inputs_digest", "meta_digest", "source_state"):
+        if stored_fingerprint.get(key) != fingerprint.get(key):
+            return True
+    return False
+
+
 def _runtime_fingerprint(
     project_root: Path,
     *,
@@ -178,15 +207,30 @@ def _runtime_fingerprint(
     rustflags: str,
     runtime_features: tuple[str, ...] = (),
     stored_fingerprint: dict[str, Any] | None = None,
-) -> dict[str, str | None] | None:
+) -> dict[str, Any] | None:
     feature_list = tuple(_dedupe_preserve_order(sorted(runtime_features)))
     meta = f"profile:{cargo_profile}\ntarget:{target_triple or 'native'}\n"
     meta += "build-schema:runtime-feature-profile-v3\n"
     meta += f"rustflags:{rustflags}\n"
     meta += f"features:{','.join(feature_list)}\n"
     meta_digest = hashlib.sha256(meta.encode("utf-8")).hexdigest()
-    source_paths = _runtime_source_paths(project_root)
     rustc_info = _rustc_version()
+    source_state = _compiler_clean_source_state(project_root)
+    if _stored_fingerprint_matches_clean_source_state(
+        stored_fingerprint,
+        source_state=source_state,
+        rustc=rustc_info,
+        meta_digest=meta_digest,
+    ):
+        assert stored_fingerprint is not None
+        return {
+            "hash": cast(str, stored_fingerprint.get("hash")),
+            "rustc": rustc_info,
+            "inputs_digest": stored_fingerprint.get("inputs_digest"),
+            "meta_digest": meta_digest,
+            "source_state": source_state,
+        }
+    source_paths = _runtime_source_paths(project_root, runtime_features=feature_list)
     inputs_meta = _hash_source_tree_metadata(source_paths, project_root)
     inputs_digest = inputs_meta[0] if inputs_meta is not None else None
     if _stored_fingerprint_matches_source_metadata(
@@ -201,18 +245,13 @@ def _runtime_fingerprint(
             "rustc": rustc_info,
             "inputs_digest": inputs_digest,
             "meta_digest": meta_digest,
+            "source_state": source_state,
         }
 
     hasher = hashlib.sha256()
     hasher.update(meta.encode("utf-8"))
     try:
-        for path in sorted(source_paths, key=lambda p: str(p)):
-            if path.is_dir():
-                for item in sorted(path.rglob("*"), key=lambda p: str(p)):
-                    if item.is_file():
-                        _hash_runtime_file(item, project_root, hasher)
-            elif path.exists():
-                _hash_runtime_file(path, project_root, hasher)
+        _hash_source_tree_paths(source_paths, project_root, hasher)
     except OSError:
         return None
     return {
@@ -220,54 +259,72 @@ def _runtime_fingerprint(
         "rustc": rustc_info,
         "inputs_digest": inputs_digest,
         "meta_digest": meta_digest,
+        "source_state": source_state,
     }
 
 
-@functools.lru_cache(maxsize=128)
-def _runtime_source_paths_cached(project_root_str: str) -> tuple[Path, ...]:
-    project_root = Path(project_root_str)
+def _runtime_manifest_cache_stamp(project_root: Path) -> str:
     runtime_root = project_root / "runtime"
-    paths: list[Path] = [
-        project_root / "runtime/molt-runtime/src",
-        project_root / "runtime/molt-runtime/Cargo.toml",
-        project_root / "runtime/molt-runtime/build.rs",
-        project_root / "runtime/build_support",
-        project_root / "runtime/molt-cpython-abi/src",
-        project_root / "runtime/molt-cpython-abi/shims",
-        project_root / "runtime/molt-cpython-abi/Cargo.toml",
-        project_root / "runtime/molt-cpython-abi/build.rs",
-        project_root / "runtime/molt-obj-model/src",
-        project_root / "runtime/molt-obj-model/Cargo.toml",
-        project_root / "runtime/molt-obj-model/build.rs",
+    manifests = [
+        project_root / "Cargo.toml",
+        project_root / "Cargo.lock",
+        runtime_root / "Cargo.toml",
+        runtime_root / "Cargo.lock",
     ]
-    for crate_dir in sorted(runtime_root.glob("molt-runtime-*")):
-        paths.extend(
-            (
-                crate_dir / "src",
-                crate_dir / "Cargo.toml",
-                crate_dir / "build.rs",
-            )
-        )
-    paths.extend(
-        (
-            project_root / "runtime/Cargo.toml",
-            project_root / "runtime/Cargo.lock",
-            project_root / "Cargo.toml",
-            project_root / "Cargo.lock",
+    manifests.extend(sorted(runtime_root.glob("*/Cargo.toml")))
+    metadata = _hash_source_tree_metadata(manifests, project_root)
+    return metadata[0] if metadata is not None else "metadata-unavailable"
+
+
+def _runtime_source_features(runtime_features: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            {
+                feature
+                for feature in runtime_features
+                if feature and feature not in _RUNTIME_SOURCE_FEATURE_MARKERS
+            }
         )
     )
-    deduped: list[Path] = []
-    seen: set[Path] = set()
-    for path in paths:
-        if path in seen:
-            continue
-        seen.add(path)
-        deduped.append(path)
-    return tuple(deduped)
 
 
-def _runtime_source_paths(project_root: Path) -> list[Path]:
-    return list(_runtime_source_paths_cached(os.fspath(project_root)))
+@functools.lru_cache(maxsize=256)
+def _runtime_source_paths_cached(
+    project_root_str: str,
+    runtime_features: tuple[str, ...],
+    manifest_cache_stamp: str,
+) -> tuple[Path, ...]:
+    del manifest_cache_stamp
+    project_root = Path(project_root_str)
+    return tuple(
+        _cargo_crate_source_closure(
+            project_root=project_root,
+            crate_root=project_root / _RUNTIME_FACADE_CRATE,
+            crate_features=runtime_features,
+            extra_source_paths=(
+                project_root / "Cargo.toml",
+                project_root / "Cargo.lock",
+                project_root / "runtime/Cargo.toml",
+                project_root / "runtime/Cargo.lock",
+                project_root / "runtime/build_support",
+                project_root / "runtime/molt-cpython-abi/shims",
+            ),
+        )
+    )
+
+
+def _runtime_source_paths(
+    project_root: Path,
+    runtime_features: tuple[str, ...] = (),
+) -> list[Path]:
+    normalized_features = _runtime_source_features(runtime_features)
+    return list(
+        _runtime_source_paths_cached(
+            os.fspath(project_root),
+            normalized_features,
+            _runtime_manifest_cache_stamp(project_root),
+        )
+    )
 
 
 def _artifact_needs_rebuild(
@@ -314,6 +371,11 @@ def _runtime_artifact_fingerprint_matches(
     artifact_digest = stored_fingerprint.get("artifact_sha256")
     if not isinstance(artifact_digest, str) or not artifact_digest:
         return False
+    artifact_identity = stored_fingerprint.get("artifact_identity")
+    if isinstance(artifact_identity, dict) and (
+        artifact_identity == _runtime_artifact_identity(artifact)
+    ):
+        return True
     try:
         return _sha256_file(artifact) == artifact_digest
     except OSError:
