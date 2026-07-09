@@ -47,6 +47,7 @@ class _GeneratorProtocolAttrs(Protocol):
     _deferred_runtime_warnings: list[str]
     _emitted_syntax_warnings: set[tuple[str, int, str]]
     _expr_col: tuple[int, int] | None
+    _free_var_analysis_cache_by_node: Any
     _inline_super_must_fold: bool
     _list_int_containers: set[str]
     _midend_env_snapshot: Any
@@ -138,4 +139,3 @@ class _GeneratorProtocolAttrs(Protocol):
     imported_attr_names: dict[str, str]
     imported_module_attr_mutations: set[tuple[str, str]]
     imported_modules: dict[str, str]
-    imported_names: dict[str, str]

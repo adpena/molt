@@ -753,3 +753,88 @@ def test_collect_assigned_names_includes_walrus_targets() -> None:
     )
     assert "z" not in names3
     assert {"g", "y"} <= names3
+
+
+def test_free_var_analysis_memoizes_nested_subtrees(monkeypatch) -> None:
+    mod = ast.parse(
+        """
+module_value = 1
+def outer():
+    outer_value = 2
+    def mid():
+        def leaf():
+            return module_value + outer_value
+        helper = lambda: module_value + outer_value
+        return leaf, helper
+    def sibling():
+        return mid
+    return mid, sibling
+"""
+    )
+    outer = mod.body[1]
+    assert isinstance(outer, ast.FunctionDef)
+    mid = outer.body[1]
+    assert isinstance(mid, ast.FunctionDef)
+    leaf = mid.body[0]
+    assert isinstance(leaf, ast.FunctionDef)
+    helper_assign = mid.body[1]
+    assert isinstance(helper_assign, ast.Assign)
+    helper = helper_assign.value
+    assert isinstance(helper, ast.Lambda)
+    sibling = outer.body[2]
+    assert isinstance(sibling, ast.FunctionDef)
+
+    gen = SimpleTIRGenerator()
+    function_calls: dict[ast.AST, int] = {}
+    lambda_calls: dict[ast.AST, int] = {}
+    original_function_compute = gen._compute_free_vars_raw
+    original_lambda_compute = gen._compute_free_vars_expr_raw
+
+    def counted_function_compute(
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> frozenset[str]:
+        function_calls[node] = function_calls.get(node, 0) + 1
+        return original_function_compute(node)
+
+    def counted_lambda_compute(node: ast.Lambda) -> frozenset[str]:
+        lambda_calls[node] = lambda_calls.get(node, 0) + 1
+        return original_lambda_compute(node)
+
+    monkeypatch.setattr(gen, "_compute_free_vars_raw", counted_function_compute)
+    monkeypatch.setattr(gen, "_compute_free_vars_expr_raw", counted_lambda_compute)
+
+    assert gen._collect_free_vars_raw(outer) == {"module_value"}
+    assert function_calls == {outer: 1, mid: 1, leaf: 1, sibling: 1}
+    assert lambda_calls == {helper: 1}
+
+    gen.locals = {"module_value": object(), "outer_value": object()}
+    assert gen._collect_free_vars(mid) == ["module_value", "outer_value"]
+    assert gen._collect_free_vars_expr(helper) == ["module_value", "outer_value"]
+    assert gen._collect_free_vars_raw(leaf) == {"module_value", "outer_value"}
+
+    assert function_calls == {outer: 1, mid: 1, leaf: 1, sibling: 1}
+    assert lambda_calls == {helper: 1}
+
+
+def test_free_var_cache_keeps_nested_super_classcell_projection() -> None:
+    mod = ast.parse(
+        """
+class Child:
+    def method(self):
+        def inner():
+            return super().label()
+        return inner
+"""
+    )
+    cls = mod.body[0]
+    assert isinstance(cls, ast.ClassDef)
+    method = cls.body[0]
+    assert isinstance(method, ast.FunctionDef)
+
+    gen = SimpleTIRGenerator()
+    gen._active_classcell_cell = object()
+    gen.locals = {"__class__": object()}
+    gen.boxed_locals = {"__class__": object()}
+
+    assert gen._collect_free_vars_raw(method) == {"super"}
+    assert gen._collect_free_vars(method) == ["__class__"]
