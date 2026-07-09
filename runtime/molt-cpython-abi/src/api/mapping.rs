@@ -83,6 +83,22 @@ pub unsafe extern "C" fn PyDict_SetItem(
     drop(bridge);
     let h = hooks_or_stubs();
     unsafe { (h.dict_set)(dict_bits, key_bits, val_bits) };
+    // CPython contract: the dict takes its OWN strong references to key and
+    // value (PyDict_SetItem does not steal). The bridge equivalent anchors the
+    // key/value proxies so the extension's balancing `Py_DECREF` of its
+    // temporaries cannot sever the pointer↔handle mapping while the object
+    // stays reachable from the runtime dict. Without this, numpy's
+    // `npy_cpu_dispatch_tracer_init` pattern — `PyDict_New()` →
+    // `PyDict_SetItemString(mod_dict, …)` → `Py_DECREF(reg_dict)` → cache the
+    // borrowed pointer — left `cpu_dispatch_registry` unresolvable and every
+    // later `PyDict_SetItemString(registry, "argmin"/"argmax", …)` failed
+    // "unresolved dict". Entries removed on the Molt side keep their anchor (a
+    // small header) — a deliberate CPython-semantics trade the raw-registry
+    // bridging already makes.
+    unsafe {
+        crate::api::refcount::Py_INCREF(key);
+        crate::api::refcount::Py_INCREF(value);
+    }
     0
 }
 
@@ -512,4 +528,47 @@ pub unsafe extern "C" fn PyDict_Values(op: *mut PyObject) -> *mut PyObject {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyDict_Items(op: *mut PyObject) -> *mut PyObject {
     unsafe { dict_op(crate::hooks::DictOp::Items, op) }
+}
+
+#[cfg(test)]
+mod dict_anchor_tests {
+    use super::*;
+    use molt_lang_obj_model::MoltObject;
+
+    /// Regression for the numpy `npy_cpu_dispatch_tracer_init` unresolved-dict
+    /// class: `PyDict_SetItem` must anchor the key/value proxies (CPython's
+    /// dict takes its own strong references — the API does not steal), so the
+    /// extension's balancing `Py_DECREF` of its temporaries cannot sever the
+    /// pointer↔handle mapping while the object stays reachable from the
+    /// runtime dict. numpy caches the borrowed registry pointer and every later
+    /// `PyDict_SetItemString(registry, "argmin"/"argmax", …)` failed
+    /// "unresolved dict" without this.
+    #[test]
+    fn dict_set_item_anchors_key_and_value_proxies() {
+        crate::bridge::init_tag_table();
+        let (recv, key, val) = {
+            let mut bridge = GLOBAL_BRIDGE.lock();
+            unsafe {
+                (
+                    bridge.handle_to_pyobj(MoltObject::from_int(0xD1C7).bits()),
+                    bridge.handle_to_pyobj(MoltObject::from_int(0x6EE7).bits()),
+                    bridge.handle_to_pyobj(MoltObject::from_int(0x7A17).bits()),
+                )
+            }
+        };
+        assert_eq!(unsafe { PyDict_SetItem(recv, key, val) }, 0);
+        // The extension's balancing DECREF of its temporaries…
+        unsafe { crate::api::refcount::Py_DECREF(key) };
+        unsafe { crate::api::refcount::Py_DECREF(val) };
+        // …must leave the mapping intact (the dict's own reference anchors it).
+        let bridge = GLOBAL_BRIDGE.lock();
+        assert!(
+            bridge.pyobj_to_handle(key).is_some(),
+            "key mapping severed by balancing DECREF"
+        );
+        assert!(
+            bridge.pyobj_to_handle(val).is_some(),
+            "value mapping severed by balancing DECREF"
+        );
+    }
 }

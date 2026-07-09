@@ -609,29 +609,34 @@ static int molt_callfunction_top_level_item_count(const char *format) {
     return count;
 }
 
+/* Shared `PyObject_CallFunction` / `PyObject_CallMethod` argument builder:
+ * CPython semantics — an empty/NULL format is a no-arg call; a format that
+ * builds a single non-tuple value becomes a 1-tuple; a tuple-shaped or
+ * multi-item format is the args tuple itself. Returns a NEW args tuple, or
+ * NULL with an exception set. */
+static PyObject *molt_callfunction_build_args(const char *format, va_list ap) {
+    if (format == NULL || format[0] == '\0') {
+        return PyTuple_New(0);
+    }
+    PyObject *built = Py_VaBuildValue(format, ap);
+    if (built == NULL) return NULL;
+
+    int top_level_count = molt_callfunction_top_level_item_count(format);
+    if (molt_callfunction_format_starts_tuple(format) || top_level_count != 1) {
+        return built;
+    }
+    PyObject *args = PyTuple_Pack(1, built);
+    Py_DECREF(built);
+    return args;
+}
+
 PyObject *PyObject_CallFunction(PyObject *callable, const char *format, ...) {
     if (callable == NULL) return NULL;
 
-    PyObject *args = NULL;
-    if (format == NULL || format[0] == '\0') {
-        args = PyTuple_New(0);
-    }
-    else {
-        va_list ap;
-        va_start(ap, format);
-        PyObject *built = Py_VaBuildValue(format, ap);
-        va_end(ap);
-        if (built == NULL) return NULL;
-
-        int top_level_count = molt_callfunction_top_level_item_count(format);
-        if (molt_callfunction_format_starts_tuple(format) || top_level_count != 1) {
-            args = built;
-        }
-        else {
-            args = PyTuple_Pack(1, built);
-            Py_DECREF(built);
-        }
-    }
+    va_list ap;
+    va_start(ap, format);
+    PyObject *args = molt_callfunction_build_args(format, ap);
+    va_end(ap);
 
     if (args == NULL) return NULL;
     PyObject *result = PyObject_Call(callable, args, NULL);
@@ -668,10 +673,24 @@ PyObject *PyObject_CallMethod(
     ...)
 {
     if (callable == NULL || name == NULL) return NULL;
-    if (format != NULL && format[0] != '\0') return NULL;
     PyObject *method = PyObject_GetAttrString(callable, name);
     if (method == NULL) return NULL;
-    PyObject *result = PyObject_Call(method, NULL, NULL);
+
+    /* CPython semantics: build the args from the format exactly like
+     * PyObject_CallFunction. The old shim returned bare NULL (no exception)
+     * for ANY non-empty format — a silent failure that strands the
+     * extension's error check. */
+    va_list ap;
+    va_start(ap, format);
+    PyObject *args = molt_callfunction_build_args(format, ap);
+    va_end(ap);
+
+    if (args == NULL) {
+        Py_DECREF(method);
+        return NULL;
+    }
+    PyObject *result = PyObject_Call(method, args, NULL);
+    Py_DECREF(args);
     Py_DECREF(method);
     return result;
 }
