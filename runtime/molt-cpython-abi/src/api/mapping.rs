@@ -56,8 +56,15 @@ pub unsafe extern "C" fn PyDict_SetItem(
     let key_bits = match bridge.pyobj_to_handle(key) {
         Some(b) => b,
         None => {
-            // Address-only (no deref) for the same reason as the dict receiver.
-            let detail = format!("unresolved key @ {:p}", key);
+            // The dict receiver already resolved, so we hold a well-formed dict —
+            // a `PyDict_SetItem` key is a real object the extension constructed or a
+            // canonical runtime data symbol, safe to classify (`describe_*` guards
+            // null + resolves exception singletons by address before any deref).
+            let detail = format!(
+                "unresolved key @ {:p}: {}",
+                key,
+                unsafe { crate::abi_types::describe_unresolved_pyobject(key) }
+            );
             crate::capi_trace::record_silent_failure("PyDict_SetItem", Some(&detail));
             return -1;
         }
