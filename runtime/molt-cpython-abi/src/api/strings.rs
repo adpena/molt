@@ -377,6 +377,123 @@ pub unsafe extern "C" fn PyUnicode_DecodeLatin1(
     unsafe { PyUnicode_FromStringAndSize(text.as_ptr().cast(), text.len() as Py_ssize_t) }
 }
 
+/// CPython ``PyUnicode_DecodeASCII``: decode ``size`` bytes of ASCII into a
+/// ``str``. A byte >= 0x80 is not valid ASCII; with the default (strict) error
+/// handler this raises ``UnicodeDecodeError`` (a ``ValueError`` subclass) and
+/// returns NULL. ASCII is a strict subset of UTF-8, so the valid slice is
+/// forwarded verbatim to the UTF-8 string allocator — never a stub.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyUnicode_DecodeASCII(
+    s: *const c_char,
+    size: Py_ssize_t,
+    _errors: *const c_char,
+) -> *mut PyObject {
+    if s.is_null() || size < 0 {
+        return ptr::null_mut();
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(s.cast::<u8>(), size as usize) };
+    if !bytes.is_ascii() {
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                &raw mut crate::abi_types::PyExc_UnicodeDecodeError,
+                c"'ascii' codec can't decode byte: ordinal not in range(128)".as_ptr(),
+            );
+        }
+        return ptr::null_mut();
+    }
+    unsafe { PyUnicode_FromStringAndSize(s, size) }
+}
+
+/// CPython ``PyUnicode_DecodeUTF16``: decode ``size`` bytes of UTF-16 into a
+/// ``str``. ``byteorder`` (when non-NULL) selects endianness: ``< 0`` little,
+/// ``> 0`` big, ``0`` native with an optional leading BOM consumed; on return
+/// ``*byteorder`` is updated to the order actually used. A dangling half-unit or
+/// an unpaired surrogate raises ``UnicodeDecodeError`` and returns NULL. Real
+/// decode via ``String::from_utf16`` — never a stub.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyUnicode_DecodeUTF16(
+    s: *const c_char,
+    size: Py_ssize_t,
+    _errors: *const c_char,
+    byteorder: *mut c_int,
+) -> *mut PyObject {
+    if s.is_null() || size < 0 {
+        return ptr::null_mut();
+    }
+    let mut bytes = unsafe { std::slice::from_raw_parts(s.cast::<u8>(), size as usize) };
+    // Resolve endianness. 0/native with a leading BOM overrides and is consumed.
+    let mut big_endian = cfg!(target_endian = "big");
+    let requested = if byteorder.is_null() {
+        0
+    } else {
+        unsafe { *byteorder }
+    };
+    if requested < 0 {
+        big_endian = false;
+    } else if requested > 0 {
+        big_endian = true;
+    } else if bytes.len() >= 2 {
+        match (bytes[0], bytes[1]) {
+            (0xFF, 0xFE) => {
+                big_endian = false;
+                bytes = &bytes[2..];
+            }
+            (0xFE, 0xFF) => {
+                big_endian = true;
+                bytes = &bytes[2..];
+            }
+            _ => {}
+        }
+    }
+    if !byteorder.is_null() {
+        unsafe { *byteorder = if big_endian { 1 } else { -1 } };
+    }
+    if bytes.len() % 2 != 0 {
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                &raw mut crate::abi_types::PyExc_UnicodeDecodeError,
+                c"'utf-16' codec can't decode: truncated data".as_ptr(),
+            );
+        }
+        return ptr::null_mut();
+    }
+    let units: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|pair| {
+            if big_endian {
+                u16::from_be_bytes([pair[0], pair[1]])
+            } else {
+                u16::from_le_bytes([pair[0], pair[1]])
+            }
+        })
+        .collect();
+    match String::from_utf16(&units) {
+        Ok(text) => unsafe {
+            PyUnicode_FromStringAndSize(text.as_ptr().cast(), text.len() as Py_ssize_t)
+        },
+        Err(_) => {
+            unsafe {
+                crate::api::errors::PyErr_SetString(
+                    &raw mut crate::abi_types::PyExc_UnicodeDecodeError,
+                    c"'utf-16' codec can't decode: unpaired surrogate".as_ptr(),
+                );
+            }
+            ptr::null_mut()
+        }
+    }
+}
+
+/// CPython ``PyUnicode_IS_ASCII``: 1 when every code point of ``op`` is ASCII,
+/// else 0. Backed by the string's UTF-8 bytes (ASCII iff the UTF-8 encoding is
+/// ASCII) — never a stub.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyUnicode_IS_ASCII(op: *mut PyObject) -> c_int {
+    match unsafe { unicode_bytes(op) } {
+        Some(bytes) => c_int::from(bytes.is_ascii()),
+        None => 0,
+    }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyUnicode_FromOrdinal(ordinal: c_int) -> *mut PyObject {
     let Some(ch) = char::from_u32(ordinal as u32) else {

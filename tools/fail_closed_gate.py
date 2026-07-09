@@ -463,6 +463,16 @@ _BUILD_CRUTCH_ALLOWLIST = frozenset(
         # --source-plan-exclude-linked-static-library` feature (source_extensions
         # .py, itself allowlisted above), not a package-specific crutch.
         "tools/build_numpy_umath_linalg_wasm.py",
+        # Pact-witness scipy _ccallback_c WASM producer. It regenerates the C
+        # from scipy's OWN _ccallback_c.pyx via the GENERIC standalone-Cython
+        # authority (source_extension_cython.py, allowlisted above), materializes
+        # scipy_config.h from scipy's OWN scipy_config.h.in via meson's
+        # configure_file rule (package custody, not a Molt-authored overlay --
+        # identical to a real scipy meson wasm-cross configure_file output), and
+        # invokes the GENERIC `molt extension build` CLI. It authors no Molt-owned
+        # source-plan/config/header overlay; the synthesized intro-targets/
+        # compile_commands are the generic source-plan shape the CLI consumes.
+        "tools/build_scipy_ccallback_c_wasm.py",
     }
 )
 
