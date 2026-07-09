@@ -443,6 +443,17 @@ _BUILD_CRUTCH_ALLOWLIST = frozenset(
         "src/molt/cli/source_extensions.py",
         "src/molt/cli/source_extension_cython.py",
         "src/molt/cli/source_extension_toolchain.py",
+        # Pact-witness pure-Python closure stagers + build-generated-module
+        # materializers. These are seal verifiers/adapters (per the docstring
+        # rationale below): they mirror the package's OWN upstream pure-Python
+        # subtree into the sealed witness roots and materialize version.py/
+        # __config__.py from the package's OWN authorities (gitversion, the real
+        # meson build output). They author no Molt-owned source-plan/config/
+        # header overlay -- their docstrings merely describe the architecture --
+        # so they are not the ecosystem_build_crutch poison shape.
+        "tools/pact_witness_numpy_python_closure.py",
+        "tools/pact_witness_scipy_python_closure.py",
+        "tools/pact_witness_scipy_generated_modules.py",
     }
 )
 
