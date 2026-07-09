@@ -1683,63 +1683,6 @@ def _source_plan_abi_include_order(
     return python_include_root, fallback_roots
 
 
-def _target_pointer_size_bytes(target_triple: str | None) -> int | None:
-    target = (target_triple or "").lower()
-    if target.startswith("wasm32"):
-        return 4
-    if target.startswith("wasm64"):
-        return 8
-    return None
-
-
-def _source_plan_target_fact_overlay_include_paths(
-    include_paths: Sequence[Path],
-    *,
-    build_tmp: Path,
-    target_triple: str | None,
-) -> list[Path]:
-    pointer_size = _target_pointer_size_bytes(target_triple)
-    if pointer_size is None:
-        return []
-    for include_path in include_paths:
-        numpy_config = include_path / "_numpyconfig.h"
-        if not numpy_config.is_file():
-            continue
-        try:
-            text = numpy_config.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        if (
-            "#define NPY_SIZEOF_PY_INTPTR_T -1" not in text
-            and "#define NPY_SIZEOF_PY_LONG_LONG -1" not in text
-        ):
-            continue
-        overlay_dir = build_tmp / "source_plan_target_facts" / "numpy_core"
-        overlay_dir.mkdir(parents=True, exist_ok=True)
-        (overlay_dir / "_numpyconfig.h").write_text(
-            "\n".join(
-                [
-                    "#ifndef MOLT_SOURCE_EXTENSION_NUMPY_TARGET_FACTS_OVERLAY_H",
-                    "#define MOLT_SOURCE_EXTENSION_NUMPY_TARGET_FACTS_OVERLAY_H",
-                    '#include_next "_numpyconfig.h"',
-                    "#if defined(NPY_SIZEOF_PY_INTPTR_T) && NPY_SIZEOF_PY_INTPTR_T < 0",
-                    "#undef NPY_SIZEOF_PY_INTPTR_T",
-                    f"#define NPY_SIZEOF_PY_INTPTR_T {pointer_size}",
-                    "#endif",
-                    "#if defined(NPY_SIZEOF_PY_LONG_LONG) && NPY_SIZEOF_PY_LONG_LONG < 0",
-                    "#undef NPY_SIZEOF_PY_LONG_LONG",
-                    "#define NPY_SIZEOF_PY_LONG_LONG 8",
-                    "#endif",
-                    "#endif",
-                    "",
-                ]
-            ),
-            encoding="utf-8",
-        )
-        return [overlay_dir]
-    return []
-
-
 _SOURCE_EXTENSION_CPP_SUFFIXES = {".cc", ".cpp", ".cxx", ".c++", ".mm"}
 
 
@@ -2620,14 +2563,6 @@ def extension_build(
                     unit_include_paths,
                     python_header=python_header,
                 )
-                unit_include_paths = [
-                    *_source_plan_target_fact_overlay_include_paths(
-                        unit_include_paths,
-                        build_tmp=build_tmp,
-                        target_triple=runtime_target_triple,
-                    ),
-                    *unit_include_paths,
-                ]
             unit_compile_args = (
                 list(plan_unit.compile_args) if plan_unit is not None else compile_args
             )

@@ -80,11 +80,9 @@ def _write_pkgconfig(pkgdir: Path, molt_root: Path) -> None:
     # The CPython-ABI tier is ONE self-complete header authority. Only expose
     # ``runtime/molt-cpython-abi/include`` (Python.h, structmember.h, pymem.h,
     # pyerrors.h, ...) via the pkg-config Cflags. Do NOT add the repo-root
-    # ``include/`` tier here: it carries Molt's source-compat NumPy overlay
-    # (``include/numpy/*``), which — once baked into numpy's Meson
-    # compile_commands.json — would shadow numpy's OWN ``numpy/*`` headers and
-    # reintroduce the header-custody collision. numpy supplies its own complete
-    # ``numpy/_core/include`` through its Meson build's include dirs.
+    # ``include/`` tier here: that is the libmolt source-compat tier, while
+    # numpy supplies its own complete ``numpy/_core/include`` through its Meson
+    # build's include dirs. Package headers must come from package custody.
     inc_abi = (molt_root / "runtime" / "molt-cpython-abi" / "include").as_posix()
     (pkgdir / "python3.pc").write_text(
         "prefix={prefix}\n"
