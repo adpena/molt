@@ -30,6 +30,7 @@ from molt.cli.runtime_wasm_validation import (  # noqa: E402
     _runtime_wasm_integrity_pin_paths,
 )
 from molt._wasm_runtime_exports import (  # noqa: E402
+    wasm_cpython_abi_data_symbol_names,
     wasm_split_runtime_export_name_for_import,
     wasm_split_runtime_import_name_for_export,
 )
@@ -902,6 +903,172 @@ def _split_runtime_data_alias_object(
     alias_path = Path(temp_dir.name) / "split_runtime_data_aliases.wasm"
     alias_path.write_bytes(_build_runtime_data_alias_object(alias_symbols))
     return alias_path
+
+
+# wasm-ld names the GOT data global it synthesises for a PIC object's data
+# relocation (R_WASM_GLOBAL_INDEX_LEB against a data symbol) as
+# ``GOT.data.internal.<sym>`` in the linked module's name section.
+_GOT_DATA_INTERNAL_PREFIX = "GOT.data.internal."
+
+
+def _write_sleb128(value: int) -> bytes:
+    """Encode a signed integer as LEB128 (the encoding of an ``i32.const``
+    immediate)."""
+    out = bytearray()
+    while True:
+        byte = value & 0x7F
+        value >>= 7
+        if (value == 0 and not (byte & 0x40)) or (
+            value == -1 and (byte & 0x40)
+        ):
+            out.append(byte)
+            return bytes(out)
+        out.append(byte | 0x80)
+
+
+def _wasm_name_section_global_names(data: bytes) -> dict[int, str]:
+    """Map global index -> name from the custom ``name`` section (global-name
+    subsection, id 7). Empty if the module carries no name section."""
+    names: dict[int, str] = {}
+    for section_id, payload in _parse_sections(data):
+        if section_id != 0:
+            continue
+        section_name, custom_payload = _parse_custom_section(payload)
+        if section_name != "name":
+            continue
+        offset = 0
+        while offset < len(custom_payload):
+            sub_id = custom_payload[offset]
+            offset += 1
+            size, offset = _read_varuint(custom_payload, offset)
+            sub_payload = custom_payload[offset : offset + size]
+            offset += size
+            if sub_id != 7:  # global names subsection
+                continue
+            sub_offset = 0
+            count, sub_offset = _read_varuint(sub_payload, sub_offset)
+            for _ in range(count):
+                index, sub_offset = _read_varuint(sub_payload, sub_offset)
+                name, sub_offset = _read_string(sub_payload, sub_offset)
+                names[index] = name
+        break
+    return names
+
+
+def _rewrite_global_section_i32_inits(
+    data: bytes, new_inits: Mapping[int, int]
+) -> bytes:
+    """Return ``data`` with the i32.const init of each defined global in
+    ``new_inits`` (keyed by *defined-global* index) replaced. Every targeted
+    global must currently hold an ``i32.const`` init expression."""
+    if not new_inits:
+        return data
+    new_sections: list[tuple[int, bytes]] = []
+    rewrote = False
+    for section_id, payload in _parse_sections(data):
+        if section_id != 6:  # global section
+            new_sections.append((section_id, payload))
+            continue
+        offset = 0
+        count, offset = _read_varuint(payload, offset)
+        rebuilt = bytearray()
+        rebuilt.extend(_write_varuint(count))
+        for defined_index in range(count):
+            valtype = payload[offset]
+            mut = payload[offset + 1]
+            body_start = offset + 2
+            if payload[body_start] == 0x41:  # i32.const
+                _value, after = _read_const_i32_init_expr(payload, body_start)
+            else:
+                after = _skip_init_expr(payload, body_start)
+            if defined_index in new_inits:
+                if payload[body_start] != 0x41:
+                    raise ValueError(
+                        "cannot retarget non-i32.const GOT data global at "
+                        f"defined index {defined_index}"
+                    )
+                rebuilt.append(valtype)
+                rebuilt.append(mut)
+                rebuilt.append(0x41)  # i32.const
+                rebuilt.extend(_write_sleb128(new_inits[defined_index]))
+                rebuilt.append(0x0B)  # end
+                rewrote = True
+            else:
+                rebuilt.extend(payload[offset:after])
+            offset = after
+        new_sections.append((section_id, bytes(rebuilt)))
+    if not rewrote:
+        return data
+    return _build_sections(new_sections)
+
+
+def _rewrite_split_app_got_data_globals(
+    data: bytes,
+    *,
+    runtime_addresses: Mapping[str, int],
+    description: str,
+) -> tuple[bytes, int]:
+    """Retarget the split app's CPython-ABI GOT data globals to the shared
+    runtime's canonical linear-memory addresses.
+
+    A PIC extension (numpy ``_multiarray_umath``) references the runtime
+    singletons/type/exception objects (``Py_None``/``Py_False``/``PyExc_*``/
+    ``Py*_Type``/...) through GOT data relocations. wasm-ld resolves each against
+    the active-data-segment alias and emits a *defined*
+    ``GOT.data.internal.molt_<sym>`` global — but the alias's zero-size segments
+    are relocated into the split app's own region, so every such global
+    initialises to the same app-local placeholder address (the extension then
+    reads an all-zero object, ``ob_type == NULL``). Those globals are the exact
+    word the extension loads at run time, so we retarget each to the runtime's
+    canonical address (published as an address-bearing wasm global on the shared
+    runtime; read here from the deploy runtime — the runtime is byte-identical
+    across apps, so the address is stable and CDN-safe).
+
+    Fails loud (M34) if a ``GOT.data.internal.molt_<sym>`` global names a
+    CPython-ABI data symbol for which the runtime publishes no address — a silent
+    skip would leave the extension reading the app-local placeholder.
+
+    Returns ``(new_bytes, retargeted_count)``.
+    """
+    global_names = _wasm_name_section_global_names(data)
+    if not global_names:
+        return data, 0
+    imported_globals = _count_imported_globals(data)
+    cpython_abi_data_symbols = set(wasm_cpython_abi_data_symbol_names())
+    new_inits: dict[int, int] = {}
+    missing: list[str] = []
+    for global_index, name in global_names.items():
+        if not name.startswith(_GOT_DATA_INTERNAL_PREFIX):
+            continue
+        split_name = name[len(_GOT_DATA_INTERNAL_PREFIX) :]
+        canonical = wasm_split_runtime_import_name_for_export(split_name)
+        if canonical is None:
+            canonical = split_name
+        if canonical not in cpython_abi_data_symbols:
+            # Not a runtime-owned CPython-ABI singleton/type/exception (e.g. a
+            # GOT global for the extension's own or libc data) — leave as linked.
+            continue
+        address = runtime_addresses.get(canonical)
+        if address is None:
+            missing.append(f"{split_name} (canonical {canonical})")
+            continue
+        defined_index = global_index - imported_globals
+        if defined_index < 0:
+            missing.append(f"{split_name} (imported global, unexpected)")
+            continue
+        new_inits[defined_index] = address
+    if missing:
+        raise ValueError(
+            f"{description}: split-runtime GOT data bridge — deploy runtime "
+            "publishes no canonical address for CPython-ABI data symbol(s): "
+            + ", ".join(sorted(missing))
+            + " — the shared runtime must export these via --export-if-defined "
+            "(wasm_cpython_abi_data_symbol_names / "
+            "wasm_runtime_shared_export_link_args)."
+        )
+    if not new_inits:
+        return data, 0
+    return _rewrite_global_section_i32_inits(data, new_inits), len(new_inits)
 
 
 def _compiler_rt_link_imports() -> frozenset[str]:
@@ -2309,8 +2476,23 @@ def _run_wasm_ld(
 
     split_native_app_path: Path | None = None
     split_native_app_cmd: list[str] | None = None
+    split_app_got_runtime_addresses: dict[str, int] = {}
     if split_runtime and native_objects:
         split_native_inputs = native_link_inputs
+        # Keep the active-data-segment alias: it defines each CPython-ABI data
+        # symbol (Py_None/Py_False/PyExc_*/Py*_Type/...) so the split app link
+        # resolves both a PIC extension's GOT references (numpy, via
+        # R_WASM_GLOBAL_INDEX_LEB -> wasm-ld emits a defined
+        # `GOT.data.internal.molt_<sym>` global) and a non-PIC extension's
+        # absolute references (scipy, via R_WASM_MEMORY_ADDR_SLEB). wasm-ld
+        # relocates the alias's zero-size segments into the split app's own
+        # region, so every one of those GOT globals initialises to the same
+        # app-local placeholder address (ob_type==NULL). The GOT globals are the
+        # exact word numpy reads at run time, so after the link we retarget each
+        # `GOT.data.internal.molt_<sym>` global to the shared runtime's canonical
+        # linear-memory address (see _rewrite_split_app_got_data_globals). This
+        # keeps the split app non-PIC (no import-dynamic, so no GOT.func / no
+        # loader change) and does not disturb any statically resolved symbol.
         try:
             data_alias_object = _split_runtime_data_alias_object(
                 native_objects=native_link_inputs,
@@ -2319,6 +2501,9 @@ def _run_wasm_ld(
                 ),
                 temp_dir=temp_dir,
                 reloc_runtime=link_runtime_path,
+            )
+            split_app_got_runtime_addresses = _runtime_exported_data_symbol_addresses(
+                _resolve_deploy_runtime(runtime, deploy_runtime_override).read_bytes()
             )
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
@@ -2639,6 +2824,30 @@ def _run_wasm_ld(
                 if native_link_error is not None:
                     print(native_link_error, file=sys.stderr)
                     return 1
+                # Retarget the CPython-ABI GOT data globals wasm-ld emitted for
+                # the PIC extension(s) from the app-local placeholder address to
+                # the shared runtime's canonical singleton/type/exception copy.
+                # Must run before the split-app optimizer strips the name
+                # section that identifies each `GOT.data.internal.molt_<sym>`.
+                try:
+                    rewritten_data, got_retargeted = (
+                        _rewrite_split_app_got_data_globals(
+                            rewritten_data,
+                            runtime_addresses=split_app_got_runtime_addresses,
+                            description="Split-runtime native app link",
+                        )
+                    )
+                except ValueError as exc:
+                    print(str(exc), file=sys.stderr)
+                    return 1
+                if got_retargeted:
+                    split_native_app_path.write_bytes(rewritten_data)
+                    print(
+                        "Split-runtime GOT data bridge: retargeted "
+                        f"{got_retargeted} CPython-ABI GOT data global(s) to the "
+                        "shared runtime's canonical addresses",
+                        file=sys.stderr,
+                    )
             else:
                 # For split-runtime without external native objects, the app
                 # artifact must remain unlinked while preserving the runtime ABI
