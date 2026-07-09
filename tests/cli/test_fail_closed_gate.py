@@ -13,8 +13,8 @@ Covers:
 
 The poison classes and their injected fixtures:
   A ecosystem_baked    — a ``typedef struct PyArray_Descr`` in a Molt-owned header
-  A2 ecosystem_build_crutch — a ``regen_scipy_*`` package-specific source-plan
-                          helper that bypasses upstream build metadata custody
+  A2 ecosystem_build_crutch — package-specific regen/source-plan/config/header
+                          overlay helpers that bypass upstream build metadata custody
   B fail_open_stub      — a ``#[no_mangle]`` ABI export using ``wrapping_add`` on int
   C todo_as_plan        — a ``status:divergent`` marker inside a public def that
                           returns a divergent value (does not fail closed)
@@ -274,11 +274,31 @@ def test_negative_control_ecosystem_build_crutch_fails_then_passes(
         "    return 'compile_commands.json for scipy'\n",
         encoding="utf-8",
     )
+    overlay = tmp_path / "src" / "molt" / "cli" / "pandas_header_overlay.py"
+    overlay.parent.mkdir(parents=True, exist_ok=True)
+    overlay.write_text(
+        "def write_pandas_overlay(build_tmp):\n"
+        "    overlay_dir = build_tmp / 'source_plan_target_facts' / 'pandas'\n"
+        "    (overlay_dir / 'pandas' / 'compat.h').write_text('/* local pandas header */')\n",
+        encoding="utf-8",
+    )
+    config = tmp_path / "tools" / "write_tinygrad_config.py"
+    config.write_text(
+        "def write_config(out):\n"
+        "    (out / 'tinygrad_config.h').write_text('#define TINYGRAD_LOCAL 1')\n",
+        encoding="utf-8",
+    )
 
     discovered = gate.discover_ecosystem_build_crutches(tmp_path)
     assert any(
         s.file == "tools/regen_scipy_ndimage_source_plan.py" for s in discovered
     ), f"Scan F failed to discover injected package build crutch; got {discovered}"
+    assert any(
+        s.file == "src/molt/cli/pandas_header_overlay.py" for s in discovered
+    ), f"Scan F failed to discover injected package header overlay; got {discovered}"
+    assert any(
+        s.file == "tools/write_tinygrad_config.py" for s in discovered
+    ), f"Scan F failed to discover injected package config authoring; got {discovered}"
 
     fail = gate.run_gate(tmp_path, registry)
     assert any(
@@ -286,8 +306,20 @@ def test_negative_control_ecosystem_build_crutch_fails_then_passes(
         and "regen_scipy_ndimage_source_plan.py" in v.detail
         for v in fail
     ), f"gate MUST fail on unregistered ecosystem_build_crutch; got {fail}"
+    assert any(
+        v.kind == "unregistered-poison-site"
+        and "pandas_header_overlay.py" in v.detail
+        for v in fail
+    ), f"gate MUST fail on unregistered package header overlay; got {fail}"
+    assert any(
+        v.kind == "unregistered-poison-site"
+        and "write_tinygrad_config.py" in v.detail
+        for v in fail
+    ), f"gate MUST fail on unregistered package config authoring; got {fail}"
 
     helper.unlink()
+    overlay.unlink()
+    config.unlink()
     assert not gate.discover_ecosystem_build_crutches(tmp_path)
     assert not gate.run_gate(tmp_path, registry)
 
