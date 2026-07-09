@@ -63,6 +63,7 @@ if TYPE_CHECKING:
 
 
 class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
+    imported_names: dict[str, str]
     in_annotation: Any
     in_generator: Any
     instance_attr_mutations: dict[str, set[str]]
@@ -306,6 +307,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _bytearray_len_hint_for(
         self, name: str | None, value: MoltValue | None
     ) -> int | None: ...
+
+    def _cached_free_vars_raw(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda
+    ) -> frozenset[str]: ...
 
     def _call_allowlist_suggestion(
         self, func_id: str, imported_from: str | None
@@ -592,6 +597,12 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _compute_block_use_def(
         self, ops: list[MoltOp]
     ) -> tuple[set[str], set[str]]: ...
+
+    def _compute_free_vars_expr_raw(self, node: ast.Lambda) -> frozenset[str]: ...
+
+    def _compute_free_vars_raw(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> frozenset[str]: ...
 
     def _compute_method_closure(
         self, item: ast.FunctionDef | ast.AsyncFunctionDef
@@ -1507,6 +1518,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         current_class: str,
         current_first_param: str,
     ) -> "MoltValue | None": ...
+
+    def _free_var_analysis_cache(self) -> dict[ast.AST, frozenset[str]]: ...
+
+    def _free_vars_in_outer_scope(self, candidates: Iterable[str]) -> list[str]: ...
 
     @staticmethod
     def _function_contains_locals_call(

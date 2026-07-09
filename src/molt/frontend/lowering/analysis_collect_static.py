@@ -1031,39 +1031,39 @@ class AnalysisCollectStaticMixin(_MixinBase):
             collector.visit(stmt)
         return collector.names
 
+    def _free_var_analysis_cache(self) -> dict[ast.AST, frozenset[str]]:
+        cache: dict[ast.AST, frozenset[str]] | None = getattr(
+            self, "_free_var_analysis_cache_by_node", None
+        )
+        if cache is None:
+            cache = {}
+            self._free_var_analysis_cache_by_node = cache
+        return cache
+
+    def _cached_free_vars_raw(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda
+    ) -> frozenset[str]:
+        cache = self._free_var_analysis_cache()
+        cached = cache.get(node)
+        if cached is None:
+            if isinstance(node, ast.Lambda):
+                cached = self._compute_free_vars_expr_raw(node)
+            else:
+                cached = self._compute_free_vars_raw(node)
+            cache[node] = cached
+        return cached
+
+    def _free_vars_in_outer_scope(self, candidates: Iterable[str]) -> list[str]:
+        outer_scope = set(self.locals) | set(self.boxed_locals)
+        if self.is_async():
+            outer_scope |= set(self.async_locals)
+        outer_scope |= set(self.free_vars) | self.scope_assigned
+        return sorted(name for name in candidates if name in outer_scope)
+
     def _collect_free_vars(
         self, node: ast.FunctionDef | ast.AsyncFunctionDef
     ) -> list[str]:
-        params = set(self._function_param_names(node.args))
-        assigned = self._collect_assigned_names(node.body)
-        comp_targets = self._collect_comprehension_target_names(node.body)
-        global_decls = self._collect_global_decls(node.body)
-        nonlocal_decls = self._collect_nonlocal_decls(node.body)
-        local_names = params | comp_targets | (assigned - nonlocal_decls)
-        used: set[str] = set()
-
-        class Collector(ast.NodeVisitor):
-            def visit_Name(self, node: ast.Name) -> Any:
-                if isinstance(node.ctx, ast.Load):
-                    used.add(node.id)
-
-            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-                return
-
-            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-                return
-
-            def visit_ClassDef(self, node: ast.ClassDef) -> None:
-                return
-
-            def visit_Lambda(self, node: ast.Lambda) -> None:
-                return
-
-        collector = Collector()
-        for stmt in node.body:
-            collector.visit(stmt)
-        used.update(nonlocal_decls)
-        used.update(self._collect_nested_free_vars(node.body))
+        candidates = set(self._cached_free_vars_raw(node))
         # Implicit ``__class__`` closure variable: a method/nested function
         # that references zero-arg ``super()`` or ``__class__`` closes over the
         # enclosing class's ``__class__`` cell exactly as CPython does.  The
@@ -1074,54 +1074,15 @@ class AnalysisCollectStaticMixin(_MixinBase):
         if self._active_classcell_cell is not None and self._function_needs_classcell(
             node
         ):
-            used.add("__class__")
-        candidates = {
-            name
-            for name in used
-            if name not in local_names and name not in global_decls
-        }
-        outer_scope = set(self.locals) | set(self.boxed_locals)
-        if self.is_async():
-            outer_scope |= set(self.async_locals)
-        outer_scope |= set(self.free_vars) | self.scope_assigned
-        return sorted(name for name in candidates if name in outer_scope)
+            candidates.add("__class__")
+        return self._free_vars_in_outer_scope(candidates)
 
     def _collect_free_vars_expr(self, node: ast.Lambda) -> list[str]:
-        params = set(self._function_param_names(node.args))
-        assigned = self._collect_assigned_names([ast.Expr(value=node.body)])
-        comp_targets = self._collect_comprehension_target_names([node.body])
-        local_names = params | comp_targets | assigned
-        used: set[str] = set()
+        return self._free_vars_in_outer_scope(self._cached_free_vars_raw(node))
 
-        class Collector(ast.NodeVisitor):
-            def visit_Name(self, node: ast.Name) -> Any:
-                if isinstance(node.ctx, ast.Load):
-                    used.add(node.id)
-
-            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-                return
-
-            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-                return
-
-            def visit_ClassDef(self, node: ast.ClassDef) -> None:
-                return
-
-            def visit_Lambda(self, node: ast.Lambda) -> None:
-                return
-
-        Collector().visit(node.body)
-        used.update(self._collect_nested_free_vars([node.body]))
-        candidates = {name for name in used if name not in local_names}
-        outer_scope = set(self.locals) | set(self.boxed_locals)
-        if self.is_async():
-            outer_scope |= set(self.async_locals)
-        outer_scope |= set(self.free_vars) | self.scope_assigned
-        return sorted(name for name in candidates if name in outer_scope)
-
-    def _collect_free_vars_raw(
+    def _compute_free_vars_raw(
         self, node: ast.FunctionDef | ast.AsyncFunctionDef
-    ) -> set[str]:
+    ) -> frozenset[str]:
         params = set(self._function_param_names(node.args))
         assigned = self._collect_assigned_names(node.body)
         comp_targets = self._collect_comprehension_target_names(node.body)
@@ -1152,13 +1113,18 @@ class AnalysisCollectStaticMixin(_MixinBase):
             collector.visit(stmt)
         used.update(nonlocal_decls)
         used.update(self._collect_nested_free_vars_raw(node.body))
-        return {
+        return frozenset(
             name
             for name in used
             if name not in local_names and name not in global_decls
-        }
+        )
 
-    def _collect_free_vars_expr_raw(self, node: ast.Lambda) -> set[str]:
+    def _collect_free_vars_raw(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> set[str]:
+        return set(self._cached_free_vars_raw(node))
+
+    def _compute_free_vars_expr_raw(self, node: ast.Lambda) -> frozenset[str]:
         params = set(self._function_param_names(node.args))
         assigned = self._collect_assigned_names([ast.Expr(value=node.body)])
         comp_targets = self._collect_comprehension_target_names([node.body])
@@ -1184,7 +1150,10 @@ class AnalysisCollectStaticMixin(_MixinBase):
 
         Collector().visit(node.body)
         used.update(self._collect_nested_free_vars_raw([node.body]))
-        return {name for name in used if name not in local_names}
+        return frozenset(name for name in used if name not in local_names)
+
+    def _collect_free_vars_expr_raw(self, node: ast.Lambda) -> set[str]:
+        return set(self._cached_free_vars_raw(node))
 
     def _collect_free_vars_comprehension(
         self, node: ast.GeneratorExp | ast.ListComp | ast.SetComp | ast.DictComp
