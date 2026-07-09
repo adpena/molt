@@ -6222,18 +6222,23 @@ static inline int _molt_buildvalue_parse_item(
             const char *text = va_arg(*ap, const char *);
             int has_len = (**cursor == '#');
             uint64_t len = 0;
-            if (text == NULL && code == 'z') {
+            if (has_len) {
+                (*cursor)++;
+            }
+            // CPython Py_BuildValue: 's'/'z'/'y' (and 'U') with a NULL C string
+            // pointer yield None — any '#' length arg is still consumed from
+            // varargs and ignored. NOT 'z'-only: 's'/'y' behave identically per
+            // the C-API docs (numpy _multiarray_umath init passes `s`/NULL
+            // expecting None; kept in lock-step with the pyarg_variadic.c shim).
+            if (text == NULL) {
+                if (has_len) {
+                    (void)va_arg(*ap, Py_ssize_t);
+                }
                 *out_bits = molt_none();
                 return 1;
             }
-            if (text == NULL) {
-                PyErr_SetString(PyExc_TypeError, "Py_BuildValue string argument is NULL");
-                return 0;
-            }
             if (has_len) {
-                Py_ssize_t value_len;
-                (*cursor)++;
-                value_len = va_arg(*ap, Py_ssize_t);
+                Py_ssize_t value_len = va_arg(*ap, Py_ssize_t);
                 if (value_len < 0) {
                     PyErr_SetString(PyExc_ValueError, "Py_BuildValue received negative length");
                     return 0;

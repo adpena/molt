@@ -373,16 +373,21 @@ static PyObject *molt_buildvalue_parse_item(const char **cursor, va_list *ap) {
     case 'z': {
         const char *text = va_arg(*ap, const char *);
         int has_len = (**cursor == '#');
-        if (text == NULL && code == 'z') {
+        if (has_len) {
+            (*cursor)++;
+        }
+        // CPython Py_BuildValue: 's'/'z' (and 'U') with a NULL C string pointer
+        // yield None — any '#' length arg is still consumed from varargs and
+        // ignored. This is NOT 'z'-only: 's' behaves identically per the C-API
+        // docs (numpy _multiarray_umath init passes `s`/NULL expecting None).
+        if (text == NULL) {
+            if (has_len) {
+                (void)va_arg(*ap, Py_ssize_t);
+            }
             Py_INCREF(&Py_None);
             return &Py_None;
         }
-        if (text == NULL) {
-            PyErr_SetString(&PyExc_TypeError, "Py_BuildValue string argument is NULL");
-            return NULL;
-        }
         if (has_len) {
-            (*cursor)++;
             Py_ssize_t len = va_arg(*ap, Py_ssize_t);
             return PyUnicode_FromStringAndSize(text, len);
         }
@@ -391,12 +396,19 @@ static PyObject *molt_buildvalue_parse_item(const char **cursor, va_list *ap) {
     case 'y': {
         const char *bytes = va_arg(*ap, const char *);
         int has_len = (**cursor == '#');
+        if (has_len) {
+            (*cursor)++;
+        }
+        // CPython: 'y' with a NULL pointer yields None (any '#' length arg is
+        // consumed and ignored), matching 's'/'z' above.
         if (bytes == NULL) {
-            PyErr_SetString(&PyExc_TypeError, "Py_BuildValue bytes argument is NULL");
-            return NULL;
+            if (has_len) {
+                (void)va_arg(*ap, Py_ssize_t);
+            }
+            Py_INCREF(&Py_None);
+            return &Py_None;
         }
         Py_ssize_t len = has_len ? va_arg(*ap, Py_ssize_t) : (Py_ssize_t)strlen(bytes);
-        if (has_len) (*cursor)++;
         return PyBytes_FromStringAndSize(bytes, len);
     }
     case 'c': {
