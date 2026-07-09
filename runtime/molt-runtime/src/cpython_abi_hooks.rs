@@ -480,6 +480,36 @@ fn sys_module_attr_borrowed(attr: &[u8]) -> u64 {
         let Some(dict_ptr) = MoltObject::from_bits(dict_bits).as_ptr() else {
             return 0;
         };
+        if let Some(bits) = dict_get_str_bytes_borrowed(&_py, dict_ptr, attr) {
+            return bits;
+        }
+        // The compiled `sys` module materializes its CPython-shaped metadata
+        // views (flags, implementation, version_info, float_info, hash_info, …)
+        // lazily through its PEP 562 module `__getattr__`: the raw module dict
+        // stays cold until Python code first touches the attribute. C
+        // extensions read these through `PySys_GetObject`, which lands here
+        // BEFORE any Python code runs — e.g. numpy's `_multiarray_umath`
+        // multi-phase init reads `sys.flags` from its `Py_mod_exec` slot, and a
+        // cold miss surfaces as "cannot get sys.flags" and fails the whole
+        // C-extension import closed. Drive the module `__getattr__` (which
+        // populates the module dict as a side effect), then re-read the
+        // borrowed handle the dict now owns so the returned reference keeps the
+        // CPython borrowed-reference contract of `PySys_GetObject`.
+        let name_ptr = alloc_string(&_py, attr);
+        if name_ptr.is_null() {
+            return 0;
+        }
+        let attr_bits = MoltObject::from_ptr(name_ptr).bits();
+        let materialized = crate::builtins::attr::module_attr_lookup_allow_missing(
+            &_py, module_ptr, attr_bits,
+        );
+        dec_ref_bits(&_py, attr_bits);
+        if let Some(owned_bits) = materialized {
+            // `__getattr__` stored the value into the module dict; drop the
+            // owned reference it returned and hand back the borrowed handle the
+            // dict keeps alive.
+            dec_ref_bits(&_py, owned_bits);
+        }
         dict_get_str_bytes_borrowed(&_py, dict_ptr, attr).unwrap_or(0)
     });
     with_gil(|_py| {
@@ -2174,6 +2204,59 @@ mod tests {
             assert_eq!(unsafe { object_type_id(flags_ptr) }, TYPE_ID_TUPLE);
             assert_eq!(unsafe { tuple_len(flags_ptr) }, 1);
             dec_ref_bits(&_py, expected_flags_bits);
+            dec_ref_bits(&_py, sys_module_bits);
+        });
+    }
+
+    // A cold `sys` module dict that has neither the requested attribute nor a
+    // `__getattr__` must make `PySys_GetObject` fail closed (NULL) WITHOUT
+    // leaking a pending exception. This guards the lazy-materialization branch
+    // added to `sys_module_attr_borrowed`: when the raw dict lookup misses it
+    // drives the module `__getattr__` (allow-missing) and re-reads the dict;
+    // the miss path must not surface an AttributeError to the C-API caller.
+    // (The real numpy path — where sys.py's PEP 562 `__getattr__` materializes
+    // `flags` into the dict — is exercised by the pact-witness E2E, since the
+    // compiled `sys` module is not linked into the unit-test binary.)
+    #[test]
+    fn pysys_getobject_missing_attr_on_cold_module_fails_closed() {
+        let _guard = cpython_abi_test_guard();
+        register_cpython_hooks();
+
+        let (_cache_restore, sys_module_bits) = with_gil(|_py| unsafe {
+            let name_ptr = alloc_string(&_py, b"sys");
+            assert!(!name_ptr.is_null());
+            let name_bits = MoltObject::from_ptr(name_ptr).bits();
+            let cache_restore = ModuleCacheRestore::new(&_py, name_bits);
+
+            let module_ptr = alloc_module_obj(&_py, name_bits);
+            assert!(!module_ptr.is_null());
+            let module_bits = MoltObject::from_ptr(module_ptr).bits();
+
+            let result_bits =
+                crate::builtins::modules::molt_module_cache_set(name_bits, module_bits);
+            if !MoltObject::from_bits(result_bits).is_none() {
+                dec_ref_bits(&_py, result_bits);
+            }
+            assert!(
+                !crate::exception_pending(&_py),
+                "test sys module registration must not leave an exception"
+            );
+            (cache_restore, module_bits)
+        });
+
+        let missing = unsafe {
+            molt_cpython_abi::api::sys::PySys_GetObject(c"molt_cold_absent_attr".as_ptr())
+        };
+        assert!(
+            missing.is_null(),
+            "PySys_GetObject must fail closed for an attribute absent from a cold sys dict"
+        );
+        assert!(
+            !with_gil(|_py| crate::exception_pending(&_py)),
+            "cold-miss lazy-materialization branch must not leak a pending exception"
+        );
+
+        with_gil(|_py| {
             dec_ref_bits(&_py, sys_module_bits);
         });
     }
