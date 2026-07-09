@@ -72,7 +72,7 @@ fn value_type_by_id_for(tir_func: &TirFunction) -> HashMap<ValueId, TirType> {
 /// SimpleIR names.
 pub fn repr_by_value_for(
     tir_func: &TirFunction,
-    vr: Option<&crate::tir::passes::value_range::ValueRangeResult>,
+    vr: Option<&crate::tir::ValueRangeResult>,
 ) -> HashMap<ValueId, Repr> {
     let value_types = value_type_by_id_for(tir_func);
     let mut repr_by_value: HashMap<ValueId, Repr> = value_ids_for(tir_func)
@@ -164,9 +164,7 @@ pub fn native_projectable_scalar_reprs_for(
     carrier_by_value
 }
 
-pub fn value_range_for(
-    tir_func: &TirFunction,
-) -> crate::tir::passes::value_range::ValueRangeResult {
+pub fn value_range_for(tir_func: &TirFunction) -> crate::tir::ValueRangeResult {
     let scev = crate::tir::passes::scev::compute_scev(tir_func);
     crate::tir::passes::value_range::compute_value_range(tir_func, &scev)
 }
@@ -192,7 +190,7 @@ pub fn value_range_for(
 #[cfg(any(test, feature = "test-util"))]
 pub fn raw_i64_safe_values_for(
     tir_func: &TirFunction,
-    vr: &crate::tir::passes::value_range::ValueRangeResult,
+    vr: &crate::tir::ValueRangeResult,
 ) -> std::collections::HashSet<ValueId> {
     let value_types = value_type_by_id_for(tir_func);
     raw_i64_safe_values_for_with_types(tir_func, vr, &value_types)
@@ -200,7 +198,7 @@ pub fn raw_i64_safe_values_for(
 
 fn raw_i64_safe_values_for_with_types(
     tir_func: &TirFunction,
-    vr: &crate::tir::passes::value_range::ValueRangeResult,
+    vr: &crate::tir::ValueRangeResult,
     value_types: &HashMap<ValueId, TirType>,
 ) -> std::collections::HashSet<ValueId> {
     let mut seed = raw_i64_safe_value_seed(tir_func, vr, value_types);
@@ -245,7 +243,7 @@ fn raw_i64_full_deopt_values_for_with_types(
 /// All bare-i64 carriers, independent of box-site tier.
 pub(crate) fn raw_i64_carrier_values_for(
     tir_func: &TirFunction,
-    vr: &crate::tir::passes::value_range::ValueRangeResult,
+    vr: &crate::tir::ValueRangeResult,
 ) -> std::collections::HashSet<ValueId> {
     let value_types = value_type_by_id_for(tir_func);
     let mut raw = raw_i64_safe_values_for_with_types(tir_func, vr, &value_types);
@@ -285,7 +283,7 @@ pub(crate) fn raw_i64_carrier_values_for(
 /// proves.
 fn raw_i64_safe_value_seed(
     tir_func: &TirFunction,
-    vr: &crate::tir::passes::value_range::ValueRangeResult,
+    vr: &crate::tir::ValueRangeResult,
     value_types: &HashMap<ValueId, TirType>,
 ) -> std::collections::HashSet<ValueId> {
     let mut seed = std::collections::HashSet::new();

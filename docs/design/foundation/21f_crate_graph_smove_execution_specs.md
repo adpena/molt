@@ -375,9 +375,9 @@ expose it via molt-passes `test-util` and import it from molt-lower's dev-dep on
 ### 4.4 Visibility-widening method
 Two boundaries open: molt-passes->molt-ir (already widened in S1) and molt-lower->molt-passes
 (NEW). Build molt-lower, read the `E0603`/`E0432` list, widen exactly what molt-lower names from
-molt-passes. The production edges are known: `passes::value_range::ValueRangeResult` (consumed by
-`lower_to_lir.rs:63,175,198,210,312`, `lower_to_wasm.rs:374`, `representation_plan.rs:1240,1278,
-1303,1332`), `passes::value_range::{compute_value_range, copy_value_source}`,
+molt-passes. The production edges are known: value-range proof data
+(`runtime/molt-ir/src/tir/value_range.rs`, re-exported through the lowering surface),
+`passes::value_range::{compute_value_range, copy_value_source}`,
 `passes::scev::compute_scev`, `passes::drop_insertion::{DROP_INSERTED_ATTR,
 EXCEPTION_REGION_DROPS_INSERTED_ATTR}` (consumed by `lower_to_simple.rs:305-319,3664-3683` +
 `lower_from_simple.rs:90-133`), `passes::SimpleIrScalarPurityFacts` (consumed by ir_rewrites).

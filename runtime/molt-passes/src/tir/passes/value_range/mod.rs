@@ -35,7 +35,6 @@ mod lengths;
 mod loops;
 mod propagation;
 mod report;
-mod result;
 mod transfer;
 
 #[cfg(test)]
@@ -48,11 +47,11 @@ use crate::tir::numeric_facts::{IntRange, ScevExpr, affine_recurrence_range};
 use super::scev::{ScevResult, compute_scev_with_loop_forest};
 use super::value_identity::copy_value_source;
 
+pub use crate::tir::value_range::ValueRangeResult;
 use lengths::collect_constants_and_lengths;
 use loops::{back_edge_update_value, narrow_from_header_guards, seed_counted_loop_iv_ranges};
 use propagation::{narrow_loop_header_phis, propagate_op_ranges};
 use report::emit_vrange_report;
-pub use result::ValueRangeResult;
 
 // Analysis registration
 // ---------------------------------------------------------------------------
@@ -103,7 +102,7 @@ pub(crate) fn compute_value_range_with_loop_forest(
     for block in func.blocks.values() {
         for op in &block.ops {
             if let Some(src) = copy_value_source(op) {
-                result.copy_src.insert(op.results[0], src);
+                result.record_copy_source(op.results[0], src);
             }
         }
     }
@@ -115,8 +114,9 @@ pub(crate) fn compute_value_range_with_loop_forest(
     let loop_bodies = &loop_forest.bodies;
 
     // ---- global ranges from constants ---------------------------------------
-    for (&v, &c) in &result.const_int {
-        result.global_range.insert(v, IntRange::point(c));
+    let const_facts: Vec<_> = result.const_int_facts().collect();
+    for (value, constant) in const_facts {
+        result.record_global_range(value, IntRange::point(constant));
     }
 
     // ---- IV ranges from SCEV ------------------------------------------------
@@ -156,15 +156,10 @@ pub(crate) fn compute_value_range_with_loop_forest(
             // The IV range holds everywhere in the loop body. Place it as a
             // per-block fact for each body block (and as a weak global so a
             // query outside any guarded block still sees it).
-            result.global_range.insert(iv, iv_range);
+            result.record_global_range(iv, iv_range);
             for &b in body {
-                // meet with any existing (e.g. a tighter guard placed later).
-                let existing = result
-                    .block_range
-                    .get(&(b, iv))
-                    .copied()
-                    .unwrap_or(IntRange::FULL_I64);
-                result.block_range.insert((b, iv), existing.meet(iv_range));
+                // Meet with any existing (e.g. a tighter guard placed later).
+                result.meet_block_range(b, iv, iv_range);
             }
             // Also range the **back-edge update value** `next = iv + k` (the
             // value carried across the latch into the IV phi). It takes the IV's
@@ -189,14 +184,7 @@ pub(crate) fn compute_value_range_with_loop_forest(
                 // value-keyed consumer prove the IV phi's loop-carried incoming
                 // fits the inline window.
                 let next_canon = result.resolve(next_val);
-                let existing = result
-                    .global_range
-                    .get(&next_canon)
-                    .copied()
-                    .unwrap_or(IntRange::FULL_I64);
-                result
-                    .global_range
-                    .insert(next_canon, existing.meet(next_range));
+                result.meet_global_range(next_canon, next_range);
             }
         }
     }

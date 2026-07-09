@@ -49,7 +49,7 @@ pub(crate) fn lower_tir_to_wasm_boxed_i64_abi(func: &TirFunction) -> Option<Wasm
 pub(crate) fn lower_tir_to_wasm_boxed_i64_abi_with_proof(
     func: &TirFunction,
     repr: &HashMap<ValueId, crate::repr::Repr>,
-    inline_proof: &crate::tir::passes::value_range::ValueRangeResult,
+    inline_proof: &crate::tir::ValueRangeResult,
 ) -> Option<WasmBody> {
     let lir = lower_function_to_lir_with_inline_proof(func, repr, inline_proof);
     lower_lir_to_wasm_boxed_i64_abi(&lir)

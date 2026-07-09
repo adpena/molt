@@ -32,7 +32,7 @@ pub(super) fn emit_vrange_report(
             }
         }
     }
-    let mut gr: Vec<_> = result.global_range.iter().collect();
+    let mut gr: Vec<_> = result.global_ranges().collect();
     gr.sort_by_key(|(v, _)| v.0);
     for (v, r) in gr {
         lines.push(format!("  v{} -> [{}, {}]", v.0, r.lo, r.hi));
