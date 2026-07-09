@@ -1,8 +1,8 @@
-use super::super::super::super::class_def_layout::ClassDefLayout;
-use super::super::super::super::context::CompileFuncContext;
 use super::super::super::result_sink::store_result_or_drop;
 use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
+use crate::wasm::class_def_layout::ClassDefLayout;
+use crate::wasm::context::CompileFuncContext;
 use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::TrackedImportIds;
 use wasm_encoder::{Function, Instruction};
