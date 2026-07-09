@@ -106,7 +106,14 @@ pub unsafe extern "C" fn PyCapsule_New(
             .lock()
             .insert(key, CapsuleEntry { pointer });
     }
-    Box::into_raw(capsule).cast::<PyObject>()
+    let ptr = Box::into_raw(capsule).cast::<PyObject>();
+    // Register the capsule in the object bridge so a native extension that stores
+    // it back in the runtime (numpy's `PyDict_SetItem`/`PyModule_AddObject` of its
+    // `_ARRAY_API` / `DATETIMEUNITS` capsules) resolves it via `pyobj_to_handle`
+    // instead of failing the bridge lookup — the same `register_raw_pyobj` bridging
+    // the type/descriptor constructors use.
+    crate::bridge::GLOBAL_BRIDGE.lock().register_raw_pyobj(ptr);
+    ptr
 }
 
 #[unsafe(no_mangle)]

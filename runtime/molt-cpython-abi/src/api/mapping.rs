@@ -44,14 +44,21 @@ pub unsafe extern "C" fn PyDict_SetItem(
     let dict_bits = match bridge.pyobj_to_handle(op) {
         Some(b) => b,
         None => {
-            crate::capi_trace::record_silent_failure("PyDict_SetItem", Some("unresolved dict"));
+            // Address-only (no deref): an unresolved dict receiver is often a wild
+            // / non-canonical pointer that is NOT safe to dereference, so we must
+            // not call `describe_unresolved_pyobject` here (it would trap on
+            // out-of-bounds linear memory).
+            let detail = format!("unresolved dict @ {:p}", op);
+            crate::capi_trace::record_silent_failure("PyDict_SetItem", Some(&detail));
             return -1;
         }
     };
     let key_bits = match bridge.pyobj_to_handle(key) {
         Some(b) => b,
         None => {
-            crate::capi_trace::record_silent_failure("PyDict_SetItem", Some("unresolved key"));
+            // Address-only (no deref) for the same reason as the dict receiver.
+            let detail = format!("unresolved key @ {:p}", key);
+            crate::capi_trace::record_silent_failure("PyDict_SetItem", Some(&detail));
             return -1;
         }
     };

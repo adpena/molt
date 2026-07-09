@@ -68,8 +68,14 @@ pub unsafe extern "C" fn PyType_Ready(tp: *mut PyTypeObject) -> c_int {
     crate::capi_trace::trace_call("PyType_Ready", Some(&label));
 
     // Idempotent: a type readied once (numpy's builtin PyType_Ready(&PyBool_Type)
-    // calls, or a re-entrant static-init) must not be re-processed.
+    // calls, or a re-entrant static-init) must not be re-processed. Still register
+    // it in the bridge (idempotent) so an already-ready static type the extension
+    // hands back — e.g. `PyBool_Type`, readied at `init_static_types` — resolves
+    // via `pyobj_to_handle` instead of failing the bridge lookup.
     if unsafe { (*tp).tp_flags } & Py_TPFLAGS_READY != 0 {
+        crate::bridge::GLOBAL_BRIDGE
+            .lock()
+            .register_raw_pyobj(tp.cast::<PyObject>());
         return 0;
     }
 
@@ -136,9 +142,33 @@ pub unsafe extern "C" fn PyType_Ready(tp: *mut PyTypeObject) -> c_int {
             return -1;
         }
 
-        // (5) Mark ready.
+        // (5) Set the metatype. CPython's `PyType_Ready` does
+        //     `Py_SET_TYPE(type, &PyType_Type)` when the type's `ob_type` is left
+        //     NULL by the static declaration (numpy's `PyVarObject_HEAD_INIT(NULL, 0)`
+        //     leaves it NULL). Without this the readied type is a bare sentinel
+        //     (`ob_type == NULL`) and every consumer that inspects
+        //     `Py_TYPE(type)` — including the split-runtime bridge and the
+        //     `describe_unresolved_pyobject` diagnostic — sees an ill-formed object.
+        if (*tp).ob_type.is_null() {
+            (*tp).ob_type = &raw mut crate::abi_types::PyType_Type;
+        }
+
+        // (6) Mark ready.
         (*tp).tp_flags |= Py_TPFLAGS_READY;
     }
+
+    // (7) Register the readied type object in the split-runtime object bridge so a
+    //     C extension that hands the type back to the runtime — `PyModule_AddObject`
+    //     (numpy's `ndarray`/`dtype`/`flatiter`/... module attributes) or a
+    //     `PyDict_SetItem` whose key/value IS the type object (numpy's
+    //     scalar-type -> DType registry) — resolves it via `pyobj_to_handle`
+    //     instead of failing the bridge lookup. This is the same
+    //     `register_raw_pyobj` bridging that `PyDescr_NewGetSet`/`PyDescr_NewMember`
+    //     already apply to the descriptors they mint (idempotent + stable handle),
+    //     not a weakening of the unresolved-object checks.
+    crate::bridge::GLOBAL_BRIDGE
+        .lock()
+        .register_raw_pyobj(tp.cast::<PyObject>());
     0
 }
 

@@ -900,6 +900,38 @@ pub unsafe fn init_static_types() {
     }
 }
 
+/// Register the runtime's canonical CPython-ABI *sentinel* data objects in the
+/// object bridge so a native extension that resolves them (via the split-runtime
+/// GOT data retarget) and hands them straight back to the runtime — as a
+/// `PyDict_SetItem` value or key — resolves through `pyobj_to_handle` instead of
+/// failing the bridge lookup.
+///
+/// Scope: only the objects that are NOT `PyType_Ready`-ed and therefore never pass
+/// through the `PyType_Ready` bridge registration — the exception singletons and
+/// the `Ellipsis` / `NotImplemented` / UTC sentinels. The canonical *type* statics
+/// (`PyBool_Type`, `PyLong_Type`, ...) are registered when the extension readies
+/// them (numpy calls `PyType_Ready(&PyBool_Type)` &c.), so they are intentionally
+/// omitted here. `Py_None` / `Py_True` / `Py_False` are resolved by identity in
+/// `pyobj_to_handle_static` and must NOT be raw-registered (that would shadow their
+/// canonical NaN-boxed handles).
+///
+/// Idempotent (`register_raw_pyobj` no-ops on a re-seen pointer), so it is safe to
+/// call from the `Once`-guarded `molt_cpython_abi_init`.
+pub fn register_static_abi_objects() {
+    let mut bridge = crate::bridge::GLOBAL_BRIDGE.lock();
+    for ptr in exc_singleton_ptrs() {
+        unsafe { bridge.register_raw_pyobj(ptr) };
+    }
+    let sentinels: [*mut PyObject; 3] = [
+        &raw mut Py_NotImplementedSentinel,
+        &raw mut Py_EllipsisObject,
+        &raw mut PyDateTime_TimeZone_UTC_Object,
+    ];
+    for ptr in sentinels {
+        unsafe { bridge.register_raw_pyobj(ptr) };
+    }
+}
+
 // ─── Exception singletons ──────────────────────────────────────────────────
 //
 // Extensions receive these as opaque `*mut PyObject` passed to PyErr_SetString.
@@ -929,6 +961,17 @@ macro_rules! exc_singletons {
                 }
             )*
             None
+        }
+
+        /// Addresses of every exception singleton, for bridge registration. These
+        /// are canonical runtime data symbols a native extension resolves (via the
+        /// split-runtime GOT data retarget) and then hands back to the runtime as a
+        /// `PyDict_SetItem` value (numpy's `error = Exception`), so the bridge must
+        /// resolve them in `pyobj_to_handle` instead of failing the lookup.
+        pub fn exc_singleton_ptrs() -> Vec<*mut PyObject> {
+            vec![
+                $( &raw mut $name as *mut PyObject, )*
+            ]
         }
     };
 }
