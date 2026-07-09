@@ -109,6 +109,7 @@ Kernel B `witness_forward.levelset_argmax` against
 | `007_molt_response_numpy_scipy_c_api_greenup_and_witness_kernel_plan.md` | ABI/package-native plan notes |
 | `008_addendum_v2_witness_decoder_20260629.md` | decode-chain, contest-runtime contracts, and runtime-rs sister-backend notes |
 | `009_theta_prime_capstone_sync_forward_kernels_and_vision_20260701.md` | θ′ capstone sync: 4 new built decode-chain kernels, the 7-kernel forward map (WebGPU speed-lane), reaffirmed contracts, and the P3/P4 visionary horizon (differentiable-WebGPU training + production deployment substrate). P0 stays Kernel A. |
+| `010_pact_update_and_work_package_20260709.md` | v7.5→v8 vehicle-line update (7-dim boundary-flip crux, argmax=power-diagram, MEASURED geometric rate collapse) + the ranked W1–W5 work package for the grown team: witness-decode-as-flagship (WASM host-bit-identical + kernel intrinsics), FLOW in-browser, ONNX trunk quick-win, numeric-array intrinsic co-design. |
 | `pact_witness_kernel/` | runnable bundle, fixture oracle, and parity script |
 
 ## The Two Asks That Unblock The Rest
