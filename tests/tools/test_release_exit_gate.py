@@ -258,8 +258,8 @@ def _degrade_to_slow_evidence(
 def _fail_closed_evidence(tmp_path: Path, *, ok: bool = True) -> dict[str, str]:
     path = tmp_path / "fail-closed.log"
     text = (
-        "fail-closed gate: OK (16 registered sites; duplicate_authority=3<=3, "
-        "ecosystem_baked=8<=8, ecosystem_build_crutch=2<=2, "
+        "fail-closed gate: OK (7 registered sites; duplicate_authority=3<=3, "
+        "ecosystem_baked=0<=0, ecosystem_build_crutch=1<=1, "
         "ecosystem_reimplementation=0<=0, fail_open_backend_dispatch=2<=2, "
         "fail_open_stub=1<=1, todo_as_plan=0<=0)\n"
         if ok

@@ -324,10 +324,10 @@ def _source_extension_include_dirs_for_abi_tier(
         # ``runtime/molt-cpython-abi/include`` supplies the full stock-CPython
         # public surface (Python.h, structmember.h, pymem.h, pyerrors.h, ...).
         # It must NOT also inject the repo-root ``include/`` tier: that tier
-        # carries Molt's source-compat NumPy overlay (``include/numpy/*``),
-        # which would shadow and collide with a source-recompiled package's OWN
-        # ``numpy/*`` headers (numpy ships its own complete ``numpy/_core/include``
-        # via package custody). One header home per tier; no cross-tier drag-in.
+        # is the libmolt source-compat header surface. Package headers such as
+        # ``numpy/*`` are admitted through the package build/source plan, never
+        # through either Molt ABI tier. One header home per tier; no cross-tier
+        # drag-in.
         return (root / "runtime" / "molt-cpython-abi" / "include",)
     return (root / "include",)
 

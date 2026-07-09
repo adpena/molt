@@ -9,6 +9,7 @@ from pathlib import Path
 
 import molt.cli as cli
 import molt.wasm_artifact as wasm_artifact
+from molt._wasm_runtime_exports import wasm_static_link_runtime_symbols_for_imports
 from molt.cli import commands as cli_commands
 from molt.cli import backend_cache as cli_backend_cache
 from molt.cli import entrypoint_parser as cli_entrypoint_parser
@@ -1192,7 +1193,7 @@ def test_extension_scan_classifies_project_generated_c_api_symbols(
     assert "npy_missing_runtime" in data["missing_symbols"]
 
 
-def test_extension_scan_numpy_surface_reports_fail_fast_symbols(
+def test_extension_scan_numpy_surface_fails_closed_without_package_headers(
     tmp_path: Path, capsys
 ) -> None:
     project_root = tmp_path / "numpy_scanproj"
@@ -1205,31 +1206,34 @@ def test_extension_scan_numpy_surface_reports_fail_fast_symbols(
         json_output=True,
         verbose=False,
     )
-    assert rc == 0
+    assert rc == 1
     payload = json.loads(capsys.readouterr().out)
-    assert payload["status"] == "ok"
+    assert payload["status"] == "error"
+    assert payload["errors"] == ["unsupported C-API symbols found"]
     data = payload["data"]
-    assert data["missing_symbols"] == []
     assert data["fail_fast_symbols"] == []
-    assert data["symbol_status"]["PyArray_CastScalarToCtype"] == "source_compile_only"
-    assert "PyArray_CastScalarToCtype" in data["source_compile_only_symbols"]
-    assert "PyArray_NDIM" in data["source_compile_only_symbols"]
-    assert data["symbol_status"]["PyArray_NDIM"] == "source_compile_only"
-    assert data["symbol_primitive_class"]["PyArray_NDIM"] == "numpy_c_api"
-    assert "PyArray_SIZE" in data["source_compile_only_symbols"]
-    assert "PyArray_TYPE" in data["source_compile_only_symbols"]
-    assert "PyTypeNum_ISINTEGER" in data["source_compile_only_symbols"]
-    assert "PyArray_CheckScalar" in data["source_compile_only_symbols"]
-    assert "PyArray_ISDATETIME" in data["source_compile_only_symbols"]
-    assert "PyArray_DescrFromScalar" in data["source_compile_only_symbols"]
-    assert "PyArray_DescrFromType" in data["source_compile_only_symbols"]
-    assert "NPY_INT" in data["source_compile_only_symbols"]
-    assert "NPY_NOTYPE" in data["source_compile_only_symbols"]
-    assert "NPY_ARRAY_BEHAVED_NS" in data["source_compile_only_symbols"]
-    assert "npy_creal" in data["source_compile_only_symbols"]
-    assert "npy_cimag" in data["source_compile_only_symbols"]
-    assert data["symbol_primitive_class"]["NPY_INT"] == "numpy_c_api"
-    assert data["symbol_primitive_class"]["npy_creal"] == "numpy_c_api"
+    assert data["source_compile_only_symbols"] == []
+    expected_missing = {
+        "PyArray_CastScalarToCtype",
+        "PyArray_CheckScalar",
+        "PyArray_DescrFromScalar",
+        "PyArray_DescrFromType",
+        "PyArray_ISDATETIME",
+        "PyArray_NDIM",
+        "PyArray_SIZE",
+        "PyArray_TYPE",
+        "PyTypeNum_ISINTEGER",
+        "NPY_ARRAY_BEHAVED_NS",
+        "NPY_INT",
+        "NPY_NOTYPE",
+        "npy_cimag",
+        "npy_creal",
+    }
+    assert expected_missing <= set(data["missing_symbols"])
+    assert data["fail_fast_symbols"] == []
+    for symbol in expected_missing:
+        assert data["symbol_status"][symbol] == "missing"
+        assert data["symbol_primitive_class"][symbol] == "numpy_c_api"
     assert data["primitive_class_counts"]["numpy_c_api"] >= 1
     assert "numpy_c_api" in data["symbols_by_primitive_class"]
 
@@ -2656,7 +2660,10 @@ def test_extension_build_wasm_target_emits_static_link_artifact_and_manifest(
     object_closure = manifest["object_closure"]
     assert object_closure["defined_symbols"] == [native_symbol]
     assert object_closure["undefined_symbols"] == sorted(wasm_imports)
-    assert object_closure["runtime_symbols"] == sorted(wasm_imports)
+    assert object_closure["runtime_symbols"] == sorted(
+        wasm_static_link_runtime_symbols_for_imports(wasm_imports)
+    )
+    assert "malloc" not in object_closure["runtime_symbols"]
     assert "PyModule_Create" in object_closure["required_c_api_symbols"]
     assert "PyOS_strtol" in object_closure["required_c_api_symbols"]
     assert "PyInit_demoext" not in object_closure["required_c_api_symbols"]
@@ -2916,6 +2923,7 @@ def test_wasi_sysroot_resolver_accepts_target_specific_include_layout(
 def test_extension_numpy_build_audit_publish_dry_run_matrix(
     tmp_path: Path,
     monkeypatch,
+    capsys,
     target: str | None,
 ) -> None:
     project_root = tmp_path / "numpy_extproj"
@@ -2959,29 +2967,12 @@ def test_extension_numpy_build_audit_publish_dry_run_matrix(
         json_output=False,
         verbose=False,
     )
-    assert rc == 0
-
-    wheel_path = next(out_dir.glob("*.whl"))
-    audit_rc = cli.extension_audit(
-        path=str(wheel_path),
-        require_capabilities=True,
-        require_abi="1",
-        require_checksum=True,
-        json_output=False,
-        verbose=False,
-    )
-    assert audit_rc == 0
-
-    publish_rc = cli.publish(
-        package_path=str(wheel_path),
-        registry=str(out_dir / "registry"),
-        dry_run=True,
-        json_output=False,
-        verbose=False,
-        deterministic=False,
-        capabilities="fs.read",
-    )
-    assert publish_rc == 0
+    assert rc == 2
+    stderr = capsys.readouterr().err
+    assert "Reachable source extension C/API symbols are unsupported" in stderr
+    assert "PyArray_NDIM" in stderr
+    assert "NPY_ARRAY_BEHAVED_NS" in stderr
+    assert not list(out_dir.glob("*.whl"))
 
 
 def test_extension_audit_reports_abi_mismatch(tmp_path: Path) -> None:
@@ -4705,131 +4696,71 @@ def test_python_header_source_compat_descriptors_fail_closed() -> None:
     assert "Py_INCREF(Py_None);\n    return Py_None;" not in header
 
 
-def test_numpy_header_arrayobject_smoke(tmp_path: Path) -> None:
-    clang = shutil.which("clang")
-    if clang is None:
-        pytest.skip("clang is required for NumPy compatibility header smoke test")
-    source = tmp_path / "numpy_h_arrayobject_smoke.c"
-    source.write_text(
-        "\n".join(
-            [
-                "#include <Python.h>",
-                "#include <numpy/arrayobject.h>",
-                "",
-                "static int numpy_smoke(PyObject *obj) {",
-                "    PyArrayObject *arr = (PyArrayObject *)obj;",
-                "    char raw[32];",
-                "    Py_buffer view;",
-                "    PyArrayObject *from_buffer;",
-                "    PyArrayObject *strided;",
-                "    PyArrayObject *copy;",
-                "    PyArrayObject *cast;",
-                "    PyArrayObject *scalar;",
-                "    npy_intp dims2[2] = {2, 2};",
-                "    npy_intp bad_strides[2] = {1, 2};",
-                "    PyArray_Descr *descr = PyArray_DescrFromType(NPY_INT);",
-                "    PyArray_Descr *scalar_descr = PyArray_DescrFromScalar(obj);",
-                "    npy_intp nd = PyArray_NDIM(arr);",
-                "    npy_intp size = PyArray_SIZE(arr);",
-                "    int is_int = PyTypeNum_ISINTEGER(PyArray_TYPE(arr));",
-                "    int is_scalar = PyArray_CheckScalar(obj);",
-                "    int is_datetime = PyArray_ISDATETIME(arr);",
-                "    PyObject *from_any = PyArray_FromAny(obj, PyArray_DescrFromType(NPY_UBYTE), 1, 2, NPY_ARRAY_C_CONTIGUOUS, NULL);",
-                "    memset(&view, 0, sizeof(view));",
-                "    view.buf = raw + 1;",
-                "    view.len = 16;",
-                "    view.itemsize = 8;",
-                "    view.readonly = 0;",
-                "    view.ndim = 1;",
-                "    view.format = \"<d\";",
-                "    from_buffer = (PyArrayObject *)PyArray_FromAny((PyObject *)&view, NULL, 0, 1, 0, NULL);",
-                "    strided = (PyArrayObject *)PyArray_NewFromDescr(&PyArray_Type, PyArray_DescrFromType(NPY_UBYTE), 2, dims2, bad_strides, raw, NPY_ARRAY_C_CONTIGUOUS, NULL);",
-                "    copy = strided != NULL ? (PyArrayObject *)PyArray_NewCopy(strided, NPY_CORDER) : NULL;",
-                "    cast = strided != NULL ? (PyArrayObject *)PyArray_Cast(strided, NPY_INT) : NULL;",
-                "    scalar = (PyArrayObject *)PyArray_Empty(0, NULL, PyArray_DescrFromType(NPY_DOUBLE), 0);",
-                "    (void)from_buffer;",
-                "    (void)copy;",
-                "    (void)cast;",
-                "    (void)scalar;",
-                "    (void)PyArray_malloc_aligned(8);",
-                "    (void)PyArray_realloc_aligned(NULL, 16);",
-                "    (void)PyArray_calloc_aligned(2, 8);",
-                "    import_array1(-1);",
-                "    (void)from_any;",
-                "    if (descr != NULL) {",
-                "        PyMem_Free(descr);",
-                "    }",
-                "    if (scalar_descr != NULL) {",
-                "        PyMem_Free(scalar_descr);",
-                "    }",
-                "    return (int)(nd + size + is_int + is_scalar + is_datetime);",
-                "}",
-                "",
-                "int main(void) {",
-                "    (void)numpy_smoke;",
-                "    return 0;",
-                "}",
-                "",
-            ]
+def test_source_compat_tier_does_not_ship_numpy_overlay() -> None:
+    source_compat_dirs = tuple(
+        path.resolve()
+        for path in (
+            cli_source_extension_toolchain._source_extension_include_dirs_for_abi_tier(
+                molt_root=ROOT,
+                abi_tier="source-compat",
+            )
         )
     )
-    result = run_cli_test_process(
-        [
-            clang,
-            "-std=c11",
-            "-Wall",
-            "-Wextra",
-            "-Werror",
-            f"-I{ROOT / 'include'}",
-            "-fsyntax-only",
-            str(source),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+
+    assert source_compat_dirs == ((ROOT / "include").resolve(),)
+    forbidden_overlay_paths = (
+        ROOT / "include" / "numpy",
+        ROOT / "include" / "_numpyconfig.h",
+        ROOT / "include" / "arrayobject.h",
+        ROOT / "include" / "arraytypes.h",
+        ROOT / "include" / "config.h",
+        ROOT / "include" / "dispatching.h",
+        ROOT / "include" / "extobj.h",
+        ROOT / "include" / "npy_cpu_dispatch_config.h",
+        ROOT / "include" / "npy_sort.h",
+        ROOT / "include" / "templ_common.h",
+        ROOT / "include" / "ufunc_object.h",
+        ROOT / "include" / "ufunc_type_resolution.h",
+        ROOT / "include" / "__multiarray_api.c",
+        ROOT / "include" / "__ufunc_api.c",
     )
-    assert result.returncode == 0, result.stderr
+    for path in forbidden_overlay_paths:
+        assert not path.exists(), f"Molt must not ship package-owned NumPy overlay: {path}"
 
 
-def test_numpy_header_arrayobject_cpython_abi_tier_smoke(tmp_path: Path) -> None:
+def test_source_compat_tier_does_not_shadow_package_numpy_headers(
+    tmp_path: Path,
+) -> None:
     clang = shutil.which("clang")
     if clang is None:
-        pytest.skip("clang is required for NumPy CPython ABI header smoke test")
-    source = tmp_path / "numpy_h_arrayobject_cpython_abi_smoke.c"
+        pytest.skip("clang is required for the source-compat numpy custody test")
+
+    package_include = tmp_path / "pkg_numpy_include"
+    (package_include / "numpy").mkdir(parents=True)
+    (package_include / "numpy" / "arrayobject.h").write_text(
+        "\n".join(
+            [
+                "#ifndef PACKAGE_OWN_NUMPY_ARRAYOBJECT_H",
+                "#define PACKAGE_OWN_NUMPY_ARRAYOBJECT_H",
+                "#define PACKAGE_OWN_NUMPY_SENTINEL 7",
+                "#endif",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    source = tmp_path / "source_compat_numpy_custody_probe.c"
     source.write_text(
         "\n".join(
             [
                 "#include <Python.h>",
                 "#include <numpy/arrayobject.h>",
                 "",
-                "static int numpy_cpython_abi_smoke(PyObject *obj) {",
-                "    PyArrayObject *arr = (PyArrayObject *)obj;",
-                "    PyArray_Descr *descr = PyArray_DescrFromScalar(obj);",
-                "    PyObject *from_any = PyArray_FromAny(",
-                "        obj, PyArray_DescrFromType(NPY_DOUBLE), 1, 2,",
-                "        NPY_ARRAY_C_CONTIGUOUS, NULL);",
-                "    int ok = PyArray_Check(arr) + PyArray_DescrCheck(descr);",
-                "    PyArray_DTypeMeta *dtype_meta = (PyArray_DTypeMeta *)descr;",
-                "    int dtype_ok = PyObject_TypeCheck(dtype_meta, &PyArrayDTypeMeta_Type);",
-                "    int type_ok = PyType_Check(&PyArray_Type);",
-                "    PyObject *type_ref = Py_NewRef(&PyArray_Type);",
-                "    Py_XSETREF(type_ref, Py_NewRef(Py_TYPE(obj)));",
-                "    if (from_any != NULL) {",
-                "        Py_DECREF(from_any);",
-                "    }",
-                "    if (type_ref != NULL) {",
-                "        Py_DECREF(type_ref);",
-                "    }",
-                "    if (descr != NULL) {",
-                "        PyMem_Free(descr);",
-                "    }",
-                "    return ok + dtype_ok + type_ok + (int)PyArray_SIZE(arr);",
-                "}",
+                "#ifndef PACKAGE_OWN_NUMPY_SENTINEL",
+                '#error "Molt overlay shadowed the package\'s own numpy/ header"',
+                "#endif",
                 "",
-                "int main(void) {",
-                "    (void)numpy_cpython_abi_smoke;",
-                "    return 0;",
-                "}",
+                "int probe(void) { return PACKAGE_OWN_NUMPY_SENTINEL; }",
                 "",
             ]
         ),
@@ -4839,11 +4770,10 @@ def test_numpy_header_arrayobject_cpython_abi_tier_smoke(tmp_path: Path) -> None
         [
             clang,
             "-std=c11",
-            "-Wall",
-            "-Wextra",
             "-Werror",
-            f"-I{ROOT / 'runtime' / 'molt-cpython-abi' / 'include'}",
             f"-I{ROOT / 'include'}",
+            "-I",
+            str(package_include),
             "-fsyntax-only",
             str(source),
         ],
@@ -4948,10 +4878,9 @@ def test_datetime_header_cpython_abi_tier_smoke(tmp_path: Path) -> None:
 def test_source_extension_cpython_abi_tier_is_single_self_complete_authority() -> None:
     """The cpython-abi tier is ONE header home: the ABI authority only.
 
-    It must NOT also inject the repo-root ``include/`` tier (which carries
-    Molt's source-compat NumPy overlay ``include/numpy/*``). That overlay would
-    shadow a source-recompiled package's OWN ``numpy/*`` headers. Regression
-    guard for the header-custody collision that blocked numpy self-recompile.
+    It must NOT also inject the repo-root ``include/`` tier. The source-compat
+    tier is a separate libmolt header authority, while package headers such as
+    ``numpy/*`` are admitted only through package custody/source plans.
     """
     abi_authority = (ROOT / "runtime" / "molt-cpython-abi" / "include").resolve()
     repo_root_include = (ROOT / "include").resolve()
@@ -4974,8 +4903,8 @@ def test_source_extension_cpython_abi_tier_is_single_self_complete_authority() -
     for header in ("Python.h", "structmember.h", "pymem.h", "pyerrors.h"):
         assert (abi_authority / header).is_file(), header
 
-    # source-compat is unchanged: it owns the repo-root include/ tier (with the
-    # Molt NumPy overlay) and does NOT pull the standalone ABI authority.
+    # source-compat is unchanged: it owns the repo-root libmolt include/ tier
+    # and does NOT pull the standalone ABI authority.
     source_compat_dirs = tuple(
         path.resolve()
         for path in (
