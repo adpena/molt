@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 import hashlib
 import json
@@ -7,8 +8,9 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Mapping, cast
 
 from molt.cli.artifact_state import (
     _artifact_state_path,
@@ -18,7 +20,6 @@ from molt.cli.artifact_state import (
     _maybe_hydrate_artifact_from_canonical_target,
 )
 from molt.cli.atomic_io import _atomic_copy_file
-from molt.cli.backend_execution import _DEFAULT_BACKEND_FEATURES
 from molt.cli.build_locks import _build_lock
 from molt.cli.cache_fingerprints import _backend_source_paths
 from molt.cli.cargo_execution import (
@@ -28,15 +29,18 @@ from molt.cli.cargo_execution import (
     _run_cargo_with_sccache_retry,
 )
 from molt.cli.command_runtime import _run_subprocess_captured_to_tempfiles
-from molt.cli.compiler_metadata import _rustc_version
+from molt.cli.compiler_metadata import _compiler_clean_source_state, _rustc_version
+from molt.cli.file_hashing import _hash_source_tree_metadata, _hash_source_tree_paths
+from molt.cli.json_cache import _read_cached_json_object, _write_cached_json_object
 from molt.cli.native_toolchain import _codesign_binary
 from molt.cli.runtime_fingerprints import (
     _artifact_needs_rebuild,
     _artifact_content_looks_valid,
-    _hash_runtime_file,
-    _hash_source_tree_metadata,
     _read_runtime_fingerprint,
+    _refresh_runtime_fingerprint_metadata,
     _stored_fingerprint_matches_source_metadata,
+    _stored_fingerprint_matches_clean_source_state,
+    _runtime_fingerprint_metadata_needs_refresh,
     _write_runtime_fingerprint,
 )
 from molt.cli.runtime_paths import _cargo_profile_dir, _cargo_target_root
@@ -46,6 +50,10 @@ from molt.cli.setup_readiness import (
 from molt.llvm_toolchain import LlvmToolchainConfigError, required_llvm_backend_pin
 
 
+_BACKEND_PROBE_VALIDATION_SCHEMA_VERSION = 1
+_BACKEND_COMPILER_CACHE_FINGERPRINT_SCHEMA_VERSION = 1
+
+
 @dataclass(frozen=True)
 class _BackendBinaryEnsureResult:
     ok: bool
@@ -53,6 +61,7 @@ class _BackendBinaryEnsureResult:
     returncode: int | None = None
     phase: str | None = None
     command: tuple[str, ...] = ()
+    cache_compiler_fingerprint: str | None = None
 
     def __bool__(self) -> bool:
         return self.ok
@@ -62,8 +71,47 @@ class _BackendBinaryEnsureResult:
         return self.detail or "Backend build failed"
 
 
-def _backend_ensure_success() -> _BackendBinaryEnsureResult:
-    return _BackendBinaryEnsureResult(ok=True)
+def _backend_compiler_cache_fingerprint(
+    fingerprint: Mapping[str, Any] | None,
+) -> str | None:
+    if fingerprint is None:
+        return None
+    fingerprint_hash = fingerprint.get("hash")
+    if not isinstance(fingerprint_hash, str) or not fingerprint_hash:
+        return None
+    payload = {
+        "schema": _BACKEND_COMPILER_CACHE_FINGERPRINT_SCHEMA_VERSION,
+        "hash": fingerprint_hash,
+        "rustc": fingerprint.get("rustc"),
+        "inputs_digest": fingerprint.get("inputs_digest"),
+        "meta_digest": fingerprint.get("meta_digest"),
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _backend_ensure_success(
+    *,
+    fingerprint: Mapping[str, Any] | None = None,
+) -> _BackendBinaryEnsureResult:
+    return _BackendBinaryEnsureResult(
+        ok=True,
+        cache_compiler_fingerprint=_backend_compiler_cache_fingerprint(fingerprint),
+    )
+
+
+def _record_backend_binary_stage_ms(
+    stage_timings_ms: dict[str, float] | None,
+    name: str,
+    started_at: float,
+) -> None:
+    if stage_timings_ms is None:
+        return
+    elapsed_ms = max(0.0, (time.perf_counter() - started_at) * 1000.0)
+    stage_timings_ms[name] = round(
+        stage_timings_ms.get(name, 0.0) + elapsed_ms,
+        6,
+    )
 
 
 def _backend_ensure_failure(
@@ -121,6 +169,103 @@ def _backend_fingerprint_path(
     )
 
 
+def _backend_probe_validation_path(
+    project_root: Path,
+    artifact: Path,
+    cargo_profile: str,
+) -> Path:
+    return _artifact_state_path(
+        project_root,
+        artifact,
+        subdir="backend_probe_validations",
+        stem_suffix=f"{cargo_profile}",
+        extension="json",
+    )
+
+
+def _backend_probe_binary_identity(binary_path: Path) -> dict[str, object] | None:
+    try:
+        resolved = binary_path.resolve()
+    except OSError:
+        resolved = binary_path
+    try:
+        stat = binary_path.stat()
+    except OSError:
+        return None
+    return {
+        "path": os.fspath(resolved),
+        "mtime_ns": stat.st_mtime_ns,
+        "size": stat.st_size,
+    }
+
+
+def _backend_probe_validation_payload(
+    *,
+    binary_path: Path,
+    probe_target: str,
+    backend_features: tuple[str, ...],
+    fingerprint: dict[str, str | None] | None,
+) -> dict[str, object] | None:
+    if fingerprint is None:
+        return None
+    fingerprint_hash = fingerprint.get("hash")
+    if not isinstance(fingerprint_hash, str) or not fingerprint_hash:
+        return None
+    binary_identity = _backend_probe_binary_identity(binary_path)
+    if binary_identity is None:
+        return None
+    return {
+        "schema": _BACKEND_PROBE_VALIDATION_SCHEMA_VERSION,
+        "binary": binary_identity,
+        "probe_target": probe_target,
+        "backend_features": sorted(backend_features),
+        "fingerprint": {
+            "hash": fingerprint_hash,
+            "rustc": fingerprint.get("rustc"),
+            "inputs_digest": fingerprint.get("inputs_digest"),
+            "meta_digest": fingerprint.get("meta_digest"),
+        },
+    }
+
+
+def _backend_probe_validation_matches(
+    path: Path,
+    *,
+    binary_path: Path,
+    probe_target: str,
+    backend_features: tuple[str, ...],
+    fingerprint: dict[str, str | None] | None,
+) -> bool:
+    expected = _backend_probe_validation_payload(
+        binary_path=binary_path,
+        probe_target=probe_target,
+        backend_features=backend_features,
+        fingerprint=fingerprint,
+    )
+    if expected is None:
+        return False
+    return _read_cached_json_object(path) == expected
+
+
+def _write_backend_probe_validation(
+    path: Path,
+    *,
+    binary_path: Path,
+    probe_target: str,
+    backend_features: tuple[str, ...],
+    fingerprint: dict[str, str | None] | None,
+) -> None:
+    payload = _backend_probe_validation_payload(
+        binary_path=binary_path,
+        probe_target=probe_target,
+        backend_features=backend_features,
+        fingerprint=fingerprint,
+    )
+    if payload is None:
+        return
+    _write_cached_json_object(path, payload)
+
+
 def _backend_fingerprint(
     project_root: Path,
     *,
@@ -128,13 +273,28 @@ def _backend_fingerprint(
     rustflags: str,
     backend_features: tuple[str, ...],
     stored_fingerprint: dict[str, Any] | None = None,
-) -> dict[str, str | None] | None:
+) -> dict[str, Any] | None:
     meta = f"profile:{cargo_profile}\n"
     meta += f"rustflags:{rustflags}\n"
     meta += f"features:{','.join(backend_features)}\n"
     meta_digest = hashlib.sha256(meta.encode("utf-8")).hexdigest()
-    source_paths = _backend_source_paths(project_root, backend_features)
     rustc_info = _rustc_version()
+    source_state = _compiler_clean_source_state(project_root)
+    if _stored_fingerprint_matches_clean_source_state(
+        stored_fingerprint,
+        source_state=source_state,
+        rustc=rustc_info,
+        meta_digest=meta_digest,
+    ):
+        assert stored_fingerprint is not None
+        return {
+            "hash": cast(str, stored_fingerprint.get("hash")),
+            "rustc": rustc_info,
+            "inputs_digest": stored_fingerprint.get("inputs_digest"),
+            "meta_digest": meta_digest,
+            "source_state": source_state,
+        }
+    source_paths = _backend_source_paths(project_root, backend_features)
     inputs_meta = _hash_source_tree_metadata(source_paths, project_root)
     inputs_digest = inputs_meta[0] if inputs_meta is not None else None
     if _stored_fingerprint_matches_source_metadata(
@@ -149,18 +309,13 @@ def _backend_fingerprint(
             "rustc": rustc_info,
             "inputs_digest": inputs_digest,
             "meta_digest": meta_digest,
+            "source_state": source_state,
         }
 
     hasher = hashlib.sha256()
     hasher.update(meta.encode("utf-8"))
     try:
-        for path in sorted(source_paths, key=lambda p: str(p)):
-            if path.is_dir():
-                for item in sorted(path.rglob("*"), key=lambda p: str(p)):
-                    if item.is_file():
-                        _hash_runtime_file(item, project_root, hasher)
-            elif path.exists():
-                _hash_runtime_file(path, project_root, hasher)
+        _hash_source_tree_paths(source_paths, project_root, hasher)
     except OSError:
         return None
     return {
@@ -168,6 +323,7 @@ def _backend_fingerprint(
         "rustc": rustc_info,
         "inputs_digest": inputs_digest,
         "meta_digest": meta_digest,
+        "source_state": source_state,
     }
 
 
@@ -179,6 +335,7 @@ def _ensure_backend_binary(
     cargo_profile: str,
     project_root: Path,
     backend_features: tuple[str, ...],
+    stage_timings_ms: dict[str, float] | None = None,
 ) -> _BackendBinaryEnsureResult:
     # MOLT_SKIP_RUNTIME_REBUILD=1 also skips the backend fingerprint check.
     if os.environ.get("MOLT_SKIP_RUNTIME_REBUILD") == "1":
@@ -188,13 +345,28 @@ def _ensure_backend_binary(
     fingerprint_path = _backend_fingerprint_path(
         project_root, backend_bin, cargo_profile
     )
+    probe_validation_path = _backend_probe_validation_path(
+        project_root, backend_bin, cargo_profile
+    )
+    stage_start = time.perf_counter()
     stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
+    _record_backend_binary_stage_ms(
+        stage_timings_ms,
+        "backend_binary_read_fingerprint",
+        stage_start,
+    )
+    stage_start = time.perf_counter()
     fingerprint = _backend_fingerprint(
         project_root,
         cargo_profile=cargo_profile,
         rustflags=rustflags,
         backend_features=backend_features,
         stored_fingerprint=stored_fingerprint,
+    )
+    _record_backend_binary_stage_ms(
+        stage_timings_ms,
+        "backend_binary_compute_fingerprint",
+        stage_start,
     )
     features_tag = "_".join(sorted(backend_features)) if backend_features else "default"
     lock_name = f"backend.{cargo_profile}.{features_tag}"
@@ -230,6 +402,7 @@ def _ensure_backend_binary(
             *,
             binary_path: Path | None = None,
         ) -> tuple[bool, str]:
+            stage_start = time.perf_counter()
             probe_ir = json.dumps(
                 {
                     "functions": [],
@@ -268,6 +441,11 @@ def _ensure_backend_binary(
                     memory_guard_prefix="MOLT_BUILD",
                 )
             except (subprocess.TimeoutExpired, OSError) as exc:
+                _record_backend_binary_stage_ms(
+                    stage_timings_ms,
+                    "backend_binary_probe",
+                    stage_start,
+                )
                 return False, str(exc)
             finally:
                 try:
@@ -276,11 +454,22 @@ def _ensure_backend_binary(
                     pass
             stderr = probe.stderr.decode(errors="replace")
             stdout = probe.stdout.decode(errors="replace")
+            if probe.returncode == 0 and binary_path is None:
+                _write_backend_probe_validation(
+                    probe_validation_path,
+                    binary_path=backend_bin,
+                    probe_target=probe_target,
+                    backend_features=backend_features,
+                    fingerprint=fingerprint,
+                )
+            _record_backend_binary_stage_ms(
+                stage_timings_ms,
+                "backend_binary_probe",
+                stage_start,
+            )
             return probe.returncode == 0, (stderr or stdout).strip()
 
         def _refresh_feature_tagged_backend_alias(probe_target: str) -> None:
-            if backend_features == _DEFAULT_BACKEND_FEATURES:
-                return
             cargo_output = _canonical_cargo_backend_output()
             if cargo_output == backend_bin or not cargo_output.exists():
                 return
@@ -302,16 +491,62 @@ def _ensure_backend_binary(
                 _materialize_backend_binary_from(cargo_output)
 
         if stored_fingerprint is None:
+            stage_start = time.perf_counter()
             stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
+            _record_backend_binary_stage_ms(
+                stage_timings_ms,
+                "backend_binary_read_fingerprint",
+                stage_start,
+            )
+        stage_start = time.perf_counter()
         if not _artifact_needs_rebuild(backend_bin, fingerprint, stored_fingerprint):
+            _record_backend_binary_stage_ms(
+                stage_timings_ms,
+                "backend_binary_artifact_freshness",
+                stage_start,
+            )
+            if _runtime_fingerprint_metadata_needs_refresh(
+                stored_fingerprint,
+                fingerprint,
+            ):
+                with contextlib.suppress(OSError):
+                    _refresh_runtime_fingerprint_metadata(
+                        fingerprint_path,
+                        fingerprint,
+                    )
             # Force a real compile-path probe. An empty stdin-only probe can
             # miss feature-lane poisoning because it never exercises output
             # emission for the requested target.
             _quick_target = _backend_probe_target()
             _refresh_feature_tagged_backend_alias(_quick_target)
+            stage_start = time.perf_counter()
+            if _backend_probe_validation_matches(
+                probe_validation_path,
+                binary_path=backend_bin,
+                probe_target=_quick_target,
+                backend_features=backend_features,
+                fingerprint=fingerprint,
+            ):
+                _record_backend_binary_stage_ms(
+                    stage_timings_ms,
+                    "backend_binary_probe_validation",
+                    stage_start,
+                )
+                return _backend_ensure_success(fingerprint=fingerprint)
+            _record_backend_binary_stage_ms(
+                stage_timings_ms,
+                "backend_binary_probe_validation",
+                stage_start,
+            )
             _probe_ok, _probe_detail = _probe_backend_binary_support(_quick_target)
             if _probe_ok:
-                return _backend_ensure_success()
+                return _backend_ensure_success(fingerprint=fingerprint)
+        else:
+            _record_backend_binary_stage_ms(
+                stage_timings_ms,
+                "backend_binary_artifact_freshness",
+                stage_start,
+            )
         canonical_target_root = _canonical_target_root(project_root)
         canonical_backend_bin = (
             canonical_target_root / _cargo_profile_dir(cargo_profile) / backend_bin.name
@@ -323,6 +558,7 @@ def _ensure_backend_binary(
             stem_suffix=f"{cargo_profile}",
             extension="fingerprint",
         )
+        stage_start = time.perf_counter()
         if _maybe_hydrate_artifact_from_canonical_target(
             artifact=backend_bin,
             fingerprint=fingerprint,
@@ -330,21 +566,38 @@ def _ensure_backend_binary(
             candidate_artifact=canonical_backend_bin,
             candidate_fingerprint_path=canonical_fingerprint_path,
         ):
+            _record_backend_binary_stage_ms(
+                stage_timings_ms,
+                "backend_binary_canonical_hydrate",
+                stage_start,
+            )
             _probe_target = _backend_probe_target()
             _probe_ok, _probe_detail = _probe_backend_binary_support(_probe_target)
             if _probe_ok:
-                return _backend_ensure_success()
+                return _backend_ensure_success(fingerprint=fingerprint)
+        else:
+            _record_backend_binary_stage_ms(
+                stage_timings_ms,
+                "backend_binary_canonical_hydrate",
+                stage_start,
+            )
         # Cargo always writes the executable as `molt-backend`; Molt keeps
         # feature-specific aliases beside it so native/wasm/rust lanes cannot
         # poison each other.  When CI or a developer prebuilds the correct
         # feature lane with cargo, materialize the alias after probing the
         # canonical binary instead of rebuilding the backend.
-        if backend_features != _DEFAULT_BACKEND_FEATURES:
+        if _canonical_cargo_backend_output() != backend_bin:
             cargo_output = _canonical_cargo_backend_output()
+            stage_start = time.perf_counter()
             if _artifact_newer_than_sources(
                 cargo_output,
                 _backend_source_paths(project_root, backend_features),
             ):
+                _record_backend_binary_stage_ms(
+                    stage_timings_ms,
+                    "backend_binary_cargo_output_newer_than_sources",
+                    stage_start,
+                )
                 _probe_target = _backend_probe_target()
                 _probe_ok, _probe_detail = _probe_backend_binary_support(
                     _probe_target,
@@ -364,21 +617,39 @@ def _ensure_backend_binary(
                                     "Warning: failed to write backend fingerprint metadata.",
                                     file=sys.stderr,
                                 )
-                    return _backend_ensure_success()
+                    return _backend_ensure_success(fingerprint=fingerprint)
+            else:
+                _record_backend_binary_stage_ms(
+                    stage_timings_ms,
+                    "backend_binary_cargo_output_newer_than_sources",
+                    stage_start,
+                )
         # Fast path: if the backend binary exists and is newer than every
         # source file that contributes to the fingerprint, skip the expensive
         # cargo build and just update the stored fingerprint.  This handles
         # the common case of running `cargo build` manually before `molt build`.
+        stage_start = time.perf_counter()
         if _artifact_newer_than_sources(
             backend_bin,
             _backend_source_paths(project_root, backend_features),
         ):
+            _record_backend_binary_stage_ms(
+                stage_timings_ms,
+                "backend_binary_newer_than_sources",
+                stage_start,
+            )
             _probe_target = _backend_probe_target()
             _probe_ok, _probe_detail = _probe_backend_binary_support(_probe_target)
             if _probe_ok:
                 assert fingerprint is not None
                 _write_runtime_fingerprint(fingerprint_path, fingerprint)
-                return _backend_ensure_success()
+                return _backend_ensure_success(fingerprint=fingerprint)
+        else:
+            _record_backend_binary_stage_ms(
+                stage_timings_ms,
+                "backend_binary_newer_than_sources",
+                stage_start,
+            )
         if not json_output:
             print("Backend sources changed; rebuilding backend...", file=sys.stderr)
         if "llvm" in backend_features:
@@ -423,6 +694,7 @@ def _ensure_backend_binary(
         _maybe_enable_sccache(build_env)
         _maybe_enable_native_cpu(build_env)
         try:
+            stage_start = time.perf_counter()
             build = _run_cargo_with_sccache_retry(
                 cmd,
                 cwd=project_root,
@@ -431,7 +703,17 @@ def _ensure_backend_binary(
                 json_output=json_output,
                 label="Backend build",
             )
+            _record_backend_binary_stage_ms(
+                stage_timings_ms,
+                "backend_binary_cargo_build",
+                stage_start,
+            )
         except subprocess.TimeoutExpired:
+            _record_backend_binary_stage_ms(
+                stage_timings_ms,
+                "backend_binary_cargo_build",
+                stage_start,
+            )
             timeout_note = (
                 f"Backend build timed out after {cargo_timeout:.1f}s."
                 if cargo_timeout is not None
@@ -526,7 +808,7 @@ def _ensure_backend_binary(
                         "Warning: failed to write backend fingerprint metadata.",
                         file=sys.stderr,
                     )
-    return _backend_ensure_success()
+    return _backend_ensure_success(fingerprint=fingerprint)
 
 
 def _artifact_newer_than_sources(

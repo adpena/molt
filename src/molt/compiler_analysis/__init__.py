@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from molt.compiler_analysis.backend_ir import (
     backend_ir_allocation_categories,
+    backend_ir_binary_image_analysis_cache_key,
     backend_ir_binary_image_analysis_payload,
     backend_ir_canonical_kind,
     backend_ir_op_source_site,
@@ -21,6 +22,7 @@ from molt.compiler_analysis.validation import (
 
 __all__ = [
     "backend_ir_allocation_categories",
+    "backend_ir_binary_image_analysis_cache_key",
     "backend_ir_binary_image_analysis_payload",
     "backend_ir_canonical_kind",
     "backend_ir_op_source_site",

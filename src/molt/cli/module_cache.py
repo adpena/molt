@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import ast
-import copy
 import contextlib
 import hashlib
 import json
@@ -1170,20 +1169,6 @@ def _load_module_analysis(
         if project_root is not None
         else None
     )
-    stale_analysis = (
-        _read_persisted_module_analysis(
-            project_root,
-            path,
-            module_name=module_name,
-            is_package=is_package,
-            import_scan_mode=import_scan_mode,
-            validate_stat=False,
-            target_python=target_python,
-            capability_config_digest=capability_config_digest,
-        )
-        if project_root is not None
-        else None
-    )
     persisted_defaults = (
         persisted_analysis[0] if persisted_analysis is not None else None
     )
@@ -1218,6 +1203,21 @@ def _load_module_analysis(
             False,
             path_stat,
         )
+
+    stale_analysis = (
+        _read_persisted_module_analysis(
+            project_root,
+            path,
+            module_name=module_name,
+            is_package=is_package,
+            import_scan_mode=import_scan_mode,
+            validate_stat=False,
+            target_python=target_python,
+            capability_config_digest=capability_config_digest,
+        )
+        if project_root is not None
+        else None
+    )
 
     if source is None:
         source = resolution_cache.read_module_source(path, retain=retain_source)
@@ -1588,7 +1588,7 @@ def _validate_persisted_module_lowering_payload(
     raw_result = payload.get("result")
     if not isinstance(raw_result, dict):
         return None
-    result = cast(dict[str, Any], copy.deepcopy(_decode_cached_json_value(raw_result)))
+    result = cast(dict[str, Any], _decode_cached_json_value(raw_result))
     raw_functions = result.get("functions")
     if isinstance(raw_functions, list):
         result["functions"] = _normalize_backend_ir_functions(

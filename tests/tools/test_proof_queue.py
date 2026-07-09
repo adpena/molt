@@ -6542,6 +6542,67 @@ def test_proof_queue_diagnoses_wasm_toolchain_contract_import_missing(
     }
 
 
+def test_proof_queue_diagnoses_embedded_python_import_missing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "dx-build-missing-import.log"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="dx-build-missing-import",
+        logical_id="e2-build-wallclock",
+        reason="prove build timer missing import diagnosis",
+        command=[sys.executable, "tools/dx_build_timer.py"],
+        cwd=proof_queue.ROOT,
+        resource_family="native-build",
+        contention_key="compiler-build-resource",
+        scopes=["E2-BUILD-WALLCLOCK"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=log_path,
+        summary_json=tmp_path / "dx-build-missing-import.memory_guard.json",
+    )
+    log_path.write_text(
+        '"stderr_tail": "  File \\"target_python.py\\", line 10, in <module>'
+        '\\nModuleNotFoundError: No module named \'packaging.specifiers\'",\n',
+        encoding="utf-8",
+    )
+    proof_queue._update_run(
+        conn, "dx-build-missing-import", status="failed", returncode=1
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "evidence",
+                "--run-id",
+                "dx-build-missing-import",
+            ]
+        )
+        == 0
+    )
+    evidence = json.loads(capsys.readouterr().out)
+    diagnostics = evidence[0]["diagnostics"]
+    assert diagnostics[0]["signal_id"] == "proof-python-import-missing"
+    assert diagnostics[0]["severity"] == "infra"
+    assert "packaging.specifiers" in diagnostics[0]["summary"]
+    assert "project-environment Python" in diagnostics[0]["next_action"]
+    assert "unclassified-failed-proof" not in {
+        item["signal_id"] for item in diagnostics
+    }
+
+
 def test_proof_queue_diagnoses_source_extension_nm_missing(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

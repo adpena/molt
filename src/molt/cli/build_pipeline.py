@@ -1,17 +1,18 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from molt.dx import session_scoped_target_dir
 from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE
 from molt.cli import backend_ir as _backend_ir
+from molt.cli import backend_ir_analysis_cache as _backend_ir_analysis_cache
 from molt.cli import backend_pipeline as _backend_pipeline
 from molt.cli import frontend_pipeline as _frontend_pipeline
 from molt.cli import factgraph as _factgraph
 from molt.cli.backend_daemon_paths import (
     _unix_socket_path_exceeds_limit as _unix_socket_path_exceeds_limit,
 )
-from molt.compiler_analysis import backend_ir_binary_image_analysis_payload
 from molt.cli.backend_diagnostics import (
     _BACKEND_DIAGNOSTIC_ENV_KNOBS as _BACKEND_DIAGNOSTIC_ENV_KNOBS,
     _PYTHON_WARNING_RE as _PYTHON_WARNING_RE,
@@ -109,9 +110,17 @@ def _run_build_pipeline(
     fact_graph_request: _factgraph.FactGraphRequest | None = None,
 ) -> int:
     prepared_frontend_run_ticket = prepared_frontend_pipeline_bundle[0]
+    frontend_run_start = time.perf_counter()
     frontend_layer_error = _run_frontend_pipeline(
         prepared_frontend_run_ticket=prepared_frontend_run_ticket,
     )
+    if prepared_build_preamble.diagnostics_enabled:
+        prepared_frontend_run_ticket.frontend_parallel_details.setdefault(
+            "pipeline_stage_ms", {}
+        )["run_frontend_pipeline"] = round(
+            max(0.0, (time.perf_counter() - frontend_run_start) * 1000.0),
+            6,
+        )
     if frontend_layer_error is not None:
         return frontend_layer_error
 
@@ -200,10 +209,23 @@ def _run_build_pipeline(
             return prepared_backend_ir_error
         assert prepared_backend_ir is not None
         if prepared_build_preamble.diagnostics_enabled:
+            backend_ir_analysis = (
+                _backend_ir_analysis_cache._cached_backend_ir_binary_image_analysis_payload(
+                    project_root=prepared_build_roots.project_root,
+                    ir=prepared_backend_ir.ir,
+                )
+            )
             record_binary_image_analysis(
                 "backend_ir",
-                backend_ir_binary_image_analysis_payload(prepared_backend_ir.ir),
+                backend_ir_analysis.payload,
             )
+            prepared_frontend_run_ticket.frontend_parallel_details[
+                "backend_ir_binary_image_analysis_cache"
+            ] = {
+                "hit": backend_ir_analysis.cache_hit,
+                "key": backend_ir_analysis.cache_key[:16],
+                "path": str(backend_ir_analysis.cache_path),
+            }
         return _run_mlir_backend_pipeline(
             ir=prepared_backend_ir.ir,
             output_artifact=output_layout.output_artifact,

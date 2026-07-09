@@ -376,6 +376,8 @@ class _FrontendModuleResultTimings:
     visit_s: float
     lower_s: float
     total_s: float
+    cache_hit: bool = False
+    reused_s: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -613,6 +615,9 @@ class _BackendCacheSetup:
     stdlib_object_manifest: str | None = None
     stdlib_module_symbols_json: str | None = None
     stdlib_module_symbols: frozenset[str] = field(default_factory=frozenset)
+    stdlib_contract_validation_token: (
+        tuple[str, tuple[tuple[str, int, int, int], ...]] | None
+    ) = None
 
 
 @dataclass(frozen=True)
@@ -1460,7 +1465,8 @@ class _ImportPlan:
         unknown = sorted(compile_set - frozenset(self.module_graph))
         if unknown:
             raise ValueError(
-                "compile module set contains modules without source graph entries: "
+                "compile module set contains modules outside the closure plan "
+                "or without source graph entries: "
                 + ", ".join(unknown)
             )
         return _ImportPlan(
@@ -1639,6 +1645,7 @@ class _PreparedFrontendRunTicket:
 @dataclass(frozen=True)
 class _PreparedBackendSetup:
     runtime_state: _RuntimeArtifactState
+    backend_bin: Path
     cache_setup: _BackendCacheSetup
     cache_hit: bool
     cache_hit_tier: str | None
@@ -1648,6 +1655,7 @@ class _PreparedBackendSetup:
     function_cache_path: Path | None
     stdlib_object_path: Path | None
     cache_candidates: list[tuple[str, Path]]
+    runtime_callable_symbols_digest: str = ""
 
 
 @dataclass(frozen=True)
@@ -1682,6 +1690,7 @@ class _PreparedBackendCompile:
 @dataclass(frozen=True)
 class _PreparedBackendRuntimeContext:
     runtime_state: _RuntimeArtifactState
+    backend_bin: Path
     runtime_lib: Path | None
     runtime_wasm: Path | None
     runtime_reloc_wasm: Path | None

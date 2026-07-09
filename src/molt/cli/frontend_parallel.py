@@ -462,7 +462,11 @@ def _worker_timing_summary_payload(summary: _WorkerTimingSummary) -> dict[str, A
 
 
 def _layer_cache_hit_count(items: Sequence[Mapping[str, Any]]) -> int:
-    return sum(1 for item in items if item.get("mode") == "parallel_cache_hit")
+    return sum(
+        1
+        for item in items
+        if item.get("mode") in {"parallel_cache_hit", "serial_cache_hit"}
+    )
 
 
 def _frontend_layer_static_metrics(
@@ -490,6 +494,7 @@ def _record_serial_frontend_worker_timing(
     module_path: Path,
     mode: str,
     total_s: float,
+    reused_s: float = 0.0,
 ) -> None:
     total_ms = total_s * 1000.0
     recorded_worker_timings.append(
@@ -502,6 +507,7 @@ def _record_serial_frontend_worker_timing(
             wait_ms=0.0,
             exec_ms=total_ms,
             roundtrip_ms=total_ms,
+            reused_ms=reused_s * 1000.0,
             worker_pid=None,
         )
     )

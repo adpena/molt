@@ -13,7 +13,7 @@ import sys
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from typing import Collection, Literal, Mapping, Sequence
+from typing import Any, Collection, Literal, Mapping, Sequence
 
 from molt._wasm_runtime_exports import (
     wasm_cpython_abi_requested_data_export_names,
@@ -58,13 +58,16 @@ from molt.cli.runtime_features import (
     _runtime_builtin_features_for_profile,
     _runtime_cargo_features,
     _wasm_runtime_feature_plan,
+    runtime_fingerprint_features_for_profile,
     runtime_cargo_feature_for_profile,
     runtime_stdlib_profile_for_required_features,
 )
 from molt.cli.runtime_fingerprints import (
     _read_runtime_fingerprint,
+    _refresh_runtime_fingerprint_metadata,
     _runtime_artifact_fingerprint_matches,
     _runtime_fingerprint,
+    _runtime_fingerprint_metadata_needs_refresh,
     _write_runtime_fingerprint,
 )
 from molt.cli.runtime_paths import (
@@ -123,6 +126,19 @@ _RUNTIME_LIB_VERIFIED: set[
     ]
 ] = set()
 _NATIVE_RUNTIME_READY_EXECUTOR: ThreadPoolExecutor | None = None
+
+
+def _record_runtime_build_stage_ms(
+    stage_timings_ms: dict[str, float] | None,
+    name: str,
+    started_at: float,
+) -> None:
+    if stage_timings_ms is None:
+        return
+    stage_timings_ms[name] = round(
+        max(0.0, (time.perf_counter() - started_at) * 1000.0),
+        6,
+    )
 
 
 def _initialize_runtime_artifact_state(
@@ -218,6 +234,7 @@ def _ensure_runtime_lib_ready(
     cargo_timeout: float | None,
     stdlib_profile: str | None = DEFAULT_RUNTIME_STDLIB_PROFILE,
     resolved_modules: Collection[str] | None = None,
+    stage_timings_ms: dict[str, float] | None = None,
 ) -> bool:
     runtime_lib = runtime_state.runtime_lib
     if runtime_lib is None:
@@ -232,6 +249,7 @@ def _ensure_runtime_lib_ready(
         stdlib_profile=stdlib_profile,
         resolved_modules=resolved_modules,
         extra_runtime_features=runtime_state.extra_runtime_features,
+        stage_timings_ms=stage_timings_ms,
     )
 
 
@@ -247,6 +265,7 @@ def _ensure_native_runtime_lib_ready_before_link(
     phase_starts: dict[str, float],
     stdlib_profile: str | None = DEFAULT_RUNTIME_STDLIB_PROFILE,
     resolved_modules: set[str] | frozenset[str] | None = None,
+    stage_timings_ms: dict[str, float] | None = None,
 ) -> bool:
     runtime_lib = runtime_state.runtime_lib
     if runtime_lib is None:
@@ -269,6 +288,7 @@ def _ensure_native_runtime_lib_ready_before_link(
         cargo_timeout=cargo_timeout,
         stdlib_profile=stdlib_profile,
         resolved_modules=resolved_modules,
+        stage_timings_ms=stage_timings_ms,
     )
 
 
@@ -324,6 +344,7 @@ def _ensure_runtime_lib(
     stdlib_profile: str | None = DEFAULT_RUNTIME_STDLIB_PROFILE,
     resolved_modules: Collection[str] | None = None,
     extra_runtime_features: Sequence[str] | None = None,
+    stage_timings_ms: dict[str, float] | None = None,
 ) -> bool:
     rustflags = os.environ.get("RUSTFLAGS", "")
     runtime_features = tuple(
@@ -341,21 +362,11 @@ def _ensure_runtime_lib(
     # profile must remain an explicit fingerprint input.
     concrete_stdlib_profile = stdlib_profile or DEFAULT_RUNTIME_STDLIB_PROFILE
     concrete_stdlib_feature = runtime_cargo_feature_for_profile(concrete_stdlib_profile)
-    fingerprint_features: tuple[str, ...]
-    if concrete_stdlib_profile == "full":
-        fingerprint_features = tuple(
-            _dedupe_preserve_order(
-                list(runtime_features) + [concrete_stdlib_feature, "default-features"]
-            )
-        )
-    else:
-        fingerprint_features = tuple(
-            _dedupe_preserve_order(
-                list(runtime_features)
-                + sorted(builtin_features)
-                + [concrete_stdlib_feature, "no-default-features"]
-            )
-        )
+    fingerprint_features = runtime_fingerprint_features_for_profile(
+        concrete_stdlib_profile,
+        target_triple=target_triple,
+        extra_runtime_features=extra_runtime_features,
+    )
     fingerprint_path = _runtime_fingerprint_path(
         project_root, runtime_lib, cargo_profile, target_triple
     )
@@ -365,7 +376,14 @@ def _ensure_runtime_lib(
     if os.environ.get("MOLT_SKIP_RUNTIME_REBUILD") == "1":
         if runtime_lib.exists():
             return True
+    read_fingerprint_start = time.perf_counter()
     stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
+    _record_runtime_build_stage_ms(
+        stage_timings_ms,
+        "runtime_lib_read_fingerprint",
+        read_fingerprint_start,
+    )
+    compute_fingerprint_start = time.perf_counter()
     fingerprint = _runtime_fingerprint(
         project_root,
         cargo_profile=cargo_profile,
@@ -373,6 +391,11 @@ def _ensure_runtime_lib(
         rustflags=rustflags,
         runtime_features=fingerprint_features,
         stored_fingerprint=stored_fingerprint,
+    )
+    _record_runtime_build_stage_ms(
+        stage_timings_ms,
+        "runtime_lib_compute_fingerprint",
+        compute_fingerprint_start,
     )
     session_key = _runtime_lib_verified_session_key(
         project_root=project_root,
@@ -390,16 +413,42 @@ def _ensure_runtime_lib(
     lock_name = f"runtime.{cargo_profile}.{lock_target}"
     with _build_lock(project_root, lock_name):
         if stored_fingerprint is None:
+            reread_fingerprint_start = time.perf_counter()
             stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
+            _record_runtime_build_stage_ms(
+                stage_timings_ms,
+                "runtime_lib_reread_fingerprint_in_lock",
+                reread_fingerprint_start,
+            )
+        artifact_match_start = time.perf_counter()
         if _runtime_artifact_fingerprint_matches(
             runtime_lib,
             fingerprint,
             fingerprint_path,
             require_artifact_digest=True,
         ):
+            if _runtime_fingerprint_metadata_needs_refresh(
+                stored_fingerprint,
+                fingerprint,
+            ):
+                with contextlib.suppress(OSError):
+                    _refresh_runtime_fingerprint_metadata(
+                        fingerprint_path,
+                        fingerprint,
+                    )
+            _record_runtime_build_stage_ms(
+                stage_timings_ms,
+                "runtime_lib_artifact_match",
+                artifact_match_start,
+            )
             if session_key is not None:
                 _RUNTIME_LIB_VERIFIED.add(session_key)
             return True
+        _record_runtime_build_stage_ms(
+            stage_timings_ms,
+            "runtime_lib_artifact_match",
+            artifact_match_start,
+        )
         canonical_target_root = _canonical_target_root(project_root)
         profile_dir = _cargo_profile_dir(cargo_profile)
         if target_triple:
@@ -420,6 +469,7 @@ def _ensure_runtime_lib(
             stem_suffix=f"{cargo_profile}.{target_label}",
             extension="fingerprint",
         )
+        hydrate_start = time.perf_counter()
         if _maybe_hydrate_artifact_from_canonical_target(
             artifact=runtime_lib,
             fingerprint=fingerprint,
@@ -428,9 +478,19 @@ def _ensure_runtime_lib(
             candidate_fingerprint_path=canonical_fingerprint_path,
             require_artifact_digest=True,
         ):
+            _record_runtime_build_stage_ms(
+                stage_timings_ms,
+                "runtime_lib_canonical_hydrate",
+                hydrate_start,
+            )
             if session_key is not None:
                 _RUNTIME_LIB_VERIFIED.add(session_key)
             return True
+        _record_runtime_build_stage_ms(
+            stage_timings_ms,
+            "runtime_lib_canonical_hydrate",
+            hydrate_start,
+        )
         first_build = not runtime_lib.exists()
         if not json_output:
             if first_build:
@@ -488,6 +548,7 @@ def _ensure_runtime_lib(
         _maybe_enable_sccache(build_env)
         try:
             with _build_slot() as _slot:
+                cargo_build_start = time.perf_counter()
                 build = _run_cargo_with_sccache_retry(
                     cmd,
                     cwd=project_root,
@@ -495,6 +556,11 @@ def _ensure_runtime_lib(
                     timeout=cargo_timeout,
                     json_output=json_output,
                     label="Runtime build",
+                )
+                _record_runtime_build_stage_ms(
+                    stage_timings_ms,
+                    "runtime_lib_cargo_build",
+                    cargo_build_start,
                 )
         except subprocess.TimeoutExpired:
             if not json_output:
@@ -892,6 +958,15 @@ def _ensure_wasm_cpython_abi_staticlib(
             fingerprint_path,
             require_artifact_digest=True,
         ):
+            if _runtime_fingerprint_metadata_needs_refresh(
+                stored_fingerprint,
+                fingerprint,
+            ):
+                with contextlib.suppress(OSError):
+                    _refresh_runtime_fingerprint_metadata(
+                        fingerprint_path,
+                        fingerprint,
+                    )
             return staticlib_path
 
         if not json_output:
@@ -1043,7 +1118,7 @@ def _current_runtime_target_artifact(
     build_state_root: Path,
     cargo_profile: str,
     target_label: str,
-    fingerprint: dict[str, str | None] | None,
+    fingerprint: dict[str, Any] | None,
 ) -> tuple[Path, Path] | None:
     for candidate in candidates:
         fingerprint_path = _runtime_target_fingerprint_path(
@@ -1052,12 +1127,22 @@ def _current_runtime_target_artifact(
             cargo_profile=cargo_profile,
             target_label=target_label,
         )
+        stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
         if _runtime_artifact_fingerprint_matches(
             candidate,
             fingerprint,
             fingerprint_path,
             require_artifact_digest=True,
         ):
+            if _runtime_fingerprint_metadata_needs_refresh(
+                stored_fingerprint,
+                fingerprint,
+            ):
+                with contextlib.suppress(OSError):
+                    _refresh_runtime_fingerprint_metadata(
+                        fingerprint_path,
+                        fingerprint,
+                    )
             return candidate, fingerprint_path
     return None
 
@@ -1502,6 +1587,8 @@ def _ensure_runtime_wasm(
     cargo_profile = _resolve_wasm_cargo_profile(cargo_profile)
     profile_dir = _cargo_profile_dir(cargo_profile)
     env = _cargo_build_env()
+    if "CARGO_INCREMENTAL" not in os.environ:
+        env["CARGO_INCREMENTAL"] = "0"
     cpython_abi_requested_exports = wasm_cpython_abi_requested_export_names(
         required_exports
     )

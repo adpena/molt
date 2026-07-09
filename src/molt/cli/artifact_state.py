@@ -6,10 +6,6 @@ import os
 from pathlib import Path
 
 from molt.cli.atomic_io import _atomic_copy_file
-from molt.cli.runtime_fingerprints import (
-    _runtime_artifact_fingerprint_matches,
-    _write_runtime_fingerprint,
-)
 from molt.cli.runtime_paths import (
     _build_state_root,
     _build_state_root_cached,
@@ -143,6 +139,11 @@ def _maybe_hydrate_artifact_from_canonical_target(
     candidate_fingerprint_path: Path,
     require_artifact_digest: bool = False,
 ) -> bool:
+    from molt.cli.runtime_fingerprints import (
+        _runtime_artifact_fingerprint_matches,
+        _write_runtime_fingerprint,
+    )
+
     if fingerprint is None:
         return False
     if artifact.resolve() == candidate_artifact.resolve():

@@ -437,7 +437,7 @@ def _lower_module_serial_with_context(
     module_path: Path,
     *,
     lowering_context: _SerialFrontendLoweringContext,
-) -> tuple[dict[str, Any], float, float, float]:
+) -> tuple[dict[str, Any], float, float, float, bool, float]:
     execution_view = _module_lowering_execution_view(
         module_name,
         module_path=module_path,
@@ -521,7 +521,11 @@ def _lower_module_serial_with_context(
                 known_modules=lowering_context.known_modules,
             )
             if cached_payload is not None:
-                return cached_payload, 0.0, 0.0, 0.0
+                cached_timings = cast(
+                    Mapping[str, Any], cached_payload.get("timings", {})
+                )
+                reused_s = float(cached_timings.get("total_s", 0.0))
+                return cached_payload, 0.0, 0.0, 0.0, True, reused_s
 
     tree = _resolve_tree_for_serial_frontend_module(
         module_name,
@@ -620,7 +624,7 @@ def _lower_module_serial_with_context(
                 result=payload,
                 target_python=lowering_context.target_python,
             )
-    return payload, visit_s, lower_s, total_s
+    return payload, visit_s, lower_s, total_s, False, 0.0
 
 
 def _run_serial_frontend_lower_with_context(
@@ -633,10 +637,12 @@ def _run_serial_frontend_lower_with_context(
     dict[str, Any] | None, _FrontendModuleResultTimings | None, _CliFailure | None
 ]:
     try:
-        result, visit_s, lower_s, total_s = _lower_module_serial_with_context(
-            module_name,
-            module_path,
-            lowering_context=lowering_context,
+        result, visit_s, lower_s, total_s, cache_hit, reused_s = (
+            _lower_module_serial_with_context(
+                module_name,
+                module_path,
+                lowering_context=lowering_context,
+            )
         )
     except _ModuleLowerError as exc:
         lowering_hooks.record_frontend_timing(
@@ -657,6 +663,8 @@ def _run_serial_frontend_lower_with_context(
         visit_s=visit_s,
         lower_s=lower_s,
         total_s=total_s,
+        cache_hit=cache_hit,
+        reused_s=reused_s,
     )
     lowering_hooks.record_frontend_timing(
         module_name=module_name,

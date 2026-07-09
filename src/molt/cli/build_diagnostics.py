@@ -1102,7 +1102,7 @@ def _frontend_lowering_cache_summary(
         if not isinstance(raw_item, Mapping):
             continue
         mode = raw_item.get("mode")
-        if mode == "parallel_cache_hit":
+        if mode in {"parallel_cache_hit", "serial_cache_hit"}:
             hits += 1
             reused_ms += float(raw_item.get("reused_ms", 0.0))
         else:

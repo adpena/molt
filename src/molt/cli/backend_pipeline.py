@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 import contextlib
+import time
 from pathlib import Path
 
 from molt.cli import backend_compile as _backend_compile
 from molt.cli import backend_ir as _backend_ir
+from molt.cli import backend_ir_analysis_cache as _backend_ir_analysis_cache
 from molt.cli.atomic_io import _atomic_write_json
 from molt.cli import backend_output_pipeline as _backend_output_pipeline
 from molt.cli import factgraph as _factgraph
 from molt.cli import frontend_pipeline as _frontend_pipeline
 from molt.cli import runtime_features as _runtime_features
 from molt.cli.backend_execution import _write_backend_ir_lease
-from molt.compiler_analysis import backend_ir_binary_image_analysis_payload
 from molt.cli.command_runtime import _run_subprocess_captured_to_tempfiles
 from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE, ENTRY_OVERRIDE_ENV
 from molt.cli.external_native import _external_native_artifact_output_custody_error
@@ -91,6 +92,7 @@ def _run_backend_pipeline(
     )
     if native_artifact_custody_error is not None:
         return _fail(native_artifact_custody_error, json_output, command="build")
+    backend_ir_start = time.perf_counter()
     prepared_backend_ir, prepared_backend_ir_error = _backend_ir._prepare_backend_ir(
         entry_module=resolved_build_entry.entry_module,
         module_graph=module_graph,
@@ -126,6 +128,13 @@ def _run_backend_pipeline(
         target=target,
         native_artifact_plan=native_artifact_plan,
     )
+    if prepared_build_preamble.diagnostics_enabled:
+        prepared_frontend_run_ticket.frontend_parallel_details.setdefault(
+            "pipeline_stage_ms", {}
+        )["prepare_backend_ir"] = round(
+            max(0.0, (time.perf_counter() - backend_ir_start) * 1000.0),
+            6,
+        )
     if prepared_backend_ir_error is not None:
         return prepared_backend_ir_error
     assert prepared_backend_ir is not None
@@ -156,9 +165,29 @@ def _run_backend_pipeline(
         )
     )
     if prepared_build_preamble.diagnostics_enabled:
+        backend_ir_analysis_start = time.perf_counter()
+        backend_ir_analysis = (
+            _backend_ir_analysis_cache._cached_backend_ir_binary_image_analysis_payload(
+                project_root=prepared_build_roots.project_root,
+                ir=ir,
+            )
+        )
         record_binary_image_analysis(
             "backend_ir",
-            backend_ir_binary_image_analysis_payload(ir),
+            backend_ir_analysis.payload,
+        )
+        prepared_frontend_run_ticket.frontend_parallel_details[
+            "backend_ir_binary_image_analysis_cache"
+        ] = {
+            "hit": backend_ir_analysis.cache_hit,
+            "key": backend_ir_analysis.cache_key[:16],
+            "path": str(backend_ir_analysis.cache_path),
+        }
+        prepared_frontend_run_ticket.frontend_parallel_details.setdefault(
+            "pipeline_stage_ms", {}
+        )["backend_ir_binary_image_analysis"] = round(
+            max(0.0, (time.perf_counter() - backend_ir_analysis_start) * 1000.0),
+            6,
         )
     resolved_modules = frozenset(module_graph)
     backend_ir_file_path: Path | None = None
@@ -176,6 +205,12 @@ def _run_backend_pipeline(
             with contextlib.suppress(OSError):
                 backend_ir_file_path.unlink()
 
+    pipeline_stage_ms: dict[str, float] | None = None
+    if prepared_build_preamble.diagnostics_enabled:
+        pipeline_stage_ms = prepared_frontend_run_ticket.frontend_parallel_details.setdefault(
+            "pipeline_stage_ms", {}
+        )
+    backend_setup_start = time.perf_counter()
     prepared_backend_setup, prepared_backend_setup_error = (
         _backend_compile._prepare_backend_setup(
             is_rust_transpile=output_layout.is_rust_transpile,
@@ -207,11 +242,18 @@ def _run_backend_pipeline(
             capability_profiles=prepared_build_config.capability_profiles,
             manifest_env_vars=prepared_build_config.manifest_env_vars,
             capability_config_digest=prepared_build_config.capability_config_cache_digest,
+            stage_timings_ms=pipeline_stage_ms,
         )
     )
+    if pipeline_stage_ms is not None:
+        pipeline_stage_ms["prepare_backend_setup"] = round(
+            max(0.0, (time.perf_counter() - backend_setup_start) * 1000.0),
+            6,
+        )
     if prepared_backend_setup_error is not None:
         return prepared_backend_setup_error
     assert prepared_backend_setup is not None
+    backend_runtime_context_start = time.perf_counter()
     prepared_backend_runtime_context, prepared_backend_runtime_error = (
         _backend_compile._prepare_backend_runtime_context(
             prepared_backend_setup=prepared_backend_setup,
@@ -226,6 +268,11 @@ def _run_backend_pipeline(
             target_triple=output_layout.target_triple,
         )
     )
+    if pipeline_stage_ms is not None:
+        pipeline_stage_ms["prepare_backend_runtime_context"] = round(
+            max(0.0, (time.perf_counter() - backend_runtime_context_start) * 1000.0),
+            6,
+        )
     if prepared_backend_runtime_error is not None:
         return prepared_backend_runtime_error
     assert prepared_backend_runtime_context is not None
@@ -256,6 +303,7 @@ def _run_backend_pipeline(
             entry_override_env=ENTRY_OVERRIDE_ENV,
         )
     try:
+        backend_compile_start = time.perf_counter()
         prepared_backend_compile, prepared_backend_compile_error = (
             _backend_compile._prepare_backend_compile(
                 diagnostics_enabled=prepared_build_preamble.diagnostics_enabled,
@@ -298,8 +346,14 @@ def _run_backend_pipeline(
                 backend_daemon_cached=prepared_build_preamble.backend_daemon_cached,
                 backend_daemon_cache_tier=prepared_build_preamble.backend_daemon_cache_tier,
                 backend_daemon_health=prepared_build_preamble.backend_daemon_health,
+                backend_bin=prepared_backend_runtime_context.backend_bin,
             )
         )
+        if pipeline_stage_ms is not None:
+            pipeline_stage_ms["prepare_backend_compile"] = round(
+                max(0.0, (time.perf_counter() - backend_compile_start) * 1000.0),
+                6,
+            )
     finally:
         if backend_ir_file_path is not None:
             with contextlib.suppress(OSError):

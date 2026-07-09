@@ -189,6 +189,10 @@ WASM_TOOLCHAIN_CONTRACT_IMPORT_MISSING_RE = re.compile(
 PYTHON_EXCEPTION_RE = re.compile(
     r"(?m)^(?P<type>[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception)):\s+(?P<message>.+)$"
 )
+PYTHON_IMPORT_MISSING_RE = re.compile(
+    r"(?:^|\\n|\n)(?P<type>ModuleNotFoundError|ImportError):\s+"
+    r"No module named ['\"](?P<module>[A-Za-z0-9_.]+)['\"]"
+)
 SOURCE_LEASE_CHANGED_RE = re.compile(
     r"(?m)^Failed to read module (?P<module>.*): "
     r"Source lease for (?P<lease>.+) changed (?P<detail>[^\r\n]+)\r?$"
