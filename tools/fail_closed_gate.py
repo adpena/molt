@@ -454,6 +454,15 @@ _BUILD_CRUTCH_ALLOWLIST = frozenset(
         "tools/pact_witness_numpy_python_closure.py",
         "tools/pact_witness_scipy_python_closure.py",
         "tools/pact_witness_scipy_generated_modules.py",
+        # Pact-witness numpy _umath_linalg (linalg) WASM producer. It consumes
+        # numpy's OWN upstream Meson intro-targets/compile_commands (produced by
+        # regen_numpy_multiarray_meson_wasm.py) and invokes the GENERIC
+        # `molt extension build` CLI -- it authors no Molt-owned source-plan/
+        # config/header overlay. Its docstring merely describes the npymath
+        # exclusion, which is a GENERIC, gated `molt extension build
+        # --source-plan-exclude-linked-static-library` feature (source_extensions
+        # .py, itself allowlisted above), not a package-specific crutch.
+        "tools/build_numpy_umath_linalg_wasm.py",
     }
 )
 
