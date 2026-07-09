@@ -408,6 +408,77 @@ unsafe extern "C" fn hook_object_set_attr(obj_bits: u64, name_bits: u64, value_b
     }
 }
 
+/// `PyObject_Call` authority for bridge-managed Molt callables.
+///
+/// Routes through the runtime's single call authority (`molt_call_bind`):
+/// compiled functions, types, bound methods, kwargs binding, and CPython-shaped
+/// exceptions all live there. `args_bits` is a Molt tuple handle of positional
+/// arguments (0 = none); `kwargs_bits` is a Molt dict handle (0 = none).
+/// Returns result handle bits, or 0 with the error left in the runtime
+/// pending-exception state (the ABI wrapper turns 0 into NULL-with-exception).
+unsafe extern "C" fn hook_object_call(callable_bits: u64, args_bits: u64, kwargs_bits: u64) -> u64 {
+    // Collect positional args + kwargs pairs up front. The caller (the C
+    // extension via the ABI wrapper) owns references to the tuple/dict and
+    // every element for the duration of the call, and the callargs builder
+    // takes its own references on push.
+    let mut pos: Vec<u64> = Vec::new();
+    if args_bits != 0 {
+        let obj = MoltObject::from_bits(args_bits);
+        let Some(ptr) = obj.as_ptr() else {
+            return object_call_type_error("PyObject_Call args must be a tuple");
+        };
+        if unsafe { object_type_id(ptr) } != TYPE_ID_TUPLE {
+            return object_call_type_error("PyObject_Call args must be a tuple");
+        }
+        pos.extend_from_slice(unsafe { seq_vec_ref(ptr) });
+    }
+    let mut kws: Vec<(u64, u64)> = Vec::new();
+    if kwargs_bits != 0 {
+        let obj = MoltObject::from_bits(kwargs_bits);
+        let Some(ptr) = obj.as_ptr() else {
+            return object_call_type_error("PyObject_Call kwargs must be a dict");
+        };
+        if unsafe { object_type_id(ptr) } != TYPE_ID_DICT {
+            return object_call_type_error("PyObject_Call kwargs must be a dict");
+        }
+        for chunk in unsafe { dict_order(ptr) }.chunks(2) {
+            if chunk.len() == 2 {
+                kws.push((chunk[0], chunk[1]));
+            }
+        }
+    }
+    let builder_bits = crate::molt_callargs_new(pos.len() as u64, kws.len() as u64);
+    if builder_bits == 0 {
+        return 0;
+    }
+    for &arg in &pos {
+        let _ = unsafe { crate::molt_callargs_push_pos(builder_bits, arg) };
+        if with_gil(|_py| crate::exception_pending(&_py)) {
+            return 0;
+        }
+    }
+    for &(name, value) in &kws {
+        let _ = unsafe { crate::molt_callargs_push_kw(builder_bits, name, value) };
+        if with_gil(|_py| crate::exception_pending(&_py)) {
+            return 0;
+        }
+    }
+    let result = crate::molt_call_bind(callable_bits, builder_bits);
+    if with_gil(|_py| crate::exception_pending(&_py)) {
+        return 0;
+    }
+    result
+}
+
+/// Raise a `TypeError` for a malformed `hook_object_call` argument shape and
+/// return the hook's error sentinel (0).
+fn object_call_type_error(message: &str) -> u64 {
+    with_gil(|_py| {
+        let _ = crate::raise_exception::<u64>(&_py, "TypeError", message);
+    });
+    0
+}
+
 unsafe extern "C" fn hook_object_format(obj_bits: u64, spec_bits: u64) -> u64 {
     crate::molt_format_builtin(obj_bits, spec_bits)
 }
@@ -1998,6 +2069,7 @@ pub fn register_cpython_hooks() {
         set_add: hook_set_add,
         set_discard: hook_set_discard,
         object_dir: hook_object_dir,
+        object_call: hook_object_call,
     };
     // SAFETY: all fn pointers are valid for the process lifetime.
     unsafe {

@@ -1255,6 +1255,17 @@ pub unsafe extern "C" fn PyObject_Call(
     {
         return unsafe { call(callable, args, kwargs) };
     }
+    // Bridge-managed Molt callable (a compiled function / class / bound method
+    // handed back by `PyObject_GetAttrString` &c. — e.g. numpy calling
+    // `numpy.dtypes._add_dtype_helper`): bridge proxies carry no `tp_call`, so
+    // route through the runtime's single call authority (`object_call` hook:
+    // dispatch, kwargs binding, CPython-shaped exceptions). Raw-registered C
+    // objects are excluded — their synthetic handles are identity anchors, not
+    // Molt object bits — and fall through to the honest TypeError below.
+    let callable_bits = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(callable);
+    if let Some(callable_bits) = callable_bits {
+        return unsafe { call_bridged_callable(callable_bits, args, kwargs) };
+    }
     // No tp_call slot: the object is not callable through this path. CPython
     // raises TypeError here; a bare NULL is a silent failure that strands an
     // extension's error check with no pending exception.
@@ -1272,6 +1283,81 @@ pub unsafe extern "C" fn PyObject_Call(
         }
     }
     ptr::null_mut()
+}
+
+/// Invoke a Molt callable handle through the runtime `object_call` hook,
+/// translating the C-API `(args, kwargs)` pair to Molt handles. `args` /
+/// `kwargs` may be NULL (and `kwargs` may be `Py_None`), per the
+/// `PyObject_Call` contract. Fails loudly (TypeError/SystemError, never a bare
+/// NULL) when a piece cannot be resolved — a silently dropped call argument is
+/// a wrong answer, not a fallback.
+unsafe fn call_bridged_callable(
+    callable_bits: u64,
+    args: *mut PyObject,
+    kwargs: *mut PyObject,
+) -> *mut PyObject {
+    let args_bits = if args.is_null() {
+        0
+    } else {
+        match GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(args) {
+            Some(bits) => bits,
+            None => {
+                crate::capi_trace::record_silent_failure(
+                    "PyObject_Call",
+                    Some("unresolved args tuple"),
+                );
+                if !exception_already_pending() {
+                    unsafe {
+                        crate::api::errors::PyErr_SetString(
+                            &raw mut crate::abi_types::PyExc_SystemError,
+                            c"PyObject_Call: args tuple is not a bridge-managed object".as_ptr(),
+                        );
+                    }
+                }
+                return ptr::null_mut();
+            }
+        }
+    };
+    let kwargs_bits = if kwargs.is_null()
+        || std::ptr::eq(kwargs, &raw mut crate::abi_types::Py_None as *mut PyObject)
+    {
+        0
+    } else {
+        match GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(kwargs) {
+            Some(bits) => bits,
+            None => {
+                crate::capi_trace::record_silent_failure(
+                    "PyObject_Call",
+                    Some("unresolved kwargs dict"),
+                );
+                if !exception_already_pending() {
+                    unsafe {
+                        crate::api::errors::PyErr_SetString(
+                            &raw mut crate::abi_types::PyExc_SystemError,
+                            c"PyObject_Call: kwargs dict is not a bridge-managed object".as_ptr(),
+                        );
+                    }
+                }
+                return ptr::null_mut();
+            }
+        }
+    };
+    let h = hooks_or_stubs();
+    let result_bits = unsafe { (h.object_call)(callable_bits, args_bits, kwargs_bits) };
+    if result_bits == 0 {
+        // Runtime raised (pending exception) or hooks are unregistered.
+        // Guarantee the NULL-return-carries-an-exception ABI contract.
+        if !exception_already_pending() {
+            unsafe {
+                crate::api::errors::PyErr_SetString(
+                    &raw mut crate::abi_types::PyExc_SystemError,
+                    c"PyObject_Call failed: runtime call authority unavailable".as_ptr(),
+                );
+            }
+        }
+        return ptr::null_mut();
+    }
+    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(result_bits) }
 }
 
 #[unsafe(no_mangle)]

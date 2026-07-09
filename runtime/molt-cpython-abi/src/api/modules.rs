@@ -210,10 +210,14 @@ pub unsafe extern "C" fn PyModule_AddObject(
         // reference — do NOT decref.
         return rc;
     }
-    // Per CPython: PyModule_AddObject steals the reference on success.
-    // The runtime hook took its own reference when storing the value, so we
-    // must drop the caller's reference here to balance the count.
-    unsafe { crate::api::refcount::Py_DECREF(value) };
+    // Per CPython: PyModule_AddObject steals the reference on success — the
+    // module dict now owns it. The bridge equivalent RETAINS the stolen proxy
+    // reference as the module's anchor: dropping it here severed the
+    // pointer↔handle mapping for a freshly minted proxy (refcnt 1) even though
+    // the Molt module still holds the object, breaking every borrowed pointer
+    // the extension kept (and, for a raw-registered static type, corrupting the
+    // static's refcount toward zero). Same class as the `PyDict_SetItem`
+    // anchor — see api/mapping.rs.
     0
 }
 

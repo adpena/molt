@@ -26,9 +26,9 @@
 //! in `PyArg_ParseTuple`, which is called on every C extension function entry.
 
 use crate::abi_types::{
-    MoltTypeTag, Py_False, Py_None, Py_True, PyBool_Type, PyBytes_Type, PyDict_Type, PyFloat_Type,
-    PyList_Type, PyLong_Type, PyModule_Type, PyObject, PySet_Type, PyTuple_Type, PyTypeObject,
-    PyUnicode_Type,
+    MoltTypeTag, Py_False, Py_None, Py_True, PyBaseObject_Type, PyBool_Type, PyBytes_Type,
+    PyDict_Type, PyFloat_Type, PyList_Type, PyLong_Type, PyModule_Type, PyObject, PySet_Type,
+    PyTuple_Type, PyTypeObject, PyUnicode_Type,
 };
 use molt_lang_obj_model::MoltObject;
 use once_cell::sync::OnceCell;
@@ -105,7 +105,9 @@ pub fn init_tag_table() {
                 table.len += 1;
             }};
         }
-        push!(MoltTypeTag::None, PyUnicode_Type); // NoneType → placeholder
+        // `None` never reaches proxy allocation (the `Py_None` singleton path
+        // resolves first); the entry exists so every tag has a defined type.
+        push!(MoltTypeTag::None, PyBaseObject_Type);
         push!(MoltTypeTag::Bool, PyBool_Type);
         push!(MoltTypeTag::Int, PyLong_Type);
         push!(MoltTypeTag::Float, PyFloat_Type);
@@ -116,6 +118,14 @@ pub fn init_tag_table() {
         push!(MoltTypeTag::Dict, PyDict_Type);
         push!(MoltTypeTag::Set, PySet_Type);
         push!(MoltTypeTag::Module, PyModule_Type);
+        // `Other` covers every Molt heap type without a dedicated static type
+        // (functions, classes, bound methods, arbitrary instances). It MUST NOT
+        // masquerade as a concrete builtin: mapping it to `PyUnicode_Type` made
+        // a Molt-compiled function proxy fail `PyObject_Call` with the lying
+        // diagnostic "'str' object is not callable" (numpy `_multiarray_umath`
+        // init calling `numpy.dtypes._add_dtype_helper`). `PyBaseObject_Type`
+        // ("object") is the honest neutral: no `tp_call`, no false type checks.
+        push!(MoltTypeTag::Other, PyBaseObject_Type);
         table
     });
 }
@@ -148,8 +158,8 @@ pub unsafe fn tag_to_type(tag: MoltTypeTag) -> *mut PyTypeObject {
                 return table.types[i];
             }
         }
-        // SAFETY: PyUnicode_Type is a valid static with the same lifetime as the program.
-        &raw mut PyUnicode_Type
+        // SAFETY: PyBaseObject_Type is a valid static with the same lifetime as the program.
+        &raw mut PyBaseObject_Type
     }
 }
 
@@ -174,7 +184,7 @@ mod simd_x86 {
                 return table.types[idx];
             }
         }
-        &raw mut PyUnicode_Type
+        &raw mut PyBaseObject_Type
     }
 }
 
@@ -200,13 +210,13 @@ mod simd_neon {
         } else if hi != 0 {
             8 + hi.trailing_zeros() as usize / 8
         } else {
-            return &raw mut PyUnicode_Type;
+            return &raw mut PyBaseObject_Type;
         };
 
         if idx < table.len {
             table.types[idx]
         } else {
-            &raw mut PyUnicode_Type
+            &raw mut PyBaseObject_Type
         }
     }
 }
@@ -318,6 +328,23 @@ impl ObjectBridge {
     /// Returns `None` for static singletons or unknown pointers.
     pub fn pyobj_to_handle(&self, ptr: *mut PyObject) -> Option<AbiHandle> {
         pyobj_to_handle_static(ptr).or_else(|| self.from_py.get(&(ptr as usize)).copied())
+    }
+
+    /// Translate a `*mut PyObject` to a *genuine Molt object handle*, excluding
+    /// raw-registered C objects (whose synthetic `0xA11C…` handles are bridge
+    /// identity anchors, NOT valid `MoltObject` bit patterns). Use this when the
+    /// handle will be passed to a runtime hook that interprets the bits as a
+    /// `MoltObject` (e.g. the `object_call` call authority); use
+    /// [`Self::pyobj_to_handle`] for pure identity resolution.
+    pub fn molt_handle_for_pyobj(&self, ptr: *mut PyObject) -> Option<AbiHandle> {
+        if let Some(bits) = pyobj_to_handle_static(ptr) {
+            return Some(bits);
+        }
+        let bits = self.from_py.get(&(ptr as usize)).copied()?;
+        if self.raw_py.contains_key(&bits) {
+            return None;
+        }
+        Some(bits)
     }
 
     pub unsafe fn register_raw_pyobj(&mut self, ptr: *mut PyObject) -> AbiHandle {
@@ -1050,5 +1077,56 @@ fn format_float_repr(f: f64) -> Vec<u8> {
         let written = unsafe { (h.float_repr)(f, big.as_mut_ptr(), big.len()) };
         big.truncate(written.min(big.len()));
         big
+    }
+}
+
+#[cfg(test)]
+mod bridge_handle_tests {
+    use super::*;
+
+    /// Regression for the numpy `_multiarray_umath` "'str' object is not
+    /// callable" frontier: `PyObject_Call` routes bridge-managed Molt callables
+    /// to the runtime `object_call` hook via `molt_handle_for_pyobj`, which must
+    /// return genuine Molt handles for minted proxies and MUST NOT hand a
+    /// raw-registry synthetic handle (not valid `MoltObject` bits) to the
+    /// runtime.
+    #[test]
+    fn molt_handle_for_pyobj_excludes_raw_registered_pointers() {
+        init_tag_table();
+        let mut bridge = GLOBAL_BRIDGE.lock();
+        // Minted proxy for a genuine Molt handle resolves through both paths.
+        let int_bits = MoltObject::from_int(0x5EED).bits();
+        let proxy = unsafe { bridge.handle_to_pyobj(int_bits) };
+        assert_eq!(bridge.pyobj_to_handle(proxy), Some(int_bits));
+        assert_eq!(bridge.molt_handle_for_pyobj(proxy), Some(int_bits));
+        // Raw-registered C object: identity resolution still works, but the
+        // synthetic handle is not a Molt object and must be excluded.
+        let mut stray = PyObject {
+            ob_refcnt: 1,
+            ob_type: std::ptr::null_mut(),
+        };
+        let stray_ptr = &raw mut stray;
+        let _ = unsafe { bridge.register_raw_pyobj(stray_ptr) };
+        assert!(bridge.pyobj_to_handle(stray_ptr).is_some());
+        assert_eq!(bridge.molt_handle_for_pyobj(stray_ptr), None);
+    }
+
+    /// `Other`-tagged Molt objects (compiled functions, classes, arbitrary
+    /// instances) must NOT masquerade as `str`: the old `PyUnicode_Type`
+    /// fallback produced the lying diagnostic "'str' object is not callable"
+    /// for numpy's `numpy.dtypes._add_dtype_helper` call. `object` is the
+    /// honest neutral.
+    #[test]
+    fn other_tag_maps_to_base_object_not_str() {
+        init_tag_table();
+        let ty = unsafe { tag_to_type(MoltTypeTag::Other) };
+        assert!(
+            std::ptr::eq(ty.cast_const(), &raw const PyBaseObject_Type),
+            "Other tag must map to PyBaseObject_Type"
+        );
+        assert!(
+            !std::ptr::eq(ty.cast_const(), &raw const PyUnicode_Type),
+            "Other tag must not masquerade as str"
+        );
     }
 }
