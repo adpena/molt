@@ -689,7 +689,7 @@ def _cargo_interruption_reason(
         return "termination_wait_expired"
     if timed_out:
         return "timeout"
-    if orphaned_process_groups:
+    if orphaned_process_groups and returncode != 0:
         return "orphaned_processes_cleaned"
     if returncode is not None and _returncode_looks_signal(returncode):
         return "signal_exit"

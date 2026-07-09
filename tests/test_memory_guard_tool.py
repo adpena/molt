@@ -2491,6 +2491,91 @@ def test_run_guarded_signal_exit_quarantines_cargo_incremental(
     assert not (target / "debug" / "incremental").exists()
 
 
+def _run_guarded_cargo_with_fake_orphan_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    exit_code: int,
+) -> tuple[
+    memory_guard.GuardResult,
+    list[dict[str, object]],
+    memory_guard.GuardTerminationReport,
+]:
+    target = tmp_path / "target"
+    calls: list[dict[str, object]] = []
+    report = _guard_termination_report(reason="tracked_orphan_cleanup")
+
+    def fake_cleanup(root_pid: int, **kwargs: object):
+        return memory_guard.GuardOrphanCleanupResult(
+            process_groups=(777,),
+            termination_reports=(report,),
+        )
+
+    def fake_quarantine(**kwargs: object):
+        calls.append(kwargs)
+        return memory_guard.CargoIncrementalQuarantine(
+            reason=str(kwargs["reason"]),
+            recorded_at="2026-07-09T00:00:00Z",
+            target_dir=str(target),
+            quarantine_dir=None,
+            command=tuple(kwargs["command"]),
+            cwd=str(kwargs["cwd"]),
+        )
+
+    monkeypatch.setattr(memory_guard, "cleanup_tracked_orphans", fake_cleanup)
+    monkeypatch.setattr(
+        memory_guard,
+        "_quarantine_cargo_incremental_state",
+        fake_quarantine,
+    )
+
+    script = "print('ok')" if exit_code == 0 else f"import sys; sys.exit({exit_code})"
+    result = memory_guard.run_guarded(
+        [sys.executable, "-c", script, "cargo"],
+        max_rss_kb=1_000_000,
+        poll_interval=0.01,
+        cwd=tmp_path,
+        env={"CARGO_TARGET_DIR": str(target)},
+        sampler=lambda: {},
+    )
+    return result, calls, report
+
+
+def test_successful_cargo_orphan_cleanup_does_not_quarantine_incremental(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    result, calls, report = _run_guarded_cargo_with_fake_orphan_cleanup(
+        monkeypatch,
+        tmp_path,
+        exit_code=0,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == "ok\n"
+    assert result.orphaned_process_groups == (777,)
+    assert result.termination_reports == (report,)
+    assert result.cargo_incremental_quarantine is None
+    assert calls == []
+
+
+def test_failed_cargo_orphan_cleanup_quarantines_incremental(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    result, calls, _report = _run_guarded_cargo_with_fake_orphan_cleanup(
+        monkeypatch,
+        tmp_path,
+        exit_code=3,
+    )
+
+    assert result.returncode == 3
+    assert result.orphaned_process_groups == (777,)
+    assert result.cargo_incremental_quarantine is not None
+    assert result.cargo_incremental_quarantine.reason == "orphaned_processes_cleaned"
+    assert [call["reason"] for call in calls] == ["orphaned_processes_cleaned"]
+
+
 def test_main_enforces_timeout_and_writes_summary(
     tmp_path, capsys: pytest.CaptureFixture[str]
 ) -> None:
