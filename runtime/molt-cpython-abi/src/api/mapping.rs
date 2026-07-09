@@ -58,7 +58,11 @@ pub unsafe extern "C" fn PyDict_SetItem(
     let val_bits = match bridge.pyobj_to_handle(value) {
         Some(b) => b,
         None => {
-            crate::capi_trace::record_silent_failure("PyDict_SetItem", Some("unresolved value"));
+            let detail = format!(
+                "unresolved value: {}",
+                unsafe { crate::abi_types::describe_unresolved_pyobject(value) }
+            );
+            crate::capi_trace::record_silent_failure("PyDict_SetItem", Some(&detail));
             return -1;
         }
     };
@@ -82,6 +86,20 @@ pub unsafe extern "C" fn PyDict_SetItemString(
         return -1;
     }
     let rc = unsafe { PyDict_SetItem(op, key_obj, value) };
+    if rc != 0 {
+        // Re-record with the string key so the diagnostic names the exact dict
+        // entry that failed (e.g. numpy's `error`, `__cpu_features__`). This
+        // overwrites the inner PyDict_SetItem record (last-write-wins) and is
+        // free on the normal path (only runs on failure).
+        let key_str = unsafe { std::ffi::CStr::from_ptr(key) }
+            .to_str()
+            .unwrap_or("<non-utf8 key>");
+        let detail = format!(
+            "key='{key_str}' value: {}",
+            unsafe { crate::abi_types::describe_unresolved_pyobject(value) }
+        );
+        crate::capi_trace::record_silent_failure("PyDict_SetItemString", Some(&detail));
+    }
     unsafe { crate::api::refcount::Py_DECREF(key_obj) };
     rc
 }

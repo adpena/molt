@@ -906,65 +906,133 @@ pub unsafe fn init_static_types() {
 // The exact type/content doesn't matter — they're identity-compared by the bridge.
 // We create one sentinel PyObject per exception class.
 
-macro_rules! exc_singleton {
-    ($name:ident) => {
-        #[unsafe(no_mangle)]
-        pub static mut $name: PyObject = PyObject {
-            ob_refcnt: 1,
-            ob_type: std::ptr::null_mut(),
-        };
+// One `pub static mut $name: PyObject` per exception class, plus a single
+// authoritative name lookup ([`exc_singleton_name`]) generated from the same
+// list so the two can never drift. The list is the sole source of truth.
+macro_rules! exc_singletons {
+    ($($name:ident),* $(,)?) => {
+        $(
+            #[unsafe(no_mangle)]
+            pub static mut $name: PyObject = PyObject {
+                ob_refcnt: 1,
+                ob_type: std::ptr::null_mut(),
+            };
+        )*
+
+        /// If `ptr` is the address of one of the exception singletons, return
+        /// its C name (e.g. `"PyExc_Exception"`). Pointer-identity only — no
+        /// dereference — so it is safe for any `*const PyObject`.
+        pub fn exc_singleton_name(ptr: *const PyObject) -> Option<&'static str> {
+            $(
+                if std::ptr::eq(ptr, &raw const $name) {
+                    return Some(stringify!($name));
+                }
+            )*
+            None
+        }
     };
 }
 
-exc_singleton!(PyExc_BaseException);
-exc_singleton!(PyExc_Exception);
-exc_singleton!(PyExc_ValueError);
-exc_singleton!(PyExc_TypeError);
-exc_singleton!(PyExc_RuntimeError);
-exc_singleton!(PyExc_MemoryError);
-exc_singleton!(PyExc_IndexError);
-exc_singleton!(PyExc_KeyError);
-exc_singleton!(PyExc_AttributeError);
-exc_singleton!(PyExc_OverflowError);
-exc_singleton!(PyExc_ZeroDivisionError);
-exc_singleton!(PyExc_ImportError);
-exc_singleton!(PyExc_ModuleNotFoundError);
-exc_singleton!(PyExc_StopIteration);
-exc_singleton!(PyExc_NotImplementedError);
-exc_singleton!(PyExc_OSError);
-exc_singleton!(PyExc_IOError);
-exc_singleton!(PyExc_FileNotFoundError);
-exc_singleton!(PyExc_PermissionError);
-exc_singleton!(PyExc_FileExistsError);
-exc_singleton!(PyExc_IsADirectoryError);
-exc_singleton!(PyExc_NotADirectoryError);
-exc_singleton!(PyExc_TimeoutError);
-exc_singleton!(PyExc_ArithmeticError);
-exc_singleton!(PyExc_FloatingPointError);
-exc_singleton!(PyExc_LookupError);
-exc_singleton!(PyExc_AssertionError);
-exc_singleton!(PyExc_EOFError);
-exc_singleton!(PyExc_NameError);
-exc_singleton!(PyExc_UnboundLocalError);
-exc_singleton!(PyExc_SyntaxError);
-exc_singleton!(PyExc_SystemError);
-exc_singleton!(PyExc_SystemExit);
-exc_singleton!(PyExc_UnicodeError);
-exc_singleton!(PyExc_UnicodeDecodeError);
-exc_singleton!(PyExc_UnicodeEncodeError);
-exc_singleton!(PyExc_BufferError);
-exc_singleton!(PyExc_RecursionError);
-exc_singleton!(PyExc_GeneratorExit);
-exc_singleton!(PyExc_KeyboardInterrupt);
-exc_singleton!(PyExc_ConnectionError);
-exc_singleton!(PyExc_ConnectionResetError);
-exc_singleton!(PyExc_BrokenPipeError);
-exc_singleton!(PyExc_Warning);
-exc_singleton!(PyExc_DeprecationWarning);
-exc_singleton!(PyExc_RuntimeWarning);
-exc_singleton!(PyExc_FutureWarning);
-exc_singleton!(PyExc_ImportWarning);
-exc_singleton!(PyExc_UserWarning);
+exc_singletons!(
+    PyExc_BaseException,
+    PyExc_Exception,
+    PyExc_ValueError,
+    PyExc_TypeError,
+    PyExc_RuntimeError,
+    PyExc_MemoryError,
+    PyExc_IndexError,
+    PyExc_KeyError,
+    PyExc_AttributeError,
+    PyExc_OverflowError,
+    PyExc_ZeroDivisionError,
+    PyExc_ImportError,
+    PyExc_ModuleNotFoundError,
+    PyExc_StopIteration,
+    PyExc_NotImplementedError,
+    PyExc_OSError,
+    PyExc_IOError,
+    PyExc_FileNotFoundError,
+    PyExc_PermissionError,
+    PyExc_FileExistsError,
+    PyExc_IsADirectoryError,
+    PyExc_NotADirectoryError,
+    PyExc_TimeoutError,
+    PyExc_ArithmeticError,
+    PyExc_FloatingPointError,
+    PyExc_LookupError,
+    PyExc_AssertionError,
+    PyExc_EOFError,
+    PyExc_NameError,
+    PyExc_UnboundLocalError,
+    PyExc_SyntaxError,
+    PyExc_SystemError,
+    PyExc_SystemExit,
+    PyExc_UnicodeError,
+    PyExc_UnicodeDecodeError,
+    PyExc_UnicodeEncodeError,
+    PyExc_BufferError,
+    PyExc_RecursionError,
+    PyExc_GeneratorExit,
+    PyExc_KeyboardInterrupt,
+    PyExc_ConnectionError,
+    PyExc_ConnectionResetError,
+    PyExc_BrokenPipeError,
+    PyExc_Warning,
+    PyExc_DeprecationWarning,
+    PyExc_RuntimeWarning,
+    PyExc_FutureWarning,
+    PyExc_ImportWarning,
+    PyExc_UserWarning,
+);
+
+/// Best-effort human description of a `*mut PyObject` that failed bridge
+/// resolution (`pyobj_to_handle` returned `None`), for the C-API silent-failure
+/// diagnostic. Reads only the object header (`ob_type` → `tp_name`) plus an
+/// identity check against the exception singletons, so it is safe for any
+/// non-null pointer a C extension may hand us.
+///
+/// # Safety
+/// `ptr` must be null or point to a readable `PyObject` header.
+pub unsafe fn describe_unresolved_pyobject(ptr: *const PyObject) -> String {
+    if ptr.is_null() {
+        return "NULL".to_string();
+    }
+    if let Some(name) = exc_singleton_name(ptr) {
+        return format!("exception-singleton {name}");
+    }
+    let ob_type = unsafe { (*ptr).ob_type };
+    if ob_type.is_null() {
+        // A non-null pointer to a bare `PyObject { ob_refcnt, ob_type: NULL }`
+        // that is neither None/True/False nor one of the runtime's exception
+        // singletons. In a split-runtime build this is the signature of a
+        // *duplicated* cpython-abi data sentinel: the C extension linked its own
+        // uninitialized copy of `Py_None`/`Py_True`/`Py_False`/`PyExc_*` at a
+        // different address than the runtime's, so pointer-identity resolution
+        // misses it. Emit the pointer plus the runtime's canonical sentinel
+        // addresses so the split-runtime data-symbol duplication is diagnosable
+        // directly from the failure record.
+        let addr = ptr as usize;
+        let none = &raw const Py_None as usize;
+        let t = &raw const Py_True as usize;
+        let f = &raw const Py_False as usize;
+        return format!(
+            "bare-sentinel(ob_type=NULL, addr={addr:#x}; runtime Py_None={none:#x} Py_True={t:#x} Py_False={f:#x})"
+        );
+    }
+    let tp_name = unsafe { (*ob_type).tp_name };
+    let type_name = if tp_name.is_null() {
+        "<unnamed>".to_string()
+    } else {
+        unsafe { std::ffi::CStr::from_ptr(tp_name) }
+            .to_string_lossy()
+            .into_owned()
+    };
+    if std::ptr::eq(ob_type as *const PyTypeObject, &raw const PyType_Type) {
+        format!("type-object '{type_name}'")
+    } else {
+        format!("instance-of '{type_name}'")
+    }
+}
 
 /// Py_HASH_EXTERNAL constant — used by some extensions.
 pub const Py_HASH_EXTERNAL: c_int = 0;
@@ -1040,3 +1108,73 @@ pub static mut PyBaseObject_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 #[allow(non_upper_case_globals)]
 #[unsafe(no_mangle)]
 pub static mut PyFrozenSet_Type: PyTypeObject = unsafe { std::mem::zeroed() };
+
+#[cfg(test)]
+mod unresolved_pyobject_tests {
+    use super::*;
+
+    #[test]
+    fn exc_singleton_name_identifies_exception_globals_by_address() {
+        // A real exception-singleton pointer resolves to its C name; an
+        // unrelated pointer does not. Address-identity only, so this is the
+        // authority the silent-failure diagnostic relies on.
+        assert_eq!(
+            exc_singleton_name(&raw const PyExc_Exception),
+            Some("PyExc_Exception")
+        );
+        assert_eq!(
+            exc_singleton_name(&raw const PyExc_ValueError),
+            Some("PyExc_ValueError")
+        );
+        let mut unrelated = PyObject {
+            ob_refcnt: 1,
+            ob_type: std::ptr::null_mut(),
+        };
+        assert_eq!(
+            exc_singleton_name(&raw mut unrelated as *const PyObject),
+            None
+        );
+    }
+
+    #[test]
+    fn describe_unresolved_pyobject_classifies_common_shapes() {
+        // NULL.
+        assert_eq!(
+            unsafe { describe_unresolved_pyobject(std::ptr::null()) },
+            "NULL"
+        );
+        // A runtime exception singleton is named directly.
+        assert_eq!(
+            unsafe { describe_unresolved_pyobject(&raw const PyExc_Exception) },
+            "exception-singleton PyExc_Exception"
+        );
+        // A bare sentinel (ob_type == NULL) that is not an exception singleton —
+        // the split-runtime duplicated-data-symbol signature. The message names
+        // the runtime's canonical sentinel addresses for comparison.
+        let mut bare = PyObject {
+            ob_refcnt: 1 << 30,
+            ob_type: std::ptr::null_mut(),
+        };
+        let desc = unsafe { describe_unresolved_pyobject(&raw mut bare) };
+        assert!(
+            desc.starts_with("bare-sentinel(ob_type=NULL"),
+            "unexpected description: {desc}"
+        );
+        assert!(desc.contains("runtime Py_None="), "missing runtime addrs: {desc}");
+        // A type object (ob_type == &PyType_Type) is reported as a type-object.
+        let mut named_type: PyTypeObject = unsafe { std::mem::zeroed() };
+        named_type.tp_name = c"widget".as_ptr();
+        let mut type_instance = PyObject {
+            ob_refcnt: 1,
+            ob_type: &raw mut named_type,
+        };
+        // Point PyType_Type's identity check: mark the object's type as
+        // PyType_Type so the classifier reports a type-object.
+        unsafe {
+            type_instance.ob_type = &raw mut PyType_Type;
+            PyType_Type.tp_name = c"type".as_ptr();
+        }
+        let desc = unsafe { describe_unresolved_pyobject(&raw mut type_instance) };
+        assert!(desc.starts_with("type-object "), "unexpected: {desc}");
+    }
+}
