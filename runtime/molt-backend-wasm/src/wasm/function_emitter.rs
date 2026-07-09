@@ -72,6 +72,7 @@ impl WasmBackend {
         // Capture native_eh_enabled before the closure to avoid borrowing self.
         // Native EH requires non-relocatable output (wasm-ld doesn't support EH relocations)
         let native_eh_enabled = self.options.native_eh_enabled && !self.options.reloc_enabled;
+        let tail_call_enabled = self.options.tail_call_enabled;
 
         // Tail call optimization counter (WASM tail calls proposal §3.5).
         // Uses Cell so the closure can mutate it while also being borrowed
@@ -92,6 +93,7 @@ impl WasmBackend {
             func_index,
             reloc_enabled,
             native_eh_enabled,
+            tail_call_enabled,
             tail_call_count: &tail_call_count,
         };
 

@@ -34,6 +34,7 @@ pub(super) struct WasmFunctionEmitContext<'a, 'ctx> {
     pub(super) func_index: u32,
     pub(super) reloc_enabled: bool,
     pub(super) native_eh_enabled: bool,
+    pub(super) tail_call_enabled: bool,
     pub(super) tail_call_count: &'a Cell<usize>,
 }
 

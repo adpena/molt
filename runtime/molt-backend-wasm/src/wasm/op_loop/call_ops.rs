@@ -34,6 +34,7 @@ pub(super) struct CallOpContext<'a, 'ctx, 'm> {
     pub(super) multi_return_candidates: &'a BTreeMap<String, usize>,
     pub(super) multi_return: &'a WasmMultiReturnLayout,
     pub(super) reloc_enabled: bool,
+    pub(super) tail_call_enabled: bool,
     pub(super) tail_call_eligible: bool,
     pub(super) arena_local: Option<u32>,
     pub(super) tail_call_count: &'a Cell<usize>,

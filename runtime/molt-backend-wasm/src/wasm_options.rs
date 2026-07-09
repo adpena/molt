@@ -19,6 +19,10 @@ pub struct WasmCompileOptions {
     pub data_base: u32,
     pub table_base: u32,
     pub split_runtime_runtime_table_min: Option<u32>,
+    /// Enable `return_call` emission (WASM tail-call proposal).
+    /// Disabled by default until the target feature probe proves support; set
+    /// `MOLT_WASM_TAIL_CALL=1` after that probe to opt into the proposal.
+    pub tail_call_enabled: bool,
     /// Enable native WASM exception handling (WASM 3.0 EH proposal).
     /// Enabled by default for non-relocatable wasm output; set
     /// `MOLT_WASM_NATIVE_EH=0` to disable explicitly.
@@ -57,6 +61,10 @@ impl Default for WasmCompileOptions {
             )
             .ok()
             .and_then(|value| value.parse::<u32>().ok()),
+            tail_call_enabled: matches!(
+                std::env::var("MOLT_WASM_TAIL_CALL").as_deref(),
+                Ok("1") | Ok("true") | Ok("TRUE") | Ok("on") | Ok("ON")
+            ),
             native_eh_enabled: !matches!(std::env::var("MOLT_WASM_NATIVE_EH").as_deref(), Ok("0")),
             wasm_profile: match std::env::var("MOLT_WASM_PROFILE").as_deref() {
                 Ok("auto") => WasmProfile::Auto,

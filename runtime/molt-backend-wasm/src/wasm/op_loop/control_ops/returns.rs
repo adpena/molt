@@ -15,6 +15,9 @@ pub(super) fn emit_return_control_op(
             func.instruction(&Instruction::I64Const(0));
             func.instruction(&Instruction::Return);
         }
+        "unreachable" => {
+            func.instruction(&Instruction::Unreachable);
+        }
         _ => return false,
     }
     true
