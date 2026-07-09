@@ -6,7 +6,7 @@ use wasm_encoder::Function;
 
 #[path = "object_attr_ops/attribute_ops.rs"]
 mod attribute_ops;
-#[path = "object_attr_ops/class_ops.rs"]
+#[path = "object_attr_ops/class_ops/mod.rs"]
 mod class_ops;
 #[path = "object_attr_ops/dataclass_ops.rs"]
 mod dataclass_ops;
