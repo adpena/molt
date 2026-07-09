@@ -2819,14 +2819,29 @@ pub(crate) unsafe fn call_function_obj_trampoline(
             }
             #[cfg(not(target_arch = "wasm32"))]
             {
-                let Some(call_target) = function_required_call_target_ptr(func_ptr, tramp_ptr)
-                else {
-                    return missing_function_call_target(
-                        _py,
-                        "call_function_obj_trampoline",
-                        tramp_ptr,
-                    );
-                };
+                // This lane invokes the *variadic trampoline* ABI
+                // `fn(closure_bits, argv_ptr, argc)`, which only the compiled
+                // `..__molt_trampoline_*` entry implements. It MUST resolve
+                // `tramp_ptr` (the trampoline's own address), NOT the function's
+                // fixed-arity `call_target` slot.
+                //
+                // `function_required_call_target_ptr` returns the offset-8
+                // `call_target` slot whenever it is populated, ignoring the
+                // `tramp_ptr` argument. That slot holds the callee's FIXED-ARITY
+                // entry (`fn(arg0, arg1, ...)`) — cached there for direct fixed-
+                // arity dispatch by `init_runtime_callable_function_obj`'s
+                // `native_direct_target` path once the app-callable resolver
+                // publishes it. Feeding that fixed-arity entry the variadic ABI
+                // reinterprets `closure_bits` (0 for a plain function) as the
+                // first param and the raw `argv` pointer as the second, so every
+                // argument is silently replaced by junk NaN-box bits — e.g.
+                // `f(1, d=4)` returns `(0.0, <argv-ptr-as-f64>)` instead of
+                // `(1, 4)`. `tramp_ptr` is the trampoline's executable address on
+                // native (`normalize_runtime_trampoline_ptr` is identity here);
+                // resolve it through the runtime-callable registry for
+                // canonicalization and fall back to the raw address.
+                let call_target = runtime_callable_target_ptr(tramp_ptr)
+                    .unwrap_or(tramp_ptr as usize as *const ());
                 let func: extern "C" fn(u64, u64, u64) -> i64 = std::mem::transmute(call_target);
                 func(closure_bits, args.as_ptr() as u64, args.len() as u64) as u64
             }
@@ -3136,6 +3151,67 @@ mod tests {
             );
 
             dec_ref_bits(_py, result_bits);
+            dec_ref_bits(_py, func_bits);
+        });
+    }
+
+    // Correct trampoline behavior: read argv[0] from the packed args array.
+    #[cfg(not(target_arch = "wasm32"))]
+    extern "C" fn trampoline_returns_first_argv(_closure: u64, argv_ptr: u64, _argc: u64) -> i64 {
+        unsafe { *(argv_ptr as *const u64) as i64 }
+    }
+
+    // Fixed-arity entry: returns its first positional param. If the trampoline
+    // lane wrongly invokes THIS with the variadic ABI, `first` is `closure_bits`
+    // (0 for a plain function), not the real argument.
+    #[cfg(not(target_arch = "wasm32"))]
+    extern "C" fn fixed_arity_returns_first_param(first: u64, _second: u64) -> i64 {
+        first as i64
+    }
+
+    // Regression guard: the variadic trampoline lane must dispatch to the
+    // trampoline entry `fn(closure, argv_ptr, argc)`, NEVER the function's
+    // fixed-arity `call_target` slot. When the app-callable resolver caches the
+    // fixed-arity entry in that slot, invoking it with the trampoline ABI
+    // reinterprets `closure_bits`/`argv_ptr` as the callee's first two params --
+    // the silent keyword-call miscompile (`f(1, d=4)` -> `(0.0, junk)`).
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn trampoline_lane_dispatches_trampoline_not_fixed_arity_call_target() {
+        init();
+        crate::with_gil_entry_nopanic!(_py, {
+            // `alloc_runtime_function_obj` registers the fixed-arity fn_ptr and
+            // caches it in the offset-8 `call_target` slot -- exactly the state
+            // the app-callable resolver produces on main.
+            let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+                _py,
+                fixed_arity_returns_first_param as *const () as usize as u64,
+                2,
+            );
+            assert!(!func_ptr.is_null());
+            let func_bits = MoltObject::from_ptr(func_ptr).bits();
+            // Publish a distinct variadic trampoline entry in the trampoline slot.
+            unsafe {
+                crate::object::layout::function_set_trampoline_ptr(
+                    func_ptr,
+                    trampoline_returns_first_argv as *const () as usize as u64,
+                );
+            }
+            assert!(
+                !unsafe { crate::object::layout::function_call_target_ptr(func_ptr) }.is_null(),
+                "precondition: fixed-arity call_target slot must be populated to reproduce the poison",
+            );
+
+            let result =
+                unsafe { super::call_function_obj_trampoline(_py, func_bits, &[int(11), int(13)]) };
+            assert!(!crate::exception_pending(_py));
+            assert_eq!(
+                result,
+                int(11),
+                "trampoline lane must invoke the trampoline entry (returns argv[0]=11), not the \
+                 fixed-arity call_target (which would return closure_bits=0)",
+            );
+
             dec_ref_bits(_py, func_bits);
         });
     }
