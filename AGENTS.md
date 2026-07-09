@@ -360,7 +360,7 @@ controls until reconciled.
 
 ## High-Signal File Map
 
-- TIR/op facts: `runtime/molt-ir/src/tir/`,
+- TIR/op facts and target/profile descriptors: `runtime/molt-ir/src/tir/`,
   `runtime/molt-ir/src/tir/op_kinds.toml`, `tools/gen_op_kinds.py`
 - Passes and representation facts: `runtime/molt-passes/src/tir/`,
   `runtime/molt-passes/src/representation_facts.rs`
