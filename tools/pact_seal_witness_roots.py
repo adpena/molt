@@ -81,6 +81,12 @@ from molt.cli.source_extensions import (  # noqa: E402
     source_extension_manifest_source_path,
 )
 
+# Sibling tool: materializes NumPy's build-generated Python modules so a re-seal
+# leaves the witness import closure complete (see the module docstring).
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+import pact_witness_numpy_generated_modules as _numpy_generated_modules  # noqa: E402
+
 
 # The witness sealed roots, relative to the repo root. These mirror the primary
 # candidates selected by tools/proof_queue.py::_pact_witness_native_roots. Only
@@ -473,6 +479,28 @@ def main(argv: list[str] | None = None) -> int:
         except RegenError as exc:
             print(f"FAIL  {root}: {exc}", file=sys.stderr)
             exit_code = 2
+
+    # NumPy's build-generated Python modules (version.py, __config__.py) do not
+    # exist in NumPy's source tree and so are never captured by a source-derived
+    # re-seal; materialize them from NumPy's own authority so the witness import
+    # closure is complete and a re-seal cannot leave them out.
+    try:
+        if args.check:
+            problems = _numpy_generated_modules.check(repo_root)
+            if problems:
+                print(f"STALE {repo_root} (numpy build-generated modules):")
+                for problem in problems:
+                    print(f"  {problem}")
+                exit_code = exit_code or 1
+            else:
+                print("OK    numpy build-generated modules present + current")
+        else:
+            written = _numpy_generated_modules.materialize(repo_root)
+            for path in written:
+                print(f"MATERIALIZED {path}")
+    except _numpy_generated_modules.GeneratedModuleError as exc:
+        print(f"FAIL  numpy build-generated modules: {exc}", file=sys.stderr)
+        exit_code = 2
 
     return exit_code
 
