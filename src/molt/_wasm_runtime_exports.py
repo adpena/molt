@@ -148,6 +148,31 @@ def wasm_cpython_abi_requested_data_export_names(
 
 
 @lru_cache(maxsize=1)
+def wasm_cpython_abi_data_symbol_names() -> tuple[str, ...]:
+    """Full, app-independent set of CPython-ABI data symbols the runtime owns.
+
+    These are the canonical singletons and static type/exception objects
+    (``Py_None`` / ``Py_True`` / ``Py_False``, every ``PyExc_*``, every
+    ``Py*_Type``, ...) that a native extension object (numpy, scipy) references
+    as *undefined data symbols*. The split-runtime deploy artifact exports each
+    one as an address-bearing wasm global so the linker can point the
+    extension's undefined data-symbol references at the runtime's single
+    canonical copy (see ``tools/wasm_link.py`` split-runtime data aliasing).
+
+    The set is derived from the generated ABI registry (single authority) and is
+    intentionally app-independent so the shared runtime stays byte-identical
+    across apps (CDN cacheability, ``test_runtime_hash_identical``).
+    """
+    return tuple(
+        sorted(
+            name
+            for name, kind in WASM_EXTERNAL_NATIVE_LINK_IMPORT_SYMBOL_KINDS.items()
+            if kind == "data" and _raw_is_cpython_abi_link_import(name)
+        )
+    )
+
+
+@lru_cache(maxsize=1)
 def _runtime_import_fallback_exports() -> dict[str, tuple[str, ...]]:
     fallback_exports: dict[str, tuple[str, ...]] = {}
     for import_name, exports in WASM_RUNTIME_IMPORT_FALLBACK_EXPORTS:
@@ -361,6 +386,14 @@ def wasm_runtime_shared_export_link_args(
         canonical_intrinsic_runtime_name(name)
         for name in _all_dynamic_runtime_owned_intrinsic_exports()
     )
+    # Always publish the canonical CPython-ABI data symbols as address-bearing
+    # globals. wasm-ld exports a defined data symbol as an immutable i32 global
+    # whose init value is the symbol's linear-memory address; the split-runtime
+    # native data-symbol aliaser reads those addresses so numpy/scipy resolve
+    # `Py_None`/`Py_False`/`PyExc_*`/`Py*_Type` to the runtime's single copy.
+    # `--export-if-defined` keeps this app-independent and never errors on a
+    # feature-gated-absent symbol, so the shared artifact stays byte-identical.
+    export_names.update(wasm_cpython_abi_data_symbol_names())
     if required_runtime_imports is not None:
         export_names.update(
             wasm_runtime_required_export_names(required_runtime_imports)
