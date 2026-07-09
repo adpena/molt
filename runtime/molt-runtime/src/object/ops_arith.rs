@@ -1327,11 +1327,19 @@ fn mod_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
                     "integer division or modulo by zero",
                 );
             }
-            let mut rem = li % ri;
-            if rem != 0 && (rem > 0) != (ri > 0) {
-                rem += ri;
+            if li == i64::MIN && ri == -1 {
+                // `i64::MIN % -1` overflows the raw `%` (its quotient 2**63 is
+                // not an i64), so it panics in debug builds / traps. The Python
+                // value is 0; fall through to the bigint path below, which
+                // returns it (collapsed back to inline). Mirrors the identical
+                // guard in `floordiv_impl`.
+            } else {
+                let mut rem = li % ri;
+                if rem != 0 && (rem > 0) != (ri > 0) {
+                    rem += ri;
+                }
+                return MoltObject::from_int(rem).bits();
             }
-            return MoltObject::from_int(rem).bits();
         }
         // String % formatting — moved after int fast path.
         if let Some(ptr) = lhs.as_ptr() {

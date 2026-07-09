@@ -308,6 +308,55 @@ fn numeric_result_binding_converts_boxed_call_result_for_float_primary_home() {
 }
 
 #[test]
+fn raw_int_div_intmin_debug_guard_precedes_raw_sdiv() {
+    // Regression for the finding-#17 UB class: the raw-i64 floordiv/mod fast
+    // lanes emit a bare `sdiv`/`srem` on FULL-RANGE carrier values, and Cranelift
+    // traps on `i64::MIN / -1` (it does not wrap). The lanes are only reached for
+    // inline-47-proven operands (INT_MIN impossible) — a NON-LOCAL invariant — so
+    // `emit_raw_int_div_intmin_debug_guard` makes that invariant locally CHECKED:
+    // in debug builds it must emit a `trapnz` guarding `(i64::MIN, -1)` ahead of
+    // the raw division; in release builds it must lower to nothing (no hot-path
+    // cost). If a refactor drops the guard, this test fails.
+    let mut sig = Signature::new(CallConv::SystemV);
+    sig.params.push(AbiParam::new(types::I64));
+    sig.params.push(AbiParam::new(types::I64));
+    sig.returns.push(AbiParam::new(types::I64));
+    let mut func = Function::with_name_signature(UserFuncName::user(0, 42), sig);
+    let mut context = FunctionBuilderContext::new();
+    {
+        let mut builder = FunctionBuilder::new(&mut func, &mut context);
+        let entry = builder.create_block();
+        builder.append_block_params_for_function_params(entry);
+        builder.switch_to_block(entry);
+        builder.seal_block(entry);
+        let lhs_raw = builder.block_params(entry)[0];
+        let rhs_raw = builder.block_params(entry)[1];
+        emit_raw_int_div_intmin_debug_guard(&mut builder, lhs_raw, rhs_raw);
+        // The guard must precede a raw division that would otherwise trap.
+        let quot = builder.ins().sdiv(lhs_raw, rhs_raw);
+        builder.ins().return_(&[quot]);
+        builder.finalize();
+    }
+
+    let flags = settings::Flags::new(settings::builder());
+    verify_function(&func, &flags)
+        .expect("raw-int div INT_MIN/-1 debug guard must produce a verifiable CFG");
+    let clif = func.display().to_string();
+    if cfg!(debug_assertions) {
+        assert!(
+            clif.contains("trapnz"),
+            "debug builds must emit a `trapnz` guarding INT_MIN/-1 ahead of the raw \
+             sdiv/srem so the non-local inline-47 invariant is checked, not assumed:\n{clif}"
+        );
+    } else {
+        assert!(
+            !clif.contains("trapnz"),
+            "release builds must not pay for the debug-only INT_MIN/-1 guard:\n{clif}"
+        );
+    }
+}
+
+#[test]
 fn semantic_type_hint_does_not_create_native_scalar_lane_for_generic_ops() {
     let hinted_generic_op = OpIR {
         kind: "call_indirect".to_string(),
