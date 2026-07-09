@@ -3,7 +3,9 @@ use crate::wasm_import_tracking::TrackedImportIds;
 use crate::{FunctionIR, OpIR};
 use wasm_encoder::Function;
 
+#[path = "attribute_ops/generic.rs"]
 mod generic;
+#[path = "attribute_ops/named.rs"]
 mod named;
 
 pub(super) fn emit_attribute_op(
