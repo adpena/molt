@@ -1296,26 +1296,42 @@ unsafe fn call_bridged_callable(
     args: *mut PyObject,
     kwargs: *mut PyObject,
 ) -> *mut PyObject {
+    // Set when the args tuple was marshaled from a C-layout tuple: the fresh
+    // Molt tuple is owned here and released after the call.
+    let mut owned_args_bits: Option<u64> = None;
     let args_bits = if args.is_null() {
         0
     } else {
-        match GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(args) {
+        let resolved = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(args);
+        match resolved {
             Some(bits) => bits,
-            None => {
-                crate::capi_trace::record_silent_failure(
-                    "PyObject_Call",
-                    Some("unresolved args tuple"),
-                );
-                if !exception_already_pending() {
-                    unsafe {
-                        crate::api::errors::PyErr_SetString(
-                            &raw mut crate::abi_types::PyExc_SystemError,
-                            c"PyObject_Call: args tuple is not a bridge-managed object".as_ptr(),
-                        );
-                    }
+            // The shim's `PyTuple_New` / `PyTuple_Pack` mint C-LAYOUT tuples
+            // (`PyTupleObject`, not bridge proxies) — the normal shape for
+            // `PyObject_CallFunction`-built args. Marshal the C tuple's items
+            // into a fresh Molt tuple; each item resolves by identity
+            // (bridge proxies, singletons, or raw-registered opaque tokens).
+            None => match unsafe { molt_tuple_bits_from_c_tuple(args) } {
+                Some(bits) => {
+                    owned_args_bits = Some(bits);
+                    bits
                 }
-                return ptr::null_mut();
-            }
+                None => {
+                    crate::capi_trace::record_silent_failure(
+                        "PyObject_Call",
+                        Some("unresolved args tuple"),
+                    );
+                    if !exception_already_pending() {
+                        unsafe {
+                            crate::api::errors::PyErr_SetString(
+                                &raw mut crate::abi_types::PyExc_SystemError,
+                                c"PyObject_Call: args tuple is not a bridge-managed object and has no C tuple layout"
+                                    .as_ptr(),
+                            );
+                        }
+                    }
+                    return ptr::null_mut();
+                }
+            },
         }
     };
     let kwargs_bits = if kwargs.is_null()
@@ -1344,6 +1360,9 @@ unsafe fn call_bridged_callable(
     };
     let h = hooks_or_stubs();
     let result_bits = unsafe { (h.object_call)(callable_bits, args_bits, kwargs_bits) };
+    if let Some(bits) = owned_args_bits {
+        unsafe { (h.dec_ref)(bits) };
+    }
     if result_bits == 0 {
         // Runtime raised (pending exception) or hooks are unregistered.
         // Guarantee the NULL-return-carries-an-exception ABI contract.
@@ -1358,6 +1377,46 @@ unsafe fn call_bridged_callable(
         return ptr::null_mut();
     }
     unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(result_bits) }
+}
+
+/// Marshal a C-layout tuple (`PyTupleObject` minted by the shim's
+/// `PyTuple_New`/`PyTuple_Pack`) into a fresh, owned Molt tuple handle. Every
+/// item must resolve through the bridge by identity — bridge proxies, static
+/// singletons, or raw-registered opaque tokens (the established
+/// container-crossing representation for extension-owned C objects). Returns
+/// `None` (caller fails loudly) when `args` has no C tuple layout or an item
+/// does not resolve.
+unsafe fn molt_tuple_bits_from_c_tuple(args: *mut PyObject) -> Option<u64> {
+    let tuple = unsafe { crate::api::sequences::tuple_layout_object(args) }?;
+    let len = unsafe { (*tuple).ob_base.ob_size };
+    if len < 0 {
+        return None;
+    }
+    let n = len as usize;
+    let items = unsafe { (*tuple).ob_item };
+    if n > 0 && items.is_null() {
+        return None;
+    }
+    let mut item_bits = Vec::with_capacity(n);
+    {
+        let bridge = GLOBAL_BRIDGE.lock();
+        for i in 0..n {
+            let item = unsafe { *items.add(i) };
+            if item.is_null() {
+                return None;
+            }
+            item_bits.push(bridge.pyobj_to_handle(item)?);
+        }
+    }
+    let h = hooks_or_stubs();
+    let tuple_bits = unsafe { (h.alloc_tuple)(n) };
+    if tuple_bits == 0 {
+        return None;
+    }
+    for (i, bits) in item_bits.into_iter().enumerate() {
+        unsafe { (h.tuple_set)(tuple_bits, i, bits) };
+    }
+    Some(tuple_bits)
 }
 
 #[unsafe(no_mangle)]

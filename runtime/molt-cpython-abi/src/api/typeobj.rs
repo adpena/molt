@@ -594,7 +594,9 @@ unsafe fn ensure_number(ty: *mut PyTypeObject) -> *mut crate::abi_types::PyNumbe
             let b: Box<crate::abi_types::PyNumberMethods> = Box::new(std::mem::zeroed());
             (*ty).tp_as_number = Box::into_raw(b).cast::<c_void>();
         }
-        (*ty).tp_as_number.cast::<crate::abi_types::PyNumberMethods>()
+        (*ty)
+            .tp_as_number
+            .cast::<crate::abi_types::PyNumberMethods>()
     }
 }
 
@@ -605,7 +607,9 @@ unsafe fn ensure_sequence(ty: *mut PyTypeObject) -> *mut crate::abi_types::PySeq
             let b: Box<crate::abi_types::PySequenceMethods> = Box::new(std::mem::zeroed());
             (*ty).tp_as_sequence = Box::into_raw(b).cast::<c_void>();
         }
-        (*ty).tp_as_sequence.cast::<crate::abi_types::PySequenceMethods>()
+        (*ty)
+            .tp_as_sequence
+            .cast::<crate::abi_types::PySequenceMethods>()
     }
 }
 
@@ -616,7 +620,9 @@ unsafe fn ensure_mapping(ty: *mut PyTypeObject) -> *mut crate::abi_types::PyMapp
             let b: Box<crate::abi_types::PyMappingMethods> = Box::new(std::mem::zeroed());
             (*ty).tp_as_mapping = Box::into_raw(b).cast::<c_void>();
         }
-        (*ty).tp_as_mapping.cast::<crate::abi_types::PyMappingMethods>()
+        (*ty)
+            .tp_as_mapping
+            .cast::<crate::abi_types::PyMappingMethods>()
     }
 }
 

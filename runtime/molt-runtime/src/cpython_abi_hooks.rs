@@ -571,9 +571,8 @@ fn sys_module_attr_borrowed(attr: &[u8]) -> u64 {
             return 0;
         }
         let attr_bits = MoltObject::from_ptr(name_ptr).bits();
-        let materialized = crate::builtins::attr::module_attr_lookup_allow_missing(
-            &_py, module_ptr, attr_bits,
-        );
+        let materialized =
+            crate::builtins::attr::module_attr_lookup_allow_missing(&_py, module_ptr, attr_bits);
         dec_ref_bits(&_py, attr_bits);
         if let Some(owned_bits) = materialized {
             // `__getattr__` stored the value into the module dict; drop the

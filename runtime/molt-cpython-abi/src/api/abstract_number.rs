@@ -38,8 +38,7 @@ unsafe fn ensure_exception_set() {
         unsafe {
             crate::api::errors::PyErr_SetString(
                 &raw mut crate::abi_types::PyExc_SystemError,
-                c"PyNumber operation failed: runtime numeric authority unavailable"
-                    .as_ptr(),
+                c"PyNumber operation failed: runtime numeric authority unavailable".as_ptr(),
             );
         }
     }
