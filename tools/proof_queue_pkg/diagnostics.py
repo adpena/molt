@@ -1175,6 +1175,11 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
     incomplete_memory_guard = pq._finished_incomplete_memory_guard_diagnostic(row)
     if incomplete_memory_guard is not None:
         diagnostics.insert(0, incomplete_memory_guard)
+    worker_exit_without_summary = (
+        pq._finished_worker_exit_without_summary_diagnostic(row)
+    )
+    if worker_exit_without_summary is not None:
+        diagnostics.insert(0, worker_exit_without_summary)
 
     if row["status"] == "failed" and not diagnostics:
         last = pq._last_nonempty_log_line(Path(row["log_path"])) or ""

@@ -887,6 +887,75 @@ def _finished_incomplete_memory_guard_diagnostic(
     )
 
 
+def _finished_worker_exit_without_summary_diagnostic(
+    row: sqlite3.Row,
+) -> dict[str, object] | None:
+    if row["status"] in RUNNING:
+        return None
+    summary = _read_json_object(Path(row["summary_json"]))
+    if summary.get("status") != "guard_worker_exited_without_final_summary":
+        return None
+    evidence_parts = [
+        f"row_status={row['status']}",
+        f"row_returncode={row['returncode']}",
+    ]
+    worker_returncode = summary.get("worker_returncode")
+    if worker_returncode is not None:
+        evidence_parts.append(f"worker_returncode={worker_returncode}")
+    previous_status = None
+    incident = summary.get("incident")
+    if isinstance(incident, dict):
+        raw_previous_status = incident.get("previous_status")
+        if isinstance(raw_previous_status, str) and raw_previous_status.strip():
+            previous_status = raw_previous_status.strip()
+            evidence_parts.append(f"previous_status={previous_status}")
+    signal_payload = summary.get("worker_exit_signal") or summary.get("exit_signal")
+    if isinstance(signal_payload, dict):
+        signal_name = signal_payload.get("name")
+        signal_number = signal_payload.get("signal")
+        if isinstance(signal_name, str) and signal_name.strip():
+            evidence_parts.append(f"worker_signal={signal_name.strip()}")
+        elif isinstance(signal_number, int):
+            evidence_parts.append(f"worker_signal={signal_number}")
+    child = summary.get("child_process")
+    if isinstance(child, dict):
+        command = child.get("command")
+        child_runner = (
+            _memory_guard_child_runner_evidence(row["summary_json"])
+            if _is_guard_command(command)
+            else None
+        )
+        if child_runner is not None:
+            evidence_parts.append(child_runner)
+        else:
+            child_pid = child.get("pid")
+            if isinstance(child_pid, int) and child_pid > 0:
+                evidence_parts.append(f"child_pid={child_pid}")
+    recorded_at = summary.get("recorded_at")
+    if isinstance(recorded_at, str) and recorded_at.strip():
+        evidence_parts.append(f"recorded_at={recorded_at.strip()}")
+    last_log_line = _last_nonempty_log_line(Path(row["log_path"]))
+    if last_log_line:
+        evidence_parts.append(f"last_log={last_log_line}")
+    evidence_parts.append(f"summary_json={row['summary_json']}")
+    return _diagnostic(
+        signal_id="memory-guard-worker-exit-without-final-summary",
+        severity="infra",
+        summary=(
+            "Terminal proof row was preserved by the memory_guard wrapper after "
+            "the internal guard worker exited before writing the final summary."
+        ),
+        evidence=" ".join(evidence_parts),
+        next_action=(
+            "Treat this row as guard-custody failure evidence, not product proof. "
+            "Inspect the worker signal/source and child logs once, then rerun "
+            "through the same queue lane after the guard lifecycle is fixed."
+        ),
+        scopes=("tools/proof_queue.py", "tools/memory_guard.py"),
+        artifacts=(str(row["summary_json"]), str(row["log_path"])),
+    )
+
+
 def _active_log_status(row: sqlite3.Row) -> list[str]:
     path = Path(row["log_path"])
     try:
