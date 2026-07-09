@@ -496,6 +496,21 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         ),
     )
     extension_build_parser.add_argument(
+        "--source-plan-exclude-linked-static-library",
+        action="append",
+        dest="source_plan_exclude_linked_static_libraries",
+        metavar="ARCHIVE",
+        help=(
+            "Name of a same-project static library (e.g. 'libnpymath.a' or "
+            "'npymath') the source-plan target links but which a PRIMARY "
+            "extension of the same package already statically exports. Its "
+            "symbols are left undefined in this extension's object closure so "
+            "they resolve against the primary at the final wasm link instead of "
+            "duplicating (which would be a fatal wasm-ld 'duplicate symbol'). "
+            "Repeat for multiple archives."
+        ),
+    )
+    extension_build_parser.add_argument(
         "--capabilities",
         help=(
             "Capabilities allowlist/profiles override "

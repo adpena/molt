@@ -434,6 +434,11 @@ def _dispatch_entrypoint_command(
             source_plan_compile_commands = extension_cfg.get(
                 "source_plan_compile_commands"
             ) or extension_cfg.get("source-plan-compile-commands")
+            source_plan_exclude_linked_static_libraries = (
+                args.source_plan_exclude_linked_static_libraries
+                or extension_cfg.get("source_plan_exclude_linked_static_libraries")
+                or extension_cfg.get("source-plan-exclude-linked-static-libraries")
+            )
             return _commands.extension_build(
                 project=args.project or extension_cfg.get("project"),
                 out_dir=args.out_dir
@@ -469,6 +474,9 @@ def _dispatch_entrypoint_command(
                 ),
                 source_plan_compile_commands=(
                     args.source_plan_compile_commands or source_plan_compile_commands
+                ),
+                source_plan_exclude_linked_static_libraries=(
+                    source_plan_exclude_linked_static_libraries
                 ),
                 abi_tier=args.abi_tier
                 or extension_cfg.get("abi_tier")
