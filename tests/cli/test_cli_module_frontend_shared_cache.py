@@ -141,8 +141,16 @@ def test_analysis_reuse_across_sessions_hydrates_shared(
         module_name="m",
         is_package=False,
         import_scan_mode="module_init",
-        func_defaults={"f": {"kind": "sync", "has_decorators": False, "params": 2,
-                             "defaults": [2], "posonly": 0, "kwonly": 0}},
+        func_defaults={
+            "f": {
+                "kind": "sync",
+                "has_decorators": False,
+                "params": 2,
+                "defaults": [2],
+                "posonly": 0,
+                "kwonly": 0,
+            }
+        },
         func_kinds={"f": "sync"},
         imports=["os"],
     )
@@ -156,12 +164,20 @@ def test_analysis_reuse_across_sessions_hydrates_shared(
     # before the read, and that the read returns the correct payload.
     _use_session(monkeypatch, "B")
     session_slot_b = MC._module_analysis_cache_path(
-        project_root, path, module_name="m", is_package=False, import_scan_mode="module_init"
+        project_root,
+        path,
+        module_name="m",
+        is_package=False,
+        import_scan_mode="module_init",
     )
     assert not session_slot_b.exists()  # cold session-local dir
 
     result = MC._read_persisted_module_analysis(
-        project_root, path, module_name="m", is_package=False, import_scan_mode="module_init"
+        project_root,
+        path,
+        module_name="m",
+        is_package=False,
+        import_scan_mode="module_init",
     )
     assert result is not None
     defaults, kinds, imports = result
@@ -341,8 +357,16 @@ def test_changed_tooling_fingerprint_is_not_reused_from_shared(
         module_name="m",
         is_package=False,
         import_scan_mode="module_init",
-        func_defaults={"f": {"kind": "sync", "has_decorators": False, "params": 2,
-                             "defaults": [1], "posonly": 0, "kwonly": 0}},
+        func_defaults={
+            "f": {
+                "kind": "sync",
+                "has_decorators": False,
+                "params": 2,
+                "defaults": [1],
+                "posonly": 0,
+                "kwonly": 0,
+            }
+        },
         func_kinds={"f": "sync"},
         imports=[],
     )
@@ -361,7 +385,11 @@ def test_changed_tooling_fingerprint_is_not_reused_from_shared(
     assert new_slot is not None and not new_slot.is_file()
 
     result = MC._read_persisted_module_analysis(
-        project_root, path, module_name="m", is_package=False, import_scan_mode="module_init"
+        project_root,
+        path,
+        module_name="m",
+        is_package=False,
+        import_scan_mode="module_init",
     )
     assert result is None
 
@@ -393,7 +421,10 @@ def test_changed_target_python_is_not_reused_from_shared(
     # Session B targeting a different Python -> different shared slot -> cold miss.
     _use_session(monkeypatch, "B")
     slot_313 = MC._shared_module_lowering_cache_path_for(
-        path, module_name="m", is_package=False, context_digest=context_digest,
+        path,
+        module_name="m",
+        is_package=False,
+        context_digest=context_digest,
         target_python=py313,
     )
     assert slot_313 is not None and not slot_313.is_file()
@@ -450,3 +481,151 @@ def test_publish_and_hydrate_never_use_os_link(
     )
 
     assert link_calls == []
+
+
+# --------------------------------------------------------------------------
+# Debug opt-out: MOLT_DISABLE_FRONTEND_LOWERING_CACHE forces a cold re-lower.
+# --------------------------------------------------------------------------
+
+
+def test_env_optout_forces_cold_lowering_miss(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With the opt-out set, a warm entry (session-local AND shared) is not reused.
+
+    This is the debugging lever for a suspected stale-cache miscompile: it must
+    strip *all* lowering-result reuse so the build is a true cold re-lower. A miss
+    can only ever force a recompute, so the opt-out can never itself miscompile.
+    """
+    project_root = tmp_path / "proj"
+    project_root.mkdir()
+    path = _write_module(project_root, "m", "def g():\n    return 41 + 1\n")
+    context_digest = "ab" * 32
+    ir_result = {"functions": [{"name": "m__g", "params": []}]}
+
+    # Populate BOTH tiers in session A with the cache enabled.
+    _use_session(monkeypatch, "A")
+    MC._write_persisted_module_lowering(
+        project_root,
+        path,
+        module_name="m",
+        is_package=False,
+        context_digest=context_digest,
+        result=ir_result,
+    )
+    session_slot_a = MC._module_lowering_cache_path(
+        project_root, path, module_name="m", is_package=False
+    )
+    shared_slot = MC._shared_module_lowering_cache_path_for(
+        path, module_name="m", is_package=False, context_digest=context_digest
+    )
+    assert session_slot_a.is_file()
+    assert shared_slot is not None and shared_slot.is_file()
+
+    # Same session (warm session-local slot present) but opt-out engaged.
+    monkeypatch.setenv("MOLT_DISABLE_FRONTEND_LOWERING_CACHE", "1")
+    assert (
+        MC._read_persisted_module_lowering(
+            project_root,
+            path,
+            module_name="m",
+            is_package=False,
+            context_digest=context_digest,
+        )
+        is None
+    )
+
+    # Flipping it back off restores reuse (proves the read path is otherwise warm).
+    monkeypatch.setenv("MOLT_DISABLE_FRONTEND_LOWERING_CACHE", "0")
+    assert (
+        MC._read_persisted_module_lowering(
+            project_root,
+            path,
+            module_name="m",
+            is_package=False,
+            context_digest=context_digest,
+        )
+        is not None
+    )
+
+
+def test_env_optout_skips_shared_publish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With the opt-out set, a cold write must not publish into the shared tier."""
+    project_root = tmp_path / "proj"
+    project_root.mkdir()
+    path = _write_module(project_root, "m", "def g():\n    return 1\n")
+    context_digest = "ab" * 32
+
+    monkeypatch.setenv("MOLT_DISABLE_FRONTEND_LOWERING_CACHE", "1")
+    _use_session(monkeypatch, "A")
+    MC._write_persisted_module_lowering(
+        project_root,
+        path,
+        module_name="m",
+        is_package=False,
+        context_digest=context_digest,
+        result={"functions": [{"name": "m__g", "params": []}]},
+    )
+    shared_slot = MC._shared_module_lowering_cache_path_for(
+        path, module_name="m", is_package=False, context_digest=context_digest
+    )
+    # The session-local entry is still written (correctness isolation), but the
+    # shared, cross-session tier is NOT populated while the opt-out is engaged.
+    assert shared_slot is not None and not shared_slot.is_file()
+
+
+# --------------------------------------------------------------------------
+# Effectiveness gate: the emitted attestation reflects warm-build reuse. A
+# regression that silently disables persistence collapses hit_rate toward 0.0.
+# --------------------------------------------------------------------------
+
+
+def test_lowering_cache_summary_reports_hit_rate() -> None:
+    from molt.cli.build_diagnostics import _frontend_lowering_cache_summary
+
+    # A warm second build: every observed module is served from the cache.
+    warm = _frontend_lowering_cache_summary(
+        {
+            "worker_timings": [
+                {"mode": "parallel_cache_hit", "reused_ms": 5.0},
+                {"mode": "serial_cache_hit", "reused_ms": 3.0},
+                {"mode": "parallel_cache_hit", "reused_ms": 4.0},
+            ]
+        }
+    )
+    assert warm is not None
+    assert warm["observed"] == 3
+    assert warm["hits"] == 3
+    assert warm["misses"] == 0
+    # Effectiveness threshold: a warm rebuild reuses (near-)every module.
+    assert warm["hit_rate"] == pytest.approx(1.0)
+    assert warm["hit_rate"] >= 0.9
+
+    # A cold build (or a silently-disabled persistent cache) collapses hit_rate.
+    cold = _frontend_lowering_cache_summary(
+        {
+            "worker_timings": [
+                {"mode": "parallel", "exec_ms": 100.0},
+                {"mode": "serial", "exec_ms": 80.0},
+            ]
+        }
+    )
+    assert cold is not None
+    assert cold["hits"] == 0
+    assert cold["hit_rate"] == pytest.approx(0.0)
+
+    # Mixed warm build: 2 of 4 reused -> 0.5.
+    mixed = _frontend_lowering_cache_summary(
+        {
+            "worker_timings": [
+                {"mode": "parallel_cache_hit", "reused_ms": 5.0},
+                {"mode": "serial_cache_hit", "reused_ms": 3.0},
+                {"mode": "parallel", "exec_ms": 50.0},
+                {"mode": "serial", "exec_ms": 40.0},
+            ]
+        }
+    )
+    assert mixed is not None
+    assert mixed["hit_rate"] == pytest.approx(0.5)
