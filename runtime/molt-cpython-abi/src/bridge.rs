@@ -457,6 +457,10 @@ pub extern "C" fn molt_cpython_abi_init() {
         unsafe { crate::abi_types::init_static_types() };
         unsafe { crate::api::typeobj::init_descriptor_slots() };
         init_tag_table();
+        // Register the canonical CPython-ABI sentinel data objects (exception
+        // singletons + Ellipsis/NotImplemented/UTC) in the bridge so a native
+        // extension that hands them back resolves them via `pyobj_to_handle`.
+        crate::abi_types::register_static_abi_objects();
     });
 }
 
