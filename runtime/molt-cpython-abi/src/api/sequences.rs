@@ -47,6 +47,12 @@ pub unsafe extern "C" fn PyList_Append(list: *mut PyObject, item: *mut PyObject)
     drop(bridge);
     let h = hooks_or_stubs();
     unsafe { (h.list_append)(list_bits, item_bits) };
+    // CPython contract: `PyList_Append` takes its own strong reference to the
+    // item (it does not steal). Anchor the item proxy so the extension's
+    // balancing `Py_DECREF` cannot sever the pointer↔handle mapping while the
+    // item stays reachable from the runtime list (same class as the
+    // `PyDict_SetItem` anchor — see api/mapping.rs).
+    unsafe { crate::api::refcount::Py_INCREF(item) };
     0
 }
 

@@ -249,6 +249,21 @@ pub struct RuntimeHooks {
     // NOT return an empty list ignoring its argument. Returns a list handle, or 0
     // with a pending exception on error.
     pub object_dir: unsafe extern "C" fn(obj_bits: u64) -> u64,
+    // ── Call protocol (PyObject_Call) ─────────────────────────────────────────
+    //
+    // The runtime owns the single call authority (`molt_call_bind`): compiled
+    // functions, types, bound methods, kwargs binding, and CPython-shaped
+    // exceptions all live there. Bridge proxies for Molt objects carry no
+    // `tp_call`, so `PyObject_Call` on a bridge-managed callable (e.g. numpy's
+    // `numpy.dtypes._add_dtype_helper`, a Molt-compiled function fetched via
+    // `PyObject_GetAttrString`) MUST route through this hook instead of failing
+    // "'<proxy-type>' object is not callable".
+    /// Call a Molt callable. `args_bits` is a Molt tuple handle of positional
+    /// arguments (0 = no positional args); `kwargs_bits` is a Molt dict handle
+    /// (0 = no keyword args). Returns the result handle bits, or 0 with the
+    /// error left in the runtime pending-exception state.
+    pub object_call:
+        unsafe extern "C" fn(callable_bits: u64, args_bits: u64, kwargs_bits: u64) -> u64,
 }
 
 /// Discriminants for [`RuntimeHooks::dict_op`]. Kept in sync with the match in
@@ -571,6 +586,9 @@ unsafe extern "C" fn stub_set_discard(_set: u64, _key: u64) -> std::os::raw::c_i
 unsafe extern "C" fn stub_object_dir(_obj: u64) -> u64 {
     0
 }
+unsafe extern "C" fn stub_object_call(_callable: u64, _args: u64, _kwargs: u64) -> u64 {
+    0
+}
 
 /// A no-op hooks table used when the runtime hasn't registered yet.
 pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
@@ -627,6 +645,7 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     set_add: stub_set_add,
     set_discard: stub_set_discard,
     object_dir: stub_object_dir,
+    object_call: stub_object_call,
 };
 
 /// Return the registered hooks or fall back to the no-op stubs.
