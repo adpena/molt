@@ -64,7 +64,7 @@ schema_version = 1
 [[crate]]
 name = "molt-ir"
 layer = 0
-role = "TIR vocabulary + SimpleIR transport + Repr vocab + std-leaf facts"
+role = "TIR vocabulary + SimpleIR transport + Repr vocab + target/profile facts"
 
 [[crate]]
 name = "molt-codegen-abi"

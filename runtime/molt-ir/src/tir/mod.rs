@@ -9,6 +9,7 @@ pub mod ops;
 pub mod printer;
 pub mod serialize;
 pub mod ssa;
+pub mod target_info;
 pub mod types;
 pub mod values;
 pub mod verify;
@@ -24,5 +25,6 @@ pub(crate) fn is_structural(kind: &str) -> bool {
 pub use self::blocks::{BlockId, Terminator, TirBlock};
 pub use self::function::{TirFunction, TirModule};
 pub use self::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
+pub use self::target_info::{BuildProfile, ProfileData, SimdCaps, TargetInfo, TargetKind};
 pub use self::types::{FuncSignature, TirType};
 pub use self::values::{TirValue, ValueId};

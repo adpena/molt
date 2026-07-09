@@ -15,13 +15,12 @@ pub mod pass_delta;
 pub mod pass_manager;
 pub mod passes;
 pub mod simple_value_names;
-pub mod target_info;
 pub mod translation_validator;
 pub mod type_refine;
 
 pub use molt_ir::tir::{
     blocks, call_targets, cfg, dominators, effect_proof, function, op_kinds_generated, ops,
-    printer, serialize, ssa, types, values, verify,
+    printer, serialize, ssa, target_info, types, values, verify,
 };
 
 /// Pass-layer access to the canonical SimpleIR structural classifier.

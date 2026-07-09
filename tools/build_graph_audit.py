@@ -593,6 +593,7 @@ def main(argv: list[str] | None = None) -> int:
         baseline_path.write_text(
             json.dumps(baseline_payload(report), indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
+            newline="\n",
         )
         print(f"baseline updated: {baseline_path}")
         wrote_artifact = True
@@ -600,7 +601,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.write_board:
         board_path = root / BOARD_PATH_REL
         board_path.parent.mkdir(parents=True, exist_ok=True)
-        board_path.write_text(format_board(report) + "\n", encoding="utf-8")
+        board_path.write_text(
+            format_board(report) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
         print(f"board written: {board_path}")
         wrote_artifact = True
 

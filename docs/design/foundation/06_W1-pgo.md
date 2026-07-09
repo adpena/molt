@@ -10,7 +10,7 @@
 - `/Users/adpena/Projects/molt/runtime/molt-backend/src/llvm_backend/lowering.rs:296-298` — `FunctionLowering.pgo_branch_weights: Option<Vec<u64>>` field and `pgo_weight_index` exist but `try_lower_tir_to_llvm` at line 360 always passes `None` for `pgo_branch_weights`.
 - `/Users/adpena/Projects/molt/runtime/molt-backend/src/ir.rs:14-18` — `PgoProfileIR` carries `hot_functions: Vec<String>` only; it silently drops `branch_counts` / `call_counts` / `loop_counts` from the JSON payload (the deserializer at line 100 reads only three fields).
 - `/Users/adpena/Projects/molt/src/molt/pgo_collect.py` — Python-side `sys.settrace` profiler producing a `molt_profile_version: "0.1"` JSON with `hotspots`, `branch_counts`, `call_counts`, `loop_counts`. Loader and CLI plumbing (`cli.py:27076-27217`) parse and validate this profile but never push `branch_counts`/`loop_counts` into the Rust backend.
-- `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/target_info.rs:149-153` — `ProfileData { hot_functions: BTreeSet<String> }` as a S2 TargetInfo hook; `with_profile_data` exists; `is_pgo_hot` / `inline_budget` work correctly. But the set is always empty (no path populates it from the real `PgoProfileIR.hot_functions`).
+- `/Users/adpena/Projects/molt/runtime/molt-ir/src/tir/target_info.rs:149-153` — `ProfileData { hot_functions: BTreeSet<String> }` as a S2 TargetInfo hook; `with_profile_data` exists; `is_pgo_hot` / `inline_budget` work correctly. But the set is always empty (no path populates it from the real `PgoProfileIR.hot_functions`).
 - `/Users/adpena/Projects/molt/runtime/molt-backend/src/passes.rs:303-320` — SimpleIR inliner reads `ir.profile.hot_functions` for hot budget selection. This is the ONLY working consumer. It relies on the SimpleIR stringly-typed profile, not the TargetInfo hook.
 - `/Users/adpena/Projects/molt/runtime/molt-backend/src/passes.rs:476-503` — `apply_profile_order` reorders functions by hot-function rank; called at `simple_backend.rs:2302` and `wasm.rs:2062`. This is the second working consumer (function layout only).
 
@@ -130,9 +130,9 @@ pub struct PgoProfileIR {
 
 **No other changes to `ir.rs`** — `SimpleIR.profile: Option<PgoProfileIR>` already exists; the new fields extend the existing struct.
 
-### 3.2 `runtime/molt-passes/src/tir/target_info.rs` — Extended `ProfileData`
+### 3.2 `runtime/molt-ir/src/tir/target_info.rs` — Extended `ProfileData`
 
-**File:** `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/target_info.rs`
+**File:** `/Users/adpena/Projects/molt/runtime/molt-ir/src/tir/target_info.rs`
 
 Extend `ProfileData` (currently lines 148-153) to carry call-count data that drives:
 - `inline_budget` (already wired, just needs real counts)
@@ -621,7 +621,7 @@ This is the only phase that must ship as one atomic change. It includes:
 | Component | File | Change Type |
 |---|---|---|
 | `PgoProfileIR` extension | `/Users/adpena/Projects/molt/runtime/molt-backend/src/ir.rs` | Extend struct + deserialization |
-| `ProfileData` extension | `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/target_info.rs` | Extend struct + new constructor + new queries |
+| `ProfileData` extension | `/Users/adpena/Projects/molt/runtime/molt-ir/src/tir/target_info.rs` | Extend struct + new constructor + new queries |
 | SimpleIR inliner de-duplication | `/Users/adpena/Projects/molt/runtime/molt-backend/src/passes.rs:303-320` | Delete dual hot-function read |
 | TargetInfo wiring (native) | `/Users/adpena/Projects/molt/runtime/molt-backend/src/native_backend/simple_backend.rs:2542-2547, 2627` | Bridge profile → TargetInfo |
 | TargetInfo wiring (WASM) | `/Users/adpena/Projects/molt/runtime/molt-backend/src/wasm.rs` | Same pattern as native |
