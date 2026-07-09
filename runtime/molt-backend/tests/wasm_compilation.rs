@@ -6,8 +6,8 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-use molt_backend::WasmBackend;
 use molt_backend::{FunctionIR, OpIR, SimpleIR};
+use molt_backend::{WasmBackend, WasmCompileOptions};
 use std::f64::consts::PI;
 use wasmparser::{Operator, Parser, Payload, TypeRef, Validator};
 
@@ -175,6 +175,23 @@ fn import_call_sequence(wasm: &[u8]) -> Vec<String> {
     }
 
     calls
+}
+
+fn return_call_count(wasm: &[u8]) -> usize {
+    let mut count = 0;
+
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Payload::CodeSectionEntry(body) = payload.expect("valid wasm payload") {
+            let mut reader = body.get_operators_reader().expect("operators reader");
+            while !reader.eof() {
+                if let Operator::ReturnCall { .. } = reader.read().expect("valid wasm operator") {
+                    count += 1;
+                }
+            }
+        }
+    }
+
+    count
 }
 
 fn count_import(calls: &HashMap<String, usize>, name: &str) -> usize {
@@ -546,6 +563,93 @@ fn call_indirect_without_output_compiles() {
 
     let wasm = compile_single_function(vec![call, op("ret_void")], &["p0", "p1"]);
     validate_wasm(&wasm).expect("output-less call_indirect should still produce valid wasm");
+}
+
+fn tail_call_candidate_ir() -> SimpleIR {
+    let mut call = op("call_internal");
+    call.s_value = Some("tail_target".to_string());
+    call.args = Some(vec!["p0".to_string()]);
+    call.out = Some("v0".to_string());
+
+    let mut recursive_call = op("call_internal");
+    recursive_call.s_value = Some("tail_target".to_string());
+    recursive_call.args = Some(vec!["p0".to_string()]);
+    recursive_call.out = Some("v1".to_string());
+
+    SimpleIR {
+        functions: vec![
+            FunctionIR {
+                name: "molt_test_func".to_string(),
+                params: vec!["p0".to_string()],
+                ops: vec![call, ret_value("v0")],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            },
+            FunctionIR {
+                name: "tail_target".to_string(),
+                params: vec!["p0".to_string()],
+                ops: vec![recursive_call, ret_value("v1")],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            },
+        ],
+        profile: None,
+    }
+}
+
+#[test]
+fn tail_call_candidate_respects_compile_feature_gate() {
+    let disabled = WasmBackend::with_options(WasmCompileOptions {
+        native_eh_enabled: false,
+        tail_call_enabled: false,
+        ..WasmCompileOptions::default()
+    })
+    .compile_with_diagnostics(tail_call_candidate_ir());
+    validate_wasm(&disabled.wasm).expect("ordinary call fallback should validate");
+    assert_eq!(
+        disabled.diagnostics.tail_calls_emitted, 0,
+        "tail-call diagnostics must stay disabled by default"
+    );
+    assert_eq!(
+        return_call_count(&disabled.wasm),
+        0,
+        "tail-call proposal opcodes must stay disabled by default"
+    );
+
+    let enabled = WasmBackend::with_options(WasmCompileOptions {
+        native_eh_enabled: false,
+        tail_call_enabled: true,
+        ..WasmCompileOptions::default()
+    })
+    .compile_with_diagnostics(tail_call_candidate_ir());
+    assert!(
+        enabled.diagnostics.tail_calls_emitted > 0,
+        "explicit tail-call feature opt-in should emit return_call"
+    );
+    assert_eq!(
+        return_call_count(&enabled.wasm),
+        enabled.diagnostics.tail_calls_emitted,
+        "diagnostics must match emitted return_call opcodes"
+    );
+}
+
+#[test]
+fn tail_call_default_env_keeps_feature_disabled() {
+    let disabled = compile_ir_with_env(
+        tail_call_candidate_ir(),
+        &[
+            ("MOLT_WASM_TAIL_CALL", None),
+            ("MOLT_WASM_NATIVE_EH", Some("0")),
+        ],
+    );
+    validate_wasm(&disabled).expect("ordinary call fallback should validate");
+    assert_eq!(
+        return_call_count(&disabled),
+        0,
+        "tail-call proposal opcodes must stay disabled by default"
+    );
 }
 
 #[test]
@@ -999,7 +1103,7 @@ fn alloc_task_future_without_args_compiles_without_resolve_local() {
 }
 
 #[test]
-#[should_panic(expected = "wasm call_async target 'molt_async_sleep' in func 'molt_test_func'")]
+#[should_panic(expected = "call_async targets molt_async_sleep, expected *_poll")]
 fn call_async_rejects_non_poll_table_target() {
     let mut call_async = op("call_async");
     call_async.s_value = Some("molt_async_sleep".to_string());

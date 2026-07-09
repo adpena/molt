@@ -43,6 +43,7 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
         let func_index = self.func_index;
         let reloc_enabled = self.reloc_enabled;
         let native_eh_enabled = self.native_eh_enabled;
+        let tail_call_enabled = self.tail_call_enabled;
         let tail_call_eligible = frame.tail_call_eligible();
         let arena_local = frame.arena_local();
         let tail_call_count = self.tail_call_count;
@@ -152,6 +153,7 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                 multi_return_candidates,
                 multi_return,
                 reloc_enabled,
+                tail_call_enabled,
                 tail_call_eligible,
                 arena_local,
                 tail_call_count,

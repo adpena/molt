@@ -199,7 +199,8 @@ fn is_tail_call_candidate(
     out_name: &str,
     multi_return_candidates: &BTreeMap<String, usize>,
 ) -> bool {
-    call_ctx.tail_call_eligible
+    call_ctx.tail_call_enabled
+        && call_ctx.tail_call_eligible
         && call_ctx.try_stack_is_empty
         && call_ctx.rel_idx + 1 < call_ctx.ops.len()
         && call_ctx.ops[call_ctx.rel_idx + 1].kind == "ret"
