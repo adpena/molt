@@ -40,6 +40,7 @@ from molt.cli.models import (
 from molt.cli.module_dependencies import _module_dependency_closure
 from molt.cli.module_graph_discovery import _load_module_imports
 from molt.cli.module_frontend_cache import (
+    _frontend_lowering_cache_disabled,
     _hydrate_shared_frontend_cache,
     _publish_shared_frontend_cache,
     _shared_module_analysis_cache_path,
@@ -966,6 +967,9 @@ def _read_persisted_module_analysis(
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     capability_config_digest: str = "",
 ) -> tuple[dict[str, dict[str, Any]], dict[str, str], tuple[str, ...] | None] | None:
+    # Debug opt-out: force a cold re-analysis (no session-local or shared reuse).
+    if _frontend_lowering_cache_disabled():
+        return None
     cache_path = _module_analysis_cache_path(
         project_root,
         path,
@@ -1615,6 +1619,9 @@ def _read_persisted_module_lowering(
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     known_modules: Iterable[str] = (),
 ) -> dict[str, Any] | None:
+    # Debug opt-out: force a cold re-lower (no session-local or shared reuse).
+    if _frontend_lowering_cache_disabled():
+        return None
     cache_path = _module_lowering_cache_path(
         project_root,
         path,

@@ -49,6 +49,7 @@ authority (see :mod:`molt.cli.module_cache`); there is no separate shared lane.
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -60,6 +61,33 @@ from molt.cli.default_paths import _default_molt_cache
 # the lowering context digest is a full sha256 hexdigest. Both are validated so a
 # stray file with an unexpected name can never be treated as a cache slot.
 _CONTENT_KEY_RE = re.compile(r"\A[0-9a-f]{16,64}\Z")
+
+
+_CACHE_DISABLE_ENV = "MOLT_DISABLE_FRONTEND_LOWERING_CACHE"
+
+
+def _frontend_lowering_cache_disabled() -> bool:
+    """True when the persistent frontend analysis/lowering cache is opt-disabled.
+
+    Set ``MOLT_DISABLE_FRONTEND_LOWERING_CACHE=1`` (or ``true``/``yes``/``on``) to
+    force every module to be re-analysed and re-lowered from source on each build:
+    both the shared, content-addressed cross-session tier (publish + hydrate) and
+    the session-local persisted reads become inert. This is the debugging lever for
+    a suspected stale-cache miscompile -- it strips *all* frontend-result reuse so
+    the build is a true cold re-lower.
+
+    Correctness-safe by construction: a disabled cache only ever forces a cold
+    recompute (read -> ``None`` / hydrate -> miss), it can never *serve* an entry,
+    so toggling it can change build *time* but never build *output*. Read from the
+    live environment (not memoized) so tests and orchestrated builds can flip it
+    per-invocation.
+    """
+    return os.environ.get(_CACHE_DISABLE_ENV, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def _shared_module_analysis_cache_root() -> Path:
@@ -120,6 +148,8 @@ def _hydrate_shared_frontend_cache(*, cache_path: Path | None, dest: Path) -> bo
     by the caller's normal read path (schema / fingerprint / context digest /
     source content sha256), so hydration can never bypass correctness.
     """
+    if _frontend_lowering_cache_disabled():
+        return False
     if cache_path is None or not cache_path.is_file():
         return False
     try:
@@ -139,6 +169,8 @@ def _publish_shared_frontend_cache(*, src: Path, cache_path: Path | None) -> Non
     Idempotent: the slot is content-addressed, so re-publishing an identical
     identity simply rewrites byte-identical content.
     """
+    if _frontend_lowering_cache_disabled():
+        return
     if cache_path is None or not src.is_file():
         return
     try:

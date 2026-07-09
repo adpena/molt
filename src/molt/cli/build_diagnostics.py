@@ -198,8 +198,7 @@ def _emit_build_diagnostics(
         last_publish_failure = runtime_wasm_cache.get("last_publish_failure")
         if isinstance(last_publish_failure, str) and last_publish_failure:
             print(
-                "- runtime_wasm_cache.last_publish_failure: "
-                f"{last_publish_failure}",
+                f"- runtime_wasm_cache.last_publish_failure: {last_publish_failure}",
                 file=sys.stderr,
             )
     if isinstance(frontend_modules_top, list):
@@ -1044,9 +1043,7 @@ def _build_build_diagnostics_payload(
             payload["allocations"] = allocations_payload
     frontend_parallel_payload = dict(diagnostics_context.frontend_parallel_details)
     payload["frontend_parallel"] = frontend_parallel_payload
-    lowering_cache_summary = _frontend_lowering_cache_summary(
-        frontend_parallel_payload
-    )
+    lowering_cache_summary = _frontend_lowering_cache_summary(frontend_parallel_payload)
     if lowering_cache_summary is not None:
         payload["frontend_lowering_cache"] = lowering_cache_summary
     runtime_wasm_cache = _runtime_wasm_cache_diagnostics_snapshot()
@@ -1111,13 +1108,21 @@ def _frontend_lowering_cache_summary(
     if observed == 0:
         return None
     misses = max(0, observed - hits)
+    # Machine-readable effectiveness signal: the fraction of lowered modules
+    # served from the persistent cache. A warm rebuild should report a hit_rate
+    # near 1.0; a regression that silently disables persistence collapses it
+    # toward 0.0, which the effectiveness gate
+    # (test_cli_module_frontend_shared_cache) asserts against.
+    hit_rate = round(hits / observed, 6) if observed else 0.0
     return {
         "hits": hits,
         "misses": misses,
+        "observed": observed,
+        "hit_rate": hit_rate,
         "reused_s": round(reused_ms / 1000.0, 6),
         "relowered_s": round(relowered_ms / 1000.0, 6),
         "message": (
-            f"lowering cache: {hits}/{misses}, "
+            f"lowering cache: {hits}/{misses} (hit_rate={hit_rate:.3f}), "
             f"{reused_ms / 1000.0:.6f}s reused / "
             f"{relowered_ms / 1000.0:.6f}s re-lowered"
         ),
