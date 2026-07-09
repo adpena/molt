@@ -75,6 +75,17 @@ pub unsafe extern "C" fn PyErr_Print() {
     }
 }
 
+/// CPython ``PyErr_PrintEx``: print the pending exception and clear it. The
+/// ``set_sys_last_vars`` flag governs whether CPython also assigns
+/// ``sys.last_type``/``sys.last_value``/``sys.last_traceback``; Molt does not
+/// model those interpreter globals, so the flag is accepted and the shared
+/// print-and-clear path is used (``PyErr_Print`` semantics). Never a stub — it
+/// drains and reports the same pending-error state.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyErr_PrintEx(_set_sys_last_vars: c_int) {
+    unsafe { PyErr_Print() };
+}
+
 /// Set a ValueError with formatted message.
 pub unsafe extern "C" fn PyErr_Format(
     exc_type: *mut PyObject,

@@ -98,6 +98,7 @@ _DEFAULT_WITNESS_ROOTS: tuple[str, ...] = (
     "tmp/pact_numpy_multiarray_sealed_for_witness",
     "tmp/pact_scipy_ndimage_sealed_for_witness_next",
     "tmp/pact_scipy_ni_label_molt_ext_wasm_cpython_abi",
+    "tmp/pact_scipy_ccallback_c_molt_ext_wasm_cpython_abi",
 )
 
 _ARTIFACT_MANIFEST_SUFFIX = ".extension_manifest.json"

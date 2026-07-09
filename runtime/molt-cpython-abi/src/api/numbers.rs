@@ -425,6 +425,37 @@ pub unsafe extern "C" fn PyLong_AsLong(op: *mut PyObject) -> c_long {
     py_long_as_i64(op) as c_long
 }
 
+/// CPython ``PyLong_AsDouble``: return the value of the integer ``op`` as a
+/// ``double``. ``op`` must be a Python ``int``; a non-int sets ``TypeError`` and
+/// returns ``-1.0`` (matching CPython's error contract). Backed by the same
+/// verified-int handle read used by ``PyLong_AsLong`` — never a stub.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyLong_AsDouble(op: *mut PyObject) -> c_double {
+    if op.is_null() {
+        return -1.0;
+    }
+    let bridge = GLOBAL_BRIDGE.lock();
+    let handle = bridge.pyobj_to_handle(op);
+    drop(bridge);
+    match handle {
+        Some(bits) => {
+            let obj = MoltObject::from_bits(bits);
+            if obj.is_int() {
+                obj.as_int().map(|value| value as c_double).unwrap_or(-1.0)
+            } else {
+                unsafe {
+                    crate::api::errors::PyErr_SetString(
+                        &raw mut crate::abi_types::PyExc_TypeError,
+                        c"an integer is required".as_ptr(),
+                    );
+                }
+                -1.0
+            }
+        }
+        None => -1.0,
+    }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyLong_AsLongAndOverflow(
     op: *mut PyObject,
