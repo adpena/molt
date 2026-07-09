@@ -408,7 +408,30 @@ _PACKAGE_REGEN_HELPER_RE = re.compile(
     r"(?:^|/)regen_(?:numpy|scipy|pandas|tinygrad)[A-Za-z0-9_]*\.py$"
 )
 _PACKAGE_CONFIG_WRITE_RE = re.compile(
-    r"(?:scipy_config\.h|_numpyconfig\.h|numpyconfig\.h)"
+    r"(?:"
+    r"scipy_config\.h"
+    r"|_numpyconfig\.h"
+    r"|numpyconfig\.h"
+    r"|(?:numpy|scipy|pandas|tinygrad)[A-Za-z0-9_./\\-]*config\.h"
+    r"|config[A-Za-z0-9_./\\-]*(?:numpy|scipy|pandas|tinygrad)[A-Za-z0-9_./\\-]*\.h"
+    r")",
+    re.IGNORECASE,
+)
+_PACKAGE_OVERLAY_AUTHORITY_RE = re.compile(
+    r"(?:"
+    r"source[_-]?plan"
+    r"|source_plan_target_facts"
+    r"|generated[_-]?header"
+    r"|header[_-]?overlay"
+    r"|config[_-]?overlay"
+    r"|include[_-]?overlay"
+    r"|overlay[_-]?(?:dir|root|path)"
+    r")",
+    re.IGNORECASE,
+)
+_PACKAGE_NAME_RE = re.compile(
+    r"(?:^|[^A-Za-z0-9])(?:numpy|scipy|pandas|tinygrad)(?:$|[^A-Za-z0-9])",
+    re.IGNORECASE,
 )
 _BUILD_CRUTCH_ALLOWLIST = frozenset(
     {
@@ -476,7 +499,49 @@ def discover_ecosystem_build_crutches(root: Path) -> list[DiscoveredSite]:
                     "this from the package build system instead",
                 )
             )
+            continue
+        overlay = _package_specific_overlay_signature(rel, text)
+        if overlay is not None:
+            signature, line_no = overlay
+            found.append(
+                DiscoveredSite(
+                    "F",
+                    "ecosystem_build_crutch",
+                    rel,
+                    signature,
+                    line_no,
+                    "package-specific source-plan/config/header overlay; route "
+                    "through generic upstream build metadata custody instead",
+                )
+            )
     return found
+
+
+def _package_specific_overlay_signature(
+    rel: str, text: str
+) -> tuple[str, int] | None:
+    """Return the first line that authors a protected-package build overlay.
+
+    Package-specific tooling names alone are not poison: adapters, probes, and
+    seal verifiers can legitimately name NumPy/SciPy/etc. The poison shape is a
+    non-generic source-plan/config/header overlay authority for one protected
+    package.
+    """
+
+    rel_stem = Path(rel).stem.replace("-", "_")
+    rel_has_package = bool(_PACKAGE_NAME_RE.search(rel_stem))
+    rel_has_overlay = bool(_PACKAGE_OVERLAY_AUTHORITY_RE.search(rel_stem))
+    for line_no, raw_line in enumerate(text.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        line_has_package = bool(_PACKAGE_NAME_RE.search(line))
+        line_has_overlay = bool(_PACKAGE_OVERLAY_AUTHORITY_RE.search(line))
+        if (line_has_package and line_has_overlay) or (
+            rel_has_package and rel_has_overlay and line_has_overlay
+        ):
+            return line, line_no
+    return None
 
 
 def _line_at(text: str, line_no: int) -> str:
