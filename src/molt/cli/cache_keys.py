@@ -10,8 +10,12 @@ from molt.frontend import MoltValue
 from molt.cli.cache_fingerprints import _cache_fingerprint, _cache_tooling_fingerprint
 
 
-_CACHE_KEY_SCHEMA_VERSION = "v4"
-_FUNCTION_CACHE_KEY_SCHEMA_VERSION = "func-v2"
+_CACHE_KEY_SCHEMA_VERSION = "v5"
+_FUNCTION_CACHE_KEY_SCHEMA_VERSION = "func-v3"
+# Backend object cache keys hash the serialized backend IR payload. Frontend
+# tooling changes are upstream of this boundary and matter only when they change
+# that payload.
+_BACKEND_IR_PAYLOAD_TOOLING_FINGERPRINT = "backend-ir-payload-authority-v1"
 
 
 def _json_ir_default(value: Any) -> Any:
@@ -81,13 +85,52 @@ def _cache_backend_payload_ir(ir: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _iter_cache_json_payload_bytes(payload_ir: Mapping[str, Any]) -> Iterator[bytes]:
+    yield _cache_json_payload_bytes(payload_ir)
+
+
+def _cache_json_payload_bytes(payload_ir: Mapping[str, Any]) -> bytes:
     encoder = json.JSONEncoder(
         sort_keys=True,
         separators=(",", ":"),
         default=_json_ir_default,
     )
-    for chunk in encoder.iterencode(payload_ir):
-        yield chunk.encode("utf-8")
+    return encoder.encode(payload_ir).encode("utf-8")
+
+
+def _cache_payload_digest(payload_ir: Mapping[str, Any]) -> str:
+    return hashlib.sha256(_cache_json_payload_bytes(payload_ir)).hexdigest()
+
+
+def _cache_key_for_payload_digest(
+    payload_digest: str,
+    *,
+    target: str,
+    target_triple: str | None,
+    variant: str,
+    schema_version: str,
+    compiler_fingerprint: str | None = None,
+    tooling_fingerprint: str | None = None,
+) -> str:
+    suffix = target_triple or target
+    if variant:
+        suffix = f"{suffix}:{variant}"
+    if compiler_fingerprint is None:
+        compiler_fingerprint = _cache_fingerprint()
+    if tooling_fingerprint is None:
+        tooling_fingerprint = _cache_tooling_fingerprint()
+    digest = hashlib.sha256()
+    digest.update(b"payload-digest-v1")
+    digest.update(b"|")
+    digest.update(payload_digest.encode("utf-8"))
+    digest.update(b"|")
+    digest.update(suffix.encode("utf-8"))
+    digest.update(b"|")
+    digest.update(compiler_fingerprint.encode("utf-8"))
+    digest.update(b"|")
+    digest.update(tooling_fingerprint.encode("utf-8"))
+    digest.update(b"|")
+    digest.update(schema_version.encode("utf-8"))
+    return digest.hexdigest()
 
 
 def _cache_key_for_json_payload_bytes(
@@ -97,22 +140,28 @@ def _cache_key_for_json_payload_bytes(
     target_triple: str | None,
     variant: str,
     schema_version: str,
+    compiler_fingerprint: str | None = None,
+    tooling_fingerprint: str | None = None,
 ) -> str:
     suffix = target_triple or target
     if variant:
         suffix = f"{suffix}:{variant}"
-    digest = hashlib.sha256()
+    if compiler_fingerprint is None:
+        compiler_fingerprint = _cache_fingerprint()
+    if tooling_fingerprint is None:
+        tooling_fingerprint = _cache_tooling_fingerprint()
+    payload_hasher = hashlib.sha256()
     for chunk in payload_chunks:
-        digest.update(chunk)
-    digest.update(b"|")
-    digest.update(suffix.encode("utf-8"))
-    digest.update(b"|")
-    digest.update(_cache_fingerprint().encode("utf-8"))
-    digest.update(b"|")
-    digest.update(_cache_tooling_fingerprint().encode("utf-8"))
-    digest.update(b"|")
-    digest.update(schema_version.encode("utf-8"))
-    return digest.hexdigest()
+        payload_hasher.update(chunk)
+    return _cache_key_for_payload_digest(
+        payload_hasher.hexdigest(),
+        target=target,
+        target_triple=target_triple,
+        variant=variant,
+        schema_version=schema_version,
+        compiler_fingerprint=compiler_fingerprint,
+        tooling_fingerprint=tooling_fingerprint,
+    )
 
 
 def _cache_key_for_payload_ir(
@@ -122,13 +171,20 @@ def _cache_key_for_payload_ir(
     target_triple: str | None,
     variant: str,
     schema_version: str,
+    compiler_fingerprint: str | None = None,
+    tooling_fingerprint: str | None = None,
+    payload_digest: str | None = None,
 ) -> str:
-    return _cache_key_for_json_payload_bytes(
-        _iter_cache_json_payload_bytes(payload_ir),
+    if payload_digest is None:
+        payload_digest = _cache_payload_digest(payload_ir)
+    return _cache_key_for_payload_digest(
+        payload_digest,
         target=target,
         target_triple=target_triple,
         variant=variant,
         schema_version=schema_version,
+        compiler_fingerprint=compiler_fingerprint,
+        tooling_fingerprint=tooling_fingerprint,
     )
 
 
@@ -138,6 +194,9 @@ def _cache_key(
     target_triple: str | None,
     variant: str = "",
     payload_ir: Mapping[str, Any] | None = None,
+    payload_digest: str | None = None,
+    compiler_fingerprint: str | None = None,
+    tooling_fingerprint: str | None = None,
 ) -> str:
     if payload_ir is None:
         payload_ir = _cache_ir_payload_ir(ir)
@@ -147,6 +206,9 @@ def _cache_key(
         target_triple=target_triple,
         variant=variant,
         schema_version=_CACHE_KEY_SCHEMA_VERSION,
+        compiler_fingerprint=compiler_fingerprint,
+        tooling_fingerprint=tooling_fingerprint,
+        payload_digest=payload_digest,
     )
 
 
@@ -183,6 +245,9 @@ def _function_cache_key(
     target_triple: str | None,
     variant: str = "",
     payload_ir: Mapping[str, Any] | None = None,
+    payload_digest: str | None = None,
+    compiler_fingerprint: str | None = None,
+    tooling_fingerprint: str | None = None,
 ) -> str:
     if payload_ir is None:
         payload_ir = _cache_backend_payload_ir(ir)
@@ -192,4 +257,7 @@ def _function_cache_key(
         target_triple=target_triple,
         variant=variant,
         schema_version=_FUNCTION_CACHE_KEY_SCHEMA_VERSION,
+        compiler_fingerprint=compiler_fingerprint,
+        tooling_fingerprint=tooling_fingerprint,
+        payload_digest=payload_digest,
     )

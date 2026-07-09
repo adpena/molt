@@ -524,9 +524,13 @@ def test_maybe_enable_sccache_installs_shared_dx_cache_defaults(
     env = {
         "PATH": "/usr/bin",
         "MOLT_EXT_ROOT": str(artifact_root),
+        "MOLT_USE_SCCACHE": "1",
     }
     monkeypatch.setattr(
         CARGO_EXECUTION.shutil, "which", lambda _name: "/usr/bin/sccache"
+    )
+    monkeypatch.setattr(
+        CARGO_EXECUTION, "_sccache_server_responsive", lambda _sccache: True
     )
 
     CARGO_EXECUTION._maybe_enable_sccache(env)
@@ -622,6 +626,12 @@ def test_cli_build_toolchain_probes_use_memory_guard(
         COMPILER_METADATA,
         "_run_completed_command",
         fake_run_completed_command,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        COMPILER_METADATA,
+        "_rustc_version_cache_path",
+        lambda identity_digest: tmp_path / f"rustc-{identity_digest}.json",
         raising=True,
     )
     monkeypatch.setattr(
@@ -1270,9 +1280,14 @@ def test_windows_msvc_env_reports_inactive_dev_shell(
         raising=True,
     )
     monkeypatch.setattr(
-        SETUP_READINESS,
-        "_run_completed_command",
-        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, ""),
+        SETUP_READINESS.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0],
+            0,
+            "clang version 22.0.0\n",
+            "",
+        ),
         raising=True,
     )
 

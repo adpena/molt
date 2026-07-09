@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import shutil
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -8,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from molt.cli import build_inputs as cli_build_inputs
+from molt.cli import backend_ir_analysis_cache as cli_backend_ir_analysis_cache
 from molt.cli import binary_image_analysis as cli_binary_image_analysis
 from molt.cli import frontend_pipeline as cli_frontend_pipeline
 from molt.cli import module_graph as cli_module_graph
@@ -443,6 +445,41 @@ def test_frontend_binary_image_analysis_bridges_ast_schedule_and_lowering(
     assert payload["lowering"]["compile_equals_known"] is False
 
 
+def test_frontend_binary_image_analysis_omits_source_sites_when_not_full(
+    tmp_path: Path,
+) -> None:
+    entry = tmp_path / "app.py"
+    helper = tmp_path / "helper.py"
+    entry.write_text("import helper\n\ndef run():\n    return helper.VALUE\n")
+    helper.write_text("VALUE = 7\n")
+    import_plan = _materialize_plan(tmp_path, entry, "app")
+    analysis = _prepare_analysis_for_plan(tmp_path, import_plan)
+    narrowed_plan = import_plan.with_compile_modules({"app"})
+
+    payload = cli_binary_image_analysis._frontend_binary_image_analysis_payload(
+        import_plan=narrowed_plan,
+        frontend_analysis=analysis,
+        frontend_module_costs={"app": 3.0, "helper": 1.0},
+        known_classes={},
+        enable_phi=True,
+        module_chunking=False,
+        module_chunk_max_ops=100,
+        type_facts_present=False,
+        compile_module_order=["app"],
+        compile_module_layers=[["app"]],
+        target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+        include_source_details=False,
+    )
+
+    assert payload["source_identity"]["detail"] == "omitted"
+    assert payload["source_identity"]["closure_identity_digest"]
+    assert "modules" not in payload["source_identity"]
+    assert payload["source_ast"]["detail"] == "omitted"
+    assert "known" not in payload["source_ast"]
+    assert payload["module_schedule"]["compile_order_len"] == 1
+    assert payload["lowering"]["frontend_cost_top"] == [{"module": "app", "cost": 3.0}]
+
+
 def test_frontend_binary_image_analysis_labels_external_native_known_modules(
     tmp_path: Path,
 ) -> None:
@@ -607,6 +644,7 @@ def test_backend_ir_and_artifact_analysis_attach_to_same_contract(
         ]
         == "app.py"
     )
+
     allocation = analysis_payload["backend_ir"]["allocation_ownership"]
     assert allocation["source_coverage_ratio"] == 1.0
     assert allocation["events_by_category"]["heap_alloc_root"] == 1
@@ -623,3 +661,41 @@ def test_backend_ir_and_artifact_analysis_attach_to_same_contract(
     )
     assert analysis_payload["artifacts"]["output_binary"]["size_bytes"] == 6
     assert analysis_payload["artifacts"]["link"]["fingerprint_hash"] == "abc"
+
+
+def test_backend_ir_analysis_cache_reuses_identical_ir_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ir = {
+        "functions": [
+            {
+                "name": "app__run",
+                "source_file": "app.py",
+                "ops": [
+                    {"kind": "const", "source_line": 3},
+                    {"kind": "call", "source_line": 4},
+                    {"kind": "object_new_bound", "source_line": 5},
+                ],
+            }
+        ]
+    }
+    build_state = tmp_path / "build-state"
+    shutil.rmtree(build_state, ignore_errors=True)
+    monkeypatch.setenv("MOLT_BUILD_STATE_DIR", str(build_state))
+
+    first = cli_backend_ir_analysis_cache._cached_backend_ir_binary_image_analysis_payload(
+        project_root=tmp_path,
+        ir=ir,
+    )
+    second = cli_backend_ir_analysis_cache._cached_backend_ir_binary_image_analysis_payload(
+        project_root=tmp_path,
+        ir=ir,
+    )
+
+    assert first.cache_hit is False
+    assert second.cache_hit is True
+    assert second.cache_key == first.cache_key
+    assert second.cache_path == first.cache_path
+    assert second.cache_path.exists()
+    assert second.payload == first.payload

@@ -1039,6 +1039,34 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
                 )
             )
 
+    match = pq.PYTHON_IMPORT_MISSING_RE.search(log_tail)
+    if match is not None and not diagnostics:
+        missing_module = match.group("module")
+        diagnostics.append(
+            pq._diagnostic(
+                signal_id="proof-python-import-missing",
+                severity="infra",
+                summary=(
+                    "Proof command used a Python environment missing import "
+                    f"{missing_module}."
+                ),
+                evidence=match.group(0).replace("\\n", "\n"),
+                next_action=(
+                    "Run the proof command through RunContext/uv active project "
+                    "provisioning, or fix the tool to launch its Molt CLI child "
+                    "with the active project-environment Python. Do not hand-install "
+                    "packages into an accidental host interpreter."
+                ),
+                scopes=(
+                    "tools/proof_queue.py",
+                    "tools/dx_build_timer.py",
+                    "tools/run_context_env.py",
+                    "pyproject.toml",
+                ),
+                artifacts=(str(row["summary_json"]), str(row["log_path"])),
+            )
+        )
+
     match = pq.PYTHON_EXCEPTION_RE.search(log_tail)
     if match is not None and not diagnostics:
         diagnostics.append(

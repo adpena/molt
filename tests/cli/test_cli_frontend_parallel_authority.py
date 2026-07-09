@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
 
 import molt.cli as cli
 from molt.cli import frontend_execution
@@ -57,3 +58,25 @@ def test_cli_frontend_parallel_authority_is_single_home() -> None:
     for marker in _FRONTEND_PARALLEL_DEFINITIONS:
         assert marker not in frontend_execution_source
         assert marker not in cli_source
+
+
+def test_serial_cache_hit_counts_as_layer_cache_hit(tmp_path: Path) -> None:
+    recorded: list[dict[str, object]] = []
+
+    def record_worker_timing(**kwargs: object) -> dict[str, object]:
+        return dict(kwargs)
+
+    frontend_parallel._record_serial_frontend_worker_timing(
+        record_frontend_parallel_worker_timing=record_worker_timing,
+        recorded_worker_timings=recorded,
+        layer_index=0,
+        module_name="cached",
+        module_path=tmp_path / "cached.py",
+        mode="serial_cache_hit",
+        total_s=0.0,
+        reused_s=2.5,
+    )
+
+    assert recorded[0]["mode"] == "serial_cache_hit"
+    assert recorded[0]["reused_ms"] == 2500.0
+    assert frontend_parallel._layer_cache_hit_count(recorded) == 1

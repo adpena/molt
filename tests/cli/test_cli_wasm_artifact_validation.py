@@ -707,7 +707,9 @@ def test_ensure_runtime_wasm_rebuilds_prebuilt_missing_shared_import_abi(
 
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
     monkeypatch.setattr(
-        RUNTIME_FINGERPRINTS, "_runtime_source_paths", lambda _root: [runtime_source]
+        RUNTIME_FINGERPRINTS,
+        "_runtime_source_paths",
+        lambda _root, **_kwargs: [runtime_source],
     )
     monkeypatch.setattr(
         RUNTIME_BUILD,
@@ -1022,7 +1024,10 @@ def test_runtime_fingerprint_recomputes_when_rustflags_change(
     project_root.mkdir()
 
     monkeypatch.setattr(
-        RUNTIME_FINGERPRINTS, "_runtime_source_paths", lambda _root: (), raising=True
+        RUNTIME_FINGERPRINTS,
+        "_runtime_source_paths",
+        lambda _root, **_kwargs: (),
+        raising=True,
     )
     monkeypatch.setattr(
         RUNTIME_FINGERPRINTS,

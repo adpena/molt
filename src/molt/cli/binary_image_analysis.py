@@ -333,21 +333,11 @@ def _frontend_binary_image_analysis_payload(
     compile_module_order: Sequence[str],
     compile_module_layers: Sequence[Sequence[str]],
     target_python: Any,
+    include_source_details: bool = True,
 ) -> dict[str, Any]:
     known_modules = set(import_plan.known_modules)
     compile_modules = set(import_plan.compile_modules)
     target_python_tag = getattr(target_python, "tag", str(target_python))
-    module_metrics, source_bytes = _module_source_and_ast_metrics(
-        import_plan=import_plan,
-        frontend_analysis=frontend_analysis,
-        module_names=known_modules,
-    )
-    known_metric_totals = _sum_metrics(
-        [metrics for name, metrics in module_metrics.items() if name in known_modules]
-    )
-    compile_metric_totals = _sum_metrics(
-        [metrics for name, metrics in module_metrics.items() if name in compile_modules]
-    )
     module_order = list(frontend_analysis.module_order)
     compile_order = list(compile_module_order)
     module_layers = [list(layer) for layer in frontend_analysis.module_layers]
@@ -359,14 +349,32 @@ def _frontend_binary_image_analysis_payload(
             key=lambda item: (-float(item[1]), item[0]),
         )[:10]
     ]
-    return {
-        "schema_version": 1,
-        "source_identity": _source_site_identity_payload(
+    if include_source_details:
+        module_metrics, source_bytes = _module_source_and_ast_metrics(
+            import_plan=import_plan,
+            frontend_analysis=frontend_analysis,
+            module_names=known_modules,
+        )
+        known_metric_totals = _sum_metrics(
+            [
+                metrics
+                for name, metrics in module_metrics.items()
+                if name in known_modules
+            ]
+        )
+        compile_metric_totals = _sum_metrics(
+            [
+                metrics
+                for name, metrics in module_metrics.items()
+                if name in compile_modules
+            ]
+        )
+        source_identity = _source_site_identity_payload(
             import_plan=import_plan,
             frontend_analysis=frontend_analysis,
             target_python_tag=target_python_tag,
-        ),
-        "source_ast": {
+        )
+        source_ast = {
             "known_module_count": len(known_modules),
             "compile_module_count": len(compile_modules),
             "source_bytes_known": _source_bytes_for(source_bytes, known_modules),
@@ -378,7 +386,37 @@ def _frontend_binary_image_analysis_payload(
                 field="ast_nodes",
                 module_names=compile_modules,
             ),
-        },
+        }
+    else:
+        source_identity = {
+            "schema_version": 1,
+            "detail": "omitted",
+            "reason": "source-site identity requires diagnostics verbosity full",
+            "closure_identity_digest": _stable_payload_hash(
+                {
+                    "schema_version": 1,
+                    "image": import_plan.image_scope.diagnostic_payload(),
+                    "known_modules": sorted(known_modules),
+                    "compile_modules": sorted(compile_modules),
+                    "native_artifact_plan": (
+                        import_plan.native_artifact_plan.digest_payload()
+                    ),
+                }
+            ),
+            "target_python": target_python_tag,
+            "module_count": len(known_modules),
+            "compile_module_count": len(compile_modules),
+        }
+        source_ast = {
+            "detail": "omitted",
+            "reason": "AST source metrics require diagnostics verbosity full",
+            "known_module_count": len(known_modules),
+            "compile_module_count": len(compile_modules),
+        }
+    return {
+        "schema_version": 1,
+        "source_identity": source_identity,
+        "source_ast": source_ast,
         "module_schedule": {
             "module_order_len": len(module_order),
             "compile_order_len": len(compile_order),

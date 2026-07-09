@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
+import functools
 from typing import Any, cast
 
 from molt.compiler_analysis.hashing import stable_payload_hash
@@ -12,6 +13,10 @@ from molt.compiler_analysis.schema import (
     TIR_BOUNDARY_CARRIER,
 )
 from molt.frontend.lowering import op_kinds_generated as op_kind_facts
+
+BACKEND_IR_BINARY_IMAGE_ANALYSIS_CACHE_KEY_SCHEMA = (
+    "backend-ir-binary-image-analysis-cache-key-v1"
+)
 
 
 def _string_key_mapping(value: object) -> Mapping[str, Any] | None:
@@ -75,18 +80,35 @@ def backend_ir_binary_image_analysis_payload(ir: Mapping[str, Any]) -> dict[str,
         functions = []
     op_counts: Counter[str] = Counter()
     function_ops: list[dict[str, Any]] = []
+    function_names: list[str] = []
     call_op_count = 0
+    site_records: list[dict[str, Any]] = []
+    site_line_counts: Counter[tuple[str, int]] = Counter()
+    attributed_functions: set[str] = set()
+    explicit_source_line_count = 0
+    line_marker_fallback_count = 0
+    allocation_category_counts: Counter[str] = Counter()
+    allocation_kind_counts: Counter[str] = Counter()
+    allocation_line_counts: Counter[tuple[str, int, str]] = Counter()
+    allocation_event_records: list[dict[str, Any]] = []
+    unattributed_allocation_event_count = 0
     for func in functions:
         if not isinstance(func, Mapping):
             continue
-        name = func.get("name")
-        if not isinstance(name, str):
+        raw_name = func.get("name")
+        if isinstance(raw_name, str):
+            name = raw_name
+            function_names.append(raw_name)
+        else:
             name = "<unknown>"
+        source_file = func.get("source_file")
+        if not isinstance(source_file, str) or not source_file:
+            source_file = "<unknown>"
         ops = func.get("ops")
         if not isinstance(ops, list):
             ops = []
         function_source_ops = 0
-        for op in ops:
+        for op_index, op in enumerate(ops):
             if not isinstance(op, Mapping):
                 continue
             kind = op.get("kind")
@@ -97,6 +119,56 @@ def backend_ir_binary_image_analysis_payload(ir: Mapping[str, Any]) -> dict[str,
                 call_op_count += 1
             if backend_ir_op_source_site(op)[0] is not None:
                 function_source_ops += 1
+            op_mapping = _string_key_mapping(op)
+            if op_mapping is None:
+                continue
+            site, source = backend_ir_op_source_site(op_mapping)
+            if site is not None:
+                attributed_functions.add(name)
+                if source == "line_marker":
+                    line_marker_fallback_count += 1
+                else:
+                    explicit_source_line_count += 1
+                line = site["line"]
+                if line is not None:
+                    site_line_counts[(source_file, line)] += 1
+                    site_records.append(
+                        {
+                            "function": name,
+                            "op_index": op_index,
+                            "kind": kind,
+                            "source_file": source_file,
+                            "line": line,
+                            "col": site["col"],
+                            "end_col": site["end_col"],
+                        }
+                    )
+            categories = backend_ir_allocation_categories(op_mapping)
+            if categories:
+                canonical_kind = backend_ir_canonical_kind(op_mapping)
+                for category in categories:
+                    allocation_category_counts[category] += 1
+                    allocation_kind_counts[f"{category}:{canonical_kind}"] += 1
+                    if site is None:
+                        unattributed_allocation_event_count += 1
+                        continue
+                    line = site["line"]
+                    if line is None:
+                        unattributed_allocation_event_count += 1
+                        continue
+                    allocation_line_counts[(source_file, line, category)] += 1
+                    allocation_event_records.append(
+                        {
+                            "function": name,
+                            "op_index": op_index,
+                            "kind": canonical_kind,
+                            "category": category,
+                            "source_file": source_file,
+                            "line": line,
+                            "col": site["col"],
+                            "end_col": site["end_col"],
+                        }
+                    )
         function_ops.append(
             {
                 "function": name,
@@ -111,12 +183,46 @@ def backend_ir_binary_image_analysis_payload(ir: Mapping[str, Any]) -> dict[str,
             op_counts.items(), key=lambda item: (-item[1], item[0])
         )[:20]
     ]
-    function_names = [
-        func.get("name")
-        for func in functions
-        if isinstance(func, Mapping) and isinstance(func.get("name"), str)
-    ]
     op_total = sum(op_counts.values())
+    attributed_op_count = len(site_records)
+    source_coverage_ratio = (
+        round(attributed_op_count / op_total, 6) if op_total > 0 else 1.0
+    )
+    top_source_lines = [
+        {"source_file": source_file, "line": line, "ops": count}
+        for (source_file, line), count in sorted(
+            site_line_counts.items(),
+            key=lambda item: (-item[1], item[0][0], item[0][1]),
+        )[:20]
+    ]
+    attributed_allocation_event_count = len(allocation_event_records)
+    total_allocation_event_count = (
+        attributed_allocation_event_count + unattributed_allocation_event_count
+    )
+    allocation_source_coverage_ratio = (
+        round(attributed_allocation_event_count / total_allocation_event_count, 6)
+        if total_allocation_event_count > 0
+        else 1.0
+    )
+    top_allocation_source_lines = [
+        {
+            "source_file": source_file,
+            "line": line,
+            "category": category,
+            "events": count,
+        }
+        for (source_file, line, category), count in sorted(
+            allocation_line_counts.items(),
+            key=lambda item: (-item[1], item[0][0], item[0][1], item[0][2]),
+        )[:20]
+    ]
+    top_allocation_kinds = [
+        {"category_kind": category_kind, "events": count}
+        for category_kind, count in sorted(
+            allocation_kind_counts.items(),
+            key=lambda item: (-item[1], item[0]),
+        )[:20]
+    ]
     return {
         "schema_version": SCHEMA_VERSION,
         "backend_ir": {
@@ -130,11 +236,34 @@ def backend_ir_binary_image_analysis_payload(ir: Mapping[str, Any]) -> dict[str,
             "profile_attached": "profile" in ir,
             "runtime_feedback_attached": "runtime_feedback" in ir,
         },
-        "source_sites": _backend_ir_source_site_payload(
-            functions,
-            op_total=op_total,
-        ),
-        "allocation_ownership": _backend_ir_allocation_ownership_payload(functions),
+        "source_sites": {
+            "carrier": SOURCE_SITE_CARRIER,
+            "attributed_op_count": attributed_op_count,
+            "unattributed_op_count": max(op_total - attributed_op_count, 0),
+            "coverage_ratio": source_coverage_ratio,
+            "function_count_with_source": len(attributed_functions),
+            "line_count": len(site_line_counts),
+            "explicit_source_line_count": explicit_source_line_count,
+            "line_marker_fallback_count": line_marker_fallback_count,
+            "source_site_digest": stable_payload_hash(site_records),
+            "top_source_lines_by_ops": top_source_lines,
+        },
+        "allocation_ownership": {
+            "carrier": ALLOCATION_OWNERSHIP_CARRIER,
+            "event_count": total_allocation_event_count,
+            "source_attributed_event_count": attributed_allocation_event_count,
+            "unattributed_event_count": unattributed_allocation_event_count,
+            "source_coverage_ratio": allocation_source_coverage_ratio,
+            "events_by_category": {
+                name: allocation_category_counts[name]
+                for name in sorted(allocation_category_counts)
+            },
+            "top_category_kinds": top_allocation_kinds,
+            "top_source_lines_by_events": top_allocation_source_lines,
+            "allocation_ownership_digest": stable_payload_hash(
+                allocation_event_records
+            ),
+        },
         "tir_boundary": {
             "carrier": TIR_BOUNDARY_CARRIER,
             "semantic_role": "frontend-to-TIR/backend input",
@@ -142,172 +271,47 @@ def backend_ir_binary_image_analysis_payload(ir: Mapping[str, Any]) -> dict[str,
     }
 
 
-def _backend_ir_source_site_payload(
-    functions: Sequence[Any],
-    *,
-    op_total: int,
-) -> dict[str, Any]:
-    site_records: list[dict[str, Any]] = []
-    line_counts: Counter[tuple[str, int]] = Counter()
-    attributed_functions: set[str] = set()
-    explicit_source_line_count = 0
-    line_marker_fallback_count = 0
-    for func in functions:
-        if not isinstance(func, Mapping):
-            continue
-        name = func.get("name")
-        if not isinstance(name, str):
-            name = "<unknown>"
-        source_file = func.get("source_file")
-        if not isinstance(source_file, str) or not source_file:
-            source_file = "<unknown>"
-        ops = func.get("ops")
-        if not isinstance(ops, list):
-            continue
-        for op_index, op in enumerate(ops):
-            op_mapping = _string_key_mapping(op)
-            if op_mapping is None:
-                continue
-            site, source = backend_ir_op_source_site(op_mapping)
-            if site is None:
-                continue
-            kind = op_mapping.get("kind")
-            if not isinstance(kind, str):
-                kind = "<unknown>"
-            attributed_functions.add(name)
-            if source == "line_marker":
-                line_marker_fallback_count += 1
-            else:
-                explicit_source_line_count += 1
-            line = site["line"]
-            if line is None:
-                continue
-            line_counts[(source_file, line)] += 1
-            site_records.append(
-                {
-                    "function": name,
-                    "op_index": op_index,
-                    "kind": kind,
-                    "source_file": source_file,
-                    "line": line,
-                    "col": site["col"],
-                    "end_col": site["end_col"],
-                }
-            )
-    attributed_op_count = len(site_records)
-    coverage_ratio = round(attributed_op_count / op_total, 6) if op_total > 0 else 1.0
-    top_source_lines = [
-        {"source_file": source_file, "line": line, "ops": count}
-        for (source_file, line), count in sorted(
-            line_counts.items(),
-            key=lambda item: (-item[1], item[0][0], item[0][1]),
-        )[:20]
-    ]
-    return {
-        "carrier": SOURCE_SITE_CARRIER,
-        "attributed_op_count": attributed_op_count,
-        "unattributed_op_count": max(op_total - attributed_op_count, 0),
-        "coverage_ratio": coverage_ratio,
-        "function_count_with_source": len(attributed_functions),
-        "line_count": len(line_counts),
-        "explicit_source_line_count": explicit_source_line_count,
-        "line_marker_fallback_count": line_marker_fallback_count,
-        "source_site_digest": stable_payload_hash(site_records),
-        "top_source_lines_by_ops": top_source_lines,
-    }
+def _sorted_strings(values: frozenset[str]) -> tuple[str, ...]:
+    return tuple(sorted(values))
 
 
-def _backend_ir_allocation_ownership_payload(
-    functions: Sequence[Any],
-) -> dict[str, Any]:
-    category_counts: Counter[str] = Counter()
-    kind_counts: Counter[str] = Counter()
-    line_counts: Counter[tuple[str, int, str]] = Counter()
-    event_records: list[dict[str, Any]] = []
-    unattributed_event_count = 0
-    for func in functions:
-        if not isinstance(func, Mapping):
-            continue
-        name = func.get("name")
-        if not isinstance(name, str):
-            name = "<unknown>"
-        source_file = func.get("source_file")
-        if not isinstance(source_file, str) or not source_file:
-            source_file = "<unknown>"
-        ops = func.get("ops")
-        if not isinstance(ops, list):
-            continue
-        for op_index, op in enumerate(ops):
-            op_mapping = _string_key_mapping(op)
-            if op_mapping is None:
-                continue
-            categories = backend_ir_allocation_categories(op_mapping)
-            if not categories:
-                continue
-            kind = backend_ir_canonical_kind(op_mapping)
-            site, _source = backend_ir_op_source_site(op_mapping)
-            for category in categories:
-                category_counts[category] += 1
-                kind_counts[f"{category}:{kind}"] += 1
-                if site is None:
-                    unattributed_event_count += 1
-                    continue
-                line = site["line"]
-                if line is None:
-                    unattributed_event_count += 1
-                    continue
-                line_counts[(source_file, line, category)] += 1
-                event_records.append(
-                    {
-                        "function": name,
-                        "op_index": op_index,
-                        "kind": kind,
-                        "category": category,
-                        "source_file": source_file,
-                        "line": line,
-                        "col": site["col"],
-                        "end_col": site["end_col"],
-                    }
-                )
-    attributed_event_count = len(event_records)
-    total_event_count = attributed_event_count + unattributed_event_count
-    source_coverage_ratio = (
-        round(attributed_event_count / total_event_count, 6)
-        if total_event_count > 0
-        else 1.0
-    )
-    top_source_lines = [
+@functools.lru_cache(maxsize=1)
+def backend_ir_binary_image_analysis_authority_hash() -> str:
+    return stable_payload_hash(
         {
-            "source_file": source_file,
-            "line": line,
-            "category": category,
-            "events": count,
+            "schema": BACKEND_IR_BINARY_IMAGE_ANALYSIS_CACHE_KEY_SCHEMA,
+            "analysis_schema_version": SCHEMA_VERSION,
+            "source_site_carrier": SOURCE_SITE_CARRIER,
+            "allocation_ownership_carrier": ALLOCATION_OWNERSHIP_CARRIER,
+            "tir_boundary_carrier": TIR_BOUNDARY_CARRIER,
+            "canonical_kind": dict(sorted(op_kind_facts.CANONICAL_KIND.items())),
+            "heap_alloc_root_kinds": _sorted_strings(
+                op_kind_facts.BINARY_IMAGE_HEAP_ALLOC_ROOT_KINDS
+            ),
+            "stack_alloc_root_kinds": _sorted_strings(
+                op_kind_facts.BINARY_IMAGE_STACK_ALLOC_ROOT_KINDS
+            ),
+            "ref_retain_kinds": _sorted_strings(
+                op_kind_facts.BINARY_IMAGE_REF_RETAIN_KINDS
+            ),
+            "ref_release_kinds": _sorted_strings(
+                op_kind_facts.BINARY_IMAGE_REF_RELEASE_KINDS
+            ),
+            "heap_exposure_kinds": _sorted_strings(
+                op_kind_facts.BINARY_IMAGE_HEAP_EXPOSURE_KINDS
+            ),
         }
-        for (source_file, line, category), count in sorted(
-            line_counts.items(),
-            key=lambda item: (-item[1], item[0][0], item[0][1], item[0][2]),
-        )[:20]
-    ]
-    top_kinds = [
-        {"category_kind": category_kind, "events": count}
-        for category_kind, count in sorted(
-            kind_counts.items(),
-            key=lambda item: (-item[1], item[0]),
-        )[:20]
-    ]
-    return {
-        "carrier": ALLOCATION_OWNERSHIP_CARRIER,
-        "event_count": total_event_count,
-        "source_attributed_event_count": attributed_event_count,
-        "unattributed_event_count": unattributed_event_count,
-        "source_coverage_ratio": source_coverage_ratio,
-        "events_by_category": {
-            name: category_counts[name] for name in sorted(category_counts)
-        },
-        "top_category_kinds": top_kinds,
-        "top_source_lines_by_events": top_source_lines,
-        "allocation_ownership_digest": stable_payload_hash(event_records),
-    }
+    )
+
+
+def backend_ir_binary_image_analysis_cache_key(ir: Mapping[str, Any]) -> str:
+    return stable_payload_hash(
+        {
+            "schema": BACKEND_IR_BINARY_IMAGE_ANALYSIS_CACHE_KEY_SCHEMA,
+            "authority": backend_ir_binary_image_analysis_authority_hash(),
+            "ir": ir,
+        }
+    )
 
 
 def _positive_int_or_none(value: Any) -> int | None:

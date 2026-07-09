@@ -9,6 +9,29 @@ from molt.cli import backend_binary as cli_backend_binary
 import pytest
 
 
+def test_backend_compiler_cache_fingerprint_covers_backend_fingerprint_fields() -> None:
+    fingerprint = {
+        "hash": "abc",
+        "rustc": "rustc-1",
+        "inputs_digest": "inputs",
+        "meta_digest": "meta",
+    }
+
+    baseline = cli_backend_binary._backend_compiler_cache_fingerprint(fingerprint)
+
+    assert baseline
+    assert baseline == cli_backend_binary._backend_compiler_cache_fingerprint(
+        dict(fingerprint)
+    )
+    assert baseline != cli_backend_binary._backend_compiler_cache_fingerprint(
+        {**fingerprint, "rustc": "rustc-2"}
+    )
+    assert baseline != cli_backend_binary._backend_compiler_cache_fingerprint(
+        {**fingerprint, "meta_digest": "meta-2"}
+    )
+    assert cli_backend_binary._backend_compiler_cache_fingerprint({}) is None
+
+
 def test_ensure_backend_binary_refreshes_feature_tagged_alias_from_newer_cargo_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -24,7 +47,7 @@ def test_ensure_backend_binary_refreshes_feature_tagged_alias_from_newer_cargo_o
     cargo_output.chmod(0o755)
 
     # Ensure the feature-tagged alias is older than the canonical cargo output.
-    stale_mtime = cargo_output.stat().st_mtime_ns - 1_000_000
+    stale_mtime = 315_532_800 * 1_000_000_000
     os.utime(backend_bin, ns=(stale_mtime, stale_mtime))
 
     fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
@@ -65,6 +88,73 @@ def test_ensure_backend_binary_refreshes_feature_tagged_alias_from_newer_cargo_o
     assert backend_bin.read_text(encoding="utf-8") == cargo_output.read_text(
         encoding="utf-8"
     )
+
+
+def test_ensure_backend_binary_reuses_exact_probe_validation_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exe_suffix = ".exe" if os.name == "nt" else ""
+    backend_bin = tmp_path / "target" / "dev-fast" / f"molt-backend{exe_suffix}"
+    backend_bin.parent.mkdir(parents=True, exist_ok=True)
+    backend_bin.write_text("backend-v1", encoding="utf-8")
+    backend_bin.chmod(0o755)
+    fingerprint = {
+        "hash": "abc",
+        "rustc": "rustc",
+        "inputs_digest": "inputs",
+        "meta_digest": "meta",
+    }
+    fingerprint_path = cli_backend_binary._backend_fingerprint_path(
+        tmp_path,
+        backend_bin,
+        "dev-fast",
+    )
+    cli._write_runtime_fingerprint(fingerprint_path, fingerprint)
+    probe_calls = 0
+
+    def fake_backend_fingerprint(*args: object, **kwargs: object) -> dict[str, str]:
+        del args, kwargs
+        return dict(fingerprint)
+
+    def fake_probe(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        nonlocal probe_calls
+        del kwargs
+        probe_calls += 1
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+    monkeypatch.setattr(
+        cli_backend_binary,
+        "_backend_fingerprint",
+        fake_backend_fingerprint,
+    )
+    monkeypatch.setattr(
+        cli_backend_binary,
+        "_run_subprocess_captured_to_tempfiles",
+        fake_probe,
+    )
+
+    for _ in range(2):
+        assert cli_backend_binary._ensure_backend_binary(
+            backend_bin,
+            cargo_timeout=1.0,
+            json_output=True,
+            cargo_profile="dev-fast",
+            project_root=tmp_path,
+            backend_features=("native-backend",),
+        )
+    assert probe_calls == 1
+
+    backend_bin.write_text("backend-v2-changed", encoding="utf-8")
+    assert cli_backend_binary._ensure_backend_binary(
+        backend_bin,
+        cargo_timeout=1.0,
+        json_output=True,
+        cargo_profile="dev-fast",
+        project_root=tmp_path,
+        backend_features=("native-backend",),
+    )
+    assert probe_calls == 2
 
 
 def test_ensure_backend_binary_returns_cargo_failure_detail(
