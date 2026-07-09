@@ -3187,6 +3187,10 @@ def _pact_witness_native_roots(repo_root: Path = ROOT) -> list[Path]:
                 candidate_repo_roots,
                 ["tmp/pact_scipy_rank_filter_1d_molt_ext_wasm_cpython_abi"],
             ),
+            _first_existing_manifest_root_across(
+                candidate_repo_roots,
+                ["tmp/pact_scipy_ccallback_c_molt_ext_wasm_cpython_abi"],
+            ),
         ]
         if root is not None
     )
@@ -3251,6 +3255,7 @@ def _pact_witness_acceptance_spec(
             "tmp/pact_scipy_ndimage_sealed_for_witness",
             "tmp/pact_scipy_ndimage_provider_sealed_helpers",
             "tmp/pact_scipy_ni_label_molt_ext_wasm_cpython_abi",
+            "tmp/pact_scipy_ccallback_c_molt_ext_wasm_cpython_abi",
         ],
         "env_overrides": _pact_witness_env_overrides(repo_root),
         "notes": [

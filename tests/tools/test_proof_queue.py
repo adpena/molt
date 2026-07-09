@@ -8849,6 +8849,7 @@ def test_proof_queue_pact_witness_acceptance_admits_staged_native_roots(
         tmp_path / "tmp/pact_numpy_multiarray_sealed_for_witness",
         tmp_path / "tmp/pact_scipy_ndimage_sealed_for_witness_next",
         tmp_path / "tmp/pact_scipy_ni_label_molt_ext_wasm_cpython_abi",
+        tmp_path / "tmp/pact_scipy_ccallback_c_molt_ext_wasm_cpython_abi",
         tmp_path / "bench/friends/repos/numpy_off_the_shelf",
         tmp_path / "bench/friends/repos/scipy_off_the_shelf",
     ]
@@ -8861,8 +8862,8 @@ def test_proof_queue_pact_witness_acceptance_admits_staged_native_roots(
         root.mkdir(parents=True)
     for root in stale_roots:
         root.mkdir(parents=True)
-    _write_current_numpy_seal_manifest(expected_roots[0], expected_roots[3])
-    for root in [*expected_roots[1:3], *stale_roots]:
+    _write_current_numpy_seal_manifest(expected_roots[0], expected_roots[4])
+    for root in [*expected_roots[1:4], *stale_roots]:
         (root / "extension_manifest.json").write_text("{}", encoding="utf-8")
 
     spec = proof_queue._pact_witness_acceptance_spec(repo_root=tmp_path)

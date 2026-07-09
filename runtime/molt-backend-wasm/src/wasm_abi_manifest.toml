@@ -7937,6 +7937,10 @@ name = "strcspn"
 primitive_class = "wasm_libc_link_import"
 
 [[external_native_link_import]]
+name = "strdup"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
 name = "strerror"
 primitive_class = "wasm_libc_link_import"
 
