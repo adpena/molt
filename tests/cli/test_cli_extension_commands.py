@@ -2110,6 +2110,86 @@ def test_extension_build_follows_linked_static_library_source_closure(
     assert "array__unique_hash" in defined_symbols
 
 
+def test_extension_build_excludes_linked_static_library(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``--source-plan-exclude-linked-static-library`` drops the archive's TUs.
+
+    Mirrors the numpy multi-extension case: ``_umath_linalg`` links
+    ``libnpymath.a``, which the PRIMARY ``_multiarray_umath`` extension already
+    statically exports. Excluding the shared archive keeps its symbols undefined
+    (resolved against the primary at final link) instead of compiling a second
+    colliding copy into this extension's closure.
+    """
+    project_root = tmp_path / "meson_extproj"
+    project_root.mkdir()
+    _write_meson_source_plan_project(project_root, linked_static_library=True)
+    commands: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        commands.append(cmd)
+        out_index = cmd.index("-o")
+        out_path = Path(cmd[out_index + 1])
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(b"obj" if "-c" in cmd else b"shared")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
+    _install_extension_object_symbol_facts(
+        monkeypatch,
+        default_init_symbol="PyInit_demoext",
+        by_stem={
+            "demoext": (
+                {"PyInit_demoext"},
+                {"array__unique_hash", "helper_generated"},
+            ),
+            "helper_generated": ({"helper_generated"}, set()),
+            "unique": ({"array__unique_hash"}, set()),
+        },
+    )
+    monkeypatch.setattr(
+        cli_commands,
+        "_shared_library_defines_symbol",
+        lambda _path, symbol: (symbol == "PyInit_demoext", None),
+    )
+
+    out_dir = project_root / "dist"
+    rc = cli_commands.extension_build(
+        project=str(project_root),
+        out_dir=str(out_dir),
+        source_plan_exclude_linked_static_libraries=["libunique_hash.a"],
+        deterministic=False,
+        json_output=False,
+        verbose=False,
+    )
+    assert rc == 0
+
+    # The excluded archive's translation unit is neither compiled nor linked.
+    assert not any(
+        "-c" in cmd and any("unique.cpp" in part for part in cmd) for cmd in commands
+    )
+    manifest = json.loads((out_dir / "extension_manifest.json").read_text())
+    object_sources = {
+        Path(obj["source"]).resolve()
+        for obj in manifest["object_closure"]["objects"]
+    }
+    assert (project_root / "pkg" / "unique.cpp").resolve() not in object_sources
+    assert str((project_root / "pkg" / "unique.cpp").resolve()) not in (
+        manifest["source_plan"]["sources"]
+    )
+    # Its symbol is now undefined in this closure (resolved from the primary at
+    # final link), not redundantly defined here.
+    defined_symbols = {
+        symbol
+        for obj in manifest["object_closure"]["objects"]
+        for symbol in obj["defined_symbols"]
+    }
+    assert "array__unique_hash" not in defined_symbols
+
+
 def test_extension_build_follows_meson_aggregate_static_library_members(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

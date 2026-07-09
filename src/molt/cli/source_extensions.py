@@ -994,8 +994,10 @@ def _load_meson_intro_targets_source_extension_plan(
     source_root: Any = None,
     build_root: Any = None,
     compile_commands: Any = None,
+    exclude_linked_static_libraries: Sequence[str] | None = None,
 ) -> tuple[_SourceExtensionBuildPlan | None, list[str]]:
     errors: list[str] = []
+    excluded_linked_static_libraries = tuple(exclude_linked_static_libraries or ())
     if not plan_path.exists() or not plan_path.is_file():
         return None, [f"source extension build plan not found: {plan_path}"]
     try:
@@ -1078,6 +1080,47 @@ def _load_meson_intro_targets_source_extension_plan(
         payload=payload,
         build_root=resolved_build_root,
     )
+    # A SECONDARY extension in a multi-extension package (e.g. numpy's
+    # ``_umath_linalg``) links a same-project static library (``libnpymath.a``)
+    # that the PRIMARY extension (``_multiarray_umath``) already statically
+    # embeds and exports. In real CPython each extension is its own ``.so`` so a
+    # private npymath copy per extension is fine, but Molt links every sealed
+    # relocatable object of a statically-linked package into ONE wasm module, so
+    # a second private copy of those global ``npy_*`` definitions is a fatal
+    # ``wasm-ld: duplicate symbol`` at the final witness link. Excluding the
+    # shared static library here keeps its symbols UNDEFINED in this extension's
+    # object closure (recorded as runtime_symbols), so they resolve against the
+    # primary extension's exported definitions at final link — the same thin
+    # shape ``scipy.ndimage._nd_image`` already relies on for numpy's C-API.
+    if excluded_linked_static_libraries:
+        excluded = {name.strip().lower() for name in excluded_linked_static_libraries}
+
+        def _target_archive_basenames(entry: Mapping[str, Any]) -> set[str]:
+            names: set[str] = set()
+            raw = entry.get("filename")
+            for value in raw if isinstance(raw, list) else (raw,):
+                if not isinstance(value, str):
+                    continue
+                base = Path(value.replace("\\", "/")).name
+                if not base:
+                    continue
+                names.add(base.lower())
+                # Also accept the bare library stem (``npymath`` for
+                # ``libnpymath.a``) so callers can name it either way.
+                stem = base
+                if stem.lower().startswith("lib"):
+                    stem = stem[3:]
+                if stem.lower().endswith(".a"):
+                    stem = stem[:-2]
+                if stem:
+                    names.add(stem.lower())
+            return names
+
+        linked_static_targets = [
+            linked_target
+            for linked_target in linked_static_targets
+            if not (_target_archive_basenames(linked_target) & excluded)
+        ]
     combined_source_groups: list[Mapping[str, Any]] = list(target_sources)
     skipped_generated_sources: list[Path] = []
     for linked_target in linked_static_targets:
@@ -1330,6 +1373,27 @@ def _load_meson_intro_targets_source_extension_plan(
     )
 
 
+def _coerce_plan_string_sequence(value: Any) -> tuple[str, ...]:
+    """Normalize a source-plan string/list option to a tuple of strings.
+
+    Accepts a single string (one entry), a list/tuple of strings, or ``None``
+    (no entries). Non-string members and blanks are dropped so a malformed
+    config degrades to an empty selector rather than raising.
+    """
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        stripped = value.strip()
+        return (stripped,) if stripped else ()
+    if isinstance(value, (list, tuple)):
+        return tuple(
+            item.strip()
+            for item in value
+            if isinstance(item, str) and item.strip()
+        )
+    return ()
+
+
 def _load_source_extension_build_plan(
     *,
     project_root: Path,
@@ -1367,6 +1431,10 @@ def _load_source_extension_build_plan(
             or plan_config.get("compile-commands")
             or plan_config.get("compile_commands_path")
             or plan_config.get("compile-commands-path"),
+            exclude_linked_static_libraries=_coerce_plan_string_sequence(
+                plan_config.get("exclude_linked_static_libraries")
+                or plan_config.get("exclude-linked-static-libraries")
+            ),
         )
     return None, [f"unsupported source extension build plan kind: {kind!r}"]
 
