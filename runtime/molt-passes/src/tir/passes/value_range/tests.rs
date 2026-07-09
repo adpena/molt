@@ -1,4 +1,3 @@
-use super::result::KnownLength;
 use super::*;
 use crate::tir::blocks::{BlockId, LoopRole, Terminator, TirBlock};
 use crate::tir::function::TirFunction;
@@ -13,20 +12,20 @@ fn proves_in_bounds_const_index() {
     let bid = BlockId(0);
     let lst = ValueId(100);
     let mut res = ValueRangeResult::default();
-    res.container_length.insert(lst, KnownLength::Constant(3));
+    res.record_container_length_constant(lst, 3);
 
     let idx = ValueId(101);
-    res.global_range.insert(idx, IntRange::point(2));
+    res.record_global_range(idx, IntRange::point(2));
     assert!(res.proves_index_in_bounds(bid, lst, idx));
 
     // index 3 into len-3 container → unsafe (3 is out of bounds).
     let idx3 = ValueId(102);
-    res.global_range.insert(idx3, IntRange::point(3));
+    res.record_global_range(idx3, IntRange::point(3));
     assert!(!res.proves_index_in_bounds(bid, lst, idx3));
 
     // negative index → unsafe.
     let idxn = ValueId(103);
-    res.global_range.insert(idxn, IntRange::point(-1));
+    res.record_global_range(idxn, IntRange::point(-1));
     assert!(!res.proves_index_in_bounds(bid, lst, idxn));
 
     // unknown range → unsafe.
@@ -35,7 +34,7 @@ fn proves_in_bounds_const_index() {
 
     // unbounded-above range → unsafe even though lo >= 0.
     let idxh = ValueId(105);
-    res.global_range.insert(idxh, IntRange::new(0, i64::MAX));
+    res.record_global_range(idxh, IntRange::new(0, i64::MAX));
     assert!(!res.proves_index_in_bounds(bid, lst, idxh));
 }
 
@@ -47,9 +46,9 @@ fn symbolic_lt_len_proof() {
     let i = ValueId(11);
     let len_val = ValueId(12);
     let mut res = ValueRangeResult::default();
-    res.len_of.insert(len_val, lst);
+    res.record_len_of(len_val, lst);
     // i is provably >= 0 (an IV from 0).
-    res.global_range.insert(i, IntRange::new(0, i64::MAX));
+    res.record_global_range(i, IntRange::new(0, i64::MAX));
     res.record_symbolic_lt(bid, i, len_val);
     assert!(res.proves_index_lt_len_symbolically(bid, lst, i));
     // wrong container → not proven.

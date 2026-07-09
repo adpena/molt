@@ -39,10 +39,9 @@ pub(super) fn propagate_op_ranges(func: &TirFunction, result: &mut ValueRangeRes
     for (&v, ty) in &func.value_types {
         if matches!(ty, crate::tir::types::TirType::Bool) {
             let canon = result.resolve(v);
-            result
-                .global_range
-                .entry(canon)
-                .or_insert(IntRange::new(0, 1));
+            if !result.has_global_range(canon) {
+                result.record_global_range(canon, IntRange::new(0, 1));
+            }
         }
     }
 
@@ -62,7 +61,7 @@ pub(super) fn propagate_op_ranges(func: &TirFunction, result: &mut ValueRangeRes
                     continue;
                 }
                 let res = result.resolve(op.results[0]);
-                if result.global_range.contains_key(&res) {
+                if result.has_global_range(res) {
                     continue; // already ranged (constant / IV / earlier sweep).
                 }
                 let Some(range) = transfer_op_range(op, result) else {
@@ -71,7 +70,7 @@ pub(super) fn propagate_op_ranges(func: &TirFunction, result: &mut ValueRangeRes
                 if range.is_full() {
                     continue; // no information — leave un-ranged.
                 }
-                result.global_range.insert(res, range);
+                result.record_global_range(res, range);
                 changed = true;
             }
         }
@@ -252,7 +251,7 @@ pub(super) fn narrow_loop_header_phis(
             let phi = arg.id;
             // If the phi already has a proven range (an AddRec IV ranged above),
             // that fact is authoritative — never widen/disturb it.
-            if result.global_range.contains_key(&result.resolve(phi)) {
+            if result.has_global_range(phi) {
                 continue;
             }
             let Some(srcs) = incomings.get(&(header, index)) else {
@@ -303,12 +302,7 @@ pub(super) fn narrow_loop_header_phis(
         // global fact. Meet with any concurrently-inserted fact for the same
         // canonical value (two header args resolving to one source — rare) so we
         // never widen.
-        let existing = result
-            .global_range
-            .get(&phi)
-            .copied()
-            .unwrap_or(IntRange::FULL_I64);
-        result.global_range.insert(phi, existing.meet(range));
+        result.meet_global_range(phi, range);
     }
     true
 }

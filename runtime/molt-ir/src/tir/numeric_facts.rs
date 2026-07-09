@@ -93,7 +93,7 @@ impl IntRange {
     /// True if this is the top of the lattice (`FULL_I64`, "anything"). A FULL
     /// operand means "unknown", so most transfer functions degrade to FULL when
     /// any input is FULL.
-    pub(crate) fn is_full(self) -> bool {
+    pub fn is_full(self) -> bool {
         self.lo == i64::MIN && self.hi == i64::MAX
     }
 
@@ -143,7 +143,7 @@ impl IntRange {
     /// Anything else (a negative operand without a constant non-negative mask)
     /// returns `FULL_I64`. `mask_const` is `Some(m)` when one operand is a
     /// compile-time constant, else `None`.
-    pub(crate) fn bit_and(
+    pub fn bit_and(
         self,
         other: IntRange,
         self_const: Option<i64>,
@@ -171,7 +171,7 @@ impl IntRange {
     /// `or_lower_floor` distinguishes OR (whose result is `>= max(a, b)`, so its
     /// low bound is `max(a.lo, b.lo)`) from XOR (whose result can be 0, e.g.
     /// `x ^ x`, so its low bound is 0).
-    pub(crate) fn bit_or_xor(self, other: IntRange, or_lower_floor: bool) -> IntRange {
+    pub fn bit_or_xor(self, other: IntRange, or_lower_floor: bool) -> IntRange {
         if self.lo < 0 || other.lo < 0 {
             return IntRange::FULL_I64;
         }
@@ -190,7 +190,7 @@ impl IntRange {
     ///   * `c > 0` ⇒ result ∈ `[0, c - 1]`.
     ///   * `c < 0` ⇒ result ∈ `[c + 1, 0]`.
     ///   * `c == 0` ⇒ raises (no value) — caller must not invoke this.
-    pub(crate) fn mod_const(c: i64) -> IntRange {
+    pub fn mod_const(c: i64) -> IntRange {
         if c > 0 {
             IntRange::new(0, c - 1)
         } else {
@@ -210,7 +210,7 @@ impl IntRange {
     ///
     /// A range straddling 0 (possible zero divisor → raise, or mixed sign)
     /// returns `FULL_I64`.
-    pub(crate) fn mod_range(divisor: IntRange) -> IntRange {
+    pub fn mod_range(divisor: IntRange) -> IntRange {
         if divisor.lo >= 1 {
             // result magnitude < divisor; sign of divisor (positive).
             IntRange::from_i128(0, (divisor.hi as i128) - 1)
@@ -230,7 +230,7 @@ impl IntRange {
     /// `i64::MIN // -1` overflow (the only two-i64 floordiv leaving i64) to the
     /// i64 extreme, far outside any inline window. Sound for *any* dividend
     /// sign. `d == 0` raises (no value) — caller must exclude it.
-    pub(crate) fn floordiv_const(self, d: i64) -> IntRange {
+    pub fn floordiv_const(self, d: i64) -> IntRange {
         debug_assert!(
             d != 0,
             "zero divisor excluded by caller (ZeroDivisionError)"
@@ -255,7 +255,7 @@ impl IntRange {
     /// because `floor` is monotone, the extrema of `x // y` — occur at the four
     /// `{lo,hi}×{lo,hi}` corners. The result is the hull of those corner
     /// quotients.
-    pub(crate) fn floordiv_range(self, divisor: IntRange) -> IntRange {
+    pub fn floordiv_range(self, divisor: IntRange) -> IntRange {
         // Provably positive (`lo >= 1`) or provably negative (`hi <= -1`); a
         // range that could contain 0 is unprovable.
         if !(divisor.lo >= 1 || divisor.hi <= -1) {
@@ -277,7 +277,7 @@ impl IntRange {
     /// the interval maps to `[floor(lo / 2^s), floor(hi / 2^s)]`. Computed in
     /// i128 with floor division (Rust `/` truncates toward zero, so adjust for
     /// negatives). `s < 0` is a Python `ValueError` (no value) and returns FULL.
-    pub(crate) fn shr_const(self, s: i64) -> IntRange {
+    pub fn shr_const(self, s: i64) -> IntRange {
         if s < 0 {
             return IntRange::FULL_I64;
         }
@@ -308,7 +308,7 @@ impl IntRange {
     /// extreme by sign — a sound widening (`from_i128` then clamps the in-range
     /// endpoint). This is what lets `(x << 80)` on an unbounded `x` (FULL range)
     /// yield a sound FULL result instead of panicking on i128 overflow.
-    pub(crate) fn shl_const(self, s: i64) -> IntRange {
+    pub fn shl_const(self, s: i64) -> IntRange {
         if s < 0 {
             return IntRange::FULL_I64;
         }

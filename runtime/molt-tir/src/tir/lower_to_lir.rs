@@ -81,7 +81,7 @@ pub fn lower_function_to_lir_for_repr_fact_extraction(func: &TirFunction) -> Lir
 pub fn lower_function_to_lir_with_inline_proof(
     func: &TirFunction,
     repr: &HashMap<ValueId, Repr>,
-    inline_proof: &crate::tir::passes::value_range::ValueRangeResult,
+    inline_proof: &crate::tir::ValueRangeResult,
 ) -> LirFunction {
     let refined = prepare_lir_function(func);
     lower_prepared_function_to_lir(refined, LirReprSource::Proven(repr), Some(inline_proof))
@@ -97,7 +97,7 @@ fn prepare_lir_function(func: &TirFunction) -> TirFunction {
 fn lower_prepared_function_to_lir(
     refined: TirFunction,
     repr: LirReprSource<'_>,
-    inline_proof: Option<&crate::tir::passes::value_range::ValueRangeResult>,
+    inline_proof: Option<&crate::tir::ValueRangeResult>,
 ) -> LirFunction {
     let type_map = extract_type_map(&refined);
     let mut allocator = ValueIdAllocator::new(refined.next_value);
@@ -206,7 +206,7 @@ fn lower_block(
     type_map: &HashMap<ValueId, TirType>,
     allocator: &mut ValueIdAllocator,
     repr: LirReprSource<'_>,
-    inline_proof: Option<&crate::tir::passes::value_range::ValueRangeResult>,
+    inline_proof: Option<&crate::tir::ValueRangeResult>,
 ) -> LirBlock {
     let mut ops = lower_block_ops(
         block.ops.as_slice(),
@@ -229,7 +229,7 @@ fn lower_block_ops(
     type_map: &HashMap<ValueId, TirType>,
     allocator: &mut ValueIdAllocator,
     repr: LirReprSource<'_>,
-    inline_proof: Option<&crate::tir::passes::value_range::ValueRangeResult>,
+    inline_proof: Option<&crate::tir::ValueRangeResult>,
 ) -> Vec<LirOp> {
     ops.iter()
         .map(|op| lower_op(op, type_map, allocator, repr, inline_proof))
@@ -241,7 +241,7 @@ fn lower_op(
     type_map: &HashMap<ValueId, TirType>,
     allocator: &mut ValueIdAllocator,
     repr: LirReprSource<'_>,
-    inline_proof: Option<&crate::tir::passes::value_range::ValueRangeResult>,
+    inline_proof: Option<&crate::tir::ValueRangeResult>,
 ) -> LirOp {
     if lowers_to_checked_i64_arithmetic(op, type_map, repr, inline_proof) {
         return lower_checked_i64_arithmetic(op, type_map, allocator, repr);
@@ -333,7 +333,7 @@ fn lowers_to_checked_i64_arithmetic(
     op: &TirOp,
     type_map: &HashMap<ValueId, TirType>,
     repr: LirReprSource<'_>,
-    inline_proof: Option<&crate::tir::passes::value_range::ValueRangeResult>,
+    inline_proof: Option<&crate::tir::ValueRangeResult>,
 ) -> bool {
     let type_eligible = opcode_supports_i64_checked_overflow_triple_table(op.opcode)
         && op.results.len() == 1

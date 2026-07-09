@@ -9,7 +9,6 @@ pub mod fact_graph;
 pub mod lower_from_simple;
 pub mod lower_to_simple;
 pub mod module_phase;
-pub mod numeric_facts;
 pub mod parallel;
 pub mod pass_delta;
 pub mod pass_manager;
@@ -19,8 +18,9 @@ pub mod translation_validator;
 pub mod type_refine;
 
 pub use molt_ir::tir::{
-    blocks, call_targets, cfg, dominators, effect_proof, function, op_kinds_generated, ops,
-    printer, serialize, ssa, target_info, types, values, verify,
+    blocks, call_targets, cfg, dominators, effect_proof, function, numeric_facts,
+    op_kinds_generated, ops, printer, serialize, ssa, target_info, types, value_range, values,
+    verify,
 };
 
 /// Pass-layer access to the canonical SimpleIR structural classifier.
@@ -45,7 +45,9 @@ pub use self::fact_graph::{
     FactGraphSummary, FactProducer, FactSourceSite, ValueFactNode,
 };
 pub use self::function::{TirFunction, TirModule};
+pub use self::numeric_facts::{IntRange, ScevExpr, TripCount};
 pub use self::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 pub use self::target_info::{BuildProfile, ProfileData, SimdCaps, TargetInfo, TargetKind};
 pub use self::types::{FuncSignature, TirType};
+pub use self::value_range::ValueRangeResult;
 pub use self::values::{TirValue, ValueId};

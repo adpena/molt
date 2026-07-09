@@ -64,7 +64,7 @@ schema_version = 1
 [[crate]]
 name = "molt-ir"
 layer = 0
-role = "TIR vocabulary + SimpleIR transport + Repr vocab + target/profile facts"
+role = "TIR vocabulary + SimpleIR transport + Repr vocab + backend-visible proof facts"
 
 [[crate]]
 name = "molt-codegen-abi"
@@ -123,8 +123,8 @@ role = "worker over molt-db"
 # ---------------------------------------------------------------------------
 # Layer 2 -- lowering + plan logic, the cpython ABI surface, and runtime core.
 # molt-tir is today's lowering crate (the future molt-lower of 21f S2): it has a
-# hard production dependency on molt-passes (ValueRangeResult, drop-insertion
-# attrs), so it sits ABOVE passes.
+# hard production dependency on molt-passes (pass execution/orchestration and
+# drop-insertion attrs), so it sits ABOVE passes.
 # ---------------------------------------------------------------------------
 
 [[crate]]

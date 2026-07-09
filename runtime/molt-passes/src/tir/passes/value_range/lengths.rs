@@ -6,7 +6,6 @@ use crate::tir::op_kinds_generated::{
 use crate::tir::ops::{AttrValue, OpCode};
 
 use super::ValueRangeResult;
-use super::result::KnownLength;
 
 /// Collect `ConstInt` values, container lengths, and `len(c)` symbols.
 pub(super) fn collect_constants_and_lengths(func: &TirFunction, result: &mut ValueRangeResult) {
@@ -17,7 +16,7 @@ pub(super) fn collect_constants_and_lengths(func: &TirFunction, result: &mut Val
                 && let Some(AttrValue::Int(v)) = op.attrs.get("value")
             {
                 for &r in &op.results {
-                    result.const_int.insert(r, *v);
+                    result.record_const_int(r, *v);
                 }
             }
         }
@@ -44,10 +43,10 @@ pub(super) fn collect_constants_and_lengths(func: &TirFunction, result: &mut Val
                 if const_fold_rule == ValueRangeConstFoldRule::None || op.operands.len() != 2 {
                     continue;
                 }
-                let Some(&a) = result.const_int.get(&result.resolve(op.operands[0])) else {
+                let Some(a) = result.const_int_of(op.operands[0]) else {
                     continue;
                 };
-                let Some(&b) = result.const_int.get(&result.resolve(op.operands[1])) else {
+                let Some(b) = result.const_int_of(op.operands[1]) else {
                     continue;
                 };
                 let folded = match const_fold_rule {
@@ -80,7 +79,7 @@ pub(super) fn collect_constants_and_lengths(func: &TirFunction, result: &mut Val
                 };
                 if let Some(v) = folded {
                     for &r in &op.results {
-                        if result.const_int.insert(r, v).is_none() {
+                        if result.record_const_int(r, v) {
                             changed = true;
                         }
                     }
@@ -95,9 +94,7 @@ pub(super) fn collect_constants_and_lengths(func: &TirFunction, result: &mut Val
                 ValueRangeContainerLengthRule::FixedLiteral => {
                     let len = op.operands.len() as i64;
                     for &r in &op.results {
-                        result
-                            .container_length
-                            .insert(r, KnownLength::Constant(len));
+                        result.record_container_length_constant(r, len);
                     }
                 }
                 ValueRangeContainerLengthRule::ListRepeat => {
@@ -109,29 +106,19 @@ pub(super) fn collect_constants_and_lengths(func: &TirFunction, result: &mut Val
                             result.resolve(op.operands[0]),
                             result.resolve(op.operands[1]),
                         );
-                        let count = if result
-                            .container_length
-                            .get(&a)
-                            .is_some_and(|l| matches!(l, KnownLength::Constant(1)))
-                        {
+                        let count = if result.container_length_is_constant(a, 1) {
                             Some(b)
-                        } else if result
-                            .container_length
-                            .get(&b)
-                            .is_some_and(|l| matches!(l, KnownLength::Constant(1)))
-                        {
+                        } else if result.container_length_is_constant(b, 1) {
                             Some(a)
                         } else {
                             None
                         };
                         if let Some(count_val) = count {
                             for &r in &op.results {
-                                if let Some(&c) = result.const_int.get(&count_val) {
-                                    result.container_length.insert(r, KnownLength::Constant(c));
+                                if let Some(c) = result.const_int_of(count_val) {
+                                    result.record_container_length_constant(r, c);
                                 } else {
-                                    result
-                                        .container_length
-                                        .insert(r, KnownLength::SameAs(count_val));
+                                    result.record_container_length_same_as(r, count_val);
                                 }
                             }
                         }
@@ -149,7 +136,7 @@ pub(super) fn collect_constants_and_lengths(func: &TirFunction, result: &mut Val
                     if name == "len" && op.operands.len() == 1 {
                         let container = result.resolve(op.operands[0]);
                         for &r in &op.results {
-                            result.len_of.insert(r, container);
+                            result.record_len_of(r, container);
                         }
                     }
                 }

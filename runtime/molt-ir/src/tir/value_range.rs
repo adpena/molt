@@ -5,7 +5,7 @@ use crate::tir::numeric_facts::{INLINE_INT47_HI, IntRange};
 use crate::tir::values::ValueId;
 /// A known container length: a compile-time constant or "same SSA value as".
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum KnownLength {
+enum KnownLength {
     Constant(i64),
     SameAs(ValueId),
 }
@@ -19,32 +19,32 @@ pub(super) enum KnownLength {
 pub struct ValueRangeResult {
     /// Loop-invariant range that holds for a value *everywhere in the function*
     /// (constants) or *everywhere in its loop body* (induction variables).
-    pub(super) global_range: HashMap<ValueId, IntRange>,
+    global_range: HashMap<ValueId, IntRange>,
     /// Per-(block, value) narrowed range from edge-sensitive guards. A query
     /// at block `b` for value `v` first consults this, then `global_range`.
-    pub(super) block_range: HashMap<(BlockId, ValueId), IntRange>,
+    block_range: HashMap<(BlockId, ValueId), IntRange>,
     /// container value → known length.
-    pub(super) container_length: HashMap<ValueId, KnownLength>,
+    container_length: HashMap<ValueId, KnownLength>,
     /// `len(c)` result value → the container `c` (for `i < len(c)` proofs).
-    pub(super) len_of: HashMap<ValueId, ValueId>,
+    len_of: HashMap<ValueId, ValueId>,
     /// constant-int values (for length/bound comparison).
-    pub(super) const_int: HashMap<ValueId, i64>,
+    const_int: HashMap<ValueId, i64>,
     /// Edge-sensitive symbolic upper bound: at block `bid`, value `var` is
     /// provably `< bound` (an SSA value). Recorded from header guards
     /// `Lt(var, bound)` and used for the `index < len(container)` symbolic
     /// proof when the numeric length is not a constant.
-    pub(super) symbolic_lt_bound: HashMap<(BlockId, ValueId), ValueId>,
+    symbolic_lt_bound: HashMap<(BlockId, ValueId), ValueId>,
     /// Transparent-copy resolution: value → canonical source through plain SSA
     /// copies (`is_plain_value_copy`). Lowering threads the IV / length / index
     /// through copies; query methods resolve to the canonical value so a fact
     /// recorded on the source is found when querying any copy of it (and vice
     /// versa). A plain copy is the identity, so this is exact, not lossy.
-    pub(super) copy_src: HashMap<ValueId, ValueId>,
+    copy_src: HashMap<ValueId, ValueId>,
 }
 
 impl ValueRangeResult {
     /// Follow plain-copy edges to the canonical source of `v` (bounded walk).
-    pub(super) fn resolve(&self, mut v: ValueId) -> ValueId {
+    pub fn resolve(&self, mut v: ValueId) -> ValueId {
         for _ in 0..64 {
             match self.copy_src.get(&v) {
                 Some(&src) if src != v => v = src,
@@ -52,6 +52,107 @@ impl ValueRangeResult {
             }
         }
         v
+    }
+
+    /// Record a transparent copy edge. Query methods resolve through these
+    /// edges so producers can record a fact on the canonical value and consumers
+    /// can ask about any equivalent copy.
+    pub fn record_copy_source(&mut self, value: ValueId, source: ValueId) {
+        self.copy_src.insert(value, source);
+    }
+
+    /// Record a known integer constant. Returns `true` when this value gained a
+    /// new constant fact.
+    pub fn record_const_int(&mut self, value: ValueId, constant: i64) -> bool {
+        let value = self.resolve(value);
+        self.const_int.insert(value, constant).is_none()
+    }
+
+    /// Return the known integer constant for `value`, after copy resolution.
+    pub fn const_int_of(&self, value: ValueId) -> Option<i64> {
+        self.const_int.get(&self.resolve(value)).copied()
+    }
+
+    /// Iterate known integer constants for analysis seeding.
+    pub fn const_int_facts(&self) -> impl Iterator<Item = (ValueId, i64)> + '_ {
+        self.const_int
+            .iter()
+            .map(|(&value, &constant)| (value, constant))
+    }
+
+    /// Record a loop-invariant/global range for a canonical value.
+    pub fn record_global_range(&mut self, value: ValueId, range: IntRange) {
+        let value = self.resolve(value);
+        self.global_range.insert(value, range);
+    }
+
+    /// Meet `range` into the existing global range for `value`.
+    pub fn meet_global_range(&mut self, value: ValueId, range: IntRange) {
+        let value = self.resolve(value);
+        let existing = self
+            .global_range
+            .get(&value)
+            .copied()
+            .unwrap_or(IntRange::FULL_I64);
+        self.global_range.insert(value, existing.meet(range));
+    }
+
+    /// Whether a global range fact exists for `value`, after copy resolution.
+    pub fn has_global_range(&self, value: ValueId) -> bool {
+        self.global_range.contains_key(&self.resolve(value))
+    }
+
+    /// The global range fact for `value`, after copy resolution.
+    pub fn global_range_of(&self, value: ValueId) -> Option<IntRange> {
+        self.global_range.get(&self.resolve(value)).copied()
+    }
+
+    /// Iterate global ranges for diagnostics.
+    pub fn global_ranges(&self) -> impl Iterator<Item = (ValueId, IntRange)> + '_ {
+        self.global_range
+            .iter()
+            .map(|(&value, &range)| (value, range))
+    }
+
+    /// Meet `range` into the edge-sensitive range for `(bid, value)`.
+    pub fn meet_block_range(&mut self, bid: BlockId, value: ValueId, range: IntRange) {
+        let value = self.resolve(value);
+        let existing = self
+            .block_range
+            .get(&(bid, value))
+            .copied()
+            .or_else(|| self.global_range.get(&value).copied())
+            .unwrap_or(IntRange::FULL_I64);
+        self.block_range.insert((bid, value), existing.meet(range));
+    }
+
+    /// Record a compile-time-known container length.
+    pub fn record_container_length_constant(&mut self, container: ValueId, len: i64) {
+        let container = self.resolve(container);
+        self.container_length
+            .insert(container, KnownLength::Constant(len));
+    }
+
+    /// Record a container length equal to another SSA value.
+    pub fn record_container_length_same_as(&mut self, container: ValueId, len_value: ValueId) {
+        let container = self.resolve(container);
+        let len_value = self.resolve(len_value);
+        self.container_length
+            .insert(container, KnownLength::SameAs(len_value));
+    }
+
+    /// True when the container's known length is exactly `len`.
+    pub fn container_length_is_constant(&self, container: ValueId, len: i64) -> bool {
+        self.container_length
+            .get(&self.resolve(container))
+            .is_some_and(|length| matches!(length, KnownLength::Constant(value) if *value == len))
+    }
+
+    /// Record that a `len(container)` result value came from `container`.
+    pub fn record_len_of(&mut self, len_value: ValueId, container: ValueId) {
+        let len_value = self.resolve(len_value);
+        let container = self.resolve(container);
+        self.len_of.insert(len_value, container);
     }
 
     /// The proven range of `v` at block `bid`: the guard-narrowed range if one
@@ -212,7 +313,7 @@ impl ValueRangeResult {
 
     /// Record the edge-sensitive symbolic fact `var < bound` at block `bid`.
     /// `var` and `bound` are stored as their canonical (resolved) sources.
-    pub(super) fn record_symbolic_lt(&mut self, bid: BlockId, var: ValueId, bound: ValueId) {
+    pub fn record_symbolic_lt(&mut self, bid: BlockId, var: ValueId, bound: ValueId) {
         let var = self.resolve(var);
         let bound = self.resolve(bound);
         self.symbolic_lt_bound.insert((bid, var), bound);
@@ -226,8 +327,51 @@ impl ValueRangeResult {
     /// test seam.
     #[cfg(any(test, feature = "test-util"))]
     pub fn set_global_range_for_test(&mut self, v: ValueId, lo: i64, hi: i64) {
+        let v = self.resolve(v);
         self.global_range.insert(v, IntRange::new(lo, hi));
     }
 }
 
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recording_methods_store_facts_on_resolved_values() {
+        let bid = BlockId(7);
+        let source = ValueId(10);
+        let copy = ValueId(11);
+        let container = ValueId(20);
+        let container_copy = ValueId(21);
+        let len = ValueId(30);
+        let len_copy = ValueId(31);
+        let index = ValueId(40);
+        let index_copy = ValueId(41);
+
+        let mut result = ValueRangeResult::default();
+        result.record_copy_source(copy, source);
+        result.record_copy_source(container_copy, container);
+        result.record_copy_source(len_copy, len);
+        result.record_copy_source(index_copy, index);
+
+        assert!(result.record_const_int(copy, 7));
+        assert_eq!(result.const_int_of(source), Some(7));
+        assert_eq!(result.const_int_of(copy), Some(7));
+
+        result.record_global_range(index_copy, IntRange::new(0, 8));
+        result.meet_block_range(bid, index_copy, IntRange::new(0, 2));
+        assert_eq!(result.range_of(index), IntRange::new(0, 8));
+        assert_eq!(result.range_at(bid, index), IntRange::new(0, 2));
+        assert_eq!(result.range_at(bid, index_copy), IntRange::new(0, 2));
+
+        result.record_container_length_same_as(container_copy, len_copy);
+        assert!(result.record_const_int(len_copy, 3));
+        assert!(result.proves_index_in_bounds(bid, container, index));
+
+        result.record_len_of(len_copy, container_copy);
+        result.record_symbolic_lt(bid, index_copy, len_copy);
+        assert!(result.proves_index_lt_len_symbolically(bid, container, index));
+    }
+}

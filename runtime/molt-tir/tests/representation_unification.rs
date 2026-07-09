@@ -524,7 +524,7 @@ fn agreement_predicate_rejects_both_fragmentation_directions() {
 /// it against a deliberately FRAGMENTED map and observe the failure.
 fn check_full_agreement(
     func: &TirFunction,
-    vr: &molt_tir::tir::passes::value_range::ValueRangeResult,
+    vr: &molt_tir::tir::ValueRangeResult,
     repr: &std::collections::HashMap<ValueId, Repr>,
 ) -> Result<(), ValueId> {
     // Check the agreement for one carrier-bearing value: an integer-family
