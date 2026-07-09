@@ -7,6 +7,12 @@ scenarios:
   - inc-<file>: touch ONE file then rebuild (incremental)
   - test-lib  : `cargo test --lib --no-run` compile time after a touch
 
+The daemon build profile and the lib-test profile are separate authorities:
+`release-fast` is optimized for the compiler daemon binary, while `dev-fast`
+is the low-latency Rust proof profile. Keeping them separate prevents the
+diagnostic harness from turning a proof-timing scenario into an optimized
+release test build.
+
 It drives `cargo` directly (NOT `molt build`) because the thing being optimised
 is the cargo build of the backend crate(s) themselves. Each scenario is run N
 times; we report min/median/max so noise from other agents is visible.
@@ -195,7 +201,7 @@ def _test_build_cmd(args: argparse.Namespace) -> list[str]:
         "cargo",
         "test",
         "--profile",
-        args.profile,
+        args.test_profile,
         "-p",
         args.package,
         "--features",
@@ -252,6 +258,7 @@ def _snapshot_payload(
     payload: dict[str, object] = {
         "meta": {
             "profile": args.profile,
+            "test_profile": args.test_profile,
             "package": args.package,
             "bin": args.bin_name,
             "features": args.features,
@@ -301,6 +308,15 @@ def _write_snapshot(
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--profile", default="release-fast")
+    ap.add_argument(
+        "--test-profile",
+        default="dev-fast",
+        help=(
+            "Cargo profile for test-lib scenarios. Defaults to dev-fast because "
+            "release-fast is the daemon iteration profile, not the Rust proof "
+            "latency profile."
+        ),
+    )
     ap.add_argument("--package", default="molt-backend")
     ap.add_argument("--bin", dest="bin_name", default="molt-backend")
     ap.add_argument("--features", default="native-backend")

@@ -136,6 +136,7 @@ def test_write_snapshot_records_active_command(tmp_path: Path) -> None:
     out = tmp_path / "timer.json"
     args = SimpleNamespace(
         profile="release-fast",
+        test_profile="dev-fast",
         package="molt-backend",
         bin_name="molt-backend",
         features="native-backend",
@@ -155,6 +156,8 @@ def test_write_snapshot_records_active_command(tmp_path: Path) -> None:
     payload = json.loads(out.read_text(encoding="utf-8"))
     assert payload["meta"]["target_dir"] == str(tmp_path / "target")
     assert payload["meta"]["bin"] == "molt-backend"
+    assert payload["meta"]["profile"] == "release-fast"
+    assert payload["meta"]["test_profile"] == "dev-fast"
     assert payload["prime"]["elapsed_sec"] == 0.5
     assert payload["active"] == {
         "label": "test-lib",
@@ -191,6 +194,7 @@ def test_test_lib_cmd_scopes_to_library_target() -> None:
     module = _load_dx_build_timer()
     args = SimpleNamespace(
         profile="release-fast",
+        test_profile="dev-fast",
         package="molt-backend",
         features="native-backend",
     )
@@ -199,7 +203,7 @@ def test_test_lib_cmd_scopes_to_library_target() -> None:
         "cargo",
         "test",
         "--profile",
-        "release-fast",
+        "dev-fast",
         "-p",
         "molt-backend",
         "--features",
