@@ -112,7 +112,7 @@ pub unsafe extern "C" fn PyCapsule_New(
     // `_ARRAY_API` / `DATETIMEUNITS` capsules) resolves it via `pyobj_to_handle`
     // instead of failing the bridge lookup — the same `register_raw_pyobj` bridging
     // the type/descriptor constructors use.
-    crate::bridge::GLOBAL_BRIDGE.lock().register_raw_pyobj(ptr);
+    unsafe { crate::bridge::GLOBAL_BRIDGE.lock().register_raw_pyobj(ptr) };
     ptr
 }
 

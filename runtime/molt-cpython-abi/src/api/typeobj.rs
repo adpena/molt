@@ -73,9 +73,11 @@ pub unsafe extern "C" fn PyType_Ready(tp: *mut PyTypeObject) -> c_int {
     // hands back — e.g. `PyBool_Type`, readied at `init_static_types` — resolves
     // via `pyobj_to_handle` instead of failing the bridge lookup.
     if unsafe { (*tp).tp_flags } & Py_TPFLAGS_READY != 0 {
-        crate::bridge::GLOBAL_BRIDGE
-            .lock()
-            .register_raw_pyobj(tp.cast::<PyObject>());
+        unsafe {
+            crate::bridge::GLOBAL_BRIDGE
+                .lock()
+                .register_raw_pyobj(tp.cast::<PyObject>());
+        }
         return 0;
     }
 
@@ -149,8 +151,8 @@ pub unsafe extern "C" fn PyType_Ready(tp: *mut PyTypeObject) -> c_int {
         //     (`ob_type == NULL`) and every consumer that inspects
         //     `Py_TYPE(type)` — including the split-runtime bridge and the
         //     `describe_unresolved_pyobject` diagnostic — sees an ill-formed object.
-        if (*tp).ob_type.is_null() {
-            (*tp).ob_type = &raw mut crate::abi_types::PyType_Type;
+        if (*tp).ob_base.ob_base.ob_type.is_null() {
+            (*tp).ob_base.ob_base.ob_type = &raw mut crate::abi_types::PyType_Type;
         }
 
         // (6) Mark ready.
@@ -166,9 +168,11 @@ pub unsafe extern "C" fn PyType_Ready(tp: *mut PyTypeObject) -> c_int {
     //     `register_raw_pyobj` bridging that `PyDescr_NewGetSet`/`PyDescr_NewMember`
     //     already apply to the descriptors they mint (idempotent + stable handle),
     //     not a weakening of the unresolved-object checks.
-    crate::bridge::GLOBAL_BRIDGE
-        .lock()
-        .register_raw_pyobj(tp.cast::<PyObject>());
+    unsafe {
+        crate::bridge::GLOBAL_BRIDGE
+            .lock()
+            .register_raw_pyobj(tp.cast::<PyObject>());
+    }
     0
 }
 

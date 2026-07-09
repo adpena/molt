@@ -906,17 +906,28 @@ pub unsafe fn init_static_types() {
 /// `PyDict_SetItem` value or key — resolves through `pyobj_to_handle` instead of
 /// failing the bridge lookup.
 ///
-/// Scope: only the objects that are NOT `PyType_Ready`-ed and therefore never pass
-/// through the `PyType_Ready` bridge registration — the exception singletons and
-/// the `Ellipsis` / `NotImplemented` / UTC sentinels. The canonical *type* statics
-/// (`PyBool_Type`, `PyLong_Type`, ...) are registered when the extension readies
-/// them (numpy calls `PyType_Ready(&PyBool_Type)` &c.), so they are intentionally
-/// omitted here. `Py_None` / `Py_True` / `Py_False` are resolved by identity in
+/// Scope: every canonical CPython-ABI data object the runtime owns and that a
+/// native extension can hand back by *pointer identity* — the exception
+/// singletons, the `Ellipsis` / `NotImplemented` / UTC sentinels, and the static
+/// *type* objects (`PyBool_Type`, `PyLong_Type`, ...). The type statics MUST be
+/// registered up front: numpy references builtin types (`&PyLong_Type`,
+/// `&PyUnicode_Type`, ...) *by address* — as `PyDict_SetItem` keys in its
+/// scalar-type → DType registry — without ever calling `PyType_Ready` on them
+/// (they are already `Py_TPFLAGS_READY` from `init_static_types`), so relying on
+/// the `PyType_Ready` bridge registration alone leaves them unresolved. This is
+/// the full canonical data-symbol object set (see
+/// `wasm_cpython_abi_data_symbol_names()` in `src/molt/_wasm_runtime_exports.py`,
+/// cross-checked by `test_register_static_abi_objects_covers_type_statics`), minus
+/// the integer/flag constants (`Py_EQ`, `Py_OptimizeFlag`, ...) which are not
+/// `PyObject`s. `Py_None` / `Py_True` / `Py_False` are resolved by identity in
 /// `pyobj_to_handle_static` and must NOT be raw-registered (that would shadow their
-/// canonical NaN-boxed handles).
+/// canonical NaN-boxed handles); note their *type* objects (`PyNone_Type`,
+/// `PyBool_Type`, `PyNotImplemented_Type`) ARE registered here — a type object is
+/// distinct from the singleton instance.
 ///
 /// Idempotent (`register_raw_pyobj` no-ops on a re-seen pointer), so it is safe to
-/// call from the `Once`-guarded `molt_cpython_abi_init`.
+/// call from the `Once`-guarded `molt_cpython_abi_init` and to overlap with the
+/// per-type `PyType_Ready` registration.
 pub fn register_static_abi_objects() {
     let mut bridge = crate::bridge::GLOBAL_BRIDGE.lock();
     for ptr in exc_singleton_ptrs() {
@@ -930,6 +941,54 @@ pub fn register_static_abi_objects() {
     for ptr in sentinels {
         unsafe { bridge.register_raw_pyobj(ptr) };
     }
+    for ptr in type_static_ptrs() {
+        unsafe { bridge.register_raw_pyobj(ptr) };
+    }
+}
+
+/// Addresses of every canonical static *type* object the runtime owns, for bridge
+/// registration. These are the `Py*_Type` data symbols a native extension resolves
+/// (via the split-runtime GOT data retarget) and hands back to the runtime as a
+/// `PyDict_SetItem` key/value or `PyModule_AddObject` value. Kept in lock-step with
+/// the `*_Type` entries of `wasm_cpython_abi_data_symbol_names()` — the split-runtime
+/// export authority — by `test_register_static_abi_objects_covers_type_statics`.
+pub fn type_static_ptrs() -> Vec<*mut PyObject> {
+    vec![
+        &raw mut PyBaseObject_Type as *mut PyObject,
+        &raw mut PyBool_Type as *mut PyObject,
+        &raw mut PyByteArray_Type as *mut PyObject,
+        &raw mut PyBytes_Type as *mut PyObject,
+        &raw mut PyCFunction_Type as *mut PyObject,
+        &raw mut PyCapsule_Type as *mut PyObject,
+        &raw mut PyComplex_Type as *mut PyObject,
+        &raw mut PyContextVar_Type as *mut PyObject,
+        &raw mut PyDateTime_DateTimeType as *mut PyObject,
+        &raw mut PyDateTime_DateType as *mut PyObject,
+        &raw mut PyDateTime_DeltaType as *mut PyObject,
+        &raw mut PyDateTime_TZInfoType as *mut PyObject,
+        &raw mut PyDateTime_TimeType as *mut PyObject,
+        &raw mut PyDictProxy_Type as *mut PyObject,
+        &raw mut PyDict_Type as *mut PyObject,
+        &raw mut PyFloat_Type as *mut PyObject,
+        &raw mut PyFrozenSet_Type as *mut PyObject,
+        &raw mut PyGetSetDescr_Type as *mut PyObject,
+        &raw mut PyList_Type as *mut PyObject,
+        &raw mut PyLong_Type as *mut PyObject,
+        &raw mut PyMemberDescr_Type as *mut PyObject,
+        &raw mut PyMemoryView_Type as *mut PyObject,
+        &raw mut PyMethodDescr_Type as *mut PyObject,
+        &raw mut PyMethod_Type as *mut PyObject,
+        &raw mut PyModuleDef_Type as *mut PyObject,
+        &raw mut PyModule_Type as *mut PyObject,
+        &raw mut PyNone_Type as *mut PyObject,
+        &raw mut PyNotImplemented_Type as *mut PyObject,
+        &raw mut PySet_Type as *mut PyObject,
+        &raw mut PySlice_Type as *mut PyObject,
+        &raw mut PyTuple_Type as *mut PyObject,
+        &raw mut PyType_Type as *mut PyObject,
+        &raw mut PyUnicode_Type as *mut PyObject,
+        &raw mut Py_GenericAliasType as *mut PyObject,
+    ]
 }
 
 // ─── Exception singletons ──────────────────────────────────────────────────
@@ -1219,5 +1278,54 @@ mod unresolved_pyobject_tests {
         }
         let desc = unsafe { describe_unresolved_pyobject(&raw mut type_instance) };
         assert!(desc.starts_with("type-object "), "unexpected: {desc}");
+    }
+
+    #[test]
+    fn type_static_ptrs_are_distinct_and_nonnull() {
+        // Exactly the canonical `Py*_Type` data-symbol set (34 statics). Guards
+        // against an accidental drop/duplicate when the type static list changes.
+        let ptrs = type_static_ptrs();
+        assert_eq!(ptrs.len(), 34, "type static count drifted");
+        for p in &ptrs {
+            assert!(!p.is_null());
+        }
+        let mut addrs: Vec<usize> = ptrs.iter().map(|p| *p as usize).collect();
+        addrs.sort_unstable();
+        addrs.dedup();
+        assert_eq!(addrs.len(), 34, "duplicate type static in type_static_ptrs()");
+    }
+
+    #[test]
+    fn register_static_abi_objects_resolves_type_statics_and_singletons() {
+        // Regression for the numpy `_multiarray_umath` `PyDict_SetItem(unresolved
+        // key)` frontier: a builtin type static (`&PyLong_Type` &c.) handed back by
+        // the extension as a dict key must resolve through `pyobj_to_handle` after
+        // `register_static_abi_objects`, instead of failing the bridge lookup. This
+        // asserts the bridge RESOLVES the canonical objects — it does NOT weaken the
+        // unresolved-object check (an unregistered pointer still returns `None`).
+        register_static_abi_objects();
+        let bridge = crate::bridge::GLOBAL_BRIDGE.lock();
+        for ptr in type_static_ptrs() {
+            assert!(
+                bridge.pyobj_to_handle(ptr).is_some(),
+                "type static @ {ptr:p} did not resolve after registration"
+            );
+        }
+        for ptr in exc_singleton_ptrs() {
+            assert!(
+                bridge.pyobj_to_handle(ptr).is_some(),
+                "exception singleton @ {ptr:p} did not resolve after registration"
+            );
+        }
+        // Negative control: a fresh, never-registered pointer still fails to
+        // resolve — the unresolved check is intact, not blanket-weakened.
+        let mut stray = PyObject {
+            ob_refcnt: 1,
+            ob_type: std::ptr::null_mut(),
+        };
+        assert!(
+            bridge.pyobj_to_handle(&raw mut stray).is_none(),
+            "unregistered pointer must remain unresolved"
+        );
     }
 }
