@@ -502,7 +502,8 @@ Read these first instead of rediscovering project structure:
     SSA construction, verification, serialization, CFG/dominator helpers, and
     generated op-kind facts. `runtime/molt-ir/src/tir/target_info.rs` owns the
     backend-visible target/profile cost-model descriptors consumed by passes and
-    lowering.
+    lowering; `runtime/molt-ir/src/tir/value_range.rs` owns the backend-visible
+    value-range proof data consumed by passes and lowering.
   - `runtime/molt-passes/src/tir/` for TIR analyses, fact graphs, pass manager,
     pass cache, SimpleIR<->TIR transport, module/drop orchestration, and
     optimization passes.

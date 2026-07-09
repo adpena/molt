@@ -21,11 +21,7 @@ pub(super) fn transfer_op_range(op: &TirOp, result: &ValueRangeResult) -> Option
             .map(|&v| result.range_of(v))
             .unwrap_or(IntRange::FULL_I64)
     };
-    let c = |i: usize| -> Option<i64> {
-        op.operands
-            .get(i)
-            .and_then(|&v| result.const_int.get(&result.resolve(v)).copied())
-    };
+    let c = |i: usize| -> Option<i64> { op.operands.get(i).and_then(|&v| result.const_int_of(v)) };
     match opcode_value_range_transfer_rule_table(op.opcode) {
         ValueRangeTransferRule::Add if op.operands.len() == 2 => Some(r(0).add(r(1))),
         ValueRangeTransferRule::Sub if op.operands.len() == 2 => Some(r(0).sub(r(1))),

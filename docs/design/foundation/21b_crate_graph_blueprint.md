@@ -17,9 +17,9 @@ Two load-bearing structural discoveries that REFINE doc 21:
    are **100% test-only** (`drop_insertion.rs:6223` under `mod tests`; `loop_unroll.rs`
    1535/1621/1884 under `mod tests`). Lowering→passes is a **hard production edge**
    (`lower_to_simple.rs:305-319` + `lower_from_simple.rs:90-96` consume
-   `passes::drop_insertion::*_ATTR`; `lower_to_lir.rs:63-312`, `lower_to_wasm.rs:374`,
-   `representation_plan.rs:1240-1332` take `passes::value_range::ValueRangeResult` as a
-   production parameter type).
+   `passes::drop_insertion::*_ATTR`; pass execution and representation planning still call
+   the pass layer). `ValueRangeResult` itself now lives below pass churn in
+   `runtime/molt-ir/src/tir/value_range.rs`.
 
 2. **The backends are NOT all mutually independent.** `native_backend → llvm_backend` is a
    REAL edge (`simple_backend.rs:3315-3547`, `#[cfg(feature="llvm")]`): native's
@@ -60,7 +60,7 @@ Two load-bearing structural discoveries that REFINE doc 21:
   belongs in emitted-artifact facts in the WASM backend/linker/optimizer path, not TIR
   name heuristics.
 - Depends-on: `molt-passes` (transitively `molt-ir`). ~24K LOC.
-- Seam: hard production dep on passes (`ValueRangeResult`, drop-insertion attrs) → must sit
+- Seam: hard production dep on passes (pass execution/orchestration, drop-insertion attrs) → must sit
   above passes; isolating it means a Cranelift/WASM author editing lowering doesn't
   recompile the 40 passes. (`ir_rewrites.rs` belongs HERE, not the orchestrator — flag #4.)
 

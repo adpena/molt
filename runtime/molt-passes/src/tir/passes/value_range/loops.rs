@@ -37,7 +37,7 @@ pub(super) fn seed_counted_loop_iv_ranges(
         let iv_canon = result.resolve(c.induction_var);
         // If SCEV already ranged this header's IV, the SCEV/guard facts are
         // authoritative — do not disturb them.
-        if result.global_range.contains_key(&iv_canon) {
+        if result.has_global_range(iv_canon) {
             continue;
         }
         // The IV's exact i128-computed hull over the proven constant trip count.
@@ -45,17 +45,10 @@ pub(super) fn seed_counted_loop_iv_ranges(
             continue;
         };
         // Place the IV range as a weak global + a per-body-block fact.
-        result.global_range.insert(iv_canon, iv_range);
+        result.record_global_range(iv_canon, iv_range);
         if let Some(body) = loop_forest.bodies.get(&header) {
             for &b in body {
-                let existing = result
-                    .block_range
-                    .get(&(b, iv_canon))
-                    .copied()
-                    .unwrap_or(IntRange::FULL_I64);
-                result
-                    .block_range
-                    .insert((b, iv_canon), existing.meet(iv_range));
+                result.meet_block_range(b, iv_canon, iv_range);
             }
         }
         // Range the back-edge update value `iv_next = iv + step` (one step later)
@@ -67,14 +60,7 @@ pub(super) fn seed_counted_loop_iv_ranges(
             && let Some(next_range) = affine_iv_hull(s0_next, c.step, c.trip_count)
         {
             let next_canon = result.resolve(c.back_args[c.iv_arg_index]);
-            let existing = result
-                .global_range
-                .get(&next_canon)
-                .copied()
-                .unwrap_or(IntRange::FULL_I64);
-            result
-                .global_range
-                .insert(next_canon, existing.meet(next_range));
+            result.meet_global_range(next_canon, next_range);
         }
     }
 }
@@ -218,7 +204,7 @@ pub(super) fn narrow_from_header_guards(
         // Numeric narrowing if `bound` is a known constant `n`:
         //   Lt(var, n) ⇒ var <= n - 1
         //   Le(var, n) ⇒ var <= n
-        let bound_const = result.const_int.get(&bound).copied();
+        let bound_const = result.const_int_of(bound);
         let narrow_rule = opcode_value_range_cond_narrow_rule_table(*opcode);
         for &b in body {
             match narrow_rule {
@@ -246,11 +232,5 @@ pub(super) fn narrow_from_header_guards(
 
 /// Meet `range` into the existing per-block fact for `(bid, var)`.
 fn narrow_block(result: &mut ValueRangeResult, bid: BlockId, var: ValueId, range: IntRange) {
-    let existing = result
-        .block_range
-        .get(&(bid, var))
-        .copied()
-        .or_else(|| result.global_range.get(&var).copied())
-        .unwrap_or(IntRange::FULL_I64);
-    result.block_range.insert((bid, var), existing.meet(range));
+    result.meet_block_range(bid, var, range);
 }
