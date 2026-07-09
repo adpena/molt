@@ -1860,6 +1860,7 @@ def extension_build(
     source_plan_source_root: str | None = None,
     source_plan_build_root: str | None = None,
     source_plan_compile_commands: str | None = None,
+    source_plan_exclude_linked_static_libraries: list[str] | None = None,
     abi_tier: str | None = None,
     json_output: bool = False,
     verbose: bool = False,
@@ -1888,6 +1889,7 @@ def extension_build(
             source_plan_source_root,
             source_plan_build_root,
             source_plan_compile_commands,
+            source_plan_exclude_linked_static_libraries,
             abi_tier,
             provided_capsules,
             python_export,
@@ -2010,6 +2012,11 @@ def extension_build(
     if source_plan_compile_commands is not None:
         source_plan_config = dict(source_plan_config or {})
         source_plan_config["compile_commands"] = source_plan_compile_commands
+    if source_plan_exclude_linked_static_libraries:
+        source_plan_config = dict(source_plan_config or {})
+        source_plan_config["exclude_linked_static_libraries"] = list(
+            source_plan_exclude_linked_static_libraries
+        )
 
     if source_plan_config is None:
         raw_sources = _coerce_str_list(
