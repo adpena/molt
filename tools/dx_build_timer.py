@@ -328,6 +328,7 @@ def main() -> int:
         default=[
             "cold",
             "inc-value_range",
+            "inc-gvn",
             "inc-function_compiler",
             "inc-modules",
             "test-lib",
