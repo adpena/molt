@@ -53,7 +53,8 @@ this file is the human/agent-readable index of the whole tool surface.
 - `molt.metric_ratios.signed_ratio` — the SOLE ratio authority (explicit direction).
 - `tools/perf_causality.py` + `tools/pass_delta_dashboard.py` — attribute a CPython-RED
   to its missing IR fact (do not re-derive perf causality by hand).
-- `tools/dx_build_timer.py` — build wall-clock (prime/cold/incremental/test-lib).
+- `tools/dx_build_timer.py` — build wall-clock (prime/cold/incremental/test-lib),
+  including first-class pass-edit probes such as `inc-value_range` and `inc-gvn`.
 
 ### Audit / repr (the evidence engine)
 - `runtime/molt-backend/src/bin/typed_repr_report.rs` — per-function scalar-repr +
