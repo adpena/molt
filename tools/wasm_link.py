@@ -602,6 +602,101 @@ def _defined_runtime_data_symbol_offsets(runtime_data: bytes) -> dict[str, tuple
     }
 
 
+def _count_imported_globals(runtime_data: bytes) -> int:
+    for section_id, payload in _parse_sections(runtime_data):
+        if section_id != 2:  # import section
+            continue
+        offset = 0
+        count, offset = _read_varuint(payload, offset)
+        imported_globals = 0
+        for _ in range(count):
+            _module, offset = _read_string(payload, offset)
+            _field, offset = _read_string(payload, offset)
+            kind = payload[offset]
+            offset += 1
+            if kind == 0x00:  # function: typeidx
+                _typeidx, offset = _read_varuint(payload, offset)
+            elif kind == 0x01:  # table: reftype + limits
+                offset += 1  # reftype
+                limit_flags = payload[offset]
+                offset += 1
+                _min, offset = _read_varuint(payload, offset)
+                if limit_flags & 0x01:
+                    _max, offset = _read_varuint(payload, offset)
+            elif kind == 0x02:  # memory: limits
+                limit_flags = payload[offset]
+                offset += 1
+                _min, offset = _read_varuint(payload, offset)
+                if limit_flags & 0x01:
+                    _max, offset = _read_varuint(payload, offset)
+            elif kind == 0x03:  # global: valtype + mut
+                offset += 2
+                imported_globals += 1
+            else:
+                raise ValueError(f"Unsupported import kind: 0x{kind:02x}")
+        return imported_globals
+    return 0
+
+
+def _defined_global_i32_inits(runtime_data: bytes) -> list[int | None]:
+    """Return the i32.const init value of each *defined* global, indexed by
+    defined-global order. Non-i32-const globals yield ``None``."""
+    inits: list[int | None] = []
+    for section_id, payload in _parse_sections(runtime_data):
+        if section_id != 6:  # global section
+            continue
+        offset = 0
+        count, offset = _read_varuint(payload, offset)
+        for _ in range(count):
+            _valtype = payload[offset]
+            offset += 1
+            _mut = payload[offset]
+            offset += 1
+            if offset < len(payload) and payload[offset] == 0x41:  # i32.const
+                value, offset = _read_const_i32_init_expr(payload, offset)
+                inits.append(value)
+            else:
+                offset = _skip_init_expr(payload, offset)
+                inits.append(None)
+        break
+    return inits
+
+
+def _runtime_exported_data_symbol_addresses(runtime_data: bytes) -> dict[str, int]:
+    """Map data-symbol name -> linear-memory address from the runtime's
+    exported address globals.
+
+    wasm-ld exports a *defined data symbol* (requested via
+    ``--export[-if-defined]``) as an immutable ``i32`` global whose init value
+    is the symbol's absolute linear-memory address. Reading those exports from
+    the deploy runtime is the authoritative source for the runtime's canonical
+    singleton/type/exception addresses — the split app links against imported
+    memory and shares those addresses at run time.
+    """
+    imported_globals = _count_imported_globals(runtime_data)
+    defined_inits = _defined_global_i32_inits(runtime_data)
+    addresses: dict[str, int] = {}
+    for section_id, payload in _parse_sections(runtime_data):
+        if section_id != 7:  # export section
+            continue
+        offset = 0
+        count, offset = _read_varuint(payload, offset)
+        for _ in range(count):
+            name, offset = _read_string(payload, offset)
+            kind = payload[offset]
+            offset += 1
+            index, offset = _read_varuint(payload, offset)
+            if kind != 0x03:  # not a global export
+                continue
+            defined_index = index - imported_globals
+            if 0 <= defined_index < len(defined_inits):
+                value = defined_inits[defined_index]
+                if value is not None:
+                    addresses[name] = value
+        break
+    return addresses
+
+
 def _undefined_cpython_abi_data_symbols(
     native_objects: Sequence[Path],
 ) -> tuple[str, ...]:
@@ -699,33 +794,110 @@ def _build_runtime_data_alias_object(
     return _build_sections(sections)
 
 
+def _resolve_deploy_runtime(
+    runtime: Path, deploy_runtime_override: Path | None
+) -> Path:
+    """Resolve the deploy-ready (non-relocatable) runtime shared at run time.
+
+    Mirrors the split-runtime publication path: honor
+    ``MOLT_WASM_DEPLOY_RUNTIME`` / an explicit override, otherwise fall back to
+    ``runtime`` and prefer its non-relocatable sibling (``*_reloc.wasm`` ->
+    ``*.wasm``). The returned artifact is the one whose linear-memory data
+    addresses the split app must agree with.
+    """
+    env_deploy_runtime = os.environ.get("MOLT_WASM_DEPLOY_RUNTIME", "").strip()
+    deploy_runtime = (
+        Path(env_deploy_runtime).expanduser()
+        if env_deploy_runtime
+        else deploy_runtime_override or runtime
+    )
+    if not deploy_runtime.exists():
+        fallback_candidates: list[Path] = []
+        if deploy_runtime_override is not None:
+            fallback_candidates.append(deploy_runtime_override)
+        fallback_candidates.append(runtime)
+        if deploy_runtime.name.endswith("_reloc.wasm"):
+            fallback_candidates.append(
+                deploy_runtime.with_name(
+                    deploy_runtime.name.replace("_reloc.wasm", ".wasm")
+                )
+            )
+        for candidate in fallback_candidates:
+            if candidate.exists():
+                deploy_runtime = candidate
+                break
+        else:
+            raise FileNotFoundError(
+                f"split deploy runtime not found: {deploy_runtime}"
+            )
+    if (
+        not env_deploy_runtime
+        and deploy_runtime_override is None
+        and deploy_runtime.name.endswith("_reloc.wasm")
+    ):
+        non_reloc = deploy_runtime.with_name(
+            deploy_runtime.name.replace("_reloc.wasm", ".wasm")
+        )
+        if non_reloc.exists():
+            deploy_runtime = non_reloc
+    return deploy_runtime
+
+
 def _split_runtime_data_alias_object(
     *,
     native_objects: Sequence[Path],
-    runtime: Path,
+    deploy_runtime: Path,
     temp_dir: tempfile.TemporaryDirectory,
+    reloc_runtime: Path | None = None,
 ) -> Path | None:
+    """Build a wasm object that defines each CPython-ABI data symbol a native
+    extension (numpy/scipy) leaves undefined, pointing it at the *deploy
+    runtime's* canonical linear-memory address.
+
+    The absolute addresses come from the deploy (shared, non-relocatable)
+    runtime's exported address globals — wasm-ld exports a defined data symbol
+    as an immutable i32 global whose init value is that symbol's address (see
+    ``_runtime_exported_data_symbol_addresses``). The split app links against
+    imported memory and shares those addresses with the deployed runtime at run
+    time, so numpy's ``Py_None``/``Py_False``/``PyExc_*``/``Py*_Type`` resolve to
+    the runtime's single canonical copy instead of an app-local duplicate.
+
+    The relocatable runtime's linking symtab is used only for the (cosmetic)
+    symbol *size* metadata; its segment-relative offsets are NOT addresses.
+    """
     required_symbols = _undefined_cpython_abi_data_symbols(native_objects)
     if not required_symbols:
         return None
-    runtime_offsets = _defined_runtime_data_symbol_offsets(runtime.read_bytes())
+    deploy_addresses = _runtime_exported_data_symbol_addresses(
+        deploy_runtime.read_bytes()
+    )
+    reloc_sizes: dict[str, tuple[int, int]] = {}
+    if reloc_runtime is not None and reloc_runtime.exists():
+        with contextlib.suppress(ValueError):
+            reloc_sizes = _defined_runtime_data_symbol_offsets(
+                reloc_runtime.read_bytes()
+            )
     alias_symbols: list[tuple[str, int, int]] = []
     missing: list[str] = []
     for split_name in required_symbols:
         canonical = wasm_split_runtime_import_name_for_export(split_name)
         if canonical is None:
             canonical = split_name
-        offset_size = runtime_offsets.get(canonical)
-        if offset_size is None:
+        address = deploy_addresses.get(canonical)
+        if address is None:
             missing.append(f"{split_name} (canonical {canonical})")
             continue
-        offset, size = offset_size
-        alias_symbols.append((split_name, offset, size))
+        size = reloc_sizes.get(canonical, (0, 8))[1]
+        alias_symbols.append((split_name, address, size))
     if missing:
         raise ValueError(
-            "split-runtime native data symbol bridge missing runtime reloc "
-            "definition(s): "
+            "split-runtime native data symbol bridge: deploy runtime "
+            f"{deploy_runtime.name} exports no address global for CPython-ABI "
+            "data symbol(s): "
             + ", ".join(missing)
+            + " — the shared runtime must publish these via "
+            "--export-if-defined (wasm_cpython_abi_data_symbol_names / "
+            "wasm_runtime_shared_export_link_args)."
         )
     alias_path = Path(temp_dir.name) / "split_runtime_data_aliases.wasm"
     alias_path.write_bytes(_build_runtime_data_alias_object(alias_symbols))
@@ -2142,8 +2314,11 @@ def _run_wasm_ld(
         try:
             data_alias_object = _split_runtime_data_alias_object(
                 native_objects=native_link_inputs,
-                runtime=link_runtime_path,
+                deploy_runtime=_resolve_deploy_runtime(
+                    runtime, deploy_runtime_override
+                ),
                 temp_dir=temp_dir,
+                reloc_runtime=link_runtime_path,
             )
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
@@ -2548,41 +2723,7 @@ def _run_wasm_ld(
             app_stage.write_bytes(optimized_app)
 
             # Resolve the deploy-ready (non-relocatable) runtime.
-            env_deploy_runtime = os.environ.get("MOLT_WASM_DEPLOY_RUNTIME", "").strip()
-            deploy_runtime = (
-                Path(env_deploy_runtime).expanduser()
-                if env_deploy_runtime
-                else deploy_runtime_override or runtime
-            )
-            if not deploy_runtime.exists():
-                fallback_candidates: list[Path] = []
-                if deploy_runtime_override is not None:
-                    fallback_candidates.append(deploy_runtime_override)
-                fallback_candidates.append(runtime)
-                if deploy_runtime.name.endswith("_reloc.wasm"):
-                    fallback_candidates.append(
-                        deploy_runtime.with_name(
-                            deploy_runtime.name.replace("_reloc.wasm", ".wasm")
-                        )
-                    )
-                for candidate in fallback_candidates:
-                    if candidate.exists():
-                        deploy_runtime = candidate
-                        break
-                else:
-                    raise FileNotFoundError(
-                        f"split deploy runtime not found: {deploy_runtime}"
-                    )
-            if (
-                not env_deploy_runtime
-                and deploy_runtime_override is None
-                and deploy_runtime.name.endswith("_reloc.wasm")
-            ):
-                non_reloc = deploy_runtime.with_name(
-                    deploy_runtime.name.replace("_reloc.wasm", ".wasm")
-                )
-                if non_reloc.exists():
-                    deploy_runtime = non_reloc
+            deploy_runtime = _resolve_deploy_runtime(runtime, deploy_runtime_override)
 
             # Tree-shake the runtime against its OWN canonical, app-independent
             # public export surface — never against the current app's import

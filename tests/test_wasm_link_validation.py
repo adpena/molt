@@ -1906,7 +1906,10 @@ def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
     runtime_bytes = wasm_link._build_sections(
         [
             *wasm_link._parse_sections(
-                _build_exported_runtime_module_many(["molt_err_pending"])
+                _add_data_address_global_exports(
+                    _build_exported_runtime_module_many(["molt_err_pending"]),
+                    {"PyLong_Type": 4096},
+                )
             ),
             (
                 0,
@@ -2484,23 +2487,17 @@ def test_rewrite_native_runtime_imports_reloc_keeps_unprefixed_cpython_abi_data_
     ]
 
 
-def test_split_runtime_data_alias_object_uses_runtime_reloc_data_symbols(
+def test_split_runtime_data_alias_object_uses_deploy_runtime_export_addresses(
     tmp_path: Path,
 ) -> None:
-    runtime = tmp_path / "molt_runtime_reloc.wasm"
+    # The alias must point the native object's undefined (split-renamed) data
+    # symbol at the DEPLOY runtime's canonical address, read from the runtime's
+    # exported address global — NOT the relocatable runtime's segment-relative
+    # offset (which is not a final address).
+    deploy_runtime = tmp_path / "molt_runtime.wasm"
     native = tmp_path / "native_runtime_imports_0.wasm"
-    runtime.write_bytes(
-        _module_with_linking_symbols(
-            [
-                _data_symbol_entry(
-                    flags=wasm_link.FLAG_EXPLICIT_NAME,
-                    name="PyLong_Type",
-                    segment_index=0,
-                    offset=4096,
-                    size=208,
-                ),
-            ]
-        )
+    deploy_runtime.write_bytes(
+        _build_data_address_export_runtime({"PyLong_Type": 0x2E1000})
     )
     native.write_bytes(
         _module_with_linking_symbols(
@@ -2518,18 +2515,22 @@ def test_split_runtime_data_alias_object_uses_runtime_reloc_data_symbols(
 
         alias = wasm_link._split_runtime_data_alias_object(
             native_objects=(native,),
-            runtime=runtime,
+            deploy_runtime=deploy_runtime,
             temp_dir=temp_dir,
         )
 
         assert alias is not None
         assert alias != native
-        assert _linking_data_symbol_names(alias.read_bytes()) == [
+        alias_bytes = alias.read_bytes()
+        assert _linking_data_symbol_names(alias_bytes) == [
             (wasm_link.FLAG_EXPLICIT_NAME, "molt_PyLong_Type"),
         ]
+        # The aliased symbol resolves to the deploy runtime's exported address.
+        seg_addresses = _alias_segment_addresses(alias_bytes)
+        assert seg_addresses[0] == 0x2E1000
         data_sections = [
             payload
-            for section_id, payload in wasm_link._parse_sections(alias.read_bytes())
+            for section_id, payload in wasm_link._parse_sections(alias_bytes)
             if section_id == 11
         ]
         assert data_sections
@@ -5000,3 +5001,248 @@ def test_resolve_native_link_inputs_rejects_missing_compiler_rt_provider(
 
     with pytest.raises(ValueError, match="wasm_compiler_rt_link_import"):
         wasm_link._resolve_native_link_inputs((native,))
+
+
+# --- Split-runtime CPython-ABI data-symbol aliasing ------------------------
+#
+# A native extension (numpy/scipy) references the runtime's canonical
+# singletons/type/exception objects (Py_None, Py_False, PyExc_*, Py*_Type) as
+# *undefined data symbols*. In a split-runtime build the app links against
+# imported memory and must resolve those references to the DEPLOY runtime's
+# single copy — otherwise the extension links its own zero-initialized
+# duplicate and pointer-identity bridges (pyobj_to_handle) fail. The deploy
+# runtime publishes each address as an exported i32 global (wasm-ld's encoding
+# for --export-if-defined of a defined data symbol); the aliaser reads those
+# addresses. See tools/wasm_link.py::_split_runtime_data_alias_object.
+
+
+def _build_data_address_export_runtime(addresses: dict[str, int]) -> bytes:
+    """Synthetic deploy runtime exporting each data symbol as an immutable i32
+    global whose init value is the symbol's linear-memory address."""
+    write_varuint = wasm_link._write_varuint
+    names = list(addresses)
+    sections: list[tuple[int, bytes]] = []
+
+    global_payload = bytearray()
+    global_payload.extend(write_varuint(len(names)))
+    for name in names:
+        global_payload.append(0x7F)  # i32
+        global_payload.append(0x00)  # immutable
+        global_payload.append(0x41)  # i32.const
+        global_payload.extend(write_varuint(addresses[name]))
+        global_payload.append(0x0B)  # end
+    sections.append((6, bytes(global_payload)))
+
+    export_payload = bytearray()
+    export_payload.extend(write_varuint(len(names)))
+    for index, name in enumerate(names):
+        export_payload.extend(wasm_link._write_string(name))
+        export_payload.append(0x03)  # global export
+        export_payload.extend(write_varuint(index))
+    sections.append((7, bytes(export_payload)))
+
+    return wasm_link._build_sections(sections)
+
+
+def _add_data_address_global_exports(
+    module: bytes, addresses: dict[str, int]
+) -> bytes:
+    """Return *module* with an added i32 global (init = address) exported under
+    each name — the wasm-ld shape for --export-if-defined of a defined data
+    symbol. Appends to any existing global/export sections."""
+    write_varuint = wasm_link._write_varuint
+    sections = wasm_link._parse_sections(module)
+
+    existing_global_count = 0
+    for section_id, payload in sections:
+        if section_id == 6:
+            existing_global_count, _ = wasm_link._read_varuint(payload, 0)
+            break
+
+    names = list(addresses)
+    new_globals = bytearray()
+    for name in names:
+        new_globals.append(0x7F)  # i32
+        new_globals.append(0x00)  # immutable
+        new_globals.append(0x41)  # i32.const
+        new_globals.extend(write_varuint(addresses[name]))
+        new_globals.append(0x0B)  # end
+
+    new_export_entries = bytearray()
+    for offset, name in enumerate(names):
+        new_export_entries.extend(wasm_link._write_string(name))
+        new_export_entries.append(0x03)  # global export
+        new_export_entries.extend(write_varuint(existing_global_count + offset))
+
+    rebuilt: list[tuple[int, bytes]] = []
+    saw_global = False
+    saw_export = False
+    for section_id, payload in sections:
+        if section_id == 6:
+            saw_global = True
+            count, offset = wasm_link._read_varuint(payload, 0)
+            merged = bytearray()
+            merged.extend(write_varuint(count + len(names)))
+            merged.extend(payload[offset:])
+            merged.extend(new_globals)
+            rebuilt.append((6, bytes(merged)))
+        elif section_id == 7:
+            saw_export = True
+            count, offset = wasm_link._read_varuint(payload, 0)
+            merged = bytearray()
+            merged.extend(write_varuint(count + len(names)))
+            merged.extend(payload[offset:])
+            merged.extend(new_export_entries)
+            rebuilt.append((7, bytes(merged)))
+        else:
+            rebuilt.append((section_id, payload))
+    if not saw_global:
+        global_section = bytearray()
+        global_section.extend(write_varuint(len(names)))
+        global_section.extend(new_globals)
+        rebuilt.append((6, bytes(global_section)))
+    if not saw_export:
+        export_section = bytearray()
+        export_section.extend(write_varuint(len(names)))
+        export_section.extend(new_export_entries)
+        rebuilt.append((7, bytes(export_section)))
+    return wasm_link._build_sections(rebuilt)
+
+
+def _build_undefined_data_symbol_object(names: list[str]) -> bytes:
+    """Synthetic relocatable native object with the given undefined data
+    symbols in its linking symtab (the shape numpy's *.molt.wasm carries)."""
+    symbol_entries: list[bytes] = []
+    for name in names:
+        entry = bytearray()
+        entry.append(wasm_link._SYMBOL_KIND_DATA)
+        entry.extend(
+            wasm_link._write_varuint(
+                wasm_link.FLAG_EXPLICIT_NAME | wasm_link.FLAG_UNDEFINED
+            )
+        )
+        entry.extend(wasm_link._write_string(name))
+        symbol_entries.append(bytes(entry))
+    symbol_payload = wasm_link._write_varuint(len(symbol_entries)) + b"".join(
+        symbol_entries
+    )
+    linking = wasm_link._build_custom_section(
+        "linking",
+        wasm_link._build_linking_payload(
+            2, [(wasm_link.SYMTAB_SUBSECTION_ID, symbol_payload)]
+        ),
+    )
+    return wasm_link._build_sections([(0, linking)])
+
+
+def _alias_segment_addresses(alias_bytes: bytes) -> dict[int, int]:
+    """Map data-segment index -> i32.const address for an alias object."""
+    addresses: dict[int, int] = {}
+    for section_id, payload in wasm_link._parse_sections(alias_bytes):
+        if section_id != 11:
+            continue
+        offset = 0
+        count, offset = wasm_link._read_varuint(payload, offset)
+        for index in range(count):
+            flags, offset = wasm_link._read_varuint(payload, offset)
+            if flags == 2:
+                _memory_index, offset = wasm_link._read_varuint(payload, offset)
+            address, offset = wasm_link._read_const_i32_init_expr(payload, offset)
+            size, offset = wasm_link._read_varuint(payload, offset)
+            offset += size
+            addresses[index] = address
+    return addresses
+
+
+def test_runtime_exported_data_symbol_addresses_reads_global_exports() -> None:
+    runtime = _build_data_address_export_runtime(
+        {"Py_None": 0x2E1688, "Py_False": 0x2E1680, "PyExc_ValueError": 0x2E1500}
+    )
+    addresses = wasm_link._runtime_exported_data_symbol_addresses(runtime)
+    assert addresses == {
+        "Py_None": 0x2E1688,
+        "Py_False": 0x2E1680,
+        "PyExc_ValueError": 0x2E1500,
+    }
+
+
+def test_split_runtime_data_alias_points_at_deploy_runtime_addresses(
+    tmp_path: Path,
+) -> None:
+    # A real CPython-ABI data-symbol subset numpy references undefined.
+    names = ["Py_None", "Py_True", "Py_False", "PyExc_ValueError", "PyList_Type"]
+    deploy_addresses = {
+        "Py_None": 0x2E1680,
+        "Py_True": 0x2E1688,
+        "Py_False": 0x2E1690,
+        "PyExc_ValueError": 0x2E1400,
+        "PyList_Type": 0x2E0000,
+    }
+    deploy_runtime = tmp_path / "molt_runtime.wasm"
+    deploy_runtime.write_bytes(_build_data_address_export_runtime(deploy_addresses))
+    native = tmp_path / "ext.molt.wasm"
+    native.write_bytes(_build_undefined_data_symbol_object(names))
+
+    # Precondition: the object surfaces exactly these undefined data symbols.
+    assert set(wasm_link._undefined_cpython_abi_data_symbols([native])) == set(names)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        temp_dir = type("_TD", (), {"name": tmp})()
+        alias_path = wasm_link._split_runtime_data_alias_object(
+            native_objects=[native],
+            deploy_runtime=deploy_runtime,
+            temp_dir=temp_dir,
+        )
+        assert alias_path is not None
+        alias_bytes = Path(alias_path).read_bytes()
+
+    # Each aliased data symbol must resolve to the deploy runtime's address.
+    # The alias emits symtab entries and data segments in the same order, so the
+    # Nth defined symbol owns the Nth segment.
+    ordered_names = [
+        name
+        for name, _offset, _size in wasm_link._iter_linking_data_symbols(
+            alias_bytes, undefined=False
+        )
+    ]
+    seg_addresses = _alias_segment_addresses(alias_bytes)
+    assert set(ordered_names) == set(names)
+    for index, name in enumerate(ordered_names):
+        assert seg_addresses[index] == deploy_addresses[name], name
+
+
+def test_split_runtime_data_alias_fails_loud_on_missing_deploy_export(
+    tmp_path: Path,
+) -> None:
+    # Deploy runtime is missing an address global for Py_False -> must raise
+    # rather than silently emit a wrong/zero address (M34: degrade loudly).
+    deploy_runtime = tmp_path / "molt_runtime.wasm"
+    deploy_runtime.write_bytes(
+        _build_data_address_export_runtime({"Py_None": 0x2E1680})
+    )
+    native = tmp_path / "ext.molt.wasm"
+    native.write_bytes(_build_undefined_data_symbol_object(["Py_None", "Py_False"]))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        temp_dir = type("_TD", (), {"name": tmp})()
+        with pytest.raises(ValueError, match="Py_False"):
+            wasm_link._split_runtime_data_alias_object(
+                native_objects=[native],
+                deploy_runtime=deploy_runtime,
+                temp_dir=temp_dir,
+            )
+
+
+def test_shared_runtime_exports_cpython_abi_data_symbols_as_globals() -> None:
+    # The shared/deploy runtime link surface must publish the canonical
+    # CPython-ABI data symbols so the aliaser can read their addresses.
+    from molt._wasm_runtime_exports import (
+        wasm_cpython_abi_data_symbol_names,
+        wasm_runtime_shared_export_link_args,
+    )
+
+    data_symbols = wasm_cpython_abi_data_symbol_names()
+    assert {"Py_None", "Py_True", "Py_False"}.issubset(data_symbols)
+    args = wasm_runtime_shared_export_link_args()
+    for name in ("Py_None", "Py_False", "PyExc_ValueError", "PyList_Type"):
+        assert f"--export-if-defined={name}" in args, name
