@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -206,3 +207,75 @@ def test_test_lib_cmd_scopes_to_library_target() -> None:
         "--lib",
         "--no-run",
     ]
+
+
+def test_main_repairs_target_after_restored_touch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_dx_build_timer()
+    target = tmp_path / "target"
+    out = tmp_path / "timer.json"
+    source = tmp_path / "value_range.rs"
+    original = b"fn value_range() {}\n"
+    source.write_bytes(original)
+    calls: list[dict[str, object]] = []
+
+    def fake_guarded_completed_process(cmd, **kwargs):
+        calls.append({"cmd": list(cmd), **kwargs})
+        stdout = "cargo 1.96.1\n" if list(cmd) == ["cargo", "--version"] else ""
+        return SimpleNamespace(
+            returncode=0,
+            stdout=stdout,
+            stderr="",
+            elapsed_s=float(len(calls)),
+        )
+
+    monkeypatch.setattr(
+        module.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
+    monkeypatch.setattr(
+        module,
+        "_touch_files",
+        lambda _repo_root: {"value_range": source},
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "dx_build_timer.py",
+            "--runs",
+            "1",
+            "--target-dir",
+            str(target),
+            "--scenarios",
+            "test-lib",
+            "--json-out",
+            str(out),
+        ],
+    )
+
+    assert module.main() == 0
+
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert source.read_bytes() == original
+    assert not (target / ".dx_build_timer_touches.json").exists()
+    assert [call["progress_label"] for call in calls] == [
+        None,
+        "dx-build prime",
+        "dx-build test-lib run 1/1",
+        "dx-build test-lib repair 1/1",
+    ]
+    assert payload["results"]["test-lib"]["samples_sec"] == [3.0]
+    assert payload["results"]["test-lib"]["repair_samples_sec"] == [4.0]
+    assert payload["results"]["test-lib"]["repair_rc"] == 0
+    assert payload["results"]["test-lib"]["repair_cmd"] == module._build_cmd(
+        SimpleNamespace(
+            profile="release-fast",
+            package="molt-backend",
+            bin_name="molt-backend",
+            features="native-backend",
+        )
+    )

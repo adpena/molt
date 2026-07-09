@@ -10,6 +10,9 @@ scenarios:
 It drives `cargo` directly (NOT `molt build`) because the thing being optimised
 is the cargo build of the backend crate(s) themselves. Each scenario is run N
 times; we report min/median/max so noise from other agents is visible.
+Synthetic source touches are restored and then repaired with an unmeasured
+baseline build so the persistent target is not left stale for the next scenario,
+the next queue row, or the next agent.
 
 This tool never runs a compiled Molt binary, but every Cargo child still routes
 through the shared memory guard because build throughput work must not bypass
@@ -320,6 +323,14 @@ def main() -> int:
         action="store_true",
         help="rm -rf target dir before the cold scenario (true cold)",
     )
+    ap.add_argument(
+        "--no-repair-after-touch",
+        action="store_true",
+        help=(
+            "restore touched files without rebuilding the baseline target; "
+            "diagnostic only, leaves Cargo artifacts stale until the next build"
+        ),
+    )
     args = ap.parse_args()
 
     env = os.environ.copy()
@@ -343,8 +354,12 @@ def main() -> int:
 
     def measure(label: str, prep, cmd: list[str]) -> None:
         samples = []
+        repair_samples = []
         rc_last = 0
         tail_last = ""
+        repair_rc_last = 0
+        repair_tail_last = ""
+        repair_cmd = _build_cmd(args)
         for i in range(args.runs):
             touch_entry = None
             if prep:
@@ -373,12 +388,45 @@ def main() -> int:
             finally:
                 if touch_entry is not None:
                     touch_journal.restore(touch_entry)
+            repair_elapsed = None
+            repair_tail = ""
+            repair_rc = 0
+            if touch_entry is not None and not args.no_repair_after_touch:
+                _write_snapshot(
+                    args,
+                    results,
+                    cargo_version=cargo_version,
+                    prime=prime,
+                    active={
+                        "label": label,
+                        "phase": "repair",
+                        "run": i + 1,
+                        "runs": args.runs,
+                        "cmd": repair_cmd,
+                        "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                    },
+                )
+                repair_rc, repair_elapsed, repair_tail = _run(
+                    repair_cmd,
+                    env,
+                    REPO_ROOT,
+                    progress_label=f"dx-build {label} repair {i + 1}/{args.runs}",
+                )
+                repair_samples.append(round(repair_elapsed, 2))
+                repair_rc_last = repair_rc
+                repair_tail_last = repair_tail
             rc_last, tail_last = rc, tail
             samples.append(round(elapsed, 2))
             print(
                 f"  [{label}] run {i + 1}/{args.runs}: {elapsed:.2f}s rc={rc}",
                 flush=True,
             )
+            if repair_elapsed is not None:
+                print(
+                    f"  [{label}] repair {i + 1}/{args.runs}: "
+                    f"{repair_elapsed:.2f}s rc={repair_rc}",
+                    flush=True,
+                )
             results[label] = {
                 "samples_sec": samples,
                 "min": min(samples) if samples else None,
@@ -387,6 +435,12 @@ def main() -> int:
                 "rc": rc_last,
                 "cmd": cmd,
                 "stderr_tail": tail_last if rc_last != 0 else "",
+                "repair_samples_sec": repair_samples,
+                "repair_rc": repair_rc_last,
+                "repair_cmd": repair_cmd if repair_samples else None,
+                "repair_stderr_tail": (
+                    repair_tail_last if repair_rc_last != 0 else ""
+                ),
             }
             _write_snapshot(
                 args,
@@ -394,8 +448,11 @@ def main() -> int:
                 cargo_version=cargo_version,
                 prime=prime,
             )
-            if rc != 0:
-                print(f"    FAILED:\n{tail}", flush=True)
+            if rc != 0 or repair_rc != 0:
+                if rc != 0:
+                    print(f"    FAILED:\n{tail}", flush=True)
+                if repair_rc != 0:
+                    print(f"    REPAIR FAILED:\n{repair_tail}", flush=True)
                 break
         results.setdefault(
             label,
@@ -407,6 +464,12 @@ def main() -> int:
                 "rc": rc_last,
                 "cmd": cmd,
                 "stderr_tail": tail_last if rc_last != 0 else "",
+                "repair_samples_sec": repair_samples,
+                "repair_rc": repair_rc_last,
+                "repair_cmd": repair_cmd if repair_samples else None,
+                "repair_stderr_tail": (
+                    repair_tail_last if repair_rc_last != 0 else ""
+                ),
             },
         )
 
@@ -459,7 +522,12 @@ def main() -> int:
         _write_snapshot(args, results, cargo_version=cargo_version, prime=prime)
         print(f"wrote {args.json_out}")
     print(out)
-    return 0
+    failed = [
+        label
+        for label, result in results.items()
+        if result.get("rc", 0) != 0 or result.get("repair_rc", 0) != 0
+    ]
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
