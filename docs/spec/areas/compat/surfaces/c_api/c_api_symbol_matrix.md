@@ -13,9 +13,9 @@
 - **Current Status:** A `libmolt` C-API bootstrap surface is implemented with
   `molt_*` wrapper symbols (`runtime/molt-runtime/src/c_api.rs` + `include/molt/molt.h`),
   and `include/molt/Python.h` now carries a broad partial CPython source-compat
-  layer plus initial NumPy source-compat headers under `include/numpy/`.
-- **Latest scan baseline (2026-02-26):** `Py*` symbol surface exported by
-  `include/molt/Python.h` + `include/numpy/*.h` (+ `include/datetime.h`) is
+  layer. NumPy headers flow from package/source-plan custody, not Molt.
+- **Historical scan baseline (2026-02-26):** `Py*` symbol surface exported by
+  `include/molt/Python.h` + the now-removed `include/numpy/*.h` (+ `include/datetime.h`) was
   `416` tokens. Sdist C-source scans report missing symbols: NumPy `2.4.2`
   `1193`, pandas `3.0.1` `28`,
   polars `1.38.1` `0`.

@@ -51,24 +51,19 @@ for C/C++ extensions recompiled against Molt.
   - not a frozen ABI surface
   - may expand between releases without changing `MOLT_C_API_VERSION`
 
-### 2.3 Tier C: Ecosystem Overlays
+### 2.3 Tier C: Package Header Custody
 - Current focus:
-  - `include/numpy/*`
-  - top-level NumPy forwarding/config bridge headers such as
-    `arrayobject.h`, `_numpyconfig.h`, `config.h`, and
-    `npy_cpu_dispatch_config.h`
-  - explicitly shipped public overlay families such as
-    `_public_dtype_api_table.h`, `halffloat.h`, `npy_2_complexcompat.h`,
-    `npy_3kcompat.h`, `npy_endian.h`, `npy_no_deprecated_api.h`,
-    `npy_os.h`, `numpy/random/*`, and the compile-focused `templ_common.h`
-    bridge for generated-source probes
+  - `numpy/*`, SciPy, pandas, and other package-owned headers come from the
+    package's own source/build plan include dirs.
+  - Generated package headers and include-only sources are materialized by the
+    upstream build system or source-plan custody, not checked into Molt.
 - Contract:
-  - unblock real-world ecosystem builds such as NumPy and pandas source trees
-  - provide source-shape compatibility for selected public include lanes
+  - unblock real-world ecosystem builds without shipping package header clones
+  - fail closed when the package build/source plan lacks a required generated
+    header, with evidence pointing to the missing package-custody artifact
 - Stability promise:
-  - compatibility-targeted, not ABI-stable
-  - explicitly allowed to be partial
-  - must stay bounded to shipped, documented headers
+  - package-owned header semantics track the package version being recompiled
+  - Molt owns only the libmolt/CPython-ABI C API tier and package-custody wiring
 
 ---
 
@@ -76,11 +71,8 @@ for C/C++ extensions recompiled against Molt.
 - No binary compatibility with CPython extension wheels.
 - No promise that extensions using CPython private structs or direct object
   layout access will compile or run.
-- No promise that private/generated third-party headers are shipped. This
-  includes examples such as:
-  - `numpy/arraytypes.h`
-  - upstream `numpy/_core/src/**`
-  - dispatch/generated header graphs created by upstream build systems
+- No third-party package headers are shipped by Molt. Private/generated
+  third-party headers must be provided through package/source-plan custody.
 - No silent fallback to CPython or host Python at runtime.
 
 ---

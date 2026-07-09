@@ -74,7 +74,7 @@
     "numpy": {
       "verdict": "partial",
       "hardest_feature": "D28",
-      "sha256_of_evidence": "8e8d1559643980bad6d375700ee972bf071394186e14db9228ae88ce95a8148e"
+      "sha256_of_evidence": "a105a5848a6ddfad94f758daa15546fad4769c8001bbafe60e6741bbc5e69b59"
     },
     "packaging": {
       "verdict": "compatible",

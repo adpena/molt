@@ -173,6 +173,10 @@ def _load_json(path: Path) -> dict:
         raise GuardError(f"manifest is not valid JSON ({path}): {exc}") from exc
 
 
+def _write_text_lf(path: Path, text: str) -> None:
+    path.write_text(text, encoding="utf-8", newline="\n")
+
+
 def load_features() -> dict[str, dict]:
     data = _load_json(FEATURES_PATH)
     # Defensive: the embedded map in the manifest must agree with this module's
@@ -497,9 +501,7 @@ def cmd_update_baseline() -> int:
                     file=sys.stderr,
                 )
                 return 1
-    BASELINE_PATH.write_text(
-        json.dumps(new, indent=2, sort_keys=False) + "\n", encoding="utf-8"
-    )
+    _write_text_lf(BASELINE_PATH, json.dumps(new, indent=2, sort_keys=False) + "\n")
     dist = new["distribution"]
     print(
         "baseline updated: "
@@ -730,7 +732,7 @@ def cmd_update_matrix() -> int:
         )
         return 1
     MATRIX_PATH.parent.mkdir(parents=True, exist_ok=True)
-    MATRIX_PATH.write_text(render_matrix(derived, features), encoding="utf-8")
+    _write_text_lf(MATRIX_PATH, render_matrix(derived, features))
     print(f"matrix regenerated: {MATRIX_PATH.relative_to(ROOT)}")
     return 0
 

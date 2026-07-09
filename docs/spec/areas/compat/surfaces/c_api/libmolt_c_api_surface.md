@@ -157,9 +157,9 @@ descriptor admission.
   `va_list` parity is implemented)
 - `PyType_Spec` slot lowering includes selected call/numeric/sequence/getset
   lanes and type-method flag handling for `METH_CLASS` + `METH_STATIC`
-- NumPy source-compat include lane (`#include <numpy/arrayobject.h>`) with
-  initial type/shape macros, typenum predicates, `import_array*` capsule wiring,
-  and fail-fast stubs for unsupported heavy APIs
+- NumPy source-compat headers are no longer shipped by Molt. Source-recompiled
+  NumPy/Scipy extension builds must admit `numpy/*` headers from the package's
+  own source/build custody include dirs (for example `numpy/_core/include`).
 - Datetime source-compat include lane (`#include <datetime.h>`) with
   `PyDateTimeAPI`, `PyDateTime_IMPORT`, and basic date/datetime/timedelta
   checker shims
@@ -180,8 +180,8 @@ descriptor admission.
 - Current shipped bootstrap header: `include/molt/molt.h`.
 - CPython-compat include path is also available via `#include <Python.h>`,
   implemented by `include/Python.h` forwarding to `include/molt/Python.h`.
-- Initial NumPy compatibility headers ship under `include/numpy/` and are
-  intentionally partial while we close remaining NumPy C-API gaps.
+- Molt does not ship NumPy compatibility headers. Package-owned `numpy/*`
+  headers are supplied by package/source-plan custody.
 - Initial datetime compatibility header ships as `include/datetime.h` with a
   partial `PyDateTime` C-API bootstrap.
 

@@ -727,7 +727,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         "scan",
         help=(
             "Scan extension sources for unsupported C/API usage against "
-            "include/molt/Python.h and include/numpy/."
+            "Molt's C/API surface; package headers come from package custody."
         ),
     )
     extension_scan_parser.add_argument(
