@@ -109,7 +109,13 @@ def test_default_touch_files_track_current_split_modules() -> None:
     assert touch_files["modules"].exists()
     assert touch_files["gvn"].exists()
     assert module._scenario_preflight_errors(
-        ["inc-value_range", "inc-function_compiler", "inc-modules", "test-lib"],
+        [
+            "inc-value_range",
+            "inc-gvn",
+            "inc-function_compiler",
+            "inc-modules",
+            "test-lib",
+        ],
         touch_files,
     ) == []
 
