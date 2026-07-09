@@ -1335,7 +1335,7 @@ unsafe fn call_bridged_callable(
         }
     };
     let kwargs_bits = if kwargs.is_null()
-        || std::ptr::eq(kwargs, &raw mut crate::abi_types::Py_None as *mut PyObject)
+        || std::ptr::eq(kwargs, &raw mut crate::abi_types::Py_None)
     {
         0
     } else {
