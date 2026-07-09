@@ -31,10 +31,12 @@ None  -  every dependency edge respects the declared layer ordering.
 | 4 | `molt-gpu` | L0 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
 | 4 | `molt-lang-cpython-abi` | L2 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
 | 4 | `molt-runtime-asyncio` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
+| 4 | `molt-runtime-audit` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
 | 4 | `molt-runtime-collections` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
 | 4 | `molt-runtime-compression` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
+| 4 | `molt-runtime-constants` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
 | 4 | `molt-runtime-crypto` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
-| 4 | `molt-stdlib-graphlib` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
+| 4 | `molt-runtime-diagnostics` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
 | 4 | `molt-runtime-http` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
 | 4 | `molt-runtime-ipaddress` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
 | 4 | `molt-runtime-itertools` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
@@ -42,7 +44,9 @@ None  -  every dependency edge respects the declared layer ordering.
 | 4 | `molt-runtime-math` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
 | 4 | `molt-runtime-net` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
 | 4 | `molt-runtime-path` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
+| 4 | `molt-runtime-platform` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
 | 4 | `molt-runtime-regex` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
+| 4 | `molt-runtime-resource` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
 | 4 | `molt-runtime-serial` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
 | 4 | `molt-runtime-stringprep` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
 | 4 | `molt-runtime-tk` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
@@ -50,6 +54,7 @@ None  -  every dependency edge respects the declared layer ordering.
 | 4 | `molt-runtime-xml` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
 | 4 | `molt-runtime-zoneinfo` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
 | 4 | `molt-stdlib-difflib` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
+| 4 | `molt-stdlib-graphlib` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
 | 4 | `molt-stdlib-text` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
 | 3 | `molt-runtime` | L4 | molt-embed, molt-ffi, molt-wasm-host |
 | 1 | `molt-backend-luau` | L3 | molt-backend |
@@ -71,7 +76,7 @@ None  -  every dependency edge respects the declared layer ordering.
 - **Layer 0:** `molt-codegen-abi`, `molt-db`, `molt-gpu`, `molt-harness`, `molt-ir`, `molt-runtime-protobuf`, `molt-snapshot`, `molt-tier`
 - **Layer 1:** `molt-lang-obj-model`, `molt-passes`, `molt-worker`
 - **Layer 2:** `molt-lang-cpython-abi`, `molt-runtime-core`, `molt-tir`
-- **Layer 3:** `molt-backend-luau`, `molt-backend-native`, `molt-backend-rust`, `molt-backend-wasm`, `molt-runtime-asyncio`, `molt-runtime-collections`, `molt-runtime-compression`, `molt-runtime-crypto`, `molt-runtime-http`, `molt-runtime-ipaddress`, `molt-runtime-itertools`, `molt-runtime-logging`, `molt-runtime-math`, `molt-runtime-net`, `molt-runtime-path`, `molt-runtime-regex`, `molt-runtime-serial`, `molt-runtime-stringprep`, `molt-runtime-tk`, `molt-runtime-vfs`, `molt-runtime-xml`, `molt-runtime-zoneinfo`, `molt-stdlib-difflib`, `molt-stdlib-graphlib`, `molt-stdlib-text`
+- **Layer 3:** `molt-backend-luau`, `molt-backend-native`, `molt-backend-rust`, `molt-backend-wasm`, `molt-runtime-asyncio`, `molt-runtime-audit`, `molt-runtime-collections`, `molt-runtime-compression`, `molt-runtime-constants`, `molt-runtime-crypto`, `molt-runtime-diagnostics`, `molt-runtime-http`, `molt-runtime-ipaddress`, `molt-runtime-itertools`, `molt-runtime-logging`, `molt-runtime-math`, `molt-runtime-net`, `molt-runtime-path`, `molt-runtime-platform`, `molt-runtime-regex`, `molt-runtime-resource`, `molt-runtime-serial`, `molt-runtime-stringprep`, `molt-runtime-tk`, `molt-runtime-vfs`, `molt-runtime-xml`, `molt-runtime-zoneinfo`, `molt-stdlib-difflib`, `molt-stdlib-graphlib`, `molt-stdlib-text`
 - **Layer 4:** `molt-backend`, `molt-runtime`
 - **Layer 5:** `molt-embed`, `molt-ffi`, `molt-wasm-host`
 

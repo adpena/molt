@@ -11,10 +11,9 @@
 //! Cranelift / WASM / LLVM / Luau) or build profile.
 //!
 //! [`TargetInfo`] is that single source of truth. It is consulted by every
-//! profitability decision in the pipeline. The [`PassManager`](crate::tir::pass_manager)
-//! owns one and threads `&TargetInfo` to each pass's `run`, exactly as it
-//! threads the [`AnalysisManager`](crate::tir::analysis::AnalysisManager); the
-//! SimpleIR inliner takes one by reference too.
+//! profitability decision in the pipeline. Pass orchestration owns one and
+//! threads `&TargetInfo` to each pass's `run`, exactly as it threads its
+//! analysis manager; the SimpleIR inliner takes one by reference too.
 //!
 //! ## Behavior-preserving defaults (the firewall)
 //!

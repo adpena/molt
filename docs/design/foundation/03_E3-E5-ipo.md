@@ -235,7 +235,7 @@ pub module_summaries: Option<Arc<ModuleSummaries>>,
 
 The escape analysis `TirPass::run` impl reads `self.module_summaries.as_deref()`.
 
-### MODIFY: `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/target_info.rs`
+### MODIFY: `/Users/adpena/Projects/molt/runtime/molt-ir/src/tir/target_info.rs`
 
 Add to `TargetInfo`:
 ```rust
