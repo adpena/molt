@@ -18,16 +18,28 @@ def _load_backend_manifest() -> dict[str, object]:
         return tomllib.load(handle)
 
 
+def _load_native_backend_manifest() -> dict[str, object]:
+    with (ROOT / "runtime" / "molt-backend-native" / "Cargo.toml").open(
+        "rb"
+    ) as handle:
+        return tomllib.load(handle)
+
+
 def test_backend_manifest_does_not_depend_on_obj_model() -> None:
     manifest = _load_backend_manifest()
     dependencies = manifest["dependencies"]
     assert "molt-obj-model" not in dependencies
 
 
-def test_backend_manifest_does_not_redeclare_wasmparser_in_dev_dependencies() -> None:
+def test_backend_manifest_keeps_wasmparser_test_only() -> None:
     manifest = _load_backend_manifest()
+    dependencies = manifest["dependencies"]
     dev_dependencies = manifest.get("dev-dependencies", {})
-    assert "wasmparser" not in dev_dependencies
+
+    assert "wasmparser" not in dependencies
+    assert "wasm-encoder" not in dependencies
+    assert dev_dependencies["wasmparser"] == "0.252.0"
+    assert dev_dependencies["wasm-encoder"] == "0.252.0"
 
 
 def test_backend_manifest_uses_serde_with_derive_feature() -> None:
@@ -41,7 +53,7 @@ def test_backend_manifest_uses_serde_with_derive_feature() -> None:
 
 
 def test_backend_manifest_uses_minimal_cranelift_codegen_features() -> None:
-    manifest = _load_backend_manifest()
+    manifest = _load_native_backend_manifest()
     codegen_dependency = manifest["dependencies"]["cranelift-codegen"]
 
     assert codegen_dependency["default-features"] is False
@@ -49,7 +61,7 @@ def test_backend_manifest_uses_minimal_cranelift_codegen_features() -> None:
 
 
 def test_backend_manifest_target_overlays_only_add_cross_isa_support() -> None:
-    manifest = _load_backend_manifest()
+    manifest = _load_native_backend_manifest()
     target_tables = manifest["target"]
     aarch64_dependency = target_tables['cfg(target_arch = "aarch64")']["dependencies"][
         "cranelift-codegen"
@@ -134,6 +146,28 @@ def test_workspace_dev_fast_does_not_force_opt_level() -> None:
     assert "opt-level" not in dev_fast_profile
 
 
+def test_release_fast_profile_stays_iteration_only_not_shipped_lto() -> None:
+    manifest = _load_workspace_manifest()
+    profiles = manifest["profile"]
+
+    release_fast = profiles["release-fast"]
+    assert release_fast["inherits"] == "release"
+    assert release_fast["lto"] == "off"
+    assert release_fast["codegen-units"] == 256
+    assert release_fast["debug"] == 0
+    assert release_fast["panic"] == "unwind"
+
+    release_output = profiles["release-output"]
+    assert release_output["lto"] == "fat"
+    assert release_output["codegen-units"] == 1
+    assert release_output["panic"] == "abort"
+
+    wasm_release = profiles["wasm-release"]
+    assert wasm_release["lto"] == "fat"
+    assert wasm_release["codegen-units"] == 1
+    assert wasm_release["panic"] == "abort"
+
+
 def test_runtime_manifest_uses_flate2_zip_deflate_only() -> None:
     runtime_manifest_path = ROOT / "runtime" / "molt-runtime" / "Cargo.toml"
     with runtime_manifest_path.open("rb") as handle:
@@ -152,7 +186,8 @@ def test_runtime_net_io_cfg_requires_supported_native_socket_abi() -> None:
     ).read_text()
 
     assert 'env::var("CARGO_CFG_TARGET_FAMILY")' in build_rs
-    assert 'let native_net_target_supported = target_arch != "wasm32"' in build_rs
+    assert 'target_arch != "wasm32"' in build_rs
+    assert "target_family.split(',')" in build_rs
     assert 'family == "unix"' in build_rs
     assert "if native_net_target_supported" in build_rs
     assert 'println!("cargo:rustc-cfg=molt_has_net_io")' in build_rs
@@ -214,8 +249,8 @@ def test_runtime_tk_native_feature_is_owned_by_leaf_crate() -> None:
     ]
 
     assert tk_dependency["default-features"] is False
-    assert "libloading" not in runtime_manifest["dependencies"]
-    assert "libloading" not in native_target_deps
+    assert native_target_deps["libloading"]["optional"] is True
+    assert runtime_features["source_extension_loader"] == ["dep:libloading"]
     assert runtime_features["stdlib_tk"] == [
         "dep:molt-runtime-tk",
         "molt-runtime-tk/tk",
@@ -367,18 +402,25 @@ def test_runtime_manifest_avoids_url_compile_graph_for_websocket_client() -> Non
 
 def test_backend_ir_model_and_passes_are_split_out_of_lib_rs() -> None:
     lib_rs = (ROOT / "runtime" / "molt-backend" / "src" / "lib.rs").read_text()
-    ir_rs = ROOT / "runtime" / "molt-backend" / "src" / "ir.rs"
-    passes_rs = ROOT / "runtime" / "molt-backend" / "src" / "passes.rs"
+    manifest = _load_backend_manifest()
+    dependencies = manifest["dependencies"]
 
-    assert ir_rs.exists()
-    assert passes_rs.exists()
+    assert "molt-ir" in dependencies
+    assert "molt-tir" in dependencies
+    assert "pub use molt_ir::" in lib_rs
+    assert "pub use molt_tir::{passes, representation_plan, tir};" in lib_rs
     assert "pub struct SimpleIR" not in lib_rs
     assert "pub fn validate_simple_ir" not in lib_rs
 
 
 def test_backend_native_trampoline_identity_is_split_out_of_lib_rs() -> None:
     native_backend_mod_path = (
-        ROOT / "runtime" / "molt-backend" / "src" / "native_backend" / "mod.rs"
+        ROOT
+        / "runtime"
+        / "molt-backend-native"
+        / "src"
+        / "native_backend"
+        / "mod.rs"
     )
     lib_rs = (ROOT / "runtime" / "molt-backend" / "src" / "lib.rs").read_text()
 
@@ -396,7 +438,7 @@ def test_backend_native_compile_func_is_split_out_of_lib_rs() -> None:
     function_compiler_rs = (
         ROOT
         / "runtime"
-        / "molt-backend"
+        / "molt-backend-native"
         / "src"
         / "native_backend"
         / "function_compiler.rs"
@@ -408,10 +450,10 @@ def test_backend_native_compile_func_is_split_out_of_lib_rs() -> None:
 
 def test_native_backend_codegen_failures_are_fail_closed() -> None:
     native_sources = [
-        ROOT / "runtime" / "molt-backend" / "src" / "lib.rs",
+        ROOT / "runtime" / "molt-backend-native" / "src" / "lib.rs",
         ROOT
         / "runtime"
-        / "molt-backend"
+        / "molt-backend-native"
         / "src"
         / "native_backend"
         / "function_compiler.rs",
