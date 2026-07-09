@@ -2020,6 +2020,51 @@ def _write_summary_json(
     )
 
 
+def _write_worker_exit_summary_json(
+    path: str,
+    *,
+    worker_returncode: int,
+) -> bool:
+    """Terminalize a running summary when the Windows wrapper outlives its worker."""
+    summary_path = Path(path)
+    try:
+        payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    status = payload.get("status")
+    if status not in {"running", "child_running"} or payload.get("returncode") is not None:
+        return False
+
+    recorded_at = _utc_timestamp()
+    exit_signal = _exit_signal_payload(worker_returncode)
+    payload["status"] = "guard_worker_exited_without_final_summary"
+    payload["returncode"] = worker_returncode
+    payload["worker_returncode"] = worker_returncode
+    payload["worker_exit_signal"] = exit_signal
+    payload["recorded_at"] = recorded_at
+    payload["incident"] = {
+        "reason": "guard_worker_exited_without_final_summary",
+        "cleanup": "none_by_wrapper",
+        "recorded_at": recorded_at,
+        "previous_status": status,
+        "worker_returncode": worker_returncode,
+        "worker_exit_signal": exit_signal,
+        "next_action": (
+            "Inspect the guard worker, child logs, and parent host/control-plane "
+            "signal source. The public memory_guard wrapper preserved terminal "
+            "custody because the internal worker exited before writing the final "
+            "summary."
+        ),
+    }
+    summary_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return True
+
+
 def _default_incident_summary_path() -> Path:
     stamp = _utc_compact_timestamp()
     return (
@@ -2326,6 +2371,20 @@ def main(
                 **inherit_stdio_kwargs(),
                 **_guarded_popen_process_isolation_kwargs(),
             )
+            if args.summary_json:
+                try:
+                    _write_worker_exit_summary_json(
+                        args.summary_json,
+                        worker_returncode=int(completed.returncode),
+                    )
+                except OSError as exc:
+                    print(
+                        "memory_guard: failed to terminalize worker-exit "
+                        f"summary JSON: {exc}",
+                        file=sys.stderr,
+                    )
+                    if completed.returncode == 0:
+                        return 2
             return completed.returncode
         execve(
             sys.executable,
