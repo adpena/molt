@@ -25,6 +25,57 @@ pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = 
     "trunc",
 ];
 
+/// Debug-only trap guard for a raw-i64 signed floordiv/mod fast path.
+///
+/// Cranelift `sdiv`/`srem` TRAP on `i64::MIN / -1` (they do NOT wrap like a
+/// masked x86 `idiv`), and the mathematically-correct `i64::MIN // -1 == 2**63`
+/// is not representable in `i64` at all. The raw fast paths below therefore
+/// require that the operand pair `(i64::MIN, -1)` never reaches them.
+///
+/// That precondition is a NON-LOCAL invariant established upstream, from two
+/// authorities that only admit the raw machine div/mod op for operands proven
+/// to fit the 47-bit inline window `[-(2^46), 2^46-1]` (which excludes
+/// `i64::MIN`, and whose closure excludes the `2**63` result):
+///   * TIR->LIR lowering forces `Div`/`FloorDiv`/`Mod` over raw-i64 carriers to
+///     the boxed runtime dispatch UNLESS value-range proves every operand AND
+///     the result `fits_inline_int47`
+///     (`opcode_requires_i64_overflow_box_dispatch_table` +
+///     `opcode_requires_i64_zero_divisor_guard_table`, both pinned for the
+///     div/mod family by `divmod_raw_lane_is_gated_for_intmin_safety`).
+///   * carrier propagation raises a direct numeric op's result to `RawI64Safe`
+///     ONLY when every operand is already `RawI64Safe`; `FloorDiv`/`Mod` never
+///     produce the full-range `RawI64FullDeopt` carrier (that tier is reserved
+///     for `CheckedAdd`/`CheckedMul` overflow-peel results). See
+///     `direct_numeric_repr_for_tir_op`.
+///
+/// This guard makes that non-local invariant LOCAL and CHECKED: in debug builds
+/// of the compiler it emits a loud `trapnz` if `(i64::MIN, -1)` ever reaches the
+/// raw lane, so a regression in the upstream proof surfaces immediately instead
+/// of degrading into a silent miscompile or an obscure release-only division
+/// trap. It mirrors the debug tag-check already emitted by `unbox_int`. In
+/// release builds it lowers to nothing.
+#[cfg(feature = "native-backend")]
+#[inline]
+pub(in crate::native_backend::function_compiler) fn emit_raw_int_div_intmin_debug_guard(
+    builder: &mut FunctionBuilder<'_>,
+    lhs_raw: Value,
+    rhs_raw: Value,
+) {
+    #[cfg(debug_assertions)]
+    {
+        let lhs_is_min = builder.ins().icmp_imm(IntCC::Equal, lhs_raw, i64::MIN);
+        let rhs_is_neg_one = builder.ins().icmp_imm(IntCC::Equal, rhs_raw, -1);
+        let is_overflow = builder.ins().band(lhs_is_min, rhs_is_neg_one);
+        builder
+            .ins()
+            .trapnz(is_overflow, cranelift_codegen::ir::TrapCode::user(2).unwrap());
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = (&*builder, lhs_raw, rhs_raw);
+    }
+}
+
 #[cfg(feature = "native-backend")]
 #[allow(clippy::too_many_arguments, clippy::manual_map)]
 pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
@@ -455,6 +506,11 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
 
                     switch_to_block_materialized(&mut *builder, fast_block);
                     seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
+                    // Raw lane reached only for inline-47-proven operands, so
+                    // `(i64::MIN, -1)` — the sole `sdiv`/`srem` trap and the sole
+                    // non-i64 quotient (`2**63`) — cannot occur. Checked loudly in
+                    // debug builds; see `emit_raw_int_div_intmin_debug_guard`.
+                    emit_raw_int_div_intmin_debug_guard(&mut *builder, lhs_raw, rhs_raw);
                     let one = builder.ins().iconst(types::I64, 1);
                     let quot = builder.ins().sdiv(lhs_raw, rhs_raw);
                     let rem = builder.ins().srem(lhs_raw, rhs_raw);
@@ -633,10 +689,13 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 switch_to_block_materialized(&mut *builder, fast_block);
                 seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
                 let one = builder.ins().iconst(types::I64, 1);
-                // SAFETY: Cranelift sdiv traps on INT_MIN/-1 (unlike x86 SIGFPE).
-                // NaN-boxed ints are 47-bit (range [-(2^46), 2^46-1]), so INT64_MIN
-                // cannot occur from unbox_int. If this invariant changes, add a guard:
-                // rhs != -1 || lhs != INT64_MIN.
+                // SAFETY (INT_MIN/-1 sdiv/srem trap): `lhs_val`/`rhs_val` are the
+                // outputs of `fused_tag_check_and_unbox_int` = `(x << 17) >> 17`,
+                // whose range is provably `[-(2^46), 2^46-1]` regardless of input
+                // bits — it CANNOT be `i64::MIN`. So `(i64::MIN, -1)`, the sole
+                // trapping pair, cannot occur here. (Locally proven by the unbox
+                // shift; contrast the raw-carrier lanes above, which lean on the
+                // upstream inline-47 gate and carry a debug trap guard.)
                 let quot = builder.ins().sdiv(lhs_val, rhs_val);
                 let rem = builder.ins().srem(lhs_val, rhs_val);
                 let rem_nonzero = builder.ins().icmp(IntCC::NotEqual, rem, zero);
@@ -727,6 +786,11 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
 
                     switch_to_block_materialized(&mut *builder, fast_block);
                     seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
+                    // Raw lane reached only for inline-47-proven operands, so
+                    // `(i64::MIN, -1)` — the sole `srem` trap — cannot occur (and
+                    // `i64::MIN % -1 == 0` is representable anyway). Checked loudly
+                    // in debug builds; see `emit_raw_int_div_intmin_debug_guard`.
+                    emit_raw_int_div_intmin_debug_guard(&mut *builder, lhs_raw, rhs_raw);
                     let rem = builder.ins().srem(lhs_raw, rhs_raw);
                     let rem_nonzero = builder.ins().icmp(IntCC::NotEqual, rem, zero);
                     let lhs_neg = builder.ins().icmp(IntCC::SignedLessThan, lhs_raw, zero);
