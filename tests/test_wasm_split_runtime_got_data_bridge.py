@@ -131,3 +131,37 @@ def test_noop_when_no_name_section():
     )
     assert count == 0
     assert new_data == data
+
+
+def _rust_type_static_ptr_names() -> set[str]:
+    """The `Py*_Type` identifiers registered by `abi_types::type_static_ptrs()`.
+
+    Parsed from the runtime source so the drift gate below binds the Rust bridge
+    registration list to the Python split-runtime export authority.
+    """
+    import re
+
+    root = Path(__file__).resolve().parents[1]
+    src = (root / "runtime" / "molt-cpython-abi" / "src" / "abi_types.rs").read_text(
+        encoding="utf-8"
+    )
+    marker = "pub fn type_static_ptrs() -> Vec<*mut PyObject> {"
+    start = src.index(marker)
+    body = src[start : src.index("\n}", start)]
+    return set(re.findall(r"&raw mut (\w+) as \*mut PyObject", body))
+
+
+def test_rust_type_static_ptrs_match_split_runtime_data_symbol_authority():
+    """M45 drift gate: the Rust `type_static_ptrs()` bridge-registration list must
+    stay in lock-step with the `*_Type` canonical data symbols the split-runtime
+    exports (`wasm_cpython_abi_data_symbol_names`). A one-symbol drift means a
+    builtin type static handed back by numpy fails `pyobj_to_handle` (the
+    `_multiarray_umath` `PyDict_SetItem(unresolved key)` class) or a stale entry
+    lingers after a type static is removed.
+    """
+    authority = {
+        name
+        for name in wasm_link.wasm_cpython_abi_data_symbol_names()
+        if name.endswith("Type")
+    }
+    assert _rust_type_static_ptr_names() == authority
