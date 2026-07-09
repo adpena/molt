@@ -1815,6 +1815,97 @@ def test_proof_queue_diagnoses_terminal_row_with_unfinished_guard_summary(
     assert "audit-unclassified-failure" not in out
 
 
+def test_proof_queue_diagnoses_worker_exit_without_final_summary(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "failed.log"
+    summary_path = tmp_path / "failed.memory_guard.json"
+    log_path.write_text(
+        "proof_queue run_id=failed-run\n"
+        "proof_queue finished status=failed exit_code=15 elapsed=460.204s\n",
+        encoding="utf-8",
+    )
+    summary_path.write_text(
+        json.dumps(
+            {
+                "status": "guard_worker_exited_without_final_summary",
+                "returncode": 15,
+                "worker_returncode": 15,
+                "worker_exit_signal": {"signal": 15, "name": "SIGTERM"},
+                "recorded_at": "2026-07-08T23:48:21Z",
+                "incident": {
+                    "reason": "guard_worker_exited_without_final_summary",
+                    "previous_status": "running",
+                },
+                "child_process": {
+                    "pid": 40_132,
+                    "command": [
+                        sys.executable,
+                        str(proof_queue.ROOT / "tools" / "memory_guard.py"),
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="failed-run",
+        logical_id="failed",
+        reason="prove wrapper-terminalized memory_guard worker exits are classified",
+        command=[sys.executable, "-c", "print('failed')"],
+        cwd=proof_queue.ROOT,
+        resource_family="python",
+        contention_key="python-proof",
+        scopes=["tools/proof_queue.py", "tools/memory_guard.py"],
+        log_path=log_path,
+        summary_json=summary_path,
+    )
+    proof_queue._insert_note(
+        conn,
+        run_id="failed-run",
+        body="test: wrapper-terminalized memory_guard worker exit must classify",
+        kind="submission",
+        author="codex",
+    )
+    proof_queue._update_run(
+        conn,
+        "failed-run",
+        status="failed",
+        returncode=15,
+        elapsed_s=460.204,
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "diagnose",
+                "failed-run",
+            ]
+        )
+        == 0
+    )
+
+    out = capsys.readouterr().out
+    assert "memory-guard-worker-exit-without-final-summary" in out
+    assert "worker_returncode=15" in out
+    assert "worker_signal=SIGTERM" in out
+    assert "previous_status=running" in out
+    assert "child_process=memory_guard_child_process pid=40132" in out
+    assert "last_log=proof_queue finished status=failed exit_code=15" in out
+    assert "memory-guard-summary-incomplete" not in out
+    assert "unclassified-failed-proof" not in out
+
+
 def test_proof_queue_audit_treats_pruned_stale_incomplete_summary_as_warning(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

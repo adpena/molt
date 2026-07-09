@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import os
 import subprocess
 from types import SimpleNamespace
 import sys
@@ -240,6 +242,65 @@ def test_windows_guarded_popen_uses_new_process_group(monkeypatch) -> None:
 
     assert kwargs == {"creationflags": 0x08000200}
     assert "start_new_session" not in kwargs
+
+
+def test_windows_wrapper_terminalizes_worker_exit_running_summary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_memory_guard()
+    summary_path = tmp_path / "memory_guard.json"
+    child_process = module.GuardedChildProcess(
+        pid=40132,
+        pgid=None,
+        sid=None,
+        command=("python", "worker.py"),
+        started_at="2026-07-08T23:40:41Z",
+    )
+    module._write_running_summary_json(
+        str(summary_path),
+        command=("python", "worker.py"),
+        cwd=tmp_path,
+        environ=os.environ,
+        max_rss_kb=12 * 1024 * 1024,
+        max_total_rss_kb=18 * 1024 * 1024,
+        max_global_rss_kb=None,
+        child_rlimit_kb=12 * 1024 * 1024,
+        timeout_s=1200.0,
+        poll_interval_s=2.0,
+        child_process=child_process,
+    )
+
+    def fake_run(*args, **kwargs):  # noqa: ANN002, ANN003
+        assert kwargs["check"] is False
+        assert kwargs["env"][module.INTERNAL_WORKER_ENV] == "1"
+        return SimpleNamespace(returncode=15)
+
+    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    rc = module.main(
+        [
+            "--summary-json",
+            str(summary_path),
+            "--",
+            sys.executable,
+            "-c",
+            "pass",
+        ],
+        hide_command_argv=True,
+        environ=os.environ,
+    )
+
+    payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert rc == 15
+    assert payload["status"] == "guard_worker_exited_without_final_summary"
+    assert payload["returncode"] == 15
+    assert payload["worker_returncode"] == 15
+    assert payload["worker_exit_signal"]["name"] == "SIGTERM"
+    assert payload["child_process"]["pid"] == 40132
+    assert payload["incident"]["reason"] == "guard_worker_exited_without_final_summary"
+    assert payload["incident"]["previous_status"] == "running"
 
 
 def test_harness_batch_process_group_kwargs_hide_windows_console(monkeypatch) -> None:
