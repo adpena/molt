@@ -61,6 +61,11 @@ The live codebase and executable Cargo metadata remain authoritative.
   output artifact size. `tools/throughput_matrix.py` and
   `tools/bench_backend_incremental.py` consume that schema instead of carrying
   sibling result dataclasses.
+- `tools/dx_build_timer.py` separates daemon-build and lib-test profile
+  authority: daemon scenarios default to `release-fast`, while `test-lib`
+  defaults to `dev-fast` and records both `profile` and `test_profile` in the
+  JSON payload. This keeps optimized daemon timing evidence from accidentally
+  turning Rust proof/DX timing into optimized release test compilation.
 - The generated runtime intrinsic resolver is no longer one monolithic Rust
   source file. `runtime/molt-runtime/src/intrinsics/generated.rs` keeps the
   parser-facing `INTRINSICS` manifest table and re-exports a thin resolver, while
@@ -169,6 +174,17 @@ tax from every dev rebuild while preserving the perf contract for shipped binari
 Root `Cargo.toml` records the measured fat-to-thin and thin-to-off
 `release-fast` deltas; future work should extend the measurement to crate
 extraction and cache-hit rebuild cases.
+Lib-test/proof latency is a separate product: `dx_build_timer` keeps
+`release-fast` for daemon prime/incremental build scenarios but compiles its
+`test-lib` scenario with `dev-fast` by default (`--test-profile`) because
+optimized release tests were a measured proof-DX tax, not daemon evidence.
+Measured on the Windows NVMe E2 lane: row
+`20260709T005742-e2-build-wallclock-post-lto-off-siblings-130c8e293714403c`
+reported `test-lib` at 106.30 s with optimized `release-fast` tests; the split
+profile proof
+`20260709T010523-e2-build-wallclock-split-test-profile-proof-45c9306d67654b84`
+reported a `release-fast` daemon prime of 10.31 s, `dev-fast` `test-lib` of
+6.52 s, and `release-fast` repair of 7.09 s on the persistent target.
 
 ### 3. Default-on `sccache` + a fast linker (lld/mac, mold/Linux)
 - **`sccache`**: caches compiled rlibs across sessions AND worktrees. The repo
