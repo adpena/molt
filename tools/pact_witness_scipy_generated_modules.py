@@ -81,10 +81,22 @@ _WITNESS_SCIPY_PACKAGE_PARENTS = (
     _SCIPY_SOURCE_REL,
 )
 
-# Candidate locations of a real meson-generated ``scipy/__config__.py``. A full
-# SciPy wasm ``meson setup`` runs ``configure_file`` on ``scipy/__config__.py.in``
-# and emits the substituted module under ``<build>/scipy/__config__.py``.
+# Candidate locations of a real meson-generated ``scipy/__config__.py``. SciPy's
+# ``__config__.py`` is emitted by meson ``configure_file`` on
+# ``scipy/__config__.py.in`` (``scipy/meson.build`` ~L782), substituting the
+# resolved compiler/BLAS/pybind11/pythran metadata.
+#
+# The authoritative producer is ``tools/pact_witness_scipy_config_meson_wasm.py``: a
+# full SciPy wasm ``meson setup`` is infeasible here (absent git submodules,
+# Fortran, openblas, heavy subprojects all block setup before the
+# ``subdir('scipy')`` configure_file), so that tool instead drives meson's OWN
+# ``configure_file`` on SciPy's OWN template with a line-cited mirror of
+# ``scipy/meson.build``'s ``conf_data`` -- every value meson-resolved from the
+# same wasm cross toolchain (no fabricated metadata). It publishes to the first
+# candidate below. The remaining candidates accept a real emitted module from a
+# full SciPy ndimage meson wasm build if one is ever produced.
 _CONFIG_BUILD_CANDIDATES = (
+    "tmp/pact_scipy_config_meson_wasm_build_generated/scipy/__config__.py",
     "tmp/pact_scipy_ndimage_meson_wasm_build_generated/scipy/__config__.py",
     "tmp/pact_scipy_ndimage_meson_wasm_build/scipy/__config__.py",
 )
