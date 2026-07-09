@@ -160,7 +160,7 @@ pub unsafe extern "C" fn PyList_Check(op: *mut PyObject) -> c_int {
 
 // ─── PyTuple ──────────────────────────────────────────────────────────────
 
-unsafe fn tuple_layout_object(op: *mut PyObject) -> Option<*mut PyTupleObject> {
+pub(crate) unsafe fn tuple_layout_object(op: *mut PyObject) -> Option<*mut PyTupleObject> {
     if op.is_null() {
         return None;
     }
@@ -472,17 +472,20 @@ pub unsafe extern "C" fn PySet_Contains(anyset: *mut PyObject, key: *mut PyObjec
         return -1;
     }
     let set_bits = match unsafe {
-        set_arg_handle(anyset, c"PySet_Contains: argument is not a bridge-managed set")
+        set_arg_handle(
+            anyset,
+            c"PySet_Contains: argument is not a bridge-managed set",
+        )
     } {
         Some(bits) => bits,
         None => return -1,
     };
-    let key_bits = match unsafe {
-        set_arg_handle(key, c"PySet_Contains: key is not a bridge-managed object")
-    } {
-        Some(bits) => bits,
-        None => return -1,
-    };
+    let key_bits =
+        match unsafe { set_arg_handle(key, c"PySet_Contains: key is not a bridge-managed object") }
+        {
+            Some(bits) => bits,
+            None => return -1,
+        };
     let h = hooks_or_stubs();
     let rc = unsafe { (h.set_contains)(set_bits, key_bits) };
     if rc < 0 {
@@ -503,12 +506,12 @@ pub unsafe extern "C" fn PySet_Add(anyset: *mut PyObject, key: *mut PyObject) ->
         }
         return -1;
     }
-    let set_bits = match unsafe {
-        set_arg_handle(anyset, c"PySet_Add: argument is not a bridge-managed set")
-    } {
-        Some(bits) => bits,
-        None => return -1,
-    };
+    let set_bits =
+        match unsafe { set_arg_handle(anyset, c"PySet_Add: argument is not a bridge-managed set") }
+        {
+            Some(bits) => bits,
+            None => return -1,
+        };
     let key_bits =
         match unsafe { set_arg_handle(key, c"PySet_Add: key is not a bridge-managed object") } {
             Some(bits) => bits,
@@ -535,7 +538,10 @@ pub unsafe extern "C" fn PySet_Discard(anyset: *mut PyObject, key: *mut PyObject
         return -1;
     }
     let set_bits = match unsafe {
-        set_arg_handle(anyset, c"PySet_Discard: argument is not a bridge-managed set")
+        set_arg_handle(
+            anyset,
+            c"PySet_Discard: argument is not a bridge-managed set",
+        )
     } {
         Some(bits) => bits,
         None => return -1,

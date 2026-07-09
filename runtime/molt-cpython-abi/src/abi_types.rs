@@ -1262,7 +1262,10 @@ mod unresolved_pyobject_tests {
             desc.starts_with("bare-sentinel(ob_type=NULL"),
             "unexpected description: {desc}"
         );
-        assert!(desc.contains("runtime Py_None="), "missing runtime addrs: {desc}");
+        assert!(
+            desc.contains("runtime Py_None="),
+            "missing runtime addrs: {desc}"
+        );
         // A type object (ob_type == &PyType_Type) is reported as a type-object.
         let mut named_type: PyTypeObject = unsafe { std::mem::zeroed() };
         named_type.tp_name = c"widget".as_ptr();
@@ -1292,7 +1295,11 @@ mod unresolved_pyobject_tests {
         let mut addrs: Vec<usize> = ptrs.iter().map(|p| *p as usize).collect();
         addrs.sort_unstable();
         addrs.dedup();
-        assert_eq!(addrs.len(), 34, "duplicate type static in type_static_ptrs()");
+        assert_eq!(
+            addrs.len(),
+            34,
+            "duplicate type static in type_static_ptrs()"
+        );
     }
 
     #[test]

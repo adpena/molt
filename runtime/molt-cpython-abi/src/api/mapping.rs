@@ -60,11 +60,9 @@ pub unsafe extern "C" fn PyDict_SetItem(
             // a `PyDict_SetItem` key is a real object the extension constructed or a
             // canonical runtime data symbol, safe to classify (`describe_*` guards
             // null + resolves exception singletons by address before any deref).
-            let detail = format!(
-                "unresolved key @ {:p}: {}",
-                key,
-                unsafe { crate::abi_types::describe_unresolved_pyobject(key) }
-            );
+            let detail = format!("unresolved key @ {:p}: {}", key, unsafe {
+                crate::abi_types::describe_unresolved_pyobject(key)
+            });
             crate::capi_trace::record_silent_failure("PyDict_SetItem", Some(&detail));
             return -1;
         }
@@ -72,10 +70,9 @@ pub unsafe extern "C" fn PyDict_SetItem(
     let val_bits = match bridge.pyobj_to_handle(value) {
         Some(b) => b,
         None => {
-            let detail = format!(
-                "unresolved value: {}",
-                unsafe { crate::abi_types::describe_unresolved_pyobject(value) }
-            );
+            let detail = format!("unresolved value: {}", unsafe {
+                crate::abi_types::describe_unresolved_pyobject(value)
+            });
             crate::capi_trace::record_silent_failure("PyDict_SetItem", Some(&detail));
             return -1;
         }
@@ -124,10 +121,9 @@ pub unsafe extern "C" fn PyDict_SetItemString(
         let key_str = unsafe { std::ffi::CStr::from_ptr(key) }
             .to_str()
             .unwrap_or("<non-utf8 key>");
-        let detail = format!(
-            "key='{key_str}' value: {}",
-            unsafe { crate::abi_types::describe_unresolved_pyobject(value) }
-        );
+        let detail = format!("key='{key_str}' value: {}", unsafe {
+            crate::abi_types::describe_unresolved_pyobject(value)
+        });
         crate::capi_trace::record_silent_failure("PyDict_SetItemString", Some(&detail));
     }
     unsafe { crate::api::refcount::Py_DECREF(key_obj) };
