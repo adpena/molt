@@ -1,7 +1,8 @@
-use super::super::super::result_sink::store_result_or_drop;
+use crate::wasm::op_loop::result_sink::store_result_or_drop;
 use crate::wasm::{WasmBackend, WasmFrameLocals};
 use crate::wasm_abi_generated::WasmRuntimeImport;
 use crate::wasm_binary::emit_call;
+use crate::wasm_data::DataSegmentRef;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_values::{box_int, stable_ic_site_id};
 use crate::{FunctionIR, OpIR};
@@ -166,8 +167,8 @@ fn emit_set_attr_generic_object(
     // (e.g. `typing.final(42)`). Route both generic forms through the
     // bits-validating object runtime import for native/WASM parity.
     let args = op.args.as_ref().unwrap();
-    let obj = local_or_panic(locals, args[0], func_ir, op);
-    let val = local_or_panic(locals, args[1], func_ir, op);
+    let obj = local_or_panic(locals, &args[0], func_ir, op);
+    let val = local_or_panic(locals, &args[1], func_ir, op);
     let attr = staged_attr_name(backend, op, reloc_enabled);
     func.instruction(&Instruction::LocalGet(obj));
     emit_staged_attr_name(backend, func, func_index, reloc_enabled, attr);
@@ -204,26 +205,30 @@ fn emit_del_attr_generic_object(
     store_result_or_drop(func, op, locals);
 }
 
-fn staged_attr_name(backend: &mut WasmBackend, op: &OpIR, reloc_enabled: bool) -> (u32, usize) {
+fn staged_attr_name(
+    backend: &mut WasmBackend,
+    op: &OpIR,
+    reloc_enabled: bool,
+) -> (DataSegmentRef, usize) {
     let attr = op.s_value.as_ref().unwrap();
     let bytes = attr.as_bytes();
     (backend.add_data_segment(reloc_enabled, bytes), bytes.len())
 }
 
 fn emit_staged_attr_name(
-    backend: &WasmBackend,
+    backend: &mut WasmBackend,
     func: &mut Function,
     func_index: u32,
     reloc_enabled: bool,
-    (data, len): (u32, usize),
+    (data, len): (DataSegmentRef, usize),
 ) {
     backend.emit_data_ptr(reloc_enabled, func_index, func, data);
     func.instruction(&Instruction::I32WrapI64);
     func.instruction(&Instruction::I64Const(len as i64));
 }
 
-fn local_or_panic(locals: &WasmFrameLocals, value: u32, func_ir: &FunctionIR, op: &OpIR) -> u32 {
-    *locals.get(&value).unwrap_or_else(|| {
+fn local_or_panic(locals: &WasmFrameLocals, value: &str, func_ir: &FunctionIR, op: &OpIR) -> u32 {
+    *locals.get(value).unwrap_or_else(|| {
         panic!(
             "missing local {} in {} for {}",
             value, func_ir.name, op.kind

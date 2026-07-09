@@ -1,6 +1,6 @@
-use super::super::super::result_sink::store_result_or_drop;
 use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
+use crate::wasm::op_loop::result_sink::store_result_or_drop;
 use crate::wasm_abi_generated::WasmRuntimeImport;
 use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::TrackedImportIds;
@@ -34,7 +34,7 @@ fn emit_get_attr_name(
     reloc_enabled: bool,
 ) {
     let args = op.args.as_ref().unwrap();
-    emit_named_receiver(func, locals, args[0], args[1]);
+    emit_named_receiver(func, locals, &args[0], &args[1]);
     emit_call(
         func,
         reloc_enabled,
@@ -51,7 +51,7 @@ fn emit_get_attr_name_default(
     reloc_enabled: bool,
 ) {
     let args = op.args.as_ref().unwrap();
-    emit_named_receiver(func, locals, args[0], args[1]);
+    emit_named_receiver(func, locals, &args[0], &args[1]);
     func.instruction(&Instruction::LocalGet(locals[&args[2]]));
     emit_call(
         func,
@@ -69,7 +69,7 @@ fn emit_has_attr_name(
     reloc_enabled: bool,
 ) {
     let args = op.args.as_ref().unwrap();
-    emit_named_receiver(func, locals, args[0], args[1]);
+    emit_named_receiver(func, locals, &args[0], &args[1]);
     emit_call(
         func,
         reloc_enabled,
@@ -86,7 +86,7 @@ fn emit_set_attr_name(
     reloc_enabled: bool,
 ) {
     let args = op.args.as_ref().unwrap();
-    emit_named_receiver(func, locals, args[0], args[1]);
+    emit_named_receiver(func, locals, &args[0], &args[1]);
     func.instruction(&Instruction::LocalGet(locals[&args[2]]));
     emit_call(
         func,
@@ -104,7 +104,7 @@ fn emit_del_attr_name(
     reloc_enabled: bool,
 ) {
     let args = op.args.as_ref().unwrap();
-    emit_named_receiver(func, locals, args[0], args[1]);
+    emit_named_receiver(func, locals, &args[0], &args[1]);
     emit_call(
         func,
         reloc_enabled,
@@ -116,9 +116,9 @@ fn emit_del_attr_name(
 fn emit_named_receiver(
     func: &mut Function,
     locals: &WasmFrameLocals,
-    object_value: u32,
-    name_value: u32,
+    object_value: &str,
+    name_value: &str,
 ) {
-    func.instruction(&Instruction::LocalGet(locals[&object_value]));
-    func.instruction(&Instruction::LocalGet(locals[&name_value]));
+    func.instruction(&Instruction::LocalGet(locals[object_value]));
+    func.instruction(&Instruction::LocalGet(locals[name_value]));
 }

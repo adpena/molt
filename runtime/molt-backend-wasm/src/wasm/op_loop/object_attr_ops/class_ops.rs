@@ -1,6 +1,10 @@
+#[path = "class_ops/allocation.rs"]
 mod allocation;
+#[path = "class_ops/definition.rs"]
 mod definition;
+#[path = "class_ops/metadata.rs"]
 mod metadata;
+#[path = "class_ops/relationships.rs"]
 mod relationships;
 
 use super::super::super::context::CompileFuncContext;

@@ -1,17 +1,16 @@
-use super::super::super::super::control_flow::ControlKind;
-use super::super::super::super::control_flow::dispatch_control_panic;
-use super::super::super::super::op_loop::WasmFunctionEmitContext;
-use super::super::super::DispatchMode;
-use super::super::super::common::{
+use crate::OpIR;
+use crate::wasm::control_flow::{ControlKind, dispatch_control_panic};
+use crate::wasm::op_loop::WasmFunctionEmitContext;
+use crate::wasm::state_dispatch::DispatchMode;
+use crate::wasm::state_dispatch::common::{
     emit_arena_free, emit_conditional_state_branch, emit_dispatch_check_exception,
     emit_dispatch_if, emit_dispatch_loop_break_cond, emit_set_state_and_br, label_target,
     loop_break_target, require_stateful,
 };
-use super::super::super::plan::{NonLinearDispatchLocals, NonLinearDispatchPlan};
-use super::super::super::stateful_ops::{
+use crate::wasm::state_dispatch::plan::{NonLinearDispatchLocals, NonLinearDispatchPlan};
+use crate::wasm::state_dispatch::stateful_ops::{
     emit_chan_recv_yield, emit_chan_send_yield, emit_state_transition, emit_state_yield,
 };
-use crate::OpIR;
 use crate::wasm_binary::emit_call;
 use crate::wasm_values::emit_branch_truthiness_i32;
 use std::collections::{BTreeMap, BTreeSet};
