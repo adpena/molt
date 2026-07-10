@@ -300,6 +300,201 @@ def test_lowering_cache_hit_returns_fresh_decoded_payload_each_read(
 
 
 # --------------------------------------------------------------------------
+# mtime-decoupling (build-dedup doctrine 74, law 1): a re-checkout / copy /
+# reinstall that resets file mtime WITHOUT changing bytes must still reuse the
+# shared entry. mtime is content-invariant metadata; gating on it made the
+# "content-addressed" cache metadata-addressed and cold-started every session.
+# --------------------------------------------------------------------------
+
+
+# Minimal lowering context inputs (mirrors the real call shape) so the tests can
+# compute a *real* context_digest and prove it no longer moves with mtime.
+_LOWERING_CTX = dict(
+    entry_override=None,
+    known_classes_snapshot={},
+    parse_codec="utf-8",
+    type_hint_policy="trust",
+    fallback_policy="python",
+    type_facts=None,
+    enable_phi=True,
+    known_modules=("m",),
+    stdlib_allowlist=(),
+    known_func_defaults={},
+    known_func_kinds={},
+    module_deps={"m": set()},
+    module_is_namespace=False,
+    module_chunking=False,
+    module_chunk_max_ops=0,
+    optimization_profile="default",
+    pgo_hot_function_names=(),
+    module_dep_closures={"m": frozenset({"m"})},
+)
+
+
+def _bump_mtime(path: Path, delta_ns: int = 5_000_000_000) -> None:
+    st = path.stat()
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + delta_ns))
+    _clear_path_caches()  # drop any stat-keyed content-sha memoization
+
+
+def test_lowering_context_digest_is_independent_of_mtime(tmp_path: Path) -> None:
+    """The content-addressed lowering key must NOT move when only mtime changes.
+
+    A re-checkout / copy / reinstall of byte-identical source resets mtime; if
+    that changed the context_digest, the shared slot name would change and force
+    a cold cross-session re-lower of unchanged source (the exact V4 failure).
+    """
+    path = _write_module(tmp_path, "m", "def g():\n    return 41 + 1\n")
+    digest_before = MC._module_lowering_context_digest_for_module(
+        "m", path, logical_source_path=str(path), is_package=False, **_LOWERING_CTX
+    )
+    _bump_mtime(path)
+    digest_after = MC._module_lowering_context_digest_for_module(
+        "m", path, logical_source_path=str(path), is_package=False, **_LOWERING_CTX
+    )
+    assert digest_before is not None and digest_before == digest_after
+
+
+def test_mtime_only_change_still_reuses_lowering_from_shared(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Session B reads a byte-identical module whose mtime was reset -> HIT.
+
+    Teeth: the read must return the reused IR without ever re-writing (the
+    frontend never runs), proving the ``_payload_source_matches`` mtime gate no
+    longer rejects a content-identical entry.
+    """
+    project_root = tmp_path / "proj"
+    project_root.mkdir()
+    path = _write_module(project_root, "m", "def g():\n    return 41 + 1\n")
+    context_digest = "ab" * 32
+    ir_result = {"functions": [{"name": "m__g", "params": []}], "profile": "release"}
+
+    _use_session(monkeypatch, "A")
+    MC._write_persisted_module_lowering(
+        project_root,
+        path,
+        module_name="m",
+        is_package=False,
+        context_digest=context_digest,
+        result=ir_result,
+    )
+
+    # Session B: byte-identical source, but mtime reset (git checkout / copy).
+    _use_session(monkeypatch, "B")
+    _bump_mtime(path)
+
+    write_calls: list[str] = []
+    original_write = MC._write_cached_json_object
+
+    def _spy_write(p, payload, *, default=None):  # type: ignore[no-untyped-def]
+        write_calls.append(str(p))
+        return original_write(p, payload, default=default)
+
+    monkeypatch.setattr(MC, "_write_cached_json_object", _spy_write)
+
+    reused = MC._read_persisted_module_lowering(
+        project_root,
+        path,
+        module_name="m",
+        is_package=False,
+        context_digest=context_digest,
+    )
+    assert reused is not None
+    assert reused["functions"][0]["name"] == "m__g"
+    # Hydrated via byte-copy; no re-lowering write occurred despite the new mtime.
+    assert write_calls == []
+
+
+def test_mtime_only_change_still_reuses_analysis_from_shared(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The analysis cache must also reuse a byte-identical, mtime-reset module."""
+    project_root = tmp_path / "proj"
+    project_root.mkdir()
+    path = _write_module(project_root, "m", "def f(a, b=2):\n    return a + b\n")
+
+    _use_session(monkeypatch, "A")
+    MC._write_persisted_module_analysis(
+        project_root,
+        path,
+        module_name="m",
+        is_package=False,
+        import_scan_mode="module_init",
+        func_defaults={
+            "f": {
+                "kind": "sync",
+                "has_decorators": False,
+                "params": 2,
+                "defaults": [2],
+                "posonly": 0,
+                "kwonly": 0,
+            }
+        },
+        func_kinds={"f": "sync"},
+        imports=["os"],
+    )
+
+    _use_session(monkeypatch, "B")
+    _bump_mtime(path)
+    result = MC._read_persisted_module_analysis(
+        project_root,
+        path,
+        module_name="m",
+        is_package=False,
+        import_scan_mode="module_init",
+    )
+    assert result is not None
+    _, kinds, imports = result
+    assert kinds == {"f": "sync"}
+    assert imports == ("os",)
+
+
+def test_same_size_different_content_is_not_reused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """sha256 -- not size or mtime -- is the content authority.
+
+    With the mtime gate removed, the coarse-mtime same-size collision defence
+    rests entirely on the source-content sha256. A same-length edit (identical
+    size, and here identical mtime) must still be rejected as a MISCOMPILE risk.
+    """
+    project_root = tmp_path / "proj"
+    project_root.mkdir()
+    path = _write_module(project_root, "m", "def f(a):\n    return a + 1\n")
+    context_digest = "ab" * 32
+    st = path.stat()
+
+    _use_session(monkeypatch, "A")
+    MC._write_persisted_module_lowering(
+        project_root,
+        path,
+        module_name="m",
+        is_package=False,
+        context_digest=context_digest,
+        result={"functions": [{"name": "m__f", "params": ["a"]}]},
+    )
+
+    _use_session(monkeypatch, "B")
+    # Same-length edit ('+ 1' -> '+ 9'): identical size, and we pin mtime back to
+    # the original so ONLY the bytes differ -> the sha256 gate must still reject.
+    path.write_text("def f(a):\n    return a + 9\n", encoding="utf-8")
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+    assert path.stat().st_size == st.st_size
+    assert path.stat().st_mtime_ns == st.st_mtime_ns
+    _clear_path_caches()
+
+    reused = MC._read_persisted_module_lowering(
+        project_root,
+        path,
+        module_name="m",
+        is_package=False,
+        context_digest=context_digest,
+    )
+    assert reused is None
+
+
+# --------------------------------------------------------------------------
 # Correctness (the critical one): a stale shared entry must NEVER be reused.
 # --------------------------------------------------------------------------
 
