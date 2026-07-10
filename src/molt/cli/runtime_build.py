@@ -78,8 +78,11 @@ from molt.cli.runtime_paths import (
     _runtime_wasm_artifact_path,
 )
 from molt.cli.runtime_wasm_cache import (
+    _build_reuse_compatible_enabled,
+    _hydrate_runtime_wasm_from_compatible_cache,
     _hydrate_runtime_wasm_from_shared_cache,
     _publish_runtime_wasm_to_shared_cache,
+    _runtime_wasm_compat_digest,
 )
 from molt.cli.runtime_wasm_build_timings import (
     _record_runtime_wasm_build_phase,
@@ -1947,6 +1950,19 @@ def _ensure_runtime_wasm(
         if not json_output:
             print("Failed to compute runtime wasm fingerprint.", file=sys.stderr)
         return False
+    # V3 lattice index recorded alongside every published artifact: the
+    # profile-independent ABI identity so a later iteration-profile request can
+    # find this artifact as compatible-or-better (see runtime_wasm_cache).
+    _compat_key = {
+        "inputs_digest": fingerprint.get("inputs_digest"),
+        "compat_digest": _runtime_wasm_compat_digest(
+            target_triple="wasm32-wasip1",
+            rustflags=fingerprint_rustflags,
+            features=fingerprint_features,
+        ),
+        "cargo_profile": cargo_profile,
+    }
+
     def _publish_runtime_integrity_pin() -> None:
         # One integrity-pin slot per resolved build identity: the fingerprint
         # meta digest keys the sidecar so different-profile builds never
@@ -2169,6 +2185,35 @@ def _ensure_runtime_wasm(
                 )
                 return True
 
+        # V3 config-lattice reuse (opt-in): the exact-identity cache missed, but
+        # an iteration request may be served by a SAME-SOURCE artifact built at a
+        # compatible-or-better opt level (the consumer only observes the export/
+        # import ABI, not the profile). Acceptance lanes keep this OFF and pin
+        # exact identity. The candidate is re-validated (structure + exports).
+        if _build_reuse_compatible_enabled() and _hydrate_runtime_wasm_from_compatible_cache(
+            dest=runtime_wasm,
+            reloc=reloc,
+            inputs_digest=_compat_key["inputs_digest"],
+            compat_digest=str(_compat_key["compat_digest"]),
+            request_profile=cargo_profile,
+            is_valid=_shared_cache_validator,
+            exports_ok=lambda path: (
+                not validate_exports
+                or _runtime_exports_satisfy_for_mode(
+                    path, required_exports, reloc=reloc
+                )
+            ),
+        ):
+            if _finalize_reused_runtime_wasm():
+                _record_runtime_wasm_build_phase(
+                    "cargo_compile",
+                    0.0,
+                    kind="reloc" if reloc else "shared",
+                    mode="compat_lattice",
+                    detail="reused compatible-or-better-opt artifact (V3 lattice)",
+                )
+                return True
+
         needs_rebuild = not _runtime_artifact_fingerprint_matches(
             runtime_wasm,
             fingerprint,
@@ -2388,6 +2433,7 @@ def _ensure_runtime_wasm(
                             src=runtime_wasm,
                             fingerprint=fingerprint,
                             reloc=reloc,
+                            compat=_compat_key,
                         ),
                         json_output=json_output,
                     )
@@ -2619,6 +2665,7 @@ def _ensure_runtime_wasm(
                             src=runtime_wasm,
                             fingerprint=fingerprint,
                             reloc=reloc,
+                            compat=_compat_key,
                         ),
                         json_output=json_output,
                     )
