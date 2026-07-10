@@ -9,17 +9,25 @@ use std::os::raw::{c_char, c_int};
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyMem_Malloc(size: usize) -> *mut c_void {
-    unsafe { libc::malloc(size) }
+    // CPython obmalloc: `if (size == 0) size = 1;` so a 0-byte request returns a
+    // unique non-NULL pointer a caller cannot mistake for allocation failure.
+    unsafe { libc::malloc(size.max(1)) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyMem_Calloc(nelem: usize, elsize: usize) -> *mut c_void {
+    // CPython: a 0-element/0-size request still returns a unique pointer.
+    if nelem == 0 || elsize == 0 {
+        return unsafe { libc::calloc(1, 1) };
+    }
     unsafe { libc::calloc(nelem, elsize) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyMem_Realloc(ptr: *mut c_void, new_size: usize) -> *mut c_void {
-    unsafe { libc::realloc(ptr, new_size) }
+    // CPython: Realloc(p, 0) behaves like Realloc(p, 1) — it never frees `p`
+    // and never returns NULL-on-success (realloc(p, 0) may do both in C).
+    unsafe { libc::realloc(ptr, new_size.max(1)) }
 }
 
 #[unsafe(no_mangle)]
@@ -89,10 +97,16 @@ pub(crate) unsafe fn molt_object_alloc(
         0
     };
     let Some(size) = base.checked_add(extra) else {
+        // Size overflow: CPython constructors set MemoryError before NULL.
+        unsafe { crate::api::errors::PyErr_NoMemory() };
         return std::ptr::null_mut();
     };
     let raw = unsafe { PyMem_Calloc(1, size) }.cast::<PyObject>();
     if raw.is_null() {
+        // OOM: `if (op == NULL) return PyErr_NoMemory();` (Objects/object.c) —
+        // a NULL from _PyObject_New/_PyObject_NewVar/_PyObject_GC_New always
+        // carries an active MemoryError.
+        unsafe { crate::api::errors::PyErr_NoMemory() };
         return std::ptr::null_mut();
     }
     if nitems > 0 || itemsize > 0 {
@@ -107,12 +121,24 @@ pub unsafe extern "C" fn PyObject_Init(
     op: *mut PyObject,
     typeobj: *mut PyTypeObject,
 ) -> *mut PyObject {
-    if op.is_null() || typeobj.is_null() {
+    // CPython: `if (op == NULL) return PyErr_NoMemory();` — the NULL input case
+    // is an extension whose own allocation failed; it must observe MemoryError.
+    if op.is_null() {
+        return unsafe { crate::api::errors::PyErr_NoMemory() };
+    }
+    if typeobj.is_null() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return std::ptr::null_mut();
     }
     unsafe {
         (*op).ob_refcnt = 1;
         (*op).ob_type = typeobj;
+        // _PyObject_Init (pycore_object.h): an instance of a HEAPTYPE owns a
+        // reference to its type; without this incref the type's refcount
+        // underflows into use-after-free when instances outlive creation scope.
+        if (*typeobj).tp_flags & crate::abi_types::Py_TPFLAGS_HEAPTYPE != 0 {
+            crate::api::refcount::Py_INCREF(typeobj.cast::<PyObject>());
+        }
     }
     op
 }
@@ -123,12 +149,17 @@ pub unsafe extern "C" fn PyObject_InitVar(
     typeobj: *mut PyTypeObject,
     size: Py_ssize_t,
 ) -> *mut PyVarObject {
-    if op.is_null() || typeobj.is_null() {
+    if op.is_null() {
+        return unsafe { crate::api::errors::PyErr_NoMemory() }.cast::<PyVarObject>();
+    }
+    if typeobj.is_null() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return std::ptr::null_mut();
     }
     unsafe {
-        (*op).ob_base.ob_refcnt = 1;
-        (*op).ob_base.ob_type = typeobj;
+        // _PyObject_InitVar routes through _PyObject_Init (heap-type incref
+        // included), then Py_SET_SIZE.
+        PyObject_Init(op.cast::<PyObject>(), typeobj);
         (*op).ob_size = size;
     }
     op
@@ -176,7 +207,20 @@ pub unsafe extern "C" fn PyObject_CallFinalizerFromDealloc(op: *mut PyObject) ->
         return 0;
     }
     if let Some(finalize) = unsafe { (*typeobj).tp_finalize } {
+        // CPython Objects/object.c: temporarily resurrect to refcount 1 so the
+        // finalizer runs against a live object, then detect resurrection — a
+        // finalizer that stored a new reference leaves refcnt > 1, and the
+        // deallocator must ABORT the free (return -1) instead of freeing a
+        // live object (use-after-free).
+        unsafe { (*op).ob_refcnt = 1 };
         unsafe { finalize(op) };
+        let refcnt = unsafe { (*op).ob_refcnt };
+        if refcnt > 1 {
+            // Object resurrected: undo the temporary reference.
+            unsafe { (*op).ob_refcnt -= 1 };
+            return -1;
+        }
+        unsafe { (*op).ob_refcnt = 0 };
     }
     0
 }
@@ -200,13 +244,51 @@ pub unsafe extern "C" fn Py_FatalError(message: *const c_char) -> ! {
     std::process::abort()
 }
 
+// CPython 3.12 pycore_ceval.h C_RECURSION_LIMIT — the C-stack guard bound.
+const C_RECURSION_LIMIT: usize = 800;
+
+thread_local! {
+    static C_RECURSION_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Py_EnterRecursiveCall(_where: *const c_char) -> c_int {
+pub unsafe extern "C" fn Py_EnterRecursiveCall(where_: *const c_char) -> c_int {
+    // CPython _Py_CheckRecursiveCall: when the C recursion budget is exhausted,
+    // raise RecursionError "maximum recursion depth exceeded%s" and return -1 —
+    // converting unbounded C recursion into a catchable error instead of a
+    // wasm stack trap. The previous body returned 0 unconditionally (no guard).
+    let depth = C_RECURSION_DEPTH.with(|d| {
+        let v = d.get() + 1;
+        d.set(v);
+        v
+    });
+    if depth > C_RECURSION_LIMIT {
+        C_RECURSION_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+        let suffix = if where_.is_null() {
+            String::new()
+        } else {
+            unsafe { std::ffi::CStr::from_ptr(where_) }
+                .to_string_lossy()
+                .into_owned()
+        };
+        let msg = format!("maximum recursion depth exceeded{suffix}");
+        if let Ok(c) = std::ffi::CString::new(msg) {
+            unsafe {
+                crate::api::errors::PyErr_SetString(
+                    &raw mut crate::abi_types::PyExc_RecursionError,
+                    c.as_ptr(),
+                );
+            }
+        }
+        return -1;
+    }
     0
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Py_LeaveRecursiveCall() {}
+pub unsafe extern "C" fn Py_LeaveRecursiveCall() {
+    C_RECURSION_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyTraceMalloc_Track(_domain: u32, _ptr: usize, _size: usize) -> c_int {
@@ -307,8 +389,36 @@ pub unsafe extern "C" fn PyMemoryView_FromObject(op: *mut PyObject) -> *mut PyOb
         return std::ptr::null_mut();
     }
     if unsafe { PyMemoryView_Check(op) } != 0 {
+        // CPython returns a NEW distinct memoryview sharing the source's buffer
+        // (mbuf_add_view), after CHECK_RELEASED — never the same object.
+        let src = op.cast::<PyMemoryViewObject>();
+        let src_view = unsafe { &(*src).view };
+        if src_view.buf.is_null() && src_view.len != 0 {
+            unsafe {
+                crate::api::errors::PyErr_SetString(
+                    &raw mut crate::abi_types::PyExc_ValueError,
+                    c"operation forbidden on released memoryview object".as_ptr(),
+                );
+            }
+            return std::ptr::null_mut();
+        }
+        // Share the descriptor; the new view holds its own reference to the
+        // SOURCE memoryview (obj), so the exporter release still happens
+        // exactly once — in the source's dealloc. `internal` stays NULL so
+        // PyBuffer_Release on the copy only drops our obj reference.
+        let mut view: Py_buffer = unsafe { std::ptr::read(&raw const (*src).view) };
         unsafe { crate::api::refcount::Py_INCREF(op) };
-        return op;
+        view.obj = op;
+        view.internal = std::ptr::null_mut();
+        let object = Box::new(PyMemoryViewObject {
+            ob_base: PyObject {
+                ob_refcnt: 1,
+                ob_type: &raw mut PyMemoryView_Type,
+            },
+            view,
+            base: op,
+        });
+        return Box::into_raw(object).cast();
     }
     let mut view = Py_buffer {
         buf: std::ptr::null_mut(),
