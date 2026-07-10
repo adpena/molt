@@ -295,12 +295,12 @@ unsafe fn import_module_level_bytes(
     if leaf.is_null() {
         return ptr::null_mut();
     }
-    if fromlist_empty {
-        if let Some(dot) = name.iter().position(|byte| *byte == b'.') {
-            let root = unsafe { import_module_bytes(&name[..dot]) };
-            unsafe { crate::api::refcount::Py_DECREF(leaf) };
-            return root;
-        }
+    if fromlist_empty
+        && let Some(dot) = name.iter().position(|byte| *byte == b'.')
+    {
+        let root = unsafe { import_module_bytes(&name[..dot]) };
+        unsafe { crate::api::refcount::Py_DECREF(leaf) };
+        return root;
     }
     leaf
 }

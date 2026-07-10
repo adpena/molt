@@ -257,47 +257,43 @@ pub unsafe extern "C" fn PyCapsule_Import(name: *const c_char, _no_block: c_int)
     if let Some((module_name, rest)) = {
         let mut parts = key.splitn(2, '.');
         parts.next().map(|m| (m.to_string(), parts.next().map(str::to_string)))
-    } {
-        if let Ok(cmodule) = std::ffi::CString::new(module_name) {
-            let mut obj =
-                unsafe { crate::api::imports::PyImport_ImportModule(cmodule.as_ptr()) };
-            if let Some(rest) = rest {
-                for attr in rest.split('.') {
-                    if obj.is_null() {
-                        break;
-                    }
-                    let Ok(cattr) = std::ffi::CString::new(attr) else {
-                        unsafe { crate::api::refcount::Py_DECREF(obj) };
-                        obj = ptr::null_mut();
-                        break;
-                    };
-                    let next = unsafe {
-                        crate::api::object::PyObject_GetAttrString(obj, cattr.as_ptr())
-                    };
-                    unsafe { crate::api::refcount::Py_DECREF(obj) };
-                    obj = next;
+    } && let Ok(cmodule) = std::ffi::CString::new(module_name)
+    {
+        let mut obj = unsafe { crate::api::imports::PyImport_ImportModule(cmodule.as_ptr()) };
+        if let Some(rest) = rest {
+            for attr in rest.split('.') {
+                if obj.is_null() {
+                    break;
                 }
-            }
-            if !obj.is_null() {
-                if unsafe { PyCapsule_IsValid(obj, name) } != 0 {
-                    let pointer = unsafe { (*obj.cast::<PyCapsuleObject>()).pointer };
+                let Ok(cattr) = std::ffi::CString::new(attr) else {
                     unsafe { crate::api::refcount::Py_DECREF(obj) };
-                    return pointer;
-                }
+                    obj = ptr::null_mut();
+                    break;
+                };
+                let next =
+                    unsafe { crate::api::object::PyObject_GetAttrString(obj, cattr.as_ptr()) };
                 unsafe { crate::api::refcount::Py_DECREF(obj) };
-                // Resolved to something that is not the named capsule.
-                let message =
-                    format!("PyCapsule_Import \"{key}\" is not valid");
-                if let Ok(cmessage) = std::ffi::CString::new(message) {
-                    unsafe {
-                        crate::api::errors::PyErr_SetString(
-                            &raw mut crate::abi_types::PyExc_AttributeError,
-                            cmessage.as_ptr(),
-                        );
-                    }
-                }
-                return ptr::null_mut();
+                obj = next;
             }
+        }
+        if !obj.is_null() {
+            if unsafe { PyCapsule_IsValid(obj, name) } != 0 {
+                let pointer = unsafe { (*obj.cast::<PyCapsuleObject>()).pointer };
+                unsafe { crate::api::refcount::Py_DECREF(obj) };
+                return pointer;
+            }
+            unsafe { crate::api::refcount::Py_DECREF(obj) };
+            // Resolved to something that is not the named capsule.
+            let message = format!("PyCapsule_Import \"{key}\" is not valid");
+            if let Ok(cmessage) = std::ffi::CString::new(message) {
+                unsafe {
+                    crate::api::errors::PyErr_SetString(
+                        &raw mut crate::abi_types::PyExc_AttributeError,
+                        cmessage.as_ptr(),
+                    );
+                }
+            }
+            return ptr::null_mut();
         }
     }
     // Both the registry and the import walk missed: honest ImportError.

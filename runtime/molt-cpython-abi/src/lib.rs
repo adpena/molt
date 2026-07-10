@@ -52,6 +52,20 @@
 //! - Type checks: `PyLong_Check`, `PyFloat_Check`, `PyList_Check`, `PyTuple_Check`, etc.
 
 #![deny(unsafe_op_in_unsafe_fn)]
+// Apparatus for the CPYTHON-ABI-LOCK-SWEEP class: a `match`/`if let`/`while let`
+// scrutinee that locks a non-reentrant `Mutex` (e.g. `GLOBAL_BRIDGE.lock()`)
+// extends that guard's lifetime across every arm body (Rust's temporary
+// lifetime extension for match scrutinees). Any arm that re-locks the same
+// mutex — directly, or via a helper that locks it (e.g. `PyErr_SetString`,
+// `PyErr_BadInternalCall`, `PyErr_SetObject`, all of which lock `GLOBAL_BRIDGE`
+// to resolve the exception type) — self-deadlocks: a hang, not a crash. Two
+// P0 hangs of exactly this shape already bit this crate (`PyErr_GivenExceptionMatches`,
+// `PyObject_GetBuffer`) before a full sweep fixed all live and latent sites by
+// binding the lock's result to a local *before* the match/if-let so the guard
+// drops before any arm runs. This lint is the regression gate: it fires on
+// exactly this shape (a significant-Drop temporary — a `MutexGuard` — held
+// across a match scrutinee), so it must stay denied.
+#![deny(clippy::significant_drop_in_scrutinee)]
 #![allow(
     non_snake_case,
     non_camel_case_types,
