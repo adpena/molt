@@ -1403,7 +1403,10 @@ pub unsafe extern "C" fn PyComplex_RealAsDouble(op: *mut PyObject) -> c_double {
         && unsafe { PyComplex_Check(op) } != 0
         && GLOBAL_BRIDGE.lock().pyobj_to_handle(op).is_none()
     {
-        return unsafe { (*op.cast::<PyComplexObject>()).cval.real };
+        // Unaligned read: a C-minted PyComplexObject may sit on a 4-byte
+        // boundary on wasm32 (a98ef2978e's misaligned-deref UB class).
+        let field = unsafe { &raw const (*op.cast::<PyComplexObject>()).cval.real };
+        return unsafe { std::ptr::read_unaligned(field) };
     }
     unsafe { PyFloat_AsDouble(op) }
 }
@@ -1418,7 +1421,9 @@ pub unsafe extern "C" fn PyComplex_ImagAsDouble(op: *mut PyObject) -> c_double {
         && unsafe { PyComplex_Check(op) } != 0
         && GLOBAL_BRIDGE.lock().pyobj_to_handle(op).is_none()
     {
-        return unsafe { (*op.cast::<PyComplexObject>()).cval.imag };
+        // Unaligned read: same C-minted-object alignment class as above.
+        let field = unsafe { &raw const (*op.cast::<PyComplexObject>()).cval.imag };
+        return unsafe { std::ptr::read_unaligned(field) };
     }
     0.0
 }
