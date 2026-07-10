@@ -1619,6 +1619,39 @@ def _link_runtime_staticlib_to_reloc_wasm(
     tmp_output_path = output_path.with_name(
         f".{output_path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
     )
+    # E1 witness fix (long-double %L trap): wasi-libc's default libc.a stubs the
+    # `%L` (long double) printf/scanf conversions with a `long_double_not_supported`
+    # abort() that lowers to a raw `unreachable` trap — reached by numpy's
+    # longdouble repr/parse (NumPyOS_ascii_formatl/strtold) during
+    # `_multiarray_umath` import. Whole-archive wasi-libc's companion long-double
+    # formatter archive so its real vfprintf/vfscanf/strtod/floatscan override the
+    # stub objects (libc.a's stay lazy and are skipped once defined), and add
+    # wasi-sdk's compiler-rt builtins so the binary128 soft-float the formatters
+    # call (__addtf3/__multf3/…) — and numpy's own longdouble arithmetic — resolve
+    # here instead of degrading to unresolved imports at the final app link.
+    longdouble_archive = wasm_toolchain.wasm_wasi_printscan_long_double_archive()
+    builtins_archive = wasm_toolchain.wasm_clang_rt_builtins_archive()
+    whole_archive_inputs = [str(staticlib_path)]
+    trailing_archives = [str(libc_archive)]
+    if longdouble_archive is not None:
+        whole_archive_inputs.append(str(longdouble_archive.resolve(strict=False)))
+        if builtins_archive is not None:
+            trailing_archives.append(str(builtins_archive.resolve(strict=False)))
+        elif not json_output:
+            print(
+                "Runtime relocatable wasm link warning: long-double printf/scanf "
+                "archive present but libclang_rt.builtins-wasm32.a is not in the "
+                "active WASI sysroot — binary128 soft-float (__addtf3/__multf3/…) "
+                "will not resolve. Provision wasi-sdk compiler-rt builtins.",
+                file=sys.stderr,
+            )
+    elif not json_output:
+        print(
+            "Runtime relocatable wasm link warning: wasi-libc "
+            "libc-printscan-long-double.a not found in the active WASI sysroot; "
+            "long double %L formatting will abort() (unreachable) at runtime.",
+            file=sys.stderr,
+        )
     export_args = _wasm_link_args_from_rustflags(export_link_args)
     if export_args:
         export_response_path = _write_wasm_link_args_response_file(
@@ -1634,9 +1667,9 @@ def _link_runtime_staticlib_to_reloc_wasm(
                 "-r",
                 *export_args,
                 "--whole-archive",
-                str(staticlib_path),
+                *whole_archive_inputs,
                 "--no-whole-archive",
-                str(libc_archive),
+                *trailing_archives,
                 "-o",
                 str(tmp_output_path),
             ],
