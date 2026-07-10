@@ -496,23 +496,50 @@ pub unsafe extern "C" fn PyNumber_Index(o: *mut PyObject) -> *mut PyObject {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyIndex_Check(o: *mut PyObject) -> c_int {
-    let Some(bits) = resolve_bits(o) else {
+    // Native Molt integers/bools are indices.
+    if let Some(bits) = resolve_bits(o) {
+        let obj = MoltObject::from_bits(bits);
+        if obj.is_int() || obj.is_bool() {
+            return 1;
+        }
+    }
+    // Foreign object: CPython's `PyIndex_Check` tests `tp_as_number->nb_index`
+    // (numpy integer scalars define it). A native non-integer (float) has no
+    // `nb_index` slot and correctly yields 0 — the prior code answered 0 for
+    // every foreign object, stranding numpy's index-checks on its own scalars.
+    if o.is_null() {
         return 0;
-    };
-    let obj = MoltObject::from_bits(bits);
-    (obj.is_int() || obj.is_bool()) as c_int
+    }
+    let tp = unsafe { (*o).ob_type };
+    if tp.is_null() {
+        return 0;
+    }
+    let num = unsafe { (*tp).tp_as_number }.cast::<crate::abi_types::PyNumberMethods>();
+    (!num.is_null() && !unsafe { (*num).nb_index }.is_null()) as c_int
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyNumber_AsSsize_t(o: *mut PyObject, _exc: *mut PyObject) -> Py_ssize_t {
-    let bits = match resolve_bits(o) {
-        Some(b) => b,
-        None => return -1,
-    };
-    match as_i64(bits) {
-        Some(v) => v as Py_ssize_t,
-        None => -1,
+    // Native fast path: an inline int/bool reads directly.
+    if let Some(bits) = resolve_bits(o)
+        && let Some(v) = as_i64(bits)
+    {
+        return v as Py_ssize_t;
     }
+    // Otherwise reduce through `PyNumber_Index` (which now dispatches the
+    // object's `nb_index` slot — e.g. a numpy integer scalar) and read the
+    // ssize_t, as CPython's `PyNumber_AsSsize_t` does (Objects/abstract.c). A
+    // failed reduction leaves a pending exception; we propagate the -1 sentinel
+    // instead of the prior bare -1 that carried none. (`_exc` overflow-clamp
+    // translation is a no-op here: ssize_t is i64 on wasm32 and PyLong_AsSsize_t
+    // already raises an honest OverflowError for a genuine out-of-range value.)
+    let index = unsafe { PyNumber_Index(o) };
+    if index.is_null() {
+        return -1;
+    }
+    let value = unsafe { crate::api::numbers::PyLong_AsSsize_t(index) };
+    unsafe { crate::api::refcount::Py_DECREF(index) };
+    value
 }
 
 // ─── In-place operations (return new object, same semantics) ─────────────
