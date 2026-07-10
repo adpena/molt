@@ -84,9 +84,18 @@ fn test_memoryview_from_memory_has_type_and_null_base() {
         assert_eq!(*(*buffer).shape, 1);
         assert_eq!(*(*buffer).strides, 1);
     }
-    let same_view = unsafe { molt_cpython_abi::api::memory::PyMemoryView_FromObject(view) };
-    assert_eq!(same_view, view);
-    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(same_view) };
+    // CPython: FromObject(memoryview) returns a NEW distinct memoryview sharing
+    // the source's buffer (mbuf_add_view) — never the same object aliased.
+    let second_view = unsafe { molt_cpython_abi::api::memory::PyMemoryView_FromObject(view) };
+    assert_ne!(second_view, view, "FromObject(mv) must mint a distinct view");
+    let second_buffer =
+        unsafe { molt_cpython_abi::api::memory::PyMemoryView_GET_BUFFER(second_view) };
+    assert_eq!(
+        unsafe { (*second_buffer).buf },
+        unsafe { (*buffer).buf },
+        "the new view shares the source's memory"
+    );
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(second_view) };
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(view) };
 
     let empty_view = unsafe {

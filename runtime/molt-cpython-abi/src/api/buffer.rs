@@ -167,22 +167,11 @@ unsafe fn descriptor_from_pybuffer(info: *const Py_buffer) -> Result<MoltBufferV
             stride = stride.checked_mul(dim).ok_or(())?;
         }
     }
-    let mut probe = Py_buffer {
-        buf: descriptor.data.cast(),
-        obj: ptr::null_mut(),
-        len: descriptor.len as isize,
-        itemsize: descriptor.itemsize as isize,
-        readonly: descriptor.readonly as c_int,
-        ndim: descriptor.ndim as c_int,
-        format: ptr::null_mut(),
-        shape: descriptor.shape.as_mut_ptr(),
-        strides: descriptor.strides.as_mut_ptr(),
-        suboffsets: ptr::null_mut(),
-        internal: ptr::null_mut(),
-    };
-    if unsafe { !pybuffer_is_c_contiguous(&raw mut probe) } {
-        return Err(());
-    }
+    // NOTE: no C-contiguity requirement — CPython's PyMemoryView_FromBuffer
+    // preserves arbitrary strides (Fortran order, sliced/strided exporters);
+    // the captured strides above carry the layout. Only suboffset (PIL-style)
+    // buffers are rejected earlier: `MoltBufferView` has no suboffsets field,
+    // so that case fails closed with BufferError rather than mis-describing.
 
     if !info.format.is_null() {
         let bytes = unsafe { CStr::from_ptr(info.format) }.to_bytes();
@@ -392,6 +381,63 @@ unsafe fn pybuffer_satisfies_flags(view: *const Py_buffer, flags: c_int) -> bool
     true
 }
 
+type BfGetBuffer = unsafe extern "C" fn(*mut PyObject, *mut Py_buffer, c_int) -> c_int;
+type BfReleaseBuffer = unsafe extern "C" fn(*mut PyObject, *mut Py_buffer);
+
+/// Read a foreign object's `tp_as_buffer->bf_getbuffer` slot, if any.
+unsafe fn foreign_bf_getbuffer(obj: *mut PyObject) -> Option<BfGetBuffer> {
+    let tp = unsafe { (*obj).ob_type };
+    if tp.is_null() {
+        return None;
+    }
+    let pb = unsafe { (*tp).tp_as_buffer }.cast::<crate::abi_types::PyBufferProcs>();
+    if pb.is_null() {
+        return None;
+    }
+    let raw = unsafe { (*pb).bf_getbuffer };
+    if raw.is_null() {
+        return None;
+    }
+    Some(unsafe { std::mem::transmute::<*mut std::ffi::c_void, BfGetBuffer>(raw) })
+}
+
+/// Read a foreign object's `tp_as_buffer->bf_releasebuffer` slot, if any.
+unsafe fn foreign_bf_releasebuffer(obj: *mut PyObject) -> Option<BfReleaseBuffer> {
+    let tp = unsafe { (*obj).ob_type };
+    if tp.is_null() {
+        return None;
+    }
+    let pb = unsafe { (*tp).tp_as_buffer }.cast::<crate::abi_types::PyBufferProcs>();
+    if pb.is_null() {
+        return None;
+    }
+    let raw = unsafe { (*pb).bf_releasebuffer };
+    if raw.is_null() {
+        return None;
+    }
+    Some(unsafe { std::mem::transmute::<*mut std::ffi::c_void, BfReleaseBuffer>(raw) })
+}
+
+/// CPython's no-buffer-slot failure: PyErr_Format(TypeError,
+/// "a bytes-like object is required, not '%.100s'").
+unsafe fn raise_bytes_like_type_error(obj: *mut PyObject) {
+    let tp = unsafe { (*obj).ob_type };
+    let name = if tp.is_null() || unsafe { (*tp).tp_name }.is_null() {
+        "object".to_string()
+    } else {
+        unsafe { CStr::from_ptr((*tp).tp_name) }
+            .to_string_lossy()
+            .into_owned()
+    };
+    let msg = format!(
+        "a bytes-like object is required, not '{:.100}'",
+        name
+    );
+    if let Ok(c) = std::ffi::CString::new(msg) {
+        unsafe { crate::api::errors::PyErr_SetString(&raw mut PyExc_TypeError, c.as_ptr()) };
+    }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_GetBuffer(
     obj: *mut PyObject,
@@ -410,7 +456,16 @@ pub unsafe extern "C" fn PyObject_GetBuffer(
     let bits = match GLOBAL_BRIDGE.lock().pyobj_to_handle(obj) {
         Some(bits) => bits,
         None => {
-            unsafe { set_buffer_error(b"object has no Molt buffer handle\0") };
+            // Foreign C object: CPython Objects/abstract.c dispatches
+            // `(*pb->bf_getbuffer)(obj, view, flags)` — the slot installed by
+            // PyType_FromSpec was previously DEAD (no call site), so a
+            // C-extension type (numpy's PyArray_Type) could never export a
+            // buffer through the standard protocol.
+            if let Some(getbuffer) = unsafe { foreign_bf_getbuffer(obj) } {
+                return unsafe { getbuffer(obj, view, flags) };
+            }
+            // No buffer slot: TypeError with CPython's message (was BufferError).
+            unsafe { raise_bytes_like_type_error(obj) };
             return -1;
         }
     };
@@ -448,11 +503,19 @@ pub unsafe extern "C" fn PyBuffer_Release(view: *mut Py_buffer) {
     }
     unsafe {
         if !(*view).internal.is_null() && unregister_buffer_internal((*view).internal) {
+            // Molt-registered view: release through the runtime hook.
             let mut internal = Box::from_raw((*view).internal.cast::<BufferInternal>());
             if internal.release_kind == BufferReleaseKind::Runtime {
                 let _ = (hooks_or_stubs().buffer_release)(
                     &mut internal.descriptor as *mut MoltBufferView,
                 );
+            }
+        } else if !(*view).obj.is_null() {
+            // View filled by a C-extension bf_getbuffer: CPython calls
+            // `pb->bf_releasebuffer(obj, view)` when present, BEFORE the obj
+            // DECREF — skipping it imbalances the exporter's refcount/resources.
+            if let Some(releasebuffer) = foreign_bf_releasebuffer((*view).obj) {
+                releasebuffer((*view).obj, view);
             }
         }
         (*view).internal = ptr::null_mut();
@@ -466,22 +529,32 @@ pub unsafe extern "C" fn PyBuffer_Release(view: *mut Py_buffer) {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_CheckBuffer(obj: *mut PyObject) -> c_int {
+    // CPython: a PURE pointer test — `tp_as_buffer && bf_getbuffer` — with no
+    // acquisition, no release, and NO mutation of the error indicator. The old
+    // body actually acquired+released the buffer (real side effects) and called
+    // PyErr_Clear() on failure, clobbering any pending exception.
     if obj.is_null() {
         return 0;
     }
-    let Some(bits) = GLOBAL_BRIDGE.lock().pyobj_to_handle(obj) else {
-        return 0;
-    };
-    let hooks = hooks_or_stubs();
-    let mut descriptor = MoltBufferView::default();
-    if unsafe { (hooks.buffer_acquire)(bits, &mut descriptor as *mut MoltBufferView) } == 0 {
-        unsafe {
-            let _ = (hooks.buffer_release)(&mut descriptor as *mut MoltBufferView);
+    let bits = GLOBAL_BRIDGE.lock().pyobj_to_handle(obj);
+    match bits {
+        None => {
+            // Foreign object: honest slot test.
+            (unsafe { foreign_bf_getbuffer(obj) }).is_some() as c_int
         }
-        return 1;
+        Some(bits) => {
+            // Molt-native: side-effect-free classification. The runtime buffer
+            // exporters are the bytes-like natives; memoryview/bytearray are
+            // raw ABI objects and never reach this arm.
+            if unsafe { crate::api::memory::PyMemoryView_Check(obj) } != 0
+                || unsafe { crate::api::strings::PyByteArray_Check(obj) } != 0
+            {
+                return 1;
+            }
+            let tag = unsafe { (hooks_or_stubs().classify_heap)(bits) };
+            (tag == crate::abi_types::MoltTypeTag::Bytes as u8) as c_int
+        }
     }
-    unsafe { crate::api::errors::PyErr_Clear() };
-    0
 }
 
 #[unsafe(no_mangle)]
@@ -491,6 +564,14 @@ pub unsafe extern "C" fn PyBuffer_IsContiguous(
 ) -> c_int {
     if view.is_null() {
         return 0;
+    }
+    // CPython Objects/abstract.c: a view with suboffsets is NEVER contiguous,
+    // and a zero-length view is ALWAYS contiguous (both checked up front).
+    if !unsafe { (*view).suboffsets }.is_null() {
+        return 0;
+    }
+    if unsafe { (*view).len } == 0 {
+        return 1;
     }
     match order as u8 {
         b'C' | b'c' => unsafe { pybuffer_is_c_contiguous(view) as c_int },
@@ -508,19 +589,22 @@ pub unsafe extern "C" fn PyBuffer_FillInfo(
     readonly: c_int,
     flags: c_int,
 ) -> c_int {
+    // CPython Objects/abstract.c: the NULL-view path SETS BufferError
+    // ("PyBuffer_FillInfo: view==NULL argument is obsolete"); no len/buf
+    // pre-validation is performed — FillInfo accepts whatever the caller
+    // declares (the only semantic check is writable-vs-readonly).
     if view.is_null() {
+        unsafe { set_buffer_error(b"PyBuffer_FillInfo: view==NULL argument is obsolete\0") };
         return -1;
     }
     if len < 0 {
+        // Defensive (not in CPython, but a negative length would poison every
+        // downstream usize cast); fail with an exception rather than bare -1.
         unsafe { set_buffer_error(b"buffer length must not be negative\0") };
         return -1;
     }
-    if buf.is_null() && len != 0 {
-        unsafe { set_buffer_error(b"buffer data pointer must not be NULL\0") };
-        return -1;
-    }
     if (flags & PyBUF_WRITABLE) != 0 && readonly != 0 {
-        unsafe { set_buffer_error(b"writable buffer requested for readonly object\0") };
+        unsafe { set_buffer_error(b"Object is not writable.\0") };
         return -1;
     }
     let base = if obj.is_null() {
