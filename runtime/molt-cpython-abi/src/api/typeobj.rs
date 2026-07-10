@@ -1516,7 +1516,14 @@ pub unsafe extern "C" fn PyMember_GetOne(
                 *(field as *const std::os::raw::c_long) as c_longlong,
             ),
             PY_T_FLOAT => crate::api::numbers::PyFloat_FromDouble(*(field as *const f32) as f64),
-            PY_T_DOUBLE => crate::api::numbers::PyFloat_FromDouble(*(field as *const f64)),
+            // `field = addr + offset` is only guaranteed aligned to the C
+            // object's struct alignment, which on wasm32 is 4 for a statically
+            // declared object. An 8-byte `f64` read there would be a misaligned
+            // dereference (UB; caught by the debug alignment check), so read it
+            // unaligned. (4-byte members above are always ≥4-aligned = safe.)
+            PY_T_DOUBLE => crate::api::numbers::PyFloat_FromDouble(std::ptr::read_unaligned(
+                field as *const f64,
+            )),
             PY_T_BOOL => {
                 let b = *(field as *const i8) != 0;
                 let obj = if b {
@@ -1534,12 +1541,14 @@ pub unsafe extern "C" fn PyMember_GetOne(
             PY_T_ULONG => crate::api::numbers::PyLong_FromUnsignedLongLong(
                 *(field as *const std::os::raw::c_ulong) as c_ulonglong,
             ),
-            PY_T_LONGLONG => {
-                crate::api::numbers::PyLong_FromLongLong(*(field as *const c_longlong))
-            }
-            PY_T_ULONGLONG => {
-                crate::api::numbers::PyLong_FromUnsignedLongLong(*(field as *const c_ulonglong))
-            }
+            // 8-byte members: `field` may be only 4-aligned (see PY_T_DOUBLE) —
+            // read unaligned to avoid a misaligned dereference on wasm32.
+            PY_T_LONGLONG => crate::api::numbers::PyLong_FromLongLong(std::ptr::read_unaligned(
+                field as *const c_longlong,
+            )),
+            PY_T_ULONGLONG => crate::api::numbers::PyLong_FromUnsignedLongLong(
+                std::ptr::read_unaligned(field as *const c_ulonglong),
+            ),
             PY_T_PYSSIZET => crate::api::numbers::PyLong_FromSsize_t(*(field as *const isize)),
             PY_T_CHAR => {
                 let c = *(field as *const c_char);
