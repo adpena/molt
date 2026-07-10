@@ -622,3 +622,187 @@ pub unsafe extern "C" fn molt_datetime_dealloc(op: *mut PyObject) {
 
 #[allow(dead_code)]
 const _: Py_ssize_t = std::mem::size_of::<PyDateTime_DateTime>() as Py_ssize_t;
+
+// ── datetime C-API capsule (`datetime.datetime_CAPI`) ────────────────────────
+//
+// A C extension that uses the datetime types (numpy, pandas, ...) does
+// `PyDateTime_IMPORT`, which expands to
+// `PyDateTimeAPI = (PyDateTime_CAPI *)PyCapsule_Import("datetime.datetime_CAPI", 0)`
+// (CPython 3.12 `Include/datetime.h`). CPython's `_datetimemodule.c` publishes
+// this capsule at module init via
+// `PyModule_AddObject(m, "datetime_CAPI", PyCapsule_New(&CAPI, PyDateTime_CAPSULE_NAME, NULL))`.
+//
+// molt has no importable `datetime` C module, so before this fix
+// `PyCapsule_Import` recorded a *silent failure* and returned NULL — numpy then
+// returned NULL from `PyInit__multiarray_umath` (M34/M05 silent-failure class).
+// We register the exact same capsule at ABI init (`molt_cpython_abi_init`), so
+// `PyCapsule_Import`'s registry fast-path resolves it. Every field points at a
+// molt symbol that already exists: the five static datetime type objects, the
+// UTC `timezone` singleton, and the nine `molt_cpython_abi_*` constructors,
+// whose signatures are byte-for-byte the CPython declarations below.
+
+/// CPython 3.12 `PyDateTime_CAPI` (`Include/datetime.h`). The field **order and
+/// count are ABI** — `PyDateTime_IMPORT` reads `PyDateTimeAPI->DateType`,
+/// `->DateTimeType`, ... by fixed struct offset. Layout: 5 type objects + 1
+/// singleton + 9 constructor function pointers = 15 pointer-sized fields.
+#[allow(non_snake_case)]
+#[repr(C)]
+pub struct PyDateTime_CAPI {
+    /// type objects
+    pub DateType: *mut PyTypeObject,
+    pub DateTimeType: *mut PyTypeObject,
+    pub TimeType: *mut PyTypeObject,
+    pub DeltaType: *mut PyTypeObject,
+    pub TZInfoType: *mut PyTypeObject,
+    /// singletons
+    pub TimeZone_UTC: *mut PyObject,
+    /// constructors
+    pub Date_FromDate: unsafe extern "C" fn(c_int, c_int, c_int, *mut PyTypeObject) -> *mut PyObject,
+    pub DateTime_FromDateAndTime: unsafe extern "C" fn(
+        c_int,
+        c_int,
+        c_int,
+        c_int,
+        c_int,
+        c_int,
+        c_int,
+        *mut PyObject,
+        *mut PyTypeObject,
+    ) -> *mut PyObject,
+    pub Time_FromTime:
+        unsafe extern "C" fn(c_int, c_int, c_int, c_int, *mut PyObject, *mut PyTypeObject) -> *mut PyObject,
+    pub Delta_FromDelta: unsafe extern "C" fn(c_int, c_int, c_int, c_int, *mut PyTypeObject) -> *mut PyObject,
+    pub TimeZone_FromTimeZone: unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> *mut PyObject,
+    /// constructors for the DB API
+    pub DateTime_FromTimestamp:
+        unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut PyObject) -> *mut PyObject,
+    pub Date_FromTimestamp: unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> *mut PyObject,
+    /// PEP 495 constructors
+    pub DateTime_FromDateAndTimeAndFold: unsafe extern "C" fn(
+        c_int,
+        c_int,
+        c_int,
+        c_int,
+        c_int,
+        c_int,
+        c_int,
+        *mut PyObject,
+        c_int,
+        *mut PyTypeObject,
+    ) -> *mut PyObject,
+    pub Time_FromTimeAndFold: unsafe extern "C" fn(
+        c_int,
+        c_int,
+        c_int,
+        c_int,
+        *mut PyObject,
+        c_int,
+        *mut PyTypeObject,
+    ) -> *mut PyObject,
+}
+
+/// The canonical CPython capsule name for the datetime C API
+/// (`PyDateTime_CAPSULE_NAME`). Static storage so `PyCapsule_New` — which
+/// stores the name pointer WITHOUT copying — retains a valid pointer forever.
+const DATETIME_CAPSULE_NAME: &std::ffi::CStr = c"datetime.datetime_CAPI";
+
+/// Assemble the `PyDateTime_CAPI` struct from molt's real datetime symbols and
+/// publish it as the `datetime.datetime_CAPI` capsule, exactly like CPython's
+/// `_datetimemodule.c`. Called once from the `Once`-guarded
+/// `molt_cpython_abi_init`, AFTER `init_static_types` has patched the datetime
+/// type objects and the UTC singleton's `ob_type`.
+///
+/// The `PyDateTime_CAPI` is leaked (process-lifetime singleton): numpy stores
+/// `PyDateTimeAPI` pointing at it for the life of the process, matching
+/// CPython, where the module owns the struct forever.
+pub fn register_datetime_capi() {
+    let capi = Box::new(PyDateTime_CAPI {
+        DateType: &raw mut crate::abi_types::PyDateTime_DateType,
+        DateTimeType: &raw mut crate::abi_types::PyDateTime_DateTimeType,
+        TimeType: &raw mut crate::abi_types::PyDateTime_TimeType,
+        DeltaType: &raw mut crate::abi_types::PyDateTime_DeltaType,
+        TZInfoType: &raw mut crate::abi_types::PyDateTime_TZInfoType,
+        TimeZone_UTC: &raw mut crate::abi_types::PyDateTime_TimeZone_UTC_Object,
+        Date_FromDate: molt_cpython_abi_date_from_date,
+        DateTime_FromDateAndTime: molt_cpython_abi_datetime_from_date_and_time,
+        Time_FromTime: molt_cpython_abi_time_from_time,
+        Delta_FromDelta: molt_cpython_abi_delta_from_delta,
+        TimeZone_FromTimeZone: molt_cpython_abi_timezone_from_timezone,
+        DateTime_FromTimestamp: molt_cpython_abi_datetime_from_timestamp,
+        Date_FromTimestamp: molt_cpython_abi_date_from_timestamp,
+        DateTime_FromDateAndTimeAndFold: molt_cpython_abi_datetime_from_date_and_time_and_fold,
+        Time_FromTimeAndFold: molt_cpython_abi_time_from_time_and_fold,
+    });
+    let capi_ptr = Box::into_raw(capi).cast::<std::ffi::c_void>();
+    // `PyCapsule_New` inserts into the capsule registry (so `PyCapsule_Import`'s
+    // fast path resolves it) and into the object bridge. The returned capsule
+    // object is intentionally never DECREF'd — like CPython's module-owned
+    // capsule it lives for the process lifetime.
+    let capsule = unsafe {
+        crate::api::capsule::PyCapsule_New(capi_ptr, DATETIME_CAPSULE_NAME.as_ptr(), None)
+    };
+    debug_assert!(!capsule.is_null(), "datetime CAPI capsule registration failed");
+}
+
+#[cfg(test)]
+mod capi_tests {
+    use super::*;
+
+    /// The struct is exactly 15 pointer-sized fields (5 types + 1 singleton + 9
+    /// constructors). A drift here silently misaligns every field numpy reads by
+    /// offset — the whole point of pinning the CPython 3.12 layout.
+    #[test]
+    fn datetime_capi_has_exact_field_count() {
+        assert_eq!(
+            std::mem::size_of::<PyDateTime_CAPI>(),
+            15 * std::mem::size_of::<*mut std::ffi::c_void>(),
+            "PyDateTime_CAPI must be 15 pointer-sized fields (CPython 3.12 layout)"
+        );
+    }
+
+    /// After ABI init the `datetime.datetime_CAPI` capsule is importable and its
+    /// fields resolve to molt's real datetime symbols — the roundtrip numpy's
+    /// `PyDateTime_IMPORT` performs.
+    #[test]
+    fn datetime_capi_capsule_roundtrips() {
+        crate::bridge::molt_cpython_abi_init();
+        let ptr = unsafe {
+            crate::api::capsule::PyCapsule_Import(DATETIME_CAPSULE_NAME.as_ptr(), 0)
+        };
+        assert!(!ptr.is_null(), "PyCapsule_Import(datetime.datetime_CAPI) returned NULL");
+        let capi = ptr.cast::<PyDateTime_CAPI>();
+        unsafe {
+            assert!(
+                std::ptr::eq((*capi).DateType, &raw mut crate::abi_types::PyDateTime_DateType),
+                "DateType must alias molt's PyDateTime_DateType"
+            );
+            assert!(
+                std::ptr::eq(
+                    (*capi).DateTimeType,
+                    &raw mut crate::abi_types::PyDateTime_DateTimeType
+                ),
+                "DateTimeType must alias molt's PyDateTime_DateTimeType"
+            );
+            assert!(
+                std::ptr::eq(
+                    (*capi).TZInfoType,
+                    &raw mut crate::abi_types::PyDateTime_TZInfoType
+                ),
+                "TZInfoType must alias molt's PyDateTime_TZInfoType"
+            );
+            assert!(
+                std::ptr::eq(
+                    (*capi).TimeZone_UTC,
+                    &raw mut crate::abi_types::PyDateTime_TimeZone_UTC_Object
+                ),
+                "TimeZone_UTC must alias molt's UTC singleton"
+            );
+        }
+        // The constructor pointers must be non-null and callable (build a date).
+        let date = unsafe {
+            ((*capi).Date_FromDate)(2026, 7, 10, std::ptr::null_mut())
+        };
+        assert!(!date.is_null(), "CAPI Date_FromDate produced NULL for a valid date");
+        unsafe { crate::api::refcount::Py_DECREF(date) };
+    }
+}
