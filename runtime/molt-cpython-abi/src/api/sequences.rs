@@ -5,13 +5,37 @@ use crate::abi_types::{Py_ssize_t, PyObject, PyTupleObject, PyVarObject};
 use crate::abi_types::{PyList_Type, PyTuple_Type};
 use crate::bridge::GLOBAL_BRIDGE;
 use crate::hooks::hooks_or_stubs;
+use molt_lang_obj_model::MoltObject;
 use std::os::raw::c_int;
 use std::ptr;
 
 // ─── PyList ───────────────────────────────────────────────────────────────
 
+/// Resolve `op` to its runtime handle bits iff it is a Molt-native list.
+/// `None` → the caller sets the CPython-shaped exception (`BadInternalCall`).
+fn resolve_native_list(op: *mut PyObject) -> Option<u64> {
+    if op.is_null() {
+        return None;
+    }
+    let bits = GLOBAL_BRIDGE.lock().pyobj_to_handle(op)?;
+    if !MoltObject::from_bits(bits).is_ptr() {
+        return None;
+    }
+    let h = hooks_or_stubs();
+    if unsafe { (h.classify_heap)(bits) } == crate::abi_types::MoltTypeTag::List as u8 {
+        Some(bits)
+    } else {
+        None
+    }
+}
+
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyList_New(_size: Py_ssize_t) -> *mut PyObject {
+pub unsafe extern "C" fn PyList_New(size: Py_ssize_t) -> *mut PyObject {
+    // CPython: negative size → SystemError (PyErr_BadInternalCall).
+    if size < 0 {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return ptr::null_mut();
+    }
     let h = hooks_or_stubs();
     let bits = unsafe { (h.alloc_list)() };
     if bits == 0 {
@@ -27,18 +51,35 @@ pub unsafe extern "C" fn PyList_New(_size: Py_ssize_t) -> *mut PyObject {
         }
         return ptr::null_mut();
     }
+    // CPython pre-sizes the list to `size` NULL slots: PyList_GET_SIZE reports
+    // `size` immediately and PyList_SetItem/SET_ITEM stores at ANY index in
+    // [0,size) — including out of order. The previous body ignored `size`
+    // (empty list) and SET_ITEM appended, silently mis-placing out-of-order
+    // fills. Molt slots are pre-filled with None (the runtime has no NULL
+    // slot; extensions must fill before reading either way).
+    let none_bits = MoltObject::none().bits();
+    for _ in 0..size {
+        unsafe { (h.list_append)(bits, none_bits) };
+    }
     unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyList_Append(list: *mut PyObject, item: *mut PyObject) -> c_int {
+    // CPython: non-list or NULL newitem → PyErr_BadInternalCall() + -1. Every
+    // -1 return must carry a pending exception (sentinel sweep).
     if list.is_null() || item.is_null() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return -1;
     }
     let mut bridge = GLOBAL_BRIDGE.lock();
     let list_bits = match bridge.pyobj_to_handle(list) {
         Some(b) => b,
-        None => return -1,
+        None => {
+            drop(bridge);
+            unsafe { crate::api::errors::PyErr_BadInternalCall() };
+            return -1;
+        }
     };
     let mut item_is_foreign = false;
     let item_bits = match bridge.pyobj_to_handle(item) {
@@ -50,7 +91,21 @@ pub unsafe extern "C" fn PyList_Append(list: *mut PyObject, item: *mut PyObject)
                 item_is_foreign = true;
                 b
             }
-            None => return -1,
+            None => {
+                drop(bridge);
+                // No foreign wrapper could be minted (runtime hooks absent).
+                // Fail loud instead of a contentless -1.
+                if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+                    unsafe {
+                        crate::api::errors::PyErr_SetString(
+                            &raw mut crate::abi_types::PyExc_SystemError,
+                            c"PyList_Append: item is not a bridge-managed object and no foreign wrapper could be minted"
+                                .as_ptr(),
+                        );
+                    }
+                }
+                return -1;
+            }
         },
     };
     drop(bridge);
@@ -69,6 +124,10 @@ pub unsafe extern "C" fn PyList_Append(list: *mut PyObject, item: *mut PyObject)
     0
 }
 
+/// Raw (macro-semantics) item read: no type/bounds exception, NULL on any miss.
+/// Borrowed reference, exactly like CPython's `PyList_GET_ITEM` macro. The
+/// checked entry point is [`PyList_GetItem`] (which the ABI tier's
+/// `PyList_GET_ITEM` header macro also routes to).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyList_GET_ITEM(op: *mut PyObject, i: Py_ssize_t) -> *mut PyObject {
     if op.is_null() || i < 0 {
@@ -85,12 +144,40 @@ pub unsafe extern "C" fn PyList_GET_ITEM(op: *mut PyObject, i: Py_ssize_t) -> *m
     if item_bits == 0 {
         return ptr::null_mut();
     }
-    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(item_bits) }
+    // CPython returns a BORROWED reference; the previous owning
+    // `handle_to_pyobj` over-anchored one proxy ref per read.
+    unsafe { GLOBAL_BRIDGE.lock().handle_to_borrowed_pyobj(item_bits) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyList_GetItem(op: *mut PyObject, i: Py_ssize_t) -> *mut PyObject {
-    unsafe { PyList_GET_ITEM(op, i) }
+    // CPython: non-list → PyErr_BadInternalCall; OOB (incl. negative) →
+    // IndexError "list index out of range"; success → borrowed ref. The prior
+    // delegation to GET_ITEM returned bare NULLs with no exception on both
+    // error classes (silent-sentinel row).
+    let bits = match resolve_native_list(op) {
+        Some(b) => b,
+        None => {
+            unsafe { crate::api::errors::PyErr_BadInternalCall() };
+            return ptr::null_mut();
+        }
+    };
+    let h = hooks_or_stubs();
+    if i >= 0 {
+        // Valid list item bits are never 0, so a 0 read == out of range;
+        // single hook call on the hot path.
+        let item_bits = unsafe { (h.list_item)(bits, i as usize) };
+        if item_bits != 0 {
+            return unsafe { GLOBAL_BRIDGE.lock().handle_to_borrowed_pyobj(item_bits) };
+        }
+    }
+    unsafe {
+        crate::api::errors::PyErr_SetString(
+            &raw mut crate::abi_types::PyExc_IndexError,
+            c"list index out of range".as_ptr(),
+        );
+    }
+    ptr::null_mut()
 }
 
 #[unsafe(no_mangle)]
@@ -103,42 +190,106 @@ pub unsafe extern "C" fn PyList_GetItemRef(op: *mut PyObject, i: Py_ssize_t) -> 
     item
 }
 
+/// Macro-semantics indexed store (steals the reference to `v`). Routes to the
+/// same real indexed `PyList_SetItem` store — the ABI tier's header maps the
+/// `PyList_SET_ITEM` macro to `PyList_SetItem` anyway. The previous body
+/// APPENDED via `list_append` (mis-placing any out-of-order fill and
+/// duplicating on replace) and silently DROPPED foreign items.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyList_SET_ITEM(op: *mut PyObject, i: Py_ssize_t, v: *mut PyObject) {
-    if op.is_null() || i < 0 || v.is_null() {
-        return;
+    unsafe {
+        let _ = PyList_SetItem(op, i, v);
     }
-    let bridge = GLOBAL_BRIDGE.lock();
-    let list_bits = match bridge.pyobj_to_handle(op) {
-        Some(b) => b,
-        None => return,
-    };
-    let val_bits = match bridge.pyobj_to_handle(v) {
-        Some(b) => b,
-        None => return,
-    };
-    drop(bridge);
-    let h = hooks_or_stubs();
-    // CPython's PyList_SET_ITEM is used almost exclusively in a
-    // build-then-fill pattern right after PyList_New(n).  The runtime
-    // hooks expose list_append but not indexed set.  Append gives correct
-    // results when items are set in order (index 0, 1, 2, ...), which is
-    // the only pattern C extensions use with SET_ITEM on a freshly
-    // allocated list.  For out-of-order indexed set we would need a
-    // list_set_item hook; that is not required by any extension we support.
-    unsafe { (h.list_append)(list_bits, val_bits) };
 }
 
+/// Faithful `Objects/listobject.c` `PyList_SetItem`:
+/// * steals the reference to `v` — released on EVERY error path (`Py_XDECREF`);
+/// * non-list receiver → `PyErr_BadInternalCall()` + `-1`;
+/// * out-of-range `i` (incl. negative) → `IndexError` "list assignment index
+///   out of range" + `-1`;
+/// * success → indexed store via the `list_set` hook (`Py_SETREF` semantics).
+///
+/// A foreign (C-extension) `v` gets first-class `TYPE_ID_FOREIGN` custody via
+/// `molt_value_for_pyobj` (pattern from 04599327e2) — the wrapper takes its own
+/// strong reference, and the stolen caller reference is consumed here — instead
+/// of the old silent drop-and-report-success.
+///
+/// Custody note: the *replaced* occupant's bridge anchor is intentionally NOT
+/// released — same deliberate leak-not-corrupt trade `PyDict_SetItem` documents
+/// for removed entries (a mismatched release on a foreign wrapper would
+/// double-free when the wrapper later drops; the anchor is a small header).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyList_SetItem(
     op: *mut PyObject,
     i: Py_ssize_t,
     v: *mut PyObject,
 ) -> c_int {
-    if op.is_null() || i < 0 || v.is_null() {
+    let list_bits = match resolve_native_list(op) {
+        Some(b) => b,
+        None => {
+            unsafe {
+                crate::api::refcount::Py_XDECREF(v);
+                crate::api::errors::PyErr_BadInternalCall();
+            }
+            return -1;
+        }
+    };
+    if v.is_null() {
+        // CPython would store a NULL slot; Molt lists have no NULL slot. An
+        // honest SystemError beats fabricating a stored value.
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return -1;
     }
-    unsafe { PyList_SET_ITEM(op, i, v) };
+    let mut bridge = GLOBAL_BRIDGE.lock();
+    let mut val_is_foreign = false;
+    let val_bits = match bridge.pyobj_to_handle(v) {
+        Some(b) => b,
+        None => match unsafe { bridge.molt_value_for_pyobj(v) } {
+            Some(b) => {
+                val_is_foreign = true;
+                b
+            }
+            None => {
+                drop(bridge);
+                unsafe {
+                    crate::api::refcount::Py_XDECREF(v);
+                    if crate::api::errors::PyErr_Occurred().is_null() {
+                        crate::api::errors::PyErr_SetString(
+                            &raw mut crate::abi_types::PyExc_SystemError,
+                            c"PyList_SetItem: item is not a bridge-managed object and no foreign wrapper could be minted"
+                                .as_ptr(),
+                        );
+                    }
+                }
+                return -1;
+            }
+        },
+    };
+    drop(bridge);
+    let h = hooks_or_stubs();
+    let stored = if i >= 0 {
+        unsafe { (h.list_set)(list_bits, i as usize, val_bits, ptr::null_mut()) }
+    } else {
+        0
+    };
+    if stored != 1 {
+        // OOB: CPython Py_XDECREFs the stolen reference, then IndexError.
+        unsafe {
+            crate::api::refcount::Py_XDECREF(v);
+            crate::api::errors::PyErr_SetString(
+                &raw mut crate::abi_types::PyExc_IndexError,
+                c"list assignment index out of range".as_ptr(),
+            );
+        }
+        return -1;
+    }
+    // Steal contract on success: the container takes over the caller's
+    // reference — a bridge proxy is NOT INCREF'd (unlike the non-stealing
+    // Append), and a foreign value's stolen C reference is consumed now (the
+    // TYPE_ID_FOREIGN wrapper holds its own strong reference for custody).
+    if val_is_foreign {
+        unsafe { crate::api::refcount::Py_DECREF(v) };
+    }
     0
 }
 
@@ -159,7 +310,17 @@ pub unsafe extern "C" fn PyList_GET_SIZE(op: *mut PyObject) -> Py_ssize_t {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyList_Size(op: *mut PyObject) -> Py_ssize_t {
-    unsafe { PyList_GET_SIZE(op) }
+    // CPython: `if (!PyList_Check(op)) { PyErr_BadInternalCall(); return -1; }`.
+    match resolve_native_list(op) {
+        Some(bits) => {
+            let h = hooks_or_stubs();
+            unsafe { (h.list_len)(bits) as Py_ssize_t }
+        }
+        None => {
+            unsafe { crate::api::errors::PyErr_BadInternalCall() };
+            -1
+        }
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -168,7 +329,17 @@ pub unsafe extern "C" fn PyList_Check(op: *mut PyObject) -> c_int {
         return 0;
     }
     let ob_type = unsafe { (*op).ob_type };
-    (std::ptr::eq(ob_type, &raw const crate::abi_types::PyList_Type)) as c_int
+    if ob_type.is_null() {
+        return 0;
+    }
+    if std::ptr::eq(ob_type, &raw const crate::abi_types::PyList_Type) {
+        return 1;
+    }
+    // CPython PyList_Check = Py_TPFLAGS_LIST_SUBCLASS — list AND subclasses.
+    // Same subtype-walk class as fcb1d9596d; identity-only was the ledger row.
+    unsafe {
+        crate::api::typeobj::PyType_IsSubtype(ob_type, &raw mut crate::abi_types::PyList_Type)
+    }
 }
 
 // ─── PyTuple ──────────────────────────────────────────────────────────────
@@ -245,12 +416,62 @@ pub unsafe extern "C" fn PyTuple_GET_ITEM(op: *mut PyObject, i: Py_ssize_t) -> *
     if item_bits == 0 {
         return ptr::null_mut();
     }
-    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(item_bits) }
+    // Borrowed reference (CPython macro contract), matching PyList_GET_ITEM.
+    unsafe { GLOBAL_BRIDGE.lock().handle_to_borrowed_pyobj(item_bits) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyTuple_GetItem(op: *mut PyObject, i: Py_ssize_t) -> *mut PyObject {
-    unsafe { PyTuple_GET_ITEM(op, i) }
+    // CPython Objects/tupleobject.c: non-tuple → PyErr_BadInternalCall; OOB
+    // (incl. negative) → IndexError "tuple index out of range"; in-bounds →
+    // the raw borrowed slot (may be NULL on a partially-filled tuple, with no
+    // exception). The prior GET_ITEM delegation returned bare NULLs with no
+    // exception for both error classes (silent-sentinel row).
+    if op.is_null() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return ptr::null_mut();
+    }
+    // ABI-layout tuple: the extension-built hot path, zero hook calls.
+    if let Some(tuple) = unsafe { tuple_layout_object(op) } {
+        let len = unsafe { (*tuple).ob_base.ob_size };
+        if i < 0 || i >= len || unsafe { (*tuple).ob_item.is_null() } {
+            unsafe {
+                crate::api::errors::PyErr_SetString(
+                    &raw mut crate::abi_types::PyExc_IndexError,
+                    c"tuple index out of range".as_ptr(),
+                );
+            }
+            return ptr::null_mut();
+        }
+        return unsafe { *(*tuple).ob_item.add(i as usize) };
+    }
+    // Bridge-managed Molt tuple.
+    let bits = match GLOBAL_BRIDGE.lock().pyobj_to_handle(op) {
+        Some(b) if MoltObject::from_bits(b).is_ptr() => b,
+        _ => {
+            unsafe { crate::api::errors::PyErr_BadInternalCall() };
+            return ptr::null_mut();
+        }
+    };
+    let h = hooks_or_stubs();
+    if unsafe { (h.classify_heap)(bits) } != crate::abi_types::MoltTypeTag::Tuple as u8 {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return ptr::null_mut();
+    }
+    if i >= 0 {
+        // Valid tuple item bits are never 0, so 0 == out of range.
+        let item_bits = unsafe { (h.tuple_item)(bits, i as usize) };
+        if item_bits != 0 {
+            return unsafe { GLOBAL_BRIDGE.lock().handle_to_borrowed_pyobj(item_bits) };
+        }
+    }
+    unsafe {
+        crate::api::errors::PyErr_SetString(
+            &raw mut crate::abi_types::PyExc_IndexError,
+            c"tuple index out of range".as_ptr(),
+        );
+    }
+    ptr::null_mut()
 }
 
 #[unsafe(no_mangle)]
@@ -310,18 +531,36 @@ pub unsafe extern "C" fn PyTuple_GetSlice(
     out
 }
 
+/// Faithful `Objects/tupleobject.c` `PyTuple_SetItem`: steals the reference to
+/// `v` and `Py_XDECREF`s it on EVERY error path; non-tuple → BadInternalCall;
+/// OOB → IndexError "tuple assignment index out of range". The bridge tier is
+/// bounds-checked before the store (the raw `tuple_set` hook auto-grows, which
+/// would silently accept an OOB index). Foreign `v` gets `TYPE_ID_FOREIGN`
+/// custody (same contract as `PyList_SetItem`).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyTuple_SetItem(
     op: *mut PyObject,
     i: Py_ssize_t,
     v: *mut PyObject,
 ) -> c_int {
-    if op.is_null() || i < 0 || v.is_null() {
+    if op.is_null() || v.is_null() {
+        unsafe {
+            crate::api::refcount::Py_XDECREF(v);
+            crate::api::errors::PyErr_BadInternalCall();
+        }
         return -1;
     }
+    // ABI-layout tuple: direct slot store (steal), zero hook calls.
     if let Some(tuple) = unsafe { tuple_layout_object(op) } {
         let len = unsafe { (*tuple).ob_base.ob_size };
-        if i >= len || unsafe { (*tuple).ob_item.is_null() } {
+        if i < 0 || i >= len || unsafe { (*tuple).ob_item.is_null() } {
+            unsafe {
+                crate::api::refcount::Py_XDECREF(v);
+                crate::api::errors::PyErr_SetString(
+                    &raw mut crate::abi_types::PyExc_IndexError,
+                    c"tuple assignment index out of range".as_ptr(),
+                );
+            }
             return -1;
         }
         let slot = unsafe { (*tuple).ob_item.add(i as usize) };
@@ -332,18 +571,71 @@ pub unsafe extern "C" fn PyTuple_SetItem(
         }
         return 0;
     }
-    let bridge = GLOBAL_BRIDGE.lock();
+    // Bridge-managed Molt tuple.
+    let mut bridge = GLOBAL_BRIDGE.lock();
     let tuple_bits = match bridge.pyobj_to_handle(op) {
-        Some(b) => b,
-        None => return -1,
+        Some(b) if MoltObject::from_bits(b).is_ptr() => b,
+        _ => {
+            drop(bridge);
+            unsafe {
+                crate::api::refcount::Py_XDECREF(v);
+                crate::api::errors::PyErr_BadInternalCall();
+            }
+            return -1;
+        }
     };
+    let mut val_is_foreign = false;
     let val_bits = match bridge.pyobj_to_handle(v) {
         Some(b) => b,
-        None => return -1,
+        None => match unsafe { bridge.molt_value_for_pyobj(v) } {
+            Some(b) => {
+                val_is_foreign = true;
+                b
+            }
+            None => {
+                drop(bridge);
+                unsafe {
+                    crate::api::refcount::Py_XDECREF(v);
+                    if crate::api::errors::PyErr_Occurred().is_null() {
+                        crate::api::errors::PyErr_SetString(
+                            &raw mut crate::abi_types::PyExc_SystemError,
+                            c"PyTuple_SetItem: item is not a bridge-managed object and no foreign wrapper could be minted"
+                                .as_ptr(),
+                        );
+                    }
+                }
+                return -1;
+            }
+        },
     };
     drop(bridge);
     let h = hooks_or_stubs();
+    // Bounds/type check first: the raw tuple_set hook grows the backing vector
+    // on an OOB index instead of failing, so gate it here.
+    let is_tuple =
+        unsafe { (h.classify_heap)(tuple_bits) } == crate::abi_types::MoltTypeTag::Tuple as u8;
+    let in_bounds = i >= 0 && is_tuple && (i as usize) < unsafe { (h.tuple_len)(tuple_bits) };
+    if !in_bounds {
+        unsafe {
+            crate::api::refcount::Py_XDECREF(v);
+            if is_tuple {
+                crate::api::errors::PyErr_SetString(
+                    &raw mut crate::abi_types::PyExc_IndexError,
+                    c"tuple assignment index out of range".as_ptr(),
+                );
+            } else {
+                crate::api::errors::PyErr_BadInternalCall();
+            }
+        }
+        return -1;
+    }
     unsafe { (h.tuple_set)(tuple_bits, i as usize, val_bits) };
+    // Steal contract: a foreign value's stolen C reference is consumed now (the
+    // wrapper holds its own strong reference); a bridge proxy's reference
+    // transfers to the container un-INCREF'd.
+    if val_is_foreign {
+        unsafe { crate::api::refcount::Py_DECREF(v) };
+    }
     0
 }
 
@@ -353,7 +645,17 @@ pub unsafe extern "C" fn PyTuple_Check(op: *mut PyObject) -> c_int {
         return 0;
     }
     let ob_type = unsafe { (*op).ob_type };
-    (std::ptr::eq(ob_type, &raw const crate::abi_types::PyTuple_Type)) as c_int
+    if ob_type.is_null() {
+        return 0;
+    }
+    if std::ptr::eq(ob_type, &raw const crate::abi_types::PyTuple_Type) {
+        return 1;
+    }
+    // CPython PyTuple_Check = Py_TPFLAGS_TUPLE_SUBCLASS — tuple AND subclasses
+    // (same subtype-walk class as fcb1d9596d).
+    unsafe {
+        crate::api::typeobj::PyType_IsSubtype(ob_type, &raw mut crate::abi_types::PyTuple_Type)
+    }
 }
 
 #[allow(dead_code)]
@@ -367,12 +669,23 @@ unsafe fn py_tuple_pack_placeholder_removed_from_abi(n: Py_ssize_t, /* ... */) -
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PySet_Check(op: *mut PyObject) -> c_int {
+    // CPython Include/setobject.h: PySet_Check is set + set SUBTYPES ONLY —
+    // frozenset is NOT included (the union is the PyAnySet_Check header macro,
+    // which composes `PySet_Check || PyFrozenSet_Check` and therefore stays
+    // correct with this split). The previous body unioned frozenset in.
     if op.is_null() {
         return 0;
     }
     let ob_type = unsafe { (*op).ob_type };
-    (std::ptr::eq(ob_type, &raw const crate::abi_types::PySet_Type)
-        || std::ptr::eq(ob_type, &raw const crate::abi_types::PyFrozenSet_Type)) as c_int
+    if ob_type.is_null() {
+        return 0;
+    }
+    if std::ptr::eq(ob_type, &raw const crate::abi_types::PySet_Type) {
+        return 1;
+    }
+    unsafe {
+        crate::api::typeobj::PyType_IsSubtype(ob_type, &raw mut crate::abi_types::PySet_Type)
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -381,7 +694,16 @@ pub unsafe extern "C" fn PyFrozenSet_Check(op: *mut PyObject) -> c_int {
         return 0;
     }
     let ob_type = unsafe { (*op).ob_type };
-    (std::ptr::eq(ob_type, &raw const crate::abi_types::PyFrozenSet_Type)) as c_int
+    if ob_type.is_null() {
+        return 0;
+    }
+    if std::ptr::eq(ob_type, &raw const crate::abi_types::PyFrozenSet_Type) {
+        return 1;
+    }
+    // frozenset subtypes count too (Py_IS_TYPE || PyType_IsSubtype in CPython).
+    unsafe {
+        crate::api::typeobj::PyType_IsSubtype(ob_type, &raw mut crate::abi_types::PyFrozenSet_Type)
+    }
 }
 
 /// Ensure a NULL / -1 error return always carries a pending exception.
@@ -606,14 +928,54 @@ pub unsafe extern "C" fn PyList_GetSlice(
     unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(new_list) }
 }
 
+/// Real slice assignment/deletion (CPython `list_ass_slice`): replaces
+/// `op[ilow:ihigh]` with the elements of `itemlist` (a list/tuple), or deletes
+/// the slice when `itemlist` is NULL. The previous body was a success-returning
+/// NO-OP — every `del a[i:j]` / slice-replace silently did nothing.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyList_SetSlice(
     op: *mut PyObject,
-    _ilow: Py_ssize_t,
-    _ihigh: Py_ssize_t,
-    _itemlist: *mut PyObject,
+    ilow: Py_ssize_t,
+    ihigh: Py_ssize_t,
+    itemlist: *mut PyObject,
 ) -> c_int {
-    if op.is_null() {
+    let list_bits = match resolve_native_list(op) {
+        Some(b) => b,
+        None => {
+            unsafe { crate::api::errors::PyErr_BadInternalCall() };
+            return -1;
+        }
+    };
+    let itemlist_bits = if itemlist.is_null() {
+        0 // deletion
+    } else {
+        match GLOBAL_BRIDGE.lock().pyobj_to_handle(itemlist) {
+            Some(b) if MoltObject::from_bits(b).is_ptr() => b,
+            _ => {
+                unsafe { crate::api::errors::PyErr_BadInternalCall() };
+                return -1;
+            }
+        }
+    };
+    let h = hooks_or_stubs();
+    // CPython INCREFs each item copied in from itemlist (the receiving list
+    // takes its own references). Anchor the incoming item proxies exactly as
+    // PyList_Append does; removed items keep their anchor (the documented
+    // PyDict_SetItem custody trade — leak-not-corrupt).
+    if itemlist_bits != 0 {
+        let n = unsafe { (h.list_len)(itemlist_bits) };
+        let mut bridge = GLOBAL_BRIDGE.lock();
+        for idx in 0..n {
+            let item_bits = unsafe { (h.list_item)(itemlist_bits, idx) };
+            if item_bits != 0 && MoltObject::from_bits(item_bits).is_ptr() {
+                let proxy = unsafe { bridge.handle_to_borrowed_pyobj(item_bits) };
+                unsafe { crate::api::refcount::Py_INCREF(proxy) };
+            }
+        }
+    }
+    let rc = unsafe { (h.list_set_slice)(list_bits, ilow, ihigh, itemlist_bits) };
+    if rc != 0 {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return -1;
     }
     0
@@ -621,15 +983,46 @@ pub unsafe extern "C" fn PyList_SetSlice(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyList_Sort(op: *mut PyObject) -> c_int {
-    // Sorting requires a comparison hook not yet available.
-    let _ = op;
+    // CPython: BadInternalCall on a non-list; sorts IN PLACE via the runtime
+    // comparison authority. The previous body discarded op and fabricated
+    // success (0) without sorting.
+    let list_bits = match resolve_native_list(op) {
+        Some(b) => b,
+        None => {
+            unsafe { crate::api::errors::PyErr_BadInternalCall() };
+            return -1;
+        }
+    };
+    let h = hooks_or_stubs();
+    let rc = unsafe { (h.list_sort)(list_bits) };
+    if rc != 0 {
+        // The runtime raises for uncomparable elements; guarantee an exception
+        // on the sentinel either way (ABI contract).
+        unsafe { ensure_set_error(c"PyList_Sort failed: runtime sort authority unavailable") };
+        return -1;
+    }
     0
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyList_Reverse(op: *mut PyObject) -> c_int {
-    // Reversal requires a list mutation hook not yet available.
-    let _ = op;
+    // CPython: BadInternalCall on a non-list; reverses IN PLACE. The previous
+    // body discarded op and fabricated success (0) without reversing.
+    let list_bits = match resolve_native_list(op) {
+        Some(b) => b,
+        None => {
+            unsafe { crate::api::errors::PyErr_BadInternalCall() };
+            return -1;
+        }
+    };
+    let h = hooks_or_stubs();
+    let rc = unsafe { (h.list_reverse)(list_bits) };
+    if rc != 0 {
+        unsafe {
+            ensure_set_error(c"PyList_Reverse failed: runtime list authority unavailable")
+        };
+        return -1;
+    }
     0
 }
 
@@ -659,12 +1052,63 @@ pub unsafe extern "C" fn PyList_AsTuple(op: *mut PyObject) -> *mut PyObject {
 
 // ─── PyList_Insert ───────────────────────────────────────────────────────
 
+/// Real indexed insert (CPython `ins1`): inserts `v` BEFORE the (negative-
+/// adjusted, clamped) index `where_`, shifting subsequent elements right. Does
+/// NOT steal `v` (CPython `Py_NewRef(v)`) — the item proxy is anchored exactly
+/// like `PyList_Append`. The previous body always APPENDED, mis-ordering every
+/// `where_ < len` insert.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyList_Insert(
     op: *mut PyObject,
-    _where_: Py_ssize_t,
+    where_: Py_ssize_t,
     v: *mut PyObject,
 ) -> c_int {
-    // Without indexed insert in hooks, fall back to append.
-    unsafe { PyList_Append(op, v) }
+    if v.is_null() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return -1;
+    }
+    let list_bits = match resolve_native_list(op) {
+        Some(b) => b,
+        None => {
+            unsafe { crate::api::errors::PyErr_BadInternalCall() };
+            return -1;
+        }
+    };
+    let mut bridge = GLOBAL_BRIDGE.lock();
+    let mut item_is_foreign = false;
+    let item_bits = match bridge.pyobj_to_handle(v) {
+        Some(b) => b,
+        None => match unsafe { bridge.molt_value_for_pyobj(v) } {
+            Some(b) => {
+                item_is_foreign = true;
+                b
+            }
+            None => {
+                drop(bridge);
+                if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+                    unsafe {
+                        crate::api::errors::PyErr_SetString(
+                            &raw mut crate::abi_types::PyExc_SystemError,
+                            c"PyList_Insert: item is not a bridge-managed object and no foreign wrapper could be minted"
+                                .as_ptr(),
+                        );
+                    }
+                }
+                return -1;
+            }
+        },
+    };
+    drop(bridge);
+    let h = hooks_or_stubs();
+    let rc = unsafe { (h.list_insert)(list_bits, where_, item_bits) };
+    if rc != 0 {
+        unsafe { ensure_set_error(c"PyList_Insert failed: runtime list authority unavailable") };
+        return -1;
+    }
+    // Non-stealing contract (same anchor discipline as PyList_Append). A
+    // foreign wrapper already owns its strong reference.
+    if !item_is_foreign {
+        unsafe { crate::api::refcount::Py_INCREF(v) };
+    }
+    0
 }
