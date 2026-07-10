@@ -94,6 +94,35 @@ unsafe extern "C" fn fake_list_len(_bits: u64) -> usize {
 unsafe extern "C" fn fake_list_item(_bits: u64, _i: usize) -> u64 {
     0
 }
+unsafe extern "C" fn fake_list_set(
+    _list_bits: u64,
+    _i: usize,
+    _val_bits: u64,
+    _out_old: *mut u64,
+) -> std::os::raw::c_int {
+    0
+}
+unsafe extern "C" fn fake_list_insert(
+    _list_bits: u64,
+    _where_: isize,
+    _item_bits: u64,
+) -> std::os::raw::c_int {
+    -1
+}
+unsafe extern "C" fn fake_list_sort(_list_bits: u64) -> std::os::raw::c_int {
+    -1
+}
+unsafe extern "C" fn fake_list_reverse(_list_bits: u64) -> std::os::raw::c_int {
+    -1
+}
+unsafe extern "C" fn fake_list_set_slice(
+    _list_bits: u64,
+    _ilow: isize,
+    _ihigh: isize,
+    _itemlist_bits: u64,
+) -> std::os::raw::c_int {
+    -1
+}
 unsafe extern "C" fn fake_alloc_tuple(_arity: usize) -> u64 {
     next_fake_handle()
 }
@@ -115,6 +144,14 @@ unsafe extern "C" fn fake_dict_del(_d: u64, _k: u64) -> std::os::raw::c_int {
     0
 }
 unsafe extern "C" fn fake_dict_len(_bits: u64) -> usize {
+    0
+}
+unsafe extern "C" fn fake_dict_entry(
+    _dict_bits: u64,
+    _index: usize,
+    _out_key: *mut u64,
+    _out_val: *mut u64,
+) -> std::os::raw::c_int {
     0
 }
 unsafe extern "C" fn fake_str_data(_bits: u64, out_len: *mut usize) -> *const u8 {
@@ -324,6 +361,11 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     list_append: fake_list_append,
     list_len: fake_list_len,
     list_item: fake_list_item,
+    list_set: fake_list_set,
+    list_insert: fake_list_insert,
+    list_sort: fake_list_sort,
+    list_reverse: fake_list_reverse,
+    list_set_slice: fake_list_set_slice,
     alloc_tuple: fake_alloc_tuple,
     tuple_set: fake_tuple_set,
     tuple_len: fake_tuple_len,
@@ -333,6 +375,7 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     dict_get: fake_dict_get,
     dict_del: fake_dict_del,
     dict_len: fake_dict_len,
+    dict_entry: fake_dict_entry,
     str_data: fake_str_data,
     bytes_data: fake_bytes_data,
     buffer_acquire: fake_buffer_acquire,

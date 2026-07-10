@@ -178,6 +178,90 @@ unsafe extern "C" fn hook_list_item(bits: u64, i: usize) -> u64 {
     unsafe { seq_vec_ref(ptr) }.get(i).copied().unwrap_or(0)
 }
 
+/// Indexed list store backing `PyList_SetItem`/`PyList_SET_ITEM`. Writes the
+/// previous occupant's bits into `*out_old` (so the ABI can release the CPython
+/// stolen-ref / `Py_SETREF` old reference) and returns 1 on success, 0 when `i`
+/// is out of range or the object is not a list. O(1), allocation-free.
+unsafe extern "C" fn hook_list_set(
+    list_bits: u64,
+    i: usize,
+    val_bits: u64,
+    out_old: *mut u64,
+) -> i32 {
+    let obj = MoltObject::from_bits(list_bits);
+    let ptr = match obj.as_ptr() {
+        Some(p) => p,
+        None => return 0,
+    };
+    if unsafe { object_type_id(ptr) } != TYPE_ID_LIST {
+        return 0;
+    }
+    let v = unsafe { seq_vec(ptr) };
+    if i >= v.len() {
+        return 0;
+    }
+    if !out_old.is_null() {
+        unsafe { *out_old = v[i] };
+    }
+    v[i] = val_bits;
+    1
+}
+
+/// Insert before (clamped) index `where_` — routes to the runtime `PyList_Insert`
+/// (`ins1`) authority so the shift semantics are the single source of truth.
+unsafe extern "C" fn hook_list_insert(list_bits: u64, where_: isize, item_bits: u64) -> i32 {
+    crate::c_api::PyList_Insert(list_bits, where_, item_bits)
+}
+
+/// Sort in place — routes to the runtime `PyList_Sort` (comparison authority).
+unsafe extern "C" fn hook_list_sort(list_bits: u64) -> i32 {
+    crate::c_api::PyList_Sort(list_bits)
+}
+
+/// Reverse in place — routes to the runtime `PyList_Reverse` authority.
+unsafe extern "C" fn hook_list_reverse(list_bits: u64) -> i32 {
+    crate::c_api::PyList_Reverse(list_bits)
+}
+
+/// Replace `list[ilow:ihigh]` with the elements of `itemlist_bits` (a list/tuple,
+/// or 0 to delete the slice), growing/shrinking the backing vector via
+/// `Vec::splice`. The replacement is cloned before the mutable borrow so a
+/// self-slice (`a[i:j] = a`) is safe. Returns -1 for a non-list receiver or a
+/// non-list/tuple itemlist.
+unsafe extern "C" fn hook_list_set_slice(
+    list_bits: u64,
+    ilow: isize,
+    ihigh: isize,
+    itemlist_bits: u64,
+) -> i32 {
+    let ptr = match MoltObject::from_bits(list_bits).as_ptr() {
+        Some(p) => p,
+        None => return -1,
+    };
+    if unsafe { object_type_id(ptr) } != TYPE_ID_LIST {
+        return -1;
+    }
+    let replacement: Vec<u64> = if itemlist_bits == 0 {
+        Vec::new()
+    } else {
+        match MoltObject::from_bits(itemlist_bits).as_ptr() {
+            Some(ip)
+                if unsafe { object_type_id(ip) } == TYPE_ID_LIST
+                    || unsafe { object_type_id(ip) } == TYPE_ID_TUPLE =>
+            {
+                unsafe { seq_vec_ref(ip) }.clone()
+            }
+            _ => return -1,
+        }
+    };
+    let v = unsafe { seq_vec(ptr) };
+    let n = v.len() as isize;
+    let low = ilow.clamp(0, n) as usize;
+    let high = ihigh.clamp(low as isize, n) as usize;
+    v.splice(low..high, replacement);
+    0
+}
+
 unsafe extern "C" fn hook_alloc_tuple(n: usize) -> u64 {
     with_gil(|_py| {
         let ptr = alloc_tuple_with_capacity(&_py, &[], n);
@@ -306,6 +390,41 @@ unsafe extern "C" fn hook_dict_len(bits: u64) -> usize {
         return 0;
     }
     unsafe { dict_len(ptr) }
+}
+
+/// Allocation-free O(1) dict cursor backing `PyDict_Next`. Reads the entry at
+/// insertion-order `index` from the flat `[k0,v0,k1,v1,...]` order vector,
+/// writing borrowed key/value bits into `*out_key`/`*out_val`. Returns 1 when an
+/// entry exists at `index`, 0 at end-of-dict or on a non-dict argument. Mirrors
+/// CPython's `PyDict_Next` ppos index into `dk_entries` and sets no exception.
+unsafe extern "C" fn hook_dict_entry(
+    dict_bits: u64,
+    index: usize,
+    out_key: *mut u64,
+    out_val: *mut u64,
+) -> i32 {
+    let obj = MoltObject::from_bits(dict_bits);
+    let ptr = match obj.as_ptr() {
+        Some(p) => p,
+        None => return 0,
+    };
+    if unsafe { object_type_id(ptr) } != TYPE_ID_DICT {
+        return 0;
+    }
+    let order = unsafe { dict_order(ptr) };
+    let base = index.checked_mul(2);
+    match base {
+        Some(b) if b + 1 < order.len() => {
+            if !out_key.is_null() {
+                unsafe { *out_key = order[b] };
+            }
+            if !out_val.is_null() {
+                unsafe { *out_val = order[b + 1] };
+            }
+            1
+        }
+        _ => 0,
+    }
 }
 
 unsafe extern "C" fn hook_str_data(bits: u64, out_len: *mut usize) -> *const u8 {
@@ -2033,6 +2152,11 @@ pub fn register_cpython_hooks() {
         list_append: hook_list_append,
         list_len: hook_list_len,
         list_item: hook_list_item,
+        list_set: hook_list_set,
+        list_insert: hook_list_insert,
+        list_sort: hook_list_sort,
+        list_reverse: hook_list_reverse,
+        list_set_slice: hook_list_set_slice,
         alloc_tuple: hook_alloc_tuple,
         tuple_set: hook_tuple_set,
         tuple_len: hook_tuple_len,
@@ -2042,6 +2166,7 @@ pub fn register_cpython_hooks() {
         dict_get: hook_dict_get,
         dict_del: hook_dict_del,
         dict_len: hook_dict_len,
+        dict_entry: hook_dict_entry,
         str_data: hook_str_data,
         bytes_data: hook_bytes_data,
         buffer_acquire: hook_buffer_acquire,

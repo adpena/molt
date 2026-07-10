@@ -179,10 +179,18 @@ fn test_list_setitem_negative_index_returns_error() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_list_size_null_returns_zero() {
+fn test_list_size_null_sets_error_and_returns_minus_one() {
+    // CPython: PyList_Size(non-list/NULL) → PyErr_BadInternalCall() + -1, not a
+    // fabricated 0 (sentinel sweep; same class as the PyDict_Size fix).
     init();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let size = unsafe { molt_cpython_abi::api::sequences::PyList_Size(ptr::null_mut()) };
-    assert_eq!(size, 0);
+    assert_eq!(size, -1, "PyList_Size(NULL) must be -1, not a fabricated 0");
+    assert!(
+        !unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null(),
+        "a -1 return from PyList_Size must leave an exception set"
+    );
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 }
 
 #[test]
