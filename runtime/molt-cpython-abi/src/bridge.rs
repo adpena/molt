@@ -1580,8 +1580,8 @@ mod bridge_handle_tests {
         assert_eq!(back, c_ptr, "foreign wrapper must round-trip to its C object");
         // Release drops the identity mapping so a fresh wrapper can be minted.
         unsafe { bridge.release_foreign(c_ptr as usize) };
-        assert!(bridge.foreign.get(&(c_ptr as usize)).is_none());
-        assert!(bridge.raw_py.get(&w_bits).is_none());
+        assert!(!bridge.foreign.contains_key(&(c_ptr as usize)));
+        assert!(!bridge.raw_py.contains_key(&w_bits));
     }
 
     /// Alignment-class regression (witness frontier RUN 20260710T155049,
