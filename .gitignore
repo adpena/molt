@@ -33,6 +33,11 @@ target/
 *.o
 *.wasm
 *.a
+# Durably vendored wasm32 long-double link archives for the reloc runtime fix
+# (see vendor/wasm-builtins/README.md). `*.a` above ignores them, so force them
+# back in — these must be committed / present-by-construction.
+!vendor/wasm-builtins/libclang_rt.builtins-wasm32.a
+!vendor/wasm-builtins/libc-printscan-long-double.a
 *.so
 *.dylib
 *.dll
