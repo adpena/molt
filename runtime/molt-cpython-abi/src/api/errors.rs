@@ -5,11 +5,11 @@
 //! most common format codes: `i`, `l`, `d`, `f`, `s`, `z`, `s#`, `O`, `p`,
 //! `n`, `L`, `K`, `b`, `B`, `H`, `I`, `k`, `y`, `y#`, `C`.
 
-use crate::abi_types::{Py_ssize_t, PyBaseExceptionObject, PyObject};
+use crate::abi_types::{MoltTypeTag, Py_ssize_t, PyBaseExceptionObject, PyObject, PyTypeObject};
 use crate::bridge::GLOBAL_BRIDGE;
 use molt_lang_obj_model::MoltObject;
 use std::ffi::{CStr, c_void};
-use std::os::raw::{c_char, c_int, c_long};
+use std::os::raw::{c_char, c_int, c_long, c_ulong};
 use std::ptr;
 
 // ─── Thread-local error state ─────────────────────────────────────────────
@@ -438,6 +438,9 @@ pub unsafe extern "C" fn molt_pyarg_parse_tuple_inner(
     let mut arg_idx = 0usize;
     let mut out_idx = 0usize;
     let mut optional = false;
+    // Number of required value units (before `|`); `usize::MAX` until a `|` is
+    // seen, meaning min == max ("exactly N"). Drives the surplus-arg TypeError.
+    let mut min_units = usize::MAX;
     let mut i = 0usize;
 
     while i < fmt.len() {
@@ -446,6 +449,7 @@ pub unsafe extern "C" fn molt_pyarg_parse_tuple_inner(
         match ch {
             '|' => {
                 optional = true;
+                min_units = arg_idx;
                 continue;
             }
             ':' | ';' => break,
@@ -471,9 +475,12 @@ pub unsafe extern "C" fn molt_pyarg_parse_tuple_inner(
 
         macro_rules! write_out {
             ($ty:ty, $val:expr) => {{
+                // Evaluate the value (which may itself raise + early-return)
+                // OUTSIDE the unsafe store so it never nests in this block.
+                let stored: $ty = $val;
                 if out_idx < outs_slice.len() && !outs_slice[out_idx].is_null() {
                     unsafe {
-                        *(outs_slice[out_idx] as *mut $ty) = $val;
+                        *(outs_slice[out_idx] as *mut $ty) = stored;
                     }
                 }
                 out_idx += 1;
@@ -481,38 +488,88 @@ pub unsafe extern "C" fn molt_pyarg_parse_tuple_inner(
         }
 
         // CPython (Python/getargs.c `convertsimple`): a converter that receives
-        // the wrong type sets TypeError and the whole parse returns 0. We must
-        // NOT silently coerce a non-int to 0 — that poisons the extension with a
-        // fake argument value where CPython would have raised. We accept the
-        // int-like values CPython accepts (int, bool as an int subtype, and heap
-        // BigInt via the runtime int-conversion authority) and reject the rest
-        // with a TypeError.
-        macro_rules! require_int {
-            ($expect:literal) => {{
-                if let Some(v) = obj.as_int() {
-                    v
-                } else if obj.is_bool() {
-                    obj.as_bool().unwrap_or(false) as i64
-                } else if let Some(v) = int_like_to_i64(bits) {
-                    // Heap BigInt (or other int-compatible object) resolved
-                    // through the runtime authority.
-                    v
-                } else {
-                    set_parse_type_error(concat!(
-                        "argument must be ",
-                        $expect,
-                        ", not the supplied type"
-                    ));
-                    return 0;
+        // the wrong type sets TypeError and the whole parse returns 0. Resolve
+        // the current argument to an int-like `i64` (int, bool-as-int-subtype, or
+        // a heap BigInt / `__index__` object via the runtime authority); a float
+        // is NOT int-like for the integer units. `None` => raise TypeError.
+        macro_rules! int_arg {
+            () => {{
+                match arg_int_like(&obj, bits) {
+                    Some(v) => v,
+                    None => {
+                        unsafe { set_parse_type_error("argument must be an integer") };
+                        return 0;
+                    }
                 }
             }};
         }
 
+        // Signed, range-checked store (CPython 'b'/'h'/'i' raise OverflowError
+        // with the exact getargs.c message). The store width is the EXACT C width
+        // the caller declared — u8 for b, i16 for h, i32 for i — so the previous
+        // 4-byte `c_int` store into a 1/2-byte target (adjacent-memory clobber)
+        // is gone.
+        macro_rules! int_ranged {
+            ($v:expr, $ty:ty, $lo:expr, $hi:expr, $lomsg:literal, $himsg:literal) => {{
+                let value = $v;
+                if value < $lo {
+                    unsafe { set_parse_overflow($lomsg) };
+                    return 0;
+                }
+                if value > $hi {
+                    unsafe { set_parse_overflow($himsg) };
+                    return 0;
+                }
+                write_out!($ty, value as $ty);
+            }};
+        }
+
         match ch {
-            'i' | 'H' | 'b' | 'B' | 'I' => write_out!(c_int, require_int!("an integer") as c_int),
-            'l' | 'k' => write_out!(c_long, require_int!("an integer") as c_long),
-            'L' => write_out!(i64, require_int!("an integer")),
-            'K' => write_out!(u64, require_int!("an integer") as u64),
+            // ── Signed, range-checked (OverflowError on out-of-range) ──────────
+            // Each stores its EXACT declared C width; the previous `as c_int`
+            // 4-byte store into a 1/2-byte b/B/H target (OOB write) is gone.
+            'b' => int_ranged!(
+                int_arg!(),
+                u8,
+                0,
+                u8::MAX as i64,
+                "unsigned byte integer is less than minimum",
+                "unsigned byte integer is greater than maximum"
+            ),
+            'h' => int_ranged!(
+                int_arg!(),
+                i16,
+                i16::MIN as i64,
+                i16::MAX as i64,
+                "signed short integer is less than minimum",
+                "signed short integer is greater than maximum"
+            ),
+            'i' => int_ranged!(
+                int_arg!(),
+                i32,
+                i32::MIN as i64,
+                i32::MAX as i64,
+                "signed integer is less than minimum",
+                "signed integer is greater than maximum"
+            ),
+            // 'l': PyLong_AsLong range (OverflowError). `try_from` is width- and
+            // platform-correct (c_long is 32-bit on Windows/wasm32, 64-bit on
+            // LP64) and clippy-clean (no absurd fixed-width comparison).
+            'l' => match c_long::try_from(int_arg!()) {
+                Ok(v) => write_out!(c_long, v),
+                Err(_) => {
+                    unsafe { set_parse_overflow("Python int too large to convert to C long") };
+                    return 0;
+                }
+            },
+            // ── Unsigned bitfield (mask low N bits, no range check) ────────────
+            'B' => write_out!(u8, int_arg!() as u8),
+            'H' => write_out!(u16, int_arg!() as u16),
+            'I' => write_out!(u32, int_arg!() as u32),
+            'k' => write_out!(c_ulong, int_arg!() as c_ulong),
+            'L' => write_out!(i64, int_arg!()),
+            'K' => write_out!(u64, int_arg!() as u64),
+            'n' => write_out!(Py_ssize_t, int_arg!() as Py_ssize_t),
             'd' => {
                 let v = match float_like(&obj, bits) {
                     Some(v) => v,
@@ -533,29 +590,170 @@ pub unsafe extern "C" fn molt_pyarg_parse_tuple_inner(
                 };
                 write_out!(f32, v);
             }
-            's' | 'z' | 'y' => {
-                // 'z' accepts None (→ NULL). 's'/'y' require a str/bytes-like.
+            's' | 'z' => {
+                // CPython 's' requires str; 'z' also accepts None (→ NULL).
+                // A non-str non-None object is a TypeError — NOT a fabricated
+                // empty string (the prior `molt_str_ptr` theater on an int/list).
+                let has_len = i < fmt.len() && fmt[i] == b'#';
                 if obj.is_none() {
                     if ch != 'z' {
-                        unsafe { set_parse_type_error("argument must be a string") };
+                        unsafe { set_parse_type_error("argument must be str, not None") };
                         return 0;
                     }
                     write_out!(*const c_char, std::ptr::null());
-                    if i < fmt.len() && fmt[i] == b'#' {
+                    if has_len {
                         i += 1;
                         write_out!(Py_ssize_t, 0 as Py_ssize_t);
                     }
-                } else {
+                } else if arg_is_str(&obj, bits) {
+                    if !has_len && str_has_interior_nul(bits) {
+                        unsafe { set_parse_value_error("embedded null character") };
+                        return 0;
+                    }
                     write_out!(*const c_char, molt_str_ptr(bits));
-                    if i < fmt.len() && fmt[i] == b'#' {
+                    if has_len {
                         i += 1;
                         write_out!(Py_ssize_t, molt_str_len(bits) as Py_ssize_t);
+                    }
+                } else {
+                    unsafe { set_parse_type_error("argument must be str") };
+                    return 0;
+                }
+            }
+            'y' => {
+                // CPython 'y' requires a bytes-like object (buffer protocol), NOT
+                // the str authority. Non-'#' form rejects an interior NUL.
+                let has_len = i < fmt.len() && fmt[i] == b'#';
+                if arg_is_bytes(&obj, bits) {
+                    if !has_len && bytes_has_interior_nul(bits) {
+                        unsafe { set_parse_value_error("embedded null byte") };
+                        return 0;
+                    }
+                    write_out!(*const c_char, molt_bytes_ptr(bits));
+                    if has_len {
+                        i += 1;
+                        write_out!(Py_ssize_t, molt_bytes_len(bits) as Py_ssize_t);
+                    }
+                } else {
+                    unsafe { set_parse_type_error("a bytes-like object is required") };
+                    return 0;
+                }
+            }
+            'S' => {
+                // Requires PyBytes; stores the borrowed object.
+                if arg_is_bytes(&obj, bits) {
+                    let py_ptr = unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) };
+                    write_out!(*mut PyObject, py_ptr);
+                } else {
+                    unsafe { set_parse_type_error("argument must be bytes") };
+                    return 0;
+                }
+            }
+            'U' => {
+                // Requires PyUnicode; stores the borrowed object.
+                if arg_is_str(&obj, bits) {
+                    let py_ptr = unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) };
+                    write_out!(*mut PyObject, py_ptr);
+                } else {
+                    unsafe { set_parse_type_error("argument must be str") };
+                    return 0;
+                }
+            }
+            'c' => {
+                // A bytes/bytearray of length 1 → one C `char`.
+                if arg_is_bytes(&obj, bits) && molt_bytes_len(bits) == 1 {
+                    let p = molt_bytes_ptr(bits);
+                    let byte = if p.is_null() {
+                        0u8
+                    } else {
+                        unsafe { *p.cast::<u8>() }
+                    };
+                    write_out!(c_char, byte as c_char);
+                } else {
+                    unsafe { set_parse_type_error("argument must be a byte string of length 1") };
+                    return 0;
+                }
+            }
+            'C' => {
+                // A str of length 1 → the code point as a C `int`.
+                match str_single_codepoint_if_str(&obj, bits) {
+                    Some(cp) => write_out!(c_int, cp as c_int),
+                    None => {
+                        unsafe {
+                            set_parse_type_error(
+                                "argument must be a unicode character, not a string",
+                            )
+                        };
+                        return 0;
                     }
                 }
             }
             'O' => {
                 let py_ptr = unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) };
-                write_out!(*mut PyObject, py_ptr);
+                // Peek for the 'O!' (type-checked) / 'O&' (converter) modifiers.
+                let modifier = if i < fmt.len() && (fmt[i] == b'!' || fmt[i] == b'&') {
+                    let m = fmt[i];
+                    i += 1;
+                    Some(m)
+                } else {
+                    None
+                };
+                match modifier {
+                    None => write_out!(*mut PyObject, py_ptr),
+                    Some(b'!') => {
+                        // getargs.c 'O!' consumes TWO varargs: the caller's
+                        // `PyTypeObject*` (a VALUE, never written through) then the
+                        // `PyObject**` destination. The prior grammar skipped '!'
+                        // and let the plain-'O' store write into the type slot,
+                        // clobbering the type-object header (UB). Here the type is
+                        // only READ, the object is stored into the destination.
+                        let type_ptr = outs_slice
+                            .get(out_idx)
+                            .copied()
+                            .unwrap_or(std::ptr::null_mut())
+                            .cast::<PyTypeObject>();
+                        let dest = outs_slice
+                            .get(out_idx + 1)
+                            .copied()
+                            .unwrap_or(std::ptr::null_mut())
+                            .cast::<*mut PyObject>();
+                        out_idx += 2;
+                        let arg_type = unsafe { crate::api::object::Py_TYPE(py_ptr) };
+                        if type_ptr.is_null()
+                            || unsafe { crate::api::typeobj::PyType_IsSubtype(arg_type, type_ptr) }
+                                == 0
+                        {
+                            unsafe { set_parse_o_bang_type_error(type_ptr, arg_type) };
+                            return 0;
+                        }
+                        if !dest.is_null() {
+                            unsafe { *dest = py_ptr };
+                        }
+                    }
+                    Some(b'&') => {
+                        // 'O&' consumes a converter fn + a destination address and
+                        // calls `convert(arg, addr)`; a 0 return fails the parse.
+                        let raw = outs_slice.get(out_idx).copied().unwrap_or(std::ptr::null_mut());
+                        let addr =
+                            outs_slice.get(out_idx + 1).copied().unwrap_or(std::ptr::null_mut());
+                        out_idx += 2;
+                        if raw.is_null() {
+                            unsafe { set_parse_format_error() };
+                            return 0;
+                        }
+                        let convert: ConverterFn =
+                            unsafe { std::mem::transmute::<*mut c_void, ConverterFn>(raw) };
+                        if unsafe { convert(py_ptr, addr) } == 0 {
+                            // The converter should have set an exception; guarantee
+                            // a NULL-return never escapes without one.
+                            if unsafe { PyErr_Occurred() }.is_null() {
+                                unsafe { set_parse_type_error("argument conversion failed") };
+                            }
+                            return 0;
+                        }
+                    }
+                    Some(_) => unreachable!("modifier peek only accepts b'!'/b'&'"),
+                }
             }
             'p' => {
                 let truthy = if obj.is_bool() {
@@ -567,7 +765,6 @@ pub unsafe extern "C" fn molt_pyarg_parse_tuple_inner(
                 };
                 write_out!(c_int, truthy as c_int);
             }
-            'n' => write_out!(Py_ssize_t, require_int!("an integer") as Py_ssize_t),
             _ => {
                 // CPython raises SystemError("bad format string") for an
                 // unrecognized format unit. Fail closed — never report success
@@ -576,6 +773,29 @@ pub unsafe extern "C" fn molt_pyarg_parse_tuple_inner(
                 return 0;
             }
         }
+    }
+    // CPython vgetargs1_impl rejects an args tuple with MORE items than the
+    // format's value units: TypeError "... takes {exactly|at most} N argument(s)
+    // (M given)". `arg_idx` == the number of value units the format declared.
+    if items.len() > arg_idx {
+        let effective_min = if min_units == usize::MAX {
+            arg_idx
+        } else {
+            min_units
+        };
+        let word = if effective_min == arg_idx {
+            "exactly"
+        } else {
+            "at most"
+        };
+        let plural = if arg_idx == 1 { "" } else { "s" };
+        unsafe {
+            set_parse_type_error(&format!(
+                "function takes {word} {arg_idx} argument{plural} ({} given)",
+                items.len()
+            ))
+        };
+        return 0;
     }
     1
 }
@@ -589,6 +809,128 @@ fn int_like_to_i64(bits: u64) -> Option<i64> {
     let mut out: i64 = 0;
     let rc = unsafe { (h.int_as_i64_checked)(bits, std::ptr::addr_of_mut!(out)) };
     (rc == 0).then_some(out)
+}
+
+/// Converter-function pointer for the PyArg `O&` unit
+/// (CPython `int (*)(PyObject *, void *)`).
+type ConverterFn = unsafe extern "C" fn(*mut PyObject, *mut c_void) -> c_int;
+
+/// Resolve the current argument to an int-like `i64` for the integer format
+/// units. Accepts int, bool (an int subtype), and a heap BigInt / `__index__`
+/// object via the runtime authority; a float is deliberately NOT int-like
+/// (CPython's integer units convert through `PyLong_AsLong`, which rejects a
+/// float). `None` => the caller raises TypeError.
+fn arg_int_like(obj: &MoltObject, bits: u64) -> Option<i64> {
+    if let Some(v) = obj.as_int() {
+        Some(v)
+    } else if obj.is_bool() {
+        Some(obj.as_bool().unwrap_or(false) as i64)
+    } else if obj.is_float() {
+        None
+    } else {
+        int_like_to_i64(bits)
+    }
+}
+
+/// Classify a heap argument handle via the runtime tag hook (`None` for a
+/// non-heap immediate). Backs the `s`/`z`/`y`/`S`/`U`/`c`/`C` type checks so a
+/// wrong-typed arg raises TypeError instead of fabricating an empty string.
+fn arg_heap_tag(obj: &MoltObject, bits: u64) -> Option<u8> {
+    obj.is_ptr()
+        .then(|| unsafe { (crate::hooks::hooks_or_stubs().classify_heap)(bits) })
+}
+
+fn arg_is_str(obj: &MoltObject, bits: u64) -> bool {
+    arg_heap_tag(obj, bits) == Some(MoltTypeTag::Str as u8)
+}
+
+fn arg_is_bytes(obj: &MoltObject, bits: u64) -> bool {
+    arg_heap_tag(obj, bits) == Some(MoltTypeTag::Bytes as u8)
+}
+
+/// Null-terminated pointer into a bytes handle's storage (runtime `bytes_data`
+/// authority). Returns a null pointer when unavailable.
+fn molt_bytes_ptr(bits: u64) -> *const c_char {
+    let h = crate::hooks::hooks_or_stubs();
+    let mut len = 0usize;
+    let ptr = unsafe { (h.bytes_data)(bits, std::ptr::addr_of_mut!(len)) };
+    if ptr.is_null() { std::ptr::null() } else { ptr.cast() }
+}
+
+fn molt_bytes_len(bits: u64) -> usize {
+    let h = crate::hooks::hooks_or_stubs();
+    let mut len = 0usize;
+    unsafe { (h.bytes_data)(bits, std::ptr::addr_of_mut!(len)) };
+    len
+}
+
+/// True when a str handle's UTF-8 storage contains an interior NUL byte, which
+/// CPython rejects for the non-`#` `s`/`z` units (ValueError).
+fn str_has_interior_nul(bits: u64) -> bool {
+    let h = crate::hooks::hooks_or_stubs();
+    let mut len = 0usize;
+    let ptr = unsafe { (h.str_data)(bits, std::ptr::addr_of_mut!(len)) };
+    !ptr.is_null() && unsafe { std::slice::from_raw_parts(ptr, len) }.contains(&0)
+}
+
+fn bytes_has_interior_nul(bits: u64) -> bool {
+    let h = crate::hooks::hooks_or_stubs();
+    let mut len = 0usize;
+    let ptr = unsafe { (h.bytes_data)(bits, std::ptr::addr_of_mut!(len)) };
+    !ptr.is_null() && unsafe { std::slice::from_raw_parts(ptr, len) }.contains(&0)
+}
+
+/// The single code point of a length-1 str argument (for the `C` unit); `None`
+/// unless the arg is a str whose content is exactly one code point.
+fn str_single_codepoint_if_str(obj: &MoltObject, bits: u64) -> Option<u32> {
+    if !arg_is_str(obj, bits) {
+        return None;
+    }
+    let h = crate::hooks::hooks_or_stubs();
+    let mut len = 0usize;
+    let ptr = unsafe { (h.str_data)(bits, std::ptr::addr_of_mut!(len)) };
+    if ptr.is_null() {
+        return None;
+    }
+    let text = std::str::from_utf8(unsafe { std::slice::from_raw_parts(ptr, len) }).ok()?;
+    let mut chars = text.chars();
+    let first = chars.next()?;
+    chars.next().is_none().then_some(first as u32)
+}
+
+/// Set OverflowError for an out-of-range integer format unit (getargs.c range
+/// checks).
+unsafe fn set_parse_overflow(message: &str) {
+    let cmsg = std::ffi::CString::new(message).unwrap_or_default();
+    unsafe {
+        PyErr_SetString(&raw mut crate::abi_types::PyExc_OverflowError, cmsg.as_ptr());
+    }
+}
+
+/// Set ValueError for an embedded-NUL `s`/`z`/`y` argument.
+unsafe fn set_parse_value_error(message: &str) {
+    let cmsg = std::ffi::CString::new(message).unwrap_or_default();
+    unsafe {
+        PyErr_SetString(&raw mut crate::abi_types::PyExc_ValueError, cmsg.as_ptr());
+    }
+}
+
+/// TypeError for an `O!` type mismatch, shaped like CPython's
+/// `converterr(type->tp_name, ...)`.
+unsafe fn set_parse_o_bang_type_error(want: *mut PyTypeObject, got: *mut PyTypeObject) {
+    fn tp_name(tp: *mut PyTypeObject) -> String {
+        if tp.is_null() {
+            return "<unknown>".to_string();
+        }
+        let name = unsafe { (*tp).tp_name };
+        if name.is_null() {
+            "<unknown>".to_string()
+        } else {
+            unsafe { CStr::from_ptr(name) }.to_string_lossy().into_owned()
+        }
+    }
+    let message = format!("argument must be {}, not {}", tp_name(want), tp_name(got));
+    unsafe { set_parse_type_error(&message) };
 }
 
 /// Resolve a float-compatible argument to f64 for the `d`/`f` format units.
