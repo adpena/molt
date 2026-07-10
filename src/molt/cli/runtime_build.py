@@ -613,13 +613,40 @@ def _ensure_runtime_lib(
     return True
 
 
+def _runtime_build_profile_override() -> str:
+    """Opt-in iteration-loop override for the runtime-wasm cargo profile.
+
+    ``MOLT_RUNTIME_BUILD_PROFILE`` (e.g. ``dev-fast``) swaps the runtime-wasm
+    cargo profile so a correctness-iteration loop (the E1 witness numpy-import
+    debug loop) does not pay full ``release-output`` (fat-LTO, opt-``z``) codegen
+    on every invalidated rebuild — opt level does not change the deterministic
+    import outcome it is chasing.  DEFAULT UNCHANGED: when the knob is unset,
+    acceptance / final-green still builds the shipped ``release-output`` runtime,
+    which is the artifact parity is measured against (M05).  An invalid profile
+    name is ignored so a typo cannot silently redirect the build; cargo would
+    also reject a non-existent profile loudly.
+    """
+    raw = os.environ.get("MOLT_RUNTIME_BUILD_PROFILE", "").strip()
+    if raw and _CARGO_PROFILE_NAME_RE.match(raw):
+        return raw
+    return ""
+
+
 @functools.lru_cache(maxsize=32)
 def _resolve_wasm_cargo_profile_cached(
     cargo_profile: str,
     override: str,
+    runtime_build_profile: str,
 ) -> str:
+    # Precedence: the explicit MOLT_WASM_CARGO_PROFILE override (pre-existing
+    # contract) wins, then the MOLT_RUNTIME_BUILD_PROFILE iteration knob, then
+    # the derived default. Keeping the iteration knob below the explicit
+    # override means an operator who pinned MOLT_WASM_CARGO_PROFILE is never
+    # surprised by it.
     if override:
         return override
+    if runtime_build_profile:
+        return runtime_build_profile
     if cargo_profile == "release":
         return "wasm-release"
     return cargo_profile
@@ -630,11 +657,13 @@ def _resolve_wasm_cargo_profile(cargo_profile: str) -> str:
 
     Uses the explicit ``wasm-release`` profile instead of generic ``release``
     so WASM artifact size/perf policy can move independently from native
-    staticlib policy. Override with ``MOLT_WASM_CARGO_PROFILE``.
+    staticlib policy. Override with ``MOLT_WASM_CARGO_PROFILE`` (explicit) or the
+    iteration-scoped ``MOLT_RUNTIME_BUILD_PROFILE`` (e.g. ``dev-fast``).
     """
     return _resolve_wasm_cargo_profile_cached(
         cargo_profile,
         os.environ.get("MOLT_WASM_CARGO_PROFILE", "").strip(),
+        _runtime_build_profile_override(),
     )
 
 
@@ -1245,6 +1274,79 @@ def _wasm_runtime_recovery_target_root(target_root: Path) -> Path:
     return target_root.parent / f"{target_root.name}-wasm-runtime-recovery"
 
 
+def _runtime_wasm_incremental_enabled() -> bool:
+    """Whether to build the runtime wasm into a stable, incremental target dir.
+
+    Opt-in (``MOLT_RUNTIME_WASM_INCREMENTAL=1``); DEFAULT OFF so the shipped
+    acceptance path keeps the deterministic-proof behaviour (session-scoped
+    target dir, cargo incremental off).  When on, consecutive iterations at the
+    same runtime-config *family* reuse rustc incremental state, and the two
+    passes within a single build (reloc/staticlib then shared/cdylib) share one
+    codegen so the second pass only re-links.
+    """
+    return os.environ.get("MOLT_RUNTIME_WASM_INCREMENTAL", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _runtime_wasm_incremental_family_key(
+    *,
+    cargo_profile: str,
+    target_triple: str,
+    features: tuple[str, ...],
+    simd_enabled: bool,
+    freestanding: bool,
+) -> str:
+    """Codegen-identity key for the incremental runtime-wasm target dir.
+
+    Deliberately EXCLUDES link-args (export allowlist, ``--import-memory`` /
+    ``--import-table`` / ``--growable-table``) which are the *only* thing that
+    differs between the reloc/staticlib and shared/cdylib passes.  ``molt-runtime``
+    declares ``crate-type = ["staticlib", "rlib", "cdylib"]`` so a single rustc
+    codegen already emits every crate-type; link-args only re-drive the final
+    link.  Keying the shared incremental dir on the codegen family therefore lets
+    the second pass reuse the first pass's object code (near-pure re-link) and
+    lets consecutive same-config iterations recompile incrementally instead of
+    from scratch.
+    """
+    payload = "\n".join(
+        [
+            f"profile:{cargo_profile}",
+            f"target:{target_triple}",
+            f"simd:{int(simd_enabled)}",
+            f"freestanding:{int(freestanding)}",
+            "features:" + ",".join(sorted(features)),
+        ]
+    )
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+    return f"{cargo_profile}-{digest}"
+
+
+def _runtime_wasm_incremental_target_root(project_root: Path, family_key: str) -> Path:
+    """Stable, session-independent cargo target dir for the runtime-wasm build.
+
+    Session-independent by design: cross-iteration incremental reuse is the whole
+    point (the per-session dir exists for agent isolation, but a fresh session id
+    per proof-queue run means cargo incremental never engages — the M09 "stable
+    target dir" lever).  Concurrency across sessions building the same family is
+    made safe by cargo's own per-target build lock plus the ``_build_slot()``
+    cross-process gate; two *divergent* source builds in one family serialise and
+    may thrash each other's incremental state (slower, never incorrect), so this
+    stays opt-in for the single-lane iteration loop.
+    """
+    override = os.environ.get("CARGO_TARGET_DIR", "").strip()
+    if override:
+        base = Path(override).expanduser()
+        if not base.is_absolute():
+            base = (Path.cwd() / base).absolute()
+    else:
+        base = project_root / "target"
+    return base / "runtime-wasm-incr" / family_key
+
+
 def _append_rustflags_text(base: str, flags: str) -> str:
     return f"{base.strip()} {flags.strip()}".strip()
 
@@ -1586,9 +1688,14 @@ def _ensure_runtime_wasm(
     requested_cargo_profile = cargo_profile
     cargo_profile = _resolve_wasm_cargo_profile(cargo_profile)
     profile_dir = _cargo_profile_dir(cargo_profile)
+    incremental_enabled = _runtime_wasm_incremental_enabled()
     env = _cargo_build_env()
     if "CARGO_INCREMENTAL" not in os.environ:
-        env["CARGO_INCREMENTAL"] = "0"
+        # Default OFF (deterministic proof builds). The opt-in incremental
+        # target-dir path turns it ON so the second crate-type pass reuses the
+        # first pass's codegen and consecutive same-family iterations recompile
+        # incrementally instead of from scratch.
+        env["CARGO_INCREMENTAL"] = "1" if incremental_enabled else "0"
     cpython_abi_requested_exports = wasm_cpython_abi_requested_export_names(
         required_exports
     )
@@ -1674,7 +1781,24 @@ def _ensure_runtime_wasm(
     fingerprint_path = _runtime_fingerprint_path(
         root, runtime_wasm, cargo_profile, "wasm32-wasip1"
     )
-    target_root = _cargo_target_root(root)
+    if incremental_enabled:
+        # Session-independent, per-codegen-family target dir. The candidate
+        # lookups + the cargo build below all key off `target_root`, so pointing
+        # it here (instead of the session dir) makes the reloc and shared passes
+        # share one incremental cache and lets a later same-fingerprint run reuse
+        # the already-built artifact without re-invoking cargo.
+        target_root = _runtime_wasm_incremental_target_root(
+            root,
+            _runtime_wasm_incremental_family_key(
+                cargo_profile=cargo_profile,
+                target_triple="wasm32-wasip1",
+                features=tuple(fingerprint_features),
+                simd_enabled=simd_enabled,
+                freestanding=freestanding,
+            ),
+        )
+    else:
+        target_root = _cargo_target_root(root)
     stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
     fingerprint = _runtime_fingerprint(
         root,
@@ -1981,6 +2105,7 @@ def _ensure_runtime_wasm(
                 env=env,
                 cargo_timeout=cargo_timeout,
                 profile_dir=profile_dir,
+                target_root_override=target_root,
                 json_output=json_output,
                 artifact_kind="staticlib" if reloc else "cdylib",
             )
@@ -2050,14 +2175,20 @@ def _ensure_runtime_wasm(
                 # Publish the freshly built reloc runtime wasm to the shared,
                 # session-independent cache so the next fresh session/worktree
                 # reuses it instead of recompiling the runtime crate.
-                _warn_runtime_wasm_cache_publish_failure(
-                    _publish_runtime_wasm_to_shared_cache(
-                        src=runtime_wasm,
-                        fingerprint=fingerprint,
-                        reloc=reloc,
-                    ),
-                    json_output=json_output,
-                )
+                # Incremental iteration builds are NOT published: they share the
+                # fingerprint of a non-incremental release build, so publishing
+                # would let an incrementally-compiled artifact hydrate an
+                # acceptance / final-green run (M05). The per-family incremental
+                # target dir already provides cross-iteration reuse.
+                if not incremental_enabled:
+                    _warn_runtime_wasm_cache_publish_failure(
+                        _publish_runtime_wasm_to_shared_cache(
+                            src=runtime_wasm,
+                            fingerprint=fingerprint,
+                            reloc=reloc,
+                        ),
+                        json_output=json_output,
+                    )
             return True
         src_state = _inspect_wasm_binary(src)
         if src_state == "missing":
@@ -2276,14 +2407,19 @@ def _ensure_runtime_wasm(
                 # session-independent shared cache so the next fresh
                 # session/worktree reuses it instead of recompiling the runtime
                 # crate from a cold per-session target dir.
-                _warn_runtime_wasm_cache_publish_failure(
-                    _publish_runtime_wasm_to_shared_cache(
-                        src=runtime_wasm,
-                        fingerprint=fingerprint,
-                        reloc=reloc,
-                    ),
-                    json_output=json_output,
-                )
+                # Incremental iteration builds are NOT published (see the reloc
+                # branch): they share the release fingerprint, so publishing
+                # would leak an incrementally-compiled artifact into an
+                # acceptance / final-green hydrate (M05).
+                if not incremental_enabled:
+                    _warn_runtime_wasm_cache_publish_failure(
+                        _publish_runtime_wasm_to_shared_cache(
+                            src=runtime_wasm,
+                            fingerprint=fingerprint,
+                            reloc=reloc,
+                        ),
+                        json_output=json_output,
+                    )
             except OSError:
                 if not json_output:
                     print(
