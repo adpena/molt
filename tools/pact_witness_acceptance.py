@@ -290,9 +290,38 @@ def _build_wasm(build_dir: Path) -> Path:
         env=env,
     )
     _summarize_build_diagnostics(diagnostics_path)
+    _run_build_health_gate(diagnostics_path)
     entry = _select_wasm_entry(build_dir)
     _assert_no_poison_stubs(build_dir, entry)
     return entry
+
+
+def _run_build_health_gate(diagnostics_path: Path) -> None:
+    """Print a LOUD attention block on build-health anomalies (deterministic hook).
+
+    Surfaces redundant-work / configured!=effective smells (an under-effective
+    lowering cache re-lowering unchanged modules, a dominating phase) on EVERY
+    build, so the anomaly triggers investigation instead of sitting unnoticed until
+    someone asks "why is this so slow?". Warn-only here (perf anomaly, not a
+    correctness failure); never blocks the build.
+    """
+    if not diagnostics_path.is_file():
+        return
+    gate = ROOT / "tools" / "build_health_gate.py"
+    if not gate.is_file():
+        return
+    result = subprocess.run(
+        [sys.executable, str(gate), "--diagnostics", str(diagnostics_path)],
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    if result.stdout:
+        print(result.stdout, end="" if result.stdout.endswith("\n") else "\n", flush=True)
 
 
 def _assert_no_poison_stubs(build_dir: Path, entry: Path) -> None:
