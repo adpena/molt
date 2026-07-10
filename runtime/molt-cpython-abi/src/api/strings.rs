@@ -1149,7 +1149,23 @@ pub unsafe extern "C" fn PyUnicode_Join(
             }
         }
     };
-    let n = unsafe { crate::api::abstract_sequence::PySequence_Size(seq) };
+    // Fast-path exact list/tuple like CPython's `PySequence_Fast` (`PyUnicode_Join`
+    // itself calls `PySequence_Fast` before iterating). This is not just a perf
+    // shortcut here: the ABI's own native tuple layout (`PyTuple_New`'s boxed
+    // `PyTupleObject`) is never bridge-registered and `PyTuple_Type`/`PyList_Type`
+    // carry no `tp_as_sequence` slot, so the generic `PySequence_Size`/`GetItem`
+    // protocol cannot see a tuple/list built through the C API at all — only
+    // `PyTuple_Size`/`GetItem` and `PyList_Size`/`GetItem` resolve both the
+    // ABI-native layout and a bridge-managed Molt list/tuple.
+    let is_tuple = unsafe { crate::api::sequences::PyTuple_Check(seq) } != 0;
+    let is_list = !is_tuple && unsafe { crate::api::sequences::PyList_Check(seq) } != 0;
+    let n = if is_tuple {
+        unsafe { crate::api::sequences::PyTuple_Size(seq) }
+    } else if is_list {
+        unsafe { crate::api::sequences::PyList_Size(seq) }
+    } else {
+        unsafe { crate::api::abstract_sequence::PySequence_Size(seq) }
+    };
     if n < 0 {
         // PySequence_Size set (or will be fixed to set) the honest exception.
         if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
@@ -1160,7 +1176,24 @@ pub unsafe extern "C" fn PyUnicode_Join(
     // Writer pattern: one output buffer, one final allocation via alloc_str.
     let mut out: Vec<u8> = Vec::new();
     for i in 0..n {
-        let item = unsafe { crate::api::abstract_sequence::PySequence_GetItem(seq, i) };
+        // PyTuple_GetItem/PyList_GetItem return a BORROWED reference (unlike
+        // PySequence_GetItem's new reference) — incref so the single DECREF
+        // below is correct for all three paths.
+        let item = if is_tuple {
+            let borrowed = unsafe { crate::api::sequences::PyTuple_GetItem(seq, i) };
+            if !borrowed.is_null() {
+                unsafe { crate::api::refcount::Py_INCREF(borrowed) };
+            }
+            borrowed
+        } else if is_list {
+            let borrowed = unsafe { crate::api::sequences::PyList_GetItem(seq, i) };
+            if !borrowed.is_null() {
+                unsafe { crate::api::refcount::Py_INCREF(borrowed) };
+            }
+            borrowed
+        } else {
+            unsafe { crate::api::abstract_sequence::PySequence_GetItem(seq, i) }
+        };
         if item.is_null() {
             if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
                 unsafe { crate::api::errors::PyErr_BadArgument() };
@@ -1629,6 +1662,14 @@ fn format_float_percent(value: f64, conv: u8, spec: &PercentSpec) -> String {
 /// accepting int (exact) and float (truncated, `%d` only) like CPython's
 /// `formatlong` (`PyNumber_Long`). On failure: TypeError + None.
 unsafe fn percent_int_arg(arg: *mut PyObject, conv: u8) -> Option<i128> {
+    let raise_not_a_number = |arg: *mut PyObject| unsafe {
+        let msg = format!(
+            "%{} format: a real number is required, not {:.200}",
+            conv as char,
+            pyobj_type_name(arg)
+        );
+        set_exc(&raw mut crate::abi_types::PyExc_TypeError, &msg);
+    };
     // Native int / bool via the bridge handle (exact, no width truncation).
     let bits = crate::bridge::GLOBAL_BRIDGE.lock().pyobj_to_handle(arg);
     if let Some(bits) = bits {
@@ -1639,25 +1680,35 @@ unsafe fn percent_int_arg(arg: *mut PyObject, conv: u8) -> Option<i128> {
         if mo.is_bool() {
             return Some(mo.as_bool().unwrap_or(false) as i128);
         }
-        if conv == b'd' || conv == b'i' || conv == b'u' {
-            if let Some(f) = mo.as_float() {
-                if f.is_finite() {
-                    return Some(f as i128);
-                }
-            }
+        if (conv == b'd' || conv == b'i' || conv == b'u')
+            && let Some(f) = mo.as_float()
+            && f.is_finite()
+        {
+            return Some(f as i128);
         }
+        // A definitively-classified native object (bridge resolution
+        // succeeded) that is not int/bool/(usable) float can never satisfy
+        // PyNumber_Long/__index__ — raise directly rather than falling
+        // through to PyLong_AsLongLong below. That converter's non-int path
+        // is a silent `-1`-with-no-exception sentinel (numbers.rs, a
+        // different lane's file — see the ledger's SILENT_SENTINEL rows for
+        // PyLong_AsLongLong); reaching it here previously let e.g.
+        // `"%d" % "nope"` silently format as `-1` instead of raising.
+        raise_not_a_number(arg);
+        return None;
     }
-    // Heap ints / foreign objects: go through the checked converter.
+    // Foreign object (bridge resolution failed): go through the checked
+    // converter, which dispatches __index__ for a genuine foreign int-like.
+    // NOTE: PyLong_AsLongLong's non-int path does not yet guarantee a set
+    // exception on every failure (see above) — a foreign object that
+    // legitimately converts to -1 must NOT be misreported as an error, so
+    // the ambiguous case is resolved by the pending-exception check exactly
+    // as CPython callers are required to (`v == -1 && PyErr_Occurred()`).
     unsafe { crate::api::errors::PyErr_Clear() };
     let v = unsafe { crate::api::numbers::PyLong_AsLongLong(arg) };
     if v == -1 && !unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
         unsafe { crate::api::errors::PyErr_Clear() };
-        let msg = format!(
-            "%{} format: a real number is required, not {:.200}",
-            conv as char,
-            unsafe { pyobj_type_name(arg) }
-        );
-        unsafe { set_exc(&raw mut crate::abi_types::PyExc_TypeError, &msg) };
+        raise_not_a_number(arg);
         return None;
     }
     Some(v as i128)
