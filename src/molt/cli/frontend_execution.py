@@ -634,6 +634,26 @@ def _run_frontend_parallel_layer_batches(
                     submitted_ns=submission.submitted_ns,
                     received_ns=received_ns,
                 )
+                # Persist THE MOMENT this module's lowering succeeds, not at the
+                # end of the layer (build-dedup doctrine 74 law 2: a killed /
+                # failed build must not forfeit completed steps). The parent used
+                # to defer every parallel persist to the post-layer consume loop,
+                # so a mid-layer kill (memory_guard SIGTERM / OOM / timeout) or a
+                # later sibling module's failure discarded EVERY already-lowered
+                # module in the in-flight layer -> full re-lower on retry. Writing
+                # here mirrors the serial worker (which already persists in-proc)
+                # so a retry pays only failed-step-forward. Content-addressed and
+                # idempotent; the shared tier survives a target/ wipe.
+                if result.get("ok"):
+                    _write_parallel_persisted_module_lowering(
+                        project_root=project_root,
+                        module_path=module_graph[module_name],
+                        module_name=module_name,
+                        worker_mode="parallel",
+                        context_digest=context_digest_by_module.get(module_name),
+                        result=result,
+                        target_python=target_python,
+                    )
             except BrokenProcessPool as exc:
                 # The pool itself died (a worker process crashed): no future in
                 # or after this batch can complete. Report it as pool-broken so
@@ -754,7 +774,13 @@ def _consume_frontend_parallel_layer_result(
     if result_error is not None:
         return fail(result_error, json_output, command="build")
     result_timings = _frontend_parallel._frontend_result_timings(result)
-    worker_mode = _frontend_parallel._record_parallel_layer_module_timing(
+    # Persistence now happens eagerly in _run_frontend_parallel_layer_batches the
+    # moment each worker's future resolves (build-dedup doctrine 74 law 2), so the
+    # consume loop only records timing and integrates -- it no longer defers the
+    # per-module cache write to end-of-layer. cache-hit results were persisted
+    # when first produced, and serial-fallback results persist in-worker
+    # (_lower_module_serial_with_context), so no result path loses its write.
+    _frontend_parallel._record_parallel_layer_module_timing(
         layer_state=layer_state,
         record_frontend_parallel_worker_timing=record_frontend_parallel_worker_timing,
         layer_index=layer_index,
@@ -762,15 +788,6 @@ def _consume_frontend_parallel_layer_result(
         module_path=module_path,
         result_timings=result_timings,
         worker_timing=layer_state.worker_timings_by_module.get(module_name),
-    )
-    _write_parallel_persisted_module_lowering(
-        project_root=project_root,
-        module_path=module_path,
-        module_name=module_name,
-        worker_mode=worker_mode,
-        context_digest=layer_state.context_digests.get(module_name),
-        result=result,
-        target_python=target_python,
     )
     return _consume_frontend_module_result(
         module_name=module_name,
