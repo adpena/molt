@@ -1352,19 +1352,30 @@ def _wasm_runtime_recovery_target_root(target_root: Path) -> Path:
 def _runtime_wasm_incremental_enabled() -> bool:
     """Whether to build the runtime wasm into a stable, incremental target dir.
 
-    Opt-in (``MOLT_RUNTIME_WASM_INCREMENTAL=1``); DEFAULT OFF so the shipped
-    acceptance path keeps the deterministic-proof behaviour (session-scoped
-    target dir, cargo incremental off).  When on, consecutive iterations at the
-    same runtime-config *family* reuse rustc incremental state, and the two
-    passes within a single build (reloc/staticlib then shared/cdylib) share one
-    codegen so the second pass only re-links.
+    The stable per-family target dir (``_runtime_wasm_incremental_target_root``)
+    is session-independent, so a fresh session/worktree reuses already-compiled
+    dependency crates instead of a cold recompile of the whole graph (V2 cold-dep
+    burn-down).  ``CARGO_INCREMENTAL=1`` is turned on with it so consecutive
+    same-family iterations recompile incrementally.
+
+    Resolution (V2 doctrine "stable dep-cache default-ON for iteration contexts"):
+
+    * ``MOLT_RUNTIME_WASM_INCREMENTAL`` explicitly set wins, both ways.
+    * Otherwise DEFAULT ON in an explicit iteration context -- i.e. when
+      ``MOLT_RUNTIME_BUILD_PROFILE`` pins a non-shipping profile (dev-fast) for
+      the correctness loop -- so the iteration knob alone enables cross-session
+      dep reuse (one knob, progressive disclosure).
+    * Otherwise DEFAULT OFF: the shipped acceptance / final-green path
+      (which never sets ``MOLT_RUNTIME_BUILD_PROFILE``) keeps the deterministic
+      session-scoped target dir and publishes exact-identity artifacts to the
+      shared cache (M05); incremental builds deliberately never publish.
     """
-    return os.environ.get("MOLT_RUNTIME_WASM_INCREMENTAL", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    raw = os.environ.get("MOLT_RUNTIME_WASM_INCREMENTAL", "").strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return bool(_runtime_build_profile_override())
 
 
 def _runtime_wasm_incremental_family_key(
@@ -2364,6 +2375,11 @@ def _ensure_runtime_wasm(
             time.perf_counter() - _cargo_compile_started,
             kind="reloc" if reloc else "shared",
             mode="build",
+            detail=(
+                "target_dir=stable-incremental (cross-session dep cache)"
+                if incremental_enabled
+                else "target_dir=session"
+            ),
         )
         if reloc:
             if not src.exists():
@@ -2839,6 +2855,11 @@ def _prepopulate_combined_runtime_wasm_target(
         time.perf_counter() - started,
         kind="combined",
         mode="build",
+        detail=(
+            "target_dir=stable-incremental (cross-session dep cache)"
+            if shared_spec.incremental_enabled
+            else "target_dir=session"
+        ),
     )
 
     cdylib_candidates = _wasm_runtime_wasm_candidates(target_root, profile_dir)
