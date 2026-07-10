@@ -929,6 +929,31 @@ def _configure_wasi_sysroot_env(env: dict[str, str]) -> None:
         env["MOLT_WASI_SYSROOT"] = sysroot
 
 
+def _configure_wasm_long_double_env(env: dict[str, str]) -> None:
+    """Thread the resolved long-double link archives to molt-runtime's build.rs.
+
+    The deploy ``molt_runtime.wasm`` cdylib link is rustc-driven (so molt cannot
+    order a trailing ``-lc-printscan-long-double`` ahead of the self-contained
+    ``-lc``); build.rs instead links these archives as build-script
+    ``rustc-link-lib`` entries, which rustc emits in its LOCAL-native-libraries
+    group AHEAD of ``-lc`` — the real ``vfprintf``/``__floatscan`` override
+    wasi-libc's ``long_double_not_supported`` stub. This is the deploy-cdylib arm
+    of the SAME single authority the reloc / split-app ``wasm-ld`` paths apply;
+    env-threaded so build.rs consumes the Python resolver's path (incl. the
+    durable ``vendor/wasm-builtins`` fallback), not merely a session sysroot. The
+    ``artifact_poison_gate`` attests the effect on the built cdylib. (Harmless on
+    the sibling staticlib crate-type: ``rustc-link-lib`` is metadata there, and
+    the reloc link whole-archives its own printscan copy.)
+    """
+    policy = wasm_toolchain.resolve_long_double_link_policy(required=False)
+    if policy.printscan is not None:
+        env["MOLT_WASM_LONGDOUBLE_ARCHIVE"] = str(
+            policy.printscan.resolve(strict=False)
+        )
+    if policy.builtins is not None:
+        env["MOLT_WASM_BUILTINS_ARCHIVE"] = str(policy.builtins.resolve(strict=False))
+
+
 def _wasm_runtime_artifact_path(target_root: Path, profile_dir: str) -> Path:
     return target_root / "wasm32-wasip1" / profile_dir / "molt_runtime.wasm"
 
@@ -1643,33 +1668,6 @@ def _reloc_runtime_requires_long_double(
     return False
 
 
-# (archive filename, resolver) pairs the reloc long-double link depends on.
-_RELOC_LONG_DOUBLE_ARCHIVE_RESOLVERS = (
-    ("libc-printscan-long-double.a", wasm_toolchain.wasm_wasi_printscan_long_double_archive),
-    ("libclang_rt.builtins-wasm32.a", wasm_toolchain.wasm_clang_rt_builtins_archive),
-)
-
-
-def _long_double_archives_missing_message(missing: Sequence[str]) -> str:
-    """Actionable hard-error diagnostic naming the missing archive(s) + the fix."""
-    names = ", ".join(missing)
-    return (
-        "Runtime relocatable wasm link (CPython-ABI/numpy tier) requires the "
-        "wasi-libc long-double formatter archives, but these are not resolvable: "
-        f"{names}. This runtime links numpy/scipy long double formatting; "
-        "proceeding would relink wasi-libc's long_double_not_supported stub and "
-        "abort() (raw `unreachable` trap) at _multiarray_umath import. Refusing "
-        "to build a runtime that traps (no silent degrade). Provision the "
-        "archives (both ship pinned in-repo at vendor/wasm-builtins/, resolved by "
-        "molt.cli.wasm_toolchain automatically): "
-        "libc-printscan-long-double.a ships in the wasi-sysroot-33.0+m tarball "
-        "(lib/wasm32-wasip1/) — set MOLT_WASI_SYSROOT / MOLT_TARGET_ROOT to a "
-        "complete sysroot; libclang_rt.builtins-wasm32.a is wasi-sdk-33 compiler-rt "
-        "(lib/clang/*/lib/wasip1/). If they resolve None the committed "
-        "vendor/wasm-builtins copy is missing — restore it (see its README)."
-    )
-
-
 class _RelocLongDoubleArchives(NamedTuple):
     """Resolved reloc long-double link archives + fail-loud / degrade decision."""
 
@@ -1684,46 +1682,27 @@ def _resolve_reloc_long_double_archives(
 ) -> _RelocLongDoubleArchives:
     """Resolve the reloc long-double archives and decide fail-loud vs degrade.
 
-    Records the ``longdouble_archives`` build attestation (present/MISSING). When
-    ``long_double_required`` and either archive is unresolved, returns an
-    ``error`` (the caller MUST abort the build — a numpy runtime that traps is
-    never acceptable). Otherwise returns the archives plus any degrade
+    Thin wrapper over the single authority
+    :func:`wasm_toolchain.resolve_long_double_link_policy` that additionally
+    records the ``longdouble_archives`` build attestation (present/MISSING). When
+    ``long_double_required`` and either archive is unresolved, propagates the
+    authority's ``error`` (the caller MUST abort the build — a numpy runtime that
+    traps is never acceptable). Otherwise returns the archives plus any degrade
     ``warnings`` for a build that provably does not need long double.
     """
-    longdouble = wasm_toolchain.wasm_wasi_printscan_long_double_archive()
-    builtins = wasm_toolchain.wasm_clang_rt_builtins_archive()
-    resolved = {
-        "libc-printscan-long-double.a": longdouble,
-        "libclang_rt.builtins-wasm32.a": builtins,
-    }
-    missing = [name for name, _ in _RELOC_LONG_DOUBLE_ARCHIVE_RESOLVERS if resolved[name] is None]
+    policy = wasm_toolchain.resolve_long_double_link_policy(
+        required=long_double_required
+    )
+    missing = policy.printscan is None or policy.builtins is None
     if not long_double_required:
         _record_runtime_wasm_longdouble_archives(
             "not_required" if missing else "present"
         )
     else:
         _record_runtime_wasm_longdouble_archives("MISSING" if missing else "present")
-        if missing:
-            return _RelocLongDoubleArchives(
-                longdouble, builtins, _long_double_archives_missing_message(missing), ()
-            )
-    warnings: list[str] = []
-    if longdouble is None:
-        warnings.append(
-            "Runtime relocatable wasm link warning: wasi-libc "
-            "libc-printscan-long-double.a not found in the active WASI sysroot or "
-            "vendor/wasm-builtins; long double %L formatting will abort() "
-            "(unreachable) at runtime."
-        )
-    elif builtins is None:
-        warnings.append(
-            "Runtime relocatable wasm link warning: long-double printf/scanf "
-            "archive present but libclang_rt.builtins-wasm32.a is not resolvable "
-            "(sysroot / wasi-sdk resource dir / vendor/wasm-builtins) — binary128 "
-            "soft-float (__addtf3/__multf3/…) will not resolve. Provision wasi-sdk "
-            "compiler-rt builtins."
-        )
-    return _RelocLongDoubleArchives(longdouble, builtins, None, tuple(warnings))
+    return _RelocLongDoubleArchives(
+        policy.printscan, policy.builtins, policy.error, policy.warnings
+    )
 
 
 def _link_runtime_staticlib_to_reloc_wasm(
@@ -1784,12 +1763,15 @@ def _link_runtime_staticlib_to_reloc_wasm(
     if not json_output:
         for warning in archives.warnings:
             print(warning, file=sys.stderr)
-    whole_archive_inputs = [str(staticlib_path)]
-    trailing_archives = [str(libc_archive)]
-    if archives.longdouble is not None:
-        whole_archive_inputs.append(str(archives.longdouble.resolve(strict=False)))
-        if archives.builtins is not None:
-            trailing_archives.append(str(archives.builtins.resolve(strict=False)))
+    # Single authority (reloc arm): whole-archive the staticlib + printscan's
+    # real long-double formatters ahead of libc.a; libc.a + builtins stay lazy.
+    long_double_argv = wasm_toolchain.long_double_whole_archive_link_argv(
+        wasm_toolchain.LongDoubleLinkPolicy(
+            archives.longdouble, archives.builtins, archives.error, archives.warnings
+        ),
+        whole_archive=[str(staticlib_path)],
+        trailing=[str(libc_archive)],
+    )
     export_args = _wasm_link_args_from_rustflags(export_link_args)
     if export_args:
         export_response_path = _write_wasm_link_args_response_file(
@@ -1804,10 +1786,7 @@ def _link_runtime_staticlib_to_reloc_wasm(
                 wasm_ld,
                 "-r",
                 *export_args,
-                "--whole-archive",
-                *whole_archive_inputs,
-                "--no-whole-archive",
-                *trailing_archives,
+                *long_double_argv,
                 "-o",
                 str(tmp_output_path),
             ],
@@ -1990,21 +1969,24 @@ def _compute_runtime_wasm_build_spec(
         simd_enabled=simd_enabled,
         freestanding=freestanding,
     )
-    if reloc:
-        # The reloc link whole-archives wasi-libc's long-double printf/scanf
-        # formatters + compiler-rt binary128 builtins (see
-        # _link_runtime_staticlib_to_reloc_wasm). Those archives are appended by
-        # wasm-ld, not passed as rustc link-args, so they never otherwise enter
-        # the fingerprint/compat digest. Fold their identity in (reloc-only, a
-        # pure fingerprint input — never handed to rustc) so provisioning them or
-        # bumping their version correctly invalidates the cached reloc runtime
-        # instead of serving a stale long-double-stubbed one (effect-attestation:
-        # configured != effective). The shared/cdylib branch is untouched, so the
-        # CDN-cacheable shared runtime stays byte-identical across builds.
-        fingerprint_rustflags = _append_rustflags_text(
-            fingerprint_rustflags,
-            f'--cfg molt_reloc_longdouble_link="{_reloc_link_archive_fingerprint_token()}"',
-        )
+    # Fold the long-double archive identity into BOTH runtime fingerprints so a
+    # change to those archives (first provisioning, version bump, or removal)
+    # invalidates the cached runtime instead of serving a stale
+    # long-double-stubbed one (effect-attestation: configured != effective, M34).
+    # The reloc link whole-archives them via wasm-ld; the shared cdylib links
+    # them via build.rs `rustc-link-lib` (see _configure_wasm_long_double_env) —
+    # in BOTH cases the archives never otherwise enter the fingerprint/compat
+    # digest (the shared build passes them by env, not rustc link-args). The tag
+    # is a pure fingerprint input (a distinct cfg name per crate-type, never
+    # handed to the real compile) so the emitted wasm stays byte-identical for a
+    # fixed archive set — the CDN-cacheable shared runtime is stable across
+    # builds and only re-keys when the archives actually change.
+    _longdouble_link_token = _reloc_link_archive_fingerprint_token()
+    fingerprint_rustflags = _append_rustflags_text(
+        fingerprint_rustflags,
+        f'--cfg molt_{"reloc" if reloc else "shared"}_longdouble_link'
+        f'="{_longdouble_link_token}"',
+    )
     cargo_runtime_features = tuple(["wasm_freestanding"] if freestanding else [])
     builtin_features = _runtime_builtin_features_for_profile(
         effective_stdlib_profile,
@@ -2508,6 +2490,7 @@ def _ensure_runtime_wasm(
         if os.environ.get("MOLT_WASM_FORCE_CC") == "1":
             _configure_wasm_cc_env(env)
         _configure_wasi_sysroot_env(env)
+        _configure_wasm_long_double_env(env)
         # Deterministic proof builds default Cargo incremental off at the env
         # boundary; an explicit operator-provided CARGO_INCREMENTAL remains
         # authoritative for local incremental-debug sessions.
@@ -2998,6 +2981,7 @@ def _prepopulate_combined_runtime_wasm_target(
     if os.environ.get("MOLT_WASM_FORCE_CC") == "1":
         _configure_wasm_cc_env(env)
     _configure_wasi_sysroot_env(env)
+    _configure_wasm_long_double_env(env)
     if os.environ.get("MOLT_WASM_DISABLE_SCCACHE") != "1":
         _maybe_enable_sccache(env)
     else:

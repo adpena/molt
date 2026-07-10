@@ -72,6 +72,8 @@ fn main() {
 
     emit_native_cdylib_isolate_stubs(&out_dir, &target_arch, &target_env);
 
+    emit_wasm_long_double_link_policy(&out_dir, &target_arch);
+
     unicode_tables::emit_runtime_unicode_tables(&out_dir, &build_python);
     println!("cargo:rerun-if-env-changed=PYTHONPATH");
     println!("cargo:rerun-if-changed=../build_support/unicode_tables.rs");
@@ -178,6 +180,99 @@ fn is_c_identifier(symbol: &str) -> bool {
         return false;
     }
     chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+}
+
+/// Single authority (deploy-cdylib arm) for wasi-libc's `long double` (`%L`)
+/// printf/scanf link policy — the SAME policy the molt-driven `wasm-ld` links
+/// (reloc runtime, split `app.wasm`) apply via `molt.cli` Python helpers.
+///
+/// The default wasi-libc `libc.a` stubs the `%L` float conversions with a
+/// `long_double_not_supported()` that `abort()`s -> raw `unreachable` trap
+/// (numpy `_multiarray_umath` import hits it). wasi-libc ships the real
+/// formatters in a companion archive `libc-printscan-long-double.a` whose real
+/// `vfprintf`/`__floatscan`/`strtold` override the stub *when linked ahead of
+/// `libc.a`*. The reloc/app hand-links whole-archive it before `libc.a`; the
+/// deploy `cdylib` is linked by rustc, which places the self-contained `-lc`
+/// AFTER any `-C link-arg`, so a trailing `-lc-printscan-long-double` is too
+/// late (the stub is already pulled). A build-script `cargo:rustc-link-lib`,
+/// however, is emitted in rustc's *local native libraries* group, which
+/// precedes the self-contained sysroot `-lc`: linking the real formatters as a
+/// normal (lazy, un-bundled) static lib there pulls `printscan`'s `vfprintf.o`
+/// to satisfy molt's own `PyOS_snprintf`/`vfprintf` reference FIRST, so
+/// `libc.a`'s stub object stays lazy and is never linked. Normal (not
+/// `--whole-archive`) can never duplicate-symbol; `-bundle` keeps the archive
+/// out of the sibling `staticlib`/`rlib` crate-types (the reloc runtime whole-
+/// archives its own copy, so bundling would double-define). The
+/// `artifact_poison_gate` attests the effect (stub string ABSENT) uniformly
+/// across all three built artifacts.
+///
+/// Archive identities come from the molt Python resolver via env
+/// (`MOLT_WASM_LONGDOUBLE_ARCHIVE` / `MOLT_WASM_BUILTINS_ARCHIVE` — the single
+/// source of truth, incl. the vendored fallback), with a wasi-sysroot lookup
+/// fallback for a plain `cargo build -p molt-runtime`.
+fn emit_wasm_long_double_link_policy(out_dir: &Path, target_arch: &str) {
+    println!("cargo:rerun-if-env-changed=MOLT_WASM_LONGDOUBLE_ARCHIVE");
+    println!("cargo:rerun-if-env-changed=MOLT_WASM_BUILTINS_ARCHIVE");
+    if target_arch != "wasm32" {
+        return;
+    }
+    let printscan = resolve_wasm_link_archive(
+        "MOLT_WASM_LONGDOUBLE_ARCHIVE",
+        "libc-printscan-long-double.a",
+    );
+    let Some(printscan) = printscan else {
+        // No archive resolvable: emit nothing. numpy/scipy-tier builds fail loud
+        // upstream in molt.cli (`_resolve_reloc_long_double_archives`); a micro
+        // build never hits `%L`, so leaving the (unreachable) stub is benign.
+        return;
+    };
+    let printscan_dst = out_dir.join("libc-printscan-long-double.a");
+    if let Err(err) = fs::copy(&printscan, &printscan_dst) {
+        panic!(
+            "failed to stage wasi-libc long-double printf/scanf archive {} -> {}: {err}",
+            printscan.display(),
+            printscan_dst.display()
+        );
+    }
+    println!("cargo:rustc-link-search=native={}", out_dir.display());
+    // Normal (lazy) + un-bundled: overrides the stub without dup, and stays out
+    // of the staticlib/rlib the reloc runtime consumes.
+    println!("cargo:rustc-link-lib=static:-bundle=c-printscan-long-double");
+    // binary128 soft-float (__addtf3/__multf3/…) the real long-double path calls.
+    if let Some(builtins) =
+        resolve_wasm_link_archive("MOLT_WASM_BUILTINS_ARCHIVE", "libclang_rt.builtins-wasm32.a")
+    {
+        let builtins_dst = out_dir.join("libclang_rt.builtins-wasm32.a");
+        if let Err(err) = fs::copy(&builtins, &builtins_dst) {
+            panic!(
+                "failed to stage compiler-rt builtins archive {} -> {}: {err}",
+                builtins.display(),
+                builtins_dst.display()
+            );
+        }
+        println!("cargo:rustc-link-lib=static:-bundle=clang_rt.builtins-wasm32");
+    }
+}
+
+/// Resolve a wasm link archive: molt-provided env path first (the Python
+/// resolver, incl. vendored fallback), then the active wasi-sysroot lib dir.
+fn resolve_wasm_link_archive(env_key: &str, file_name: &str) -> Option<PathBuf> {
+    if let Ok(value) = env::var(env_key) {
+        let value = value.trim();
+        if !value.is_empty() {
+            let path = PathBuf::from(value);
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+    }
+    let sysroot = wasi_sysroot::resolve_wasi_sysroot()?;
+    let candidate = sysroot.lib_dir("wasm32-wasip1").join(file_name);
+    if candidate.is_file() {
+        Some(candidate)
+    } else {
+        None
+    }
 }
 
 fn emit_native_cdylib_isolate_stubs(out_dir: &Path, target_arch: &str, target_env: &str) {

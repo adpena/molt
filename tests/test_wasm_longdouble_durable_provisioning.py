@@ -226,3 +226,104 @@ def test_split_app_fails_loud_when_longdouble_absent(
     )
     with pytest.raises(ValueError, match="long-double|unreachable"):
         wasm_link._split_app_native_link_args([Path("numpy.o"), Path("libc.a")])
+
+
+# --- Single authority: every wasm link path routes through ONE policy --------
+#
+# The wasi-libc `long_double_not_supported` stub lives in `libc.a` and must be
+# overridden in EVERY wasm module that links it. These lock in that the reloc
+# runtime (wasm-ld), split app.wasm (wasm-ld), and deploy cdylib (rustc via
+# build.rs env) all resolve the same archives + ordering through the ONE
+# `wasm_toolchain` policy — so a future 4th link path can't reintroduce the trap
+# by re-implementing resolution.
+
+
+def _fake_archives(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[Path, Path]:
+    ld = tmp_path / "libc-printscan-long-double.a"
+    ld.write_bytes(b"!<arch>\n")
+    bi = tmp_path / "libclang_rt.builtins-wasm32.a"
+    bi.write_bytes(b"!<arch>\n")
+    monkeypatch.setattr(
+        wasm_toolchain, "wasm_wasi_printscan_long_double_archive", lambda: ld
+    )
+    monkeypatch.setattr(wasm_toolchain, "wasm_clang_rt_builtins_archive", lambda: bi)
+    return ld, bi
+
+
+def test_all_three_link_paths_share_the_one_authority(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ld, bi = _fake_archives(monkeypatch, tmp_path)
+
+    # (1) reloc arm — resolver delegates to the authority.
+    reloc = rb._resolve_reloc_long_double_archives(long_double_required=True)
+    assert reloc.longdouble == ld
+    assert reloc.builtins == bi
+    assert reloc.error is None
+
+    # (2) split app.wasm arm — argv whole-archives printscan ahead of libc.a.
+    args = wasm_link._split_app_native_link_args([Path("numpy.o"), Path("libc.a")])
+    ld_in_args = [a for a in args if Path(a).name == ld.name]
+    bi_in_args = [a for a in args if Path(a).name == bi.name]
+    assert ld_in_args and Path(ld_in_args[0]).parent == tmp_path.resolve()
+    assert bi_in_args and Path(bi_in_args[0]).parent == tmp_path.resolve()
+    assert args.index("--whole-archive") < args.index(ld_in_args[0])
+    assert args.index(ld_in_args[0]) < args.index("--no-whole-archive")
+
+    # (3) deploy cdylib arm — archives threaded to build.rs by env.
+    env: dict[str, str] = {}
+    rb._configure_wasm_long_double_env(env)
+    assert Path(env["MOLT_WASM_LONGDOUBLE_ARCHIVE"]).parent == tmp_path.resolve()
+    assert Path(env["MOLT_WASM_LONGDOUBLE_ARCHIVE"]).name == ld.name
+    assert Path(env["MOLT_WASM_BUILTINS_ARCHIVE"]).name == bi.name
+
+
+def test_shared_argv_order_matches_reloc_policy(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The shared argv builder emits printscan in the whole-archive group ahead
+    of the (lazy) libc, with builtins trailing — the proven override order."""
+    ld, bi = _fake_archives(monkeypatch, tmp_path)
+    policy = wasm_toolchain.resolve_long_double_link_policy(required=True)
+    argv = wasm_toolchain.long_double_whole_archive_link_argv(
+        policy, whole_archive=["staticlib.a"], trailing=["libc.a"]
+    )
+    assert argv == [
+        "--whole-archive",
+        "staticlib.a",
+        str(ld.resolve(strict=False)),
+        "--no-whole-archive",
+        "libc.a",
+        str(bi.resolve(strict=False)),
+    ]
+
+
+def test_deploy_cdylib_env_absent_when_archive_unresolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No archive -> no env keys: build.rs emits nothing and the artifact poison
+    gate (plus the reloc/split-app numpy-tier fail-loud) is the effect backstop.
+    """
+    monkeypatch.setattr(
+        wasm_toolchain, "wasm_wasi_printscan_long_double_archive", lambda: None
+    )
+    monkeypatch.setattr(wasm_toolchain, "wasm_clang_rt_builtins_archive", lambda: None)
+    env: dict[str, str] = {}
+    rb._configure_wasm_long_double_env(env)
+    assert "MOLT_WASM_LONGDOUBLE_ARCHIVE" not in env
+    assert "MOLT_WASM_BUILTINS_ARCHIVE" not in env
+
+
+def test_shared_and_reloc_fingerprints_fold_archive_identity(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Both runtime fingerprints re-key when the archive set changes, so a stale
+    long-double-stubbed cached runtime (reloc OR shared cdylib) is never served.
+    """
+    _fake_archives(monkeypatch, tmp_path)
+    token_present = rb._reloc_link_archive_fingerprint_token()
+    monkeypatch.setattr(
+        wasm_toolchain, "wasm_wasi_printscan_long_double_archive", lambda: None
+    )
+    token_absent = rb._reloc_link_archive_fingerprint_token()
+    assert token_present != token_absent

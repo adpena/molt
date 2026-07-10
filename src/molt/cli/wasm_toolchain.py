@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 import functools
 import os
@@ -524,3 +525,128 @@ def wasm_clang_rt_builtins_archive() -> Path | None:
         or _wasi_sdk_compiler_rt_builtins_archive()
         or _vendored_wasm_lib_archive("libclang_rt.builtins-wasm32.a")
     )
+
+
+# --- Single authority: wasi-libc long-double (%L) link policy ----------------
+#
+# ONE resolver + ordering policy that EVERY molt wasm link path consults so that
+# no wasm module can link wasi-libc's ``libc.a`` without overriding its
+# ``long_double_not_supported`` abort stub (raw ``unreachable`` trap at numpy
+# ``_multiarray_umath`` import). Three link paths apply it, each via the
+# mechanism appropriate to how it drives the linker:
+#   * reloc runtime  — molt-driven ``wasm-ld -r`` (whole-archives the staticlib);
+#   * split app.wasm — molt-driven ``wasm-ld``  (numpy + libc.a, no reloc rt);
+#   * deploy cdylib  — rustc-driven link: the resolved archives are threaded to
+#     molt-runtime's ``build.rs`` via env (``MOLT_WASM_LONGDOUBLE_ARCHIVE`` /
+#     ``MOLT_WASM_BUILTINS_ARCHIVE``), which links them as build-script
+#     ``rustc-link-lib`` entries — emitted AHEAD of the self-contained ``-lc``.
+# The ``artifact_poison_gate`` attests the effect (stub string ABSENT) uniformly
+# across all three built artifacts.
+
+_LONG_DOUBLE_LINK_ARCHIVES: tuple[tuple[str, str], ...] = (
+    ("libc-printscan-long-double.a", "MOLT_WASM_LONGDOUBLE_ARCHIVE"),
+    ("libclang_rt.builtins-wasm32.a", "MOLT_WASM_BUILTINS_ARCHIVE"),
+)
+
+
+@dataclass(frozen=True)
+class LongDoubleLinkPolicy:
+    """Resolved wasi-libc long-double (%L) link inputs + fail-loud decision.
+
+    ``printscan`` (``libc-printscan-long-double.a``) carries the real
+    ``vfprintf``/``__floatscan``/``strtold`` that override ``libc.a``'s
+    ``long_double_not_supported`` stub *when linked ahead of ``libc.a```;
+    ``builtins`` (``libclang_rt.builtins-wasm32.a``) supplies the binary128
+    soft-float (``__addtf3``/``__multf3``/…) the real formatters call.
+    ``error`` is set (build MUST abort) when ``required`` and an archive is
+    unresolvable — a runtime that relinks the abort stub is never acceptable.
+    """
+
+    printscan: Path | None
+    builtins: Path | None
+    error: str | None
+    warnings: tuple[str, ...]
+
+
+def long_double_archives_missing_message(missing: Sequence[str]) -> str:
+    """Actionable hard-error diagnostic naming the missing archive(s) + the fix."""
+    names = ", ".join(missing)
+    return (
+        "wasm long-double (%L) link (CPython-ABI/numpy tier) requires the "
+        "wasi-libc long-double formatter archives, but these are not resolvable: "
+        f"{names}. This module links numpy/scipy long double formatting; "
+        "proceeding would relink wasi-libc's long_double_not_supported stub and "
+        "abort() (raw `unreachable` trap) at _multiarray_umath import. Refusing "
+        "to build a module that traps (no silent degrade). Provision the archives "
+        "(both ship pinned in-repo at vendor/wasm-builtins/, resolved by "
+        "molt.cli.wasm_toolchain automatically): libc-printscan-long-double.a "
+        "ships in the wasi-sysroot-33.0+m tarball (lib/wasm32-wasip1/) — set "
+        "MOLT_WASI_SYSROOT / MOLT_TARGET_ROOT to a complete sysroot; "
+        "libclang_rt.builtins-wasm32.a is wasi-sdk-33 compiler-rt "
+        "(lib/clang/*/lib/wasip1/). If they resolve None the committed "
+        "vendor/wasm-builtins copy is missing — restore it (see its README)."
+    )
+
+
+def resolve_long_double_link_policy(*, required: bool) -> LongDoubleLinkPolicy:
+    """Resolve the long-double link archives and decide fail-loud vs degrade.
+
+    ``required`` (numpy/scipy or CPython-ABI tier): a missing archive returns an
+    ``error`` the caller MUST honour (abort the build). Otherwise returns the
+    archives plus any degrade ``warnings`` for a module that provably never hits
+    ``%L`` (micro / no-numpy).
+    """
+    printscan = wasm_wasi_printscan_long_double_archive()
+    builtins = wasm_clang_rt_builtins_archive()
+    resolved = {
+        "libc-printscan-long-double.a": printscan,
+        "libclang_rt.builtins-wasm32.a": builtins,
+    }
+    missing = [name for name, _ in _LONG_DOUBLE_LINK_ARCHIVES if resolved[name] is None]
+    if required and missing:
+        return LongDoubleLinkPolicy(
+            printscan, builtins, long_double_archives_missing_message(missing), ()
+        )
+    warnings: list[str] = []
+    if printscan is None:
+        warnings.append(
+            "wasm long-double link warning: wasi-libc "
+            "libc-printscan-long-double.a not found in the active WASI sysroot or "
+            "vendor/wasm-builtins; long double %L formatting will abort() "
+            "(unreachable) at runtime."
+        )
+    elif builtins is None:
+        warnings.append(
+            "wasm long-double link warning: long-double printf/scanf archive "
+            "present but libclang_rt.builtins-wasm32.a is not resolvable (sysroot "
+            "/ wasi-sdk resource dir / vendor/wasm-builtins) — binary128 "
+            "soft-float (__addtf3/__multf3/…) will not resolve. Provision wasi-sdk "
+            "compiler-rt builtins."
+        )
+    return LongDoubleLinkPolicy(printscan, builtins, None, tuple(warnings))
+
+
+def long_double_whole_archive_link_argv(
+    policy: LongDoubleLinkPolicy,
+    *,
+    whole_archive: Sequence[str],
+    trailing: Sequence[str],
+) -> list[str]:
+    """The shared ``wasm-ld`` argv fragment applying the long-double policy.
+
+    Emits ``--whole-archive <whole_archive...> [printscan] --no-whole-archive
+    <trailing...> [builtins]`` so ``printscan``'s real formatters are force-
+    loaded ahead of ``libc.a`` (which stays in the lazy ``trailing`` group and is
+    skipped once the symbols are defined). ``builtins`` is appended lazily and
+    de-duplicated. When ``printscan`` is unresolved the fragment degrades to the
+    plain whole/no-whole split (callers gate the numpy tier on ``policy.error``).
+    """
+    wa = [str(entry) for entry in whole_archive]
+    tr = [str(entry) for entry in trailing]
+    if policy.printscan is not None:
+        wa.append(str(policy.printscan.resolve(strict=False)))
+        if policy.builtins is not None:
+            builtins = str(policy.builtins.resolve(strict=False))
+            if builtins not in tr:
+                tr.append(builtins)
+    return ["--whole-archive", *wa, "--no-whole-archive", *tr]
