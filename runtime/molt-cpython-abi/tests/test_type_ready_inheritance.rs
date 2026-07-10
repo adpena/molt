@@ -605,3 +605,70 @@ fn call_object_with_null_args_passes_empty_tuple_not_null_to_tp_new() {
         "the synthesized args must be an EMPTY tuple (len 0)"
     );
 }
+
+/// CPython's `PyObject_TypeCheck(ob, tp)` is
+/// `Py_IS_TYPE(ob, tp) || PyType_IsSubtype(Py_TYPE(ob), tp)` — an instance
+/// type-checks against its exact type AND against every BASE on its `tp_base`
+/// chain. numpy's `PyArray_DescrCheck(res)` expands to
+/// `PyObject_TypeCheck(res, &PyArrayDescr_Type)`, and a DType descriptor's
+/// `Py_TYPE` is its concrete DType class (numpy `stringdtype/dtype.c` sets
+/// `StringDType.tp_base = &PyArrayDescr_Type`), never `PyArrayDescr_Type`
+/// itself. An EXACT-only `PyObject_TypeCheck` therefore rejects every genuine
+/// descriptor and strands `use_new_as_default` (dtypemeta.c) with
+/// "Instantiating <DType> did not return a dtype instance". This test asserts
+/// the SUBTYPE arm and is mask-proof: it fails against an exact-only check.
+#[test]
+fn typecheck_matches_base_type_like_pyarray_descrcheck() {
+    use molt_cpython_abi::api::typeobj::PyObject_TypeCheck;
+    init();
+
+    // Base type: numpy's `PyArrayDescr_Type` ("numpy.dtype").
+    let mut descr_base: PyTypeObject = unsafe { std::mem::zeroed() };
+    descr_base.tp_name = c"numpy.dtype".as_ptr();
+    descr_base.tp_basicsize = std::mem::size_of::<PyObject>() as Py_ssize_t;
+    assert_eq!(unsafe { ready(&mut descr_base) }, 0);
+
+    // Concrete DType class: `StringDType`, whose `tp_base` is the descr base —
+    // exactly numpy's `StringDType.tp_base = &PyArrayDescr_Type`.
+    let mut string_dtype: PyTypeObject = unsafe { std::mem::zeroed() };
+    string_dtype.tp_name = c"numpy.dtypes.StringDType".as_ptr();
+    string_dtype.tp_basicsize = std::mem::size_of::<PyObject>() as Py_ssize_t;
+    string_dtype.tp_base = &raw mut descr_base;
+    assert_eq!(unsafe { ready(&mut string_dtype) }, 0);
+
+    // An UNRELATED readied type, to prove the subtype walk does not over-match.
+    let mut unrelated: PyTypeObject = unsafe { std::mem::zeroed() };
+    unrelated.tp_name = c"numpy.ndarray".as_ptr();
+    unrelated.tp_basicsize = std::mem::size_of::<PyObject>() as Py_ssize_t;
+    assert_eq!(unsafe { ready(&mut unrelated) }, 0);
+
+    // The descriptor instance numpy's `tp_new` returns: its `ob_type` is the
+    // concrete DType class, exactly like the result of `StringDType()`.
+    let mut descr_instance = PyObject {
+        ob_refcnt: 1,
+        ob_type: &raw mut string_dtype,
+    };
+    let inst = &raw mut descr_instance;
+
+    // Exact-type arm (`Py_IS_TYPE`).
+    assert_eq!(
+        unsafe { PyObject_TypeCheck(inst, &raw mut string_dtype) },
+        1,
+        "an instance must type-check against its exact type",
+    );
+    // Subtype arm (`PyType_IsSubtype`) — the numpy `PyArray_DescrCheck(res)`
+    // case and the teeth of this regression: an exact-only check returns 0.
+    assert_eq!(
+        unsafe { PyObject_TypeCheck(inst, &raw mut descr_base) },
+        1,
+        "a DType descriptor must type-check against its base PyArrayDescr_Type \
+         (PyObject_TypeCheck = Py_IS_TYPE || PyType_IsSubtype); exact-only \
+         stranded numpy use_new_as_default",
+    );
+    // Must NOT match an unrelated type: the walk terminates at `object`.
+    assert_eq!(
+        unsafe { PyObject_TypeCheck(inst, &raw mut unrelated) },
+        0,
+        "the subtype walk must not over-match an unrelated type",
+    );
+}
