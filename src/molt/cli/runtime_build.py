@@ -1588,6 +1588,30 @@ def _run_runtime_wasm_cargo_build(
     return build, reported_artifact
 
 
+def _reloc_link_archive_fingerprint_token() -> str:
+    """Content token for the reloc link's long-double + builtins archives.
+
+    Folded into the reloc-runtime-wasm fingerprint so a change to those archives
+    (first provisioning, a version bump, or removal) invalidates the cached
+    reloc runtime. Uses (name, size, mtime) — cheap and sufficient to detect a
+    swapped/updated archive without hashing hundreds of KB every build.
+    """
+    parts: list[str] = []
+    for label, archive in (
+        ("longdouble", wasm_toolchain.wasm_wasi_printscan_long_double_archive()),
+        ("builtins", wasm_toolchain.wasm_clang_rt_builtins_archive()),
+    ):
+        if archive is None:
+            parts.append(f"{label}=none")
+            continue
+        try:
+            st = archive.stat()
+            parts.append(f"{label}={archive.name}:{st.st_size}:{int(st.st_mtime)}")
+        except OSError:
+            parts.append(f"{label}={archive.name}:unstat")
+    return hashlib.sha256(";".join(parts).encode("utf-8")).hexdigest()[:16]
+
+
 def _link_runtime_staticlib_to_reloc_wasm(
     *,
     staticlib_path: Path,
@@ -1852,6 +1876,21 @@ def _compute_runtime_wasm_build_spec(
         simd_enabled=simd_enabled,
         freestanding=freestanding,
     )
+    if reloc:
+        # The reloc link whole-archives wasi-libc's long-double printf/scanf
+        # formatters + compiler-rt binary128 builtins (see
+        # _link_runtime_staticlib_to_reloc_wasm). Those archives are appended by
+        # wasm-ld, not passed as rustc link-args, so they never otherwise enter
+        # the fingerprint/compat digest. Fold their identity in (reloc-only, a
+        # pure fingerprint input — never handed to rustc) so provisioning them or
+        # bumping their version correctly invalidates the cached reloc runtime
+        # instead of serving a stale long-double-stubbed one (effect-attestation:
+        # configured != effective). The shared/cdylib branch is untouched, so the
+        # CDN-cacheable shared runtime stays byte-identical across builds.
+        fingerprint_rustflags = _append_rustflags_text(
+            fingerprint_rustflags,
+            f'--cfg molt_reloc_longdouble_link="{_reloc_link_archive_fingerprint_token()}"',
+        )
     cargo_runtime_features = tuple(["wasm_freestanding"] if freestanding else [])
     builtin_features = _runtime_builtin_features_for_profile(
         effective_stdlib_profile,
