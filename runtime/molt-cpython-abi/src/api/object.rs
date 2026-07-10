@@ -968,84 +968,318 @@ pub unsafe extern "C" fn PyObject_LengthHint(
     if size < 0 { defaultvalue } else { size }
 }
 
+/// Enforce the C-API contract that an object-returning item-access slot which
+/// returns NULL leaves a pending exception. If a foreign slot broke that
+/// contract, record the site on the permanent silent-failure surface
+/// (`MOLT_TRACE_CAPI`) and raise `SystemError` so a bare NULL never escapes.
+/// Mirrors `abstract_number::finalize_slot_result`.
+unsafe fn finalize_item_slot_result(
+    o: *mut PyObject,
+    result: *mut PyObject,
+    capi_name: &str,
+) -> *mut PyObject {
+    if result.is_null() && !exception_already_pending() {
+        crate::capi_trace::record_silent_failure(capi_name, Some(&unsafe { type_name_lossy(o) }));
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                &raw mut crate::abi_types::PyExc_SystemError,
+                c"item-access slot returned NULL without setting an exception".as_ptr(),
+            );
+        }
+    }
+    result
+}
+
+/// `int`-returning analogue of [`finalize_item_slot_result`] for the
+/// item-assignment slots (`mp_ass_subscript` / `sq_ass_item`): a `-1` return
+/// must carry a pending exception, else record + raise `SystemError`.
+unsafe fn finalize_item_ass_result(o: *mut PyObject, res: c_int, capi_name: &str) -> c_int {
+    if res < 0 && !exception_already_pending() {
+        crate::capi_trace::record_silent_failure(capi_name, Some(&unsafe { type_name_lossy(o) }));
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                &raw mut crate::abi_types::PyExc_SystemError,
+                c"item-assignment slot returned -1 without setting an exception".as_ptr(),
+            );
+        }
+    }
+    res
+}
+
+/// No native or foreign item access applied: record the site on the permanent
+/// silent-failure surface and raise a CPython-shaped `TypeError` (`message`), so
+/// a failing subscript is never a bare NULL. Object-returning variant.
+unsafe fn item_type_error_obj(o: *mut PyObject, capi_name: &str, message: String) -> *mut PyObject {
+    crate::capi_trace::record_silent_failure(capi_name, Some(&unsafe { type_name_lossy(o) }));
+    if !exception_already_pending()
+        && let Ok(cmsg) = std::ffi::CString::new(message)
+    {
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                &raw mut crate::abi_types::PyExc_TypeError,
+                cmsg.as_ptr(),
+            );
+        }
+    }
+    ptr::null_mut()
+}
+
+/// `int`-returning analogue of [`item_type_error_obj`] (returns the `-1`
+/// sentinel for the assignment protocol).
+unsafe fn item_type_error_int(o: *mut PyObject, capi_name: &str, message: String) -> c_int {
+    let _ = unsafe { item_type_error_obj(o, capi_name, message) };
+    -1
+}
+
+/// Convert an index-like `key` to a `Py_ssize_t` for the sequence protocol,
+/// exactly as CPython's `PyObject_GetItem`/`PyObject_SetItem` sequence path
+/// (`_PyIndex_Check` → `PyNumber_AsSsize_t(key, PyExc_IndexError)`), then apply
+/// the negative-index adjustment `PySequence_GetItem`/`SetItem` performs via the
+/// object's own `sq_length`. Returns `Ok(index)`, or `Err(())` when the key is
+/// not index-like or the conversion raised (a pending exception is set, or the
+/// caller must raise the "sequence index must be integer" `TypeError`).
+unsafe fn sequence_index_from_key(
+    o: *mut PyObject,
+    key: *mut PyObject,
+    seq: *mut crate::abi_types::PySequenceMethods,
+) -> Result<Py_ssize_t, ()> {
+    if unsafe { crate::api::abstract_number::PyIndex_Check(key) } == 0 {
+        return Err(());
+    }
+    let mut idx = unsafe {
+        crate::api::abstract_number::PyNumber_AsSsize_t(
+            key,
+            &raw mut crate::abi_types::PyExc_IndexError,
+        )
+    };
+    if idx == -1 && !unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+        return Err(());
+    }
+    // Negative-index adjustment via sq_length (CPython PySequence_GetItem/SetItem).
+    if idx < 0 {
+        let sq_length = unsafe { (*seq).sq_length };
+        if !sq_length.is_null() {
+            type LenFunc = unsafe extern "C" fn(*mut PyObject) -> Py_ssize_t;
+            let lf: LenFunc = unsafe { std::mem::transmute::<*mut c_void, LenFunc>(sq_length) };
+            let l = unsafe { lf(o) };
+            if l < 0 {
+                // sq_length raised — propagate its exception, not a synthetic one.
+                return Err(());
+            }
+            idx += l;
+        }
+    }
+    Ok(idx)
+}
+
+/// Foreign (non-native) item read: dispatch the object's type slots in CPython's
+/// order — `tp_as_mapping->mp_subscript`, then `tp_as_sequence->sq_item` (with
+/// `__index__` conversion + negative-index adjustment via `sq_length`) — exactly
+/// as `Objects/abstract.c` `PyObject_GetItem`. Returns NULL only with a pending
+/// exception set. This is the FALLBACK tier below the Molt-native dict/list/tuple
+/// fast paths, mirroring how `abstract_number::call_number_unary_slot` layers the
+/// foreign number-slot dispatch below the native numeric fast path.
+unsafe fn foreign_get_item(o: *mut PyObject, key: *mut PyObject) -> *mut PyObject {
+    let tp = unsafe { (*o).ob_type };
+    if tp.is_null() {
+        let message = format!("'{}' object is not subscriptable", unsafe { type_name_lossy(o) });
+        return unsafe { item_type_error_obj(o, "PyObject_GetItem", message) };
+    }
+    // Mapping protocol first: mp_subscript(o, key).
+    let m = unsafe { (*tp).tp_as_mapping }.cast::<crate::abi_types::PyMappingMethods>();
+    if !m.is_null() {
+        let mp_subscript = unsafe { (*m).mp_subscript };
+        if !mp_subscript.is_null() {
+            type BinaryFunc = unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> *mut PyObject;
+            let f: BinaryFunc =
+                unsafe { std::mem::transmute::<*mut c_void, BinaryFunc>(mp_subscript) };
+            let result = unsafe { f(o, key) };
+            return unsafe { finalize_item_slot_result(o, result, "PyObject_GetItem") };
+        }
+    }
+    // Sequence protocol: sq_item(o, index).
+    let seq = unsafe { (*tp).tp_as_sequence }.cast::<crate::abi_types::PySequenceMethods>();
+    if !seq.is_null() {
+        let sq_item = unsafe { (*seq).sq_item };
+        if !sq_item.is_null() {
+            let idx = match unsafe { sequence_index_from_key(o, key, seq) } {
+                Ok(i) => i,
+                Err(()) => {
+                    // A pending exception (conversion / sq_length) is the real
+                    // error; otherwise the key is not index-like.
+                    if !unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+                        return ptr::null_mut();
+                    }
+                    let message = format!(
+                        "sequence index must be integer, not '{}'",
+                        unsafe { type_name_lossy(key) }
+                    );
+                    return unsafe { item_type_error_obj(o, "PyObject_GetItem", message) };
+                }
+            };
+            type SsizeArgFunc = unsafe extern "C" fn(*mut PyObject, Py_ssize_t) -> *mut PyObject;
+            let f: SsizeArgFunc = unsafe { std::mem::transmute::<*mut c_void, SsizeArgFunc>(sq_item) };
+            let result = unsafe { f(o, idx) };
+            return unsafe { finalize_item_slot_result(o, result, "PyObject_GetItem") };
+        }
+    }
+    // No mapping or sequence protocol: honest TypeError (CPython
+    // "'%.200s' object is not subscriptable").
+    let message = format!("'{}' object is not subscriptable", unsafe { type_name_lossy(o) });
+    unsafe { item_type_error_obj(o, "PyObject_GetItem", message) }
+}
+
+/// Foreign (non-native) item write: dispatch the object's type slots in
+/// CPython's order — `tp_as_mapping->mp_ass_subscript`, then
+/// `tp_as_sequence->sq_ass_item` (index conversion + negative adjustment) — as
+/// `Objects/abstract.c` `PyObject_SetItem`. Returns `-1` only with a pending
+/// exception set. FALLBACK tier below the Molt-native dict lane.
+unsafe fn foreign_set_item(o: *mut PyObject, key: *mut PyObject, v: *mut PyObject) -> c_int {
+    let tp = unsafe { (*o).ob_type };
+    if tp.is_null() {
+        let message = format!(
+            "'{}' object does not support item assignment",
+            unsafe { type_name_lossy(o) }
+        );
+        return unsafe { item_type_error_int(o, "PyObject_SetItem", message) };
+    }
+    // Mapping protocol first: mp_ass_subscript(o, key, v).
+    let m = unsafe { (*tp).tp_as_mapping }.cast::<crate::abi_types::PyMappingMethods>();
+    if !m.is_null() {
+        let mp_ass = unsafe { (*m).mp_ass_subscript };
+        if !mp_ass.is_null() {
+            type ObjObjArgProc =
+                unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut PyObject) -> c_int;
+            let f: ObjObjArgProc = unsafe { std::mem::transmute::<*mut c_void, ObjObjArgProc>(mp_ass) };
+            let res = unsafe { f(o, key, v) };
+            return unsafe { finalize_item_ass_result(o, res, "PyObject_SetItem") };
+        }
+    }
+    // Sequence protocol: sq_ass_item(o, index, v).
+    let seq = unsafe { (*tp).tp_as_sequence }.cast::<crate::abi_types::PySequenceMethods>();
+    if !seq.is_null() {
+        let sq_ass = unsafe { (*seq).sq_ass_item };
+        if !sq_ass.is_null() {
+            let idx = match unsafe { sequence_index_from_key(o, key, seq) } {
+                Ok(i) => i,
+                Err(()) => {
+                    if !unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+                        return -1;
+                    }
+                    let message = format!(
+                        "sequence index must be integer, not '{}'",
+                        unsafe { type_name_lossy(key) }
+                    );
+                    return unsafe { item_type_error_int(o, "PyObject_SetItem", message) };
+                }
+            };
+            type SsizeObjArgProc =
+                unsafe extern "C" fn(*mut PyObject, Py_ssize_t, *mut PyObject) -> c_int;
+            let f: SsizeObjArgProc = unsafe { std::mem::transmute::<*mut c_void, SsizeObjArgProc>(sq_ass) };
+            let res = unsafe { f(o, idx, v) };
+            return unsafe { finalize_item_ass_result(o, res, "PyObject_SetItem") };
+        }
+    }
+    // No mapping or sequence assignment protocol: honest TypeError.
+    let message = format!(
+        "'{}' object does not support item assignment",
+        unsafe { type_name_lossy(o) }
+    );
+    unsafe { item_type_error_int(o, "PyObject_SetItem", message) }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_GetItem(o: *mut PyObject, key: *mut PyObject) -> *mut PyObject {
     if o.is_null() || key.is_null() {
         return ptr::null_mut();
     }
-    // Try dict first
-    let bridge = GLOBAL_BRIDGE.lock();
-    let o_bits = match bridge.pyobj_to_handle(o) {
-        Some(b) => b,
-        None => return ptr::null_mut(),
-    };
-    drop(bridge);
-
-    let h = hooks_or_stubs();
-    let obj = MoltObject::from_bits(o_bits);
-
-    if obj.is_ptr() {
-        let tag = unsafe { (h.classify_heap)(o_bits) };
-        // Dict: use dict_get
-        if tag == crate::abi_types::MoltTypeTag::Dict as u8 {
-            let bridge2 = GLOBAL_BRIDGE.lock();
-            let key_bits = match bridge2.pyobj_to_handle(key) {
-                Some(b) => b,
-                None => return ptr::null_mut(),
-            };
-            drop(bridge2);
-            let val_bits = unsafe { (h.dict_get)(o_bits, key_bits) };
-            if val_bits == 0 {
-                return ptr::null_mut();
+    // ── Molt-native fast path (dict/list/tuple lanes — ordering unchanged) ──
+    // A bridge miss (`None`) means `o` is a genuine foreign C-extension object
+    // that never crossed into Molt: fall through to the foreign-slot dispatch
+    // tier instead of the prior bare-NULL return.
+    let o_bits = GLOBAL_BRIDGE.lock().pyobj_to_handle(o);
+    if let Some(o_bits) = o_bits {
+        let h = hooks_or_stubs();
+        let obj = MoltObject::from_bits(o_bits);
+        if obj.is_ptr() {
+            let tag = unsafe { (h.classify_heap)(o_bits) };
+            // Dict: use dict_get
+            if tag == crate::abi_types::MoltTypeTag::Dict as u8 {
+                let key_bits = GLOBAL_BRIDGE.lock().pyobj_to_handle(key);
+                if let Some(key_bits) = key_bits {
+                    let val_bits = unsafe { (h.dict_get)(o_bits, key_bits) };
+                    if val_bits == 0 {
+                        // Dict miss: CPython `dict_subscript` raises `KeyError`
+                        // with the key as its argument (Objects/dictobject.c).
+                        // The prior bare NULL stranded any C caller relying on
+                        // the set-exception contract.
+                        unsafe {
+                            crate::api::errors::PyErr_SetObject(
+                                &raw mut crate::abi_types::PyExc_KeyError,
+                                key,
+                            );
+                        }
+                        return ptr::null_mut();
+                    }
+                    return unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(val_bits) };
+                }
+                // Foreign key into a native dict: fall to the generic slot path.
             }
-            return unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(val_bits) };
-        }
-        // List: use list_item with int key
-        if tag == crate::abi_types::MoltTypeTag::List as u8 {
-            let bridge2 = GLOBAL_BRIDGE.lock();
-            let key_bits = match bridge2.pyobj_to_handle(key) {
-                Some(b) => b,
-                None => return ptr::null_mut(),
-            };
-            drop(bridge2);
-            let key_obj = MoltObject::from_bits(key_bits);
-            if let Some(idx) = key_obj.as_int() {
-                let len = unsafe { (h.list_len)(o_bits) };
-                let actual_idx = if idx < 0 { len as i64 + idx } else { idx };
-                if actual_idx < 0 || actual_idx >= len as i64 {
-                    return ptr::null_mut();
+            // List: use list_item with int key
+            if tag == crate::abi_types::MoltTypeTag::List as u8 {
+                let key_bits = GLOBAL_BRIDGE.lock().pyobj_to_handle(key);
+                if let Some(key_bits) = key_bits {
+                    let key_obj = MoltObject::from_bits(key_bits);
+                    if let Some(idx) = key_obj.as_int() {
+                        let len = unsafe { (h.list_len)(o_bits) };
+                        let actual_idx = if idx < 0 { len as i64 + idx } else { idx };
+                        if actual_idx < 0 || actual_idx >= len as i64 {
+                            // CPython list indexing raises IndexError, not NULL.
+                            unsafe {
+                                crate::api::errors::PyErr_SetString(
+                                    &raw mut crate::abi_types::PyExc_IndexError,
+                                    c"list index out of range".as_ptr(),
+                                );
+                            }
+                            return ptr::null_mut();
+                        }
+                        let item_bits = unsafe { (h.list_item)(o_bits, actual_idx as usize) };
+                        if item_bits == 0 {
+                            return ptr::null_mut();
+                        }
+                        return unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(item_bits) };
+                    }
                 }
-                let item_bits = unsafe { (h.list_item)(o_bits, actual_idx as usize) };
-                if item_bits == 0 {
-                    return ptr::null_mut();
-                }
-                return unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(item_bits) };
             }
-        }
-        // Tuple: use tuple_item with int key
-        if tag == crate::abi_types::MoltTypeTag::Tuple as u8 {
-            let bridge2 = GLOBAL_BRIDGE.lock();
-            let key_bits = match bridge2.pyobj_to_handle(key) {
-                Some(b) => b,
-                None => return ptr::null_mut(),
-            };
-            drop(bridge2);
-            let key_obj = MoltObject::from_bits(key_bits);
-            if let Some(idx) = key_obj.as_int() {
-                let len = unsafe { (h.tuple_len)(o_bits) };
-                let actual_idx = if idx < 0 { len as i64 + idx } else { idx };
-                if actual_idx < 0 || actual_idx >= len as i64 {
-                    return ptr::null_mut();
+            // Tuple: use tuple_item with int key
+            if tag == crate::abi_types::MoltTypeTag::Tuple as u8 {
+                let key_bits = GLOBAL_BRIDGE.lock().pyobj_to_handle(key);
+                if let Some(key_bits) = key_bits {
+                    let key_obj = MoltObject::from_bits(key_bits);
+                    if let Some(idx) = key_obj.as_int() {
+                        let len = unsafe { (h.tuple_len)(o_bits) };
+                        let actual_idx = if idx < 0 { len as i64 + idx } else { idx };
+                        if actual_idx < 0 || actual_idx >= len as i64 {
+                            unsafe {
+                                crate::api::errors::PyErr_SetString(
+                                    &raw mut crate::abi_types::PyExc_IndexError,
+                                    c"tuple index out of range".as_ptr(),
+                                );
+                            }
+                            return ptr::null_mut();
+                        }
+                        let item_bits = unsafe { (h.tuple_item)(o_bits, actual_idx as usize) };
+                        if item_bits == 0 {
+                            return ptr::null_mut();
+                        }
+                        return unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(item_bits) };
+                    }
                 }
-                let item_bits = unsafe { (h.tuple_item)(o_bits, actual_idx as usize) };
-                if item_bits == 0 {
-                    return ptr::null_mut();
-                }
-                return unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(item_bits) };
             }
         }
     }
-    ptr::null_mut()
+    // ── Foreign fallback tier: dispatch mp_subscript → sq_item, else TypeError.
+    unsafe { foreign_get_item(o, key) }
 }
 
 #[unsafe(no_mangle)]
@@ -1057,34 +1291,29 @@ pub unsafe extern "C" fn PyObject_SetItem(
     if o.is_null() || key.is_null() || v.is_null() {
         return -1;
     }
-    let bridge = GLOBAL_BRIDGE.lock();
-    let o_bits = match bridge.pyobj_to_handle(o) {
-        Some(b) => b,
-        None => return -1,
-    };
-    drop(bridge);
-
-    let h = hooks_or_stubs();
-    let obj = MoltObject::from_bits(o_bits);
-
-    if obj.is_ptr() {
-        let tag = unsafe { (h.classify_heap)(o_bits) };
-        if tag == crate::abi_types::MoltTypeTag::Dict as u8 {
-            let bridge2 = GLOBAL_BRIDGE.lock();
-            let key_bits = match bridge2.pyobj_to_handle(key) {
-                Some(b) => b,
-                None => return -1,
-            };
-            let val_bits = match bridge2.pyobj_to_handle(v) {
-                Some(b) => b,
-                None => return -1,
-            };
-            drop(bridge2);
-            unsafe { (h.dict_set)(o_bits, key_bits, val_bits) };
-            return 0;
+    // ── Molt-native fast path (dict lane — ordering unchanged). A bridge miss
+    // means `o` is a genuine foreign object; fall through to slot dispatch. ──
+    let o_bits = GLOBAL_BRIDGE.lock().pyobj_to_handle(o);
+    if let Some(o_bits) = o_bits {
+        let h = hooks_or_stubs();
+        let obj = MoltObject::from_bits(o_bits);
+        if obj.is_ptr() {
+            let tag = unsafe { (h.classify_heap)(o_bits) };
+            if tag == crate::abi_types::MoltTypeTag::Dict as u8 {
+                let bridge2 = GLOBAL_BRIDGE.lock();
+                let key_bits = bridge2.pyobj_to_handle(key);
+                let val_bits = bridge2.pyobj_to_handle(v);
+                drop(bridge2);
+                if let (Some(key_bits), Some(val_bits)) = (key_bits, val_bits) {
+                    unsafe { (h.dict_set)(o_bits, key_bits, val_bits) };
+                    return 0;
+                }
+                // Foreign key/value into a native dict: fall to the slot path.
+            }
         }
     }
-    -1
+    // ── Foreign fallback tier: mp_ass_subscript → sq_ass_item, else TypeError.
+    unsafe { foreign_set_item(o, key, v) }
 }
 
 #[unsafe(no_mangle)]
@@ -2335,19 +2564,288 @@ pub static Py_GE: c_int = 5;
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_Bytes(o: *mut PyObject) -> *mut PyObject {
     if o.is_null() {
+        // CPython returns b"<NULL>" here; a NULL argument is a caller bug, so we
+        // keep the defensive NULL return (a valid failure sentinel), not a
+        // fabricated value.
         return ptr::null_mut();
     }
-    // If it's already bytes, return it.
+    // Already bytes: return a new reference (CPython PyBytes_CheckExact fast path;
+    // PyBytes_Check is the closest available predicate).
     if unsafe { crate::api::strings::PyBytes_Check(o) } != 0 {
         unsafe { crate::api::refcount::Py_INCREF(o) };
         return o;
     }
-    // Otherwise return b'' placeholder.
-    unsafe { crate::api::strings::PyBytes_FromStringAndSize(ptr::null(), 0) }
+    // Dispatch the object's `__bytes__`, as CPython's `PyObject_Bytes`
+    // (Objects/object.c) does via `_PyObject_LookupSpecial`. The prior code
+    // fabricated an empty `b''` for every non-bytes object — a silently-wrong
+    // result (M05 poison) that masks the real conversion. `GetOptionalAttrString`
+    // is the quiet lookup: >0 found (owned ref), 0 absent (no exception set), -1
+    // error.
+    let mut func: *mut PyObject = ptr::null_mut();
+    let rc = unsafe {
+        PyObject_GetOptionalAttrString(o, c"__bytes__".as_ptr(), &raw mut func)
+    };
+    if rc < 0 {
+        return ptr::null_mut();
+    }
+    if rc > 0 && !func.is_null() {
+        let result = unsafe { PyObject_CallNoArgs(func) };
+        unsafe { crate::api::refcount::Py_DECREF(func) };
+        if result.is_null() {
+            return ptr::null_mut();
+        }
+        if unsafe { crate::api::strings::PyBytes_Check(result) } == 0 {
+            let message = format!(
+                "__bytes__ returned non-bytes (type {})",
+                unsafe { type_name_lossy(result) }
+            );
+            unsafe { crate::api::refcount::Py_DECREF(result) };
+            return unsafe { item_type_error_obj(o, "PyObject_Bytes", message) };
+        }
+        return result;
+    }
+    // No `__bytes__`: CPython falls back to `PyBytes_FromObject` (buffer protocol
+    // / iterable-of-ints). Molt does not yet implement that fallback here; raise
+    // the honest CPython-shaped TypeError instead of a fabricated value, and
+    // record the site so the buffer/iterable path is a tracked gap, never silent.
+    let message = format!(
+        "cannot convert '{}' object to bytes",
+        unsafe { type_name_lossy(o) }
+    );
+    unsafe { item_type_error_obj(o, "PyObject_Bytes", message) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_ASCII(o: *mut PyObject) -> *mut PyObject {
     // For now, same as repr.
     unsafe { crate::api::typeobj::PyObject_Repr(o) }
+}
+
+#[cfg(test)]
+mod item_access_slot_tests {
+    //! Gate tests for the item-access protocol (`PyObject_GetItem` /
+    //! `PyObject_SetItem`) foreign-slot dispatch. These mirror
+    //! `abstract_number::conversion_slot_tests`: a foreign object's own type
+    //! slots must be dispatched, and an unresolvable path must record the site
+    //! on the silent-failure surface and set an honest exception — never a bare
+    //! NULL / -1. They run on `STUB_HOOKS` (no runtime), reading the fake type's
+    //! slots directly exactly as production reads a numpy/foreign object's.
+    use super::*;
+    use crate::abi_types::{PyMappingMethods, PyObject, PySequenceMethods, PyTypeObject};
+    use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
+
+    // Stand-in "looked-up value" the fake slots hand back. Contents irrelevant;
+    // tests only check pointer identity.
+    static mut FAKE_ITEM_RESULT: PyObject = PyObject {
+        ob_refcnt: 1,
+        ob_type: ptr::null_mut(),
+    };
+
+    unsafe extern "C" fn fake_mp_subscript(
+        _o: *mut PyObject,
+        _key: *mut PyObject,
+    ) -> *mut PyObject {
+        &raw mut FAKE_ITEM_RESULT
+    }
+
+    /// (a) A foreign object whose type exposes `mp_subscript` must have
+    /// `PyObject_GetItem` dispatch to that slot (the numpy-mapping path the
+    /// prior bare-NULL return skipped entirely).
+    #[test]
+    fn get_item_dispatches_to_foreign_mp_subscript() {
+        let _ = crate::capi_trace::take_last_silent_failure();
+        unsafe { crate::api::errors::PyErr_Clear() };
+        let mut mapping: PyMappingMethods = unsafe { std::mem::zeroed() };
+        mapping.mp_subscript = fake_mp_subscript as *mut c_void;
+        let mut ty: PyTypeObject = unsafe { std::mem::zeroed() };
+        ty.tp_as_mapping = (&raw mut mapping).cast::<c_void>();
+        ty.tp_name = c"fake_mapping".as_ptr();
+        let mut obj = PyObject {
+            ob_refcnt: 1,
+            ob_type: &raw mut ty,
+        };
+        let mut key = PyObject {
+            ob_refcnt: 1,
+            ob_type: ptr::null_mut(),
+        };
+        let result = unsafe { PyObject_GetItem(&raw mut obj, &raw mut key) };
+        assert_eq!(result, &raw mut FAKE_ITEM_RESULT);
+    }
+
+    static SQ_ITEM_INDEX: AtomicI64 = AtomicI64::new(i64::MIN);
+
+    unsafe extern "C" fn fake_sq_item(_o: *mut PyObject, i: Py_ssize_t) -> *mut PyObject {
+        SQ_ITEM_INDEX.store(i as i64, Ordering::SeqCst);
+        &raw mut FAKE_ITEM_RESULT
+    }
+
+    unsafe extern "C" fn fake_sq_length(_o: *mut PyObject) -> Py_ssize_t {
+        5
+    }
+
+    /// The sequence lane of `PyObject_GetItem`: an index-like key is converted
+    /// via `PyNumber_AsSsize_t` and a NEGATIVE index is adjusted by the object's
+    /// own `sq_length` before `sq_item` is called (CPython `PySequence_GetItem`).
+    /// This proves the disambiguation that a legitimate `-1` index is NOT the
+    /// `PyNumber_AsSsize_t` error sentinel.
+    #[test]
+    fn get_item_sequence_path_adjusts_negative_index_via_sq_length() {
+        unsafe { crate::api::errors::PyErr_Clear() };
+        SQ_ITEM_INDEX.store(i64::MIN, Ordering::SeqCst);
+        // A native int `-1` key so `PyIndex_Check`/`PyNumber_AsSsize_t` resolve it.
+        let key = unsafe {
+            GLOBAL_BRIDGE
+                .lock()
+                .handle_to_pyobj(MoltObject::from_int(-1).bits())
+        };
+        let mut seq: PySequenceMethods = unsafe { std::mem::zeroed() };
+        seq.sq_item = fake_sq_item as *mut c_void;
+        seq.sq_length = fake_sq_length as *mut c_void;
+        let mut ty: PyTypeObject = unsafe { std::mem::zeroed() };
+        ty.tp_as_sequence = (&raw mut seq).cast::<c_void>();
+        ty.tp_name = c"fake_sequence".as_ptr();
+        let mut obj = PyObject {
+            ob_refcnt: 1,
+            ob_type: &raw mut ty,
+        };
+        let result = unsafe { PyObject_GetItem(&raw mut obj, key) };
+        assert_eq!(result, &raw mut FAKE_ITEM_RESULT);
+        assert_eq!(
+            SQ_ITEM_INDEX.load(Ordering::SeqCst),
+            4,
+            "negative index -1 must be adjusted to 4 via sq_length()==5"
+        );
+    }
+
+    /// (b) A foreign object with NO mapping/sequence item slot must never return
+    /// a bare NULL: `PyObject_GetItem` records the site on the permanent
+    /// silent-failure surface and raises an honest `TypeError`.
+    #[test]
+    fn get_item_without_slot_is_never_a_silent_null() {
+        let _ = crate::capi_trace::take_last_silent_failure();
+        unsafe { crate::api::errors::PyErr_Clear() };
+        let mut ty: PyTypeObject = unsafe { std::mem::zeroed() };
+        ty.tp_name = c"opaque".as_ptr();
+        // tp_as_mapping and tp_as_sequence left NULL.
+        let mut obj = PyObject {
+            ob_refcnt: 1,
+            ob_type: &raw mut ty,
+        };
+        let mut key = PyObject {
+            ob_refcnt: 1,
+            ob_type: ptr::null_mut(),
+        };
+        let result = unsafe { PyObject_GetItem(&raw mut obj, &raw mut key) };
+        assert!(result.is_null());
+        let recorded = crate::capi_trace::take_last_silent_failure();
+        assert!(
+            recorded.as_deref().unwrap_or("").contains("PyObject_GetItem"),
+            "expected PyObject_GetItem on the silent-failure surface, got {recorded:?}"
+        );
+        assert!(
+            !unsafe { crate::api::errors::PyErr_Occurred() }.is_null(),
+            "PyObject_GetItem must leave a pending exception, never a bare NULL"
+        );
+        unsafe { crate::api::errors::PyErr_Clear() };
+    }
+
+    static SET_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe extern "C" fn fake_mp_ass_subscript(
+        _o: *mut PyObject,
+        _key: *mut PyObject,
+        _v: *mut PyObject,
+    ) -> c_int {
+        SET_CALLS.fetch_add(1, Ordering::SeqCst);
+        0
+    }
+
+    /// (d) `PyObject_SetItem` foreign dispatch analog: a foreign object whose
+    /// type exposes `mp_ass_subscript` must dispatch to it (return 0), not the
+    /// prior bare -1.
+    #[test]
+    fn set_item_dispatches_to_foreign_mp_ass_subscript() {
+        unsafe { crate::api::errors::PyErr_Clear() };
+        SET_CALLS.store(0, Ordering::SeqCst);
+        let mut mapping: PyMappingMethods = unsafe { std::mem::zeroed() };
+        mapping.mp_ass_subscript = fake_mp_ass_subscript as *mut c_void;
+        let mut ty: PyTypeObject = unsafe { std::mem::zeroed() };
+        ty.tp_as_mapping = (&raw mut mapping).cast::<c_void>();
+        ty.tp_name = c"fake_mapping".as_ptr();
+        let mut obj = PyObject {
+            ob_refcnt: 1,
+            ob_type: &raw mut ty,
+        };
+        let mut key = PyObject {
+            ob_refcnt: 1,
+            ob_type: ptr::null_mut(),
+        };
+        let mut val = PyObject {
+            ob_refcnt: 1,
+            ob_type: ptr::null_mut(),
+        };
+        let rc = unsafe { PyObject_SetItem(&raw mut obj, &raw mut key, &raw mut val) };
+        assert_eq!(rc, 0);
+        assert_eq!(
+            SET_CALLS.load(Ordering::SeqCst),
+            1,
+            "mp_ass_subscript must be dispatched exactly once"
+        );
+    }
+
+    /// A foreign object with no item-assignment slot must never return a bare
+    /// -1: record + honest `TypeError` (the SetItem analog of (b)).
+    #[test]
+    fn set_item_without_slot_is_never_a_silent_minus_one() {
+        let _ = crate::capi_trace::take_last_silent_failure();
+        unsafe { crate::api::errors::PyErr_Clear() };
+        let mut ty: PyTypeObject = unsafe { std::mem::zeroed() };
+        ty.tp_name = c"opaque".as_ptr();
+        let mut obj = PyObject {
+            ob_refcnt: 1,
+            ob_type: &raw mut ty,
+        };
+        let mut key = PyObject {
+            ob_refcnt: 1,
+            ob_type: ptr::null_mut(),
+        };
+        let mut val = PyObject {
+            ob_refcnt: 1,
+            ob_type: ptr::null_mut(),
+        };
+        let rc = unsafe { PyObject_SetItem(&raw mut obj, &raw mut key, &raw mut val) };
+        assert_eq!(rc, -1);
+        let recorded = crate::capi_trace::take_last_silent_failure();
+        assert!(
+            recorded.as_deref().unwrap_or("").contains("PyObject_SetItem"),
+            "expected PyObject_SetItem on the silent-failure surface, got {recorded:?}"
+        );
+        assert!(
+            !unsafe { crate::api::errors::PyErr_Occurred() }.is_null(),
+            "PyObject_SetItem must leave a pending exception, never a bare -1"
+        );
+        unsafe { crate::api::errors::PyErr_Clear() };
+    }
+
+    /// The bytes fast path is preserved: `PyObject_Bytes` on a genuine bytes
+    /// object returns a NEW reference to it (never a fabricated value). The
+    /// non-bytes fabrication-removal is covered in the `test_item_access`
+    /// integration binary, where `alloc_str` is wired so the `__bytes__` lookup
+    /// reaches the honest TypeError path.
+    #[test]
+    fn object_bytes_passthrough_preserves_bytes_identity() {
+        // A stand-in bytes object: its type IS `PyBytes_Type`, so `PyBytes_Check`
+        // succeeds and the fast path returns it with an incremented refcount.
+        let mut obj = PyObject {
+            ob_refcnt: 1,
+            ob_type: &raw mut crate::abi_types::PyBytes_Type,
+        };
+        let result = unsafe { PyObject_Bytes(&raw mut obj) };
+        assert_eq!(
+            result,
+            &raw mut obj,
+            "PyObject_Bytes must return the same bytes object (passthrough)"
+        );
+        assert_eq!(obj.ob_refcnt, 2, "passthrough must take a new reference");
+    }
 }

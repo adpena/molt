@@ -101,18 +101,23 @@ pub unsafe extern "C" fn PyMapping_GetItemString(
     o: *mut PyObject,
     key: *const c_char,
 ) -> *mut PyObject {
-    if o.is_null() || key.is_null() {
+    if key.is_null() {
         return ptr::null_mut();
     }
+    // CPython's `PyMapping_GetItemString` (Objects/abstract.c) builds a str key
+    // and routes through `PyObject_GetItem`, so it works for ANY mapping (via
+    // `mp_subscript`) and raises `KeyError` on a miss. The prior route through
+    // `PyDict_GetItem` returned a bare NULL with no exception on a miss and did
+    // nothing for a foreign mapping — the sentinel-without-exception bug this
+    // sweep closes. `PyObject_GetItem` already owns the native dict/list/tuple
+    // fast paths plus foreign `mp_subscript`/`sq_item` dispatch and INCREFs the
+    // returned reference, so no extra refcount handling is needed here.
     let key_obj = unsafe { crate::api::strings::PyUnicode_FromString(key) };
     if key_obj.is_null() {
         return ptr::null_mut();
     }
-    let result = unsafe { crate::api::mapping::PyDict_GetItem(o, key_obj) };
+    let result = unsafe { crate::api::object::PyObject_GetItem(o, key_obj) };
     unsafe { crate::api::refcount::Py_DECREF(key_obj) };
-    if !result.is_null() {
-        unsafe { crate::api::refcount::Py_INCREF(result) };
-    }
     result
 }
 
