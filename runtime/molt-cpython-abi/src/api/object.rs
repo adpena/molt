@@ -2009,7 +2009,8 @@ pub unsafe extern "C" fn PyObject_Dir(o: *mut PyObject) -> *mut PyObject {
         }
         return ptr::null_mut();
     }
-    let bits = match GLOBAL_BRIDGE.lock().pyobj_to_handle(o) {
+    let o_handle = GLOBAL_BRIDGE.lock().pyobj_to_handle(o);
+    let bits = match o_handle {
         Some(b) => b,
         None => {
             unsafe {
@@ -2143,7 +2144,8 @@ unsafe fn call_bridged_callable(
     {
         0
     } else {
-        match GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(kwargs) {
+        let kwargs_handle = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(kwargs);
+        match kwargs_handle {
             Some(bits) => bits,
             None => {
                 crate::capi_trace::record_silent_failure(
@@ -2901,7 +2903,8 @@ pub unsafe extern "C" fn PyCFunction_NewEx(
         let self_bits = if self_.is_null() {
             none_bits()
         } else {
-            match GLOBAL_BRIDGE.lock().pyobj_to_handle(self_) {
+            let self_handle = GLOBAL_BRIDGE.lock().pyobj_to_handle(self_);
+            match self_handle {
                 Some(bits) => bits,
                 None => unsafe { crate::bridge::read_bridge_header_bits(self_) },
             }

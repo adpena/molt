@@ -718,6 +718,47 @@ fn test_object_dir_null_fails_closed() {
 }
 
 #[test]
+fn test_object_dir_foreign_nonbridge_does_not_hang() {
+    // CPYTHON-ABI-LOCK-SWEEP regression test: PyObject_Dir(o) with a non-NULL,
+    // non-bridge-managed `o` takes the `None` arm of what was
+    // `match GLOBAL_BRIDGE.lock()...`. That arm calls PyErr_SetString, which
+    // itself locks GLOBAL_BRIDGE — a self-deadlock (hang, not a crash) on a
+    // non-reentrant Mutex. Reproduced live against the pre-fix code (the
+    // spawned thread below hung past the 10s bound); the fix binds the lock's
+    // result to a local *before* the match so the guard drops before any arm
+    // runs. Runs the call in a spawned thread with a bounded join so a
+    // regression fails this test instead of wedging the whole suite.
+    init();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+    let mut fake = PyObject {
+        ob_refcnt: 1,
+        ob_type: ptr::null_mut(),
+    };
+    let raw_addr = (&raw mut fake) as usize;
+    let handle = std::thread::spawn(move || {
+        let o = raw_addr as *mut PyObject;
+        (unsafe { molt_cpython_abi::api::object::PyObject_Dir(o) }) as usize
+    });
+    let start = std::time::Instant::now();
+    loop {
+        if handle.is_finished() {
+            let result = handle.join().expect("PyObject_Dir thread panicked");
+            assert_eq!(
+                result, 0,
+                "PyObject_Dir on a foreign object must fail closed (NULL)"
+            );
+            unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+            break;
+        }
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(10),
+            "PyObject_Dir(foreign) HUNG for >10s — GLOBAL_BRIDGE self-deadlock reproduced"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+#[test]
 fn test_object_delitem_null_returns_error() {
     // PyObject_DelItem now routes real deletion through the runtime dict_del
     // authority (previously it set the key to None — not deletion). NULL args are
