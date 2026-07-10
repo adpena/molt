@@ -196,3 +196,41 @@ def test_fingerprint_token_flips_when_presence_flips(
     )
     token_absent = rb._reloc_link_archive_fingerprint_token()
     assert token_present != token_absent
+
+
+# --- App-side (app.wasm) split-runtime link: the SAME %L stub lives in app.wasm ---
+# numpy is statically linked into app.wasm, so it hits app.wasm's own libc.a
+# stub, NOT the reloc runtime's whole-archived formatters. tools/wasm_link.py
+# must whole-archive the long-double formatter over libc.a in the app link too.
+import wasm_link  # noqa: E402  (tools/ is on sys.path via conftest)
+
+
+def test_app_link_wholearchives_longdouble_when_libc_present() -> None:
+    args = wasm_link._native_link_wasm_ld_args(
+        [Path("numpy_multiarray.o"), Path("libc.a")]
+    )
+    # long-double formatter is whole-archived AHEAD of libc.a so its real
+    # vfprintf/floatscan override the abort() stub objects.
+    assert args[0] == "--whole-archive"
+    assert args[1].endswith("libc-printscan-long-double.a")
+    assert args[2] == "--no-whole-archive"
+    assert any(a.endswith("libc.a") for a in args)
+    # binary128 soft-float builtins appended so __multf3/__addtf3 resolve.
+    assert any(a.endswith("libclang_rt.builtins-wasm32.a") for a in args)
+
+
+def test_app_link_plain_passthrough_without_libc() -> None:
+    inputs = [Path("extmod.o"), Path("libcompiler_builtins-abc.rlib")]
+    args = wasm_link._native_link_wasm_ld_args(inputs)
+    assert args == [str(p) for p in inputs]
+    assert "--whole-archive" not in args
+
+
+def test_app_link_fails_loud_when_longdouble_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        wasm_toolchain, "wasm_wasi_printscan_long_double_archive", lambda: None
+    )
+    with pytest.raises(ValueError, match="long-double|unreachable"):
+        wasm_link._native_link_wasm_ld_args([Path("numpy.o"), Path("libc.a")])
