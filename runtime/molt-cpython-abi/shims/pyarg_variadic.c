@@ -78,17 +78,25 @@ static int count_format_outs(const char *fmt) {
         char c = *p;
         if (c == ':' || c == ';') break;
         switch (c) {
+        case 'O':
+            /* 'O' takes one out; 'O!'/'O&' consume a SECOND vararg (the type
+             * object / converter fn) — the whole reason the O! header-clobber
+             * bug existed was this count omitting it. Skip the modifier char. */
+            count++;
+            if (*(p+1) == '!' || *(p+1) == '&') { count++; p++; }
+            break;
         case 's': case 'z': case 'y':
             count++;
-            if (*(p+1) == '#') { count++; p++; } /* s#, y# take two outs */
+            if (*(p+1) == '#') { count++; p++; } /* s#, z#, y# take two outs */
             break;
-        case 'i': case 'l': case 'd': case 'f': case 'O':
+        case 'i': case 'l': case 'd': case 'f':
         case 'p': case 'n': case 'L': case 'K': case 'H':
         case 'I': case 'k': case 'B': case 'C': case 'b':
+        case 'h': case 'c': case 'S': case 'U':
             count++;
             break;
-        case '(': case ')': case '!': case 'e': case 'w':
-            break; /* skip grouping / encoding flags */
+        case '(': case ')': case '|': case 'e': case 'w':
+            break; /* skip grouping / optional-marker / encoding flags */
         default:
             break;
         }
