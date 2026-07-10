@@ -10,17 +10,17 @@
 //! synchronous trial deletion; same garbage set, iterative, gc-module parity)
 //!
 //! `deduce_unreachable` over the tracked candidate set:
-//!   1. `update_refs`:   snapshot each tracked object's refcount into a transient
-//!                       `gc_refs` map; mark it COLLECTING.
+//!   1. `update_refs`: snapshot each tracked object's refcount into a transient
+//!      `gc_refs` map; mark it COLLECTING.
 //!   2. `subtract_refs`: for each tracked object, `traverse` its children and
-//!                       decrement `gc_refs` of every child that is itself in the
-//!                       candidate set. After this, `gc_refs > 0` ⟺ the object is
-//!                       referenced from OUTSIDE the candidate set (a root);
-//!                       `gc_refs == 0` ⟺ a cycle candidate.
+//!      decrement `gc_refs` of every child that is itself in the
+//!      candidate set. After this, `gc_refs > 0` ⟺ the object is
+//!      referenced from OUTSIDE the candidate set (a root);
+//!      `gc_refs == 0` ⟺ a cycle candidate.
 //!   3. `move_unreachable`: BFS from the roots (`gc_refs > 0`). A root re-marks all
-//!                       its transitive referents reachable (`gc_refs := 1`). The
-//!                       objects still at `gc_refs == 0` after the BFS are the
-//!                       unreachable cycle garbage.
+//!      its transitive referents reachable (`gc_refs := 1`). The
+//!      objects still at `gc_refs == 0` after the BFS are the
+//!      unreachable cycle garbage.
 //!
 //! Then the CPython 3.12 destruction order (verbatim — the most parity-sensitive
 //! contract, do NOT reorder; verified against CPython 3.12 `Modules/gcmodule.c`

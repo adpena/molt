@@ -638,6 +638,9 @@ pub extern "C" fn molt_tuple_new_bound(cls_bits: u64, iterable_bits: u64) -> u64
     })
 }
 
+/// # Safety
+/// `obj_ptr_bits` must encode a valid Molt object header that can be mutated,
+/// and `class_bits` must be either zero or a valid Molt type object.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_object_set_class(obj_ptr_bits: u64, class_bits: u64) -> u64 {
     unsafe {

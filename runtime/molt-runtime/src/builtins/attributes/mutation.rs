@@ -41,8 +41,7 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                 let Some(attr_bits) = attr_name_bits_from_bytes(_py, slice) else {
                     return MoltObject::none().bits() as i64;
                 };
-                let rc =
-                    molt_cpython_abi::bridge::molt_foreign_setattr(c_ptr, attr_bits, val_bits);
+                let rc = molt_cpython_abi::bridge::molt_foreign_setattr(c_ptr, attr_bits, val_bits);
                 dec_ref_bits(_py, attr_bits);
                 if rc == 0 {
                     return MoltObject::none().bits() as i64;
@@ -50,7 +49,11 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                 if exception_pending(_py) {
                     return MoltObject::none().bits() as i64;
                 }
-                return attr_error(_py, type_name(_py, MoltObject::from_ptr(obj_ptr)), attr_name);
+                return attr_error(
+                    _py,
+                    type_name(_py, MoltObject::from_ptr(obj_ptr)),
+                    attr_name,
+                );
             }
             if type_id == TYPE_ID_MODULE {
                 let Some(attr_bits) = attr_name_bits_from_bytes(_py, slice) else {

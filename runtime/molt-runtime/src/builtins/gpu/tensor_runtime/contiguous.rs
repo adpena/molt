@@ -1042,7 +1042,7 @@ pub extern "C" fn molt_gpu_broadcast_binary_contiguous(
             let mut b_index = 0usize;
             for axis in 0..out_ndim {
                 let stride = out_strides[axis];
-                let coord = if stride == 0 { 0 } else { rem / stride };
+                let coord = rem.checked_div(stride).unwrap_or(0);
                 rem %= stride.max(1);
                 if a_padded[axis] != 1 {
                     a_index += coord * a_strides[axis];
@@ -1207,7 +1207,7 @@ pub extern "C" fn molt_gpu_matmul_contiguous(
                 let mut b_batch_index = 0usize;
                 for axis in 0..out_batch_strides.len() {
                     let stride = out_batch_strides[axis];
-                    let coord = if stride == 0 { 0 } else { rem / stride };
+                    let coord = rem.checked_div(stride).unwrap_or(0);
                     rem %= stride.max(1);
                     if padded_a_batch_shape[axis] != 1 {
                         a_batch_index += coord * a_batch_strides[axis];
@@ -1483,7 +1483,7 @@ pub extern "C" fn molt_gpu_permute_contiguous(
             let mut coords = vec![0usize; shape.len()];
             for axis in 0..shape.len() {
                 let stride = old_strides[axis];
-                coords[axis] = if stride == 0 { 0 } else { rem / stride };
+                coords[axis] = rem.checked_div(stride).unwrap_or(0);
                 rem %= stride.max(1);
             }
             let mut new_index = 0usize;
@@ -1544,11 +1544,7 @@ pub extern "C" fn molt_gpu_softmax_last_axis_contiguous(
             return raise_exception::<_>(_py, "ValueError", "x_data buffer is too small");
         }
         let axis_len = *shape.last().unwrap_or(&1);
-        let outer = if axis_len == 0 {
-            0
-        } else {
-            total_elems / axis_len
-        };
+        let outer = total_elems.checked_div(axis_len).unwrap_or(0);
         let mut out = vec![0u8; total_elems * out_format.itemsize()];
         if x_format == ScalarFormat::F32 && out_format == ScalarFormat::F32 {
             unsafe { softmax_last_axis_f32(x_view.ptr, out.as_mut_ptr(), outer, axis_len) };
@@ -1707,11 +1703,7 @@ pub extern "C" fn molt_gpu_squared_relu_gate_interleaved_contiguous(
                 "x_data byte length does not match shape",
             );
         }
-        let outer = if axis_len == 0 {
-            0
-        } else {
-            total_elems / axis_len
-        };
+        let outer = total_elems.checked_div(axis_len).unwrap_or(0);
         let out_elems = outer * (axis_len / 2);
         let mut out = vec![0u8; out_elems * out_format.itemsize()];
         if x_format == ScalarFormat::F32 && out_format == ScalarFormat::F32 {

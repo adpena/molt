@@ -85,10 +85,10 @@ pub(super) unsafe fn memory_backend_bits(handle: &MoltFileHandle) -> u64 {
     let Some(buffer_ptr) = buffer_obj.as_ptr() else {
         return 0;
     };
-    if object_type_id(buffer_ptr) != TYPE_ID_FILE_HANDLE {
+    if unsafe { object_type_id(buffer_ptr) } != TYPE_ID_FILE_HANDLE {
         return 0;
     }
-    let buffer_handle_ptr = file_handle_ptr(buffer_ptr);
+    let buffer_handle_ptr = unsafe { file_handle_ptr(buffer_ptr) };
     if buffer_handle_ptr.is_null() {
         return 0;
     }

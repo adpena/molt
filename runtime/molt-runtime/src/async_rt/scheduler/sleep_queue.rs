@@ -220,10 +220,7 @@ impl SleepQueue {
         }
         let now = Instant::now();
         let mut due: Vec<*mut u8> = Vec::new();
-        loop {
-            let Some(entry) = guard.heap.peek() else {
-                break;
-            };
+        while let Some(entry) = guard.heap.peek() {
             let key = entry.task_ptr;
             if guard.tasks.get(&key) != Some(&entry.generation) {
                 guard.heap.pop();

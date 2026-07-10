@@ -31,8 +31,8 @@ pub(crate) mod backing;
 pub(crate) mod buffer2d;
 pub(crate) mod builders;
 pub(crate) mod cold_header;
-pub(crate) mod foreign;
 pub mod float_repr;
+pub(crate) mod foreign;
 pub(crate) mod gc;
 #[allow(dead_code)]
 pub mod gil;
@@ -99,11 +99,10 @@ use crate::{
     TYPE_ID_DICT_ITEMS_VIEW, TYPE_ID_DICT_KEYS_VIEW, TYPE_ID_DICT_VALUES_VIEW, TYPE_ID_ENUMERATE,
     TYPE_ID_EXCEPTION, TYPE_ID_FILE_HANDLE, TYPE_ID_FILTER, TYPE_ID_FOREIGN, TYPE_ID_FROZENSET,
     TYPE_ID_FUNCTION, TYPE_ID_GENERATOR, TYPE_ID_GENERIC_ALIAS, TYPE_ID_GLOB_ITER, TYPE_ID_ITER,
-    TYPE_ID_LIST,
-    TYPE_ID_LIST_BUILDER, TYPE_ID_MAP, TYPE_ID_MEMORYVIEW, TYPE_ID_MODULE, TYPE_ID_NATIVE_HANDLE,
-    TYPE_ID_OBJECT, TYPE_ID_PROPERTY, TYPE_ID_REVERSED, TYPE_ID_SET, TYPE_ID_SLICE,
-    TYPE_ID_STATICMETHOD, TYPE_ID_STRING, TYPE_ID_TRACEBACK_PAYLOAD, TYPE_ID_TUPLE, TYPE_ID_UNION,
-    TYPE_ID_ZIP, asyncgen_call_finalizer, asyncgen_gen_bits, asyncgen_pending_bits,
+    TYPE_ID_LIST, TYPE_ID_LIST_BUILDER, TYPE_ID_MAP, TYPE_ID_MEMORYVIEW, TYPE_ID_MODULE,
+    TYPE_ID_NATIVE_HANDLE, TYPE_ID_OBJECT, TYPE_ID_PROPERTY, TYPE_ID_REVERSED, TYPE_ID_SET,
+    TYPE_ID_SLICE, TYPE_ID_STATICMETHOD, TYPE_ID_STRING, TYPE_ID_TRACEBACK_PAYLOAD, TYPE_ID_TUPLE,
+    TYPE_ID_UNION, TYPE_ID_ZIP, asyncgen_call_finalizer, asyncgen_gen_bits, asyncgen_pending_bits,
     asyncgen_registry_remove, asyncgen_running_bits, asyncio_fd_watcher_poll_fn_addr,
     asyncio_fd_watcher_task_drop, asyncio_gather_poll_fn_addr, asyncio_gather_task_drop,
     asyncio_ready_runner_poll_fn_addr, asyncio_ready_runner_task_drop,
@@ -331,7 +330,10 @@ pub struct MoltHeader {
 const _: () = {
     assert!(std::mem::size_of::<MoltHeader>() == molt_codegen_abi::HEADER_SIZE_BYTES as usize);
     assert!(std::mem::align_of::<MoltHeader>() <= molt_codegen_abi::HEADER_ALLOC_ALIGN_BYTES);
-    assert!(std::mem::size_of::<MoltHeader>() % molt_codegen_abi::HEADER_ALLOC_ALIGN_BYTES == 0);
+    assert!(
+        std::mem::size_of::<MoltHeader>()
+            .is_multiple_of(molt_codegen_abi::HEADER_ALLOC_ALIGN_BYTES)
+    );
 };
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]

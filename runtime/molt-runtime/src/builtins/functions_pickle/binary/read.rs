@@ -2,7 +2,10 @@
 
 use super::*;
 
-pub(crate) fn pickle_input_to_bytes(_py: &crate::PyToken<'_>, data_bits: u64) -> Result<Vec<u8>, u64> {
+pub(crate) fn pickle_input_to_bytes(
+    _py: &crate::PyToken<'_>,
+    data_bits: u64,
+) -> Result<Vec<u8>, u64> {
     if let Some(ptr) = obj_from_bits(data_bits).as_ptr()
         && let Some(raw) = unsafe { bytes_like_slice(ptr) }
     {
@@ -18,7 +21,11 @@ pub(crate) fn pickle_input_to_bytes(_py: &crate::PyToken<'_>, data_bits: u64) ->
     ))
 }
 
-pub(crate) fn pickle_read_u8(data: &[u8], idx: &mut usize, _py: &crate::PyToken<'_>) -> Result<u8, u64> {
+pub(crate) fn pickle_read_u8(
+    data: &[u8],
+    idx: &mut usize,
+    _py: &crate::PyToken<'_>,
+) -> Result<u8, u64> {
     if *idx >= data.len() {
         return Err(pickle_raise(_py, "pickle.loads: unexpected end of stream"));
     }
@@ -59,24 +66,39 @@ pub(crate) fn pickle_read_line_bytes<'a>(
     Ok(&data[start..end])
 }
 
-pub(crate) fn pickle_read_u16_le(data: &[u8], idx: &mut usize, _py: &crate::PyToken<'_>) -> Result<u16, u64> {
+pub(crate) fn pickle_read_u16_le(
+    data: &[u8],
+    idx: &mut usize,
+    _py: &crate::PyToken<'_>,
+) -> Result<u16, u64> {
     let raw = pickle_read_exact(data, idx, 2, _py)?;
     Ok(u16::from_le_bytes([raw[0], raw[1]]))
 }
 
-pub(crate) fn pickle_read_u32_le(data: &[u8], idx: &mut usize, _py: &crate::PyToken<'_>) -> Result<u32, u64> {
+pub(crate) fn pickle_read_u32_le(
+    data: &[u8],
+    idx: &mut usize,
+    _py: &crate::PyToken<'_>,
+) -> Result<u32, u64> {
     let raw = pickle_read_exact(data, idx, 4, _py)?;
     Ok(u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]))
 }
 
-pub(crate) fn pickle_read_u64_le(data: &[u8], idx: &mut usize, _py: &crate::PyToken<'_>) -> Result<u64, u64> {
+pub(crate) fn pickle_read_u64_le(
+    data: &[u8],
+    idx: &mut usize,
+    _py: &crate::PyToken<'_>,
+) -> Result<u64, u64> {
     let raw = pickle_read_exact(data, idx, 8, _py)?;
     Ok(u64::from_le_bytes([
         raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
     ]))
 }
 
-pub(crate) fn pickle_parse_long_bytes_bits(_py: &crate::PyToken<'_>, raw: &[u8]) -> Result<u64, u64> {
+pub(crate) fn pickle_parse_long_bytes_bits(
+    _py: &crate::PyToken<'_>,
+    raw: &[u8],
+) -> Result<u64, u64> {
     if raw.is_empty() {
         return Ok(MoltObject::from_int(0).bits());
     }
@@ -92,14 +114,22 @@ pub(crate) fn pickle_parse_long_bytes_bits(_py: &crate::PyToken<'_>, raw: &[u8])
     Ok(MoltObject::from_int(i64::from_le_bytes(bytes)).bits())
 }
 
-pub(crate) fn pickle_read_f64_be(data: &[u8], idx: &mut usize, _py: &crate::PyToken<'_>) -> Result<f64, u64> {
+pub(crate) fn pickle_read_f64_be(
+    data: &[u8],
+    idx: &mut usize,
+    _py: &crate::PyToken<'_>,
+) -> Result<f64, u64> {
     let raw = pickle_read_exact(data, idx, 8, _py)?;
     Ok(f64::from_bits(u64::from_be_bytes([
         raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
     ])))
 }
 
-pub(crate) fn pickle_decode_utf8(_py: &crate::PyToken<'_>, raw: &[u8], ctx: &str) -> Result<String, u64> {
+pub(crate) fn pickle_decode_utf8(
+    _py: &crate::PyToken<'_>,
+    raw: &[u8],
+    ctx: &str,
+) -> Result<String, u64> {
     String::from_utf8(raw.to_vec()).map_err(|_| {
         let msg = format!("pickle.loads: invalid UTF-8 while decoding {ctx}");
         pickle_raise(_py, &msg)
@@ -127,7 +157,11 @@ pub(crate) fn pickle_attr_optional(
     Ok(Some(value_bits))
 }
 
-pub(crate) fn pickle_attr_required(_py: &crate::PyToken<'_>, obj_bits: u64, name: &[u8]) -> Result<u64, u64> {
+pub(crate) fn pickle_attr_required(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+    name: &[u8],
+) -> Result<u64, u64> {
     match pickle_attr_optional(_py, obj_bits, name)? {
         Some(bits) => Ok(bits),
         None => {
