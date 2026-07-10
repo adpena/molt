@@ -21,6 +21,7 @@ def test_prepare_build_config_uses_dev_runtime_profile_for_dev_builds(
         project_root=tmp_path,
         warnings=[],
         json_output=False,
+        target="native",
         profile="dev",
         pgo_profile=None,
         runtime_feedback=None,
@@ -39,6 +40,7 @@ def test_prepare_build_config_uses_release_runtime_profile_for_release_builds(
         project_root=tmp_path,
         warnings=[],
         json_output=False,
+        target="native",
         profile="release",
         pgo_profile=None,
         runtime_feedback=None,
@@ -155,3 +157,155 @@ def test_nested_build_keeps_platform_profile_and_forwards_dev_build_profile(
             str(entry),
         ]
     ]
+
+
+# ---------------------------------------------------------------------------
+# Runtime-wasm iteration knobs (Hotspot 1/2): dev-fast profile + incremental
+# target dir. Default-off so acceptance / final-green stays release-output.
+# ---------------------------------------------------------------------------
+
+
+def _clear_wasm_profile_cache() -> None:
+    cli_runtime_build._resolve_wasm_cargo_profile_cached.cache_clear()
+
+
+def test_runtime_build_profile_default_is_release_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MOLT_RUNTIME_BUILD_PROFILE", raising=False)
+    monkeypatch.delenv("MOLT_WASM_CARGO_PROFILE", raising=False)
+    _clear_wasm_profile_cache()
+    # release-output is passed through untouched (already wasm-resolved upstream)
+    assert cli_runtime_build._resolve_wasm_cargo_profile("release-output") == (
+        "release-output"
+    )
+    # generic "release" still maps to wasm-release
+    _clear_wasm_profile_cache()
+    assert cli_runtime_build._resolve_wasm_cargo_profile("release") == "wasm-release"
+
+
+def test_runtime_build_profile_knob_overrides_wasm_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MOLT_RUNTIME_BUILD_PROFILE", "dev-fast")
+    monkeypatch.delenv("MOLT_WASM_CARGO_PROFILE", raising=False)
+    _clear_wasm_profile_cache()
+    assert cli_runtime_build._resolve_wasm_cargo_profile("release-output") == "dev-fast"
+    _clear_wasm_profile_cache()
+
+
+def test_explicit_wasm_cargo_profile_wins_over_runtime_build_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MOLT_RUNTIME_BUILD_PROFILE", "dev-fast")
+    monkeypatch.setenv("MOLT_WASM_CARGO_PROFILE", "wasm-release")
+    _clear_wasm_profile_cache()
+    assert cli_runtime_build._resolve_wasm_cargo_profile("release-output") == (
+        "wasm-release"
+    )
+    _clear_wasm_profile_cache()
+
+
+def test_runtime_build_profile_ignores_invalid_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MOLT_RUNTIME_BUILD_PROFILE", "bad name; rm -rf")
+    monkeypatch.delenv("MOLT_WASM_CARGO_PROFILE", raising=False)
+    _clear_wasm_profile_cache()
+    assert cli_runtime_build._resolve_wasm_cargo_profile("release-output") == (
+        "release-output"
+    )
+    _clear_wasm_profile_cache()
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("", False),
+        ("0", False),
+        ("off", False),
+        ("1", True),
+        ("true", True),
+        ("YES", True),
+        ("On", True),
+    ],
+)
+def test_runtime_wasm_incremental_enabled_env(
+    value: str,
+    expected: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if value:
+        monkeypatch.setenv("MOLT_RUNTIME_WASM_INCREMENTAL", value)
+    else:
+        monkeypatch.delenv("MOLT_RUNTIME_WASM_INCREMENTAL", raising=False)
+    assert cli_runtime_build._runtime_wasm_incremental_enabled() is expected
+
+
+def test_incremental_family_key_excludes_link_args_and_separates_configs() -> None:
+    # The family key is the codegen identity: reloc vs shared differ only by
+    # link-args (not an argument here), so both passes map to ONE dir/key.
+    base = dict(
+        cargo_profile="release-output",
+        target_triple="wasm32-wasip1",
+        features=("stdlib_math", "stdlib_regex"),
+        simd_enabled=True,
+        freestanding=False,
+    )
+    key = cli_runtime_build._runtime_wasm_incremental_family_key(**base)
+    # Stable across feature ordering (sorted internally).
+    reordered = dict(base, features=("stdlib_regex", "stdlib_math"))
+    assert cli_runtime_build._runtime_wasm_incremental_family_key(**reordered) == key
+    # Genuinely different configs get different families.
+    assert (
+        cli_runtime_build._runtime_wasm_incremental_family_key(
+            **dict(base, cargo_profile="dev-fast")
+        )
+        != key
+    )
+    assert (
+        cli_runtime_build._runtime_wasm_incremental_family_key(
+            **dict(base, simd_enabled=False)
+        )
+        != key
+    )
+    assert (
+        cli_runtime_build._runtime_wasm_incremental_family_key(
+            **dict(base, freestanding=True)
+        )
+        != key
+    )
+    assert (
+        cli_runtime_build._runtime_wasm_incremental_family_key(
+            **dict(base, features=("stdlib_math",))
+        )
+        != key
+    )
+    # Readable profile prefix.
+    assert key.startswith("release-output-")
+
+
+def test_incremental_target_root_is_session_independent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
+    monkeypatch.setenv("MOLT_SESSION_ID", "session-abc")
+    root = cli_runtime_build._runtime_wasm_incremental_target_root(
+        tmp_path, "release-output-deadbeef"
+    )
+    # No per-session component: the whole point is cross-iteration reuse.
+    assert "sessions" not in root.parts
+    assert root == tmp_path / "target" / "runtime-wasm-incr" / "release-output-deadbeef"
+
+
+def test_incremental_target_root_honors_cargo_target_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    override = tmp_path / "custom-target"
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(override))
+    root = cli_runtime_build._runtime_wasm_incremental_target_root(
+        tmp_path, "dev-fast-cafef00d"
+    )
+    assert root == override / "runtime-wasm-incr" / "dev-fast-cafef00d"
