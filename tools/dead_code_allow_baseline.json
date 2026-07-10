@@ -1,5 +1,5 @@
 {
-  "total": 226,
+  "total": 218,
   "by_area": {
     "runtime/build_support": 4,
     "runtime/molt-backend": 2,
@@ -12,7 +12,7 @@
     "runtime/molt-gpu": 6,
     "runtime/molt-ir": 3,
     "runtime/molt-passes": 9,
-    "runtime/molt-runtime": 77,
+    "runtime/molt-runtime": 69,
     "runtime/molt-runtime-collections": 4,
     "runtime/molt-runtime-compression": 2,
     "runtime/molt-runtime-constants": 2,
