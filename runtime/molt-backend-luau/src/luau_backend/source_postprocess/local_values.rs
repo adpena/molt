@@ -106,10 +106,6 @@ pub(super) fn inline_single_use_constants(source: &mut String) {
     );
 }
 
-/// Remove trailing `continue` statements from loop bodies.
-/// `continue` right before `end` in a loop is a no-op — the loop naturally
-/// continues to the next iteration at `end`.
-
 pub(super) fn strip_undefined_rhs_assignments(source: &mut String) {
     use std::collections::BTreeSet;
 
@@ -356,8 +352,6 @@ fn propagate_single_use_copies_once(source: &mut String) -> usize {
     count
 }
 
-/// Check if a string is a simple variable reference (v\d+ or parameter name).
-
 /// Simplify return chains where a hoisted variable is assigned just before return.
 /// Pattern: `vN = expr; [comment lines]; return vN` → `return expr`
 /// Only applies when vN is used exactly 3 times total (decl + assign + return).
@@ -457,13 +451,6 @@ pub(super) fn simplify_return_chain(source: &mut String) {
     *source = result;
     eprintln!("[molt-luau] Simplified {} return chains", count);
 }
-
-/// Returns `true` if the expression is a *pure* non-trivial RHS suitable for
-/// common-subexpression elimination or loop-invariant hoisting.
-///
-/// "Pure" means no observable side effects: arithmetic, comparisons,
-/// table reads, known-pure math/string builtins, concatenation, and the
-/// length operator are accepted.  Arbitrary function calls are rejected.
 
 /// Sink single-use locals into their sole consumer when the consumer is on
 /// the immediately following (non-blank, non-comment) line.
