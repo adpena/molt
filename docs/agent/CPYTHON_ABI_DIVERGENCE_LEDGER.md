@@ -288,6 +288,55 @@ function name (see legend).
 | `[?]` **PyWeakref_GetObject** | `weakref.rs:13` | [source finding truncated at input; behavior read directly from weakref.rs:13-25 + CPython 3.12] Returns &Py_None for every non-null argument (never resolves the actual referent); only a NULL argument raises TypeError 'expected a weakref'. Companion PyWeakref_Check always returns 0. | Objects/weakrefobject.c returns the borrowed referent (Py_None only when the referent is already dead); a non-weakref argument raises SystemError via PyErr_BadInternalCall. | Resolve and return the real referent from the weakref (Py_None only when cleared); raise SystemError on a non-weakref rather than returning a fabricated Py_None. |
 
 ---
+
+## 2.5 Landed fixes
+
+Rows fixed with a landing SHA + the teeth that lock them (refresh protocol §4.3).
+The class/severity tables and counts above are NOT yet regenerated — treat a row
+listed here as CLOSED regardless of its table entry.
+
+### Lane F3 — `object.rs` (all 19 rows) — landed `85f8af71bd` (+ teeth `4011c64c6e`, `1201433012`)
+
+All 19 `object.rs` rows fixed in one coherent cut, CPython 3.12 primary-source
+verified (Objects/object.c, abstract.c, methodobject.c, iterobject.c). Native
+fast paths preserved byte-identical tier-1; foreign type-slot dispatch layered
+below (a476666f0a pattern); every error path sets a CPython-shaped exception +
+`record_silent_failure` on unresolvable sites. Teeth:
+`api::object::f3_divergence_tests` (9 unit gates), `tests/test_truthiness.rs`
+(native-container truthiness/len/seqiter integration), un-masked
+`tests/test_object_protocol.rs` GetOptionalAttr gate. Load-bearing proven by
+local revert (5 tests flip red).
+
+| Row | file:line | Sev | Fix |
+|---|---|---|---|
+| PyObject_IsTrue | object.rs:796 | H | 3-tier: singletons / native scalar+container (len!=0 via runtime length authority incl. set) / foreign nb_bool→mp_length→sq_length |
+| PyObject_GetOptionalAttr | object.rs:293 | H | only AttributeError → 0-cleared; any other exception propagates -1 (flows through LookupAttr/GetOptionalAttrString/HasAttr*WithError) |
+| PyObject_GenericGetAttr (instance dict) | object.rs:441 | M | dict==NULL loads instance dict from tp_dictoffset between descriptor tiers |
+| PyObject_GenericGetAttr (suppress==0) | object.rs:458 | M | not-found raises CPython AttributeError |
+| PyObject_GenericGetDict | object.rs:478 | M | AttributeError "This object has no __dict__" on no-dict path |
+| PyObject_GenericSetDict | object.rs:511 | L | same AttributeError; accepts value==NULL (clears dict) |
+| PyObject_GenericSetAttr | object.rs:757 | M | foreign: data-descriptor tp_descr_set → instance __dict__ assign/delete → CPython-shaped AttributeError |
+| PyObject_SetAttr | object.rs:231 | L | legacy tp_setattr; bridge objects → GenericSetAttr; slot-less → no-attributes/read-only TypeError |
+| PyObject_SetAttrString | object.rs:258 | M | routes through the PyObject_SetAttr authority (bridge objects reach object_set_attr) |
+| PyObject_ClearWeakRefs | object.rs:592 | M | reads actual tp_weaklistoffset slot; non-empty list = tracked gap (recorded), never an ignoring no-op |
+| PyObject_Print | object.rs:806 | M | honors Py_PRINT_RAW (repr default); "<nil>" for NULL |
+| PyObject_Format | object.rs:886 | M | dispatches foreign object's own __format__ before empty-spec fallback |
+| PyObject_Size | object.rs:957 | M | native tier + set via set_size; foreign sq_length→mp_length; else "has no len()" TypeError |
+| PyObject_DelItem | object.rs:1348 | L | foreign mp_ass_subscript(key,NULL) → sq_ass_item(idx,NULL); else deletion TypeError |
+| PyObject_GetIter | object.rs:1366 | M | PyIter_Check validation of tp_iter result; PySeqIter_New fallback for sequences; not-iterable TypeError |
+| PyIter_Next | object.rs:1390 | M | clears pending StopIteration on NULL (normal exhaustion) |
+| PySeqIter_New | object.rs:1411 | M | real index-based seqiterobject (it_seq strong ref, it_index cursor, terminal-error clear, dealloc releases ref) |
+| molt_cfunction_call | object.rs:2130 | L | CPython-shaped TypeError per arg/kw mismatch; SystemError for METH_METHOD/unknown flags |
+| PyObject_ASCII | object.rs:2621 | L | real ascii() backslash-escaping (\xNN/\uNNNN/\UNNNNNNNN) of repr |
+
+Deferred (tracked, not masked): a live weakref list in `PyObject_ClearWeakRefs`
+cannot be cleared/callbacked until a `PyWeakReference` layout + creation path
+exists (no such path in this tier today — the slot head is always NULL; a
+non-empty list is recorded on the silent-failure surface). Managed-dict /
+negative `tp_dictoffset` var-objects take the honest AttributeError in
+`GenericGetDict`/`SetDict` until modeled.
+
+---
 ## 3. Batch-fix plan (4 coherent lanes, one agent each)
 
 Findings are grouped by **mechanism** (not by file) so each lane is a single coherent
