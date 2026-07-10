@@ -35,8 +35,11 @@ fresh session can reuse a warm artifact instead of recompiling:
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -54,7 +57,68 @@ _RUNTIME_WASM_CACHE_STATS: dict[str, int | str] = {
     "publish_successes": 0,
     "publish_failures": 0,
     "last_publish_failure": "",
+    # V3 config-lattice reuse (MOLT_BUILD_REUSE_COMPATIBLE): an iteration-profile
+    # request served by a same-source compatible-or-better-opt cached artifact.
+    "compat_hydrate_attempts": 0,
+    "compat_hydrate_hits": 0,
+    "compat_hydrate_misses": 0,
 }
+
+
+# Consumer-opt-reuse rank: a runtime-wasm request at rank R may be satisfied by
+# a cached artifact at rank >= R (equal or higher optimisation) whose ABI inputs
+# are identical, because run_wasm.js / tools/wasm_link.py consume the artifact by
+# export/import symbol contract only -- the opt level is invisible to them
+# (doctrine 74 law 3). Unknown profiles get the lowest rank so they only ever
+# satisfy an exactly-equal-named request, never silently substitute a peer.
+_PROFILE_REUSE_RANK: dict[str, int] = {
+    "dev": 0,
+    "debug": 0,
+    "dev-fast": 1,
+    "wasm-release-fallback": 2,
+    "wasm-release": 3,
+    "release": 3,
+    "release-output": 4,
+    "release-fast": 4,
+}
+
+
+def _profile_reuse_rank(profile: str) -> int:
+    return _PROFILE_REUSE_RANK.get(profile, -1)
+
+
+def _build_reuse_compatible_enabled() -> bool:
+    """Whether V3 config-lattice reuse is active (opt-in; default OFF).
+
+    Acceptance/proof lanes MUST pin exact content identity (M05), so this stays
+    opt-in via ``MOLT_BUILD_REUSE_COMPATIBLE=1`` for heavy iteration dev loops.
+    """
+    return os.environ.get("MOLT_BUILD_REUSE_COMPATIBLE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _runtime_wasm_compat_digest(
+    *,
+    target_triple: str | None,
+    rustflags: str,
+    features: Iterable[str],
+) -> str:
+    """ABI-identity digest EXCLUDING the cargo profile (opt level).
+
+    Two runtime builds that differ only in opt level share this digest, so a
+    lattice lookup can prove "same source ABI, only the profile differs" before
+    substituting a compatible-or-better artifact.
+    """
+    payload = (
+        f"target:{target_triple or 'native'}\n"
+        f"rustflags:{rustflags}\n"
+        f"features:{','.join(sorted(features))}\n"
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _runtime_wasm_cache_diagnostics_snapshot() -> dict[str, Any] | None:
@@ -82,6 +146,17 @@ def _runtime_wasm_cache_diagnostics_snapshot() -> dict[str, Any] | None:
     last_publish_failure = str(_RUNTIME_WASM_CACHE_STATS["last_publish_failure"])
     if last_publish_failure:
         snapshot["last_publish_failure"] = last_publish_failure
+    compat_attempts = int(_RUNTIME_WASM_CACHE_STATS["compat_hydrate_attempts"])
+    if compat_attempts:
+        compat_hits = int(_RUNTIME_WASM_CACHE_STATS["compat_hydrate_hits"])
+        snapshot["compat_hydrate_attempts"] = compat_attempts
+        snapshot["compat_hydrate_hits"] = compat_hits
+        snapshot["compat_hydrate_misses"] = int(
+            _RUNTIME_WASM_CACHE_STATS["compat_hydrate_misses"]
+        )
+        snapshot["compat_hydrate_hit_rate"] = round(
+            compat_hits / max(1, compat_attempts), 6
+        )
     return snapshot
 
 
@@ -193,6 +268,7 @@ def _publish_runtime_wasm_to_shared_cache(
     src: Path,
     fingerprint: Mapping[str, object],
     reloc: bool,
+    compat: Mapping[str, object] | None = None,
 ) -> str | None:
     """Publish a freshly built runtime wasm into the shared cache.
 
@@ -220,15 +296,26 @@ def _publish_runtime_wasm_to_shared_cache(
     if key is None:
         return None
     hash_value, meta_digest = key
+    sidecar_payload: dict[str, object] = {
+        "hash": hash_value,
+        "meta_digest": meta_digest,
+        "reloc": reloc,
+        "rustc": fingerprint.get("rustc"),
+    }
+    # V3 lattice index: record the profile-independent ABI identity so a later
+    # iteration-profile request can find this artifact as compatible-or-better.
+    if compat is not None:
+        inputs_digest = compat.get("inputs_digest")
+        compat_digest = compat.get("compat_digest")
+        cargo_profile = compat.get("cargo_profile")
+        if inputs_digest and compat_digest and cargo_profile:
+            sidecar_payload["inputs_digest"] = inputs_digest
+            sidecar_payload["compat_digest"] = compat_digest
+            sidecar_payload["cargo_profile"] = cargo_profile
     try:
         _write_json_sidecar(
             cache_path.with_suffix(".wasm.json"),
-            {
-                "hash": hash_value,
-                "meta_digest": meta_digest,
-                "reloc": reloc,
-                "rustc": fingerprint.get("rustc"),
-            },
+            sidecar_payload,
         )
     except OSError as exc:
         reason = f"metadata sidecar failed: {exc}"
@@ -241,3 +328,80 @@ def _publish_runtime_wasm_to_shared_cache(
         int(_RUNTIME_WASM_CACHE_STATS["publish_successes"]) + 1
     )
     return None
+
+
+def _hydrate_runtime_wasm_from_compatible_cache(
+    *,
+    dest: Path,
+    reloc: bool,
+    inputs_digest: str | None,
+    compat_digest: str,
+    request_profile: str,
+    is_valid: Callable[[Path], bool],
+    exports_ok: Callable[[Path], bool],
+) -> bool:
+    """V3: reuse a same-source, compatible-or-better-opt cached runtime wasm.
+
+    Only runs when ``MOLT_BUILD_REUSE_COMPATIBLE`` is set (checked by the caller).
+    Scans the shared cache for an artifact of the same kind whose ABI identity
+    (``inputs_digest`` + ``compat_digest``) matches this request but whose cargo
+    profile is compatible-or-better (``_profile_reuse_rank`` >= the request's).
+    The candidate must still pass the mode-appropriate structural validator AND
+    the caller's export-satisfaction check, so a lattice reuse can never hand the
+    consumer an artifact missing a required symbol. Highest-opt match wins.
+    """
+    if not inputs_digest:
+        return False
+    request_rank = _profile_reuse_rank(request_profile)
+    _RUNTIME_WASM_CACHE_STATS["compat_hydrate_attempts"] = (
+        int(_RUNTIME_WASM_CACHE_STATS["compat_hydrate_attempts"]) + 1
+    )
+    root = _shared_runtime_wasm_cache_root()
+    kind = "reloc" if reloc else "shared"
+    prefix = f"molt_runtime.{kind}."
+    candidates: list[tuple[int, str, Path]] = []
+    try:
+        sidecars = sorted(root.glob(f"{prefix}*.wasm.json"))
+    except OSError:
+        sidecars = []
+    for sidecar in sidecars:
+        try:
+            meta = json.loads(sidecar.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(meta, dict):
+            continue
+        if bool(meta.get("reloc")) != reloc:
+            continue
+        if meta.get("inputs_digest") != inputs_digest:
+            continue
+        if meta.get("compat_digest") != compat_digest:
+            continue
+        cand_profile = meta.get("cargo_profile")
+        if not isinstance(cand_profile, str):
+            continue
+        cand_rank = _profile_reuse_rank(cand_profile)
+        if cand_rank < 0 or cand_rank < request_rank:
+            continue
+        artifact = sidecar.with_suffix("")  # strip ".json" -> "....wasm"
+        if artifact.suffix != ".wasm" or not artifact.is_file():
+            continue
+        candidates.append((cand_rank, artifact.name, artifact))
+    # Highest opt rank first, then a stable name tiebreak for determinism.
+    candidates.sort(key=lambda item: (-item[0], item[1]))
+    for _rank, _name, artifact in candidates:
+        if not bool(is_valid(artifact)):
+            continue
+        try:
+            _atomic_copy_file(artifact, dest)
+        except OSError:
+            continue
+        if bool(is_valid(dest)) and bool(exports_ok(dest)):
+            _RUNTIME_WASM_CACHE_STATS["compat_hydrate_hits"] = (
+                int(_RUNTIME_WASM_CACHE_STATS["compat_hydrate_hits"]) + 1
+            )
+            return True
+    _RUNTIME_WASM_CACHE_STATS["compat_hydrate_misses"] = (
+        int(_RUNTIME_WASM_CACHE_STATS["compat_hydrate_misses"]) + 1
+    )
+    return False
