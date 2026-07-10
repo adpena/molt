@@ -148,7 +148,9 @@ fn test_list_setitem_null_list_returns_error() {
     let result =
         unsafe { molt_cpython_abi::api::sequences::PyList_SetItem(ptr::null_mut(), 0, val) };
     assert_eq!(result, -1);
-    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(val) };
+    // `PyList_SetItem` steals `val` even when the container is not a list (it
+    // `Py_XDECREF`s the item before `PyErr_BadInternalCall`, matching CPython);
+    // decref'ing `val` again here would be a double-free.
 }
 
 #[test]
@@ -168,8 +170,11 @@ fn test_list_setitem_negative_index_returns_error() {
     let val = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1) };
     let result = unsafe { molt_cpython_abi::api::sequences::PyList_SetItem(list, -1, val) };
     assert_eq!(result, -1);
+    // `PyList_SetItem` STEALS the item reference even on the out-of-range error
+    // path (it `Py_XDECREF`s `val` before returning -1, matching CPython's
+    // `listobject.c`). The caller therefore must NOT decref `val` again — doing
+    // so is a double-free (a use-after-free Miri catches at `refcount.rs`).
     unsafe {
-        molt_cpython_abi::api::refcount::Py_DECREF(val);
         molt_cpython_abi::api::refcount::Py_DECREF(list);
     }
 }
@@ -279,7 +284,9 @@ fn test_tuple_setitem_null_tuple_returns_error() {
     let result =
         unsafe { molt_cpython_abi::api::sequences::PyTuple_SetItem(ptr::null_mut(), 0, val) };
     assert_eq!(result, -1);
-    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(val) };
+    // `PyTuple_SetItem` steals `val` even when the container is not a tuple (it
+    // `Py_XDECREF`s the item before `PyErr_BadInternalCall`, matching CPython);
+    // decref'ing `val` again here would be a double-free.
 }
 
 #[test]
@@ -299,8 +306,10 @@ fn test_tuple_setitem_negative_index_returns_error() {
     let val = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1) };
     let result = unsafe { molt_cpython_abi::api::sequences::PyTuple_SetItem(tup, -1, val) };
     assert_eq!(result, -1);
+    // `PyTuple_SetItem` steals `val` on the out-of-range error path (it
+    // `Py_XDECREF`s the item before returning -1, matching CPython); the caller
+    // must NOT decref `val` again — that is a double-free.
     unsafe {
-        molt_cpython_abi::api::refcount::Py_DECREF(val);
         molt_cpython_abi::api::refcount::Py_DECREF(tup);
     }
 }
