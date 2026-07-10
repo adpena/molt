@@ -672,3 +672,105 @@ fn typecheck_matches_base_type_like_pyarray_descrcheck() {
         "the subtype walk must not over-match an unrelated type",
     );
 }
+
+/// `PyObject_IsInstance(inst, cls)` for a type `cls` reduces to
+/// `PyObject_TypeCheck(inst, cls)` (CPython `recursive_isinstance`). It is the
+/// same exact-OR-subtype relationship — numpy's `descriptor.c` calls
+/// `PyObject_IsInstance(conv, &PyArray_StringDType)` on descriptors whose type
+/// is a subclass of the queried DType. An exact-only check returns a false
+/// negative; this asserts the SUBTYPE arm and is mask-proof.
+#[test]
+fn isinstance_matches_base_type_via_subtype_walk() {
+    use molt_cpython_abi::api::typeobj::PyObject_IsInstance;
+    init();
+
+    let mut base: PyTypeObject = unsafe { std::mem::zeroed() };
+    base.tp_name = c"numpy.dtype".as_ptr();
+    base.tp_basicsize = std::mem::size_of::<PyObject>() as Py_ssize_t;
+    assert_eq!(unsafe { ready(&mut base) }, 0);
+
+    let mut derived: PyTypeObject = unsafe { std::mem::zeroed() };
+    derived.tp_name = c"numpy.dtypes.StringDType".as_ptr();
+    derived.tp_basicsize = std::mem::size_of::<PyObject>() as Py_ssize_t;
+    derived.tp_base = &raw mut base;
+    assert_eq!(unsafe { ready(&mut derived) }, 0);
+
+    let mut unrelated: PyTypeObject = unsafe { std::mem::zeroed() };
+    unrelated.tp_name = c"numpy.ndarray".as_ptr();
+    unrelated.tp_basicsize = std::mem::size_of::<PyObject>() as Py_ssize_t;
+    assert_eq!(unsafe { ready(&mut unrelated) }, 0);
+
+    let mut instance = PyObject {
+        ob_refcnt: 1,
+        ob_type: &raw mut derived,
+    };
+    let inst = &raw mut instance;
+
+    assert_eq!(
+        unsafe { PyObject_IsInstance(inst, (&raw mut derived).cast::<PyObject>()) },
+        1,
+        "isinstance against the exact class",
+    );
+    assert_eq!(
+        unsafe { PyObject_IsInstance(inst, (&raw mut base).cast::<PyObject>()) },
+        1,
+        "isinstance against a BASE class must walk the subtype chain (mask-proof)",
+    );
+    assert_eq!(
+        unsafe { PyObject_IsInstance(inst, (&raw mut unrelated).cast::<PyObject>()) },
+        0,
+        "isinstance must not over-match an unrelated class",
+    );
+}
+
+/// `PyObject_IsSubclass(derived, cls)` for type args reduces to
+/// `PyType_IsSubtype(derived, cls)` (CPython `recursive_issubclass`). A bare
+/// pointer-identity check dropped every genuine base/derived relationship; this
+/// asserts the SUBTYPE arm (mask-proof) plus the exact and no-over-match cases,
+/// and that the relationship is DIRECTIONAL (base is not a subclass of derived).
+#[test]
+fn issubclass_walks_base_chain() {
+    use molt_cpython_abi::api::object::PyObject_IsSubclass;
+    init();
+
+    let mut base: PyTypeObject = unsafe { std::mem::zeroed() };
+    base.tp_name = c"numpy.dtype".as_ptr();
+    base.tp_basicsize = std::mem::size_of::<PyObject>() as Py_ssize_t;
+    assert_eq!(unsafe { ready(&mut base) }, 0);
+
+    let mut derived: PyTypeObject = unsafe { std::mem::zeroed() };
+    derived.tp_name = c"numpy.dtypes.StringDType".as_ptr();
+    derived.tp_basicsize = std::mem::size_of::<PyObject>() as Py_ssize_t;
+    derived.tp_base = &raw mut base;
+    assert_eq!(unsafe { ready(&mut derived) }, 0);
+
+    let mut unrelated: PyTypeObject = unsafe { std::mem::zeroed() };
+    unrelated.tp_name = c"numpy.ndarray".as_ptr();
+    unrelated.tp_basicsize = std::mem::size_of::<PyObject>() as Py_ssize_t;
+    assert_eq!(unsafe { ready(&mut unrelated) }, 0);
+
+    let base_o = (&raw mut base).cast::<PyObject>();
+    let derived_o = (&raw mut derived).cast::<PyObject>();
+    let unrelated_o = (&raw mut unrelated).cast::<PyObject>();
+
+    assert_eq!(
+        unsafe { PyObject_IsSubclass(derived_o, base_o) },
+        1,
+        "derived IS a subclass of its base (mask-proof: exact-only returns 0)",
+    );
+    assert_eq!(
+        unsafe { PyObject_IsSubclass(derived_o, derived_o) },
+        1,
+        "a class is a subclass of itself",
+    );
+    assert_eq!(
+        unsafe { PyObject_IsSubclass(base_o, derived_o) },
+        0,
+        "the base is NOT a subclass of its derived (directional)",
+    );
+    assert_eq!(
+        unsafe { PyObject_IsSubclass(derived_o, unrelated_o) },
+        0,
+        "unrelated classes are not in a subclass relationship",
+    );
+}
