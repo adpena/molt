@@ -1158,35 +1158,43 @@ pub extern "C" fn molt_bridge_hash(obj: *mut PyObject) -> isize {
     if obj.is_null() {
         return -1;
     }
-    let bits = pyobject_to_bits(obj);
+    molt_hash_from_bits(pyobject_to_bits(obj))
+}
+
+/// Compute the runtime hash of a Molt value directly from its NaN-boxed bits.
+/// The single authority behind both `molt_bridge_hash` (direct-boxing callers)
+/// and the C-ABI `PyObject_Hash` (which resolves a bridge handle to its bits
+/// first). Never returns the raw `-1` error sentinel for a real value: an
+/// integer that hashes to `-1` is remapped to `-2`, matching CPython.
+pub(crate) fn molt_hash_from_bits(bits: u64) -> isize {
     let mo = MoltObject::from_bits(bits);
 
-    if mo.is_int() {
+    let h = if mo.is_int() {
         // CPython: hash(n) == n for small ints.
-        return mo.as_int().unwrap_or(0) as isize;
-    }
-    if mo.is_float() {
+        mo.as_int().unwrap_or(0) as isize
+    } else if mo.is_float() {
         // CPython: hash(float) follows a specific protocol.
         // For the common case, use the bit pattern.
         let f = mo.as_float().unwrap_or(0.0);
         if f == (f as i64 as f64) && f.is_finite() {
             // Integer-valued float: hash matches the int hash.
-            return f as i64 as isize;
+            f as i64 as isize
+        } else {
+            py_hash_from_unsigned_bits(bits)
         }
-        return py_hash_from_unsigned_bits(bits);
-    }
-    if mo.is_bool() {
-        return mo.as_bool().unwrap_or(false) as isize;
-    }
-    if mo.is_none() {
-        return py_hash_from_unsigned_bits(PY_NONE_HASH_BITS);
-    }
-    if mo.is_ptr() {
+    } else if mo.is_bool() {
+        mo.as_bool().unwrap_or(false) as isize
+    } else if mo.is_none() {
+        py_hash_from_unsigned_bits(PY_NONE_HASH_BITS)
+    } else if mo.is_ptr() {
         // Heap objects: use the address portion of the NaN-boxed bits.
         // This gives a stable identity hash for the object's lifetime.
-        return py_hash_from_unsigned_bits(bits & 0x0000_FFFF_FFFF_FFFF);
-    }
-    py_hash_from_unsigned_bits(bits)
+        py_hash_from_unsigned_bits(bits & 0x0000_FFFF_FFFF_FFFF)
+    } else {
+        py_hash_from_unsigned_bits(bits)
+    };
+    // CPython contract: a real value never hashes to the -1 error sentinel.
+    if h == -1 { -2 } else { h }
 }
 
 /// `PyObject_Length(obj)` — return length of a container via NaN-boxed bits.
@@ -1368,7 +1376,7 @@ pub extern "C" fn molt_bridge_err_occurred() -> *mut PyObject {
 // ─── Internal helpers for repr/str formatting ────────────────────────────
 
 /// Produce a Python-style repr string for a NaN-boxed value.
-fn molt_repr_string(bits: u64) -> Vec<u8> {
+pub(crate) fn molt_repr_string(bits: u64) -> Vec<u8> {
     let mo = MoltObject::from_bits(bits);
 
     if mo.is_none() {
@@ -1411,7 +1419,7 @@ fn molt_repr_string(bits: u64) -> Vec<u8> {
 }
 
 /// Produce a Python-style str() string for a NaN-boxed value.
-fn molt_str_string(bits: u64) -> Vec<u8> {
+pub(crate) fn molt_str_string(bits: u64) -> Vec<u8> {
     let mo = MoltObject::from_bits(bits);
 
     if mo.is_none() {
