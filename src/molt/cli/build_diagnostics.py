@@ -203,6 +203,20 @@ def _emit_build_diagnostics(
                 f"- runtime_wasm_cache.last_publish_failure: {last_publish_failure}",
                 file=sys.stderr,
             )
+        compat_attempts = runtime_wasm_cache.get("compat_hydrate_attempts")
+        compat_hits = runtime_wasm_cache.get("compat_hydrate_hits")
+        compat_rate = runtime_wasm_cache.get("compat_hydrate_hit_rate")
+        if (
+            isinstance(compat_attempts, int)
+            and isinstance(compat_hits, int)
+            and isinstance(compat_rate, (int, float))
+        ):
+            print(
+                "- runtime_wasm_cache.compat_lattice: "
+                f"hits={compat_hits}/{compat_attempts} "
+                f"hit_rate={float(compat_rate):.6f}",
+                file=sys.stderr,
+            )
     if isinstance(runtime_wasm_build, dict) and runtime_wasm_build:
         cargo_builds = runtime_wasm_build.get("cargo_compile_builds")
         cargo_reuses = runtime_wasm_build.get("cargo_compile_reuses")
