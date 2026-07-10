@@ -40,6 +40,32 @@ That is **~140×** faster counting a cold build and **>1000×** on the warm
 incremental loop that dominates a fix session. The `molt-cpython-abi` crate is
 lightweight (13 normal deps, no `molt-runtime`), which is *why* the loop is cheap.
 
+## Native C-extension DISCOVERY engine — LANDED (the deeper Tier A)
+
+The **discovery** variant — driving a REAL prebuilt extension's `PyInit` against
+molt's ABI + REAL `molt-runtime` hooks to catch **unknown** frontiers — is now
+LANDED and RUNS real numpy 1.26.4 `_multiarray_umath` init natively (macOS/Linux;
+not Windows — no flat namespace). Use it for numpy/scipy-import frontier
+discovery instead of a wasm-witness cycle:
+
+```bash
+# Build the single-static-pool harness (incremental), static symbol-gap check,
+# then drive PyInit and localise the runtime frontier (MOLT_TRACE_CAPI on):
+CARGO_TARGET_DIR=<fast-dir> tools/native_numpy_discovery.sh _multiarray_umath
+```
+
+* Harness: `runtime/molt-cext-discovery` — a `cdylib` linking BOTH `molt-runtime`
+  AND `molt-cpython-abi` into ONE image → a single ABI static pool that owns the
+  REAL hooks (not the no-op `STUB_HOOKS`), the `Py*` numpy calls, and the loader.
+* Driver: `tools/native_cext_driver.c` (`dlopen … RTLD_GLOBAL`, then drive PyInit).
+* Measured **warm edit→frontier cycle: ~7 s** (vs ~1800 s for a wasm witness).
+* The ORDERED frontier list it surfaced (symbol-gap + runtime tiers):
+  [NATIVE_DISCOVERY_FRONTIERS.md](NATIVE_DISCOVERY_FRONTIERS.md).
+
+Current numpy-init frontier surfaced: `PyCapsule_Import("datetime.datetime_CAPI")`
+**silent-failure** (molt has no importable `datetime` CAPI capsule) → `PyInit`
+returns NULL. Re-run after each fix to advance to the next frontier in seconds.
+
 ## What the harness is
 
 `runtime/molt-cpython-abi/tests/frontier_repro.rs` turns the

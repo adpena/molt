@@ -1,0 +1,28 @@
+[package]
+name = "molt-cext-discovery"
+version = "0.1.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+description = "Native CPython-ABI C-extension DISCOVERY harness: dlopen a real prebuilt extension (e.g. numpy _multiarray_umath) and drive PyInit against molt-runtime's REAL ABI hooks to surface every remaining ABI frontier natively — seconds per frontier with real backtraces, instead of one per ~30-min wasm-witness cycle."
+
+[lib]
+name = "molt_cext_discovery"
+# cdylib so the #[no_mangle] Py* ABI symbols (from the linked molt-cpython-abi
+# rlib) are exported into this single image; a tiny C driver dlopen's it with
+# RTLD_GLOBAL and the extension's `-undefined dynamic_lookup` Py* imports bind
+# to them. staticlib is unused but keeps `cargo build` honest about linkage.
+crate-type = ["cdylib"]
+
+[dependencies]
+# BOTH halves in ONE image => a single molt_cpython_abi static pool that owns
+# the REAL hooks AND the Py* the extension calls AND the loader that drives it.
+# `stdlib_micro` (no networking) is the known-good NATIVE feature set — matches
+# molt-embed/molt-ffi. The default `stdlib_full + wasi_host` combo is
+# wasm-oriented and does not compile cleanly for native (net-io / TLS paths
+# reference a wasm-only `libc_compat`). The CPython-ABI hooks live in the core
+# runtime, so no stdlib feature beyond micro is needed to drive numpy's PyInit.
+molt-runtime = { path = "../molt-runtime", default-features = false, features = ["stdlib_micro"] }
+molt-cpython-abi = { package = "molt-lang-cpython-abi", path = "../molt-cpython-abi", features = ["extension-loader"] }
+libc = "0.2"
