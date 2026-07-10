@@ -806,6 +806,13 @@ _ABI_ALLOWLIST_SYMBOLS = frozenset(
         "_Py_DECREF",
         "Py_IncRef",
         "Py_DecRef",
+        # PyList_New pre-sizes the runtime list to `size` None slots — the
+        # CPython contract itself (Objects/listobject.c calloc's `size` NULL
+        # slots + Py_SET_SIZE so indexed PyList_SetItem/SET_ITEM can fill any
+        # slot, incl. out of order). MoltObject::none() here is the faithful
+        # implementation, not a placeholder success (teeth:
+        # tests/test_list_setitem.rs::setitem_places_items_at_index_out_of_order).
+        "PyList_New",
     }
 )
 # Files whose wrapping_* is mask/refcount arithmetic, not int-semantics poison.

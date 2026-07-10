@@ -1087,9 +1087,10 @@ pub unsafe extern "C" fn PySequence_Repeat(o: *mut PyObject, count: Py_ssize_t) 
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PySequence_List(o: *mut PyObject) -> *mut PyObject {
-    // CPython: PyList_New(0) + _PyList_Extend(result, v) — ANY iterable
-    // converts; a non-iterable raises TypeError. The previous body fabricated
-    // an EMPTY list for every non-list/tuple (theater row).
+    // CPython builds an empty list and drains the iterator into it via
+    // _PyList_Extend — ANY iterable converts; a non-iterable raises TypeError.
+    // The previous body fabricated an EMPTY list for every non-list/tuple
+    // (theater row).
     if o.is_null() {
         unsafe { set_null_error() };
         return ptr::null_mut();
