@@ -504,6 +504,104 @@ fn metatype_inherits_type_call_and_instantiates_via_tp_new_tp_init() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// (4b) Metatype call slot restored when its `type` base did not resolve.
+//
+// In the split wasm runtime a PIC extension's `&PyType_Type` DATA reference can
+// resolve to an app-local UNRESOLVED placeholder (an all-zero PyTypeObject:
+// tp_name/tp_call NULL) instead of the runtime's canonical PyType_Type. numpy's
+// `_DTypeMeta` sets `tp_base = &PyType_Type` and relies on PyType_Ready slot
+// inheritance for `type_call`; with an unresolved base it inherits NULL, so
+// calling a DType class (`StringDType()`, whose metatype is `_DTypeMeta`) fails
+// "'numpy._DTypeMeta' object is not callable" during `_multiarray_umath` init.
+// PyType_Ready must guarantee the metatype of any readied type carries
+// `type_call` when the broken cross-module inheritance left it NULL. This models
+// the exact StringDType witness frontier without the wasm linker in the loop.
+// ---------------------------------------------------------------------------
+#[test]
+fn metatype_with_unresolved_type_base_gains_type_call_when_subtype_readied() {
+    init();
+
+    // An UNRESOLVED `&PyType_Type` placeholder: a zeroed PyTypeObject — exactly
+    // what the split app reads when the GOT data reference is not retargeted to
+    // the runtime's canonical PyType_Type. Both tp_name AND tp_call are NULL.
+    let mut unresolved_type_base: PyTypeObject = unsafe { std::mem::zeroed() };
+    unresolved_type_base.tp_flags = Py_TPFLAGS_READY;
+    assert!(
+        unresolved_type_base.tp_call.is_none(),
+        "the unresolved base placeholder must carry no tp_call (all-zero object)"
+    );
+
+    // numpy's `_DTypeMeta`: its tp_base points at the unresolved placeholder.
+    let mut meta: PyTypeObject = unsafe { std::mem::zeroed() };
+    meta.tp_name = c"numpy._DTypeMeta".as_ptr();
+    meta.tp_basicsize = std::mem::size_of::<PyTypeObject>() as Py_ssize_t;
+    meta.tp_base = &mut unresolved_type_base;
+    assert_eq!(unsafe { ready(&mut meta) }, 0);
+    // Reproduce the bug: with an unresolved `type` base, the metatype inherits a
+    // NULL tp_call — the state that made `StringDType()` "not callable".
+    assert!(
+        meta.tp_call.is_none(),
+        "precondition: an unresolved type base leaves the metatype's tp_call NULL"
+    );
+
+    // A DType class: an instance of the metatype with its own tp_new/tp_init.
+    let mut dtype_class: PyTypeObject = unsafe { std::mem::zeroed() };
+    dtype_class.tp_name = c"numpy.dtypes.StringDType".as_ptr();
+    dtype_class.tp_basicsize = 64;
+    dtype_class.tp_new = Some(counting_new);
+    dtype_class.tp_init = Some(counting_init);
+    dtype_class.ob_base.ob_base.ob_type = &mut meta;
+    assert_eq!(unsafe { ready(&mut dtype_class) }, 0);
+
+    // The fix: readying the DType class restored its metatype's `tp_call` to
+    // CPython's `type_call`, so the class is now callable.
+    assert!(
+        meta.tp_call.is_some(),
+        "readying a type whose metatype lost type_call must restore the metatype's tp_call"
+    );
+
+    // Calling the DType class through the restored metatype tp_call must run
+    // tp_new + tp_init and yield an instance — not a bare NULL / "not callable"
+    // TypeError. Exercise the full `PyObject_Call` dispatch, the exact path the
+    // extension takes.
+    let before_new = NEW_CALLS.load(std::sync::atomic::Ordering::SeqCst);
+    let before_init = INIT_CALLS.load(std::sync::atomic::Ordering::SeqCst);
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+    let args = unsafe { molt_cpython_abi::api::sequences::PyTuple_New(0) };
+    assert!(!args.is_null());
+    let obj = unsafe {
+        molt_cpython_abi::api::object::PyObject_Call(
+            (&mut dtype_class as *mut PyTypeObject).cast::<PyObject>(),
+            args,
+            ptr::null_mut(),
+        )
+    };
+    assert!(
+        !obj.is_null(),
+        "calling the DType class must instantiate via the restored metatype type_call"
+    );
+    assert!(
+        unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null(),
+        "a successful instantiation must leave no pending exception"
+    );
+    assert_eq!(
+        NEW_CALLS.load(std::sync::atomic::Ordering::SeqCst),
+        before_new + 1,
+        "tp_new must run exactly once"
+    );
+    assert_eq!(
+        INIT_CALLS.load(std::sync::atomic::Ordering::SeqCst),
+        before_init + 1,
+        "tp_init must run when the result is an instance of the class"
+    );
+    assert_eq!(
+        unsafe { (*obj).ob_type },
+        &mut dtype_class as *mut PyTypeObject,
+        "the instance's ob_type must be the called DType class"
+    );
+}
+
 #[test]
 fn type_call_without_tp_new_raises_type_error_not_null_funcref() {
     init();

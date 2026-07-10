@@ -184,6 +184,32 @@ pub unsafe extern "C" fn PyType_Ready(tp: *mut PyTypeObject) -> c_int {
             (*tp).ob_base.ob_base.ob_type = &raw mut crate::abi_types::PyType_Type;
         }
 
+        // (5b) Guarantee the metatype can INSTANTIATE this type. `tp` is a type
+        //      object; `Py_TYPE(tp)` is therefore its metatype, and in CPython
+        //      every metatype is a subtype of `type` and so carries `type_call`
+        //      as its `tp_call` (inherited during the metatype's own
+        //      PyType_Ready). numpy's `_DTypeMeta` sets `tp_base = &PyType_Type`
+        //      and relies on exactly that inheritance — but in the split wasm
+        //      runtime a PIC extension's `&PyType_Type` DATA reference can resolve
+        //      to an app-local unresolved GOT placeholder (an all-zero
+        //      PyTypeObject: `tp_name`/`tp_call` NULL) rather than the runtime's
+        //      canonical `PyType_Type`, so `_DTypeMeta` readies with a NULL
+        //      `tp_call`. Then calling a DType class — `StringDType(...)`, whose
+        //      metatype is `_DTypeMeta` — dispatches `Py_TYPE(cls)->tp_call`,
+        //      finds NULL, and fails "'numpy._DTypeMeta' object is not callable"
+        //      during `_multiarray_umath` init. Restore the slot the broken
+        //      cross-module inheritance left NULL: this is byte-for-byte the value
+        //      a faithful `inherit_slots(_DTypeMeta, &PyType_Type)` would have
+        //      copied, so it is the correct metatype call slot, not a mask. Only a
+        //      NULL slot is filled, so a metatype that overrides `__call__` keeps
+        //      its own `tp_call`. `PyType_Type` itself (the common metatype)
+        //      already carries `molt_type_call` from `init_static_types`, so this
+        //      is a no-op for ordinary types.
+        let meta = (*tp).ob_base.ob_base.ob_type;
+        if !meta.is_null() && (*meta).tp_call.is_none() {
+            (*meta).tp_call = Some(molt_type_call);
+        }
+
         // (6) Mark ready.
         (*tp).tp_flags |= Py_TPFLAGS_READY;
     }
