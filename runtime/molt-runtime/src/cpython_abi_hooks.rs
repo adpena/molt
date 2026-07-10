@@ -470,6 +470,13 @@ unsafe extern "C" fn hook_object_call(callable_bits: u64, args_bits: u64, kwargs
     result
 }
 
+/// Allocate a `TYPE_ID_FOREIGN` wrapper around a genuine C-extension `PyObject*`
+/// crossing INTO compiled Python. The bridge caller takes the strong reference
+/// custody; this hook only materializes the Molt heap wrapper.
+unsafe extern "C" fn hook_foreign_new(c_ptr: usize) -> u64 {
+    with_gil(|_py| crate::object::foreign::foreign_new(&_py, c_ptr))
+}
+
 /// Raise a `TypeError` for a malformed `hook_object_call` argument shape and
 /// return the hook's error sentinel (0).
 fn object_call_type_error(message: &str) -> u64 {
@@ -2069,6 +2076,7 @@ pub fn register_cpython_hooks() {
         set_discard: hook_set_discard,
         object_dir: hook_object_dir,
         object_call: hook_object_call,
+        foreign_new: hook_foreign_new,
     };
     // SAFETY: all fn pointers are valid for the process lifetime.
     unsafe {

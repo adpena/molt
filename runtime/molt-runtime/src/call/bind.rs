@@ -12,8 +12,9 @@ use crate::{
     CALL_BIND_IC_HIT_COUNT, CALL_BIND_IC_MISS_COUNT, GEN_CONTROL_SIZE,
     HEADER_FLAG_FUNC_REQUIRES_BINDER, INVOKE_FFI_BRIDGE_CAPABILITY_DENIED_COUNT, MoltHeader,
     MoltObject, PtrDropGuard, PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_CALLARGS, TYPE_ID_CODE,
-    TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_EXCEPTION, TYPE_ID_FROZENSET, TYPE_ID_FUNCTION,
-    TYPE_ID_GENERIC_ALIAS, TYPE_ID_OBJECT, TYPE_ID_SET, TYPE_ID_STRING, TYPE_ID_TUPLE,
+    TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_EXCEPTION, TYPE_ID_FOREIGN, TYPE_ID_FROZENSET,
+    TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS, TYPE_ID_OBJECT, TYPE_ID_SET, TYPE_ID_STRING,
+    TYPE_ID_TUPLE,
     TYPE_ID_TYPE, alloc_class_obj, alloc_dict_with_pairs, alloc_exception_from_class_bits,
     alloc_instance_for_class, alloc_instance_for_default_object_new, alloc_object,
     alloc_object_zeroed, alloc_string, alloc_tuple, apply_class_slots_layout, attr_lookup_ptr,
@@ -2159,6 +2160,67 @@ pub(crate) unsafe fn call_function_obj_via_positional_bind(
     }
 }
 
+/// Route a call on a `TYPE_ID_FOREIGN` wrapper through the wrapped C object's
+/// own `tp_call`. Materializes the call builder's positional args into a Molt
+/// tuple and its kwargs into a Molt dict, then hands them to the ABI bridge
+/// (which builds a C-layout args tuple the callee can read). Returns the call
+/// result as an owned Molt handle, or the error sentinel with an exception set.
+///
+/// # Safety
+/// `call_ptr` must be a live `TYPE_ID_FOREIGN` object; `builder_ptr` may be null
+/// (no-arg call) or a live call builder.
+unsafe fn call_foreign_with_builder(
+    _py: &PyToken<'_>,
+    call_ptr: *mut u8,
+    builder_ptr: *mut u8,
+) -> u64 {
+    let c_ptr = unsafe { crate::object::foreign::foreign_ptr_from_obj(call_ptr) };
+    let mut args_bits = 0u64;
+    let mut kwargs_bits = 0u64;
+    if !builder_ptr.is_null() {
+        let args_ptr = match unsafe { require_callargs_ptr(_py, builder_ptr) } {
+            Ok(ptr) => ptr,
+            Err(err) => return err,
+        };
+        let pos = unsafe { (*args_ptr).pos.clone() };
+        let tuple_ptr = crate::object::builders::alloc_tuple_with_capacity(_py, &pos, pos.len());
+        if tuple_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        args_bits = MoltObject::from_ptr(tuple_ptr).bits();
+        let (kw_names, kw_values) =
+            unsafe { ((*args_ptr).kw_names.clone(), (*args_ptr).kw_values.clone()) };
+        if !kw_names.is_empty() {
+            let mut pairs: Vec<u64> = Vec::with_capacity(kw_names.len() * 2);
+            for (k, v) in kw_names.iter().copied().zip(kw_values.iter().copied()) {
+                pairs.push(k);
+                pairs.push(v);
+            }
+            let dict_ptr = crate::object::builders::alloc_dict_with_pairs(_py, &pairs);
+            if dict_ptr.is_null() {
+                dec_ref_bits(_py, args_bits);
+                return MoltObject::none().bits();
+            }
+            kwargs_bits = MoltObject::from_ptr(dict_ptr).bits();
+        }
+    }
+    let result =
+        unsafe { molt_cpython_abi::bridge::molt_foreign_call(c_ptr, args_bits, kwargs_bits) };
+    if args_bits != 0 {
+        dec_ref_bits(_py, args_bits);
+    }
+    if kwargs_bits != 0 {
+        dec_ref_bits(_py, kwargs_bits);
+    }
+    if result == 0 {
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        return raise_exception::<_>(_py, "TypeError", "foreign object call failed");
+    }
+    result
+}
+
 #[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `builder_bits` is valid and points to a list builder.
@@ -2315,6 +2377,12 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                     }
                     builder_guard.release();
                     return molt_call_bind(call_attr_bits, builder_bits);
+                }
+                TYPE_ID_FOREIGN => {
+                    // Foreign (C-extension) callable: route through the wrapped
+                    // object's own `tp_call` via the ABI bridge. The builder
+                    // guard drops the builder at scope exit (we copy its args).
+                    return call_foreign_with_builder(_py, call_ptr, builder_ptr);
                 }
                 _ => return raise_not_callable(_py, call_obj),
             }

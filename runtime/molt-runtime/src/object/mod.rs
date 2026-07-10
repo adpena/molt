@@ -31,6 +31,7 @@ pub(crate) mod backing;
 pub(crate) mod buffer2d;
 pub(crate) mod builders;
 pub(crate) mod cold_header;
+pub(crate) mod foreign;
 pub mod float_repr;
 pub(crate) mod gc;
 #[allow(dead_code)]
@@ -96,8 +97,9 @@ use crate::{
     TYPE_ID_BUFFER2D, TYPE_ID_BYTEARRAY, TYPE_ID_CALL_ITER, TYPE_ID_CALLARGS, TYPE_ID_CLASSMETHOD,
     TYPE_ID_CODE, TYPE_ID_CONTEXT_MANAGER, TYPE_ID_DATACLASS, TYPE_ID_DICT,
     TYPE_ID_DICT_ITEMS_VIEW, TYPE_ID_DICT_KEYS_VIEW, TYPE_ID_DICT_VALUES_VIEW, TYPE_ID_ENUMERATE,
-    TYPE_ID_EXCEPTION, TYPE_ID_FILE_HANDLE, TYPE_ID_FILTER, TYPE_ID_FROZENSET, TYPE_ID_FUNCTION,
-    TYPE_ID_GENERATOR, TYPE_ID_GENERIC_ALIAS, TYPE_ID_GLOB_ITER, TYPE_ID_ITER, TYPE_ID_LIST,
+    TYPE_ID_EXCEPTION, TYPE_ID_FILE_HANDLE, TYPE_ID_FILTER, TYPE_ID_FOREIGN, TYPE_ID_FROZENSET,
+    TYPE_ID_FUNCTION, TYPE_ID_GENERATOR, TYPE_ID_GENERIC_ALIAS, TYPE_ID_GLOB_ITER, TYPE_ID_ITER,
+    TYPE_ID_LIST,
     TYPE_ID_LIST_BUILDER, TYPE_ID_MAP, TYPE_ID_MEMORYVIEW, TYPE_ID_MODULE, TYPE_ID_NATIVE_HANDLE,
     TYPE_ID_OBJECT, TYPE_ID_PROPERTY, TYPE_ID_REVERSED, TYPE_ID_SET, TYPE_ID_SLICE,
     TYPE_ID_STATICMETHOD, TYPE_ID_STRING, TYPE_ID_TRACEBACK_PAYLOAD, TYPE_ID_TUPLE, TYPE_ID_UNION,
@@ -2517,6 +2519,9 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                 }
                 TYPE_ID_NATIVE_HANDLE => {
                     native_handle::native_handle_drop(ptr);
+                }
+                TYPE_ID_FOREIGN => {
+                    foreign::foreign_drop(ptr);
                 }
                 TYPE_ID_EXCEPTION => {
                     let exc_kind_bits = exception_kind_bits(ptr);

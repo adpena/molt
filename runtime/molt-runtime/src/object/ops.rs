@@ -2247,6 +2247,20 @@ pub(crate) fn type_name(_py: &PyToken<'_>, obj: MoltObject) -> Cow<'static, str>
                 TYPE_ID_MAP => Cow::Borrowed("map"),
                 TYPE_ID_FILTER => Cow::Borrowed("filter"),
                 TYPE_ID_NATIVE_HANDLE => Cow::Borrowed("native_handle"),
+                crate::TYPE_ID_FOREIGN => {
+                    // Honest type name: the wrapped C object's `tp_name`.
+                    let c_ptr = crate::object::foreign::foreign_ptr_from_obj(ptr);
+                    let name_ptr = molt_cpython_abi::bridge::molt_foreign_type_name(c_ptr);
+                    if name_ptr.is_null() {
+                        Cow::Borrowed("foreign_object")
+                    } else {
+                        Cow::Owned(
+                            std::ffi::CStr::from_ptr(name_ptr)
+                                .to_string_lossy()
+                                .into_owned(),
+                        )
+                    }
+                }
                 TYPE_ID_CLASSMETHOD => Cow::Borrowed("classmethod"),
                 TYPE_ID_STATICMETHOD => Cow::Borrowed("staticmethod"),
                 TYPE_ID_PROPERTY => Cow::Borrowed("property"),

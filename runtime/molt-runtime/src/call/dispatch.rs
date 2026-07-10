@@ -148,6 +148,7 @@ pub(crate) unsafe fn call_callable0(_py: &PyToken<'_>, call_bits: u64) -> u64 {
             }
             TYPE_ID_BOUND_METHOD => call_type_via_bind(_py, call_bits, &[]),
             TYPE_ID_TYPE => call_type_via_bind(_py, call_bits, &[]),
+            crate::TYPE_ID_FOREIGN => call_type_via_bind(_py, call_bits, &[]),
             TYPE_ID_GENERIC_ALIAS => call_generic_alias_via_bind(_py, call_ptr, &[]),
             TYPE_ID_OBJECT | TYPE_ID_DATACLASS => {
                 let Some(call_attr_bits) = lookup_call_attr(_py, call_ptr) else {
@@ -179,6 +180,7 @@ pub(crate) unsafe fn call_callable1(_py: &PyToken<'_>, call_bits: u64, arg0_bits
             }
             TYPE_ID_BOUND_METHOD => call_type_via_bind(_py, call_bits, &[arg0_bits]),
             TYPE_ID_TYPE => call_type_via_bind(_py, call_bits, &[arg0_bits]),
+            crate::TYPE_ID_FOREIGN => call_type_via_bind(_py, call_bits, &[arg0_bits]),
             TYPE_ID_GENERIC_ALIAS => call_generic_alias_via_bind(_py, call_ptr, &[arg0_bits]),
             TYPE_ID_OBJECT | TYPE_ID_DATACLASS => {
                 let Some(call_attr_bits) = lookup_call_attr(_py, call_ptr) else {
@@ -245,6 +247,9 @@ pub(crate) unsafe fn call_callable2(
             }
             TYPE_ID_BOUND_METHOD => call_type_via_bind(_py, call_bits, &[arg0_bits, arg1_bits]),
             TYPE_ID_TYPE => call_type_via_bind(_py, call_bits, &[arg0_bits, arg1_bits]),
+            crate::TYPE_ID_FOREIGN => {
+                call_type_via_bind(_py, call_bits, &[arg0_bits, arg1_bits])
+            }
             TYPE_ID_GENERIC_ALIAS => {
                 call_generic_alias_via_bind(_py, call_ptr, &[arg0_bits, arg1_bits])
             }
@@ -293,6 +298,9 @@ pub(crate) unsafe fn call_callable3(
                 call_type_via_bind(_py, call_bits, &[arg0_bits, arg1_bits, arg2_bits])
             }
             TYPE_ID_TYPE => call_type_via_bind(_py, call_bits, &[arg0_bits, arg1_bits, arg2_bits]),
+            crate::TYPE_ID_FOREIGN => {
+                call_type_via_bind(_py, call_bits, &[arg0_bits, arg1_bits, arg2_bits])
+            }
             TYPE_ID_GENERIC_ALIAS => {
                 call_generic_alias_via_bind(_py, call_ptr, &[arg0_bits, arg1_bits, arg2_bits])
             }

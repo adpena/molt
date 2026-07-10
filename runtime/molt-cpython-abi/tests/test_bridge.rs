@@ -266,8 +266,14 @@ fn test_tag_to_type_module() {
 fn test_tag_to_type_other_falls_back() {
     init();
     let tp = unsafe { molt_cpython_abi::bridge::tag_to_type(MoltTypeTag::Other) };
-    // Falls back to PyUnicode_Type
-    assert!(std::ptr::eq(tp, &raw mut PyUnicode_Type));
+    // `Other` maps to `PyBaseObject_Type` ("object"), the honest neutral: it
+    // must NOT masquerade as `str` (`PyUnicode_Type`), which made a Molt
+    // function proxy fail `PyObject_Call` with the lying "'str' object is not
+    // callable" (numpy `_multiarray_umath` init). See the tag-table push! for
+    // `MoltTypeTag::Other` and the `other_tag_maps_to_base_object_not_str`
+    // unit test in `bridge.rs`.
+    assert!(std::ptr::eq(tp, &raw mut PyBaseObject_Type));
+    assert!(!std::ptr::eq(tp, &raw mut PyUnicode_Type));
 }
 
 // ---------------------------------------------------------------------------

@@ -366,8 +366,16 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     set_add: fake_set_add,
     set_discard: fake_set_discard,
     object_dir: fake_object_dir,
+    object_call: fake_object_call,
+    foreign_new: fake_foreign_new,
 };
 
+unsafe extern "C" fn fake_object_call(_callable: u64, _args: u64, _kwargs: u64) -> u64 {
+    0
+}
+unsafe extern "C" fn fake_foreign_new(_c_ptr: usize) -> u64 {
+    0
+}
 unsafe extern "C" fn fake_number_binary_op(_op: u32, _a: u64, _b: u64) -> u64 {
     0
 }
