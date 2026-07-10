@@ -1653,8 +1653,22 @@ pub unsafe extern "C" fn PyObject_TypeCheck(op: *mut PyObject, tp: *mut PyTypeOb
     if op.is_null() || tp.is_null() {
         return 0;
     }
+    // CPython's `PyObject_TypeCheck` (Include/object.h) is
+    //   `Py_IS_TYPE(ob, tp) || PyType_IsSubtype(Py_TYPE(ob), tp)`
+    // — an EXACT-type match OR a subtype relationship. Molt previously answered
+    // only the exact match, so any C extension that type-checks an instance
+    // against a BASE type failed closed. numpy's `PyArray_DescrCheck(res)` is
+    // `PyObject_TypeCheck(res, &PyArrayDescr_Type)`: a DType descriptor's
+    // `Py_TYPE` is its concrete DType class (e.g. `StringDType`, whose
+    // `tp_base == &PyArrayDescr_Type`), never `PyArrayDescr_Type` itself, so the
+    // exact-only check rejected every genuine descriptor and stranded
+    // `use_new_as_default` (dtypemeta.c) with "did not return a dtype instance".
+    // Walk the subtype chain exactly as CPython does.
     let actual = unsafe { (*op).ob_type };
-    std::ptr::eq(actual, tp) as c_int
+    if std::ptr::eq(actual, tp) {
+        return 1;
+    }
+    unsafe { PyType_IsSubtype(actual, tp) }
 }
 
 #[unsafe(no_mangle)]
