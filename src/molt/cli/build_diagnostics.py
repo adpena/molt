@@ -16,6 +16,7 @@ from molt.cli.models import (
     _FrontendTimingRecorderConfig,
 )
 from molt.cli.runtime_wasm_cache import _runtime_wasm_cache_diagnostics_snapshot
+from molt.cli.runtime_wasm_build_timings import _runtime_wasm_build_timings_snapshot
 from molt.metric_ratios import budget_utilization
 
 
@@ -122,6 +123,7 @@ def _emit_build_diagnostics(
     frontend_modules_top = diagnostics.get("frontend_module_timings_top", [])
     allocations = diagnostics.get("allocations", {})
     runtime_wasm_cache = diagnostics.get("runtime_wasm_cache", {})
+    runtime_wasm_build = diagnostics.get("runtime_wasm_build", {})
     print("Build diagnostics:", file=sys.stderr)
     if isinstance(total_sec, (int, float)):
         print(f"- total_sec: {total_sec:.6f}", file=sys.stderr)
@@ -201,6 +203,32 @@ def _emit_build_diagnostics(
                 f"- runtime_wasm_cache.last_publish_failure: {last_publish_failure}",
                 file=sys.stderr,
             )
+    if isinstance(runtime_wasm_build, dict) and runtime_wasm_build:
+        cargo_builds = runtime_wasm_build.get("cargo_compile_builds")
+        cargo_reuses = runtime_wasm_build.get("cargo_compile_reuses")
+        build_wall = runtime_wasm_build.get("cargo_compile_build_wall_s")
+        if (
+            isinstance(cargo_builds, int)
+            and isinstance(cargo_reuses, int)
+            and isinstance(build_wall, (int, float))
+        ):
+            print(
+                "- runtime_wasm_build: "
+                f"cargo_compiles={cargo_builds} (reused={cargo_reuses}) "
+                f"cargo_compile_wall_s={float(build_wall):.6f}",
+                file=sys.stderr,
+            )
+        phases = runtime_wasm_build.get("phases")
+        if not summary_only and isinstance(phases, list):
+            for item in phases:
+                if not isinstance(item, dict):
+                    continue
+                print(
+                    "- runtime_wasm_build.phase: "
+                    f"{item.get('phase')} kind={item.get('kind')} "
+                    f"mode={item.get('mode')} wall_s={float(item.get('wall_s', 0.0)):.6f}",
+                    file=sys.stderr,
+                )
     if isinstance(frontend_modules_top, list):
         limit = 20 if full_details else 10
         for idx, item in enumerate(frontend_modules_top[:limit], start=1):
@@ -1049,6 +1077,9 @@ def _build_build_diagnostics_payload(
     runtime_wasm_cache = _runtime_wasm_cache_diagnostics_snapshot()
     if runtime_wasm_cache is not None:
         payload["runtime_wasm_cache"] = runtime_wasm_cache
+    runtime_wasm_build = _runtime_wasm_build_timings_snapshot()
+    if runtime_wasm_build is not None:
+        payload["runtime_wasm_build"] = runtime_wasm_build
     midend_payload = _build_midend_diagnostics_payload(
         requested_profile=cast(BuildProfile, diagnostics_context.profile),
         policy_outcomes_by_function=dict(

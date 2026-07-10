@@ -81,6 +81,10 @@ from molt.cli.runtime_wasm_cache import (
     _hydrate_runtime_wasm_from_shared_cache,
     _publish_runtime_wasm_to_shared_cache,
 )
+from molt.cli.runtime_wasm_build_timings import (
+    _record_runtime_wasm_build_phase,
+    _runtime_wasm_build_timings_snapshot,
+)
 from molt.cli.runtime_wasm_validation import (
     _is_valid_runtime_wasm_artifact,
     _is_valid_shared_runtime_wasm_artifact,
@@ -811,6 +815,7 @@ def _prebuild_runtime_wasm(
                 print(f"Runtime wasm {label} prebuild failed.", file=sys.stderr)
             return 1
         artifacts[label] = os.fspath(runtime_path)
+    _emit_runtime_wasm_build_timings(json_output=json_output)
     if json_output:
         print(
             json.dumps(
@@ -822,6 +827,34 @@ def _prebuild_runtime_wasm(
         for label, path in artifacts.items():
             print(f"Runtime wasm {label}: {path}", file=sys.stderr)
     return 0
+
+
+def _emit_runtime_wasm_build_timings(*, json_output: bool) -> None:
+    """Emit the per-phase runtime-wasm build timings under MOLT_BUILD_DIAGNOSTICS.
+
+    Extends the task #21 diagnostics surface to the standalone
+    ``internal-runtime-wasm-build`` entry (which does not assemble the full
+    build-diagnostics payload).  ``MOLT_BUILD_DIAGNOSTICS`` gates a compact,
+    machine-readable JSON line on stderr and an optional JSON file at
+    ``MOLT_BUILD_DIAGNOSTICS_FILE`` so the ``--kind both`` single-compile
+    acceptance is a measured number (doctrine 74 law 4).
+    """
+    if os.environ.get("MOLT_BUILD_DIAGNOSTICS", "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return
+    snapshot = _runtime_wasm_build_timings_snapshot()
+    if snapshot is None:
+        return
+    line = json.dumps({"runtime_wasm_build": snapshot}, sort_keys=True)
+    print(f"MOLT_BUILD_DIAGNOSTICS runtime_wasm_build: {line}", file=sys.stderr)
+    out_spec = os.environ.get("MOLT_BUILD_DIAGNOSTICS_FILE", "").strip()
+    if out_spec:
+        with contextlib.suppress(OSError):
+            _atomic_write_text(Path(out_spec), line + "\n")
 
 
 def _configure_wasm_cc_env(env: dict[str, str]) -> None:
@@ -1850,6 +1883,13 @@ def _ensure_runtime_wasm(
             )
         ):
             assert fingerprint is not None
+            _record_runtime_wasm_build_phase(
+                "cargo_compile",
+                0.0,
+                kind="shared",
+                mode="target_reuse",
+                detail="cdylib reused from cargo target dir",
+            )
             target_runtime_wasm_fingerprint_path = target_runtime_wasm_current[1]
             runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
             _atomic_copy_file(target_runtime_wasm, runtime_wasm)
@@ -1897,6 +1937,14 @@ def _ensure_runtime_wasm(
             target_runtime_staticlib, target_runtime_staticlib_fingerprint_path = (
                 target_runtime_staticlib_current
             )
+            _record_runtime_wasm_build_phase(
+                "cargo_compile",
+                0.0,
+                kind="reloc",
+                mode="target_reuse",
+                detail="staticlib reused from cargo target dir",
+            )
+            _reloc_link_started = time.perf_counter()
             if not _link_runtime_staticlib_to_reloc_wasm(
                 staticlib_path=target_runtime_staticlib,
                 output_path=runtime_wasm,
@@ -1905,6 +1953,12 @@ def _ensure_runtime_wasm(
                 export_link_args=runtime_exports,
             ):
                 return False
+            _record_runtime_wasm_build_phase(
+                "reloc_link",
+                time.perf_counter() - _reloc_link_started,
+                kind="reloc",
+                mode="link",
+            )
             try:
                 _publish_runtime_integrity_pin()
                 target_runtime_staticlib_fingerprint_path.parent.mkdir(
@@ -1979,6 +2033,13 @@ def _ensure_runtime_wasm(
             )
         ):
             if _finalize_reused_runtime_wasm():
+                _record_runtime_wasm_build_phase(
+                    "cargo_compile",
+                    0.0,
+                    kind="reloc" if reloc else "shared",
+                    mode="shared_cache",
+                    detail="hydrated from session-independent shared cache",
+                )
                 return True
 
         needs_rebuild = not _runtime_artifact_fingerprint_matches(
@@ -2098,6 +2159,7 @@ def _ensure_runtime_wasm(
             cmd.extend(["--", "--crate-type=staticlib"])
         else:
             cmd.extend(["--", "--crate-type=cdylib"])
+        _cargo_compile_started = time.perf_counter()
         try:
             build, src = _run_runtime_wasm_cargo_build(
                 cmd=cmd,
@@ -2125,6 +2187,12 @@ def _ensure_runtime_wasm(
                 msg = f"{msg}: {detail}"
             print(msg, file=sys.stderr)
             return False
+        _record_runtime_wasm_build_phase(
+            "cargo_compile",
+            time.perf_counter() - _cargo_compile_started,
+            kind="reloc" if reloc else "shared",
+            mode="build",
+        )
         if reloc:
             if not src.exists():
                 if not json_output:
@@ -2133,6 +2201,7 @@ def _ensure_runtime_wasm(
                         file=sys.stderr,
                     )
                 return False
+            _reloc_link_started = time.perf_counter()
             if not _link_runtime_staticlib_to_reloc_wasm(
                 staticlib_path=src,
                 output_path=runtime_wasm,
@@ -2141,6 +2210,12 @@ def _ensure_runtime_wasm(
                 export_link_args=runtime_exports,
             ):
                 return False
+            _record_runtime_wasm_build_phase(
+                "reloc_link",
+                time.perf_counter() - _reloc_link_started,
+                kind="reloc",
+                mode="link",
+            )
             try:
                 _publish_runtime_integrity_pin()
             except OSError:
