@@ -1155,41 +1155,30 @@ def _split_app_native_link_args(native_inputs: Sequence[Path]) -> list[str]:
     ``libc.a`` but — unlike the combined ``output_linked.wasm`` — does NOT link
     the reloc runtime object, so numpy's ``NumPyOS_ascii_formatl`` ->
     ``snprintf("%Lg")`` binds ``libc.a``'s ``long_double_not_supported`` stub
-    (raw ``unreachable`` trap at ``_multiarray_umath`` import). Mirror the reloc
-    runtime link: whole-archive ``libc-printscan-long-double.a`` ahead of
-    ``libc.a`` so its real ``vfprintf``/``__floatscan``/``strtold`` override the
-    stub objects (they stay lazy once defined), and append
-    ``libclang_rt.builtins-wasm32.a`` for the binary128 soft-float
-    (``__addtf3``/``__multf3``/…). Scoped to the split app ONLY: the combined
-    link already carries these from the reloc runtime, so whole-archiving there
-    duplicate-symbols (``vfprintf``/``__floatscan``/…). Non-numpy builds (no
-    ``libc.a``) get the plain passthrough.
+    (raw ``unreachable`` trap at ``_multiarray_umath`` import).
+
+    Applies the SINGLE long-double link authority
+    (:func:`wasm_toolchain.resolve_long_double_link_policy` +
+    :func:`wasm_toolchain.long_double_whole_archive_link_argv`) — the SAME policy
+    the reloc runtime and deploy cdylib links apply: whole-archive
+    ``libc-printscan-long-double.a`` ahead of ``libc.a`` so its real
+    ``vfprintf``/``__floatscan``/``strtold`` override the stub objects (they stay
+    lazy once defined), + the binary128 soft-float builtins. Scoped to the split
+    app ONLY: the combined link already carries these from the reloc runtime, so
+    whole-archiving there duplicate-symbols. Non-numpy builds (no ``libc.a``) get
+    the plain passthrough.
     """
     inputs = list(native_inputs)
     if not any(path.name == "libc.a" for path in inputs):
         return [str(path) for path in inputs]
-    longdouble = wasm_toolchain.wasm_wasi_printscan_long_double_archive()
-    builtins = wasm_toolchain.wasm_clang_rt_builtins_archive()
-    if longdouble is None:
-        # FAIL LOUD (no silent degrade): a numpy-tier split app without the
-        # long-double formatters relinks the abort() stub and traps at import.
-        raise ValueError(
-            "split app static link pulls wasi-libc libc.a (numpy/scipy tier) but "
-            "libc-printscan-long-double.a is not resolvable; the %L printf path "
-            "would abort() (unreachable) at import. Provision the archive (ships "
-            "in wasi-sysroot-33.0+m; also vendored at vendor/wasm-builtins)."
-        )
-    args: list[str] = [
-        "--whole-archive",
-        str(longdouble.resolve(strict=False)),
-        "--no-whole-archive",
-        *(str(path) for path in inputs),
-    ]
-    if builtins is not None and not any(
-        path.name == builtins.name for path in inputs
-    ):
-        args.append(str(builtins.resolve(strict=False)))
-    return args
+    # libc.a present => numpy/scipy static tier: a missing formatter archive is a
+    # HARD ERROR (relinking the abort stub would trap at import).
+    policy = wasm_toolchain.resolve_long_double_link_policy(required=True)
+    if policy.error is not None:
+        raise ValueError(policy.error)
+    return wasm_toolchain.long_double_whole_archive_link_argv(
+        policy, whole_archive=[], trailing=[str(path) for path in inputs]
+    )
 
 
 def _read_const_i32_init_expr(data: bytes, offset: int) -> tuple[int, int]:
