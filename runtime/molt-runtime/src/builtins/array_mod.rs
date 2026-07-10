@@ -406,12 +406,14 @@ impl ArrayHandle {
 
 type ArrayCell = Mutex<ArrayHandle>;
 
-// clippy(dead_code): the array buffer-export lease mechanism (export refcount via
-// `ArrayCell::exports`, released by this lease's Drop) is landed but not yet wired
-// into a live export path — `resize_blocked` reads the count, yet nothing outside
-// this cluster increments it. Retained (recent buffer-custody WIP, c798e48331)
-// rather than deleted; a follow-up task tracks wiring or removing it.
-#[allow(dead_code)]
+// The array buffer-export lease. While a buffer is exported from an array (via
+// the C buffer protocol — `molt_buffer_acquire` -> `array_buffer_owner_bits`),
+// exactly one live `ArrayBufferLease` holds an `ArrayCell::exports` increment.
+// The lease is wrapped in a refcounted native-handle object stored as the
+// exported view's owner; when the view is released and that handle's refcount
+// reaches zero, this `Drop` decrements `exports`. So `resize_blocked` reports
+// true for precisely the window a buffer is live-exported (use-after-free
+// guard: an array cannot be reallocated while a live view points into it).
 struct ArrayBufferLease {
     cell: Arc<ArrayCell>,
 }
@@ -430,7 +432,6 @@ fn array_arc_from_bits(bits: u64) -> Option<Arc<ArrayCell>> {
     native_handle_arc::<ArrayCell>(bits)
 }
 
-#[allow(dead_code)] // array buffer-export lease cluster (see ArrayBufferLease)
 fn array_lease_arc_from_bits(bits: u64) -> Option<Arc<ArrayBufferLease>> {
     native_handle_arc::<ArrayBufferLease>(bits)
 }
@@ -472,7 +473,6 @@ fn ensure_array_resizable(_py: &PyToken<'_>, handle: &ArrayHandle) -> Result<(),
     }
 }
 
-#[allow(dead_code)] // array buffer-export lease cluster (see ArrayBufferLease)
 fn array_cell_from_export_source(_py: &PyToken<'_>, bits: u64) -> Option<Arc<ArrayCell>> {
     if let Some(cell) = array_arc_from_bits(bits) {
         return Some(cell);
@@ -492,7 +492,6 @@ fn array_cell_from_export_source(_py: &PyToken<'_>, bits: u64) -> Option<Arc<Arr
     }
 }
 
-#[allow(dead_code)] // array buffer-export lease cluster (see ArrayBufferLease)
 unsafe fn object_array_handle_bits(
     _py: &PyToken<'_>,
     obj_ptr: *mut u8,
@@ -527,7 +526,6 @@ unsafe fn object_array_handle_bits(
     }
 }
 
-#[allow(dead_code)] // array buffer-export lease cluster (see ArrayBufferLease)
 pub(crate) fn array_storage_from_object_bits(
     _py: &PyToken<'_>,
     bits: u64,
@@ -548,7 +546,7 @@ pub(crate) fn array_storage_from_object_bits(
         return Err(TypedStridedStorageError::InvalidDescriptor);
     }
     let format_bits = MoltObject::from_ptr(format_ptr).bits();
-    TypedStridedStorage::one_dim(
+    let storage = TypedStridedStorage::one_dim(
         data,
         false,
         guard.len(),
@@ -557,11 +555,18 @@ pub(crate) fn array_storage_from_object_bits(
         0,
         bits,
         format_bits,
-    )
-    .ok_or(TypedStridedStorageError::InvalidDescriptor)
+    );
+    // `one_dim`/`new` copies the typecode into the descriptor's inline `format`
+    // bytes during construction, so the transient format-string object is no
+    // longer needed. Drop it and clear `format_bits`: a `MoltBufferView` carries
+    // the inline bytes (not a string handle), and nothing downstream owns this
+    // reference — leaving it set would leak the string on every buffer export.
+    dec_ref_bits(_py, format_bits);
+    let mut storage = storage.ok_or(TypedStridedStorageError::InvalidDescriptor)?;
+    storage.format_bits = 0;
+    Ok(storage)
 }
 
-#[allow(dead_code)] // array buffer-export lease cluster (see ArrayBufferLease)
 pub(crate) fn array_buffer_owner_bits(_py: &PyToken<'_>, bits: u64) -> Result<Option<u64>, ()> {
     if array_lease_arc_from_bits(bits).is_some() {
         crate::inc_ref_bits(_py, bits);

@@ -605,7 +605,15 @@ pub unsafe extern "C" fn molt_buffer_export(obj_bits: u64, out_ptr: *mut MoltBuf
                     let _ = raise_released_memoryview::<u64>(_py);
                     return 1;
                 }
-                Err(_) => return 1,
+                // `array.array` exports its typed contiguous storage as a 1-D
+                // buffer through the same typed-strided descriptor authority.
+                Err(_) => {
+                    match crate::builtins::array_mod::array_storage_from_object_bits(_py, obj_bits)
+                    {
+                        Ok(storage) => storage,
+                        Err(_) => return 1,
+                    }
+                }
             };
             let Some(export) = MoltBufferView::from_typed_storage(&storage) else {
                 return 1;
