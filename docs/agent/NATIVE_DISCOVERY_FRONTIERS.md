@@ -160,3 +160,60 @@ discovery is now a native sweep.
 
 Host: `tertiary` (Tailscale `100.65.24.39`), macOS 26.5 arm64, rustc 1.96.1,
 numpy `1.26.4` cp312 wheel. Worktree `~/molt-disc` off `origin/main`.
+
+---
+
+## Progress update — 2026-07-10 (lane DISCOVERY-FRONTIER-FIXES)
+
+Driven ON this engine (tertiary macOS arm64). Each fix re-verified by re-running
+`tools/native_numpy_discovery.sh _multiarray_umath` and reading the frontier +
+the static symbol-gap count.
+
+### FIXED — B.1 datetime CAPI capsule  (landed `09c8d2337`)
+`molt_cpython_abi_init` now registers the `datetime.datetime_CAPI` capsule with
+the exact CPython 3.12 `PyDateTime_CAPI` layout (5 type objects + UTC singleton
++ 9 constructors; `Include/datetime.h` field order/count). numpy's
+`PyDateTime_IMPORT` → `PyCapsule_Import("datetime.datetime_CAPI")` now RESOLVES.
+**The engine frontier ADVANCED past B.1** to:
+
+```
+[MOLT_TRACE_CAPI] call PyCapsule_Import(datetime.datetime_CAPI)      <- resolves
+[MOLT_TRACE_CAPI] call PyImport_ImportModule(numpy.exceptions)       <- NEW frontier
+===MOLT_DISCOVERY_EXC: "import of 'numpy.exceptions' failed (runtime import error pending)"
+```
+
+### FIXED — A.4/A.2 symbol-gap batch  (landed `61093cb4a` + `e30c35b81`)
+Real ABI impls (harness stubs deleted): `PyObject_Malloc/Calloc/Realloc`,
+`PyThreadState_GetDict` (real thread-local dict), `PyOS_setsig` (real
+`signal(2)`), `_Py_ascii_whitespace[128]`, `_Py_Dealloc` (real finalizer),
+`_PyErr_BadInternalCall(file,line)`, `_PyDict_GetItemStringWithError`. numpy
+links the PRIVATE `_PyObject_New`/`_PyObject_GC_New`/`_Py_HashDouble`/
+`_PyUnicode_IsWhitespace` (the ABI already exports these), so those public-name
+harness stubs were dead and are removed too. Re-verified: symbol **GAP=5**
+(only the `_SizeT` variadics numpy doesn't reference at init), the `_Py_Dealloc`
+stub no longer fires, frontier unchanged — NO REGRESSION.
+
+### CURRENT frontier — `PyImport_ImportModule("numpy.exceptions")` fails
+This is **NOT an ABI symbol gap** — it is numpy importing its own pure-Python
+sibling module, which is not in the native discovery harness's import closure
+(only the `.so` is dlopen'd). In the real wasm witness numpy is a full package,
+so this resolves through package/import symbol-closure custody — the E1
+numpy-closure lane's concern, not `molt-cpython-abi`.
+
+### DEFERRED (honest, not fakes — see CLAIMS `DISCOVERY-FRONTIER-FIXES`)
+* **A.1 singleton aliases** (`_Py_NoneStruct`/`_Py_TrueStruct`/`_Py_FalseStruct`/
+  `_Py_NotImplementedStruct`/`_Py_EllipsisObject`): need a same-storage GLOBAL
+  alias to molt's `Py_None`/etc. Verified on this host that an in-crate
+  `core::arch::global_asm` `.set`/`=` alias emits a **LOCAL** symbol on Mach-O
+  LLVM (`.globl` does not promote it → it can't satisfy numpy's
+  `dynamic_lookup`). The correct fix is a linker `-alias`/`--defsym` at the
+  FINAL native link (a library crate cannot emit link-args) — belongs at molt's
+  native-artifact link layer, exactly as this harness's `build.rs` already does.
+* **`PyStructSequence_New`/`InitType2`**: numpy does not call them on the path
+  to the `numpy.exceptions` frontier (the loud stub never fires during
+  `_multiarray_umath` init). molt's member machinery supports the named-field
+  half faithfully, but the tuple-subclass INDEX semantics for a C-layout
+  struct-sequence depend on molt's foreign-slot item dispatch (actively evolving
+  in a separate lane) and are unverifiable until numpy reaches structseq — left
+  as the loud stub rather than shipped as an unverifiable, possibly-masking
+  partial (M05).
