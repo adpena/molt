@@ -371,10 +371,16 @@ def _payload_source_matches(
     expected_hash = payload.get("source_sha256")
     if not isinstance(expected_hash, str) or not expected_hash:
         return False
-    if (
-        payload.get("size") != path_stat.st_size
-        or payload.get("mtime_ns") != path_stat.st_mtime_ns
-    ):
+    # ``size`` is content-correlated (identical bytes => identical size), so a
+    # size mismatch is a sound fast reject that avoids hashing. ``mtime_ns`` is
+    # deliberately NOT gated: it is content-invariant metadata that a fresh git
+    # checkout / file copy / pip reinstall / OneDrive sync resets even when the
+    # bytes are unchanged, so gating on it forced a cold cross-session/worktree
+    # re-lower of byte-identical source (build-dedup doctrine 74 law 1:
+    # content-addressed, not metadata-addressed). The source-content sha256 below
+    # is the sole correctness authority and already defends against the
+    # coarse-mtime same-size collision the metadata gate cannot catch anyway.
+    if payload.get("size") != path_stat.st_size:
         return False
     return _source_content_sha256(path, path_stat) == expected_hash
 
