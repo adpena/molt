@@ -105,12 +105,18 @@ pub unsafe fn load_cpython_extension(path: &Path, name: &str) -> Result<u64, Loa
 
     // Call the init function. This runs the extension's module setup code,
     // which calls back into our PyModule_Create2, PyType_Ready, etc.
-    let module_ptr = unsafe { init_fn() };
-    if module_ptr.is_null() {
+    let raw_init = unsafe { init_fn() };
+    if raw_init.is_null() {
         return Err(LoadError::InitReturnedNull {
             name: name.to_owned(),
         });
     }
+
+    // PEP 489 multi-phase init: `PyInit_<name>()` may return a `PyModuleDef*`
+    // (produced by `PyModuleDef_Init`) instead of a fully-created module. Drive
+    // the create/exec slots (`PyModule_FromDefAndSpec`) if so; single-phase C
+    // extensions return the module directly and pass through unchanged.
+    let module_ptr = unsafe { drive_multiphase_if_needed(raw_init, name, path)? };
 
     // Convert the returned `*mut PyObject` to a Molt handle.
     //
@@ -143,6 +149,118 @@ pub unsafe fn load_cpython_extension(path: &Path, name: &str) -> Result<u64, Loa
     LOADED_EXTENSION_LIBRARIES.lock().push(lib);
 
     Ok(molt_bits)
+}
+
+/// If `raw` is a `PyModuleDef` returned by a PEP 489 multi-phase `PyInit_<name>`,
+/// drive `PyModule_FromDefAndSpec` (which executes the `Py_mod_create` and
+/// `Py_mod_exec` slots) and return the resulting module; otherwise return `raw`
+/// unchanged (single-phase init already produced the module).
+///
+/// CPython's import machinery makes exactly this distinction by the returned
+/// object's type (`ob_type == &PyModuleDef_Type`). Modern Cython extensions
+/// (e.g. scipy's `_ni_label` / `_nd_image`) use multi-phase init; hand-written
+/// single-phase C extensions (e.g. numpy's `_multiarray_umath`) do not. Without
+/// this branch a multi-phase `PyInit` return is a bare `PyModuleDef` that no
+/// Molt handle maps to (`InitReturnedUnmappedObject`), blocking the whole
+/// multi-phase extension class.
+///
+/// # Safety
+/// `raw` must be the non-null pointer returned by an extension `PyInit_<name>()`.
+unsafe fn drive_multiphase_if_needed(
+    raw: *mut PyObject,
+    name: &str,
+    origin: &Path,
+) -> Result<*mut PyObject, LoadError> {
+    let ob_type = unsafe { (*raw).ob_type };
+    let is_moduledef =
+        !ob_type.is_null() && std::ptr::eq(ob_type, &raw mut crate::abi_types::PyModuleDef_Type);
+    if !is_moduledef {
+        return Ok(raw);
+    }
+    let def = raw.cast::<crate::abi_types::PyModuleDef>();
+    // A minimal module spec carrying `.name`: a `Py_mod_create` slot reads
+    // `spec.name`; exec-only modules ignore it. Any object exposing `name`
+    // satisfies the create-slot contract.
+    let spec = unsafe { build_min_module_spec(name, origin) };
+    let module = unsafe { crate::api::modules::PyModule_FromDefAndSpec(def, spec) };
+    if !spec.is_null() {
+        unsafe { crate::api::refcount::Py_DECREF(spec) };
+    }
+    if module.is_null() {
+        return Err(LoadError::InitReturnedNull {
+            name: name.to_owned(),
+        });
+    }
+    Ok(module)
+}
+
+/// Build a throwaway object serving as the PEP 489 module spec. It exposes the
+/// attributes a multi-phase init reads: `name` (the dotted module name),
+/// `loader` (None — Cython's `__Pyx_copy_spec_to_module` copies `spec.loader`
+/// to `__loader__` with `allow_missing = 0`, i.e. the attribute must be
+/// present), `origin` (the `.so` path — copied to `__file__`), and `parent`
+/// (empty — copied to `__package__`). This mirrors what importlib's real
+/// `ModuleSpec` supplies in a stock CPython import; without `loader` present,
+/// Cython bails during exec. Returns null on allocation failure.
+///
+/// # Safety
+/// Calls the ABI string/module/object entry points; must run after ABI init.
+unsafe fn build_min_module_spec(name: &str, origin: &Path) -> *mut PyObject {
+    let Ok(cname) = std::ffi::CString::new(name) else {
+        return std::ptr::null_mut();
+    };
+    let spec = unsafe { crate::api::modules::PyModule_New(cname.as_ptr()) };
+    if spec.is_null() {
+        return std::ptr::null_mut();
+    }
+    unsafe fn set_owned(spec: *mut PyObject, key: &std::ffi::CStr, value: *mut PyObject) {
+        if value.is_null() {
+            return;
+        }
+        let rc =
+            unsafe { crate::api::object::PyObject_SetAttrString(spec, key.as_ptr(), value) };
+        unsafe { crate::api::refcount::Py_DECREF(value) };
+        if rc != 0 {
+            unsafe { crate::api::errors::PyErr_Clear() };
+        }
+    }
+    // name -> spec.name
+    let name_obj = unsafe { crate::api::strings::PyUnicode_FromString(cname.as_ptr()) };
+    unsafe { set_owned(spec, c"name", name_obj) };
+    // loader -> spec.loader = None (required-present by Cython; None is allowed)
+    let none = &raw mut crate::abi_types::Py_None;
+    let rc = unsafe { crate::api::object::PyObject_SetAttrString(spec, c"loader".as_ptr(), none) };
+    if rc != 0 {
+        unsafe { crate::api::errors::PyErr_Clear() };
+    }
+    // origin -> spec.origin = <.so path> (copied to __file__)
+    if let Ok(corigin) = std::ffi::CString::new(origin.to_string_lossy().into_owned()) {
+        let origin_obj =
+            unsafe { crate::api::strings::PyUnicode_FromString(corigin.as_ptr()) };
+        unsafe { set_owned(spec, c"origin", origin_obj) };
+    }
+    // parent -> spec.parent = "" (copied to __package__)
+    let parent_obj = unsafe { crate::api::strings::PyUnicode_FromString(c"".as_ptr()) };
+    unsafe { set_owned(spec, c"parent", parent_obj) };
+    // submodule_search_locations -> __path__ = None (None => not a package)
+    let none = &raw mut crate::abi_types::Py_None;
+    let rc = unsafe {
+        crate::api::object::PyObject_SetAttrString(
+            spec,
+            c"submodule_search_locations".as_ptr(),
+            none,
+        )
+    };
+    if rc != 0 {
+        unsafe { crate::api::errors::PyErr_Clear() };
+    }
+    // cached -> spec.cached = None (copied to __cached__)
+    let rc =
+        unsafe { crate::api::object::PyObject_SetAttrString(spec, c"cached".as_ptr(), none) };
+    if rc != 0 {
+        unsafe { crate::api::errors::PyErr_Clear() };
+    }
+    spec
 }
 
 /// Search standard CPython extension paths for `name`.
