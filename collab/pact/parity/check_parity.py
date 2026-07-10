@@ -9,6 +9,12 @@ engine so Kernels B..7 drop in with ZERO engine changes.
 
     python check_parity.py candidate.npz reference.npz <k>_gates.json
 
+New kernels (B..7) drop in as a `<k>.py` / `make_<k>_fixture.py` / `<k>_gates.json`
+file-set with zero changes to this engine; `make_kernel_scaffold.py` in this same
+directory emits a loud, un-passable NOT-IMPLEMENTED scaffold for a kernel awaiting
+pact source (its manifest carries `status: "AWAITING_PACT_KERNEL_SOURCE"`, which is
+refused unconditionally below -- see `SCAFFOLD_STATUS`).
+
 Exit codes:
     0  every gate PASSED (strict verdict)
     1  a parity gate FAILED (precise per-array diff printed)
@@ -52,7 +58,6 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-import sys
 from typing import Any
 
 import numpy as np

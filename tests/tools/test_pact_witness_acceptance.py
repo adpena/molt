@@ -4,7 +4,61 @@ import json
 from pathlib import Path
 import subprocess
 
+import pytest
+
 import tools.pact_witness_acceptance as acceptance
+
+
+def test_pact_witness_acceptance_check_parity_uses_shared_engine_and_gates(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """`_check_parity` must invoke the ONE shared parity authority --
+    `collab/pact/parity/check_parity.py` against the declarative Kernel A
+    gate manifest -- not the superseded per-kernel inline oracle at
+    `collab/pact/pact_witness_kernel/check_parity.py`. This is the 011
+    parity-harness wiring: `tools/pact_witness_acceptance.py` must have
+    exactly ONE acceptance authority, never two disagreeing implementations."""
+    captured: dict[str, object] = {}
+
+    def fake_run(args: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> None:
+        captured["args"] = args
+        captured["cwd"] = cwd
+
+    monkeypatch.setattr(acceptance, "_run", fake_run)
+
+    candidate = tmp_path / "candidate_outputs.npz"
+    reference = tmp_path / "reference_outputs.npz"
+    candidate.write_bytes(b"candidate")
+    reference.write_bytes(b"reference")
+
+    acceptance._check_parity(candidate, reference)
+
+    args = captured["args"]
+    assert args[1:] == [
+        str(acceptance.PARITY_ENGINE),
+        str(candidate),
+        str(reference),
+        str(acceptance.KERNEL_A_GATES),
+    ]
+    assert acceptance.PARITY_ENGINE == (
+        acceptance.ROOT / "collab" / "pact" / "parity" / "check_parity.py"
+    )
+    assert acceptance.KERNEL_A_GATES == (
+        acceptance.KERNEL_ROOT / "field_solve_gates.json"
+    )
+    # Never the superseded per-kernel inline oracle (two-arg legacy call
+    # shape) -- that would be a second, divergence-prone parity authority.
+    assert str(acceptance.KERNEL_ROOT / "check_parity.py") not in args
+
+
+def test_pact_witness_acceptance_check_parity_requires_reference(tmp_path: Path) -> None:
+    candidate = tmp_path / "candidate_outputs.npz"
+    candidate.write_bytes(b"candidate")
+    missing_reference = tmp_path / "reference_outputs.npz"
+
+    with pytest.raises(SystemExit, match="missing Pact reference oracle"):
+        acceptance._check_parity(candidate, missing_reference)
 
 
 def test_pact_witness_acceptance_uses_run_scoped_attempt_dirs(
