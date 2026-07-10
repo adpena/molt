@@ -148,6 +148,80 @@ fn small_int_bits(v: i64) -> u64 {
         .unwrap_or(0)
 }
 
+/// Sign of a heap bignum beyond the ±2^64 hook envelope, via the runtime
+/// numeric authority: `v >> 128` is `-1` for negatives and `0` otherwise.
+/// `None` when the authority is unavailable (stub hooks) or errored.
+fn big_int_sign(bits: u64) -> Option<i64> {
+    let h = hooks_or_stubs();
+    let shift = small_int_bits(128);
+    if shift == 0 {
+        return None;
+    }
+    let result = unsafe {
+        (h.number_binary_op)(crate::hooks::NumberBinaryOp::Rshift as u32, bits, shift)
+    };
+    if result == 0 {
+        return None;
+    }
+    MoltObject::from_bits(result).as_int()
+}
+
+/// True when `op` resolves to a genuine Molt int (inline int, bool, or heap
+/// BigInt) — the objects `py_long_as_ssize_clamped` reads directly without an
+/// `__index__` round-trip. Zero-alloc; the slice fast path depends on it.
+pub(crate) fn is_int_like(op: *mut PyObject) -> bool {
+    if op.is_null() {
+        return false;
+    }
+    let Some(bits) = GLOBAL_BRIDGE.lock().pyobj_to_handle(op) else {
+        return false;
+    };
+    let obj = MoltObject::from_bits(bits);
+    obj.is_int()
+        || obj.is_bool()
+        || (obj.is_ptr()
+            && unsafe { (hooks_or_stubs().classify_heap)(bits) }
+                == crate::abi_types::MoltTypeTag::Int as u8)
+}
+
+/// `PyNumber_AsSsize_t(v, NULL)`-style clamped read of an *integer* object
+/// (Objects/abstract.c): an out-of-`Py_ssize_t` value CLAMPS to
+/// `PY_SSIZE_T_MAX`/`PY_SSIZE_T_MIN` by the value's sign instead of raising —
+/// the `err == NULL` contract the slice machinery relies on
+/// (`_PyEval_SliceIndex`, Python/ceval.c). Returns `None` with a pending
+/// exception when `op` is not an int or the sign of a beyond-±2^64 bignum
+/// cannot be resolved (runtime authority absent — loud, never a wrong-direction
+/// clamp).
+pub(crate) fn py_long_as_ssize_clamped(op: *mut PyObject) -> Option<isize> {
+    match py_long_value(op, false) {
+        Ok(LongValue::Signed(v)) => {
+            // On 32-bit targets (wasm32) clamp rather than truncate.
+            Some(v.clamp(isize::MIN as i64, isize::MAX as i64) as isize)
+        }
+        Ok(LongValue::Big(_)) => Some(isize::MAX),
+        Err(LongError::OutOf64) => {
+            let bits = GLOBAL_BRIDGE.lock().pyobj_to_handle(op).unwrap_or(0);
+            match (bits != 0).then(|| big_int_sign(bits)).flatten() {
+                Some(sign) if sign < 0 => Some(isize::MIN),
+                Some(_) => Some(isize::MAX),
+                None => {
+                    if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+                        set_long_overflow_msg(
+                            c"cannot clamp int beyond the Molt numeric authority (runtime hooks absent)",
+                        );
+                    }
+                    None
+                }
+            }
+        }
+        Err(LongError::NotInt) => {
+            set_long_type_error();
+            None
+        }
+        Err(LongError::Raised) => None,
+    }
+}
+
 /// Exact int→f64 conversion for a heap bignum beyond the 64-bit hook envelope,
 /// via the runtime's own numeric authority: `v / 1` (TrueDivide) is the exact
 /// CPython `nb_float`-equivalent conversion, raising the runtime's OverflowError
