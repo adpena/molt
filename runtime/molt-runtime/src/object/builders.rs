@@ -1927,34 +1927,6 @@ pub(crate) fn alloc_intarray(_py: &PyToken<'_>, values: &[i64]) -> *mut u8 {
     ptr
 }
 
-// clippy(dead_code): pre-unified-memoryview-API allocator, retained through the
-// TypedStridedStorage migration (c1414d9cfa); a follow-up task wires or removes it.
-#[allow(clippy::too_many_arguments, dead_code)]
-pub(crate) fn alloc_memoryview(
-    _py: &PyToken<'_>,
-    owner_bits: u64,
-    offset: isize,
-    len: usize,
-    itemsize: usize,
-    stride: isize,
-    readonly: bool,
-    format_bits: u64,
-) -> *mut u8 {
-    let Some(storage) = crate::object::memoryview::TypedStridedStorage::one_dim(
-        std::ptr::null_mut(),
-        readonly,
-        len,
-        itemsize,
-        stride,
-        offset,
-        owner_bits,
-        format_bits,
-    ) else {
-        return std::ptr::null_mut();
-    };
-    alloc_memoryview_from_storage(_py, storage)
-}
-
 pub(crate) fn alloc_memoryview_from_storage(
     _py: &PyToken<'_>,
     storage: crate::object::memoryview::TypedStridedStorage,
@@ -2037,34 +2009,6 @@ pub(crate) fn alloc_memoryview_from_storage(
     }
     inc_ref_bits(_py, storage.format_bits);
     ptr
-}
-
-// clippy(dead_code): pre-unified-memoryview-API allocator, retained through the
-// TypedStridedStorage migration (c1414d9cfa); a follow-up task wires or removes it.
-#[allow(clippy::too_many_arguments, dead_code)]
-pub(crate) fn alloc_memoryview_shaped(
-    _py: &PyToken<'_>,
-    owner_bits: u64,
-    offset: isize,
-    itemsize: usize,
-    readonly: bool,
-    format_bits: u64,
-    shape: Vec<isize>,
-    strides: Vec<isize>,
-) -> *mut u8 {
-    let Some(storage) = crate::object::memoryview::TypedStridedStorage::new(
-        std::ptr::null_mut(),
-        readonly,
-        itemsize,
-        offset,
-        owner_bits,
-        format_bits,
-        shape,
-        strides,
-    ) else {
-        return std::ptr::null_mut();
-    };
-    alloc_memoryview_from_storage(_py, storage)
 }
 
 #[cfg(test)]

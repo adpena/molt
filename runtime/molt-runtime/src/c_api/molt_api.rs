@@ -1746,9 +1746,24 @@ pub unsafe extern "C" fn molt_buffer_acquire(
         if unsafe { molt_buffer_export(obj_bits, &mut export as *mut MoltBufferView) } != 0 {
             return -1;
         }
-        inc_ref_bits(_py, obj_bits);
+        // Pin the exporter's backing store for the buffer's lifetime. For an
+        // `array.array`, `array_buffer_owner_bits` mints an export lease that
+        // also blocks resize (it increments the array's export counter and
+        // returns a lease handle whose `Drop` decrements it); for every other
+        // exporter the pin is a strong ref on the object itself. Either way
+        // `molt_buffer_release` drops this single owner ref.
+        let owner_bits = match crate::builtins::array_mod::array_buffer_owner_bits(_py, obj_bits) {
+            Ok(Some(owner_bits)) => owner_bits,
+            Ok(None) => {
+                inc_ref_bits(_py, obj_bits);
+                obj_bits
+            }
+            Err(()) => {
+                return raise_i32(_py, "BufferError", "cannot pin array buffer for export");
+            }
+        };
         unsafe {
-            export.owner = obj_bits;
+            export.owner = owner_bits;
             *out_view = export;
         }
         0
