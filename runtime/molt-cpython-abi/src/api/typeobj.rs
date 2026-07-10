@@ -1676,21 +1676,17 @@ pub unsafe extern "C" fn PyObject_IsInstance(inst: *mut PyObject, cls: *mut PyOb
     if inst.is_null() || cls.is_null() {
         return 0;
     }
-    // Check whether inst's type pointer matches cls (exact type match).
-    // This does not walk the MRO — full isinstance() requires the Molt runtime.
-    // Returning -1 (error) would be worse than a conservative match, so we
-    // check the one thing we *can* check: pointer identity of ob_type.
-    let inst_type = unsafe { (*inst).ob_type };
-    if inst_type.is_null() {
-        return 0;
-    }
-    if std::ptr::eq(inst_type as *const PyObject, cls) {
-        return 1;
-    }
-    // Cannot determine — return 0 (not an instance) rather than lying.
-    // Extensions that hit this path get a false negative, which is safer than
-    // a false positive.  Log via bridge tracing if available.
-    0
+    // When `cls` is a type object, CPython's `PyObject_IsInstance` reduces to
+    // `PyObject_TypeCheck(inst, (PyTypeObject *)cls)` (Objects/abstract.c ->
+    // `recursive_isinstance`). That is exactly the C-extension case (e.g.
+    // numpy `descriptor.c` does `PyObject_IsInstance(conv, &PyArray_StringDType)`),
+    // so answer it with the same exact-OR-subtype walk `PyObject_TypeCheck`
+    // now performs. `PyObject_TypeCheck` only POINTER-compares `cls`
+    // (it dereferences `inst`'s type, never `cls`), so a non-type `cls` — the
+    // `__instancecheck__` / tuple-of-classes cases Molt cannot resolve here —
+    // safely yields the same conservative `0` (not-an-instance) as before,
+    // never a false positive.
+    unsafe { PyObject_TypeCheck(inst, cls.cast::<PyTypeObject>()) }
 }
 
 #[unsafe(no_mangle)]

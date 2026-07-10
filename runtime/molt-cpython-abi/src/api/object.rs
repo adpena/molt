@@ -1753,8 +1753,22 @@ pub unsafe extern "C" fn PyObject_IsSubclass(derived: *mut PyObject, cls: *mut P
     if derived.is_null() || cls.is_null() {
         return 0;
     }
-    // Pointer identity check — full MRO traversal not available.
-    std::ptr::eq(derived, cls) as c_int
+    // When `derived` and `cls` are type objects, CPython's `PyObject_IsSubclass`
+    // reduces to `PyType_IsSubtype((PyTypeObject *)derived, (PyTypeObject *)cls)`
+    // (Objects/abstract.c -> `recursive_issubclass`) — the C-extension case. A
+    // bare pointer-identity check dropped every genuine base/derived
+    // relationship (the same class of bug that stranded numpy's
+    // `PyObject_TypeCheck`-based `PyArray_DescrCheck`). `PyType_IsSubtype`
+    // already answers the exact-match case (`a == b`) and then walks
+    // `derived`'s `tp_base` chain; it only pointer-compares `cls`, so a
+    // non-type `cls` (the `__subclasscheck__` case Molt cannot resolve here)
+    // yields the same conservative `0` rather than a false positive.
+    unsafe {
+        crate::api::typeobj::PyType_IsSubtype(
+            derived.cast::<PyTypeObject>(),
+            cls.cast::<PyTypeObject>(),
+        )
+    }
 }
 
 // ─── Py_NewRef / Py_XNewRef (CPython 3.10+) ──────────────────────────────
