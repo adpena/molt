@@ -127,12 +127,25 @@ def _frontend_tooling_source_paths(project_root: Path) -> list[Path]:
 
 # Molt-owned frontend source files that are shared by *every* frontend phase
 # (import scan, analysis, lowering) yet live outside cli/ and frontend/.
+#
+#   * ``_intrinsic_symbols.py`` -- generated intrinsic symbol table consumed by
+#     ``_wasm_runtime_exports`` (itself a load-bearing frontend input); editing it
+#     changes what the exports helper returns, so it is a transitive lowering
+#     input and must be hashed even though nothing under ``frontend/`` imports it
+#     directly.
+#   * ``_runtime_feature_gates.py`` -- generated feature-gate table. It is
+#     consumed on the link/required-features path rather than proven on the
+#     ast->TIR path, but it is a ``feature-gate`` authority and is retained
+#     conservatively (a rarely-edited generated table; keeping it costs no
+#     realistic cold-starts while removing any miscompile ambiguity).
 _FRONTEND_AUX_SOURCE_RELPATHS: tuple[str, ...] = (
     "type_facts.py",
     "capabilities.py",
     "capability_manifest.py",
     "compat.py",
     "_wasm_runtime_exports.py",
+    "_intrinsic_symbols.py",
+    "_runtime_feature_gates.py",
 )
 
 
@@ -142,6 +155,13 @@ _FRONTEND_AUX_SOURCE_RELPATHS: tuple[str, ...] = (
 #
 #   * ``frontend/`` -- the whole Python->TIR frontend (visitors, sema, lowering),
 #     kept wholesale because its subpackages import one another.
+#   * ``compiler_analysis/`` -- the compiler analysis package (static-truth,
+#     native-support slicing, backend-IR / TIR fact-graph helpers). ``frontend/``
+#     imports its lowering-facing submodules directly and it is a self-contained
+#     analysis package (its only external ``molt`` import is *into* ``frontend/``),
+#     so it is kept wholesale as a lowering root -- keeping the IR/TIR-adjacent
+#     helpers in scope rather than relying on a package-``__init__`` re-export
+#     edge that the refined resolver (below) no longer follows.
 #   * ``cli/frontend_*.py`` and ``cli/module_*.py`` -- the CLI-level frontend /
 #     module-graph drivers that invoke and cache the frontend (frontend pipeline,
 #     workers, module resolution / graph / source / cache authorities).
@@ -252,6 +272,21 @@ def _module_level_molt_import_targets(path: Path, src_root: Path) -> set[str]:
     deferred work (post-lowering command dispatch, native linking, diagnostics)
     that runs after the cached lowering is computed, so it is intentionally not
     followed -- following it would drag the backend back onto the frontend path.
+
+    A ``from PKG import NAME`` statement is attributed to *where ``NAME`` is
+    defined* -- the submodule ``PKG.NAME`` when one exists, otherwise ``PKG``
+    itself (resolved via the owner-fallback in
+    ``_resolve_import_targets_to_files``) where the attribute lives. The package
+    aggregate ``PKG`` is deliberately NOT added for a sibling-submodule import:
+    importing ``PKG.NAME`` does execute ``PKG/__init__``'s module-level code at
+    runtime, but that ``__init__``'s *other* imports are the package's unrelated
+    surface -- e.g. importing ``molt.cli.frontend_execution`` would otherwise drag
+    ``cli/__init__``'s whole command / extension-seal / daemon / package-registry
+    layer onto the lowering scope even though none of it feeds the lowered TIR.
+    Attributing each import to the specific module it names keeps the closure to
+    files that actually define what the frontend imports; genuine lowering-facing
+    packages that must be kept wholesale (``frontend/``, ``compiler_analysis/``)
+    are seeded explicitly instead of via a package-``__init__`` re-export edge.
     """
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -289,7 +324,11 @@ def _module_level_molt_import_targets(path: Path, src_root: Path) -> set[str]:
                 )
                 if not base.startswith("molt"):
                     continue
-            targets.add(base)
+            # Attribute the dependency to each imported name (submodule ``base.X``
+            # or, via the resolver's owner-fallback, the module ``base`` where an
+            # attribute / star import is defined). ``base`` itself is intentionally
+            # NOT added unconditionally -- see the docstring: doing so pulls the
+            # package ``__init__``'s unrelated siblings onto the lowering path.
             for alias in node.names:
                 targets.add(f"{base}.{alias.name}")
     return targets
@@ -335,10 +374,13 @@ def _resolve_import_targets_to_files(targets: set[str], src_root: Path) -> set[P
 def _lowering_scope_seed_paths(project_root: Path) -> tuple[Path, ...]:
     molt_root = project_root / "src" / "molt"
     frontend_root = molt_root / "frontend"
+    compiler_analysis_root = molt_root / "compiler_analysis"
     cli_root = molt_root / "cli"
     paths: list[Path] = []
     if frontend_root.exists():
         paths.append(frontend_root)
+    if compiler_analysis_root.exists():
+        paths.append(compiler_analysis_root)
     if cli_root.exists():
         for source in cli_root.glob("*.py"):
             if source.name.startswith(_LOWERING_SCOPE_SEED_CLI_PREFIXES):
@@ -368,13 +410,24 @@ def _lowering_scope_source_files_cached(project_root_str: str) -> tuple[str, ...
     """Module-level import closure of the frontend lowering seeds.
 
     Returns every ``molt``-owned source file reachable by following module-level
-    imports from the frontend/module drivers. After the frontend<->backend import
-    seams were cut, this closure provably excludes the backend / native-link /
-    cargo / daemon / toolchain layer, so an edit to any of those files leaves the
-    persisted analysis / lowering / import-graph fingerprints unchanged. The set
-    is cached per project root (mirroring ``_frontend_tooling_source_paths``); the
-    per-module cache's own source-stat + ``context_digest`` gate remains the
-    correctness authority for individual module edits.
+    imports from the frontend / ``compiler_analysis`` / frontend-driver seeds.
+    Because a ``from PKG import submodule`` edge is attributed to the submodule it
+    names rather than to ``PKG/__init__`` (see
+    ``_module_level_molt_import_targets``), importing a frontend driver no longer
+    drags ``cli/__init__``'s command / extension-seal / daemon / package-registry
+    layer into the closure: those command-orchestration files are neither seeds
+    nor reachable from one, so editing them leaves the persisted analysis /
+    lowering / import-graph fingerprints unchanged (fixing the chronic
+    cross-session cold-start where every landing invalidated the whole cache).
+
+    The bias remains strictly toward inclusion: the whole ``frontend/`` and
+    ``compiler_analysis/`` packages are seeded wholesale and the shared aux
+    semantic files (incl. the generated intrinsic / feature-gate tables) are
+    force-included, so a lowering-relevant file is never dropped -- the worst case
+    is a spurious cold-start, never a stale lowering. The set is cached per
+    project root (mirroring ``_frontend_tooling_source_paths``); the per-module
+    cache's own source-stat + ``context_digest`` gate remains the correctness
+    authority for individual module edits.
     """
     project_root = pathlib.Path(project_root_str)
     src_root = (project_root / "src").resolve()
@@ -396,6 +449,10 @@ def _lowering_scope_source_files_cached(project_root_str: str) -> tuple[str, ...
     frontend_root = molt_root / "frontend"
     if frontend_root.exists():
         for source in frontend_root.rglob("*.py"):
+            seeds.add(source.resolve())
+    compiler_analysis_root = molt_root / "compiler_analysis"
+    if compiler_analysis_root.exists():
+        for source in compiler_analysis_root.rglob("*.py"):
             seeds.add(source.resolve())
     if cli_root.exists():
         for source in cli_root.glob("*.py"):
