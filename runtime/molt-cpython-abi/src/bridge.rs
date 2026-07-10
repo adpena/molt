@@ -662,6 +662,11 @@ pub extern "C" fn molt_cpython_abi_init() {
         // singletons + Ellipsis/NotImplemented/UTC) in the bridge so a native
         // extension that hands them back resolves them via `pyobj_to_handle`.
         crate::abi_types::register_static_abi_objects();
+        // Publish the `datetime.datetime_CAPI` capsule so a C extension's
+        // `PyDateTime_IMPORT` (`PyCapsule_Import("datetime.datetime_CAPI", 0)`)
+        // resolves the datetime C API — numpy's `_multiarray_umath` init does
+        // this and returned NULL when the capsule was absent (silent-failure).
+        crate::api::datetime::register_datetime_capi();
     });
 }
 
