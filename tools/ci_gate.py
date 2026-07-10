@@ -380,6 +380,21 @@ def _build_checks() -> list[Check]:
     )
     checks.append(
         Check(
+            # The dead-code-allow ratchet: a new `#[allow(dead_code)]` usually masks
+            # a HALF-WIRED mechanism (a live consumer of state only dead code
+            # produces — e.g. array_mod.rs `exports` was read by the live
+            # `resize_blocked` but incremented only by dead code, so the
+            # resize-while-exported UAF interlock shipped inert). clippy -D blocks
+            # UN-allowed dead code; this blocks silencing it. Count is monotonically
+            # non-increasing vs the committed baseline — wire-or-delete, don't mask.
+            name="dead-code-allow-ratchet",
+            tier=1,
+            cmd=_uv_run(str(TOOLS / "dead_code_allow_ratchet.py")),
+            timeout=60,
+        )
+    )
+    checks.append(
+        Check(
             # The semantic-fact-plane meta-gate (doc 59 Phases 1-3): every
             # generated authority is registered + --check-gated, no orphan
             # generated files, and no NEW silent-default `match` over a closed
