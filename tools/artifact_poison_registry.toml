@@ -1,0 +1,22 @@
+# Artifact-effect poison registry (apparatus, 2026-07-10).
+#
+# WHY THIS EXISTS: a capability can be "configured" (archive resolves, flag set,
+# source looks right) yet NOT be "effective" in the built artifact (the trapping
+# stub still links). Source-level gates (fail_closed_registry) and config-level
+# fail-loud checks (a missing archive) do NOT catch this class — the runtime
+# still ships a stub and traps ~minutes later at runtime as an opaque
+# `RuntimeError: unreachable`. This registry lists byte-markers that PROVE a
+# degraded/stub capability is present in a *built* wasm artifact. The
+# artifact_poison_gate scans the runtime/app wasm for them and FAILS LOUD at
+# build time, turning a 30-minute-later runtime trap into an immediate, named
+# gate failure. Markers are DATA STRINGS (abort/diagnostic messages), so they
+# survive symbol stripping — unlike name-section symbols.
+#
+# Each entry: a substring that MUST NOT appear in a shipped/witness wasm, plus
+# the exact fix. Add a marker whenever a "resolve != effective" stub bites.
+
+[markers.long_double_not_supported]
+bytes = "Support for formatting long double values is currently disabled"
+capability = "wasi-libc long-double (%L) printf/scanf formatting"
+why = "numpy longdouble repr/parse hits %L during _multiarray_umath import; the wasi-libc stub abort()s -> raw `unreachable`."
+fix = "The reloc link must whole-archive libc-printscan-long-double.a AND libclang_rt.builtins-wasm32.a AHEAD of libc.a so the real formatters override the stub. Resolving the archive is NOT enough — verify __multf3/__addtf3 are defined and this string is ABSENT in the built molt_runtime.wasm. Bust any stale session-cached runtime; fold the archive content into the runtime-wasm fingerprint."
