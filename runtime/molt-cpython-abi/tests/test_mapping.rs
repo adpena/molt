@@ -310,10 +310,18 @@ fn test_dict_delitemstring_null_key_returns_error() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_dict_size_null_returns_zero() {
+fn test_dict_size_null_sets_error_and_returns_minus_one() {
+    // CPython: PyDict_Size(non-dict/NULL) → PyErr_BadInternalCall() + return -1,
+    // NOT a fabricated 0 (which PyDict_Merge read as "empty"). Sentinel sweep.
     init();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let size = unsafe { molt_cpython_abi::api::mapping::PyDict_Size(ptr::null_mut()) };
-    assert_eq!(size, 0);
+    assert_eq!(size, -1, "PyDict_Size(NULL) must be -1, not a fabricated 0");
+    assert!(
+        !unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null(),
+        "a -1 return from PyDict_Size must leave an exception set"
+    );
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 }
 
 // ---------------------------------------------------------------------------
@@ -345,3 +353,7 @@ fn test_dict_check_on_int_returns_zero() {
 // above. Their real (non-empty) results require the runtime dict authority and
 // are exercised by the runtime-side / differential integration tests, not by
 // these stub-only unit tests.
+//
+// PyDict_Next / PyDict_Merge real-iteration teeth (which need a fake dict model
+// whose `dict_entry`/`dict_set` hooks conflict with this file's first-wins hook
+// OnceLock) live in their own binary, `tests/test_dict_cursor.rs`.
