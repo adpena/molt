@@ -346,6 +346,15 @@ jobs:
       - name: Test molt-runtime-protobuf
         run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test -p molt-runtime-protobuf
 
+      - name: Test molt-lang-cpython-abi (incl. buffer-export allocation-budget gate)
+        # Runs the crate's lib unit tests, which include
+        # buffer_export_bench::buffer_export_allocation_budget — the M10
+        # perf-regression interlock asserting EXACTLY 1 alloc of 1112 B per
+        # Py_buffer export. Without this step the gate compiles (workspace clippy)
+        # but never fires, so a per-export allocation regression could drift in
+        # silently. The wall-clock profiler in the same module is #[ignore]d.
+        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test -p molt-lang-cpython-abi --lib
+
       - name: Verify zero warnings
         run: |
           WARNING_COUNT=$(grep -c 'warning\[' logs/ci-cargo-build.log || true)
