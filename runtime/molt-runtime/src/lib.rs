@@ -155,6 +155,12 @@ pub(crate) const TASK_KIND_COROUTINE: u64 = molt_codegen_abi::TASK_KIND_COROUTIN
 pub(crate) use molt_runtime_diagnostics as diagnostics;
 #[cfg(target_arch = "wasm32")]
 pub(crate) use molt_runtime_platform::libc_compat;
+// Native (non-wasm) targets have the real `libc` crate; the `libc_compat` WASI
+// shim exists only on wasm32. Alias real libc so `crate::libc_compat` resolves
+// on native too (child-process rlimits, native TLS socket helpers, ...). Every
+// native user below calls only real POSIX libc symbols.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use ::libc as libc_compat;
 pub(crate) use molt_runtime_platform::randomness;
 pub(crate) use molt_runtime_platform::socket_constants;
 pub(crate) use molt_runtime_platform::utils;
