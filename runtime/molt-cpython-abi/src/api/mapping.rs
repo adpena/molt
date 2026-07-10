@@ -53,19 +53,45 @@ pub unsafe extern "C" fn PyDict_SetItem(
             return -1;
         }
     };
+    let mut key_is_foreign = false;
     let key_bits = match bridge.pyobj_to_handle(key) {
         Some(b) => b,
-        None => {
-            // The dict receiver already resolved, so we hold a well-formed dict —
-            // a `PyDict_SetItem` key is a real object the extension constructed or a
-            // canonical runtime data symbol, safe to classify (`describe_*` guards
-            // null + resolves exception singletons by address before any deref).
-            let detail = format!("unresolved key @ {:p}: {}", key, unsafe {
-                crate::abi_types::describe_unresolved_pyobject(key)
-            });
-            crate::capi_trace::record_silent_failure("PyDict_SetItem", Some(&detail));
-            return -1;
-        }
+        None => match unsafe { bridge.molt_value_for_pyobj(key) } {
+            // A genuine C-extension object key (numpy uses a builtin dtype/DType
+            // singleton — a pure C `PyArray_Descr` — as the key when registering
+            // its descriptor maps right after readying the DType classes): give it
+            // the same first-class `TYPE_ID_FOREIGN` custody the value path below
+            // already mints, instead of dropping the key. The wrapper is cached by
+            // C-pointer identity (`foreign_wrapper_for`), so a later insert/lookup
+            // with the same singleton pointer resolves to the same handle.
+            Some(b) => {
+                key_is_foreign = true;
+                b
+            }
+            None => {
+                // The dict receiver already resolved, so we hold a well-formed
+                // dict — a `PyDict_SetItem` key is a real object the extension
+                // constructed or a canonical runtime data symbol, safe to classify
+                // (`describe_*` guards null + resolves exception singletons by
+                // address before any deref). Reaching here means no foreign wrapper
+                // could be minted (runtime hooks not installed); fail loud with an
+                // honest exception rather than a contentless -1.
+                let detail = format!("unresolved key @ {:p}: {}", key, unsafe {
+                    crate::abi_types::describe_unresolved_pyobject(key)
+                });
+                crate::capi_trace::record_silent_failure("PyDict_SetItem", Some(&detail));
+                if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+                    unsafe {
+                        crate::api::errors::PyErr_SetString(
+                            &raw mut crate::abi_types::PyExc_SystemError,
+                            c"PyDict_SetItem: key is not a bridge-managed object and no foreign wrapper could be minted"
+                                .as_ptr(),
+                        );
+                    }
+                }
+                return -1;
+            }
+        },
     };
     let mut val_is_foreign = false;
     let val_bits = match bridge.pyobj_to_handle(value) {
@@ -103,12 +129,14 @@ pub unsafe extern "C" fn PyDict_SetItem(
     // small header) — a deliberate CPython-semantics trade the raw-registry
     // bridging already makes.
     unsafe {
-        crate::api::refcount::Py_INCREF(key);
-        // A bridge-proxy value is anchored by INCREF'ing the C object, exactly
+        // A bridge-proxy key/value is anchored by INCREF'ing the C object, exactly
         // like CPython (the dict takes its own reference). A foreign-wrapped
-        // value already holds a strong reference on the C object (minted at
+        // key/value already holds a strong reference on the C object (minted at
         // refcount 1, ownership transferred to this dict entry), so it must NOT
         // be INCREF'd again — that would leak the C object.
+        if !key_is_foreign {
+            crate::api::refcount::Py_INCREF(key);
+        }
         if !val_is_foreign {
             crate::api::refcount::Py_INCREF(value);
         }
@@ -583,5 +611,61 @@ mod dict_anchor_tests {
             bridge.pyobj_to_handle(val).is_some(),
             "value mapping severed by balancing DECREF"
         );
+    }
+
+    /// Regression for the numpy `_multiarray_umath` DType-registration class:
+    /// its `Py_mod_exec` slot uses a builtin dtype/DType singleton (a pure C
+    /// `PyArray_Descr`, unknown to the bridge) as a `PyDict_SetItem` KEY right
+    /// after readying the DType classes. `PyDict_SetItem` already minted a
+    /// `TYPE_ID_FOREIGN` wrapper for an unresolved VALUE but dropped an
+    /// unresolved KEY with a bare `-1` and no exception — the silent failure the
+    /// exec slot propagated as "returned non-zero without setting an exception".
+    /// The key must get the same foreign custody (stable pointer-keyed identity)
+    /// and be accepted.
+    #[test]
+    fn dict_set_item_gives_foreign_custody_to_key() {
+        crate::bridge::init_tag_table();
+        // A genuine C-extension object (numpy dtype singleton stand-in) that the
+        // bridge does not know, with a pre-installed foreign wrapper identity: a
+        // first real crossing would have minted this via `foreign_wrapper_for`
+        // (the runtime `foreign_new` hook is not linked in a pure-ABI test).
+        let mut foreign_key = PyObject {
+            ob_refcnt: 1,
+            ob_type: ptr::null_mut(),
+        };
+        let key_ptr = &raw mut foreign_key as *mut PyObject;
+        let wrapper_bits = 0xF0DE_0000_0000_0010u64;
+        let (recv, val) = {
+            let mut bridge = GLOBAL_BRIDGE.lock();
+            bridge.insert_foreign_for_test(key_ptr, wrapper_bits);
+            unsafe {
+                (
+                    bridge.handle_to_pyobj(MoltObject::from_int(0xD1C7).bits()),
+                    bridge.handle_to_pyobj(MoltObject::from_int(0x7A17).bits()),
+                )
+            }
+        };
+        unsafe { crate::api::errors::PyErr_Clear() };
+        // Before the fix this returned -1 with NO exception set (the silent
+        // failure that stranded the exec slot). After the fix the key is given
+        // foreign custody and accepted.
+        let rc = unsafe { PyDict_SetItem(recv, key_ptr, val) };
+        assert_eq!(rc, 0, "foreign C-extension object rejected as a dict key");
+        assert!(
+            unsafe { crate::api::errors::PyErr_Occurred() }.is_null(),
+            "foreign-key path must not leave a stray pending exception",
+        );
+        // The wrapper keeps its stable pointer-keyed identity, so a later
+        // insert/lookup with the same singleton pointer resolves to the same
+        // handle rather than silently missing.
+        {
+            let mut bridge = GLOBAL_BRIDGE.lock();
+            assert_eq!(
+                unsafe { bridge.handle_to_pyobj(wrapper_bits) },
+                key_ptr,
+                "foreign key wrapper lost its round-trip identity",
+            );
+        }
+        unsafe { GLOBAL_BRIDGE.lock().release_foreign(key_ptr as usize) };
     }
 }

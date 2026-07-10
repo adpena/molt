@@ -437,6 +437,17 @@ impl ObjectBridge {
         }
     }
 
+    /// Install a `TYPE_ID_FOREIGN` wrapper identity for `ptr` exactly as
+    /// [`Self::foreign_wrapper_for`] would after a first crossing. Test-only:
+    /// the runtime `foreign_new` hook is not linked in pure-ABI unit tests, so
+    /// cross-module tests that need to exercise foreign key/value custody install
+    /// the cache entry directly instead of minting one.
+    #[cfg(test)]
+    pub(crate) fn insert_foreign_for_test(&mut self, ptr: *mut PyObject, handle: AbiHandle) {
+        self.foreign.insert(ptr as usize, handle);
+        self.raw_py.insert(handle, ptr as usize);
+    }
+
     pub unsafe fn register_raw_pyobj(&mut self, ptr: *mut PyObject) -> AbiHandle {
         if ptr.is_null() {
             return 0;
