@@ -317,6 +317,28 @@ pub extern "C" fn _PyUnicode_IsWhitespace(ch: u32) -> c_int {
     c_bool(unicode_space_table::is_space(ch))
 }
 
+/// CPython `_Py_ascii_whitespace[128]` (Objects/bytes_methods.c): the ASCII
+/// whitespace classification table behind `Py_ISSPACE`/bytes `.strip()`/
+/// `.split()`. A C extension (numpy links it as DATA) indexes it by byte value.
+/// Set for the exact CPython set: 0x09-0x0D (TAB/LF/VT/FF/CR), 0x1C-0x1F
+/// (FS/GS/RS/US) and 0x20 (SPACE); every other byte is 0.
+#[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static _Py_ascii_whitespace: [std::os::raw::c_uchar; 128] = {
+    let mut t = [0u8; 128];
+    t[0x09] = 1;
+    t[0x0a] = 1;
+    t[0x0b] = 1;
+    t[0x0c] = 1;
+    t[0x0d] = 1;
+    t[0x1c] = 1;
+    t[0x1d] = 1;
+    t[0x1e] = 1;
+    t[0x1f] = 1;
+    t[0x20] = 1;
+    t
+};
+
 #[unsafe(no_mangle)]
 pub extern "C" fn _PyUnicode_IsLinebreak(ch: u32) -> c_int {
     c_bool(matches!(
@@ -2305,5 +2327,23 @@ mod tests {
         assert_eq!(_PyUnicode_IsPrintable('\n' as u32), 0);
         assert_eq!(_PyUnicode_IsAlpha(0x11_0000), 0);
         assert_eq!(_PyUnicode_IsLowercase(0x11_0000), 0);
+    }
+}
+
+#[cfg(test)]
+mod ascii_whitespace_table_tests {
+    use super::_Py_ascii_whitespace;
+
+    /// The `_Py_ascii_whitespace[128]` table is exactly CPython's: 1 for
+    /// 0x09-0x0D, 0x1C-0x1F and 0x20; 0 for every other byte. A drift here
+    /// silently changes bytes `.strip()`/`.split()` classification for a C
+    /// extension that indexes the table directly.
+    #[test]
+    fn ascii_whitespace_table_matches_cpython() {
+        assert_eq!(_Py_ascii_whitespace.len(), 128);
+        for (i, &v) in _Py_ascii_whitespace.iter().enumerate() {
+            let expect = matches!(i, 0x09..=0x0d | 0x1c..=0x1f | 0x20);
+            assert_eq!(v != 0, expect, "byte {i:#04x} whitespace flag");
+        }
     }
 }
