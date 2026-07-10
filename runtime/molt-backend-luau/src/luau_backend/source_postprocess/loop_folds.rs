@@ -1,6 +1,9 @@
 use super::source_text::is_ident_char;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Remove trailing `continue` statements from loop bodies.
+/// `continue` right before `end` in a loop is a no-op — the loop naturally
+/// continues to the next iteration at `end`.
 pub(super) fn strip_trailing_continue(source: &mut String) {
     let lines: Vec<&str> = source.lines().collect();
     let mut remove: BTreeSet<usize> = BTreeSet::new();

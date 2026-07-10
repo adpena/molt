@@ -1,5 +1,4 @@
 /// Shared lexical and expression predicates for Luau source postprocessing.
-
 pub(super) fn is_simple_literal(s: &str) -> bool {
     if s == "nil" || s == "true" || s == "false" {
         return true;
@@ -70,6 +69,7 @@ pub(super) fn replace_whole_word(haystack: &str, needle: &str, replacement: &str
     result
 }
 
+/// Check if a string is a simple variable reference (v\d+ or parameter name).
 pub(super) fn is_simple_var_ref(s: &str) -> bool {
     if s.is_empty() {
         return false;
@@ -129,6 +129,12 @@ pub(super) fn contains_whole_word_var(line: &str, var: &str) -> bool {
     false
 }
 
+/// Returns `true` if the expression is a *pure* non-trivial RHS suitable for
+/// common-subexpression elimination or loop-invariant hoisting.
+///
+/// "Pure" means no observable side effects: arithmetic, comparisons,
+/// table reads, known-pure math/string builtins, concatenation, and the
+/// length operator are accepted.  Arbitrary function calls are rejected.
 pub(super) fn is_pure_expr(s: &str) -> bool {
     // Reject simple literals and variable refs — no point in CSE for those.
     if is_simple_literal(s) || is_simple_var_ref(s) {
@@ -168,17 +174,6 @@ pub(super) fn is_pure_expr(s: &str) -> bool {
     true
 }
 
-/// Common-subexpression elimination (CSE).
-///
-/// Scans for `local vN = <pure_expr>` declarations.  When the *exact* same
-/// pure expression appears as the RHS of a later `local vM = <pure_expr>` at
-/// the same indentation depth, the second declaration is rewritten to
-/// `local vM = vN` (reuse the first computation).
-///
-/// Only applies when `vN` is not reassigned between the two declarations and
-/// none of the variables referenced in the expression are reassigned either.
-
-/// Find the matching closing parenthesis for an opening paren at `open_pos`.
 /// Check if an expression contains binary operators at the top level
 /// (not inside `[]`, `()`, or `{}`). Used by the sink pass to decide
 /// whether inlined expressions need parenthesization.

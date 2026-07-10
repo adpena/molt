@@ -73,6 +73,15 @@ pub(super) fn optimize_luau_source(source: &mut String) {
     spill_excess_locals(source);
 }
 
+/// Common-subexpression elimination (CSE).
+///
+/// Scans for `local vN = <pure_expr>` declarations.  When the *exact* same
+/// pure expression appears as the RHS of a later `local vM = <pure_expr>` at
+/// the same indentation depth, the second declaration is rewritten to
+/// `local vM = vN` (reuse the first computation).
+///
+/// Only applies when `vN` is not reassigned between the two declarations and
+/// none of the variables referenced in the expression are reassigned either.
 fn eliminate_common_subexpressions(source: &mut String) {
     let lines: Vec<&str> = source.lines().collect();
 
@@ -540,10 +549,7 @@ fn optimize_luau_perf(source: &mut String) {
 
         // Pass 1: Inline molt_pow(a, b) → a ^ b
         if !is_func_def {
-            loop {
-                let Some(start) = optimized.find("molt_pow(") else {
-                    break;
-                };
+            while let Some(start) = optimized.find("molt_pow(") {
                 if let Some(close) = find_matching_paren(&optimized, start + 8) {
                     let inner = &optimized[start + 9..close];
                     if let Some(comma) = inner.find(", ") {
@@ -566,10 +572,7 @@ fn optimize_luau_perf(source: &mut String) {
 
         // Pass 2: Inline molt_floor_div(a, b) → a // b (LOP_IDIV opcode)
         if !is_func_def {
-            loop {
-                let Some(start) = optimized.find("molt_floor_div(") else {
-                    break;
-                };
+            while let Some(start) = optimized.find("molt_floor_div(") {
                 if let Some(close) = find_matching_paren(&optimized, start + 14) {
                     let inner = &optimized[start + 15..close];
                     if let Some(comma) = inner.find(", ") {
@@ -594,10 +597,7 @@ fn optimize_luau_perf(source: &mut String) {
         // Python's floor-mod matches Luau's % for positive divisors, which covers
         // the vast majority of real-world uses (array indexing, hash functions, etc.).
         if !is_func_def {
-            loop {
-                let Some(start) = optimized.find("molt_mod(") else {
-                    break;
-                };
+            while let Some(start) = optimized.find("molt_mod(") {
                 if let Some(close) = find_matching_paren(&optimized, start + 8) {
                     let inner = &optimized[start + 9..close];
                     if let Some(comma) = inner.find(", ") {
