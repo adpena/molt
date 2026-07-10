@@ -20,10 +20,12 @@ pub unsafe extern "C" fn PyWeakref_Check(_op: *mut PyObject) -> c_int {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyWeakref_GetObject(ref_obj: *mut PyObject) -> *mut PyObject {
+pub unsafe extern "C" fn PyWeakref_GetObject(_ref_obj: *mut PyObject) -> *mut PyObject {
     // CPython Objects/weakrefobject.c: non-weakref -> PyErr_BadInternalCall()
     // + NULL. Every argument is a non-weakref until a weakref model exists.
-    let _ = ref_obj;
+    // (This ALWAYS fails closed — it never ships a fabricated success sentinel
+    // — so the argument is genuinely unconsulted, not silently dropped; the
+    // leading underscore is the idiomatic "intentionally unused" convention.)
     unsafe { crate::api::errors::PyErr_BadInternalCall() };
     ptr::null_mut()
 }
