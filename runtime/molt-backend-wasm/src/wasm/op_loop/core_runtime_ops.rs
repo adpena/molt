@@ -116,7 +116,7 @@ pub(super) fn emit_core_runtime_op(
         "bool" | "cast_bool" | "builtin_bool" => {
             let args = op.args.as_ref().unwrap();
             let val = locals[&args[0]];
-            let truthy_import = if wasm_scalar_truthiness_fast_path_for_name(&scalar_plan, &args[0])
+            let truthy_import = if wasm_scalar_truthiness_fast_path_for_name(scalar_plan, &args[0])
             {
                 crate::wasm_abi_generated::WasmRuntimeImport::IsTruthyInt
             } else {

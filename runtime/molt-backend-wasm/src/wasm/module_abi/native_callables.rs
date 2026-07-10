@@ -345,16 +345,6 @@ fn exact_native_callable_type_idx(
     type_idx
 }
 
-fn val_type_matches(expected: &str, actual: ValType) -> bool {
-    matches!(
-        (expected, actual),
-        ("i32", ValType::I32)
-            | ("i64", ValType::I64)
-            | ("f32", ValType::F32)
-            | ("f64", ValType::F64)
-    )
-}
-
 fn wasm_val_type(value: &str, abi: NativeCallableAbi) -> ValType {
     match value {
         "i32" => ValType::I32,

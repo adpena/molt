@@ -3,7 +3,7 @@ use super::super::op_loop::WasmFunctionEmitContext;
 use super::DispatchMode;
 use super::block_layout::emit_dispatch_block_lookup;
 use super::common::{
-    emit_dispatch_trailing_return, emit_set_state_and_br, emit_stateful_resume_prelude,
+    emit_dispatch_trailing_return, emit_stateful_resume_prelude,
     exception_handler_region_indices_from_label_map,
 };
 use super::plan::{NonLinearDispatchLocals, NonLinearDispatchPlan};

@@ -175,8 +175,6 @@ impl WasmBackend {
             }
         }
 
-        drop(op_emitter);
-
         // Accumulate tail call count from this function into the backend total.
         self.tail_calls_emitted += tail_call_count.get();
 

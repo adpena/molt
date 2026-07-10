@@ -4,12 +4,12 @@ mod requirements;
 mod seeds;
 
 use super::{WasmFrameControlMode, WasmFunctionFrame, WasmFunctionFramePlan};
+use crate::FunctionIR;
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::context::CompileFuncContext;
 use crate::wasm::frame_locals::{WasmFrameLocals, WasmFrameSyntheticLocal};
 use crate::wasm::local_analysis::{LocalVariableAnalysis, analyze_local_variables};
 use crate::wasm::multi_return_layout::WasmMultiReturnLayout;
-use crate::{FunctionIR, OpIR};
 use debug::emit_seed_debug;
 use local_alloc::{FrameLocalAllocationPolicy, ensure_frame_local};
 use requirements::FrameRuntimeRequirements;
