@@ -567,9 +567,9 @@ pub(super) fn structure_pcall_failure_blocks(source: &mut String) {
                     let target_line = ((i + 1)..handler_line).find(|&candidate| {
                         label_name_from_line(&lines[candidate]).as_deref() == Some(target.as_str())
                     });
-                    if target_line.is_some() {
+                    if let Some(target_line) = target_line {
                         handler_jump_line = Some(idx);
-                        continuation_label = Some((target, target_line.unwrap()));
+                        continuation_label = Some((target, target_line));
                         break;
                     }
                 }

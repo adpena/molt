@@ -101,24 +101,23 @@ pub(super) fn lower_try_to_pcall(ops: &[OpIR]) -> (Vec<OpIR>, BTreeSet<String>) 
     for (idx, op) in ops.iter().enumerate() {
         let kind = op.kind.as_str();
 
-        if kind == "label" {
-            if let Some(label) = op.value {
-                if let Some(ids) = cleanup_end_labels.remove(&label) {
-                    for id in ids {
-                        if active_pcalls.last().copied() == Some(id) {
-                            active_pcalls.pop();
-                        } else if let Some(pos) =
-                            active_pcalls.iter().rposition(|&active| active == id)
-                        {
-                            active_pcalls.remove(pos);
-                        }
+        if kind == "label"
+            && let Some(label) = op.value
+        {
+            if let Some(ids) = cleanup_end_labels.remove(&label) {
+                for id in ids {
+                    if active_pcalls.last().copied() == Some(id) {
+                        active_pcalls.pop();
+                    } else if let Some(pos) = active_pcalls.iter().rposition(|&active| active == id)
+                    {
+                        active_pcalls.remove(pos);
                     }
                 }
-                if let Some(ids) = handler_entry_labels.get(&label) {
-                    for id in ids {
-                        if !active_pcalls.contains(id) {
-                            active_pcalls.push(*id);
-                        }
+            }
+            if let Some(ids) = handler_entry_labels.get(&label) {
+                for id in ids {
+                    if !active_pcalls.contains(id) {
+                        active_pcalls.push(*id);
                     }
                 }
             }
