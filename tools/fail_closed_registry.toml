@@ -107,7 +107,7 @@ authority before this class reaches zero.
 
 # --- abstract_number.rs: arbitrary-precision int silently truncated -----------
 
-# F5_sequences_drops_op RIPPED by lane F2 (66b475bc25): PyList_Sort/PyList_Reverse
+# F5_sequences_drops_op RIPPED by lane F2 (e47205c64f): PyList_Sort/PyList_Reverse
 # now route the runtime in-place sort/reverse authorities (list_sort/list_reverse
 # hooks) with BadInternalCall on a non-list — no argument is dropped and no
 # fabricated success remains. Baseline lowered 1 -> 0 (ratchet).
