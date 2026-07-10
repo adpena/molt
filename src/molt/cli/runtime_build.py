@@ -1274,6 +1274,32 @@ def _wasm_runtime_recovery_target_root(target_root: Path) -> Path:
     return target_root.parent / f"{target_root.name}-wasm-runtime-recovery"
 
 
+def _runtime_wasm_single_compile_enabled() -> bool:
+    """Whether to build the split runtime with ONE cargo compile + two wasm-ld links.
+
+    DEFAULT ON (M34: full capability is the default, not an opt-in knob).  The
+    reloc/staticlib and shared/cdylib artifacts are the SAME crate codegen with a
+    different *final link*; the historical dual build ran two full cargo compiles
+    that differed only by RUSTFLAGS link-args which are INERT to a self-contained
+    wasm32 staticlib archive (they only re-drive the final link), so the second
+    ~115-205s compile was pure waste — the cargo-fingerprint divergence forced it.
+    This path compiles the staticlib once (the reloc and shared passes issue a
+    byte-identical cargo invocation → the second is a pure cargo cache hit) and
+    produces BOTH artifacts by linking that staticlib with wasm-ld: ``-r`` for
+    reloc, the cdylib final-link recipe for shared.  Escape hatch
+    ``MOLT_RUNTIME_WASM_DUAL_COMPILE=1`` restores the legacy two-compile path if
+    the hand-linked shared module ever regresses.
+    """
+    if os.environ.get("MOLT_RUNTIME_WASM_DUAL_COMPILE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return False
+    return True
+
+
 def _runtime_wasm_incremental_enabled() -> bool:
     """Whether to build the runtime wasm into a stable, incremental target dir.
 
@@ -1590,6 +1616,117 @@ def _link_runtime_staticlib_to_reloc_wasm(
     return True
 
 
+def _link_runtime_staticlib_to_shared_wasm(
+    *,
+    staticlib_path: Path,
+    output_path: Path,
+    json_output: bool,
+    link_timeout: float | None,
+    export_link_args: str = "",
+) -> bool:
+    """Link the runtime staticlib into the shared split-runtime cdylib artifact.
+
+    STRUCTURAL: a wasm32 ``--crate-type=staticlib`` archive is self-contained
+    (crate + every Rust dep + std bundled; only libc is external — proven by the
+    sibling reloc link).  The shared split-runtime module is the SAME codegen with
+    a different *final link* — ``--no-entry`` + ``--import-memory/--import-table
+    /--growable-table`` + the public export allowlist — exactly the trailing flags
+    rustc's own cdylib link drives (captured from ``--print=link-args``).  So the
+    reloc pass and this shared pass link from ONE cargo staticlib compile instead
+    of two full cargo compiles that differed only by inert-to-a-staticlib RUSTFLAGS
+    link-args (the cargo-fingerprint divergence that forced the dual ~115-205s
+    rebuild).  ``--whole-archive`` mirrors the reloc path's proven inclusion; the
+    subsequent wasm-opt tree-shake (existing pipeline) strips whatever is dead
+    once ``--gc-sections`` has kept the export-reachable + table-referenced set.
+    """
+    wasm_ld = shutil.which("wasm-ld")
+    if wasm_ld is None:
+        if not json_output:
+            print(
+                "Runtime shared wasm link failed: wasm-ld not found.",
+                file=sys.stderr,
+            )
+        return False
+    libc_archive = wasm_toolchain.wasm_wasi_libc_archive()
+    if libc_archive is None:
+        if not json_output:
+            print(
+                "Runtime shared wasm link failed: Rust wasm32-wasip1 libc.a not found.",
+                file=sys.stderr,
+            )
+        return False
+    staticlib_path = staticlib_path.resolve(strict=False)
+    libc_archive = libc_archive.resolve(strict=False)
+    output_path = output_path.resolve(strict=False)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_output_path = output_path.with_name(
+        f".{output_path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    )
+    export_args = _wasm_link_args_from_rustflags(export_link_args)
+    if export_args:
+        export_response_path = _write_wasm_link_args_response_file(
+            output_path.parent / ".molt_link_args",
+            label=f"{output_path.stem}.shared",
+            link_args=export_args,
+        )
+        export_args = [f"@{export_response_path}"]
+    try:
+        process = _run_completed_command(
+            [
+                wasm_ld,
+                "--no-entry",
+                "--gc-sections",
+                "-O2",
+                "--import-memory",
+                "--import-table",
+                "--growable-table",
+                "-z",
+                "stack-size=1048576",
+                "--stack-first",
+                *export_args,
+                "--whole-archive",
+                str(staticlib_path),
+                "--no-whole-archive",
+                str(libc_archive),
+                "-o",
+                str(tmp_output_path),
+            ],
+            cwd=output_path.parent,
+            env=None,
+            capture_output=True,
+            memory_guard_prefix="MOLT_WASM_LINK",
+            timeout=link_timeout,
+        )
+        if process.returncode != 0:
+            if not json_output:
+                err = (process.stderr or "").strip() or (process.stdout or "").strip()
+                msg = "Runtime shared wasm link failed"
+                if err:
+                    msg = f"{msg}: {err}"
+                print(msg, file=sys.stderr)
+            return False
+        if not _is_valid_shared_runtime_wasm_artifact(tmp_output_path):
+            if not json_output:
+                print(
+                    f"Runtime shared wasm artifact is invalid/incomplete: {tmp_output_path}",
+                    file=sys.stderr,
+                )
+            return False
+        os.replace(tmp_output_path, output_path)
+        if os.name == "posix":
+            with contextlib.suppress(OSError):
+                dir_fd = os.open(output_path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+    finally:
+        with contextlib.suppress(OSError):
+            if tmp_output_path.exists():
+                tmp_output_path.unlink()
+    return True
+
+
 def _materialize_split_runtime_public_exports(
     runtime_wasm: Path,
     required_exports: set[str] | frozenset[str] | None,
@@ -1689,6 +1826,7 @@ def _ensure_runtime_wasm(
     cargo_profile = _resolve_wasm_cargo_profile(cargo_profile)
     profile_dir = _cargo_profile_dir(cargo_profile)
     incremental_enabled = _runtime_wasm_incremental_enabled()
+    single_compile = _runtime_wasm_single_compile_enabled()
     env = _cargo_build_env()
     if "CARGO_INCREMENTAL" not in os.environ:
         # Default OFF (deterministic proof builds). The opt-in incremental
@@ -1750,6 +1888,22 @@ def _ensure_runtime_wasm(
             label=f"runtime.{_resolve_wasm_cargo_profile(cargo_profile)}.shared",
             link_flags=link_flags,
         )
+    if single_compile:
+        # One-compile split runtime: both the reloc and shared passes compile an
+        # identical staticlib (link-args are inert to a staticlib archive), so the
+        # cargo-facing RUSTFLAGS carry NO link-args — making the two cargo
+        # invocations byte-identical → the runtime crate compiles once and the
+        # second pass is a pure cargo cache hit. The mode-specific link-args stay
+        # in `fingerprint_rustflags` (so the reloc and shared artifact identities
+        # never collide in the shared cache) and in `runtime_exports` (fed to the
+        # post-cargo wasm-ld hand-link that actually applies exports/imports).
+        cargo_link_flags = ""
+        # Give the hand-linked artifact a DISTINCT fingerprint identity from the
+        # legacy dual-compile (rustc cdylib) one so a stale cross-method artifact
+        # can never hydrate from the shared cache in place of a hand-linked one
+        # (M05: no masking a hand-link regression, no leaking a bad hand-link).
+        # `link_flags` feeds only the fingerprint hash here, never cargo.
+        link_flags = _append_rustflags_text(link_flags, "--molt-link=single-compile")
     base_rustflags = env.get("RUSTFLAGS", "").strip()
     cargo_rustflags = _append_rustflags_text(base_rustflags, cargo_link_flags)
     fingerprint_rustflags = _append_rustflags_text(base_rustflags, link_flags)
@@ -2094,10 +2248,17 @@ def _ensure_runtime_wasm(
             cmd.append("--no-default-features")
         if wasm_cargo_features:
             cmd.extend(["--features", ",".join(wasm_cargo_features)])
-        if reloc:
+        if reloc or single_compile:
+            # single_compile: the shared module is hand-linked from this same
+            # staticlib after cargo, so both passes build the identical staticlib.
             cmd.extend(["--", "--crate-type=staticlib"])
         else:
             cmd.extend(["--", "--crate-type=cdylib"])
+        if os.environ.get("MOLT_RUNTIME_WASM_PRINT_LINK_ARGS") == "1":
+            # Diagnostics: print the exact linker invocation rustc drives for
+            # this crate-type (used to keep the explicit wasm-ld link paths in
+            # faithful parity with rustc's own link line).
+            cmd.append("--print=link-args")
         try:
             build, src = _run_runtime_wasm_cargo_build(
                 cmd=cmd,
@@ -2107,7 +2268,7 @@ def _ensure_runtime_wasm(
                 profile_dir=profile_dir,
                 target_root_override=target_root,
                 json_output=json_output,
-                artifact_kind="staticlib" if reloc else "cdylib",
+                artifact_kind="staticlib" if (reloc or single_compile) else "cdylib",
             )
         except subprocess.TimeoutExpired:
             if not json_output:
@@ -2125,6 +2286,29 @@ def _ensure_runtime_wasm(
                 msg = f"{msg}: {detail}"
             print(msg, file=sys.stderr)
             return False
+        if single_compile and not reloc:
+            # Single-compile split runtime: `src` is the staticlib cargo just
+            # produced (a cache hit off the reloc pass in the shared target dir).
+            # Link the shared module from it and re-point `src` at the linked
+            # wasm so the existing shared finalization (export-rename, missing-
+            # export validation, fingerprint, cache publish) runs unchanged.
+            if not src.exists():
+                if not json_output:
+                    print(
+                        "Runtime wasm build succeeded but staticlib artifact is missing.",
+                        file=sys.stderr,
+                    )
+                return False
+            shared_linked = src.with_name(f"{src.stem}.shared.wasm")
+            if not _link_runtime_staticlib_to_shared_wasm(
+                staticlib_path=src,
+                output_path=shared_linked,
+                json_output=json_output,
+                link_timeout=cargo_timeout,
+                export_link_args=runtime_exports,
+            ):
+                return False
+            src = shared_linked
         if reloc:
             if not src.exists():
                 if not json_output:
