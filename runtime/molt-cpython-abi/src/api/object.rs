@@ -1429,6 +1429,18 @@ pub unsafe extern "C" fn PyObject_CallObject(
     callable: *mut PyObject,
     args: *mut PyObject,
 ) -> *mut PyObject {
+    // CPython contract (Objects/call.c::PyObject_CallObject): when `args` is
+    // NULL the object is called with NO arguments via `_PyObject_CallNoArgs`,
+    // which hands the callee's `tp_call` the empty-tuple singleton — a real
+    // tuple, NEVER a NULL `args` pointer. numpy's `use_new_as_default`
+    // (dtypemeta.c) depends on this: it does
+    // `PyObject_CallObject((PyObject *)DTypeClass, NULL)` and the DType's
+    // `tp_new` (e.g. numpy `stringdtype_new`) parses `args` as a tuple. Passing
+    // the NULL straight through to `tp_new` violates the contract and strands
+    // parametric DType constructors, so route NULL args through `CallNoArgs`.
+    if args.is_null() {
+        return unsafe { PyObject_CallNoArgs(callable) };
+    }
     unsafe { PyObject_Call(callable, args, ptr::null_mut()) }
 }
 
