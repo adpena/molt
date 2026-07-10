@@ -290,7 +290,51 @@ def _build_wasm(build_dir: Path) -> Path:
         env=env,
     )
     _summarize_build_diagnostics(diagnostics_path)
-    return _select_wasm_entry(build_dir)
+    entry = _select_wasm_entry(build_dir)
+    _assert_no_poison_stubs(build_dir, entry)
+    return entry
+
+
+def _assert_no_poison_stubs(build_dir: Path, entry: Path) -> None:
+    """Fail LOUD if a built wasm ships a stub capability (artifact-effect gate).
+
+    Apparatus: a resolving-config check (e.g. "the long-double archive was
+    found") does NOT prove the capability is effective in the linked artifact —
+    the trapping stub can still be present and would otherwise surface ~minutes
+    later as an opaque ``RuntimeError: unreachable`` at run time, which is easy to
+    mis-mark as "done" on the proxy signal. Scan the runtime + app wasm for
+    known poison byte-markers (tools/artifact_poison_registry.toml) and abort the
+    acceptance build immediately with a named diagnosis when one is present.
+    """
+    gate = ROOT / "tools" / "artifact_poison_gate.py"
+    targets = [
+        p
+        for p in (build_dir / "molt_runtime.wasm", entry, build_dir / "app.wasm")
+        if p.is_file()
+    ]
+    # de-dup while preserving order
+    seen: set[str] = set()
+    unique = [p for p in targets if not (str(p) in seen or seen.add(str(p)))]
+    if not unique:
+        return
+    result = subprocess.run(
+        [sys.executable, str(gate), *[str(p) for p in unique]],
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    if result.stdout:
+        print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
+    if result.returncode != 0:
+        raise SystemExit(
+            "pact witness acceptance ABORTED: built wasm ships a stub capability "
+            "(artifact_poison_gate failed — see diagnosis above). The build is not "
+            "acceptable; fix the effect, not just the config."
+        )
 
 
 def _prepare_reference_oracle(run_dir: Path) -> Path:
