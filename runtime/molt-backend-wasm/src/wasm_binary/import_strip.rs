@@ -55,7 +55,7 @@ fn strip_unused_imports_checked(
                 let mut section = ImportSection::new();
                 for import in &plan.imports {
                     if !import.remove {
-                        section.import(&import.module, &import.name, import.entity_ty.clone());
+                        section.import(&import.module, &import.name, import.entity_ty);
                     }
                 }
                 out.push(2);

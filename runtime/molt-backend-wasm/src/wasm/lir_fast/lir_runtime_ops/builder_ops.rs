@@ -51,7 +51,7 @@ pub(in crate::wasm::lir_fast) fn emit_lir_sequence_builder(
 }
 
 pub(in crate::wasm::lir_fast) fn emit_lir_build_dict(ctx: &mut LirLowerCtx, op: &LirOp) {
-    if op.tir_op.operands.len() % 2 != 0 {
+    if !op.tir_op.operands.len().is_multiple_of(2) {
         panic!("BuildDict requires an even key/value operand count");
     }
     let Some(result) = op.result_values.first() else {

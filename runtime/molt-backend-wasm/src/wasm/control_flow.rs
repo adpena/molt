@@ -11,28 +11,24 @@ pub(in crate::wasm) enum ControlKind {
 }
 
 pub(in crate::wasm) fn loop_break_depth(control_stack: &[ControlKind]) -> Option<u32> {
-    let mut depth = 0u32;
     let mut found_loop = false;
-    for entry in control_stack.iter().rev() {
+    for (depth, entry) in control_stack.iter().rev().enumerate() {
         match entry {
-            ControlKind::Block if found_loop => return Some(depth),
+            ControlKind::Block if found_loop => return Some(depth as u32),
             ControlKind::Loop => {
                 found_loop = true;
             }
             _ => {}
         }
-        depth += 1;
     }
     None
 }
 
 pub(in crate::wasm) fn loop_continue_depth(control_stack: &[ControlKind]) -> Option<u32> {
-    let mut depth = 0u32;
-    for entry in control_stack.iter().rev() {
+    for (depth, entry) in control_stack.iter().rev().enumerate() {
         if matches!(entry, ControlKind::Loop) {
-            return Some(depth);
+            return Some(depth as u32);
         }
-        depth += 1;
     }
     None
 }
