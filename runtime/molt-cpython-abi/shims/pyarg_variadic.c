@@ -906,6 +906,18 @@ void PySys_WriteStderr(const char *format, ...) {
     va_end(ap);
 }
 
+/* C-runtime errno accessors for PyErr_SetFromErrno (errors.rs). The C runtime
+ * is the only portable authority for errno: Rust's last_os_error() reads
+ * GetLastError() on Windows, a DIFFERENT channel from the errno a C extension
+ * just set. */
+int molt_capi_errno(void) {
+    return errno;
+}
+
+const char *molt_capi_strerror(int errnum) {
+    return strerror(errnum);
+}
+
 int PyOS_vsnprintf(char *str, size_t size, const char *format, va_list va) {
     return vsnprintf(str, size, format, va);
 }
