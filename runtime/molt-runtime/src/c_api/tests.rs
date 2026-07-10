@@ -49,6 +49,36 @@ fn assert_none_with_exception_class(_py: &PyToken<'_>, bits: u64, expected: &str
     assert_pending_exception_class(_py, expected);
 }
 
+/// Build a shaped memoryview over `owner_bits` through the live typed-strided
+/// allocator (`alloc_memoryview_from_storage`). Replaces the removed
+/// `alloc_memoryview_shaped` convenience wrapper; the behavior under test
+/// (descriptor shape/strides/len, release semantics) is identical.
+#[allow(clippy::too_many_arguments)]
+fn alloc_shaped_memoryview_for_test(
+    _py: &PyToken<'_>,
+    owner_bits: u64,
+    offset: isize,
+    itemsize: usize,
+    readonly: bool,
+    format_bits: u64,
+    shape: Vec<isize>,
+    strides: Vec<isize>,
+) -> *mut u8 {
+    let Some(storage) = crate::object::memoryview::TypedStridedStorage::new(
+        std::ptr::null_mut(),
+        readonly,
+        itemsize,
+        offset,
+        owner_bits,
+        format_bits,
+        shape,
+        strides,
+    ) else {
+        return std::ptr::null_mut();
+    };
+    crate::object::builders::alloc_memoryview_from_storage(_py, storage)
+}
+
 struct CApiModuleCacheRestore {
     name_bits: u64,
     previous_bits: u64,
@@ -1401,6 +1431,67 @@ fn buffer_acquire_and_release_pins_owner() {
     });
 }
 
+/// End-to-end interlock guard: exporting an `array.array` buffer must pin the
+/// array against resize for the buffer's whole lifetime, and release must lift
+/// the pin. This proves the export-lease is fully wired — `ArrayCell::exports`
+/// is actually incremented on export and decremented on release, so
+/// `resize_blocked` (and the `ensure_array_resizable` mutator guards) are
+/// load-bearing rather than inert. It fails on the pre-wire code (arrays are not
+/// buffer-exportable at all, so `molt_buffer_acquire` returns -1) and again if
+/// the lease is ever un-wired (the mid-export append would silently succeed).
+#[test]
+fn array_buffer_export_lease_blocks_resize_until_release() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        use crate::builtins::array_mod::{molt_array_append, molt_array_new};
+
+        let tc_ptr = alloc_string(_py, b"i");
+        assert!(!tc_ptr.is_null());
+        let tc_bits = MoltObject::from_ptr(tc_ptr).bits();
+        let arr_bits = molt_array_new(tc_bits);
+        assert!(!obj_from_bits(arr_bits).is_none());
+        dec_ref_bits(_py, tc_bits);
+
+        // Seed two elements so the exported buffer has real backing bytes.
+        for value in [7_i64, 8] {
+            let appended = molt_array_append(arr_bits, MoltObject::from_int(value).bits());
+            assert!(!exception_pending(_py), "seed append must succeed");
+            assert!(obj_from_bits(appended).is_none());
+        }
+
+        // Export the array through the live C buffer-protocol acquire path.
+        let mut view = MoltBufferView::default();
+        let rc = unsafe { molt_buffer_acquire(arr_bits, &mut view as *mut MoltBufferView) };
+        assert_eq!(rc, 0, "array.array must be buffer-exportable");
+        assert_eq!(view.itemsize, 4);
+        assert_eq!(view.len, 8, "2 elements * 4-byte itemcode 'i'");
+        assert_eq!(view.base, arr_bits);
+        assert!(!view.data.is_null());
+
+        // While the buffer is exported, resizing must raise the interlock error.
+        let blocked = molt_array_append(arr_bits, MoltObject::from_int(9).bits());
+        assert!(obj_from_bits(blocked).is_none());
+        assert_pending_exception_class(_py, "BufferError");
+        let _ = molt_err_clear();
+
+        // Releasing the buffer drops the export lease, decrementing `exports`.
+        let rc_release = unsafe { molt_buffer_release(&mut view as *mut MoltBufferView) };
+        assert_eq!(rc_release, 0);
+        assert!(view.data.is_null());
+        assert_eq!(view.owner, 0);
+
+        // After release, resizing succeeds again.
+        let after = molt_array_append(arr_bits, MoltObject::from_int(10).bits());
+        assert!(
+            !exception_pending(_py),
+            "append after buffer release must succeed"
+        );
+        assert!(obj_from_bits(after).is_none());
+
+        dec_ref_bits(_py, arr_bits);
+    });
+}
+
 #[test]
 fn buffer_acquire_exports_shaped_memoryview_descriptor() {
     let _guard = CApiTestGuard::new();
@@ -1411,7 +1502,7 @@ fn buffer_acquire_exports_shaped_memoryview_descriptor() {
         let format_ptr = alloc_string(_py, b"B");
         assert!(!format_ptr.is_null());
         let format_bits = MoltObject::from_ptr(format_ptr).bits();
-        let view_ptr = crate::object::builders::alloc_memoryview_shaped(
+        let view_ptr = alloc_shaped_memoryview_for_test(
             _py,
             owner_bits,
             0,
@@ -1459,7 +1550,7 @@ fn memoryview_clone_and_c_export_share_typed_strided_descriptor() {
         let format_ptr = alloc_string(_py, b"B");
         assert!(!format_ptr.is_null());
         let format_bits = MoltObject::from_ptr(format_ptr).bits();
-        let view_ptr = crate::object::builders::alloc_memoryview_shaped(
+        let view_ptr = alloc_shaped_memoryview_for_test(
             _py,
             owner_bits,
             0,
@@ -1716,7 +1807,7 @@ fn memoryview_release_closes_typed_storage_export_and_runtime_access() {
         let format_ptr = alloc_string(_py, b"B");
         assert!(!format_ptr.is_null());
         let format_bits = MoltObject::from_ptr(format_ptr).bits();
-        let view_ptr = crate::object::builders::alloc_memoryview_shaped(
+        let view_ptr = alloc_shaped_memoryview_for_test(
             _py,
             owner_bits,
             0,
@@ -1780,7 +1871,7 @@ fn memoryview_release_closes_byteslike_method_arguments() {
         let format_ptr = alloc_string(_py, b"B");
         assert!(!format_ptr.is_null());
         let format_bits = MoltObject::from_ptr(format_ptr).bits();
-        let view_ptr = crate::object::builders::alloc_memoryview_shaped(
+        let view_ptr = alloc_shaped_memoryview_for_test(
             _py,
             owner_bits,
             0,
