@@ -318,6 +318,22 @@ jobs:
         # renderer drift cannot silently re-enter.
         run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo clippy -p molt-gpu --all-targets --all-features -- -D warnings
 
+      - name: Clippy (workspace zero-warning net — standing -D warnings gate)
+        # THE standing gate: a single workspace-wide -D-warnings clippy run that
+        # no crate can escape. The per-crate steps above give feature-specific
+        # coverage (--all-features on ir/passes/tir/gpu, native-backend on
+        # molt-backend); this net denies warnings across EVERY workspace member
+        # under default features + all targets, so a lint regression in a crate
+        # that never had its own clippy job (molt-runtime, molt-backend-wasm,
+        # molt-backend-luau, molt-lang-cpython-abi, db, snapshot, embed, ffi, ...)
+        # fails CI instead of drifting in silently — the class fix for the debt
+        # this gate was introduced to burn down. `--all-features` is intentionally
+        # NOT used: it would enable molt-backend's `llvm`/`polly` features, which
+        # need a system LLVM the default runner lacks (the +llvm lane is gated
+        # separately in the llvm-backend job); default features keep this portable
+        # across Windows/macOS/Linux dev boxes too.
+        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo clippy --workspace --all-targets -- -D warnings
+
       - name: Test molt-snapshot
         run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test -p molt-snapshot
 
