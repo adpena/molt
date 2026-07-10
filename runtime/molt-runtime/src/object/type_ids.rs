@@ -55,6 +55,14 @@ pub(crate) const TYPE_ID_NATIVE_HANDLE: u32 = 252;
 /// (CPython-faithful `glob` algorithm, but incremental instead of eager).
 pub(crate) const TYPE_ID_GLOB_ITER: u32 = 253;
 
+/// First-class Molt wrapper around a genuine C-extension `PyObject*` that has
+/// crossed *into* compiled Python (a numpy static type, an extension instance,
+/// a descriptor, …). Payload is the raw C pointer (`usize`); attribute access,
+/// mutation, and calls route back through the object's own CPython type slots
+/// (`tp_getattro`/`tp_setattro`/`tp_call`) via the `molt-cpython-abi` bridge.
+/// See `object::foreign`.
+pub(crate) const TYPE_ID_FOREIGN: u32 = 254;
+
 pub(crate) const TYPE_TAG_ANY: i64 = 0;
 pub(crate) const TYPE_TAG_INT: i64 = 1;
 pub(crate) const TYPE_TAG_FLOAT: i64 = 2;
@@ -131,7 +139,7 @@ pub(crate) const TYPE_ID_LIST_BOOL: u32 = molt_codegen_abi::TYPE_ID_LIST_BOOL;
 pub(crate) const TYPE_ID_FLOAT: u32 = 249;
 
 pub(crate) const MIN_HEAP_TYPE_ID: u32 = TYPE_ID_STRING;
-pub(crate) const MAX_HEAP_TYPE_ID: u32 = TYPE_ID_GLOB_ITER;
+pub(crate) const MAX_HEAP_TYPE_ID: u32 = TYPE_ID_FOREIGN;
 
 #[inline]
 pub(crate) fn is_valid_heap_type_id(type_id: u32) -> bool {

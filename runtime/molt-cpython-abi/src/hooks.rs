@@ -264,6 +264,22 @@ pub struct RuntimeHooks {
     /// error left in the runtime pending-exception state.
     pub object_call:
         unsafe extern "C" fn(callable_bits: u64, args_bits: u64, kwargs_bits: u64) -> u64,
+    // ── Foreign-object custody (C-extension objects into Molt) ────────────────
+    //
+    // When a genuine C-extension `PyObject*` (a numpy static type, an extension
+    // instance, a descriptor, …) crosses *into* compiled Python, the bridge
+    // wraps it in a first-class Molt heap object (`TYPE_ID_FOREIGN`) so that
+    // Molt-side attribute access / calls resolve — the previous synthetic
+    // `0xA11C…` identity token was not a valid `MoltObject` bit pattern, so
+    // `DType.__name__` and friends failed to decode the handle. This hook
+    // allocates the wrapper; the runtime owns the `TYPE_ID_FOREIGN` heap type,
+    // its drop custody, and the getattr/setattr/call routing back through the
+    // object's own CPython type slots (via `molt-cpython-abi` bridge functions).
+    /// Allocate a `TYPE_ID_FOREIGN` wrapper around the C `PyObject*` at address
+    /// `c_ptr`. Returns the wrapper handle bits, or 0 on failure. The strong
+    /// reference custody (`Py_INCREF` on the C object) is handled by the bridge
+    /// caller, not this hook.
+    pub foreign_new: unsafe extern "C" fn(c_ptr: usize) -> u64,
 }
 
 /// Discriminants for [`RuntimeHooks::dict_op`]. Kept in sync with the match in
@@ -589,6 +605,9 @@ unsafe extern "C" fn stub_object_dir(_obj: u64) -> u64 {
 unsafe extern "C" fn stub_object_call(_callable: u64, _args: u64, _kwargs: u64) -> u64 {
     0
 }
+unsafe extern "C" fn stub_foreign_new(_c_ptr: usize) -> u64 {
+    0
+}
 
 /// A no-op hooks table used when the runtime hasn't registered yet.
 pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
@@ -646,6 +665,7 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     set_discard: stub_set_discard,
     object_dir: stub_object_dir,
     object_call: stub_object_call,
+    foreign_new: stub_foreign_new,
 };
 
 /// Return the registered hooks or fall back to the no-op stubs.

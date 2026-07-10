@@ -35,14 +35,23 @@ pub unsafe extern "C" fn PyList_Append(list: *mut PyObject, item: *mut PyObject)
     if list.is_null() || item.is_null() {
         return -1;
     }
-    let bridge = GLOBAL_BRIDGE.lock();
+    let mut bridge = GLOBAL_BRIDGE.lock();
     let list_bits = match bridge.pyobj_to_handle(list) {
         Some(b) => b,
         None => return -1,
     };
+    let mut item_is_foreign = false;
     let item_bits = match bridge.pyobj_to_handle(item) {
         Some(b) => b,
-        None => return -1,
+        None => match unsafe { bridge.molt_value_for_pyobj(item) } {
+            // A genuine C-extension object item: give it a first-class
+            // `TYPE_ID_FOREIGN` wrapper so it can be stored in the Molt list.
+            Some(b) => {
+                item_is_foreign = true;
+                b
+            }
+            None => return -1,
+        },
     };
     drop(bridge);
     let h = hooks_or_stubs();
@@ -51,8 +60,12 @@ pub unsafe extern "C" fn PyList_Append(list: *mut PyObject, item: *mut PyObject)
     // item (it does not steal). Anchor the item proxy so the extension's
     // balancing `Py_DECREF` cannot sever the pointer↔handle mapping while the
     // item stays reachable from the runtime list (same class as the
-    // `PyDict_SetItem` anchor — see api/mapping.rs).
-    unsafe { crate::api::refcount::Py_INCREF(item) };
+    // `PyDict_SetItem` anchor — see api/mapping.rs). A foreign-wrapped item
+    // already holds its own strong reference on the C object (minted at
+    // refcount 1, ownership transferred to the list), so it is not INCREF'd.
+    if !item_is_foreign {
+        unsafe { crate::api::refcount::Py_INCREF(item) };
+    }
     0
 }
 

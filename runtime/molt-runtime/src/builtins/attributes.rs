@@ -225,6 +225,43 @@ pub extern "C" fn molt_code_positions(code_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
+/// Attribute lookup for a `TYPE_ID_FOREIGN` wrapper: route through the wrapped
+/// C object's own type slots via the ABI bridge. Type name-dunders
+/// (`__name__`/`__qualname__`) resolve hooks-free directly from the C `tp_name`
+/// (runtime attribute name + runtime string allocator), robust across
+/// split-runtime modules where the getattr's ABI hook table may be a stub.
+/// Returns `Some(bits)` on success, or `None` (caller raises `AttributeError`,
+/// or propagates a pending exception the C slot left set).
+///
+/// # Safety
+/// `obj_ptr` must be a live `TYPE_ID_FOREIGN` object.
+pub(crate) unsafe fn foreign_attr_lookup(
+    _py: &PyToken<'_>,
+    obj_ptr: *mut u8,
+    attr_bits: u64,
+) -> Option<u64> {
+    let c_ptr = unsafe { crate::object::foreign::foreign_ptr_from_obj(obj_ptr) };
+    let attr_name = string_obj_to_owned(obj_from_bits(attr_bits))?;
+    if attr_name == "__name__" || attr_name == "__qualname__" {
+        let mut buf = [0u8; 256];
+        let n = unsafe {
+            molt_cpython_abi::bridge::molt_foreign_type_dunder_name(
+                c_ptr,
+                buf.as_mut_ptr(),
+                buf.len(),
+            )
+        };
+        if n >= 0 && (n as usize) <= buf.len() {
+            let name_ptr = crate::object::builders::alloc_string(_py, &buf[..n as usize]);
+            if !name_ptr.is_null() {
+                return Some(MoltObject::from_ptr(name_ptr).bits());
+            }
+        }
+    }
+    let val = unsafe { molt_cpython_abi::bridge::molt_foreign_getattr(c_ptr, attr_bits) };
+    if val != 0 { Some(val) } else { None }
+}
+
 pub(crate) unsafe fn attr_lookup_ptr(
     _py: &PyToken<'_>,
     obj_ptr: *mut u8,
@@ -250,6 +287,13 @@ pub(crate) unsafe fn attr_lookup_ptr(
         }
         profile_hit(_py, &ATTR_LOOKUP_COUNT);
         let type_id = object_type_id(obj_ptr);
+        // Foreign (C-extension) object: route ALL attribute access here — this is
+        // the shared lookup every getattr entry point (`molt_get_attr_object`,
+        // `_ic`, `_generic`, `_name`, …) funnels through, so foreign dispatch must
+        // live here, not in a single entry point.
+        if type_id == crate::TYPE_ID_FOREIGN {
+            return foreign_attr_lookup(_py, obj_ptr, attr_bits);
+        }
         if matches!(type_id, TYPE_ID_BIGINT | TYPE_ID_FLOAT) {
             let name = string_obj_to_owned(obj_from_bits(attr_bits))?;
             let self_bits = MoltObject::from_ptr(obj_ptr).bits();
@@ -2651,6 +2695,9 @@ pub extern "C" fn molt_get_attr_name(obj_bits: u64, name_bits: u64) -> u64 {
             let attr_name = string_obj_to_owned(obj_from_bits(name_bits))
                 .unwrap_or_else(|| "<attr>".to_string());
             if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
+                // Foreign (C-extension) objects are handled inside the shared
+                // `attr_lookup_ptr` (below) so every getattr entry point routes
+                // them uniformly — do NOT special-case here.
                 if let Some(val) = attr_lookup_ptr(_py, obj_ptr, name_bits) {
                     return val;
                 }
