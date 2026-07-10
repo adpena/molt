@@ -198,31 +198,45 @@ unsafe fn reset_pybuffer(view: *mut Py_buffer) {
     }
 }
 
+/// Fill `view` from the descriptor reached through the RAW pointer
+/// `descriptor` (which must point into the heap-published `BufferInternal`, not
+/// a stack temporary or a `&mut`-reborrow of one).
+///
+/// The `format`/`shape`/`strides` pointers written into `view` are what C reads
+/// for the *entire* lifetime of the view — long after this call returns. They
+/// must therefore carry provenance that survives every later access to the
+/// enclosing box. We derive them by RAW projection (`&raw mut (*descriptor).f`),
+/// never via `<[T; N]>::as_mut_ptr` (which takes `&mut self` and would mint a
+/// reference retag that a subsequent `Box::into_raw`/`Box::from_raw` Unique
+/// retag pops off the borrow stack — the offset-`0x440` `format` UB). This is
+/// the buffer analogue of the bridge header's `UnsafeCell` fix: aliasing raw
+/// pointers into memory C also holds, kept live by never routing through a
+/// `&`/`&mut` reborrow.
 unsafe fn apply_molt_view(
     view: *mut Py_buffer,
     obj: *mut PyObject,
-    descriptor: &mut MoltBufferView,
+    descriptor: *mut MoltBufferView,
     flags: c_int,
 ) {
     unsafe {
-        (*view).buf = descriptor.data.cast();
+        (*view).buf = (*descriptor).data.cast();
         (*view).obj = obj;
-        (*view).len = descriptor.len as isize;
-        (*view).itemsize = descriptor.itemsize as isize;
-        (*view).readonly = descriptor.readonly as c_int;
-        (*view).ndim = descriptor.ndim as c_int;
+        (*view).len = (*descriptor).len as isize;
+        (*view).itemsize = (*descriptor).itemsize as isize;
+        (*view).readonly = (*descriptor).readonly as c_int;
+        (*view).ndim = (*descriptor).ndim as c_int;
         (*view).format = if (flags & PyBUF_FORMAT) != 0 {
-            descriptor.format.as_mut_ptr().cast::<c_char>()
+            (&raw mut (*descriptor).format).cast::<c_char>()
         } else {
             ptr::null_mut()
         };
         (*view).shape = if (flags & (PyBUF_ND | PyBUF_STRIDES)) != 0 {
-            descriptor.shape.as_mut_ptr()
+            (&raw mut (*descriptor).shape).cast::<isize>()
         } else {
             ptr::null_mut()
         };
         (*view).strides = if (flags & PyBUF_STRIDES) != 0 {
-            descriptor.strides.as_mut_ptr()
+            (&raw mut (*descriptor).strides).cast::<isize>()
         } else {
             ptr::null_mut()
         };
@@ -233,14 +247,23 @@ unsafe fn apply_molt_view(
 unsafe fn install_buffer_internal(
     view: *mut Py_buffer,
     obj: *mut PyObject,
-    mut internal: Box<BufferInternal>,
+    internal: Box<BufferInternal>,
     flags: c_int,
 ) -> c_int {
     unsafe {
         let descriptor_ok = descriptor_satisfies_flags(&internal.descriptor, flags);
-        apply_molt_view(view, obj, &mut internal.descriptor, flags);
+        // Publish the box as a raw pointer FIRST, then derive the C-visible
+        // `view.format`/`shape`/`strides` pointers from that raw pointer. Doing
+        // it the other way round — building the interior pointers from
+        // `&mut internal.descriptor` and only THEN calling `Box::into_raw` — is
+        // UB under Stacked Borrows: `Box::into_raw`'s internal `&mut *box`
+        // reborrow is a Unique retag over the whole allocation ([0x0..0x458])
+        // that invalidates the reference-derived `format` tag at [0x440..0x450],
+        // so C's later read of `view.format` hits a popped tag. Raw→raw
+        // projection off `internal_ptr` never creates such a reference retag.
         let internal_ptr = Box::into_raw(internal);
         register_buffer_internal(internal_ptr);
+        apply_molt_view(view, obj, &raw mut (*internal_ptr).descriptor, flags);
         (*view).internal = internal_ptr.cast();
         if !obj.is_null() {
             crate::api::refcount::Py_INCREF(obj);

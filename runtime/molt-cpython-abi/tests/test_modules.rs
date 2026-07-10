@@ -756,9 +756,16 @@ fn test_moduledef_init_returns_definition_pointer() {
         m_free: ptr::null_mut(),
     };
 
-    let out = unsafe { molt_cpython_abi::api::modules::PyModuleDef_Init(&mut def) };
+    // Take the raw `def` pointer ONCE and reuse it. `PyModuleDef_Init` returns
+    // exactly this pointer (`(PyObject*)def`), so `out` aliases `def`. Forming a
+    // fresh `&mut def as *mut PyModuleDef` for the comparison (as this test used
+    // to) is a Unique retag over `def` that pops `out`'s tag off the borrow
+    // stack, so the following `(*out).ob_refcnt` read is UB under Stacked
+    // Borrows. Comparing against the pre-taken raw pointer keeps `out` live.
+    let def_ptr: *mut PyModuleDef = &raw mut def;
+    let out = unsafe { molt_cpython_abi::api::modules::PyModuleDef_Init(def_ptr) };
 
-    assert_eq!(out.cast::<PyModuleDef>(), &mut def as *mut PyModuleDef);
+    assert_eq!(out.cast::<PyModuleDef>(), def_ptr);
     assert_eq!(unsafe { (*out).ob_refcnt }, 1);
     assert!(std::ptr::eq(
         unsafe { (*out).ob_type },
