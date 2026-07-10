@@ -196,7 +196,7 @@ unsafe fn attribute_error_missing(o: *mut PyObject, attr_name: *const c_char) {
 
 /// Best-effort type name for an object, for diagnostic messages. Falls back to
 /// "object" when the type or its `tp_name` is unavailable.
-unsafe fn type_name_lossy(o: *mut PyObject) -> String {
+pub(crate) unsafe fn type_name_lossy(o: *mut PyObject) -> String {
     if o.is_null() {
         return "object".to_string();
     }
