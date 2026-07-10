@@ -160,6 +160,11 @@ pub unsafe extern "C" fn PyCapsule_IsValid(capsule: *mut PyObject, name: *const 
     let Some(capsule) = (unsafe { capsule_object(capsule) }) else {
         return 0;
     };
+    // CPython Objects/capsule.c: a NULL-pointer capsule is INVALID — the same
+    // `capsule->pointer != NULL` conjunct gates every getter.
+    if unsafe { (*capsule).pointer }.is_null() {
+        return 0;
+    }
     unsafe { capsule_name_matches((*capsule).name, name) as c_int }
 }
 
@@ -236,26 +241,75 @@ pub unsafe extern "C" fn PyCapsule_Import(name: *const c_char, _no_block: c_int)
     }
     let key = unsafe { CStr::from_ptr(name).to_string_lossy().into_owned() };
     crate::capi_trace::trace_call("PyCapsule_Import", Some(&key));
+    // Fast path: a capsule created in this process is in the registry.
     let found = CAPSULE_REGISTRY
         .lock()
         .get(&key)
         .map(|entry| entry.pointer)
         .unwrap_or(ptr::null_mut());
-    if found.is_null() {
-        // CPython's PyCapsule_Import sets ImportError when the named capsule is
-        // not available. Returning a bare NULL is a silent failure: an extension
-        // (for example numpy's PyDateTime_IMPORT) then proceeds with a NULL API
-        // pointer and crashes later instead of failing cleanly here.
-        crate::capi_trace::record_silent_failure("PyCapsule_Import", Some(&key));
-        let message = format!("PyCapsule_Import could not import module capsule \"{key}\"");
-        if let Ok(cmessage) = std::ffi::CString::new(message) {
-            unsafe {
-                crate::api::errors::PyErr_SetString(
-                    &raw mut crate::abi_types::PyExc_ImportError,
-                    cmessage.as_ptr(),
-                );
+    if !found.is_null() {
+        return found;
+    }
+    // Registry miss: run CPython's real protocol — import the first dotted
+    // component (triggering the module init that CREATES the capsule for a
+    // lazily-initialized module), walk the remaining components via getattr,
+    // validate with PyCapsule_IsValid, and return the capsule's pointer.
+    if let Some((module_name, rest)) = {
+        let mut parts = key.splitn(2, '.');
+        parts.next().map(|m| (m.to_string(), parts.next().map(str::to_string)))
+    } {
+        if let Ok(cmodule) = std::ffi::CString::new(module_name) {
+            let mut obj =
+                unsafe { crate::api::imports::PyImport_ImportModule(cmodule.as_ptr()) };
+            if let Some(rest) = rest {
+                for attr in rest.split('.') {
+                    if obj.is_null() {
+                        break;
+                    }
+                    let Ok(cattr) = std::ffi::CString::new(attr) else {
+                        unsafe { crate::api::refcount::Py_DECREF(obj) };
+                        obj = ptr::null_mut();
+                        break;
+                    };
+                    let next = unsafe {
+                        crate::api::object::PyObject_GetAttrString(obj, cattr.as_ptr())
+                    };
+                    unsafe { crate::api::refcount::Py_DECREF(obj) };
+                    obj = next;
+                }
+            }
+            if !obj.is_null() {
+                if unsafe { PyCapsule_IsValid(obj, name) } != 0 {
+                    let pointer = unsafe { (*obj.cast::<PyCapsuleObject>()).pointer };
+                    unsafe { crate::api::refcount::Py_DECREF(obj) };
+                    return pointer;
+                }
+                unsafe { crate::api::refcount::Py_DECREF(obj) };
+                // Resolved to something that is not the named capsule.
+                let message =
+                    format!("PyCapsule_Import \"{key}\" is not valid");
+                if let Ok(cmessage) = std::ffi::CString::new(message) {
+                    unsafe {
+                        crate::api::errors::PyErr_SetString(
+                            &raw mut crate::abi_types::PyExc_AttributeError,
+                            cmessage.as_ptr(),
+                        );
+                    }
+                }
+                return ptr::null_mut();
             }
         }
     }
-    found
+    // Both the registry and the import walk missed: honest ImportError.
+    crate::capi_trace::record_silent_failure("PyCapsule_Import", Some(&key));
+    let message = format!("PyCapsule_Import could not import module capsule \"{key}\"");
+    if let Ok(cmessage) = std::ffi::CString::new(message) {
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                &raw mut crate::abi_types::PyExc_ImportError,
+                cmessage.as_ptr(),
+            );
+        }
+    }
+    ptr::null_mut()
 }
