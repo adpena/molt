@@ -73,6 +73,27 @@ pub unsafe extern "C" fn PyObject_Free(ptr: *mut c_void) {
     unsafe { PyMem_Free(ptr) };
 }
 
+// CPython's `PyObject_Malloc`/`Calloc`/`Realloc` are the object-domain
+// allocator (`obmalloc`). Semantically they are `malloc`/`calloc`/`realloc`
+// with the same "0-size returns a unique non-NULL pointer" guarantee — Molt has
+// no separate obmalloc arena, so they route through the same libc path as
+// `PyMem_*`/`PyObject_Free`. A C extension (numpy) that pairs `PyObject_Malloc`
+// with `PyObject_Free` must see a matched allocator, which this guarantees.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyObject_Malloc(size: usize) -> *mut c_void {
+    unsafe { PyMem_Malloc(size) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyObject_Calloc(nelem: usize, elsize: usize) -> *mut c_void {
+    unsafe { PyMem_Calloc(nelem, elsize) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyObject_Realloc(ptr: *mut c_void, new_size: usize) -> *mut c_void {
+    unsafe { PyMem_Realloc(ptr, new_size) }
+}
+
 pub(crate) unsafe fn molt_object_alloc(
     typeobj: *mut PyTypeObject,
     nitems: Py_ssize_t,
@@ -462,5 +483,36 @@ pub unsafe extern "C" fn molt_memoryview_dealloc(op: *mut PyObject) {
     unsafe {
         crate::api::buffer::PyBuffer_Release(&raw mut (*view).view);
         drop(Box::from_raw(view));
+    }
+}
+
+#[cfg(test)]
+mod object_allocator_tests {
+    use super::*;
+
+    /// `PyObject_Malloc`/`Realloc`/`Free` round-trip real writable storage, and a
+    /// 0-size `PyObject_Calloc` returns a unique non-NULL block (CPython's obmalloc
+    /// contract), so a numpy pairing of `PyObject_Malloc` with `PyObject_Free`
+    /// cannot fault or leak on the 0 edge.
+    #[test]
+    fn object_allocators_roundtrip() {
+        unsafe {
+            let p = PyObject_Malloc(64);
+            assert!(!p.is_null(), "PyObject_Malloc(64) is NULL");
+            std::ptr::write_bytes(p.cast::<u8>(), 0xAB, 64);
+            let p = PyObject_Realloc(p, 256);
+            assert!(!p.is_null(), "PyObject_Realloc(256) is NULL");
+            assert_eq!(*p.cast::<u8>(), 0xAB, "realloc must preserve leading bytes");
+            PyObject_Free(p);
+
+            let zero = PyObject_Calloc(0, 0);
+            assert!(!zero.is_null(), "PyObject_Calloc(0,0) must be non-NULL");
+            PyObject_Free(zero);
+
+            let c = PyObject_Calloc(8, 8);
+            assert!(!c.is_null());
+            assert_eq!(*c.cast::<u64>(), 0, "PyObject_Calloc must zero the block");
+            PyObject_Free(c);
+        }
     }
 }

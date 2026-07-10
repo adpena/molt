@@ -61,6 +61,32 @@ pub unsafe extern "C" fn Py_DECREF(op: *mut PyObject) {
     }
 }
 
+/// CPython private `_Py_Dealloc` (Objects/object.c): the object finalizer that a
+/// C extension's `Py_DECREF` macro tail-calls the moment a refcount reaches
+/// zero. numpy links it directly. This mirrors the zero-refcount branch of
+/// [`Py_DECREF`]: release the bridge identity when this is a molt-owned object,
+/// otherwise invoke the C type's own `tp_dealloc`.
+///
+/// # Safety
+/// `op` must be a valid PyObject whose refcount has already reached zero.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn _Py_Dealloc(op: *mut PyObject) {
+    if op.is_null() {
+        return;
+    }
+    unsafe {
+        let released_bridge_object = crate::bridge::GLOBAL_BRIDGE.lock().release_pyobj(op);
+        if !released_bridge_object {
+            let tp = (*op).ob_type;
+            if !tp.is_null()
+                && let Some(dealloc) = (*tp).tp_dealloc
+            {
+                dealloc(op);
+            }
+        }
+    }
+}
+
 /// `Py_INCREF` that accepts null (null is silently ignored).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Py_XINCREF(op: *mut PyObject) {

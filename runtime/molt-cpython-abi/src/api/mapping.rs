@@ -455,6 +455,29 @@ pub unsafe extern "C" fn PyDict_GetItemString(
     result
 }
 
+/// CPython private `_PyDict_GetItemStringWithError(v, key)` (Objects/dictobject.c):
+/// like [`PyDict_GetItemString`] but does NOT suppress errors — a non-dict `v`
+/// sets `PyErr_BadInternalCall`, while a genuinely absent key returns NULL with
+/// no exception. numpy links this private form. Builds the str key and routes
+/// through [`PyDict_GetItemWithError`], returning a BORROWED reference.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn _PyDict_GetItemStringWithError(
+    op: *mut PyObject,
+    key: *const std::os::raw::c_char,
+) -> *mut PyObject {
+    if key.is_null() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return ptr::null_mut();
+    }
+    let key_obj = unsafe { crate::api::strings::PyUnicode_FromString(key) };
+    if key_obj.is_null() {
+        return ptr::null_mut();
+    }
+    let result = unsafe { PyDict_GetItemWithError(op, key_obj) };
+    unsafe { crate::api::refcount::Py_DECREF(key_obj) };
+    result
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyDict_SetDefault(
     op: *mut PyObject,
@@ -772,6 +795,29 @@ pub unsafe extern "C" fn PyDict_Items(op: *mut PyObject) -> *mut PyObject {
 mod dict_anchor_tests {
     use super::*;
     use molt_lang_obj_model::MoltObject;
+
+    /// `_PyDict_GetItemStringWithError` is the error-propagating variant: a NULL
+    /// key is a bad internal call (sets an exception), never a silent NULL. The
+    /// found/absent dict-lookup paths are exercised end-to-end by the discovery
+    /// engine (they need the runtime `dict` hooks); here we pin the guard that
+    /// distinguishes it from the error-suppressing `PyDict_GetItemString`.
+    #[test]
+    fn getitemstring_witherror_null_key_is_bad_internal_call() {
+        crate::bridge::init_tag_table();
+        unsafe {
+            crate::api::errors::PyErr_Clear();
+            let recv = GLOBAL_BRIDGE
+                .lock()
+                .handle_to_pyobj(MoltObject::from_int(0xD1C7).bits());
+            let got = _PyDict_GetItemStringWithError(recv, ptr::null());
+            assert!(got.is_null(), "NULL key must yield NULL");
+            assert!(
+                !crate::api::errors::PyErr_Occurred().is_null(),
+                "NULL key must set an exception (bad internal call), not a silent NULL"
+            );
+            crate::api::errors::PyErr_Clear();
+        }
+    }
 
     /// Regression for the numpy `npy_cpu_dispatch_tracer_init` unresolved-dict
     /// class: `PyDict_SetItem` must anchor the key/value proxies (CPython's

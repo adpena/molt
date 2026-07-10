@@ -228,6 +228,32 @@ pub unsafe extern "C" fn PyErr_BadInternalCall() {
     }
 }
 
+/// CPython private `_PyErr_BadInternalCall(filename, lineno)` (Python/errors.c):
+/// the located form of [`PyErr_BadInternalCall`] — sets **SystemError**
+/// `"<file>:<line>: bad argument to internal function"`. When a C extension is
+/// built with `assert`-style internal-call checks, its `PyErr_BadInternalCall()`
+/// macro expands to this private form carrying `__FILE__`/`__LINE__`; numpy
+/// links it. A NULL filename or an interior-NUL message degrades to the
+/// no-location wrapper rather than dropping the error.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn _PyErr_BadInternalCall(filename: *const c_char, lineno: c_int) {
+    if filename.is_null() {
+        unsafe { PyErr_BadInternalCall() };
+        return;
+    }
+    let file = unsafe { CStr::from_ptr(filename) }.to_string_lossy();
+    let message = format!("{file}:{lineno}: bad argument to internal function");
+    match std::ffi::CString::new(message) {
+        Ok(cmessage) => unsafe {
+            PyErr_SetString(
+                &raw mut crate::abi_types::PyExc_SystemError,
+                cmessage.as_ptr(),
+            );
+        },
+        Err(_) => unsafe { PyErr_BadInternalCall() },
+    }
+}
+
 /// CPython `PyErr_Fetch` (Python/errors.c): transfers the pending exception's
 /// REAL type plus a value carrying its message into the out-params and clears
 /// the indicator, so a Fetch → Restore round-trip preserves the exception.
@@ -1184,4 +1210,38 @@ fn molt_str_len(bits: u64) -> usize {
     let mut len: usize = 0;
     unsafe { (h.str_data)(bits, std::ptr::addr_of_mut!(len)) };
     len
+}
+
+#[cfg(test)]
+mod bad_internal_call_tests {
+    use super::*;
+
+    /// `_PyErr_BadInternalCall(file, line)` sets a SystemError whose message
+    /// carries the `file:line` location (the located form numpy links), and a
+    /// NULL filename degrades to the no-location wrapper rather than dropping the
+    /// error. The message is stored in the thread-local exception state, so this
+    /// is exercisable without runtime hooks.
+    #[test]
+    fn located_bad_internal_call_carries_location() {
+        unsafe {
+            PyErr_Clear();
+            _PyErr_BadInternalCall(c"multiarraymodule.c".as_ptr(), 4242);
+        }
+        let msg = take_current_error_message().unwrap_or_default();
+        assert!(
+            msg.contains("multiarraymodule.c:4242"),
+            "located message must carry file:line, got {msg:?}"
+        );
+        assert!(msg.contains("bad argument to internal function"), "got {msg:?}");
+    }
+
+    #[test]
+    fn null_filename_degrades_to_wrapper() {
+        unsafe {
+            PyErr_Clear();
+            _PyErr_BadInternalCall(std::ptr::null(), 0);
+        }
+        let msg = take_current_error_message().unwrap_or_default();
+        assert_eq!(msg, "bad argument to internal function");
+    }
 }
