@@ -44,15 +44,11 @@ impl WasmRuntimeSurfacePlan {
     pub(super) fn auto_imports(&self, import_ids: &TrackedImportIds) -> Vec<WasmRuntimeImport> {
         let mut auto_imports: Vec<WasmRuntimeImport> =
             self.required_imports.iter().copied().collect();
-        auto_imports.extend(
-            self.builtin_trampoline_specs
-                .iter()
-                .map(|(runtime_name, _arity)| {
-                    runtime_callable_import(runtime_name).unwrap_or_else(|| {
-                        panic!("runtime callable missing generated import spec: {runtime_name}")
-                    })
-                }),
-        );
+        auto_imports.extend(self.builtin_trampoline_specs.keys().map(|runtime_name| {
+            runtime_callable_import(runtime_name).unwrap_or_else(|| {
+                panic!("runtime callable missing generated import spec: {runtime_name}")
+            })
+        }));
         auto_imports.extend(self.direct_import_call_specs.keys().map(|runtime_name| {
             wasm_runtime_import(runtime_name).unwrap_or_else(|| {
                 panic!("direct runtime call missing generated import spec: {runtime_name}")

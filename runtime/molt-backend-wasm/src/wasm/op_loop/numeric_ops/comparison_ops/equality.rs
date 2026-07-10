@@ -40,7 +40,7 @@ pub(super) fn emit_equality_compare_op(
     import_name: crate::wasm_abi_generated::WasmRuntimeImport,
 ) {
     let operands = binary_operands(op, locals);
-    if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
+    if wasm_scalar_integer_fast_path_for_op(scalar_plan, op) {
         emit_guarded_int_binary_result_or_boxed(
             func,
             operands,

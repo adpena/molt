@@ -22,15 +22,10 @@ pub(in crate::wasm::state_dispatch) fn build_state_resume_maps(
             if let Some(state_id) = op.value {
                 state_map.insert(state_id, idx);
             }
-        } else {
-            match op.kind.as_str() {
-                "const" => {
-                    if let (Some(out), Some(value)) = (op.out.as_ref(), op.value) {
-                        const_ints.insert(out.clone(), value);
-                    }
-                }
-                _ => {}
-            }
+        } else if op.kind.as_str() == "const"
+            && let (Some(out), Some(value)) = (op.out.as_ref(), op.value)
+        {
+            const_ints.insert(out.clone(), value);
         }
     }
 
