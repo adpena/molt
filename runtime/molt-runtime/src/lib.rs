@@ -159,7 +159,12 @@ pub(crate) use molt_runtime_platform::libc_compat;
 // shim exists only on wasm32. Alias real libc so `crate::libc_compat` resolves
 // on native too (child-process rlimits, native TLS socket helpers, ...). Every
 // native user below calls only real POSIX libc symbols.
+// clippy(unused_imports): this alias must exist on every non-wasm target so that
+// `crate::libc_compat` resolves in the ~20 downstream modules that import it; on
+// Windows those modules' concrete `libc::` calls are all `#[cfg(unix)]`-gated, so
+// the alias is (correctly) unused on Windows while remaining used on unix.
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(unused_imports)]
 pub(crate) use ::libc as libc_compat;
 pub(crate) use molt_runtime_platform::randomness;
 pub(crate) use molt_runtime_platform::socket_constants;
