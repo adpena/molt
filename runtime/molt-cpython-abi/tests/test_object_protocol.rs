@@ -29,7 +29,10 @@ fn test_object_repr_fails_closed_under_stubs() {
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(42) };
     let repr = unsafe { molt_cpython_abi::api::typeobj::PyObject_Repr(py) };
-    assert!(repr.is_null(), "PyObject_Repr string alloc fails closed under stubs");
+    assert!(
+        repr.is_null(),
+        "PyObject_Repr string alloc fails closed under stubs"
+    );
     assert!(!unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
     unsafe {
         molt_cpython_abi::api::errors::PyErr_Clear();
@@ -51,7 +54,10 @@ fn test_object_str_fails_closed_under_stubs() {
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(42) };
     let s = unsafe { molt_cpython_abi::api::typeobj::PyObject_Str(py) };
-    assert!(s.is_null(), "PyObject_Str string alloc fails closed under stubs");
+    assert!(
+        s.is_null(),
+        "PyObject_Str string alloc fails closed under stubs"
+    );
     assert!(!unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
     unsafe {
         molt_cpython_abi::api::errors::PyErr_Clear();
@@ -87,7 +93,10 @@ fn test_memoryview_from_memory_has_type_and_null_base() {
     // CPython: FromObject(memoryview) returns a NEW distinct memoryview sharing
     // the source's buffer (mbuf_add_view) — never the same object aliased.
     let second_view = unsafe { molt_cpython_abi::api::memory::PyMemoryView_FromObject(view) };
-    assert_ne!(second_view, view, "FromObject(mv) must mint a distinct view");
+    assert_ne!(
+        second_view, view,
+        "FromObject(mv) must mint a distinct view"
+    );
     let second_buffer =
         unsafe { molt_cpython_abi::api::memory::PyMemoryView_GET_BUFFER(second_view) };
     assert_eq!(
@@ -214,7 +223,7 @@ fn test_memoryview_from_buffer_ignores_foreign_private_internal_pointer() {
     info.format = format.as_mut_ptr();
     info.shape = shape.as_mut_ptr();
     info.strides = strides.as_mut_ptr();
-    info.internal = 1usize as *mut c_void;
+    info.internal = std::ptr::dangling_mut::<c_void>();
 
     let view = unsafe { molt_cpython_abi::api::memory::PyMemoryView_FromBuffer(&mut info) };
     assert!(!view.is_null());

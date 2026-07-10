@@ -247,7 +247,7 @@ fn ready_populates_tp_dict_from_members_and_getset() {
     let mut getter_value: c_int = 1234;
     let mut getsets = [
         PyGetSetDef {
-            name: b"names\0".as_ptr().cast::<c_char>(),
+            name: c"names".as_ptr(),
             get: Some(fake_getter),
             set: None,
             doc: ptr::null(),

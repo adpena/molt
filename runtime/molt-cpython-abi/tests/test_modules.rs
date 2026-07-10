@@ -858,7 +858,7 @@ fn test_module_from_def_and_spec_accepts_python312_metadata_slots() {
         },
         PyModuleDef_Slot {
             slot: 4,
-            value: 1usize as *mut c_void,
+            value: std::ptr::dangling_mut::<c_void>(),
         },
         PyModuleDef_Slot {
             slot: 0,

@@ -15,6 +15,7 @@
 //!   * `Py_nb_add`      → `tp_as_number` allocated with `nb_add` set
 //!   * `Py_tp_doc`      → doc string copied into fresh storage
 //!   * `Py_TPFLAGS_READY` present (PyType_Ready ran the full pipeline)
+//!
 //! plus the fail-closed path: an unrecognised slot id returns NULL with a
 //! pending exception (no silent drop).
 
@@ -179,7 +180,8 @@ fn fromspec_installs_all_slot_families() {
         *mut PyObject,
     ) -> *mut PyObject = spec_new;
     let repr_fp: unsafe extern "C" fn(*mut PyObject) -> *mut PyObject = spec_repr;
-    let nb_add_fp: unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> *mut PyObject = spec_nb_add;
+    let nb_add_fp: unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> *mut PyObject =
+        spec_nb_add;
     let new_ptr = new_fp as *mut c_void;
     let repr_ptr = repr_fp as *mut c_void;
     let nb_add_ptr = nb_add_fp as *mut c_void;
@@ -215,7 +217,7 @@ fn fromspec_installs_all_slot_families() {
         name: c"molt.SpecType".as_ptr(),
         basicsize: std::mem::size_of::<PyObject>() as c_int,
         itemsize: 0,
-        flags: Py_TPFLAGS_BASETYPE as u32,
+        flags: Py_TPFLAGS_BASETYPE,
         slots: slots.as_mut_ptr(),
     };
 
