@@ -573,7 +573,47 @@ pub unsafe extern "C" fn molt_type_call(
             return ptr::null_mut();
         };
 
+        // Env-gated diagnostic (MOLT_TRACE_CAPI): name the type being
+        // instantiated, its `tp_new` slot pointer, and whether the call arrived
+        // with a NULL args pointer. This is the probe that pins split-runtime
+        // DType-instantiation failures (numpy `use_new_as_default`) to a
+        // concrete DType + slot. Zero cost when the env var is unset.
+        if crate::capi_trace::trace_enabled() {
+            let name = if (*tp).tp_name.is_null() {
+                "<anonymous>".to_string()
+            } else {
+                std::ffi::CStr::from_ptr((*tp).tp_name)
+                    .to_string_lossy()
+                    .into_owned()
+            };
+            crate::capi_trace::trace_call(
+                "molt_type_call:new",
+                Some(&format!(
+                    "{name} tp_new={:p} args_null={} kwds_null={}",
+                    tp_new as *const (),
+                    args.is_null(),
+                    kwds.is_null()
+                )),
+            );
+        }
+
         let obj = tp_new(tp, args, kwds);
+
+        if crate::capi_trace::trace_enabled() {
+            let result_type = if obj.is_null() {
+                "NULL".to_string()
+            } else if (*obj).ob_type.is_null() || (*(*obj).ob_type).tp_name.is_null() {
+                "<anonymous-result>".to_string()
+            } else {
+                std::ffi::CStr::from_ptr((*(*obj).ob_type).tp_name)
+                    .to_string_lossy()
+                    .into_owned()
+            };
+            crate::capi_trace::trace_call(
+                "molt_type_call:result",
+                Some(&format!("-> {result_type}")),
+            );
+        }
         // _Py_CheckFunctionResult: fail closed on a contract violation rather
         // than silently propagating a bare NULL / stale exception.
         if obj.is_null() {
