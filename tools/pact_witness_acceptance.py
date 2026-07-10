@@ -17,6 +17,15 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 KERNEL_ROOT = ROOT / "collab" / "pact" / "pact_witness_kernel"
 DEFAULT_OUT_DIR = ROOT / "tmp" / "pact_witness_acceptance_queue"
+# The ONE shared parity authority (011 parity-harness proposal §2): a
+# declarative <k>_gates.json manifest evaluated by the generalized fail-loud
+# engine, superseding the old per-kernel inline gate dicts in
+# collab/pact/pact_witness_kernel/check_parity.py (kept there only as the
+# frozen equivalence-proof reference for
+# tests/tools/test_pact_parity_engine.py, and for the separate CPython-only
+# pact-witness-oracle sanity lane in tools/pact_witness_oracle.py).
+PARITY_ENGINE = ROOT / "collab" / "pact" / "parity" / "check_parity.py"
+KERNEL_A_GATES = KERNEL_ROOT / "field_solve_gates.json"
 _STATIC_LINK_EXEC_FAILURE_RE = re.compile(
     r"(?:ImportError:|Original error was:)\s+"
     r"(?P<module>[A-Za-z_][A-Za-z0-9_.]*):\s+"
@@ -624,9 +633,10 @@ def _check_parity(candidate: Path, reference: Path) -> None:
     _run(
         [
             sys.executable,
-            str(KERNEL_ROOT / "check_parity.py"),
+            str(PARITY_ENGINE),
             str(candidate),
             str(reference),
+            str(KERNEL_A_GATES),
         ],
         cwd=candidate.parent,
         env=_build_env(),
