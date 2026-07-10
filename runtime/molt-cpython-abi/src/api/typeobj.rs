@@ -897,22 +897,34 @@ unsafe fn apply_spec_slots(
             // tp_* function-pointer fields are `Option<extern "C" fn(...)>`, which
             // is pointer-sized and null-niche-optimised, so a transmute from the
             // raw `pfunc` yields `None` for a null pointer and `Some(fn)` otherwise.
+            // The destination type is spelled out explicitly per call site (rather
+            // than left for inference) to satisfy clippy's
+            // `missing_transmute_annotations`: each `$dest` below is copied
+            // verbatim from the corresponding `PyTypeObject` field type in
+            // `abi_types.rs`, so a drift between the two would be a visible diff
+            // here, not a silent inferred cast.
             macro_rules! set_fn {
-                ($field:ident) => {{
-                    (*ty).$field = ::std::mem::transmute(pfunc);
+                ($field:ident, $dest:ty) => {{
+                    (*ty).$field = ::std::mem::transmute::<*mut c_void, $dest>(pfunc);
                 }};
             }
             match id {
                 // ── tp_* slots ────────────────────────────────────────────────
-                ts::Py_tp_alloc => set_fn!(tp_alloc),
+                ts::Py_tp_alloc => set_fn!(
+                    tp_alloc,
+                    Option<unsafe extern "C" fn(*mut PyTypeObject, Py_ssize_t) -> *mut PyObject>
+                ),
                 ts::Py_tp_base => (*ty).tp_base = pfunc.cast::<PyTypeObject>(),
                 ts::Py_tp_bases => (*ty).tp_bases = pfunc.cast::<PyObject>(),
-                ts::Py_tp_call => set_fn!(tp_call),
-                ts::Py_tp_clear => set_fn!(tp_clear),
-                ts::Py_tp_dealloc => set_fn!(tp_dealloc),
-                ts::Py_tp_del => set_fn!(tp_del),
-                ts::Py_tp_descr_get => set_fn!(tp_descr_get),
-                ts::Py_tp_descr_set => set_fn!(tp_descr_set),
+                ts::Py_tp_call => set_fn!(
+                    tp_call,
+                    Option<unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut PyObject) -> *mut PyObject>
+                ),
+                ts::Py_tp_clear => set_fn!(tp_clear, Option<unsafe extern "C" fn(*mut PyObject) -> c_int>),
+                ts::Py_tp_dealloc => set_fn!(tp_dealloc, Option<unsafe extern "C" fn(*mut PyObject)>),
+                ts::Py_tp_del => set_fn!(tp_del, Option<unsafe extern "C" fn(*mut PyObject)>),
+                ts::Py_tp_descr_get => set_fn!(tp_descr_get, Option<crate::abi_types::PyDescrGetFunc>),
+                ts::Py_tp_descr_set => set_fn!(tp_descr_set, Option<crate::abi_types::PyDescrSetFunc>),
                 ts::Py_tp_doc => {
                     // CPython copies the doc string into fresh storage owned by the
                     // type (the caller's static string need not outlive the spec).
@@ -932,25 +944,49 @@ unsafe fn apply_spec_slots(
                         (*ty).tp_doc = buf;
                     }
                 }
-                ts::Py_tp_getattr => set_fn!(tp_getattr),
-                ts::Py_tp_getattro => set_fn!(tp_getattro),
-                ts::Py_tp_hash => set_fn!(tp_hash),
-                ts::Py_tp_init => set_fn!(tp_init),
-                ts::Py_tp_is_gc => set_fn!(tp_is_gc),
-                ts::Py_tp_iter => set_fn!(tp_iter),
-                ts::Py_tp_iternext => set_fn!(tp_iternext),
+                ts::Py_tp_getattr => set_fn!(
+                    tp_getattr,
+                    Option<unsafe extern "C" fn(*mut PyObject, *const c_char) -> *mut PyObject>
+                ),
+                ts::Py_tp_getattro => set_fn!(
+                    tp_getattro,
+                    Option<unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> *mut PyObject>
+                ),
+                ts::Py_tp_hash => set_fn!(tp_hash, Option<unsafe extern "C" fn(*mut PyObject) -> crate::abi_types::Py_hash_t>),
+                ts::Py_tp_init => set_fn!(
+                    tp_init,
+                    Option<unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut PyObject) -> c_int>
+                ),
+                ts::Py_tp_is_gc => set_fn!(tp_is_gc, Option<unsafe extern "C" fn(*mut PyObject) -> c_int>),
+                ts::Py_tp_iter => set_fn!(tp_iter, Option<unsafe extern "C" fn(*mut PyObject) -> *mut PyObject>),
+                ts::Py_tp_iternext => set_fn!(tp_iternext, Option<unsafe extern "C" fn(*mut PyObject) -> *mut PyObject>),
                 ts::Py_tp_methods => (*ty).tp_methods = pfunc.cast::<PyMethodDef>(),
-                ts::Py_tp_new => set_fn!(tp_new),
-                ts::Py_tp_repr => set_fn!(tp_repr),
-                ts::Py_tp_richcompare => set_fn!(tp_richcompare),
-                ts::Py_tp_setattr => set_fn!(tp_setattr),
-                ts::Py_tp_setattro => set_fn!(tp_setattro),
-                ts::Py_tp_str => set_fn!(tp_str),
-                ts::Py_tp_traverse => set_fn!(tp_traverse),
+                ts::Py_tp_new => set_fn!(
+                    tp_new,
+                    Option<unsafe extern "C" fn(*mut PyTypeObject, *mut PyObject, *mut PyObject) -> *mut PyObject>
+                ),
+                ts::Py_tp_repr => set_fn!(tp_repr, Option<unsafe extern "C" fn(*mut PyObject) -> *mut PyObject>),
+                ts::Py_tp_richcompare => set_fn!(
+                    tp_richcompare,
+                    Option<unsafe extern "C" fn(*mut PyObject, *mut PyObject, c_int) -> *mut PyObject>
+                ),
+                ts::Py_tp_setattr => set_fn!(
+                    tp_setattr,
+                    Option<unsafe extern "C" fn(*mut PyObject, *const c_char, *mut PyObject) -> c_int>
+                ),
+                ts::Py_tp_setattro => set_fn!(
+                    tp_setattro,
+                    Option<unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut PyObject) -> c_int>
+                ),
+                ts::Py_tp_str => set_fn!(tp_str, Option<unsafe extern "C" fn(*mut PyObject) -> *mut PyObject>),
+                ts::Py_tp_traverse => set_fn!(
+                    tp_traverse,
+                    Option<unsafe extern "C" fn(*mut PyObject, *mut c_void, *mut c_void) -> c_int>
+                ),
                 ts::Py_tp_members => (*ty).tp_members = pfunc,
                 ts::Py_tp_getset => (*ty).tp_getset = pfunc,
-                ts::Py_tp_free => set_fn!(tp_free),
-                ts::Py_tp_finalize => set_fn!(tp_finalize),
+                ts::Py_tp_free => set_fn!(tp_free, Option<unsafe extern "C" fn(*mut c_void)>),
+                ts::Py_tp_finalize => set_fn!(tp_finalize, Option<unsafe extern "C" fn(*mut PyObject)>),
                 // ── nb_* (number) slots ───────────────────────────────────────
                 ts::Py_nb_absolute => (*ensure_number(ty)).nb_absolute = pfunc,
                 ts::Py_nb_add => (*ensure_number(ty)).nb_add = pfunc,

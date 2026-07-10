@@ -589,7 +589,6 @@ unsafe fn raise_unicode_encode_error(bytes: &[u8], codec: &str, reason: &str, li
             .chars()
             .enumerate()
             .find(|(_, ch)| *ch as u32 > limit)
-            .map(|(i, ch)| (i, ch))
             .unwrap_or((0, '\u{fffd}')),
         Err(_) => (0, '\u{fffd}'),
     };
