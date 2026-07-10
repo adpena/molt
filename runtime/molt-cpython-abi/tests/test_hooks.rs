@@ -132,7 +132,7 @@ fn test_stub_buffer_hooks_fail_closed_and_clear_view() {
     init();
     let h = hooks_or_stubs();
     let mut view = molt_cpython_abi::hooks::MoltBufferView {
-        data: 1usize as *mut u8,
+        data: std::ptr::dangling_mut::<u8>(),
         len: 8,
         readonly: 0,
         ..molt_cpython_abi::hooks::MoltBufferView::default()
@@ -207,8 +207,7 @@ fn test_pyarg_parse_missing_required_arg_fails_closed() {
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     // args tuple is 0 (empty / None under stubs); format "i" wants one int.
     let mut out_slot: std::os::raw::c_int = 4242;
-    let mut outs: [*mut std::ffi::c_void; 1] =
-        [(&mut out_slot as *mut std::os::raw::c_int).cast()];
+    let mut outs: [*mut std::ffi::c_void; 1] = [(&mut out_slot as *mut std::os::raw::c_int).cast()];
     let rc = unsafe {
         molt_cpython_abi::api::errors::molt_pyarg_parse_tuple_inner(
             ptr::null_mut(),
@@ -217,7 +216,10 @@ fn test_pyarg_parse_missing_required_arg_fails_closed() {
             1,
         )
     };
-    assert_eq!(rc, 0, "PyArg_ParseTuple must fail (0), not fake success (1)");
+    assert_eq!(
+        rc, 0,
+        "PyArg_ParseTuple must fail (0), not fake success (1)"
+    );
     assert!(
         !unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null(),
         "a failed PyArg_ParseTuple must leave an exception set"
