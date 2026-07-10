@@ -118,14 +118,39 @@ a sound CI gate. When the box-elimination lever lands, update
 `EXPECTED_ALLOCS_PER_EXPORT` in the same commit and record the before→after
 ns/export here.
 
-## Phase-2 status: DEFERRED (coordination)
+## Phase-2 status: UNBLOCKED (interlock landed; buffer.rs untouched)
 
-Source edits to `buffer.rs` are deferred until the array-buffer-export-interlock
-lane (`origin/codex/ndarray-buffer-lease-land`, tip `fce3c67c74`, NOT yet in
-`main`) lands, per the lane's own instruction — its lease wiring rewrites
-`install_buffer_internal` / `PyBuffer_Release` / `descriptor_from_pybuffer`, the
-exact functions the registry-elimination lever touches. Landing the profile +
-gate now (new files only) avoids fighting that lane. Phase-2 plan, grounded in
-the numbers above: (1) registry-mutex elimination via self-describing box header
-(~41 ns + the multi-thread cliff); (2) box pooling/inline (~46 ns). Re-measure
-each against this baseline; keep `cargo test` + the Miri finding-C repros green.
+The array-buffer-export-interlock lane **landed on `main` at `8fe41579af`**
+(`02c6d7f952` + `ca7eb56e54`) while this profile was being landed. It wired the
+resize-while-exported lease into **`molt-runtime`** (`molt_buffer_export` /
+`molt_buffer_acquire` / `molt_buffer_release` + `ArrayBufferLease`) and left
+`runtime/molt-cpython-abi/src/api/buffer.rs` **UNTOUCHED**. So the Phase-2 levers
+below are now unblocked with no rebase-onto-interlock hazard in `buffer.rs`
+itself — but any Phase-2 change must preserve the runtime-side lease interlock
+(the export lifetime `owner`/lease is the resize-UAF guard) end-to-end.
+
+Phase-2 plan, grounded in the numbers:
+
+1. **Registry-mutex elimination (~41 ns + the multi-thread serialization
+   cliff)** — the highest-value lever, but **NOT a naive "magic-header" swap.**
+   Safety subtlety found while scoping it: the current
+   `BUFFER_INTERNAL_REGISTRY` is a *deref-free set-membership* test on
+   `view.internal`, and that is load-bearing — `PyBuffer_Release` /
+   `descriptor_from_pybuffer` run on views whose `internal` was filled by a
+   **foreign** C-extension `bf_getbuffer` (an exporter-private cookie that may be
+   a small integer or point to unmapped memory). A self-describing box header
+   that *dereferences* `view.internal` to read a magic word would be UB for those
+   foreign internals. The CPython-aligned fix is to dispatch the release on
+   **`view.obj`'s type** (native Molt buffer exporter → `Box::from_raw` ours;
+   foreign → `bf_releasebuffer`), which needs neither a global lock nor a deref
+   of `internal`. That is a careful refactor with direct Miri finding-C stakes
+   (it touches the exact functions the provenance fix hardened) and should be its
+   own focused, Miri-SB+TB-verified lane.
+2. **Box pooling / inline (~46 ns)** — amortize the 1112 B `malloc`/`free`.
+   Shrinking `MoltBufferView` is not free (`ndim` may reach 64; arbitrary
+   strides are legal), so a thread-local free-list / arena of `BufferInternal`s
+   is the safer shape.
+
+Re-measure each against this baseline (`buffer_export_timing_profile`), update
+`EXPECTED_ALLOCS_PER_EXPORT` in the same commit when the box is eliminated, and
+keep `cargo test` + the Miri finding-C repros green under Stacked + Tree Borrows.
