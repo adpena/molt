@@ -51,6 +51,14 @@ unsafe extern "C" fn mock_tuple_item(bits: u64, i: usize) -> u64 {
     }
 }
 
+unsafe extern "C" fn mock_classify_heap(bits: u64) -> u8 {
+    if bits == TUPLE_BITS.load(Ordering::SeqCst) {
+        molt_cpython_abi::abi_types::MoltTypeTag::Tuple as u8
+    } else {
+        molt_cpython_abi::abi_types::MoltTypeTag::Other as u8
+    }
+}
+
 fn install_hooks() {
     molt_cpython_abi::bridge::molt_cpython_abi_init();
     // Allocate a stable backing pointer for the synthetic tuple handle exactly
@@ -64,6 +72,7 @@ fn install_hooks() {
     let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
     hooks.tuple_len = mock_tuple_len;
     hooks.tuple_item = mock_tuple_item;
+    hooks.classify_heap = mock_classify_heap;
     unsafe {
         let _ = molt_cpython_abi::try_set_runtime_hooks(hooks);
     }
@@ -273,4 +282,45 @@ fn pyarg_surplus_positional_args_raise_typeerror() {
         "surplus args must raise TypeError (CPython 'takes at most N')"
     );
     clear_err();
+}
+
+// ── errors.rs:276 — GivenExceptionMatches iterates a tuple of candidates ────
+// (Lives in this binary because its mock hook table backs a synthetic tuple.)
+
+#[test]
+fn given_exception_matches_tuple_candidates() {
+    let _g = TEST_LOCK.lock().unwrap();
+    install_hooks();
+    clear_err();
+    // A candidate tuple (KeyError, LookupError). A pending IndexError matches
+    // via the LookupError member's subclass walk; TypeError does not match.
+    let key_bits = GLOBAL_BRIDGE
+        .lock()
+        .pyobj_to_handle(&raw mut molt_cpython_abi::abi_types::PyExc_KeyError)
+        .expect("exception singletons are bridge-registered");
+    let lookup_bits = GLOBAL_BRIDGE
+        .lock()
+        .pyobj_to_handle(&raw mut molt_cpython_abi::abi_types::PyExc_LookupError)
+        .expect("exception singletons are bridge-registered");
+    let tuple = args_with(&[key_bits, lookup_bits]); // the mock tuple object
+
+    let hit = unsafe {
+        molt_cpython_abi::api::errors::PyErr_GivenExceptionMatches(
+            &raw mut molt_cpython_abi::abi_types::PyExc_IndexError,
+            tuple,
+        )
+    };
+    assert_eq!(
+        hit, 1,
+        "except (KeyError, LookupError) must catch IndexError via the tuple \
+         walk + subclass chain — the pre-fix ptr::eq never matched a tuple"
+    );
+
+    let miss = unsafe {
+        molt_cpython_abi::api::errors::PyErr_GivenExceptionMatches(
+            &raw mut molt_cpython_abi::abi_types::PyExc_TypeError,
+            tuple,
+        )
+    };
+    assert_eq!(miss, 0, "TypeError is in neither candidate's chain");
 }
