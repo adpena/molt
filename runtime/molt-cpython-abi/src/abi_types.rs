@@ -884,6 +884,13 @@ pub unsafe fn init_static_types() {
         PyCFunction_Type.tp_dealloc = Some(crate::api::object::molt_cfunction_dealloc);
         PyMethod_Type.tp_call = Some(crate::api::object::molt_method_call);
         PyMethod_Type.tp_dealloc = Some(crate::api::object::molt_method_dealloc);
+        // CPython's `PyType_Type.tp_call = type_call` — calling a type object
+        // (class instantiation from C) drives `tp_new`/`tp_init`. A C-extension
+        // metatype (numpy's `PyArrayDTypeMeta_Type` sets `tp_base = &PyType_Type`
+        // at import) inherits this via PyType_Ready slot inheritance; without it
+        // every `SomeDTypeClass()` call fails "'numpy._DTypeMeta' object is not
+        // callable" during `_multiarray_umath` init.
+        PyType_Type.tp_call = Some(crate::api::typeobj::molt_type_call);
 
         set_name!(PyNone_Type, b"NoneType\0");
         set_name!(PyNotImplemented_Type, b"NotImplementedType\0");

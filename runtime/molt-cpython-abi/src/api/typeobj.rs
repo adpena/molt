@@ -499,6 +499,127 @@ unsafe fn inherit_slots_from_base(tp: *mut PyTypeObject, base: *mut PyTypeObject
     }
 }
 
+/// CPython 3.12 `type_call` — the `tp_call` slot of `PyType_Type`. Verified
+/// verbatim against the primary source (python/cpython v3.12.13
+/// `Objects/typeobject.c::type_call`): the `type(x)` one-argument special case
+/// (only for `type` itself, #27157), the "type() takes 1 or 3 arguments"
+/// error, the NULL-`tp_new` "cannot create '%s' instances" error, the
+/// `tp_new` → `PyObject_TypeCheck` → `tp_init` flow with `res < 0` dropping
+/// the fresh instance, and `_Py_CheckFunctionResult`'s fail-closed contract
+/// (NULL without an exception ⇒ SystemError; a result with an exception
+/// pending ⇒ SystemError) instead of CPython's debug-only asserts.
+///
+/// Installed on `PyType_Type` by `init_static_types`, so every C-extension
+/// metatype that sets `tp_base = &PyType_Type` and relies on `PyType_Ready`
+/// slot inheritance (numpy's `PyArrayDTypeMeta_Type` is the canonical case —
+/// calling a DType class like `BoolDType()` dispatches
+/// `Py_TYPE(cls)->tp_call`, i.e. `type.tp_call`) can instantiate its
+/// instances. Molt-compiled classes are NOT affected: their bridge proxies
+/// carry `ob_type == PyBaseObject_Type` (see `bridge::tag_to_type`), so
+/// `PyObject_Call` still routes them through the runtime call authority.
+pub unsafe extern "C" fn molt_type_call(
+    callable: *mut PyObject,
+    args: *mut PyObject,
+    kwds: *mut PyObject,
+) -> *mut PyObject {
+    let tp = callable.cast::<PyTypeObject>();
+    if tp.is_null() {
+        return ptr::null_mut();
+    }
+    let type_type = &raw mut crate::abi_types::PyType_Type;
+    unsafe {
+        // Special case: type(x) should return Py_TYPE(x). Only `type` itself
+        // accepts the one-argument form (#27157).
+        if ptr::eq(tp, type_type) {
+            let nargs = if args.is_null() {
+                0
+            } else {
+                crate::api::sequences::PyTuple_Size(args)
+            };
+            let kwds_empty = kwds.is_null() || crate::api::mapping::PyDict_Size(kwds) == 0;
+            if nargs == 1 && kwds_empty {
+                let item = crate::api::sequences::PyTuple_GetItem(args, 0);
+                if item.is_null() {
+                    return ptr::null_mut();
+                }
+                let item_type = (*item).ob_type.cast::<PyObject>();
+                crate::api::refcount::Py_INCREF(item_type);
+                return item_type;
+            }
+            if nargs != 3 {
+                crate::api::errors::PyErr_SetString(
+                    &raw mut crate::abi_types::PyExc_TypeError,
+                    c"type() takes 1 or 3 arguments".as_ptr(),
+                );
+                return ptr::null_mut();
+            }
+        }
+
+        let Some(tp_new) = (*tp).tp_new else {
+            let name = if (*tp).tp_name.is_null() {
+                "<anonymous>".to_string()
+            } else {
+                std::ffi::CStr::from_ptr((*tp).tp_name)
+                    .to_string_lossy()
+                    .into_owned()
+            };
+            crate::capi_trace::record_silent_failure("type_call", Some(&name));
+            if let Ok(msg) = std::ffi::CString::new(format!("cannot create '{name}' instances")) {
+                crate::api::errors::PyErr_SetString(
+                    &raw mut crate::abi_types::PyExc_TypeError,
+                    msg.as_ptr(),
+                );
+            }
+            return ptr::null_mut();
+        };
+
+        let obj = tp_new(tp, args, kwds);
+        // _Py_CheckFunctionResult: fail closed on a contract violation rather
+        // than silently propagating a bare NULL / stale exception.
+        if obj.is_null() {
+            if crate::api::errors::PyErr_Occurred().is_null() {
+                crate::api::errors::PyErr_SetString(
+                    &raw mut crate::abi_types::PyExc_SystemError,
+                    c"tp_new returned NULL without setting an exception".as_ptr(),
+                );
+            }
+            return ptr::null_mut();
+        }
+        if !crate::api::errors::PyErr_Occurred().is_null() {
+            crate::api::refcount::Py_DECREF(obj);
+            crate::api::errors::PyErr_SetString(
+                &raw mut crate::abi_types::PyExc_SystemError,
+                c"tp_new returned a result with an exception set".as_ptr(),
+            );
+            return ptr::null_mut();
+        }
+
+        // If the returned object is not an instance of the called type, it
+        // won't be initialized.
+        if PyObject_TypeCheck(obj, tp) == 0 {
+            return obj;
+        }
+
+        let instance_type = (*obj).ob_type;
+        if !instance_type.is_null()
+            && let Some(tp_init) = (*instance_type).tp_init
+        {
+            let res = tp_init(obj, args, kwds);
+            if res < 0 {
+                if crate::api::errors::PyErr_Occurred().is_null() {
+                    crate::api::errors::PyErr_SetString(
+                        &raw mut crate::abi_types::PyExc_SystemError,
+                        c"tp_init failed without setting an exception".as_ptr(),
+                    );
+                }
+                crate::api::refcount::Py_DECREF(obj);
+                return ptr::null_mut();
+            }
+        }
+        obj
+    }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyType_GenericAlloc(
     tp: *mut PyTypeObject,
