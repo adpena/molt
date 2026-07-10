@@ -634,13 +634,19 @@ fn test_richcompare_different_objects_ne() {
 }
 
 #[test]
-fn test_richcompare_returns_not_implemented_for_lt() {
+fn test_richcompare_native_int_ordering_is_computed() {
     init();
+    // CPython: 1 < 2 dispatches long_richcompare and yields Py_True — never
+    // NotImplemented. The old ABI returned the NotImplemented sentinel here
+    // (ledger typeobj.rs:1920 divergence); natives now compare by value.
     let a = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1) };
     let b = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(2) };
     let result = unsafe { molt_cpython_abi::api::typeobj::PyObject_RichCompare(a, b, PY_LT) };
-    // Without tp_richcompare, returns NotImplemented sentinel
-    assert!(std::ptr::eq(result, &raw mut Py_NotImplementedSentinel));
+    assert!(
+        std::ptr::eq(result, &raw mut molt_cpython_abi::abi_types::Py_True),
+        "1 < 2 must be Py_True, never NotImplemented"
+    );
+    assert!(!std::ptr::eq(result, &raw mut Py_NotImplementedSentinel));
     unsafe {
         molt_cpython_abi::api::refcount::Py_DECREF(a);
         molt_cpython_abi::api::refcount::Py_DECREF(b);
@@ -648,9 +654,11 @@ fn test_richcompare_returns_not_implemented_for_lt() {
 }
 
 #[test]
-fn test_richcompare_null_is_safe() {
+fn test_richcompare_null_is_bad_internal_call() {
     init();
-    // v=NULL should not crash
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+    // CPython PyObject_RichCompare: a NULL operand is a BadInternalCall —
+    // NULL return with an exception set, never a fabricated NotImplemented.
     let result = unsafe {
         molt_cpython_abi::api::typeobj::PyObject_RichCompare(
             ptr::null_mut(),
@@ -658,8 +666,9 @@ fn test_richcompare_null_is_safe() {
             PY_EQ,
         )
     };
-    // Returns NotImplemented sentinel
-    assert!(std::ptr::eq(result, &raw mut Py_NotImplementedSentinel));
+    assert!(result.is_null());
+    assert!(!unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 }
 
 #[test]

@@ -1676,7 +1676,7 @@ pub unsafe extern "C" fn PyMember_SetOne(
                     );
                     return -1;
                 }
-                *(field as *mut i8) = is_true as i8;
+                *field.cast::<i8>() = is_true as i8;
                 0
             }
             PY_T_BYTE => {
@@ -1684,7 +1684,7 @@ pub unsafe extern "C" fn PyMember_SetOne(
                 if v == -1 && err_set() {
                     return -1;
                 }
-                *(field as *mut i8) = v as i8;
+                *field.cast::<i8>() = v as i8;
                 0
             }
             PY_T_UBYTE => {
@@ -2340,27 +2340,130 @@ unsafe fn try_slot_richcompare(
     Some(unsafe { f(a, b, op) })
 }
 
+#[inline]
+fn cmp_bool_result(b: bool) -> *mut PyObject {
+    let res = if b {
+        &raw mut crate::abi_types::Py_True
+    } else {
+        &raw mut crate::abi_types::Py_False
+    };
+    unsafe { crate::api::refcount::Py_INCREF(res) };
+    res
+}
+
+#[inline]
+fn ordering_to_result(ord: std::cmp::Ordering, op: c_int) -> Option<*mut PyObject> {
+    use std::cmp::Ordering::*;
+    let b = match op {
+        CMP_LT => ord == Less,
+        CMP_LE => ord != Greater,
+        CMP_EQ => ord == Equal,
+        CMP_NE => ord != Equal,
+        CMP_GT => ord == Greater,
+        CMP_GE => ord != Less,
+        _ => return None,
+    };
+    Some(cmp_bool_result(b))
+}
+
+/// Value comparison for two Molt-native (bridge-resolvable) operands, playing
+/// the role of CPython's `long_richcompare` / `float_richcompare` /
+/// `unicode_richcompare` slots (bridge-minted natives carry no tp_richcompare).
+/// Returns `None` when this pair is not a natively comparable combination —
+/// callers then continue with slot dispatch / NotImplemented resolution.
+unsafe fn native_value_richcompare(
+    v: *mut PyObject,
+    w: *mut PyObject,
+    op: c_int,
+) -> Option<*mut PyObject> {
+    let (vb, wb) = {
+        let bridge = crate::bridge::GLOBAL_BRIDGE.lock();
+        (bridge.pyobj_to_handle(v), bridge.pyobj_to_handle(w))
+    };
+    let (vb, wb) = (vb?, wb?);
+    let (mv, mw) = (
+        molt_lang_obj_model::MoltObject::from_bits(vb),
+        molt_lang_obj_model::MoltObject::from_bits(wb),
+    );
+
+    // Numeric pair (inline int / bool exact in i64; float via f64 — inline ints
+    // are 47-bit, exact in f64, so a mixed compare loses nothing).
+    let as_num = |m: &molt_lang_obj_model::MoltObject| -> Option<(Option<i64>, f64)> {
+        if m.is_bool() {
+            let i = m.as_bool().unwrap_or(false) as i64;
+            Some((Some(i), i as f64))
+        } else if m.is_int() {
+            let i = m.as_int()?;
+            Some((Some(i), i as f64))
+        } else if m.is_float() {
+            Some((None, m.as_float()?))
+        } else {
+            None
+        }
+    };
+    if let (Some((vi, vf)), Some((wi, wf))) = (as_num(&mv), as_num(&mw)) {
+        // int-vs-int stays exact; any float operand compares as f64.
+        let ord = match (vi, wi) {
+            (Some(a), Some(b)) => a.cmp(&b),
+            _ => vf.partial_cmp(&wf)?, // NaN: fall through to slot path
+        };
+        return ordering_to_result(ord, op);
+    }
+
+    // str pair: byte-lexicographic == code-point-lexicographic under UTF-8.
+    let str_bytes = |bits: u64| -> Option<Vec<u8>> {
+        let h = crate::hooks::hooks_or_stubs();
+        let m = molt_lang_obj_model::MoltObject::from_bits(bits);
+        if !m.is_ptr() {
+            return None;
+        }
+        if unsafe { (h.classify_heap)(bits) } != crate::abi_types::MoltTypeTag::Str as u8 {
+            return None;
+        }
+        let mut len: usize = 0;
+        let p = unsafe { (h.str_data)(bits, &raw mut len) };
+        if p.is_null() {
+            return Some(Vec::new());
+        }
+        Some(unsafe { std::slice::from_raw_parts(p, len) }.to_vec())
+    };
+    if let (Some(a), Some(b)) = (str_bytes(vb), str_bytes(wb)) {
+        return ordering_to_result(a.cmp(&b), op);
+    }
+
+    // Same handle bits: identity implies equality for EQ/NE.
+    if vb == wb && (op == CMP_EQ || op == CMP_NE) {
+        return Some(cmp_bool_result(op == CMP_EQ));
+    }
+    None
+}
+
 /// Faithful port of CPython `Objects/object.c` `do_richcompare`: reflected
 /// (subtype-priority) slot first, then v's slot, then w's; NULL propagates as an
 /// error; a both-NotImplemented result resolves EQ/NE by identity and raises
 /// TypeError for ordering — never leaks NotImplemented to the caller.
 unsafe fn do_richcompare(v: *mut PyObject, w: *mut PyObject, op: c_int) -> *mut PyObject {
+    // Molt-native value comparison (the natives' "type slots").
+    if let Some(res) = unsafe { native_value_richcompare(v, w, op) } {
+        return res;
+    }
     let tv = unsafe { (*v).ob_type };
     let tw = unsafe { (*w).ob_type };
     let mut checked_reverse = false;
 
     // Reflected op on w first when Py_TYPE(w) is a PROPER subtype of Py_TYPE(v).
-    if !std::ptr::eq(tv, tw) && unsafe { PyType_IsSubtype(tw, tv) } == 1 {
-        if let Some(res) = unsafe { try_slot_richcompare(w, v, swapped_op(op)) } {
-            checked_reverse = true;
-            if res.is_null() {
-                return ptr::null_mut();
-            }
-            if !is_not_implemented(res) {
-                return res;
-            }
-            unsafe { crate::api::refcount::Py_DECREF(res) };
+    if !std::ptr::eq(tv, tw)
+        && unsafe { PyType_IsSubtype(tw, tv) } == 1
+        && let Some(res) = unsafe { try_slot_richcompare(w, v, swapped_op(op)) }
+    {
+        checked_reverse = true;
+        if res.is_null() {
+            return ptr::null_mut();
         }
+        if !is_not_implemented(res) {
+            return res;
+        }
+        unsafe { crate::api::refcount::Py_DECREF(res) };
     }
     // v's own slot.
     if let Some(res) = unsafe { try_slot_richcompare(v, w, op) } {
