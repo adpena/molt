@@ -453,7 +453,16 @@ pub unsafe extern "C" fn PyObject_GetBuffer(
         unsafe { set_type_error(b"buffer exporter must not be NULL\0") };
         return -1;
     }
-    let bits = match GLOBAL_BRIDGE.lock().pyobj_to_handle(obj) {
+    // Resolve in its own statement (NOT as a `match` scrutinee): a `match
+    // GLOBAL_BRIDGE.lock()....` scrutinee keeps the MutexGuard alive for the
+    // ENTIRE match statement, including the `None` arm's body (Rust temporary
+    // lifetime extension). That arm calls `raise_bytes_like_type_error` ->
+    // `PyErr_SetString`, which itself locks `GLOBAL_BRIDGE` — with the outer
+    // guard still held, that is an immediate self-deadlock (parking_lot's
+    // Mutex is not reentrant). Binding the resolved `Option` first drops the
+    // guard before the `None` arm runs.
+    let resolved = GLOBAL_BRIDGE.lock().pyobj_to_handle(obj);
+    let bits = match resolved {
         Some(bits) => bits,
         None => {
             // Foreign C object: CPython Objects/abstract.c dispatches

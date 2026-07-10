@@ -145,17 +145,140 @@ pub unsafe extern "C" fn PyImport_GetModuleDict() -> *mut PyObject {
     *raw as *mut PyObject
 }
 
+/// Read a `str`-valued item from a `globals` dict by C-string key, into an
+/// owned byte vector (`None` on absence, non-str, or a non-dict `globals`).
+unsafe fn dict_get_string_bytes(globals: *mut PyObject, key: &CStr) -> Option<Vec<u8>> {
+    if globals.is_null() {
+        return None;
+    }
+    let value = unsafe { crate::api::mapping::PyDict_GetItemString(globals, key.as_ptr()) };
+    if value.is_null() || std::ptr::eq(value, &raw mut crate::abi_types::Py_None) {
+        return None;
+    }
+    let mut size: crate::abi_types::Py_ssize_t = 0;
+    let ptr = unsafe { crate::api::strings::PyUnicode_AsUTF8AndSize(value, &raw mut size) };
+    if ptr.is_null() || size < 0 {
+        // Not a str (or conversion failed): clear so a stray TypeError from
+        // the probe doesn't leak into the caller's import.
+        unsafe { crate::api::errors::PyErr_Clear() };
+        return None;
+    }
+    Some(unsafe { std::slice::from_raw_parts(ptr as *const u8, size as usize) }.to_vec())
+}
+
+/// CPython `Python/import.c` `resolve_name`: combine `level` leading dots with
+/// the caller's package context (read from `globals`) to compute the absolute
+/// module name for a relative import (`from . import x` / `from .. import x`).
+/// Faithful to the dominant path — `__package__` when present, else derived
+/// from `__name__` (minus its trailing component unless `__path__` marks the
+/// caller as a package's own `__init__`). The `__spec__.parent` agreement
+/// check is not reproduced: in CPython it only emits a DeprecationWarning on
+/// mismatch and never changes the resolved name.
+unsafe fn resolve_relative_name(
+    name: &[u8],
+    globals: *mut PyObject,
+    level: c_int,
+) -> Option<Vec<u8>> {
+    if globals.is_null() {
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                &raw mut crate::abi_types::PyExc_KeyError,
+                c"'__name__' not in globals".as_ptr(),
+            );
+        }
+        return None;
+    }
+    let mut package = match unsafe { dict_get_string_bytes(globals, c"__package__") } {
+        Some(bytes) => bytes,
+        None => {
+            let Some(mut name_bytes) = (unsafe { dict_get_string_bytes(globals, c"__name__") })
+            else {
+                unsafe {
+                    crate::api::errors::PyErr_SetString(
+                        &raw mut crate::abi_types::PyExc_KeyError,
+                        c"'__name__' not in globals".as_ptr(),
+                    );
+                }
+                return None;
+            };
+            let has_path = !unsafe {
+                crate::api::mapping::PyDict_GetItemString(globals, c"__path__".as_ptr())
+            }
+            .is_null();
+            if !has_path {
+                // A regular (non-package) module: its parent package is
+                // `__name__` minus the trailing dotted component.
+                match name_bytes.iter().rposition(|&b| b == b'.') {
+                    Some(dot) => name_bytes.truncate(dot),
+                    None => {
+                        unsafe {
+                            crate::api::errors::PyErr_SetString(
+                                &raw mut crate::abi_types::PyExc_ImportError,
+                                c"attempted relative import with no known parent package"
+                                    .as_ptr(),
+                            );
+                        }
+                        return None;
+                    }
+                }
+            }
+            name_bytes
+        }
+    };
+    if package.is_empty() {
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                &raw mut crate::abi_types::PyExc_ImportError,
+                c"attempted relative import with no known parent package".as_ptr(),
+            );
+        }
+        return None;
+    }
+    // Walk `level - 1` additional dotted components upward (level==1 keeps
+    // `package` as-is: a single leading dot means "the current package").
+    let mut last_dot = package.len();
+    for _ in 1..level {
+        match package[..last_dot].iter().rposition(|&b| b == b'.') {
+            Some(dot) => last_dot = dot,
+            None => {
+                unsafe {
+                    crate::api::errors::PyErr_SetString(
+                        &raw mut crate::abi_types::PyExc_ImportError,
+                        c"attempted relative import beyond top-level package".as_ptr(),
+                    );
+                }
+                return None;
+            }
+        }
+    }
+    package.truncate(last_dot);
+    if name.is_empty() {
+        return Some(package);
+    }
+    package.push(b'.');
+    package.extend_from_slice(name);
+    Some(package)
+}
+
 unsafe fn import_module_level_bytes(
     name: &[u8],
+    globals: *mut PyObject,
     fromlist: *mut PyObject,
     level: c_int,
 ) -> *mut PyObject {
-    if level != 0 {
-        // Relative imports need package context the ABI boundary does not
-        // carry; fail closed instead of guessing a package root.
-        unsafe { set_import_unavailable(ptr::null()) };
-        return ptr::null_mut();
-    }
+    let name = if level != 0 {
+        // CPython resolves the absolute name via `resolve_name` before
+        // importing; the previous body failed every relative import
+        // regardless of package context, even though `globals` (carrying
+        // `__package__`/`__name__`/`__path__`) is available at every call site.
+        match unsafe { resolve_relative_name(name, globals, level) } {
+            Some(resolved) => resolved,
+            None => return ptr::null_mut(),
+        }
+    } else {
+        name.to_vec()
+    };
+    let name = name.as_slice();
     let fromlist_empty =
         if fromlist.is_null() || std::ptr::eq(fromlist, &raw mut crate::abi_types::Py_None) {
             true
@@ -185,7 +308,7 @@ unsafe fn import_module_level_bytes(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyImport_ImportModuleLevel(
     name: *const c_char,
-    _globals: *mut PyObject,
+    globals: *mut PyObject,
     _locals: *mut PyObject,
     fromlist: *mut PyObject,
     level: c_int,
@@ -195,13 +318,13 @@ pub unsafe extern "C" fn PyImport_ImportModuleLevel(
         return ptr::null_mut();
     }
     let name_bytes = unsafe { CStr::from_ptr(name).to_bytes() };
-    unsafe { import_module_level_bytes(name_bytes, fromlist, level) }
+    unsafe { import_module_level_bytes(name_bytes, globals, fromlist, level) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyImport_ImportModuleLevelObject(
     name: *mut PyObject,
-    _globals: *mut PyObject,
+    globals: *mut PyObject,
     _locals: *mut PyObject,
     fromlist: *mut PyObject,
     level: c_int,
@@ -215,7 +338,7 @@ pub unsafe extern "C" fn PyImport_ImportModuleLevelObject(
         return ptr::null_mut();
     }
     let name_bytes = unsafe { CStr::from_ptr(name_ptr).to_bytes() };
-    unsafe { import_module_level_bytes(name_bytes, fromlist, level) }
+    unsafe { import_module_level_bytes(name_bytes, globals, fromlist, level) }
 }
 
 #[unsafe(no_mangle)]
