@@ -400,3 +400,51 @@ def wasm_compiler_builtins_archive(target_triple: str = "wasm32-wasip1") -> Path
     if unversioned.exists():
         return unversioned
     return None
+
+
+# WASI sysroots use the wasm32-wasip1 (and legacy wasm32-wasi) multilib layout.
+_WASI_SYSROOT_LIB_SUBDIRS = ("wasm32-wasip1", "wasm32-wasi")
+
+
+def _wasi_sysroot_lib_archive(name: str) -> Path | None:
+    """Resolve a named archive under the active WASI sysroot's lib dir.
+
+    Probes the ABI-variant lib subdirs (``lib/wasm32-wasip1`` then the legacy
+    ``lib/wasm32-wasi``) of :func:`resolve_wasi_sysroot`. Returns ``None`` when
+    no sysroot resolves or the archive is absent from every candidate dir.
+    """
+    sysroot = resolve_wasi_sysroot()
+    if sysroot is None:
+        return None
+    for subdir in _WASI_SYSROOT_LIB_SUBDIRS:
+        candidate = sysroot / "lib" / subdir / name
+        if candidate.exists():
+            return candidate.resolve(strict=False)
+    return None
+
+
+def wasm_wasi_printscan_long_double_archive() -> Path | None:
+    """wasi-libc's long-double-capable printf/scanf archive.
+
+    The default ``libc.a`` links a ``long_double_not_supported`` stub for the
+    ``%L`` float conversions that ``abort()``s (raw ``unreachable`` trap) — the
+    E1 witness frontier where numpy's longdouble repr/parse hit it during
+    ``_multiarray_umath`` import. wasi-libc ships the real formatters in this
+    companion archive; whole-archiving it ahead of ``libc.a`` overrides the
+    stub. Its binary128 arithmetic needs the TF-mode soft-float builtins from
+    :func:`wasm_clang_rt_builtins_archive`.
+    """
+    return _wasi_sysroot_lib_archive("libc-printscan-long-double.a")
+
+
+def wasm_clang_rt_builtins_archive() -> Path | None:
+    """LLVM compiler-rt builtins (incl. binary128 ``__addtf3``/``__multf3`` …).
+
+    Rust's ``wasm32-wasip1`` sysroot ships only ``libc.a`` + a
+    ``compiler_builtins`` rlib that *references* the TF-mode soft-float
+    routines as undefined; the concrete definitions live in wasi-sdk's
+    ``libclang_rt.builtins-wasm32.a``. Required so wasi-libc's long-double
+    printf/scanf (and numpy's own longdouble arithmetic) resolve at link time
+    instead of degrading to unresolved imports.
+    """
+    return _wasi_sysroot_lib_archive("libclang_rt.builtins-wasm32.a")
