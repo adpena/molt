@@ -136,8 +136,82 @@ def _wasm_run_env(wasm_entry: Path) -> dict[str, str]:
     return env
 
 
+def _summarize_build_diagnostics(diagnostics_path: Path) -> None:
+    """Print a one-line attribution of the (otherwise hidden) build phases.
+
+    Diagnostics-only: turns the ~480-540 s unattributed frontend-lowering +
+    runtime-wasm-rebuild wall into a machine-checkable per-run line
+    (phase_sec breakdown + frontend lowering-cache hit_rate + runtime_wasm_cache
+    hydrate/publish status). No effect on the build itself.
+    """
+    diag = _load_json_object(diagnostics_path)
+    if diag is None:
+        print(
+            f"build diagnostics: unavailable (no readable {diagnostics_path.name})",
+            flush=True,
+        )
+        return
+    parts: list[str] = []
+    total_sec = diag.get("total_sec")
+    if isinstance(total_sec, (int, float)):
+        parts.append(f"total_sec={float(total_sec):.1f}")
+    phase_sec = diag.get("phase_sec")
+    if isinstance(phase_sec, Mapping) and phase_sec:
+        ranked = sorted(
+            (
+                (str(name), float(value))
+                for name, value in phase_sec.items()
+                if isinstance(value, (int, float))
+            ),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+        phase_str = " ".join(f"{name}={secs:.1f}s" for name, secs in ranked)
+        parts.append(f"phase_sec[{phase_str}]")
+    lowering = diag.get("frontend_lowering_cache")
+    if isinstance(lowering, Mapping):
+        hit_rate = lowering.get("hit_rate")
+        hits = lowering.get("hits")
+        observed = lowering.get("observed")
+        reused_s = lowering.get("reused_s")
+        relowered_s = lowering.get("relowered_s")
+        detail = []
+        if isinstance(hit_rate, (int, float)):
+            detail.append(f"hit_rate={float(hit_rate):.3f}")
+        if isinstance(hits, int) and isinstance(observed, int):
+            detail.append(f"hits={hits}/{observed}")
+        if isinstance(reused_s, (int, float)) and isinstance(relowered_s, (int, float)):
+            detail.append(
+                f"reused_s={float(reused_s):.1f} relowered_s={float(relowered_s):.1f}"
+            )
+        parts.append("frontend_lowering_cache[" + " ".join(detail) + "]")
+    else:
+        parts.append("frontend_lowering_cache[absent]")
+    rt_cache = diag.get("runtime_wasm_cache")
+    if isinstance(rt_cache, Mapping):
+        h_hits = rt_cache.get("hydrate_hits")
+        h_attempts = rt_cache.get("hydrate_attempts")
+        p_ok = rt_cache.get("publish_successes")
+        p_attempts = rt_cache.get("publish_attempts")
+        parts.append(
+            "runtime_wasm_cache["
+            f"hydrate={h_hits}/{h_attempts} publish={p_ok}/{p_attempts}]"
+        )
+    print("build diagnostics: " + " ".join(parts), flush=True)
+
+
 def _build_wasm(build_dir: Path) -> Path:
     env = _build_env()
+    # Diagnostics-only (no build-output change): attribute the hidden
+    # frontend-lowering + runtime-wasm-rebuild wall and capture the
+    # cross-session lowering-cache hit_rate on the witness path. Absolute file
+    # path so it lands in the attempt build dir regardless of the build's
+    # internal artifacts-root resolution. MOLT_BUILD_ALLOCATIONS is deliberately
+    # left off (tracemalloc is expensive).
+    diagnostics_path = (build_dir / "build_diagnostics.json").resolve()
+    env["MOLT_BUILD_DIAGNOSTICS"] = "1"
+    env["MOLT_BUILD_DIAGNOSTICS_FILE"] = str(diagnostics_path)
+    env["MOLT_BUILD_DIAGNOSTICS_VERBOSITY"] = "summary"
     _run(
         [
             sys.executable,
@@ -158,6 +232,7 @@ def _build_wasm(build_dir: Path) -> Path:
         cwd=ROOT,
         env=env,
     )
+    _summarize_build_diagnostics(diagnostics_path)
     return _select_wasm_entry(build_dir)
 
 
