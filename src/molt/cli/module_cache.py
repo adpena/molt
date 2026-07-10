@@ -1464,7 +1464,51 @@ def _module_lowering_context_digest(payload: dict[str, Any]) -> str | None:
         ).encode("utf-8")
     except (TypeError, ValueError):
         return None
-    return hashlib.sha256(encoded).hexdigest()
+    digest = hashlib.sha256(encoded).hexdigest()
+    _trace_lowering_context_digest(payload, digest)
+    return digest
+
+
+def _trace_lowering_context_digest(payload: dict[str, Any], digest: str) -> None:
+    """Append this module's context digest + per-field digests when tracing.
+
+    Gated on ``MOLT_TRACE_LOWERING_CTX=<path>``: emits one JSON line per module
+    (module name, full context digest, and a sha256 per top-level payload field).
+    This is the standing profiler for the frontend-lowering-cache hit rate: the
+    shared per-module lowering tier hits a fresh session only when this digest is
+    identical to the one a prior session wrote, so diffing two runs' traces
+    localizes any run-varying context input to a specific field. No-op (a single
+    ``os.environ`` read) unless the env var is set, so it never affects a build.
+    See docs/agent/FAST_WITNESS_ITER.md for the reproduce recipe.
+    """
+    dump_path = os.environ.get("MOLT_TRACE_LOWERING_CTX")
+    if not dump_path:
+        return
+    try:
+        field_digests: dict[str, str] = {}
+        for key, value in payload.items():
+            try:
+                blob = json.dumps(
+                    value,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=_json_ir_default,
+                ).encode("utf-8")
+            except (TypeError, ValueError):
+                blob = repr(value).encode("utf-8", "replace")
+            field_digests[key] = hashlib.sha256(blob).hexdigest()[:16]
+        line = json.dumps(
+            {
+                "module_name": payload.get("module_name"),
+                "digest": digest,
+                "field_digests": field_digests,
+            },
+            sort_keys=True,
+        )
+        with open(dump_path, "a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+    except OSError:
+        return
 
 
 def _type_facts_cache_payload(type_facts: Any) -> Any:

@@ -35,7 +35,21 @@ def _json_ir_default(value: Any) -> Any:
             ]
         }
     if isinstance(value, ast.AST):
-        return {"__ast__": ast.dump(value, include_attributes=False)}
+        # Encode as the bare ``ast.dump`` string, NOT a ``{"__ast__": ...}`` wrapper.
+        # The cache decoder (``_decode_cached_json_value``) collapses a stored
+        # ``{"__ast__": s}`` back to the bare string ``s``, so a payload that has
+        # been round-tripped through the analysis/lowering cache holds a bare
+        # string where a freshly-analysed payload holds a live ``ast.AST``. If the
+        # encoder wrapped the live node in a dict, those two provably-equivalent
+        # forms would serialise to different bytes, making the frontend-lowering
+        # context digest depend on cache-population state rather than only on the
+        # source -- the shared per-module lowering cache then almost never hits
+        # across fresh witness sessions (observed hit_rate ~0.19). Emitting the
+        # same bare string the decoder produces makes the round-trip idempotent:
+        # encode(node) == encode(decode(encode(node))). Proven representation-only
+        # (does not change lowered IR) by the two-direction gate in
+        # test_cli_lowering_context_ast_idempotent.py.
+        return ast.dump(value, include_attributes=False)
     if isinstance(value, (set, frozenset)):
         try:
             items = sorted(value)
