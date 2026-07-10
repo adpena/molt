@@ -84,6 +84,7 @@ struct WsPollStream {
     ctx: *const Mutex<NativeWebSocket>,
 }
 
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_ws_pair(
     capacity_bits: u64,
     out_left: *mut u64,
