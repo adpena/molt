@@ -522,18 +522,42 @@ fn test_cfunction_new_is_callable() {
 }
 
 #[test]
-fn test_object_get_optional_attr_missing_clears_error() {
+fn test_object_get_optional_attr_propagates_non_attribute_error() {
+    // Under the stub table `PyUnicode_FromString` fails closed (NULL name +
+    // pending MemoryError). CPython `_PyObject_LookupAttr` semantics: ONLY an
+    // AttributeError means "attribute absent" (0); any other pending exception
+    // must propagate as -1 with the exception preserved. The previous version of
+    // this test asserted `rc == 0` with the error cleared — that green was the
+    // swallow-all `PyErr_Clear()` divergence itself (ledger object.rs:293 [H]):
+    // a MemoryError from the lookup path was misreported as 'attribute absent'.
+    // The genuine missing-attribute→0 contract is covered by the
+    // `get_optional_attr_absent_on_attribute_error` unit test on a fake type.
     init();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(11) };
     let name = unsafe { molt_cpython_abi::api::strings::PyUnicode_FromString(c"missing".as_ptr()) };
+    assert!(
+        name.is_null(),
+        "stub alloc_str must fail closed (this test exercises the error path)"
+    );
+    assert!(
+        !unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null(),
+        "the failed name construction must leave MemoryError pending"
+    );
     let mut result: *mut PyObject = ptr::null_mut();
     let rc =
         unsafe { molt_cpython_abi::api::object::PyObject_GetOptionalAttr(py, name, &mut result) };
-    assert_eq!(rc, 0);
+    assert_eq!(
+        rc, -1,
+        "a pending non-AttributeError must propagate as -1, never 'absent'"
+    );
     assert!(result.is_null());
-    assert!(unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
+    assert!(
+        !unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null(),
+        "the MemoryError must stay pending (not swallowed)"
+    );
     unsafe {
-        molt_cpython_abi::api::refcount::Py_DECREF(name);
+        molt_cpython_abi::api::errors::PyErr_Clear();
         molt_cpython_abi::api::refcount::Py_DECREF(py);
     }
 }
