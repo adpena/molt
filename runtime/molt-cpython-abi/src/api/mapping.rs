@@ -3,8 +3,32 @@
 use crate::abi_types::{Py_ssize_t, PyDictProxyObject, PyObject};
 use crate::bridge::GLOBAL_BRIDGE;
 use crate::hooks::hooks_or_stubs;
+use molt_lang_obj_model::MoltObject;
 use std::os::raw::c_int;
 use std::ptr;
+
+/// Resolve `op` to its runtime handle bits iff it is a Molt-native dict.
+///
+/// Returns `None` for NULL, a non-bridge pointer, or any object that does not
+/// classify as a dict — the caller then sets the CPython-appropriate exception
+/// (`PyErr_BadInternalCall`). This is what lets `PyDict_Size`/`Merge`/`DelItem`
+/// distinguish a genuine error from an empty dict, instead of the fabricated
+/// `0`/silent `-1` the sentinel sweep removes.
+fn resolve_native_dict(op: *mut PyObject) -> Option<u64> {
+    if op.is_null() {
+        return None;
+    }
+    let bits = GLOBAL_BRIDGE.lock().pyobj_to_handle(op)?;
+    if !MoltObject::from_bits(bits).is_ptr() {
+        return None;
+    }
+    let h = hooks_or_stubs();
+    if unsafe { (h.classify_heap)(bits) } == crate::abi_types::MoltTypeTag::Dict as u8 {
+        Some(bits)
+    } else {
+        None
+    }
+}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyDict_New() -> *mut PyObject {
@@ -175,26 +199,107 @@ pub unsafe extern "C" fn PyDict_SetItemString(
     rc
 }
 
+/// Merge every key/value of `other` into `op`, honoring CPython's `override`
+/// contract (matches `Objects/dictobject.c` `dict_merge`):
+/// * `override == 1` — overwrite unconditionally (used by `PyDict_Update`);
+/// * `override == 0` — keep the existing value, skip duplicate keys;
+/// * `override == 2` — raise `KeyError` on the first duplicate key.
+///
+/// The previous body hard-failed with `RuntimeError` on any non-empty source,
+/// blocking numpy `__dict__` / namespace population. Now the native-dict fast
+/// path walks `other` through the allocation-free [`PyDict_Next`] cursor; a
+/// non-dict mapping goes through the `keys()` / `__getitem__` protocol exactly
+/// as CPython's `dict_merge` does.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyDict_Merge(
     op: *mut PyObject,
     other: *mut PyObject,
-    _override: c_int,
+    override_: c_int,
 ) -> c_int {
-    if op.is_null() || other.is_null() {
+    // CPython: `a` must be a dict (`!PyDict_Check(a)` → `PyErr_BadInternalCall`).
+    if op.is_null() || other.is_null() || resolve_native_dict(op).is_none() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return -1;
     }
-    let size = unsafe { PyDict_Size(other) };
-    if size == 0 {
+    // Merging a dict into itself is a no-op (CPython `if (a == b) return 0`).
+    if std::ptr::eq(op, other) {
         return 0;
     }
-    unsafe {
-        crate::api::errors::PyErr_SetString(
-            &raw mut crate::abi_types::PyExc_RuntimeError,
-            c"PyDict_Merge requires Molt dict iteration hook".as_ptr(),
-        );
+    // ── Native-dict fast path: iterate `other` via the O(1) cursor. ──
+    if resolve_native_dict(other).is_some() {
+        let mut pos: Py_ssize_t = 0;
+        let mut key: *mut PyObject = ptr::null_mut();
+        let mut val: *mut PyObject = ptr::null_mut();
+        while unsafe { PyDict_Next(other, &raw mut pos, &raw mut key, &raw mut val) } == 1 {
+            if override_ != 1 {
+                // override 0 (skip) / 2 (raise) both first test for presence.
+                if unsafe { PyDict_Contains(op, key) } == 1 {
+                    if override_ == 2 {
+                        unsafe {
+                            crate::api::errors::PyErr_SetObject(
+                                &raw mut crate::abi_types::PyExc_KeyError,
+                                key,
+                            );
+                        }
+                        return -1;
+                    }
+                    continue; // override == 0: keep the existing value
+                }
+            }
+            if unsafe { PyDict_SetItem(op, key, val) } != 0 {
+                return -1;
+            }
+        }
+        return 0;
     }
-    -1
+    // ── Non-dict mapping: keys() + __getitem__ protocol (CPython slow path). ──
+    unsafe { dict_merge_from_mapping(op, other, override_) }
+}
+
+/// CPython `dict_merge` non-dict branch: `PyMapping_Keys(other)` then, per key,
+/// `PyObject_GetItem(other, key)` → set into `op` honoring `override`.
+unsafe fn dict_merge_from_mapping(op: *mut PyObject, other: *mut PyObject, override_: c_int) -> c_int {
+    let keys = unsafe { crate::api::abstract_mapping::PyMapping_Keys(other) };
+    if keys.is_null() {
+        // PyMapping_Keys already set the exception (foreign mapping without a
+        // usable keys(), or the runtime authority is unavailable). Fail loud.
+        return -1;
+    }
+    let n = unsafe { crate::api::sequences::PyList_Size(keys) };
+    let mut rc = 0;
+    for i in 0..n {
+        let key = unsafe { crate::api::sequences::PyList_GetItem(keys, i) };
+        if key.is_null() {
+            rc = -1;
+            break;
+        }
+        if override_ != 1 && unsafe { PyDict_Contains(op, key) } == 1 {
+            if override_ == 2 {
+                unsafe {
+                    crate::api::errors::PyErr_SetObject(
+                        &raw mut crate::abi_types::PyExc_KeyError,
+                        key,
+                    );
+                }
+                rc = -1;
+                break;
+            }
+            continue;
+        }
+        let value = unsafe { crate::api::object::PyObject_GetItem(other, key) };
+        if value.is_null() {
+            rc = -1;
+            break;
+        }
+        let set_rc = unsafe { PyDict_SetItem(op, key, value) };
+        unsafe { crate::api::refcount::Py_DECREF(value) };
+        if set_rc != 0 {
+            rc = -1;
+            break;
+        }
+    }
+    unsafe { crate::api::refcount::Py_DECREF(keys) };
+    rc
 }
 
 #[unsafe(no_mangle)]
@@ -253,11 +358,20 @@ pub unsafe extern "C" fn PyDict_GetItem(op: *mut PyObject, key: *mut PyObject) -
     unsafe { GLOBAL_BRIDGE.lock().handle_to_borrowed_pyobj(val_bits) }
 }
 
+/// Like [`PyDict_GetItem`] but does NOT suppress errors: a non-dict receiver
+/// sets `PyErr_BadInternalCall` (CPython), and only a genuinely absent key
+/// returns NULL with no exception. (The runtime `dict_get` hook cannot surface
+/// an unhashable-key hash error, so that residual — rare in the extension
+/// surface — is the one case still reported as absence; see the ledger row.)
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyDict_GetItemWithError(
     op: *mut PyObject,
     key: *mut PyObject,
 ) -> *mut PyObject {
+    if op.is_null() || key.is_null() || resolve_native_dict(op).is_none() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return ptr::null_mut();
+    }
     unsafe { PyDict_GetItem(op, key) }
 }
 
@@ -275,7 +389,13 @@ pub unsafe extern "C" fn PyDict_GetItemRef(
     }
     let value = unsafe { PyDict_GetItemWithError(op, key) };
     if value.is_null() {
-        0
+        // CPython: NULL + pending exception is an error (-1); NULL with no
+        // exception is genuine absence (0). The prior code collapsed both to 0.
+        if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+            0
+        } else {
+            -1
+        }
     } else {
         unsafe {
             crate::api::refcount::Py_INCREF(value);
@@ -390,21 +510,44 @@ pub unsafe extern "C" fn PyDict_SetDefaultRef(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyDict_DelItem(op: *mut PyObject, key: *mut PyObject) -> c_int {
+    // CPython delitem_common: non-dict → BadInternalCall, missing key → KeyError;
+    // every `-1` carries a set exception (the sentinel sweep closes the silent
+    // `-1` this used to return for an unresolved dict/key).
     if op.is_null() || key.is_null() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return -1;
     }
-    let bridge = GLOBAL_BRIDGE.lock();
-    let dict_bits = match bridge.pyobj_to_handle(op) {
+    let dict_bits = match resolve_native_dict(op) {
         Some(b) => b,
-        None => return -1,
+        None => {
+            unsafe { crate::api::errors::PyErr_BadInternalCall() };
+            return -1;
+        }
     };
-    let key_bits = match bridge.pyobj_to_handle(key) {
+    let key_bits = match GLOBAL_BRIDGE.lock().pyobj_to_handle(key) {
         Some(b) => b,
-        None => return -1,
+        None => {
+            // A key that is not bridge-resolvable cannot be present in a
+            // Molt-native dict → genuine absence → KeyError(key), as CPython.
+            unsafe {
+                crate::api::errors::PyErr_SetObject(&raw mut crate::abi_types::PyExc_KeyError, key);
+            }
+            return -1;
+        }
     };
-    drop(bridge);
     let h = hooks_or_stubs();
-    unsafe { (h.dict_del)(dict_bits, key_bits) }
+    let rc = unsafe { (h.dict_del)(dict_bits, key_bits) };
+    if rc != 0 {
+        // dict_del returns -1 for a missing key; CPython raises KeyError(key).
+        // Only synthesize one if the runtime did not already set an exception.
+        if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+            unsafe {
+                crate::api::errors::PyErr_SetObject(&raw mut crate::abi_types::PyExc_KeyError, key);
+            }
+        }
+        return -1;
+    }
+    0
 }
 
 #[unsafe(no_mangle)]
@@ -426,19 +569,31 @@ pub unsafe extern "C" fn PyDict_DelItemString(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyDict_Size(op: *mut PyObject) -> Py_ssize_t {
-    if op.is_null() {
-        return 0;
+    // CPython: `if (!PyDict_Check(mp)) { PyErr_BadInternalCall(); return -1; }` —
+    // a non-dict / NULL yields -1 with SystemError, never a fabricated 0 (which
+    // `PyDict_Merge` used to read as "empty", silently treating a non-dict as
+    // mergeable).
+    match resolve_native_dict(op) {
+        Some(bits) => {
+            let h = hooks_or_stubs();
+            unsafe { (h.dict_len)(bits) as Py_ssize_t }
+        }
+        None => {
+            unsafe { crate::api::errors::PyErr_BadInternalCall() };
+            -1
+        }
     }
-    let bridge = GLOBAL_BRIDGE.lock();
-    let bits = match bridge.pyobj_to_handle(op) {
-        Some(b) => b,
-        None => return 0,
-    };
-    drop(bridge);
-    let h = hooks_or_stubs();
-    unsafe { (h.dict_len)(bits) as Py_ssize_t }
 }
 
+/// Real dict iteration over a Molt-native dict.
+///
+/// Backed by the allocation-free O(1) [`crate::hooks::RuntimeHooks::dict_entry`]
+/// cursor (indexes the runtime dict's flat entry vector by `*pos`), so a
+/// `while (PyDict_Next(d, &pos, &k, &v))` loop yields every entry with **borrowed**
+/// key/value refs and returns `0` only at the true end — with **no** exception,
+/// matching CPython. The previous stub observed an empty dict and left a stray
+/// pending `RuntimeError`, breaking exactly the walks numpy runs during type/module
+/// init.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyDict_Next(
     op: *mut PyObject,
@@ -449,34 +604,61 @@ pub unsafe extern "C" fn PyDict_Next(
     if op.is_null() || pos.is_null() {
         return 0;
     }
-    let size = unsafe { PyDict_Size(op) };
-    if unsafe { *pos } >= size {
+    // Identity resolution only; the dict_entry hook re-checks the dict tag and
+    // returns 0 for a non-dict (CPython's "0 if op is not a dictionary").
+    let dict_bits = match GLOBAL_BRIDGE.lock().pyobj_to_handle(op) {
+        Some(b) => b,
+        None => return 0,
+    };
+    let index = unsafe { *pos };
+    if index < 0 {
         return 0;
     }
-    if size > 0 {
-        unsafe {
-            crate::api::errors::PyErr_SetString(
-                &raw mut crate::abi_types::PyExc_RuntimeError,
-                c"PyDict_Next requires Molt dict iteration hook".as_ptr(),
-            );
-        }
+    let h = hooks_or_stubs();
+    let mut key_bits: u64 = 0;
+    let mut val_bits: u64 = 0;
+    let found = unsafe {
+        (h.dict_entry)(
+            dict_bits,
+            index as usize,
+            &raw mut key_bits,
+            &raw mut val_bits,
+        )
+    };
+    if found != 1 {
+        // End of iteration (or non-dict): return 0 and set NO exception.
+        return 0;
     }
     unsafe {
-        *pos = size;
-        if !key.is_null() {
-            *key = ptr::null_mut();
-        }
-        if !value.is_null() {
-            *value = ptr::null_mut();
-        }
+        *pos = index + 1;
     }
-    0
+    // Borrowed references (CPython contract — caller must not DECREF). O(1) and
+    // allocation-free per step for keys/values already anchored in the bridge
+    // (the common init path, where every entry entered via PyDict_SetItem).
+    let mut bridge = GLOBAL_BRIDGE.lock();
+    if !key.is_null() {
+        unsafe { *key = bridge.handle_to_borrowed_pyobj(key_bits) };
+    }
+    if !value.is_null() {
+        unsafe { *value = bridge.handle_to_borrowed_pyobj(val_bits) };
+    }
+    1
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyDict_Contains(op: *mut PyObject, key: *mut PyObject) -> c_int {
     let value = unsafe { PyDict_GetItemWithError(op, key) };
-    if value.is_null() { 0 } else { 1 }
+    if !value.is_null() {
+        return 1;
+    }
+    // CPython: a genuine absent key returns 0, but any error (non-dict receiver
+    // via BadInternalCall, or a lookup error) returns -1 with the exception left
+    // pending — never a silent 0 that a caller reads as "not present".
+    if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+        0
+    } else {
+        -1
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -502,7 +684,20 @@ pub unsafe extern "C" fn PyDict_Check(op: *mut PyObject) -> c_int {
         return 0;
     }
     let ob_type = unsafe { (*op).ob_type };
-    (std::ptr::eq(ob_type, &raw const crate::abi_types::PyDict_Type)) as c_int
+    if ob_type.is_null() {
+        return 0;
+    }
+    // Exact dict fast path (also `PyDict_CheckExact`).
+    if std::ptr::eq(ob_type, &raw const crate::abi_types::PyDict_Type) {
+        return 1;
+    }
+    // Dict subclasses: CPython's `PyDict_Check` is the `Py_TPFLAGS_DICT_SUBCLASS`
+    // flag test — equivalent to a subtype walk against `dict`. Route through the
+    // shared `PyType_IsSubtype` authority so a C-defined dict subclass is
+    // recognized instead of the previous exact-identity-only `0`.
+    unsafe {
+        crate::api::typeobj::PyType_IsSubtype(ob_type, &raw mut crate::abi_types::PyDict_Type)
+    }
 }
 
 /// Dispatch a dict-iteration op through the runtime dict authority.
@@ -633,7 +828,7 @@ mod dict_anchor_tests {
             ob_refcnt: 1,
             ob_type: ptr::null_mut(),
         };
-        let key_ptr = &raw mut foreign_key as *mut PyObject;
+        let key_ptr = &raw mut foreign_key;
         let wrapper_bits = 0xF0DE_0000_0000_0010u64;
         let (recv, val) = {
             let mut bridge = GLOBAL_BRIDGE.lock();

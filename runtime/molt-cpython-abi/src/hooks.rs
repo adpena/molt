@@ -84,6 +84,37 @@ pub struct RuntimeHooks {
     pub list_len: unsafe extern "C" fn(bits: u64) -> usize,
     /// Return the bits of item `i` in the list, or 0 if out of range.
     pub list_item: unsafe extern "C" fn(bits: u64, i: usize) -> u64,
+    /// Store `val_bits` at index `i` of the list, writing the previous occupant's
+    /// bits into `*out_old`. Returns 1 on success, 0 when `i` is out of range or
+    /// `list_bits` is not a list. Backs the indexed `PyList_SetItem`/`SET_ITEM`
+    /// store: CPython stores directly (`Py_SETREF`), stealing the new reference
+    /// and releasing the old — the ABI releases `*out_old` and honors the steal.
+    pub list_set: unsafe extern "C" fn(
+        list_bits: u64,
+        i: usize,
+        val_bits: u64,
+        out_old: *mut u64,
+    ) -> std::os::raw::c_int,
+    /// Insert `item_bits` before (clamped) index `where_` in the list, shifting
+    /// subsequent elements right. Returns 0 on success, -1 on a non-list.
+    /// Routes to the runtime `PyList_Insert` authority (`ins1` semantics).
+    pub list_insert:
+        unsafe extern "C" fn(list_bits: u64, where_: isize, item_bits: u64) -> std::os::raw::c_int,
+    /// Sort the list in place via the runtime comparison authority. Returns 0 on
+    /// success, -1 with a pending exception on error (uncomparable elements).
+    pub list_sort: unsafe extern "C" fn(list_bits: u64) -> std::os::raw::c_int,
+    /// Reverse the list in place. Returns 0 on success, -1 on a non-list.
+    pub list_reverse: unsafe extern "C" fn(list_bits: u64) -> std::os::raw::c_int,
+    /// Replace `list[ilow:ihigh]` with the elements of the list `itemlist_bits`
+    /// (or delete the slice when `itemlist_bits == 0`), growing/shrinking the
+    /// backing store. Returns 0 on success, -1 on a non-list receiver. Backs
+    /// `PyList_SetSlice` (`list_ass_slice`).
+    pub list_set_slice: unsafe extern "C" fn(
+        list_bits: u64,
+        ilow: isize,
+        ihigh: isize,
+        itemlist_bits: u64,
+    ) -> std::os::raw::c_int,
     /// Allocate a tuple of exactly `n` slots. Slots are uninitialized (None).
     pub alloc_tuple: unsafe extern "C" fn(n: usize) -> u64,
     /// Set slot `i` of tuple `bits` to `val_bits`.
@@ -102,6 +133,17 @@ pub struct RuntimeHooks {
     pub dict_del: unsafe extern "C" fn(dict_bits: u64, key_bits: u64) -> std::os::raw::c_int,
     /// Return the number of entries in a dict.
     pub dict_len: unsafe extern "C" fn(bits: u64) -> usize,
+    /// Read the dict entry at insertion-order `index`, writing borrowed key/value
+    /// bits into `*out_key`/`*out_val`. Returns 1 when an entry exists at `index`,
+    /// 0 at end-of-dict or when `dict_bits` is not a dict. Allocation-free O(1)
+    /// cursor step backing `PyDict_Next` (mirrors CPython's `ppos` index into the
+    /// entry table); it must NOT set an exception (CPython `PyDict_Next` contract).
+    pub dict_entry: unsafe extern "C" fn(
+        dict_bits: u64,
+        index: usize,
+        out_key: *mut u64,
+        out_val: *mut u64,
+    ) -> std::os::raw::c_int,
     // ── Data access ───────────────────────────────────────────────────────────
     /// Return a pointer to the UTF-8 bytes of a string handle, writing the
     /// length into `*out_len`. Pointer is valid until next GC cycle.
@@ -410,6 +452,35 @@ unsafe extern "C" fn stub_list_len(_bits: u64) -> usize {
 unsafe extern "C" fn stub_list_item(_bits: u64, _i: usize) -> u64 {
     0
 }
+unsafe extern "C" fn stub_list_set(
+    _list_bits: u64,
+    _i: usize,
+    _val_bits: u64,
+    _out_old: *mut u64,
+) -> std::os::raw::c_int {
+    0
+}
+unsafe extern "C" fn stub_list_insert(
+    _list_bits: u64,
+    _where_: isize,
+    _item_bits: u64,
+) -> std::os::raw::c_int {
+    -1
+}
+unsafe extern "C" fn stub_list_sort(_list_bits: u64) -> std::os::raw::c_int {
+    -1
+}
+unsafe extern "C" fn stub_list_reverse(_list_bits: u64) -> std::os::raw::c_int {
+    -1
+}
+unsafe extern "C" fn stub_list_set_slice(
+    _list_bits: u64,
+    _ilow: isize,
+    _ihigh: isize,
+    _itemlist_bits: u64,
+) -> std::os::raw::c_int {
+    -1
+}
 unsafe extern "C" fn stub_alloc_tuple(_n: usize) -> u64 {
     0
 }
@@ -431,6 +502,14 @@ unsafe extern "C" fn stub_dict_del(_d: u64, _k: u64) -> std::os::raw::c_int {
     -1
 }
 unsafe extern "C" fn stub_dict_len(_bits: u64) -> usize {
+    0
+}
+unsafe extern "C" fn stub_dict_entry(
+    _dict_bits: u64,
+    _index: usize,
+    _out_key: *mut u64,
+    _out_val: *mut u64,
+) -> std::os::raw::c_int {
     0
 }
 unsafe extern "C" fn stub_str_data(_bits: u64, out_len: *mut usize) -> *const u8 {
@@ -622,6 +701,11 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     list_append: stub_list_append,
     list_len: stub_list_len,
     list_item: stub_list_item,
+    list_set: stub_list_set,
+    list_insert: stub_list_insert,
+    list_sort: stub_list_sort,
+    list_reverse: stub_list_reverse,
+    list_set_slice: stub_list_set_slice,
     alloc_tuple: stub_alloc_tuple,
     tuple_set: stub_tuple_set,
     tuple_len: stub_tuple_len,
@@ -631,6 +715,7 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     dict_get: stub_dict_get,
     dict_del: stub_dict_del,
     dict_len: stub_dict_len,
+    dict_entry: stub_dict_entry,
     str_data: stub_str_data,
     bytes_data: stub_bytes_data,
     buffer_acquire: stub_buffer_acquire,
