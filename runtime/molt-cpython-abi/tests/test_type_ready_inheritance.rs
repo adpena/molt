@@ -404,3 +404,127 @@ fn ready_preserves_explicit_tp_free() {
         "an explicit tp_free must not be overwritten by the default"
     );
 }
+
+// ---------------------------------------------------------------------------
+// (4) type.tp_call (CPython type_call) — calling a C-extension type object.
+//
+// numpy's PyArrayDTypeMeta_Type sets tp_base = &PyType_Type at import time and
+// its DType-class instances (BoolDType, ...) are instantiated FROM C by calling
+// the class: Py_TYPE(cls)->tp_call == type.tp_call. Verified against CPython
+// v3.12.13 Objects/typeobject.c::type_call. A zeroed PyType_Type.tp_call turns
+// every DType() call into "'numpy._DTypeMeta' object is not callable" during
+// _multiarray_umath init.
+// ---------------------------------------------------------------------------
+
+static NEW_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static INIT_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+unsafe extern "C" fn counting_new(
+    tp: *mut PyTypeObject,
+    _args: *mut PyObject,
+    _kwds: *mut PyObject,
+) -> *mut PyObject {
+    NEW_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    unsafe { molt_cpython_abi::api::typeobj::PyType_GenericAlloc(tp, 0) }
+}
+
+unsafe extern "C" fn counting_init(
+    _obj: *mut PyObject,
+    _args: *mut PyObject,
+    _kwds: *mut PyObject,
+) -> c_int {
+    INIT_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    0
+}
+
+#[test]
+fn metatype_inherits_type_call_and_instantiates_via_tp_new_tp_init() {
+    init();
+    // PyType_Type carries CPython's type_call after static init.
+    let type_type = &raw mut PyType_Type;
+    let type_call = unsafe { (*type_type).tp_call };
+    assert!(
+        type_call.is_some(),
+        "PyType_Type.tp_call must be CPython's type_call after init_static_types"
+    );
+
+    // A metatype like numpy's _DTypeMeta: tp_base = &PyType_Type, readied.
+    let mut meta: PyTypeObject = unsafe { std::mem::zeroed() };
+    meta.tp_name = c"numpy._DTypeMeta".as_ptr();
+    meta.tp_basicsize = std::mem::size_of::<PyTypeObject>() as Py_ssize_t;
+    meta.tp_base = type_type;
+    assert_eq!(unsafe { ready(&mut meta) }, 0);
+    assert!(
+        meta.tp_call.is_some(),
+        "a metatype with tp_base=&PyType_Type must inherit type_call via PyType_Ready"
+    );
+
+    // A "DType class": an instance of the metatype with its own tp_new/tp_init
+    // (numpy's legacy_dtype_default_new pattern).
+    let mut dtype_class: PyTypeObject = unsafe { std::mem::zeroed() };
+    dtype_class.tp_name = c"numpy.dtypes.BoolDType".as_ptr();
+    dtype_class.tp_basicsize = 64;
+    dtype_class.tp_new = Some(counting_new);
+    dtype_class.tp_init = Some(counting_init);
+    dtype_class.ob_base.ob_base.ob_type = &mut meta;
+    assert_eq!(unsafe { ready(&mut dtype_class) }, 0);
+
+    // Calling the DType class through the inherited type_call must run
+    // tp_new + tp_init and yield an instance of the class.
+    let before_new = NEW_CALLS.load(std::sync::atomic::Ordering::SeqCst);
+    let before_init = INIT_CALLS.load(std::sync::atomic::Ordering::SeqCst);
+    let args = unsafe { molt_cpython_abi::api::sequences::PyTuple_New(0) };
+    assert!(!args.is_null());
+    let call = meta.tp_call.expect("inherited type_call");
+    let obj = unsafe {
+        call(
+            (&mut dtype_class as *mut PyTypeObject).cast::<PyObject>(),
+            args,
+            ptr::null_mut(),
+        )
+    };
+    assert!(
+        !obj.is_null(),
+        "type_call must instantiate via the class's own tp_new"
+    );
+    assert_eq!(
+        NEW_CALLS.load(std::sync::atomic::Ordering::SeqCst),
+        before_new + 1,
+        "tp_new must be invoked exactly once"
+    );
+    assert_eq!(
+        INIT_CALLS.load(std::sync::atomic::Ordering::SeqCst),
+        before_init + 1,
+        "tp_init must run when the result is an instance of the called type"
+    );
+    assert_eq!(
+        unsafe { (*obj).ob_type },
+        &mut dtype_class as *mut PyTypeObject,
+        "the instance's ob_type must be the called class"
+    );
+}
+
+#[test]
+fn type_call_without_tp_new_raises_type_error_not_null_funcref() {
+    init();
+    let type_type = &raw mut PyType_Type;
+    let call = unsafe { (*type_type).tp_call }.expect("type_call installed");
+    let mut bare: PyTypeObject = unsafe { std::mem::zeroed() };
+    bare.tp_name = c"bare_type".as_ptr();
+    bare.tp_flags = Py_TPFLAGS_READY; // readied, but no tp_new anywhere
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+    let args = unsafe { molt_cpython_abi::api::sequences::PyTuple_New(0) };
+    let obj = unsafe {
+        call(
+            (&mut bare as *mut PyTypeObject).cast::<PyObject>(),
+            args,
+            ptr::null_mut(),
+        )
+    };
+    assert!(obj.is_null(), "a type without tp_new must not instantiate");
+    assert!(
+        !unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null(),
+        "the failure must set a TypeError, never a bare NULL"
+    );
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+}
