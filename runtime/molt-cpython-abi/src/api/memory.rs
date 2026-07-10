@@ -52,6 +52,19 @@ pub unsafe extern "C" fn PyObject_GC_Del(ptr: *mut c_void) {
     unsafe { PyMem_Free(ptr) };
 }
 
+/// CPython `PyObject_Free` — release an object's memory. In CPython this is the
+/// non-GC object deallocator (`object`'s default `tp_free`); Molt routes it
+/// through the same `libc::free` path as `PyMem_Free`/`PyObject_GC_Del` (there
+/// is no separate obmalloc arena or GC tracking in the wasm runtime). Provided
+/// so `PyType_Ready` can install CPython's `tp_free` default: a static
+/// C-extension type that leaves `tp_free` NULL (e.g. numpy's
+/// `PyBoundArrayMethod_Type`) inherits `object.tp_free == PyObject_Free`, and
+/// its `tp_dealloc`'s `Py_TYPE(self)->tp_free(self)` must resolve.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyObject_Free(ptr: *mut c_void) {
+    unsafe { PyMem_Free(ptr) };
+}
+
 pub(crate) unsafe fn molt_object_alloc(
     typeobj: *mut PyTypeObject,
     nitems: Py_ssize_t,
