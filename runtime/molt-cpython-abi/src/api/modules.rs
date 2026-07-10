@@ -58,7 +58,8 @@ fn bridge_pyobj_to_bits(obj: *mut PyObject) -> u64 {
     if obj.is_null() {
         return MoltObject::none().bits();
     }
-    if let Some(bits) = GLOBAL_BRIDGE.lock().pyobj_to_handle(obj) {
+    let handle = GLOBAL_BRIDGE.lock().pyobj_to_handle(obj);
+    if let Some(bits) = handle {
         return bits;
     }
     // No singleton match and no entry in the local map — the pointer most

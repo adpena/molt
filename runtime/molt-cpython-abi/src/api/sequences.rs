@@ -446,7 +446,8 @@ pub unsafe extern "C" fn PyTuple_GetItem(op: *mut PyObject, i: Py_ssize_t) -> *m
         return unsafe { *(*tuple).ob_item.add(i as usize) };
     }
     // Bridge-managed Molt tuple.
-    let bits = match GLOBAL_BRIDGE.lock().pyobj_to_handle(op) {
+    let op_handle = GLOBAL_BRIDGE.lock().pyobj_to_handle(op);
+    let bits = match op_handle {
         Some(b) if MoltObject::from_bits(b).is_ptr() => b,
         _ => {
             unsafe { crate::api::errors::PyErr_BadInternalCall() };
@@ -949,7 +950,8 @@ pub unsafe extern "C" fn PyList_SetSlice(
     let itemlist_bits = if itemlist.is_null() {
         0 // deletion
     } else {
-        match GLOBAL_BRIDGE.lock().pyobj_to_handle(itemlist) {
+        let itemlist_handle = GLOBAL_BRIDGE.lock().pyobj_to_handle(itemlist);
+        match itemlist_handle {
             Some(b) if MoltObject::from_bits(b).is_ptr() => b,
             _ => {
                 unsafe { crate::api::errors::PyErr_BadInternalCall() };

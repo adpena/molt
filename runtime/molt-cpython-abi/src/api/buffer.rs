@@ -83,14 +83,16 @@ fn raw_1d_descriptor(
     readonly: c_int,
     base: u64,
 ) -> MoltBufferView {
-    let mut descriptor = MoltBufferView::default();
-    descriptor.data = buf.cast();
-    descriptor.len = len as u64;
-    descriptor.backing_capacity = len as u64;
-    descriptor.readonly = u32::from(readonly != 0);
-    descriptor.ndim = 1;
-    descriptor.itemsize = 1;
-    descriptor.base = base;
+    let mut descriptor = MoltBufferView {
+        data: buf.cast(),
+        len: len as u64,
+        backing_capacity: len as u64,
+        readonly: u32::from(readonly != 0),
+        ndim: 1,
+        itemsize: 1,
+        base,
+        ..Default::default()
+    };
     descriptor.shape[0] = len;
     descriptor.strides[0] = 1;
     descriptor.format[0] = b'B';
@@ -120,20 +122,22 @@ unsafe fn descriptor_from_pybuffer(info: *const Py_buffer) -> Result<MoltBufferV
         return Err(());
     }
 
-    let mut descriptor = MoltBufferView::default();
-    descriptor.data = info.buf.cast();
-    descriptor.len = info.len as u64;
-    descriptor.backing_capacity = info.len as u64;
-    descriptor.readonly = u32::from(info.readonly != 0);
-    descriptor.ndim = ndim as u32;
-    descriptor.itemsize = info.itemsize as u64;
-    descriptor.base = if info.obj.is_null() {
-        0
-    } else {
-        GLOBAL_BRIDGE
-            .lock()
-            .pyobj_to_handle(info.obj)
-            .unwrap_or_default()
+    let mut descriptor = MoltBufferView {
+        data: info.buf.cast(),
+        len: info.len as u64,
+        backing_capacity: info.len as u64,
+        readonly: u32::from(info.readonly != 0),
+        ndim: ndim as u32,
+        itemsize: info.itemsize as u64,
+        base: if info.obj.is_null() {
+            0
+        } else {
+            GLOBAL_BRIDGE
+                .lock()
+                .pyobj_to_handle(info.obj)
+                .unwrap_or_default()
+        },
+        ..Default::default()
     };
 
     if ndim == 0 {
@@ -619,10 +623,7 @@ pub unsafe extern "C" fn PyBuffer_FillInfo(
     let base = if obj.is_null() {
         0
     } else {
-        match GLOBAL_BRIDGE.lock().pyobj_to_handle(obj) {
-            Some(bits) => bits,
-            None => 0,
-        }
+        GLOBAL_BRIDGE.lock().pyobj_to_handle(obj).unwrap_or_default()
     };
     unsafe {
         reset_pybuffer(view);
