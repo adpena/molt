@@ -74,7 +74,8 @@ fn py_long_value(op: *mut PyObject, use_index: bool) -> Result<LongValue, LongEr
         unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return Err(LongError::Raised);
     }
-    if let Some(bits) = GLOBAL_BRIDGE.lock().pyobj_to_handle(op) {
+    let op_handle = GLOBAL_BRIDGE.lock().pyobj_to_handle(op);
+    if let Some(bits) = op_handle {
         let obj = MoltObject::from_bits(bits);
         if let Some(v) = obj.as_int() {
             return Ok(LongValue::Signed(v));
@@ -1248,7 +1249,8 @@ pub unsafe extern "C" fn PyFloat_AsDouble(op: *mut PyObject) -> c_double {
         unsafe { crate::api::errors::PyErr_BadArgument() };
         return -1.0;
     }
-    if let Some(bits) = GLOBAL_BRIDGE.lock().pyobj_to_handle(op) {
+    let op_handle = GLOBAL_BRIDGE.lock().pyobj_to_handle(op);
+    if let Some(bits) = op_handle {
         let obj = MoltObject::from_bits(bits);
         if obj.is_float() {
             return obj.as_float().unwrap_or(-1.0);
@@ -1286,7 +1288,8 @@ pub unsafe extern "C" fn PyFloat_AsDouble(op: *mut PyObject) -> c_double {
     // path), then the `nb_index` route, mirroring floatobject.c.
     let converted = unsafe { crate::api::abstract_number::PyNumber_Float(op) };
     if !converted.is_null() {
-        let value = if let Some(bits) = GLOBAL_BRIDGE.lock().pyobj_to_handle(converted) {
+        let converted_handle = GLOBAL_BRIDGE.lock().pyobj_to_handle(converted);
+        let value = if let Some(bits) = converted_handle {
             MoltObject::from_bits(bits).as_float()
         } else {
             None
@@ -1539,7 +1542,8 @@ macro_rules! type_check {
             if op.is_null() {
                 return 0;
             }
-            match GLOBAL_BRIDGE.lock().pyobj_to_handle(op) {
+            let op_handle = GLOBAL_BRIDGE.lock().pyobj_to_handle(op);
+            match op_handle {
                 Some(bits) => MoltObject::from_bits(bits).$pred() as c_int,
                 None => 0,
             }
@@ -1556,7 +1560,8 @@ pub unsafe extern "C" fn PyLong_Check(op: *mut PyObject) -> c_int {
     if op.is_null() {
         return 0;
     }
-    if let Some(bits) = GLOBAL_BRIDGE.lock().pyobj_to_handle(op) {
+    let op_handle = GLOBAL_BRIDGE.lock().pyobj_to_handle(op);
+    if let Some(bits) = op_handle {
         let obj = MoltObject::from_bits(bits);
         if obj.is_int() || obj.is_bool() {
             return 1;
@@ -1583,7 +1588,8 @@ pub unsafe extern "C" fn PyFloat_Check(op: *mut PyObject) -> c_int {
     if op.is_null() {
         return 0;
     }
-    if let Some(bits) = GLOBAL_BRIDGE.lock().pyobj_to_handle(op) {
+    let op_handle = GLOBAL_BRIDGE.lock().pyobj_to_handle(op);
+    if let Some(bits) = op_handle {
         return MoltObject::from_bits(bits).is_float() as c_int;
     }
     unsafe {
@@ -1604,7 +1610,8 @@ pub unsafe extern "C" fn PyNumber_Check(op: *mut PyObject) -> c_int {
     if op.is_null() {
         return 0;
     }
-    if let Some(bits) = GLOBAL_BRIDGE.lock().pyobj_to_handle(op) {
+    let op_handle = GLOBAL_BRIDGE.lock().pyobj_to_handle(op);
+    if let Some(bits) = op_handle {
         let obj = MoltObject::from_bits(bits);
         if obj.is_int() || obj.is_float() || obj.is_bool() {
             return 1;

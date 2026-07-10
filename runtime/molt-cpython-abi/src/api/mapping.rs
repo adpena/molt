@@ -524,7 +524,8 @@ pub unsafe extern "C" fn PyDict_DelItem(op: *mut PyObject, key: *mut PyObject) -
             return -1;
         }
     };
-    let key_bits = match GLOBAL_BRIDGE.lock().pyobj_to_handle(key) {
+    let key_handle = GLOBAL_BRIDGE.lock().pyobj_to_handle(key);
+    let key_bits = match key_handle {
         Some(b) => b,
         None => {
             // A key that is not bridge-resolvable cannot be present in a
@@ -606,7 +607,8 @@ pub unsafe extern "C" fn PyDict_Next(
     }
     // Identity resolution only; the dict_entry hook re-checks the dict tag and
     // returns 0 for a non-dict (CPython's "0 if op is not a dictionary").
-    let dict_bits = match GLOBAL_BRIDGE.lock().pyobj_to_handle(op) {
+    let dict_handle = GLOBAL_BRIDGE.lock().pyobj_to_handle(op);
+    let dict_bits = match dict_handle {
         Some(b) => b,
         None => return 0,
     };
