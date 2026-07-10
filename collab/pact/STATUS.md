@@ -1,22 +1,74 @@
-# STATUS - Pact dogfooding of Molt (2026-07-01)
+# STATUS - Pact dogfooding of Molt (2026-07-10)
 
-Positive signal first: the browser call shape is no longer the core unknown.
+Positive signal first: the witness build is no longer blocked at build/link or at
+"cannot run numpy". The `pact-witness-acceptance` lane now builds and links the
+split-runtime `app.wasm` + `molt_runtime.wasm` with the sealed numpy/scipy roots
+and executes **deep into numpy `_multiarray_umath` C-extension initialization at
+runtime**, with the C-API trace completely clean of silent failures. The frontier
+is now a single split-runtime `call-indirect` trap during numpy import - the last
+major wall before numpy is importable and `field_solve` can run.
+
+Still true and unchanged: the browser call shape is not the core unknown.
 `wasm/browser_embed.js` owns the narrow split-runtime embed path, and
-`examples/browser_embed_forward/` now contains a source-level numeric
+`examples/browser_embed_forward/` contains a source-level numeric
 `forward(Float32Array) -> Float32Array` example plus a plain JS runner that
 consumes a generated build directory. The full `wasm/browser_host.js` process
-host remains separate, while `wasm/loader_bridge.js` now owns the shared WASM
+host remains separate, while `wasm/loader_bridge.js` owns the shared WASM
 import/tag parser, isolate-import i64 bridge, and reserved runtime-call bridge
-used by the browser and Node loaders.
+used by the browser and Node loaders. No checked-in
+`examples/browser_embed_forward/artifacts/` bundle remains; a committed prebuilt
+runtime/app package would be a second artifact lane that rots without a
+release/integrity pipeline. Generated WASM remains an output.
 
-No checked-in `examples/browser_embed_forward/artifacts/` bundle remains. A
-committed prebuilt runtime/app package would be a second artifact lane and would
-rot unless it is managed by a release/integrity pipeline. Generated WASM remains
-an output.
+**Honest bottom line: Kernel A is NOT green.** No `candidate_outputs.npz` is
+written; `check_parity.py` has not passed from a Molt-WASM run. Everything below
+is real, gated forward motion through numpy import - not a claim that numpy/scipy
+run or that `field_solve` executes. Trust this file + `docs/agent/CLAIMS.md` +
+`git log`; the frontier moves daily.
 
 ## Current Blocker
 
-### 2026-07-01 Runtime ABI and DX Update
+### 2026-07-10 numpy `_multiarray_umath` call-indirect frontier (LIVE)
+
+Since the 2026-07-01 call-arity/function-index snapshot below, the witness walked
+forward through the full numpy/scipy import closure and a chain of runtime C-API
+frontiers, each **landed on `origin/main` with a regression gate, no stubs**:
+
+- **Package pure-Python closure completed.** numpy's full importable subtree (263
+  modules) staged into every witness seal (`e031e4b02b`), plus numpy's own
+  build-generated `version.py`/`__config__.py` (`6dabfa7db1`); scipy's full
+  subtree (542 modules, `9d86b61f03`) plus scipy's meson-emitted `__config__.py`
+  driven through scipy's own `configure_file` on the wasm cross toolchain
+  (`05287a0669`). The old partial-seal `ModuleNotFoundError` class is retired.
+- **Native C-extension seals** built from upstream source with custody sidecars:
+  `scipy.ndimage._nd_image` + `_ni_label`; `scipy._lib._ccallback_c` plus its 5
+  faithfully-implemented CPython C-API deps (`1aec825e02`); numpy `_umath_linalg`
+  with self-contained f2c `lapack_lite` - real `dsyevd_`/`ssyevd_`/`cheevd_`/
+  `zheevd_` eigh drivers (`02b5fa7dbd`), which also gates numpy import.
+- **Runtime C-API + split-runtime linker frontiers cleared in order:**
+  `sys.flags` cold C-API read via PEP-562 `__getattr__` (`f3b97fa194`);
+  GOT data-symbol retargeting so numpy's `Py_None`/`Py_True`/`Py_False`/`PyExc_*`
+  resolve to the runtime's single canonical addresses instead of uninitialised
+  copies (`596d8baa8e`); 34 canonical `Py*_Type` statics registered in the bridge
+  (`48788f0695`); `Py_BuildValue` `'s'`/`'y'`-with-NULL yields `None` per CPython
+  3.12 spec (`744048ae35`); a new `object_call` hook + container proxy anchoring
+  (`6013b845be` + `635d62f707`); and first-class foreign-object custody
+  (`TYPE_ID_FOREIGN`) for C-extension objects crossing into compiled Python
+  (`39a4f737ee`), which cleared `DType.__name__` and ran numpy past
+  `_add_dtype_helper` into DType registration. A P0 keyword-call dispatch fix
+  landed alongside (`58928854b0`), since numpy/scipy use kw-calls pervasively.
+
+Live trap: E2E RUN_ID `20260710T033748-pact-witness-acceptance-ae136709e9574896`
+(rc=1) hits a WASM `call-indirect` `null function or function signature mismatch`
+as the `_multiarray_umath` init stack crosses the split-runtime app<->runtime
+module boundary (`runtimeImports.<computed>`, `run_wasm.js`). This is a
+function-pointer / split-runtime call-table relocation issue (M40/M50-adjacent),
+NOT a missing C-API or undecodable-handle problem. Active on branch
+`e1-callindirect-20260710`; the next executable step is a call-indirect
+diagnostic naming the exact trapping funcref, then the call-table/signature fix,
+then a rerun of `pact-witness-acceptance`.
+
+### 2026-07-01 Runtime ABI and DX Update (historical - superseded by 2026-07-10 above)
 
 The live aperture has moved again. Queue row
 `20260701T205002-pact-witness-acceptance-cdd2f00c403240e7` reached
@@ -158,6 +210,24 @@ lane. Molt-owned Python shims for NumPy/SciPy would be the wrong architecture.
 
 ## What Worked
 
+### 2026-07-10
+
+- The witness build now runs numpy `_multiarray_umath` C-ext init at runtime with
+  a silent-failure-free C-API trace: full numpy+scipy pure-Python import closures
+  stage cleanly, the native seals (`_nd_image`/`_ni_label`/`_ccallback_c`/
+  `_umath_linalg`+`lapack_lite`) resolve through the real external-native
+  resolver, and the runtime C-API frontiers (`sys.flags`, GOT data symbols, type
+  statics, `Py_BuildValue` NULL, call authority, container anchors, foreign-object
+  custody) are landed and gated.
+- Foreign-object custody (`TYPE_ID_FOREIGN`, `39a4f737ee`) gives C-extension
+  objects a first-class Molt heap representation whose getattr/setattr/call route
+  through the object's own CPython type slots - the general "extension object used
+  from Python" class `field_solve` needs (ndarray methods, dtype instances).
+- The keyword-call dispatch P0 (`58928854b0`) is fixed cold on main; numpy/scipy
+  keyword-heavy call sites no longer garble compiled-function params.
+
+### Prior (2026-07-01 and earlier)
+
 - The repository has first-class WASM and browser surfaces: split runtime,
   browser embed JS, process host JS, browser GPU worker, and generated ABI
   tables.
@@ -183,6 +253,25 @@ lane. Molt-owned Python shims for NumPy/SciPy would be the wrong architecture.
   can link.
 
 ## Proof Status
+
+### 2026-07-10 live-frontier evidence (CLAIMS row 186 + git log)
+
+- E2E RUN_ID `20260710T033748-pact-witness-acceptance-ae136709e9574896` (rc=1):
+  builds + links split WASM, runs `_multiarray_umath` init past
+  `_add_dtype_helper` into DType registration, trace clean of silent failures;
+  **no `candidate_outputs.npz`** - halts at the `call-indirect` signature-mismatch
+  trap. This is the authoritative current frontier signal.
+- Landed frontier commits (all on `origin/main`, each with a regression gate):
+  `e031e4b02b`/`6dabfa7db1` (numpy pyclosure + generated modules), `9d86b61f03`/
+  `05287a0669` (scipy pyclosure + `__config__`), `1aec825e02` (scipy
+  `_ccallback_c` + 5 C-API), `02b5fa7dbd` (numpy `_umath_linalg`+`lapack_lite`),
+  `f3b97fa194` (`sys.flags`), `596d8baa8e` (GOT data-symbol retarget),
+  `48788f0695`/`744048ae35`/`6013b845be`/`635d62f707` (type statics /
+  `Py_BuildValue` NULL / call authority / container anchors), `39a4f737ee`
+  (foreign-object custody), `58928854b0` (kw-call dispatch P0).
+- The 2026-07-01 evidence below is retained as historical baseline; the RUN_IDs
+  there (`43e969d640e44709`, `09339473a62c443f`, ...) predate the frontier chain
+  and no longer describe the live blocker.
 
 Queue-native Pact witness lanes:
 
@@ -272,18 +361,22 @@ machine.
 
 ## Next Step
 
-Start with Kernel A, not Kernel B. The aperture is the live `field_solve.py`
-operation closure: `scipy.ndimage.distance_transform_edt`, `gaussian_filter`,
-`maximum_filter`, `minimum_filter`, `label`, plus NumPy ndarray operations such
-as `sort`, `argmax`, `percentile`, `where`, `lexsort`, `gradient`, `clip`,
-`stack`, and `linalg.eigh`. The full rip is the package-native
-object/symbol/storage closure needed to make those calls real in WASM without
-host-CPython fallback and without Molt-owned NumPy/SciPy Python semantics. The
-next executable primitive is reachable upstream extension custody: make the
-NumPy/SciPy artifact publisher emit precise `python_exports`,
-`provider_module`-backed `module_attr` callable exports, checksummed support
-Python sources, and static-link artifacts for the wrapper-reachable native
-extensions (`_nd_image`, `_ni_label`, `_rank_filter_1d`, then NumPy providers).
-Stage only the native objects/symbols reachable from that operation closure,
-scan their C/API gaps, bucket the gaps into shared primitives, and link/fail
-closed before the browser parity lane runs.
+Still Kernel A first, not Kernel B - the sequencing below is unchanged. But the
+upstream extension-custody and package-closure work described here is now **done**
+(see 2026-07-10 above): the numpy/scipy pure-Python closures are staged, the
+`_nd_image`/`_ni_label`/`_ccallback_c`/`_umath_linalg` native seals are built with
+custody sidecars, and the C/API gaps that surfaced during `_multiarray_umath` init
+are closed. The single live executable primitive is now **the split-runtime
+`call-indirect` closure**: name the exact trapping funcref via a call-indirect
+diagnostic, fix the app<->runtime call-table/signature relocation across the split
+boundary, and rerun `pact-witness-acceptance`. Once numpy import completes,
+`field_solve.py`'s operation closure (`distance_transform_edt`, `gaussian_filter`,
+`maximum_filter`, `minimum_filter`, `label`, plus `sort`, `argmax`, `percentile`,
+`where`, `lexsort`, `gradient`, `clip`, `stack`, `linalg.eigh`) executes and
+writes `candidate_outputs.npz` for the `check_parity.py` gate. No host-CPython
+fallback and no Molt-owned NumPy/SciPy Python semantics at any point.
+
+The parity-harness interface for Kernel C/D/... and the `{WASM-CPU, WebGPU} x
+{headless, browser}` support matrix are now specified in
+`011_molt_reply_progress_sync_and_harness_proposal_20260710.md` and
+`docs/PACT_SUPPORT_MATRIX.md` respectively.
