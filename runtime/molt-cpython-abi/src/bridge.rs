@@ -33,6 +33,7 @@ use crate::abi_types::{
 use molt_lang_obj_model::MoltObject;
 use once_cell::sync::OnceCell;
 use parking_lot::Mutex;
+use std::cell::UnsafeCell;
 use std::collections::HashMap;
 use std::sync::Once;
 
@@ -51,7 +52,18 @@ pub type AbiHandle = u64;
 /// the loader's `pyobj_to_handle` boundary.
 #[repr(C)]
 struct BridgeHeader {
-    py_obj: PyObject,
+    /// The CPython-layout `PyObject` header. C extensions and the bridge itself
+    /// hold *aliasing* `*mut PyObject` pointers into this field and mutate
+    /// `ob_refcnt` through them (that is what CPython refcounting is). Interior
+    /// mutability (`UnsafeCell`) is therefore mandatory: without it, every fresh
+    /// `&`/`&mut` reborrow of this field would pop previously-handed-out raw
+    /// pointers off the aliasing model's borrow stack, making a later access
+    /// through an earlier pointer undefined behaviour (a real miscompilation
+    /// hazard — LLVM may cache/reorder around the reborrow). `UnsafeCell` is
+    /// `#[repr(transparent)]`, so the `#[repr(C)]` layout the C ABI and the
+    /// trailing-`molt_bits` read (`read_bridge_header_bits`) depend on is
+    /// unchanged.
+    py_obj: UnsafeCell<PyObject>,
     molt_bits: u64,
 }
 
@@ -259,14 +271,17 @@ impl ObjectBridge {
         let tag = self.classify_handle(bits);
         let ob_type = unsafe { tag_to_type(tag) };
 
-        let mut entry = Box::new(BridgeEntry {
+        let entry = Box::new(BridgeEntry {
             header: Box::new(BridgeHeader {
-                py_obj: PyObject { ob_refcnt, ob_type },
+                py_obj: UnsafeCell::new(PyObject { ob_refcnt, ob_type }),
                 molt_bits: bits,
             }),
         });
 
-        let raw_ptr = &mut entry.header.py_obj as *mut PyObject;
+        // Derive the shared-mutable raw pointer through `UnsafeCell::get()` so
+        // every pointer the bridge hands out for this object shares one
+        // interior-mutable provenance and none invalidates the others.
+        let raw_ptr = entry.header.py_obj.get();
         // Molt OWNS this allocation: `Box<BridgeHeader>` forces
         // `align_of::<BridgeHeader>() == 8` (the trailing `u64` handle), so the
         // header base — and hence the trailer at `base + size_of::<PyObject>()`
@@ -275,7 +290,10 @@ impl ObjectBridge {
         // *foreign* C `PyObject` carries no such guarantee — see
         // `read_bridge_header_bits`, which reads unaligned.)
         debug_assert_aligned!(raw_ptr, BridgeHeader);
-        self.from_py.insert(raw_ptr as usize, bits);
+        // `from_py` is an identity map (address → handle); it is never used to
+        // reconstruct a pointer, so key it on the strict address, not an exposed
+        // one.
+        self.from_py.insert(raw_ptr.addr(), bits);
         self.to_py.insert(bits, entry);
         raw_ptr
     }
@@ -291,16 +309,27 @@ impl ObjectBridge {
     /// The returned pointer is valid until `release_pyobj` is called.
     pub unsafe fn handle_to_pyobj(&mut self, bits: AbiHandle) -> *mut PyObject {
         // Fast path: already in map.
+        //
+        // Derive the raw pointer through `UnsafeCell::get()` from a *shared*
+        // borrow. `ob_refcnt` is written below, and the header the C side aliases
+        // is interior-mutable, so this write is legal AND — unlike a fresh `&mut`
+        // reborrow — it does not invalidate any raw pointer the bridge handed out
+        // on an earlier call for the same object. (Verified by Miri: writing
+        // through a shared-ref `*mut` cast, or re-`&mut`-reborrowing, is UB.)
         if let Some(entry) = self.to_py.get(&bits) {
-            let ptr = &entry.header.py_obj as *const PyObject as *mut PyObject;
+            let ptr = entry.header.py_obj.get();
             unsafe {
                 (*ptr).ob_refcnt += 1;
             }
             return ptr;
         }
 
-        if let Some(ptr) = self.raw_py.get(&bits).copied() {
-            let ptr = ptr as *mut PyObject;
+        if let Some(addr) = self.raw_py.get(&bits).copied() {
+            // `addr` is a C-extension pointer stored as its exposed address
+            // (see `register_raw_pyobj` / `insert_foreign_for_test`); rebuild the
+            // pointer with the exposed-provenance API so the reconstruction is
+            // provenance-correct rather than a bare `usize as *mut` int→ptr cast.
+            let ptr = core::ptr::with_exposed_provenance_mut::<PyObject>(addr);
             unsafe {
                 (*ptr).ob_refcnt += 1;
             }
@@ -325,12 +354,17 @@ impl ObjectBridge {
     /// # Safety
     /// The Molt-side owner must keep `bits` live for the borrowed result.
     pub unsafe fn handle_to_borrowed_pyobj(&mut self, bits: AbiHandle) -> *mut PyObject {
+        // Return an interior-mutable pointer via `UnsafeCell::get()`: the
+        // borrowed-API contract lets the caller `Py_INCREF` through it, so the
+        // pointer must carry write permission (a shared-ref `*mut` cast would be
+        // read-only, and writing through it UB), while still aliasing cleanly
+        // with any other outstanding pointer to the same object.
         if let Some(entry) = self.to_py.get(&bits) {
-            return &entry.header.py_obj as *const PyObject as *mut PyObject;
+            return entry.header.py_obj.get();
         }
 
-        if let Some(ptr) = self.raw_py.get(&bits).copied() {
-            return ptr as *mut PyObject;
+        if let Some(addr) = self.raw_py.get(&bits).copied() {
+            return core::ptr::with_exposed_provenance_mut::<PyObject>(addr);
         }
 
         if let Some(ptr) = Self::singleton_pyobj(bits) {
@@ -344,7 +378,7 @@ impl ObjectBridge {
     ///
     /// Returns `None` for static singletons or unknown pointers.
     pub fn pyobj_to_handle(&self, ptr: *mut PyObject) -> Option<AbiHandle> {
-        pyobj_to_handle_static(ptr).or_else(|| self.from_py.get(&(ptr as usize)).copied())
+        pyobj_to_handle_static(ptr).or_else(|| self.from_py.get(&ptr.addr()).copied())
     }
 
     /// Translate a `*mut PyObject` to a *genuine Molt object handle*, excluding
@@ -357,7 +391,7 @@ impl ObjectBridge {
         if let Some(bits) = pyobj_to_handle_static(ptr) {
             return Some(bits);
         }
-        let bits = self.from_py.get(&(ptr as usize)).copied()?;
+        let bits = self.from_py.get(&ptr.addr()).copied()?;
         if self.raw_py.contains_key(&bits) {
             return None;
         }
@@ -410,7 +444,10 @@ impl ObjectBridge {
     /// # Safety
     /// `ptr` must be a live C-extension `PyObject*`.
     unsafe fn foreign_wrapper_for(&mut self, ptr: *mut PyObject) -> Option<u64> {
-        let key = ptr as usize;
+        // `key` flows into `raw_py` and into the runtime's `foreign_new` hook,
+        // both of which reconstruct it back into a `*mut PyObject` later
+        // (`handle_to_pyobj`, `molt_foreign_*`), so expose the provenance now.
+        let key = ptr.expose_provenance();
         let h = crate::hooks::hooks_or_stubs();
         if let Some(&w) = self.foreign.get(&key) {
             // Cache hit: hand the caller its own reference to the live wrapper.
@@ -452,23 +489,31 @@ impl ObjectBridge {
     /// the cache entry directly instead of minting one.
     #[cfg(test)]
     pub(crate) fn insert_foreign_for_test(&mut self, ptr: *mut PyObject, handle: AbiHandle) {
-        self.foreign.insert(ptr as usize, handle);
-        self.raw_py.insert(handle, ptr as usize);
+        // `raw_py` values are later reconstructed into `*mut PyObject`
+        // (`handle_to_pyobj`), so the address must be *exposed*; the `foreign`
+        // key is lookup-only, so its address needs no provenance.
+        let addr = ptr.expose_provenance();
+        self.foreign.insert(ptr.addr(), handle);
+        self.raw_py.insert(handle, addr);
     }
 
     pub unsafe fn register_raw_pyobj(&mut self, ptr: *mut PyObject) -> AbiHandle {
         if ptr.is_null() {
             return 0;
         }
-        if let Some(bits) = self.from_py.get(&(ptr as usize)).copied() {
+        if let Some(bits) = self.from_py.get(&ptr.addr()).copied() {
             return bits;
         }
+        // The address stored in `raw_py` is reconstructed into a pointer by
+        // `handle_to_pyobj`, so expose the pointer's provenance here. The
+        // `from_py` key is identity-only and needs no exposure.
+        let addr = ptr.expose_provenance();
         loop {
             let bits = self.next_raw_handle;
             self.next_raw_handle = self.next_raw_handle.wrapping_add(0x10);
             if bits != 0 && !self.to_py.contains_key(&bits) && !self.raw_py.contains_key(&bits) {
-                self.raw_py.insert(bits, ptr as usize);
-                self.from_py.insert(ptr as usize, bits);
+                self.raw_py.insert(bits, addr);
+                self.from_py.insert(addr, bits);
                 return bits;
             }
         }
@@ -476,7 +521,7 @@ impl ObjectBridge {
 
     /// Called by `Py_DECREF` when ref count reaches zero — release bridge entry.
     pub fn release_pyobj(&mut self, ptr: *mut PyObject) -> bool {
-        if let Some(bits) = self.from_py.remove(&(ptr as usize)) {
+        if let Some(bits) = self.from_py.remove(&ptr.addr()) {
             if self.raw_py.remove(&bits).is_some() {
                 false
             } else {
@@ -646,7 +691,9 @@ pub unsafe fn molt_foreign_object_release(c_ptr: usize) {
     // reference OUTSIDE the lock (Py_DECREF may run a C tp_dealloc that
     // re-enters the bridge).
     unsafe { GLOBAL_BRIDGE.lock().release_foreign(c_ptr) };
-    unsafe { crate::api::refcount::Py_DECREF(c_ptr as *mut PyObject) };
+    unsafe {
+        crate::api::refcount::Py_DECREF(core::ptr::with_exposed_provenance_mut::<PyObject>(c_ptr))
+    };
 }
 
 /// `getattr` on a foreign wrapper: route through the wrapped C object's own
@@ -657,7 +704,7 @@ pub unsafe fn molt_foreign_object_release(c_ptr: usize) {
 /// # Safety
 /// `c_ptr` must be a live C-extension `PyObject*`.
 pub unsafe fn molt_foreign_getattr(c_ptr: usize, name_bits: u64) -> u64 {
-    let obj = c_ptr as *mut PyObject;
+    let obj = core::ptr::with_exposed_provenance_mut::<PyObject>(c_ptr);
     if obj.is_null() {
         return 0;
     }
@@ -683,7 +730,7 @@ pub unsafe fn molt_foreign_getattr(c_ptr: usize, name_bits: u64) -> u64 {
 /// # Safety
 /// `c_ptr` must be a live C-extension `PyObject*`.
 pub unsafe fn molt_foreign_type_name(c_ptr: usize) -> *const std::os::raw::c_char {
-    let obj = c_ptr as *mut PyObject;
+    let obj = core::ptr::with_exposed_provenance_mut::<PyObject>(c_ptr);
     if obj.is_null() {
         return std::ptr::null();
     }
@@ -701,7 +748,7 @@ pub unsafe fn molt_foreign_type_name(c_ptr: usize) -> *const std::os::raw::c_cha
 /// # Safety
 /// `c_ptr` must be a live C-extension `PyObject*`.
 unsafe fn foreign_obj_is_type(c_ptr: usize) -> bool {
-    let obj = c_ptr as *mut PyObject;
+    let obj = core::ptr::with_exposed_provenance_mut::<PyObject>(c_ptr);
     if obj.is_null() {
         return false;
     }
@@ -788,7 +835,7 @@ pub unsafe fn molt_foreign_setattr(
     name_bits: u64,
     value_bits: u64,
 ) -> std::os::raw::c_int {
-    let obj = c_ptr as *mut PyObject;
+    let obj = core::ptr::with_exposed_provenance_mut::<PyObject>(c_ptr);
     if obj.is_null() {
         return -1;
     }
@@ -831,7 +878,7 @@ pub unsafe fn molt_foreign_setattr(
 /// # Safety
 /// `c_ptr` must be a live callable C-extension `PyObject*`.
 pub unsafe fn molt_foreign_call(c_ptr: usize, args_bits: u64, kwargs_bits: u64) -> u64 {
-    let obj = c_ptr as *mut PyObject;
+    let obj = core::ptr::with_exposed_provenance_mut::<PyObject>(c_ptr);
     if obj.is_null() {
         return 0;
     }
@@ -903,13 +950,20 @@ unsafe fn c_layout_tuple_from_molt(args_bits: u64) -> *mut PyObject {
 /// no bridge lookup, just a cast.
 #[inline(always)]
 pub fn pyobject_to_bits(obj: *mut PyObject) -> u64 {
-    obj as u64
+    // Expose the pointer's provenance so the address can be reconstructed into a
+    // valid pointer by `bits_to_pyobject`. On 64-bit the address is the full
+    // NaN-box bit pattern; on 32-bit (wasm) it zero-extends, exactly as the
+    // previous `obj as u64` cast did.
+    obj.expose_provenance() as u64
 }
 
 /// Convert Molt NaN-boxed u64 bits back to a `*mut PyObject`.
 #[inline(always)]
 pub fn bits_to_pyobject(bits: u64) -> *mut PyObject {
-    bits as *mut PyObject
+    // Reconstruct with the exposed-provenance API (matching `pyobject_to_bits`)
+    // instead of a bare `u64 as *mut` int→ptr cast, so the round-trip carries
+    // provenance under Miri's strict/exposed model.
+    core::ptr::with_exposed_provenance_mut(bits as usize)
 }
 
 // ─── Tier 1: Reference Counting ──────────────────────────────────────────
@@ -1573,14 +1627,18 @@ mod bridge_handle_tests {
         // hook is not linked in a pure-ABI test); install the identity entries
         // exactly as `foreign_wrapper_for` would.
         let w_bits = 0xBEEF_0000_0000_0010u64;
-        bridge.foreign.insert(c_ptr as usize, w_bits);
-        bridge.raw_py.insert(w_bits, c_ptr as usize);
+        // Expose once (the address is reconstructed into a pointer by
+        // `handle_to_pyobj` below), then use it for the identity entries exactly
+        // as `foreign_wrapper_for` does.
+        let addr = c_ptr.expose_provenance();
+        bridge.foreign.insert(addr, w_bits);
+        bridge.raw_py.insert(w_bits, addr);
         // The wrapper handed back to C resolves to the original C pointer.
         let back = unsafe { bridge.handle_to_pyobj(w_bits) };
         assert_eq!(back, c_ptr, "foreign wrapper must round-trip to its C object");
         // Release drops the identity mapping so a fresh wrapper can be minted.
-        unsafe { bridge.release_foreign(c_ptr as usize) };
-        assert!(!bridge.foreign.contains_key(&(c_ptr as usize)));
+        unsafe { bridge.release_foreign(addr) };
+        assert!(!bridge.foreign.contains_key(&addr));
         assert!(!bridge.raw_py.contains_key(&w_bits));
     }
 
