@@ -863,7 +863,14 @@ pub unsafe extern "C" fn PyComplex_AsCComplex(op: *mut PyObject) -> Py_complex {
         };
     }
     if unsafe { PyComplex_Check(op) } != 0 && GLOBAL_BRIDGE.lock().pyobj_to_handle(op).is_none() {
-        return unsafe { (*op.cast::<PyComplexObject>()).cval };
+        // `op` is a genuine (non-bridge-minted) C complex object here. On wasm32
+        // a statically declared C `PyObject` is only 4-byte aligned, but
+        // `PyComplexObject` (two `c_double`s) has alignment 8, so dereferencing
+        // it directly would be a misaligned read (UB; caught by the debug
+        // alignment check). Take a raw field ref (no dereference) and read the
+        // `cval` unaligned.
+        let cval = unsafe { &raw const (*op.cast::<PyComplexObject>()).cval };
+        return unsafe { std::ptr::read_unaligned(cval) };
     }
     if unsafe { PyFloat_Check(op) } != 0
         || unsafe { PyLong_Check(op) } != 0

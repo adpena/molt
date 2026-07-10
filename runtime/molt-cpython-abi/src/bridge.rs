@@ -267,6 +267,14 @@ impl ObjectBridge {
         });
 
         let raw_ptr = &mut entry.header.py_obj as *mut PyObject;
+        // Molt OWNS this allocation: `Box<BridgeHeader>` forces
+        // `align_of::<BridgeHeader>() == 8` (the trailing `u64` handle), so the
+        // header base — and hence the trailer at `base + size_of::<PyObject>()`
+        // — is 8-byte aligned. Document + enforce that contract so iteration
+        // mode flags any regression where molt's own allocation drifts. (A
+        // *foreign* C `PyObject` carries no such guarantee — see
+        // `read_bridge_header_bits`, which reads unaligned.)
+        debug_assert_aligned!(raw_ptr, BridgeHeader);
         self.from_py.insert(raw_ptr as usize, bits);
         self.to_py.insert(bits, entry);
         raw_ptr
@@ -553,6 +561,21 @@ fn pyobj_to_handle_static(ptr: *mut PyObject) -> Option<AbiHandle> {
 /// stored immediately after the `PyObject` header in `BridgeHeader`, the
 /// layout used by every PyObject the bridge mints.
 ///
+/// # Alignment
+/// The read uses [`core::ptr::read_unaligned`] deliberately. Callers reach this
+/// function *only when [`ObjectBridge::pyobj_to_handle`] returned `None`* — i.e.
+/// `ptr` is not in this bridge copy's map. That pointer is either (a) a
+/// `BridgeHeader` minted by a *separately loaded* copy of the bridge (8-byte
+/// aligned — the `u64` field forces `align_of::<BridgeHeader>() == 8`) or (b) a
+/// genuine C-extension object that happens to expose the same layout. Case (b)
+/// carries **no** molt-side alignment guarantee: on `wasm32` a C `PyObject` has
+/// struct alignment 4 (widest member is a 4-byte `Py_ssize_t`/pointer), so a
+/// statically-declared C object lands on a 4-byte-aligned address and the
+/// trailer at `base + size_of::<PyObject>()` is likewise only 4-aligned. An
+/// aligned `*trailer` read is therefore UB (a misaligned dereference, caught by
+/// the debug alignment check under `MOLT_WITNESS_ITERATION=1`); `read_unaligned`
+/// is correct and — because wasm loads carry no alignment penalty — free.
+///
 /// # Safety
 /// `ptr` must either be null, a `&Py_None` / `&Py_True` / `&Py_False` static,
 /// or a non-null pointer minted by `ObjectBridge::handle_to_pyobj` (in any
@@ -568,7 +591,7 @@ pub unsafe fn read_bridge_header_bits(ptr: *mut PyObject) -> u64 {
         let raw = ptr as *const u8;
         raw.add(std::mem::size_of::<PyObject>()) as *const u64
     };
-    unsafe { *trailer }
+    unsafe { std::ptr::read_unaligned(trailer) }
 }
 
 // ─── Exported ABI initialiser ─────────────────────────────────────────────
@@ -1551,5 +1574,48 @@ mod bridge_handle_tests {
         unsafe { bridge.release_foreign(c_ptr as usize) };
         assert!(bridge.foreign.get(&(c_ptr as usize)).is_none());
         assert!(bridge.raw_py.get(&w_bits).is_none());
+    }
+
+    /// Alignment-class regression (witness frontier RUN 20260710T155049,
+    /// `bridge.rs:571` "misaligned pointer dereference: address must be a
+    /// multiple of 0x8"): `read_bridge_header_bits` must tolerate a
+    /// **4-byte-aligned** object pointer. On `wasm32` a genuine C `PyObject` has
+    /// struct alignment 4, so a statically-declared C object lands on a
+    /// 4-aligned address and the trailer `u64` at `base + size_of::<PyObject>()`
+    /// is only 4-aligned. Before the `read_unaligned` fix this test panicked
+    /// under debug assertions (`cargo test` builds with `debug_assertions`);
+    /// after it, the trailer bits round-trip.
+    #[test]
+    fn read_bridge_header_bits_tolerates_4byte_aligned_pointer() {
+        use std::mem::size_of;
+
+        // Over-aligned backing store; we offset into it to *force* a base that
+        // is 4-byte aligned but NOT 8-byte aligned, mirroring a wasm32 C object.
+        #[repr(align(8))]
+        struct Backing([u8; 64]);
+        let mut backing = Backing([0u8; 64]);
+
+        let trailer_off = size_of::<PyObject>();
+        assert!(trailer_off + size_of::<u64>() + 4 <= backing.0.len());
+
+        // `+ 4` yields `addr % 8 == 4`: 4-aligned, deliberately not 8-aligned.
+        let base = unsafe { backing.0.as_mut_ptr().add(4) };
+        assert_eq!(
+            base as usize % 8,
+            4,
+            "test precondition: base must be 4-aligned-not-8"
+        );
+
+        // Simulate the bridge layout: a `PyObject` header we never dereference,
+        // followed by the Molt handle bits in the trailer slot.
+        let expected: u64 = 0x0123_4567_89AB_CDEF;
+        unsafe {
+            std::ptr::write_unaligned(base.add(trailer_off).cast::<u64>(), expected);
+        }
+
+        // The pointer is neither null nor a static singleton, so this exercises
+        // exactly the trailer read that panicked at the witness frontier.
+        let got = unsafe { read_bridge_header_bits(base.cast::<PyObject>()) };
+        assert_eq!(got, expected, "trailer bits must survive an unaligned read");
     }
 }

@@ -60,6 +60,36 @@
 )]
 #![cfg_attr(target_arch = "wasm32", allow(unused))]
 
+/// Debug-only alignment guard for pointers whose alignment molt *owns* and
+/// guarantees at the allocation site.
+///
+/// Use this to document + enforce an N-byte alignment contract so
+/// `MOLT_WITNESS_ITERATION=1` (debug assertions on) keeps catching regressions
+/// where a molt-minted allocation drifts out of alignment. It is a no-op in
+/// release builds.
+///
+/// Do **not** use it to guard pointers minted by C — those carry no molt-side
+/// alignment guarantee. On `wasm32` a C `PyObject` has struct alignment 4 (its
+/// widest member, `Py_ssize_t`/`ob_type`, is 4 bytes), so a statically-declared
+/// C object (module / type / exception singleton) sits at a 4-byte-aligned
+/// address. An 8-byte scalar read (`u64`/`f64`) or a projection into an
+/// 8-aligned struct off such a pointer is a misaligned dereference (UB in Rust
+/// semantics; silently tolerated by wasm hardware in release, caught by the
+/// debug alignment check). Read those with `core::ptr::read_unaligned` instead.
+macro_rules! debug_assert_aligned {
+    ($ptr:expr, $ty:ty) => {{
+        let __addr = $ptr as *const _ as usize;
+        let __align = ::core::mem::align_of::<$ty>();
+        ::core::debug_assert!(
+            __addr % __align == 0,
+            "pointer {:#x} is not aligned to {} bytes for {}",
+            __addr,
+            __align,
+            ::core::stringify!($ty),
+        );
+    }};
+}
+
 pub mod abi_types;
 pub mod api;
 pub mod bridge;
