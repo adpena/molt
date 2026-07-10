@@ -115,11 +115,17 @@ fn reserved_slot_index_for_any_region(
     table_idx
         .checked_sub(direct_start)
         .filter(|o| *o < count)
-        .or_else(|| table_idx.checked_sub(trampoline_start).filter(|o| *o < count))
+        .or_else(|| {
+            table_idx
+                .checked_sub(trampoline_start)
+                .filter(|o| *o < count)
+        })
 }
 
 #[cfg(target_arch = "wasm32")]
-pub(crate) fn reserved_wasm_runtime_direct_slot_for_any_reserved_slot(table_idx: u64) -> Option<u64> {
+pub(crate) fn reserved_wasm_runtime_direct_slot_for_any_reserved_slot(
+    table_idx: u64,
+) -> Option<u64> {
     let base = crate::wasm_table_base();
     let direct_start = base + wasm_callables::RESERVED_WASM_RUNTIME_CALLABLE_BASE;
     let trampoline_start = base + wasm_callables::RESERVED_WASM_RUNTIME_TRAMPOLINE_BASE;
@@ -1581,12 +1587,7 @@ mod wasm_runtime_callable_tests {
 
         // A pointer in the direct region resolves to its index.
         assert_eq!(
-            reserved_slot_index_for_any_region(
-                direct_slot,
-                direct_start,
-                trampoline_start,
-                count
-            ),
+            reserved_slot_index_for_any_region(direct_slot, direct_start, trampoline_start, count),
             Some(1)
         );
         // The bug shape: a pointer in the TRAMPOLINE region must also resolve to

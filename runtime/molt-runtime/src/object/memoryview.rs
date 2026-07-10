@@ -113,6 +113,10 @@ pub(crate) struct TypedStridedStorage {
 }
 
 impl TypedStridedStorage {
+    // clippy: the 8 params mirror the buffer-protocol fields (data/readonly/
+    // format/itemsize/shape/strides/offset/base); a params struct would just
+    // duplicate the struct being constructed.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         data: *mut u8,
         readonly: bool,
@@ -153,6 +157,8 @@ impl TypedStridedStorage {
         })
     }
 
+    // clippy: the 8 params mirror the buffer-protocol fields; see `new` above.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn one_dim(
         data: *mut u8,
         readonly: bool,

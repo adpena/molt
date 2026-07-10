@@ -713,6 +713,10 @@ pub extern "C" fn molt_runtime_init_resources() {
     }
 }
 
+// clippy: this test module is intentionally co-located with `resource_limits_from_env`
+// (the unit it exercises); the WASI argv/init runtime items that follow are unrelated
+// and stay after it by design, so moving it to EOF would only separate test from subject.
+#[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod runtime_resource_env_tests {
     use super::resource_limits_from_env;

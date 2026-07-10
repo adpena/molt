@@ -161,7 +161,7 @@ struct CHeapHeader {
 }
 
 unsafe fn c_heap_header(ptr: usize) -> Option<&'static CHeapHeader> {
-    if ptr == 0 || ptr % std::mem::align_of::<CHeapHeader>() != 0 {
+    if ptr == 0 || !ptr.is_multiple_of(std::mem::align_of::<CHeapHeader>()) {
         return None;
     }
     let header = unsafe { &*(ptr as *const CHeapHeader) };

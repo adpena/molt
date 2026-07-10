@@ -398,7 +398,7 @@ pub(super) unsafe fn call_bind_ic_entry_for_call(
                         );
                     }
                     Some(CallBindIcEntry {
-                        fn_ptr: function_fn_ptr(call_ptr) as u64,
+                        fn_ptr: function_fn_ptr(call_ptr),
                         target_bits: call_bits,
                         class_bits: 0,
                         class_version: 0,
@@ -432,7 +432,7 @@ pub(super) unsafe fn call_bind_ic_entry_for_call(
                 let fn_ptr = function_fn_ptr(func_ptr);
                 if fn_ptr == fn_addr!(molt_list_append) {
                     Some(CallBindIcEntry {
-                        fn_ptr: fn_ptr as u64,
+                        fn_ptr,
                         target_bits: func_bits,
                         class_bits: 0,
                         class_version: 0,
@@ -444,7 +444,7 @@ pub(super) unsafe fn call_bind_ic_entry_for_call(
                     let arity = function_arity(func_ptr);
                     if (1..=5).contains(&arity) {
                         Some(CallBindIcEntry {
-                            fn_ptr: fn_ptr as u64,
+                            fn_ptr,
                             target_bits: func_bits,
                             class_bits: 0,
                             class_version: 0,
@@ -496,7 +496,7 @@ pub(super) unsafe fn call_bind_ic_entry_for_call(
                 let layout_size = crate::call::class_init::class_layout_size_cached(_py, call_ptr);
                 let total_alloc = layout_size + std::mem::size_of::<crate::object::MoltHeader>();
                 Some(CallBindIcEntry {
-                    fn_ptr: function_fn_ptr(init_ptr) as u64,
+                    fn_ptr: function_fn_ptr(init_ptr),
                     target_bits: init_bits,
                     class_bits,
                     class_version: class_layout_version_bits(call_ptr),
@@ -526,7 +526,7 @@ pub(super) unsafe fn call_bind_ic_entry_for_call(
                 let class_bits = object_class_bits(call_ptr);
                 let class_ptr = obj_from_bits(class_bits).as_ptr()?;
                 Some(CallBindIcEntry {
-                    fn_ptr: function_fn_ptr(func_ptr) as u64,
+                    fn_ptr: function_fn_ptr(func_ptr),
                     target_bits: func_bits,
                     class_bits,
                     class_version: class_layout_version_bits(class_ptr),
@@ -567,7 +567,7 @@ pub(super) unsafe fn try_call_bind_ic_fast(
             if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
                 return None;
             }
-            if function_fn_ptr(func_ptr) as u64 != entry.fn_ptr {
+            if function_fn_ptr(func_ptr) != entry.fn_ptr {
                 return None;
             }
             let self_bits = bound_method_self_bits(call_ptr);
@@ -579,7 +579,7 @@ pub(super) unsafe fn try_call_bind_ic_fast(
             if object_type_id(call_ptr) != TYPE_ID_FUNCTION {
                 return None;
             }
-            if function_fn_ptr(call_ptr) as u64 != entry.fn_ptr {
+            if function_fn_ptr(call_ptr) != entry.fn_ptr {
                 return None;
             }
             if args.pos.len() != entry.arity as usize {
@@ -599,7 +599,7 @@ pub(super) unsafe fn try_call_bind_ic_fast(
             if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
                 return None;
             }
-            if function_fn_ptr(func_ptr) as u64 != entry.fn_ptr {
+            if function_fn_ptr(func_ptr) != entry.fn_ptr {
                 return None;
             }
             if args.pos.len() != entry.arity as usize {
@@ -636,7 +636,7 @@ pub(super) unsafe fn try_call_bind_ic_fast(
             if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
                 return None;
             }
-            if function_fn_ptr(func_ptr) as u64 != entry.fn_ptr {
+            if function_fn_ptr(func_ptr) != entry.fn_ptr {
                 return None;
             }
             if args.pos.len() != entry.arity as usize {
@@ -681,7 +681,7 @@ pub(super) unsafe fn try_call_bind_ic_fast(
             if object_type_id(init_ptr) != TYPE_ID_FUNCTION {
                 return None;
             }
-            if function_fn_ptr(init_ptr) as u64 != entry.fn_ptr {
+            if function_fn_ptr(init_ptr) != entry.fn_ptr {
                 return None;
             }
             // Allocate instance using the IC-cached allocation size.

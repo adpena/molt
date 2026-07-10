@@ -41,7 +41,10 @@ fn pickle_apply_dict_state(
     Ok(())
 }
 
-pub(crate) fn pickle_vm_item_to_bits(_py: &crate::PyToken<'_>, item: &PickleVmItem) -> Result<u64, u64> {
+pub(crate) fn pickle_vm_item_to_bits(
+    _py: &crate::PyToken<'_>,
+    item: &PickleVmItem,
+) -> Result<u64, u64> {
     match item {
         PickleVmItem::Value(bits) => Ok(*bits),
         PickleVmItem::Global(global) => pickle_global_callable_bits(_py, *global),

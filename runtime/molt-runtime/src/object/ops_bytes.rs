@@ -819,11 +819,11 @@ fn bytes_hex_string(bytes: &[u8], sep: Option<&str>, bytes_per_sep: i64) -> Stri
         return unsafe { String::from_utf8_unchecked(raw) };
     };
     let group = bytes_per_sep.unsigned_abs() as usize;
-    let separators = if group == 0 {
-        0
-    } else {
-        (bytes.len().saturating_sub(1)) / group
-    };
+    let separators = bytes
+        .len()
+        .saturating_sub(1)
+        .checked_div(group)
+        .unwrap_or(0);
     let mut out = String::with_capacity(hex_len + separators * sep_str.len());
     if bytes_per_sep > 0 {
         for (idx, &b) in bytes.iter().enumerate() {
@@ -915,15 +915,12 @@ fn bytes_translate_impl(
                 return Err(raise_exception::<_>(_py, "TypeError", &msg));
             }
         };
-        let table_bytes = match bytes_like_arg_or_type_error(_py, table_ptr, || {
+        let table_bytes = bytes_like_arg_or_type_error(_py, table_ptr, || {
             format!(
                 "a bytes-like object is required, not '{}'",
                 type_name(_py, table_obj)
             )
-        }) {
-            Ok(slice) => slice,
-            Err(bits) => return Err(bits),
-        };
+        })?;
         if table_bytes.len() != 256 {
             return Err(raise_exception::<_>(
                 _py,
@@ -947,15 +944,12 @@ fn bytes_translate_impl(
                 return Err(raise_exception::<_>(_py, "TypeError", &msg));
             }
         };
-        match bytes_like_arg_or_type_error(_py, delete_ptr, || {
+        bytes_like_arg_or_type_error(_py, delete_ptr, || {
             format!(
                 "a bytes-like object is required, not '{}'",
                 type_name(_py, delete_obj)
             )
-        }) {
-            Ok(slice) => slice,
-            Err(bits) => return Err(bits),
-        }
+        })?
     };
     if hay_bytes.is_empty() {
         return Ok(Vec::new());

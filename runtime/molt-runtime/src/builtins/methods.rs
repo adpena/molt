@@ -8,18 +8,14 @@ mod singletons;
 mod specialized;
 
 pub(crate) use common::{
-    builtin_classmethod_bits, builtin_classmethod_bits_with_defaults_tuple, builtin_func_bits,
-    builtin_func_bits_with_bind_kind, builtin_func_bits_with_defaults_tuple,
+    builtin_func_bits, builtin_func_bits_with_bind_kind, builtin_func_bits_with_defaults_tuple,
 };
 pub(crate) use core_types::{
     memoryview_method_bits, object_method_bits, range_method_bits, type_method_bits,
 };
 pub(crate) use dispatch::builtin_class_method_bits;
 pub(crate) use io::file_method_bits;
-pub(crate) use numeric::{
-    complex_class_method_bits, complex_method_bits, float_class_method_bits, float_method_bits,
-    int_class_method_bits, int_method_bits,
-};
+pub(crate) use numeric::{complex_method_bits, float_method_bits, int_method_bits};
 pub(crate) use sequence::{
     bytearray_method_bits, bytes_method_bits, slice_method_bits, string_method_bits,
 };

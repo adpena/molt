@@ -247,9 +247,7 @@ pub(crate) unsafe fn call_callable2(
             }
             TYPE_ID_BOUND_METHOD => call_type_via_bind(_py, call_bits, &[arg0_bits, arg1_bits]),
             TYPE_ID_TYPE => call_type_via_bind(_py, call_bits, &[arg0_bits, arg1_bits]),
-            crate::TYPE_ID_FOREIGN => {
-                call_type_via_bind(_py, call_bits, &[arg0_bits, arg1_bits])
-            }
+            crate::TYPE_ID_FOREIGN => call_type_via_bind(_py, call_bits, &[arg0_bits, arg1_bits]),
             TYPE_ID_GENERIC_ALIAS => {
                 call_generic_alias_via_bind(_py, call_ptr, &[arg0_bits, arg1_bits])
             }

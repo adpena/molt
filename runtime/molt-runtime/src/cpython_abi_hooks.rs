@@ -1528,6 +1528,11 @@ unsafe fn static_link_module_def_to_bits(
     Ok(Some(module_bits))
 }
 
+/// # Safety
+/// `name_ptr` must point to `name_len` readable bytes; `doc_ptr` must be null or
+/// point to `doc_len` readable bytes. `method_addr` must be the address of a
+/// valid C callable whose calling convention matches `method_flags`, and
+/// `self_bits` must be a valid Molt object handle (or 0).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_py_cfunction_create_bytes(
     self_bits: u64,
@@ -1564,6 +1569,11 @@ pub unsafe extern "C" fn molt_py_cfunction_create_bytes(
     })
 }
 
+/// # Safety
+/// `name_ptr` must point to `name_len` readable bytes; `doc_ptr` must be null or
+/// point to `doc_len` readable bytes. `method_addr` must be the address of a
+/// valid C callable whose calling convention matches `method_flags`, and
+/// `module_bits` must be a valid Molt module handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_module_add_py_cfunction_bytes(
     module_bits: u64,
@@ -1747,13 +1757,8 @@ fn take_runtime_pyinit_error_message() -> Option<String> {
 }
 
 fn take_static_pyinit_error_detail() -> Option<String> {
-    if let Some(detail) = molt_cpython_abi::api::errors::take_current_error_message() {
-        Some(detail)
-    } else if let Some(detail) = take_runtime_pyinit_error_message() {
-        Some(detail)
-    } else {
-        None
-    }
+    molt_cpython_abi::api::errors::take_current_error_message()
+        .or_else(take_runtime_pyinit_error_message)
 }
 
 fn static_pyinit_import_error_message(prefix: &str) -> String {
@@ -1781,7 +1786,7 @@ pub extern "C" fn molt_cpython_abi_pyinit_module_to_bits(result_pyobj: u64) -> u
             Ok(Some(module_bits)) => return module_bits,
             Ok(None) => {}
             Err(message) => {
-                return crate::raise_exception::<u64>(&_py, "ImportError", &message);
+                return crate::raise_exception::<u64>(&_py, "ImportError", message);
             }
         }
         match unsafe { static_link_module_def_to_bits(result_pyobj as *mut StaticLinkPyModuleDef) }
@@ -1891,7 +1896,7 @@ pub extern "C" fn molt_cpython_abi_cext_call_trampoline(
                     "SystemError",
                     "C extension trampoline received non-int closure id",
                 )
-            }) as i64;
+            });
         }
     };
     let entry = match cext_callable_registry().lock() {
@@ -1905,7 +1910,7 @@ pub extern "C" fn molt_cpython_abi_cext_call_trampoline(
                 "SystemError",
                 "C extension callable registry id is out of range",
             )
-        }) as i64;
+        });
     };
 
     let n = args_len as usize;
@@ -1918,7 +1923,7 @@ pub extern "C" fn molt_cpython_abi_cext_call_trampoline(
                 "SystemError",
                 "C extension trampoline received null args pointer",
             )
-        }) as i64;
+        });
     } else {
         unsafe { std::slice::from_raw_parts(args_ptr as *const u64, n) }
     };
@@ -1940,7 +1945,7 @@ pub extern "C" fn molt_cpython_abi_cext_call_trampoline(
                             "TypeError",
                             "METH_NOARGS C extension function takes no arguments",
                         )
-                    }) as i64;
+                    });
                 }
                 let f: PyCFunction = std::mem::transmute(entry.meth_addr as *const ());
                 f(self_obj, ptr::null_mut())
@@ -1953,7 +1958,7 @@ pub extern "C" fn molt_cpython_abi_cext_call_trampoline(
                             "TypeError",
                             "METH_O C extension function takes exactly one argument",
                         )
-                    }) as i64;
+                    });
                 }
                 let arg = cext_pyobject_from_bits(args[0]);
                 temp_pyobjects.push(arg);
@@ -1968,7 +1973,7 @@ pub extern "C" fn molt_cpython_abi_cext_call_trampoline(
                             "MemoryError",
                             "failed to allocate C extension args tuple",
                         )
-                    }) as i64;
+                    });
                 };
                 temp_tuple_bits = Some(tuple_bits);
                 temp_pyobjects.push(tuple_obj);
@@ -1983,7 +1988,7 @@ pub extern "C" fn molt_cpython_abi_cext_call_trampoline(
                             "MemoryError",
                             "failed to allocate C extension args tuple",
                         )
-                    }) as i64;
+                    });
                 };
                 temp_tuple_bits = Some(tuple_bits);
                 temp_pyobjects.push(tuple_obj);
@@ -2048,7 +2053,7 @@ pub extern "C" fn molt_cpython_abi_cext_call_trampoline(
                 entry.flags
             );
             crate::raise_exception::<i64>(&_py, "RuntimeError", &msg)
-        }) as i64,
+        }),
     }
 }
 
@@ -2426,7 +2431,7 @@ mod tests {
         let _guard = cpython_abi_test_guard();
         register_cpython_hooks();
 
-        let (_cache_restore, sys_module_bits) = with_gil(|_py| unsafe {
+        let (_cache_restore, sys_module_bits) = with_gil(|_py| {
             let name_ptr = alloc_string(&_py, b"sys");
             assert!(!name_ptr.is_null());
             let name_bits = MoltObject::from_ptr(name_ptr).bits();
@@ -2688,7 +2693,7 @@ mod tests {
             },
             StaticLinkPyModuleDefSlot {
                 slot: STATIC_PY_MOD_GIL,
-                value: 1usize as *mut c_void,
+                value: std::ptr::dangling_mut::<c_void>(),
             },
             StaticLinkPyModuleDefSlot {
                 slot: 0,
@@ -2734,7 +2739,7 @@ mod tests {
         let mut slots = [
             StaticLinkPyModuleDefSlot {
                 slot: STATIC_PY_MOD_CREATE,
-                value: 1usize as *mut c_void,
+                value: std::ptr::dangling_mut::<c_void>(),
             },
             StaticLinkPyModuleDefSlot {
                 slot: 0,
