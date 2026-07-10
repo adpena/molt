@@ -1,7 +1,8 @@
 //! Type object API — PyType_Ready, PyType_GenericAlloc, Py_TYPE checks.
 
 use crate::abi_types::{
-    Py_TPFLAGS_READY, Py_ssize_t, PyMethodDef, PyObject, PyType_Spec, PyTypeObject,
+    Py_TPFLAGS_HAVE_GC, Py_TPFLAGS_READY, Py_ssize_t, PyMethodDef, PyObject, PyType_Spec,
+    PyTypeObject,
 };
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
@@ -101,6 +102,33 @@ pub unsafe extern "C" fn PyType_Ready(tp: *mut PyTypeObject) -> c_int {
         //     fail opaquely.
         if !(*tp).tp_base.is_null() {
             inherit_slots_from_base(tp, (*tp).tp_base);
+        }
+
+        // (2b) Guarantee the object-lifecycle allocator slots CPython fills
+        //      during PyType_Ready. CPython's post-ready invariant (verified
+        //      against CPython 3.12: non-GC builtins carry
+        //      `tp_free == PyObject_Free`, GC builtins carry
+        //      `tp_free == PyObject_GC_Del`, and every readied type carries
+        //      `tp_alloc == PyType_GenericAlloc`) is that `tp_free` and
+        //      `tp_alloc` are NON-NULL. A static C extension leaves them NULL and
+        //      trusts PyType_Ready to fill them from `object`: numpy's
+        //      `PyBoundArrayMethod_Type` (`Py_TPFLAGS_DEFAULT`, no `tp_free`) is
+        //      the canonical case — its `boundarraymethod_dealloc` ends in
+        //      `Py_TYPE(self)->tp_free(self)`. Leaving `tp_free` NULL turns that
+        //      into a `call_indirect` on table index 0, which traps with
+        //      "null function or function signature mismatch" on the first
+        //      dealloc. (In the wasm runtime PyObject_Free / PyObject_GC_Del /
+        //      PyMem_Free all route to `libc::free`, so the GC split is
+        //      CPython-faithful bookkeeping rather than a behavioral fork.)
+        if (*tp).tp_free.is_none() {
+            (*tp).tp_free = Some(if (*tp).tp_flags & Py_TPFLAGS_HAVE_GC != 0 {
+                crate::api::memory::PyObject_GC_Del
+            } else {
+                crate::api::memory::PyObject_Free
+            });
+        }
+        if (*tp).tp_alloc.is_none() {
+            (*tp).tp_alloc = Some(PyType_GenericAlloc);
         }
 
         // (3) Build tp_dict and populate it from the type's own tp_methods so

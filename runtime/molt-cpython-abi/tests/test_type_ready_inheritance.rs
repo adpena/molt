@@ -323,3 +323,84 @@ fn type_lookup_walks_derived_mro_including_base() {
         "derived MRO must include the base so _PyType_Lookup can reach inherited methods"
     );
 }
+
+// ---------------------------------------------------------------------------
+// (3) tp_free / tp_alloc defaulting — CPython's post-PyType_Ready invariant.
+//
+// numpy's `PyBoundArrayMethod_Type` (Py_TPFLAGS_DEFAULT, own tp_dealloc, NULL
+// tp_free) ends `boundarraymethod_dealloc` with `Py_TYPE(self)->tp_free(self)`.
+// CPython guarantees tp_free is non-NULL after readying (verified against
+// CPython 3.12: non-GC builtins carry tp_free == PyObject_Free, GC builtins
+// carry tp_free == PyObject_GC_Del, every readied type carries
+// tp_alloc == PyType_GenericAlloc). A NULL tp_free turns that dealloc into a
+// `call_indirect` on table index 0, which traps ("null function or function
+// signature mismatch") on the first dealloc in the split wasm runtime.
+// ---------------------------------------------------------------------------
+
+type FreeFn = unsafe extern "C" fn(*mut std::ffi::c_void);
+type AllocFn = unsafe extern "C" fn(*mut PyTypeObject, Py_ssize_t) -> *mut PyObject;
+
+fn free_addr(f: Option<FreeFn>) -> usize {
+    f.map(|g| g as FreeFn as usize).unwrap_or(0)
+}
+
+fn alloc_addr(f: Option<AllocFn>) -> usize {
+    f.map(|g| g as AllocFn as usize).unwrap_or(0)
+}
+
+unsafe extern "C" fn dummy_dealloc(_o: *mut PyObject) {}
+
+#[test]
+fn ready_fills_tp_free_for_non_gc_type_like_bound_array_method() {
+    init();
+    let mut tp: PyTypeObject = unsafe { std::mem::zeroed() };
+    tp.tp_name = c"numpy._BoundArrayMethod".as_ptr();
+    tp.tp_basicsize = 32;
+    tp.tp_dealloc = Some(dummy_dealloc);
+    tp.tp_flags = Py_TPFLAGS_DEFAULT; // non-GC (no Py_TPFLAGS_HAVE_GC)
+    assert!(tp.tp_free.is_none(), "precondition: extension leaves tp_free NULL");
+    assert_eq!(unsafe { ready(&mut tp) }, 0);
+    assert_eq!(
+        free_addr(tp.tp_free),
+        molt_cpython_abi::api::memory::PyObject_Free as FreeFn as usize,
+        "a non-GC type that leaves tp_free NULL must inherit PyObject_Free; a NULL \
+         tp_free makes the extension's tp_dealloc call_indirect a null table slot"
+    );
+    assert_eq!(
+        alloc_addr(tp.tp_alloc),
+        molt_cpython_abi::api::typeobj::PyType_GenericAlloc as AllocFn as usize,
+        "tp_alloc must default to PyType_GenericAlloc after readying"
+    );
+}
+
+#[test]
+fn ready_fills_tp_free_for_gc_type_with_gc_del() {
+    init();
+    let mut tp: PyTypeObject = unsafe { std::mem::zeroed() };
+    tp.tp_name = c"gc_scalar".as_ptr();
+    tp.tp_basicsize = 32;
+    tp.tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC;
+    assert!(tp.tp_free.is_none());
+    assert_eq!(unsafe { ready(&mut tp) }, 0);
+    assert_eq!(
+        free_addr(tp.tp_free),
+        molt_cpython_abi::api::memory::PyObject_GC_Del as FreeFn as usize,
+        "a GC type that leaves tp_free NULL must get PyObject_GC_Del after readying"
+    );
+}
+
+#[test]
+fn ready_preserves_explicit_tp_free() {
+    init();
+    let mut tp: PyTypeObject = unsafe { std::mem::zeroed() };
+    tp.tp_name = c"custom_free".as_ptr();
+    tp.tp_basicsize = 32;
+    tp.tp_flags = Py_TPFLAGS_DEFAULT;
+    tp.tp_free = Some(molt_cpython_abi::api::memory::PyMem_Free);
+    assert_eq!(unsafe { ready(&mut tp) }, 0);
+    assert_eq!(
+        free_addr(tp.tp_free),
+        molt_cpython_abi::api::memory::PyMem_Free as FreeFn as usize,
+        "an explicit tp_free must not be overwritten by the default"
+    );
+}
