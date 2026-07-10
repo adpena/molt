@@ -105,6 +105,40 @@ C array to expose.
 
 ---
 
+## 1c. Landed fixes — lane F1 (`errors.rs` / `numbers.rs` / `slice.rs`)
+
+**Every ledger row in `errors.rs` (14), `numbers.rs` (20), and `slice.rs` (2) is
+closed** (2026-07-10, branch `f1-cpython-abi-divergence`), verified against CPython
+3.12 primary sources (Python/getargs.c, Objects/longobject.c, floatobject.c,
+complexobject.c, Objects/sliceobject.c, Python/ceval.c, Python/errors.c). Teeth:
+`tests/test_pyarg_parse.rs`, `tests/test_long_conversions.rs`,
+`tests/test_slice_unpack.rs`, updated `tests/test_exceptions.rs`. Four
+High/CONFIRMED gates proven load-bearing by local revert (b/B/H OOB store,
+`PyLong_AsSsize_t` silent sentinel, `PySlice_Unpack` unchecked bound, and the
+`PyArg` engine). Native fast paths preserved: single-pass format parse, zero-alloc
+int fast path in `slice_index`, immediate-int fast path in the checked long core.
+
+> SHAs are omitted per row because a pre-merge rebasing branch rewrites them on
+> every reland; the durable reference is the branch `f1-cpython-abi-divergence`
+> (7 commits) landed on origin/main. Re-anchor rows by function name (§4, refresh protocol).
+
+| Slice | Rows |
+|---|---|
+| PyArg engine (1a–1) | **[H]† `molt_pyarg_parse_tuple_inner` :556** (top-10 #1, UB) — real `O!`/`O&` grammar: the type object is READ (PyType_IsSubtype), never written through (the pre-fix skipped-`!` store clobbered the type-object header on every numpy entrypoint); + `h`/`c`/`C`/`S`/`U` units; shim `count_format_outs` now counts the `O!`/`O&` second vararg. **[H]† :512** (top-10 #2, OOB) — b/B/H/h store the EXACT declared C width (u8/u16/i16), killing the 4-byte `c_int` adjacent-memory clobber, with getargs.c range checks (OverflowError). [M, THEATER] :536 — `s`/`z`/`y` type-checked (TypeError, not a fabricated empty string; embedded-NUL ValueError). [L] :580 — surplus positional args raise TypeError |
+| PyErr identity (1b) | [M] `PyErr_Occurred` :55 (real pending type, not `&Py_None`); [M] `PyErr_Fetch` :201 / `PyErr_Restore` :229 / `PyErr_NormalizeException` :243 (real type/value round-trip); [M] `PyErr_ExceptionMatches` :264 / `PyErr_GivenExceptionMatches` :276 (subclass-chain + tuple walk via a hand-synced 3.12 hierarchy in `abi_types.rs`, table-drift-gated; the tuple path releases the bridge lock before per-item resolution — a non-reentrant self-deadlock fix); [L] `PyErr_BadInternalCall` :189 (SystemError); [L] `PyErr_SetFromErrno` :100 (C `errno` via shim, `[Errno N]` shape); [L] `PyErr_WarnEx` :344 (visible stderr emit); [L] `PyErr_CheckSignals` :375 (accepted no-op, documented) |
+| PyLong/Float/Complex (2, +align reconcile of `a98ef2978e`) | **[H] `PyLong_AsSsize_t` :486** (top-10 #7) + **[H] `PyLong_AsLong` :424** (top-10 #8) + [M] `AsLongAndOverflow` :460 / `AsLongLong` :491 / `AsLongLongAndOverflow` / `AsUnsignedLong` :539 / `AsUnsignedLongLong` :544 + [L] `AsVoidPtr` :549 / `AsNativeBytes` :562 / `_PyLong_AsInt` :615 / `AsDouble` :433 / `_PyLong_AsByteArray` :640 — single checked core (`py_long_value`): `__index__` where CPython dispatches, exact width OverflowError messages, negatives→OverflowError, -1/NULL only with an exception; `AsNativeBytes` reports the TRUE minimal byte width. [M] `PyLong_FromDouble` :328 (exact bignum via `mantissa<<exp` through the runtime authority) + [L] `PyLong_FromUnicodeObject` :362 (Horner bignum). [M] `PyFloat_AsDouble` :730 (no silent NaN — nb_float/nb_index dispatch). [M] `PyComplex_AsCComplex` :852 / [M] `ImagAsDouble` :895 (clean 0.0) / `RealAsDouble`. [M] `PyLong_Check` :936 (bool + heap bignum) / `PyFloat_Check` :937 / [L] `PyComplex_Check` :900 (subtype walks) / [L] `PyNumber_Check` :941 (foreign `tp_as_number`) |
+| PySlice (3) | **[H]† `PySlice_Unpack` :117** (honorable-mention, numpy indexing) — `_PyEval_SliceIndex` equivalent: non-None bound requires `__index__` (TypeError), converts with the `PyNumber_AsSsize_t(NULL)` sign-clamp (`slice(0, 10**30)` → PY_SSIZE_T_MAX, not truncation/error), -1 only with an exception; sign of a beyond-±2^64 bignum via the runtime `>>128` authority. [L] `PySlice_GetIndices` :209 — own legacy body (PyLong_Check per field, single negative += length, -1 on out-of-range) instead of the clamping GetIndicesEx delegation |
+
+Honest residuals (documented in-code): `PyErr_SetFromErrno` sets the OSError
+message but not the instance `.errno`/`.strerror` attributes (the `(type, message)`
+error state carries no instance); `PyComplex_AsCComplex` dispatches `nb_float`/
+`nb_index` but not the `__complex__` special method (needs a `_PyObject_LookupSpecial`
+equivalent); the bignum/clamp paths in `PyLong_FromDouble`/`FromUnicodeObject`/
+`AsDouble` and the slice sign-clamp require the runtime numeric authority and fail
+LOUD (OverflowError), never a fabricated value, when it is absent (stub hooks).
+
+---
+
 ## 2. Findings by classification
 
 Within each table: **High → Low**, then numpy-imported first. Sev/np/† tags precede the
