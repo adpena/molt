@@ -83,6 +83,13 @@ let wasiExitCode = null;
 let detectedWasmTableBase = null;
 let implicitBundlePreopen = null;
 const callIndirectDebug = process.env.MOLT_WASM_CALL_INDIRECT_DEBUG === '1';
+// MOLT_TRACE_DEALLOC=1: on each molt_Py_DECREF crossing the split boundary with
+// refcount about to reach zero, print the object's type name and its type's
+// tp_dealloc/tp_free slot values read from shared memory. Names the exact
+// object/slot behind a "null function or function signature mismatch" trap in
+// a C extension's dealloc path (the diagnostic that pinned the NULL tp_free on
+// numpy._BoundArrayMethod) without rebuilding anything.
+const traceDealloc = process.env.MOLT_TRACE_DEALLOC === '1';
 const traceExit = process.env.MOLT_WASM_TRACE_EXIT === '1';
 const traceRun = process.env.MOLT_WASM_TRACE_RUN === '1';
 const traceRunFile = process.env.MOLT_WASM_TRACE_FILE || null;
@@ -4990,6 +4997,41 @@ const buildRuntimeImportDirect = (runtimeInst) => {
     runtimeImports[entry.name] = (...args) => {
       if (traceRun) {
         console.error(`[molt wasm] direct runtime import ${entry.name} argc=${args.length}`);
+      }
+      if (traceDealloc && entry.name === 'molt_Py_DECREF') {
+        try {
+          const mem = appWasmMemory;
+          if (mem) {
+            // wasm32 PyObject layout: ob_refcnt@0 (i32), ob_type@4 (ptr);
+            // PyTypeObject: tp_name@12, tp_dealloc@24, tp_free@160.
+            const dv = new DataView(mem.buffer);
+            let op = args[0];
+            op = typeof op === 'bigint' ? Number(op) : Number(op);
+            if (op > 0 && op + 8 <= dv.byteLength) {
+              const refcnt = dv.getInt32(op, true);
+              const obtype = dv.getUint32(op + 4, true);
+              if (refcnt <= 1 && obtype > 0 && obtype + 168 <= dv.byteLength) {
+                const tpFree = dv.getUint32(obtype + 160, true);
+                const tpDealloc = dv.getUint32(obtype + 24, true);
+                const tpNamePtr = dv.getUint32(obtype + 12, true);
+                let typeName = '';
+                for (let i = 0; i < 80 && tpNamePtr + i < dv.byteLength; i += 1) {
+                  const c = dv.getUint8(tpNamePtr + i);
+                  if (!c) {
+                    break;
+                  }
+                  typeName += String.fromCharCode(c);
+                }
+                console.error(
+                  `[molt wasm] dealloc op=0x${op.toString(16)} rc=${refcnt} type='${typeName}' ` +
+                    `tp=0x${obtype.toString(16)} tp_dealloc=${tpDealloc} tp_free=${tpFree}`,
+                );
+              }
+            }
+          }
+        } catch (err) {
+          console.error('[molt wasm] dealloc probe error:', err.message);
+        }
       }
       return makeRuntimeImportAdapter(entry.name, fn, sig, {
         appMemoryProvider: () => appWasmMemory,
