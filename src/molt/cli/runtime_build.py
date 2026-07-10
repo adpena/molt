@@ -13,7 +13,7 @@ import sys
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Collection, Literal, Mapping, Sequence
+from typing import Any, Collection, Literal, Mapping, NamedTuple, Sequence
 
 from molt._wasm_runtime_exports import (
     wasm_cpython_abi_requested_data_export_names,
@@ -780,12 +780,51 @@ def _prebuild_runtime_wasm(
         stdlib_profile=concrete_stdlib_profile,
     )
     artifacts: dict[str, str] = {}
-    plans: list[tuple[str, bool, Path | None]] = []
-    if kind in {"shared", "both"}:
-        plans.append(("shared", False, runtime_state.runtime_wasm))
-    if kind in {"reloc", "both"}:
-        plans.append(("reloc", True, runtime_state.runtime_reloc_wasm))
-    for label, reloc, runtime_path in plans:
+    if kind == "both":
+        # V1 dual-compile burn-down: a single combined `cargo rustc --lib`
+        # (no --crate-type override) emits both the staticlib and cdylib, so the
+        # reloc and shared artifacts are produced from ONE compile instead of two.
+        if (
+            runtime_state.runtime_wasm is None
+            or runtime_state.runtime_reloc_wasm is None
+        ):
+            if not json_output:
+                print(
+                    "Runtime wasm shared/reloc artifact path is unavailable.",
+                    file=sys.stderr,
+                )
+            return 1
+        if verbose and not json_output:
+            print(
+                "Prebuilding runtime wasm shared+reloc (single combined compile): "
+                f"{runtime_state.runtime_wasm}",
+                file=sys.stderr,
+            )
+        if not _ensure_runtime_wasm_both(
+            runtime_state,
+            json_output=json_output,
+            cargo_profile=cargo_profile,
+            cargo_timeout=cargo_timeout,
+            project_root=project_root,
+            simd_enabled=simd_enabled,
+            freestanding=freestanding,
+            stdlib_profile=concrete_stdlib_profile,
+            resolved_modules=None,
+            required_exports=None,
+        ):
+            if not json_output:
+                print("Runtime wasm prebuild failed.", file=sys.stderr)
+            return 1
+        artifacts["shared"] = os.fspath(runtime_state.runtime_wasm)
+        artifacts["reloc"] = os.fspath(runtime_state.runtime_reloc_wasm)
+    else:
+        label = "shared" if kind == "shared" else "reloc"
+        reloc = kind == "reloc"
+        runtime_path = (
+            runtime_state.runtime_reloc_wasm
+            if reloc
+            else runtime_state.runtime_wasm
+        )
         if runtime_path is None:
             if not json_output:
                 print(
@@ -1668,6 +1707,163 @@ def _runtime_missing_exports_for_mode(
     return _split_runtime_wasm_missing_exports(path, required_exports)
 
 
+class _RuntimeWasmBuildSpec(NamedTuple):
+    """Resolved, mode-specific build spec for one runtime-wasm artifact.
+
+    Single source of truth for the cargo profile, feature plan, RUSTFLAGS, and
+    the content-address ``fingerprint`` of a reloc/shared runtime-wasm build.
+    Shared by ``_ensure_runtime_wasm`` (which consumes exactly these values) and
+    ``_prepopulate_combined_runtime_wasm_target`` (which must compute a
+    byte-identical ``fingerprint`` so the combined single-compile's artifacts are
+    recognised by the per-artifact target-reuse fast path).  Keeping one
+    authority means the two can never silently drift out of fingerprint parity.
+    """
+
+    requested_cargo_profile: str
+    cargo_profile: str
+    profile_dir: str
+    incremental_enabled: bool
+    env: dict[str, str]
+    runtime_exports: str
+    link_flags: str
+    cargo_rustflags: str
+    fingerprint_rustflags: str
+    no_default_features: bool
+    wasm_cargo_features: tuple[str, ...]
+    fingerprint_features: tuple[str, ...]
+    fingerprint_path: Path
+    target_root: Path
+    stored_fingerprint: dict[str, Any] | None
+    fingerprint: dict[str, Any] | None
+
+
+def _compute_runtime_wasm_build_spec(
+    root: Path,
+    runtime_wasm: Path,
+    *,
+    reloc: bool,
+    cargo_profile: str,
+    simd_enabled: bool,
+    freestanding: bool,
+    stdlib_profile: str | None,
+    resolved_modules: set[str] | frozenset[str] | None,
+    required_link_features: frozenset[str],
+    required_exports: set[str] | frozenset[str] | None,
+) -> _RuntimeWasmBuildSpec:
+    """Resolve the mode-specific runtime-wasm build spec (see _RuntimeWasmBuildSpec)."""
+    effective_stdlib_profile = stdlib_profile or DEFAULT_RUNTIME_STDLIB_PROFILE
+    requested_cargo_profile = cargo_profile
+    cargo_profile = _resolve_wasm_cargo_profile(cargo_profile)
+    profile_dir = _cargo_profile_dir(cargo_profile)
+    incremental_enabled = _runtime_wasm_incremental_enabled()
+    env = _cargo_build_env()
+    if "CARGO_INCREMENTAL" not in os.environ:
+        env["CARGO_INCREMENTAL"] = "1" if incremental_enabled else "0"
+    cpython_abi_requested_exports = wasm_cpython_abi_requested_export_names(
+        required_exports
+    )
+    if cpython_abi_requested_exports:
+        env["MOLT_WASM_CPYTHON_ABI_EXPORTS"] = "\n".join(cpython_abi_requested_exports)
+        cpython_abi_requested_data_exports = (
+            wasm_cpython_abi_requested_data_export_names(required_exports)
+        )
+        if cpython_abi_requested_data_exports:
+            env["MOLT_WASM_CPYTHON_ABI_DATA_EXPORTS"] = "\n".join(
+                cpython_abi_requested_data_exports
+            )
+    if reloc:
+        runtime_exports = wasm_runtime_export_link_args(
+            required_exports,
+            resolved_modules=resolved_modules,
+        )
+        link_flags = runtime_exports
+        cargo_link_flags = _wasm_link_args_response_rustflags(
+            root,
+            label=f"runtime.{_resolve_wasm_cargo_profile(cargo_profile)}.reloc",
+            link_flags=link_flags,
+        )
+    else:
+        runtime_exports = wasm_runtime_shared_export_link_args(required_exports)
+        shared_import_flags = (
+            "-C link-arg=--import-memory -C link-arg=--import-table"
+            " -C link-arg=--growable-table"
+        )
+        link_flags = f"{shared_import_flags}{runtime_exports}"
+        cargo_link_flags = _wasm_link_args_response_rustflags(
+            root,
+            label=f"runtime.{_resolve_wasm_cargo_profile(cargo_profile)}.shared",
+            link_flags=link_flags,
+        )
+    base_rustflags = env.get("RUSTFLAGS", "").strip()
+    cargo_rustflags = _wasm_runtime_codegen_rustflags(
+        _append_rustflags_text(base_rustflags, cargo_link_flags),
+        simd_enabled=simd_enabled,
+        freestanding=freestanding,
+    )
+    fingerprint_rustflags = _wasm_runtime_codegen_rustflags(
+        _append_rustflags_text(base_rustflags, link_flags),
+        simd_enabled=simd_enabled,
+        freestanding=freestanding,
+    )
+    cargo_runtime_features = tuple(["wasm_freestanding"] if freestanding else [])
+    builtin_features = _runtime_builtin_features_for_profile(
+        effective_stdlib_profile,
+        target_triple="wasm32-wasip1",
+    )
+    no_default_features, wasm_cargo_features, fingerprint_features = (
+        _wasm_runtime_feature_plan(
+            stdlib_profile=effective_stdlib_profile,
+            runtime_features=cargo_runtime_features,
+            builtin_features=builtin_features,
+            resolved_modules=resolved_modules,
+            required_link_features=required_link_features,
+        )
+    )
+    fingerprint_path = _runtime_fingerprint_path(
+        root, runtime_wasm, cargo_profile, "wasm32-wasip1"
+    )
+    if incremental_enabled:
+        target_root = _runtime_wasm_incremental_target_root(
+            root,
+            _runtime_wasm_incremental_family_key(
+                cargo_profile=cargo_profile,
+                target_triple="wasm32-wasip1",
+                features=tuple(fingerprint_features),
+                simd_enabled=simd_enabled,
+                freestanding=freestanding,
+            ),
+        )
+    else:
+        target_root = _cargo_target_root(root)
+    stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
+    fingerprint = _runtime_fingerprint(
+        root,
+        cargo_profile=cargo_profile,
+        target_triple="wasm32-wasip1",
+        rustflags=fingerprint_rustflags,
+        runtime_features=fingerprint_features,
+        stored_fingerprint=stored_fingerprint,
+    )
+    return _RuntimeWasmBuildSpec(
+        requested_cargo_profile=requested_cargo_profile,
+        cargo_profile=cargo_profile,
+        profile_dir=profile_dir,
+        incremental_enabled=incremental_enabled,
+        env=env,
+        runtime_exports=runtime_exports,
+        link_flags=link_flags,
+        cargo_rustflags=cargo_rustflags,
+        fingerprint_rustflags=fingerprint_rustflags,
+        no_default_features=no_default_features,
+        wasm_cargo_features=tuple(wasm_cargo_features),
+        fingerprint_features=tuple(fingerprint_features),
+        fingerprint_path=fingerprint_path,
+        target_root=target_root,
+        stored_fingerprint=stored_fingerprint,
+        fingerprint=fingerprint,
+    )
+
+
 def _ensure_runtime_wasm(
     runtime_wasm: Path,
     *,
@@ -1718,128 +1914,34 @@ def _ensure_runtime_wasm(
                     )
                 )
             )
-    requested_cargo_profile = cargo_profile
-    cargo_profile = _resolve_wasm_cargo_profile(cargo_profile)
-    profile_dir = _cargo_profile_dir(cargo_profile)
-    incremental_enabled = _runtime_wasm_incremental_enabled()
-    env = _cargo_build_env()
-    if "CARGO_INCREMENTAL" not in os.environ:
-        # Default OFF (deterministic proof builds). The opt-in incremental
-        # target-dir path turns it ON so the second crate-type pass reuses the
-        # first pass's codegen and consecutive same-family iterations recompile
-        # incrementally instead of from scratch.
-        env["CARGO_INCREMENTAL"] = "1" if incremental_enabled else "0"
-    cpython_abi_requested_exports = wasm_cpython_abi_requested_export_names(
-        required_exports
-    )
-    if cpython_abi_requested_exports:
-        env["MOLT_WASM_CPYTHON_ABI_EXPORTS"] = "\n".join(
-            cpython_abi_requested_exports
-        )
-        cpython_abi_requested_data_exports = (
-            wasm_cpython_abi_requested_data_export_names(required_exports)
-        )
-        if cpython_abi_requested_data_exports:
-            env["MOLT_WASM_CPYTHON_ABI_DATA_EXPORTS"] = "\n".join(
-                cpython_abi_requested_data_exports
-            )
-    if reloc:
-        runtime_exports = wasm_runtime_export_link_args(
-            required_exports,
-            resolved_modules=resolved_modules,
-        )
-    else:
-        # The shared split-runtime artifact keeps its full generated public ABI
-        # for loader imports; runtime-backed extension obligations are additive.
-        runtime_exports = wasm_runtime_shared_export_link_args(required_exports)
-    if reloc:
-        link_flags = runtime_exports
-        cargo_link_flags = _wasm_link_args_response_rustflags(
-            root,
-            label=f"runtime.{_resolve_wasm_cargo_profile(cargo_profile)}.reloc",
-            link_flags=link_flags,
-        )
-    else:
-        # Shared-runtime ABI: import the host-provided memory and table, and
-        # allow the table to grow for app-specific call_indirect slots.
-        shared_import_flags = (
-            "-C link-arg=--import-memory -C link-arg=--import-table"
-            " -C link-arg=--growable-table"
-        )
-        # Split-runtime size policy (feedback_wasm_export_treeshaking: "only
-        # export table refs for split-runtime builds").  --export-dynamic exports
-        # every defined Rust symbol - thousands of mangled
-        # serde_json/num_bigint/alloc/core internals.  Those leaked exports (a)
-        # bloat the export-name section by ~800KB of mangled strings and (b) pin
-        # internal-only functions as wasm-opt GC roots, blocking
-        # --remove-unused-module-elements from stripping ~MBs of dead code. The
-        # public surface is fully described by the explicit
-        # wasm_runtime_export_link_args() allowlist plus the post-link
-        # table-ref export pass (_export_wasm_table_refs), so
-        # --export-dynamic is pure bloat here.
-        link_flags = f"{shared_import_flags}{runtime_exports}"
-        cargo_link_flags = _wasm_link_args_response_rustflags(
-            root,
-            label=f"runtime.{_resolve_wasm_cargo_profile(cargo_profile)}.shared",
-            link_flags=link_flags,
-        )
-    base_rustflags = env.get("RUSTFLAGS", "").strip()
-    cargo_rustflags = _append_rustflags_text(base_rustflags, cargo_link_flags)
-    fingerprint_rustflags = _append_rustflags_text(base_rustflags, link_flags)
-    cargo_rustflags = _wasm_runtime_codegen_rustflags(
+    (
+        requested_cargo_profile,
+        cargo_profile,
+        profile_dir,
+        incremental_enabled,
+        env,
+        runtime_exports,
+        link_flags,
         cargo_rustflags,
-        simd_enabled=simd_enabled,
-        freestanding=freestanding,
-    )
-    fingerprint_rustflags = _wasm_runtime_codegen_rustflags(
         fingerprint_rustflags,
+        no_default_features,
+        wasm_cargo_features,
+        fingerprint_features,
+        fingerprint_path,
+        target_root,
+        stored_fingerprint,
+        fingerprint,
+    ) = _compute_runtime_wasm_build_spec(
+        root,
+        runtime_wasm,
+        reloc=reloc,
+        cargo_profile=cargo_profile,
         simd_enabled=simd_enabled,
         freestanding=freestanding,
-    )
-    cargo_runtime_features = tuple(["wasm_freestanding"] if freestanding else [])
-    builtin_features = _runtime_builtin_features_for_profile(
-        effective_stdlib_profile,
-        target_triple="wasm32-wasip1",
-    )
-    runtime_features = cargo_runtime_features
-    no_default_features, wasm_cargo_features, fingerprint_features = (
-        _wasm_runtime_feature_plan(
-            stdlib_profile=effective_stdlib_profile,
-            runtime_features=runtime_features,
-            builtin_features=builtin_features,
-            resolved_modules=resolved_modules,
-            required_link_features=required_link_features,
-        )
-    )
-    fingerprint_path = _runtime_fingerprint_path(
-        root, runtime_wasm, cargo_profile, "wasm32-wasip1"
-    )
-    if incremental_enabled:
-        # Session-independent, per-codegen-family target dir. The candidate
-        # lookups + the cargo build below all key off `target_root`, so pointing
-        # it here (instead of the session dir) makes the reloc and shared passes
-        # share one incremental cache and lets a later same-fingerprint run reuse
-        # the already-built artifact without re-invoking cargo.
-        target_root = _runtime_wasm_incremental_target_root(
-            root,
-            _runtime_wasm_incremental_family_key(
-                cargo_profile=cargo_profile,
-                target_triple="wasm32-wasip1",
-                features=tuple(fingerprint_features),
-                simd_enabled=simd_enabled,
-                freestanding=freestanding,
-            ),
-        )
-    else:
-        target_root = _cargo_target_root(root)
-    stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
-    fingerprint = _runtime_fingerprint(
-        root,
-        cargo_profile=cargo_profile,
-        target_triple="wasm32-wasip1",
-        rustflags=fingerprint_rustflags,
-        runtime_features=fingerprint_features,
-        stored_fingerprint=stored_fingerprint,
+        stdlib_profile=stdlib_profile,
+        resolved_modules=resolved_modules,
+        required_link_features=required_link_features,
+        required_exports=required_exports,
     )
     if fingerprint is None:
         if not json_output:
@@ -1897,6 +1999,31 @@ def _ensure_runtime_wasm(
                 if not json_output:
                     print(
                         f"Copied runtime wasm artifact is invalid: {runtime_wasm}",
+                        file=sys.stderr,
+                    )
+                return False
+            # The target-dir cdylib holds rustc's raw #[no_mangle] export names;
+            # the shipped shared artifact renames the CPython-ABI subset to their
+            # public split-runtime names (e.g. `PyBool_Check` -> `molt_PyBool_Check`).
+            # The full-build path applies this; the reuse path MUST too, or the
+            # split-runtime app link fails to resolve the renamed imports. (This
+            # also fixed a latent reuse-path defect independent of single-compile.)
+            if not _materialize_split_runtime_public_exports(
+                runtime_wasm,
+                required_exports,
+                json_output=json_output,
+            ):
+                return False
+            reused_missing_exports = _runtime_missing_exports_for_mode(
+                runtime_wasm,
+                required_exports,
+                reloc=reloc,
+            )
+            if reused_missing_exports:
+                if not json_output:
+                    print(
+                        "Reused runtime wasm artifact missing required exports: "
+                        + ", ".join(sorted(reused_missing_exports)),
                         file=sys.stderr,
                     )
                 return False
@@ -2502,3 +2629,310 @@ def _ensure_runtime_wasm(
                         file=sys.stderr,
                     )
     return True
+
+
+def _single_compile_split_runtime_enabled() -> bool:
+    """Whether ``--kind both`` uses ONE combined cargo compile (V1 dedup).
+
+    Default ON.  Kill switch ``MOLT_RUNTIME_WASM_SINGLE_COMPILE=0`` reverts to the
+    proven sequential dual-compile (two ``cargo rustc --crate-type=...`` passes),
+    the fallback also taken automatically whenever the combined compile fails.
+    """
+    return os.environ.get(
+        "MOLT_RUNTIME_WASM_SINGLE_COMPILE", "1"
+    ).strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _prepopulate_combined_runtime_wasm_target(
+    *,
+    shared_spec: _RuntimeWasmBuildSpec,
+    reloc_spec: _RuntimeWasmBuildSpec,
+    json_output: bool,
+    cargo_timeout: float | None,
+    project_root: Path,
+    simd_enabled: bool,
+    freestanding: bool,
+) -> bool:
+    """Run ONE ``cargo rustc --lib`` emitting BOTH staticlib and cdylib (V1).
+
+    ``molt-runtime`` declares ``crate-type = ["staticlib","rlib","cdylib"]`` so a
+    single rustc codegen emits every crate-type.  The shared cdylib link args
+    (``--import-memory``/``--import-table``/``--growable-table`` plus the
+    ``--export-if-defined`` allowlist) are passed as ``-- -C link-arg=@resp``
+    extra rustc args; rustc applies them only to the cdylib link (the staticlib
+    is an archive), preserving rustc own authoritative ``#[no_mangle]`` cdylib
+    export enumeration -- the ~3260 exports the reverted hand-link dropped.
+
+    Both target-dir fingerprints are then recorded so the per-artifact reuse
+    fast path in ``_ensure_runtime_wasm`` finalises each artifact (export
+    materialization, integrity pin, sidecars) WITHOUT a second compile.  Returns
+    ``True`` when the target dir now satisfies both crate-types, else ``False``
+    (caller falls back to the sequential dual-compile -- correct, just no dedup).
+    """
+    root = project_root
+    if shared_spec.fingerprint is None or reloc_spec.fingerprint is None:
+        return False
+    # target_root/profile are codegen-identity properties: identical for the
+    # reloc and shared specs (features + codegen rustflags do not depend on the
+    # link-only crate-type), so either spec names the shared compile home.
+    cargo_profile = shared_spec.cargo_profile
+    profile_dir = shared_spec.profile_dir
+    target_root = shared_spec.target_root
+    build_state_root = _build_state_root(root)
+    target_label = "wasm32-wasip1"
+
+    cdylib_current = _current_runtime_target_artifact(
+        _wasm_runtime_wasm_candidates(target_root, profile_dir),
+        build_state_root=build_state_root,
+        cargo_profile=cargo_profile,
+        target_label=target_label,
+        fingerprint=shared_spec.fingerprint,
+    )
+    staticlib_current = _current_runtime_target_artifact(
+        _wasm_runtime_staticlib_candidates(target_root, profile_dir),
+        build_state_root=build_state_root,
+        cargo_profile=cargo_profile,
+        target_label=target_label,
+        fingerprint=reloc_spec.fingerprint,
+    )
+    if cdylib_current is not None and staticlib_current is not None:
+        # Both crate-types already fresh in the target dir; nothing to compile.
+        return True
+
+    if wasm_toolchain.rust_target_libdir("wasm32-wasip1") is None:
+        if not json_output:
+            print(
+                wasm_toolchain.rust_target_missing_message(
+                    "wasm32-wasip1",
+                    root=root,
+                    context="Runtime wasm combined build",
+                ),
+                file=sys.stderr,
+            )
+        return False
+
+    env = dict(shared_spec.env)
+    # RUSTFLAGS carries ONLY the codegen flags (target-feature); the cdylib link
+    # args move to `-- -C link-arg=@resp` so the compile fingerprint is not
+    # crate-type/link-arg specific and one compile serves both artifacts.
+    codegen_rustflags = _wasm_runtime_codegen_rustflags(
+        env.get("RUSTFLAGS", "").strip(),
+        simd_enabled=simd_enabled,
+        freestanding=freestanding,
+    )
+    if codegen_rustflags:
+        env["RUSTFLAGS"] = codegen_rustflags
+    else:
+        env.pop("RUSTFLAGS", None)
+    if os.environ.get("MOLT_WASM_FORCE_CC") == "1":
+        _configure_wasm_cc_env(env)
+    _configure_wasi_sysroot_env(env)
+    if os.environ.get("MOLT_WASM_DISABLE_SCCACHE") != "1":
+        _maybe_enable_sccache(env)
+    else:
+        env.pop("RUSTC_WRAPPER", None)
+
+    cmd = [
+        "cargo",
+        "rustc",
+        "--package",
+        "molt-runtime",
+        "--profile",
+        cargo_profile,
+        "--target",
+        "wasm32-wasip1",
+        "--lib",
+    ]
+    if shared_spec.no_default_features:
+        cmd.append("--no-default-features")
+    if shared_spec.wasm_cargo_features:
+        cmd.extend(["--features", ",".join(shared_spec.wasm_cargo_features)])
+    # NO `--crate-type` override: build every declared crate-type in one compile.
+    cmd.append("--")
+    shared_link_args = _wasm_link_args_from_rustflags(shared_spec.link_flags)
+    if shared_link_args:
+        response_path = _write_wasm_link_args_response_file(
+            _build_state_root(root) / "wasm_link_args",
+            label=f"runtime.{cargo_profile}.combined",
+            link_args=shared_link_args,
+        )
+        cmd.extend(["-C", f"link-arg=@{response_path}"])
+
+    if not json_output:
+        print(
+            "Building runtime wasm (single combined compile: staticlib+cdylib)...",
+            file=sys.stderr,
+        )
+    started = time.perf_counter()
+    try:
+        build, _reported = _run_runtime_wasm_cargo_build(
+            cmd=cmd,
+            root=root,
+            env=env,
+            cargo_timeout=cargo_timeout,
+            profile_dir=profile_dir,
+            target_root_override=target_root,
+            json_output=json_output,
+            artifact_kind="cdylib",
+        )
+    except subprocess.TimeoutExpired:
+        if not json_output:
+            print("Runtime wasm combined build timed out.", file=sys.stderr)
+        return False
+    if build.returncode != 0:
+        if not json_output:
+            detail = (build.stderr or build.stdout or "").strip()
+            msg = "Runtime wasm combined build failed"
+            if detail:
+                msg = f"{msg}: {detail}"
+            print(msg, file=sys.stderr)
+        return False
+    _record_runtime_wasm_build_phase(
+        "cargo_compile",
+        time.perf_counter() - started,
+        kind="combined",
+        mode="build",
+    )
+
+    cdylib_candidates = _wasm_runtime_wasm_candidates(target_root, profile_dir)
+    staticlib_candidates = _wasm_runtime_staticlib_candidates(target_root, profile_dir)
+    if not cdylib_candidates or not staticlib_candidates:
+        if not json_output:
+            print(
+                "Runtime wasm combined build succeeded but a crate-type artifact "
+                "is missing (expected both cdylib and staticlib).",
+                file=sys.stderr,
+            )
+        return False
+    cdylib = cdylib_candidates[0]
+    staticlib = staticlib_candidates[0]
+    if (
+        _inspect_wasm_binary(cdylib) != "valid"
+        or not _is_valid_shared_runtime_wasm_artifact(cdylib)
+    ):
+        if not json_output:
+            print(
+                "Runtime wasm combined build produced an invalid cdylib artifact.",
+                file=sys.stderr,
+            )
+        return False
+
+    try:
+        cdylib_fp_path = _runtime_target_fingerprint_path(
+            build_state_root,
+            cdylib,
+            cargo_profile=cargo_profile,
+            target_label=target_label,
+        )
+        cdylib_fp_path.parent.mkdir(parents=True, exist_ok=True)
+        _write_runtime_fingerprint(
+            cdylib_fp_path, shared_spec.fingerprint, artifact=cdylib
+        )
+        staticlib_fp_path = _runtime_target_fingerprint_path(
+            build_state_root,
+            staticlib,
+            cargo_profile=cargo_profile,
+            target_label=target_label,
+        )
+        staticlib_fp_path.parent.mkdir(parents=True, exist_ok=True)
+        _write_runtime_fingerprint(
+            staticlib_fp_path, reloc_spec.fingerprint, artifact=staticlib
+        )
+    except OSError:
+        if not json_output:
+            print(
+                "Runtime wasm combined build: failed to record target fingerprints.",
+                file=sys.stderr,
+            )
+        return False
+    return True
+
+
+def _ensure_runtime_wasm_both(
+    runtime_state: _RuntimeArtifactState,
+    *,
+    json_output: bool,
+    cargo_profile: str,
+    cargo_timeout: float | None,
+    project_root: Path,
+    simd_enabled: bool,
+    freestanding: bool,
+    stdlib_profile: str | None = DEFAULT_RUNTIME_STDLIB_PROFILE,
+    resolved_modules: set[str] | frozenset[str] | None = None,
+    required_link_features: frozenset[str] = frozenset(),
+    required_exports: set[str] | frozenset[str] | None = None,
+) -> bool:
+    """Ensure BOTH the shared (cdylib) and reloc (staticlib) runtime wasm.
+
+    V1 dual-compile burn-down: when single-compile is enabled (default), one
+    combined ``cargo rustc --lib`` populates the target dir with both crate-types
+    (``_prepopulate_combined_runtime_wasm_target``); the two per-artifact
+    ``_ensure_runtime_wasm_artifact`` calls then finalise each via the UNCHANGED
+    reuse path (no second compile).  On any combined-build failure the per-artifact
+    calls transparently recompile, so behaviour degrades to the proven sequential
+    dual-compile -- never incorrect, only un-deduped.
+    """
+    runtime_wasm = runtime_state.runtime_wasm
+    runtime_reloc_wasm = runtime_state.runtime_reloc_wasm
+
+    def _ensure(reloc: bool) -> bool:
+        return _ensure_runtime_wasm_artifact(
+            runtime_state,
+            reloc=reloc,
+            json_output=json_output,
+            cargo_profile=cargo_profile,
+            cargo_timeout=cargo_timeout,
+            project_root=project_root,
+            simd_enabled=simd_enabled,
+            freestanding=freestanding,
+            stdlib_profile=stdlib_profile,
+            resolved_modules=resolved_modules,
+            required_link_features=required_link_features,
+            required_exports=required_exports,
+        )
+
+    if (
+        _single_compile_split_runtime_enabled()
+        and runtime_wasm is not None
+        and runtime_reloc_wasm is not None
+    ):
+        shared_spec = _compute_runtime_wasm_build_spec(
+            project_root,
+            runtime_wasm,
+            reloc=False,
+            cargo_profile=cargo_profile,
+            simd_enabled=simd_enabled,
+            freestanding=freestanding,
+            stdlib_profile=stdlib_profile,
+            resolved_modules=resolved_modules,
+            required_link_features=required_link_features,
+            required_exports=required_exports,
+        )
+        reloc_spec = _compute_runtime_wasm_build_spec(
+            project_root,
+            runtime_reloc_wasm,
+            reloc=True,
+            cargo_profile=cargo_profile,
+            simd_enabled=simd_enabled,
+            freestanding=freestanding,
+            stdlib_profile=stdlib_profile,
+            resolved_modules=resolved_modules,
+            required_link_features=required_link_features,
+            required_exports=required_exports,
+        )
+        # Best-effort: populate the target dir with one compile. A False result
+        # (build failed / toolchain missing) just means the per-artifact calls
+        # below recompile as before -- correctness is unaffected.
+        _prepopulate_combined_runtime_wasm_target(
+            shared_spec=shared_spec,
+            reloc_spec=reloc_spec,
+            json_output=json_output,
+            cargo_timeout=cargo_timeout,
+            project_root=project_root,
+            simd_enabled=simd_enabled,
+            freestanding=freestanding,
+        )
+
+    ok_shared = _ensure(reloc=False)
+    ok_reloc = _ensure(reloc=True)
+    return ok_shared and ok_reloc
