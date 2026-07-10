@@ -156,6 +156,23 @@ fn main() {
                 lib_path.display()
             );
         }
+        "wasi" if target_arch == "wasm32" => {
+            // wasm32-wasip1: rustc drives rust-lld (wasm-ld) directly with no cc
+            // driver, so pass wasm-ld flags WITHOUT the `-Wl,` prefix the linux
+            // arm needs. Whole-archive the C shim so its symbols are defined in
+            // this cdylib — not just the variadic PyArg_*/Py_BuildValue/... that
+            // no Rust calls, but also the errno accessors molt_capi_errno /
+            // molt_capi_strerror that errors.rs's PyErr_SetFromErrno DOES call
+            // (added by ab87dd425f); without this the cdylib link fails with
+            // `undefined symbol: molt_capi_errno`. `cargo_metadata(false)` above
+            // keeps the shim out of the rlib (which molt-runtime consumes and
+            // whole-archives via its own wasm export anchor), so scoping the
+            // whole-archive to this cdylib-link-arg cannot duplicate-symbol at
+            // the runtime's final link.
+            println!("cargo:rustc-cdylib-link-arg=--whole-archive");
+            println!("cargo:rustc-cdylib-link-arg={}", lib_path.display());
+            println!("cargo:rustc-cdylib-link-arg=--no-whole-archive");
+        }
         _ => {}
     }
 
