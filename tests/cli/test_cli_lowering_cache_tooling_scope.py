@@ -362,3 +362,209 @@ def cf_module_file() -> str:
     from molt.cli import cache_fingerprints as cf
 
     return cf.__file__
+
+
+# ---------------------------------------------------------------------------
+# The cli/__init__ command-layer over-scope fix.
+#
+# ``frontend_pipeline`` / ``module_resolution`` import sibling ``cli`` submodules
+# via the package (``from molt.cli import frontend_execution``). The resolver used
+# to treat that as a dependency on ``molt.cli`` (the package ``__init__``) and then
+# followed ``cli/__init__``'s ~80 module-level imports -- dragging the whole
+# command / extension-seal / build-locks / daemon / package-registry orchestration
+# layer into the lowering fingerprint. Because every landing edits one of those
+# orchestration files, the persisted per-module lowering cache cold-started on
+# every run (attested 0/152 hits on the numpy witness). The fix attributes a
+# ``from PKG import SUBMOD`` edge to the submodule it names, not the package
+# aggregate, so the command layer is neither a seed nor reachable from one; the
+# genuinely lowering-facing ``compiler_analysis/`` package is seeded explicitly
+# and the generated intrinsic / feature-gate tables are force-included, so nothing
+# on the ast->TIR path is dropped (safety over speed -- a spurious cold-start is
+# the worst case, never a stale lowering; M35).
+# ---------------------------------------------------------------------------
+
+
+def _scope_relpaths(root: Path) -> set[str]:
+    """POSIX relpaths (from ``src/molt``) of every file in the semantic scope."""
+    molt_root = (Path(root) / "src" / "molt").resolve()
+    rels: set[str] = set()
+    for path in CF._frontend_semantic_tooling_source_paths(Path(root)):
+        p = Path(path).resolve()
+        if p.is_dir():
+            for f in p.rglob("*.py"):
+                rels.add(f.resolve().relative_to(molt_root).as_posix())
+        else:
+            rels.add(p.relative_to(molt_root).as_posix())
+    return rels
+
+
+# Files every landing edits that provably run only after a module is lowered
+# (command dispatch, extension sealing, build locking, the backend daemon, debug
+# tooling). None appear on the ast->TIR path, so all must be OUT of scope.
+_COMMAND_LAYER_OUT = (
+    "cli/__init__.py",
+    "cli/build_locks.py",
+    "cli/extension_seal.py",
+    "cli/extension_scan.py",
+    "cli/package_registry.py",
+    "cli/profile_feedback.py",
+    "cli/runtime_features.py",
+    "cli/debug_helpers.py",
+    "backend_daemon_custody.py",
+    "debug/reduce.py",
+    "debug/ir.py",
+)
+# IR / TIR analysis and generated intrinsic / feature-gate tables: kept IN unless
+# proven irrelevant. ``compiler_analysis`` is the frontend analysis package;
+# ``_intrinsic_symbols`` feeds the aux ``_wasm_runtime_exports`` input; the feature
+# -gate table is retained conservatively.
+_LOWERING_RELEVANT_IN = (
+    "compiler_analysis/backend_ir.py",
+    "compiler_analysis/tir_fact_graph.py",
+    "compiler_analysis/static_truth.py",
+    "compiler_analysis/native_support_slice.py",
+    "compiler_analysis/hashing.py",
+    "compiler_analysis/schema.py",
+    "compiler_analysis/validation.py",
+    "_intrinsic_symbols.py",
+    "_runtime_feature_gates.py",
+    "_wasm_runtime_exports.py",
+    "_wasm_abi_generated.py",
+    "type_facts.py",
+    "compat.py",
+)
+
+
+def test_command_orchestration_layer_excluded_but_analysis_and_intrinsics_kept() -> (
+    None
+):
+    """Acceptance (scope shrank + what dropped): the command/extension/daemon/debug
+    orchestration layer is out of the lowering scope while every IR/TIR analysis
+    file and generated intrinsic/feature-gate table stays in."""
+    rels = _scope_relpaths(CF._compiler_root())
+
+    leaked = [rel for rel in _COMMAND_LAYER_OUT if rel in rels]
+    assert not leaked, (
+        f"command-orchestration files leaked into the lowering scope "
+        f"(every landing edits these -> chronic cold-start): {leaked}"
+    )
+
+    dropped = [rel for rel in _LOWERING_RELEVANT_IN if rel not in rels]
+    assert not dropped, (
+        f"lowering-relevant files fell OUT of scope -> stale-lowering risk (M35): "
+        f"{dropped}"
+    )
+
+
+def _build_leak_tree(root: Path) -> Path:
+    """Fake ``src/molt`` where a frontend driver imports a cli submodule via the
+    package and ``cli/__init__`` module-level-imports a command-only module."""
+    molt = root / "src" / "molt"
+    cli = molt / "cli"
+    # A ``frontend_*`` seed importing a sibling submodule *through the package* --
+    # the exact edge that used to drag ``cli/__init__``'s command surface in.
+    _write(cli / "frontend_pipeline.py", "from molt.cli import frontend_execution as _fe\nMARKER = 1\n")
+    _write(cli / "frontend_execution.py", "MARKER = 1\n")
+    # cli/__init__ eagerly imports a command-only orchestration module.
+    _write(cli / "__init__.py", "from molt.cli.orchestration_only import run as _run\nMARKER = 1\n")
+    _write(cli / "orchestration_only.py", "def run():\n    return 1\n")
+    _write(molt / "frontend" / "__init__.py", "MARKER = 1\n")
+    for rel in _AUX_FILES:
+        _write(molt / rel, "MARKER = 1\n")
+    return molt
+
+
+def test_cli_package_init_command_layer_leak_is_cut(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Direction 1 (orchestration edit -> cache HIT): importing a cli submodule via
+    the package no longer pulls ``cli/__init__`` or its command-only imports into
+    the scope, so editing such a file leaves the scoped fingerprint byte-identical
+    (the persisted lowering is reused). The broad fingerprint still moves, proving
+    the edit really did land under ``cli/`` (teeth)."""
+    molt = _build_leak_tree(tmp_path)
+    monkeypatch.setattr(CF, "_compiler_root", lambda: tmp_path)
+    CF._frontend_tooling_source_paths_cached.cache_clear()
+    CF._lowering_scope_source_files_cached.cache_clear()
+    CF._SOURCE_TREE_CONTENT_DIGEST_CACHE.clear()
+
+    molt_root = (tmp_path / "src" / "molt").resolve()
+    reached = {
+        Path(p).resolve().relative_to(molt_root).as_posix()
+        for p in CF._lowering_scope_source_files_cached(str(tmp_path))
+    }
+    assert "cli/frontend_execution.py" in reached  # the named submodule is in scope
+    assert "cli/__init__.py" not in reached  # the package aggregate is NOT dragged
+    assert "cli/orchestration_only.py" not in reached  # nor its command-only import
+
+    scoped_before = CF._frontend_semantic_tooling_fingerprint()
+    broad_before = CF._cache_tooling_fingerprint()
+
+    (molt / "cli" / "orchestration_only.py").write_text(
+        "def run():\n    return 999\n", encoding="utf-8"
+    )
+    CF._SOURCE_TREE_CONTENT_DIGEST_CACHE.clear()
+
+    scoped_after = CF._frontend_semantic_tooling_fingerprint()
+    broad_after = CF._cache_tooling_fingerprint()
+
+    assert scoped_after == scoped_before, (
+        "editing a command-only cli module changed the lowering fingerprint -> "
+        "the leak is not cut and numpy's cache would cold-start"
+    )
+    assert broad_after != broad_before, (
+        "broad fingerprint did not move -> the test edit did not land, no teeth"
+    )
+
+
+def _build_analysis_tree(root: Path) -> Path:
+    """Fake ``src/molt`` with a ``compiler_analysis`` package and the aux files."""
+    molt = root / "src" / "molt"
+    _write(molt / "frontend" / "__init__.py", "MARKER = 1\n")
+    _write(molt / "cli" / "frontend_pipeline.py", "MARKER = 1\n")
+    _write(
+        molt / "compiler_analysis" / "__init__.py",
+        "from molt.compiler_analysis.backend_ir import thing\nMARKER = 1\n",
+    )
+    _write(molt / "compiler_analysis" / "backend_ir.py", "thing = 1\n")
+    for rel in _AUX_FILES:
+        _write(molt / rel, "MARKER = 1\n")
+    return molt
+
+
+@pytest.mark.parametrize(
+    "edit_relpath",
+    ["compiler_analysis/backend_ir.py", "_intrinsic_symbols.py"],
+)
+def test_kept_analysis_and_intrinsic_edits_still_invalidate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, edit_relpath: str
+) -> None:
+    """Direction 2 (lowering-relevant edit -> cache MISS): the kept
+    ``compiler_analysis`` IR/TIR package and the force-included generated intrinsic
+    table are genuinely in scope -- editing either moves the scoped fingerprint, so
+    a real semantic change invalidates the persisted lowering rather than silently
+    reusing a stale one (M35)."""
+    molt = _build_analysis_tree(tmp_path)
+    monkeypatch.setattr(CF, "_compiler_root", lambda: tmp_path)
+    CF._frontend_tooling_source_paths_cached.cache_clear()
+    CF._lowering_scope_source_files_cached.cache_clear()
+    CF._SOURCE_TREE_CONTENT_DIGEST_CACHE.clear()
+
+    molt_root = (tmp_path / "src" / "molt").resolve()
+    reached = {
+        Path(p).resolve().relative_to(molt_root).as_posix()
+        for p in CF._lowering_scope_source_files_cached(str(tmp_path))
+    }
+    assert "compiler_analysis/backend_ir.py" in reached  # analysis package seeded
+
+    scoped_before = CF._frontend_semantic_tooling_fingerprint()
+    target = molt / Path(edit_relpath)
+    target.write_text("thing = 2\nMARKER = 2\n", encoding="utf-8")
+    CF._lowering_scope_source_files_cached.cache_clear()
+    CF._SOURCE_TREE_CONTENT_DIGEST_CACHE.clear()
+    scoped_after = CF._frontend_semantic_tooling_fingerprint()
+
+    assert scoped_after != scoped_before, (
+        f"editing kept lowering-relevant file {edit_relpath!r} did NOT invalidate "
+        f"the scoped fingerprint -> stale-lowering risk"
+    )
