@@ -351,6 +351,7 @@ fn format_applies_width_precision_and_hex() {
 }
 
 #[test]
+#[allow(clippy::approx_constant)] // 3.14159 deliberately exercises %.2f truncation, not math::PI
 fn format_float_conversions() {
     install();
     let fmt = unsafe { str_obj("%.2f|%e|%g") };
