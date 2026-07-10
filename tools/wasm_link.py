@@ -1148,63 +1148,6 @@ def _resolve_native_link_inputs(native_objects: Sequence[Path]) -> tuple[Path, .
     )
 
 
-def _native_inputs_link_wasi_libc(native_inputs: Sequence[Path]) -> bool:
-    """Whether the app static link pulls in wasi-libc's ``libc.a``.
-
-    numpy/scipy static extensions are linked with wasi-libc's ``libc.a`` (added
-    by the build's ``needs_wasm_libc_link`` path), whose default ``%L`` printf/
-    scanf path is the ``long_double_not_supported`` abort() stub -> raw
-    ``unreachable`` trap.
-    """
-    return any(path.name == "libc.a" for path in native_inputs)
-
-
-def _native_link_wasm_ld_args(native_inputs: Sequence[Path]) -> list[str]:
-    """wasm-ld args for the app-side native inputs, overriding the ``%L`` stub.
-
-    When the app link pulls in wasi-libc's ``libc.a`` (numpy/scipy tier), the
-    default ``libc.a`` links a ``long_double_not_supported`` stub for the ``%L``
-    (long double) printf/scanf conversions that ``abort()``s (raw ``unreachable``
-    trap) — reached by numpy's longdouble repr/parse in the APP module (numpy is
-    statically linked into ``app.wasm``, so it hits app.wasm's own libc, NOT the
-    reloc runtime's whole-archived formatters). Mirror the reloc-runtime link:
-    whole-archive wasi-libc's companion ``libc-printscan-long-double.a`` ahead of
-    ``libc.a`` so its real vfprintf/vfscanf/strtod/floatscan override the stub
-    objects, and append wasi-sdk's ``libclang_rt.builtins-wasm32.a`` so the
-    binary128 soft-float the formatters call (``__addtf3``/``__multf3``/…) — and
-    numpy's own longdouble arithmetic — resolve. Both archives are durably
-    resolvable (``vendor/wasm-builtins`` fallback), so this is present-by-
-    construction. Non-numpy builds (no ``libc.a``) are unaffected.
-    """
-    inputs = list(native_inputs)
-    if not _native_inputs_link_wasi_libc(inputs):
-        return [str(path) for path in inputs]
-    longdouble = wasm_toolchain.wasm_wasi_printscan_long_double_archive()
-    builtins = wasm_toolchain.wasm_clang_rt_builtins_archive()
-    if longdouble is None:
-        # FAIL LOUD (no silent degrade): a numpy-tier app link without the
-        # long-double formatters would relink the abort() stub and trap at
-        # import — never build that. The reloc-runtime gate normally catches this
-        # first; this is the app-link chokepoint.
-        raise ValueError(
-            "app static link pulls wasi-libc libc.a (numpy/scipy tier) but "
-            "libc-printscan-long-double.a is not resolvable; the %L printf path "
-            "would abort() (unreachable) at import. Provision the archive "
-            "(ships in wasi-sysroot-33.0+m; also vendored at vendor/wasm-builtins)."
-        )
-    args: list[str] = [
-        "--whole-archive",
-        str(longdouble.resolve(strict=False)),
-        "--no-whole-archive",
-        *(str(path) for path in inputs),
-    ]
-    if builtins is not None and not any(
-        path.name == builtins.name for path in inputs
-    ):
-        args.append(str(builtins.resolve(strict=False)))
-    return args
-
-
 def _read_const_i32_init_expr(data: bytes, offset: int) -> tuple[int, int]:
     if offset >= len(data):
         raise ValueError("Unexpected EOF while reading data offset expression")
@@ -2529,11 +2472,7 @@ def _run_wasm_ld(
         str(linked_rewritten_path),
         str(link_runtime_path),
     ]
-    try:
-        cmd.extend(_native_link_wasm_ld_args(linked_native_inputs))
-    except ValueError as exc:
-        print(f"WASM native link failed: {exc}", file=sys.stderr)
-        return 1
+    cmd.extend(str(native_object) for native_object in linked_native_inputs)
 
     split_native_app_path: Path | None = None
     split_native_app_cmd: list[str] | None = None
@@ -2588,11 +2527,6 @@ def _run_wasm_ld(
             else part
             for part in cmd[: cmd.index("-o")]
         ]
-        try:
-            split_native_app_args = _native_link_wasm_ld_args(split_native_inputs)
-        except ValueError as exc:
-            print(f"WASM native link failed: {exc}", file=sys.stderr)
-            return 1
         split_native_app_cmd = [
             *split_native_prefix,
             "--import-memory",
@@ -2601,7 +2535,7 @@ def _run_wasm_ld(
             "-o",
             str(split_native_app_path),
             str(rewritten_path),
-            *split_native_app_args,
+            *(str(native_object) for native_object in split_native_inputs),
         ]
 
     res = _run_external_tool(cmd, capture_output=True, text=True)
