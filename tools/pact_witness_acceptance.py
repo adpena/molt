@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,9 +24,25 @@ _STATIC_LINK_EXEC_FAILURE_RE = re.compile(
 )
 
 
+def _phase_label(args: list[str]) -> str:
+    """Short human label for a subprocess phase (doctrine 74 law 4: attested walls)."""
+    for token in args:
+        name = Path(token).name.lower()
+        if name.endswith((".py", ".js")):
+            return name
+    return Path(args[0]).name if args else "?"
+
+
 def _run(args: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> None:
     print(f"+ {' '.join(args)}", flush=True)
-    subprocess.run(args, cwd=cwd, env=env, check=True)
+    started = time.perf_counter()
+    try:
+        subprocess.run(args, cwd=cwd, env=env, check=True)
+    finally:
+        print(
+            f"[wall] {_phase_label(args)}: {time.perf_counter() - started:.1f}s",
+            flush=True,
+        )
 
 
 def _run_capture(
@@ -35,6 +52,7 @@ def _run_capture(
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     print(f"+ {' '.join(args)}", flush=True)
+    started = time.perf_counter()
     result = subprocess.run(
         args,
         cwd=cwd,
@@ -45,6 +63,10 @@ def _run_capture(
         encoding="utf-8",
         errors="replace",
         check=False,
+    )
+    print(
+        f"[wall] {_phase_label(args)}: {time.perf_counter() - started:.1f}s rc={result.returncode}",
+        flush=True,
     )
     if result.stdout:
         print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
