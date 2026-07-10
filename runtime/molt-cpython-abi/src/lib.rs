@@ -113,6 +113,11 @@ pub mod hooks;
 #[cfg(all(feature = "extension-loader", not(target_arch = "wasm32")))]
 pub mod loader;
 
+// Profiling + allocation-budget gate for the Py_buffer export hot path.
+// Test-only: never compiled into the shipped cdylib/rlib.
+#[cfg(test)]
+mod buffer_export_bench;
+
 pub use abi_types::{Py_ssize_t, PyObject, PyTypeObject};
 pub use bridge::{AbiHandle, ObjectBridge};
 pub use hooks::{
