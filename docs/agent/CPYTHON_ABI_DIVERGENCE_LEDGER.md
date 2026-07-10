@@ -64,7 +64,7 @@ divergences most likely to be the *next* thing that breaks the numpy witness.
 | 3 | ~~`PyDict_Next`~~ **FIXED** (§1b, `8481c83524`+`e47205c64f`) | `mapping.rs:456` | Type-dict / module-dict / kwargs walks always observe an EMPTY dict and leave a stray pending RuntimeError -- exactly the traversal numpy runs during import/type init. (Bites under the cpython-abi tier; the default source-compat header has a correct inline.) |
 | 4 | ~~`PyDict_Merge`~~ **FIXED** (§1b, `8481c83524`+`e47205c64f`) | `mapping.rs:187` | __dict__ / namespace population hard-fails RuntimeError on any non-empty merge (PyDict_Update delegates here); blocks numpy module/type init. Fails loud, so easier to spot but stops import cold. |
 | 5 | `PyObject_IsTrue` | `object.rs:796` | Truthiness of every empty container and all foreign objects is wrong (bool([])==1, `if arr:` never dispatches numpy nb_bool); pervasive always-on primitive on the import+compute surface. |
-| 6 | `PyObject_Str` | `typeobj.rs:1916` | str()/repr() of every object returns the literal '<molt object>' (zero-dispatch stub); also backs %S PyErr_Format / PyUnicode_FromFormat, so error messages and dtype/array string paths are all corrupted. |
+| 6 | ~~`PyObject_Str`~~ **FIXED** (§1d, `bdbe2a399f`+`f54e4d996f`) | `typeobj.rs:1916` | str()/repr() of every object returns the literal '<molt object>' (zero-dispatch stub); also backs %S PyErr_Format / PyUnicode_FromFormat, so error messages and dtype/array string paths are all corrupted. |
 | 7 | `PyLong_AsSsize_t` | `numbers.rs:486` | Primary shape/stride/index conversion returns a silent -1 (numpy's reshape 'infer' sentinel) for non-int/foreign scalars and truncates >2^31 on wasm32 -- silent wrong shapes on array construction/reshape/indexing/buffer. |
 | 8 | `PyLong_AsLong` | `numbers.rs:424` | long conversion truncates >2^31 on wasm32/Windows, never dispatches __index__, and returns a silent -1 with no exception -- C callers using the `x==-1 && PyErr_Occurred()` idiom treat the sentinel as a valid value. |
 | 9 | ~~`PyList_SetItem`~~ **FIXED** (§1b, `e47205c64f`) | `sequences.rs:133` | Silently drops foreign (numpy scalar/array) items and mis-places/duplicates entries while reporting success 0 on list-building compute paths; in-order fill of bridge objects happens to work, bounding but not removing the corruption. |
@@ -139,12 +139,96 @@ LOUD (OverflowError), never a fabricated value, when it is absent (stub hooks).
 
 ---
 
+## 1d. Landed fixes — lane F4 (`typeobj.rs` / `strings.rs` / small files)
+
+**All 63 ledger rows across `typeobj.rs` (10), `strings.rs` (19), `buffer.rs` (6),
+`capsule.rs` (2), `contextvars.rs` (6), `datetime.rs` (7), `imports.rs` (4),
+`memory.rs` (8), `weakref.rs` (1) are closed except one deliberately-deferred Low row**
+(2026-07-10, branch `lane-f4-cpython-abi`, landed on origin/main at `f54e4d996f` +
+`7ba8c61384`, rebased twice onto a moving `origin/main` — 19 then 13 more commits,
+incl. the `a98ef2978e` wasm32-alignment class and Lane F1's full `errors.rs`/
+`numbers.rs`/`slice.rs` closure — with zero conflicts). Verified against CPython 3.12
+primary sources (`Objects/object.c`, `unicodeobject.c`, `typeobject.c`, `listobject.c`,
+`tupleobject.c`, `abstract.c`, `capsule.c`, `context.c`, `_datetimemodule.c`,
+`structmember.c`). Teeth: `tests/test_stringification.rs`, `tests/test_f4_small_files.rs`
+(40 cases), `tests/test_typeobj_semantics.rs`, updated `test_object_protocol.rs`.
+
+| Slice | Rows |
+|---|---|
+| Stringification (`typeobj.rs`) | **[H]† `PyObject_Str` :1916** (top-10 #6) + [THEATER] `PyObject_Repr` :1911 — real `tp_str`/`tp_repr` slot dispatch with CPython's exact-str/tp_str-null-falls-back-to-repr/`<%s object at %p>` chain; [M]† `PyObject_RichCompare` :1920 / `PyObject_RichCompareBool` :1971 — reflected (subtype-priority) dispatch, NULL-propagates-as-error, both-NotImplemented identity/TypeError resolution, `IsTrue`-routed non-bool results; [L] `PyObject_Hash` :1749 (unhashable TypeError, never a pointer-derived hash); [M] `PyType_Check` :1122 / `PyType_IsSubtype` :1763 (tp_mro walk, multiple-inheritance) / [L] `PyType_GetName` :1790 (dotted-prefix strip); [M] `PyType_GenericNew` :706 (dispatches the type's own `tp_alloc`); [STUB] `PyMember_SetOne` :1629 (real numeric/char/bool member-write conversions) |
+| Unicode/bytes codecs (`strings.rs`) | [M] `PyUnicode_Tailmatch` :701 (code-point windowing) / `FromEncodedObject` :1011 (str-rejects, bytes-decodes-with-requested-encoding) + [L] `Replace` :724 (code-point-safe empty-needle) / `Decode` :991 (encoding dispatch); [M] `AsASCIIString` :543 / `AsLatin1String` :554 / `AsUTF8AndSize` :565 / `GetLength` :582 / `AsUCS4` :630 / `Compare` :690 / `PyBytes_AsStringAndSize` :798 / `PyBytes_Size` :882 / `Contains` :934 / `AsEncodedString` :1035 / `Format` :1126 (full width/precision/conversion-set/mapping-key printf engine, writer pattern) + [L, THEATER] `DecodeUTF8` :1002 (real UTF-8 validation) — every one of these now sets the CPython-shaped exception before its `-1`/`NULL` sentinel; [STUB] `Join` :924 (real writer-pattern concatenation, TypeError on non-str item) + [THEATER] `AsUTF8` :514 (type-checked, never a fabricated `""`). **Deferred**: [STUB] `PyUnicode_New` :358 — see below |
+| Buffer protocol (`buffer.rs`) | [M]† `PyObject_GetBuffer` :396 / `PyBuffer_Release` :445 / `PyObject_CheckBuffer` :468 — wakes the dead `bf_getbuffer`/`bf_releasebuffer` slots (foreign C-extension buffer export, e.g. `PyArray_Type`) + side-effect-free `CheckBuffer`; [L] `PyBuffer_IsContiguous` :488 (suboffsets/zero-len short-circuit) / `copy_pybuffer_for_memoryview` :547 (preserves arbitrary strides — Fortran order, sliced exporters — not just C-contiguous) / `PyBuffer_FillInfo` :511 (BufferError on NULL view, CPython's permissive len/buf contract). Honest residual: suboffset (PIL-style) buffers still fail closed with `BufferError` — `MoltBufferView` has no suboffsets field; a real fix needs a runtime descriptor extension |
+| Capsules (`capsule.rs`) | [L] `PyCapsule_IsValid` :159 (NULL-pointer capsule is invalid) / `PyCapsule_Import` :233 (real dotted-name import/getattr walk + `IsValid` validation, not a same-process registry that misses lazy-init capsules) |
+| Context variables (`contextvars.rs`) | [M] `PyContextVar_Set` :53 (per-context binding map, not a mutable field — no cross-context leak) / `PyContextVar_Get` :79 (caller `default_value` beats the var's own default) / :87 (no-value/no-default is `*value=NULL` + success 0, never `LookupError`); [L] `PyContextVar_New` :30 (no invented empty-name restriction) / `PyContextVar_Get` :104 (non-exact type is TypeError, no duck-typing); [THEATER] `PyContextVar_Set` :183 (real `PyContextToken` object + working `PyContextVar_Reset`, not a fabricated value/None) |
+| Datetime (`datetime.rs`) | [M] `molt_cpython_abi_delta_from_delta` :208 (real `normalize_d_s_us` carry + `MAX_DELTA_DAYS` OverflowError); [L] `date_from_date`/`valid_date` :12 (leap-aware `days_in_month`) / `datetime_from_date_and_time_and_fold` :78 (tzinfo subtype-check + fold∈{0,1}) / `molt_datetime_dealloc` :264 (subtype walk via `PyObject_TypeCheck`, not exact-type — subclass tzinfo no longer leaks); [STUB] `timezone_from_timezone` :230 (real ±24h-validated construction + UTC-singleton reuse) / `datetime_from_timestamp` :239 / `date_from_timestamp` :249 (real POSIX-timestamp decomposition, Howard Hinnant civil-from-days + round-half-even microseconds) |
+| Imports (`imports.rs`) | [M] `import_module_bytes` :49 (mirrors the runtime's pending import failure into the ABI exception state); [STUB] `PyImport_AddModule` :74 (real create-or-get in `sys.modules`) / `import_module_level_bytes` :92 (real relative-import resolution — CPython's `resolve_name` ported against the `globals` `__package__`/`__name__`/`__path__` triad every call site already receives); [THEATER] `PyImport_GetModuleDict` :80 (backed by the real `sys.modules`, not a detached empty dict) |
+| Memory/GC (`memory.rs`) | [M] `PyObject_Init` :113 / `PyObject_InitVar` :129 (heap-type `Py_INCREF` — the missing incref that underflows a type's refcount into use-after-free); [L] `PyMem_Realloc` :21 (0-size never frees/returns NULL) / `PyMemoryView_FromObject` :309 (real distinct memoryview via `CHECK_RELEASED`, not identity-alias) / `PyObject_CallFinalizerFromDealloc` :178 (resurrection detection aborts the free) / `PyObject_Init` :110 + `_PyObject_New` :138 (every NULL carries `MemoryError`); [STUB] `Py_EnterRecursiveCall` :204 (real C-recursion-depth guard + `RecursionError`, `C_RECURSION_LIMIT`=800 per `pycore_ceval.h`) |
+| Weakrefs (`weakref.rs`) | [THEATER] `PyWeakref_GetObject` :13 — fails loud (`PyErr_BadInternalCall`) for every argument instead of fabricating a `Py_None` referent; honest until a real weakref object model exists |
+
+**Bugs found (not ledger rows) while independently re-verifying the above** — the
+predecessor's WIP had already implemented nearly all of the table above faithfully;
+re-auditing every row against the current code + re-running the mask-proof suite
+surfaced:
+1. **P0 self-deadlock**, `buffer.rs` `PyObject_GetBuffer` — `match GLOBAL_BRIDGE.lock()
+   .pyobj_to_handle(obj) { None => { ...; PyErr_SetString(...) } }` keeps the
+   `MutexGuard` alive for the whole `match` (Rust temporary-lifetime-extension), so the
+   common "not a bytes-like object" TypeError path locked the non-reentrant
+   `parking_lot::Mutex` twice and hung the calling thread forever (11/40
+   `test_f4_small_files` tests hung >60s pre-fix). **Same bug class Lane F1
+   independently found+fixed** in `PyErr_GivenExceptionMatches`'s tuple path (§1c) —
+   worth a dedicated cross-file sweep for this exact `match <lock>() { None => { ...
+   nested-lock-call... } }` shape.
+2. `typeobj.rs` `PyMember_SetOne` — the `T_DOUBLE`/`T_LONGLONG`/`T_ULONGLONG` *write*
+   paths were still aligned stores even though `a98ef2978e` fixed the *read* side
+   (`PyMember_GetOne`) for the identical fields. Switched to `write_unaligned`.
+3. `strings.rs` `PyUnicode_Format`'s `percent_int_arg` fell through to `numbers.rs`'s
+   `PyLong_AsLongLong` (a different lane's file) for a NATIVE object already
+   positively classified as non-numeric, and that converter's non-int path is a
+   silent `-1`-with-no-exception sentinel — so `"%d" % "nope"` silently formatted as
+   `-1` instead of raising `TypeError`. Fixed by raising directly once native
+   classification proves non-numeric (the genuinely-ambiguous foreign-object
+   fallback is untouched, to avoid rejecting a real foreign `-1`).
+4. `strings.rs` `PyUnicode_Join` iterated via the generic `PySequence_Size`/`GetItem`
+   protocol, which cannot see the ABI's own native `PyTuple_New`/`PyList` layout at
+   all (never bridge-registered; `PyTuple_Type`/`PyList_Type` carry no
+   `tp_as_sequence`). Fixed by fast-pathing exact list/tuple through
+   `PyTuple_Size`/`GetItem` + `PyList_Size`/`GetItem` first (mirrors CPython's own
+   `PySequence_Fast`).
+5. `eval.rs` `PyEval_GetBuiltins` (not itself a ledger row — `eval.rs` wasn't in the
+   original audited file set, but owned by this lane) — the identical detached-empty-
+   `PyDict` THEATER shape already fixed for `PyImport_GetModuleDict`. Now backed by
+   `PyImport_ImportModule("builtins")` + `PyModule_GetDict`.
+6. `weakref.rs` `PyWeakref_GetObject` tripped a false-positive on the
+   `fail_open_stub` poison gate (its `let _ = ref_obj;` idiom literally matches the
+   class docstring's example) even though the function always fails closed;
+   unflagged by renaming the parameter to `_ref_obj` rather than registering
+   non-existent debt.
+
+**Deliberately deferred**: `strings.rs` `PyUnicode_New` :358 (STUB, Low, not on
+numpy's imported surface) fabricates a fixed-width space-filled buffer and
+`PyUnicode_WRITE` is a no-op macro in `include/Python.h`. CPython's real contract —
+a mutable 1/2/4-byte-per-codepoint buffer selected by `maxchar`, written in place via
+`PyUnicode_WRITE` — cannot be safely retrofitted onto Molt's UTF-8-backed string
+representation without a first-class mutable kind-aware scratch-buffer object plus a
+materialize-on-first-read design: naively exposing `PyUnicode_DATA` as a direct
+writable pointer into the final UTF-8 buffer would let a caller write a raw Latin-1/
+UCS2/UCS4 byte >0x7F that is invalid UTF-8 on its own, corrupting every other string
+op that assumes the runtime's str invariant. A shallow fix here risks shipping a new,
+worse corruption bug than the current honestly-labeled stub; flagged for follow-up
+rather than shipped.
+
+---
+
 ## 2. Findings by classification
 
 Within each table: **High → Low**, then numpy-imported first. Sev/np/† tags precede the
 function name (see legend). **Lane-F2 rows (mapping.rs / sequences.rs /
-abstract_mapping.rs / abstract_sequence.rs) are all FIXED — see §1b; their table rows
-below describe the PRE-FIX behavior for the historical record.**
+abstract_mapping.rs / abstract_sequence.rs) are all FIXED — see §1b; Lane-F1 rows
+(errors.rs / numbers.rs / slice.rs) are all FIXED — see §1c; Lane-F4 rows (typeobj.rs /
+strings.rs / buffer.rs / capsule.rs / contextvars.rs / datetime.rs / imports.rs /
+memory.rs / weakref.rs) are all FIXED except one deliberately-deferred row
+(PyUnicode_New) — see §1d; Lane-F3 rows (object.rs) are all FIXED — see §2.5. Their
+table rows below describe the PRE-FIX behavior for the historical record.**
 
 ### MISSING_DISPATCH  —  28
 
