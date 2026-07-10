@@ -77,6 +77,7 @@ pub unsafe extern "C" fn PyType_Ready(tp: *mut PyTypeObject) -> c_int {
             crate::bridge::GLOBAL_BRIDGE
                 .lock()
                 .register_raw_pyobj(tp.cast::<PyObject>());
+            install_metatype_getattro(tp);
         }
         return 0;
     }
@@ -172,6 +173,7 @@ pub unsafe extern "C" fn PyType_Ready(tp: *mut PyTypeObject) -> c_int {
         crate::bridge::GLOBAL_BRIDGE
             .lock()
             .register_raw_pyobj(tp.cast::<PyObject>());
+        install_metatype_getattro(tp);
     }
     0
 }
@@ -1561,6 +1563,102 @@ pub unsafe extern "C" fn PyType_GetName(tp: *mut PyTypeObject) -> *mut PyObject 
         return ptr::null_mut();
     }
     unsafe { crate::api::strings::PyUnicode_FromString(name_ptr) }
+}
+
+/// Read a `str` attribute-name `PyObject` into an owned `String`, or `None`.
+fn attr_name_utf8(name: *mut PyObject) -> Option<String> {
+    let mut size: Py_ssize_t = 0;
+    let ptr = unsafe { crate::api::strings::PyUnicode_AsUTF8AndSize(name, &raw mut size) };
+    if ptr.is_null() || size < 0 {
+        return None;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, size as usize) };
+    std::str::from_utf8(bytes).ok().map(|s| s.to_string())
+}
+
+/// `tp_getattro` for `PyType_Type` — inherited by every metaclass that leaves
+/// its own slot null (numpy's `_DTypeMeta`, whose `tp_base` is `type`). CPython
+/// exposes `type.__name__` / `type.__qualname__` as getset descriptors in
+/// `type`'s dict, backed by the `PyTypeObject` fields; our static `PyType_Type`
+/// carries no populated dict, so those well-known attributes are answered here
+/// straight from `tp_name` — exactly what CPython's getters read. This is not a
+/// per-attribute fake: it is the genuine `type` attribute semantics, and it lets
+/// `DType.__name__` inside numpy's `numpy.dtypes._add_dtype_helper` resolve once
+/// the DType crosses into Molt as a foreign wrapper. Every other attribute
+/// delegates to generic resolution (the type's own dict + MRO, populated by
+/// `PyType_Ready` from `tp_methods`/`tp_getset`, e.g. numpy's `_abstract`).
+unsafe extern "C" fn type_getattro(o: *mut PyObject, name: *mut PyObject) -> *mut PyObject {
+    if o.is_null() || name.is_null() {
+        return ptr::null_mut();
+    }
+    if let Some(attr) = attr_name_utf8(name) {
+        // `__name__` / `__qualname__` are data descriptors on the metatype in
+        // CPython, so they take priority over the type's own dict. Resolve them
+        // from `tp_name`, stripping any module/qualifier prefix (the part up to
+        // and including the last '.') — exactly what CPython's `type.__name__`
+        // getter does, so numpy's dotted `numpy.dtypes.BoolDType` reports
+        // `BoolDType` (the key `_add_dtype_helper` stores in `numpy.dtypes`).
+        if attr == "__name__" || attr == "__qualname__" {
+            let tp = o.cast::<PyTypeObject>();
+            let name_ptr = unsafe { (*tp).tp_name };
+            if !name_ptr.is_null() {
+                let bytes = unsafe { std::ffi::CStr::from_ptr(name_ptr) }.to_bytes();
+                let short = match bytes.iter().rposition(|&b| b == b'.') {
+                    Some(dot) => &bytes[dot + 1..],
+                    None => bytes,
+                };
+                return unsafe {
+                    crate::api::strings::PyUnicode_FromStringAndSize(
+                        short.as_ptr().cast::<std::os::raw::c_char>(),
+                        short.len() as Py_ssize_t,
+                    )
+                };
+            }
+        }
+    }
+    unsafe { crate::api::object::PyObject_GenericGetAttr(o, name) }
+}
+
+/// Install `type_getattro` on `PyType_Type` so metaclasses inherit it. Called
+/// from `init_static_types` after the static type table is zero-initialized.
+///
+/// # Safety
+/// Must be called during single-threaded ABI initialization.
+pub unsafe fn init_type_getattro() {
+    unsafe {
+        crate::abi_types::PyType_Type.tp_getattro = Some(type_getattro);
+    }
+}
+
+
+/// Ensure the *metatype* of a just-readied type `tp` carries a `tp_getattro`.
+///
+/// In CPython every metaclass inherits `type.__getattribute__` (our
+/// `type_getattro`) from `type`; a static extension's metaclass (numpy's
+/// `_DTypeMeta`) should get it when `PyType_Ready` runs. But in the
+/// split-runtime the extension's `&PyType_Type` can retarget to a copy of
+/// `type` that never received our `type_getattro`, so `inherit_slots` copies a
+/// null slot and the metaclass is left with no getattro — making
+/// `DType.__name__` (numpy's `numpy.dtypes._add_dtype_helper`) fail to resolve.
+/// `tp`'s metatype is the object that answers attribute access for `tp` and
+/// every sibling instance of that metaclass, so installing our `type_getattro`
+/// here (only when the slot is null — never overriding a metatype's own) makes
+/// `Type.__name__` / `__qualname__` resolve for every type of that metaclass,
+/// from Molt (via foreign-object custody) and from C alike.
+///
+/// # Safety
+/// `tp` must be a readied `PyTypeObject` (its `ob_type` is set).
+pub(crate) unsafe fn install_metatype_getattro(tp: *mut PyTypeObject) {
+    if tp.is_null() {
+        return;
+    }
+    let metatype = unsafe { (*tp).ob_base.ob_base.ob_type };
+    if metatype.is_null() || std::ptr::eq(metatype, tp) {
+        return;
+    }
+    if unsafe { (*metatype).tp_getattro }.is_none() {
+        unsafe { (*metatype).tp_getattro = Some(type_getattro) };
+    }
 }
 
 #[unsafe(no_mangle)]

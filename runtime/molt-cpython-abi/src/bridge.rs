@@ -73,6 +73,14 @@ pub struct ObjectBridge {
     /// CPython raw pointer (usize) → handle
     from_py: HashMap<usize, AbiHandle>,
     next_raw_handle: AbiHandle,
+    /// Genuine C-extension object pointer (usize) → its `TYPE_ID_FOREIGN` Molt
+    /// wrapper handle bits. Populated lazily by [`ObjectBridge::molt_value_for_pyobj`]
+    /// when a C object crosses *into* compiled Python; the wrapper's handle bits
+    /// are also entered into `raw_py` so a wrapper handed back to C round-trips
+    /// (via [`ObjectBridge::handle_to_pyobj`]) to the original C pointer. One
+    /// entry ⇒ one strong reference the wrapper holds on the C object, released
+    /// by `molt_foreign_object_release` at wrapper drop.
+    foreign: HashMap<usize, AbiHandle>,
 }
 
 /// SIMD tag→type lookup table.
@@ -228,6 +236,7 @@ impl ObjectBridge {
             raw_py: HashMap::new(),
             from_py: HashMap::new(),
             next_raw_handle: 0xA11C_0000_0000_0000,
+            foreign: HashMap::new(),
         }
     }
 
@@ -345,6 +354,87 @@ impl ObjectBridge {
             return None;
         }
         Some(bits)
+    }
+
+    /// Translate a `*mut PyObject` to a Molt value usable *inside* compiled
+    /// Python — the crossing converter for C-extension objects flowing INTO
+    /// Molt (call arguments, attribute/call results). Unlike
+    /// [`Self::pyobj_to_handle`] (identity only) and
+    /// [`Self::molt_handle_for_pyobj`] (genuine Molt handles only), this mints a
+    /// first-class `TYPE_ID_FOREIGN` wrapper for a genuine C-extension object so
+    /// its attribute access / calls resolve through the object's own type slots.
+    ///
+    /// The returned handle is an *owned* reference (the caller owns one Molt
+    /// reference): a singleton (immortal), a genuine Molt handle
+    /// (`inc_ref`-ed), or a foreign wrapper (fresh at refcount 1, or `inc_ref`-ed
+    /// on a cache hit). Returns `None` only when the wrapper cannot be minted
+    /// (runtime hooks not yet installed) — callers must then fail loud.
+    ///
+    /// # Safety
+    /// `ptr` must be null, a static singleton, a bridge-managed pointer, or a
+    /// live C-extension `PyObject*`.
+    pub unsafe fn molt_value_for_pyobj(&mut self, ptr: *mut PyObject) -> Option<u64> {
+        if ptr.is_null() {
+            return None;
+        }
+        if let Some(bits) = pyobj_to_handle_static(ptr) {
+            // Singletons are immortal; no reference to take.
+            return Some(bits);
+        }
+        // A genuine Molt object that previously crossed to C is a bridge proxy;
+        // resolve it to its real Molt handle and hand the caller an owned ref.
+        if let Some(bits) = self.molt_handle_for_pyobj(ptr) {
+            let h = crate::hooks::hooks_or_stubs();
+            unsafe { (h.inc_ref)(bits) };
+            return Some(bits);
+        }
+        // Otherwise this is a genuine C-extension object (a raw-registered
+        // identity anchor, or one not yet seen): give it a first-class foreign
+        // wrapper the runtime can getattr/setattr/call through.
+        unsafe { self.foreign_wrapper_for(ptr) }
+    }
+
+    /// Mint (or reuse) the `TYPE_ID_FOREIGN` wrapper for a genuine C-extension
+    /// object `ptr`, returning an owned reference to it. On first mint the
+    /// wrapper takes ONE strong reference on the C object (`Py_INCREF`), released
+    /// by `molt_foreign_object_release` when the wrapper is dropped.
+    ///
+    /// # Safety
+    /// `ptr` must be a live C-extension `PyObject*`.
+    unsafe fn foreign_wrapper_for(&mut self, ptr: *mut PyObject) -> Option<u64> {
+        let key = ptr as usize;
+        let h = crate::hooks::hooks_or_stubs();
+        if let Some(&w) = self.foreign.get(&key) {
+            // Cache hit: hand the caller its own reference to the live wrapper.
+            unsafe { (h.inc_ref)(w) };
+            return Some(w);
+        }
+        let w = unsafe { (h.foreign_new)(key) };
+        if w == 0 {
+            // Runtime hooks not installed (pre-init / pure-ABI tests): cannot
+            // mint a wrapper. Fail loud rather than fabricate a handle.
+            return None;
+        }
+        // Strong-ref custody: the wrapper holds one reference on the C object for
+        // its lifetime; `molt_foreign_object_release` balances it at drop.
+        unsafe { crate::api::refcount::Py_INCREF(ptr) };
+        self.foreign.insert(key, w);
+        // Round-trip: a wrapper handed back to C resolves to the original C
+        // pointer via `handle_to_pyobj`'s `raw_py` lookup.
+        self.raw_py.insert(w, key);
+        Some(w)
+    }
+
+    /// Release the foreign wrapper identity for the C object at `c_ptr`: drop the
+    /// `foreign` / `raw_py` entries and `Py_DECREF` the strong reference the
+    /// wrapper held. Called by the runtime's `TYPE_ID_FOREIGN` drop hook.
+    ///
+    /// # Safety
+    /// `c_ptr` must be the C pointer a live-until-now foreign wrapper held.
+    pub unsafe fn release_foreign(&mut self, c_ptr: usize) {
+        if let Some(w) = self.foreign.remove(&c_ptr) {
+            self.raw_py.remove(&w);
+        }
     }
 
     pub unsafe fn register_raw_pyobj(&mut self, ptr: *mut PyObject) -> AbiHandle {
@@ -483,12 +573,283 @@ pub extern "C" fn molt_cpython_abi_init() {
     INIT.call_once(|| {
         unsafe { crate::abi_types::init_static_types() };
         unsafe { crate::api::typeobj::init_descriptor_slots() };
+        // Give `PyType_Type` a `tp_getattro` that answers `type.__name__` /
+        // `__qualname__` from `tp_name`, so metaclasses (numpy's `_DTypeMeta`)
+        // inherit it and `DType.__name__` resolves once a DType crosses into
+        // Molt as a foreign wrapper.
+        unsafe { crate::api::typeobj::init_type_getattro() };
         init_tag_table();
         // Register the canonical CPython-ABI sentinel data objects (exception
         // singletons + Ellipsis/NotImplemented/UTC) in the bridge so a native
         // extension that hands them back resolves them via `pyobj_to_handle`.
         crate::abi_types::register_static_abi_objects();
     });
+}
+
+// ─── Foreign-object custody: dispatch back through the C type slots ────────────
+//
+// A runtime `TYPE_ID_FOREIGN` wrapper stores a genuine C-extension `PyObject*`.
+// When compiled Python performs `getattr` / `setattr` / a call on the wrapper,
+// the runtime extracts the C pointer and calls one of these functions (a direct
+// cross-crate Rust call — the ABI is statically linked into the runtime binary).
+// Each routes through the wrapped object's OWN type slots and converts the
+// C result back into an owned Molt value via `molt_value_for_pyobj`. They must
+// NOT re-enter `PyObject_GetAttr`/`PyObject_SetAttr` (whose first branch is the
+// bridge hook back into the runtime), or a foreign object would recurse forever;
+// they go straight to `tp_getattro` / `tp_setattro` / `PyObject_Call`.
+
+/// Release the bridge identity + strong reference a foreign wrapper held on the
+/// C object at `c_ptr`. Called from the runtime's `TYPE_ID_FOREIGN` drop hook.
+///
+/// # Safety
+/// `c_ptr` is the C pointer a now-dropping foreign wrapper held; the matching
+/// `Py_INCREF` was taken in [`ObjectBridge::foreign_wrapper_for`].
+pub unsafe fn molt_foreign_object_release(c_ptr: usize) {
+    if c_ptr == 0 {
+        return;
+    }
+    // Drop the identity mapping under the bridge lock, then release the strong
+    // reference OUTSIDE the lock (Py_DECREF may run a C tp_dealloc that
+    // re-enters the bridge).
+    unsafe { GLOBAL_BRIDGE.lock().release_foreign(c_ptr) };
+    unsafe { crate::api::refcount::Py_DECREF(c_ptr as *mut PyObject) };
+}
+
+/// `getattr` on a foreign wrapper: route through the wrapped C object's own
+/// `tp_getattro` (else CPython generic getattr). `name_bits` is a Molt string
+/// handle. Returns the attribute value as an owned Molt handle, or 0 with the C
+/// slot's exception left pending.
+///
+/// # Safety
+/// `c_ptr` must be a live C-extension `PyObject*`.
+pub unsafe fn molt_foreign_getattr(c_ptr: usize, name_bits: u64) -> u64 {
+    let obj = c_ptr as *mut PyObject;
+    if obj.is_null() {
+        return 0;
+    }
+    let name_obj = unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(name_bits) };
+    if name_obj.is_null() {
+        return 0;
+    }
+    let result = unsafe { foreign_slot_getattr(obj, name_obj) };
+    unsafe { crate::api::refcount::Py_DECREF(name_obj) };
+    if result.is_null() {
+        return 0;
+    }
+    let bits = unsafe { GLOBAL_BRIDGE.lock().molt_value_for_pyobj(result) };
+    // `molt_value_for_pyobj` minted its own owned reference for the Molt caller;
+    // release the reference the C slot returned to us.
+    unsafe { crate::api::refcount::Py_DECREF(result) };
+    bits.unwrap_or(0)
+}
+
+/// Return the wrapped C object's type name (`tp_name`, a static C string) for
+/// honest diagnostics of a foreign wrapper. Returns NULL when unavailable.
+///
+/// # Safety
+/// `c_ptr` must be a live C-extension `PyObject*`.
+pub unsafe fn molt_foreign_type_name(c_ptr: usize) -> *const std::os::raw::c_char {
+    let obj = c_ptr as *mut PyObject;
+    if obj.is_null() {
+        return std::ptr::null();
+    }
+    let tp = unsafe { (*obj).ob_type };
+    if tp.is_null() {
+        return std::ptr::null();
+    }
+    unsafe { (*tp).tp_name }
+}
+
+/// Is `c_ptr` a C type object? Detected identity-free by walking its metatype
+/// (`ob_type`) chain for a `type`-named metatype — robust to a static
+/// extension's `&PyType_Type` retargeting to a copy of `type`.
+///
+/// # Safety
+/// `c_ptr` must be a live C-extension `PyObject*`.
+unsafe fn foreign_obj_is_type(c_ptr: usize) -> bool {
+    let obj = c_ptr as *mut PyObject;
+    if obj.is_null() {
+        return false;
+    }
+    let mut mt = unsafe { (*obj).ob_type };
+    let mut steps = 0u32;
+    while !mt.is_null() && steps < 32 {
+        let n = unsafe { (*mt).tp_name };
+        if !n.is_null() && unsafe { std::ffi::CStr::from_ptr(n) }.to_bytes() == b"type" {
+            return true;
+        }
+        mt = unsafe { (*mt).tp_base };
+        steps += 1;
+    }
+    false
+}
+
+/// Resolve a *type* object's `__name__` / `__qualname__` from its own `tp_name`,
+/// stripping any module/qualifier prefix (up to and including the last '.') —
+/// exactly what CPython's `type.__name__` getter does. Writes the resolved name
+/// (no NUL) into `out[..cap]` and returns its byte length, or -1 when `c_ptr` is
+/// not a type object or has no `tp_name`.
+///
+/// This is deliberately **hooks-free** (no `str_data`/`alloc_str`, no bridge
+/// proxy round-trip): the runtime side owns the attribute name and allocates the
+/// result string itself, so `Type.__name__` resolves regardless of which
+/// split-runtime module the getattr lands in. Our static `PyType_Type` carries
+/// no `__name__` getset, and a static extension's metaclass (numpy's
+/// `_DTypeMeta`) can reach Molt with no usable getattro, so this direct path is
+/// the honest, robust answer for the numpy `numpy.dtypes._add_dtype_helper`
+/// `DType.__name__` frontier.
+///
+/// # Safety
+/// `c_ptr` must be a live C-extension `PyObject*`; `out` valid for `cap` bytes.
+pub unsafe fn molt_foreign_type_dunder_name(c_ptr: usize, out: *mut u8, cap: usize) -> isize {
+    if !unsafe { foreign_obj_is_type(c_ptr) } {
+        return -1;
+    }
+    let tp = c_ptr as *mut PyTypeObject;
+    let name_ptr = unsafe { (*tp).tp_name };
+    if name_ptr.is_null() {
+        return -1;
+    }
+    let bytes = unsafe { std::ffi::CStr::from_ptr(name_ptr) }.to_bytes();
+    let short = match bytes.iter().rposition(|&b| b == b'.') {
+        Some(dot) => &bytes[dot + 1..],
+        None => bytes,
+    };
+    if short.len() <= cap && !out.is_null() {
+        unsafe { std::ptr::copy_nonoverlapping(short.as_ptr(), out, short.len()) };
+    }
+    short.len() as isize
+}
+
+unsafe fn foreign_slot_getattr(obj: *mut PyObject, name_obj: *mut PyObject) -> *mut PyObject {
+    // Walk the metatype's `tp_base` chain to find the first `tp_getattro` slot,
+    // replicating CPython slot inheritance at call time. A static extension's
+    // metaclass (numpy's `_DTypeMeta`, whose `tp_base` is `type`) can reach this
+    // path with a null `tp_getattro` — either because inherit-slots was skipped
+    // or because its `&PyType_Type` retargeted to a copy without our
+    // `type_getattro` — and the chain walk still finds `PyType_Type`'s slot,
+    // so `DType.__name__` resolves.
+    let mut tp = unsafe { (*obj).ob_type };
+    let mut steps = 0u32;
+    while !tp.is_null() && steps < 32 {
+        if let Some(getattro) = unsafe { (*tp).tp_getattro } {
+            return unsafe { getattro(obj, name_obj) };
+        }
+        tp = unsafe { (*tp).tp_base };
+        steps += 1;
+    }
+    // No tp_getattro slot anywhere in the metatype chain: fall back to CPython's
+    // generic instance getattr.
+    unsafe { crate::api::object::PyObject_GenericGetAttr(obj, name_obj) }
+}
+
+/// `setattr` on a foreign wrapper: route through the wrapped C object's own
+/// `tp_setattro`. `value_bits == 0` means delete the attribute. Returns 0 on
+/// success, -1 with the C slot's exception left pending on failure.
+///
+/// # Safety
+/// `c_ptr` must be a live C-extension `PyObject*`.
+pub unsafe fn molt_foreign_setattr(
+    c_ptr: usize,
+    name_bits: u64,
+    value_bits: u64,
+) -> std::os::raw::c_int {
+    let obj = c_ptr as *mut PyObject;
+    if obj.is_null() {
+        return -1;
+    }
+    let (name_obj, value_obj) = {
+        let mut bridge = GLOBAL_BRIDGE.lock();
+        let name_obj = unsafe { bridge.handle_to_pyobj(name_bits) };
+        let value_obj = if value_bits == 0 {
+            std::ptr::null_mut()
+        } else {
+            unsafe { bridge.handle_to_pyobj(value_bits) }
+        };
+        (name_obj, value_obj)
+    };
+    if name_obj.is_null() {
+        return -1;
+    }
+    let tp = unsafe { (*obj).ob_type };
+    let rc = if !tp.is_null() {
+        if let Some(setattro) = unsafe { (*tp).tp_setattro } {
+            unsafe { setattro(obj, name_obj, value_obj) }
+        } else {
+            -1
+        }
+    } else {
+        -1
+    };
+    unsafe { crate::api::refcount::Py_DECREF(name_obj) };
+    if !value_obj.is_null() {
+        unsafe { crate::api::refcount::Py_DECREF(value_obj) };
+    }
+    rc
+}
+
+/// Call a foreign wrapper: route through the wrapped C object's `tp_call` via
+/// `PyObject_Call`, materializing a C-layout args tuple the callee can read.
+/// `args_bits` is a Molt tuple handle (0 = no positional args); `kwargs_bits` a
+/// Molt dict handle (0 = none). Returns the result as an owned Molt handle, or 0
+/// with the C slot's exception left pending.
+///
+/// # Safety
+/// `c_ptr` must be a live callable C-extension `PyObject*`.
+pub unsafe fn molt_foreign_call(c_ptr: usize, args_bits: u64, kwargs_bits: u64) -> u64 {
+    let obj = c_ptr as *mut PyObject;
+    if obj.is_null() {
+        return 0;
+    }
+    let args_obj = unsafe { c_layout_tuple_from_molt(args_bits) };
+    if args_obj.is_null() {
+        return 0;
+    }
+    let kwargs_obj = if kwargs_bits == 0 {
+        std::ptr::null_mut()
+    } else {
+        unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(kwargs_bits) }
+    };
+    let result = unsafe { crate::api::object::PyObject_Call(obj, args_obj, kwargs_obj) };
+    unsafe { crate::api::refcount::Py_DECREF(args_obj) };
+    if !kwargs_obj.is_null() {
+        unsafe { crate::api::refcount::Py_DECREF(kwargs_obj) };
+    }
+    if result.is_null() {
+        return 0;
+    }
+    let bits = unsafe { GLOBAL_BRIDGE.lock().molt_value_for_pyobj(result) };
+    unsafe { crate::api::refcount::Py_DECREF(result) };
+    bits.unwrap_or(0)
+}
+
+/// Build a C-layout `PyTupleObject` (readable by a C callee via
+/// `PyTuple_GET_ITEM`) from a Molt tuple handle, translating each element to a
+/// C-visible `*mut PyObject` via `handle_to_pyobj`. `PyTuple_SetItem` steals the
+/// element references. Returns NULL on allocation failure.
+unsafe fn c_layout_tuple_from_molt(args_bits: u64) -> *mut PyObject {
+    let h = crate::hooks::hooks_or_stubs();
+    if args_bits == 0 {
+        return unsafe { crate::api::sequences::PyTuple_New(0) };
+    }
+    let n = unsafe { (h.tuple_len)(args_bits) };
+    let tuple = unsafe { crate::api::sequences::PyTuple_New(n as crate::abi_types::Py_ssize_t) };
+    if tuple.is_null() {
+        return std::ptr::null_mut();
+    }
+    for i in 0..n {
+        let item_bits = unsafe { (h.tuple_item)(args_bits, i) };
+        let item_obj = unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(item_bits) };
+        // PyTuple_SetItem steals the reference on success.
+        if unsafe {
+            crate::api::sequences::PyTuple_SetItem(tuple, i as crate::abi_types::Py_ssize_t, item_obj)
+        } != 0
+        {
+            unsafe { crate::api::refcount::Py_DECREF(tuple) };
+            return std::ptr::null_mut();
+        }
+    }
+    tuple
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1128,5 +1489,56 @@ mod bridge_handle_tests {
             !std::ptr::eq(ty.cast_const(), &raw const PyUnicode_Type),
             "Other tag must not masquerade as str"
         );
+    }
+
+    /// `molt_value_for_pyobj` resolves static singletons and genuine Molt
+    /// proxies to their canonical Molt handles WITHOUT foreign-wrapping them —
+    /// only genuine C-extension objects get a `TYPE_ID_FOREIGN` wrapper.
+    #[test]
+    fn molt_value_for_pyobj_resolves_singletons_and_proxies() {
+        init_tag_table();
+        let mut bridge = ObjectBridge::new();
+        // Static singleton `None` → canonical NaN-boxed None, no wrapper.
+        let none_ptr = &raw mut Py_None;
+        assert_eq!(
+            unsafe { bridge.molt_value_for_pyobj(none_ptr) },
+            Some(MoltObject::none().bits())
+        );
+        // A genuine Molt object that crossed to C (a bridge proxy) resolves back
+        // to its own Molt handle, not a foreign wrapper.
+        let int_bits = MoltObject::from_int(0x1234).bits();
+        let proxy = unsafe { bridge.handle_to_pyobj(int_bits) };
+        assert_eq!(
+            unsafe { bridge.molt_value_for_pyobj(proxy) },
+            Some(int_bits)
+        );
+        assert!(bridge.foreign.is_empty(), "no foreign wrapper for a Molt proxy");
+    }
+
+    /// A foreign wrapper's identity round-trips: handed back to C it resolves to
+    /// the ORIGINAL C pointer (via `raw_py`), and `release_foreign` drops both
+    /// the `foreign` and `raw_py` identity entries.
+    #[test]
+    fn foreign_wrapper_round_trips_and_releases() {
+        init_tag_table();
+        let mut bridge = ObjectBridge::new();
+        let mut fake = PyObject {
+            ob_refcnt: 1,
+            ob_type: std::ptr::null_mut(),
+        };
+        let c_ptr = &raw mut fake;
+        // Stand in for a minted `TYPE_ID_FOREIGN` wrapper handle (the runtime
+        // hook is not linked in a pure-ABI test); install the identity entries
+        // exactly as `foreign_wrapper_for` would.
+        let w_bits = 0xBEEF_0000_0000_0010u64;
+        bridge.foreign.insert(c_ptr as usize, w_bits);
+        bridge.raw_py.insert(w_bits, c_ptr as usize);
+        // The wrapper handed back to C resolves to the original C pointer.
+        let back = unsafe { bridge.handle_to_pyobj(w_bits) };
+        assert_eq!(back, c_ptr, "foreign wrapper must round-trip to its C object");
+        // Release drops the identity mapping so a fresh wrapper can be minted.
+        unsafe { bridge.release_foreign(c_ptr as usize) };
+        assert!(bridge.foreign.get(&(c_ptr as usize)).is_none());
+        assert!(bridge.raw_py.get(&w_bits).is_none());
     }
 }

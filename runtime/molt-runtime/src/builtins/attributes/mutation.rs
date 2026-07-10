@@ -33,6 +33,25 @@ pub unsafe extern "C" fn molt_set_attr_generic(
             let slice = std::slice::from_raw_parts(attr_name_ptr, attr_name_len);
             let attr_name = std::str::from_utf8(slice).unwrap_or("<attr>");
             let type_id = object_type_id(obj_ptr);
+            // Foreign (C-extension) object: route through its own `tp_setattro`
+            // via the ABI bridge. This is the shared setattr helper every entry
+            // point funnels through, so foreign dispatch lives here.
+            if type_id == crate::TYPE_ID_FOREIGN {
+                let c_ptr = crate::object::foreign::foreign_ptr_from_obj(obj_ptr);
+                let Some(attr_bits) = attr_name_bits_from_bytes(_py, slice) else {
+                    return MoltObject::none().bits() as i64;
+                };
+                let rc =
+                    molt_cpython_abi::bridge::molt_foreign_setattr(c_ptr, attr_bits, val_bits);
+                dec_ref_bits(_py, attr_bits);
+                if rc == 0 {
+                    return MoltObject::none().bits() as i64;
+                }
+                if exception_pending(_py) {
+                    return MoltObject::none().bits() as i64;
+                }
+                return attr_error(_py, type_name(_py, MoltObject::from_ptr(obj_ptr)), attr_name);
+            }
             if type_id == TYPE_ID_MODULE {
                 let Some(attr_bits) = attr_name_bits_from_bytes(_py, slice) else {
                     return MoltObject::none().bits() as i64;
@@ -2010,6 +2029,9 @@ pub extern "C" fn molt_set_attr_name(obj_bits: u64, name_bits: u64, val_bits: u6
                 return raise_attr_name_type_error(_py, name_bits);
             }
             if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
+                // Foreign (C-extension) objects are handled inside the shared
+                // `molt_set_attr_generic` so every setattr entry point routes
+                // them uniformly.
                 let bytes = string_bytes(name_ptr);
                 let len = string_len(name_ptr);
                 return molt_set_attr_generic(obj_ptr, bytes, len as u64, val_bits) as u64;

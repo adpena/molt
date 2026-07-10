@@ -1399,13 +1399,18 @@ unsafe fn molt_tuple_bits_from_c_tuple(args: *mut PyObject) -> Option<u64> {
     }
     let mut item_bits = Vec::with_capacity(n);
     {
-        let bridge = GLOBAL_BRIDGE.lock();
+        let mut bridge = GLOBAL_BRIDGE.lock();
         for i in 0..n {
             let item = unsafe { *items.add(i) };
             if item.is_null() {
                 return None;
             }
-            item_bits.push(bridge.pyobj_to_handle(item)?);
+            // Cross each argument INTO Molt as a first-class value: bridge
+            // proxies / singletons resolve to their Molt handle, and a genuine
+            // C-extension object gets a `TYPE_ID_FOREIGN` wrapper so the callee
+            // can `getattr`/call it. Each is an owned reference the fresh Molt
+            // tuple takes ownership of (released when the tuple is dropped).
+            item_bits.push(unsafe { bridge.molt_value_for_pyobj(item) }?);
         }
     }
     let h = hooks_or_stubs();

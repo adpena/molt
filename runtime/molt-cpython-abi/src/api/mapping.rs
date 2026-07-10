@@ -40,7 +40,7 @@ pub unsafe extern "C" fn PyDict_SetItem(
     if op.is_null() || key.is_null() || value.is_null() {
         return -1;
     }
-    let bridge = GLOBAL_BRIDGE.lock();
+    let mut bridge = GLOBAL_BRIDGE.lock();
     let dict_bits = match bridge.pyobj_to_handle(op) {
         Some(b) => b,
         None => {
@@ -67,15 +67,25 @@ pub unsafe extern "C" fn PyDict_SetItem(
             return -1;
         }
     };
+    let mut val_is_foreign = false;
     let val_bits = match bridge.pyobj_to_handle(value) {
         Some(b) => b,
-        None => {
-            let detail = format!("unresolved value: {}", unsafe {
-                crate::abi_types::describe_unresolved_pyobject(value)
-            });
-            crate::capi_trace::record_silent_failure("PyDict_SetItem", Some(&detail));
-            return -1;
-        }
+        None => match unsafe { bridge.molt_value_for_pyobj(value) } {
+            // A genuine C-extension object value (a numpy dtype instance): give
+            // it a first-class `TYPE_ID_FOREIGN` wrapper so it can be stored in
+            // the Molt dict, instead of failing "unresolved value".
+            Some(b) => {
+                val_is_foreign = true;
+                b
+            }
+            None => {
+                let detail = format!("unresolved value: {}", unsafe {
+                    crate::abi_types::describe_unresolved_pyobject(value)
+                });
+                crate::capi_trace::record_silent_failure("PyDict_SetItem", Some(&detail));
+                return -1;
+            }
+        },
     };
     drop(bridge);
     let h = hooks_or_stubs();
@@ -94,7 +104,14 @@ pub unsafe extern "C" fn PyDict_SetItem(
     // bridging already makes.
     unsafe {
         crate::api::refcount::Py_INCREF(key);
-        crate::api::refcount::Py_INCREF(value);
+        // A bridge-proxy value is anchored by INCREF'ing the C object, exactly
+        // like CPython (the dict takes its own reference). A foreign-wrapped
+        // value already holds a strong reference on the C object (minted at
+        // refcount 1, ownership transferred to this dict entry), so it must NOT
+        // be INCREF'd again — that would leak the C object.
+        if !val_is_foreign {
+            crate::api::refcount::Py_INCREF(value);
+        }
     }
     0
 }
