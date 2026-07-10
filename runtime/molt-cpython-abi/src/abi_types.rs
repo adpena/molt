@@ -1004,11 +1004,26 @@ pub fn type_static_ptrs() -> Vec<*mut PyObject> {
 // The exact type/content doesn't matter — they're identity-compared by the bridge.
 // We create one sentinel PyObject per exception class.
 
+// Expands an exception-singleton parent spec: `ROOT` (BaseException) has no
+// parent; anything else names its base-class singleton.
+macro_rules! exc_parent_expand {
+    (ROOT) => {
+        None
+    };
+    ($parent:ident) => {
+        Some(&raw mut $parent as *mut PyObject)
+    };
+}
+
 // One `pub static mut $name: PyObject` per exception class, plus a single
-// authoritative name lookup ([`exc_singleton_name`]) generated from the same
-// list so the two can never drift. The list is the sole source of truth.
+// authoritative name lookup ([`exc_singleton_name`]) AND the base-class edge
+// ([`exc_singleton_parent`]) generated from the same list so the three can
+// never drift. The list is the sole source of truth; each entry's parent is
+// the documented Python 3.12 builtin exception hierarchy
+// (https://docs.python.org/3.12/library/exceptions.html#exception-hierarchy),
+// pinned by `exception_hierarchy_matches_python_3_12` below.
 macro_rules! exc_singletons {
-    ($($name:ident),* $(,)?) => {
+    ($($name:ident => $parent:tt),* $(,)?) => {
         $(
             #[unsafe(no_mangle)]
             pub static mut $name: PyObject = PyObject {
@@ -1029,6 +1044,20 @@ macro_rules! exc_singletons {
             None
         }
 
+        /// The base class of a builtin exception singleton per the Python 3.12
+        /// hierarchy, or `None` for `BaseException` (root) and for a pointer
+        /// that is not an exception singleton. Powers the subclass walk in
+        /// `PyErr_GivenExceptionMatches` (`except LookupError` catching a
+        /// pending `IndexError`). Pointer-identity only — no dereference.
+        pub fn exc_singleton_parent(ptr: *const PyObject) -> Option<*mut PyObject> {
+            $(
+                if std::ptr::eq(ptr, &raw const $name) {
+                    return exc_parent_expand!($parent);
+                }
+            )*
+            None
+        }
+
         /// Addresses of every exception singleton, for bridge registration. These
         /// are canonical runtime data symbols a native extension resolves (via the
         /// split-runtime GOT data retarget) and then hands back to the runtime as a
@@ -1043,56 +1072,129 @@ macro_rules! exc_singletons {
 }
 
 exc_singletons!(
-    PyExc_BaseException,
-    PyExc_Exception,
-    PyExc_ValueError,
-    PyExc_TypeError,
-    PyExc_RuntimeError,
-    PyExc_MemoryError,
-    PyExc_IndexError,
-    PyExc_KeyError,
-    PyExc_AttributeError,
-    PyExc_OverflowError,
-    PyExc_ZeroDivisionError,
-    PyExc_ImportError,
-    PyExc_ModuleNotFoundError,
-    PyExc_StopIteration,
-    PyExc_NotImplementedError,
-    PyExc_OSError,
-    PyExc_IOError,
-    PyExc_FileNotFoundError,
-    PyExc_PermissionError,
-    PyExc_FileExistsError,
-    PyExc_IsADirectoryError,
-    PyExc_NotADirectoryError,
-    PyExc_TimeoutError,
-    PyExc_ArithmeticError,
-    PyExc_FloatingPointError,
-    PyExc_LookupError,
-    PyExc_AssertionError,
-    PyExc_EOFError,
-    PyExc_NameError,
-    PyExc_UnboundLocalError,
-    PyExc_SyntaxError,
-    PyExc_SystemError,
-    PyExc_SystemExit,
-    PyExc_UnicodeError,
-    PyExc_UnicodeDecodeError,
-    PyExc_UnicodeEncodeError,
-    PyExc_BufferError,
-    PyExc_RecursionError,
-    PyExc_GeneratorExit,
-    PyExc_KeyboardInterrupt,
-    PyExc_ConnectionError,
-    PyExc_ConnectionResetError,
-    PyExc_BrokenPipeError,
-    PyExc_Warning,
-    PyExc_DeprecationWarning,
-    PyExc_RuntimeWarning,
-    PyExc_FutureWarning,
-    PyExc_ImportWarning,
-    PyExc_UserWarning,
+    PyExc_BaseException => ROOT,
+    PyExc_Exception => PyExc_BaseException,
+    PyExc_ValueError => PyExc_Exception,
+    PyExc_TypeError => PyExc_Exception,
+    PyExc_RuntimeError => PyExc_Exception,
+    PyExc_MemoryError => PyExc_Exception,
+    PyExc_IndexError => PyExc_LookupError,
+    PyExc_KeyError => PyExc_LookupError,
+    PyExc_AttributeError => PyExc_Exception,
+    PyExc_OverflowError => PyExc_ArithmeticError,
+    PyExc_ZeroDivisionError => PyExc_ArithmeticError,
+    PyExc_ImportError => PyExc_Exception,
+    PyExc_ModuleNotFoundError => PyExc_ImportError,
+    PyExc_StopIteration => PyExc_Exception,
+    PyExc_NotImplementedError => PyExc_RuntimeError,
+    PyExc_OSError => PyExc_Exception,
+    // CPython aliases IOError to the OSError object itself; the ABI keeps a
+    // distinct singleton, so subclass-of-OSError is the closest sound edge
+    // (an `except OSError` catches a pending IOError, as in CPython).
+    PyExc_IOError => PyExc_OSError,
+    PyExc_FileNotFoundError => PyExc_OSError,
+    PyExc_PermissionError => PyExc_OSError,
+    PyExc_FileExistsError => PyExc_OSError,
+    PyExc_IsADirectoryError => PyExc_OSError,
+    PyExc_NotADirectoryError => PyExc_OSError,
+    PyExc_TimeoutError => PyExc_OSError,
+    PyExc_ArithmeticError => PyExc_Exception,
+    PyExc_FloatingPointError => PyExc_ArithmeticError,
+    PyExc_LookupError => PyExc_Exception,
+    PyExc_AssertionError => PyExc_Exception,
+    PyExc_EOFError => PyExc_Exception,
+    PyExc_NameError => PyExc_Exception,
+    PyExc_UnboundLocalError => PyExc_NameError,
+    PyExc_SyntaxError => PyExc_Exception,
+    PyExc_SystemError => PyExc_Exception,
+    PyExc_SystemExit => PyExc_BaseException,
+    PyExc_UnicodeError => PyExc_ValueError,
+    PyExc_UnicodeDecodeError => PyExc_UnicodeError,
+    PyExc_UnicodeEncodeError => PyExc_UnicodeError,
+    PyExc_BufferError => PyExc_Exception,
+    PyExc_RecursionError => PyExc_RuntimeError,
+    PyExc_GeneratorExit => PyExc_BaseException,
+    PyExc_KeyboardInterrupt => PyExc_BaseException,
+    PyExc_ConnectionError => PyExc_OSError,
+    PyExc_ConnectionResetError => PyExc_ConnectionError,
+    PyExc_BrokenPipeError => PyExc_ConnectionError,
+    PyExc_Warning => PyExc_Exception,
+    PyExc_DeprecationWarning => PyExc_Warning,
+    PyExc_RuntimeWarning => PyExc_Warning,
+    PyExc_FutureWarning => PyExc_Warning,
+    PyExc_ImportWarning => PyExc_Warning,
+    PyExc_UserWarning => PyExc_Warning,
 );
+
+#[cfg(test)]
+mod exc_hierarchy_tests {
+    use super::*;
+
+    /// Table-drift gate for the hand-synced parent edges: every chain must
+    /// terminate at BaseException, and the documented 3.12 subclass chains
+    /// hold (https://docs.python.org/3.12/library/exceptions.html).
+    #[test]
+    fn exception_hierarchy_matches_python_3_12() {
+        fn chain(mut ptr: *mut PyObject) -> Vec<&'static str> {
+            let mut names = vec![exc_singleton_name(ptr).unwrap()];
+            while let Some(parent) = exc_singleton_parent(ptr) {
+                names.push(exc_singleton_name(parent).unwrap());
+                ptr = parent;
+            }
+            names
+        }
+        // Spot-pin the load-bearing chains.
+        assert_eq!(
+            chain(&raw mut PyExc_IndexError),
+            ["PyExc_IndexError", "PyExc_LookupError", "PyExc_Exception", "PyExc_BaseException"]
+        );
+        assert_eq!(
+            chain(&raw mut PyExc_OverflowError),
+            [
+                "PyExc_OverflowError",
+                "PyExc_ArithmeticError",
+                "PyExc_Exception",
+                "PyExc_BaseException"
+            ]
+        );
+        assert_eq!(
+            chain(&raw mut PyExc_UnicodeDecodeError),
+            [
+                "PyExc_UnicodeDecodeError",
+                "PyExc_UnicodeError",
+                "PyExc_ValueError",
+                "PyExc_Exception",
+                "PyExc_BaseException"
+            ]
+        );
+        assert_eq!(
+            chain(&raw mut PyExc_BrokenPipeError),
+            [
+                "PyExc_BrokenPipeError",
+                "PyExc_ConnectionError",
+                "PyExc_OSError",
+                "PyExc_Exception",
+                "PyExc_BaseException"
+            ]
+        );
+        assert_eq!(
+            chain(&raw mut PyExc_ModuleNotFoundError),
+            [
+                "PyExc_ModuleNotFoundError",
+                "PyExc_ImportError",
+                "PyExc_Exception",
+                "PyExc_BaseException"
+            ]
+        );
+        // EVERY singleton chain terminates at BaseException with no cycle
+        // (bounded walk) — a wrong edge cannot hide.
+        for ptr in exc_singleton_ptrs() {
+            let names = chain(ptr);
+            assert!(names.len() <= 8, "suspicious chain length for {names:?}");
+            assert_eq!(*names.last().unwrap(), "PyExc_BaseException");
+        }
+    }
+}
 
 /// Best-effort human description of a `*mut PyObject` that failed bridge
 /// resolution (`pyobj_to_handle` returned `None`), for the C-API silent-failure

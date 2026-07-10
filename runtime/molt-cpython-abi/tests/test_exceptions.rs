@@ -206,13 +206,33 @@ fn test_fetch_consumes_current_error_message() {
         molt_cpython_abi::api::errors::PyErr_Fetch(&mut exc_type, &mut exc_value, &mut exc_tb);
     }
 
-    assert!(!exc_type.is_null());
+    // Fetch transfers the REAL type (Python/errors.c), not a Py_None sentinel:
+    // Fetch/Restore round-trips must preserve exception identity.
+    assert!(std::ptr::eq(exc_type, exc), "Fetch must hand back the real exception type");
+    // Under stub hooks the str authority is absent, so the value cannot be
+    // materialized; crucially Fetch must NOT clobber the indicator with a
+    // MemoryError while trying (with a runtime it is the message str).
     assert!(exc_value.is_null());
     assert!(exc_tb.is_null());
     assert_eq!(
         molt_cpython_abi::api::errors::take_current_error_message(),
-        None
+        None,
+        "Fetch clears the indicator and leaves NO substitute exception"
     );
+
+    // Restore re-installs what Fetch produced: the round-trip preserves type.
+    unsafe {
+        molt_cpython_abi::api::errors::PyErr_Restore(exc_type, exc_value, exc_tb);
+    }
+    assert_eq!(
+        unsafe {
+            molt_cpython_abi::api::errors::PyErr_ExceptionMatches(&raw mut PyExc_ValueError)
+        },
+        1,
+        "a Fetch -> Restore round-trip must preserve the exception type \
+         (the pre-fix Restore stored a fabricated placeholder)"
+    );
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 }
 
 #[test]
@@ -337,4 +357,104 @@ fn test_err_write_unraisable_does_not_panic_with_object() {
         unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null(),
         "PyErr_WriteUnraisable must clear the reported exception"
     );
+}
+
+// ─── F1 identity-plumbing gates (ledger errors.rs:55/:189/:264/:276/:100) ───
+
+#[test]
+fn occurred_returns_the_real_pending_type() {
+    init();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+    let exc = &raw mut molt_cpython_abi::abi_types::PyExc_KeyError;
+    unsafe { molt_cpython_abi::api::errors::PyErr_SetString(exc, c"k".as_ptr()) };
+    let occurred = unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() };
+    assert!(
+        std::ptr::eq(occurred, exc),
+        "PyErr_Occurred must return the REAL exception type (identity tests \
+         like `PyErr_Occurred() == PyExc_StopIteration` depend on it) — the \
+         pre-fix Py_None sentinel mis-decided every such probe"
+    );
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+}
+
+#[test]
+fn exception_matches_walks_the_builtin_subclass_chain() {
+    init();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+    // Pending IndexError must match LookupError AND Exception AND BaseException
+    // (the documented 3.12 hierarchy), and must NOT match KeyError/TypeError.
+    unsafe {
+        molt_cpython_abi::api::errors::PyErr_SetString(
+            &raw mut molt_cpython_abi::abi_types::PyExc_IndexError,
+            c"idx".as_ptr(),
+        );
+    }
+    let m = |e: *mut molt_cpython_abi::abi_types::PyObject| unsafe {
+        molt_cpython_abi::api::errors::PyErr_ExceptionMatches(e)
+    };
+    assert_eq!(m(&raw mut molt_cpython_abi::abi_types::PyExc_IndexError), 1);
+    assert_eq!(
+        m(&raw mut molt_cpython_abi::abi_types::PyExc_LookupError),
+        1,
+        "except LookupError must catch a pending IndexError (subclass walk)"
+    );
+    assert_eq!(m(&raw mut molt_cpython_abi::abi_types::PyExc_Exception), 1);
+    assert_eq!(m(&raw mut molt_cpython_abi::abi_types::PyExc_BaseException), 1);
+    assert_eq!(m(&raw mut molt_cpython_abi::abi_types::PyExc_KeyError), 0);
+    assert_eq!(m(&raw mut PyExc_TypeError), 0);
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+}
+
+#[test]
+fn given_exception_matches_is_subclass_aware() {
+    init();
+    let given = unsafe {
+        molt_cpython_abi::api::errors::PyErr_GivenExceptionMatches(
+            &raw mut molt_cpython_abi::abi_types::PyExc_ModuleNotFoundError,
+            &raw mut molt_cpython_abi::abi_types::PyExc_ImportError,
+        )
+    };
+    assert_eq!(given, 1, "ModuleNotFoundError IS an ImportError");
+    let not = unsafe {
+        molt_cpython_abi::api::errors::PyErr_GivenExceptionMatches(
+            &raw mut molt_cpython_abi::abi_types::PyExc_ImportError,
+            &raw mut molt_cpython_abi::abi_types::PyExc_ModuleNotFoundError,
+        )
+    };
+    assert_eq!(not, 0, "the subclass relation is directional");
+}
+
+#[test]
+fn bad_internal_call_is_system_error() {
+    init();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+    unsafe { molt_cpython_abi::api::errors::PyErr_BadInternalCall() };
+    assert_eq!(
+        unsafe {
+            molt_cpython_abi::api::errors::PyErr_ExceptionMatches(
+                &raw mut molt_cpython_abi::abi_types::PyExc_SystemError,
+            )
+        },
+        1,
+        "PyErr_BadInternalCall sets SystemError (Python/errors.c), not RuntimeError"
+    );
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+}
+
+#[test]
+fn set_from_errno_reads_c_errno_shape() {
+    init();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+    let result = unsafe {
+        molt_cpython_abi::api::errors::PyErr_SetFromErrno(
+            &raw mut molt_cpython_abi::abi_types::PyExc_OSError,
+        )
+    };
+    assert!(result.is_null());
+    let msg = molt_cpython_abi::api::errors::take_current_error_message().unwrap();
+    assert!(
+        msg.starts_with("[Errno "),
+        "OSError message must carry CPython's '[Errno N] text' shape, got {msg:?}"
+    );
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 }

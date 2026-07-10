@@ -50,17 +50,26 @@ pub unsafe extern "C" fn PyErr_SetNone(exc_type: *mut PyObject) {
     unsafe { PyErr_SetString(exc_type, ptr::null()) };
 }
 
-/// Returns NULL if no exception, else non-null (type of current exception).
+/// CPython `PyErr_Occurred` (Python/errors.c): returns the pending exception's
+/// actual TYPE (borrowed) or NULL. Consumers do identity/subtype tests on the
+/// result (`PyErr_Occurred() == PyExc_StopIteration`,
+/// `GivenExceptionMatches(PyErr_Occurred(), X)`), so the pre-fix `&Py_None`
+/// sentinel mis-decided every such probe. The stored type-handle bits resolve
+/// back to the original `PyExc_*` pointer through the bridge raw registry;
+/// only an unresolvable/NULL-typed exception falls back to the non-null
+/// `Py_None` sentinel (never NULL while an exception is pending).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_Occurred() -> *mut PyObject {
-    CURRENT_EXC.with(|c| {
-        if c.borrow().is_some() {
-            // Return a non-null sentinel — caller only checks null/non-null.
-            &raw mut crate::abi_types::Py_None
-        } else {
-            ptr::null_mut()
+    let Some(type_bits) = current_exc_type_bits() else {
+        return ptr::null_mut();
+    };
+    if type_bits != 0 {
+        let resolved = unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(type_bits) };
+        if !resolved.is_null() {
+            return resolved;
         }
-    })
+    }
+    &raw mut crate::abi_types::Py_None
 }
 
 #[unsafe(no_mangle)]
@@ -96,9 +105,30 @@ pub unsafe extern "C" fn PyErr_Format(
     ptr::null_mut()
 }
 
+unsafe extern "C" {
+    /// C-runtime `errno` accessors from the shim (`pyarg_variadic.c`) — the C
+    /// runtime is the only portable authority for `errno` (on Windows,
+    /// `std::io::Error::last_os_error()` reads `GetLastError()`, which is a
+    /// DIFFERENT channel from the C `errno` an extension just set).
+    fn molt_capi_errno() -> c_int;
+    fn molt_capi_strerror(errnum: c_int) -> *const c_char;
+}
+
+/// CPython `PyErr_SetFromErrno` (Python/errors.c): reads the C `errno` (NOT
+/// GetLastError) and formats CPython's OSError shape
+/// `[Errno N] strerror-text`. Residual (documented): the bridge error state
+/// carries `(type, message)` only, so the instance `.errno`/`.strerror`
+/// attributes CPython also sets are not materialized.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_SetFromErrno(exc_type: *mut PyObject) -> *mut PyObject {
-    let message = std::io::Error::last_os_error().to_string();
+    let errnum = unsafe { molt_capi_errno() };
+    let detail = unsafe { molt_capi_strerror(errnum) };
+    let detail = if detail.is_null() {
+        "operating system error".to_string()
+    } else {
+        unsafe { CStr::from_ptr(detail) }.to_string_lossy().into_owned()
+    };
+    let message = format!("[Errno {errnum}] {detail}");
     let c_message = std::ffi::CString::new(message).unwrap_or_else(|_| {
         std::ffi::CString::new("operating system error").expect("static string has no nul")
     });
@@ -185,93 +215,179 @@ pub unsafe extern "C" fn PyErr_BadArgument() -> c_int {
     0
 }
 
+/// CPython `PyErr_BadInternalCall` (Python/errors.c): sets **SystemError**
+/// ("bad argument to internal function") — the pre-fix RuntimeError broke any
+/// caller's `ExceptionMatches(PyExc_SystemError)` probe.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_BadInternalCall() {
     unsafe {
         PyErr_SetString(
-            &raw mut crate::abi_types::PyExc_RuntimeError,
+            &raw mut crate::abi_types::PyExc_SystemError,
             c"bad argument to internal function".as_ptr(),
         );
     }
 }
 
-/// Fetch (and clear) the current exception state.
-/// Writes the exception type, value, and traceback into the provided pointers.
+/// CPython `PyErr_Fetch` (Python/errors.c): transfers the pending exception's
+/// REAL type plus a value carrying its message into the out-params and clears
+/// the indicator, so a Fetch → Restore round-trip preserves the exception.
+/// The pre-fix body wrote a `Py_None` type sentinel and a NULL value,
+/// destroying both. The value is materialized as the message `str` (the
+/// pre-normalization `(type, str, tb)` triple CPython itself allows); NULL
+/// when the str authority is unavailable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_Fetch(
     p_type: *mut *mut PyObject,
     p_value: *mut *mut PyObject,
     p_tb: *mut *mut PyObject,
 ) {
-    let exc = take_current_error_message();
-    if exc.is_some() {
-        if !p_type.is_null() {
-            // Return a non-null sentinel for the type.
-            unsafe { *p_type = &raw mut crate::abi_types::Py_None };
+    let state = CURRENT_EXC.with(|c| c.borrow_mut().take());
+    let (type_ptr, value_ptr) = match state {
+        Some((type_bits, message)) => {
+            let type_ptr = if type_bits != 0 {
+                let resolved = unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(type_bits) };
+                if resolved.is_null() {
+                    &raw mut crate::abi_types::Py_None
+                } else {
+                    resolved
+                }
+            } else {
+                &raw mut crate::abi_types::Py_None
+            };
+            (type_ptr, exception_free_str(&message))
         }
-        if !p_value.is_null() {
-            unsafe { *p_value = ptr::null_mut() };
-        }
-    } else {
-        if !p_type.is_null() {
-            unsafe { *p_type = ptr::null_mut() };
-        }
-        if !p_value.is_null() {
-            unsafe { *p_value = ptr::null_mut() };
-        }
+        None => (ptr::null_mut(), ptr::null_mut()),
+    };
+    if !p_type.is_null() {
+        unsafe { *p_type = type_ptr };
+    }
+    if !p_value.is_null() {
+        unsafe { *p_value = value_ptr };
+    } else if !value_ptr.is_null() {
+        unsafe { crate::api::refcount::Py_DECREF(value_ptr) };
     }
     if !p_tb.is_null() {
         unsafe { *p_tb = ptr::null_mut() };
     }
 }
 
+/// CPython `PyErr_Restore` (Python/errors.c): takes ownership of
+/// `(type, value, tb)` and re-installs them as the pending exception. The
+/// pre-fix THEATER discarded all three and stored a fabricated
+/// `(0, "<restored exception>")`, so a later `ExceptionMatches` against the
+/// intended type always failed. The real type handle and the value's `str()`
+/// text are preserved; the stolen references are released after flattening.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_Restore(
-    _tp: *mut PyObject,
-    _value: *mut PyObject,
-    _tb: *mut PyObject,
+    exc_type: *mut PyObject,
+    value: *mut PyObject,
+    tb: *mut PyObject,
 ) {
-    // Simplified: just set the error state to the provided type.
-    if _tp.is_null() {
+    if exc_type.is_null() {
         unsafe { PyErr_Clear() };
     } else {
-        CURRENT_EXC.with(|c| *c.borrow_mut() = Some((0, String::from("<restored exception>"))));
+        let type_bits = GLOBAL_BRIDGE.lock().pyobj_to_handle(exc_type).unwrap_or(0);
+        let message = value_str_message(value).unwrap_or_default();
+        CURRENT_EXC.with(|c| *c.borrow_mut() = Some((type_bits, message)));
+    }
+    // Restore steals all three references.
+    unsafe {
+        crate::api::refcount::Py_XDECREF(exc_type);
+        crate::api::refcount::Py_XDECREF(value);
+        crate::api::refcount::Py_XDECREF(tb);
     }
 }
 
+/// CPython `PyErr_NormalizeException` (Python/errors.c): guarantees a caller
+/// reading `*val` after normalization never dereferences NULL. Full
+/// instantiation of exception objects needs the runtime class authority; the
+/// bridge materializes the message-`str` value (matching what `PyErr_Fetch`
+/// produces) when `*val` is NULL, and leaves an already-populated triple
+/// untouched.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_NormalizeException(
-    _exc: *mut *mut PyObject,
-    _val: *mut *mut PyObject,
+    exc: *mut *mut PyObject,
+    val: *mut *mut PyObject,
     _tb: *mut *mut PyObject,
 ) {
-    // No-op — full normalization requires instantiating exception objects.
+    if exc.is_null() || val.is_null() {
+        return;
+    }
+    let exc_ptr = unsafe { *exc };
+    if exc_ptr.is_null() || !unsafe { *val }.is_null() {
+        return;
+    }
+    let materialized = exception_free_str("");
+    if !materialized.is_null() {
+        unsafe { *val = materialized };
+    }
+}
+
+/// Build a str `PyObject` from `text` WITHOUT ever touching the pending-error
+/// indicator — `PyUnicode_FromString` sets MemoryError when the str authority
+/// is unavailable, which inside `PyErr_Fetch`/`NormalizeException` would
+/// clobber the very exception being transferred. Returns NULL (silently) when
+/// the authority is absent.
+fn exception_free_str(text: &str) -> *mut PyObject {
+    let h = crate::hooks::hooks_or_stubs();
+    let bits = unsafe { (h.alloc_str)(text.as_ptr(), text.len()) };
+    if bits == 0 {
+        return ptr::null_mut();
+    }
+    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) }
 }
 
 /// `PyErr_ExceptionMatches(exc)` — does the pending exception match `exc`?
 /// CPython defines this as `PyErr_GivenExceptionMatches(PyErr_Occurred(), exc)`
-/// (Python/errors.c). The previous stub dropped `exc` and returned "is ANY
-/// exception set", so `PyErr_ExceptionMatches(PyExc_KeyError)` was true for a
-/// pending TypeError — a fail-open that misroutes extension error handling.
-///
-/// We compare the pending exception's stored type-handle against `exc` by
-/// identity. Identity match is exact for the common `except SpecificError` case.
-/// A subclass relationship (e.g. pending IndexError vs `exc = LookupError`)
-/// returns 0 here because the bridge has no exception-MRO hook: that is a
-/// CONSERVATIVE narrowing (never a false positive), not a fail-open. When no
-/// exception is pending, return 0 (CPython returns 0 for a NULL PyErr_Occurred).
+/// (Python/errors.c); with `PyErr_Occurred` now returning the REAL pending
+/// type, the delegation is exact — subclass walks (pending IndexError vs
+/// `exc = LookupError`) and tuple candidates both match.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_ExceptionMatches(exc: *mut PyObject) -> c_int {
-    let Some(pending_type_bits) = current_exc_type_bits() else {
-        return 0;
-    };
-    if exc.is_null() {
-        return 0;
-    }
-    let exc_bits = GLOBAL_BRIDGE.lock().pyobj_to_handle(exc).unwrap_or(0);
-    (pending_type_bits != 0 && pending_type_bits == exc_bits) as c_int
+    let given = unsafe { PyErr_Occurred() };
+    unsafe { PyErr_GivenExceptionMatches(given, exc) }
 }
 
+/// One `given`-vs-single-candidate match: pointer identity, then the builtin
+/// exception-hierarchy subclass walk (`exc_singleton_parent`), then the
+/// `PyType_IsSubtype` walk for genuine heap exception TYPES an extension
+/// registered (both sides must be type objects for that to be sound).
+fn given_matches_single(given: *mut PyObject, exc: *mut PyObject) -> bool {
+    if std::ptr::eq(given, exc) {
+        return true;
+    }
+    // Builtin singleton subclass chain: IndexError -> LookupError -> ... .
+    let mut cursor = given.cast_const();
+    while let Some(parent) = crate::abi_types::exc_singleton_parent(cursor) {
+        if std::ptr::eq(parent, exc) {
+            return true;
+        }
+        cursor = parent;
+    }
+    // Heap exception classes (PyType_FromSpec etc.): a real subtype walk when
+    // BOTH sides are type objects (ob_type == PyType_Type).
+    let is_type_obj = |p: *mut PyObject| {
+        !p.is_null()
+            && std::ptr::eq(
+                unsafe { (*p).ob_type },
+                &raw const crate::abi_types::PyType_Type,
+            )
+    };
+    if is_type_obj(given) && is_type_obj(exc) {
+        return unsafe {
+            crate::api::typeobj::PyType_IsSubtype(
+                given.cast::<PyTypeObject>(),
+                exc.cast::<PyTypeObject>(),
+            )
+        } != 0;
+    }
+    false
+}
+
+/// CPython `PyErr_GivenExceptionMatches` (Python/errors.c): resolves an
+/// exception INSTANCE to its class, iterates a tuple of candidates, and walks
+/// the subclass relation — the pre-fix raw `ptr::eq` failed every
+/// `except (A, B)` and every subclass catch a numpy C path relies on.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_GivenExceptionMatches(
     given: *mut PyObject,
@@ -280,7 +396,47 @@ pub unsafe extern "C" fn PyErr_GivenExceptionMatches(
     if given.is_null() || exc.is_null() {
         return 0;
     }
-    std::ptr::eq(given, exc) as c_int
+    // An exception INSTANCE resolves to its class first (Python/errors.c).
+    // Exception singletons/types carry no bridge instance state; only a
+    // non-singleton object whose ob_type is a registered exception type is an
+    // instance here. The singleton fast path covers the dominant case.
+    let given = if crate::abi_types::exc_singleton_name(given).is_some() {
+        given
+    } else {
+        let ob_type = unsafe { (*given).ob_type };
+        if !ob_type.is_null()
+            && crate::abi_types::exc_singleton_name(ob_type.cast()).is_some()
+        {
+            ob_type.cast::<PyObject>()
+        } else {
+            given
+        }
+    };
+    // A tuple of candidates: match any member (bridged tuple via the runtime
+    // tuple hooks). Resolve `exc`'s bits and RELEASE the bridge lock before the
+    // per-item `handle_to_pyobj` calls — the bridge Mutex is non-reentrant, so
+    // holding the guard across the loop would self-deadlock.
+    let exc_bits = GLOBAL_BRIDGE.lock().pyobj_to_handle(exc);
+    if let Some(bits) = exc_bits
+        && MoltObject::from_bits(bits).is_ptr()
+    {
+        let h = crate::hooks::hooks_or_stubs();
+        if unsafe { (h.classify_heap)(bits) } == MoltTypeTag::Tuple as u8 {
+            let len = unsafe { (h.tuple_len)(bits) };
+            for i in 0..len {
+                let item_bits = unsafe { (h.tuple_item)(bits, i) };
+                if item_bits == 0 {
+                    continue;
+                }
+                let item = unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(item_bits) };
+                if !item.is_null() && given_matches_single(given, item) {
+                    return 1;
+                }
+            }
+            return 0;
+        }
+    }
+    given_matches_single(given, exc) as c_int
 }
 
 #[unsafe(no_mangle)]
@@ -340,13 +496,28 @@ pub unsafe extern "C" fn PyException_SetCause(exc: *mut PyObject, cause: *mut Py
     }
 }
 
+/// CPython `PyErr_WarnEx` (Python/_warnings.c): runs the warnings machinery,
+/// which by default PRINTS the warning to stderr ("<source>: Category:
+/// message"). The bridge has no warnings-filter state (documented residual: a
+/// filter mapping the category to "error" cannot raise here), but the default
+/// visible-emission path is honored — the pre-fix silent swallow hid every
+/// extension warning. Writing to stderr matches CPython's own default
+/// destination.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_WarnEx(
-    _category: *mut PyObject,
-    _message: *const c_char,
+    category: *mut PyObject,
+    message: *const c_char,
     _stack_level: c_int,
 ) -> c_int {
-    // Warnings are silently ignored in the bridge.
+    let text = if message.is_null() {
+        String::new()
+    } else {
+        unsafe { CStr::from_ptr(message) }.to_string_lossy().into_owned()
+    };
+    let category_name = crate::abi_types::exc_singleton_name(category)
+        .map(|name| name.strip_prefix("PyExc_").unwrap_or(name))
+        .unwrap_or("UserWarning");
+    eprintln!("<molt-cpython-abi>: {category_name}: {text}");
     0
 }
 
@@ -371,6 +542,12 @@ pub unsafe extern "C" fn PyErr_WriteUnraisable(obj: *mut PyObject) {
     unsafe { PyErr_Clear() };
 }
 
+/// CPython `PyErr_CheckSignals` runs pending signal handlers so a Ctrl-C can
+/// interrupt a long C loop. ACCEPTED NO-OP (ledger `errors.rs:375`): the wasm
+/// witness tier has no signal delivery (WASI has no signals) and the native
+/// bridge installs no handlers, so there is never a pending signal to run;
+/// returning 0 is the truthful answer, not a stub. Revisit if a host with
+/// real signal routing is added.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_CheckSignals() -> c_int {
     0
