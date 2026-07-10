@@ -1416,7 +1416,14 @@ def _module_lowering_context_payload(
     if is_package is None:
         is_package = module_path.name == "__init__.py"
     return {
-        "version": 1,
+        # v2 dropped ``mtime_ns`` from the content-addressed lowering key: it is
+        # content-invariant metadata that a re-checkout / copy / reinstall resets
+        # even for byte-identical source, so embedding it forced a cold
+        # cross-session/worktree re-lower (build-dedup doctrine 74 law 1). ``size``
+        # is kept (content-correlated); the per-read source sha256 gate
+        # (_payload_source_matches) remains the content authority. Bumping the
+        # version is the intentional one-time invalidation of pre-fix entries.
+        "version": 2,
         "module_name": module_name,
         "logical_source_path": logical_source_path,
         "is_package": is_package,
@@ -1426,7 +1433,6 @@ def _module_lowering_context_payload(
         "target_python": target_python.tag,
         "target_sys_platform": target_sys_platform,
         "size": path_stat.st_size,
-        "mtime_ns": path_stat.st_mtime_ns,
         "parse_codec": parse_codec,
         "type_hint_policy": type_hint_policy,
         "fallback_policy": fallback_policy,
