@@ -170,13 +170,15 @@ fn pyarg_o_bang_does_not_clobber_type_header_and_fills_dest() {
     sentinel_type.ob_base.ob_base.ob_refcnt = 0x0DED_BEEF;
 
     let args = args_with(&[int_item(7)]);
-    let mut dest: *mut PyObject = 0x1 as *mut PyObject; // poison; must stay untouched on failure
+    // Poison destination; must stay untouched on failure.
+    let poison: *mut PyObject = std::ptr::dangling_mut::<PyObject>();
+    let mut dest: *mut PyObject = poison;
     let rc = unsafe {
         PyArg_ParseTuple(
             args,
             c"O!".as_ptr(),
-            &raw mut sentinel_type as *mut PyTypeObject,
-            &raw mut dest as *mut *mut PyObject,
+            &raw mut sentinel_type,
+            &raw mut dest,
         )
     };
     assert_eq!(rc, 0, "int is not a subtype of the sentinel type -> O! fails");
@@ -189,7 +191,7 @@ fn pyarg_o_bang_does_not_clobber_type_header_and_fills_dest() {
         "O! must NOT write through the type-object pointer (header clobber = UB)"
     );
     assert_eq!(
-        dest, 0x1 as *mut PyObject,
+        dest, poison,
         "a failed O! must leave the destination untouched"
     );
     clear_err();
@@ -203,8 +205,8 @@ fn pyarg_o_bang_does_not_clobber_type_header_and_fills_dest() {
         PyArg_ParseTuple(
             args,
             c"O!".as_ptr(),
-            &raw mut molt_cpython_abi::abi_types::PyLong_Type as *mut PyTypeObject,
-            &raw mut dest2 as *mut *mut PyObject,
+            &raw mut molt_cpython_abi::abi_types::PyLong_Type,
+            &raw mut dest2,
         )
     };
     assert_eq!(rc, 1, "an int against PyLong_Type must satisfy O!");
@@ -237,7 +239,8 @@ fn pyarg_s_rejects_non_string_argument() {
     // An int passed to 's' must be a TypeError, not a fabricated empty string
     // (the theater the pre-fix `molt_str_ptr` produced).
     let args = args_with(&[int_item(42)]);
-    let mut out: *const c_char = 0x1 as *const c_char;
+    let poison: *const c_char = std::ptr::dangling::<c_char>();
+    let mut out: *const c_char = poison;
     let rc = unsafe {
         PyArg_ParseTuple(args, c"s".as_ptr(), &mut out as *mut *const c_char as *mut c_void)
     };
@@ -247,7 +250,7 @@ fn pyarg_s_rejects_non_string_argument() {
         "'s' on a non-str must raise TypeError"
     );
     assert_eq!(
-        out, 0x1 as *const c_char,
+        out, poison,
         "a failed 's' must not fabricate a string pointer"
     );
     clear_err();
