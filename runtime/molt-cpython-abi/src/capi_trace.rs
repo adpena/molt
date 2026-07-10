@@ -36,7 +36,7 @@ thread_local! {
     static LAST_SILENT_FAILURE: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
-fn trace_enabled() -> bool {
+pub fn trace_enabled() -> bool {
     // Resolved per call rather than cached: the WASI host forwards the process
     // environment, and this path is cold (only hit on failure sentinels), so a
     // `getenv` here costs nothing measurable while staying robust to env setup
