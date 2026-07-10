@@ -135,28 +135,80 @@ stray/implicit ones.
    -1)` (the actual behaviour under test) is untouched — this aligns the tests
    with the steal contract, it does not weaken them.
 
-### C. REAL UB (model-dependent) — DOCUMENTED + flagged to the buffer/deadlock-sweep lane
+### C. REAL UB (model-dependent) — FIXED at the root (`src/api/buffer.rs`, lane MIRI-BUFFER-UB)
 
-4. **`Py_buffer.format` read after memoryview descriptor copy.** Reading
-   `*view.format` after `PyMemoryView_FromBuffer` + `PyBuffer_Release` trips a
-   Stacked-Borrows "tag does not exist in the borrow stack" error at offset
-   `0x440`. Repro: `tests/test_object_protocol.rs:148`
+4. **`Py_buffer.format`/`shape`/`strides` read after buffer/memoryview install.**
+   Reading `*view.format` after `PyMemoryView_FromBuffer`/`PyBuffer_FillInfo`
+   tripped a Stacked-Borrows "tag does not exist in the borrow stack" error at
+   offset `0x440` (the `format` field: `MoltBufferView` = data@0 … shape@64
+   [512B] … strides@576 [512B] … **format@1088 = 0x440**). Repro:
+   `tests/test_object_protocol.rs:148`
    (`test_memoryview_from_buffer_copies_descriptor_without_sharing_release`) and
    `tests/test_modules.rs:541`
-   (`test_fillinfo_uses_typed_descriptor_without_runtime_release`). The invalidated
-   tag is a `SharedReadWrite` retag created inside the buffer/memoryview copy path
-   (`src/api/buffer.rs` `PyBuffer_FillInfo` / `src/api/memory.rs`
-   `PyMemoryView_FromBuffer`).
+   (`test_fillinfo_uses_typed_descriptor_without_runtime_release`).
 
-   **Model note:** this is flagged under **Stacked Borrows only** — it is **clean
-   under Tree Borrows** (the newer, more permissive model Rust is converging on).
-   So it is a model-dependent borrow-stack strictness, not a definite
-   miscompilation under the semantics Rust is standardising on.
+   **Root cause (precise).** `install_buffer_internal` built the C-visible
+   interior pointers via `apply_molt_view(view, obj, &mut internal.descriptor,
+   …)`, where `<[T; N]>::as_mut_ptr()` takes `&mut self` — a `SharedReadWrite`
+   retag at `[0x440..0x450]` derived from that `&mut`. It then called
+   `Box::into_raw(internal)`, whose internal `&mut *box` reborrow is a **Unique
+   retag over the whole allocation `[0x0..0x458]`** (`BufferInternal` = 8-byte
+   `release_kind` + 1104-byte `MoltBufferView` = 1112 = 0x458) that pops the
+   reference-derived interior tags off the borrow stack. The pointers survive in
+   the `Py_buffer` and are read by C long afterward → read through a popped tag.
+   The fragile fields were exactly the three that store *pointers into* the boxed
+   descriptor: `format`, `shape`, `strides` (`buf`/`len`/`itemsize`/… are copied
+   by value and were never fragile).
 
-   **Disposition:** NOT fixed here — `buffer.rs`/`memory.rs` are the concurrently-
-   active deadlock-sweep lane's files; a fix there belongs with that lane's
-   descriptor-lifecycle context and would otherwise collide. Handed off with the
-   exact repro above (and a background task) rather than stomped or ignored.
+   **Root-cause fix (all three fields, one model — raw projection).**
+   `install_buffer_internal` now `Box::into_raw`s the descriptor **first**, then
+   derives `format`/`shape`/`strides` from the raw `internal_ptr` by raw
+   projection (`(&raw mut (*descriptor).format).cast::<c_char>()`, likewise
+   `shape`/`strides`) — never through a `&`/`&mut` array reborrow. Raw→raw
+   projection creates no reference retag, so no later Unique retag of the box
+   (`into_raw`, or `Box::from_raw` at `PyBuffer_Release`) can pop them; the
+   pointers stay live for the whole view lifetime. This is the buffer analogue of
+   the bridge header's `UnsafeCell` fix (A): aliasing raw pointers into memory C
+   also holds, kept valid by never routing through a reference reborrow. A
+   `'static` format table was considered and rejected — `shape`/`strides` are
+   inherently per-buffer, and `format` is copied per-buffer from an arbitrary
+   exporter (`descriptor_from_pybuffer`), so raw projection fixes all three
+   uniformly at the source with no interning machinery.
+
+   **Miri re-run (post-fix), lane MIRI-BUFFER-UB.** Both repros PASS under
+   **Stacked Borrows AND Tree Borrows** (`-Zmiri-ignore-leaks`). Whole-binary
+   under both models: `test_object_protocol` 36/36, `test_modules` 25/25, `lib`
+   unit 54/54 — 0 UB. (Fixing C4 un-masked a second, unrelated finding E, below,
+   in the same binary — Miri aborts the process on the *first* UB, so C4 had been
+   hiding it.)
+
+### E. REAL UB (model-dependent) — FIXED in test (`tests/test_modules.rs`, surfaced by the C fix)
+
+5. **`PyModuleDef_Init` return pointer invalidated by a later `&mut def`.**
+   `test_moduledef_init_returns_definition_pointer` calls
+   `PyModuleDef_Init(&mut def)` (returns `(PyObject*)def`, i.e. `out` aliases the
+   local `def`), then asserts `out.cast() == &mut def as *mut PyModuleDef` and
+   reads `(*out).ob_refcnt`. Forming `&mut def` for the comparison is a Unique
+   retag over `def` that pops `out`'s tag, so the following read through `out` is
+   UB (`alloc[0x0]`, `test_modules.rs:762`). **Production `PyModuleDef_Init` is
+   correct** (all raw-pointer: `(*def).m_base… = …; def.cast()`) — the bug is the
+   test's aliasing `&mut`, the same class as finding B. Pre-existing on
+   origin/main; it had been *masked* by C4 aborting first. SB-only, TB-clean.
+
+   **Fix:** take the raw `def` pointer once (`let def_ptr: *mut PyModuleDef =
+   &raw mut def;`), pass it to `PyModuleDef_Init`, and compare/read through
+   `def_ptr`/`out` — no fresh `&mut def` after `out` exists. Same assertions, no
+   weakening; `test_modules` is now 25/25 under SB + TB.
+
+   **Flaky cross-binary SIGSEGV — verdict.** The intermittent full-suite SIGSEGV
+   in the buffer tests is **the same root cause as C4**, not a distinct race: the
+   invalidated `format`/`shape`/`strides` tag is a compile-time provenance
+   hazard, so under `-O` LLVM was free to treat the descriptor store as dead /
+   reorder it around the `Box::into_raw` reborrow, leaving `view.format` pointing
+   into a reused/clobbered slot on real hardware (only *sometimes*, hence flaky).
+   The raw-projection fix removes the reborrow that licensed that reordering, so
+   the C-held pointers now provably alias the live descriptor. No separate
+   allocation/race was found; the fix that closes C4 closes the flaky SIGSEGV.
 
 ### D. Miri limitations — out of scope (documented, not molt bugs)
 
@@ -195,7 +247,7 @@ under all three.
 | test_bridge (26) | clean — **was UB, fixed (A1/A2)** |
 | test_sequences (30) | clean — **was UAF, fixed (B3)** |
 | test_numbers (46), test_strings (33), test_mapping (21), test_type_operations (17), test_refcount (15), test_hooks (14), test_typeobj_semantics (14), test_long_conversions (13), test_stringification (10), test_abstract_protocols (7), test_slice_unpack (7), test_item_access (3), test_list_setitem (3), test_slice (3), test_sys (3), test_cfunction_bridge_registration (3), test_contextvars (2), test_dict_cursor (2), test_fromspec_slots (2), test_capsule (1), test_truthiness (1), frontier_repro (1), test_f4_small_files (40) | clean |
-| test_modules (24/25), test_object_protocol (34/35) | 1 test each = finding **C4** (SB-only, Tree-Borrows-clean) |
+| test_modules (25), test_object_protocol (36) | clean — **was UB, fixed (C4 buffer + E5 moduledef-in-test); green under SB + Tree Borrows** |
 | test_type_ready_inheritance (11/15) | 4 = fn-ptr-identity Miri limitation (D) |
 | test_getset_member_descriptors (7/8) | 1 = Windows isolation file read (D) |
 | test_exceptions, test_pyarg_parse | FFI-into-C shim — out of Miri's reach (D) |
@@ -204,6 +256,10 @@ Honest bottom line: on Windows Miri the **pure-Rust surface is broadly reachable
 (unlike some std/OS-heavy crates) — only 2 of 33 binaries are fully FFI-blocked.
 The bridge's handle-encoding puns were the strict-provenance signal, and they are
 now provenance-correct (exposed model). The two real UB classes in the bridge are
-fixed at the root; the reference-stealing double-frees are fixed in-test; the one
-remaining (buffer `format`) is a Tree-Borrows-clean, model-dependent finding
-handed to its owning lane.
+fixed at the root; the reference-stealing double-frees are fixed in-test; the
+buffer `format`/`shape`/`strides` descriptor pointers (C4) are fixed at the root
+via raw projection off the heap-published box (lane MIRI-BUFFER-UB), which also
+closes the flaky cross-binary buffer SIGSEGV (same provenance hazard); and the
+`PyModuleDef_Init`-return finding (E5) it un-masked is fixed in-test. All named
+findings are RESOLVED — `test_modules`, `test_object_protocol`, and the `lib`
+unit suite are green under Stacked Borrows *and* Tree Borrows.
