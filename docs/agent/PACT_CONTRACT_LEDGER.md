@@ -35,8 +35,9 @@ a queue RUN_ID, a CLAIMS row, or a file on disk.
    row.
 
 _Last refreshed: **2026-07-10**, against `origin/main` @ `4df4fdbad9`. Latest
-correspondence: `010` (landed `7c82badf37`, 2026-07-09). No molt-authored reply
-since `007`._
+correspondence: `010` (landed `7c82badf37`, 2026-07-09). Molt-authored reply
+`011` (progress sync + parity-harness interface + 008–010 ack) authored this
+refresh, landing with the `MATRIX` doc and the `STATUS.md` rewrite in one push._
 
 ## Priority ordering (converged with 010 §4 / 009 §Priority)
 
@@ -110,7 +111,7 @@ no plan, effectively unowned).
 
 | id | obligation | source doc§ | status | evidence | owner / next action |
 |---|---|---|---|---|---|
-| <a id="MATRIX"></a>`MATRIX` | **The `{WASM-CPU, WebGPU} × {headless CI, browser}` support matrix** → supported / needs-port / blocked. Decides the contest-legal target (CPU-WASM vs WebGPU-showcase). This is W1(a)'s second half and answers 008 §4 / 009 P1. | 008 §4 (P1); 009 P1; 010 W1(a) | **not-started** | **Asked three times (008, 009, 010), still open.** Low-cost doc; no lane, no owner. Contest runs `inflate.sh` in a headless CI-class runner (T4/CPU, no display). | Produce the 2×2 matrix (a doc, not compiler work); it unblocks the contest-legal-target decision. |
+| <a id="MATRIX"></a>`MATRIX` | **The `{WASM-CPU, WebGPU} × {headless CI, browser}` support matrix** → supported / needs-port / blocked. Decides the contest-legal target (CPU-WASM vs WebGPU-showcase). This is W1(a)'s second half and answers 008 §4 / 009 P1. | 008 §4 (P1); 009 P1; 010 W1(a) | **done** | **Delivered** `docs/PACT_SUPPORT_MATRIX.md` (2026-07-10, evidence-based per cell). Verdicts: WASM-CPU×headless = supported (witness parity in-flight); WASM-CPU×browser = needs-port (node-proven, browser E2E uncaptured); WebGPU×headless = **blocked** (no node WebGPU binding — grep zero for `@webgpu/dawn`/`wgpu-native`; JS-mock dispatcher only); WebGPU×browser = needs-port (WGSL shaders shipped, on-GPU parity uncaptured). **Contest-legal target = WASM-CPU/native; WebGPU is showcase-only.** | — (kept current as browser/WebGPU proofs land). |
 | <a id="CONTEST-RT"></a>`CONTEST-RT` | **Contest-runtime contracts attached to the authority lane.** 30-min full-eval budget on T4 (16GB) **or** CPU (4-core/16GB); CPU and CUDA are **separate axes**, neither inferred from the other. | 008 §3 (P2); 009 §3 | **queued** | Binding; becomes actionable once `KA` produces a runnable WASM decode to time. | Attach a budget/throughput measurement to the authority lane as it lands. |
 | <a id="RUNTIME-RS"></a>`RUNTIME-RS` | **runtime-rs sister-backend parity.** molt (Python→WASM/WebGPU) and pact's `runtime-rs` (Rust→native) both pass the **same** numpy-fp32 parity vectors; the numpy reference is the single source of truth; promote either backend only after bit-exact parity. | 008 §5 | **queued** | molt's obligation here is `KA` parity itself. runtime-rs is pact-owned; increments #282/#283 referenced in 010 W1(b). | Deliver molt's WASM-CPU parity vectors (= `KA`); coordinate golden vectors with `KERN7`. |
 
@@ -129,7 +130,7 @@ no plan, effectively unowned).
 
 | id | obligation | source doc§ | status | evidence | owner / next action |
 |---|---|---|---|---|---|
-| <a id="RESPOND"></a>`RESPOND` | **Propose the parity-harness interface shape back to pact.** Tell pact the interface it should deliver new-kernel references + parity harness in, so it ships Kernel C/D… in exactly that shape; and (soft) close the loop on 008/009/010 with a molt-authored reply — `007` is the last molt-side doc. | 009 §5; 010 §Open invitation | **not-started** | No molt-authored correspondence since `007`. `009 §5` and `010` both explicitly invite a molt response + interface spec. | Author `collab/pact/011_molt_response_*.md`: (a) the parity-harness interface (co-scoped with `W4-ARRAY`), (b) ack of 008–010, (c) the `MATRIX` answer when ready. |
+| <a id="RESPOND"></a>`RESPOND` | **Propose the parity-harness interface shape back to pact.** Tell pact the interface it should deliver new-kernel references + parity harness in, so it ships Kernel C/D… in exactly that shape; and (soft) close the loop on 008/009/010 with a molt-authored reply — `007` is the last molt-side doc. | 009 §5; 010 §Open invitation | **done** | **Authored** `collab/pact/011_molt_reply_progress_sync_and_harness_proposal_20260710.md`: (a) honest Kernel-A progress sync (the numpy/scipy frontier chain landed this session, **not green** — halts at the split-runtime call-indirect trap, RUN_ID `20260710T033748...ae136709`); (b) the parity-harness interface (per-kernel file-set + declarative `<k>_gates.json` mirroring Kernel A's exact/exact_set/atol/order-robust gates, drop-in for B..7); (c) ack of the 010 work package with the converged W3→W1→P1 ranking; (d) `EMBED-API` flagged done-but-unproven. | — (open the `KERN-CD` ingest once pact ships extracts in this shape). |
 
 ### pact → molt inputs (their side — tracked for completeness)
 
@@ -137,7 +138,7 @@ no plan, effectively unowned).
 |---|---|---|---|---|---|
 | <a id="PACT-BUNDLE"></a>`PACT-BUNDLE` | pact ships the runnable kernel bundle (`field_solve.py`, `witness_forward.py`, fixtures, `check_parity.py`, `verify_against_tac.py`). | 005; 006 | **done** | `collab/pact/pact_witness_kernel/` present with all 7 files. | — |
 | <a id="PACT-RETEST"></a>`PACT-RETEST` | pact owes a $0 re-test of the bundle on its stack (numpy 1.26.4 / scipy 1.17.1). | 010 §1 | **done** | 010 §1: reference reproduce + parity oracle **PASS** (bit-exact, all 11 fields); `verify_against_tac.py` **ALL-MATCH** vs live production 2026-07-09. | — |
-| <a id="KERN-CD"></a>`KERN-CD` | pact hands Kernel C/D… extracts (fixture + reference + `check_parity`) in molt's chosen harness shape, as each of the 7 kernels stabilizes. | 009 §5; 010 §Open invitation | **queued (pact side)** | Blocked on molt delivering the harness interface (`RESPOND`). | Unblock by shipping `RESPOND`; then ingest extracts into the acceptance lane. |
+| <a id="KERN-CD"></a>`KERN-CD` | pact hands Kernel C/D… extracts (fixture + reference + `check_parity`) in molt's chosen harness shape, as each of the 7 kernels stabilizes. | 009 §5; 010 §Open invitation | **queued (pact side, now unblocked)** | Harness interface delivered (`RESPOND` → `011 §2`): per-kernel `<k>.py` + `make_<k>_fixture.py` + `<k>_reference.npz` + declarative `<k>_gates.json` + `verify_against_tac.py`, shared `check_parity.py`. | pact side: ship extracts in the `011 §2` shape; molt ingests them into `pact-witness-acceptance` behind `KA`. |
 
 ## Post-A pivot plan (sequencing the work package)
 
@@ -182,28 +183,31 @@ ride alongside the speed lane.
 
 | status | count | ids |
 |---|---:|---|
-| done | 4 | `EMBED-SAMPLE`, `CAPI-GREENUP`, `PACT-BUNDLE`, `PACT-RETEST` |
+| done | 6 | `EMBED-SAMPLE`, `CAPI-GREENUP`, `PACT-BUNDLE`, `PACT-RETEST`, `MATRIX`, `RESPOND` |
 | in-flight | 3 | `KA`, `KA-GATES`, `EMBED-API` (landed, proof uncaptured) |
 | standing (binding, honored) | 4 | `FP32-BAR`, `PKG-CUSTODY`, `TWO-LANE`, `RULE118` |
 | queued | 6 | `GPU-WORKER`, `KB`, `KERN7`, `FRAMERATE`, `CONTEST-RT`, `RUNTIME-RS`, `KERN-CD` |
-| not-started | 12 | `RELEASE-WASM`, `NUMPY-MATRIX`, `NUMPY-SMOKE`, `MATRIX`, `W3-ONNX`, `W4-ARRAY`, `W2-FLOW`, `W5-DASH`, `P3-TRAIN`, `P4-DEPLOY`, `RESPOND` |
+| not-started | 10 | `RELEASE-WASM`, `NUMPY-MATRIX`, `NUMPY-SMOKE`, `W3-ONNX`, `W4-ARRAY`, `W2-FLOW`, `W5-DASH`, `P3-TRAIN`, `P4-DEPLOY` |
 
-_(Counts: 4 done, 7 in-flight incl. 4 standing constraints, 7 queued incl. the
-pact-side `KERN-CD`, 12 not-started. 30 obligations total.)_
+_(Counts: 6 done, 7 in-flight incl. 4 standing constraints, 7 queued incl. the
+pact-side `KERN-CD`, 10 not-started. 30 obligations total. This refresh moved
+`MATRIX` + `RESPOND` from not-started → done via the `011` reply + support matrix.)_
 
 ## Surprising / under-tracked (read before assuming coverage)
 
-- **STATUS.md is 9 days stale and materially understates progress.**
-  `collab/pact/STATUS.md` is dated 2026-07-01 and describes the frontier as a
-  call-arity-mismatch / function-index-relocation problem. Reality (CLAIMS row
-  186, 2026-07-10) is many frontiers downstream: past `sys.flags` (`f3b97fa194`),
-  past `Py_BuildValue` NULL, past foreign-object custody / `DType.__name__`
-  (`39a4f737ee`) — now at the split-runtime **call-indirect** signature-mismatch
-  trap. Trust `CLAIMS.md` + `git log` over `STATUS.md`; STATUS.md is due a rewrite.
-- **The `{WASM-CPU,WebGPU}×{headless,browser}` support matrix has been asked three
-  times and never produced** (008 §4, 009 P1, 010 W1(a)). It is a low-cost **doc**
-  that gates the contest-legal-target decision, yet no lane owns it. Cheapest
-  high-leverage item on the board.
+- **STATUS.md refreshed to 2026-07-10 (was 9 days stale).** `collab/pact/STATUS.md`
+  previously described the frontier as a call-arity-mismatch / function-index
+  problem; it is now rewritten to the live reality (CLAIMS row 186): the
+  numpy/scipy frontier chain landed (`sys.flags` `f3b97fa194`, GOT retarget
+  `596d8baa8e`, foreign-object custody `39a4f737ee`, …) and the live blocker is
+  the split-runtime **call-indirect** signature-mismatch trap. Historical
+  2026-07-01 notes preserved in-file. Still trust `CLAIMS.md` + `git log` for the
+  daily-moving frontier.
+- **The `{WASM-CPU,WebGPU}×{headless,browser}` support matrix is DELIVERED**
+  (`docs/PACT_SUPPORT_MATRIX.md`, 2026-07-10) after being asked three times (008
+  §4, 009 P1, 010 W1(a)). Evidence-based verdict: **WebGPU is blocked in the
+  headless lane** (no node WebGPU binding; JS-mock dispatcher only), so the
+  **contest-legal target is WASM-CPU/native** and WebGPU is showcase-only.
 - **W3 (the ranked #1 post-A item) is completely unowned.** 010 §4 ranks the ONNX
   trunk export directly under P0 precisely because the substrate already ships —
   yet there is no CLAIMS lane, no queued proof, no export attempt. The entire
@@ -214,9 +218,11 @@ pact-side `KERN-CD`, 12 not-started. 30 obligations total.)_
   `test_browser_embed_forward_roundtrips_float32_typed_arrays` is flagged
   **Unknown** in STATUS.md ("do not treat as green until rerun on a quiet
   machine"). The implementation landed; the acceptance was never captured green.
-- **No molt-authored reply since 007.** 009 §5 and 010's open invitation explicitly
-  ask molt to propose the parity-harness interface and respond to 008–010. That
-  reply (`RESPOND` → a `collab/pact/011_*.md`) is owed and untracked.
+- **Molt-authored reply 011 delivered** (`collab/pact/011_molt_reply_progress_sync_and_harness_proposal_20260710.md`),
+  closing the "no reply since 007" gap: honest Kernel-A progress sync (not green —
+  call-indirect frontier), the parity-harness interface for Kernel C/D (per-kernel
+  file-set + declarative `<k>_gates.json`), 008–010 ack with the converged
+  W3→W1→P1 ranking, and the `EMBED-API` done-but-unproven flag.
 - **`docs/CAPABILITIES.md` has zero numpy/scipy content**, corroborating 010 §0's
   honest framing that no general numpy-array runtime is documented today — the 007
   greenup is a symbol-surface declaration, not a runtime proof. The `NUMPY-MATRIX`
