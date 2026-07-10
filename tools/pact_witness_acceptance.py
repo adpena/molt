@@ -73,6 +73,22 @@ def _run_capture(
     return result
 
 
+def _iteration_mode() -> bool:
+    """Frontier-iteration lane: fast runtime profile + lattice reuse.
+
+    Set ``MOLT_WITNESS_ITERATION=1`` for import/frontier debugging cycles.
+    A run in this mode is loudly stamped and its PASS is NOT acceptance
+    evidence — the exit-criteria green must be reproduced with this unset
+    (exact ship-profile artifacts, M05).
+    """
+    return os.environ.get("MOLT_WITNESS_ITERATION", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def _node_bin() -> str:
     requested = os.environ.get("MOLT_NODE_BIN", "").strip()
     if requested:
@@ -224,6 +240,16 @@ def _summarize_build_diagnostics(diagnostics_path: Path) -> None:
 
 def _build_wasm(build_dir: Path) -> Path:
     env = _build_env()
+    if _iteration_mode():
+        # Frontier-iteration lane (doctrine 74 law 3 + doc 75 lever #1): the
+        # ship profile's fat-LTO/cgu=1 runtime codegen neither ships nor
+        # changes a deterministic import/frontier outcome, so iteration cycles
+        # use the landed fast knobs. `setdefault` keeps an operator pin
+        # authoritative. Final green MUST run WITHOUT MOLT_WITNESS_ITERATION:
+        # the result is stamped non-acceptance below and cannot count as the
+        # exit-criteria PASS (M05).
+        env.setdefault("MOLT_RUNTIME_BUILD_PROFILE", "dev-fast")
+        env.setdefault("MOLT_BUILD_REUSE_COMPATIBLE", "1")
     # Diagnostics-only (no build-output change): attribute the hidden
     # frontend-lowering + runtime-wasm-rebuild wall and capture the
     # cross-session lowering-cache hit_rate on the witness path. Absolute file
@@ -621,10 +647,22 @@ def main(argv: list[str] | None = None) -> int:
 
     build_dir, run_dir = _prepare_attempt_dirs(args.out_dir)
 
+    if _iteration_mode():
+        print(
+            "!! ITERATION MODE (MOLT_WITNESS_ITERATION=1): fast runtime profile; "
+            "result is NOT acceptance evidence — reproduce green with it unset.",
+            flush=True,
+        )
     output_wasm = _build_wasm(build_dir)
     candidate, reference = _run_candidate(output_wasm, run_dir)
     _check_parity(candidate, reference)
-    print("pact witness acceptance PASS", flush=True)
+    if _iteration_mode():
+        print(
+            "pact witness acceptance PASS [ITERATION MODE — NOT acceptance evidence]",
+            flush=True,
+        )
+    else:
+        print("pact witness acceptance PASS", flush=True)
     return 0
 
 
