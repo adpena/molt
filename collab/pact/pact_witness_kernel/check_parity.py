@@ -1,5 +1,19 @@
 """Parity oracle: compare a candidate field-solve output against the reference.
 
+SUPERSEDED as the wired acceptance authority: `tools/pact_witness_acceptance.py`
+now calls `collab/pact/parity/check_parity.py` (the generalized, declarative-manifest
+engine, driven by `field_solve_gates.json`) so there is exactly ONE parity authority,
+per the `011` parity-harness proposal §2. This file is kept, unmodified in behavior,
+for two things only:
+  1. the frozen equivalence-proof reference in
+     `tests/tools/test_pact_parity_engine.py` (proving the new engine's verdict is
+     identical to this one's, per-array, on the real Kernel A reference); and
+  2. the standalone CPython-only sanity self-check driven by
+     `tools/pact_witness_oracle.py` (regenerate + self-consistency check, no Molt
+     WASM candidate involved).
+Do not add new gates or kernels here -- new kernels get a `<k>_gates.json` manifest
+for the shared engine instead (see `collab/pact/parity/make_kernel_scaffold.py`).
+
 Usage:
     python check_parity.py candidate_outputs.npz [reference_outputs.npz]
 

@@ -63,6 +63,15 @@ The oracle lane regenerates ignored `.npz` outputs in a temporary directory and
 proves the tracked `check_parity.py` gates without creating a second acceptance
 path.
 
+**Acceptance authority note:** `pact-witness-acceptance` (the real Molt-WASM-vs-reference
+check) is wired to the shared, generalized engine at `../parity/check_parity.py`, driven
+by the declarative `field_solve_gates.json` manifest in this directory — not the inline
+`check_parity.py` above. That file's gate dicts are the ones `field_solve_gates.json`
+generalizes; it is kept only as the equivalence-proof reference
+(`tests/tools/test_pact_parity_engine.py`) and for the `pact-witness-oracle` CPython-only
+sanity self-check. Kernels B..7 land as a `<k>_gates.json` manifest for the shared engine
+— see `../parity/make_kernel_scaffold.py` for the drop-in scaffold generator.
+
 `field_solve` is deterministic (no RNG/time/I/O) and bit-identical across CPython re-runs. The two
 cross-implementation-fragile spots (sort tie-order, eigh sign) are **already canonicalized inside the
 kernel**, so WASM does not need to match LAPACK's sign or numpy's tie convention — only the ops in
