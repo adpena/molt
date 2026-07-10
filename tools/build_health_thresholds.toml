@@ -1,0 +1,19 @@
+# Build-health anomaly thresholds — the expected bands for the build_health_gate.
+# Crossing one prints a LOUD attention block (the deterministic hook that triggers
+# investigation of redundant work / configured-not-effective smells).
+
+# Runtime should rebuild AT MOST once per build — single-compile serves reloc+shared.
+# >1 means the build path isn't routed through _ensure_runtime_wasm_both (task #33).
+max_runtime_rebuilds = 1
+
+# Frontend lowering cache: on a build where module sources are unchanged, the cache
+# should approach full reuse. Below this floor (with enough modules + real re-lower
+# time) means a cache-key input is over-sensitive (M34 configured!=effective).
+frontend_lowering_cache_hit_floor = 0.80
+frontend_lowering_cache_min_observed = 40   # don't alarm on tiny/first builds
+relowered_waste_floor_s = 30.0              # only alarm when real time is wasted
+
+# A single build phase dominating (candidate for content-address caching if it
+# re-runs on unchanged inputs).
+phase_dominance_frac = 0.55
+phase_dominance_min_total_s = 120.0
