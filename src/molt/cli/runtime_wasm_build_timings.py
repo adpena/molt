@@ -30,6 +30,25 @@ from typing import Any
 
 _LOCK = threading.Lock()
 _RUNTIME_WASM_BUILD_PHASES: list[dict[str, Any]] = []
+# Presence attestation for the reloc runtime's long-double link archives
+# (libc-printscan-long-double.a + libclang_rt.builtins-wasm32.a). One of
+# "present" / "MISSING" / "not_required"; surfaced under MOLT_BUILD_DIAGNOSTICS
+# as ``longdouble_archives`` so every run self-reports whether the runtime it
+# built/reused actually carries the %L formatters (effect attestation: a missing
+# archive silently relinks wasi-libc's long_double_not_supported abort() stub).
+_RUNTIME_WASM_LONGDOUBLE_ARCHIVES: str | None = None
+
+
+def _record_runtime_wasm_longdouble_archives(status: str) -> None:
+    """Record whether the reloc long-double link archives resolved this build.
+
+    ``status`` is one of ``present`` (both archives resolved), ``MISSING`` (at
+    least one did not), or ``not_required`` (a build that provably does not link
+    long double, e.g. micro / no numpy). Last write wins.
+    """
+    global _RUNTIME_WASM_LONGDOUBLE_ARCHIVES
+    with _LOCK:
+        _RUNTIME_WASM_LONGDOUBLE_ARCHIVES = status
 
 
 def _record_runtime_wasm_build_phase(
@@ -67,7 +86,8 @@ def _runtime_wasm_build_timings_snapshot() -> dict[str, Any] | None:
     """
     with _LOCK:
         phases = [dict(record) for record in _RUNTIME_WASM_BUILD_PHASES]
-    if not phases:
+        longdouble_archives = _RUNTIME_WASM_LONGDOUBLE_ARCHIVES
+    if not phases and longdouble_archives is None:
         return None
     cargo_builds = [
         record
@@ -79,7 +99,7 @@ def _runtime_wasm_build_timings_snapshot() -> dict[str, Any] | None:
         for record in phases
         if record["phase"] == "cargo_compile" and record["mode"] != "build"
     ]
-    return {
+    snapshot: dict[str, Any] = {
         "phases": phases,
         "cargo_compile_builds": len(cargo_builds),
         "cargo_compile_reuses": len(cargo_reuses),
@@ -88,9 +108,14 @@ def _runtime_wasm_build_timings_snapshot() -> dict[str, Any] | None:
         ),
         "total_wall_s": round(sum(record["wall_s"] for record in phases), 6),
     }
+    if longdouble_archives is not None:
+        snapshot["longdouble_archives"] = longdouble_archives
+    return snapshot
 
 
 def _reset_runtime_wasm_build_timings() -> None:
     """Clear the process-local accumulator. Intended for tests and per-run reuse."""
+    global _RUNTIME_WASM_LONGDOUBLE_ARCHIVES
     with _LOCK:
         _RUNTIME_WASM_BUILD_PHASES.clear()
+        _RUNTIME_WASM_LONGDOUBLE_ARCHIVES = None
