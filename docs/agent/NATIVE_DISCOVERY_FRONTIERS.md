@@ -20,6 +20,11 @@ witness cycle — ~260×).
 # One command: build the harness (incremental), static symbol-gap check,
 # then drive PyInit and localise the runtime frontier via MOLT_TRACE_CAPI.
 CARGO_TARGET_DIR=<fast-dir> tools/native_numpy_discovery.sh _multiarray_umath
+
+# WHOLE-witness symbol-gap sweep (numpy core + numpy.linalg + scipy.ndimage) in
+# ONE native pass — the complete Tier-A frontier for the field_solve compute
+# surface (see the 2026-07-10 DISCOVERY-ALL-AT-ONCE update below).
+CARGO_TARGET_DIR=<fast-dir> tools/native_witness_symbol_sweep.sh
 ```
 
 Requires a Unix host with real `dlopen`/`RTLD_GLOBAL` (macOS or Linux — NOT
@@ -217,3 +222,196 @@ numpy-closure lane's concern, not `molt-cpython-abi`.
   in a separate lane) and are unverifiable until numpy reaches structseq — left
   as the loud stub rather than shipped as an unverifiable, possibly-masking
   partial (M05).
+
+
+---
+
+## Progress update — 2026-07-10 (lane DISCOVERY-ALL-AT-ONCE)
+
+> Operator directive: *"no more leaves — all at once."* Extend the engine to
+> enumerate EVERY remaining witness frontier in ONE native sweep, so they batch-
+> fix in coherent lanes instead of one-per-30-min-wasm-cycle. Driven on
+> `tertiary` (macOS arm64), worktree `~/molt-disc` rebased onto `origin/main`
+> `556ff0bb9` (single-authority long-double + ABI fixes landed). numpy `1.26.4`
+> + scipy `1.13.1` cp312 wheels unpacked; `field_solve.py` is the compute target.
+
+### Engine extensions landed this lane
+
+1. **Whole-witness symbol sweep** — `tools/native_witness_symbol_sweep.sh`.
+   The companion to `native_numpy_discovery.sh`: instead of driving ONE
+   extension's `PyInit`, it statically diffs the undefined `Py*` imports of
+   **every** extension `.so` the `field_solve.py` compute path loads (numpy core
+   + `numpy.linalg` + `scipy.ndimage`) against molt's exported ABI (authority =
+   the `molt-cext-discovery` harness, which links the real
+   `molt-cpython-abi` + `molt-runtime`). One pass (~1 s after a warm harness)
+   yields the COMPLETE Tier-A frontier for the whole witness surface. A missing
+   DATA/function symbol is a *guaranteed* frontier (macOS `dlopen(RTLD_NOW)`
+   aborts on the first unresolved symbol; ELF traps on first call), so this
+   static diff is exhaustive and exact.
+
+2. **PEP 489 multi-phase init in the extension loader** — `runtime/molt-cpython-abi/src/loader.rs`.
+   Real molt fix (see below). VERIFIED to advance the native drive of scipy's
+   Cython `_ni_label` from a bare `PyModuleDef` all the way through its
+   `Py_mod_exec` module body.
+
+### Tier A — COMPLETE whole-witness ABI symbol-gap frontier  (real-wasm-frontier)
+
+molt's ABI exports **605** `Py*` symbols. Across the whole `field_solve.py`
+compute surface the aggregate gap is **14 unique symbols** (reproduce with
+`tools/native_witness_symbol_sweep.sh`):
+
+| extension `.so` (field_solve path) | numpy/scipy op it backs | needs | GAP |
+|---|---|---|---|
+| `numpy.core._multiarray_umath` | ndarray, ufuncs, `argmax/sort/where/clip/...` | 301 | **5** |
+| `numpy.linalg._umath_linalg` | `np.linalg.eigh` (Hessian 2×2) | 21 | **0** |
+| `numpy.linalg.lapack_lite` | LAPACK fallback for eigh | 26 | **2** |
+| `scipy.ndimage._nd_image` | `distance_transform_edt`,`gaussian_filter`,`maximum/minimum_filter` | 46 | **1** |
+| `scipy.ndimage._ni_label` | `label` (Cython, PEP 489 multi-phase) | 182 | **8** |
+
+Grouped into **batch-fix lanes** (each symbol tagged; all are real-wasm-frontiers
+— the witness's recompiled-to-wasm extensions reference the same C-API names):
+
+**Lane A-SIZE — `PY_SSIZE_T_CLEAN` variadic aliases (5).** ABI-identical to the
+base functions (molt is already ssize-clean). Fix = `#[export_name]` alias on
+the same impls (a linker `-alias` works for DATA singletons but NOT for these
+functions on macOS ld64). numpy does not reference them during
+`_multiarray_umath` init (they bind lazily at array-op runtime), so they do not
+block init — but they WILL be needed at compute time.
+`_PyArg_ParseTuple_SizeT`, `_PyArg_ParseTupleAndKeywords_SizeT`,
+`_PyArg_VaParseTupleAndKeywords_SizeT`, `_PyObject_CallFunction_SizeT`,
+`_PyObject_CallMethod_SizeT`.
+
+**Lane A-EXC — exception-type construction (1).** `PyErr_NewException(name,
+base, dict)` — creates a new exception class. `lapack_lite` (and most
+extensions defining a custom error) need it. molt has exception machinery but
+does not export this constructor. Real gap; moderate.
+
+**Lane A-FATAL — fatal-error hook (1).** `_Py_FatalErrorFunc` — backs the
+`Py_FatalError` macro (`scipy` `_nd_image` + `_ni_label`). Trivial: print +
+`abort()` with the CPython message contract.
+
+**Lane A-CYTHON — Cython-3 runtime surface (7).** Needed by scipy's Cython
+extensions (`_ni_label`, and the Cython half of `_nd_image`, plus essentially
+every scipy/sklearn/pandas Cython module):
+`PyCMethod_New` (vectorcall C-method object), `PyVectorcall_Function`
+(vectorcall accessor), `PyImport_GetModule` (sys.modules lookup — trivial;
+molt has `PyImport_AddModule`/`GetModuleDict` but not the plain getter),
+`PyThread_allocate_lock` / `PyThread_free_lock` (opaque thread locks),
+`_PyList_Extend`, `_PyUnicode_FastCopyCharacters` (private fast-path helpers).
+Real gaps; a coherent single batch since they all gate the Cython class.
+
+> Why this is the whole-surface answer: the sweep proves the ENTIRE remaining
+> symbol frontier for `field_solve.py` is these 14 — no more symbol-leaf
+> discovery is needed for the compute path. Close the four lanes and every
+> witness extension resolves at the symbol level.
+
+### Loader frontier — PEP 489 multi-phase init  (real-wasm-frontier, FIXED inline)
+
+Driving each extension's `PyInit` natively surfaced a structural loader gap.
+`scipy.ndimage._ni_label` is a Cython-3 module using **PEP 489 multi-phase
+init**: it links `PyModuleDef_Init` (not `PyModule_Create2`), so
+`PyInit__ni_label()` returns a `PyModuleDef*`, not a finished module. molt's ABI
+already implements the machinery (`PyModuleDef_Init`,
+`PyModule_FromDefAndSpec`, `PyModule_ExecDef` — `src/api/modules.rs`), but the
+**loader** (`load_cpython_extension`) only handled single-phase: it treated the
+returned `PyModuleDef*` as a module and failed with
+`InitReturnedUnmappedObject`. This blocks the ENTIRE multi-phase extension class
+(most of scipy); numpy's hand-written single-phase `_multiarray_umath` was
+unaffected, which is why it drove further.
+
+**Fix (LANDED, verified):** `load_cpython_extension` now detects a
+`PyModuleDef` return (`ob_type == &PyModuleDef_Type`, exactly as CPython's
+import machinery does) and drives `PyModule_FromDefAndSpec(def, spec)` — which
+runs the `Py_mod_create` + `Py_mod_exec` slots — against a synthesized module
+`spec`. The synthesized spec carries the attributes a multi-phase init reads,
+mirroring importlib's real `ModuleSpec`: `name`, `loader` (None — Cython's
+`__Pyx_copy_spec_to_module` copies `spec.loader` → `__loader__` with
+`allow_missing = 0`, i.e. it must be present), `origin` (the `.so` path →
+`__file__`), `parent` (→ `__package__`), `submodule_search_locations` (None →
+`__path__`), `cached`.
+
+**Verified advance chain** (each step re-run in ~8 s):
+`InitReturnedUnmappedObject` → (multi-phase) `silent getattr(spec,"loader")`
+→ (+loader/origin) `getattr(spec,"submodule_search_locations")` → (+full spec)
+**`Py_mod_exec:enter`** → the real Cython module body runs, imports `sys`
+successfully against molt-runtime (`import stage name=sys pending=<none>`), then
+fails on a subsequent import (below). No single-phase regression:
+`_multiarray_umath` still reaches `numpy.exceptions` unchanged.
+
+### Tier B — runtime / import frontiers  (mixed; see tags)
+
+* **`_multiarray_umath` → `PyImport_ImportModule("numpy.exceptions")`**
+  *(native-packaging-artifact — AOT-closure lane, NOT an ABI gap).* Unchanged
+  current numpy-init frontier. numpy's C init imports its pure-Python sibling;
+  molt's native importer is **registry-driven** (`molt_module_registry_blob`,
+  a baked-in table of AOT-compiled module init pointers) with **no runtime
+  `.py` source loader**, and the discovery harness (`stdlib_micro`) has neither
+  numpy's modules registered nor an embedded frontend (`compile`/`exec` is
+  `stdlib_ast`-gated, absent here). So the sibling import fails with
+  `ImportError`. In the real wasm witness numpy is a full AOT-compiled package,
+  so this resolves through package/import closure — the E1 numpy-closure lane's
+  concern.
+
+* **Cython exec → empty-name / relative import → `set_import_unavailable`**
+  *(real-wasm-frontier — error-quality, low severity).* After `_ni_label` imports
+  `sys` fine, its exec makes a further import that lands on `import_module_bytes`'
+  empty-name / hooks-guard branch and surfaces the confusing
+  `ImportError: "import API is not available in standalone molt-cpython-abi"`
+  rather than a clean `ModuleNotFoundError`. The downstream cause is again the
+  numpy-AOT wall (Cython `cimport numpy`), but the ABI's import entrypoints
+  should return a precise `ModuleNotFoundError('numpy')` on this path. Worth a
+  small ABI fix independent of the AOT closure.
+
+* **numpy↔scipy version-compat** *(native-packaging-artifact — witness pinning).*
+  `scipy 1.13.1`'s `_nd_image` `import_array()` requests
+  **`numpy._core._multiarray_umath`** (numpy-2.x layout), while the unpacked
+  numpy is `1.26.4` (`numpy.core`). The witness must pin an ABI-consistent
+  numpy+scipy pair (e.g. scipy 1.11.x built against numpy 1.26, or numpy 2.x
+  throughout). Not a molt frontier; record so a fix is not spent on it.
+
+### Tier C — `field_solve.py` compute-op frontier map  (real-wasm-frontier, latent)
+
+The exact numpy+scipy C-API surface `field_solve.py` exercises — the compute
+frontiers that go live once the import wall (Tier B) is unblocked. Grouped by
+backing extension:
+
+| op in `field_solve.py` | numpy/scipy API | backing `.so` (C-API) |
+|---|---|---|
+| per-class SDF, `argmax(-1)`, `sort(axis=-1)`, `where`, `clip`, `abs`, `stack`, `gradient`, `percentile`, `lexsort`, `zeros/asarray/astype`, boolean-mask & fancy indexing, `array_equal` | numpy ndarray + ufunc + `PyArray_*` C-API | `numpy.core._multiarray_umath` |
+| `np.linalg.eigh(2×2 Hessian)` → eigenvalues/vectors | `numpy.linalg` gufunc `eigh` | `numpy.linalg._umath_linalg` (+ `lapack_lite` LAPACK `dsyevd`) |
+| `distance_transform_edt`, `gaussian_filter(sigma)`, `maximum_filter(size)`, `minimum_filter(size)` | `scipy.ndimage` filters/morphology | `scipy.ndimage._nd_image` |
+| `label(mask)` connected-components | `scipy.ndimage.label` | `scipy.ndimage._ni_label` (Cython, multi-phase — loader fix above) |
+
+These become drivable natively per-op the moment the numpy package is AOT-closed
+(or the harness is given a numpy-module provider — see the honest limit). Until
+then they are enumerated, not driven; each is a real-wasm-frontier.
+
+### HONEST LIMIT — why full native `import numpy` is blocked in this mode
+
+The C-ext-import discovery mode is **structurally blocked at the first numpy
+pure-Python sibling import**, and the block is NOT an ABI gap:
+
+* molt's native importer (`isolate_import_dispatch` → `module_id_of` →
+  `molt_module_registry_blob`) is **registry-driven / AOT**: a module resolves
+  only if its compiled init pointer is baked into the binary's registry. There
+  is **no runtime filesystem `.py` source loader**, and the `stdlib_micro`
+  harness embeds **no frontend** (`compile`/`exec` are `stdlib_ast`-gated and
+  absent). So `PyImport_ImportModule("numpy.exceptions")` — and every numpy/scipy
+  pure-Python module — cannot be resolved by this harness.
+* Driving full `import numpy` natively therefore requires the **AOT witness
+  pipeline** (molt frontend compiles numpy's `.py` closure → registry), i.e. the
+  very pipeline this engine exists to shortcut. The gap is real and belongs to
+  the numpy-closure / AOT lane, not `molt-cpython-abi`.
+
+**What the native engine CAN and DID enumerate exhaustively without the AOT
+pipeline:** the complete Tier-A symbol frontier for the whole compute surface
+(14 symbols, 4 lanes); the PEP 489 multi-phase loader frontier (fixed, verified
+by driving `_ni_label` into its exec body); the per-extension first-frontier for
+every witness `.so`; the numpy C-init import-closure entrypoint
+(`numpy.exceptions`); the error-quality import frontier; and the version-compat
+pin. **Next engine step to drive deeper** (recorded, not yet built): give the
+discovery harness a numpy-package *provider* — register the numpy/scipy
+pure-Python modules into molt's module cache via the ABI (a discovery
+instrumentation, tagged packaging-artifact, exactly like the singleton stubs) —
+to punch past the import wall and surface the Tier-B/Tier-C runtime-semantic
+frontiers of numpy's array machinery natively.
