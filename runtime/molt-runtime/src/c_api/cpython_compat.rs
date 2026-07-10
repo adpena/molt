@@ -1691,8 +1691,7 @@ pub extern "C" fn PySet_Discard(set: u64, key: u64) -> i32 {
         let ptr = match obj_from_bits(set).as_ptr() {
             Some(ptr) if unsafe { object_type_id(ptr) } == TYPE_ID_SET => ptr,
             _ => {
-                let _ =
-                    raise_exception::<u64>(_py, "SystemError", "PySet_Discard: expected a set");
+                let _ = raise_exception::<u64>(_py, "SystemError", "PySet_Discard: expected a set");
                 return -1;
             }
         };

@@ -21,7 +21,6 @@ pub(crate) use molt_runtime_platform::importlib_support::{
 use molt_runtime_platform::path_text::{
     path_basename_text, path_dirname_text, path_join_text, path_normpath_text,
 };
-pub(crate) use molt_runtime_platform::socket_constants::{SOCK_CLOEXEC_FLAG, SOCK_NONBLOCK_FLAG};
 use molt_runtime_platform::uuid_support::{
     uuid_node, uuid_v1_bytes, uuid_v3_bytes, uuid_v4_bytes, uuid_v5_bytes,
 };

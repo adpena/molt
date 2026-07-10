@@ -908,10 +908,7 @@ pub extern "C" fn molt_functools_update_wrapper(
         let missing = crate::missing_bits(_py);
         let assigned_iter = molt_iter(assigned_bits);
         if !obj_from_bits(assigned_iter).is_none() {
-            loop {
-                let Some((val_bits, done)) = iter_next_pair(_py, assigned_iter) else {
-                    break;
-                };
+            while let Some((val_bits, done)) = iter_next_pair(_py, assigned_iter) {
                 if done {
                     break;
                 }
@@ -935,10 +932,7 @@ pub extern "C" fn molt_functools_update_wrapper(
         }
         let updated_iter = molt_iter(updated_bits);
         if !obj_from_bits(updated_iter).is_none() {
-            loop {
-                let Some((val_bits, done)) = iter_next_pair(_py, updated_iter) else {
-                    break;
-                };
+            while let Some((val_bits, done)) = iter_next_pair(_py, updated_iter) {
                 if done {
                     break;
                 }

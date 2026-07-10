@@ -1927,7 +1927,9 @@ pub(crate) fn alloc_intarray(_py: &PyToken<'_>, values: &[i64]) -> *mut u8 {
     ptr
 }
 
-#[allow(clippy::too_many_arguments)]
+// clippy(dead_code): pre-unified-memoryview-API allocator, retained through the
+// TypedStridedStorage migration (c1414d9cfa); a follow-up task wires or removes it.
+#[allow(clippy::too_many_arguments, dead_code)]
 pub(crate) fn alloc_memoryview(
     _py: &PyToken<'_>,
     owner_bits: u64,
@@ -1988,10 +1990,9 @@ pub(crate) fn alloc_memoryview_from_storage(
         let base = obj_from_bits(storage.base_bits);
         if let Some(base_ptr) = base.as_ptr()
             && let Some(base_slice) = unsafe { bytes_like_slice_raw(base_ptr) }
+            && !storage.fits_in_base_len(base_slice.len())
         {
-            if !storage.fits_in_base_len(base_slice.len()) {
-                return std::ptr::null_mut();
-            }
+            return std::ptr::null_mut();
         }
     }
     let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<MemoryView>();
@@ -2038,7 +2039,9 @@ pub(crate) fn alloc_memoryview_from_storage(
     ptr
 }
 
-#[allow(clippy::too_many_arguments)]
+// clippy(dead_code): pre-unified-memoryview-API allocator, retained through the
+// TypedStridedStorage migration (c1414d9cfa); a follow-up task wires or removes it.
+#[allow(clippy::too_many_arguments, dead_code)]
 pub(crate) fn alloc_memoryview_shaped(
     _py: &PyToken<'_>,
     owner_bits: u64,

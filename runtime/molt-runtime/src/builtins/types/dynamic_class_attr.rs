@@ -622,10 +622,6 @@ pub extern "C" fn molt_types_dynamic_class_attr_deleter(self_bits: u64, fdel_bit
     })
 }
 
-/// # Safety
-/// `obj_ptr_bits` must encode a valid Molt object header that can be mutated,
-/// and `class_bits` must be either zero or a valid Molt type object.
-
 pub(crate) fn dynamic_class_attribute_class(_py: &PyToken<'_>) -> u64 {
     let class_bits = types_class(
         _py,

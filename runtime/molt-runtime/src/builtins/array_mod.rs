@@ -406,6 +406,12 @@ impl ArrayHandle {
 
 type ArrayCell = Mutex<ArrayHandle>;
 
+// clippy(dead_code): the array buffer-export lease mechanism (export refcount via
+// `ArrayCell::exports`, released by this lease's Drop) is landed but not yet wired
+// into a live export path — `resize_blocked` reads the count, yet nothing outside
+// this cluster increments it. Retained (recent buffer-custody WIP, c798e48331)
+// rather than deleted; a follow-up task tracks wiring or removing it.
+#[allow(dead_code)]
 struct ArrayBufferLease {
     cell: Arc<ArrayCell>,
 }
@@ -424,6 +430,7 @@ fn array_arc_from_bits(bits: u64) -> Option<Arc<ArrayCell>> {
     native_handle_arc::<ArrayCell>(bits)
 }
 
+#[allow(dead_code)] // array buffer-export lease cluster (see ArrayBufferLease)
 fn array_lease_arc_from_bits(bits: u64) -> Option<Arc<ArrayBufferLease>> {
     native_handle_arc::<ArrayBufferLease>(bits)
 }
@@ -465,6 +472,7 @@ fn ensure_array_resizable(_py: &PyToken<'_>, handle: &ArrayHandle) -> Result<(),
     }
 }
 
+#[allow(dead_code)] // array buffer-export lease cluster (see ArrayBufferLease)
 fn array_cell_from_export_source(_py: &PyToken<'_>, bits: u64) -> Option<Arc<ArrayCell>> {
     if let Some(cell) = array_arc_from_bits(bits) {
         return Some(cell);
@@ -484,6 +492,7 @@ fn array_cell_from_export_source(_py: &PyToken<'_>, bits: u64) -> Option<Arc<Arr
     }
 }
 
+#[allow(dead_code)] // array buffer-export lease cluster (see ArrayBufferLease)
 unsafe fn object_array_handle_bits(
     _py: &PyToken<'_>,
     obj_ptr: *mut u8,
@@ -518,6 +527,7 @@ unsafe fn object_array_handle_bits(
     }
 }
 
+#[allow(dead_code)] // array buffer-export lease cluster (see ArrayBufferLease)
 pub(crate) fn array_storage_from_object_bits(
     _py: &PyToken<'_>,
     bits: u64,
@@ -551,6 +561,7 @@ pub(crate) fn array_storage_from_object_bits(
     .ok_or(TypedStridedStorageError::InvalidDescriptor)
 }
 
+#[allow(dead_code)] // array buffer-export lease cluster (see ArrayBufferLease)
 pub(crate) fn array_buffer_owner_bits(_py: &PyToken<'_>, bits: u64) -> Result<Option<u64>, ()> {
     if array_lease_arc_from_bits(bits).is_some() {
         crate::inc_ref_bits(_py, bits);

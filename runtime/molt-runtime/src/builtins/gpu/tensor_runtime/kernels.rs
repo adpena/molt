@@ -2104,7 +2104,7 @@ pub(super) unsafe fn matmul_f32(
         let mut b_batch_index = 0usize;
         for axis in 0..out_batch_strides.len() {
             let stride = out_batch_strides[axis];
-            let coord = if stride == 0 { 0 } else { rem / stride };
+            let coord = rem.checked_div(stride).unwrap_or(0);
             rem %= stride.max(1);
             if padded_a_batch_shape[axis] != 1 {
                 a_batch_index += coord * a_batch_strides[axis];

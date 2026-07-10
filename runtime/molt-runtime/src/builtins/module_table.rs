@@ -41,8 +41,8 @@
 //!   5.8) requires the first-init dict snapshot that lands in PR4; until then
 //!   that transition fails closed with a named diagnostic.
 //!
-//! Platform note: everything here is target-neutral by construction (atomics
-//! + GIL discipline; thread ids from `crate::concurrency::current_thread_id`);
+//! Platform note: everything here is target-neutral by construction (atomics +
+//! GIL discipline; thread ids from `crate::concurrency::current_thread_id`);
 //! there are no host-OS branches, so Windows/macOS/Linux share one code path.
 #![cfg(not(target_arch = "wasm32"))]
 
@@ -935,11 +935,14 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicU64 as TestCounter;
 
+    /// One synthetic registry row, in the Python layout writer's column order.
+    type BlobRow = (String, u64, Option<u32>, Option<u32>, u8, u8);
+
     /// Mirror of the Python layout authority (`molt.cli.module_registry`),
     /// used to build a synthetic registry blob for the state-machine tests.
     /// Divergence from the real writer fails `ModuleRegistry::parse`.
     struct BlobBuilder {
-        rows: Vec<(String, u64, Option<u32>, Option<u32>, u8, u8)>,
+        rows: Vec<BlobRow>,
     }
 
     impl BlobBuilder {
