@@ -528,3 +528,80 @@ fn type_call_without_tp_new_raises_type_error_not_null_funcref() {
     );
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 }
+
+// Records what `args` its caller received: whether the pointer was NULL and, if
+// not, the tuple length. Proves the CPython `PyObject_CallObject(c, NULL)`
+// contract at the `tp_new` boundary.
+static RECORD_ARGS_WAS_NULL: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+static RECORD_ARGS_LEN: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(-777);
+
+unsafe extern "C" fn recording_new(
+    tp: *mut PyTypeObject,
+    args: *mut PyObject,
+    _kwds: *mut PyObject,
+) -> *mut PyObject {
+    RECORD_ARGS_WAS_NULL.store(args.is_null(), std::sync::atomic::Ordering::SeqCst);
+    let len = if args.is_null() {
+        -1
+    } else {
+        unsafe { molt_cpython_abi::api::sequences::PyTuple_Size(args) as i64 }
+    };
+    RECORD_ARGS_LEN.store(len, std::sync::atomic::Ordering::SeqCst);
+    unsafe { molt_cpython_abi::api::typeobj::PyType_GenericAlloc(tp, 0) }
+}
+
+/// Regression: `PyObject_CallObject(callable, NULL)` MUST invoke the callee's
+/// `tp_call`/`tp_new` with the empty-tuple singleton, never a NULL `args`
+/// pointer — the CPython contract (Objects/call.c routes NULL args through
+/// `_PyObject_CallNoArgs`). numpy's `use_new_as_default` (dtypemeta.c) relies on
+/// exactly this to build a parametric DType's default descriptor:
+/// `PyObject_CallObject((PyObject*)DTypeClass, NULL)` and the DType's `tp_new`
+/// (e.g. numpy `stringdtype_new`) parses `args` as a tuple. Forwarding NULL
+/// strands that `tp_new`.
+#[test]
+fn call_object_with_null_args_passes_empty_tuple_not_null_to_tp_new() {
+    init();
+    let type_type = &raw mut PyType_Type;
+
+    // Metatype (numpy's `_DTypeMeta` shape): tp_base = &PyType_Type, readied so
+    // it inherits `type_call` as its `tp_call`.
+    let mut meta: PyTypeObject = unsafe { std::mem::zeroed() };
+    meta.tp_name = c"numpy._DTypeMeta".as_ptr();
+    meta.tp_basicsize = std::mem::size_of::<PyTypeObject>() as Py_ssize_t;
+    meta.tp_base = type_type;
+    assert_eq!(unsafe { ready(&mut meta) }, 0);
+
+    // A parametric "DType class" whose `tp_new` records its `args`.
+    let mut dtype_class: PyTypeObject = unsafe { std::mem::zeroed() };
+    dtype_class.tp_name = c"numpy.dtypes.StringDType".as_ptr();
+    dtype_class.tp_basicsize = 64;
+    dtype_class.tp_new = Some(recording_new);
+    dtype_class.ob_base.ob_base.ob_type = &mut meta;
+    assert_eq!(unsafe { ready(&mut dtype_class) }, 0);
+
+    RECORD_ARGS_WAS_NULL.store(true, std::sync::atomic::Ordering::SeqCst);
+    RECORD_ARGS_LEN.store(-777, std::sync::atomic::Ordering::SeqCst);
+
+    // The exact numpy call: PyObject_CallObject(DTypeClass, NULL).
+    let obj = unsafe {
+        molt_cpython_abi::api::object::PyObject_CallObject(
+            (&mut dtype_class as *mut PyTypeObject).cast::<PyObject>(),
+            ptr::null_mut(),
+        )
+    };
+    assert!(
+        !obj.is_null(),
+        "PyObject_CallObject must instantiate through tp_new"
+    );
+    assert!(
+        !RECORD_ARGS_WAS_NULL.load(std::sync::atomic::Ordering::SeqCst),
+        "tp_new must receive a real (empty-tuple) args pointer, never NULL — \
+         the CPython PyObject_CallObject(c, NULL) contract"
+    );
+    assert_eq!(
+        RECORD_ARGS_LEN.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "the synthesized args must be an EMPTY tuple (len 0)"
+    );
+}
