@@ -2482,6 +2482,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "molt-cext-discovery"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "molt-lang-cpython-abi",
+ "molt-runtime",
+]
+
+[[package]]
 name = "molt-codegen-abi"
 version = "0.1.0"
 
