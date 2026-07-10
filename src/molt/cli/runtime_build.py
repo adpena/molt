@@ -86,6 +86,7 @@ from molt.cli.runtime_wasm_cache import (
 )
 from molt.cli.runtime_wasm_build_timings import (
     _record_runtime_wasm_build_phase,
+    _record_runtime_wasm_longdouble_archives,
     _runtime_wasm_build_timings_snapshot,
 )
 from molt.cli.runtime_wasm_validation import (
@@ -1612,6 +1613,119 @@ def _reloc_link_archive_fingerprint_token() -> str:
     return hashlib.sha256(";".join(parts).encode("utf-8")).hexdigest()[:16]
 
 
+# Top-level packages whose native extensions format/parse `long double` (%L)
+# during import, so the reloc runtime they link against MUST carry wasi-libc's
+# long-double formatters (else the stub abort()s -> unreachable at import).
+_LONG_DOUBLE_MODULE_PREFIXES = frozenset({"numpy", "scipy"})
+
+
+def _reloc_runtime_requires_long_double(
+    *,
+    resolved_modules: set[str] | frozenset[str] | None,
+    required_exports: set[str] | frozenset[str] | None,
+) -> bool:
+    """Whether this reloc runtime links code that hits wasi-libc's ``%L`` path.
+
+    True for the CPython-ABI tier (numpy/scipy C extensions format/parse
+    ``long double`` during import) — identified by a non-empty CPython-ABI
+    requested-export set — or when a resolved module is (a submodule of) numpy or
+    scipy. For these builds a missing long-double formatter archive is a HARD
+    ERROR (the runtime would relink wasi-libc's ``long_double_not_supported``
+    abort() stub -> raw ``unreachable`` trap at ``_multiarray_umath`` import), not
+    a silent graceful degrade. Non-numpy / micro builds stay degradable.
+    """
+    if wasm_cpython_abi_requested_export_names(required_exports):
+        return True
+    if resolved_modules:
+        for module in resolved_modules:
+            if module.split(".", 1)[0] in _LONG_DOUBLE_MODULE_PREFIXES:
+                return True
+    return False
+
+
+# (archive filename, resolver) pairs the reloc long-double link depends on.
+_RELOC_LONG_DOUBLE_ARCHIVE_RESOLVERS = (
+    ("libc-printscan-long-double.a", wasm_toolchain.wasm_wasi_printscan_long_double_archive),
+    ("libclang_rt.builtins-wasm32.a", wasm_toolchain.wasm_clang_rt_builtins_archive),
+)
+
+
+def _long_double_archives_missing_message(missing: Sequence[str]) -> str:
+    """Actionable hard-error diagnostic naming the missing archive(s) + the fix."""
+    names = ", ".join(missing)
+    return (
+        "Runtime relocatable wasm link (CPython-ABI/numpy tier) requires the "
+        "wasi-libc long-double formatter archives, but these are not resolvable: "
+        f"{names}. This runtime links numpy/scipy long double formatting; "
+        "proceeding would relink wasi-libc's long_double_not_supported stub and "
+        "abort() (raw `unreachable` trap) at _multiarray_umath import. Refusing "
+        "to build a runtime that traps (no silent degrade). Provision the "
+        "archives (both ship pinned in-repo at vendor/wasm-builtins/, resolved by "
+        "molt.cli.wasm_toolchain automatically): "
+        "libc-printscan-long-double.a ships in the wasi-sysroot-33.0+m tarball "
+        "(lib/wasm32-wasip1/) — set MOLT_WASI_SYSROOT / MOLT_TARGET_ROOT to a "
+        "complete sysroot; libclang_rt.builtins-wasm32.a is wasi-sdk-33 compiler-rt "
+        "(lib/clang/*/lib/wasip1/). If they resolve None the committed "
+        "vendor/wasm-builtins copy is missing — restore it (see its README)."
+    )
+
+
+class _RelocLongDoubleArchives(NamedTuple):
+    """Resolved reloc long-double link archives + fail-loud / degrade decision."""
+
+    longdouble: Path | None
+    builtins: Path | None
+    error: str | None
+    warnings: tuple[str, ...]
+
+
+def _resolve_reloc_long_double_archives(
+    *, long_double_required: bool
+) -> _RelocLongDoubleArchives:
+    """Resolve the reloc long-double archives and decide fail-loud vs degrade.
+
+    Records the ``longdouble_archives`` build attestation (present/MISSING). When
+    ``long_double_required`` and either archive is unresolved, returns an
+    ``error`` (the caller MUST abort the build — a numpy runtime that traps is
+    never acceptable). Otherwise returns the archives plus any degrade
+    ``warnings`` for a build that provably does not need long double.
+    """
+    longdouble = wasm_toolchain.wasm_wasi_printscan_long_double_archive()
+    builtins = wasm_toolchain.wasm_clang_rt_builtins_archive()
+    resolved = {
+        "libc-printscan-long-double.a": longdouble,
+        "libclang_rt.builtins-wasm32.a": builtins,
+    }
+    missing = [name for name, _ in _RELOC_LONG_DOUBLE_ARCHIVE_RESOLVERS if resolved[name] is None]
+    if not long_double_required:
+        _record_runtime_wasm_longdouble_archives(
+            "not_required" if missing else "present"
+        )
+    else:
+        _record_runtime_wasm_longdouble_archives("MISSING" if missing else "present")
+        if missing:
+            return _RelocLongDoubleArchives(
+                longdouble, builtins, _long_double_archives_missing_message(missing), ()
+            )
+    warnings: list[str] = []
+    if longdouble is None:
+        warnings.append(
+            "Runtime relocatable wasm link warning: wasi-libc "
+            "libc-printscan-long-double.a not found in the active WASI sysroot or "
+            "vendor/wasm-builtins; long double %L formatting will abort() "
+            "(unreachable) at runtime."
+        )
+    elif builtins is None:
+        warnings.append(
+            "Runtime relocatable wasm link warning: long-double printf/scanf "
+            "archive present but libclang_rt.builtins-wasm32.a is not resolvable "
+            "(sysroot / wasi-sdk resource dir / vendor/wasm-builtins) — binary128 "
+            "soft-float (__addtf3/__multf3/…) will not resolve. Provision wasi-sdk "
+            "compiler-rt builtins."
+        )
+    return _RelocLongDoubleArchives(longdouble, builtins, None, tuple(warnings))
+
+
 def _link_runtime_staticlib_to_reloc_wasm(
     *,
     staticlib_path: Path,
@@ -1619,6 +1733,7 @@ def _link_runtime_staticlib_to_reloc_wasm(
     json_output: bool,
     link_timeout: float | None,
     export_link_args: str = "",
+    long_double_required: bool = False,
 ) -> bool:
     wasm_ld = shutil.which("wasm-ld")
     if wasm_ld is None:
@@ -1653,29 +1768,28 @@ def _link_runtime_staticlib_to_reloc_wasm(
     # wasi-sdk's compiler-rt builtins so the binary128 soft-float the formatters
     # call (__addtf3/__multf3/…) — and numpy's own longdouble arithmetic — resolve
     # here instead of degrading to unresolved imports at the final app link.
-    longdouble_archive = wasm_toolchain.wasm_wasi_printscan_long_double_archive()
-    builtins_archive = wasm_toolchain.wasm_clang_rt_builtins_archive()
+    #
+    # When this runtime links numpy/scipy (``long_double_required``), a missing
+    # archive is a HARD ERROR: building a runtime that would relink the abort()
+    # stub and trap at import is never acceptable, and the old warn-but-proceed
+    # graceful degrade silently masked exactly that regression. Non-numpy / micro
+    # builds keep the degrade path (they never hit %L).
+    archives = _resolve_reloc_long_double_archives(
+        long_double_required=long_double_required
+    )
+    if archives.error is not None:
+        if not json_output:
+            print(archives.error, file=sys.stderr)
+        return False
+    if not json_output:
+        for warning in archives.warnings:
+            print(warning, file=sys.stderr)
     whole_archive_inputs = [str(staticlib_path)]
     trailing_archives = [str(libc_archive)]
-    if longdouble_archive is not None:
-        whole_archive_inputs.append(str(longdouble_archive.resolve(strict=False)))
-        if builtins_archive is not None:
-            trailing_archives.append(str(builtins_archive.resolve(strict=False)))
-        elif not json_output:
-            print(
-                "Runtime relocatable wasm link warning: long-double printf/scanf "
-                "archive present but libclang_rt.builtins-wasm32.a is not in the "
-                "active WASI sysroot — binary128 soft-float (__addtf3/__multf3/…) "
-                "will not resolve. Provision wasi-sdk compiler-rt builtins.",
-                file=sys.stderr,
-            )
-    elif not json_output:
-        print(
-            "Runtime relocatable wasm link warning: wasi-libc "
-            "libc-printscan-long-double.a not found in the active WASI sysroot; "
-            "long double %L formatting will abort() (unreachable) at runtime.",
-            file=sys.stderr,
-        )
+    if archives.longdouble is not None:
+        whole_archive_inputs.append(str(archives.longdouble.resolve(strict=False)))
+        if archives.builtins is not None:
+            trailing_archives.append(str(archives.builtins.resolve(strict=False)))
     export_args = _wasm_link_args_from_rustflags(export_link_args)
     if export_args:
         export_response_path = _write_wasm_link_args_response_file(
@@ -2033,6 +2147,26 @@ def _ensure_runtime_wasm(
         if not json_output:
             print("Failed to compute runtime wasm fingerprint.", file=sys.stderr)
         return False
+    # FAIL LOUD for the witness/CPython-ABI tier: when this reloc runtime links
+    # numpy/scipy long double, the long-double formatter + compiler-rt builtins
+    # archives MUST be resolvable. Check BEFORE any reuse/hydrate/build path (the
+    # shared-cache / compat-lattice / fingerprint-match reuse paths skip the
+    # reloc link entirely) so a runtime that would relink the abort() stub and
+    # trap at import can never be built OR served from cache. Micro / no-numpy
+    # builds are unaffected (they degrade). The archive presence is folded into
+    # the fingerprint, so a degraded (archives-absent) cached runtime is keyed
+    # separately and only ever reused by other archives-absent builds — which
+    # this gate then refuses for the numpy tier.
+    long_double_required = reloc and _reloc_runtime_requires_long_double(
+        resolved_modules=resolved_modules,
+        required_exports=required_exports,
+    )
+    if long_double_required:
+        _archives = _resolve_reloc_long_double_archives(long_double_required=True)
+        if _archives.error is not None:
+            if not json_output:
+                print(_archives.error, file=sys.stderr)
+            return False
     # V3 lattice index recorded alongside every published artifact: the
     # profile-independent ABI identity so a later iteration-profile request can
     # find this artifact as compatible-or-better (see runtime_wasm_cache).
@@ -2177,6 +2311,7 @@ def _ensure_runtime_wasm(
                 json_output=json_output,
                 link_timeout=cargo_timeout,
                 export_link_args=runtime_exports,
+                long_double_required=long_double_required,
             ):
                 return False
             _record_runtime_wasm_build_phase(
@@ -2468,6 +2603,7 @@ def _ensure_runtime_wasm(
                 json_output=json_output,
                 link_timeout=cargo_timeout,
                 export_link_args=runtime_exports,
+                long_double_required=long_double_required,
             ):
                 return False
             _record_runtime_wasm_build_phase(
