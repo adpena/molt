@@ -10,8 +10,10 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 CI = ROOT / ".github" / "workflows" / "ci.yml"
 DEV_GATES = ROOT / "tools" / "molt_dev_gates.toml"
+RUNNER = ROOT / "tools" / "run_cargo_test_truth.py"
 _CARGO_TEST = re.compile(r"cargo\s+test\b[^\n\"']*")
 _CANONICAL = "cargo test --workspace --tests --no-fail-fast"
+_RUNNER_COMMAND = "python3 tools/run_cargo_test_truth.py"
 
 
 def _commands(path: Path) -> list[tuple[int, str]]:
@@ -25,10 +27,16 @@ def _commands(path: Path) -> list[tuple[int, str]]:
 
 def violations() -> list[str]:
     failures = []
-    if CI.read_text(encoding="utf-8").count(_CANONICAL) != 1:
+    if CI.read_text(encoding="utf-8").count(_RUNNER_COMMAND) != 1:
         failures.append(
-            f"{CI.relative_to(ROOT)} must contain exactly one canonical workspace "
-            f"test execution: {_CANONICAL!r}"
+            f"{CI.relative_to(ROOT)} must contain exactly one canonical truth runner: "
+            f"{_RUNNER_COMMAND!r}"
+        )
+    if RUNNER.read_text(encoding="utf-8").count(
+        '("cargo", "test", "--workspace", "--tests", "--no-fail-fast")'
+    ) != 1:
+        failures.append(
+            f"{RUNNER.relative_to(ROOT)} must execute exactly {_CANONICAL!r}"
         )
     for path in (CI, DEV_GATES):
         for line_number, command in _commands(path):

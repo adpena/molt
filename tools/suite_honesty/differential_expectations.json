@@ -4,7 +4,38 @@
   "_compliance_note": "The `compliance` block tracks the pytest compliance suite (tests/compliance/py3{12,13,14}/test_spec.py), a DIFFERENT harness from the differential JSONL. The guard LINTS these entries (every `fail`/`uncalibrated` is validated the same way -- tracking + root_cause + evidence on a fail; loud uncalibrated) but does NOT differential-reality-check them (no shared results file). Each key is 'tests/compliance/<pkg>/test_spec.py::<Class>::<method>'. FINDING THIS SESSION: the py314 PEP-649 deferred-annotation case that earlier reports flagged ('2' != '0') now PASSES on native@3.14 (molt defers annotations correctly) -- it is FIXED and deliberately NOT seeded as a debt (mirrors the stale generator-shape entries). The py313 multiline-docstring case is host-version-gated (skips on a 3.14 host) and could not be cleanly re-confirmed here under build contention, so it is marked native@3.13 'uncalibrated' (loud) pending a py3.13 calibration run, rather than asserted or silently dropped.",
   "_dimensions": "Keys under `dimensions` are '<backend>' or '<backend>@<cpython-version>'. Backends: native, llvm, wasm, luau. `native` (basic + a 28-test stdlib slice) and `wasm` (4 #59 PEP-695/typing E1-inliner build failures, task #55) are calibrated (against native_calibration.jsonl on CPython 3.14). llvm/wasm/luau are UNCALIBRATED at the suite level pending their own calibration lanes (follow-up task #46-llvm-wasm-luau-calibration); add per-test backend dimensions only with verified evidence from those runs, never from description. Per this session's reviews: generator shapes pre-3fe511c3d are now FIXED (do NOT seed); candidate llvm/wasm debts to verify in that lane include sum int->float #37, alias_reassign bigint-carrier, gen.throw shapes #51 (LLVM dominance + a noted native miscompile).",
   "_root_cause_groups": "Many native failures share a root cause; the `tracking` field names the shared bug (e.g. #3 asyncio, #50 generic_class). Per-test entries are kept because the ratchet enforces per-test, but fixing the shared bug should flip a whole group to pass at once \u2014 then remove that group's entries.",
-  "execution_reds": [],
+  "execution_reds": [
+    {
+      "identity": "wasm::tests::call_indirect_table::reloc_table_ref_exports_do_not_publish_reserved_runtime_sentinels",
+      "owner": "E1-NUMPY-2.5.1-UNWIND / wasm-toolchain",
+      "predicate": {
+        "target": "default"
+      },
+      "expiry": "2026-07-18",
+      "evidence": "workspace proof 20260711T122805-substrate2-workspace-tests-rerun-0ac443245bfb4901: reloc test omits molt_main while module_abi table init requires it; module_abi is board-frozen",
+      "introduced_sha": "82c20b082da"
+    },
+    {
+      "identity": "wasm::tests::native_callable::native_callable_forward_f32_rejects_non_unary_payload_abi",
+      "owner": "E1-NUMPY-2.5.1-UNWIND / wasm-toolchain",
+      "predicate": {
+        "target": "default"
+      },
+      "expiry": "2026-07-18",
+      "evidence": "workspace proof 20260711T122805-substrate2-workspace-tests-rerun-0ac443245bfb4901: expected panic occurs on optimizer worker thread and does not propagate to the should_panic test owner",
+      "introduced_sha": "82c20b082da"
+    },
+    {
+      "identity": "wasm::tests::native_callable::native_callable_pyinit_imports_wasm32_pointer_and_extends_to_value_lane",
+      "owner": "E1-NUMPY-2.5.1-UNWIND / wasm-toolchain",
+      "predicate": {
+        "target": "default"
+      },
+      "expiry": "2026-07-18",
+      "evidence": "workspace proof 20260711T122805-substrate2-workspace-tests-rerun-0ac443245bfb4901: generated type index shifted from the test's STATIC_TYPE_COUNT assumption",
+      "introduced_sha": "82c20b082da"
+    }
+  ],
   "compliance": {
     "tests/compliance/py313/test_spec.py::TestDocstringHandling::test_multiline_docstring_stripping": {
       "dimensions": {
