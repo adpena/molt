@@ -1141,6 +1141,16 @@ pub unsafe fn init_static_types() {
         PyComplex_Type.tp_richcompare = Some(crate::api::typeobj::molt_complex_richcompare);
         PyUnicode_Type.tp_richcompare = Some(crate::api::typeobj::molt_str_richcompare);
         PyBytes_Type.tp_richcompare = Some(crate::api::typeobj::molt_bytes_richcompare);
+        PyLong_Type.tp_repr = Some(crate::api::typeobj::molt_native_repr);
+        PyLong_Type.tp_str = Some(crate::api::typeobj::molt_native_str);
+        PyBool_Type.tp_repr = Some(crate::api::typeobj::molt_native_repr);
+        PyBool_Type.tp_str = Some(crate::api::typeobj::molt_native_str);
+        PyFloat_Type.tp_repr = Some(crate::api::typeobj::molt_native_repr);
+        PyFloat_Type.tp_str = Some(crate::api::typeobj::molt_native_str);
+        PyUnicode_Type.tp_repr = Some(crate::api::typeobj::molt_native_repr);
+        PyUnicode_Type.tp_str = Some(crate::api::typeobj::molt_native_str);
+        PyNone_Type.tp_repr = Some(crate::api::typeobj::molt_native_repr);
+        PyNone_Type.tp_str = Some(crate::api::typeobj::molt_native_str);
 
         PyByteArray_Type.tp_dealloc = Some(crate::api::strings::molt_bytearray_dealloc);
         PyComplex_Type.tp_dealloc = Some(crate::api::numbers::molt_complex_dealloc);
