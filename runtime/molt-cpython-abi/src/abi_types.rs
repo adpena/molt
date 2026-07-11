@@ -646,7 +646,39 @@ pub const Py_TPFLAGS_CHECKTYPES: c_ulong = 0;
 pub const Py_TPFLAGS_HAVE_NEWBUFFER: c_ulong = 0;
 pub const Py_TPFLAGS_IS_ABSTRACT: c_ulong = 1 << 20;
 pub const Py_TPFLAGS_BASE_EXC_SUBCLASS: c_ulong = 1 << 30;
-pub const Py_TPFLAGS_DEFAULT: c_ulong = Py_TPFLAGS_BASETYPE;
+// ── Full tp_flags surface (values verified against CPython v3.12.0
+// Include/object.h). The `*_SUBCLASS` fast-check bits + the protocol/behaviour
+// flags were previously undefined on the Rust side, so the builtin static type
+// shells could not carry them and `PyType_FastSubclass`/`PyType_HasFeature`
+// answered wrong (matrix PyTypeObject #1/#2, L3).
+pub const Py_TPFLAGS_MANAGED_WEAKREF: c_ulong = 1 << 3;
+pub const Py_TPFLAGS_MANAGED_DICT: c_ulong = 1 << 4;
+pub const Py_TPFLAGS_SEQUENCE: c_ulong = 1 << 5;
+pub const Py_TPFLAGS_MAPPING: c_ulong = 1 << 6;
+pub const Py_TPFLAGS_DISALLOW_INSTANTIATION: c_ulong = 1 << 7;
+pub const Py_TPFLAGS_IMMUTABLETYPE: c_ulong = 1 << 8;
+pub const Py_TPFLAGS_HAVE_VECTORCALL: c_ulong = 1 << 11;
+pub const Py_TPFLAGS_METHOD_DESCRIPTOR: c_ulong = 1 << 17;
+pub const Py_TPFLAGS_VALID_VERSION_TAG: c_ulong = 1 << 19;
+/// Undocumented CPython-internal flag (Include/object.h @ v3.12.0): the type
+/// matches itself as a `match`-statement class pattern. Set on the self-matching
+/// builtin leaf types (int/float/str/bytes/bytearray/list/tuple/dict/set).
+pub const _Py_TPFLAGS_MATCH_SELF: c_ulong = 1 << 22;
+pub const Py_TPFLAGS_ITEMS_AT_END: c_ulong = 1 << 23;
+pub const Py_TPFLAGS_LONG_SUBCLASS: c_ulong = 1 << 24;
+pub const Py_TPFLAGS_LIST_SUBCLASS: c_ulong = 1 << 25;
+pub const Py_TPFLAGS_TUPLE_SUBCLASS: c_ulong = 1 << 26;
+pub const Py_TPFLAGS_BYTES_SUBCLASS: c_ulong = 1 << 27;
+pub const Py_TPFLAGS_UNICODE_SUBCLASS: c_ulong = 1 << 28;
+pub const Py_TPFLAGS_DICT_SUBCLASS: c_ulong = 1 << 29;
+pub const Py_TPFLAGS_TYPE_SUBCLASS: c_ulong = 1 << 31;
+/// `Py_TPFLAGS_DEFAULT` is **0** on a standard (non-STACKLESS) CPython v3.12.0
+/// build (`Include/object.h`: `Py_TPFLAGS_HAVE_STACKLESS_EXTENSION | 0`, and the
+/// stackless bit is 0 off-Stackless). The prior `= Py_TPFLAGS_BASETYPE` was a
+/// duplicate-authority drift vs the C header's correct `Py_TPFLAGS_DEFAULT (0)`
+/// (matrix PyTypeObject #5); a flag computation seeded from it would silently
+/// mark every type BASETYPE.
+pub const Py_TPFLAGS_DEFAULT: c_ulong = 0;
 
 /// The `(major<<24)|(minor<<16)|(micro<<8)|level` hex Python version — the ONE
 /// version authority the ABI is pinned to. The `Py_Version` data symbol below
@@ -984,6 +1016,12 @@ pub unsafe fn init_static_types() {
         // which breaks numpy ufunc dispatch (get_info_no_cast) — see
         // `molt_tuple_richcompare`.
         PyTuple_Type.tp_richcompare = Some(crate::api::sequences::molt_tuple_richcompare);
+        // Sibling structural-comparison slots (close the same zeroed-shell class on
+        // the container types numpy/scipy touch): list is element-wise like tuple;
+        // dict is EQ/NE key-value equality. Without them two distinct-but-equal
+        // list/dict objects compare unequal by object identity in do_richcompare.
+        PyList_Type.tp_richcompare = Some(crate::api::sequences::molt_list_richcompare);
+        PyDict_Type.tp_richcompare = Some(crate::api::mapping::molt_dict_richcompare);
         PyByteArray_Type.tp_dealloc = Some(crate::api::strings::molt_bytearray_dealloc);
         PyComplex_Type.tp_dealloc = Some(crate::api::numbers::molt_complex_dealloc);
         PyDictProxy_Type.tp_basicsize = std::mem::size_of::<PyDictProxyObject>() as Py_ssize_t;
@@ -1023,6 +1061,157 @@ pub unsafe fn init_static_types() {
         set_name!(PyType_Type, b"type\0");
         set_name!(PyBaseObject_Type, b"object\0");
         set_name!(PyFrozenSet_Type, b"frozenset\0");
+
+        // ── Builtin type-object shells: full CPython v3.12.0 `tp_flags` / `tp_base`
+        // / `tp_basicsize`. The `set_name!` above left `tp_flags = READY` only, so
+        // `PyType_FastSubclass(&PyLong_Type, LONG_SUBCLASS)`, `PyType_HasFeature(_,
+        // BASETYPE)` and the `tp_base`-chain `PyType_IsSubtype` all answered wrong
+        // (numpy's inlined feature/subclass tests miss). Per-type `tp_flags` verified
+        // against each `Objects/*.c` static initialiser PLUS the `*_SUBCLASS` bits
+        // `inherit_special` folds in at ready-time (e.g. bool inherits LONG_SUBCLASS
+        // from int); `tp_base` set so the subtype chain terminates at `object`
+        // (matrix PyTypeObject #1/#2/#5, L3). `tp_basicsize` is set for the numeric
+        // /object leaves numpy subclasses (their layout is a real molt struct);
+        // container/str/module basicsize is left to the bridge (molt does not store
+        // them as fixed CPython structs) — flagged, not silently faked.
+        macro_rules! shell {
+            ($ty:expr, $flags:expr, $base:expr) => {
+                $ty.tp_flags = ($flags) | Py_TPFLAGS_READY;
+                $ty.tp_base = $base;
+            };
+        }
+        let object: *mut PyTypeObject = &raw mut PyBaseObject_Type;
+        // object — root of the hierarchy; DEFAULT|BASETYPE, no base.
+        PyBaseObject_Type.tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_READY;
+        PyBaseObject_Type.tp_base = std::ptr::null_mut();
+        PyBaseObject_Type.tp_basicsize = std::mem::size_of::<PyObject>() as Py_ssize_t;
+        // type — the metaclass. HAVE_GC|BASETYPE|TYPE_SUBCLASS|HAVE_VECTORCALL|
+        // ITEMS_AT_END. (tp_basicsize = sizeof(PyHeapTypeObject) + tp_itemsize are
+        // set with the heap-type work.) numpy's `_DTypeMeta` sets tp_base=&PyType_Type.
+        shell!(
+            PyType_Type,
+            Py_TPFLAGS_DEFAULT
+                | Py_TPFLAGS_HAVE_GC
+                | Py_TPFLAGS_BASETYPE
+                | Py_TPFLAGS_TYPE_SUBCLASS
+                | Py_TPFLAGS_HAVE_VECTORCALL
+                | Py_TPFLAGS_ITEMS_AT_END,
+            object
+        );
+        // int — LONG_SUBCLASS|BASETYPE|MATCH_SELF; variable-length (ob_digit tail).
+        shell!(
+            PyLong_Type,
+            Py_TPFLAGS_DEFAULT
+                | Py_TPFLAGS_BASETYPE
+                | Py_TPFLAGS_LONG_SUBCLASS
+                | _Py_TPFLAGS_MATCH_SELF,
+            object
+        );
+        PyLong_Type.tp_basicsize =
+            core::mem::offset_of!(PyLongObject, long_value.ob_digit) as Py_ssize_t;
+        PyLong_Type.tp_itemsize = std::mem::size_of::<u32>() as Py_ssize_t;
+        // bool — subclass of int (inherits LONG_SUBCLASS); NOT BASETYPE (final).
+        shell!(
+            PyBool_Type,
+            Py_TPFLAGS_DEFAULT | Py_TPFLAGS_LONG_SUBCLASS,
+            &raw mut PyLong_Type
+        );
+        PyBool_Type.tp_basicsize =
+            core::mem::offset_of!(PyLongObject, long_value.ob_digit) as Py_ssize_t;
+        PyBool_Type.tp_itemsize = std::mem::size_of::<u32>() as Py_ssize_t;
+        // float — BASETYPE|MATCH_SELF. CPython PyFloatObject = {PyObject_HEAD; double}.
+        shell!(
+            PyFloat_Type,
+            Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | _Py_TPFLAGS_MATCH_SELF,
+            object
+        );
+        PyFloat_Type.tp_basicsize =
+            (std::mem::size_of::<PyObject>() + std::mem::size_of::<std::os::raw::c_double>())
+                as Py_ssize_t;
+        // complex — BASETYPE.
+        shell!(
+            PyComplex_Type,
+            Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,
+            object
+        );
+        PyComplex_Type.tp_basicsize = std::mem::size_of::<PyComplexObject>() as Py_ssize_t;
+        // str — UNICODE_SUBCLASS|BASETYPE|MATCH_SELF.
+        shell!(
+            PyUnicode_Type,
+            Py_TPFLAGS_DEFAULT
+                | Py_TPFLAGS_BASETYPE
+                | Py_TPFLAGS_UNICODE_SUBCLASS
+                | _Py_TPFLAGS_MATCH_SELF,
+            object
+        );
+        // bytes — BYTES_SUBCLASS|BASETYPE|MATCH_SELF; variable-length (ob_sval tail).
+        shell!(
+            PyBytes_Type,
+            Py_TPFLAGS_DEFAULT
+                | Py_TPFLAGS_BASETYPE
+                | Py_TPFLAGS_BYTES_SUBCLASS
+                | _Py_TPFLAGS_MATCH_SELF,
+            object
+        );
+        PyBytes_Type.tp_basicsize = core::mem::offset_of!(PyBytesObject, ob_sval) as Py_ssize_t;
+        PyBytes_Type.tp_itemsize = std::mem::size_of::<std::os::raw::c_char>() as Py_ssize_t;
+        // bytearray — BASETYPE|MATCH_SELF.
+        shell!(
+            PyByteArray_Type,
+            Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | _Py_TPFLAGS_MATCH_SELF,
+            object
+        );
+        PyByteArray_Type.tp_basicsize = std::mem::size_of::<PyByteArrayObject>() as Py_ssize_t;
+        // list — HAVE_GC|BASETYPE|LIST_SUBCLASS|MATCH_SELF|SEQUENCE.
+        shell!(
+            PyList_Type,
+            Py_TPFLAGS_DEFAULT
+                | Py_TPFLAGS_HAVE_GC
+                | Py_TPFLAGS_BASETYPE
+                | Py_TPFLAGS_LIST_SUBCLASS
+                | _Py_TPFLAGS_MATCH_SELF
+                | Py_TPFLAGS_SEQUENCE,
+            object
+        );
+        // tuple — HAVE_GC|BASETYPE|TUPLE_SUBCLASS|MATCH_SELF|SEQUENCE.
+        shell!(
+            PyTuple_Type,
+            Py_TPFLAGS_DEFAULT
+                | Py_TPFLAGS_HAVE_GC
+                | Py_TPFLAGS_BASETYPE
+                | Py_TPFLAGS_TUPLE_SUBCLASS
+                | _Py_TPFLAGS_MATCH_SELF
+                | Py_TPFLAGS_SEQUENCE,
+            object
+        );
+        // dict — HAVE_GC|BASETYPE|DICT_SUBCLASS|MATCH_SELF|MAPPING.
+        shell!(
+            PyDict_Type,
+            Py_TPFLAGS_DEFAULT
+                | Py_TPFLAGS_HAVE_GC
+                | Py_TPFLAGS_BASETYPE
+                | Py_TPFLAGS_DICT_SUBCLASS
+                | _Py_TPFLAGS_MATCH_SELF
+                | Py_TPFLAGS_MAPPING,
+            object
+        );
+        // set / frozenset — HAVE_GC|BASETYPE|MATCH_SELF.
+        shell!(
+            PySet_Type,
+            Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC | Py_TPFLAGS_BASETYPE | _Py_TPFLAGS_MATCH_SELF,
+            object
+        );
+        shell!(
+            PyFrozenSet_Type,
+            Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC | Py_TPFLAGS_BASETYPE | _Py_TPFLAGS_MATCH_SELF,
+            object
+        );
+        // module — HAVE_GC|BASETYPE.
+        shell!(
+            PyModule_Type,
+            Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC | Py_TPFLAGS_BASETYPE,
+            object
+        );
 
         Py_None.ob_type = &raw mut PyNone_Type;
         // `Py_True`/`Py_False` set `ob_base.ob_type = &PyBool_Type` in their const
@@ -1861,6 +2050,107 @@ mod immortal_authority_tests {
                 "Py_False ob_type == &PyBool_Type"
             );
             assert!(is_immortal_refcnt((*f).ob_base.ob_refcnt));
+        }
+    }
+
+    /// Mask-proof (ABI-TYPEOBJECT-L4, type-shell flags/base): the builtin static
+    /// type shells now carry their full CPython v3.12.0 `tp_flags` (was `READY`
+    /// only → every `*_SUBCLASS`/`BASETYPE` fast-check answered 0) and a `tp_base`
+    /// chain (was NULL → `PyType_IsSubtype` could not walk to a base). Verifies the
+    /// exact checks numpy's inlined feature tests rely on; fails pre-fix.
+    #[test]
+    fn builtin_type_shells_carry_correct_fast_subclass_flags_and_base() {
+        crate::bridge::molt_cpython_abi_init();
+        use crate::api::typeobj::{PyType_HasFeature, PyType_IsSubtype};
+        unsafe {
+            let long_t = &raw mut PyLong_Type;
+            let bool_t = &raw mut PyBool_Type;
+            let list_t = &raw mut PyList_Type;
+            let dict_t = &raw mut PyDict_Type;
+            let tuple_t = &raw mut PyTuple_Type;
+            let unicode_t = &raw mut PyUnicode_Type;
+            let type_t = &raw mut PyType_Type;
+            let object_t = &raw mut PyBaseObject_Type;
+
+            // FastSubclass = HasFeature(t, <TYPE>_SUBCLASS): each base carries its
+            // own fast bit (pre-fix 0 → e.g. numpy's inlined PyLong_Check misses).
+            assert_eq!(PyType_HasFeature(long_t, Py_TPFLAGS_LONG_SUBCLASS), 1, "int LONG_SUBCLASS");
+            assert_eq!(PyType_HasFeature(list_t, Py_TPFLAGS_LIST_SUBCLASS), 1, "list LIST_SUBCLASS");
+            assert_eq!(PyType_HasFeature(tuple_t, Py_TPFLAGS_TUPLE_SUBCLASS), 1, "tuple TUPLE_SUBCLASS");
+            assert_eq!(PyType_HasFeature(dict_t, Py_TPFLAGS_DICT_SUBCLASS), 1, "dict DICT_SUBCLASS");
+            assert_eq!(PyType_HasFeature(unicode_t, Py_TPFLAGS_UNICODE_SUBCLASS), 1, "str UNICODE_SUBCLASS");
+            assert_eq!(PyType_HasFeature(type_t, Py_TPFLAGS_TYPE_SUBCLASS), 1, "type TYPE_SUBCLASS");
+
+            // Subclassability: int/list/object ARE BASETYPE; bool is NOT (final).
+            assert_eq!(PyType_HasFeature(long_t, Py_TPFLAGS_BASETYPE), 1, "int subclassable");
+            assert_eq!(PyType_HasFeature(object_t, Py_TPFLAGS_BASETYPE), 1, "object subclassable");
+            assert_eq!(PyType_HasFeature(bool_t, Py_TPFLAGS_BASETYPE), 0, "bool is final (not BASETYPE)");
+
+            // bool IS an int subclass — via the fast bit AND the tp_base chain.
+            assert_eq!(PyType_HasFeature(bool_t, Py_TPFLAGS_LONG_SUBCLASS), 1, "bool inherits LONG_SUBCLASS");
+            assert_eq!(PyType_IsSubtype(bool_t, long_t), 1, "bool <: int");
+            assert_eq!(PyType_IsSubtype(bool_t, object_t), 1, "bool <: object (chain)");
+            assert_eq!(PyType_IsSubtype(long_t, object_t), 1, "int <: object");
+            assert_eq!(PyType_IsSubtype(long_t, bool_t), 0, "int is NOT <: bool");
+
+            // GC flag: containers carry HAVE_GC; leaf numerics do not.
+            assert_eq!(PyType_HasFeature(list_t, Py_TPFLAGS_HAVE_GC), 1, "list HAVE_GC");
+            assert_eq!(PyType_HasFeature(long_t, Py_TPFLAGS_HAVE_GC), 0, "int no HAVE_GC");
+        }
+    }
+
+    /// `Py_TPFLAGS_DEFAULT` must be 0 on the standard 3.12 build (was `= BASETYPE`,
+    /// a duplicate-authority drift vs the C header `Py_TPFLAGS_DEFAULT (0)`; matrix
+    /// PyTypeObject #5).
+    #[test]
+    fn tpflags_default_is_zero_like_cpython_3_12() {
+        assert_eq!(Py_TPFLAGS_DEFAULT, 0);
+    }
+
+    /// `tp_basicsize` on the value-carrying numeric/object leaves is non-zero and
+    /// matches the molt struct layout (pre-fix 0 → a C subclass inherits a
+    /// zero-size base and its instances are truncated). Verified against the exact
+    /// CPython v3.12.0 variable-length scheme for int (offsetof(long_value.ob_digit)
+    /// + itemsize=sizeof(digit)).
+    #[test]
+    fn builtin_numeric_leaves_have_correct_basicsize() {
+        crate::bridge::molt_cpython_abi_init();
+        // Read the fields through raw pointers into locals first (edition-2024
+        // forbids borrowing a `static mut` field, which `assert_eq!` would do).
+        let obj_t = &raw const PyBaseObject_Type;
+        let long_t = &raw const PyLong_Type;
+        let bool_t = &raw const PyBool_Type;
+        let float_t = &raw const PyFloat_Type;
+        let complex_t = &raw const PyComplex_Type;
+        unsafe {
+            let obj_bs = (*obj_t).tp_basicsize;
+            let long_bs = (*long_t).tp_basicsize;
+            let long_is = (*long_t).tp_itemsize;
+            let bool_bs = (*bool_t).tp_basicsize;
+            let float_bs = (*float_t).tp_basicsize;
+            let complex_bs = (*complex_t).tp_basicsize;
+            assert_eq!(
+                obj_bs,
+                std::mem::size_of::<PyObject>() as Py_ssize_t,
+                "object basicsize == sizeof(PyObject)"
+            );
+            assert_eq!(
+                long_bs,
+                core::mem::offset_of!(PyLongObject, long_value.ob_digit) as Py_ssize_t,
+                "int basicsize == offsetof(long_value.ob_digit)"
+            );
+            assert_eq!(long_is, std::mem::size_of::<u32>() as Py_ssize_t, "int itemsize == sizeof(digit)");
+            assert_eq!(bool_bs, long_bs, "bool shares int's _longobject basicsize");
+            assert!(
+                float_bs
+                    >= (std::mem::size_of::<PyObject>() + std::mem::size_of::<f64>()) as Py_ssize_t,
+                "float basicsize holds a PyObject header + a double"
+            );
+            assert_eq!(
+                complex_bs,
+                std::mem::size_of::<PyComplexObject>() as Py_ssize_t,
+                "complex basicsize == sizeof(PyComplexObject)"
+            );
         }
     }
 }
