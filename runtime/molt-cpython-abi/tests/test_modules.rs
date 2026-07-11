@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{LazyLock, Mutex};
+use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
 
 // ─── Test hook implementations ───────────────────────────────────────────────
 //
@@ -28,8 +28,22 @@ static FAKE_HANDLE_COUNTER: AtomicU64 = AtomicU64::new(0x1000);
 static FAKE_BUFFER_RELEASES: AtomicU64 = AtomicU64::new(0);
 static MODULE_EXEC_CALLED: AtomicU64 = AtomicU64::new(0);
 static MODULE_EXEC_STATE_BYTE: AtomicU64 = AtomicU64::new(0);
-static FAKE_MODULE_EXEC_LOCK: Mutex<()> = Mutex::new(());
-static FAKE_BUFFER_LOCK: Mutex<()> = Mutex::new(());
+/// Serializes EVERY test in this binary. These tests exercise the ABI against
+/// the process-global `GLOBAL_BRIDGE` (bidirectional handle<->PyObject proxy
+/// table with non-atomically-refcounted, value-deduped proxies), the global
+/// runtime-hook vtable, and the fake buffer-release / module-registry fixtures
+/// below. In production every C-extension ABI call is GIL-serialized, so that
+/// shared mutable state is only ever touched single-threaded; under
+/// `cargo test`'s parallel threads it is not, and concurrent proxy churn
+/// intermittently evicts a still-live handle (e.g. `PyState_FindModule` then
+/// resolves a module to a fresh proxy pointer != the created one) or drops a
+/// runtime buffer release, breaking the memoryview lifetime assertion. Holding
+/// this lock for each test's duration restores the single-threaded invariant —
+/// the same `TEST_LOCK` convention used across this crate's integration tests.
+/// It subsumes the former per-fixture `FAKE_BUFFER_LOCK` / `FAKE_MODULE_EXEC_LOCK`
+/// gates (which only serialized their own tests, leaving the shared-bridge race
+/// open) and is acquired poison-tolerantly so one test's failure never cascades.
+static TEST_LOCK: Mutex<()> = Mutex::new(());
 static FAKE_BUFFER: [u8; 4] = [1, 2, 3, 4];
 static FAKE_MODULE_STATE: LazyLock<Mutex<FakeModuleState>> =
     LazyLock::new(|| Mutex::new(FakeModuleState::default()));
@@ -458,7 +472,13 @@ unsafe extern "C" fn fake_object_dir(_obj: u64) -> u64 {
     0
 }
 
-fn init() {
+/// Acquire the binary-wide serialization guard (poison-tolerant, so one test's
+/// failure never cascades into the rest) and run the idempotent ABI + hook init.
+/// Every test binds the returned guard for its whole body — see `TEST_LOCK`.
+/// The returned `MutexGuard` is itself `#[must_use]`, so a test that drops it
+/// early (a bare `init();`) is caught at compile time.
+fn init() -> MutexGuard<'static, ()> {
+    let guard = TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     molt_cpython_abi::bridge::molt_cpython_abi_init();
     // Idempotent — only the first test in the run actually installs hooks;
     // subsequent calls observe the already-registered state and silently
@@ -466,12 +486,12 @@ fn init() {
     unsafe {
         molt_cpython_abi::try_set_runtime_hooks(TEST_HOOKS);
     }
+    guard
 }
 
 #[test]
 fn test_getbuffer_uses_runtime_typed_descriptor() {
-    let _guard = FAKE_BUFFER_LOCK.lock().unwrap();
-    init();
+    let _guard = init();
     let obj = unsafe {
         molt_cpython_abi::bridge::GLOBAL_BRIDGE
             .lock()
@@ -508,8 +528,7 @@ fn test_getbuffer_uses_runtime_typed_descriptor() {
 
 #[test]
 fn test_fillinfo_uses_typed_descriptor_without_runtime_release() {
-    let _guard = FAKE_BUFFER_LOCK.lock().unwrap();
-    init();
+    let _guard = init();
     FAKE_BUFFER_RELEASES.store(0, Ordering::Relaxed);
     let mut data = [9_u8, 8, 7, 6];
     let mut view: Py_buffer = unsafe { std::mem::zeroed() };
@@ -561,7 +580,7 @@ fn test_fillinfo_uses_typed_descriptor_without_runtime_release() {
 
 #[test]
 fn test_fillinfo_rejects_writable_request_for_readonly_raw_buffer() {
-    init();
+    let _guard = init();
     let mut data = [1_u8];
     let mut view: Py_buffer = unsafe { std::mem::zeroed() };
 
@@ -583,8 +602,7 @@ fn test_fillinfo_rejects_writable_request_for_readonly_raw_buffer() {
 
 #[test]
 fn test_memoryview_uses_runtime_buffer_lifetime() {
-    let _guard = FAKE_BUFFER_LOCK.lock().unwrap();
-    init();
+    let _guard = init();
     FAKE_BUFFER_RELEASES.store(0, Ordering::Relaxed);
     let obj = unsafe {
         molt_cpython_abi::bridge::GLOBAL_BRIDGE
@@ -629,7 +647,7 @@ fn test_memoryview_uses_runtime_buffer_lifetime() {
 
 #[test]
 fn test_module_new_non_null() {
-    init();
+    let _guard = init();
     let m = unsafe { molt_cpython_abi::api::modules::PyModule_New(c"testmod".as_ptr()) };
     assert!(!m.is_null());
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(m) };
@@ -637,7 +655,7 @@ fn test_module_new_non_null() {
 
 #[test]
 fn test_module_new_null_name_returns_null() {
-    init();
+    let _guard = init();
     let m = unsafe { molt_cpython_abi::api::modules::PyModule_New(ptr::null()) };
     assert!(m.is_null());
 }
@@ -648,7 +666,7 @@ fn test_module_new_null_name_returns_null() {
 
 #[test]
 fn test_module_getdict_non_null() {
-    init();
+    let _guard = init();
     let m = unsafe { molt_cpython_abi::api::modules::PyModule_New(c"mod".as_ptr()) };
     let d = unsafe { molt_cpython_abi::api::modules::PyModule_GetDict(m) };
     // Returns the module itself as a placeholder
@@ -658,7 +676,7 @@ fn test_module_getdict_non_null() {
 
 #[test]
 fn test_module_getdict_null_returns_null() {
-    init();
+    let _guard = init();
     let d = unsafe { molt_cpython_abi::api::modules::PyModule_GetDict(ptr::null_mut()) };
     assert!(d.is_null());
 }
@@ -669,7 +687,7 @@ fn test_module_getdict_null_returns_null() {
 
 #[test]
 fn test_module_addobject_null_module_returns_error() {
-    init();
+    let _guard = init();
     let val = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1) };
     let result = unsafe {
         molt_cpython_abi::api::modules::PyModule_AddObject(ptr::null_mut(), c"attr".as_ptr(), val)
@@ -680,7 +698,7 @@ fn test_module_addobject_null_module_returns_error() {
 
 #[test]
 fn test_module_addobject_null_name_returns_error() {
-    init();
+    let _guard = init();
     let m = unsafe { molt_cpython_abi::api::modules::PyModule_New(c"mod".as_ptr()) };
     let val = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1) };
     let result = unsafe { molt_cpython_abi::api::modules::PyModule_AddObject(m, ptr::null(), val) };
@@ -694,7 +712,7 @@ fn test_module_addobject_null_name_returns_error() {
 
 #[test]
 fn test_module_addobject_null_value_returns_error() {
-    init();
+    let _guard = init();
     let m = unsafe { molt_cpython_abi::api::modules::PyModule_New(c"mod".as_ptr()) };
     let result = unsafe {
         molt_cpython_abi::api::modules::PyModule_AddObject(m, c"attr".as_ptr(), ptr::null_mut())
@@ -709,7 +727,7 @@ fn test_module_addobject_null_value_returns_error() {
 
 #[test]
 fn test_module_addintconstant_null_module() {
-    init();
+    let _guard = init();
     let result = unsafe {
         molt_cpython_abi::api::modules::PyModule_AddIntConstant(ptr::null_mut(), c"X".as_ptr(), 42)
     };
@@ -722,7 +740,7 @@ fn test_module_addintconstant_null_module() {
 
 #[test]
 fn test_module_addstringconstant_null_module() {
-    init();
+    let _guard = init();
     let result = unsafe {
         molt_cpython_abi::api::modules::PyModule_AddStringConstant(
             ptr::null_mut(),
@@ -739,14 +757,14 @@ fn test_module_addstringconstant_null_module() {
 
 #[test]
 fn test_moduledef_init_null_returns_null() {
-    init();
+    let _guard = init();
     let result = unsafe { molt_cpython_abi::api::modules::PyModuleDef_Init(ptr::null_mut()) };
     assert!(result.is_null());
 }
 
 #[test]
 fn test_moduledef_init_returns_definition_pointer() {
-    init();
+    let _guard = init();
     let mut def = PyModuleDef {
         m_base: PyModuleDef_Base {
             ob_base: PyObject {
@@ -818,8 +836,7 @@ unsafe extern "C" fn fake_module_exec_mutates_state(module: *mut PyObject) -> st
 
 #[test]
 fn test_module_from_def_and_spec_runs_py_mod_exec_slot() {
-    let _guard = FAKE_MODULE_EXEC_LOCK.lock().unwrap();
-    init();
+    let _guard = init();
     MODULE_EXEC_CALLED.store(0, Ordering::Relaxed);
     let mut slots = [
         PyModuleDef_Slot {
@@ -862,8 +879,7 @@ fn test_module_from_def_and_spec_runs_py_mod_exec_slot() {
 
 #[test]
 fn test_module_from_def_and_spec_accepts_python312_metadata_slots() {
-    let _guard = FAKE_MODULE_EXEC_LOCK.lock().unwrap();
-    init();
+    let _guard = init();
     MODULE_EXEC_CALLED.store(0, Ordering::Relaxed);
     let mut slots = [
         PyModuleDef_Slot {
@@ -914,8 +930,7 @@ fn test_module_from_def_and_spec_accepts_python312_metadata_slots() {
 
 #[test]
 fn test_module_from_def_and_spec_registers_capi_state_once_before_exec() {
-    let _guard = FAKE_MODULE_EXEC_LOCK.lock().unwrap();
-    init();
+    let _guard = init();
     MODULE_EXEC_CALLED.store(0, Ordering::Relaxed);
     MODULE_EXEC_STATE_BYTE.store(0, Ordering::Relaxed);
     let mut slots = [
@@ -963,8 +978,7 @@ fn test_module_from_def_and_spec_registers_capi_state_once_before_exec() {
 
 #[test]
 fn test_module_from_def_and_spec_exec_failure_sets_error_message() {
-    let _guard = FAKE_MODULE_EXEC_LOCK.lock().unwrap();
-    init();
+    let _guard = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     MODULE_EXEC_CALLED.store(0, Ordering::Relaxed);
     let mut slots = [
@@ -1014,14 +1028,14 @@ fn test_module_from_def_and_spec_exec_failure_sets_error_message() {
 
 #[test]
 fn test_module_create2_null_returns_null() {
-    init();
+    let _guard = init();
     let result = unsafe { molt_cpython_abi::api::modules::PyModule_Create2(ptr::null_mut(), 0) };
     assert!(result.is_null());
 }
 
 #[test]
 fn test_module_create2_with_valid_def() {
-    init();
+    let _guard = init();
     let mut def = PyModuleDef {
         m_base: PyModuleDef_Base {
             ob_base: PyObject {
@@ -1048,7 +1062,7 @@ fn test_module_create2_with_valid_def() {
 
 #[test]
 fn test_module_create2_registers_capi_state_and_pystate_registry_roundtrip() {
-    init();
+    let _guard = init();
     let def = Box::leak(Box::new(PyModuleDef {
         m_base: PyModuleDef_Base {
             ob_base: PyObject {
@@ -1105,7 +1119,7 @@ fn test_module_create2_registers_capi_state_and_pystate_registry_roundtrip() {
 
 #[test]
 fn test_module_create2_null_name_uses_unnamed() {
-    init();
+    let _guard = init();
     let mut def = PyModuleDef {
         m_base: PyModuleDef_Base {
             ob_base: PyObject {
@@ -1136,7 +1150,7 @@ unsafe extern "C" fn fake_c_method(_self: *mut PyObject, _args: *mut PyObject) -
 
 #[test]
 fn test_module_create2_fails_closed_when_c_function_registration_fails() {
-    init();
+    let _guard = init();
     let mut methods = [
         PyMethodDef {
             ml_name: c"reject".as_ptr(),
@@ -1179,7 +1193,7 @@ fn test_module_create2_fails_closed_when_c_function_registration_fails() {
 
 #[test]
 fn test_module_create2_fails_closed_when_c_function_attr_publication_fails() {
-    init();
+    let _guard = init();
     let mut methods = [
         PyMethodDef {
             ml_name: c"reject_attr".as_ptr(),
