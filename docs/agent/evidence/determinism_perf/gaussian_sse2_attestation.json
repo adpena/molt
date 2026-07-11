@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "fixture": "C:\\Molt\\parity-lab\\exp\\stages-pip.npz",
+  "shape": [
+    384,
+    512
+  ],
+  "dtype": "float32",
+  "radius": 8,
+  "repeats": 21,
+  "scalar_median_seconds": 0.0031798999989405274,
+  "simd_median_seconds": 0.002650299997185357,
+  "speedup": 1.1998264356177077,
+  "bit_identical_to_scipy": true,
+  "compiler_flags": [
+    "-O3",
+    "-fno-fast-math",
+    "-ffp-contract=off",
+    "-msse2"
+  ]
+}

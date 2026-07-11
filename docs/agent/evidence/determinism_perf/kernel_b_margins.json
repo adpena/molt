@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "fixture": "synthetic make_weights_fixture.py; real learned weights unavailable",
+  "shape": [
+    96,
+    128,
+    5
+  ],
+  "activation": "hosc",
+  "operations_exercised": [
+    "float64 matmul",
+    "sin",
+    "cos",
+    "tanh",
+    "float32 cast",
+    "argmax"
+  ],
+  "operations_not_exercised": [
+    "wire activation exp"
+  ],
+  "feature_range": {
+    "min": -1.0,
+    "max": 1.0
+  },
+  "film_range": {
+    "min": -0.5089225316418895,
+    "max": 0.3773444340624167
+  },
+  "hidden_ranges": [
+    {
+      "layer": "in_proj",
+      "preactivation": {
+        "min": -9.227260554566971,
+        "max": 9.117246357108726
+      },
+      "output": {
+        "min": -0.9993293285369873,
+        "max": 0.9993293285369873
+      }
+    },
+    {
+      "layer": "hidden.0",
+      "preactivation": {
+        "min": -14.186635642343736,
+        "max": 15.00034968838641
+      },
+      "output": {
+        "min": -0.9993293285369873,
+        "max": 0.9993293285369873
+      }
+    },
+    {
+      "layer": "hidden.1",
+      "preactivation": {
+        "min": -14.574015959913503,
+        "max": 14.992613656355477
+      },
+      "output": {
+        "min": -0.9993293285369873,
+        "max": 0.9993293285369873
+      }
+    },
+    {
+      "layer": "hidden.2",
+      "preactivation": {
+        "min": -14.851959739821469,
+        "max": 16.015141882084727
+      },
+      "output": {
+        "min": -0.9993293285369873,
+        "max": 0.9993293285369873
+      }
+    },
+    {
+      "layer": "hidden.3",
+      "preactivation": {
+        "min": -15.858196043077136,
+        "max": 15.542947724220435
+      },
+      "output": {
+        "min": -0.9993293285369873,
+        "max": 0.9993293285369873
+      }
+    }
+  ],
+  "logit_range": {
+    "min": -13.245894432067871,
+    "max": 11.241138458251953
+  },
+  "argmax_margin": {
+    "minimum": 7.367134094238281e-05,
+    "p001": 0.0019469814142212272,
+    "p01": 0.02678016945719719,
+    "median": 1.4143478870391846,
+    "minimum_top_logit_ulps": 618.0,
+    "zero_margin_pixels": 0
+  },
+  "directed_ulp_stress_argmax_changes": {
+    "1": 0,
+    "2": 0,
+    "4": 0,
+    "8": 0,
+    "16": 0
+  },
+  "verdict": "fallback_not_triggered_on_synthetic_fixture"
+}
