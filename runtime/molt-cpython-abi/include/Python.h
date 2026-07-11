@@ -117,8 +117,31 @@ typedef struct {
 #define PY_SSIZE_T_MAX  ((Py_ssize_t)(((size_t)-1)>>1))
 #define PY_SSIZE_T_MIN  (-PY_SSIZE_T_MAX - 1)
 
-#define _Py_IMMORTAL_REFCNT_LOCAL ((Py_ssize_t)(1 << 30))
-#define _Py_IMMORTAL_INITIAL_REFCNT _Py_IMMORTAL_REFCNT_LOCAL
+/* Immortal ob_refcnt — the SINGLE authority, mirroring CPython's
+ * _Py_IMMORTAL_REFCNT (Include/object.h in 3.12/3.13). Width-gated so the value
+ * matches molt's Rust `abi_types::IMMORTAL_REFCNT` byte-for-byte on both wasm32
+ * (ILP32) and 64-bit; __SIZEOF_POINTER__ is a numeric compiler builtin usable in
+ * #if (unlike molt's sizeof-based SIZEOF_VOID_P). 3.12/3.13: UINT_MAX / UINT_MAX>>2. */
+#if defined(__SIZEOF_POINTER__) && __SIZEOF_POINTER__ > 4
+#  define _Py_IMMORTAL_REFCNT ((Py_ssize_t)0xFFFFFFFF)   /* UINT_MAX (64-bit) */
+#else
+#  define _Py_IMMORTAL_REFCNT ((Py_ssize_t)0x3FFFFFFF)   /* UINT_MAX >> 2 (32-bit) */
+#endif
+/* Back-compat aliases — both resolve to the one authority above. */
+#define _Py_IMMORTAL_REFCNT_LOCAL   _Py_IMMORTAL_REFCNT
+#define _Py_IMMORTAL_INITIAL_REFCNT _Py_IMMORTAL_REFCNT
+
+/* _Py_IsImmortal / Py_IsImmortal — the sole immortal predicate for C consumers,
+ * mirroring CPython. 64-bit: low-word bit 31 set (== (int32)ob_refcnt < 0);
+ * 32-bit: equals the immortal sentinel. Matches abi_types::is_immortal_refcnt. */
+#if defined(__SIZEOF_POINTER__) && __SIZEOF_POINTER__ > 4
+#  define _Py_IsImmortal(op) \
+       ((int)((((PyObject *)(op))->ob_refcnt & (Py_ssize_t)0x80000000) != 0))
+#else
+#  define _Py_IsImmortal(op) \
+       ((int)((((PyObject *)(op))->ob_refcnt) == _Py_IMMORTAL_REFCNT))
+#endif
+#define Py_IsImmortal(op) _Py_IsImmortal(op)
 
 #define Py_ASNATIVEBYTES_DEFAULTS -1
 #define Py_ASNATIVEBYTES_BIG_ENDIAN 0
@@ -150,7 +173,11 @@ typedef struct PyFrameObject PyFrameObject;
     PyObject_HEAD           \
     Py_ssize_t ob_size;
 
-#define PyObject_HEAD_INIT(type) 1, (type),
+/* Static objects are immortal (CPython inits them to _Py_IMMORTAL_REFCNT under
+ * Py_BUILD_CORE). Route through the one authority so an extension's statically
+ * declared PyObject/PyTypeObject starts immortal — a net over-DECREF can never
+ * free static storage. Was `1` (mortal under molt's own out-of-line Py_DECREF). */
+#define PyObject_HEAD_INIT(type) _Py_IMMORTAL_INITIAL_REFCNT, (type),
 #define PyVarObject_HEAD_INIT(type, size) PyObject_HEAD_INIT(type) (size),
 
 /* ── PyObject ─────────────────────────────────────────────────────────────── */
@@ -1654,7 +1681,15 @@ extern PyObject PyExc_UnicodeEncodeError;
 #define Py_TYPE(ob)     (((PyObject *)(ob))->ob_type)
 #define Py_REFCNT(ob)   (((PyObject *)(ob))->ob_refcnt)
 #define Py_SIZE(ob)     (((PyVarObject *)(ob))->ob_size)
-#define Py_SET_REFCNT(ob, refcnt) (Py_REFCNT(ob) = (refcnt))
+/* No-op on immortals (CPython 3.12+): Py_SET_REFCNT must not mortalize a shared
+ * static singleton. Statement macro; use in statement context. */
+#define Py_SET_REFCNT(ob, refcnt)                                   \
+    do {                                                            \
+        PyObject *_molt_setref_o = (PyObject *)(ob);                \
+        if (!_Py_IsImmortal(_molt_setref_o)) {                      \
+            _molt_setref_o->ob_refcnt = (refcnt);                   \
+        }                                                           \
+    } while (0)
 #define Py_SET_TYPE(ob, type) (Py_TYPE(ob) = (type))
 #define Py_SET_SIZE(ob, size) (Py_SIZE(ob) = (size))
 #define PyExceptionInstance_Class(x) ((PyObject *)Py_TYPE(x))

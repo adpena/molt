@@ -648,13 +648,106 @@ pub const Py_TPFLAGS_IS_ABSTRACT: c_ulong = 1 << 20;
 pub const Py_TPFLAGS_BASE_EXC_SUBCLASS: c_ulong = 1 << 30;
 pub const Py_TPFLAGS_DEFAULT: c_ulong = Py_TPFLAGS_BASETYPE;
 
+/// The `(major<<24)|(minor<<16)|(micro<<8)|level` hex Python version — the ONE
+/// version authority the ABI is pinned to. The `Py_Version` data symbol below
+/// re-exports it and the immortal-refcount authority derives from it, so there
+/// is a single source of truth for "which CPython are we".
+pub const PY_VERSION_HEX: c_ulong = 0x030c00f0;
+
+/// Target CPython minor version, extracted from [`PY_VERSION_HEX`] (12 for 3.12).
+// `as u32` is required where `c_ulong` is 64-bit (Linux/macOS LP64) and a no-op
+// where it is 32-bit (Windows LLP64) — the lint fires only on the latter.
+#[allow(clippy::unnecessary_cast)]
+pub const TARGET_PY_MINOR: u32 = ((PY_VERSION_HEX >> 16) & 0xff) as u32;
+
 #[allow(non_upper_case_globals)]
 #[unsafe(no_mangle)]
-pub static Py_Version: c_ulong = 0x030c00f0;
+pub static Py_Version: c_ulong = PY_VERSION_HEX;
 
 #[allow(non_upper_case_globals)]
 #[unsafe(no_mangle)]
 pub static mut Py_OptimizeFlag: c_int = 0;
+
+// ─── Immortal reference-count authority ────────────────────────────────────
+//
+// THE single source of truth for the immortal `ob_refcnt` encoding. Every
+// static singleton — `Py_None`/`Py_True`/`Py_False`, the `PyExc_*` singletons,
+// the builtin `Py*_Type` statics, the canonical `_Py_*Struct` data symbols, the
+// `NotImplemented`/`Ellipsis`/UTC sentinels — MUST initialise `ob_refcnt` to
+// [`IMMORTAL_REFCNT`], and refcount immortality is decided ONLY by
+// [`is_immortal_refcnt`]. This collapses the four historical encodings the
+// binary-contract matrix flagged (`1`, `0` (zeroed), `1 << 30`, and the C
+// header macro) to ONE; the anti-duplication invariant is machine-checked by
+// `all_static_singletons_share_the_one_immortal_encoding` /
+// `no_raw_immortal_literal_outside_the_authority` below.
+//
+// Value + detection mirror CPython's `_Py_IMMORTAL_REFCNT` / `_Py_IsImmortal`,
+// verified against the primary source (python/cpython Include/object.h in
+// v3.12.0/v3.13.0, Include/refcount.h in v3.14.0):
+//   3.12/3.13  64-bit: UINT_MAX (0xFFFF_FFFF); 32-bit: UINT_MAX>>2 (0x3FFF_FFFF)
+//   3.14       64-bit: _Py_IMMORTAL_INITIAL_REFCNT = 3<<30; 32-bit: 5<<28
+//   _Py_IsImmortal 64-bit: (int32)ob_refcnt < 0; 32-bit: == the sentinel (3.12/
+//   3.13) / >= the sentinel (3.14). Both 3.12 and 3.14 64-bit values keep bit 31
+//   of the low word set, so the 64-bit predicate is version-independent.
+// Because the value derives from [`TARGET_PY_MINOR`] (i.e. the single
+// [`PY_VERSION_HEX`] knob), the constant is version-gated honest-early (M02)
+// without introducing a second version authority.
+
+/// CPython's immortal `ob_refcnt` initial value for a target minor version and
+/// pointer width (in bytes). `const fn` so it can drive `static` initialisers.
+const fn immortal_refcnt_for(py_minor: u32, ptr_bytes: usize) -> Py_ssize_t {
+    if ptr_bytes > 4 {
+        // 64-bit (LP64/LLP64). `_Py_IsImmortal` tests `(int32)ob_refcnt < 0`, so
+        // any value whose low-word bit 31 is set reads immortal.
+        if py_minor >= 14 {
+            (3_u64 << 30) as Py_ssize_t // _Py_IMMORTAL_INITIAL_REFCNT (3.14)
+        } else {
+            u32::MAX as Py_ssize_t // _Py_IMMORTAL_REFCNT == UINT_MAX (3.12/3.13)
+        }
+    } else if py_minor >= 14 {
+        (5_u32 << 28) as Py_ssize_t // _Py_IMMORTAL_INITIAL_REFCNT 32-bit (3.14)
+    } else {
+        (u32::MAX >> 2) as Py_ssize_t // UINT_MAX>>2 == 0x3FFF_FFFF (3.12/3.13)
+    }
+}
+
+/// THE immortal `ob_refcnt` value, for the pinned target version and this
+/// target's pointer width. Matches the C header's `_Py_IMMORTAL_REFCNT`.
+pub const IMMORTAL_REFCNT: Py_ssize_t =
+    immortal_refcnt_for(TARGET_PY_MINOR, core::mem::size_of::<*const ()>());
+
+// Compile-time invariant, enforced on BOTH the native and wasm32 builds (the
+// host-only runtime tests never execute the 32-bit path): the immortal value is
+// a positive refcount and, on 64-bit, carries low-word bit 31 so CPython's
+// `_Py_IsImmortal` ((int32)ob_refcnt < 0) classifies it immortal.
+const _: () = {
+    assert!(IMMORTAL_REFCNT > 0, "immortal refcount must be a positive ob_refcnt");
+    #[cfg(target_pointer_width = "64")]
+    assert!(
+        IMMORTAL_REFCNT & 0x8000_0000 != 0,
+        "64-bit immortal value must set low-word bit 31 (_Py_IsImmortal)"
+    );
+};
+
+/// Immortality predicate — the sole immortal test, mirroring CPython
+/// `_Py_IsImmortal` for the target pointer width. `Py_INCREF`/`Py_DECREF` route
+/// through this instead of an ad-hoc threshold.
+#[inline]
+pub fn is_immortal_refcnt(rc: Py_ssize_t) -> bool {
+    #[cfg(target_pointer_width = "64")]
+    {
+        // (int32)rc < 0  ⇔  low-word bit 31 set. Mask form is cast-truncation-free.
+        rc & 0x8000_0000 != 0
+    }
+    #[cfg(not(target_pointer_width = "64"))]
+    {
+        if TARGET_PY_MINOR >= 14 {
+            rc >= IMMORTAL_REFCNT
+        } else {
+            rc == IMMORTAL_REFCNT
+        }
+    }
+}
 
 /// Type IDs used internally by the bridge to fast-path type checks.
 /// These are NOT CPython ob_type pointers — they are Molt-side type tags.
@@ -684,19 +777,19 @@ pub const PY_NULL: *mut PyObject = std::ptr::null_mut();
 /// Callers must Py_INCREF before storing.
 #[unsafe(no_mangle)]
 pub static mut Py_None: PyObject = PyObject {
-    ob_refcnt: 1 << 30, // effectively immortal
+    ob_refcnt: IMMORTAL_REFCNT, // effectively immortal
     ob_type: std::ptr::null_mut(),
 };
 
 #[unsafe(no_mangle)]
 pub static mut Py_True: PyObject = PyObject {
-    ob_refcnt: 1 << 30,
+    ob_refcnt: IMMORTAL_REFCNT,
     ob_type: std::ptr::null_mut(),
 };
 
 #[unsafe(no_mangle)]
 pub static mut Py_False: PyObject = PyObject {
-    ob_refcnt: 1 << 30,
+    ob_refcnt: IMMORTAL_REFCNT,
     ob_type: std::ptr::null_mut(),
 };
 
@@ -706,14 +799,14 @@ pub static mut Py_False: PyObject = PyObject {
 #[allow(non_upper_case_globals)]
 #[unsafe(no_mangle)]
 pub static mut Py_NotImplementedSentinel: PyObject = PyObject {
-    ob_refcnt: 1 << 30,
+    ob_refcnt: IMMORTAL_REFCNT,
     ob_type: std::ptr::null_mut(),
 };
 
 #[allow(non_upper_case_globals)]
 #[unsafe(no_mangle)]
 pub static mut Py_EllipsisObject: PyObject = PyObject {
-    ob_refcnt: 1 << 30,
+    ob_refcnt: IMMORTAL_REFCNT,
     ob_type: std::ptr::null_mut(),
 };
 
@@ -810,7 +903,7 @@ pub static mut PyDateTime_TZInfoType: PyTypeObject = unsafe { std::mem::zeroed()
 #[allow(non_upper_case_globals)]
 #[unsafe(no_mangle)]
 pub static mut PyDateTime_TimeZone_UTC_Object: PyObject = PyObject {
-    ob_refcnt: 1 << 30,
+    ob_refcnt: IMMORTAL_REFCNT,
     ob_type: std::ptr::null_mut(),
 };
 
@@ -823,6 +916,10 @@ pub unsafe fn init_static_types() {
         ($ty:expr, $s:literal) => {
             $ty.tp_name = $s.as_ptr().cast();
             $ty.tp_flags = Py_TPFLAGS_READY;
+            // Builtin type statics are `std::mem::zeroed()` (ob_refcnt == 0 ==
+            // MORTAL). Immortal-init them through the single authority so a net
+            // over-DECREF cannot `tp_dealloc` a statically-allocated type.
+            $ty.ob_base.ob_base.ob_refcnt = IMMORTAL_REFCNT;
         };
     }
     unsafe {
@@ -1027,7 +1124,11 @@ macro_rules! exc_singletons {
         $(
             #[unsafe(no_mangle)]
             pub static mut $name: PyObject = PyObject {
-                ob_refcnt: 1,
+                // Immortal: CPython's PyExc_* are immortal type objects, so a
+                // borrowed-ref over-DECREF must NOT free this static. Routed
+                // through the single [`IMMORTAL_REFCNT`] authority (was `1`,
+                // which molt's own Py_DECREF treated as MORTAL → static-free).
+                ob_refcnt: IMMORTAL_REFCNT,
                 ob_type: std::ptr::null_mut(),
             };
         )*
@@ -1363,7 +1464,7 @@ mod unresolved_pyobject_tests {
         // the split-runtime duplicated-data-symbol signature. The message names
         // the runtime's canonical sentinel addresses for comparison.
         let mut bare = PyObject {
-            ob_refcnt: 1 << 30,
+            ob_refcnt: IMMORTAL_REFCNT,
             ob_type: std::ptr::null_mut(),
         };
         let desc = unsafe { describe_unresolved_pyobject(&raw mut bare) };
@@ -1442,6 +1543,160 @@ mod unresolved_pyobject_tests {
         assert!(
             bridge.pyobj_to_handle(&raw mut stray).is_none(),
             "unregistered pointer must remain unresolved"
+        );
+    }
+}
+
+#[cfg(test)]
+mod immortal_authority_tests {
+    //! Lane ABI-SINGLETON-IMMORTAL — the immortal-refcount authority is SINGLE
+    //! (one value, one predicate) and every static singleton routes through it.
+    use super::*;
+
+    /// The one immortal value equals CPython's `_Py_IMMORTAL_REFCNT` for this
+    /// target width (primary source: python/cpython v3.12.0 Include/object.h —
+    /// `UINT_MAX` / `UINT_MAX >> 2`), and the predicate mirrors `_Py_IsImmortal`.
+    #[test]
+    fn immortal_refcnt_matches_cpython_for_this_width() {
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(
+            IMMORTAL_REFCNT,
+            u32::MAX as Py_ssize_t,
+            "3.12/3.13 64-bit immortal must be UINT_MAX (0xFFFF_FFFF)"
+        );
+        #[cfg(target_pointer_width = "32")]
+        assert_eq!(
+            IMMORTAL_REFCNT,
+            (u32::MAX >> 2) as Py_ssize_t,
+            "3.12/3.13 32-bit immortal must be UINT_MAX>>2 (0x3FFF_FFFF)"
+        );
+        assert!(
+            is_immortal_refcnt(IMMORTAL_REFCNT),
+            "the immortal value must read immortal"
+        );
+        // A fresh/mortal refcount is NOT immortal — this is exactly what the old
+        // `ob_refcnt: 1` exception singletons had, so the pre-fix state fails the
+        // single-encoding gate below by construction.
+        assert!(!is_immortal_refcnt(1), "refcount 1 (the old exc encoding) is mortal");
+        assert!(!is_immortal_refcnt(0), "refcount 0 (zeroed type static) is mortal");
+        assert!(!is_immortal_refcnt(4096), "an ordinary refcount is mortal");
+    }
+
+    /// Single-authority behavioural gate: after init, EVERY static singleton the
+    /// runtime owns carries exactly `IMMORTAL_REFCNT` — no `1`, `0`, or `1<<30`
+    /// survivor. A regression that re-introduces a second encoding on any of
+    /// these trips here.
+    #[test]
+    fn all_static_singletons_share_the_one_immortal_encoding() {
+        crate::bridge::molt_cpython_abi_init();
+        let mut singletons: Vec<*mut PyObject> = vec![
+            &raw mut Py_None,
+            &raw mut Py_True,
+            &raw mut Py_False,
+            &raw mut Py_NotImplementedSentinel,
+            &raw mut Py_EllipsisObject,
+            &raw mut PyDateTime_TimeZone_UTC_Object,
+        ];
+        singletons.extend(exc_singleton_ptrs());
+        singletons.extend(type_static_ptrs());
+        for p in singletons {
+            let rc = unsafe { (*p).ob_refcnt };
+            assert_eq!(
+                rc, IMMORTAL_REFCNT,
+                "singleton @ {p:p} uses a non-authority refcnt encoding: {rc:#x}"
+            );
+            assert!(is_immortal_refcnt(rc), "singleton @ {p:p} not detected immortal");
+        }
+    }
+
+    /// Mask-proof (memory-corruption regression): a static exception singleton
+    /// survives a net-negative over-DECREF. Pre-fix its `ob_refcnt` was `1`, which
+    /// molt's own `Py_DECREF` treated as MORTAL, so a borrowed-ref over-DECREF
+    /// reached 0 and `release_pyobj`/`tp_dealloc`'d statically-allocated memory
+    /// AND dropped its bridge identity (breaking later `PyErr_SetString` matches).
+    #[test]
+    fn exc_singleton_survives_over_decref() {
+        crate::bridge::molt_cpython_abi_init();
+        let exc = &raw mut PyExc_ValueError;
+        let rc_before = unsafe { (*exc).ob_refcnt };
+        assert!(
+            is_immortal_refcnt(rc_before),
+            "PyExc_ValueError must be immortal (pre-fix it was the mortal `1`)"
+        );
+        assert!(
+            crate::bridge::GLOBAL_BRIDGE.lock().pyobj_to_handle(exc).is_some(),
+            "exc singleton must be bridge-registered before the over-DECREF"
+        );
+        // 8 net-negative DECREFs — for a mortal `1` this reaches 0 and frees.
+        for _ in 0..8 {
+            unsafe { crate::api::refcount::Py_DECREF(exc) };
+        }
+        assert_eq!(
+            unsafe { (*exc).ob_refcnt },
+            rc_before,
+            "immortal exception singleton refcount changed under DECREF"
+        );
+        assert!(
+            crate::bridge::GLOBAL_BRIDGE.lock().pyobj_to_handle(exc).is_some(),
+            "exc singleton lost bridge identity after over-DECREF (static-free regression)"
+        );
+    }
+
+    /// Anti-duplication teeth (textual): no raw immortal-refcount literal survives
+    /// outside the single authority. Needles are reconstructed at runtime so this
+    /// scanner never matches itself. The legitimate flag `= 1 << 30`
+    /// (`Py_TPFLAGS_BASE_EXC_SUBCLASS`) is not an `ob_refcnt` initialiser, so the
+    /// `ob_refcnt:`/`ob_refcnt =` prefix keeps it out of scope.
+    #[test]
+    fn no_raw_immortal_literal_outside_the_authority() {
+        let sources: [(&str, &str); 3] = [
+            ("abi_types.rs", include_str!("abi_types.rs")),
+            ("api/refcount.rs", include_str!("api/refcount.rs")),
+            ("api/object.rs", include_str!("api/object.rs")),
+        ];
+        let forbidden: [String; 3] = [
+            ["ob_refcnt: 1 ", "<< 30"].concat(), // struct-init immortal literal
+            ["ob_refcnt = 1 ", "<< 30"].concat(), // assignment immortal literal
+            ["(1 ", "<< 29)"].concat(),           // the old ad-hoc immortal threshold
+        ];
+        for (name, src) in sources {
+            for needle in &forbidden {
+                assert!(
+                    !src.contains(needle.as_str()),
+                    "{name} re-introduced a raw immortal encoding `{needle}` — \
+                     route it through abi_types::IMMORTAL_REFCNT / is_immortal_refcnt",
+                );
+            }
+        }
+    }
+
+    /// Regression: handing a registered immortal singleton back out through the
+    /// bridge (`handle_to_pyobj`, the `raw_py` path) must NOT touch its refcount.
+    /// Pre-fix the raw `ob_refcnt += 1` crept it up on every call; harmless under
+    /// the old `>= 1<<29` threshold, but under CPython-faithful detection the
+    /// first increment past `IMMORTAL_REFCNT` (bit 31 → clear) silently mortalises
+    /// the static → a later DECREF frees static storage (UAF).
+    #[test]
+    fn bridge_never_increments_a_registered_immortal_singleton() {
+        crate::bridge::molt_cpython_abi_init();
+        let exc = &raw mut PyExc_TypeError;
+        let mut bridge = crate::bridge::GLOBAL_BRIDGE.lock();
+        let bits = bridge
+            .pyobj_to_handle(exc)
+            .expect("registered exc singleton resolves to a handle");
+        let rc_before = unsafe { (*exc).ob_refcnt };
+        for _ in 0..16 {
+            let p = unsafe { bridge.handle_to_pyobj(bits) };
+            assert!(std::ptr::eq(p, exc), "singleton handle round-trip lost identity");
+        }
+        assert_eq!(
+            unsafe { (*exc).ob_refcnt },
+            rc_before,
+            "bridge incremented an immortal singleton (static-free/UAF vector)"
+        );
+        assert!(
+            is_immortal_refcnt(unsafe { (*exc).ob_refcnt }),
+            "singleton must remain immortal after bridge round-trips"
         );
     }
 }

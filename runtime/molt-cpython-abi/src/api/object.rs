@@ -806,7 +806,7 @@ pub unsafe extern "C" fn PyUnstable_SetImmortal(obj: *mut PyObject) {
         return;
     }
     unsafe {
-        (*obj).ob_refcnt = 1 << 30;
+        (*obj).ob_refcnt = crate::abi_types::IMMORTAL_REFCNT;
     }
 }
 
@@ -1915,7 +1915,7 @@ unsafe fn molt_seqiter_type() -> *mut PyTypeObject {
     MOLT_SEQITER_TYPE_INIT.call_once(|| {
         let t = &raw mut MOLT_SEQITER_TYPE;
         unsafe {
-            (*t).ob_base.ob_base.ob_refcnt = 1 << 30; // effectively immortal
+            (*t).ob_base.ob_base.ob_refcnt = crate::abi_types::IMMORTAL_REFCNT;
             (*t).ob_base.ob_base.ob_type = &raw mut crate::abi_types::PyType_Type;
             (*t).tp_name = c"iterator".as_ptr();
             (*t).tp_basicsize = std::mem::size_of::<MoltSeqIterObject>() as Py_ssize_t;
@@ -3177,21 +3177,21 @@ pub unsafe extern "C" fn PyInterpreterState_GetIDFromThreadState(
 /// _Py_NoneStruct — alias for Py_None, used by some extensions.
 #[unsafe(no_mangle)]
 pub static mut _Py_NoneStruct: PyObject = PyObject {
-    ob_refcnt: 1 << 30,
+    ob_refcnt: crate::abi_types::IMMORTAL_REFCNT,
     ob_type: std::ptr::null_mut(),
 };
 
 /// _Py_TrueStruct — alias for Py_True.
 #[unsafe(no_mangle)]
 pub static mut _Py_TrueStruct: PyObject = PyObject {
-    ob_refcnt: 1 << 30,
+    ob_refcnt: crate::abi_types::IMMORTAL_REFCNT,
     ob_type: std::ptr::null_mut(),
 };
 
 /// _Py_FalseStruct — alias for Py_False.
 #[unsafe(no_mangle)]
 pub static mut _Py_FalseStruct: PyObject = PyObject {
-    ob_refcnt: 1 << 30,
+    ob_refcnt: crate::abi_types::IMMORTAL_REFCNT,
     ob_type: std::ptr::null_mut(),
 };
 

@@ -319,7 +319,13 @@ impl ObjectBridge {
         if let Some(entry) = self.to_py.get(&bits) {
             let ptr = entry.header.py_obj.get();
             unsafe {
-                (*ptr).ob_refcnt += 1;
+                // Never mutate an immortal's refcount (mirrors CPython Py_INCREF,
+                // which no-ops on immortals). Proxies are mortal so this normally
+                // increments; the guard keeps the "bridge never touches an
+                // immortal refcnt" invariant total.
+                if !crate::abi_types::is_immortal_refcnt((*ptr).ob_refcnt) {
+                    (*ptr).ob_refcnt += 1;
+                }
             }
             return ptr;
         }
@@ -331,7 +337,15 @@ impl ObjectBridge {
             // provenance-correct rather than a bare `usize as *mut` int→ptr cast.
             let ptr = core::ptr::with_exposed_provenance_mut::<PyObject>(addr);
             unsafe {
-                (*ptr).ob_refcnt += 1;
+                // `raw_py` holds BOTH the registered immortal singletons (exc
+                // singletons, `Py*_Type`, sentinels) and foreign-object anchors.
+                // Immortals must never be incremented — otherwise a registered
+                // singleton's refcount creeps past `IMMORTAL_REFCNT` and (under
+                // CPython-faithful detection) silently drops to MORTAL, exposing
+                // a static-free/UAF. Mortal foreign objects still get the new ref.
+                if !crate::abi_types::is_immortal_refcnt((*ptr).ob_refcnt) {
+                    (*ptr).ob_refcnt += 1;
+                }
             }
             return ptr;
         }
