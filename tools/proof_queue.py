@@ -3218,13 +3218,20 @@ def _pact_witness_native_roots(repo_root: Path = ROOT) -> list[Path]:
 
 
 def _pact_witness_env_overrides(repo_root: Path = ROOT) -> dict[str, str]:
+    # Force UTF-8 across the ENTIRE witness process tree (the parent tool + every
+    # spawned build/gate subprocess). On Windows the default cp1252 stdio codec
+    # raises UnicodeEncodeError on any non-cp1252 char in a relayed subprocess
+    # capture (e.g. a gate's em-dash decoded to U+FFFD), which once aborted an
+    # otherwise-SUCCESSFUL witness build after ~20 min. PYTHONUTF8=1 makes stdio
+    # and the default file encoding UTF-8 tree-wide — the single-primitive fix for
+    # this recurring encoding bug class. Set unconditionally (independent of the
+    # native-root delta below) so the guarantee holds on every witness path.
+    env: dict[str, str] = {"PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
     roots = _pact_witness_native_roots(repo_root)
-    if not roots:
-        return {}
-    return {
-        "MOLT_MODULE_ROOTS": os.pathsep.join(str(root) for root in roots),
-        "MOLT_EXTERNAL_STATIC_PACKAGES": "numpy scipy",
-    }
+    if roots:
+        env["MOLT_MODULE_ROOTS"] = os.pathsep.join(str(root) for root in roots)
+        env["MOLT_EXTERNAL_STATIC_PACKAGES"] = "numpy scipy"
+    return env
 
 
 def _pact_witness_acceptance_spec(
