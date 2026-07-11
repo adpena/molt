@@ -121,7 +121,7 @@ fn call_indirect_type_layout_and_sentinel_table_slot_are_pinned() {
 #[test]
 fn reloc_table_ref_exports_do_not_publish_reserved_runtime_sentinels() {
     let func = wasm_test_function(
-        "reserved_table_ref_export_filter",
+        "molt_main",
         vec![],
         None,
         vec![wasm_test_op("ret_void", None, vec![])],
