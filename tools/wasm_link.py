@@ -308,8 +308,58 @@ def _find_tool(names: list[str]) -> str | None:
 
 
 def _find_wasm_ld() -> str | None:
-    """Return the path to `wasm-ld` if it is available."""
-    return _find_tool(["wasm-ld"])
+    """Return the attested `wasm-ld` selected by WASI toolchain authority."""
+    try:
+        identity = wasm_toolchain.resolve_wasm_linker()
+    except wasm_toolchain.WasmLinkerContractError as exc:
+        print(f"Wasm linker contract failed: {exc}", file=sys.stderr)
+        return None
+    if identity is None:
+        return None
+    print(f"Wasm linker identity: {identity.diagnostic}", file=sys.stderr)
+    return str(identity.path)
+
+
+def _deduplicated_export_flags(*groups: Iterable[str]) -> list[str]:
+    flags: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        for flag in group:
+            if flag in seen:
+                continue
+            seen.add(flag)
+            flags.append(flag)
+    return flags
+
+
+def _preflight_relocatable_runtime(
+    wasm_ld: str, runtime: Path, temp_dir: object
+) -> str | None:
+    if not runtime.name.endswith("_reloc.wasm"):
+        return None
+    output = Path(temp_dir.name) / "runtime_reloc_preflight.wasm"
+    result = _run_external_tool(
+        [wasm_ld, "-r", "-o", str(output), str(runtime)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        return None
+    detail = (result.stderr or result.stdout or "").strip()
+    crash = (
+        "PLEASE submit a bug report" in detail
+        or result.returncode < 0
+        or result.returncode > 255
+    )
+    if crash:
+        return (
+            "relocatable runtime linker metadata is inconsistent: wasm-ld crashed "
+            f"while relinking {runtime}. This commonly means publication stripping "
+            "removed sections without rewriting the linking/reloc custom-section "
+            "indices; rebuild and republish the reloc runtime from one build identity. "
+            f"linker={wasm_ld} returncode={result.returncode}"
+        )
+    return f"relocatable runtime preflight failed for {runtime}: {detail}"
 
 
 def _dump_symbols(path: Path, wasm_tools: str) -> list[tuple[int, int, str, str]]:
@@ -530,7 +580,7 @@ _SYMBOL_KIND_DATA = 1
 
 
 class _SplitRuntimeExportContractEntry:
-    __slots__ = ("artifact", "kind", "canonical_name", "accepted_names", "linker_flag")
+    __slots__ = ("artifact", "kind", "canonical_name", "accepted_names")
 
     def __init__(
         self,
@@ -539,13 +589,11 @@ class _SplitRuntimeExportContractEntry:
         kind: int,
         canonical_name: str,
         accepted_names: tuple[str, ...],
-        linker_flag: str | None = None,
     ) -> None:
         self.artifact = artifact
         self.kind = kind
         self.canonical_name = canonical_name
         self.accepted_names = accepted_names
-        self.linker_flag = linker_flag
 
 
 _SPLIT_RUNTIME_EXPORT_CONTRACT = (
@@ -560,14 +608,12 @@ _SPLIT_RUNTIME_EXPORT_CONTRACT = (
         kind=2,
         canonical_name="molt_memory",
         accepted_names=("molt_memory", "memory"),
-        linker_flag="--export-memory",
     ),
     _SplitRuntimeExportContractEntry(
         artifact="app",
         kind=1,
         canonical_name="molt_table",
         accepted_names=("molt_table", "__indirect_function_table"),
-        linker_flag="--export-table",
     ),
 )
 
@@ -577,14 +623,6 @@ def _split_runtime_export_contract(
 ) -> tuple[_SplitRuntimeExportContractEntry, ...]:
     return tuple(
         entry for entry in _SPLIT_RUNTIME_EXPORT_CONTRACT if entry.artifact == artifact
-    )
-
-
-def _split_runtime_linker_export_flags(artifact: str) -> tuple[str, ...]:
-    return tuple(
-        entry.linker_flag
-        for entry in _split_runtime_export_contract(artifact)
-        if entry.linker_flag is not None
     )
 
 
@@ -2609,8 +2647,19 @@ def _run_wasm_ld(
             | set(_sealed_native_init_symbols(native_objects))
         )
     )
-    preserved_output_exports = _collect_preserved_output_export_names(output_data)
     export_symbol_map = _collect_output_export_symbol_map(output_data)
+    preserved_output_exports = list(
+        dict.fromkeys(
+            [
+                *_collect_preserved_output_export_names(output_data),
+                *(
+                    entry.canonical_name
+                    for entry in _split_runtime_export_contract("app")
+                    if entry.kind == 0 and entry.canonical_name in export_symbol_map
+                ),
+            ]
+        )
+    )
     user_export_symbol_names = [
         export_symbol_map[name]
         for name in preserved_output_exports
@@ -2734,11 +2783,15 @@ def _run_wasm_ld(
     # unreachable runtime stub.
     link_runtime_path = runtime
 
+    preflight_error = _preflight_relocatable_runtime(wasm_ld, link_runtime_path, temp_dir)
+    if preflight_error is not None:
+        print(f"Wasm link failed: {preflight_error}", file=sys.stderr)
+        return 1
+
     cmd = [
         wasm_ld,
         "--no-entry",
         "--gc-sections",
-        "--export-all",
         f"--allow-undefined-file={str(allowlist)}",
         "--import-table",
         # Place the stack before data segments in linear memory so that the
@@ -2761,16 +2814,20 @@ def _run_wasm_ld(
     # Force-export symbols that were rewritten but missing from the
     # non-relocatable runtime — they exist in the relocatable runtime
     # and wasm-ld needs to know to keep them in the linked output.
-    for sym in force_exports:
-        cmd.append(f"--export-if-defined={sym}")
-    for sym in sorted(
-        _ESSENTIAL_EXPORTS - {"__indirect_function_table", "memory", "molt_main"}
-    ):
-        cmd.append(f"--export-if-defined={sym}")
-    for sym in required_native_direct_symbols:
-        cmd.append(f"--export={sym}")
-    for sym in user_export_symbol_names:
-        cmd.append(f"--export={sym}")
+    cmd.extend(
+        _deduplicated_export_flags(
+            (f"--export-if-defined={sym}" for sym in force_exports),
+            (
+                f"--export-if-defined={sym}"
+                for sym in sorted(
+                    _ESSENTIAL_EXPORTS
+                    - {"__indirect_function_table", "memory", "molt_main"}
+                )
+            ),
+            (f"--export={sym}" for sym in required_native_direct_symbols),
+            (f"--export={sym}" for sym in user_export_symbol_names),
+        )
+    )
     cmd += [
         "-o",
         str(work_linked),
@@ -2840,7 +2897,6 @@ def _run_wasm_ld(
         split_native_app_cmd = [
             *split_native_prefix,
             "--import-memory",
-            *_split_runtime_linker_export_flags("app"),
             f"--global-base={split_app_global_base}",
             f"--table-base={split_app_table_base}",
             "-o",
@@ -3492,7 +3548,7 @@ def main() -> int:
         return 1
     linked.parent.mkdir(parents=True, exist_ok=True)
 
-    wasm_ld = _find_tool(["wasm-ld"])
+    wasm_ld = _find_wasm_ld()
     if not wasm_ld:
         print(
             "wasm-ld not found; install LLVM to enable single-module linking.",

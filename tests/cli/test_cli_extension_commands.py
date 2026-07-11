@@ -31,6 +31,47 @@ from tests.cli.process_guard import run_cli_test_process
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_resolve_wasm_linker_prefers_matching_wasi_sdk_linker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sdk = tmp_path / "wasi-sdk"
+    sysroot = sdk / "share" / "wasi-sysroot"
+    sysroot.mkdir(parents=True)
+    (sysroot / "VERSION").write_text("llvm-version: 22.1.0\n", encoding="utf-8")
+    linker = sdk / "bin" / ("wasm-ld.exe" if cli_wasm_toolchain.os.name == "nt" else "wasm-ld")
+    linker.parent.mkdir()
+    linker.write_bytes(b"linker")
+    monkeypatch.setattr(cli_wasm_toolchain, "resolve_wasi_sysroot", lambda: sysroot)
+    monkeypatch.setattr(cli_wasm_toolchain.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(cli_wasm_toolchain, "_wasm_linker_version", lambda _path: "22.1.7")
+
+    identity = cli_wasm_toolchain.resolve_wasm_linker()
+
+    assert identity is not None
+    assert identity.path == linker.resolve()
+    assert identity.version == "22.1.7"
+    assert identity.wasi_sdk_llvm_version == "22.1.0"
+
+
+def test_resolve_wasm_linker_rejects_wasi_sdk_release_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sysroot = tmp_path / "wasi-sysroot-33.0+m"
+    sysroot.mkdir()
+    (sysroot / "VERSION").write_text("llvm-version: 22.1.0\n", encoding="utf-8")
+    linker = tmp_path / "wasm-ld.exe"
+    linker.write_bytes(b"linker")
+    monkeypatch.setenv("MOLT_WASM_LD", str(linker))
+    monkeypatch.setattr(cli_wasm_toolchain, "resolve_wasi_sysroot", lambda: sysroot)
+    monkeypatch.setattr(cli_wasm_toolchain, "_wasm_linker_version", lambda _path: "21.1.8")
+
+    with pytest.raises(
+        cli_wasm_toolchain.WasmLinkerContractError,
+        match="requires LLVM 22.1.0",
+    ):
+        cli_wasm_toolchain.resolve_wasm_linker()
+
+
 def test_manifest_source_resolver_computes_relocation_roots_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
