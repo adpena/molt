@@ -610,6 +610,25 @@ fn pyobj_to_handle_static(ptr: *mut PyObject) -> Option<AbiHandle> {
     if std::ptr::eq(ptr, &raw const Py_False as *const _) {
         return Some(MoltObject::from_bool(false).bits());
     }
+    // The canonical CPython data-symbol singletons resolve to the SAME handles as
+    // their molt-header twins above, so `_Py_NoneStruct is None` / `is True` hold
+    // across the header boundary (a real-CPython-header extension resolving
+    // `_Py_NoneStruct` is no longer a foreign object). Matrix L1 #3/#4.
+    if std::ptr::eq(ptr, &raw const crate::api::object::_Py_NoneStruct as *const _) {
+        return Some(MoltObject::none().bits());
+    }
+    if std::ptr::eq(
+        ptr,
+        (&raw const crate::api::object::_Py_TrueStruct).cast::<PyObject>(),
+    ) {
+        return Some(MoltObject::from_bool(true).bits());
+    }
+    if std::ptr::eq(
+        ptr,
+        (&raw const crate::api::object::_Py_FalseStruct).cast::<PyObject>(),
+    ) {
+        return Some(MoltObject::from_bool(false).bits());
+    }
     None
 }
 
