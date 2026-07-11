@@ -2207,7 +2207,7 @@ mod tests {
         PyExc_RuntimeError, PyModuleDef_Base, PyModuleDef_Slot, PyObject, PyTypeObject,
     };
     use std::os::raw::c_int;
-    use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
     use std::sync::{Mutex as StdMutex, MutexGuard as StdMutexGuard};
 
     static STATIC_LINK_EXEC_MODULE_BITS: AtomicU64 = AtomicU64::new(0);
@@ -2231,6 +2231,116 @@ mod tests {
             dec_ref_bits(&_py, exc_bits);
             message
         })
+    }
+
+    static RAW_GETATTRO_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static mut RAW_GETATTRO_RESULT: PyObject = PyObject {
+        ob_refcnt: 1,
+        ob_type: std::ptr::null_mut(),
+    };
+
+    unsafe extern "C" fn raw_type_getattro(
+        _obj: *mut PyObject,
+        _name: *mut PyObject,
+    ) -> *mut PyObject {
+        RAW_GETATTRO_CALLS.fetch_add(1, AtomicOrdering::SeqCst);
+        &raw mut RAW_GETATTRO_RESULT
+    }
+
+    #[test]
+    fn raw_c_object_getattr_bypasses_molt_value_dispatch() {
+        let _guard = cpython_abi_test_guard();
+        register_cpython_hooks();
+        with_gil(|_py| crate::clear_exception(&_py));
+        RAW_GETATTRO_CALLS.store(0, AtomicOrdering::SeqCst);
+
+        let mut raw_type: PyTypeObject = unsafe { std::mem::zeroed() };
+        raw_type.tp_name = c"numpy.ndarray".as_ptr();
+        raw_type.tp_getattro = Some(raw_type_getattro);
+        let mut raw_obj = PyObject {
+            ob_refcnt: 1,
+            ob_type: &raw mut raw_type,
+        };
+        let raw_ptr = &raw mut raw_obj;
+        unsafe {
+            molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                .lock()
+                .register_raw_pyobj(raw_ptr);
+        }
+
+        let result = unsafe {
+            molt_cpython_abi::api::object::PyObject_GetAttrString(
+                raw_ptr,
+                c"__array_finalize__".as_ptr(),
+            )
+        };
+
+        assert_eq!(result, &raw mut RAW_GETATTRO_RESULT);
+        assert_eq!(RAW_GETATTRO_CALLS.load(AtomicOrdering::SeqCst), 1);
+        assert!(
+            !with_gil(|_py| crate::exception_pending(&_py)),
+            "raw C identity handles must not be decoded as Molt floats before tp_getattro"
+        );
+        molt_cpython_abi::bridge::GLOBAL_BRIDGE
+            .lock()
+            .release_pyobj(raw_ptr);
+    }
+
+    #[test]
+    fn raw_c_type_getattr_resolves_own_type_dict() {
+        let _guard = cpython_abi_test_guard();
+        register_cpython_hooks();
+        with_gil(|_py| crate::clear_exception(&_py));
+
+        let mut raw_type: PyTypeObject = unsafe { std::mem::zeroed() };
+        raw_type.ob_base.ob_base.ob_refcnt = 1;
+        raw_type.ob_base.ob_base.ob_type = &raw mut molt_cpython_abi::abi_types::PyType_Type;
+        raw_type.tp_name = c"numpy.ndarray".as_ptr();
+        raw_type.tp_dict = unsafe { molt_cpython_abi::api::mapping::PyDict_New() };
+        assert!(!raw_type.tp_dict.is_null());
+        let finalize = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(17) };
+        assert!(!finalize.is_null());
+        assert_eq!(
+            unsafe {
+                molt_cpython_abi::api::mapping::PyDict_SetItemString(
+                    raw_type.tp_dict,
+                    c"__array_finalize__".as_ptr(),
+                    finalize,
+                )
+            },
+            0
+        );
+        let raw_type_ptr = (&raw mut raw_type).cast::<PyObject>();
+        unsafe {
+            molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                .lock()
+                .register_raw_pyobj(raw_type_ptr);
+        }
+
+        let result = unsafe {
+            molt_cpython_abi::api::object::PyObject_GetAttrString(
+                raw_type_ptr,
+                c"__array_finalize__".as_ptr(),
+            )
+        };
+
+        assert!(!result.is_null());
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::numbers::PyLong_AsLong(result) },
+            17
+        );
+        assert!(
+            !with_gil(|_py| crate::exception_pending(&_py)),
+            "type_getattro must resolve the class MRO dictionary without a stale AttributeError"
+        );
+        unsafe {
+            molt_cpython_abi::api::refcount::Py_DECREF(result);
+            molt_cpython_abi::api::refcount::Py_DECREF(finalize);
+            molt_cpython_abi::api::refcount::Py_DECREF(raw_type.tp_dict);
+        }
+        molt_cpython_abi::bridge::GLOBAL_BRIDGE
+            .lock()
+            .release_pyobj(raw_type_ptr);
     }
 
     #[test]
