@@ -698,6 +698,19 @@ pub unsafe extern "C" fn PyLong_FromDouble(v: c_double) -> *mut PyObject {
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn _PyLong_Sign(op: *mut PyObject) -> c_int {
+    match py_long_value(op, false) {
+        Ok(LongValue::Signed(value)) => value.signum() as c_int,
+        Ok(LongValue::Big(_)) => 1,
+        Err(LongError::OutOf64) => GLOBAL_BRIDGE
+            .molt_handle_for_pyobj(op)
+            .and_then(|value| big_int_sign(value.bits()))
+            .map_or(0, |sign| sign.signum() as c_int),
+        Err(LongError::NotInt | LongError::Raised) => 0,
+    }
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyLong_FromUnicodeObject(u: *mut PyObject, base: c_int) -> *mut PyObject {
     let bytes = match unsafe { py_textlike_bytes(u) } {
         Ok(bytes) => bytes,
