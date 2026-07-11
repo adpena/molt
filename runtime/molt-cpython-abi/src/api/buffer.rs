@@ -77,28 +77,11 @@ impl BufferInternal {
     }
 }
 
-fn raw_1d_descriptor(
-    buf: *mut std::ffi::c_void,
-    len: isize,
-    readonly: c_int,
-    base: u64,
-) -> MoltBufferView {
-    let mut descriptor = MoltBufferView {
-        data: buf.cast(),
-        len: len as u64,
-        backing_capacity: len as u64,
-        readonly: u32::from(readonly != 0),
-        ndim: 1,
-        itemsize: 1,
-        base,
-        ..Default::default()
-    };
-    descriptor.shape[0] = len;
-    descriptor.strides[0] = 1;
-    descriptor.format[0] = b'B';
-    descriptor.format[1] = 0;
-    descriptor
-}
+/// The `'static` PEP 3118 format string for a 1-D unsigned-byte buffer. C reads
+/// `view.format` for the view's whole lifetime; pointing it at this static (never
+/// written by C) is what lets `PyBuffer_FillInfo` avoid a per-export heap box —
+/// exactly CPython's `view->format = "B"`.
+static FORMAT_UNSIGNED_BYTE: [c_char; 2] = [b'B' as c_char, 0];
 
 unsafe fn descriptor_from_pybuffer(info: *const Py_buffer) -> Result<MoltBufferView, ()> {
     if info.is_null() {
@@ -643,22 +626,44 @@ pub unsafe extern "C" fn PyBuffer_FillInfo(
         unsafe { set_buffer_error(b"Object is not writable.\0") };
         return -1;
     }
-    let base = if obj.is_null() {
-        0
-    } else {
-        GLOBAL_BRIDGE.lock().pyobj_to_handle(obj).unwrap_or_default()
-    };
     unsafe {
+        // CPython Objects/abstract.c PyBuffer_FillInfo: a raw 1-D region. Point
+        // shape/strides at the view's OWN `len`/`itemsize` fields and `format` at
+        // a static "B" — NO heap box, NO registry entry, `internal` stays NULL.
+        // Distilled from the old boxed MoltBufferView path: for a 1-D buffer the
+        // descriptor storage the box provided is redundant with the Py_buffer's
+        // own fields, so we lend those instead of copying (kills the alloc + the
+        // registry insert/remove). Release then follows CPython's `internal==NULL`
+        // path (bf_releasebuffer if the obj type has one, then DECREF).
         reset_pybuffer(view);
-        install_buffer_internal(
-            view,
-            obj,
-            Box::new(BufferInternal::raw_descriptor(raw_1d_descriptor(
-                buf, len, readonly, base,
-            ))),
-            flags,
-        )
+        (*view).buf = buf;
+        (*view).obj = obj;
+        (*view).len = len;
+        (*view).readonly = readonly;
+        (*view).itemsize = 1;
+        (*view).ndim = 1;
+        (*view).format = if (flags & PyBUF_FORMAT) != 0 {
+            (&raw const FORMAT_UNSIGNED_BYTE).cast::<c_char>().cast_mut()
+        } else {
+            ptr::null_mut()
+        };
+        (*view).shape = if (flags & PyBUF_ND) != 0 {
+            &raw mut (*view).len
+        } else {
+            ptr::null_mut()
+        };
+        (*view).strides = if (flags & PyBUF_STRIDES) != 0 {
+            &raw mut (*view).itemsize
+        } else {
+            ptr::null_mut()
+        };
+        (*view).suboffsets = ptr::null_mut();
+        (*view).internal = ptr::null_mut();
+        if !obj.is_null() {
+            crate::api::refcount::Py_INCREF(obj);
+        }
     }
+    0
 }
 
 pub(crate) unsafe fn copy_pybuffer_for_memoryview(
