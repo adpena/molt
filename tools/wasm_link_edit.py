@@ -523,6 +523,9 @@ def _resolve_import_targeted_table_refs(
     if not refs:
         return {}
     function_exports = _collect_function_exports(data)
+    function_names: dict[str, int] = {}
+    for func_index, func_name in _collect_func_names(data).items():
+        function_names.setdefault(func_name, func_index)
     func_import_indices: dict[str, int] = {}
     func_import_index = 0
     for _module, name, kind, _desc in _collect_imports(data):
@@ -535,6 +538,8 @@ def _resolve_import_targeted_table_refs(
     for table_index, (module, name) in sorted(refs.items()):
         for candidate in _import_symbol_name_candidates(module, name):
             func_index = function_exports.get(candidate)
+            if func_index is None:
+                func_index = function_names.get(candidate)
             if func_index is None:
                 func_index = func_import_indices.get(candidate)
             if func_index is not None:

@@ -2454,6 +2454,22 @@ def _run_wasm_ld(
     if rewritten is None:
         return 1
     rewritten_path, temp_dir, force_exports = rewritten
+    try:
+        prelinked_data, prelinked_materialized = _materialize_import_targeted_table_refs(
+            rewritten_path.read_bytes(),
+            output_data=output_data,
+            description="rewritten wasm-ld input",
+        )
+    except ValueError as exc:
+        print(
+            f"Failed to materialize pre-link import-targeted callable table refs: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+    if prelinked_materialized:
+        prelinked_path = Path(temp_dir.name) / "output_import_table_refs.wasm"
+        prelinked_path.write_bytes(prelinked_data)
+        rewritten_path = prelinked_path
     rewritten_path = _inject_table_ref_export_symbols(rewritten_path, temp_dir)
     native_link_inputs, native_force_exports = _rewrite_native_runtime_imports(
         tuple(native_objects),
@@ -2748,20 +2764,21 @@ def _run_wasm_ld(
         # linked module still carries the full --export-all surface; the
         # post-link optimizer below strips those export names and stubs
         # functions that are not yet rooted by element segments.
-        try:
-            linked_bytes, materialized = _materialize_import_targeted_table_refs(
-                linked_bytes,
-                output_data=output_data,
-                description="linked wasm",
-            )
-        except ValueError as exc:
-            print(
-                f"Failed to materialize import-targeted callable table refs: {exc}",
-                file=sys.stderr,
-            )
-            return 1
-        if materialized:
-            work_linked.write_bytes(linked_bytes)
+        if not split_runtime:
+            try:
+                linked_bytes, materialized = _materialize_import_targeted_table_refs(
+                    linked_bytes,
+                    output_data=output_data,
+                    description="linked wasm",
+                )
+            except ValueError as exc:
+                print(
+                    f"Failed to materialize import-targeted callable table refs: {exc}",
+                    file=sys.stderr,
+                )
+                return 1
+            if materialized:
+                work_linked.write_bytes(linked_bytes)
 
         # MOL-183/MOL-186: Post-link optimization to reduce V8 OOM risk.
         # Strip debug sections, internal exports, and report data duplicates.
