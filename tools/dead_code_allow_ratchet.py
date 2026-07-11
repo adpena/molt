@@ -1,131 +1,163 @@
 #!/usr/bin/env python3
-"""Dead-code-allow ratchet — a metabug guard against silently-masked mechanisms.
+"""Ratchet Rust dead-code masks and permanently cfg-disabled corpses."""
 
-THE METABUG CLASS THIS PREVENTS
--------------------------------
-`cargo clippy -D warnings` already blocks *un-allowed* dead code. The remaining
-hole is silencing a HALF-WIRED mechanism by adding `#[allow(dead_code)]` — a live
-consumer reading state that only dead code produces, so a safety interlock ships
-inert (real example: array_mod.rs `ArrayCell::exports` was READ by the live
-`resize_blocked` but INCREMENTED only by `#[allow(dead_code)]` code, so
-resize-while-exported UAF protection was silently off). An `#[allow(dead_code)]`
-is a promise of "landed, wire later" that is easy to forget — this ratchet makes
-ADDING one a reviewed event: the total may DECREASE freely (wire-or-delete is
-always welcome) but may not INCREASE past the committed baseline without an
-explicit, justified rebaseline. It forces the wire-or-delete decision instead of
-a silent mask.
-
-Usage:
-    python tools/dead_code_allow_ratchet.py            # check against baseline
-    python tools/dead_code_allow_ratchet.py --update   # rebaseline (review the drop/rise)
-
-Exit: 0 = at-or-below baseline; 2 = INCREASED (new mask — wire/delete or justify);
-3 = usage/IO error.
-"""
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
 import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-BASELINE = Path(__file__).resolve().parent / "dead_code_allow_baseline.json"
-# Roots scanned for Rust sources.
-_SCAN_ROOTS = ("runtime", "src")
-# Matches #[allow(dead_code)] and #![allow(dead_code)] and grouped allows that
-# include dead_code, e.g. #[allow(dead_code, unused)].
-_ALLOW_RE = re.compile(r"#!?\[\s*allow\s*\(([^)]*)\)\s*\]")
+REGISTRY = Path(__file__).resolve().parent / "dead_code_allow_baseline.json"
+SCAN_ROOTS = ("runtime", "src")
+ALLOW_RE = re.compile(r"#!?\[\s*allow\s*\(([^)]*)\)\s*\]")
+CFG_CORPSE_RE = re.compile(
+    r"#\[\s*cfg\s*\(\s*(?:any\s*\(\s*\)|not\s*\(\s*all\s*\(\s*\)\s*\))\s*\)\s*\]"
+)
+PLACEHOLDER = {"todo", "fixme", "later", "temporary", "tbd", "wip", "none"}
 
 
-def _counts() -> dict[str, int]:
-    """Per-crate-area dead_code-allow counts across the Rust tree."""
-    counts: dict[str, int] = {}
-    for root_name in _SCAN_ROOTS:
-        root = ROOT / root_name
-        if not root.is_dir():
+@dataclass(frozen=True)
+class Site:
+    id: str
+    path: str
+    line: int
+    kind: str
+
+
+def _valid_text(value: object) -> bool:
+    text = str(value or "").strip()
+    return len(text) >= 4 and text.lower() not in PLACEHOLDER
+
+
+def scan(root: Path = ROOT) -> list[Site]:
+    sites: list[Site] = []
+    ordinals: dict[tuple[str, str], int] = {}
+    for root_name in SCAN_ROOTS:
+        source_root = root / root_name
+        if not source_root.is_dir():
             continue
-        for rs in root.rglob("*.rs"):
-            # skip vendored/target/generated trees
-            parts = set(rs.parts)
-            if "target" in parts or ".git" in parts:
+        for source in sorted(source_root.rglob("*.rs")):
+            if "target" in source.parts or ".git" in source.parts:
                 continue
-            n = 0
-            try:
-                text = rs.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            for m in _ALLOW_RE.finditer(text):
-                lints = {t.strip() for t in m.group(1).split(",")}
+            text = source.read_text(encoding="utf-8", errors="replace")
+            rel = source.relative_to(root).as_posix()
+            matches: list[tuple[int, str]] = []
+            for match in ALLOW_RE.finditer(text):
+                lints = {lint.strip() for lint in match.group(1).split(",")}
                 if "dead_code" in lints:
-                    n += 1
-            if n:
-                # bucket by the crate dir (first 3 path components under ROOT)
-                rel = rs.relative_to(ROOT)
-                area = "/".join(rel.parts[: min(2, len(rel.parts) - 1)]) or rel.parts[0]
-                counts[area] = counts.get(area, 0) + n
-    return counts
+                    matches.append((match.start(), "allow_dead_code"))
+            matches.extend(
+                (match.start(), "cfg_corpse") for match in CFG_CORPSE_RE.finditer(text)
+            )
+            for offset, kind in sorted(matches):
+                key = (rel, kind)
+                ordinal = ordinals.get(key, 0) + 1
+                ordinals[key] = ordinal
+                sites.append(
+                    Site(
+                        id=f"{rel}::{kind}::{ordinal}",
+                        path=rel,
+                        line=text.count("\n", 0, offset) + 1,
+                        kind=kind,
+                    )
+                )
+    return sites
 
 
-def _total(counts: dict[str, int]) -> int:
-    return sum(counts.values())
+def _load_registry(path: Path = REGISTRY) -> dict[str, object]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data.get("entries"), list):
+        raise ValueError("registry must contain an entries list")
+    return data
+
+
+def regressions(sites: list[Site], registry: dict[str, object]) -> list[str]:
+    failures: list[str] = []
+    entries = registry["entries"]
+    assert isinstance(entries, list)
+    registered: dict[str, dict[str, object]] = {}
+    for raw in entries:
+        if not isinstance(raw, dict) or not isinstance(raw.get("id"), str):
+            failures.append("invalid registry entry")
+            continue
+        site_id = raw["id"]
+        if site_id in registered:
+            failures.append(f"duplicate registry entry: {site_id}")
+            continue
+        registered[site_id] = raw
+        if not _valid_text(raw.get("owner")):
+            failures.append(f"missing owner: {site_id}")
+        if not _valid_text(raw.get("waiver")):
+            failures.append(f"missing waiver rationale: {site_id}")
+    live = {site.id: site for site in sites}
+    for site_id, site in live.items():
+        if site_id not in registered:
+            failures.append(
+                f"unwaived {site.kind}: {site.path}:{site.line} ({site.id})"
+            )
+    for site_id in sorted(set(registered) - set(live)):
+        failures.append(f"stale registry entry must be removed: {site_id}")
+    baseline_total = int(registry.get("baseline_total", len(entries)))
+    if len(entries) > baseline_total:
+        failures.append(
+            f"ratchet regression: {len(entries)} entries exceed baseline {baseline_total}"
+        )
+    return failures
+
+
+def _write_registry(sites: list[Site], owner: str, path: Path = REGISTRY) -> None:
+    entries = [
+        {
+            **asdict(site),
+            "owner": owner,
+            "waiver": "legacy dead-code mask; owner must wire or delete",
+        }
+        for site in sites
+    ]
+    path.write_bytes(
+        (
+            json.dumps({"baseline_total": len(entries), "entries": entries}, indent=2)
+            + "\n"
+        ).encode("utf-8")
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--update", action="store_true", help="rebaseline to the current count")
-    args = ap.parse_args(argv)
-
-    counts = _counts()
-    total = _total(counts)
-
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--update", action="store_true")
+    parser.add_argument("--owner", default="compiler-runtime maintainers")
+    args = parser.parse_args(argv)
+    sites = scan()
     if args.update:
-        BASELINE.write_text(
-            json.dumps({"total": total, "by_area": dict(sorted(counts.items()))}, indent=2)
-            + "\n",
-            encoding="utf-8",
-        )
-        print(f"dead_code_allow_ratchet: baseline updated to total={total}")
+        if not _valid_text(args.owner):
+            print(
+                "dead_code_allow_ratchet: --owner must name a real owner",
+                file=sys.stderr,
+            )
+            return 3
+        _write_registry(sites, args.owner)
+        print(f"dead_code_allow_ratchet: registry updated to {len(sites)} sites")
         return 0
-
-    if not BASELINE.is_file():
-        print(
-            "dead_code_allow_ratchet: no baseline — run --update once to establish it.",
-            file=sys.stderr,
-        )
-        return 3
     try:
-        base = json.loads(BASELINE.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        print(f"dead_code_allow_ratchet: cannot read baseline: {exc}", file=sys.stderr)
+        registry = _load_registry()
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(f"dead_code_allow_ratchet: invalid registry: {exc}", file=sys.stderr)
         return 3
-
-    base_total = int(base.get("total", 0))
-    if total <= base_total:
-        note = "" if total == base_total else f" (down {base_total - total} — nice)"
-        print(f"dead_code_allow_ratchet: PASS — {total} <= baseline {base_total}{note}")
-        return 0
-
+    failures = regressions(sites, registry)
+    if failures:
+        print("dead_code_allow_ratchet: FAIL", file=sys.stderr)
+        for failure in failures:
+            print(f"  - {failure}", file=sys.stderr)
+        return 2
     print(
-        f"dead_code_allow_ratchet: FAIL — #[allow(dead_code)] rose {base_total} -> {total} "
-        f"(+{total - base_total}).",
-        file=sys.stderr,
+        f"dead_code_allow_ratchet: PASS - {len(sites)} registered sites <= "
+        f"baseline {registry['baseline_total']}"
     )
-    base_by = base.get("by_area", {})
-    for area in sorted(set(counts) | set(base_by)):
-        b, c = int(base_by.get(area, 0)), counts.get(area, 0)
-        if c > b:
-            print(f"    {area}: {b} -> {c}  (+{c - b})", file=sys.stderr)
-    print(
-        "\nA new #[allow(dead_code)] usually masks a HALF-WIRED mechanism (a live "
-        "consumer of state only dead code produces). WIRE it into a live path or "
-        "DELETE it. If the allow is genuinely justified (cfg-gated, trait-required), "
-        "rebaseline with `python tools/dead_code_allow_ratchet.py --update` and "
-        "explain in the commit.",
-        file=sys.stderr,
-    )
-    return 2
+    return 0
 
 
 if __name__ == "__main__":
