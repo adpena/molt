@@ -259,6 +259,7 @@ pub struct RuntimeHooks {
     // [`DictOp`] discriminant. Returns result bits, or 0 with a pending exception
     // on error.
     pub dict_op: unsafe extern "C" fn(op: u32, dict_bits: u64) -> u64,
+    pub set_op: unsafe extern "C" fn(op: u32, set_bits: u64) -> u64,
     // ── Set protocol (PySet_*) ────────────────────────────────────────────────
     //
     // The runtime owns the single set authority (hash table, dedup, membership,
@@ -333,6 +334,15 @@ pub enum DictOp {
     Keys = 1,
     Values = 2,
     Items = 3,
+    Clear = 4,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub enum SetOp {
+    FrozenNew = 0,
+    Pop = 1,
+    Clear = 2,
 }
 
 /// Discriminants for [`RuntimeHooks::number_binary_op`]. Kept in sync with the
@@ -659,6 +669,9 @@ unsafe extern "C" fn stub_number_power(_a: u64, _b: u64, _mod_bits: u64) -> u64 
 unsafe extern "C" fn stub_dict_op(_op: u32, _dict: u64) -> u64 {
     0
 }
+unsafe extern "C" fn stub_set_op(_op: u32, _set: u64) -> u64 {
+    0
+}
 // Set stubs fail closed with the CPython error sentinel (0 / -1). Without the
 // runtime set authority registered, returning a fake success would silently
 // corrupt set semantics; the API wrappers turn these sentinels into NULL / -1
@@ -743,6 +756,7 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     number_unary_op: stub_number_unary_op,
     number_power: stub_number_power,
     dict_op: stub_dict_op,
+    set_op: stub_set_op,
     set_new: stub_set_new,
     set_size: stub_set_size,
     set_contains: stub_set_contains,

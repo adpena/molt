@@ -14,7 +14,7 @@
 
 #![allow(non_snake_case)]
 
-use molt_cpython_abi::abi_types::{MoltTypeTag, PyObject, Py_ssize_t};
+use molt_cpython_abi::abi_types::{MoltTypeTag, Py_ssize_t, PyObject};
 use molt_lang_obj_model::MoltObject;
 use std::ptr;
 use std::sync::Mutex;
@@ -27,6 +27,7 @@ static ENTRIES: Mutex<Vec<(u64, u64)>> = Mutex::new(Vec::new());
 static SETS: Mutex<Vec<(u64, u64, u64)>> = Mutex::new(Vec::new());
 // Keys reported present by dict_get (drives the merge override path).
 static PRESENT: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+static CLEARS: Mutex<Vec<u64>> = Mutex::new(Vec::new());
 
 unsafe extern "C" fn fx_dict_entry(
     _d: u64,
@@ -57,10 +58,23 @@ unsafe extern "C" fn fx_dict_set(d: u64, k: u64, v: u64) {
     SETS.lock().unwrap().push((d, k, v));
 }
 unsafe extern "C" fn fx_dict_get(_d: u64, k: u64) -> u64 {
-    if PRESENT.lock().unwrap().contains(&k) { k } else { 0 }
+    if PRESENT.lock().unwrap().contains(&k) {
+        k
+    } else {
+        0
+    }
 }
 unsafe extern "C" fn fx_dict_len(_b: u64) -> usize {
     ENTRIES.lock().unwrap().len()
+}
+unsafe extern "C" fn fx_dict_op(op: u32, dict: u64) -> u64 {
+    if op == molt_cpython_abi::DictOp::Clear as u32 {
+        CLEARS.lock().unwrap().push(dict);
+        ENTRIES.lock().unwrap().clear();
+        MoltObject::none().bits()
+    } else {
+        0
+    }
 }
 
 fn install() {
@@ -70,6 +84,7 @@ fn install() {
     hooks.dict_set = fx_dict_set;
     hooks.dict_get = fx_dict_get;
     hooks.dict_len = fx_dict_len;
+    hooks.dict_op = fx_dict_op;
     unsafe {
         molt_cpython_abi::bridge::molt_cpython_abi_init();
         let _ = molt_cpython_abi::try_set_runtime_hooks(hooks);
@@ -160,7 +175,11 @@ fn merge_populates_target_override() {
     let rc = unsafe { molt_cpython_abi::api::mapping::PyDict_Merge(op, other, 1) };
     assert_eq!(rc, 0, "PyDict_Merge must succeed, not RuntimeError");
     let sets = SETS.lock().unwrap();
-    assert_eq!(sets.len(), 2, "every source entry must be set into the target");
+    assert_eq!(
+        sets.len(),
+        2,
+        "every source entry must be set into the target"
+    );
     assert!(
         sets.iter().all(|(d, _, _)| *d == op_bits),
         "merge must write into the target dict handle"
@@ -170,4 +189,57 @@ fn merge_populates_target_override() {
         keys.contains(&k1) && keys.contains(&k2),
         "both source keys must be merged"
     );
+}
+
+#[test]
+fn update_overwrites_and_clear_empties() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    install();
+    let key = MoltObject::from_int(0x55).bits();
+    let old_value = MoltObject::from_int(0x66).bits();
+    let new_value = MoltObject::from_int(0x77).bits();
+    *ENTRIES.lock().unwrap() = vec![(key, new_value)];
+    *PRESENT.lock().unwrap() = vec![key];
+    SETS.lock().unwrap().clear();
+    CLEARS.lock().unwrap().clear();
+    let target = register(fake_dict_handle(0x8100));
+    let source = register(fake_dict_handle(0x8200));
+    let target_bits = handle_of(target);
+    SETS.lock().unwrap().push((target_bits, key, old_value));
+
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::mapping::PyDict_Update(target, source) },
+        0
+    );
+    assert!(
+        SETS.lock()
+            .unwrap()
+            .iter()
+            .any(|entry| *entry == (target_bits, key, new_value))
+    );
+
+    unsafe { molt_cpython_abi::api::mapping::PyDict_Clear(target) };
+    assert_eq!(&*CLEARS.lock().unwrap(), &[target_bits]);
+    assert!(ENTRIES.lock().unwrap().is_empty());
+}
+
+#[test]
+fn dict_proxy_is_read_only() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    install();
+    let dict = register(fake_dict_handle(0x8300));
+    let proxy = unsafe { molt_cpython_abi::api::mapping::PyDictProxy_New(dict) };
+    assert!(!proxy.is_null());
+    let key = register(MoltObject::from_int(1).bits());
+    let value = register(MoltObject::from_int(2).bits());
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::object::PyObject_SetItem(proxy, key, value) },
+        -1
+    );
+    assert!(!unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
+    unsafe {
+        molt_cpython_abi::api::errors::PyErr_Clear();
+        molt_cpython_abi::api::refcount::Py_DECREF(proxy);
+    }
 }

@@ -816,7 +816,10 @@ pub const IMMORTAL_REFCNT: Py_ssize_t =
 // a positive refcount and, on 64-bit, carries low-word bit 31 so CPython's
 // `_Py_IsImmortal` ((int32)ob_refcnt < 0) classifies it immortal.
 const _: () = {
-    assert!(IMMORTAL_REFCNT > 0, "immortal refcount must be a positive ob_refcnt");
+    assert!(
+        IMMORTAL_REFCNT > 0,
+        "immortal refcount must be a positive ob_refcnt"
+    );
     #[cfg(target_pointer_width = "64")]
     assert!(
         IMMORTAL_REFCNT & 0x8000_0000 != 0,
@@ -896,7 +899,10 @@ pub static mut Py_True: PyLongObject = PyLongObject {
         ob_refcnt: IMMORTAL_REFCNT,
         ob_type: &raw mut PyBool_Type,
     },
-    long_value: PyLongValue { lv_tag: 8, ob_digit: [1] },
+    long_value: PyLongValue {
+        lv_tag: 8,
+        ob_digit: [1],
+    },
 };
 
 /// `Py_False` — value-carrying `PyLongObject` twin of [`Py_True`] (CPython
@@ -909,7 +915,10 @@ pub static mut Py_False: PyLongObject = PyLongObject {
         ob_refcnt: IMMORTAL_REFCNT,
         ob_type: &raw mut PyBool_Type,
     },
-    long_value: PyLongValue { lv_tag: 1, ob_digit: [0] },
+    long_value: PyLongValue {
+        lv_tag: 1,
+        ob_digit: [0],
+    },
 };
 
 /// Sentinel returned by rich comparison when the operation is not supported.
@@ -1091,6 +1100,12 @@ pub unsafe fn init_static_types() {
         PyComplex_Type.tp_dealloc = Some(crate::api::numbers::molt_complex_dealloc);
         PyDictProxy_Type.tp_basicsize = std::mem::size_of::<PyDictProxyObject>() as Py_ssize_t;
         PyDictProxy_Type.tp_dealloc = Some(crate::api::mapping::molt_dictproxy_dealloc);
+        PyDictProxy_Type.tp_iter = Some(crate::api::mapping::molt_dictproxy_iter);
+        PyDictProxy_Type.tp_as_mapping = Box::into_raw(Box::new(PyMappingMethods {
+            mp_length: crate::api::mapping::molt_dictproxy_len as *mut c_void,
+            mp_subscript: crate::api::mapping::molt_dictproxy_subscript as *mut c_void,
+            mp_ass_subscript: std::ptr::null_mut(),
+        })) as *mut c_void;
         Py_GenericAliasType.tp_basicsize =
             std::mem::size_of::<PyGenericAliasObject>() as Py_ssize_t;
         Py_GenericAliasType.tp_dealloc = Some(crate::api::object::molt_generic_alias_dealloc);
@@ -1198,9 +1213,9 @@ pub unsafe fn init_static_types() {
             Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | _Py_TPFLAGS_MATCH_SELF,
             object
         );
-        PyFloat_Type.tp_basicsize =
-            (std::mem::size_of::<PyObject>() + std::mem::size_of::<std::os::raw::c_double>())
-                as Py_ssize_t;
+        PyFloat_Type.tp_basicsize = (std::mem::size_of::<PyObject>()
+            + std::mem::size_of::<std::os::raw::c_double>())
+            as Py_ssize_t;
         // complex — BASETYPE.
         shell!(
             PyComplex_Type,
@@ -1539,7 +1554,12 @@ mod exc_hierarchy_tests {
         // Spot-pin the load-bearing chains.
         assert_eq!(
             chain(&raw mut PyExc_IndexError),
-            ["PyExc_IndexError", "PyExc_LookupError", "PyExc_Exception", "PyExc_BaseException"]
+            [
+                "PyExc_IndexError",
+                "PyExc_LookupError",
+                "PyExc_Exception",
+                "PyExc_BaseException"
+            ]
         );
         assert_eq!(
             chain(&raw mut PyExc_OverflowError),
@@ -1888,8 +1908,14 @@ mod immortal_authority_tests {
         // A fresh/mortal refcount is NOT immortal — this is exactly what the old
         // `ob_refcnt: 1` exception singletons had, so the pre-fix state fails the
         // single-encoding gate below by construction.
-        assert!(!is_immortal_refcnt(1), "refcount 1 (the old exc encoding) is mortal");
-        assert!(!is_immortal_refcnt(0), "refcount 0 (zeroed type static) is mortal");
+        assert!(
+            !is_immortal_refcnt(1),
+            "refcount 1 (the old exc encoding) is mortal"
+        );
+        assert!(
+            !is_immortal_refcnt(0),
+            "refcount 0 (zeroed type static) is mortal"
+        );
         assert!(!is_immortal_refcnt(4096), "an ordinary refcount is mortal");
     }
 
@@ -1916,7 +1942,10 @@ mod immortal_authority_tests {
                 rc, IMMORTAL_REFCNT,
                 "singleton @ {p:p} uses a non-authority refcnt encoding: {rc:#x}"
             );
-            assert!(is_immortal_refcnt(rc), "singleton @ {p:p} not detected immortal");
+            assert!(
+                is_immortal_refcnt(rc),
+                "singleton @ {p:p} not detected immortal"
+            );
         }
     }
 
@@ -1935,7 +1964,10 @@ mod immortal_authority_tests {
             "PyExc_ValueError must be immortal (pre-fix it was the mortal `1`)"
         );
         assert!(
-            crate::bridge::GLOBAL_BRIDGE.lock().pyobj_to_handle(exc).is_some(),
+            crate::bridge::GLOBAL_BRIDGE
+                .lock()
+                .pyobj_to_handle(exc)
+                .is_some(),
             "exc singleton must be bridge-registered before the over-DECREF"
         );
         // 8 net-negative DECREFs — for a mortal `1` this reaches 0 and frees.
@@ -1948,7 +1980,10 @@ mod immortal_authority_tests {
             "immortal exception singleton refcount changed under DECREF"
         );
         assert!(
-            crate::bridge::GLOBAL_BRIDGE.lock().pyobj_to_handle(exc).is_some(),
+            crate::bridge::GLOBAL_BRIDGE
+                .lock()
+                .pyobj_to_handle(exc)
+                .is_some(),
             "exc singleton lost bridge identity after over-DECREF (static-free regression)"
         );
     }
@@ -1968,7 +2003,7 @@ mod immortal_authority_tests {
         let forbidden: [String; 3] = [
             ["ob_refcnt: 1 ", "<< 30"].concat(), // struct-init immortal literal
             ["ob_refcnt = 1 ", "<< 30"].concat(), // assignment immortal literal
-            ["(1 ", "<< 29)"].concat(),           // the old ad-hoc immortal threshold
+            ["(1 ", "<< 29)"].concat(),          // the old ad-hoc immortal threshold
         ];
         for (name, src) in sources {
             for needle in &forbidden {
@@ -1998,7 +2033,10 @@ mod immortal_authority_tests {
         let rc_before = unsafe { (*exc).ob_refcnt };
         for _ in 0..16 {
             let p = unsafe { bridge.handle_to_pyobj(bits) };
-            assert!(std::ptr::eq(p, exc), "singleton handle round-trip lost identity");
+            assert!(
+                std::ptr::eq(p, exc),
+                "singleton handle round-trip lost identity"
+            );
         }
         assert_eq!(
             unsafe { (*exc).ob_refcnt },
@@ -2057,7 +2095,11 @@ mod immortal_authority_tests {
             );
             assert!(is_immortal_refcnt((*t).ob_base.ob_refcnt));
             assert_eq!((*f).long_value.ob_digit[0], 0, "False ob_digit[0]");
-            assert_eq!((*f).long_value.lv_tag, 1, "False lv_tag == _PyLong_FALSE_TAG");
+            assert_eq!(
+                (*f).long_value.lv_tag,
+                1,
+                "False lv_tag == _PyLong_FALSE_TAG"
+            );
             assert!(
                 std::ptr::eq((*f).ob_base.ob_type, &raw mut PyBool_Type),
                 "False ob_type == &PyBool_Type"
@@ -2147,28 +2189,80 @@ mod immortal_authority_tests {
 
             // FastSubclass = HasFeature(t, <TYPE>_SUBCLASS): each base carries its
             // own fast bit (pre-fix 0 → e.g. numpy's inlined PyLong_Check misses).
-            assert_eq!(PyType_HasFeature(long_t, Py_TPFLAGS_LONG_SUBCLASS), 1, "int LONG_SUBCLASS");
-            assert_eq!(PyType_HasFeature(list_t, Py_TPFLAGS_LIST_SUBCLASS), 1, "list LIST_SUBCLASS");
-            assert_eq!(PyType_HasFeature(tuple_t, Py_TPFLAGS_TUPLE_SUBCLASS), 1, "tuple TUPLE_SUBCLASS");
-            assert_eq!(PyType_HasFeature(dict_t, Py_TPFLAGS_DICT_SUBCLASS), 1, "dict DICT_SUBCLASS");
-            assert_eq!(PyType_HasFeature(unicode_t, Py_TPFLAGS_UNICODE_SUBCLASS), 1, "str UNICODE_SUBCLASS");
-            assert_eq!(PyType_HasFeature(type_t, Py_TPFLAGS_TYPE_SUBCLASS), 1, "type TYPE_SUBCLASS");
+            assert_eq!(
+                PyType_HasFeature(long_t, Py_TPFLAGS_LONG_SUBCLASS),
+                1,
+                "int LONG_SUBCLASS"
+            );
+            assert_eq!(
+                PyType_HasFeature(list_t, Py_TPFLAGS_LIST_SUBCLASS),
+                1,
+                "list LIST_SUBCLASS"
+            );
+            assert_eq!(
+                PyType_HasFeature(tuple_t, Py_TPFLAGS_TUPLE_SUBCLASS),
+                1,
+                "tuple TUPLE_SUBCLASS"
+            );
+            assert_eq!(
+                PyType_HasFeature(dict_t, Py_TPFLAGS_DICT_SUBCLASS),
+                1,
+                "dict DICT_SUBCLASS"
+            );
+            assert_eq!(
+                PyType_HasFeature(unicode_t, Py_TPFLAGS_UNICODE_SUBCLASS),
+                1,
+                "str UNICODE_SUBCLASS"
+            );
+            assert_eq!(
+                PyType_HasFeature(type_t, Py_TPFLAGS_TYPE_SUBCLASS),
+                1,
+                "type TYPE_SUBCLASS"
+            );
 
             // Subclassability: int/list/object ARE BASETYPE; bool is NOT (final).
-            assert_eq!(PyType_HasFeature(long_t, Py_TPFLAGS_BASETYPE), 1, "int subclassable");
-            assert_eq!(PyType_HasFeature(object_t, Py_TPFLAGS_BASETYPE), 1, "object subclassable");
-            assert_eq!(PyType_HasFeature(bool_t, Py_TPFLAGS_BASETYPE), 0, "bool is final (not BASETYPE)");
+            assert_eq!(
+                PyType_HasFeature(long_t, Py_TPFLAGS_BASETYPE),
+                1,
+                "int subclassable"
+            );
+            assert_eq!(
+                PyType_HasFeature(object_t, Py_TPFLAGS_BASETYPE),
+                1,
+                "object subclassable"
+            );
+            assert_eq!(
+                PyType_HasFeature(bool_t, Py_TPFLAGS_BASETYPE),
+                0,
+                "bool is final (not BASETYPE)"
+            );
 
             // bool IS an int subclass — via the fast bit AND the tp_base chain.
-            assert_eq!(PyType_HasFeature(bool_t, Py_TPFLAGS_LONG_SUBCLASS), 1, "bool inherits LONG_SUBCLASS");
+            assert_eq!(
+                PyType_HasFeature(bool_t, Py_TPFLAGS_LONG_SUBCLASS),
+                1,
+                "bool inherits LONG_SUBCLASS"
+            );
             assert_eq!(PyType_IsSubtype(bool_t, long_t), 1, "bool <: int");
-            assert_eq!(PyType_IsSubtype(bool_t, object_t), 1, "bool <: object (chain)");
+            assert_eq!(
+                PyType_IsSubtype(bool_t, object_t),
+                1,
+                "bool <: object (chain)"
+            );
             assert_eq!(PyType_IsSubtype(long_t, object_t), 1, "int <: object");
             assert_eq!(PyType_IsSubtype(long_t, bool_t), 0, "int is NOT <: bool");
 
             // GC flag: containers carry HAVE_GC; leaf numerics do not.
-            assert_eq!(PyType_HasFeature(list_t, Py_TPFLAGS_HAVE_GC), 1, "list HAVE_GC");
-            assert_eq!(PyType_HasFeature(long_t, Py_TPFLAGS_HAVE_GC), 0, "int no HAVE_GC");
+            assert_eq!(
+                PyType_HasFeature(list_t, Py_TPFLAGS_HAVE_GC),
+                1,
+                "list HAVE_GC"
+            );
+            assert_eq!(
+                PyType_HasFeature(long_t, Py_TPFLAGS_HAVE_GC),
+                0,
+                "int no HAVE_GC"
+            );
         }
     }
 
@@ -2212,7 +2306,11 @@ mod immortal_authority_tests {
                 core::mem::offset_of!(PyLongObject, long_value.ob_digit) as Py_ssize_t,
                 "int basicsize == offsetof(long_value.ob_digit)"
             );
-            assert_eq!(long_is, std::mem::size_of::<u32>() as Py_ssize_t, "int itemsize == sizeof(digit)");
+            assert_eq!(
+                long_is,
+                std::mem::size_of::<u32>() as Py_ssize_t,
+                "int itemsize == sizeof(digit)"
+            );
             assert_eq!(bool_bs, long_bs, "bool shares int's _longobject basicsize");
             assert!(
                 float_bs
@@ -2241,7 +2339,10 @@ mod immortal_authority_tests {
         use core::mem::{offset_of, size_of};
         assert_eq!(offset_of!(PyHeapTypeObject, ht_type), 0, "ht_type first");
         // Sub-tables follow the header in order with no padding.
-        assert_eq!(offset_of!(PyHeapTypeObject, as_async), size_of::<PyTypeObject>());
+        assert_eq!(
+            offset_of!(PyHeapTypeObject, as_async),
+            size_of::<PyTypeObject>()
+        );
         let after_subtables = size_of::<PyTypeObject>()
             + size_of::<PyAsyncMethods>()
             + size_of::<PyNumberMethods>()
@@ -2249,12 +2350,29 @@ mod immortal_authority_tests {
             + size_of::<PySequenceMethods>()
             + size_of::<PyBufferProcs>();
         let p = size_of::<*mut PyObject>();
-        assert_eq!(offset_of!(PyHeapTypeObject, ht_name), after_subtables, "ht_name past subtables");
+        assert_eq!(
+            offset_of!(PyHeapTypeObject, ht_name),
+            after_subtables,
+            "ht_name past subtables"
+        );
         assert_eq!(offset_of!(PyHeapTypeObject, ht_slots), after_subtables + p);
-        assert_eq!(offset_of!(PyHeapTypeObject, ht_qualname), after_subtables + 2 * p);
-        assert_eq!(offset_of!(PyHeapTypeObject, ht_cached_keys), after_subtables + 3 * p);
-        assert_eq!(offset_of!(PyHeapTypeObject, ht_module), after_subtables + 4 * p, "ht_module offset");
-        assert_eq!(offset_of!(PyHeapTypeObject, _ht_tpname), after_subtables + 5 * p);
+        assert_eq!(
+            offset_of!(PyHeapTypeObject, ht_qualname),
+            after_subtables + 2 * p
+        );
+        assert_eq!(
+            offset_of!(PyHeapTypeObject, ht_cached_keys),
+            after_subtables + 3 * p
+        );
+        assert_eq!(
+            offset_of!(PyHeapTypeObject, ht_module),
+            after_subtables + 4 * p,
+            "ht_module offset"
+        );
+        assert_eq!(
+            offset_of!(PyHeapTypeObject, _ht_tpname),
+            after_subtables + 5 * p
+        );
         // _spec_cache: { PyObject *getitem; uint32_t getitem_version; }.
         assert_eq!(offset_of!(SpecializationCache, getitem), 0);
         assert_eq!(offset_of!(SpecializationCache, getitem_version), p);

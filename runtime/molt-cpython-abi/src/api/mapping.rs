@@ -216,6 +216,7 @@ pub unsafe extern "C" fn PyDict_Merge(
     other: *mut PyObject,
     override_: c_int,
 ) -> c_int {
+    let override_ = c_int::from(override_ != 0);
     // CPython: `a` must be a dict (`!PyDict_Check(a)` → `PyErr_BadInternalCall`).
     if op.is_null() || other.is_null() || resolve_native_dict(op).is_none() {
         unsafe { crate::api::errors::PyErr_BadInternalCall() };
@@ -256,9 +257,99 @@ pub unsafe extern "C" fn PyDict_Merge(
     unsafe { dict_merge_from_mapping(op, other, override_) }
 }
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyDict_Update(op: *mut PyObject, other: *mut PyObject) -> c_int {
+    unsafe { PyDict_Merge(op, other, 1) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyDict_MergeFromSeq2(
+    op: *mut PyObject,
+    seq2: *mut PyObject,
+    override_: c_int,
+) -> c_int {
+    if resolve_native_dict(op).is_none() || seq2.is_null() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return -1;
+    }
+    let iter = unsafe { crate::api::object::PyObject_GetIter(seq2) };
+    if iter.is_null() {
+        return -1;
+    }
+    let mut index = 0usize;
+    loop {
+        let item = unsafe { crate::api::object::PyIter_Next(iter) };
+        if item.is_null() {
+            break;
+        }
+        let fast = unsafe {
+            crate::api::abstract_sequence::PySequence_Fast(
+                item,
+                c"cannot convert dictionary update sequence element to a sequence".as_ptr(),
+            )
+        };
+        unsafe { crate::api::refcount::Py_DECREF(item) };
+        if fast.is_null() {
+            unsafe { crate::api::refcount::Py_DECREF(iter) };
+            return -1;
+        }
+        let size = unsafe { crate::api::abstract_sequence::PySequence_Fast_GET_SIZE(fast) };
+        if size != 2 {
+            let message = format!(
+                "dictionary update sequence element #{} has length {}; 2 is required",
+                index, size
+            );
+            let c_message = std::ffi::CString::new(message).expect("dict merge error has no NUL");
+            unsafe {
+                crate::api::errors::PyErr_SetString(
+                    &raw mut crate::abi_types::PyExc_ValueError,
+                    c_message.as_ptr(),
+                );
+                crate::api::refcount::Py_DECREF(fast);
+                crate::api::refcount::Py_DECREF(iter);
+            }
+            return -1;
+        }
+        let key = unsafe { crate::api::abstract_sequence::PySequence_Fast_GET_ITEM(fast, 0) };
+        let value = unsafe { crate::api::abstract_sequence::PySequence_Fast_GET_ITEM(fast, 1) };
+        let should_set = override_ != 0 || unsafe { PyDict_Contains(op, key) } == 0;
+        let rc = if should_set {
+            unsafe { PyDict_SetItem(op, key, value) }
+        } else {
+            0
+        };
+        unsafe { crate::api::refcount::Py_DECREF(fast) };
+        if rc != 0 {
+            unsafe { crate::api::refcount::Py_DECREF(iter) };
+            return -1;
+        }
+        index += 1;
+    }
+    unsafe { crate::api::refcount::Py_DECREF(iter) };
+    if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+        0
+    } else {
+        -1
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyDict_Clear(op: *mut PyObject) {
+    let Some(bits) = resolve_native_dict(op) else {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return;
+    };
+    let h = hooks_or_stubs();
+    let _ = unsafe { (h.dict_op)(crate::hooks::DictOp::Clear as u32, bits) };
+}
+
 /// CPython `dict_merge` non-dict branch: `PyMapping_Keys(other)` then, per key,
 /// `PyObject_GetItem(other, key)` → set into `op` honoring `override`.
-unsafe fn dict_merge_from_mapping(op: *mut PyObject, other: *mut PyObject, override_: c_int) -> c_int {
+unsafe fn dict_merge_from_mapping(
+    op: *mut PyObject,
+    other: *mut PyObject,
+    override_: c_int,
+) -> c_int {
     let keys = unsafe { crate::api::abstract_mapping::PyMapping_Keys(other) };
     if keys.is_null() {
         // PyMapping_Keys already set the exception (foreign mapping without a
@@ -304,13 +395,11 @@ unsafe fn dict_merge_from_mapping(op: *mut PyObject, other: *mut PyObject, overr
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyDictProxy_New(mapping: *mut PyObject) -> *mut PyObject {
-    if mapping.is_null() {
-        unsafe {
-            crate::api::errors::PyErr_SetString(
-                &raw mut crate::abi_types::PyExc_TypeError,
-                c"PyDictProxy_New mapping must not be NULL".as_ptr(),
-            );
-        }
+    if mapping.is_null()
+        || (resolve_native_dict(mapping).is_none()
+            && unsafe { crate::api::abstract_mapping::PyMapping_Check(mapping) } == 0)
+    {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return ptr::null_mut();
     }
     unsafe { crate::api::refcount::Py_INCREF(mapping) };
@@ -322,6 +411,32 @@ pub unsafe extern "C" fn PyDictProxy_New(mapping: *mut PyObject) -> *mut PyObjec
         mapping,
     });
     Box::into_raw(proxy).cast::<PyObject>()
+}
+
+pub unsafe extern "C" fn molt_dictproxy_len(op: *mut PyObject) -> Py_ssize_t {
+    let proxy = op.cast::<PyDictProxyObject>();
+    if resolve_native_dict(unsafe { (*proxy).mapping }).is_some() {
+        unsafe { PyDict_Size((*proxy).mapping) }
+    } else {
+        unsafe { crate::api::object::PyObject_Size((*proxy).mapping) }
+    }
+}
+
+pub unsafe extern "C" fn molt_dictproxy_subscript(
+    op: *mut PyObject,
+    key: *mut PyObject,
+) -> *mut PyObject {
+    let proxy = op.cast::<PyDictProxyObject>();
+    if resolve_native_dict(unsafe { (*proxy).mapping }).is_some() {
+        unsafe { PyDict_GetItemWithError((*proxy).mapping, key) }
+    } else {
+        unsafe { crate::api::object::PyObject_GetItem((*proxy).mapping, key) }
+    }
+}
+
+pub unsafe extern "C" fn molt_dictproxy_iter(op: *mut PyObject) -> *mut PyObject {
+    let proxy = op.cast::<PyDictProxyObject>();
+    unsafe { crate::api::object::PyObject_GetIter((*proxy).mapping) }
 }
 
 pub unsafe extern "C" fn molt_dictproxy_dealloc(op: *mut PyObject) {
@@ -487,7 +602,7 @@ pub unsafe extern "C" fn PyDict_SetDefault(
     if op.is_null() || key.is_null() || default_value.is_null() {
         return ptr::null_mut();
     }
-    let existing = unsafe { PyDict_GetItem(op, key) };
+    let existing = unsafe { PyDict_GetItemWithError(op, key) };
     if !existing.is_null() {
         return existing;
     }

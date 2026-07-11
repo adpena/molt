@@ -1353,6 +1353,7 @@ extern PyObject   *PyTuple_New     (Py_ssize_t size);
 extern PyObject   *PyTuple_Pack    (Py_ssize_t n, ...);
 extern PyObject   *PyTuple_GetItem (PyObject *op, Py_ssize_t i);
 extern PyObject   *PyTuple_GetSlice(PyObject *op, Py_ssize_t start, Py_ssize_t end);
+extern int         _PyTuple_Resize(PyObject **op, Py_ssize_t newsize);
 extern int         PyTuple_SetItem (PyObject *op, Py_ssize_t i, PyObject *v);
 extern Py_ssize_t  PyTuple_Size    (PyObject *op);
 extern int         PyTuple_Check   (PyObject *op);
@@ -1366,10 +1367,13 @@ extern int         PyTuple_Check   (PyObject *op);
 extern int         PySet_Check    (PyObject *op);
 extern int         PyFrozenSet_Check(PyObject *op);
 extern PyObject   *PySet_New      (PyObject *iterable);
+extern PyObject   *PyFrozenSet_New(PyObject *iterable);
 extern Py_ssize_t  PySet_Size     (PyObject *anyset);
 extern int         PySet_Contains (PyObject *anyset, PyObject *key);
 extern int         PySet_Add      (PyObject *anyset, PyObject *key);
 extern int         PySet_Discard  (PyObject *anyset, PyObject *key);
+extern PyObject   *PySet_Pop      (PyObject *anyset);
+extern int         PySet_Clear    (PyObject *anyset);
 
 #define PySet_GET_SIZE(op) PySet_Size((PyObject *)(op))
 #define PyAnySet_Check(op) (PySet_Check((PyObject *)(op)) || PyFrozenSet_Check((PyObject *)(op)))
@@ -1382,6 +1386,9 @@ extern PyObject   *_PyDict_NewPresized  (Py_ssize_t minused);
 extern int         PyDict_SetItem       (PyObject *op, PyObject *key, PyObject *val);
 extern int         PyDict_SetItemString (PyObject *op, const char *key, PyObject *val);
 extern int         PyDict_Merge         (PyObject *op, PyObject *other, int override);
+extern int         PyDict_MergeFromSeq2 (PyObject *op, PyObject *seq2, int override);
+extern int         PyDict_Update        (PyObject *op, PyObject *other);
+extern void        PyDict_Clear         (PyObject *op);
 extern PyObject   *PyDictProxy_New      (PyObject *mapping);
 extern PyObject   *PyDict_GetItem       (PyObject *op, PyObject *key);
 extern PyObject   *PyDict_GetItemWithError(PyObject *op, PyObject *key);
@@ -1862,11 +1869,6 @@ static inline int PyTraceBack_Check(PyObject *ob) {
         return 0;
     }
     return strcmp(Py_TYPE(ob)->tp_name, "traceback") == 0;
-}
-
-/* dict.update(b): merge b into a, overwriting (override=1). */
-static inline int PyDict_Update(PyObject *a, PyObject *b) {
-    return PyDict_Merge(a, b, 1);
 }
 
 /* Remove key from dict, returning a new ref to its value; on absence return a

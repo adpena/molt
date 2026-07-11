@@ -417,6 +417,7 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     number_unary_op: fake_number_unary_op,
     number_power: fake_number_power,
     dict_op: fake_dict_op,
+    set_op: fake_dict_op,
     set_new: fake_set_new,
     set_size: fake_set_size,
     set_contains: fake_set_contains,
