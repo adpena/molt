@@ -20205,6 +20205,11 @@ def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
     libc_provider.write_bytes(b"!<arch>\nlibc")
     compiler_rt_provider = tmp_path / "rustlib" / "libcompiler_builtins-x.rlib"
     compiler_rt_provider.write_bytes(b"!<arch>\ncompiler-rt")
+    libcxx_provider = tmp_path / "wasi-sysroot" / "eh" / "libc++.a"
+    libcxxabi_provider = tmp_path / "wasi-sysroot" / "eh" / "libc++abi.a"
+    libcxx_provider.parent.mkdir(parents=True)
+    libcxx_provider.write_bytes(b"!<arch>\nlibcxx")
+    libcxxabi_provider.write_bytes(b"!<arch>\nlibcxxabi")
     native_artifact_plan = _ExternalPackageNativeArtifactPlan(
         artifacts=(
             _ExternalPackageNativeArtifact(
@@ -20240,6 +20245,12 @@ def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
                         primitive_class="wasm_compiler_rt_link_import",
                         source="undefined_symbols",
                     ),
+                    _ExternalNativeAbiSymbol(
+                        symbol="_ZNSt3__212__next_primeEm",
+                        status="external_link",
+                        primitive_class="wasm_libcxx_link_import",
+                        source="undefined_symbols",
+                    ),
                 ),
                 c_api_symbols=(
                     _ExternalNativeCapiSymbol(
@@ -20272,6 +20283,12 @@ def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
         cli_wasm_toolchain,
         "wasm_compiler_builtins_archive",
         lambda: compiler_rt_provider,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli_wasm_toolchain,
+        "wasm_libcxx_archives",
+        lambda: (libcxx_provider, libcxxabi_provider),
         raising=True,
     )
 
@@ -20312,6 +20329,8 @@ def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
     assert cpython_abi_provider not in native_inputs
     assert libc_provider in native_inputs
     assert compiler_rt_provider in native_inputs
+    assert libcxx_provider in native_inputs
+    assert libcxxabi_provider in native_inputs
     assert reloc_required == [{"PyErr_Format", "molt_cpython_abi_date_from_date"}]
     assert shared_required == [{"PyErr_Format", "molt_cpython_abi_date_from_date"}]
     staged_native_inputs = [
