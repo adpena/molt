@@ -1253,6 +1253,27 @@ def test_canonicalize_standard_section_order_moves_element_before_code_data() ->
     ]
 
 
+def test_canonicalize_standard_section_order_places_tag_after_memory() -> None:
+    module = wasm_link._build_sections(
+        [
+            (6, b"\x00"),
+            (13, b"\x00"),
+            (5, b"\x00"),
+            (7, b"\x00"),
+        ]
+    )
+
+    canonical = wasm_link._canonicalize_standard_section_order(module)
+
+    assert canonical is not None
+    assert [section_id for section_id, _ in wasm_link._parse_sections(canonical)] == [
+        5,
+        13,
+        6,
+        7,
+    ]
+
+
 def _build_linked_host_table_module(table_import_name: str) -> bytes:
     write_varuint = wasm_link._write_varuint
     sections: list[tuple[int, bytes]] = []
@@ -1562,19 +1583,36 @@ def test_restore_split_runtime_contract_exports_reemits_memory_and_table() -> No
     }
 
 
-def test_split_app_post_link_mask_restores_real_molt_main_export() -> None:
+def test_split_runtime_contract_keep_set_includes_all_external_kinds() -> None:
+    assert wasm_link._split_runtime_contract_export_names("app") == {
+        "__indirect_function_table",
+        "memory",
+        "molt_main",
+        "molt_memory",
+        "molt_table",
+    }
+
+
+def test_split_app_post_link_preserves_and_restores_contract_exports() -> None:
     app = _build_split_runtime_app_module([])
     molt_main_index = wasm_link._collect_function_exports(app)["molt_main"]
     optimized = wasm_link._post_link_optimize(
         app,
         reference_data=_build_exported_runtime_module_many(["reference_only"]),
-        preserve_exports=wasm_link._split_runtime_function_export_names("app"),
+        preserve_exports=wasm_link._split_runtime_contract_export_names("app"),
         preserve_reference_exports=False,
     )
 
-    assert wasm_link._collect_function_exports(optimized)["molt_main"] == molt_main_index
+    assert wasm_link.parse_wasm_module_facts(optimized).export_kinds == {
+        "molt_main": (0, molt_main_index),
+        "molt_memory": (2, 0),
+        "molt_table": (1, 0),
+    }
 
-    masked = _strip_export(optimized, "molt_main")
+    masked = _strip_export(
+        _strip_export(_strip_export(optimized, "molt_main"), "molt_memory"),
+        "molt_table",
+    )
     restored = wasm_link._restore_split_runtime_contract_exports(
         masked,
         artifact="app",
@@ -1582,7 +1620,69 @@ def test_split_app_post_link_mask_restores_real_molt_main_export() -> None:
         function_export_indices={"molt_main": molt_main_index},
     )
 
-    assert wasm_link._collect_function_exports(restored)["molt_main"] == molt_main_index
+    assert wasm_link.parse_wasm_module_facts(restored).export_kinds == {
+        "molt_main": (0, molt_main_index),
+        "molt_memory": (2, 0),
+        "molt_table": (1, 0),
+    }
+
+
+def test_split_combined_post_link_preserves_linker_memory_and_table_aliases() -> None:
+    linked = wasm_link._rename_export_names(
+        _build_linked_ref_func_module(),
+        {
+            "molt_memory": "memory",
+            "molt_table": "__indirect_function_table",
+        },
+    )
+    assert linked is not None
+
+    optimized = wasm_link._post_link_optimize(
+        linked,
+        preserve_exports=wasm_link._split_runtime_contract_export_names("app"),
+        preserve_reference_exports=False,
+    )
+
+    assert wasm_link.parse_wasm_module_facts(optimized).export_kinds == {
+        "memory": (2, 0),
+        "__indirect_function_table": (1, 0),
+    }
+
+
+def test_split_combined_post_link_restores_real_defined_memory_export() -> None:
+    linked = _strip_export(_build_linked_ref_func_module(), "molt_memory")
+    optimized = wasm_link._post_link_optimize(
+        linked,
+        preserve_exports=wasm_link._split_runtime_contract_export_names("app"),
+        preserve_reference_exports=False,
+    )
+
+    restored = wasm_link._ensure_defined_memory_export(optimized)
+
+    assert restored is not None
+    facts = wasm_link.parse_wasm_module_facts(restored)
+    assert not [entry for entry in facts.imports if entry[2] == 2]
+    assert facts.export_kinds["molt_memory"] == (2, 0)
+
+
+def test_defined_memory_export_restoration_rejects_imported_memory() -> None:
+    app = _strip_export(_build_split_runtime_app_module([]), "molt_memory")
+
+    with pytest.raises(
+        ValueError, match="cannot restore linked memory export from an imported memory"
+    ):
+        wasm_link._ensure_defined_memory_export(app)
+
+
+def test_split_app_shared_memory_contract_passes_split_validation(
+    tmp_path: Path,
+) -> None:
+    app = tmp_path / "app.wasm"
+    runtime = tmp_path / "molt_runtime.wasm"
+    app.write_bytes(_build_split_runtime_app_module([]))
+    runtime.write_bytes(_build_exported_runtime_module_many([]))
+
+    assert wasm_link._validate_split_runtime_outputs(app, runtime)
 
 
 def test_validate_split_runtime_outputs_requires_shared_app_memory(

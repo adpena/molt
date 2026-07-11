@@ -59,13 +59,14 @@ _STANDARD_SECTION_ORDER = {
     3: 3,  # function
     4: 4,  # table
     5: 5,  # memory
-    6: 6,  # global
-    7: 7,  # export
-    8: 8,  # start
-    9: 9,  # element
-    12: 10,  # data count
-    10: 11,  # code
-    11: 12,  # data
+    13: 6,  # tag
+    6: 7,  # global
+    7: 8,  # export
+    8: 9,  # start
+    9: 10,  # element
+    12: 11,  # data count
+    10: 12,  # code
+    11: 13,  # data
 }
 
 _CPYTHON_ABI_LINK_IMPORT_CLASS = "molt_cpython_abi_link_import"
