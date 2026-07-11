@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "claim": "OPT-MATRIX-R8",
+  "target": "wasm-browser split",
+  "axis": "startup",
+  "profile": "release final-form split artifacts in fresh system Edge processes",
+  "samples_per_variant": 7,
+  "serial": {
+    "samples_ms": [
+      171.5,
+      173.2999999988824,
+      220.19999999925494,
+      170.19999999925494,
+      178.2000000011176,
+      210.69999999925494,
+      178.40000000037253
+    ],
+    "median_ms": 178.2000000011176
+  },
+  "streaming": {
+    "samples_ms": [
+      192.90000000037253,
+      241.2000000011176,
+      198.59999999962747,
+      198.90000000037253,
+      198.80000000074506,
+      190.59999999962747,
+      192
+    ],
+    "median_ms": 198.59999999962747
+  },
+  "streaming_speedup": 0.897280966774682,
+  "metadata_parity": {
+    "serial": {
+      "mode": "serial",
+      "elapsed_ms": 171.5,
+      "app_bytes": 34443453,
+      "runtime_bytes": 9720086,
+      "app_function_imports": 1032,
+      "runtime_function_imports": 90
+    },
+    "streaming": {
+      "mode": "streaming",
+      "elapsed_ms": 192.90000000037253,
+      "app_bytes": 34443453,
+      "runtime_bytes": 9720086,
+      "app_function_imports": 1032,
+      "runtime_function_imports": 90
+    }
+  },
+  "artifacts": {
+    "app": "C:\\Molt\\wt-optmatrix\\tmp\\pact_witness_acceptance_queue\\runs\\20260711T194951-pact-witness-acceptance-d4ed20bdf9dc47aa\\build\\output.wasm",
+    "app_bytes": 34443453,
+    "runtime": "C:\\Molt\\wt-optmatrix\\tmp\\opt_matrix_r1\\molt_runtime.release.wasm",
+    "runtime_bytes": 9720086
+  },
+  "verdict": "DOCUMENTED-BLOCKED",
+  "regression_percent": 11.447811446903454,
+  "blocking_evidence": [
+    "seven alternating fresh system Edge processes show streaming compilation is slower on final-form release bytes",
+    "the browser loader must retain full bytes for import, memory, table, target-feature, and runtime-callable metadata authority",
+    "response cloning and teeing adds a second response-body consumer without removing the mandatory O(module_bytes) parse"
+  ],
+  "unblock_condition": {
+    "measurement": "at least seven alternating fresh-browser release samples",
+    "acceptance": "at least 5% lower median startup with identical metadata and no peak process-tree memory regression",
+    "structural": "remove the mandatory full-byte metadata parse or prove a representative deployment transport changes the cost balance",
+    "exclusion": "network latency alone is not an optimization claim"
+  }
+}
