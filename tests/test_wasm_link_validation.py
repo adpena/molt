@@ -1562,6 +1562,29 @@ def test_restore_split_runtime_contract_exports_reemits_memory_and_table() -> No
     }
 
 
+def test_split_app_post_link_mask_restores_real_molt_main_export() -> None:
+    app = _build_split_runtime_app_module([])
+    molt_main_index = wasm_link._collect_function_exports(app)["molt_main"]
+    optimized = wasm_link._post_link_optimize(
+        app,
+        reference_data=_build_exported_runtime_module_many(["reference_only"]),
+        preserve_exports=wasm_link._split_runtime_function_export_names("app"),
+        preserve_reference_exports=False,
+    )
+
+    assert wasm_link._collect_function_exports(optimized)["molt_main"] == molt_main_index
+
+    masked = _strip_export(optimized, "molt_main")
+    restored = wasm_link._restore_split_runtime_contract_exports(
+        masked,
+        artifact="app",
+        stage="test-post-link-mask",
+        function_export_indices={"molt_main": molt_main_index},
+    )
+
+    assert wasm_link._collect_function_exports(restored)["molt_main"] == molt_main_index
+
+
 def test_validate_split_runtime_outputs_requires_shared_app_memory(
     tmp_path: Path,
     capsys,

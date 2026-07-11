@@ -682,6 +682,14 @@ def _split_runtime_export_contract(
     )
 
 
+def _split_runtime_function_export_names(artifact: str) -> set[str]:
+    return {
+        entry.canonical_name
+        for entry in _split_runtime_export_contract(artifact)
+        if entry.kind == 0
+    }
+
+
 def _external_native_host_link_imports() -> tuple[str, ...]:
     return tuple(
         symbol
@@ -1539,7 +1547,11 @@ def _ensure_export_by_index(
 
 
 def _restore_split_runtime_contract_exports(
-    data: bytes, *, artifact: str, stage: str = "unspecified"
+    data: bytes,
+    *,
+    artifact: str,
+    stage: str = "unspecified",
+    function_export_indices: Mapping[str, int] | None = None,
 ) -> bytes:
     restored = data
     import_names = {1: "__indirect_function_table", 2: "memory"}
@@ -1551,10 +1563,21 @@ def _restore_split_runtime_contract_exports(
         ):
             continue
         if entry.kind == 0:
-            raise ValueError(
-                f"Split-runtime {artifact} is missing app-owned function export "
-                f"{entry.canonical_name} after symbol restoration at {stage}"
+            index = (function_export_indices or {}).get(entry.canonical_name)
+            if index is None:
+                raise ValueError(
+                    f"Split-runtime {artifact} is missing app-owned function export "
+                    f"{entry.canonical_name} after symbol restoration at {stage}"
+                )
+            updated = _ensure_export_by_index(
+                restored,
+                name=entry.canonical_name,
+                kind=entry.kind,
+                index=index,
             )
+            if updated is not None:
+                restored = updated
+            continue
         import_name = import_names.get(entry.kind)
         if import_name is None:
             raise ValueError(
@@ -2037,7 +2060,10 @@ def _optimize_split_app_module(
     optimized = _post_link_optimize(
         app_data,
         reference_data=reference_data,
-        preserve_exports=_split_app_reference_function_exports(reference_data),
+        preserve_exports=(
+            _split_app_reference_function_exports(reference_data)
+            | _split_runtime_function_export_names("app")
+        ),
         preserve_reference_exports=False,
     )
     stripped = _strip_unused_module_function_imports(
@@ -3079,9 +3105,13 @@ def _run_wasm_ld_with_custodied_inputs(
             output_reference = output.read_bytes()
         except OSError:
             output_reference = None
+        post_link_preserve_exports = _split_runtime_function_export_names("app")
+        if not split_runtime:
+            post_link_preserve_exports.update(preserved_output_exports)
         linked_bytes = _post_link_optimize(
             linked_bytes,
             reference_data=output_reference,
+            preserve_exports=post_link_preserve_exports,
             preserve_table_refs=True,
         )
         post_opt_size = len(linked_bytes)
@@ -3237,6 +3267,34 @@ def _run_wasm_ld_with_custodied_inputs(
                 if canonical_rewritten_data != rewritten_data:
                     split_native_app_path.write_bytes(canonical_rewritten_data)
                     rewritten_data = canonical_rewritten_data
+                native_contract_function_indices = {
+                    name: index
+                    for name, index in _collect_function_exports(rewritten_data).items()
+                    if name in _split_runtime_function_export_names("app")
+                }
+                if "molt_main" not in native_contract_function_indices:
+                    symbol_name = public_export_map.get("molt_main")
+                    if symbol_name is not None:
+                        symbol_indices = {
+                            symbol: index
+                            for _flags, index, symbol, _kind in (
+                                _collect_linking_function_symbols(rewritten_data)
+                            )
+                            if symbol
+                        }
+                        if symbol_name not in symbol_indices:
+                            symbol_indices.update(
+                                {
+                                    function_name: index
+                                    for index, function_name in _collect_func_names(
+                                        rewritten_data
+                                    ).items()
+                                }
+                            )
+                        if symbol_name in symbol_indices:
+                            native_contract_function_indices["molt_main"] = (
+                                symbol_indices[symbol_name]
+                            )
                 restored_rewritten_data = _restore_public_output_exports(
                     rewritten_data,
                     public_export_map,
@@ -3250,6 +3308,7 @@ def _run_wasm_ld_with_custodied_inputs(
                         rewritten_data,
                         artifact="app",
                         stage="native-link",
+                        function_export_indices=native_contract_function_indices,
                     )
                 except ValueError as exc:
                     print(str(exc), file=sys.stderr)
