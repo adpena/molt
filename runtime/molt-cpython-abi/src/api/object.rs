@@ -863,10 +863,19 @@ pub unsafe extern "C" fn PyFrame_GetBack(frame: *mut PyFrameObject) -> *mut PyFr
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyThreadState_GetFrame(tstate: *mut PyThreadState) -> *mut PyFrameObject {
-    if tstate.is_null() {
-        return ptr::null_mut();
-    }
-    unsafe { PyFrame_New(tstate, ptr::null_mut(), ptr::null_mut(), ptr::null_mut()) }
+    // CPython's PyThreadState_GetFrame returns a NEW reference to the thread's
+    // currently-executing Python frame, or NULL when no frame is on the stack.
+    // Molt's cpython-abi PyThreadState carries no CPython-style frame stack
+    // (abi_types::PyThreadState has no frame field), so there is no real frame to
+    // hand back — the honest, CPython-legal answer is NULL ("no frame currently
+    // executing"). The former code fabricated a fresh empty PyFrameObject (NULL
+    // code/globals/locals, f_lineno=0) for any non-null tstate: HIDDEN_THEATER
+    // (M05) — a C extension walking the frame read fabricated zeros as the real
+    // execution frame (and PyFrame_GetCode then synthesized an empty code
+    // object). Fail closed with NULL, like the weakref sibling, never a synthetic
+    // frame that reads as genuine.
+    let _ = tstate;
+    ptr::null_mut()
 }
 
 #[unsafe(no_mangle)]

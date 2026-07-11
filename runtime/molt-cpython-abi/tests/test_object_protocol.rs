@@ -424,6 +424,25 @@ fn test_pyeval_save_restore_thread_uses_singleton_thread_state() {
     unsafe { molt_cpython_abi::api::object::PyEval_RestoreThread(tstate) };
 }
 
+// Mask-proof regression for POISON Lane A #9 — PyThreadState_GetFrame theater.
+// The ABI-tier PyThreadState carries no CPython frame stack, so GetFrame must
+// return NULL ("no frame executing"), never a fabricated empty PyFrameObject
+// that a frame-walking C extension would read as the real execution frame.
+// Pre-fix this returned a non-null synthetic frame (via PyFrame_New) → FAILS;
+// post-fix it returns NULL → PASSES.
+#[test]
+fn test_pythreadstate_getframe_returns_null_not_synthetic_frame() {
+    init();
+    let tstate = unsafe { molt_cpython_abi::api::object::PyThreadState_Get() };
+    assert!(!tstate.is_null(), "a valid thread state is needed for the test");
+    let frame = unsafe { molt_cpython_abi::api::object::PyThreadState_GetFrame(tstate) };
+    assert!(
+        frame.is_null(),
+        "PyThreadState_GetFrame must return NULL (no CPython frame stack), \
+         never a fabricated empty frame read as the real execution frame"
+    );
+}
+
 #[test]
 fn test_gil_check_mutex_and_unstable_unique_refs() {
     init();
