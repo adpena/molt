@@ -6,13 +6,11 @@
 // `crate::bridge::*`.
 
 use crate::bridge::*;
-#[cfg(feature = "crypto")]
 use digest::Digest;
 use molt_runtime_core::prelude::*;
 use num_bigint::{BigInt, BigUint};
 use num_integer::Integer;
 use num_traits::{One, Signed, ToPrimitive, Zero};
-#[cfg(feature = "crypto")]
 use sha2::Sha512;
 
 // ---------------------------------------------------------------------------
