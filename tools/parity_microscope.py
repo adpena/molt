@@ -44,7 +44,7 @@ import os
 import platform
 import sys
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 
@@ -100,7 +100,9 @@ STAGES: list[tuple[str, str, str]] = [
     ("crit_saddle_eigvec", "eigh eigvec, sign-canonicalized", "LAPACK-HAZARD"),
     ("w_gauss_s15", "np.exp gaussian weights sigma=1.5", "LIBM-HAZARD"),
     ("ms_curv", "gaussian_filter(m12 as f64, sigma=1.5)", "accumulation"),
-    ("kappa_raw", "gradient chain curvature arithmetic", "exact-safe"),
+    # (mx*mx+my*my)**1.5 calls libm pow: glibc vs UCRT diverge at 1 ulp on a
+    # sparse subset of inputs (measured: 78/196608 px Windows-vs-Linux wheels).
+    ("kappa_raw", "curvature arithmetic incl. **1.5 (libm pow)", "LIBM-HAZARD"),
     ("thr_kappa", "percentile(kappa, 99.5)", "derived"),
     ("curvature", "clip(kappa, 0, thr) masked to boundary", "derived"),
     ("dist", "distance_transform_edt(~boundary)", "exact-safe"),
@@ -146,17 +148,26 @@ def _float_ordinals(a: np.ndarray) -> np.ndarray:
         raise TypeError(f"ulp ordinals need float32/float64, got {a.dtype}")
     negative = bits < 0
     magnitude = np.where(
-        negative, bits & ~sign_mask if a.dtype == np.float64 else bits - sign_mask,
+        negative,
+        bits & ~sign_mask if a.dtype == np.float64 else bits - sign_mask,
         bits,
     )
     return np.where(negative, -magnitude, magnitude)
 
 
 def ulp_distance(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """Element-wise ulp distance as float64 (exact below 2**53, huge => approx)."""
-    oa = _float_ordinals(a).astype(np.float64)
-    ob = _float_ordinals(b).astype(np.float64)
-    return np.abs(oa - ob)
+    """Element-wise ulp distance as float64.
+
+    Computed exactly in int64 ordinal space when both operands share a sign
+    (the ~always case for near misses); opposite-sign pairs fall back to a
+    float64 approximation — they are astronomically far apart anyway and only
+    need order-of-magnitude reporting.
+    """
+    oa, ob = _float_ordinals(a), _float_ordinals(b)
+    same_sign = (oa >= 0) == (ob >= 0)
+    exact = np.abs(oa - ob).astype(np.float64)  # int64-exact when same sign
+    approx = np.abs(oa.astype(np.float64) - ob.astype(np.float64))
+    return np.where(same_sign, exact, approx)
 
 
 def perturb_ulps(
@@ -170,9 +181,7 @@ def perturb_ulps(
     if a.dtype not in (np.float32, np.float64):
         raise TypeError(f"cannot ulp-perturb dtype {a.dtype}")
     if at is None:
-        steps = (rng.integers(0, 2, size=a.shape).astype(np.int64) * 2 - 1) * int(
-            ulps
-        )
+        steps = (rng.integers(0, 2, size=a.shape).astype(np.int64) * 2 - 1) * int(ulps)
     else:
         steps = np.zeros(a.shape, np.int64)
         steps[at] = int(ulps)
@@ -301,9 +310,7 @@ def staged_field_solve(
         else np.zeros((0, 2), np.int32),
     )
 
-    locmin = put(
-        "locmin_mask", (m_smooth == minimum_filter(m_smooth, size=11)) & bnd
-    )
+    locmin = put("locmin_mask", (m_smooth == minimum_filter(m_smooth, size=11)) & bnd)
     nr, nc = np.where(locmin)
     if nr.size > 120:
         vals = m_smooth[nr, nc]
@@ -354,9 +361,7 @@ def staged_field_solve(
         for idx, (r, c) in enumerate(zip(sr, sc)):
             r = int(np.clip(r, 1, H - 2))
             c = int(np.clip(c, 1, W - 2))
-            Hm = np.array(
-                [[gxx[r, c], gxy[r, c]], [gxy[r, c], gyy[r, c]]], float
-            )
+            Hm = np.array([[gxx[r, c], gxy[r, c]], [gxy[r, c], gyy[r, c]]], float)
             hessians[idx] = Hm
             w, v = np.linalg.eigh(Hm)
             eigvals[idx] = w
@@ -530,7 +535,9 @@ def cmd_final(cand_path: Path, ref_path: Path) -> int:
     matching: set[str] = set()
     for key in FINAL_ORDER:
         if key not in cand.files or key not in ref.files:
-            print(f"  MISSING {key} in {'candidate' if key not in cand.files else 'reference'}")
+            print(
+                f"  MISSING {key} in {'candidate' if key not in cand.files else 'reference'}"
+            )
             diverging.append(key)
             continue
         a, b = cand[key], ref[key]
@@ -542,8 +549,7 @@ def cmd_final(cand_path: Path, ref_path: Path) -> int:
         parent_state = (
             "all parents match -> divergence INTRODUCED at this op"
             if all(p in matching for p in parents)
-            else f"parents also diverging: "
-            f"{[p for p in parents if p not in matching]}"
+            else f"parents also diverging: {[p for p in parents if p not in matching]}"
         )
         print(f"  DIVERGES {key}  (producing op: {stage}; {parent_state})")
         for line in _describe_divergence(key, a, b):
@@ -625,6 +631,19 @@ def cmd_margins(stages_path: Path) -> int:
         f"    nearest value-to-threshold distance: {d.min():.6g} "
         f"({d.min() / spacing:.0f} f32-ulps at threshold); "
         f"within 16 ulps: {int(np.count_nonzero(d <= 16 * spacing))} px"
+    )
+    # The actual flip-risk set is the JOINT condition: window-max pixels near
+    # the threshold (a near-threshold pixel only matters if it is also a
+    # 15x15 window maximum).
+    from scipy.ndimage import maximum_filter
+
+    winmax = m_smooth == maximum_filter(m_smooth, size=15)
+    d_wm = d[winmax]
+    print(
+        f"    window-max pixels: {int(winmax.sum())}; nearest window-max to "
+        f"threshold: {d_wm.min():.6g} ({d_wm.min() / spacing:.0f} f32-ulps); "
+        f"window-max within 16 ulps of threshold: "
+        f"{int(np.count_nonzero(d_wm <= 16 * spacing))}"
     )
     locmax = z["locmax_mask"]
     margins = []
