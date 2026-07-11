@@ -188,7 +188,24 @@ fn test_tpflags_constants() {
     assert_eq!(Py_TPFLAGS_READYING, 1 << 13);
     assert_eq!(Py_TPFLAGS_HEAPTYPE, 1 << 9);
     assert_eq!(Py_TPFLAGS_HAVE_GC, 1 << 14);
-    assert_eq!(Py_TPFLAGS_DEFAULT, Py_TPFLAGS_BASETYPE);
+    // CPython v3.12.0 Include/object.h: DEFAULT is 0 on a standard build (was
+    // wrongly pinned to BASETYPE here — a duplicate-authority drift; matrix #5).
+    assert_eq!(Py_TPFLAGS_DEFAULT, 0);
+    // Fast-subclass + protocol flag bit positions (verified against 3.12.0).
+    assert_eq!(Py_TPFLAGS_MANAGED_WEAKREF, 1 << 3);
+    assert_eq!(Py_TPFLAGS_MANAGED_DICT, 1 << 4);
+    assert_eq!(Py_TPFLAGS_SEQUENCE, 1 << 5);
+    assert_eq!(Py_TPFLAGS_MAPPING, 1 << 6);
+    assert_eq!(Py_TPFLAGS_HAVE_VECTORCALL, 1 << 11);
+    assert_eq!(Py_TPFLAGS_ITEMS_AT_END, 1 << 23);
+    assert_eq!(Py_TPFLAGS_LONG_SUBCLASS, 1 << 24);
+    assert_eq!(Py_TPFLAGS_LIST_SUBCLASS, 1 << 25);
+    assert_eq!(Py_TPFLAGS_TUPLE_SUBCLASS, 1 << 26);
+    assert_eq!(Py_TPFLAGS_BYTES_SUBCLASS, 1 << 27);
+    assert_eq!(Py_TPFLAGS_UNICODE_SUBCLASS, 1 << 28);
+    assert_eq!(Py_TPFLAGS_DICT_SUBCLASS, 1 << 29);
+    assert_eq!(Py_TPFLAGS_BASE_EXC_SUBCLASS, 1 << 30);
+    assert_eq!(Py_TPFLAGS_TYPE_SUBCLASS, 1 << 31);
 }
 
 // ---------------------------------------------------------------------------

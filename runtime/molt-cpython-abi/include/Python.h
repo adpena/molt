@@ -548,8 +548,26 @@ typedef struct _heaptypeobject {
 #define Py_TPFLAGS_CHECKTYPES   (0)
 #define Py_TPFLAGS_HAVE_NEWBUFFER (0)
 #define Py_TPFLAGS_IS_ABSTRACT  (1UL << 20)
+/* Fast-subclass + protocol flags (CPython v3.12.0 Include/object.h). Previously
+ * absent from this header -> Cython/numpy source referencing them failed to
+ * compile (undeclared identifier); the runtime now sets them on the builtin
+ * type shells so PyType_FastSubclass answers correctly. */
+#define Py_TPFLAGS_MANAGED_WEAKREF (1UL << 3)
+#define Py_TPFLAGS_SEQUENCE     (1UL << 5)
+#define Py_TPFLAGS_MAPPING      (1UL << 6)
+#define Py_TPFLAGS_DISALLOW_INSTANTIATION (1UL << 7)
+#define Py_TPFLAGS_IMMUTABLETYPE (1UL << 8)
+#define Py_TPFLAGS_READYING     (1UL << 13)
+#define Py_TPFLAGS_VALID_VERSION_TAG (1UL << 19)
+#define Py_TPFLAGS_ITEMS_AT_END (1UL << 23)
+#define Py_TPFLAGS_LONG_SUBCLASS   (1UL << 24)
+#define Py_TPFLAGS_LIST_SUBCLASS   (1UL << 25)
+#define Py_TPFLAGS_TUPLE_SUBCLASS  (1UL << 26)
+#define Py_TPFLAGS_BYTES_SUBCLASS  (1UL << 27)
 #define Py_TPFLAGS_UNICODE_SUBCLASS (1UL << 28)
+#define Py_TPFLAGS_DICT_SUBCLASS   (1UL << 29)
 #define Py_TPFLAGS_BASE_EXC_SUBCLASS (1UL << 30)
+#define Py_TPFLAGS_TYPE_SUBCLASS   (1UL << 31)
 
 #define Py_T_SHORT              0
 #define Py_T_INT                1

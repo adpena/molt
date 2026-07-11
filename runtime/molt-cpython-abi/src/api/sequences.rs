@@ -661,7 +661,7 @@ pub unsafe extern "C" fn PyTuple_Check(op: *mut PyObject) -> c_int {
 
 /// Return `Py_True`/`Py_False` as a new reference (CPython richcompare contract).
 #[inline]
-fn tuple_richcmp_bool(b: bool) -> *mut PyObject {
+fn seq_richcmp_bool(b: bool) -> *mut PyObject {
     let res = if b {
         (&raw mut crate::abi_types::Py_True).cast::<PyObject>()
     } else {
@@ -671,26 +671,19 @@ fn tuple_richcmp_bool(b: bool) -> *mut PyObject {
     res
 }
 
-/// CPython `Objects/tupleobject.c` `tuplerichcompare` — element-wise structural
-/// comparison for tuples.
-///
-/// Without this slot, `do_richcompare` on two *distinct* tuple objects finds no
-/// `tp_richcompare` and falls back to **object identity**, so `(a,a,a) == (a,a,a)`
-/// over two distinct tuples is wrongly `False`. numpy's ufunc dispatch depends on
-/// exactly this equality: `get_info_no_cast` (`_core/src/umath/dispatching.c`)
-/// matches a registered loop with
-/// `PyObject_RichCompareBool(cur_DType_tuple, t_dtypes, Py_EQ)`, where the two
-/// tuples are always distinct objects holding equal `DTypeMeta` elements. A NULL
-/// slot makes every lookup miss → `Py_None` → the generated `InitOperators`
-/// raises `RuntimeError: cannot add indexed loop to ufunc add with NPY_BYTE`
-/// (numpy's first ufunc × first indexed dtype). Reads through the dual-path
-/// `PyTuple_Size`/`PyTuple_GetItem`, so it is correct for both ABI-layout tuples
-/// (`PyTuple_New`) and bridge-managed runtime tuples.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_tuple_richcompare(
+/// Element-wise (lexicographic) structural richcompare shared by the built-in
+/// homogeneous sequence types (`tuple`, `list`). Both operands are already known
+/// to be the concrete type; `len`/`get` are that type's dual-path size/item
+/// accessors, so it is correct for both ABI-layout (`PyTuple_New`/`PyList_New`)
+/// and bridge-managed runtime objects. Faithful port of CPython
+/// `Objects/tupleobject.c tuplerichcompare` / `Objects/listobject.c
+/// list_richcompare` (byte-for-byte the same algorithm).
+unsafe fn seq_structural_richcompare(
     v: *mut PyObject,
     w: *mut PyObject,
     op: c_int,
+    len: unsafe extern "C" fn(*mut PyObject) -> Py_ssize_t,
+    get: unsafe extern "C" fn(*mut PyObject, Py_ssize_t) -> *mut PyObject,
 ) -> *mut PyObject {
     // CPython comparison opcodes (Include/object.h).
     const PY_LT: c_int = 0;
@@ -700,25 +693,18 @@ pub unsafe extern "C" fn molt_tuple_richcompare(
     const PY_GT: c_int = 4;
     const PY_GE: c_int = 5;
 
-    // Only tuple-vs-tuple; otherwise defer with NotImplemented (CPython behavior).
-    if unsafe { PyTuple_Check(v) } == 0 || unsafe { PyTuple_Check(w) } == 0 {
-        let ni = &raw mut crate::abi_types::Py_NotImplementedSentinel;
-        unsafe { crate::api::refcount::Py_INCREF(ni) };
-        return ni;
-    }
-
-    let vlen = unsafe { PyTuple_Size(v) };
-    let wlen = unsafe { PyTuple_Size(w) };
+    let vlen = unsafe { len(v) };
+    let wlen = unsafe { len(w) };
     if vlen < 0 || wlen < 0 {
-        // PyTuple_Size already set the exception.
+        // The size accessor already set the exception.
         return ptr::null_mut();
     }
 
-    // First index where items differ under Py_EQ (immutable-safe, like CPython).
+    // First index where items differ under Py_EQ.
     let mut i: Py_ssize_t = 0;
     while i < vlen && i < wlen {
-        let vi = unsafe { PyTuple_GetItem(v, i) };
-        let wi = unsafe { PyTuple_GetItem(w, i) };
+        let vi = unsafe { get(v, i) };
+        let wi = unsafe { get(w, i) };
         if vi.is_null() || wi.is_null() {
             return ptr::null_mut();
         }
@@ -743,23 +729,73 @@ pub unsafe extern "C" fn molt_tuple_richcompare(
             PY_GE => vlen >= wlen,
             _ => return ptr::null_mut(),
         };
-        return tuple_richcmp_bool(cmp);
+        return seq_richcmp_bool(cmp);
     }
 
     // A differing item exists — EQ/NE short-circuit without re-comparing.
     if op == PY_EQ {
-        return tuple_richcmp_bool(false);
+        return seq_richcmp_bool(false);
     }
     if op == PY_NE {
-        return tuple_richcmp_bool(true);
+        return seq_richcmp_bool(true);
     }
     // Ordering: compare the first differing item with the requested operator.
-    let vi = unsafe { PyTuple_GetItem(v, i) };
-    let wi = unsafe { PyTuple_GetItem(w, i) };
+    let vi = unsafe { get(v, i) };
+    let wi = unsafe { get(w, i) };
     if vi.is_null() || wi.is_null() {
         return ptr::null_mut();
     }
     unsafe { crate::api::typeobj::PyObject_RichCompare(vi, wi, op) }
+}
+
+/// Defer to `NotImplemented` (a new reference), CPython's contract when the two
+/// operands are not the same built-in sequence type.
+#[inline]
+unsafe fn richcompare_not_implemented() -> *mut PyObject {
+    let ni = &raw mut crate::abi_types::Py_NotImplementedSentinel;
+    unsafe { crate::api::refcount::Py_INCREF(ni) };
+    ni
+}
+
+/// CPython `Objects/tupleobject.c` `tuplerichcompare` — element-wise structural
+/// comparison for tuples.
+///
+/// Without this slot, `do_richcompare` on two *distinct* tuple objects finds no
+/// `tp_richcompare` and falls back to **object identity**, so `(a,a,a) == (a,a,a)`
+/// over two distinct tuples is wrongly `False`. numpy's ufunc dispatch depends on
+/// exactly this equality: `get_info_no_cast` (`_core/src/umath/dispatching.c`)
+/// matches a registered loop with
+/// `PyObject_RichCompareBool(cur_DType_tuple, t_dtypes, Py_EQ)`, where the two
+/// tuples are always distinct objects holding equal `DTypeMeta` elements.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_tuple_richcompare(
+    v: *mut PyObject,
+    w: *mut PyObject,
+    op: c_int,
+) -> *mut PyObject {
+    // Only tuple-vs-tuple; otherwise defer with NotImplemented (CPython behavior).
+    if unsafe { PyTuple_Check(v) } == 0 || unsafe { PyTuple_Check(w) } == 0 {
+        return unsafe { richcompare_not_implemented() };
+    }
+    unsafe { seq_structural_richcompare(v, w, op, PyTuple_Size, PyTuple_GetItem) }
+}
+
+/// CPython `Objects/listobject.c` `list_richcompare` — element-wise structural
+/// comparison for lists (same algorithm as tuples). Sibling of the tuple slot:
+/// without it, two *distinct* equal lists compare unequal by object identity in
+/// `do_richcompare` (the zeroed-shell defect the coordinator flagged for the
+/// container siblings). Reads through the dual-path `PyList_Size`/`PyList_GetItem`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_list_richcompare(
+    v: *mut PyObject,
+    w: *mut PyObject,
+    op: c_int,
+) -> *mut PyObject {
+    // Only list-vs-list; otherwise defer with NotImplemented (CPython behavior).
+    if unsafe { PyList_Check(v) } == 0 || unsafe { PyList_Check(w) } == 0 {
+        return unsafe { richcompare_not_implemented() };
+    }
+    unsafe { seq_structural_richcompare(v, w, op, PyList_Size, PyList_GetItem) }
 }
 
 #[allow(dead_code)]
