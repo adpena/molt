@@ -1,5 +1,29 @@
 # Py_buffer Export→Release Profile + Allocation Gate — BUFFER-EXPORT-PERF
 
+> **LANDED — BUFFER-DISTILL-55 (2026-07-10).** Both Phase-2 levers below are
+> DONE, by deletion rather than by a faster registry (see the addendum at the
+> bottom for the measured before→after):
+>
+> - `BUFFER_INTERNAL_REGISTRY` (global `Mutex<HashSet>`) is **deleted**.
+>   `PyBuffer_Release` discriminates on the **exporter object** — CPython's
+>   model (`Objects/abstract.c` dispatches on `view->obj`) — via the bridge's
+>   `molt_handle_for_pyobj` (genuine molt handles only; raw-registered C
+>   objects classify as foreign, so export/release dispatch can never
+>   disagree). Foreign `view.internal` cookies are never dereferenced.
+> - The 1112 B `BufferInternal` box is **deleted**. `PyBuffer_FillInfo` is
+>   CPython-exact and **allocation-free** (static `"B"` format,
+>   self-referential `shape = &view.len` / `strides = &view.itemsize`,
+>   `internal = NULL`); memoryviews embed the descriptor in the
+>   `PyMemoryViewObject` itself (CPython's `ob_array` model) and are filled
+>   **in place** (never filled on the stack and moved — the field-trick UAF
+>   class from the reverted `7da58cff8f`); molt-native `PyObject_GetBuffer`
+>   installs a right-sized `ExportInternal` (32 B + 16 B/dim, raw-projection
+>   provenance, Miri SB+TB clean) whose header carries `owner` for the runtime
+>   pin release.
+>
+> The measured-breakdown/verdict sections below are the **pre-distill**
+> baseline record, kept for attribution history.
+
 M10 attestation for the buffer-protocol export hot path
 (`runtime/molt-cpython-abi/src/api/buffer.rs`). **PROFILE FIRST** (M10): the
 numbers below are measured, machine-checkable, and reproducible; the
@@ -154,3 +178,48 @@ Phase-2 plan, grounded in the numbers:
 Re-measure each against this baseline (`buffer_export_timing_profile`), update
 `EXPECTED_ALLOCS_PER_EXPORT` in the same commit when the box is eliminated, and
 keep `cargo test` + the Miri finding-C repros green under Stacked + Tree Borrows.
+
+## LANDED addendum — BUFFER-DISTILL-55 measured before→after (2026-07-10)
+
+Same machine, same session, `--release`, N = 200 000/variant. "Before" is
+`origin/main` @ `3c82e4539d` re-profiled in a clean worktree immediately before
+landing (the absolute ns numbers differ from the older table above — different
+day/load — which is why the baseline was re-measured in-session).
+
+| path | before (@3c82e4539d) | after | delta |
+|---|---:|---:|---:|
+| `PyBuffer_FillInfo` cycle | **179.9 ns**, 1 alloc / 1112 B | **6.6 ns**, **0 allocs** | **−96% ns, −100% allocs** |
+| memoryview copy: OLD sub-cycle (`copy_pybuffer_for_memoryview`, box+registry, **no** object) | 274.9–285.4 ns, 1 alloc / 1112 B | — | — |
+| memoryview copy: NEW **full** `PyMemoryView_FromBuffer` cycle (object construct + C reads + dealloc) | ≈ old sub-cycle **+ ~72 ns** object box (control A ≈ 71.7 ns) ⇒ ~350 ns equiv | **148.6–159.8 ns**, 1 alloc / 1144 B (the object itself) | **≈ −55% end-to-end; side box + registry node deleted (2→1 allocs)** |
+| `PyMemoryView_FromMemory` full cycle | (old: object + 1112 B box + registry) | **77.0 ns**, 1 alloc | ≈ the bare object-allocation floor (control: 73.9 ns) |
+| `PyObject_GetBuffer` internal | 1112 B box + registry insert/remove | right-sized `ExportInternal`: **32 B + 16 B/dim** (48 B @ 1-D), no registry | −96% bytes @ 1-D |
+| ndim sweep (FromBuffer full cycle) | 277.2 / 277.4 / 280.4 / 286.7 ns (1–4-D, old sub-cycle) | 151.3 / 155.1 / 154.5 / 158.9 ns | still O(ndim)-flat |
+| controls (same session) | A `Box<[u8;1112]>` 71.7 ns · B `Mutex<HashSet>` 81.3 ns | both paths **deleted** | — |
+
+Multi-thread note: the registry was ONE global mutex serializing every
+export/release across all threads; release now takes only the bridge lock
+(already required for identity resolution on these paths), so the extra
+process-wide serialization point is gone rather than made faster.
+
+Gates (machine-checkable):
+
+- `buffer_export_allocation_budget` — memoryview paths pinned at **1.0
+  alloc/export = `size_of::<PyMemoryViewObject>()` (1144 B, storage embedded)**
+  and FillInfo pinned at **0.0 allocs**; edited DOWN deliberately in the
+  landing commit, cannot silently drift back up.
+- `export_internal_is_right_sized` (`api::buffer::export_internal_tests`) —
+  pins the GetBuffer internal at 32 B header + 16 B/dim.
+- `test_memoryview_descriptor_outlives_constructing_frame`
+  (`tests/test_object_protocol.rs`) — the anti-dangle gate: reads
+  shape/strides/format AFTER the constructing frame returned (with a stack
+  clobber), the exact UAF shape of the reverted `7da58cff8f` field-trick.
+- Miri: lib + `test_object_protocol` + `test_modules` under **Stacked Borrows
+  AND Tree Borrows** (`-Zmiri-ignore-leaks` for the documented immortal-global
+  exception), 0 UB.
+
+Residual (spec'd, not landed): true-zero-box `PyObject_GetBuffer` via the
+cross-crate lease-lend — `molt_buffer_acquire` lending stable shape/strides
+pointers out of the `ArrayBufferLease` that already outlives the view
+(RuntimeHooks ABI change across hooks.rs / cpython_abi_hooks.rs / molt_api.rs).
+That deletes the remaining 48 B/export allocation on the GetBuffer path; the
+memoryview and FillInfo paths are already at their floor (one object / zero).

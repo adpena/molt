@@ -533,10 +533,21 @@ fn test_fillinfo_uses_typed_descriptor_without_runtime_release() {
     assert_eq!(view.readonly, 1);
     assert_eq!(view.ndim, 1);
     assert!(view.obj.is_null());
-    assert!(!view.internal.is_null());
+    // CPython-exact FillInfo (Objects/abstract.c): allocation-free —
+    // `internal` is NULL, `format` is the static "B", and shape/strides are
+    // the self-referential field pointers `&view.len` / `&view.itemsize`.
+    assert!(view.internal.is_null());
     assert!(!view.format.is_null());
     assert!(!view.shape.is_null());
     assert!(!view.strides.is_null());
+    assert!(
+        std::ptr::eq(view.shape.cast_const(), &raw const view.len),
+        "FillInfo shape must be the CPython self-referential &view.len",
+    );
+    assert!(
+        std::ptr::eq(view.strides.cast_const(), &raw const view.itemsize),
+        "FillInfo strides must be the CPython self-referential &view.itemsize",
+    );
     unsafe {
         assert_eq!(*view.format as u8, b'B');
         assert_eq!(*view.shape, 4);
