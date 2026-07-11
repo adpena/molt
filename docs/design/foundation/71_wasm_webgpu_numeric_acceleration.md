@@ -1,5 +1,10 @@
 # 71 - WASM, WebGPU, and Numeric Acceleration Plan
 
+> **Lowering authority:** [`WEBGPU_LOWERING.md`](WEBGPU_LOWERING.md) governs
+> determinism, witness eligibility, buffer custody, fallback attribution, and the
+> zero-partials acceptance boundary. This document remains the broader portfolio
+> roadmap; any conflict is resolved in favor of the lowering doctrine.
+
 Status: research addendum, 2026-07-03
 
 This document turns current WASM, WebGPU, WebNN, BLAS/LAPACK/GSL, and tensor
