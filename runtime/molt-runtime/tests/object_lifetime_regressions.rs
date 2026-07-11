@@ -1,7 +1,7 @@
 use molt_obj_model::MoltObject;
 use molt_runtime::MoltHeader;
-use std::sync::Once;
 use std::sync::atomic::Ordering;
+use std::sync::{Mutex, MutexGuard, Once};
 
 const HEADER_FLAG_SKIP_CLASS_DECREF: u32 = molt_codegen_abi::HEADER_FLAG_SKIP_CLASS_DECREF;
 
@@ -32,12 +32,17 @@ unsafe extern "C" {
 }
 
 static INIT: Once = Once::new();
+static TEST_LOCK: Mutex<()> = Mutex::new(());
 
-fn init() {
+fn init() -> MutexGuard<'static, ()> {
+    let guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     INIT.call_once(|| unsafe {
         molt_runtime_init();
     });
     let _ = unsafe { molt_exception_clear() };
+    guard
 }
 
 fn none() -> u64 {
@@ -78,7 +83,7 @@ fn class_from_name(name: &[u8]) -> u64 {
 
 #[test]
 fn iter_next_unboxed_overwrites_value_out_on_exhaustion() {
-    init();
+    let _guard = init();
 
     let elem_bits = unsafe { molt_string_from(b"iter-owned".as_ptr(), 10) };
     assert_ne!(elem_bits, none());
@@ -114,7 +119,7 @@ fn iter_next_unboxed_overwrites_value_out_on_exhaustion() {
 
 #[test]
 fn iter_next_dict_items_overwrites_outputs_on_exhaustion() {
-    init();
+    let _guard = init();
 
     let dict_bits = unsafe { molt_dict_new(1) };
     assert_ne!(dict_bits, none());
@@ -161,7 +166,7 @@ fn iter_next_dict_items_overwrites_outputs_on_exhaustion() {
 
 #[test]
 fn alloc_class_balances_heap_class_refcount() {
-    init();
+    let _guard = init();
 
     let class_bits = class_from_name(b"HeapClassRef");
     let class_before = refcount(class_bits);
@@ -183,7 +188,7 @@ fn alloc_class_balances_heap_class_refcount() {
 
 #[test]
 fn alloc_class_static_marks_skip_class_decref_and_preserves_class_refcount() {
-    init();
+    let _guard = init();
 
     let class_bits = class_from_name(b"HeapClassStatic");
     let class_before = refcount(class_bits);
@@ -205,7 +210,7 @@ fn alloc_class_static_marks_skip_class_decref_and_preserves_class_refcount() {
 
 #[test]
 fn list_clear_detaches_owned_heap_refs_before_cascade_decref() {
-    init();
+    let _guard = init();
 
     let elem_bits = unsafe { molt_string_from(b"owned-element".as_ptr(), 13) };
     assert_ne!(elem_bits, none());
@@ -228,7 +233,7 @@ fn list_clear_detaches_owned_heap_refs_before_cascade_decref() {
 
 #[test]
 fn module_del_global_then_local_drop_releases_list_element_owner() {
-    init();
+    let _guard = init();
 
     let module_name_bits = unsafe { molt_string_from(b"test_module".as_ptr(), 11) };
     assert_ne!(module_name_bits, none());
@@ -265,7 +270,7 @@ fn module_del_global_then_local_drop_releases_list_element_owner() {
 
 #[test]
 fn module_del_global_releases_owned_list_builder_literal_element() {
-    init();
+    let _guard = init();
 
     let module_name_bits = unsafe { molt_string_from(b"builder_module".as_ptr(), 14) };
     assert_ne!(module_name_bits, none());
@@ -315,7 +320,7 @@ fn module_del_global_releases_owned_list_builder_literal_element() {
 
 #[test]
 fn string_join_singleton_list_mints_fresh_owned_string() {
-    init();
+    let _guard = init();
 
     let sep_bits = unsafe { molt_string_from(b".".as_ptr(), 1) };
     let elem_bits = unsafe { molt_string_from(b"math".as_ptr(), 4) };
