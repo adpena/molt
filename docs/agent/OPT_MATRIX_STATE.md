@@ -30,7 +30,7 @@ Ranking-helper input:
 | 6 | all | runtime perf | Profile target-specific hot loops under determinism-safe classes | 8 | 4 | 2.00 | ATTESTED-IMPROVED OPT-MATRIX-R4: native multi-byte reverse search 5.062 s -> 0.266 s median, 19.0301x; shared primitive benefits bytes/string/bytearray on native and WASM |
 | 7 | wasm-browser split + wasm-server/wasi | startup | Remove linked-only metadata payload decoding before instantiation | 5 | 3 | 1.67 | ATTESTED-IMPROVED OPT-MATRIX-R5: linked metadata parse 10.6805 ms -> 3.0449 ms median, 3.5077x |
 | 8 | native exe | memory | Profile release peak RSS and remove proven excess reservation | 5 | 4 | 1.25 | DOCUMENTED-BLOCKED OPT-MATRIX-R6: 5.984 MB median peak RSS, only 1.790 MB above the full executable image and 2.35x below CPython |
-| 9 | wasm-browser split + wasm-server/wasi | memory | Profile release host RSS / linear-memory ceilings and remove proven excess reservation | 5 | 4 | 1.25 | UNATTACKED |
+| 9 | wasm-browser split + wasm-server/wasi | memory | Profile release host RSS / linear-memory ceilings and remove proven excess reservation | 5 | 4 | 1.25 | DOCUMENTED-BLOCKED OPT-MATRIX-R7: exact 48-page memory adds only 446,464 B committed RSS; measurable RSS is artifact/V8-code driven and depends on reserved tree-shake authority |
 | 10 | wasm-browser split | startup | Measure browser `instantiateStreaming` independently | 4 | 4 | 1.00 | UNATTACKED |
 | 11 | wasm-browser split + wasm-server/wasi | startup | Attribute V8 compile/instantiate cost to code, active data, and retained custom sections | 5 | 6 | 0.83 | UNATTACKED |
 
@@ -90,3 +90,12 @@ Ranking-helper input:
 - Verdict: DOCUMENTED-BLOCKED. No target-specific removable reservation is large enough to support an honest A12 memory improvement; changing empty registries or allocator bookkeeping below the process-image floor would be unmeasured optimization theater.
 - Unblock contract: attribute at least 1 MiB or 10% of release peak RSS to one removable native reservation on a representative nontrivial workload, then provide at least seven alternating release samples, identical output, strict Variant-II acceptance, held-bench never-regress proof, and a peak-RSS ceiling. Virtual address reservation alone is insufficient.
 - Evidence: `tools/opt_matrix_r6_native_memory_blocker.json`. WASM linear-memory and host-RSS ceilings remain a separate unattacked rung.
+
+### OPT-MATRIX-R7 - WASM release memory attribution
+
+- Aperture: release split-runtime memory from host-process baseline through artifact residency, exact imported linear memory, and V8 module compilation.
+- Profile: seven serial fresh Node/V8 processes measured 38,072,320 B baseline RSS, 61,435,904 B after loading and parsing the 9,720,086 B release runtime, 61,882,368 B with the exact 48-page `WebAssembly.Memory`, and 73,060,352 B after synchronous module compilation.
+- Machine-checkable attribution: the declared 3,145,728 B linear memory adds only 446,464 B median committed RSS over the identical artifact/metadata phase. The runner and browser host share the same parsed import-minimum authority, so neither contains a second Molt-owned initial-memory reservation.
+- Verdict: DOCUMENTED-BLOCKED. The committed linear-memory delta is below both the 1 MiB and 10% optimization-admission thresholds; shrinking virtual pages without a working-set win would be evidence theater. The measurable 23,363,584 B artifact/metadata delta and 11,624,448 B V8 compile delta belong to the higher-ranked Binaryen tree-shake rung, whose linker/toolchain files are reserved this cycle.
+- Unblock contract: after the `wasmld-toolchain` lane lands, remeasure the tree-shaken release artifact with `tools/benchmark_wasm_memory.py`; otherwise attribute at least 1 MiB or 10% of release RSS to one removable committed Molt-owned allocation. Browser-specific reopening requires Chromium process-tree peak RSS on the real release bytes, not JavaScript heap or Node proxy evidence.
+- Evidence: `tools/opt_matrix_r7_wasm_memory_profile.json` and `tools/opt_matrix_r7_wasm_memory_blocker.json`.

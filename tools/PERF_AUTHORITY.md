@@ -212,6 +212,15 @@ The current checked-in attestations validate as follows:
 - `perf_goal_r5_relink_attestation.json`: parsed; real three-run artifact differential, missing explicit release-profile and memory-ceiling evidence.
 - `perf_witness_iteration_attestation.json`: parsed; acceptance-shaped build evidence, not a complete correctness/memory attestation.
 
+### OPT-MATRIX-R7 WASM release memory floor
+
+- Aperture: host RSS for the real 9,720,086 B release runtime, separated into Node/V8 baseline, artifact plus metadata residency, exact imported linear memory, and module compilation.
+- Profile: seven serial fresh processes measured medians of 38,072,320 B baseline, 61,435,904 B artifact/metadata, 61,882,368 B artifact plus the exact 48-page memory, and 73,060,352 B compiled module RSS.
+- Linear-memory fact: both Node and browser hosts allocate from the parsed WASM import minimum. The 48 pages reserve 3,145,728 virtual bytes but add only 446,464 B committed RSS over the identical artifact/metadata phase.
+- Verdict: DOCUMENTED-BLOCKED. No Molt-owned committed linear-memory allocation clears the 1 MiB or 10% admission threshold. The measurable RSS is artifact and V8-code driven, so its structural removal belongs to Task #22/Binaryen tree shaking rather than a fake initial-page reduction.
+- Unblock contract: remeasure after the reserved `wasmld-toolchain` authority lands, or identify one removable committed allocation above the admission floor; browser-specific claims require Chromium process-tree RSS on the real release artifact.
+- Evidence: `tools/opt_matrix_r7_wasm_memory_profile.json` and `tools/opt_matrix_r7_wasm_memory_blocker.json`.
+
 ### Backlog gain per validation cost
 
 The ranking helper reads this intentionally small table; it does not create a
