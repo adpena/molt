@@ -348,6 +348,21 @@ concurrent crossing/release watchdog tests cover deadlock and invariant drift.
 
 ### 5.3 GIL custody: make `PyGILState_*`/`PyEval_SaveThread` real — carefully
 
+**DONE 2026-07-11 (Phase-3 milestone 1b).** `RuntimeHooks` now owns
+`gil_ensure`/`gil_leave`/`gil_release`/`gil_restore`/`gil_check`; the runtime
+stores recursive Ensure guards and SaveThread release guards on per-thread
+stacks. Exact current-thread ownership is separate from the optimized logical
+single-thread held lane. When a second GIL-capable thread appears, the existing
+`GilGuard::new()` multi-thread branch converts the permanent runtime hold into
+scoped call custody and restores it on drop; the single-thread branch is
+unchanged and wasm remains a compile-time no-op.
+
+Proof: 8 workers ? 2,000 recursive acquisitions serialize a deliberately
+non-atomic foreign-proxy mutation (`max_active == 1`, 16,000/16,000 updates)
+while the main thread repeatedly performs SaveThread/RestoreThread under a
+20-second watchdog. The release microbench measured 53.526 ns baseline versus
+53.496 ns custody (`-0.057%`).
+
 The correct CPython-parity wiring, and why it must not be landed blind:
 - `PyEval_SaveThread` ⇒ `GilReleaseGuard::new()` pushed on a TLS stack
   (runtime side, exposed to the ABI crate through **new `RuntimeHooks`
@@ -388,7 +403,8 @@ demand signal exists; the §4.4 fail-closed gate keeps us honest meanwhile.
 2. **DONE 2026-07-11:** rebase onto CLASS2 newtypes → §5.2 sharded bridge (perf-gated:
    single-thread crossing micro-bench before/after must be Δ≤0; N-thread
    crossing bench must scale).
-3. §5.3 GIL hooks + custody redesign (correctness-gated: stress + watchdog).
+3. **DONE 2026-07-11:** ?5.3 GIL hooks + custody redesign (stress + watchdog +
+   single-thread performance gate).
 4. §5.1 biased-RC only if the post-§5.2/§5.3 profile names the shared RMW.
 
 Dependency note: if CLASS2 lands newtypes with different names/shape, the
@@ -398,6 +414,14 @@ value-keyed by bits) — the design binds to the *distinction*, not the names.
 ---
 
 ## 6. Verification ledger (Phase 2)
+
+Phase-3 milestone 1b receipts:
+- watchdog/race/recursive proof: `20260711T092035-gil-custody-targeted-tests-compile2-aaf1d6254097405e`;
+- single-thread gate: `20260711T102710-gil-custody-single-thread-bench-inlined-b539d2a7ec3d41a5`
+  (`53.526 ns` baseline, `53.496 ns` custody, `-0.057%`);
+- full ABI suite: `20260711T103142-gil-custody-full-abi-02afd750b1844fe9`;
+- touched clippy `-D warnings`, ABI wasm32, fail-closed, table-drift,
+  wasm-ABI generation, and rustfmt gates pass.
 
 - `cargo test -p molt-lang-cpython-abi --no-fail-fast` — all green (all
   binaries; includes 5 new integration tests + 5 new unit tests).

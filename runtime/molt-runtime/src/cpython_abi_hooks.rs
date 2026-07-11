@@ -23,6 +23,7 @@ use num_traits::ToPrimitive;
 use crate::builtins::containers::{dict_len, dict_order, list_len, tuple_len};
 use crate::builtins::numbers::{int_bits_from_i64, int_bits_from_i128, to_bigint, to_i64};
 use crate::concurrency::gil::with_gil;
+use crate::concurrency::{GilGuard, GilReleaseGuard, gil_owned_by_current_thread};
 use crate::object::builders::{
     alloc_bytes, alloc_dict_with_pairs, alloc_function_obj, alloc_list_with_capacity,
     alloc_module_obj, alloc_string, alloc_tuple_with_capacity,
@@ -47,6 +48,45 @@ use crate::object::{
 
 fn abi_buffer_view_from_runtime(view: crate::MoltBufferView) -> AbiMoltBufferView {
     unsafe { std::mem::transmute::<crate::MoltBufferView, AbiMoltBufferView>(view) }
+}
+
+thread_local! {
+    static ABI_GIL_ENSURE_GUARDS: std::cell::RefCell<Vec<GilGuard>> = const { std::cell::RefCell::new(Vec::new()) };
+    static ABI_GIL_RELEASE_GUARDS: std::cell::RefCell<Vec<GilReleaseGuard>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+unsafe extern "C" fn hook_gil_ensure() -> c_int {
+    let was_held = gil_owned_by_current_thread();
+    ABI_GIL_ENSURE_GUARDS.with(|guards| guards.borrow_mut().push(GilGuard::new()));
+    c_int::from(was_held)
+}
+
+unsafe extern "C" fn hook_gil_leave(_state: c_int) {
+    ABI_GIL_ENSURE_GUARDS.with(|guards| {
+        let guard = guards
+            .borrow_mut()
+            .pop()
+            .expect("PyGILState_Release without matching PyGILState_Ensure");
+        drop(guard);
+    });
+}
+
+unsafe extern "C" fn hook_gil_release() {
+    ABI_GIL_RELEASE_GUARDS.with(|guards| guards.borrow_mut().push(GilReleaseGuard::new()));
+}
+
+unsafe extern "C" fn hook_gil_restore() {
+    ABI_GIL_RELEASE_GUARDS.with(|guards| {
+        let guard = guards
+            .borrow_mut()
+            .pop()
+            .expect("PyEval_RestoreThread without matching PyEval_SaveThread");
+        drop(guard);
+    });
+}
+
+unsafe extern "C" fn hook_gil_check() -> c_int {
+    c_int::from(gil_owned_by_current_thread())
 }
 
 fn runtime_buffer_view_from_abi(view: AbiMoltBufferView) -> crate::MoltBufferView {
@@ -1945,6 +1985,16 @@ pub extern "C" fn molt_cpython_abi_cext_call_trampoline(
     args_ptr: u64,
     args_len: u64,
 ) -> i64 {
+    let _gil_call = GilGuard::new_extension_call();
+    molt_cpython_abi_cext_call_trampoline_inner(closure_bits, args_ptr, args_len)
+}
+
+#[inline(always)]
+fn molt_cpython_abi_cext_call_trampoline_inner(
+    closure_bits: u64,
+    args_ptr: u64,
+    args_len: u64,
+) -> i64 {
     // The closure encodes the registry id as a NaN-boxed int.
     let id_obj = MoltObject::from_bits(closure_bits);
     let id = match id_obj.as_int() {
@@ -2124,6 +2174,16 @@ pub extern "C" fn molt_cpython_abi_cext_call_trampoline(
     }
 }
 
+#[cfg(test)]
+extern "C" fn molt_cpython_abi_cext_call_trampoline_baseline(
+    closure_bits: u64,
+    args_ptr: u64,
+    args_len: u64,
+) -> i64 {
+    let _gil_call = GilGuard::new();
+    molt_cpython_abi_cext_call_trampoline_inner(closure_bits, args_ptr, args_len)
+}
+
 unsafe extern "C" fn hook_register_c_function(
     meth_addr: u64,
     flags: std::os::raw::c_int,
@@ -2213,6 +2273,11 @@ pub fn register_cpython_hooks() {
         return;
     }
     let hooks = RuntimeHooks {
+        gil_ensure: hook_gil_ensure,
+        gil_leave: hook_gil_leave,
+        gil_release: hook_gil_release,
+        gil_restore: hook_gil_restore,
+        gil_check: hook_gil_check,
         alloc_str: hook_alloc_str,
         alloc_bytes: hook_alloc_bytes,
         int_from_i64: hook_int_from_i64,
@@ -2289,15 +2354,195 @@ mod tests {
         PyExc_RuntimeError, PyExc_TypeError, PyModuleDef_Base, PyModuleDef_Slot, PyObject,
         PyTypeObject,
     };
+    use std::cell::UnsafeCell;
     use std::os::raw::c_int;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize as TestAtomicUsize};
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
     use std::sync::{Mutex as StdMutex, MutexGuard as StdMutexGuard};
+    use std::time::{Duration, Instant};
 
     static STATIC_LINK_EXEC_MODULE_BITS: AtomicU64 = AtomicU64::new(0);
+
+    struct ForeignProxyMutation(UnsafeCell<usize>);
+
+    unsafe impl Send for ForeignProxyMutation {}
+    unsafe impl Sync for ForeignProxyMutation {}
 
     fn cpython_abi_test_guard() -> StdMutexGuard<'static, ()> {
         static LOCK: StdMutex<()> = StdMutex::new(());
         LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[test]
+    fn gil_custody_recursive_ensure_and_allow_threads_make_progress() {
+        let _test_guard = cpython_abi_test_guard();
+        register_cpython_hooks();
+
+        let runtime_guard = GilGuard::new();
+        crate::concurrency::gil::hold_runtime_gil(runtime_guard);
+
+        let outer = unsafe { molt_cpython_abi::api::object::PyGILState_Ensure() };
+        let inner = unsafe { molt_cpython_abi::api::object::PyGILState_Ensure() };
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::object::PyGILState_Check() },
+            1
+        );
+        unsafe { molt_cpython_abi::api::object::PyGILState_Release(inner) };
+        unsafe { molt_cpython_abi::api::object::PyGILState_Release(outer) };
+
+        const WORKERS: usize = 8;
+        const ACQUISITIONS: usize = 2_000;
+        let mutation = Arc::new(ForeignProxyMutation(UnsafeCell::new(0)));
+        let active = Arc::new(TestAtomicUsize::new(0));
+        let max_active = Arc::new(TestAtomicUsize::new(0));
+        let started = Arc::new(TestAtomicUsize::new(0));
+        let finished = Arc::new(TestAtomicUsize::new(0));
+        let stop_watchdog = Arc::new(AtomicBool::new(false));
+
+        let watchdog_finished = Arc::clone(&finished);
+        let watchdog_stop = Arc::clone(&stop_watchdog);
+        let watchdog = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while !watchdog_stop.load(AtomicOrdering::Acquire) {
+                assert!(
+                    Instant::now() < deadline,
+                    "GIL custody stress made no progress"
+                );
+                if watchdog_finished.load(AtomicOrdering::Acquire) == WORKERS {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+
+        let mut workers = Vec::new();
+        for _ in 0..WORKERS {
+            let mutation = Arc::clone(&mutation);
+            let active = Arc::clone(&active);
+            let max_active = Arc::clone(&max_active);
+            let started = Arc::clone(&started);
+            let finished = Arc::clone(&finished);
+            workers.push(std::thread::spawn(move || {
+                started.fetch_add(1, AtomicOrdering::Release);
+                for _ in 0..ACQUISITIONS {
+                    let state = unsafe { molt_cpython_abi::api::object::PyGILState_Ensure() };
+                    assert_eq!(state, 0, "fresh worker acquisition must report unlocked");
+                    let recursive = unsafe { molt_cpython_abi::api::object::PyGILState_Ensure() };
+                    assert_eq!(recursive, 1, "recursive Ensure must report locked");
+                    unsafe { molt_cpython_abi::api::object::PyGILState_Release(recursive) };
+                    let now = active.fetch_add(1, AtomicOrdering::AcqRel) + 1;
+                    max_active.fetch_max(now, AtomicOrdering::AcqRel);
+                    unsafe {
+                        let value = mutation.0.get();
+                        *value = (*value).wrapping_add(1);
+                    }
+                    active.fetch_sub(1, AtomicOrdering::AcqRel);
+                    unsafe { molt_cpython_abi::api::object::PyGILState_Release(state) };
+                }
+                finished.fetch_add(1, AtomicOrdering::Release);
+            }));
+        }
+
+        while started.load(AtomicOrdering::Acquire) != WORKERS {
+            std::thread::yield_now();
+        }
+        while finished.load(AtomicOrdering::Acquire) != WORKERS {
+            let _extension_call = GilGuard::new_extension_call();
+            let saved = unsafe { molt_cpython_abi::api::object::PyEval_SaveThread() };
+            std::thread::yield_now();
+            unsafe { molt_cpython_abi::api::object::PyEval_RestoreThread(saved) };
+        }
+
+        {
+            let _release = GilReleaseGuard::new();
+            for worker in workers {
+                worker.join().expect("worker panicked");
+            }
+        }
+        stop_watchdog.store(true, AtomicOrdering::Release);
+        watchdog.join().expect("watchdog panicked");
+
+        assert_eq!(max_active.load(AtomicOrdering::Acquire), 1);
+        assert_eq!(
+            unsafe { *mutation.0.get() },
+            WORKERS * ACQUISITIONS,
+            "foreign-proxy mutation lost updates despite GIL custody"
+        );
+        crate::concurrency::gil::release_runtime_gil();
+    }
+
+    unsafe extern "C" fn gil_bench_noargs(
+        _self: *mut PyObject,
+        _args: *mut PyObject,
+    ) -> *mut PyObject {
+        unsafe {
+            molt_cpython_abi::api::refcount::Py_INCREF(
+                &raw mut molt_cpython_abi::abi_types::Py_None,
+            )
+        };
+        &raw mut molt_cpython_abi::abi_types::Py_None
+    }
+
+    #[test]
+    #[ignore = "release microbenchmark"]
+    fn single_thread_extension_call_preemption_bench() {
+        let _test_guard = cpython_abi_test_guard();
+        register_cpython_hooks();
+        let runtime_guard = GilGuard::new();
+        crate::concurrency::gil::hold_runtime_gil(runtime_guard);
+
+        let id = {
+            let mut registry = cext_callable_registry()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let id = registry.len();
+            registry.push(CExtCallable {
+                meth_addr: gil_bench_noargs as *const () as usize,
+                flags: METH_NOARGS,
+                self_bits: MoltObject::none().bits(),
+                dispatch_kind: CExtDispatchKind::NoArgs,
+            });
+            id
+        };
+        let closure_bits = MoltObject::from_int(id as i64).bits();
+        const ITERATIONS: usize = 1_000_000;
+        const ROUNDS: usize = 9;
+        let baseline_call: extern "C" fn(u64, u64, u64) -> i64 =
+            std::hint::black_box(molt_cpython_abi_cext_call_trampoline_baseline);
+        let guarded_call: extern "C" fn(u64, u64, u64) -> i64 =
+            std::hint::black_box(molt_cpython_abi_cext_call_trampoline);
+        let mut baseline = Vec::with_capacity(ROUNDS);
+        let mut guarded = Vec::with_capacity(ROUNDS);
+        for round in 0..ROUNDS {
+            let measure = |call: extern "C" fn(u64, u64, u64) -> i64| {
+                let start = Instant::now();
+                for _ in 0..ITERATIONS {
+                    std::hint::black_box(call(closure_bits, 0, 0));
+                }
+                start.elapsed().as_nanos() as f64 / ITERATIONS as f64
+            };
+            if round % 2 == 0 {
+                baseline.push(measure(baseline_call));
+                guarded.push(measure(guarded_call));
+            } else {
+                guarded.push(measure(guarded_call));
+                baseline.push(measure(baseline_call));
+            }
+        }
+        baseline.sort_by(f64::total_cmp);
+        guarded.sort_by(f64::total_cmp);
+        let baseline_ns = baseline[ROUNDS / 2];
+        let guarded_ns = guarded[ROUNDS / 2];
+        let delta_pct = ((guarded_ns / baseline_ns) - 1.0) * 100.0;
+        eprintln!(
+            "single-thread extension call baseline={baseline_ns:.3} ns guarded={guarded_ns:.3} ns delta={delta_pct:+.3}%"
+        );
+        assert!(
+            delta_pct < 1.0,
+            "single-thread extension-call regression must stay below 1%"
+        );
+        crate::concurrency::gil::release_runtime_gil();
     }
 
     fn pending_exception_message_for_assertion() -> String {

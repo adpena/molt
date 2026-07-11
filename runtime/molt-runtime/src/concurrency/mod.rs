@@ -8,7 +8,9 @@ mod panic_contract_tests;
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
-pub(crate) use gil::{GilGuard, GilReleaseGuard, PyToken, gil_assert, gil_held, with_gil};
+pub(crate) use gil::{
+    GilGuard, GilReleaseGuard, PyToken, gil_assert, gil_held, gil_owned_by_current_thread, with_gil,
+};
 #[allow(unused_imports)]
 pub(crate) use isolates::*;
 #[allow(unused_imports)]
