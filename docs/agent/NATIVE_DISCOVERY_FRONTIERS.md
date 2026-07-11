@@ -510,3 +510,134 @@ could not surface):
 | **Warm edit → next frontier** (incremental relink + static sweep + PyInit drive) | **12.66 s** |
 | Incremental ABI relink only (one `molt-cpython-abi` object → cdylib) | 24.98 s |
 | One numpy/scipy **wasm witness** frontier cycle (baseline) | ~1800 s (~30 min) |
+
+---
+
+## Progress update — 2026-07-10 (lane UFUNC-FRONTIER)
+
+> The wasm witness's `_multiarray_umath` init reached **ufunc loop
+> registration** and failed with
+> `RuntimeError: cannot add indexed loop to ufunc add with NPY_BYTE`
+> (numpy `_core/code_generators/generate_umath.py`, generated into
+> `__umath_generated.c` `InitOperators`). Root-caused, fixed, and verified with a
+> mask-proof native reproduction. Driven on the Windows canonical box (the
+> `frontier_repro` pure-ABI loop; no wasm, no dlopen — 0.03 s per cycle).
+
+### ROOT CAUSE — ABI tuple structural equality was broken (`PyTuple_Type.tp_richcompare == NULL`)
+
+The generated `InitOperators` code for every ufunc with indexed loops does, per
+indexed dtype (numpy `generate_umath.py`, `for c in uf.indexed`):
+
+```c
+PyArray_DTypeMeta *dtype = PyArray_DTypeFromTypeNum(NPY_BYTE);
+PyObject *info = get_info_no_cast((PyUFuncObject *)f, dtype, 3);
+if (info == NULL) return -1;
+if (info == Py_None) { PyErr_SetString(PyExc_RuntimeError,
+    "cannot add indexed loop to ufunc add with NPY_BYTE"); return -1; }
+```
+
+`get_info_no_cast` (numpy `_core/src/umath/dispatching.c:1249`) locates the
+registered loop by scanning `ufunc->_loops` and matching with:
+
+```c
+int cmp = PyObject_RichCompareBool(cur_DType_tuple, t_dtypes, Py_EQ);
+```
+
+where `cur_DType_tuple` (stored during registration) and `t_dtypes` (freshly
+built from `op_dtype` repeated `ndtypes` times) are **two distinct tuple objects
+holding equal `DTypeMeta` elements**.
+
+molt's ABI creates these tuples as native-C-struct `PyTupleObject`s with
+`ob_type = &PyTuple_Type` (`api/sequences.rs::PyTuple_New`). But `PyTuple_Type`
+was `std::mem::zeroed()` with only `tp_name` + `tp_dealloc` populated
+(`abi_types.rs`) — **`tp_richcompare` was NULL**. So `PyObject_RichCompare` →
+`do_richcompare` (`api/typeobj.rs`) found no slot on either operand and fell to
+its **object-identity** fallback (`std::ptr::eq(v, w)` for EQ/NE). Two distinct
+tuple objects are never pointer-equal, so `RichCompareBool(tupleA, tupleB, Py_EQ)`
+returned **0 for structurally-equal tuples**. `get_info_no_cast` therefore never
+matches any loop → returns `Py_None` → the generated guard raises the
+RuntimeError at the **first ufunc × first indexed dtype** (`add` × `NPY_BYTE`,
+since `add.indexed = intfltcmplx` and `byte` is the first integer typecode).
+
+This is a **single, clean molt-cpython-abi root**, not a numpy-side or
+cross-compile defect. It is a concrete instance of the documented
+`std::mem::zeroed()` type-object-shell class:
+* `CPYTHON_ABI_COVERAGE_MATRIX.md` §4 containers row *"PyDict_Type / … /
+  PyTuple_Type / … `std::mem::zeroed()` sentinels; … all method slots null"* →
+  **Lane L5 (CONTAINER C-API CONTRACT)**.
+* `CPYTHON_ABI_BINARY_CONTRACT_MATRIX.md` "PyTypeObject struct/tp_flags" item 2 +
+  "Exported data symbols" item 8 (zero-initialized builtin type-object shells) →
+  **Lane 3 (TYPEOBJECT COMPLETENESS & FLAGS)**.
+
+### FIX (landed) — CPython-faithful `tuple_richcompare`
+
+`api/sequences.rs::molt_tuple_richcompare` ports numpy/CPython
+`Objects/tupleobject.c::tuplerichcompare` faithfully (element-wise Py_EQ scan for
+the first differing index; then length decision or the proper operator on the
+differing item), reading through the dual-path `PyTuple_Size`/`PyTuple_GetItem`
+so it is correct for both ABI-layout and bridge-managed tuples. Wired as
+`PyTuple_Type.tp_richcompare` in `abi_types.rs`.
+
+### VERIFICATION — mask-proof, native, 0.03 s
+
+`runtime/molt-cpython-abi/tests/frontier_repro.rs::ufunc_frontier_tuple_structural_richcompare`
+(NOT `#[ignore]`d — a permanent regression guard):
+* **Pre-fix:** `PyObject_RichCompareBool((7,7,7),(7,7,7), Py_EQ)` returned **0**
+  (FAILED) — the exact `get_info_no_cast` miss.
+* **Post-fix:** returns **1** (PASS). Also asserts the discriminator cases the
+  registration path needs: distinct-content tuples compare `!=` (so
+  `PyUFunc_AddLoop(ignore_duplicate=1)` never false-drops a real loop),
+  lexicographic ordering, and length mismatch. Full `molt-cpython-abi` suite
+  green; no regression.
+
+The `PyObject_RichCompareBool` identity short-circuit and `do_richcompare`
+identity fallback were already correct, and the bridge foreign-wrapper cache is
+keyed by C pointer (`bridge.rs` `foreign: HashMap<usize, AbiHandle>`), so molt
+faithfully reflects `DTypeMeta` **pointer** identity — the defect was purely the
+missing tuple slot. (Because this fix removes a *proven, definitely-present*
+blocker, it is necessary; full advancement of the **wasm** witness past ufunc
+registration is confirmed by E1's ~30-min cycle — the native drive cannot reach
+`InitOperators`, see the engine-limitation note below.)
+
+### KEY ENGINE-LIMITATION FINDING — the native discovery drive cannot reach this frontier
+
+Reading numpy's `PyInit__multiarray_umath` (`multiarraymodule.c:5078`) in order:
+`initialize_static_globals()` (5119) imports `numpy.exceptions` **before**
+`typeinfo_init_structsequences()` (5291, PyStructSequence), which is before
+`initumath()`/`InitOperators` (5318, ufunc registration). The native engine is
+**blocked at 5119** (the AOT import wall — it dlopens only the `.so`, with no
+numpy pure-Python provider) and additionally uses **prebuilt** numpy, so it
+structurally **cannot** reach or reproduce the ufunc-registration frontier. This
+class of frontier (anything past the numpy.exceptions/structseq gates, and
+anything specific to molt's *wasm cross-compilation* of numpy's own C) is
+reproducible only in the wasm witness **or** by a scoped pure-ABI reproduction of
+the exact C-API sequence — which is what `frontier_repro` did here in 0.03 s.
+
+### COMPLETE REMAINING FRONTIER SET for `_multiarray_umath` init, ordered + mapped
+
+Frontiers the **native engine** is blocked on before `InitOperators` (the wasm
+witness already passes all of them via AOT closure — proof they work in wasm):
+
+| # | init site | frontier | lane |
+|---|---|---|---|
+| N1 | 5119 `initialize_static_globals` | `PyImport_ImportModule("numpy.exceptions")` (DTypePromotionError) — AOT import wall | E1 numpy-closure / AOT (NOT ABI) |
+| N2 | 5291 `typeinfo_init_structsequences` | `PyStructSequence_New/InitType2` | Coverage L4/L7 (`PyLong_GetInfo`/`PyFloat_GetInfo` structseq) — native loud stub |
+| N3 | 5128/5134/5148 | `PyType_Ready` on DTypeMeta metatype, `PyArrayDescr_Type`, scalar types (C3 MRO, add_operators) | Coverage L4 `PyType_Ready` (M61) |
+| N4 | 5310 `initialize_and_map_pytypes_to_dtypes` | `PyType_FromMetaclass` / DTypeMeta creation & identity | Coverage L4 `PyType_FromMetaclass` (DIVERGENT) |
+
+Frontier at 5318 (this lane): **F0 — ufunc `get_info_no_cast` tuple equality —
+FIXED.**
+
+Downstream frontiers that go live next once ufunc registration completes (the
+wasm witness will surface these after F0):
+
+| # | trigger | frontier | lane |
+|---|---|---|---|
+| D1 | ufunc `__call__` | `PyObject_Vectorcall` kwnames path + `PyVectorcall_Function` | Binary-Contract Lane 4 (items 1–3); Coverage L3/L1 (A-CYTHON) |
+| D2 | `numpy/__init__.py` continuation | remaining Tier-A symbol gaps: A-SIZE (`_PyArg_*_SizeT`), A-EXC (`PyErr_NewException`), A-FATAL (`_Py_FatalErrorFunc`), A-CYTHON | Coverage L1/L5/L6 (whole-witness sweep) |
+| D3 | `numpy.linalg` / `scipy.ndimage` | `_umath_linalg`, `lapack_lite`, `_nd_image`, `_ni_label` (PEP 489 loader already fixed) | Coverage L1 |
+
+> Note (coordination): the ABI-singleton/immortality lane owns `object.rs`
+> singletons + `Py_None` canonicalization. This root is **not** `Py_None`
+> identity — it is the tuple type's missing comparison slot — so there is no
+> collision with that lane.
