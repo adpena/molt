@@ -628,7 +628,7 @@ def _runtime_build_profile_override() -> str:
     ``MOLT_RUNTIME_BUILD_PROFILE`` (e.g. ``dev-fast``) swaps the runtime-wasm
     cargo profile so a correctness-iteration loop (the E1 witness numpy-import
     debug loop) does not pay full ``release-output`` (fat-LTO, opt-``z``) codegen
-    on every invalidated rebuild — opt level does not change the deterministic
+    on every invalidated rebuild â€” opt level does not change the deterministic
     import outcome it is chasing.  DEFAULT UNCHANGED: when the knob is unset,
     acceptance / final-green still builds the shipped ``release-output`` runtime,
     which is the artifact parity is measured against (M05).  An invalid profile
@@ -937,7 +937,7 @@ def _configure_wasm_long_double_env(env: dict[str, str]) -> None:
     order a trailing ``-lc-printscan-long-double`` ahead of the self-contained
     ``-lc``); build.rs instead links these archives as build-script
     ``rustc-link-lib`` entries, which rustc emits in its LOCAL-native-libraries
-    group AHEAD of ``-lc`` — the real ``vfprintf``/``__floatscan`` override
+    group AHEAD of ``-lc`` â€” the real ``vfprintf``/``__floatscan`` override
     wasi-libc's ``long_double_not_supported`` stub. This is the deploy-cdylib arm
     of the SAME single authority the reloc / split-app ``wasm-ld`` paths apply;
     env-threaded so build.rs consumes the Python resolver's path (incl. the
@@ -1443,7 +1443,7 @@ def _runtime_wasm_incremental_target_root(project_root: Path, family_key: str) -
 
     Session-independent by design: cross-iteration incremental reuse is the whole
     point (the per-session dir exists for agent isolation, but a fresh session id
-    per proof-queue run means cargo incremental never engages — the M09 "stable
+    per proof-queue run means cargo incremental never engages â€” the M09 "stable
     target dir" lever).  Concurrency across sessions building the same family is
     made safe by cargo's own per-target build lock plus the ``_build_slot()``
     cross-process gate; two *divergent* source builds in one family serialise and
@@ -1620,7 +1620,7 @@ def _reloc_link_archive_fingerprint_token() -> str:
 
     Folded into the reloc-runtime-wasm fingerprint so a change to those archives
     (first provisioning, a version bump, or removal) invalidates the cached
-    reloc runtime. Uses (name, size, mtime) — cheap and sufficient to detect a
+    reloc runtime. Uses (name, size, mtime) â€” cheap and sufficient to detect a
     swapped/updated archive without hashing hundreds of KB every build.
     """
     parts: list[str] = []
@@ -1653,8 +1653,8 @@ def _reloc_runtime_requires_long_double(
     """Whether this reloc runtime links code that hits wasi-libc's ``%L`` path.
 
     True for the CPython-ABI tier (numpy/scipy C extensions format/parse
-    ``long double`` during import) — identified by a non-empty CPython-ABI
-    requested-export set — or when a resolved module is (a submodule of) numpy or
+    ``long double`` during import) â€” identified by a non-empty CPython-ABI
+    requested-export set â€” or when a resolved module is (a submodule of) numpy or
     scipy. For these builds a missing long-double formatter archive is a HARD
     ERROR (the runtime would relink wasi-libc's ``long_double_not_supported``
     abort() stub -> raw ``unreachable`` trap at ``_multiarray_umath`` import), not
@@ -1687,7 +1687,7 @@ def _resolve_reloc_long_double_archives(
     :func:`wasm_toolchain.resolve_long_double_link_policy` that additionally
     records the ``longdouble_archives`` build attestation (present/MISSING). When
     ``long_double_required`` and either archive is unresolved, propagates the
-    authority's ``error`` (the caller MUST abort the build — a numpy runtime that
+    authority's ``error`` (the caller MUST abort the build â€” a numpy runtime that
     traps is never acceptable). Otherwise returns the archives plus any degrade
     ``warnings`` for a build that provably does not need long double.
     """
@@ -1740,13 +1740,13 @@ def _link_runtime_staticlib_to_reloc_wasm(
     )
     # E1 witness fix (long-double %L trap): wasi-libc's default libc.a stubs the
     # `%L` (long double) printf/scanf conversions with a `long_double_not_supported`
-    # abort() that lowers to a raw `unreachable` trap — reached by numpy's
+    # abort() that lowers to a raw `unreachable` trap â€” reached by numpy's
     # longdouble repr/parse (NumPyOS_ascii_formatl/strtold) during
     # `_multiarray_umath` import. Whole-archive wasi-libc's companion long-double
     # formatter archive so its real vfprintf/vfscanf/strtod/floatscan override the
     # stub objects (libc.a's stay lazy and are skipped once defined), and add
     # wasi-sdk's compiler-rt builtins so the binary128 soft-float the formatters
-    # call (__addtf3/__multf3/…) — and numpy's own longdouble arithmetic — resolve
+    # call (__addtf3/__multf3/â€¦) â€” and numpy's own longdouble arithmetic â€” resolve
     # here instead of degrading to unresolved imports at the final app link.
     #
     # When this runtime links numpy/scipy (``long_double_required``), a missing
@@ -1916,7 +1916,6 @@ def _compute_runtime_wasm_build_spec(
     required_exports: set[str] | frozenset[str] | None,
 ) -> _RuntimeWasmBuildSpec:
     """Resolve the mode-specific runtime-wasm build spec (see _RuntimeWasmBuildSpec)."""
-    effective_stdlib_profile = stdlib_profile or DEFAULT_RUNTIME_STDLIB_PROFILE
     requested_cargo_profile = cargo_profile
     cargo_profile = _resolve_wasm_cargo_profile(cargo_profile)
     profile_dir = _cargo_profile_dir(cargo_profile)
@@ -1975,12 +1974,12 @@ def _compute_runtime_wasm_build_spec(
     # invalidates the cached runtime instead of serving a stale
     # long-double-stubbed one (effect-attestation: configured != effective, M34).
     # The reloc link whole-archives them via wasm-ld; the shared cdylib links
-    # them via build.rs `rustc-link-lib` (see _configure_wasm_long_double_env) —
+    # them via build.rs `rustc-link-lib` (see _configure_wasm_long_double_env) â€”
     # in BOTH cases the archives never otherwise enter the fingerprint/compat
     # digest (the shared build passes them by env, not rustc link-args). The tag
     # is a pure fingerprint input (a distinct cfg name per crate-type, never
     # handed to the real compile) so the emitted wasm stays byte-identical for a
-    # fixed archive set — the CDN-cacheable shared runtime is stable across
+    # fixed archive set â€” the CDN-cacheable shared runtime is stable across
     # builds and only re-keys when the archives actually change.
     _longdouble_link_token = _reloc_link_archive_fingerprint_token()
     fingerprint_rustflags = _append_rustflags_text(
@@ -1988,6 +1987,7 @@ def _compute_runtime_wasm_build_spec(
         f'--cfg molt_{"reloc" if reloc else "shared"}_longdouble_link'
         f'="{_longdouble_link_token}"',
     )
+    effective_stdlib_profile = stdlib_profile or DEFAULT_RUNTIME_STDLIB_PROFILE
     cargo_runtime_features = tuple(["wasm_freestanding"] if freestanding else [])
     builtin_features = _runtime_builtin_features_for_profile(
         effective_stdlib_profile,
@@ -2047,6 +2047,16 @@ def _compute_runtime_wasm_build_spec(
     )
 
 
+def _runtime_publication_bytes(
+    data: bytes, *, reloc: bool, preserve_debug: bool
+) -> bytes:
+    if reloc:
+        return data
+    return strip_wasm_publication_sections(
+        data, final_artifact=True, preserve_debug=preserve_debug
+    )
+
+
 def _ensure_runtime_wasm(
     runtime_wasm: Path,
     *,
@@ -2063,7 +2073,6 @@ def _ensure_runtime_wasm(
     required_exports: set[str] | frozenset[str] | None = None,
 ) -> bool:
     validate_exports = not reloc
-    effective_stdlib_profile = stdlib_profile or DEFAULT_RUNTIME_STDLIB_PROFILE
 
     def _runtime_wasm_build_error_detail(
         build: subprocess.CompletedProcess[str],
@@ -2138,7 +2147,7 @@ def _ensure_runtime_wasm(
     # trap at import can never be built OR served from cache. Micro / no-numpy
     # builds are unaffected (they degrade). The archive presence is folded into
     # the fingerprint, so a degraded (archives-absent) cached runtime is keyed
-    # separately and only ever reused by other archives-absent builds — which
+    # separately and only ever reused by other archives-absent builds â€” which
     # this gate then refuses for the numpy tier.
     long_double_required = reloc and _reloc_runtime_requires_long_double(
         resolved_modules=resolved_modules,
@@ -2170,9 +2179,9 @@ def _ensure_runtime_wasm(
             for marker in ("dev", "debug")
         )
         published = runtime_wasm.read_bytes()
-        stripped = strip_wasm_publication_sections(
+        stripped = _runtime_publication_bytes(
             published,
-            final_artifact=not reloc,
+            reloc=reloc,
             preserve_debug=preserve_debug,
         )
         if stripped != published:
