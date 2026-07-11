@@ -65,6 +65,7 @@ from molt.cli.output import (
 )
 from molt.cli.runtime_build import (
     _ensure_runtime_wasm_artifact,
+    _ensure_runtime_wasm_both,
     _initialize_runtime_artifact_state,
     _maybe_start_native_runtime_lib_ready_async,
 )
@@ -303,6 +304,32 @@ def _prepare_backend_runtime_context(
             required_exports=required_exports,
         )
 
+    def ensure_runtime_wasm_both(
+        required_exports: set[str] | frozenset[str] | None = None,
+    ) -> bool:
+        # V1 dual-compile burn-down (doctrine 74): ensure the shared cdylib and
+        # the reloc staticlib from ONE combined cargo compile with the app's
+        # required_exports, instead of two separate per-artifact ensures that
+        # each recompile the crate when required_exports gates out cdylib reuse.
+        # The combined helper still finalises each artifact via the UNCHANGED
+        # per-artifact reuse path (export materialization + missing-export
+        # validators) and honours the MOLT_RUNTIME_WASM_SINGLE_COMPILE authority
+        # internally, transparently degrading to the sequential dual-compile on
+        # any combined-build failure.
+        return _ensure_runtime_wasm_both(
+            runtime_state,
+            json_output=json_output,
+            cargo_profile=runtime_cargo_profile,
+            cargo_timeout=cargo_timeout,
+            project_root=molt_root,
+            simd_enabled=not is_wasm_freestanding,
+            freestanding=is_wasm_freestanding,
+            stdlib_profile=stdlib_profile,
+            resolved_modules=resolved_modules,
+            required_link_features=required_link_features,
+            required_exports=required_exports,
+        )
+
     if not prepared_backend_setup.runtime_callable_symbols_digest:
         _, callable_symbols_error = _stage_runtime_callable_symbols_for_native_codegen(
             runtime_state,
@@ -326,6 +353,7 @@ def _prepare_backend_runtime_context(
         runtime_reloc_wasm=runtime_state.runtime_reloc_wasm,
         ensure_runtime_wasm_shared=ensure_runtime_wasm_shared,
         ensure_runtime_wasm_reloc=ensure_runtime_wasm_reloc,
+        ensure_runtime_wasm_both=ensure_runtime_wasm_both,
         cache_setup=prepared_backend_setup.cache_setup,
         cache_hit=prepared_backend_setup.cache_hit,
         cache_hit_tier=prepared_backend_setup.cache_hit_tier,

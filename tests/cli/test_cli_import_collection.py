@@ -21594,6 +21594,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
                 runtime_reloc_wasm=None,
                 ensure_runtime_wasm_shared=lambda required=None: True,
                 ensure_runtime_wasm_reloc=lambda required=None: True,
+                ensure_runtime_wasm_both=lambda required=None: True,
                 cache_setup=kwargs["prepared_backend_setup"].cache_setup,
                 cache_hit=False,
                 cache_hit_tier=None,

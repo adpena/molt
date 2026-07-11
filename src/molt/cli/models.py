@@ -1696,6 +1696,7 @@ class _PreparedBackendRuntimeContext:
     runtime_reloc_wasm: Path | None
     ensure_runtime_wasm_shared: Callable[[set[str] | frozenset[str] | None], bool]
     ensure_runtime_wasm_reloc: Callable[[set[str] | frozenset[str] | None], bool]
+    ensure_runtime_wasm_both: Callable[[set[str] | frozenset[str] | None], bool]
     cache_setup: _BackendCacheSetup
     cache_hit: bool
     cache_hit_tier: str | None

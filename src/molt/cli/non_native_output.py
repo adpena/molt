@@ -533,6 +533,33 @@ def _external_native_artifact_fingerprint_inputs(
     )
 
 
+def _app_split_runtime_dual_compile_forced() -> bool:
+    """Whether the app split-runtime build must use two separate cargo compiles.
+
+    Default False -> the non-freestanding split-runtime app routes the reloc
+    staticlib and the shared cdylib through ONE combined cargo compile
+    (``_ensure_runtime_wasm_both``), so the runtime builds ONCE per app build.
+
+    Forced True by either operator kill switch:
+
+    * ``MOLT_RUNTIME_WASM_DUAL_COMPILE=1`` -- the explicit app-path override; or
+    * ``MOLT_RUNTIME_WASM_SINGLE_COMPILE=0`` -- the landed single-compile
+      authority (reused, not re-parsed), so disabling single-compile reverts the
+      app path to the proven sequential reloc-then-shared ensures too.
+    """
+    if os.environ.get("MOLT_RUNTIME_WASM_DUAL_COMPILE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return True
+    # Reuse the landed single-compile authority (avoids a second env parser).
+    from molt.cli.runtime_build import _single_compile_split_runtime_enabled
+
+    return not _single_compile_split_runtime_enabled()
+
+
 def _prepare_non_native_build_result(
     *,
     is_rust_transpile: bool,
@@ -551,6 +578,9 @@ def _prepare_non_native_build_result(
     runtime_reloc_wasm: Path | None,
     ensure_runtime_wasm_shared: Callable[[set[str] | frozenset[str] | None], bool],
     ensure_runtime_wasm_reloc: Callable[[set[str] | frozenset[str] | None], bool],
+    ensure_runtime_wasm_both: (
+        Callable[[set[str] | frozenset[str] | None], bool] | None
+    ) = None,
     runtime_cargo_profile: str,
     molt_root: Path,
     split_runtime: bool = False,
@@ -691,12 +721,46 @@ def _prepare_non_native_build_result(
                     json_output,
                     command="build",
                 )
-            if not ensure_runtime_wasm_reloc(required_runtime_exports):
-                return None, _fail(
-                    "Runtime wasm build failed",
-                    json_output,
-                    command="build",
-                )
+            # Ensure the runtime-wasm artifact(s) the app link consumes.  A
+            # non-freestanding split-runtime app needs BOTH the reloc staticlib
+            # (hand-linked into the app) AND the shared cdylib runtime; route
+            # them through ONE combined cargo compile (doctrine 74 V1 /
+            # _ensure_runtime_wasm_both) so the runtime builds ONCE per app
+            # build instead of twice (a reloc ensure + a shared ensure = two
+            # cargo compiles).  Freestanding builds need only the reloc runtime.
+            # The combined helper honours the MOLT_RUNTIME_WASM_SINGLE_COMPILE
+            # authority internally and degrades to the sequential dual-compile
+            # on any failure; the app path additionally honours the
+            # MOLT_RUNTIME_WASM_DUAL_COMPILE=1 kill switch (and a missing
+            # combined callable) by falling back to the two separate ensures.
+            _runtime_shared_ensured = False
+            if is_wasm_freestanding:
+                if not ensure_runtime_wasm_reloc(required_runtime_exports):
+                    return None, _fail(
+                        "Runtime wasm build failed",
+                        json_output,
+                        command="build",
+                    )
+            elif (
+                ensure_runtime_wasm_both is not None
+                and not _app_split_runtime_dual_compile_forced()
+            ):
+                if not ensure_runtime_wasm_both(required_runtime_exports):
+                    return None, _fail(
+                        "Runtime wasm build failed",
+                        json_output,
+                        command="build",
+                    )
+                # One combined compile produced BOTH the reloc and the shared
+                # runtime; skip the redundant standalone shared ensure below.
+                _runtime_shared_ensured = True
+            else:
+                if not ensure_runtime_wasm_reloc(required_runtime_exports):
+                    return None, _fail(
+                        "Runtime wasm build failed",
+                        json_output,
+                        command="build",
+                    )
             if runtime_reloc_wasm is None:
                 return None, _fail(
                     "Runtime wasm build failed",
@@ -714,12 +778,13 @@ def _prepare_non_native_build_result(
                         json_output,
                         command="build",
                     )
-                if not ensure_runtime_wasm_shared(required_runtime_exports):
-                    return None, _fail(
-                        "Runtime wasm build failed",
-                        json_output,
-                        command="build",
-                    )
+                if not _runtime_shared_ensured:
+                    if not ensure_runtime_wasm_shared(required_runtime_exports):
+                        return None, _fail(
+                            "Runtime wasm build failed",
+                            json_output,
+                            command="build",
+                        )
                 if not runtime_wasm.exists():
                     return None, _fail(
                         "Runtime wasm build failed",

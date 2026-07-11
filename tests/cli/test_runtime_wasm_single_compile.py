@@ -119,3 +119,190 @@ def test_combined_cargo_cmd_has_no_crate_type_override_and_uses_response_file(
     # RUSTFLAGS must NOT carry the per-export link args (they moved to -C link-arg).
     env = captured["env"]
     assert "--export-if-defined" not in env.get("RUSTFLAGS", "")
+
+
+# ---------------------------------------------------------------------------
+# App-path routing: the split-runtime app build (`molt build --target wasm
+# --split-runtime`, the witness) must route the reloc staticlib + shared cdylib
+# through ONE combined ensure so the runtime builds ONCE, not twice, per app
+# build -- while honouring the dual-compile kill switch.
+# ---------------------------------------------------------------------------
+
+import molt.cli.non_native_output as nno  # noqa: E402
+
+
+def _record_ensure(name: str, ret: bool, log: list[str]):
+    def _ensure(required_exports=None) -> bool:  # noqa: ANN001
+        log.append(name)
+        return ret
+
+    return _ensure
+
+
+def _run_app_ensure_routing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    freestanding: bool,
+    both_callable: bool,
+    reloc_ret: bool,
+    shared_ret: bool,
+    both_ret: bool,
+) -> list[str]:
+    """Drive `_prepare_non_native_build_result` up to the runtime-ensure branch.
+
+    All ensures record their name; each configured return value is chosen so the
+    function short-circuits (returns a ``_fail``) right after the ensure
+    decision -- either because an ensure returns False, or because the shared
+    runtime artifact path does not exist.  The returned list is the ORDER of
+    ensures actually invoked, which is exactly the routing decision under test.
+    """
+    # Stub the wasm inspection helpers so no real module is parsed.
+    monkeypatch.setattr(
+        nno, "_collect_wasm_module_import_names", lambda *a, **k: {"molt_PyA"}
+    )
+    monkeypatch.setattr(nno, "_validate_wasm_structural", lambda *a, **k: None)
+    monkeypatch.setattr(
+        nno, "_staged_artifact_runtime_export_symbols", lambda *a, **k: set()
+    )
+
+    output_wasm = tmp_path / "app_out.wasm"
+    output_wasm.write_bytes(b"\0asm")
+    runtime_reloc = tmp_path / "molt_runtime_reloc.wasm"
+    runtime_reloc.write_bytes(b"\0asm")
+    # Deliberately MISSING so the non-freestanding path _fails at exists() right
+    # after the shared-ensure decision (keeps the test off the real link path).
+    runtime_shared_missing = tmp_path / "molt_runtime.wasm"
+
+    log: list[str] = []
+    _result, err = nno._prepare_non_native_build_result(
+        is_rust_transpile=False,
+        is_luau_transpile=False,
+        is_wasm=True,
+        is_wasm_freestanding=freestanding,
+        linked=True,
+        require_linked=False,
+        linked_output_path=None,
+        output_artifact=output_wasm,
+        json_output=True,
+        runtime_wasm=runtime_shared_missing,
+        runtime_reloc_wasm=runtime_reloc,
+        ensure_runtime_wasm_shared=_record_ensure("shared", shared_ret, log),
+        ensure_runtime_wasm_reloc=_record_ensure("reloc", reloc_ret, log),
+        ensure_runtime_wasm_both=(
+            _record_ensure("both", both_ret, log) if both_callable else None
+        ),
+        runtime_cargo_profile="release",
+        molt_root=tmp_path,
+        split_runtime=True,
+    )
+    # Every configured scenario short-circuits before a successful build.
+    assert err is not None
+    return log
+
+
+def test_app_path_default_routes_through_combined_ensure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("MOLT_RUNTIME_WASM_DUAL_COMPILE", raising=False)
+    monkeypatch.delenv("MOLT_RUNTIME_WASM_SINGLE_COMPILE", raising=False)
+    log = _run_app_ensure_routing(
+        monkeypatch,
+        tmp_path,
+        freestanding=False,
+        both_callable=True,
+        reloc_ret=True,
+        shared_ret=True,
+        both_ret=True,
+    )
+    # ONE combined ensure; the standalone reloc/shared ensures are NOT invoked.
+    assert log == ["both"]
+
+
+def test_app_path_dual_compile_kill_switch_forces_two_ensures(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("MOLT_RUNTIME_WASM_SINGLE_COMPILE", raising=False)
+    monkeypatch.setenv("MOLT_RUNTIME_WASM_DUAL_COMPILE", "1")
+    log = _run_app_ensure_routing(
+        monkeypatch,
+        tmp_path,
+        freestanding=False,
+        both_callable=True,
+        reloc_ret=True,
+        shared_ret=True,
+        both_ret=True,
+    )
+    # Kill switch -> separate reloc + shared ensures; combined is NOT invoked.
+    assert log == ["reloc", "shared"]
+
+
+def test_app_path_single_compile_off_forces_two_ensures(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("MOLT_RUNTIME_WASM_DUAL_COMPILE", raising=False)
+    monkeypatch.setenv("MOLT_RUNTIME_WASM_SINGLE_COMPILE", "0")
+    log = _run_app_ensure_routing(
+        monkeypatch,
+        tmp_path,
+        freestanding=False,
+        both_callable=True,
+        reloc_ret=True,
+        shared_ret=True,
+        both_ret=True,
+    )
+    assert log == ["reloc", "shared"]
+
+
+def test_app_path_legacy_fallback_when_combined_absent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("MOLT_RUNTIME_WASM_DUAL_COMPILE", raising=False)
+    monkeypatch.delenv("MOLT_RUNTIME_WASM_SINGLE_COMPILE", raising=False)
+    log = _run_app_ensure_routing(
+        monkeypatch,
+        tmp_path,
+        freestanding=False,
+        both_callable=False,
+        reloc_ret=True,
+        shared_ret=True,
+        both_ret=True,
+    )
+    # No combined callable supplied -> proven sequential reloc + shared.
+    assert log == ["reloc", "shared"]
+
+
+def test_app_path_freestanding_routes_reloc_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("MOLT_RUNTIME_WASM_DUAL_COMPILE", raising=False)
+    monkeypatch.delenv("MOLT_RUNTIME_WASM_SINGLE_COMPILE", raising=False)
+    log = _run_app_ensure_routing(
+        monkeypatch,
+        tmp_path,
+        freestanding=True,
+        both_callable=True,
+        reloc_ret=False,  # False -> _fail immediately after the reloc ensure
+        shared_ret=True,
+        both_ret=True,
+    )
+    # Freestanding needs only the reloc runtime -- never the combined/shared.
+    assert log == ["reloc"]
+
+
+def test_app_dual_compile_forced_env_parsing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MOLT_RUNTIME_WASM_DUAL_COMPILE", raising=False)
+    monkeypatch.delenv("MOLT_RUNTIME_WASM_SINGLE_COMPILE", raising=False)
+    assert nno._app_split_runtime_dual_compile_forced() is False
+    for on in ("1", "true", "yes", "on", "ON"):
+        monkeypatch.setenv("MOLT_RUNTIME_WASM_DUAL_COMPILE", on)
+        assert nno._app_split_runtime_dual_compile_forced() is True
+    monkeypatch.delenv("MOLT_RUNTIME_WASM_DUAL_COMPILE", raising=False)
+    # The landed single-compile authority OFF also forces the dual route.
+    for off in ("0", "false", "no", "off"):
+        monkeypatch.setenv("MOLT_RUNTIME_WASM_SINGLE_COMPILE", off)
+        assert nno._app_split_runtime_dual_compile_forced() is True
+    monkeypatch.setenv("MOLT_RUNTIME_WASM_SINGLE_COMPILE", "1")
+    assert nno._app_split_runtime_dual_compile_forced() is False
