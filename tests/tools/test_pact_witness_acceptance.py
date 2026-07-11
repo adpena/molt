@@ -312,3 +312,74 @@ def test_pact_witness_acceptance_diagnoses_numpy_wrapped_static_extension_error(
         ),
     }
     assert report["manifest_matches"][0]["manifest_module"] == "_multiarray_umath"
+
+
+def test_reference_oracle_pins_numpy_dispatch_baseline(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """ORACLE DETERMINISM PIN (E1 parity feasibility): the numpy-fp32
+    reference must be generated on the numpy wheel's portable BASELINE
+    dispatch tier (`NPY_DISABLE_CPU_FEATURES=X86_V3`) so the oracle's
+    numerics are an attested choice rather than host-CPU luck.
+
+    MASK-PROOF: the pin was measured to be a bitwise NO-OP on the acceptance
+    host (all 26 pipeline stages identical with X86_V3 on vs off — see
+    docs/agent/E1_PARITY_FEASIBILITY.md), so it cannot absorb a candidate
+    divergence; it only removes oracle host-variance. The pin uses
+    `setdefault`, so an operator override in the environment wins."""
+    kernel_root = tmp_path / "kernel"
+    kernel_root.mkdir()
+    (kernel_root / "make_fixture.py").write_text("", encoding="utf-8")
+    (kernel_root / "field_solve.py").write_text("", encoding="utf-8")
+    monkeypatch.setattr(acceptance, "KERNEL_ROOT", kernel_root)
+
+    captured_envs: list[dict[str, str]] = []
+
+    def fake_run(
+        args: list[str], *, cwd: Path, env: dict[str, str] | None = None
+    ) -> None:
+        captured_envs.append(dict(env or {}))
+        script = Path(args[1]).name
+        if script == "make_fixture.py":
+            (cwd / "lstar_sample.npz").write_bytes(b"fixture")
+        elif script == "field_solve.py":
+            (cwd / "reference_outputs.npz").write_bytes(b"reference")
+
+    monkeypatch.setattr(acceptance, "_run", fake_run)
+    monkeypatch.delenv("NPY_DISABLE_CPU_FEATURES", raising=False)
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    reference = acceptance._prepare_reference_oracle(run_dir)
+
+    assert reference == run_dir / "reference_oracle.npz"
+    assert len(captured_envs) == 2  # make_fixture + field_solve
+    for env in captured_envs:
+        assert env.get("NPY_DISABLE_CPU_FEATURES") == "X86_V3"
+
+    # Operator override wins (setdefault semantics), never silently clobbered.
+    captured_envs.clear()
+    monkeypatch.setenv("NPY_DISABLE_CPU_FEATURES", "")
+    acceptance._prepare_reference_oracle(run_dir)
+    assert [env.get("NPY_DISABLE_CPU_FEATURES") for env in captured_envs] == ["", ""]
+
+
+def test_oracle_selfcheck_lane_pins_numpy_dispatch_baseline(monkeypatch) -> None:
+    """`tools/pact_witness_oracle.py` (the CPython-only oracle self-check
+    lane) must generate with the SAME dispatch pin as the acceptance oracle
+    (one oracle numerics authority, no second acceptance path)."""
+    import tools.pact_witness_oracle as oracle
+
+    captured_envs: list[dict[str, str]] = []
+
+    def fake_subprocess_run(args, *, cwd, check, env):  # noqa: ANN001
+        captured_envs.append(dict(env))
+
+    monkeypatch.setattr(oracle.subprocess, "run", fake_subprocess_run)
+    monkeypatch.delenv("NPY_DISABLE_CPU_FEATURES", raising=False)
+
+    assert oracle.main() == 0
+    assert len(captured_envs) == 3  # make_fixture + field_solve + check_parity
+    for env in captured_envs:
+        assert env.get("NPY_DISABLE_CPU_FEATURES") == "X86_V3"
