@@ -11,9 +11,29 @@ use molt_cpython_abi::abi_types::{
 use std::ffi::c_void;
 use std::os::raw::c_char;
 use std::ptr;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
-fn init() {
+/// Serializes EVERY test in this binary. Many of these tests (e.g.
+/// `test_richcompare_native_int_ordering_is_computed`) create small-int operands
+/// via `PyLong_FromLong` and depend on `PyObject_RichCompare` / `PyObject_Hash`
+/// resolving them back through the process-global `GLOBAL_BRIDGE` small-int proxy
+/// cache. Sibling tests that create the SAME value share ONE deduped, mortal
+/// proxy whose `ob_refcnt` the ABI mutates WITHOUT the bridge lock
+/// (`Py_INCREF`/`Py_DECREF`); under `cargo test`'s parallel threads those
+/// non-atomic refcount RMWs race, evicting a still-live handle so a comparison
+/// yields NotImplemented instead of the computed result. Production serializes
+/// every C-extension ABI call via the GIL; this lock restores that invariant for
+/// the harness (the `TEST_LOCK` convention used across this crate's tests). It is
+/// pure isolation — serial `--test-threads=1` was already 0-flake and every
+/// assertion is unchanged.
+static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+/// Acquire the binary-wide serialization guard (poison-tolerant) and run the
+/// idempotent ABI init. Every test binds the returned `MutexGuard` for its body.
+fn init() -> MutexGuard<'static, ()> {
+    let guard = TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     molt_cpython_abi::bridge::molt_cpython_abi_init();
+    guard
 }
 
 /// Expected `ob_refcnt` after ONE new-reference `Py_INCREF`. CPython-faithful:
@@ -38,7 +58,7 @@ fn test_object_repr_fails_closed_under_stubs() {
     // PyObject_Repr builds its result string via PyUnicode_FromString, whose
     // alloc_str fails under the stub table => NULL + MemoryError. Post-burndown
     // that path fails closed instead of returning a fabricated None placeholder.
-    init();
+    let _guard = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(42) };
     let repr = unsafe { molt_cpython_abi::api::typeobj::PyObject_Repr(py) };
@@ -55,7 +75,7 @@ fn test_object_repr_fails_closed_under_stubs() {
 
 #[test]
 fn test_object_repr_null_returns_null() {
-    init();
+    let _guard = init();
     let repr = unsafe { molt_cpython_abi::api::typeobj::PyObject_Repr(ptr::null_mut()) };
     assert!(repr.is_null());
 }
@@ -63,7 +83,7 @@ fn test_object_repr_null_returns_null() {
 #[test]
 fn test_object_str_fails_closed_under_stubs() {
     // Same as repr: PyObject_Str's result-string alloc fails closed under stubs.
-    init();
+    let _guard = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(42) };
     let s = unsafe { molt_cpython_abi::api::typeobj::PyObject_Str(py) };
@@ -80,7 +100,7 @@ fn test_object_str_fails_closed_under_stubs() {
 
 #[test]
 fn test_memoryview_from_memory_has_type_and_null_base() {
-    init();
+    let _guard = init();
     let mut byte = b'x' as c_char;
     let view = unsafe {
         molt_cpython_abi::api::memory::PyMemoryView_FromMemory(&mut byte, 1, PyBUF_WRITE)
@@ -146,7 +166,7 @@ fn test_memoryview_from_memory_has_type_and_null_base() {
 
 #[test]
 fn test_memoryview_from_buffer_copies_descriptor_without_sharing_release() {
-    init();
+    let _guard = init();
     let mut bytes = [1_u8, 2, 3, 4];
     let mut info: Py_buffer = unsafe { std::mem::zeroed() };
     let rc = unsafe {
@@ -213,7 +233,7 @@ fn test_memoryview_from_buffer_copies_descriptor_without_sharing_release() {
 
 #[test]
 fn test_memoryview_from_buffer_rejects_indirect_suboffsets() {
-    init();
+    let _guard = init();
     let mut bytes = [1_u8, 2, 3, 4];
     let mut shape = [bytes.len() as isize];
     let mut strides = [1isize];
@@ -236,7 +256,7 @@ fn test_memoryview_from_buffer_rejects_indirect_suboffsets() {
 
 #[test]
 fn test_memoryview_from_buffer_preserves_zero_dimensional_descriptor() {
-    init();
+    let _guard = init();
     let mut bytes = [0_u8; 8];
     let mut format = [b'd' as c_char, 0];
     let mut info: Py_buffer = unsafe { std::mem::zeroed() };
@@ -259,7 +279,7 @@ fn test_memoryview_from_buffer_preserves_zero_dimensional_descriptor() {
 
 #[test]
 fn test_memoryview_from_buffer_ignores_foreign_private_internal_pointer() {
-    init();
+    let _guard = init();
     let mut bytes = [1_u8, 2, 3, 4];
     let mut shape = [bytes.len() as isize];
     let mut strides = [1isize];
@@ -338,7 +358,7 @@ fn clobber_stack() -> u64 {
 /// fail loudly on values too.
 #[test]
 fn test_memoryview_descriptor_outlives_constructing_frame() {
-    init();
+    let _guard = init();
     let mut data = [7_u8; 32];
 
     let mv_mem = build_memoryview_from_memory(data.as_mut_ptr().cast(), data.len() as isize);
@@ -377,7 +397,7 @@ fn test_memoryview_descriptor_outlives_constructing_frame() {
 
 #[test]
 fn test_one_dimensional_gapped_buffer_is_not_contiguous() {
-    init();
+    let _guard = init();
     let mut bytes = [1_u8, 2, 3, 4, 5, 6];
     let mut shape = [3isize];
     let mut strides = [2isize];
@@ -408,7 +428,7 @@ fn test_one_dimensional_gapped_buffer_is_not_contiguous() {
 
 #[test]
 fn test_object_hash_non_null() {
-    init();
+    let _guard = init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(42) };
     let hash = unsafe { molt_cpython_abi::api::typeobj::PyObject_Hash(py) };
     // Should return some non-zero value (pointer-based)
@@ -418,14 +438,14 @@ fn test_object_hash_non_null() {
 
 #[test]
 fn test_object_length_hint_uses_default_for_unknown_object() {
-    init();
+    let _guard = init();
     let hint = unsafe { molt_cpython_abi::api::object::PyObject_LengthHint(ptr::null_mut(), 17) };
     assert_eq!(hint, 17);
 }
 
 #[test]
 fn test_object_self_iter_returns_new_reference_to_same_object() {
-    init();
+    let _guard = init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(42) };
     let initial_refcnt = unsafe { (*py).ob_refcnt };
     let iter = unsafe { molt_cpython_abi::api::object::PyObject_SelfIter(py) };
@@ -439,7 +459,7 @@ fn test_object_self_iter_returns_new_reference_to_same_object() {
 
 #[test]
 fn test_object_hash_different_objects_differ() {
-    init();
+    let _guard = init();
     let a = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1) };
     let b = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(2) };
     let ha = unsafe { molt_cpython_abi::api::typeobj::PyObject_Hash(a) };
@@ -458,7 +478,7 @@ fn test_object_hash_different_objects_differ() {
 
 #[test]
 fn test_object_typecheck_matching_type() {
-    init();
+    let _guard = init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(5) };
     let tp = unsafe { (*py).ob_type };
     let result = unsafe { molt_cpython_abi::api::typeobj::PyObject_TypeCheck(py, tp) };
@@ -468,7 +488,7 @@ fn test_object_typecheck_matching_type() {
 
 #[test]
 fn test_object_typecheck_mismatched_type() {
-    init();
+    let _guard = init();
     let py_int = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(5) };
     let py_float = unsafe { molt_cpython_abi::api::numbers::PyFloat_FromDouble(1.0) };
     let float_tp = unsafe { (*py_float).ob_type };
@@ -482,7 +502,7 @@ fn test_object_typecheck_mismatched_type() {
 
 #[test]
 fn test_object_typecheck_null_args() {
-    init();
+    let _guard = init();
     assert_eq!(
         unsafe {
             molt_cpython_abi::api::typeobj::PyObject_TypeCheck(ptr::null_mut(), ptr::null_mut())
@@ -497,7 +517,7 @@ fn test_object_typecheck_null_args() {
 
 #[test]
 fn test_isinstance_null_returns_zero() {
-    init();
+    let _guard = init();
     assert_eq!(
         unsafe {
             molt_cpython_abi::api::typeobj::PyObject_IsInstance(ptr::null_mut(), ptr::null_mut())
@@ -512,7 +532,7 @@ fn test_isinstance_null_returns_zero() {
 
 #[test]
 fn test_py_type_returns_ob_type() {
-    init();
+    let _guard = init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(10) };
     let tp = unsafe { molt_cpython_abi::api::typeobj::_Py_TYPE(py) };
     assert!(!tp.is_null());
@@ -522,14 +542,14 @@ fn test_py_type_returns_ob_type() {
 
 #[test]
 fn test_py_type_null_returns_null() {
-    init();
+    let _guard = init();
     let tp = unsafe { molt_cpython_abi::api::typeobj::_Py_TYPE(ptr::null_mut()) };
     assert!(tp.is_null());
 }
 
 #[test]
 fn test_pyobject_type_returns_new_reference_to_ob_type() {
-    init();
+    let _guard = init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(10) };
     let tp = unsafe { (*py).ob_type };
     let before = unsafe { (*tp).ob_base.ob_base.ob_refcnt };
@@ -553,7 +573,7 @@ fn test_pyobject_type_returns_new_reference_to_ob_type() {
 
 #[test]
 fn test_pyobject_type_null_sets_error_and_returns_null() {
-    init();
+    let _guard = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let type_obj = unsafe { molt_cpython_abi::api::typeobj::PyObject_Type(ptr::null_mut()) };
     assert!(type_obj.is_null());
@@ -563,7 +583,7 @@ fn test_pyobject_type_null_sets_error_and_returns_null() {
 
 #[test]
 fn test_pyeval_save_restore_thread_uses_singleton_thread_state() {
-    init();
+    let _guard = init();
     let tstate = unsafe { molt_cpython_abi::api::object::PyEval_SaveThread() };
     assert!(!tstate.is_null());
     assert!(std::ptr::eq(tstate, unsafe {
@@ -580,7 +600,7 @@ fn test_pyeval_save_restore_thread_uses_singleton_thread_state() {
 // post-fix it returns NULL → PASSES.
 #[test]
 fn test_pythreadstate_getframe_returns_null_not_synthetic_frame() {
-    init();
+    let _guard = init();
     let tstate = unsafe { molt_cpython_abi::api::object::PyThreadState_Get() };
     assert!(!tstate.is_null(), "a valid thread state is needed for the test");
     let frame = unsafe { molt_cpython_abi::api::object::PyThreadState_GetFrame(tstate) };
@@ -593,7 +613,7 @@ fn test_pythreadstate_getframe_returns_null_not_synthetic_frame() {
 
 #[test]
 fn test_gil_check_mutex_and_unstable_unique_refs() {
-    init();
+    let _guard = init();
 
     assert_eq!(
         unsafe { molt_cpython_abi::api::object::PyGILState_Check() },
@@ -641,14 +661,14 @@ fn test_gil_check_mutex_and_unstable_unique_refs() {
 
 #[test]
 fn test_callable_check_null_returns_zero() {
-    init();
+    let _guard = init();
     let result = unsafe { molt_cpython_abi::api::typeobj::PyCallable_Check(ptr::null_mut()) };
     assert_eq!(result, 0);
 }
 
 #[test]
 fn test_callable_check_on_int_returns_zero() {
-    init();
+    let _guard = init();
     // Integers don't have tp_call
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(5) };
     let result = unsafe { molt_cpython_abi::api::typeobj::PyCallable_Check(py) };
@@ -675,7 +695,7 @@ unsafe extern "C" fn echo_single_arg(_self_: *mut PyObject, arg: *mut PyObject) 
 
 #[test]
 fn test_cfunction_new_is_callable() {
-    init();
+    let _guard = init();
     static NAME: &[u8] = b"f\0";
     let mut def = PyMethodDef {
         ml_name: NAME.as_ptr().cast(),
@@ -717,7 +737,7 @@ fn test_object_get_optional_attr_propagates_non_attribute_error() {
     // a MemoryError from the lookup path was misreported as 'attribute absent'.
     // The genuine missing-attribute→0 contract is covered by the
     // `get_optional_attr_absent_on_attribute_error` unit test on a fake type.
-    init();
+    let _guard = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(11) };
     let name = unsafe { molt_cpython_abi::api::strings::PyUnicode_FromString(c"missing".as_ptr()) };
@@ -749,7 +769,7 @@ fn test_object_get_optional_attr_propagates_non_attribute_error() {
 
 #[test]
 fn test_method_new_binds_self_for_cfunction() {
-    init();
+    let _guard = init();
     static NAME: &[u8] = b"echo\0";
     let mut def = PyMethodDef {
         ml_name: NAME.as_ptr().cast(),
@@ -795,7 +815,7 @@ const PY_NE: i32 = 3;
 
 #[test]
 fn test_richcompare_same_object_eq() {
-    init();
+    let _guard = init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(42) };
     // Without tp_richcompare set, falls back to NotImplemented, then pointer identity
     let result = unsafe { molt_cpython_abi::api::typeobj::PyObject_RichCompareBool(py, py, PY_EQ) };
@@ -806,7 +826,7 @@ fn test_richcompare_same_object_eq() {
 
 #[test]
 fn test_richcompare_different_objects_ne() {
-    init();
+    let _guard = init();
     let a = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1) };
     let b = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(2) };
     let result = unsafe { molt_cpython_abi::api::typeobj::PyObject_RichCompareBool(a, b, PY_NE) };
@@ -820,7 +840,7 @@ fn test_richcompare_different_objects_ne() {
 
 #[test]
 fn test_richcompare_native_int_ordering_is_computed() {
-    init();
+    let _guard = init();
     // CPython: 1 < 2 dispatches long_richcompare and yields Py_True — never
     // NotImplemented. The old ABI returned the NotImplemented sentinel here
     // (ledger typeobj.rs:1920 divergence); natives now compare by value.
@@ -840,7 +860,7 @@ fn test_richcompare_native_int_ordering_is_computed() {
 
 #[test]
 fn test_richcompare_null_is_bad_internal_call() {
-    init();
+    let _guard = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     // CPython PyObject_RichCompare: a NULL operand is a BadInternalCall —
     // NULL return with an exception set, never a fabricated NotImplemented.
@@ -858,7 +878,7 @@ fn test_richcompare_null_is_bad_internal_call() {
 
 #[test]
 fn test_richcomparebool_null_returns_error() {
-    init();
+    let _guard = init();
     let result = unsafe {
         molt_cpython_abi::api::typeobj::PyObject_RichCompareBool(
             ptr::null_mut(),
@@ -879,7 +899,7 @@ fn test_object_dir_null_fails_closed() {
     // F6 teeth: PyObject_Dir previously returned an empty list ignoring `o`.
     // PyObject_Dir(NULL) (frame-local dir) is unsupported from the ABI bridge and
     // must fail closed with NULL + an exception, never an empty-list placeholder.
-    init();
+    let _guard = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let result = unsafe { molt_cpython_abi::api::object::PyObject_Dir(ptr::null_mut()) };
     assert!(
@@ -904,7 +924,7 @@ fn test_object_dir_foreign_nonbridge_does_not_hang() {
     // result to a local *before* the match so the guard drops before any arm
     // runs. Runs the call in a spawned thread with a bounded join so a
     // regression fails this test instead of wedging the whole suite.
-    init();
+    let _guard = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let mut fake = PyObject {
         ob_refcnt: 1,
@@ -939,7 +959,7 @@ fn test_object_delitem_null_returns_error() {
     // PyObject_DelItem now routes real deletion through the runtime dict_del
     // authority (previously it set the key to None — not deletion). NULL args are
     // the error sentinel -1.
-    init();
+    let _guard = init();
     let rc = unsafe {
         molt_cpython_abi::api::object::PyObject_DelItem(ptr::null_mut(), ptr::null_mut())
     };
