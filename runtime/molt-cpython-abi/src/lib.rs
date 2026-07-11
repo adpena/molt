@@ -121,6 +121,6 @@ mod buffer_export_bench;
 pub use abi_types::{Py_ssize_t, PyObject, PyTypeObject};
 pub use bridge::{AbiHandle, ObjectBridge};
 pub use hooks::{
-    DictOp, MoltBufferView, NumberBinaryOp, NumberUnaryOp, RuntimeHooks, hooks, hooks_or_stubs,
-    set_runtime_hooks, try_set_runtime_hooks,
+    DictOp, MoltBufferView, NumberBinaryOp, NumberUnaryOp, RuntimeHooks, SetOp, hooks,
+    hooks_or_stubs, set_runtime_hooks, try_set_runtime_hooks,
 };

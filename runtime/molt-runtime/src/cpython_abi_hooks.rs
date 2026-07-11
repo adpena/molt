@@ -883,11 +883,42 @@ unsafe extern "C" fn hook_dict_op(op: u32, dict_bits: u64) -> u64 {
         x if x == DictOp::Keys as u32 => crate::c_api::PyDict_Keys(dict_bits),
         x if x == DictOp::Values as u32 => crate::c_api::PyDict_Values(dict_bits),
         x if x == DictOp::Items as u32 => crate::c_api::PyDict_Items(dict_bits),
+        x if x == DictOp::Clear as u32 => {
+            let result = crate::molt_dict_clear(dict_bits);
+            if with_gil(|_py| crate::exception_pending(&_py)) {
+                0
+            } else {
+                result
+            }
+        }
         _ => with_gil(|_py| {
             crate::raise_exception::<u64>(
                 &_py,
                 "SystemError",
                 "PyDict op: unknown operation discriminant",
+            )
+        }),
+    }
+}
+
+unsafe extern "C" fn hook_set_op(op: u32, set_bits: u64) -> u64 {
+    use molt_cpython_abi::SetOp;
+    match op {
+        x if x == SetOp::FrozenNew as u32 => crate::c_api::PyFrozenSet_New(set_bits),
+        x if x == SetOp::Pop as u32 => crate::c_api::PySet_Pop(set_bits),
+        x if x == SetOp::Clear as u32 => {
+            let rc = crate::c_api::PySet_Clear(set_bits);
+            if rc == 0 {
+                MoltObject::none().bits()
+            } else {
+                0
+            }
+        }
+        _ => with_gil(|_py| {
+            crate::raise_exception::<u64>(
+                &_py,
+                "SystemError",
+                "PySet op: unknown operation discriminant",
             )
         }),
     }
@@ -2185,6 +2216,7 @@ pub fn register_cpython_hooks() {
         number_unary_op: hook_number_unary_op,
         number_power: hook_number_power,
         dict_op: hook_dict_op,
+        set_op: hook_set_op,
         set_new: hook_set_new,
         set_size: hook_set_size,
         set_contains: hook_set_contains,

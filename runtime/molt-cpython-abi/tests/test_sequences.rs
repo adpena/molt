@@ -49,7 +49,10 @@ fn test_set_new_fails_closed() {
     init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let py = unsafe { molt_cpython_abi::api::sequences::PySet_New(ptr::null_mut()) };
-    assert!(py.is_null(), "PySet_New must fail closed, not return a list");
+    assert!(
+        py.is_null(),
+        "PySet_New must fail closed, not return a list"
+    );
     assert!(!unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 }
@@ -108,6 +111,24 @@ fn test_list_append_both_null_returns_error() {
         molt_cpython_abi::api::sequences::PyList_Append(ptr::null_mut(), ptr::null_mut())
     };
     assert_eq!(result, -1);
+}
+
+#[test]
+fn test_list_append_rejects_non_list() {
+    init();
+    let tuple = unsafe { molt_cpython_abi::api::sequences::PyTuple_New(0) };
+    let item = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1) };
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::sequences::PyList_Append(tuple, item) },
+        -1
+    );
+    assert!(!unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
+    unsafe {
+        molt_cpython_abi::api::errors::PyErr_Clear();
+        molt_cpython_abi::api::refcount::Py_DECREF(item);
+        molt_cpython_abi::api::refcount::Py_DECREF(tuple);
+    }
 }
 
 // ---------------------------------------------------------------------------
