@@ -49,7 +49,7 @@ pub unsafe extern "C" fn Py_DECREF(op: *mut PyObject) {
         let new_rc = rc.wrapping_sub(1);
         (*op).ob_refcnt = new_rc;
         if new_rc == 0 {
-            let released_bridge_object = crate::bridge::GLOBAL_BRIDGE.lock().release_pyobj(op);
+            let released_bridge_object = crate::bridge::GLOBAL_BRIDGE.release_pyobj(op);
             if !released_bridge_object {
                 let tp = (*op).ob_type;
                 if !tp.is_null()
@@ -76,7 +76,7 @@ pub unsafe extern "C" fn _Py_Dealloc(op: *mut PyObject) {
         return;
     }
     unsafe {
-        let released_bridge_object = crate::bridge::GLOBAL_BRIDGE.lock().release_pyobj(op);
+        let released_bridge_object = crate::bridge::GLOBAL_BRIDGE.release_pyobj(op);
         if !released_bridge_object {
             let tp = (*op).ob_type;
             if !tp.is_null()

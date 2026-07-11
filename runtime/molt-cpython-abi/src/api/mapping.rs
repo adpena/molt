@@ -19,7 +19,7 @@ fn resolve_native_dict(op: *mut PyObject) -> Option<u64> {
     if op.is_null() {
         return None;
     }
-    let bits = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(op)?;
+    let bits = GLOBAL_BRIDGE.molt_handle_for_pyobj(op)?;
     if !bits.decode().is_ptr() {
         return None;
     }
@@ -48,7 +48,7 @@ pub unsafe extern "C" fn PyDict_New() -> *mut PyObject {
         }
         return ptr::null_mut();
     }
-    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) }
+    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) }
 }
 
 #[unsafe(no_mangle)]
@@ -65,7 +65,7 @@ pub unsafe extern "C" fn PyDict_SetItem(
     if op.is_null() || key.is_null() || value.is_null() {
         return -1;
     }
-    let mut bridge = GLOBAL_BRIDGE.lock();
+    let bridge = &*GLOBAL_BRIDGE;
     let dict_bits = match bridge.molt_handle_for_pyobj(op) {
         Some(b) => b.bits(),
         None => {
@@ -138,7 +138,6 @@ pub unsafe extern "C" fn PyDict_SetItem(
             }
         },
     };
-    drop(bridge);
     let h = hooks_or_stubs();
     unsafe { (h.dict_set)(dict_bits, key_bits, val_bits) };
     // CPython contract: the dict takes its OWN strong references to key and
@@ -456,7 +455,7 @@ pub unsafe extern "C" fn PyDict_GetItem(op: *mut PyObject, key: *mut PyObject) -
     if op.is_null() || key.is_null() {
         return ptr::null_mut();
     }
-    let bridge = GLOBAL_BRIDGE.lock();
+    let bridge = &*GLOBAL_BRIDGE;
     let dict_bits = match bridge.molt_handle_for_pyobj(op) {
         Some(b) => b.bits(),
         None => return ptr::null_mut(),
@@ -465,13 +464,12 @@ pub unsafe extern "C" fn PyDict_GetItem(op: *mut PyObject, key: *mut PyObject) -
         Some(b) => b.bits(),
         None => return ptr::null_mut(),
     };
-    drop(bridge);
     let h = hooks_or_stubs();
     let val_bits = unsafe { (h.dict_get)(dict_bits, key_bits) };
     if val_bits == 0 {
         return ptr::null_mut();
     }
-    unsafe { GLOBAL_BRIDGE.lock().handle_to_borrowed_pyobj(val_bits) }
+    unsafe { GLOBAL_BRIDGE.handle_to_borrowed_pyobj(val_bits) }
 }
 
 /// Like [`PyDict_GetItem`] but does NOT suppress errors: a non-dict receiver
@@ -663,7 +661,7 @@ pub unsafe extern "C" fn PyDict_DelItem(op: *mut PyObject, key: *mut PyObject) -
             return -1;
         }
     };
-    let key_handle = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(key);
+    let key_handle = GLOBAL_BRIDGE.molt_handle_for_pyobj(key);
     let key_bits = match key_handle {
         Some(b) => b.bits(),
         None => {
@@ -746,7 +744,7 @@ pub unsafe extern "C" fn PyDict_Next(
     }
     // Identity resolution only; the dict_entry hook re-checks the dict tag and
     // returns 0 for a non-dict (CPython's "0 if op is not a dictionary").
-    let dict_handle = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(op);
+    let dict_handle = GLOBAL_BRIDGE.molt_handle_for_pyobj(op);
     let dict_bits = match dict_handle {
         Some(b) => b.bits(),
         None => return 0,
@@ -776,7 +774,7 @@ pub unsafe extern "C" fn PyDict_Next(
     // Borrowed references (CPython contract — caller must not DECREF). O(1) and
     // allocation-free per step for keys/values already anchored in the bridge
     // (the common init path, where every entry entered via PyDict_SetItem).
-    let mut bridge = GLOBAL_BRIDGE.lock();
+    let bridge = &*GLOBAL_BRIDGE;
     if !key.is_null() {
         unsafe { *key = bridge.handle_to_borrowed_pyobj(key_bits) };
     }
@@ -933,7 +931,7 @@ unsafe fn dict_op(op: crate::hooks::DictOp, dict: *mut PyObject) -> *mut PyObjec
     // PyErr_SetString and handle_to_pyobj re-acquire GLOBAL_BRIDGE, so holding
     // the guard across them would self-deadlock.
     let handle = {
-        let bridge = GLOBAL_BRIDGE.lock();
+        let bridge = &*GLOBAL_BRIDGE;
         bridge.molt_handle_for_pyobj(dict)
     };
     let bits = match handle {
@@ -966,7 +964,7 @@ unsafe fn dict_op(op: crate::hooks::DictOp, dict: *mut PyObject) -> *mut PyObjec
         }
         return ptr::null_mut();
     }
-    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(result) }
+    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(result) }
 }
 
 #[unsafe(no_mangle)]
@@ -1003,9 +1001,7 @@ mod dict_anchor_tests {
         crate::bridge::init_tag_table();
         unsafe {
             crate::api::errors::PyErr_Clear();
-            let recv = GLOBAL_BRIDGE
-                .lock()
-                .handle_to_pyobj(MoltObject::from_int(0xD1C7).bits());
+            let recv = GLOBAL_BRIDGE.handle_to_pyobj(MoltObject::from_int(0xD1C7).bits());
             let got = _PyDict_GetItemStringWithError(recv, ptr::null());
             assert!(got.is_null(), "NULL key must yield NULL");
             assert!(
@@ -1028,7 +1024,7 @@ mod dict_anchor_tests {
     fn dict_set_item_anchors_key_and_value_proxies() {
         crate::bridge::init_tag_table();
         let (recv, key, val) = {
-            let mut bridge = GLOBAL_BRIDGE.lock();
+            let bridge = &*GLOBAL_BRIDGE;
             unsafe {
                 (
                     bridge.handle_to_pyobj(MoltObject::from_int(0xD1C7).bits()),
@@ -1042,7 +1038,7 @@ mod dict_anchor_tests {
         unsafe { crate::api::refcount::Py_DECREF(key) };
         unsafe { crate::api::refcount::Py_DECREF(val) };
         // …must leave the mapping intact (the dict's own reference anchors it).
-        let bridge = GLOBAL_BRIDGE.lock();
+        let bridge = &*GLOBAL_BRIDGE;
         assert!(
             bridge.molt_handle_for_pyobj(key).is_some(),
             "key mapping severed by balancing DECREF"
@@ -1076,7 +1072,7 @@ mod dict_anchor_tests {
         let key_ptr = &raw mut foreign_key;
         let wrapper_bits = 0xF0DE_0000_0000_0010u64;
         let (recv, val) = {
-            let mut bridge = GLOBAL_BRIDGE.lock();
+            let bridge = &*GLOBAL_BRIDGE;
             bridge.insert_foreign_for_test(key_ptr, wrapper_bits);
             unsafe {
                 (
@@ -1099,13 +1095,13 @@ mod dict_anchor_tests {
         // insert/lookup with the same singleton pointer resolves to the same
         // handle rather than silently missing.
         {
-            let mut bridge = GLOBAL_BRIDGE.lock();
+            let bridge = &*GLOBAL_BRIDGE;
             assert_eq!(
                 unsafe { bridge.handle_to_pyobj(wrapper_bits) },
                 key_ptr,
                 "foreign key wrapper lost its round-trip identity",
             );
         }
-        unsafe { GLOBAL_BRIDGE.lock().release_foreign(key_ptr as usize) };
+        unsafe { GLOBAL_BRIDGE.release_foreign(key_ptr as usize) };
     }
 }

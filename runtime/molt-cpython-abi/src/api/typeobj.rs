@@ -75,9 +75,7 @@ pub unsafe extern "C" fn PyType_Ready(tp: *mut PyTypeObject) -> c_int {
     // via `pyobj_to_handle` instead of failing the bridge lookup.
     if unsafe { (*tp).tp_flags } & Py_TPFLAGS_READY != 0 {
         unsafe {
-            crate::bridge::GLOBAL_BRIDGE
-                .lock()
-                .register_raw_pyobj(tp.cast::<PyObject>());
+            crate::bridge::GLOBAL_BRIDGE.register_raw_pyobj(tp.cast::<PyObject>());
             install_metatype_getattro(tp);
         }
         return 0;
@@ -224,9 +222,7 @@ pub unsafe extern "C" fn PyType_Ready(tp: *mut PyTypeObject) -> c_int {
     //     already apply to the descriptors they mint (idempotent + stable handle),
     //     not a weakening of the unresolved-object checks.
     unsafe {
-        crate::bridge::GLOBAL_BRIDGE
-            .lock()
-            .register_raw_pyobj(tp.cast::<PyObject>());
+        crate::bridge::GLOBAL_BRIDGE.register_raw_pyobj(tp.cast::<PyObject>());
         install_metatype_getattro(tp);
     }
     0
@@ -1513,7 +1509,7 @@ pub unsafe extern "C" fn PyDescr_NewGetSet(
             d_getset: getset,
         });
         let ptr = Box::into_raw(descr).cast::<PyObject>();
-        crate::bridge::GLOBAL_BRIDGE.lock().register_raw_pyobj(ptr);
+        crate::bridge::GLOBAL_BRIDGE.register_raw_pyobj(ptr);
         ptr
     }
 }
@@ -1541,7 +1537,7 @@ pub unsafe extern "C" fn PyDescr_NewMember(
             d_member: member,
         });
         let ptr = Box::into_raw(descr).cast::<PyObject>();
-        crate::bridge::GLOBAL_BRIDGE.lock().register_raw_pyobj(ptr);
+        crate::bridge::GLOBAL_BRIDGE.register_raw_pyobj(ptr);
         ptr
     }
 }
@@ -2183,9 +2179,7 @@ pub unsafe extern "C" fn PyObject_Hash(op: *mut PyObject) -> isize {
     }
     // Molt-native (bridge-managed) objects hash through the runtime hash
     // authority over their handle bits (hash(int) == int, etc.), not tp_hash.
-    let native = crate::bridge::GLOBAL_BRIDGE
-        .lock()
-        .molt_handle_for_pyobj(op);
+    let native = crate::bridge::GLOBAL_BRIDGE.molt_handle_for_pyobj(op);
     if let Some(value) = native {
         return crate::bridge::molt_hash_from_bits(value.bits());
     }
@@ -2507,9 +2501,7 @@ pub unsafe extern "C" fn PyObject_Repr(op: *mut PyObject) -> *mut PyObject {
     // resolving Some means a genuine Molt handle; None means a foreign C object.
     // Bind the handle in its own statement so the bridge lock is released before
     // `native_stringify` re-enters the bridge (parking_lot mutex is not reentrant).
-    let native = crate::bridge::GLOBAL_BRIDGE
-        .lock()
-        .molt_handle_for_pyobj(op);
+    let native = crate::bridge::GLOBAL_BRIDGE.molt_handle_for_pyobj(op);
     if let Some(value) = native {
         return unsafe { native_stringify(value.bits(), true) };
     }
@@ -2545,9 +2537,7 @@ pub unsafe extern "C" fn PyObject_Str(op: *mut PyObject) -> *mut PyObject {
     }
     // Molt-native (bridge-managed) non-str object: runtime str primitive.
     // Release the bridge lock before re-entering the bridge (non-reentrant).
-    let native = crate::bridge::GLOBAL_BRIDGE
-        .lock()
-        .molt_handle_for_pyobj(op);
+    let native = crate::bridge::GLOBAL_BRIDGE.molt_handle_for_pyobj(op);
     if let Some(value) = native {
         return unsafe { native_stringify(value.bits(), false) };
     }
@@ -2654,7 +2644,7 @@ unsafe fn native_value_richcompare(
     op: c_int,
 ) -> Option<*mut PyObject> {
     let (vb, wb) = {
-        let bridge = crate::bridge::GLOBAL_BRIDGE.lock();
+        let bridge = &*crate::bridge::GLOBAL_BRIDGE;
         (
             bridge.molt_handle_for_pyobj(v),
             bridge.molt_handle_for_pyobj(w),
@@ -2956,9 +2946,7 @@ pub unsafe extern "C" fn molt_generic_hash(op: *mut PyObject) -> isize {
     // Molt-native value. Decode-safe converter excludes a raw-registered foreign
     // object's `0xA11C` identity anchor (Class-2 mis-decode), so it is NEVER
     // hashed as a garbage float. Resolve then drop the bridge lock before hashing.
-    let native = crate::bridge::GLOBAL_BRIDGE
-        .lock()
-        .molt_handle_for_pyobj(op);
+    let native = crate::bridge::GLOBAL_BRIDGE.molt_handle_for_pyobj(op);
     if let Some(bits) = native {
         return crate::bridge::molt_hash_from_bits(bits.bits());
     }
@@ -3185,9 +3173,7 @@ mod class2_decode_tests {
         };
         unsafe {
             REPR_RESULT.ob_type = &raw mut crate::abi_types::PyUnicode_Type;
-            crate::bridge::GLOBAL_BRIDGE
-                .lock()
-                .register_raw_pyobj(&raw mut obj);
+            crate::bridge::GLOBAL_BRIDGE.register_raw_pyobj(&raw mut obj);
         }
 
         assert_eq!(unsafe { PyObject_Hash(&raw mut obj) }, 4242);
@@ -3215,10 +3201,6 @@ mod class2_decode_tests {
         );
         assert_eq!(BOOL_CALLS.load(Ordering::SeqCst), 1);
 
-        assert!(
-            !crate::bridge::GLOBAL_BRIDGE
-                .lock()
-                .release_pyobj(&raw mut obj)
-        );
+        assert!(!crate::bridge::GLOBAL_BRIDGE.release_pyobj(&raw mut obj));
     }
 }

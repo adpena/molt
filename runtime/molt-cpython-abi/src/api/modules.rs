@@ -113,7 +113,7 @@ fn bridge_pyobj_to_bits(obj: *mut PyObject) -> u64 {
     if obj.is_null() {
         return MoltObject::none().bits();
     }
-    let mut bridge = GLOBAL_BRIDGE.lock();
+    let bridge = &*GLOBAL_BRIDGE;
     if let Some(value) = bridge.molt_handle_for_pyobj(obj) {
         return value.bits();
     }
@@ -137,7 +137,7 @@ pub unsafe extern "C" fn PyModule_New(name: *const c_char) -> *mut PyObject {
     // 48 bits of address) and so the trailing handle bits give the loader a
     // stateless way to recover the canonical handle even when called from a
     // different copy of this bridge crate.
-    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) }
+    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) }
 }
 
 #[unsafe(no_mangle)]
@@ -158,7 +158,7 @@ pub unsafe extern "C" fn PyModule_Check(module: *mut PyObject) -> c_int {
     if std::ptr::eq(ob_type, &raw mut crate::abi_types::PyModule_Type) {
         return 1;
     }
-    GLOBAL_BRIDGE.lock().pyobj_to_handle(module).is_some() as c_int
+    GLOBAL_BRIDGE.pyobj_to_handle(module).is_some() as c_int
 }
 
 /// CPython 3.13+ Unstable API (`Objects/moduleobject.c`):
@@ -269,7 +269,7 @@ pub unsafe extern "C" fn PyModule_GetDict(module: *mut PyObject) -> *mut PyObjec
         crate::capi_trace::record_silent_failure("PyModule_GetDict", None);
         return ptr::null_mut();
     }
-    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(dict_bits) }
+    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(dict_bits) }
 }
 
 #[unsafe(no_mangle)]
@@ -302,7 +302,7 @@ pub unsafe extern "C" fn PyState_FindModule(def: *mut PyModuleDef) -> *mut PyObj
     if module_bits == 0 {
         return ptr::null_mut();
     }
-    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(module_bits) }
+    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(module_bits) }
 }
 
 #[unsafe(no_mangle)]

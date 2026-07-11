@@ -82,7 +82,7 @@ fn install_hooks() {
 fn args_with(items: &[u64]) -> *mut PyObject {
     *ITEMS.lock().unwrap() = items.to_vec();
     let bits = TUPLE_BITS.load(Ordering::SeqCst);
-    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) }
+    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) }
 }
 
 fn int_item(v: i64) -> u64 {
@@ -310,12 +310,10 @@ fn given_exception_matches_tuple_candidates() {
     // A candidate tuple (KeyError, LookupError). A pending IndexError matches
     // via the LookupError member's subclass walk; TypeError does not match.
     let key_bits = GLOBAL_BRIDGE
-        .lock()
         .pyobj_to_handle(&raw mut molt_cpython_abi::abi_types::PyExc_KeyError)
         .map(|identity| identity.as_handle())
         .expect("exception singletons are bridge-registered");
     let lookup_bits = GLOBAL_BRIDGE
-        .lock()
         .pyobj_to_handle(&raw mut molt_cpython_abi::abi_types::PyExc_LookupError)
         .map(|identity| identity.as_handle())
         .expect("exception singletons are bridge-registered");

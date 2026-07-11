@@ -189,7 +189,6 @@ pub unsafe extern "C" fn PyErr_SetString(exc_type: *mut PyObject, message: *cons
         0u64
     } else {
         GLOBAL_BRIDGE
-            .lock()
             .pyobj_to_handle(exc_type)
             .map(|identity| identity.as_handle())
             .unwrap_or(0)
@@ -216,7 +215,7 @@ pub unsafe extern "C" fn PyErr_Occurred() -> *mut PyObject {
         return ptr::null_mut();
     };
     if type_bits != 0 {
-        let resolved = unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(type_bits) };
+        let resolved = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(type_bits) };
         if !resolved.is_null() {
             return resolved;
         }
@@ -301,7 +300,7 @@ fn value_str_message(value: *mut PyObject) -> Option<String> {
     if value.is_null() {
         return None;
     }
-    let value = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(value)?;
+    let value = GLOBAL_BRIDGE.molt_handle_for_pyobj(value)?;
     let bits = value.bits();
     let obj = MoltObject::from_bits(bits);
     if obj.is_none() {
@@ -426,7 +425,7 @@ pub unsafe extern "C" fn PyErr_Fetch(
     let (type_ptr, value_ptr) = match state {
         Some((type_bits, message)) => {
             let type_ptr = if type_bits != 0 {
-                let resolved = unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(type_bits) };
+                let resolved = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(type_bits) };
                 if resolved.is_null() {
                     &raw mut crate::abi_types::Py_None
                 } else {
@@ -468,7 +467,6 @@ pub unsafe extern "C" fn PyErr_Restore(
         unsafe { PyErr_Clear() };
     } else {
         let type_bits = GLOBAL_BRIDGE
-            .lock()
             .pyobj_to_handle(exc_type)
             .map(|identity| identity.as_handle())
             .unwrap_or(0);
@@ -519,7 +517,7 @@ fn exception_free_str(text: &str) -> *mut PyObject {
     if bits == 0 {
         return ptr::null_mut();
     }
-    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) }
+    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) }
 }
 
 /// `PyErr_ExceptionMatches(exc)` — does the pending exception match `exc`?
@@ -599,7 +597,7 @@ pub unsafe extern "C" fn PyErr_GivenExceptionMatches(
     // tuple hooks). Resolve `exc`'s bits and RELEASE the bridge lock before the
     // per-item `handle_to_pyobj` calls — the bridge Mutex is non-reentrant, so
     // holding the guard across the loop would self-deadlock.
-    let exc_bits = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(exc);
+    let exc_bits = GLOBAL_BRIDGE.molt_handle_for_pyobj(exc);
     if let Some(value) = exc_bits
         && value.decode().is_ptr()
     {
@@ -611,7 +609,7 @@ pub unsafe extern "C" fn PyErr_GivenExceptionMatches(
                 if item_bits == 0 {
                     continue;
                 }
-                let item = unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(item_bits) };
+                let item = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(item_bits) };
                 if !item.is_null() && given_matches_single(given, item) {
                     return 1;
                 }
@@ -786,9 +784,8 @@ pub unsafe extern "C" fn molt_pyarg_parse_tuple_inner(
     }
     let fmt = unsafe { CStr::from_ptr(format).to_bytes() };
 
-    let bridge = GLOBAL_BRIDGE.lock();
+    let bridge = &*GLOBAL_BRIDGE;
     let args_bits = bridge.molt_handle_for_pyobj(args).map(|value| value.bits());
-    drop(bridge);
 
     let items = args_bits.map(molt_tuple_items).unwrap_or_default();
     let outs_slice = if outs.is_null() || n_outs <= 0 {
@@ -1004,7 +1001,7 @@ pub unsafe extern "C" fn molt_pyarg_parse_tuple_inner(
             'S' => {
                 // Requires PyBytes; stores the borrowed object.
                 if arg_is_bytes(&obj, bits) {
-                    let py_ptr = unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) };
+                    let py_ptr = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) };
                     write_out!(*mut PyObject, py_ptr);
                 } else {
                     unsafe { set_parse_type_error("argument must be bytes") };
@@ -1014,7 +1011,7 @@ pub unsafe extern "C" fn molt_pyarg_parse_tuple_inner(
             'U' => {
                 // Requires PyUnicode; stores the borrowed object.
                 if arg_is_str(&obj, bits) {
-                    let py_ptr = unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) };
+                    let py_ptr = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) };
                     write_out!(*mut PyObject, py_ptr);
                 } else {
                     unsafe { set_parse_type_error("argument must be str") };
@@ -1051,7 +1048,7 @@ pub unsafe extern "C" fn molt_pyarg_parse_tuple_inner(
                 }
             }
             'O' => {
-                let py_ptr = unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) };
+                let py_ptr = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) };
                 // Peek for the 'O!' (type-checked) / 'O&' (converter) modifiers.
                 let modifier = if i < fmt.len() && (fmt[i] == b'!' || fmt[i] == b'&') {
                     let m = fmt[i];

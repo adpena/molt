@@ -17,7 +17,7 @@ fn py_long_from_i64(v: i64) -> *mut PyObject {
     if bits == 0 {
         return ptr::null_mut();
     }
-    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) }
+    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) }
 }
 
 fn py_long_from_u64(v: u64) -> *mut PyObject {
@@ -27,7 +27,7 @@ fn py_long_from_u64(v: u64) -> *mut PyObject {
     if bits == 0 {
         return ptr::null_mut();
     }
-    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) }
+    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) }
 }
 
 // ─── Checked PyLong_As* conversion core ──────────────────────────────────────
@@ -74,7 +74,7 @@ fn py_long_value(op: *mut PyObject, use_index: bool) -> Result<LongValue, LongEr
         unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return Err(LongError::Raised);
     }
-    let op_handle = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(op);
+    let op_handle = GLOBAL_BRIDGE.molt_handle_for_pyobj(op);
     if let Some(value) = op_handle {
         let bits = value.bits();
         let obj = value.decode();
@@ -174,7 +174,7 @@ pub(crate) fn is_int_like(op: *mut PyObject) -> bool {
     if op.is_null() {
         return false;
     }
-    let Some(bits) = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(op) else {
+    let Some(bits) = GLOBAL_BRIDGE.molt_handle_for_pyobj(op) else {
         return false;
     };
     let obj = bits.decode();
@@ -202,7 +202,6 @@ pub(crate) fn py_long_as_ssize_clamped(op: *mut PyObject) -> Option<isize> {
         Ok(LongValue::Big(_)) => Some(isize::MAX),
         Err(LongError::OutOf64) => {
             let bits = GLOBAL_BRIDGE
-                .lock()
                 .molt_handle_for_pyobj(op)
                 .map(|value| value.bits())
                 .unwrap_or(0);
@@ -615,7 +614,7 @@ pub unsafe extern "C" fn PyLong_FromDouble(v: c_double) -> *mut PyObject {
         }
         return ptr::null_mut();
     }
-    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(result) }
+    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(result) }
 }
 
 #[unsafe(no_mangle)]
@@ -646,7 +645,7 @@ pub unsafe extern "C" fn PyLong_FromUnicodeObject(u: *mut PyObject, base: c_int)
                 }
             };
             match build_big_int_from_literal(&scanned) {
-                Some(bits) => unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) },
+                Some(bits) => unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) },
                 None => {
                     unsafe {
                         set_numeric_parse_error(
@@ -772,7 +771,6 @@ pub unsafe extern "C" fn PyLong_AsDouble(op: *mut PyObject) -> c_double {
             // A genuine int beyond ±2^64: exact conversion via the runtime
             // authority when available; honest OverflowError otherwise.
             let bits = GLOBAL_BRIDGE
-                .lock()
                 .molt_handle_for_pyobj(op)
                 .map(|value| value.bits())
                 .unwrap_or(0);
@@ -1224,7 +1222,7 @@ pub unsafe extern "C" fn _PyLong_AsByteArray(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyFloat_FromDouble(v: c_double) -> *mut PyObject {
     let bits = MoltObject::from_float(v).bits();
-    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) }
+    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) }
 }
 
 #[unsafe(no_mangle)]
@@ -1274,7 +1272,7 @@ pub unsafe extern "C" fn PyFloat_AsDouble(op: *mut PyObject) -> c_double {
         unsafe { crate::api::errors::PyErr_BadArgument() };
         return -1.0;
     }
-    let op_handle = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(op);
+    let op_handle = GLOBAL_BRIDGE.molt_handle_for_pyobj(op);
     if let Some(bits) = op_handle {
         let obj = bits.decode();
         if obj.is_float() {
@@ -1314,7 +1312,7 @@ pub unsafe extern "C" fn PyFloat_AsDouble(op: *mut PyObject) -> c_double {
     // path), then the `nb_index` route, mirroring floatobject.c.
     let converted = unsafe { crate::api::abstract_number::PyNumber_Float(op) };
     if !converted.is_null() {
-        let converted_handle = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(converted);
+        let converted_handle = GLOBAL_BRIDGE.molt_handle_for_pyobj(converted);
         let value = if let Some(bits) = converted_handle {
             bits.decode().as_float()
         } else {
@@ -1478,9 +1476,7 @@ pub unsafe extern "C" fn PyComplex_AsCComplex(op: *mut PyObject) -> Py_complex {
             imag: 0.0,
         };
     }
-    if unsafe { PyComplex_Check(op) } != 0
-        && GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(op).is_none()
-    {
+    if unsafe { PyComplex_Check(op) } != 0 && GLOBAL_BRIDGE.molt_handle_for_pyobj(op).is_none() {
         // `op` is a genuine (non-bridge-minted) C complex object here. On wasm32
         // a statically declared C `PyObject` is only 4-byte aligned, but
         // `PyComplexObject` (two `c_double`s) has alignment 8, so dereferencing
@@ -1506,7 +1502,7 @@ pub unsafe extern "C" fn PyComplex_AsCComplex(op: *mut PyObject) -> Py_complex {
 pub unsafe extern "C" fn PyComplex_RealAsDouble(op: *mut PyObject) -> c_double {
     if !op.is_null()
         && unsafe { PyComplex_Check(op) } != 0
-        && GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(op).is_none()
+        && GLOBAL_BRIDGE.molt_handle_for_pyobj(op).is_none()
     {
         // Unaligned read: a C-minted PyComplexObject may sit on a 4-byte
         // boundary on wasm32 (a98ef2978e's misaligned-deref UB class).
@@ -1524,7 +1520,7 @@ pub unsafe extern "C" fn PyComplex_RealAsDouble(op: *mut PyObject) -> c_double {
 pub unsafe extern "C" fn PyComplex_ImagAsDouble(op: *mut PyObject) -> c_double {
     if !op.is_null()
         && unsafe { PyComplex_Check(op) } != 0
-        && GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(op).is_none()
+        && GLOBAL_BRIDGE.molt_handle_for_pyobj(op).is_none()
     {
         // Unaligned read: same C-minted-object alignment class as above.
         let field = unsafe { &raw const (*op.cast::<PyComplexObject>()).cval.imag };
@@ -1570,7 +1566,7 @@ macro_rules! type_check {
             if op.is_null() {
                 return 0;
             }
-            let op_handle = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(op);
+            let op_handle = GLOBAL_BRIDGE.molt_handle_for_pyobj(op);
             match op_handle {
                 Some(value) => value.decode().$pred() as c_int,
                 None => 0,
@@ -1588,7 +1584,7 @@ pub unsafe extern "C" fn PyLong_Check(op: *mut PyObject) -> c_int {
     if op.is_null() {
         return 0;
     }
-    let op_handle = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(op);
+    let op_handle = GLOBAL_BRIDGE.molt_handle_for_pyobj(op);
     if let Some(value) = op_handle {
         let bits = value.bits();
         let obj = value.decode();
@@ -1614,7 +1610,7 @@ pub unsafe extern "C" fn PyFloat_Check(op: *mut PyObject) -> c_int {
     if op.is_null() {
         return 0;
     }
-    let op_handle = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(op);
+    let op_handle = GLOBAL_BRIDGE.molt_handle_for_pyobj(op);
     if let Some(value) = op_handle {
         return value.decode().is_float() as c_int;
     }
@@ -1636,7 +1632,7 @@ pub unsafe extern "C" fn PyNumber_Check(op: *mut PyObject) -> c_int {
     if op.is_null() {
         return 0;
     }
-    let op_handle = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(op);
+    let op_handle = GLOBAL_BRIDGE.molt_handle_for_pyobj(op);
     if let Some(value) = op_handle {
         let bits = value.bits();
         let obj = value.decode();

@@ -137,12 +137,13 @@ canonicalize.
   main thread effectively owns the GIL for the process lifetime and re-enters
   via the no-op lane.
 
-### 2.3 The bridge (`molt-cpython-abi`) — GIL-ful CPython ABI, one global lock
+### 2.3 The bridge (`molt-cpython-abi`) — GIL-ful CPython ABI, sharded identity custody
 
-- `runtime/molt-cpython-abi/src/bridge.rs:81-82` — `GLOBAL_BRIDGE:
-  Lazy<Mutex<ObjectBridge>>` (parking_lot) serializes ALL `*mut PyObject ↔
-  handle` crossings. It protects four maps (`to_py`, `raw_py`, `from_py`,
-  `foreign`) plus `next_raw_handle`, whose invariants are (a) bidirectional
+- `runtime/molt-cpython-abi/src/bridge.rs` — `GLOBAL_BRIDGE:
+  Lazy<ObjectBridge>` shards `*mut PyObject ↔ handle` crossings by the CLASS2
+  identity/value boundary. Address stripes own `from_py` + `foreign`; handle
+  stripes own `to_py` + `raw_py`; `next_raw_handle` is atomic on native and a
+  zero-atomic `Cell` on wasm32. The invariants remain (a) bidirectional
   identity consistency (`from_py[addr] == bits ⇔ to_py[bits].addr == addr`),
   (b) exactly-one `BridgeEntry` (allocation) per live proxied handle, (c)
   foreign-wrapper identity + one strong C-ref per `foreign` entry.
@@ -310,7 +311,7 @@ split-field biased RC into `MoltHeader` now. Reasons:
   flag (already branch-first on both paths). This is an additive,
   measured-only step (M10: profile first, attest delta).
 
-### 5.2 The bridge: shard on the CLASS2 newtype boundary
+### 5.2 The bridge: shard on the CLASS2 newtype boundary — DONE (milestone 1a)
 
 Once `BridgeIdentity` (identity-only) vs `MoltValueHandle` (decodable) land
 in bridge.rs, the map custody splits cleanly:
@@ -332,6 +333,18 @@ in bridge.rs, the map custody splits cleanly:
   measured-first step that preserves every invariant CLASS2's types encode.
 - wasm32: `N = 1` (compile-time), stripes collapse to today's single map —
   zero added cost.
+
+Landed implementation result (2026-07-11): native `N = next_pow2(2×cores)`;
+address index `(addr >> 4) & (N-1)`; handle index `(bits >> 4) & (N-1)`.
+Every two-map mutation uses the single `lock_address_then_handle` authority,
+so rank is globally fixed as address stripe before handle stripe. The release
+profile's identical pre/post executable measured the former global mutex at
+18.72 ns/crossing and the sharded path at 13.29 ns/crossing (`-29.01%`), with
+4-thread throughput 291.39 Mops/s and 8-thread throughput 524.23 Mops/s versus
+the baseline's 8.38 and 4.27 Mops/s respectively. The ignored release-profile
+test machine-checks `Δ≤0` against that captured baseline and requires 4-thread
+throughput to reach at least 1.5× the single-thread rate. Crossed-index and
+concurrent crossing/release watchdog tests cover deadlock and invariant drift.
 
 ### 5.3 GIL custody: make `PyGILState_*`/`PyEval_SaveThread` real — carefully
 
@@ -372,7 +385,7 @@ demand signal exists; the §4.4 fail-closed gate keeps us honest meanwhile.
 ### 5.5 Phase-3 execution order
 
 1. §4.4 loader fail-closed gate (independent, small).
-2. Rebase onto CLASS2 newtypes → §5.2 sharded bridge (perf-gated:
+2. **DONE 2026-07-11:** rebase onto CLASS2 newtypes → §5.2 sharded bridge (perf-gated:
    single-thread crossing micro-bench before/after must be Δ≤0; N-thread
    crossing bench must scale).
 3. §5.3 GIL hooks + custody redesign (correctness-gated: stress + watchdog).

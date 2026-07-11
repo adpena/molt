@@ -36,16 +36,30 @@ fn fresh_handle() -> u64 {
 
 unsafe extern "C" fn fx_alloc_list() -> u64 {
     let bits = fresh_handle();
-    LISTS.lock().unwrap().get_or_insert_default().insert(bits, Vec::new());
+    LISTS
+        .lock()
+        .unwrap()
+        .get_or_insert_default()
+        .insert(bits, Vec::new());
     bits
 }
 unsafe extern "C" fn fx_list_append(list_bits: u64, item_bits: u64) {
-    if let Some(v) = LISTS.lock().unwrap().get_or_insert_default().get_mut(&list_bits) {
+    if let Some(v) = LISTS
+        .lock()
+        .unwrap()
+        .get_or_insert_default()
+        .get_mut(&list_bits)
+    {
         v.push(item_bits);
     }
 }
 unsafe extern "C" fn fx_list_len(bits: u64) -> usize {
-    LISTS.lock().unwrap().get_or_insert_default().get(&bits).map_or(0, |v| v.len())
+    LISTS
+        .lock()
+        .unwrap()
+        .get_or_insert_default()
+        .get(&bits)
+        .map_or(0, |v| v.len())
 }
 unsafe extern "C" fn fx_list_item(bits: u64, i: usize) -> u64 {
     LISTS
@@ -66,14 +80,23 @@ unsafe extern "C" fn fx_alloc_tuple(n: usize) -> u64 {
     bits
 }
 unsafe extern "C" fn fx_tuple_set(bits: u64, i: usize, val: u64) {
-    if let Some(v) = TUPLES.lock().unwrap().get_or_insert_default().get_mut(&bits)
+    if let Some(v) = TUPLES
+        .lock()
+        .unwrap()
+        .get_or_insert_default()
+        .get_mut(&bits)
         && i < v.len()
     {
         v[i] = val;
     }
 }
 unsafe extern "C" fn fx_tuple_len(bits: u64) -> usize {
-    TUPLES.lock().unwrap().get_or_insert_default().get(&bits).map_or(0, |v| v.len())
+    TUPLES
+        .lock()
+        .unwrap()
+        .get_or_insert_default()
+        .get(&bits)
+        .map_or(0, |v| v.len())
 }
 unsafe extern "C" fn fx_tuple_item(bits: u64, i: usize) -> u64 {
     TUPLES
@@ -85,10 +108,16 @@ unsafe extern "C" fn fx_tuple_item(bits: u64, i: usize) -> u64 {
         .unwrap_or(0)
 }
 unsafe extern "C" fn fx_alloc_str(data: *const u8, len: usize) -> u64 {
-    let bytes: &'static [u8] =
-        Box::leak(unsafe { std::slice::from_raw_parts(data, len) }.to_vec().into_boxed_slice());
+    let bytes: &'static [u8] = Box::leak(
+        unsafe { std::slice::from_raw_parts(data, len) }
+            .to_vec()
+            .into_boxed_slice(),
+    );
     let bits = fresh_handle();
-    STRS.lock().unwrap().get_or_insert_default().insert(bits, bytes);
+    STRS.lock()
+        .unwrap()
+        .get_or_insert_default()
+        .insert(bits, bytes);
     bits
 }
 unsafe extern "C" fn fx_str_data(bits: u64, out_len: *mut usize) -> *const u8 {
@@ -108,19 +137,45 @@ unsafe extern "C" fn fx_str_data(bits: u64, out_len: *mut usize) -> *const u8 {
     }
 }
 unsafe extern "C" fn fx_dict_len(bits: u64) -> usize {
-    DICTS.lock().unwrap().get_or_insert_default().get(&bits).copied().unwrap_or(0)
+    DICTS
+        .lock()
+        .unwrap()
+        .get_or_insert_default()
+        .get(&bits)
+        .copied()
+        .unwrap_or(0)
 }
 unsafe extern "C" fn fx_classify_heap(bits: u64) -> u8 {
-    if LISTS.lock().unwrap().get_or_insert_default().contains_key(&bits) {
+    if LISTS
+        .lock()
+        .unwrap()
+        .get_or_insert_default()
+        .contains_key(&bits)
+    {
         return MoltTypeTag::List as u8;
     }
-    if TUPLES.lock().unwrap().get_or_insert_default().contains_key(&bits) {
+    if TUPLES
+        .lock()
+        .unwrap()
+        .get_or_insert_default()
+        .contains_key(&bits)
+    {
         return MoltTypeTag::Tuple as u8;
     }
-    if STRS.lock().unwrap().get_or_insert_default().contains_key(&bits) {
+    if STRS
+        .lock()
+        .unwrap()
+        .get_or_insert_default()
+        .contains_key(&bits)
+    {
         return MoltTypeTag::Str as u8;
     }
-    if DICTS.lock().unwrap().get_or_insert_default().contains_key(&bits) {
+    if DICTS
+        .lock()
+        .unwrap()
+        .get_or_insert_default()
+        .contains_key(&bits)
+    {
         return MoltTypeTag::Dict as u8;
     }
     MoltTypeTag::Other as u8
@@ -147,7 +202,7 @@ fn install() {
 }
 
 fn register(bits: u64) -> *mut PyObject {
-    unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) }
+    unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_pyobj(bits) }
 }
 fn make_str(text: &str) -> u64 {
     unsafe { fx_alloc_str(text.as_ptr(), text.len()) }
@@ -165,7 +220,10 @@ fn contains_and_index_use_value_equality_for_heap_strings() {
     // pre-fix raw-bits compare missed.
     let s_in_list = make_str("dtype");
     let s_probe = make_str("dtype");
-    assert_ne!(s_in_list, s_probe, "handles must be distinct for this proof");
+    assert_ne!(
+        s_in_list, s_probe,
+        "handles must be distinct for this proof"
+    );
 
     let list_bits = unsafe { fx_alloc_list() };
     unsafe { fx_list_append(list_bits, s_in_list) };
@@ -221,13 +279,25 @@ fn tuple_and_list_of_non_iterable_raise_typeerror_not_empty() {
     let n = register(MoltObject::from_int(42).bits());
 
     let t = unsafe { abstract_sequence::PySequence_Tuple(n) };
-    assert!(t.is_null(), "PySequence_Tuple(non-iterable) must be NULL, not an empty tuple");
-    assert!(!unsafe { errors::PyErr_Occurred() }.is_null(), "TypeError must be pending");
+    assert!(
+        t.is_null(),
+        "PySequence_Tuple(non-iterable) must be NULL, not an empty tuple"
+    );
+    assert!(
+        !unsafe { errors::PyErr_Occurred() }.is_null(),
+        "TypeError must be pending"
+    );
     unsafe { errors::PyErr_Clear() };
 
     let l = unsafe { abstract_sequence::PySequence_List(n) };
-    assert!(l.is_null(), "PySequence_List(non-iterable) must be NULL, not an empty list");
-    assert!(!unsafe { errors::PyErr_Occurred() }.is_null(), "TypeError must be pending");
+    assert!(
+        l.is_null(),
+        "PySequence_List(non-iterable) must be NULL, not an empty list"
+    );
+    assert!(
+        !unsafe { errors::PyErr_Occurred() }.is_null(),
+        "TypeError must be pending"
+    );
     unsafe { errors::PyErr_Clear() };
 }
 
@@ -241,7 +311,10 @@ fn str_materializes_into_code_point_tuple() {
     // pre-fix code raised/fabricated for every non-list/tuple.
     let s = register(make_str("ab"));
     let t = unsafe { abstract_sequence::PySequence_Tuple(s) };
-    assert!(!t.is_null(), "PySequence_Tuple(str) must materialize the code points");
+    assert!(
+        !t.is_null(),
+        "PySequence_Tuple(str) must materialize the code points"
+    );
     assert_eq!(unsafe { abstract_sequence::PySequence_Fast_GET_SIZE(t) }, 2);
     assert!(unsafe { errors::PyErr_Occurred() }.is_null());
 }
@@ -280,7 +353,11 @@ fn sequence_size_of_dict_raises_typeerror() {
     unsafe { errors::PyErr_Clear() };
 
     let dict_bits = fresh_handle();
-    DICTS.lock().unwrap().get_or_insert_default().insert(dict_bits, 3);
+    DICTS
+        .lock()
+        .unwrap()
+        .get_or_insert_default()
+        .insert(dict_bits, 3);
     let dict = register(dict_bits);
 
     // CPython: dict has mp_length but NO sq_length → TypeError "%s is not a

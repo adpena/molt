@@ -98,15 +98,10 @@ fn fake_dict_handle(addr: usize) -> u64 {
 }
 
 fn register(handle: u64) -> *mut PyObject {
-    unsafe {
-        molt_cpython_abi::bridge::GLOBAL_BRIDGE
-            .lock()
-            .handle_to_pyobj(handle)
-    }
+    unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_pyobj(handle) }
 }
 fn handle_of(p: *mut PyObject) -> u64 {
     molt_cpython_abi::bridge::GLOBAL_BRIDGE
-        .lock()
         .pyobj_to_handle(p)
         .map(|identity| identity.as_handle())
         .expect("pointer must round-trip to a handle")

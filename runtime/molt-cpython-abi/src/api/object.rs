@@ -35,7 +35,7 @@ fn none_bits() -> u64 {
 
 unsafe fn bridge_get_attr_from_name_bits(o: *mut PyObject, name_bits: u64) -> *mut PyObject {
     let obj_bits = {
-        let bridge = GLOBAL_BRIDGE.lock();
+        let bridge = &*GLOBAL_BRIDGE;
         bridge.molt_handle_for_pyobj(o)
     };
     let Some(obj_bits) = obj_bits else {
@@ -45,7 +45,7 @@ unsafe fn bridge_get_attr_from_name_bits(o: *mut PyObject, name_bits: u64) -> *m
     if bits == 0 {
         return ptr::null_mut();
     }
-    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) }
+    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) }
 }
 
 #[unsafe(no_mangle)]
@@ -57,7 +57,7 @@ pub unsafe extern "C" fn PyObject_GetAttr(
         return ptr::null_mut();
     }
     let name_bits = {
-        let bridge = GLOBAL_BRIDGE.lock();
+        let bridge = &*GLOBAL_BRIDGE;
         bridge.molt_handle_for_pyobj(attr_name)
     };
     if let Some(name_bits) = name_bits {
@@ -122,7 +122,7 @@ pub unsafe extern "C" fn PyObject_GetAttrString(
     if o.is_null() || attr_name.is_null() {
         return ptr::null_mut();
     }
-    let obj_bits = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(o);
+    let obj_bits = GLOBAL_BRIDGE.molt_handle_for_pyobj(o);
     if obj_bits.is_some() {
         let name_bytes = unsafe { std::ffi::CStr::from_ptr(attr_name) }.to_bytes();
         let hooks = hooks_or_stubs();
@@ -237,7 +237,7 @@ pub unsafe extern "C" fn PyObject_SetAttr(
     // No C set-slot. A bridge-managed Molt object still assigns attributes via
     // the runtime object model (exactly as GenericSetAttr does); route it there.
     // The prior bare -1 silently dropped `setattr` on every slot-less object.
-    if GLOBAL_BRIDGE.lock().pyobj_to_handle(o).is_some() {
+    if GLOBAL_BRIDGE.pyobj_to_handle(o).is_some() {
         return unsafe { PyObject_GenericSetAttr(o, attr_name, v) };
     }
     // Genuinely slot-less foreign type: CPython raises TypeError, never -1.
@@ -896,7 +896,7 @@ pub unsafe extern "C" fn PyObject_GenericSetAttr(
         return -1;
     }
     let (obj_bits, name_bits, value_bits) = {
-        let bridge = GLOBAL_BRIDGE.lock();
+        let bridge = &*GLOBAL_BRIDGE;
         (
             bridge.molt_handle_for_pyobj(o),
             bridge.molt_handle_for_pyobj(name),
@@ -1021,7 +1021,7 @@ pub unsafe extern "C" fn PyObject_IsTrue(o: *mut PyObject) -> c_int {
     }
     // ── Tier 2: native Molt object. Resolve the handle once (the lock is dropped
     // immediately so the length hooks below never re-enter a held bridge lock). ──
-    let handle = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(o);
+    let handle = GLOBAL_BRIDGE.molt_handle_for_pyobj(o);
     if let Some(value) = handle {
         let bits = value.bits();
         let obj = value.decode();
@@ -1216,7 +1216,7 @@ pub unsafe extern "C" fn PyObject_Format(
     }
 
     let (obj_bits, spec_bits) = {
-        let bridge = GLOBAL_BRIDGE.lock();
+        let bridge = &*GLOBAL_BRIDGE;
         (
             bridge.molt_handle_for_pyobj(o),
             bridge.molt_handle_for_pyobj(spec),
@@ -1226,7 +1226,7 @@ pub unsafe extern "C" fn PyObject_Format(
         let out_bits =
             unsafe { (hooks_or_stubs().object_format)(obj_bits.bits(), spec_bits.bits()) };
         if out_bits != 0 {
-            let out = unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(out_bits) };
+            let out = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(out_bits) };
             if !owned_empty_spec.is_null() {
                 unsafe { crate::api::refcount::Py_DECREF(owned_empty_spec) };
             }
@@ -1310,7 +1310,7 @@ pub unsafe extern "C" fn PyObject_Size(o: *mut PyObject) -> Py_ssize_t {
     }
     // ── Native Molt container fast path (list/tuple/dict/str/bytes/set) via the
     // single length authority. `set` was previously unhandled (silent -1). ──
-    let handle = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(o);
+    let handle = GLOBAL_BRIDGE.molt_handle_for_pyobj(o);
     if let Some(value) = handle
         && value.decode().is_ptr()
         && let Some(len) = unsafe { native_container_len(value.bits()) }
@@ -1600,7 +1600,7 @@ pub unsafe extern "C" fn PyObject_GetItem(o: *mut PyObject, key: *mut PyObject) 
     // A bridge miss (`None`) means `o` is a genuine foreign C-extension object
     // that never crossed into Molt: fall through to the foreign-slot dispatch
     // tier instead of the prior bare-NULL return.
-    let o_bits = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(o);
+    let o_bits = GLOBAL_BRIDGE.molt_handle_for_pyobj(o);
     if let Some(o_bits) = o_bits {
         let h = hooks_or_stubs();
         let obj = o_bits.decode();
@@ -1608,7 +1608,7 @@ pub unsafe extern "C" fn PyObject_GetItem(o: *mut PyObject, key: *mut PyObject) 
             let tag = unsafe { (h.classify_heap)(o_bits.bits()) };
             // Dict: use dict_get
             if tag == crate::abi_types::MoltTypeTag::Dict as u8 {
-                let key_bits = unsafe { GLOBAL_BRIDGE.lock().molt_value_for_pyobj(key) };
+                let key_bits = unsafe { GLOBAL_BRIDGE.molt_value_for_pyobj(key) };
                 if let Some(key_bits) = key_bits {
                     let val_bits = unsafe { (h.dict_get)(o_bits.bits(), key_bits) };
                     if val_bits == 0 {
@@ -1624,13 +1624,13 @@ pub unsafe extern "C" fn PyObject_GetItem(o: *mut PyObject, key: *mut PyObject) 
                         }
                         return ptr::null_mut();
                     }
-                    return unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(val_bits) };
+                    return unsafe { GLOBAL_BRIDGE.handle_to_pyobj(val_bits) };
                 }
                 // Foreign key into a native dict: fall to the generic slot path.
             }
             // List: use list_item with int key
             if tag == crate::abi_types::MoltTypeTag::List as u8 {
-                let key_bits = unsafe { GLOBAL_BRIDGE.lock().molt_value_for_pyobj(key) };
+                let key_bits = unsafe { GLOBAL_BRIDGE.molt_value_for_pyobj(key) };
                 if let Some(key_bits) = key_bits {
                     let key_obj = MoltObject::from_bits(key_bits);
                     if let Some(idx) = key_obj.as_int() {
@@ -1651,13 +1651,13 @@ pub unsafe extern "C" fn PyObject_GetItem(o: *mut PyObject, key: *mut PyObject) 
                         if item_bits == 0 {
                             return ptr::null_mut();
                         }
-                        return unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(item_bits) };
+                        return unsafe { GLOBAL_BRIDGE.handle_to_pyobj(item_bits) };
                     }
                 }
             }
             // Tuple: use tuple_item with int key
             if tag == crate::abi_types::MoltTypeTag::Tuple as u8 {
-                let key_bits = unsafe { GLOBAL_BRIDGE.lock().molt_value_for_pyobj(key) };
+                let key_bits = unsafe { GLOBAL_BRIDGE.molt_value_for_pyobj(key) };
                 if let Some(key_bits) = key_bits {
                     let key_obj = MoltObject::from_bits(key_bits);
                     if let Some(idx) = key_obj.as_int() {
@@ -1677,7 +1677,7 @@ pub unsafe extern "C" fn PyObject_GetItem(o: *mut PyObject, key: *mut PyObject) 
                         if item_bits == 0 {
                             return ptr::null_mut();
                         }
-                        return unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(item_bits) };
+                        return unsafe { GLOBAL_BRIDGE.handle_to_pyobj(item_bits) };
                     }
                 }
             }
@@ -1698,17 +1698,16 @@ pub unsafe extern "C" fn PyObject_SetItem(
     }
     // ── Molt-native fast path (dict lane — ordering unchanged). A bridge miss
     // means `o` is a genuine foreign object; fall through to slot dispatch. ──
-    let o_bits = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(o);
+    let o_bits = GLOBAL_BRIDGE.molt_handle_for_pyobj(o);
     if let Some(o_bits) = o_bits {
         let h = hooks_or_stubs();
         let obj = o_bits.decode();
         if obj.is_ptr() {
             let tag = unsafe { (h.classify_heap)(o_bits.bits()) };
             if tag == crate::abi_types::MoltTypeTag::Dict as u8 {
-                let mut bridge2 = GLOBAL_BRIDGE.lock();
+                let bridge2 = &*GLOBAL_BRIDGE;
                 let key_bits = unsafe { bridge2.molt_value_for_pyobj(key) };
                 let val_bits = unsafe { bridge2.molt_value_for_pyobj(v) };
-                drop(bridge2);
                 if let (Some(key_bits), Some(val_bits)) = (key_bits, val_bits) {
                     unsafe { (h.dict_set)(o_bits.bits(), key_bits, val_bits) };
                     return 0;
@@ -1728,14 +1727,14 @@ pub unsafe extern "C" fn PyObject_DelItem(o: *mut PyObject, key: *mut PyObject) 
     }
     // ── Native dict fast path: real deletion via the runtime dict authority.
     // A bridge miss means `o` is a genuine foreign object; fall to slot dispatch.
-    let o_bits = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(o);
+    let o_bits = GLOBAL_BRIDGE.molt_handle_for_pyobj(o);
     if let Some(o_bits) = o_bits {
         let h = hooks_or_stubs();
         let obj = o_bits.decode();
         if obj.is_ptr() {
             let tag = unsafe { (h.classify_heap)(o_bits.bits()) };
             if tag == crate::abi_types::MoltTypeTag::Dict as u8 {
-                let key_bits = unsafe { GLOBAL_BRIDGE.lock().molt_value_for_pyobj(key) };
+                let key_bits = unsafe { GLOBAL_BRIDGE.molt_value_for_pyobj(key) };
                 if let Some(key_bits) = key_bits {
                     // dict_del removes the entry and returns -1 (KeyError set by
                     // the runtime) if absent.
@@ -2025,7 +2024,7 @@ pub unsafe extern "C" fn PyObject_Dir(o: *mut PyObject) -> *mut PyObject {
         }
         return ptr::null_mut();
     }
-    let o_handle = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(o);
+    let o_handle = GLOBAL_BRIDGE.molt_handle_for_pyobj(o);
     let bits = match o_handle {
         Some(value) => value.bits(),
         None => {
@@ -2056,7 +2055,7 @@ pub unsafe extern "C" fn PyObject_Dir(o: *mut PyObject) -> *mut PyObject {
         }
         return ptr::null_mut();
     }
-    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(result) }
+    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(result) }
 }
 
 // ─── Call protocol ────────────────────────────────────────────────────────
@@ -2092,7 +2091,7 @@ pub unsafe extern "C" fn PyObject_Call(
     // dispatch, kwargs binding, CPython-shaped exceptions). Raw-registered C
     // objects are excluded — their synthetic handles are identity anchors, not
     // Molt object bits — and fall through to the honest TypeError below.
-    let callable_bits = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(callable);
+    let callable_bits = GLOBAL_BRIDGE.molt_handle_for_pyobj(callable);
     if let Some(callable_bits) = callable_bits {
         return unsafe { call_bridged_callable(callable_bits.bits(), args, kwargs) };
     }
@@ -2132,7 +2131,7 @@ unsafe fn call_bridged_callable(
     let args_bits = if args.is_null() {
         0
     } else {
-        let resolved = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(args);
+        let resolved = GLOBAL_BRIDGE.molt_handle_for_pyobj(args);
         match resolved {
             Some(bits) => bits.bits(),
             // The shim's `PyTuple_New` / `PyTuple_Pack` mint C-LAYOUT tuples
@@ -2169,7 +2168,7 @@ unsafe fn call_bridged_callable(
     {
         0
     } else {
-        let kwargs_handle = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(kwargs);
+        let kwargs_handle = GLOBAL_BRIDGE.molt_handle_for_pyobj(kwargs);
         match kwargs_handle {
             Some(bits) => bits.bits(),
             None => {
@@ -2207,7 +2206,7 @@ unsafe fn call_bridged_callable(
         }
         return ptr::null_mut();
     }
-    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(result_bits) }
+    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(result_bits) }
 }
 
 /// Marshal a C-layout tuple (`PyTupleObject` minted by the shim's
@@ -2230,7 +2229,7 @@ unsafe fn molt_tuple_bits_from_c_tuple(args: *mut PyObject) -> Option<u64> {
     }
     let mut item_bits = Vec::with_capacity(n);
     {
-        let mut bridge = GLOBAL_BRIDGE.lock();
+        let bridge = &*GLOBAL_BRIDGE;
         for i in 0..n {
             let item = unsafe { *items.add(i) };
             if item.is_null() {
@@ -3210,7 +3209,7 @@ pub unsafe extern "C" fn PyCFunction_NewEx(
         let self_bits = if self_.is_null() {
             none_bits()
         } else {
-            unsafe { GLOBAL_BRIDGE.lock().molt_value_for_pyobj(self_) }.unwrap_or_else(none_bits)
+            unsafe { GLOBAL_BRIDGE.molt_value_for_pyobj(self_) }.unwrap_or_else(none_bits)
         };
         let meth_addr = fn_ptr as *const () as usize as u64;
         let h = hooks_or_stubs();
@@ -3224,7 +3223,7 @@ pub unsafe extern "C" fn PyCFunction_NewEx(
             )
         };
         if func_bits != 0 {
-            return unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(func_bits) };
+            return unsafe { GLOBAL_BRIDGE.handle_to_pyobj(func_bits) };
         }
     }
 
@@ -3760,11 +3759,7 @@ mod item_access_slot_tests {
         unsafe { crate::api::errors::PyErr_Clear() };
         SQ_ITEM_INDEX.store(i64::MIN, Ordering::SeqCst);
         // A native int `-1` key so `PyIndex_Check`/`PyNumber_AsSsize_t` resolve it.
-        let key = unsafe {
-            GLOBAL_BRIDGE
-                .lock()
-                .handle_to_pyobj(MoltObject::from_int(-1).bits())
-        };
+        let key = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(MoltObject::from_int(-1).bits()) };
         let mut seq: PySequenceMethods = unsafe { std::mem::zeroed() };
         seq.sq_item = fake_sq_item as *mut c_void;
         seq.sq_length = fake_sq_length as *mut c_void;

@@ -493,11 +493,8 @@ fn init() -> MutexGuard<'static, ()> {
 #[test]
 fn test_getbuffer_uses_runtime_typed_descriptor() {
     let _guard = init();
-    let obj = unsafe {
-        molt_cpython_abi::bridge::GLOBAL_BRIDGE
-            .lock()
-            .handle_to_pyobj(next_fake_handle())
-    };
+    let obj =
+        unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_pyobj(next_fake_handle()) };
     let mut view: Py_buffer = unsafe { std::mem::zeroed() };
     let flags = PyBUF_FORMAT | PyBUF_STRIDES;
     let rc = unsafe { molt_cpython_abi::api::buffer::PyObject_GetBuffer(obj, &mut view, flags) };
@@ -605,11 +602,8 @@ fn test_fillinfo_rejects_writable_request_for_readonly_raw_buffer() {
 fn test_memoryview_uses_runtime_buffer_lifetime() {
     let _guard = init();
     FAKE_BUFFER_RELEASES.store(0, Ordering::Relaxed);
-    let obj = unsafe {
-        molt_cpython_abi::bridge::GLOBAL_BRIDGE
-            .lock()
-            .handle_to_pyobj(next_fake_handle())
-    };
+    let obj =
+        unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_pyobj(next_fake_handle()) };
     let rc_before = unsafe { (*obj).ob_refcnt };
     let memoryview = unsafe { molt_cpython_abi::api::memory::PyMemoryView_FromObject(obj) };
     assert!(!memoryview.is_null());

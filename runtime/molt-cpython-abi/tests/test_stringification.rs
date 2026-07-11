@@ -90,7 +90,6 @@ fn install() {
 /// Read the UTF-8 bytes backing a Molt-native `str` result.
 unsafe fn read_native_str(py: *mut PyObject) -> Vec<u8> {
     let bits = GLOBAL_BRIDGE
-        .lock()
         .pyobj_to_handle(py)
         .map(|identity| identity.as_handle())
         .expect("result must be a bridge-managed native str");
