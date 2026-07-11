@@ -479,3 +479,70 @@ globs = [
 gates = [
   "python3 tools/venv_exec.py python -m pytest -q tests/test_ci_workflow_topology.py",
 ]
+
+# --- APPARATUS Wave 1 hook spine (A1/A2/A9) ------------------------------
+[[rule]]
+name = "apparatus-hooks"
+description = "Claude Code hook spine + landing gate + waiver grammar: pure-decision teeth + fail-open + gate-liveness canary."
+globs = [
+  ".claude/settings.json",
+  "tools/hooks/**/*.py",
+  "tools/check_gate_flips.py",
+  "tools/check_gate_liveness.py",
+  "tests/tools/test_hooks_bash_guard.py",
+  "tests/tools/test_hooks_landing_gate.py",
+  "tests/tools/test_hooks_session_digest.py",
+  "tests/tools/test_hooks_fail_open.py",
+  "tests/tools/test_hooks_waivers.py",
+  "tests/tools/test_check_gate_flips.py",
+  "tests/tools/test_check_gate_liveness.py",
+]
+gates = [
+  "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_hooks_bash_guard.py tests/tools/test_hooks_landing_gate.py tests/tools/test_hooks_session_digest.py tests/tools/test_hooks_fail_open.py tests/tools/test_hooks_waivers.py tests/tools/test_check_gate_flips.py tests/tools/test_check_gate_liveness.py",
+  "python3 tools/venv_exec.py python tools/check_gate_liveness.py --check",
+  "python3 tools/venv_exec.py python tools/check_gate_flips.py --check",
+]
+
+# =========================================================================
+# GATE-LIFECYCLE REGISTRY (APPARATUS Wave 1, A9)
+#
+# Uniform warn->strict lifecycle for molt gates, mirroring pact's discipline:
+# a gate lands WARN-ONLY with a NAMED, machine-checkable flip condition; a
+# separate commit flips it once the condition is met. `tools/check_gate_flips.py`
+# reports (and, with --check, fails on) any gate whose `strict_when` is met but
+# is still `state = "warn"` -- the ratchet that ratchets the ratchets.
+#
+# `state`       : "warn" | "strict"
+# `strict_when` : machine token (`live_count == 0`, `live_count <= N`,
+#                 `landed_functional`, `always`) or free text (-> manual review)
+# `count_cmd`   : optional shell command whose integer stdout is `live_count`
+# `rationale`   : why this state / flip condition
+#
+# The Wave-1 hooks land FUNCTIONAL (not warn-only): they are additive and
+# fail-open, so blocking-at-land is safe. They are recorded here as
+# `landed_functional` per A9 so the lifecycle is uniform and auditable.
+# =========================================================================
+
+[[gate_flip]]
+name = "bash_guard"
+state = "strict"
+strict_when = "landed_functional"
+rationale = "PreToolUse guard is additive + fail-open; blocking destructive-git/add-sweep/queue-bypass/https-push at land is safe and reversible via MOLT_GUARD_OK=1."
+
+[[gate_flip]]
+name = "landing_gate"
+state = "strict"
+strict_when = "landed_functional"
+rationale = "Stop-hook land-or-blocker nudge; exit-0 block-once + stop_hook_active make it a re-engage nudge, never a wedge, so it is safe at land."
+
+[[gate_flip]]
+name = "session_digest"
+state = "strict"
+strict_when = "always"
+rationale = "SessionStart digest never blocks (informational, exit 0 always); 'always' = no flip pending."
+
+[[gate_flip]]
+name = "gate_liveness_canary"
+state = "strict"
+strict_when = "landed_functional"
+rationale = "check_gate_liveness must always fire on known-bad fixtures; a canary that cannot fire is worthless, so it lands strict."
