@@ -36,7 +36,7 @@ fn none_bits() -> u64 {
 unsafe fn bridge_get_attr_from_name_bits(o: *mut PyObject, name_bits: u64) -> *mut PyObject {
     let obj_bits = {
         let bridge = GLOBAL_BRIDGE.lock();
-        bridge.pyobj_to_handle(o)
+        bridge.molt_handle_for_pyobj(o)
     };
     let Some(obj_bits) = obj_bits else {
         return ptr::null_mut();
@@ -122,10 +122,7 @@ pub unsafe extern "C" fn PyObject_GetAttrString(
     if o.is_null() || attr_name.is_null() {
         return ptr::null_mut();
     }
-    let obj_bits = {
-        let bridge = GLOBAL_BRIDGE.lock();
-        bridge.pyobj_to_handle(o)
-    };
+    let obj_bits = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(o);
     if obj_bits.is_some() {
         let name_bytes = unsafe { std::ffi::CStr::from_ptr(attr_name) }.to_bytes();
         let hooks = hooks_or_stubs();
