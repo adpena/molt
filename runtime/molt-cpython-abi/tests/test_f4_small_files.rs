@@ -175,6 +175,7 @@ unsafe fn read_str(py: *mut PyObject) -> Vec<u8> {
     let bits = GLOBAL_BRIDGE
         .lock()
         .pyobj_to_handle(py)
+        .map(|identity| identity.as_handle())
         .expect("bridge str handle");
     str_map().as_ref().unwrap().get(&bits).unwrap().to_vec()
 }
@@ -681,7 +682,9 @@ fn get_module_dict_is_backed_by_sys_modules() {
     install();
     let d1 = unsafe { molt_cpython_abi::api::imports::PyImport_GetModuleDict() };
     assert!(!d1.is_null());
-    let bits = GLOBAL_BRIDGE.lock().pyobj_to_handle(d1).expect("dict handle");
+    let bits = GLOBAL_BRIDGE.lock().pyobj_to_handle(d1)
+        .map(|identity| identity.as_handle())
+        .expect("dict handle");
     assert_eq!(
         bits,
         *SYS_MODULES.lock().unwrap(),

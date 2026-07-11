@@ -148,6 +148,7 @@ fn setitem_places_items_at_index_out_of_order() {
         molt_cpython_abi::bridge::GLOBAL_BRIDGE
             .lock()
             .pyobj_to_handle(p)
+            .map(|identity| identity.as_handle())
             .unwrap()
     };
     let (ab, bb, cb) = (bridge_bits(a), bridge_bits(b), bridge_bits(c));

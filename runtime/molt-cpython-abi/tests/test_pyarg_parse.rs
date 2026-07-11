@@ -297,10 +297,12 @@ fn given_exception_matches_tuple_candidates() {
     let key_bits = GLOBAL_BRIDGE
         .lock()
         .pyobj_to_handle(&raw mut molt_cpython_abi::abi_types::PyExc_KeyError)
+        .map(|identity| identity.as_handle())
         .expect("exception singletons are bridge-registered");
     let lookup_bits = GLOBAL_BRIDGE
         .lock()
         .pyobj_to_handle(&raw mut molt_cpython_abi::abi_types::PyExc_LookupError)
+        .map(|identity| identity.as_handle())
         .expect("exception singletons are bridge-registered");
     let tuple = args_with(&[key_bits, lookup_bits]); // the mock tuple object
 
