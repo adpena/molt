@@ -1177,22 +1177,9 @@ pub extern "C" fn Py_DecRef(obj: *mut PyObject) {
 ///   bool  → "True" / "False"
 ///   None  → "None"
 ///   str   → "'hello'"  (quoted)
-///   other → "<molt object>"
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Py_IncRef_Repr(obj: *mut PyObject) -> *mut PyObject {
-    // Note: this is exposed as molt_bridge_repr; the canonical PyObject_Repr
-    // in api/typeobj.rs delegates here when using the direct path.
-    if obj.is_null() {
-        return std::ptr::null_mut();
-    }
-    let bits = pyobject_to_bits(obj);
-    let repr = molt_repr_string(bits);
-    let h = crate::hooks::hooks_or_stubs();
-    let repr_bits = unsafe { (h.alloc_str)(repr.as_ptr(), repr.len()) };
-    if repr_bits == 0 {
-        return std::ptr::null_mut();
-    }
-    bits_to_pyobject(repr_bits)
+    unsafe { crate::api::typeobj::PyObject_Repr(obj) }
 }
 
 /// `PyObject_Str(obj)` — return the str() of a Molt object.
@@ -1201,29 +1188,7 @@ pub unsafe extern "C" fn Py_IncRef_Repr(obj: *mut PyObject) -> *mut PyObject {
 /// unquoted.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Py_IncRef_Str(obj: *mut PyObject) -> *mut PyObject {
-    if obj.is_null() {
-        return std::ptr::null_mut();
-    }
-    let bits = pyobject_to_bits(obj);
-    let mo = MoltObject::from_bits(bits);
-
-    // Strings return themselves — no allocation needed.
-    if mo.is_ptr() {
-        let h = crate::hooks::hooks_or_stubs();
-        let tag = unsafe { (h.classify_heap)(bits) };
-        if tag == MoltTypeTag::Str as u8 {
-            unsafe { (h.inc_ref)(bits) };
-            return obj; // already a string, return as-is
-        }
-    }
-
-    let s = molt_str_string(bits);
-    let h = crate::hooks::hooks_or_stubs();
-    let str_bits = unsafe { (h.alloc_str)(s.as_ptr(), s.len()) };
-    if str_bits == 0 {
-        return std::ptr::null_mut();
-    }
-    bits_to_pyobject(str_bits)
+    unsafe { crate::api::typeobj::PyObject_Str(obj) }
 }
 
 // ─── Tier 1: Object Protocol — Attr Access ───────────────────────────────
@@ -1595,26 +1560,26 @@ pub extern "C" fn molt_bridge_err_occurred() -> *mut PyObject {
 // ─── Internal helpers for repr/str formatting ────────────────────────────
 
 /// Produce a Python-style repr string for a NaN-boxed value.
-pub(crate) fn molt_repr_string(bits: u64) -> Vec<u8> {
+pub(crate) fn molt_repr_string(bits: u64) -> Option<Vec<u8>> {
     let mo = MoltObject::from_bits(bits);
 
     if mo.is_none() {
-        return b"None".to_vec();
+        return Some(b"None".to_vec());
     }
     if mo.is_bool() {
-        return if mo.as_bool().unwrap_or(false) {
+        return Some(if mo.as_bool().unwrap_or(false) {
             b"True".to_vec()
         } else {
             b"False".to_vec()
-        };
+        });
     }
     if mo.is_int() {
         let i = mo.as_int_unchecked();
-        return i.to_string().into_bytes();
+        return Some(i.to_string().into_bytes());
     }
     if mo.is_float() {
         let f = mo.as_float().unwrap_or(f64::NAN);
-        return format_float_repr(f);
+        return Some(format_float_repr(f));
     }
     if mo.is_ptr() {
         let h = crate::hooks::hooks_or_stubs();
@@ -1629,35 +1594,35 @@ pub(crate) fn molt_repr_string(bits: u64) -> Vec<u8> {
                 out.push(b'\'');
                 out.extend_from_slice(s);
                 out.push(b'\'');
-                return out;
+                return Some(out);
             }
-            return b"''".to_vec();
+            return Some(b"''".to_vec());
         }
     }
-    b"<molt object>".to_vec()
+    None
 }
 
 /// Produce a Python-style str() string for a NaN-boxed value.
-pub(crate) fn molt_str_string(bits: u64) -> Vec<u8> {
+pub(crate) fn molt_str_string(bits: u64) -> Option<Vec<u8>> {
     let mo = MoltObject::from_bits(bits);
 
     if mo.is_none() {
-        return b"None".to_vec();
+        return Some(b"None".to_vec());
     }
     if mo.is_bool() {
-        return if mo.as_bool().unwrap_or(false) {
+        return Some(if mo.as_bool().unwrap_or(false) {
             b"True".to_vec()
         } else {
             b"False".to_vec()
-        };
+        });
     }
     if mo.is_int() {
         let i = mo.as_int_unchecked();
-        return i.to_string().into_bytes();
+        return Some(i.to_string().into_bytes());
     }
     if mo.is_float() {
         let f = mo.as_float().unwrap_or(f64::NAN);
-        return format_float_repr(f);
+        return Some(format_float_repr(f));
     }
     if mo.is_ptr() {
         let h = crate::hooks::hooks_or_stubs();
@@ -1667,12 +1632,12 @@ pub(crate) fn molt_str_string(bits: u64) -> Vec<u8> {
             let mut len: usize = 0;
             let ptr = unsafe { (h.str_data)(bits, &raw mut len) };
             if !ptr.is_null() && len > 0 {
-                return unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
+                return Some(unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec());
             }
-            return Vec::new();
+            return Some(Vec::new());
         }
     }
-    b"<molt object>".to_vec()
+    None
 }
 
 /// Format a float for `repr(float)` / `str(float)` through the runtime's single

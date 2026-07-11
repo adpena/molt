@@ -52,8 +52,6 @@ use std::sync::{Mutex, Once};
 // ─────────────────────────────────────────────────────────────────────────────
 
 static STR_ARENA: Mutex<Option<HashMap<u64, &'static [u8]>>> = Mutex::new(None);
-static NEXT_STR_HANDLE: Mutex<u64> = Mutex::new(0x4000_0000);
-
 unsafe extern "C" fn fake_alloc_str(data: *const u8, len: usize) -> u64 {
     // Store the payload with a trailing NUL, matching CPython's
     // `PyUnicode_AsUTF8` contract (it returns a NUL-terminated C buffer). The
@@ -68,10 +66,7 @@ unsafe extern "C" fn fake_alloc_str(data: *const u8, len: usize) -> u64 {
     // Leak so the pointer handed back through `str_data` stays valid for the
     // whole test process (these tests are short-lived; no reclamation).
     let leaked: &'static [u8] = Box::leak(owned.into_boxed_slice());
-    let mut next = NEXT_STR_HANDLE.lock().unwrap();
-    let handle = *next;
-    *next += 0x10;
-    drop(next);
+    let handle = molt_lang_obj_model::MoltObject::from_ptr(leaked.as_ptr() as *mut u8).bits();
     let mut arena = STR_ARENA.lock().unwrap();
     arena
         .get_or_insert_with(HashMap::new)
@@ -95,6 +90,19 @@ unsafe extern "C" fn fake_str_data(bits: u64, out_len: *mut usize) -> *const u8 
     }
 }
 
+unsafe extern "C" fn fake_classify_heap(bits: u64) -> u8 {
+    if STR_ARENA
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|arena| arena.contains_key(&bits))
+    {
+        molt_cpython_abi::abi_types::MoltTypeTag::Str as u8
+    } else {
+        molt_cpython_abi::abi_types::MoltTypeTag::Other as u8
+    }
+}
+
 static INIT: Once = Once::new();
 
 /// Initialize the ABI and install the minimal str-materializing hook set.
@@ -105,6 +113,7 @@ fn install_min_hooks() {
         let mut hooks: RuntimeHooks = molt_cpython_abi::hooks::STUB_HOOKS;
         hooks.alloc_str = fake_alloc_str;
         hooks.str_data = fake_str_data;
+        hooks.classify_heap = fake_classify_heap;
         // Fresh OnceLock in this dedicated test binary — installs cleanly.
         unsafe {
             molt_cpython_abi::try_set_runtime_hooks(hooks);
@@ -165,7 +174,6 @@ fn frontier_08_pylong_aslong_silent_overflow() {
     const BIG: std::os::raw::c_longlong = 2_147_483_653;
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLongLong(BIG) };
     assert!(!py.is_null());
-
     let got = unsafe { molt_cpython_abi::api::numbers::PyLong_AsLong(py) };
     let err = unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() };
 
@@ -300,9 +308,6 @@ fn ufunc_frontier_tuple_structural_richcompare() {
 }
 
 #[test]
-#[ignore = "FRONTIER: reproduces divergence-ledger #6 (typeobj.rs PyObject_Str/Repr \
-            returns the literal '<molt object>'). Delete this #[ignore] once fixed \
-            to convert into a regression guard."]
 fn frontier_06_pyobject_str_theater() {
     install_min_hooks();
 

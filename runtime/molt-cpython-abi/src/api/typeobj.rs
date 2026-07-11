@@ -2924,6 +2924,15 @@ unsafe fn native_stringify(bits: u64, want_repr: bool) -> *mut PyObject {
     } else {
         crate::bridge::molt_str_string(bits)
     };
+    let Some(bytes) = bytes else {
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                &raw mut crate::abi_types::PyExc_TypeError,
+                c"object has no native string representation".as_ptr(),
+            );
+        }
+        return ptr::null_mut();
+    };
     // PyUnicode_FromStringAndSize routes through the runtime `alloc_str` hook and
     // sets MemoryError on failure, so the native path stays fail-closed.
     unsafe {
@@ -2935,27 +2944,43 @@ unsafe fn native_stringify(bits: u64, want_repr: bool) -> *mut PyObject {
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_native_repr(op: *mut PyObject) -> *mut PyObject {
+    let native = unsafe { crate::bridge::GLOBAL_BRIDGE.molt_value_for_pyobj(op) };
+    match native {
+        Some(bits) => unsafe { native_stringify(bits, true) },
+        None => ptr::null_mut(),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_native_str(op: *mut PyObject) -> *mut PyObject {
+    let native = unsafe { crate::bridge::GLOBAL_BRIDGE.molt_value_for_pyobj(op) };
+    match native {
+        Some(bits) => unsafe { native_stringify(bits, false) },
+        None => ptr::null_mut(),
+    }
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_Repr(op: *mut PyObject) -> *mut PyObject {
     // CPython Objects/object.c PyObject_Repr: NULL -> "<NULL>".
     if op.is_null() {
         return unsafe { crate::api::strings::PyUnicode_FromString(c"<NULL>".as_ptr()) };
     }
-    // Molt-native (bridge-managed) objects: the runtime repr primitive is the
-    // authority (int/float/bool/None quote-aware str, etc.). `pyobj_to_handle`
-    // resolving Some means a genuine Molt handle; None means a foreign C object.
-    // Bind the handle in its own statement so the bridge lock is released before
-    // `native_stringify` re-enters the bridge (parking_lot mutex is not reentrant).
-    let native = crate::bridge::GLOBAL_BRIDGE.molt_handle_for_pyobj(op);
-    if let Some(value) = native {
-        return unsafe { native_stringify(value.bits(), true) };
-    }
-    // Foreign object: dispatch its own `tp_repr`, else the CPython default
-    // "<%s object at %p>" from tp_name + address.
     let tp = unsafe { (*op).ob_type };
     if !tp.is_null()
         && let Some(reprfunc) = unsafe { (*tp).tp_repr }
     {
+        if unsafe {
+            crate::api::memory::Py_EnterRecursiveCall(
+                c" while getting the repr of an object".as_ptr(),
+            )
+        } != 0
+        {
+            return ptr::null_mut();
+        }
         let res = unsafe { reprfunc(op) };
+        unsafe { crate::api::memory::Py_LeaveRecursiveCall() };
         return unsafe { check_stringifier_result(res, "__repr__") };
     }
     let name = unsafe { foreign_type_name(op) };
@@ -2975,23 +3000,24 @@ pub unsafe extern "C" fn PyObject_Str(op: *mut PyObject) -> *mut PyObject {
     // Exact-str fast path: str(s) is s (identity, incref) — CPython
     // PyUnicode_CheckExact branch. A native bridge str carries
     // ob_type == &PyUnicode_Type.
-    if unsafe { crate::api::strings::PyUnicode_Check(op) } == 1 {
+    if unsafe { (*op).ob_type == &raw mut crate::abi_types::PyUnicode_Type } {
         unsafe { crate::api::refcount::Py_INCREF(op) };
         return op;
     }
-    // Molt-native (bridge-managed) non-str object: runtime str primitive.
-    // Release the bridge lock before re-entering the bridge (non-reentrant).
-    let native = crate::bridge::GLOBAL_BRIDGE.molt_handle_for_pyobj(op);
-    if let Some(value) = native {
-        return unsafe { native_stringify(value.bits(), false) };
-    }
-    // Foreign object: dispatch its own `tp_str`, else fall back to repr
-    // (CPython: tp_str == NULL -> PyObject_Repr).
     let tp = unsafe { (*op).ob_type };
     if !tp.is_null()
         && let Some(strfunc) = unsafe { (*tp).tp_str }
     {
+        if unsafe {
+            crate::api::memory::Py_EnterRecursiveCall(
+                c" while getting the str of an object".as_ptr(),
+            )
+        } != 0
+        {
+            return ptr::null_mut();
+        }
         let res = unsafe { strfunc(op) };
+        unsafe { crate::api::memory::Py_LeaveRecursiveCall() };
         return unsafe { check_stringifier_result(res, "__str__") };
     }
     unsafe { PyObject_Repr(op) }
