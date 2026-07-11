@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "claim": "OPT-MATRIX-R3",
+  "rung": "native hello startup below CPython",
+  "verdict": "DOCUMENTED-BLOCKED",
+  "profile": "release",
+  "profile_evidence": {
+    "queue_run": "20260711T185428-opt-matrix-r3-startup-profile-1c835cc901814022",
+    "native_build_seconds": 268.172,
+    "native_artifact": "tmp/startup_bench/hello/native/hello_molt",
+    "native_artifact_bytes": 4193792,
+    "native_samples_ms": [
+      259.119,
+      12.042,
+      11.274,
+      11.382,
+      12.033,
+      11.536,
+      11.954
+    ],
+    "native_median_ms": 11.954,
+    "cpython_samples_ms": [
+      202.159,
+      184.385,
+      173.974,
+      167.438,
+      164.124,
+      160.797,
+      158.965
+    ],
+    "cpython_median_ms": 167.438,
+    "runtime_init_total_us": 1024,
+    "runtime_init_largest_stage_us": 254
+  },
+  "rejected_candidate": {
+    "description": "delete the native molt_main idempotent molt_runtime_init call while retaining WASM and molt_host_init initialization",
+    "rebuild_queue_run": "20260711T190943-opt-matrix-r3-native-rebuild-0349735db84c4a45",
+    "before_runs_ms": [
+      15.5403,
+      10.7531,
+      10.5602,
+      10.615,
+      10.7629,
+      10.5047,
+      10.7763,
+      11.0183,
+      10.4512
+    ],
+    "before_median_ms": 10.7531,
+    "after_runs_ms": [
+      228.9837,
+      10.8735,
+      11.4442,
+      10.3511,
+      10.6981,
+      10.6905,
+      11.2946,
+      11.6452,
+      10.9078
+    ],
+    "after_median_ms": 10.9078,
+    "verdict": "REJECTED_NO_MEASURED_IMPROVEMENT",
+    "source_change_retained": false
+  },
+  "blocking_evidence": [
+    "native release hello already clears the CPython process bar by 14.0x on the same machine",
+    "runtime initialization is about 1.024 ms, below the roughly 11-12 ms process floor",
+    "the only exposed duplicate init fast path produced no A12 net improvement and was removed",
+    "tools/startup_bench.py couples native and WASM builds, so a WASM link failure currently refuses the whole attestation even after native succeeds"
+  ],
+  "unblock_condition": {
+    "measurement": "a target-specific phase or pre-main component with at least 0.5 ms median cost and a predicted >=2% end-to-end win",
+    "samples": "at least 7 serial alternating release samples per side plus cold-start treatment",
+    "acceptance": "tools/powerplay_acceptance.py strict Variant-II acceptance, held stdout/exit bench, and memory ceiling",
+    "harness": "native evidence must survive an independent WASM build failure"
+  }
+}
