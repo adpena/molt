@@ -286,6 +286,8 @@ steps below are the contract it implements.
 | BINDMETA-FASTPATH | codex-bindmeta | 2026-07-11T08:04:00Z | COMPLETE | Stale fixture, not a metadata-binding correctness regression. Commit `c6336e37ec1` added the `molt_call_bind` trampoline fast path, and `e2303aa8359` narrowed it with `function_raw_positional_call_needs_binding`; simple positional metadata intentionally stays on direct arity-checked execution, so the old zero-argument fixture no longer reached the full metadata binder or its trace. Retargeted `debug_call_bind` to a zero-positional, required-keyword-only metadata function, strengthened the trace assertions to `total_pos=0` and `kwonly=1`, and added an explicit CI invocation because workspace clippy compiled but did not execute this integration binary and broad fail-fast runs could mask it. Proof: baseline failed `20260711T075536-bindmeta-baseline-d474ee2292f847cc`; focused passed `20260711T080033-bindmeta-focused-481afbe5b0b04b33`; all 6 integration tests passed `20260711T080234-bindmeta-full-binary-2a662bac416341be`; molt-runtime all-target clippy `-D warnings` passed `20260711T080305-bindmeta-clippy-3b8e19581f3d493f`. |
 # Solo-Owner Lane Claims
 
+| BINSIZE-PUBLICATION-STRIP | codex-binsize | 2026-07-11T00:00:00Z | CLAIMED | One publication authority for final wasm section stripping, reloc-runtime cache diet, M34 artifact-profile attestation, and anti-recurrence gate teeth. |
+
 Some lanes must be driven **END-TO-END by ONE agent**. Splitting them across
 agents causes exactly the failures this collaboration has hit repeatedly:
 colliding edits, trampled landings, and *masked frontiers* (one agent's local

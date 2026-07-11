@@ -16,7 +16,6 @@ from wasm_link_format import (
     _collect_function_exports,
     _count_func_imports,
     is_table_ref_export_name,
-    _parse_custom_section,
     _parse_func_type_indices,
     _parse_import_desc,
     _parse_sections,
