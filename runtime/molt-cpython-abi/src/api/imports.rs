@@ -145,6 +145,16 @@ pub unsafe extern "C" fn PyImport_GetModuleDict() -> *mut PyObject {
     *raw as *mut PyObject
 }
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyImport_GetModule(name: *mut PyObject) -> *mut PyObject {
+    let modules = unsafe { PyImport_GetModuleDict() };
+    if modules.is_null() {
+        return ptr::null_mut();
+    }
+    let module = unsafe { crate::api::mapping::PyDict_GetItemWithError(modules, name) };
+    unsafe { crate::api::object::Py_XNewRef(module) }
+}
+
 /// Read a `str`-valued item from a `globals` dict by C-string key, into an
 /// owned byte vector (`None` on absence, non-str, or a non-dict `globals`).
 unsafe fn dict_get_string_bytes(globals: *mut PyObject, key: &CStr) -> Option<Vec<u8>> {

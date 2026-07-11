@@ -667,27 +667,26 @@ typedef struct PyMutex {
 } PyMutex;
 
 typedef void *PyThread_type_lock;
+typedef struct {
+    int _is_initialized;
+    uintptr_t _key;
+} Py_tss_t;
+#define Py_tss_NEEDS_INIT {0, 0}
 
 #define WAIT_LOCK 1
 #define NOWAIT_LOCK 0
 
-static inline PyThread_type_lock PyThread_allocate_lock(void) {
-    return (PyThread_type_lock)1;
-}
-
-static inline int PyThread_acquire_lock(PyThread_type_lock lock, int waitflag) {
-    (void)lock;
-    (void)waitflag;
-    return 1;
-}
-
-static inline void PyThread_release_lock(PyThread_type_lock lock) {
-    (void)lock;
-}
-
-static inline void PyThread_free_lock(PyThread_type_lock lock) {
-    (void)lock;
-}
+extern PyThread_type_lock PyThread_allocate_lock(void);
+extern int PyThread_acquire_lock(PyThread_type_lock lock, int waitflag);
+extern void PyThread_release_lock(PyThread_type_lock lock);
+extern void PyThread_free_lock(PyThread_type_lock lock);
+extern Py_tss_t *PyThread_tss_alloc(void);
+extern void PyThread_tss_free(Py_tss_t *key);
+extern int PyThread_tss_create(Py_tss_t *key);
+extern void PyThread_tss_delete(Py_tss_t *key);
+extern int PyThread_tss_is_created(Py_tss_t *key);
+extern int PyThread_tss_set(Py_tss_t *key, void *value);
+extern void *PyThread_tss_get(Py_tss_t *key);
 
 #define Py_BEGIN_CRITICAL_SECTION(op) do { (void)(op); } while (0)
 #define Py_END_CRITICAL_SECTION() do { } while (0)
@@ -879,6 +878,7 @@ extern PyTypeObject PyBaseObject_Type;
 extern PyTypeObject PyNone_Type;
 extern PyTypeObject PyNotImplemented_Type;
 extern PyTypeObject PyCFunction_Type;
+extern PyTypeObject PyCMethod_Type;
 extern PyTypeObject PyMethod_Type;
 extern PyTypeObject PyMethodDescr_Type;
 extern PyTypeObject PyMemberDescr_Type;
@@ -1461,6 +1461,7 @@ extern const char *Py_GetVersion       (void);
 extern PyObject *PyImport_ImportModule (const char *name);
 extern PyObject *PyImport_AddModule    (const char *name);
 extern PyObject *PyImport_GetModuleDict(void);
+extern PyObject *PyImport_GetModule(PyObject *name);
 extern PyObject *PyImport_ImportModuleLevel(const char *name, PyObject *globals, PyObject *locals, PyObject *fromlist, int level);
 extern PyObject *PyImport_ImportModuleLevelObject(PyObject *name, PyObject *globals, PyObject *locals, PyObject *fromlist, int level);
 extern PyObject *PyImport_Import(PyObject *name);
@@ -1891,13 +1892,14 @@ static inline PyObject *_PyDict_Pop(PyObject *dict, PyObject *key, PyObject *def
 }
 
 /* sys.modules[name], new ref, or NULL (without error) when absent. */
-static inline PyObject *PyImport_GetModule(PyObject *name) {
-    PyObject *modules = PyImport_GetModuleDict();
-    if (modules == NULL) {
-        return NULL;
-    }
-    return Py_XNewRef(PyDict_GetItemWithError(modules, name));
-}
+extern PyObject *PyErr_NewException(const char *name, PyObject *base, PyObject *dict);
+extern PyObject *PyErr_NewExceptionWithDoc(const char *name, const char *doc, PyObject *base, PyObject *dict);
+extern PyObject *PyCMethod_New(PyMethodDef *ml, PyObject *self, PyObject *module, PyTypeObject *cls);
+extern PyObject *_PyList_Extend(PyListObject *self, PyObject *iterable);
+extern int _PyArg_ParseTuple_SizeT(PyObject *args, const char *format, ...);
+extern int _PyArg_ParseTupleAndKeywords_SizeT(PyObject *args, PyObject *kwargs, const char *format, char **kwlist, ...);
+extern int _PyArg_VaParse_SizeT(PyObject *args, const char *format, va_list vargs);
+extern int _PyArg_VaParseTupleAndKeywords_SizeT(PyObject *args, PyObject *kwargs, const char *format, char **kwlist, va_list vargs);
 
 /* Validate that every key of a keyword dict is a str. 1 = ok, 0 = TypeError. */
 static inline int PyArg_ValidateKeywordArguments(PyObject *kwargs) {
@@ -1943,19 +1945,7 @@ static inline void PyErr_SetRaisedException(PyObject *exc) {
 }
 
 /* Copy how_many code points from `from` into `to` via the kind/data macros. */
-static inline void _PyUnicode_FastCopyCharacters(
-        PyObject *to, Py_ssize_t to_start,
-        PyObject *from, Py_ssize_t from_start, Py_ssize_t how_many) {
-    int from_kind = PyUnicode_KIND(from);
-    int to_kind = PyUnicode_KIND(to);
-    const void *from_data = PyUnicode_DATA(from);
-    void *to_data = PyUnicode_DATA(to);
-    Py_ssize_t i;
-    for (i = 0; i < how_many; i++) {
-        Py_UCS4 ch = PyUnicode_READ(from_kind, from_data, from_start + i);
-        PyUnicode_WRITE(to_kind, to_data, to_start + i, ch);
-    }
-}
+extern void _PyUnicode_FastCopyCharacters(PyObject *to, Py_ssize_t to_start, PyObject *from, Py_ssize_t from_start, Py_ssize_t how_many);
 
 #ifdef __cplusplus
 }

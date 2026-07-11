@@ -416,6 +416,65 @@ pub unsafe extern "C" fn PyUnicode_New(size: Py_ssize_t, _maxchar: u32) -> *mut 
     unsafe { PyUnicode_FromStringAndSize(bytes.as_ptr().cast(), size) }
 }
 
+#[repr(C)]
+struct FastCopyAscii {
+    ob_base: crate::abi_types::PyObject,
+    length: Py_ssize_t,
+    hash: isize,
+    state: u32,
+    wstr: *mut u32,
+}
+
+unsafe fn fast_copy_layout(op: *mut PyObject) -> Option<(u32, *mut u8)> {
+    if op.is_null() {
+        return None;
+    }
+    let ascii = op.cast::<FastCopyAscii>();
+    let state = unsafe { (*ascii).state };
+    let kind = (state >> 2) & 7;
+    let compact = state & (1 << 5) != 0;
+    let ascii_only = state & (1 << 6) != 0;
+    if !compact || !matches!(kind, 1 | 2 | 4) {
+        return None;
+    }
+    let offset = if ascii_only {
+        std::mem::size_of::<FastCopyAscii>()
+    } else {
+        std::mem::size_of::<crate::abi_types::PyCompactUnicodeObject>()
+    };
+    Some((kind, unsafe { op.cast::<u8>().add(offset) }))
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn _PyUnicode_FastCopyCharacters(
+    to: *mut PyObject,
+    to_start: Py_ssize_t,
+    from: *mut PyObject,
+    from_start: Py_ssize_t,
+    how_many: Py_ssize_t,
+) {
+    let Some((to_kind, to_data)) = (unsafe { fast_copy_layout(to) }) else { return };
+    let Some((from_kind, from_data)) = (unsafe { fast_copy_layout(from) }) else { return };
+    for index in 0..how_many {
+        let source = from_start + index;
+        let target = to_start + index;
+        let ch = unsafe {
+            match from_kind {
+                1 => *from_data.add(source as usize) as u32,
+                2 => *from_data.cast::<u16>().add(source as usize) as u32,
+                _ => *from_data.cast::<u32>().add(source as usize),
+            }
+        };
+        unsafe {
+            match to_kind {
+                1 => *to_data.add(target as usize) = ch as u8,
+                2 => *to_data.cast::<u16>().add(target as usize) = ch as u16,
+                _ => *to_data.cast::<u32>().add(target as usize) = ch,
+            }
+        }
+    }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyUnicode_DecodeLatin1(
     s: *const c_char,
