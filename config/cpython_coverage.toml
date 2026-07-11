@@ -1,0 +1,47 @@
+schema_version = 1
+stable_abi_source = "CPython v3.12.0 Misc/stable_abi.toml"
+
+[default]
+cpython = "3.12"
+platform = "windows"
+
+[[verified]]
+cpython = "3.12"
+platform = "windows"
+evidence = "Local Windows contract lanes and the checked-in CPython 3.12 ABI headers."
+
+[[candidate]]
+cpython = "3.12"
+platform = "linux"
+status = "unverified"
+evidence = "Ubuntu CI exercises Molt broadly, but no dedicated CPython binary-contract parity gate proves this tuple."
+
+[[candidate]]
+cpython = "3.12"
+platform = "macos"
+status = "unverified"
+evidence = "Release packaging covers macOS, but no dedicated CPython binary-contract parity gate proves this tuple."
+
+[[divergence]]
+surface = "PyModuleDef_Slot.Py_mod_gil"
+introduced = "3.13"
+summary = "Python 3.13 adds the Py_mod_gil module slot and its stable-ABI constants."
+source = "https://docs.python.org/3.13/c-api/module.html"
+
+[[divergence]]
+surface = "PyGILState_Ensure"
+introduced = "3.14"
+summary = "During interpreter finalization, Python 3.14 hangs the calling thread instead of terminating it."
+source = "https://docs.python.org/3.14/c-api/init.html#c.PyGILState_Ensure"
+
+[[divergence]]
+surface = "object-header.immortal-refcount"
+introduced = "3.13"
+summary = "Free-threaded 3.13 builds add refcount and immortality behavior that must be accessed through public refcount APIs, not private header bits."
+source = "https://docs.python.org/3.13/c-api/refcounting.html"
+
+[[divergence]]
+surface = "private-_Py-symbols"
+introduced = "3.13"
+summary = "Private _Py APIs may change without notice and several were removed or restored during the 3.13 cycle."
+source = "https://docs.python.org/3.13/c-api/stable.html"
