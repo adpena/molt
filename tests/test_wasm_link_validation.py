@@ -607,6 +607,81 @@ def _build_runtime_import_module(
     return wasm_link._build_sections(sections)
 
 
+def _build_split_runtime_app_module(
+    import_names: list[str], *, memory_min: int = 1
+) -> bytes:
+    write_varuint = wasm_link._write_varuint
+    sections: list[tuple[int, bytes]] = []
+
+    type_payload = bytearray()
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x60)
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x7E)
+    type_payload.extend(write_varuint(0))
+    sections.append((1, bytes(type_payload)))
+
+    import_payload = bytearray()
+    import_payload.extend(write_varuint(len(import_names) + 2))
+    for name in import_names:
+        import_payload.extend(wasm_link._write_string("molt_runtime"))
+        import_payload.extend(wasm_link._write_string(name))
+        import_payload.append(0x00)
+        import_payload.extend(write_varuint(0))
+    import_payload.extend(wasm_link._write_string("env"))
+    import_payload.extend(wasm_link._write_string("__indirect_function_table"))
+    import_payload.append(0x01)
+    import_payload.append(0x70)
+    import_payload.extend(write_varuint(0))
+    import_payload.extend(write_varuint(1))
+    import_payload.extend(wasm_link._write_string("env"))
+    import_payload.extend(wasm_link._write_string("memory"))
+    import_payload.append(0x02)
+    import_payload.append(0x00)
+    import_payload.extend(write_varuint(memory_min))
+    sections.append((2, bytes(import_payload)))
+    sections.append((3, write_varuint(1) + write_varuint(0)))
+
+    export_payload = bytearray()
+    export_payload.extend(write_varuint(3))
+    for name, kind, index in (
+        ("molt_main", 0x00, len(import_names)),
+        ("molt_table", 0x01, 0),
+        ("molt_memory", 0x02, 0),
+    ):
+        export_payload.extend(wasm_link._write_string(name))
+        export_payload.append(kind)
+        export_payload.extend(write_varuint(index))
+    sections.append((7, bytes(export_payload)))
+    code_payload = write_varuint(1) + write_varuint(2) + b"\x00\x0b"
+    sections.append((10, code_payload))
+    return wasm_link._build_sections(sections)
+
+
+def _strip_export(data: bytes, export_name: str) -> bytes:
+    rebuilt_sections: list[tuple[int, bytes]] = []
+    for section_id, payload in wasm_link._parse_sections(data):
+        if section_id != 7:
+            rebuilt_sections.append((section_id, payload))
+            continue
+        count, offset = wasm_link._read_varuint(payload, 0)
+        exports: list[tuple[str, int, int]] = []
+        for _ in range(count):
+            name, offset = wasm_link._read_string(payload, offset)
+            kind = payload[offset]
+            offset += 1
+            index, offset = wasm_link._read_varuint(payload, offset)
+            if name != export_name:
+                exports.append((name, kind, index))
+        rebuilt = bytearray(wasm_link._write_varuint(len(exports)))
+        for name, kind, index in exports:
+            rebuilt.extend(wasm_link._write_string(name))
+            rebuilt.append(kind)
+            rebuilt.extend(wasm_link._write_varuint(index))
+        rebuilt_sections.append((7, bytes(rebuilt)))
+    return wasm_link._build_sections(rebuilt_sections)
+
+
 def _build_memory_import_ref_func_app_module(func_index: int = 0) -> bytes:
     write_varuint = wasm_link._write_varuint
     sections: list[tuple[int, bytes]] = []
@@ -1120,7 +1195,7 @@ def test_validate_split_runtime_outputs_parses_each_artifact_once(
     runtime = tmp_path / "molt_runtime.wasm"
     app = tmp_path / "app.wasm"
     runtime.write_bytes(_build_exported_runtime_module_many(["molt_err_pending"]))
-    app.write_bytes(_build_runtime_import_module(["molt_err_pending"], memory_min=1))
+    app.write_bytes(_build_split_runtime_app_module(["molt_err_pending"], memory_min=1))
     calls: list[int] = []
     original_parse = wasm_link.parse_wasm_module_facts
 
@@ -1259,6 +1334,40 @@ def test_tree_shake_runtime_preserves_direct_runner_exception_debug_exports() ->
     assert "molt_dec_ref_obj" in exports
 
 
+def test_validate_split_runtime_outputs_rejects_stripped_contract_memory_export(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runtime = tmp_path / "molt_runtime.wasm"
+    app = tmp_path / "app.wasm"
+    runtime.write_bytes(_build_exported_runtime_module_many(["molt_err_pending"]))
+    app.write_bytes(
+        _strip_export(
+            _build_split_runtime_app_module(["molt_err_pending"]),
+            "molt_memory",
+        )
+    )
+
+    assert not wasm_link._validate_split_runtime_outputs(app, runtime)
+    assert "missing contract export molt_memory (kind 2)" in capsys.readouterr().err
+
+
+def test_restore_split_runtime_contract_exports_reemits_memory_and_table() -> None:
+    app = _build_split_runtime_app_module([])
+    stripped = _strip_export(_strip_export(app, "molt_memory"), "molt_table")
+
+    restored = wasm_link._restore_split_runtime_contract_exports(
+        stripped,
+        artifact="app",
+    )
+
+    assert wasm_link.parse_wasm_module_facts(restored).export_kinds == {
+        "molt_main": (0, 0),
+        "molt_memory": (2, 0),
+        "molt_table": (1, 0),
+    }
+
+
 def test_validate_split_runtime_outputs_requires_shared_app_memory(
     tmp_path: Path,
     capsys,
@@ -1267,7 +1376,7 @@ def test_validate_split_runtime_outputs_requires_shared_app_memory(
     app = tmp_path / "app.wasm"
     runtime.write_bytes(_build_exported_runtime_module_many(["molt_err_pending"]))
 
-    app.write_bytes(_build_runtime_import_module(["molt_err_pending"], memory_min=1))
+    app.write_bytes(_build_split_runtime_app_module(["molt_err_pending"], memory_min=1))
     assert wasm_link._validate_split_runtime_outputs(app, runtime)
 
     app.write_bytes(_build_defined_memory_module(1))
@@ -1283,7 +1392,7 @@ def test_validate_split_runtime_outputs_rejects_structurally_invalid_app(
     runtime = tmp_path / "molt_runtime.wasm"
     app = tmp_path / "app.wasm"
     runtime.write_bytes(_build_exported_runtime_module_many(["molt_err_pending"]))
-    app.write_bytes(_build_runtime_import_module(["molt_err_pending"], memory_min=1))
+    app.write_bytes(_build_split_runtime_app_module(["molt_err_pending"], memory_min=1))
 
     seen: list[str] = []
 
@@ -1304,7 +1413,7 @@ def test_validate_split_runtime_outputs_rejects_structurally_invalid_runtime(
     runtime = tmp_path / "molt_runtime.wasm"
     app = tmp_path / "app.wasm"
     runtime.write_bytes(_build_exported_runtime_module_many(["molt_err_pending"]))
-    app.write_bytes(_build_runtime_import_module(["molt_err_pending"], memory_min=1))
+    app.write_bytes(_build_split_runtime_app_module(["molt_err_pending"], memory_min=1))
 
     seen: list[str] = []
 
@@ -1462,7 +1571,7 @@ def test_run_wasm_ld_split_runtime_falls_back_when_env_deploy_runtime_is_stale(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    output_bytes = _build_runtime_import_module([], memory_min=1)
+    output_bytes = _build_split_runtime_app_module([])
     runtime_bytes = _build_exported_runtime_module("molt_exception_pending")
     runtime = tmp_path / "runtime.wasm"
     output = tmp_path / "output.wasm"
@@ -1750,7 +1859,7 @@ def test_run_wasm_ld_split_runtime_links_native_objects_into_app(
     split_dir = tmp_path / "split"
     native_object = tmp_path / "external_static_packages" / "ndimage_edt.o"
     link_calls: list[list[str]] = []
-    app_link_bytes = _build_runtime_import_module([], memory_min=2)
+    app_link_bytes = _build_split_runtime_app_module([], memory_min=2)
 
     runtime.write_bytes(runtime_bytes)
     output.write_bytes(output_bytes)
@@ -1775,6 +1884,11 @@ def test_run_wasm_ld_split_runtime_links_native_objects_into_app(
     monkeypatch.setattr(wasm_link, "_validate_linked", lambda _p: True)
     monkeypatch.setattr(wasm_link, "_validate_split_runtime_outputs", lambda *_a: True)
     monkeypatch.setattr(
+        wasm_link,
+        "_restore_split_runtime_contract_exports",
+        lambda data, **_kwargs: data,
+    )
+    monkeypatch.setattr(
         wasm_link, "_append_table_ref_elements", lambda data, **_kwargs: None
     )
     monkeypatch.setattr(wasm_link, "_declare_ref_func_elements", lambda data: None)
@@ -1788,7 +1902,6 @@ def test_run_wasm_ld_split_runtime_links_native_objects_into_app(
         wasm_link, "_tree_shake_runtime", lambda *_args, **_kwargs: runtime_bytes
     )
     monkeypatch.setattr(wasm_link, "_collect_custom_names", lambda _data: [])
-    monkeypatch.setattr(wasm_link, "_collect_imports", lambda _data: [])
     monkeypatch.setattr(
         wasm_link, "_collect_exports", lambda _data: {"molt_memory", "molt_table"}
     )
@@ -1843,9 +1956,7 @@ def test_run_wasm_ld_split_runtime_forces_native_direct_symbols(
     output.write_bytes(output_bytes)
     native_object.parent.mkdir()
     native_object.write_bytes(b"\x00asm\x01\x00\x00\x00native-object")
-    native_object.with_name(
-        native_object.name + ".extension_manifest.json"
-    ).write_text(
+    native_object.with_name(native_object.name + ".extension_manifest.json").write_text(
         json.dumps(
             {
                 "module": "nativepkg._demo",
@@ -1874,6 +1985,11 @@ def test_run_wasm_ld_split_runtime_forces_native_direct_symbols(
     monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
     monkeypatch.setattr(wasm_link, "_validate_linked", lambda _p: True)
     monkeypatch.setattr(wasm_link, "_validate_split_runtime_outputs", lambda *_a: True)
+    monkeypatch.setattr(
+        wasm_link,
+        "_restore_split_runtime_contract_exports",
+        lambda data, **_kwargs: data,
+    )
     monkeypatch.setattr(
         wasm_link, "_append_table_ref_elements", lambda data, **_kwargs: None
     )
@@ -1910,9 +2026,9 @@ def test_sealed_native_init_symbols_fail_closed_on_invalid_manifest(
 ) -> None:
     native_object = tmp_path / "_demo.molt.wasm"
     native_object.write_bytes(b"\x00asm\x01\x00\x00\x00")
-    native_object.with_name(
-        native_object.name + ".extension_manifest.json"
-    ).write_text('{"init_symbol": "demo"}', encoding="utf-8")
+    native_object.with_name(native_object.name + ".extension_manifest.json").write_text(
+        '{"init_symbol": "demo"}', encoding="utf-8"
+    )
 
     with pytest.raises(ValueError, match="invalid init_symbol"):
         wasm_link._sealed_native_init_symbols((native_object,))
@@ -2068,6 +2184,11 @@ def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
     monkeypatch.setattr(wasm_link, "_validate_linked", lambda _p: True)
     monkeypatch.setattr(wasm_link, "_validate_split_runtime_outputs", lambda *_a: True)
     monkeypatch.setattr(
+        wasm_link,
+        "_restore_split_runtime_contract_exports",
+        lambda data, **_kwargs: data,
+    )
+    monkeypatch.setattr(
         wasm_link, "_append_table_ref_elements", lambda data, **_kwargs: None
     )
     monkeypatch.setattr(wasm_link, "_declare_ref_func_elements", lambda data: None)
@@ -2134,9 +2255,7 @@ def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
             ("env", "__trunctfdf2"),
         ]
     ]
-    assert data_alias_symbols == [
-        [(wasm_link.FLAG_EXPLICIT_NAME, "molt_PyLong_Type")]
-    ]
+    assert data_alias_symbols == [[(wasm_link.FLAG_EXPLICIT_NAME, "molt_PyLong_Type")]]
     assert "molt_err_pending" not in allowlists[0]
     assert "molt_err_pending" in allowlists[1]
     assert "malloc" in allowlists[1]
@@ -2630,16 +2749,16 @@ def test_split_runtime_validation_uses_generated_runtime_export_names(
     app = tmp_path / "app.wasm"
     runtime = tmp_path / "runtime.wasm"
     app.write_bytes(
-        _build_runtime_import_module(["socket_drop", "unknown_probe"], memory_min=1)
+        _build_split_runtime_app_module(["socket_drop", "unknown_probe"], memory_min=1)
     )
     runtime.write_bytes(_build_exported_runtime_module("molt_socket_drop"))
 
     assert not wasm_link._validate_split_runtime_outputs(app, runtime)
 
-    app.write_bytes(_build_runtime_import_module(["socket_drop"], memory_min=1))
+    app.write_bytes(_build_split_runtime_app_module(["socket_drop"], memory_min=1))
     assert wasm_link._validate_split_runtime_outputs(app, runtime)
 
-    app.write_bytes(_build_runtime_import_module(["PyType_Ready"], memory_min=1))
+    app.write_bytes(_build_split_runtime_app_module(["PyType_Ready"], memory_min=1))
     runtime.write_bytes(_build_exported_runtime_module("PyType_Ready"))
     assert not wasm_link._validate_split_runtime_outputs(app, runtime)
 
@@ -3860,6 +3979,11 @@ def test_run_wasm_ld_split_runtime_publishes_only_after_staged_validation(
     monkeypatch.setattr(wasm_link, "_validate_linked", validate_linked)
     monkeypatch.setattr(wasm_link, "_validate_split_runtime_outputs", validate_split)
     monkeypatch.setattr(
+        wasm_link,
+        "_restore_split_runtime_contract_exports",
+        lambda data, **_kwargs: data,
+    )
+    monkeypatch.setattr(
         wasm_link, "_append_table_ref_elements", lambda data, **_kwargs: None
     )
     monkeypatch.setattr(wasm_link, "_declare_ref_func_elements", lambda data: None)
@@ -3958,6 +4082,11 @@ def test_run_wasm_ld_split_runtime_materializes_final_optimized_app(
     monkeypatch.setattr(wasm_link, "_validate_split_runtime_outputs", validate_split)
     monkeypatch.setattr(
         wasm_link,
+        "_restore_split_runtime_contract_exports",
+        lambda data, **_kwargs: data,
+    )
+    monkeypatch.setattr(
+        wasm_link,
         "_materialize_callable_table_refs_and_ref_func_declarations",
         materialize,
     )
@@ -4035,6 +4164,11 @@ def test_run_wasm_ld_rematerializes_split_app_ref_funcs_after_optimization(
     monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
     monkeypatch.setattr(wasm_link, "_validate_linked", lambda _p: True)
     monkeypatch.setattr(wasm_link, "_validate_split_runtime_outputs", validate_split)
+    monkeypatch.setattr(
+        wasm_link,
+        "_restore_split_runtime_contract_exports",
+        lambda data, **_kwargs: data,
+    )
     monkeypatch.setattr(wasm_link, "_ensure_table_export", lambda data: None)
     monkeypatch.setattr(wasm_link, "_restore_output_export_aliases", lambda data: None)
     monkeypatch.setattr(
@@ -5135,9 +5269,7 @@ def _build_data_address_export_runtime(addresses: dict[str, int]) -> bytes:
     return wasm_link._build_sections(sections)
 
 
-def _add_data_address_global_exports(
-    module: bytes, addresses: dict[str, int]
-) -> bytes:
+def _add_data_address_global_exports(module: bytes, addresses: dict[str, int]) -> bytes:
     """Return *module* with an added i32 global (init = address) exported under
     each name — the wasm-ld shape for --export-if-defined of a defined data
     symbol. Appends to any existing global/export sections."""

@@ -528,6 +528,65 @@ _DEFAULT_SPLIT_APP_GLOBAL_BASE = 64 * 1024 * 1024
 _SYMBOL_KIND_DATA = 1
 
 
+class _SplitRuntimeExportContractEntry:
+    __slots__ = ("artifact", "kind", "canonical_name", "accepted_names", "linker_flag")
+
+    def __init__(
+        self,
+        *,
+        artifact: str,
+        kind: int,
+        canonical_name: str,
+        accepted_names: tuple[str, ...],
+        linker_flag: str | None = None,
+    ) -> None:
+        self.artifact = artifact
+        self.kind = kind
+        self.canonical_name = canonical_name
+        self.accepted_names = accepted_names
+        self.linker_flag = linker_flag
+
+
+_SPLIT_RUNTIME_EXPORT_CONTRACT = (
+    _SplitRuntimeExportContractEntry(
+        artifact="app",
+        kind=0,
+        canonical_name="molt_main",
+        accepted_names=("molt_main",),
+    ),
+    _SplitRuntimeExportContractEntry(
+        artifact="app",
+        kind=2,
+        canonical_name="molt_memory",
+        accepted_names=("molt_memory", "memory"),
+        linker_flag="--export-memory",
+    ),
+    _SplitRuntimeExportContractEntry(
+        artifact="app",
+        kind=1,
+        canonical_name="molt_table",
+        accepted_names=("molt_table", "__indirect_function_table"),
+        linker_flag="--export-table",
+    ),
+)
+
+
+def _split_runtime_export_contract(
+    artifact: str,
+) -> tuple[_SplitRuntimeExportContractEntry, ...]:
+    return tuple(
+        entry for entry in _SPLIT_RUNTIME_EXPORT_CONTRACT if entry.artifact == artifact
+    )
+
+
+def _split_runtime_linker_export_flags(artifact: str) -> tuple[str, ...]:
+    return tuple(
+        entry.linker_flag
+        for entry in _split_runtime_export_contract(artifact)
+        if entry.linker_flag is not None
+    )
+
+
 def _external_native_host_link_imports() -> tuple[str, ...]:
     return tuple(
         symbol
@@ -594,7 +653,9 @@ def _iter_linking_data_symbols(
                     yield symbol_name, data_offset, size
 
 
-def _defined_runtime_data_symbol_offsets(runtime_data: bytes) -> dict[str, tuple[int, int]]:
+def _defined_runtime_data_symbol_offsets(
+    runtime_data: bytes,
+) -> dict[str, tuple[int, int]]:
     return {
         name: (offset, size)
         for name, offset, size in _iter_linking_data_symbols(
@@ -745,7 +806,7 @@ def _data_symbol_entry(
 
 
 def _build_runtime_data_alias_object(
-    symbol_offsets: Sequence[tuple[str, int, int]]
+    symbol_offsets: Sequence[tuple[str, int, int]],
 ) -> bytes:
     """Build a tiny wasm object that defines runtime-owned data symbols.
 
@@ -829,9 +890,7 @@ def _resolve_deploy_runtime(
                 deploy_runtime = candidate
                 break
         else:
-            raise FileNotFoundError(
-                f"split deploy runtime not found: {deploy_runtime}"
-            )
+            raise FileNotFoundError(f"split deploy runtime not found: {deploy_runtime}")
     if (
         not env_deploy_runtime
         and deploy_runtime_override is None
@@ -919,9 +978,7 @@ def _write_sleb128(value: int) -> bytes:
     while True:
         byte = value & 0x7F
         value >>= 7
-        if (value == 0 and not (byte & 0x40)) or (
-            value == -1 and (byte & 0x40)
-        ):
+        if (value == 0 and not (byte & 0x40)) or (value == -1 and (byte & 0x40)):
             out.append(byte)
             return bytes(out)
         out.append(byte | 0x80)
@@ -1323,6 +1380,101 @@ def _restore_public_output_exports(
     if preserved_export_indices:
         updated = _ensure_function_exports_by_indices(
             restored, preserved_export_indices
+        )
+        if updated is not None:
+            restored = updated
+    return restored
+
+
+def _import_index_for_kind(
+    data: bytes,
+    *,
+    module: str,
+    name: str,
+    kind: int,
+) -> int | None:
+    index = 0
+    for import_module, import_name, import_kind, _desc in _collect_imports(data):
+        if import_kind != kind:
+            continue
+        if import_module == module and import_name == name:
+            return index
+        index += 1
+    return None
+
+
+def _ensure_export_by_index(
+    data: bytes,
+    *,
+    name: str,
+    kind: int,
+    index: int,
+) -> bytes | None:
+    sections = _parse_sections(data)
+    rebuilt_sections: list[tuple[int, bytes]] = []
+    inserted = False
+    for section_id, payload in sections:
+        if section_id == 7:
+            count, offset = _read_varuint(payload, 0)
+            rebuilt = bytearray(_write_varuint(count + 1))
+            rebuilt.extend(payload[offset:])
+            rebuilt.extend(_write_string(name))
+            rebuilt.append(kind)
+            rebuilt.extend(_write_varuint(index))
+            rebuilt_sections.append((section_id, bytes(rebuilt)))
+            inserted = True
+            continue
+        if not inserted and section_id > 7:
+            export_payload = bytearray(_write_varuint(1))
+            export_payload.extend(_write_string(name))
+            export_payload.append(kind)
+            export_payload.extend(_write_varuint(index))
+            rebuilt_sections.append((7, bytes(export_payload)))
+            inserted = True
+        rebuilt_sections.append((section_id, payload))
+    if not inserted:
+        export_payload = bytearray(_write_varuint(1))
+        export_payload.extend(_write_string(name))
+        export_payload.append(kind)
+        export_payload.extend(_write_varuint(index))
+        rebuilt_sections.append((7, bytes(export_payload)))
+    rebuilt = _build_sections(rebuilt_sections)
+    canonical = _canonicalize_standard_section_order(rebuilt)
+    return rebuilt if canonical is None else canonical
+
+
+def _restore_split_runtime_contract_exports(data: bytes, *, artifact: str) -> bytes:
+    restored = data
+    import_names = {1: "__indirect_function_table", 2: "memory"}
+    for entry in _split_runtime_export_contract(artifact):
+        facts = parse_wasm_module_facts(restored)
+        if any(
+            facts.export_kinds.get(name, (None, None))[0] == entry.kind
+            for name in entry.accepted_names
+        ):
+            continue
+        import_name = import_names.get(entry.kind)
+        if import_name is None:
+            raise ValueError(
+                f"Split-runtime {artifact} has no restoration source for export "
+                f"{entry.canonical_name} kind {entry.kind}"
+            )
+        index = _import_index_for_kind(
+            restored,
+            module="env",
+            name=import_name,
+            kind=entry.kind,
+        )
+        if index is None:
+            raise ValueError(
+                f"Split-runtime {artifact} cannot restore {entry.canonical_name}: "
+                f"missing env.{import_name} kind {entry.kind} import"
+            )
+        updated = _ensure_export_by_index(
+            restored,
+            name=entry.canonical_name,
+            kind=entry.kind,
+            index=index,
         )
         if updated is not None:
             restored = updated
@@ -2053,6 +2205,18 @@ def _validate_split_runtime_outputs(app_wasm: Path, rt_wasm: Path) -> bool:
             file=sys.stderr,
         )
         return False
+    for entry in _split_runtime_export_contract("app"):
+        if any(
+            app_facts.export_kinds.get(name, (None, None))[0] == entry.kind
+            for name in entry.accepted_names
+        ):
+            continue
+        print(
+            f"Split-runtime app missing contract export {entry.canonical_name} "
+            f"(kind {entry.kind}).",
+            file=sys.stderr,
+        )
+        return False
     missing: list[str] = []
     for name in app_imports:
         export_name = wasm_split_runtime_export_name_for_import(name)
@@ -2455,10 +2619,12 @@ def _run_wasm_ld(
         return 1
     rewritten_path, temp_dir, force_exports = rewritten
     try:
-        prelinked_data, prelinked_materialized = _materialize_import_targeted_table_refs(
-            rewritten_path.read_bytes(),
-            output_data=output_data,
-            description="rewritten wasm-ld input",
+        prelinked_data, prelinked_materialized = (
+            _materialize_import_targeted_table_refs(
+                rewritten_path.read_bytes(),
+                output_data=output_data,
+                description="rewritten wasm-ld input",
+            )
         )
     except ValueError as exc:
         print(
@@ -2672,6 +2838,7 @@ def _run_wasm_ld(
         split_native_app_cmd = [
             *split_native_prefix,
             "--import-memory",
+            *_split_runtime_linker_export_flags("app"),
             f"--global-base={split_app_global_base}",
             f"--table-base={split_app_table_base}",
             "-o",
@@ -2957,6 +3124,17 @@ def _run_wasm_ld(
                     split_native_app_path.write_bytes(restored_rewritten_data)
                     rewritten_data = restored_rewritten_data
                 try:
+                    restored_rewritten_data = _restore_split_runtime_contract_exports(
+                        rewritten_data,
+                        artifact="app",
+                    )
+                except ValueError as exc:
+                    print(str(exc), file=sys.stderr)
+                    return 1
+                if restored_rewritten_data != rewritten_data:
+                    split_native_app_path.write_bytes(restored_rewritten_data)
+                    rewritten_data = restored_rewritten_data
+                try:
                     native_link_error = _validate_required_native_direct_symbols(
                         rewritten_data,
                         required_native_direct_symbols,
@@ -3066,6 +3244,14 @@ def _run_wasm_ld(
                     f"table refs: {exc}",
                     file=sys.stderr,
                 )
+                return 1
+            try:
+                optimized_app = _restore_split_runtime_contract_exports(
+                    optimized_app,
+                    artifact="app",
+                )
+            except ValueError as exc:
+                print(str(exc), file=sys.stderr)
                 return 1
             if native_objects:
                 native_imports = _collect_module_imports(optimized_app, "molt_native")
