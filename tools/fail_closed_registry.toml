@@ -151,9 +151,30 @@ file = "include/datetime.h"
 anchor = "#ifndef MOLT_C_API_DATETIME_H"
 resolution_row = "task#10"
 justification = """
-include/datetime.h and runtime/molt-cpython-abi/include/datetime.h are two
-substantive copies of the CPython datetime C-API header, hand-synced. Same
-duplicate-authority defect as D1_python_h_two_copies.
+RECLASSIFIED (POISON Lane A #3). This row previously described include/datetime.h
+as a benign "hand-synced substantive copy" of the datetime C-API header — a
+MISCLASSIFICATION. The source-compat copy was in fact a fail-open, MEMORY-UNSAFE
+stub: a 4-byte integer-placeholder PyDateTime_CAPI (so PyDateTimeAPI->field read
+out of bounds), *_Check functions that unconditionally yielded false (silent
+wrong branch), and no PyTime_Check. That was a real correctness+safety defect,
+not a benign duplicate.
+
+FIXED: include/datetime.h now mirrors CPython 3.12 faithfully — the exact
+15-field PyDateTime_CAPI, PyDateTime_IMPORT resolving PyDateTimeAPI from the
+datetime.datetime_CAPI capsule the runtime publishes, and real PyObject_TypeCheck
+*_Check functions (NULL-guarded, no OOB). It is now a genuinely-correct
+source-compat-tier implementation, distinct in mechanism from the ABI-tier
+runtime/molt-cpython-abi/include/datetime.h (static type symbols), which is also
+correct.
+
+Residual (why this row remains, now accurately a duplicate_authority drift-risk
+like D2_structmember): the 15-field PyDateTime_CAPI struct LAYOUT is hand-synced
+across THREE authorities — include/datetime.h, runtime/molt-cpython-abi/include/
+datetime.h, and the runtime capsule struct in
+runtime/molt-cpython-abi/src/api/datetime.rs — where a one-field drift silently
+mis-reads the capsule (OOB/wrong offset). Burn-down (task#10): generate the
+shared layout from the single abi_types authority (as D1's struct half already
+is) and retire this row. No wrong answer today; pure layout drift-risk.
 """
 
 # ===========================================================================
