@@ -156,6 +156,17 @@ from `run_wasm.js`. Seven serial fresh-process samples on a 9,720,086 B
 final-form release runtime improved the median from 36.3275 ms to 22.6561 ms
 (1.6034x), with metadata parity and a 77,664,256 B maximum RSS ceiling.
 
+### Exact runtime-WASM shared-cache hydrate
+
+`tools/opt_matrix_r2_runtime_wasm_hydrate_attestation.json` records the
+A12-citable release differential for an exact-identity shared runtime cache hit.
+The cache source retains full structural/export validation before hydration;
+the superseded second validation of the byte-identical atomic-copy destination
+is deleted. Seven serial alternating samples on a real 45,871,431 B release
+runtime improved the median from 1,111.2847 ms to 554.2158 ms (2.0051x), with
+byte identity, corrupt-source rejection, copy-failure rejection, and a
+144,908,288 B maximum RSS ceiling.
+
 ## Variant-II Landing Acceptance
 
 `tools/powerplay_acceptance.py` is the acceptance authority for perf landings.
