@@ -2267,67 +2267,6 @@ def _ensure_runtime_wasm(
                     )
                 return False
             return True
-        target_runtime_staticlib_current = _current_runtime_target_artifact(
-            _wasm_runtime_staticlib_candidates(target_root, profile_dir),
-            build_state_root=target_build_state_root,
-            cargo_profile=cargo_profile,
-            target_label=target_label,
-            fingerprint=fingerprint,
-        )
-        if reloc and target_runtime_staticlib_current is not None:
-            assert fingerprint is not None
-            target_runtime_staticlib, target_runtime_staticlib_fingerprint_path = (
-                target_runtime_staticlib_current
-            )
-            _record_runtime_wasm_build_phase(
-                "cargo_compile",
-                0.0,
-                kind="reloc",
-                mode="target_reuse",
-                detail="staticlib reused from cargo target dir",
-            )
-            _reloc_link_started = time.perf_counter()
-            if not _link_runtime_staticlib_to_reloc_wasm(
-                staticlib_path=target_runtime_staticlib,
-                output_path=runtime_wasm,
-                json_output=json_output,
-                link_timeout=cargo_timeout,
-                export_link_args=runtime_exports,
-                long_double_required=long_double_required,
-            ):
-                return False
-            _record_runtime_wasm_build_phase(
-                "reloc_link",
-                time.perf_counter() - _reloc_link_started,
-                kind="reloc",
-                mode="link",
-            )
-            try:
-                _publish_runtime_integrity_pin()
-                target_runtime_staticlib_fingerprint_path.parent.mkdir(
-                    parents=True,
-                    exist_ok=True,
-                )
-                _write_runtime_fingerprint(
-                    target_runtime_staticlib_fingerprint_path,
-                    fingerprint,
-                    artifact=target_runtime_staticlib,
-                )
-                fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
-                _write_runtime_fingerprint(
-                    fingerprint_path,
-                    fingerprint,
-                    artifact=runtime_wasm,
-                )
-            except OSError:
-                if not json_output:
-                    print(
-                        "Failed to publish prebuilt runtime wasm metadata.",
-                        file=sys.stderr,
-                    )
-                return False
-            return True
-
         def _finalize_reused_runtime_wasm() -> bool:
             # Shared reuse/hydration lands a validated artifact at
             # ``runtime_wasm``; record the integrity pin + fingerprint sidecar so
@@ -2413,6 +2352,68 @@ def _ensure_runtime_wasm(
                     detail="reused compatible-or-better-opt artifact (V3 lattice)",
                 )
                 return True
+
+        target_runtime_staticlib_current = _current_runtime_target_artifact(
+            _wasm_runtime_staticlib_candidates(target_root, profile_dir),
+            build_state_root=target_build_state_root,
+            cargo_profile=cargo_profile,
+            target_label=target_label,
+            fingerprint=fingerprint,
+        )
+        if reloc and target_runtime_staticlib_current is not None:
+            assert fingerprint is not None
+            target_runtime_staticlib, target_runtime_staticlib_fingerprint_path = (
+                target_runtime_staticlib_current
+            )
+            _record_runtime_wasm_build_phase(
+                "cargo_compile",
+                0.0,
+                kind="reloc",
+                mode="target_reuse",
+                detail="staticlib reused from cargo target dir",
+            )
+            _reloc_link_started = time.perf_counter()
+            if not _link_runtime_staticlib_to_reloc_wasm(
+                staticlib_path=target_runtime_staticlib,
+                output_path=runtime_wasm,
+                json_output=json_output,
+                link_timeout=cargo_timeout,
+                export_link_args=runtime_exports,
+                long_double_required=long_double_required,
+            ):
+                return False
+            _record_runtime_wasm_build_phase(
+                "reloc_link",
+                time.perf_counter() - _reloc_link_started,
+                kind="reloc",
+                mode="link",
+            )
+            try:
+                _publish_runtime_integrity_pin()
+                target_runtime_staticlib_fingerprint_path.parent.mkdir(
+                    parents=True,
+                    exist_ok=True,
+                )
+                _write_runtime_fingerprint(
+                    target_runtime_staticlib_fingerprint_path,
+                    fingerprint,
+                    artifact=target_runtime_staticlib,
+                )
+                fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
+                _write_runtime_fingerprint(
+                    fingerprint_path,
+                    fingerprint,
+                    artifact=runtime_wasm,
+                )
+            except OSError:
+                if not json_output:
+                    print(
+                        "Failed to publish prebuilt runtime wasm metadata.",
+                        file=sys.stderr,
+                    )
+                return False
+            return True
+
 
         needs_rebuild = not _runtime_artifact_fingerprint_matches(
             runtime_wasm,
