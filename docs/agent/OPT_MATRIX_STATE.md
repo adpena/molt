@@ -29,9 +29,10 @@ Ranking-helper input:
 | 5 | native exe | startup | Measure and reduce native hello below the CPython process median | 7 | 3 | 2.33 | DOCUMENTED-BLOCKED OPT-MATRIX-R3: current release median 11.954 ms vs CPython 167.438 ms; exposed duplicate-init candidate failed A12 (10.7531 ms -> 10.9078 ms) and was deleted |
 | 6 | all | runtime perf | Profile target-specific hot loops under determinism-safe classes | 8 | 4 | 2.00 | ATTESTED-IMPROVED OPT-MATRIX-R4: native multi-byte reverse search 5.062 s -> 0.266 s median, 19.0301x; shared primitive benefits bytes/string/bytearray on native and WASM |
 | 7 | wasm-browser split + wasm-server/wasi | startup | Remove linked-only metadata payload decoding before instantiation | 5 | 3 | 1.67 | ATTESTED-IMPROVED OPT-MATRIX-R5: linked metadata parse 10.6805 ms -> 3.0449 ms median, 3.5077x |
-| 8 | all | memory | Profile release peak RSS / linear-memory ceilings and remove proven excess reservation | 5 | 4 | 1.25 | UNATTACKED |
-| 9 | wasm-browser split | startup | Measure browser `instantiateStreaming` independently | 4 | 4 | 1.00 | UNATTACKED |
-| 10 | wasm-browser split + wasm-server/wasi | startup | Attribute V8 compile/instantiate cost to code, active data, and retained custom sections | 5 | 6 | 0.83 | UNATTACKED |
+| 8 | native exe | memory | Profile release peak RSS and remove proven excess reservation | 5 | 4 | 1.25 | DOCUMENTED-BLOCKED OPT-MATRIX-R6: 5.984 MB median peak RSS, only 1.790 MB above the full executable image and 2.35x below CPython |
+| 9 | wasm-browser split + wasm-server/wasi | memory | Profile release host RSS / linear-memory ceilings and remove proven excess reservation | 5 | 4 | 1.25 | UNATTACKED |
+| 10 | wasm-browser split | startup | Measure browser `instantiateStreaming` independently | 4 | 4 | 1.00 | UNATTACKED |
+| 11 | wasm-browser split + wasm-server/wasi | startup | Attribute V8 compile/instantiate cost to code, active data, and retained custom sections | 5 | 6 | 0.83 | UNATTACKED |
 
 ## Iteration Log
 
@@ -80,3 +81,12 @@ Ranking-helper input:
 - Evidence: `tools/opt_matrix_r5_linked_metadata_attestation.json` (seven serial alternating release-artifact samples; 10.6805 ms -> 3.0449 ms median, 3.5077x; identical 90 function imports; 4,409 unused linked exports skipped; peak RSS 65,130,496 B).
 - Teeth: `tools/benchmark_wasm_linked_metadata.py` is the reproducible A12 differential, static loader-authority tests pin the mode selection, and 125 link-validation tests preserve the linked artifact contract.
 - Gates: strict powerplay acceptance, fail-closed, table drift, generated WASM ABI, determinism, NumPy 2.5.1 seal, artifact poison, Node syntax, focused loader tests, and link validation pass. Published WASM bytes are unchanged, so the iteration does not consume another full witness run.
+
+### OPT-MATRIX-R6 - Native release memory floor
+
+- Aperture: native release `hello` process working set from image mapping through `molt_runtime_init` and module execution.
+- Profile: seven serial release launches measured 5,984,256 B median peak RSS and 6,070,272 B maximum. The complete executable is 4,193,792 B, leaving only 1,790,464 B of median working set above the full image. The hot path is `O(runtime initialization entries)` with no input-sized allocation.
+- Comparison: isolated CPython on the same probe measured 14,061,568 B median peak RSS and 14,143,488 B maximum, 2.35x Molt's median working set.
+- Verdict: DOCUMENTED-BLOCKED. No target-specific removable reservation is large enough to support an honest A12 memory improvement; changing empty registries or allocator bookkeeping below the process-image floor would be unmeasured optimization theater.
+- Unblock contract: attribute at least 1 MiB or 10% of release peak RSS to one removable native reservation on a representative nontrivial workload, then provide at least seven alternating release samples, identical output, strict Variant-II acceptance, held-bench never-regress proof, and a peak-RSS ceiling. Virtual address reservation alone is insufficient.
+- Evidence: `tools/opt_matrix_r6_native_memory_blocker.json`. WASM linear-memory and host-RSS ceilings remain a separate unattacked rung.
