@@ -577,7 +577,10 @@ def _extend_native_runtime_python_import_closure(
         "".join(f"import {name}\n" for name in pending),
         encoding="utf-8",
     )
-    module_roots = [root for root in roots if root != stdlib_root]
+    module_roots = [
+        artifacts_root.resolve(),
+        *(root for root in roots if root != stdlib_root),
+    ]
     closure_graph, explicit_imports = (
         _graph_discovery._discover_module_graph_from_paths(
             (entry_path,),

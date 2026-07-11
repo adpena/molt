@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "claim": "PERF-WITNESS-ITERATION",
+  "git_base": "89c89a3a4c",
+  "scenario": "pact-witness-acceptance unique run output directory, same machine, C:\\Molt\\target\\perf, failure frontier import_strip after build hot path",
+  "big_o_before": "O(M) frontend relowering per run because the unique build output path entered known_modules",
+  "big_o_after": "O(changed modules); output-directory churn contributes zero lowering-context invalidations",
+  "before": {
+    "run_id": "20260711T132218-pact-witness-acceptance-4a2d55c21c12441d",
+    "wall_seconds": 762.6,
+    "lowering_contexts": 152,
+    "output_path_pseudo_modules": 7
+  },
+  "after": {
+    "run_ids": [
+      "20260711T134622-pact-witness-acceptance-088568cb6b1c40ea",
+      "20260711T135742-pact-witness-acceptance-478ac8678af6433a"
+    ],
+    "wall_seconds": [600.2, 295.0],
+    "steady_state_wall_seconds": 295.0,
+    "lowering_contexts": 145,
+    "stable_contexts_across_runs": 145,
+    "output_path_pseudo_modules": 0,
+    "runtime_frontier": "wasm import_strip rejected code section body 6093"
+  },
+  "delta": {
+    "seconds": -467.6,
+    "percent": -61.316549,
+    "speedup": 2.585085
+  }
+}
