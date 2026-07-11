@@ -11,6 +11,13 @@ FallbackPolicy = Literal["error", "bridge"]
 FallbackTier = Literal["native", "guarded", "bridge", "unsupported"]
 Impact = Literal["low", "medium", "high"]
 
+VERIFIED_SUBSET_BOUNDARY = (
+    "docs/spec/areas/compat/contracts/verified_subset_contract.md"
+)
+DEFAULT_SUBSET_WORKAROUND = (
+    "run this path with CPython or rewrite it within Molt's verified subset"
+)
+
 
 @dataclass(frozen=True)
 class CompatibilityIssue:
@@ -38,11 +45,14 @@ class CompatibilityIssue:
             f"  location: {self.location}",
             f"  tier: {self.tier}",
             f"  impact: {self.impact}",
+            f"  boundary: {VERIFIED_SUBSET_BOUNDARY}",
         ]
         if self.detail:
             lines.append(f"  detail: {self.detail}")
         if self.alternative:
             lines.append(f"  replace: {self.alternative}")
+        else:
+            lines.append(f"  workaround: {DEFAULT_SUBSET_WORKAROUND}")
         return "\n".join(lines)
 
     def runtime_message(self) -> str:

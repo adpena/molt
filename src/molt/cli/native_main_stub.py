@@ -179,6 +179,23 @@ extern int molt_json_parse_scalar(const char* ptr, long len, unsigned long long*
 extern int molt_msgpack_parse_scalar(const char* ptr, long len, unsigned long long* out);
 extern int molt_cbor_parse_scalar(const char* ptr, long len, unsigned long long* out);
 extern long molt_get_attr_generic(void* obj, const char* attr, long len);
+
+static int molt_env_enabled(const char* name) {
+#ifdef _WIN32
+    char* value = NULL;
+    size_t value_len = 0;
+    if (_dupenv_s(&value, &value_len, name) != 0 || value == NULL) {
+        free(value);
+        return 0;
+    }
+    int enabled = value[0] != '\\0' && strcmp(value, "0") != 0;
+    free(value);
+    return enabled;
+#else
+    const char* value = getenv(name);
+    return value != NULL && value[0] != '\\0' && strcmp(value, "0") != 0;
+#endif
+}
 extern unsigned long long molt_alloc(long size);
 extern long molt_block_on(void* task);
 extern void molt_spawn(void* task);
@@ -212,8 +229,7 @@ extern unsigned long long molt_module_registry_install(const unsigned char* blob
 
 static int molt_finish() {
     unsigned long long pending = molt_exception_pending();
-    const char* debug_exc = getenv("MOLT_DEBUG_MAIN_EXCEPTION");
-    if (debug_exc != NULL && debug_exc[0] != '\\0' && strcmp(debug_exc, "0") != 0) {
+    if (molt_env_enabled("MOLT_DEBUG_MAIN_EXCEPTION")) {
         fprintf(stderr, "molt main finish pending=%d\\n", pending != 0);
     }
     if (pending != 0) {
