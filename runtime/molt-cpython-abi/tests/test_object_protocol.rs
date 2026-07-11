@@ -5,8 +5,8 @@
 
 use molt_cpython_abi::abi_types::Py_NotImplementedSentinel;
 use molt_cpython_abi::abi_types::{
-    METH_NOARGS, METH_O, Py_OptimizeFlag, Py_buffer, PyBUF_FORMAT, PyBUF_READ, PyBUF_STRIDES,
-    PyBUF_WRITE, PyMethodDef, PyMutex, PyObject,
+    METH_NOARGS, METH_O, Py_OptimizeFlag, Py_buffer, Py_ssize_t, PyBUF_FORMAT, PyBUF_READ,
+    PyBUF_STRIDES, PyBUF_WRITE, PyMethodDef, PyMutex, PyObject, is_immortal_refcnt,
 };
 use std::ffi::c_void;
 use std::os::raw::c_char;
@@ -14,6 +14,19 @@ use std::ptr;
 
 fn init() {
     molt_cpython_abi::bridge::molt_cpython_abi_init();
+}
+
+/// Expected `ob_refcnt` after ONE new-reference `Py_INCREF`. CPython-faithful:
+/// an IMMORTAL object (builtin type statics like `PyLong_Type` are immortal on
+/// 3.12+) never bumps, so the count is UNCHANGED; a mortal object shows
+/// `before + 1`. Routes through the crate's single `is_immortal_refcnt`
+/// authority so the mortal case is NOT weakened.
+fn refcnt_after_one_incref(before: Py_ssize_t) -> Py_ssize_t {
+    if is_immortal_refcnt(before) {
+        before
+    } else {
+        before + 1
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -395,7 +408,14 @@ fn test_pyobject_type_returns_new_reference_to_ob_type() {
     let type_obj = unsafe { molt_cpython_abi::api::typeobj::PyObject_Type(py) };
 
     assert_eq!(type_obj, tp.cast::<PyObject>());
-    assert_eq!(unsafe { (*tp).ob_base.ob_base.ob_refcnt }, before + 1);
+    // PyObject_Type returns a NEW reference to ob_type. For an immortal builtin
+    // type (PyLong_Type here) the INCREF is a permanent no-op, so the refcount is
+    // UNCHANGED; a mortal type would show before+1. (Was hard-coded `before + 1`,
+    // stale once builtin type statics became immortal.)
+    assert_eq!(
+        unsafe { (*tp).ob_base.ob_base.ob_refcnt },
+        refcnt_after_one_incref(before)
+    );
 
     unsafe {
         molt_cpython_abi::api::refcount::Py_DECREF(type_obj);
