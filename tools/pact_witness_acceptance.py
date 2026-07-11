@@ -393,6 +393,17 @@ def _prepare_reference_oracle(run_dir: Path) -> Path:
     raw_reference.unlink(missing_ok=True)
     reference.unlink(missing_ok=True)
     env = _build_env()
+    # ORACLE DETERMINISM PIN (E1 parity feasibility, docs/agent/
+    # E1_PARITY_FEASIBILITY.md): generate the numpy-fp32 reference on the
+    # wheel's portable BASELINE dispatch tier so the oracle's numerics are an
+    # attested choice, not host-CPU luck. numpy 2.5.1 wheels carry exactly one
+    # above-baseline tier (X86_V3, verified via __cpu_dispatch__); disabling a
+    # non-baseline tier is always legal per numpy's env-var contract.
+    # MASK-PROOF: on the acceptance host this pin changes NOTHING — all 26
+    # pipeline stages were measured bitwise-identical with X86_V3 on vs off
+    # (see the feasibility doc, experiment "SIMD dispatch"), so the pin cannot
+    # absorb a candidate divergence; it only removes oracle host-variance.
+    env.setdefault("NPY_DISABLE_CPU_FEATURES", "X86_V3")
     _run([sys.executable, str(KERNEL_ROOT / "make_fixture.py")], cwd=run_dir, env=env)
     if not fixture.is_file():
         raise SystemExit(f"Pact fixture generator did not produce {fixture}")

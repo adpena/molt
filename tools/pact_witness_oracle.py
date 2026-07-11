@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -14,7 +15,14 @@ TMP_ROOT = ROOT / "tmp"
 
 def _run(args: list[str], *, cwd: Path) -> None:
     print(f"+ {' '.join(args)}", flush=True)
-    subprocess.run(args, cwd=cwd, check=True)
+    env = os.environ.copy()
+    # Same oracle determinism pin as tools/pact_witness_acceptance.py
+    # `_prepare_reference_oracle` (ONE oracle numerics authority): generate on
+    # the numpy wheel's baseline dispatch tier. Mask-proof + rationale in
+    # docs/agent/E1_PARITY_FEASIBILITY.md (measured bitwise no-op on the
+    # acceptance host; removes oracle host-variance only).
+    env.setdefault("NPY_DISABLE_CPU_FEATURES", "X86_V3")
+    subprocess.run(args, cwd=cwd, check=True, env=env)
 
 
 def main() -> int:
