@@ -15559,6 +15559,12 @@ pub(crate) enum ReservedRuntimeCallableDispatch {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ReservedRuntimeCallableTrampolineAbi {
+    UnpackArgs,
+    CallFrame,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ReservedRuntimeCallableSpec {
     pub(crate) index: u32,
     pub(crate) runtime_name: &'static str,
@@ -15566,6 +15572,7 @@ pub(crate) struct ReservedRuntimeCallableSpec {
     pub(crate) import: Option<WasmRuntimeImport>,
     pub(crate) arity: usize,
     pub(crate) dispatch: ReservedRuntimeCallableDispatch,
+    pub(crate) trampoline_abi: ReservedRuntimeCallableTrampolineAbi,
 }
 
 pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec] = &[
@@ -15576,6 +15583,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         import: None,
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
+        trampoline_abi: ReservedRuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
         index: 1,
@@ -15584,6 +15592,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         import: None,
         arity: 5,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
+        trampoline_abi: ReservedRuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
         index: 2,
@@ -15592,6 +15601,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         import: None,
         arity: 5,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
+        trampoline_abi: ReservedRuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
         index: 3,
@@ -15600,6 +15610,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         import: Some(WasmRuntimeImport::ObjectNewBound),
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
+        trampoline_abi: ReservedRuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
         index: 4,
@@ -15608,6 +15619,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         import: None,
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
+        trampoline_abi: ReservedRuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
         index: 5,
@@ -15616,6 +15628,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         import: None,
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
+        trampoline_abi: ReservedRuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
         index: 6,
@@ -15624,6 +15637,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         import: None,
         arity: 2,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
+        trampoline_abi: ReservedRuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
         index: 7,
@@ -15632,6 +15646,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         import: None,
         arity: 2,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
+        trampoline_abi: ReservedRuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
         index: 8,
@@ -15640,6 +15655,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         import: None,
         arity: 2,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
+        trampoline_abi: ReservedRuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
         index: 9,
@@ -15648,6 +15664,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         import: None,
         arity: 2,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
+        trampoline_abi: ReservedRuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
         index: 10,
@@ -15656,6 +15673,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         import: None,
         arity: 2,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
+        trampoline_abi: ReservedRuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
         index: 11,
@@ -15664,6 +15682,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         import: None,
         arity: 3,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
+        trampoline_abi: ReservedRuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
         index: 12,
@@ -15672,6 +15691,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         import: None,
         arity: 3,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
+        trampoline_abi: ReservedRuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
         index: 13,
@@ -15680,6 +15700,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         import: None,
         arity: 3,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
+        trampoline_abi: ReservedRuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
         index: 14,
@@ -15688,6 +15709,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         import: None,
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
+        trampoline_abi: ReservedRuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
         index: 15,
@@ -15696,6 +15718,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         import: None,
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
+        trampoline_abi: ReservedRuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
         index: 16,
@@ -15704,6 +15727,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         import: None,
         arity: 3,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
+        trampoline_abi: ReservedRuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
         index: 17,
@@ -15712,6 +15736,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         import: None,
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
+        trampoline_abi: ReservedRuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
         index: 18,
@@ -15720,6 +15745,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         import: None,
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
+        trampoline_abi: ReservedRuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
         index: 19,
@@ -15728,6 +15754,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         import: None,
         arity: 2,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
+        trampoline_abi: ReservedRuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
         index: 20,
@@ -15736,6 +15763,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         import: None,
         arity: 2,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
+        trampoline_abi: ReservedRuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
         index: 21,
@@ -15744,6 +15772,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         import: None,
         arity: 2,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
+        trampoline_abi: ReservedRuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
         index: 22,
@@ -15752,6 +15781,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         import: None,
         arity: 3,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
+        trampoline_abi: ReservedRuntimeCallableTrampolineAbi::CallFrame,
     },
     ReservedRuntimeCallableSpec {
         index: 23,
@@ -15760,6 +15790,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         import: Some(WasmRuntimeImport::ImportlibImportTransaction),
         arity: 5,
         dispatch: ReservedRuntimeCallableDispatch::Trampoline,
+        trampoline_abi: ReservedRuntimeCallableTrampolineAbi::UnpackArgs,
     },
 ];
 
