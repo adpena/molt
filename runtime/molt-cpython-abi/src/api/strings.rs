@@ -1,6 +1,9 @@
 //! String API — PyUnicode_*, PyBytes_*.
 
-use crate::abi_types::{Py_ssize_t, PyByteArrayObject, PyObject, PyVarObject};
+use crate::abi_types::{
+    Py_TPFLAGS_BYTES_SUBCLASS, Py_TPFLAGS_UNICODE_SUBCLASS, Py_ssize_t, PyByteArrayObject,
+    PyObject, PyVarObject,
+};
 use crate::bridge::GLOBAL_BRIDGE;
 use crate::hooks::hooks_or_stubs;
 use std::cmp::Ordering;
@@ -16,6 +19,38 @@ use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
 /// handle, which reads to the C caller as a non-NULL success and masks the OOM.
 unsafe fn str_alloc_failed() -> *mut PyObject {
     unsafe { crate::api::errors::PyErr_NoMemory() }
+}
+
+unsafe fn raise_utf8_decode_error(bytes: &[u8], error: std::str::Utf8Error) {
+    let start = error.valid_up_to();
+    let reason = if error.error_len().is_none() {
+        "unexpected end of data"
+    } else {
+        "invalid start or continuation byte"
+    };
+    let message = format!(
+        "'utf-8' codec can't decode byte 0x{:02x} in position {start}: {reason}",
+        bytes.get(start).copied().unwrap_or_default()
+    );
+    unsafe {
+        set_exc(
+            &raw mut crate::abi_types::PyExc_UnicodeDecodeError,
+            &message,
+        )
+    };
+}
+
+unsafe fn unicode_from_utf8_bytes(bytes: &[u8]) -> *mut PyObject {
+    if let Err(error) = std::str::from_utf8(bytes) {
+        unsafe { raise_utf8_decode_error(bytes, error) };
+        return ptr::null_mut();
+    }
+    let h = hooks_or_stubs();
+    let bits = unsafe { (h.alloc_str)(bytes.as_ptr(), bytes.len()) };
+    if bits == 0 {
+        return unsafe { str_alloc_failed() };
+    }
+    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) }
 }
 
 /// Set an exception of type `exc` with a runtime-formatted message.
@@ -46,7 +81,9 @@ unsafe fn pyobj_type_name(op: *mut PyObject) -> String {
     if name.is_null() {
         return "object".to_string();
     }
-    unsafe { CStr::from_ptr(name) }.to_string_lossy().into_owned()
+    unsafe { CStr::from_ptr(name) }
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn unicode_range(len: usize, start: Py_ssize_t, end: Py_ssize_t) -> (usize, usize) {
@@ -380,13 +417,7 @@ pub unsafe extern "C" fn PyUnicode_FromString(s: *const c_char) -> *mut PyObject
         return ptr::null_mut();
     }
     let bytes = unsafe { CStr::from_ptr(s).to_bytes() };
-    let h = hooks_or_stubs();
-    let bits = unsafe { (h.alloc_str)(bytes.as_ptr(), bytes.len()) };
-    if bits == 0 {
-        // Out of memory: fail closed with NULL + MemoryError (CPython contract).
-        return unsafe { str_alloc_failed() };
-    }
-    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) }
+    unsafe { unicode_from_utf8_bytes(bytes) }
 }
 
 #[unsafe(no_mangle)]
@@ -394,17 +425,29 @@ pub unsafe extern "C" fn PyUnicode_FromStringAndSize(
     s: *const c_char,
     size: Py_ssize_t,
 ) -> *mut PyObject {
-    if s.is_null() || size < 0 {
+    if size < 0 {
+        unsafe {
+            set_exc(
+                &raw mut crate::abi_types::PyExc_SystemError,
+                "Negative size passed to PyUnicode_FromStringAndSize",
+            )
+        };
+        return ptr::null_mut();
+    }
+    if s.is_null() {
+        if size == 0 {
+            return unsafe { unicode_from_utf8_bytes(&[]) };
+        }
+        unsafe {
+            set_exc(
+                &raw mut crate::abi_types::PyExc_SystemError,
+                "NULL string with positive size passed to PyUnicode_FromStringAndSize",
+            )
+        };
         return ptr::null_mut();
     }
     let bytes = unsafe { std::slice::from_raw_parts(s.cast::<u8>(), size as usize) };
-    let h = hooks_or_stubs();
-    let bits = unsafe { (h.alloc_str)(bytes.as_ptr(), bytes.len()) };
-    if bits == 0 {
-        // Out of memory: fail closed with NULL + MemoryError (CPython contract).
-        return unsafe { str_alloc_failed() };
-    }
-    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) }
+    unsafe { unicode_from_utf8_bytes(bytes) }
 }
 
 #[unsafe(no_mangle)]
@@ -453,8 +496,12 @@ pub unsafe extern "C" fn _PyUnicode_FastCopyCharacters(
     from_start: Py_ssize_t,
     how_many: Py_ssize_t,
 ) {
-    let Some((to_kind, to_data)) = (unsafe { fast_copy_layout(to) }) else { return };
-    let Some((from_kind, from_data)) = (unsafe { fast_copy_layout(from) }) else { return };
+    let Some((to_kind, to_data)) = (unsafe { fast_copy_layout(to) }) else {
+        return;
+    };
+    let Some((from_kind, from_data)) = (unsafe { fast_copy_layout(from) }) else {
+        return;
+    };
     for index in 0..how_many {
         let source = from_start + index;
         let target = to_start + index;
@@ -624,33 +671,7 @@ pub unsafe extern "C" fn PyUnicode_FromOrdinal(ordinal: c_int) -> *mut PyObject 
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyUnicode_AsUTF8(op: *mut PyObject) -> *const c_char {
-    if op.is_null() {
-        unsafe { crate::api::errors::PyErr_BadArgument() };
-        return ptr::null();
-    }
-    let bridge = GLOBAL_BRIDGE.lock();
-    let bits = match bridge.pyobj_to_handle(op) {
-        Some(b) => b,
-        None => {
-            // CPython AsUTF8AndSize: a non-str argument is PyErr_BadArgument()
-            // (TypeError) + NULL — NEVER a fabricated empty-string pointer that
-            // reads to the C caller as success.
-            drop(bridge);
-            unsafe { crate::api::errors::PyErr_BadArgument() };
-            return ptr::null();
-        }
-    };
-    drop(bridge);
-    let h = hooks_or_stubs();
-    let mut len: usize = 0;
-    let data = unsafe { (h.str_data)(bits, &raw mut len) };
-    if data.is_null() {
-        // Handle resolved but not a str (or runtime unavailable): honest failure.
-        unsafe { crate::api::errors::PyErr_BadArgument() };
-        ptr::null()
-    } else {
-        data.cast()
-    }
+    unsafe { PyUnicode_AsUTF8AndSize(op, ptr::null_mut()) }
 }
 
 #[unsafe(no_mangle)]
@@ -688,9 +709,7 @@ pub unsafe extern "C" fn PyUnicode_AsASCIIString(op: *mut PyObject) -> *mut PyOb
     };
     if !bytes.is_ascii() {
         // CPython unicode_encode_ucs1: UnicodeEncodeError, never a bare NULL.
-        unsafe {
-            raise_unicode_encode_error(bytes, "ascii", "ordinal not in range(128)", 0x7f)
-        };
+        unsafe { raise_unicode_encode_error(bytes, "ascii", "ordinal not in range(128)", 0x7f) };
         return ptr::null_mut();
     }
     unsafe { PyBytes_FromStringAndSize(bytes.as_ptr().cast(), bytes.len() as Py_ssize_t) }
@@ -704,9 +723,7 @@ pub unsafe extern "C" fn PyUnicode_AsLatin1String(op: *mut PyObject) -> *mut PyO
     };
     let Some(encoded) = latin1_encode_utf8_bytes(bytes) else {
         // CPython unicode_encode_ucs1: UnicodeEncodeError for code points > 0xFF.
-        unsafe {
-            raise_unicode_encode_error(bytes, "latin-1", "ordinal not in range(256)", 0xff)
-        };
+        unsafe { raise_unicode_encode_error(bytes, "latin-1", "ordinal not in range(256)", 0xff) };
         return ptr::null_mut();
     };
     unsafe { PyBytes_FromStringAndSize(encoded.as_ptr().cast(), encoded.len() as Py_ssize_t) }
@@ -717,19 +734,34 @@ pub unsafe extern "C" fn PyUnicode_AsUTF8AndSize(
     op: *mut PyObject,
     size: *mut Py_ssize_t,
 ) -> *const c_char {
-    // Single handle resolution (the previous body resolved twice — once via
-    // unicode_bytes and again via AsUTF8). CPython: non-str -> PyErr_BadArgument
-    // (TypeError) + NULL, so the NULL sentinel always carries an exception.
-    let Some(bytes) = (unsafe { unicode_bytes(op) }) else {
+    if unsafe { PyUnicode_Check(op) } == 0 {
+        unsafe { crate::api::errors::PyErr_BadArgument() };
+        return ptr::null();
+    }
+    let resolved_bits = GLOBAL_BRIDGE.lock().pyobj_to_handle(op);
+    let bits = match resolved_bits {
+        Some(bits) => bits,
+        None => {
+            unsafe { crate::api::errors::PyErr_BadArgument() };
+            return ptr::null();
+        }
+    };
+    let h = hooks_or_stubs();
+    let mut runtime_len = 0usize;
+    let runtime_data = unsafe { (h.str_data)(bits, &raw mut runtime_len) };
+    if runtime_data.is_null() {
+        unsafe { crate::api::errors::PyErr_BadArgument() };
+        return ptr::null();
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(runtime_data, runtime_len) };
+    let Some((data, len)) = GLOBAL_BRIDGE.lock().unicode_utf8_cache(bits, bytes) else {
         unsafe { crate::api::errors::PyErr_BadArgument() };
         return ptr::null();
     };
     if !size.is_null() {
-        unsafe {
-            *size = bytes.len() as Py_ssize_t;
-        }
+        unsafe { *size = len as Py_ssize_t };
     }
-    bytes.as_ptr().cast()
+    data.cast()
 }
 
 #[unsafe(no_mangle)]
@@ -755,7 +787,8 @@ pub unsafe extern "C" fn PyUnicode_Check(op: *mut PyObject) -> c_int {
         return 0;
     }
     let ob_type = unsafe { (*op).ob_type };
-    (std::ptr::eq(ob_type, &raw const crate::abi_types::PyUnicode_Type)) as c_int
+    (!ob_type.is_null() && unsafe { (*ob_type).tp_flags } & Py_TPFLAGS_UNICODE_SUBCLASS != 0)
+        as c_int
 }
 
 #[unsafe(no_mangle)]
@@ -862,9 +895,9 @@ pub unsafe extern "C" fn PyUnicode_Compare(left: *mut PyObject, right: *mut PyOb
     // CPython: non-str operands raise TypeError "Can't compare %.100s and
     // %.100s" — the -1 sentinel is also a valid "left < right" result, so it
     // MUST carry an exception to be distinguishable.
-    let (Some(left_bytes), Some(right_bytes)) =
-        (unsafe { unicode_bytes(left) }, unsafe { unicode_bytes(right) })
-    else {
+    let (Some(left_bytes), Some(right_bytes)) = (unsafe { unicode_bytes(left) }, unsafe {
+        unicode_bytes(right)
+    }) else {
         let msg = format!(
             "Can't compare {:.100} and {:.100}",
             unsafe { pyobj_type_name(left) },
@@ -884,9 +917,9 @@ pub unsafe extern "C" fn PyUnicode_Tailmatch(
     end: Py_ssize_t,
     direction: c_int,
 ) -> Py_ssize_t {
-    let (Some(text), Some(needle)) =
-        (unsafe { unicode_bytes(str_obj) }, unsafe { unicode_bytes(substr) })
-    else {
+    let (Some(text), Some(needle)) = (unsafe { unicode_bytes(str_obj) }, unsafe {
+        unicode_bytes(substr)
+    }) else {
         // Non-str operand: TypeError, never a bare -1.
         unsafe { crate::api::errors::PyErr_BadArgument() };
         return -1;
@@ -1106,7 +1139,7 @@ pub unsafe extern "C" fn PyBytes_Check(op: *mut PyObject) -> c_int {
         return 0;
     }
     let ob_type = unsafe { (*op).ob_type };
-    (std::ptr::eq(ob_type, &raw const crate::abi_types::PyBytes_Type)) as c_int
+    (!ob_type.is_null() && unsafe { (*ob_type).tp_flags } & Py_TPFLAGS_BYTES_SUBCLASS != 0) as c_int
 }
 
 #[unsafe(no_mangle)]
@@ -1460,9 +1493,10 @@ pub unsafe extern "C" fn PyUnicode_FromEncodedObject(
         }
         return unsafe { PyUnicode_Decode(data.cast_const(), len, encoding, errors) };
     }
-    let msg = format!("decoding to str: need a bytes-like object, {:.80} found", unsafe {
-        pyobj_type_name(obj)
-    });
+    let msg = format!(
+        "decoding to str: need a bytes-like object, {:.80} found",
+        unsafe { pyobj_type_name(obj) }
+    );
     unsafe { set_exc(&raw mut crate::abi_types::PyExc_TypeError, &msg) };
     ptr::null_mut()
 }
@@ -1507,12 +1541,7 @@ pub unsafe extern "C" fn PyUnicode_AsEncodedString(
             Some(encoded) => Some(encoded),
             None => {
                 unsafe {
-                    raise_unicode_encode_error(
-                        bytes,
-                        "latin-1",
-                        "ordinal not in range(256)",
-                        0xff,
-                    )
+                    raise_unicode_encode_error(bytes, "latin-1", "ordinal not in range(256)", 0xff)
                 };
                 return ptr::null_mut();
             }

@@ -1209,7 +1209,7 @@ extern void         PyUnicode_InternInPlace       (PyObject **p);
 extern PyObject    *PyUnicode_InternFromString    (const char *s);
 
 #define PyUnicode_GET_LENGTH(op) PyUnicode_GetLength(op)
-#define PyUnicode_CheckExact(op) PyUnicode_Check(op)
+#define PyUnicode_CheckExact(op) Py_IS_TYPE((PyObject *)(op), &PyUnicode_Type)
 #define PyUnicode_1BYTE_KIND 1
 #define PyUnicode_2BYTE_KIND 2
 #define PyUnicode_4BYTE_KIND 4
@@ -1271,7 +1271,7 @@ extern char     *PyBytes_AsString          (PyObject *op);
 extern char     *PyBytes_AS_STRING         (PyObject *op);
 
 #define PyBytes_GET_SIZE(op) PyBytes_Size(op)
-#define PyBytes_CheckExact(op) PyBytes_Check(op)
+#define PyBytes_CheckExact(op) Py_IS_TYPE((PyObject *)(op), &PyBytes_Type)
 
 /* Bytearray */
 extern PyObject *PyByteArray_FromStringAndSize(const char *s, Py_ssize_t len);
