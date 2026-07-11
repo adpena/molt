@@ -7,6 +7,7 @@ from molt.cli import build_diagnostics
 
 _BUILD_DIAGNOSTICS_NAMES = (
     "_build_allocation_diagnostics_enabled",
+    "_build_phase_attribution",
     "_build_build_diagnostics_payload",
     "_build_diagnostics_enabled",
     "_build_midend_diagnostics_payload",
@@ -28,6 +29,7 @@ _BUILD_DIAGNOSTICS_NAMES = (
 
 _BUILD_DIAGNOSTICS_DEFINITIONS = (
     "def _build_allocation_diagnostics_enabled(",
+    "def _build_phase_attribution(",
     "def _build_build_diagnostics_payload(",
     "def _build_diagnostics_enabled(",
     "def _build_midend_diagnostics_payload(",
@@ -56,3 +58,21 @@ def test_cli_build_diagnostics_authority_is_single_home() -> None:
     cli_source = inspect.getsource(cli)
     for marker in _BUILD_DIAGNOSTICS_DEFINITIONS:
         assert marker not in cli_source
+
+
+def test_build_phase_attribution_reports_relative_shares_and_link_children() -> None:
+    attribution = build_diagnostics._build_phase_attribution(
+        total_sec=20.0,
+        phase_sec={"ir_lowering": 2.0, "backend_codegen": 8.0},
+        pipeline_stage_ms={
+            "wasm_link_total": 6000.0,
+            "split_runtime_processing": 1000.0,
+            "wasm_strip": 500.0,
+            "fail_closed_validation": 500.0,
+        },
+    )
+
+    assert attribution["phase_sec"]["wasm_link_core"] == 4.0
+    assert attribution["phase_share"]["backend_codegen"] == 0.4
+    assert attribution["phase_sec"]["frontend_lowering"] == 2.0
+    assert attribution["ranked_phases"][0] == "backend_codegen"
