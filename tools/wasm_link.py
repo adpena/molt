@@ -1480,6 +1480,12 @@ def _restore_public_output_exports(
     updated = _restore_output_export_aliases(restored)
     if updated is not None:
         restored = updated
+    updated = _ensure_function_exports_by_symbol_names(
+        restored,
+        {name: name for name in preserved_symbol_names},
+    )
+    if updated is not None:
+        restored = updated
     if preserved_export_indices:
         updated = _ensure_function_exports_by_indices(
             restored, preserved_export_indices
@@ -1676,7 +1682,9 @@ def _ensure_function_exports_by_indices(
             export_payload.append(0)
             export_payload.extend(_write_varuint(index))
         rebuilt_sections.append((7, bytes(export_payload)))
-    return _canonicalize_standard_section_order(_build_sections(rebuilt_sections))
+    rebuilt = _build_sections(rebuilt_sections)
+    canonical = _canonicalize_standard_section_order(rebuilt)
+    return rebuilt if canonical is None else canonical
 
 
 _TRAP_FUNC_BODY = bytes([0x00, 0x00, 0x0B])
@@ -1692,6 +1700,49 @@ def _required_native_direct_symbols(output_data: bytes) -> tuple[str, ...]:
             }
         )
     )
+
+
+def _rewrite_required_native_direct_imports(
+    module_path: Path,
+    required_symbols: Sequence[str],
+    temp_dir: tempfile.TemporaryDirectory,
+) -> Path:
+    required = set(required_symbols)
+    if not required:
+        return module_path
+    sections = _parse_sections(module_path.read_bytes())
+    changed = False
+    rebuilt_sections: list[tuple[int, bytes]] = []
+    for section_id, payload in sections:
+        if section_id != 2:
+            rebuilt_sections.append((section_id, payload))
+            continue
+        offset = 0
+        count, offset = _read_varuint(payload, offset)
+        rebuilt = bytearray(_write_varuint(count))
+        for _ in range(count):
+            module, offset = _read_string(payload, offset)
+            name, offset = _read_string(payload, offset)
+            if offset >= len(payload):
+                raise ValueError("Unexpected EOF while reading import kind")
+            kind = payload[offset]
+            offset += 1
+            desc_start = offset
+            offset = _parse_import_desc(payload, offset, kind)
+            desc = payload[desc_start:offset]
+            if module == "molt_native" and kind == 0 and name in required:
+                module = "env"
+                changed = True
+            rebuilt.extend(_write_string(module))
+            rebuilt.extend(_write_string(name))
+            rebuilt.append(kind)
+            rebuilt.extend(desc)
+        rebuilt_sections.append((section_id, bytes(rebuilt)))
+    if not changed:
+        return module_path
+    rewritten_path = Path(temp_dir.name) / "output_native_direct_imports.wasm"
+    rewritten_path.write_bytes(_build_sections(rebuilt_sections))
+    return rewritten_path
 
 
 def _function_body_payloads_by_index(data: bytes) -> dict[int, bytes]:
@@ -2786,6 +2837,15 @@ def _run_wasm_ld_with_custodied_inputs(
         return 1
     rewritten_path, temp_dir, force_exports = rewritten
     try:
+        rewritten_path = _rewrite_required_native_direct_imports(
+            rewritten_path,
+            required_native_direct_symbols,
+            temp_dir,
+        )
+    except ValueError as exc:
+        print(f"Failed to rewrite native direct imports: {exc}", file=sys.stderr)
+        return 1
+    try:
         prelinked_data, prelinked_materialized = (
             _materialize_import_targeted_table_refs(
                 rewritten_path.read_bytes(),
@@ -3303,12 +3363,13 @@ def _run_wasm_ld_with_custodied_inputs(
                 if canonical_rewritten_data != rewritten_data:
                     split_native_app_path.write_bytes(canonical_rewritten_data)
                     rewritten_data = canonical_rewritten_data
-                native_contract_function_indices = {
+                native_preserved_function_indices = {
                     name: index
                     for name, index in _collect_function_exports(rewritten_data).items()
                     if name in _split_runtime_contract_export_names("app")
+                    or name in required_native_direct_symbols
                 }
-                if "molt_main" not in native_contract_function_indices:
+                if "molt_main" not in native_preserved_function_indices:
                     symbol_name = public_export_map.get("molt_main")
                     if symbol_name is not None:
                         symbol_indices = {
@@ -3328,7 +3389,7 @@ def _run_wasm_ld_with_custodied_inputs(
                                 }
                             )
                         if symbol_name in symbol_indices:
-                            native_contract_function_indices["molt_main"] = (
+                            native_preserved_function_indices["molt_main"] = (
                                 symbol_indices[symbol_name]
                             )
                 restored_rewritten_data = _restore_public_output_exports(
@@ -3344,12 +3405,24 @@ def _run_wasm_ld_with_custodied_inputs(
                         rewritten_data,
                         artifact="app",
                         stage="native-link",
-                        function_export_indices=native_contract_function_indices,
+                        function_export_indices=native_preserved_function_indices,
                     )
                 except ValueError as exc:
                     print(str(exc), file=sys.stderr)
                     return 1
                 if restored_rewritten_data != rewritten_data:
+                    split_native_app_path.write_bytes(restored_rewritten_data)
+                    rewritten_data = restored_rewritten_data
+                required_native_export_indices = {
+                    name: native_preserved_function_indices[name]
+                    for name in required_native_direct_symbols
+                    if name in native_preserved_function_indices
+                }
+                restored_rewritten_data = _ensure_function_exports_by_indices(
+                    rewritten_data,
+                    required_native_export_indices,
+                )
+                if restored_rewritten_data is not None:
                     split_native_app_path.write_bytes(restored_rewritten_data)
                     rewritten_data = restored_rewritten_data
                 try:
