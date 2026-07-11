@@ -103,11 +103,11 @@ unsafe fn unicode_bytes(op: *mut PyObject) -> Option<&'static [u8]> {
         return None;
     }
     let bridge = GLOBAL_BRIDGE.lock();
-    let bits = bridge.pyobj_to_handle(op)?;
+    let bits = bridge.molt_handle_for_pyobj(op)?;
     drop(bridge);
     let h = hooks_or_stubs();
     let mut len: usize = 0;
-    let data = unsafe { (h.str_data)(bits, &raw mut len) };
+    let data = unsafe { (h.str_data)(bits.bits(), &raw mut len) };
     if data.is_null() {
         None
     } else {
@@ -738,9 +738,9 @@ pub unsafe extern "C" fn PyUnicode_AsUTF8AndSize(
         unsafe { crate::api::errors::PyErr_BadArgument() };
         return ptr::null();
     }
-    let resolved_bits = GLOBAL_BRIDGE.lock().pyobj_to_handle(op);
+    let resolved_bits = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(op);
     let bits = match resolved_bits {
-        Some(bits) => bits,
+        Some(bits) => bits.bits(),
         None => {
             unsafe { crate::api::errors::PyErr_BadArgument() };
             return ptr::null();
@@ -1106,8 +1106,8 @@ pub unsafe extern "C" fn PyBytes_AsStringAndSize(
         return -1;
     }
     let bridge = GLOBAL_BRIDGE.lock();
-    let bits = match bridge.pyobj_to_handle(op) {
-        Some(b) => b,
+    let bits = match bridge.molt_handle_for_pyobj(op) {
+        Some(b) => b.bits(),
         None => {
             drop(bridge);
             expected_bytes_error(op);
@@ -1166,8 +1166,8 @@ pub unsafe extern "C" fn PyBytes_AS_STRING(op: *mut PyObject) -> *mut c_char {
         return ptr::null_mut();
     }
     let bridge = GLOBAL_BRIDGE.lock();
-    let bits = match bridge.pyobj_to_handle(op) {
-        Some(b) => b,
+    let bits = match bridge.molt_handle_for_pyobj(op) {
+        Some(b) => b.bits(),
         None => return ptr::null_mut(),
     };
     drop(bridge);
@@ -1206,8 +1206,8 @@ pub unsafe extern "C" fn PyBytes_Size(op: *mut PyObject) -> Py_ssize_t {
         return -1;
     }
     let bridge = GLOBAL_BRIDGE.lock();
-    let bits = match bridge.pyobj_to_handle(op) {
-        Some(b) => b,
+    let bits = match bridge.molt_handle_for_pyobj(op) {
+        Some(b) => b.bits(),
         None => {
             drop(bridge);
             expected_bytes_error(op);
@@ -1798,9 +1798,9 @@ unsafe fn percent_int_arg(arg: *mut PyObject, conv: u8) -> Option<i128> {
         set_exc(&raw mut crate::abi_types::PyExc_TypeError, &msg);
     };
     // Native int / bool via the bridge handle (exact, no width truncation).
-    let bits = crate::bridge::GLOBAL_BRIDGE.lock().pyobj_to_handle(arg);
+    let bits = crate::bridge::GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(arg);
     if let Some(bits) = bits {
-        let mo = molt_lang_obj_model::MoltObject::from_bits(bits);
+        let mo = bits.decode();
         if let Some(i) = mo.as_int() {
             return Some(i as i128);
         }
@@ -2209,17 +2209,17 @@ pub unsafe extern "C" fn PyBytes_Concat(bytes: *mut *mut PyObject, newpart: *mut
     let old = unsafe { *bytes };
 
     // Read the left operand's bytes.
-    let Some(left_bits) = GLOBAL_BRIDGE.lock().pyobj_to_handle(old) else {
+    let Some(left_bits) = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(old) else {
         return;
     };
-    let Some(right_bits) = GLOBAL_BRIDGE.lock().pyobj_to_handle(newpart) else {
+    let Some(right_bits) = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(newpart) else {
         return;
     };
     let h = hooks_or_stubs();
     let mut left_len: usize = 0;
-    let left_ptr = unsafe { (h.bytes_data)(left_bits, std::ptr::addr_of_mut!(left_len)) };
+    let left_ptr = unsafe { (h.bytes_data)(left_bits.bits(), std::ptr::addr_of_mut!(left_len)) };
     let mut right_len: usize = 0;
-    let right_ptr = unsafe { (h.bytes_data)(right_bits, std::ptr::addr_of_mut!(right_len)) };
+    let right_ptr = unsafe { (h.bytes_data)(right_bits.bits(), std::ptr::addr_of_mut!(right_len)) };
     if left_ptr.is_null() || right_ptr.is_null() {
         // Not bytes-like / no runtime: leave *pv untouched rather than corrupting it.
         return;

@@ -2891,7 +2891,7 @@ pub unsafe extern "C" fn molt_generic_hash(op: *mut PyObject) -> isize {
     // hashed as a garbage float. Resolve then drop the bridge lock before hashing.
     let native = crate::bridge::GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(op);
     if let Some(bits) = native {
-        return crate::bridge::molt_hash_from_bits(bits);
+        return crate::bridge::molt_hash_from_bits(bits.bits());
     }
     // Foreign object carrying a copied builtin hash slot. complex and float have
     // CPython-defined layouts numpy's CDouble/Double scalars share.

@@ -3,7 +3,6 @@
 use crate::abi_types::{Py_ssize_t, PyDictProxyObject, PyObject};
 use crate::bridge::GLOBAL_BRIDGE;
 use crate::hooks::hooks_or_stubs;
-use molt_lang_obj_model::MoltObject;
 use std::os::raw::c_int;
 use std::ptr;
 
@@ -18,13 +17,13 @@ fn resolve_native_dict(op: *mut PyObject) -> Option<u64> {
     if op.is_null() {
         return None;
     }
-    let bits = GLOBAL_BRIDGE.lock().pyobj_to_handle(op)?;
-    if !MoltObject::from_bits(bits).is_ptr() {
+    let bits = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(op)?;
+    if !bits.decode().is_ptr() {
         return None;
     }
     let h = hooks_or_stubs();
-    if unsafe { (h.classify_heap)(bits) } == crate::abi_types::MoltTypeTag::Dict as u8 {
-        Some(bits)
+    if unsafe { (h.classify_heap)(bits.bits()) } == crate::abi_types::MoltTypeTag::Dict as u8 {
+        Some(bits.bits())
     } else {
         None
     }
@@ -65,8 +64,8 @@ pub unsafe extern "C" fn PyDict_SetItem(
         return -1;
     }
     let mut bridge = GLOBAL_BRIDGE.lock();
-    let dict_bits = match bridge.pyobj_to_handle(op) {
-        Some(b) => b,
+    let dict_bits = match bridge.molt_handle_for_pyobj(op) {
+        Some(b) => b.bits(),
         None => {
             // Address-only (no deref): an unresolved dict receiver is often a wild
             // / non-canonical pointer that is NOT safe to dereference, so we must
@@ -78,8 +77,8 @@ pub unsafe extern "C" fn PyDict_SetItem(
         }
     };
     let mut key_is_foreign = false;
-    let key_bits = match bridge.pyobj_to_handle(key) {
-        Some(b) => b,
+    let key_bits = match bridge.molt_handle_for_pyobj(key) {
+        Some(b) => b.bits(),
         None => match unsafe { bridge.molt_value_for_pyobj(key) } {
             // A genuine C-extension object key (numpy uses a builtin dtype/DType
             // singleton — a pure C `PyArray_Descr` — as the key when registering
@@ -118,8 +117,8 @@ pub unsafe extern "C" fn PyDict_SetItem(
         },
     };
     let mut val_is_foreign = false;
-    let val_bits = match bridge.pyobj_to_handle(value) {
-        Some(b) => b,
+    let val_bits = match bridge.molt_handle_for_pyobj(value) {
+        Some(b) => b.bits(),
         None => match unsafe { bridge.molt_value_for_pyobj(value) } {
             // A genuine C-extension object value (a numpy dtype instance): give
             // it a first-class `TYPE_ID_FOREIGN` wrapper so it can be stored in
@@ -456,12 +455,12 @@ pub unsafe extern "C" fn PyDict_GetItem(op: *mut PyObject, key: *mut PyObject) -
         return ptr::null_mut();
     }
     let bridge = GLOBAL_BRIDGE.lock();
-    let dict_bits = match bridge.pyobj_to_handle(op) {
-        Some(b) => b,
+    let dict_bits = match bridge.molt_handle_for_pyobj(op) {
+        Some(b) => b.bits(),
         None => return ptr::null_mut(),
     };
-    let key_bits = match bridge.pyobj_to_handle(key) {
-        Some(b) => b,
+    let key_bits = match bridge.molt_handle_for_pyobj(key) {
+        Some(b) => b.bits(),
         None => return ptr::null_mut(),
     };
     drop(bridge);
@@ -662,9 +661,9 @@ pub unsafe extern "C" fn PyDict_DelItem(op: *mut PyObject, key: *mut PyObject) -
             return -1;
         }
     };
-    let key_handle = GLOBAL_BRIDGE.lock().pyobj_to_handle(key);
+    let key_handle = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(key);
     let key_bits = match key_handle {
-        Some(b) => b,
+        Some(b) => b.bits(),
         None => {
             // A key that is not bridge-resolvable cannot be present in a
             // Molt-native dict → genuine absence → KeyError(key), as CPython.
@@ -745,9 +744,9 @@ pub unsafe extern "C" fn PyDict_Next(
     }
     // Identity resolution only; the dict_entry hook re-checks the dict tag and
     // returns 0 for a non-dict (CPython's "0 if op is not a dictionary").
-    let dict_handle = GLOBAL_BRIDGE.lock().pyobj_to_handle(op);
+    let dict_handle = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(op);
     let dict_bits = match dict_handle {
-        Some(b) => b,
+        Some(b) => b.bits(),
         None => return 0,
     };
     let index = unsafe { *pos };
@@ -933,10 +932,10 @@ unsafe fn dict_op(op: crate::hooks::DictOp, dict: *mut PyObject) -> *mut PyObjec
     // the guard across them would self-deadlock.
     let handle = {
         let bridge = GLOBAL_BRIDGE.lock();
-        bridge.pyobj_to_handle(dict)
+        bridge.molt_handle_for_pyobj(dict)
     };
     let bits = match handle {
-        Some(b) => b,
+        Some(b) => b.bits(),
         None => {
             unsafe {
                 crate::api::errors::PyErr_SetString(
@@ -991,7 +990,6 @@ pub unsafe extern "C" fn PyDict_Items(op: *mut PyObject) -> *mut PyObject {
 #[cfg(test)]
 mod dict_anchor_tests {
     use super::*;
-    use molt_lang_obj_model::MoltObject;
 
     /// `_PyDict_GetItemStringWithError` is the error-propagating variant: a NULL
     /// key is a bad internal call (sets an exception), never a silent NULL. The
@@ -1044,11 +1042,11 @@ mod dict_anchor_tests {
         // …must leave the mapping intact (the dict's own reference anchors it).
         let bridge = GLOBAL_BRIDGE.lock();
         assert!(
-            bridge.pyobj_to_handle(key).is_some(),
+            bridge.molt_handle_for_pyobj(key).is_some(),
             "key mapping severed by balancing DECREF"
         );
         assert!(
-            bridge.pyobj_to_handle(val).is_some(),
+            bridge.molt_handle_for_pyobj(val).is_some(),
             "value mapping severed by balancing DECREF"
         );
     }
