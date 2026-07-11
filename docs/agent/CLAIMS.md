@@ -1,4 +1,4 @@
-﻿# Solo-Owner Lane Claims
+# Solo-Owner Lane Claims
 
 Some lanes must be driven **END-TO-END by ONE agent**. Splitting them across
 agents causes exactly the failures this collaboration has hit repeatedly:
