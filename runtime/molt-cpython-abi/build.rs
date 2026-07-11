@@ -63,9 +63,31 @@ fn main() {
         }
     }
 
+    // On Linux (rust-lld) the shim archive was force-included via a separate
+    // `--whole-archive <full-path>` link-arg (the old `"linux"` match arm below)
+    // ON TOP of cc's automatic lazy `-lmolt_pyarg_shims`. LLD then pulled the one
+    // archive two ways and hard-errored `duplicate symbol: PyTuple_Pack` (+~20),
+    // so molt-cpython-abi did not even BUILD on native x86_64 Linux. macOS ld64
+    // dedups the `-l`+`-force_load` overlap; LLD does not. A plain
+    // `cargo_metadata(false)` alone over-corrects the other way: cc's link-lib is
+    // what PROPAGATES the shim to downstream cdylibs, so dropping it strands their
+    // references. Fix: suppress cc's metadata (kills the duplicate lazy pull) and
+    // emit ONE propagating `static:+whole-archive` link-lib, so the shim is linked
+    // exactly once and still propagates to this crate's cdylib and the discovery
+    // harness cdylib. (wasm32 already suppresses cc metadata above for the same
+    // double-pull reason.) NB: `nm` still lists ~20 weak/lazy Py* as "missing"
+    // from the harness — those bind at array-op runtime, not init, and do NOT
+    // block PyInit (the native drive reaches `numpy.exceptions` regardless).
+    if target_os == "linux" {
+        build.cargo_metadata(false);
+    }
     build.compile("molt_pyarg_shims");
     if target_arch == "wasm32" {
         println!("cargo:rustc-link-search=native={}", out_dir.display());
+    }
+    if target_os == "linux" {
+        println!("cargo:rustc-link-search=native={}", out_dir.display());
+        println!("cargo:rustc-link-lib=static:+whole-archive=molt_pyarg_shims");
     }
 
     // Single-authority layout enforcement. Compile a tiny translation unit that
@@ -146,9 +168,11 @@ fn main() {
             }
         }
         "linux" => {
-            println!("cargo:rustc-cdylib-link-arg=-Wl,--whole-archive");
-            println!("cargo:rustc-cdylib-link-arg={}", lib_path.display());
-            println!("cargo:rustc-cdylib-link-arg=-Wl,--no-whole-archive");
+            // Handled above by a propagating `static:+whole-archive` link-lib —
+            // see the comment at the `build.compile("molt_pyarg_shims")` site.
+            // A separate `--whole-archive` link-arg here double-pulled the
+            // archive on LLD (`duplicate symbol`) and did not propagate to the
+            // discovery harness cdylib.
         }
         "windows" if target_env == "msvc" => {
             println!(
