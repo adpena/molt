@@ -70,6 +70,10 @@ struct BridgeHeader {
 struct BridgeEntry {
     /// The CPython-layout header C code sees, plus the trailing handle bits.
     header: Box<BridgeHeader>,
+    /// CPython-compatible, object-owned UTF-8 cache. The final byte is always
+    /// NUL and the payload length excludes it. Dropping the bridge entry drops
+    /// this cache, matching the `str` object's C-visible lifetime.
+    utf8: Option<Box<[u8]>>,
 }
 
 /// Global bridge — one per process (extensions are global singletons).
@@ -276,6 +280,7 @@ impl ObjectBridge {
                 py_obj: UnsafeCell::new(PyObject { ob_refcnt, ob_type }),
                 molt_bits: bits,
             }),
+            utf8: None,
         });
 
         // Derive the shared-mutable raw pointer through `UnsafeCell::get()` so
@@ -393,6 +398,24 @@ impl ObjectBridge {
     /// Returns `None` for static singletons or unknown pointers.
     pub fn pyobj_to_handle(&self, ptr: *mut PyObject) -> Option<AbiHandle> {
         pyobj_to_handle_static(ptr).or_else(|| self.from_py.get(&ptr.addr()).copied())
+    }
+
+    /// Return the object-owned, NUL-terminated UTF-8 cache for a bridge string,
+    /// creating it from `bytes` on first use. The returned pointer stays valid
+    /// until `release_pyobj` removes the bridge entry.
+    pub fn unicode_utf8_cache(
+        &mut self,
+        bits: AbiHandle,
+        bytes: &[u8],
+    ) -> Option<(*const u8, usize)> {
+        let entry = self.to_py.get_mut(&bits)?;
+        let cache = entry.utf8.get_or_insert_with(|| {
+            let mut nul_terminated = Vec::with_capacity(bytes.len() + 1);
+            nul_terminated.extend_from_slice(bytes);
+            nul_terminated.push(0);
+            nul_terminated.into_boxed_slice()
+        });
+        Some((cache.as_ptr(), cache.len() - 1))
     }
 
     /// Translate a `*mut PyObject` to a *genuine Molt object handle*, excluding
@@ -614,7 +637,10 @@ fn pyobj_to_handle_static(ptr: *mut PyObject) -> Option<AbiHandle> {
     // their molt-header twins above, so `_Py_NoneStruct is None` / `is True` hold
     // across the header boundary (a real-CPython-header extension resolving
     // `_Py_NoneStruct` is no longer a foreign object). Matrix L1 #3/#4.
-    if std::ptr::eq(ptr, &raw const crate::api::object::_Py_NoneStruct as *const _) {
+    if std::ptr::eq(
+        ptr,
+        &raw const crate::api::object::_Py_NoneStruct as *const _,
+    ) {
         return Some(MoltObject::none().bits());
     }
     if std::ptr::eq(
@@ -961,7 +987,11 @@ unsafe fn c_layout_tuple_from_molt(args_bits: u64) -> *mut PyObject {
         let item_obj = unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(item_bits) };
         // PyTuple_SetItem steals the reference on success.
         if unsafe {
-            crate::api::sequences::PyTuple_SetItem(tuple, i as crate::abi_types::Py_ssize_t, item_obj)
+            crate::api::sequences::PyTuple_SetItem(
+                tuple,
+                i as crate::abi_types::Py_ssize_t,
+                item_obj,
+            )
         } != 0
         {
             unsafe { crate::api::refcount::Py_DECREF(tuple) };
@@ -1646,7 +1676,10 @@ mod bridge_handle_tests {
             unsafe { bridge.molt_value_for_pyobj(proxy) },
             Some(int_bits)
         );
-        assert!(bridge.foreign.is_empty(), "no foreign wrapper for a Molt proxy");
+        assert!(
+            bridge.foreign.is_empty(),
+            "no foreign wrapper for a Molt proxy"
+        );
     }
 
     /// A foreign wrapper's identity round-trips: handed back to C it resolves to
@@ -1673,7 +1706,10 @@ mod bridge_handle_tests {
         bridge.raw_py.insert(w_bits, addr);
         // The wrapper handed back to C resolves to the original C pointer.
         let back = unsafe { bridge.handle_to_pyobj(w_bits) };
-        assert_eq!(back, c_ptr, "foreign wrapper must round-trip to its C object");
+        assert_eq!(
+            back, c_ptr,
+            "foreign wrapper must round-trip to its C object"
+        );
         // Release drops the identity mapping so a fresh wrapper can be minted.
         unsafe { bridge.release_foreign(addr) };
         assert!(!bridge.foreign.contains_key(&addr));
