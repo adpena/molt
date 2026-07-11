@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "claim": "OPT-MATRIX-R4",
+  "scenario": "real native release multi-byte bytes.rfind serial differential",
+  "profile": "release-fast",
+  "hot_path": "200 reverse searches over a 10,000,000-byte haystack with 4-byte overlapping matches",
+  "complexity": {
+    "before": "O(matches * search_progress) forward match enumeration retaining only the final index",
+    "after": "O(haystack_bytes) reverse memmem search with immediate return of the final match"
+  },
+  "benchmark": "tests/benchmarks/bench_bytes_rfind_only.py",
+  "before": {
+    "mode": "memmem::Finder::find_iter forward enumeration",
+    "runs": [5.078, 5.062, 5.016],
+    "median_ms": 5062.0
+  },
+  "after": {
+    "mode": "memmem::rfind reverse search",
+    "runs": [0.266, 0.266, 0.344],
+    "median_ms": 266.0
+  },
+  "held_benches": {
+    "output_parity": true,
+    "empty_needle": true,
+    "single_byte_needle": true,
+    "overlapping_multi_byte_needle": true,
+    "missing_needle": true
+  },
+  "memory_ceiling": {
+    "pass": true,
+    "before_peak_rss_mib": 64.0,
+    "after_peak_rss_mib": 40.0
+  },
+  "proof_queue": {
+    "before": "20260711T192707-opt-matrix-r4-rfind-before-acba002cf4bf4f81",
+    "unit": "20260711T193046-opt-matrix-r4-rfind-unit-a200a8b4a6cf49c2",
+    "after": "20260711T193259-opt-matrix-r4-rfind-after-bd3d99fb82614343",
+    "witness": "20260711T194951-pact-witness-acceptance-d4ed20bdf9dc47aa"
+  },
+  "correctness_seal": {
+    "current_frontier_preserved": true,
+    "frontier": "Split-runtime app has no restoration source for export molt_main kind 0",
+    "link_validation": "135 passed, 3 skipped",
+    "publication_strip_gate_tests": "24 passed with powerplay, table-drift, and artifact-poison gate coverage"
+  }
+}
