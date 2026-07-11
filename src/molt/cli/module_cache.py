@@ -1328,6 +1328,60 @@ def _module_lowering_local_reference_issue(
     )
 
 
+# Class-info fields that are LOWERING-TIME derived memos, not analysis-time semantic
+# inputs: they are lazily written onto the shared ``class_info`` the first time some
+# module's lowering asks for them, and are fully derivable from fields the digest
+# already carries. A cache-hydrated class (whose defining module was a cache hit)
+# lacks the memo while a fresh-lowered one has it, so hashing them makes the
+# ``known_classes`` context-digest component depend on cache-population provenance
+# rather than only on the source -- the residual after the idempotent-AST fix that
+# still missed every module scoping such a class (numpy witness: 26/152 modules).
+#
+# ``exception_subclass`` (``frontend.lowering.class_resolution``) is a bool memo
+# derived entirely from the class's ``mro``/bases (already in the digest) plus the
+# builtin-exception name set (in the frontend tooling fingerprint); it is written
+# onto ``class_info`` the first time ``_class_is_exception_subclass`` runs for that
+# class. Excluding it from the digest is provably lossless (no information the
+# digest lacks) and output-invariant (proven: the lowered ``local_classes`` are
+# byte-identical whether or not the memo was populated), so it can only merge keys
+# that were already producing identical lowerings.
+_CLASS_INFO_DERIVED_MEMO_FIELDS = frozenset({"exception_subclass"})
+
+
+def _class_info_for_context_digest(class_info: Any) -> Any:
+    """Project one ``class_info`` to its provenance-independent semantic fields.
+
+    Drops the lowering-time derived memos (:data:`_CLASS_INFO_DERIVED_MEMO_FIELDS`)
+    so a fresh-lowered class and a cache-hydrated one hash identically. Returns the
+    input unchanged when there is nothing to drop (the common case), and never
+    mutates the shared ``class_info`` (the lowering path still sees the memo).
+    """
+    if not isinstance(class_info, dict):
+        return class_info
+    if _CLASS_INFO_DERIVED_MEMO_FIELDS.isdisjoint(class_info):
+        return class_info
+    return {
+        key: value
+        for key, value in class_info.items()
+        if key not in _CLASS_INFO_DERIVED_MEMO_FIELDS
+    }
+
+
+def _known_classes_for_context_digest(
+    scoped_known_classes: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Digest-only projection of the scoped ``known_classes`` snapshot.
+
+    The lowering path keeps the full ``class_info`` (the memo is a legitimate
+    lowering cache); only the context-digest view drops the derived memos so the
+    shared per-module lowering cache is provenance-independent.
+    """
+    return {
+        class_name: _class_info_for_context_digest(class_info)
+        for class_name, class_info in scoped_known_classes.items()
+    }
+
+
 def _module_lowering_context_payload(
     module_name: str,
     module_path: Path,
@@ -1440,7 +1494,7 @@ def _module_lowering_context_payload(
         "enable_phi": enable_phi,
         "known_modules": known_modules_sorted,
         "direct_call_modules": direct_call_modules_sorted,
-        "known_classes": scoped_known_classes,
+        "known_classes": _known_classes_for_context_digest(scoped_known_classes),
         "stdlib_allowlist": stdlib_allowlist_sorted,
         "known_func_defaults": scoped_known_func_defaults,
         "known_func_kinds": scoped_known_func_kinds,
