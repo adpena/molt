@@ -4503,6 +4503,53 @@ def test_materialize_import_targeted_table_refs_resolves_linked_export(
     assert _single_active_element_entries(updated) == [(3, [0])]
 
 
+def test_materialize_import_targeted_table_refs_resolves_linker_function_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MOLT_WASM_LINK_APPEND_TABLE_REFS", raising=False)
+    output_data = _build_import_targeted_table_ref_module()
+
+    write_varuint = wasm_link._write_varuint
+    sections: list[tuple[int, bytes]] = []
+    type_payload = bytearray()
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x60)
+    type_payload.extend(write_varuint(0))
+    type_payload.extend(write_varuint(0))
+    sections.append((1, bytes(type_payload)))
+    sections.append((3, write_varuint(1) + write_varuint(0)))
+    table_payload = bytearray()
+    table_payload.extend(write_varuint(1))
+    table_payload.append(0x70)
+    table_payload.extend(write_varuint(0))
+    table_payload.extend(write_varuint(16))
+    sections.append((4, bytes(table_payload)))
+    code_payload = bytearray()
+    code_payload.extend(write_varuint(1))
+    code_payload.extend(write_varuint(2))
+    code_payload.append(0x00)
+    code_payload.append(0x0B)
+    sections.append((10, bytes(code_payload)))
+    name_map = bytearray()
+    name_map.extend(write_varuint(1))
+    name_map.extend(write_varuint(0))
+    name_map.extend(wasm_link._write_string("molt_socket_drop"))
+    name_subsection = bytes([1]) + write_varuint(len(name_map)) + bytes(name_map)
+    sections.append((0, wasm_link._build_custom_section("name", name_subsection)))
+    linked_without_runtime_exports = wasm_link._build_sections(sections)
+
+    updated, changed = wasm_link._materialize_import_targeted_table_refs(
+        linked_without_runtime_exports,
+        output_data=output_data,
+        description="test linked wasm after export restoration",
+    )
+
+    assert changed
+    ok, err = wasm_link._validate_elements(updated)
+    assert ok, err
+    assert _single_active_element_entries(updated) == [(3, [0])]
+
+
 def test_materialize_import_targeted_table_refs_resolves_surviving_import(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
