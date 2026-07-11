@@ -20,8 +20,21 @@ use molt_cpython_abi::hooks::RuntimeHooks;
 use std::collections::HashMap;
 use std::os::raw::{c_char, c_int};
 use std::ptr;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError};
+
+/// Serializes EVERY test in this binary. These tests ready static types against
+/// the process-global `PyType_Type` and share the `NEW_CALLS`/`INIT_CALLS`
+/// counters that the metatype tests delta-assert (`before + 1`) — both metatype
+/// tests install `counting_new`/`counting_init` as a class's `tp_new`/`tp_init`,
+/// so under `cargo test`'s parallel THREADS a sibling's instantiation bumps the
+/// shared counter between one test's load and its assert (observed `+2`), and the
+/// shared `PyType_Type` readiness state races too. Production serializes every
+/// C-extension ABI call via the GIL; this lock restores that single-threaded
+/// invariant for the harness (the `TEST_LOCK` convention used across this crate's
+/// integration tests). Serial `--test-threads=1` was already 0-flake — this is a
+/// pure isolation gate, NOT a product change; every assertion is unchanged.
+static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 // A minimal in-test runtime hook table. PyType_Ready builds `tp_dict` via
 // PyDict_New and populates method names via PyUnicode_FromString; both fail
@@ -101,7 +114,11 @@ unsafe extern "C" fn fake_register_c_function(
     fresh_handle()
 }
 
-fn init() {
+/// Acquire the binary-wide serialization guard (poison-tolerant, so one test's
+/// failure never cascades) and install the idempotent ABI + hook state. Every
+/// test binds the returned `MutexGuard` (itself `#[must_use]`) for its body.
+fn init() -> MutexGuard<'static, ()> {
+    let guard = TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     let mut hooks: RuntimeHooks = molt_cpython_abi::hooks::STUB_HOOKS;
     hooks.alloc_dict = fake_alloc_dict;
     hooks.dict_set = fake_dict_set;
@@ -115,6 +132,7 @@ fn init() {
         molt_cpython_abi::bridge::molt_cpython_abi_init();
         let _ = molt_cpython_abi::try_set_runtime_hooks(hooks);
     }
+    guard
 }
 
 unsafe fn ready(tp: *mut PyTypeObject) -> c_int {
@@ -158,7 +176,7 @@ fn method_sentinel() -> PyMethodDef {
 
 #[test]
 fn ready_defaults_missing_base_to_object() {
-    init();
+    let _guard = init();
     let mut tp: PyTypeObject = unsafe { std::mem::zeroed() };
     tp.tp_name = c"root_scalar".as_ptr();
     assert!(tp.tp_base.is_null());
@@ -195,7 +213,7 @@ fn base_hash_addr() -> usize {
 
 #[test]
 fn ready_inherits_slots_through_single_inherit_chain() {
-    init();
+    let _guard = init();
 
     // Root: defines tp_hash and an opaque tp_as_number table; readied first.
     let mut number_methods: [u8; 256] = [0; 256];
@@ -245,7 +263,7 @@ fn ready_inherits_slots_through_single_inherit_chain() {
 
 #[test]
 fn ready_populates_tp_dict_from_methods() {
-    init();
+    let _guard = init();
     let mut methods = [
         method_def(b"reduce\0"),
         method_def(b"item\0"),
@@ -274,7 +292,7 @@ fn ready_populates_tp_dict_from_methods() {
 
 #[test]
 fn ready_computes_single_inheritance_mro() {
-    init();
+    let _guard = init();
     let mut base: PyTypeObject = unsafe { std::mem::zeroed() };
     base.tp_name = c"mro_base".as_ptr();
     assert_eq!(unsafe { ready(&mut base) }, 0);
@@ -309,7 +327,7 @@ fn ready_computes_single_inheritance_mro() {
 
 #[test]
 fn type_lookup_walks_derived_mro_including_base() {
-    init();
+    let _guard = init();
     let mut methods = [method_def(b"shared\0"), method_sentinel()];
     let mut base: PyTypeObject = unsafe { std::mem::zeroed() };
     base.tp_name = c"lookup_base".as_ptr();
@@ -369,7 +387,7 @@ unsafe extern "C" fn dummy_dealloc(_o: *mut PyObject) {}
 
 #[test]
 fn ready_fills_tp_free_for_non_gc_type_like_bound_array_method() {
-    init();
+    let _guard = init();
     let mut tp: PyTypeObject = unsafe { std::mem::zeroed() };
     tp.tp_name = c"numpy._BoundArrayMethod".as_ptr();
     tp.tp_basicsize = 32;
@@ -392,7 +410,7 @@ fn ready_fills_tp_free_for_non_gc_type_like_bound_array_method() {
 
 #[test]
 fn ready_fills_tp_free_for_gc_type_with_gc_del() {
-    init();
+    let _guard = init();
     let mut tp: PyTypeObject = unsafe { std::mem::zeroed() };
     tp.tp_name = c"gc_scalar".as_ptr();
     tp.tp_basicsize = 32;
@@ -408,7 +426,7 @@ fn ready_fills_tp_free_for_gc_type_with_gc_del() {
 
 #[test]
 fn ready_preserves_explicit_tp_free() {
-    init();
+    let _guard = init();
     let mut tp: PyTypeObject = unsafe { std::mem::zeroed() };
     tp.tp_name = c"custom_free".as_ptr();
     tp.tp_basicsize = 32;
@@ -456,7 +474,7 @@ unsafe extern "C" fn counting_init(
 
 #[test]
 fn metatype_inherits_type_call_and_instantiates_via_tp_new_tp_init() {
-    init();
+    let _guard = init();
     // PyType_Type carries CPython's type_call after static init.
     let type_type = &raw mut PyType_Type;
     let type_call = unsafe { (*type_type).tp_call };
@@ -537,7 +555,7 @@ fn metatype_inherits_type_call_and_instantiates_via_tp_new_tp_init() {
 // ---------------------------------------------------------------------------
 #[test]
 fn metatype_with_unresolved_type_base_gains_type_call_when_subtype_readied() {
-    init();
+    let _guard = init();
 
     // An UNRESOLVED `&PyType_Type` placeholder: a zeroed PyTypeObject — exactly
     // what the split app reads when the GOT data reference is not retargeted to
@@ -621,7 +639,7 @@ fn metatype_with_unresolved_type_base_gains_type_call_when_subtype_readied() {
 
 #[test]
 fn type_call_without_tp_new_raises_type_error_not_null_funcref() {
-    init();
+    let _guard = init();
     let type_type = &raw mut PyType_Type;
     let call = unsafe { (*type_type).tp_call }.expect("type_call installed");
     let mut bare: PyTypeObject = unsafe { std::mem::zeroed() };
@@ -676,7 +694,7 @@ unsafe extern "C" fn recording_new(
 /// strands that `tp_new`.
 #[test]
 fn call_object_with_null_args_passes_empty_tuple_not_null_to_tp_new() {
-    init();
+    let _guard = init();
     let type_type = &raw mut PyType_Type;
 
     // Metatype (numpy's `_DTypeMeta` shape): tp_base = &PyType_Type, readied so
@@ -735,7 +753,7 @@ fn call_object_with_null_args_passes_empty_tuple_not_null_to_tp_new() {
 #[test]
 fn typecheck_matches_base_type_like_pyarray_descrcheck() {
     use molt_cpython_abi::api::typeobj::PyObject_TypeCheck;
-    init();
+    let _guard = init();
 
     // Base type: numpy's `PyArrayDescr_Type` ("numpy.dtype").
     let mut descr_base: PyTypeObject = unsafe { std::mem::zeroed() };
@@ -797,7 +815,7 @@ fn typecheck_matches_base_type_like_pyarray_descrcheck() {
 #[test]
 fn isinstance_matches_base_type_via_subtype_walk() {
     use molt_cpython_abi::api::typeobj::PyObject_IsInstance;
-    init();
+    let _guard = init();
 
     let mut base: PyTypeObject = unsafe { std::mem::zeroed() };
     base.tp_name = c"numpy.dtype".as_ptr();
@@ -846,7 +864,7 @@ fn isinstance_matches_base_type_via_subtype_walk() {
 #[test]
 fn issubclass_walks_base_chain() {
     use molt_cpython_abi::api::object::PyObject_IsSubclass;
-    init();
+    let _guard = init();
 
     let mut base: PyTypeObject = unsafe { std::mem::zeroed() };
     base.tp_name = c"numpy.dtype".as_ptr();
