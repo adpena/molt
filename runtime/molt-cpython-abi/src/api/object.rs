@@ -3445,15 +3445,17 @@ pub unsafe extern "C" fn Py_IsInitialized() -> c_int {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyGILState_Ensure() -> c_int {
-    0
+    unsafe { (hooks_or_stubs().gil_ensure)() }
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyGILState_Release(_state: c_int) {}
+pub unsafe extern "C" fn PyGILState_Release(state: c_int) {
+    unsafe { (hooks_or_stubs().gil_leave)(state) }
+}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyGILState_Check() -> c_int {
-    1
+    unsafe { (hooks_or_stubs().gil_check)() }
 }
 
 #[unsafe(no_mangle)]
@@ -3486,11 +3488,17 @@ pub unsafe extern "C" fn _PyThreadState_UncheckedGet() -> *mut PyThreadState {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyEval_SaveThread() -> *mut PyThreadState {
+    unsafe { (hooks_or_stubs().gil_release)() };
     &raw mut MOLT_THREAD_STATE
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyEval_RestoreThread(_tstate: *mut PyThreadState) {}
+pub unsafe extern "C" fn PyEval_RestoreThread(tstate: *mut PyThreadState) {
+    if tstate.is_null() {
+        return;
+    }
+    unsafe { (hooks_or_stubs().gil_restore)() }
+}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyInterpreterState_Get() -> *mut PyInterpreterState {

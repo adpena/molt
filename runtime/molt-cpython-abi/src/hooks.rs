@@ -61,6 +61,11 @@ impl Default for MoltBufferView {
 #[allow(dead_code)]
 #[repr(C)]
 pub struct RuntimeHooks {
+    pub gil_ensure: unsafe extern "C" fn() -> std::os::raw::c_int,
+    pub gil_leave: unsafe extern "C" fn(state: std::os::raw::c_int),
+    pub gil_release: unsafe extern "C" fn(),
+    pub gil_restore: unsafe extern "C" fn(),
+    pub gil_check: unsafe extern "C" fn() -> std::os::raw::c_int,
     // ── Allocation ────────────────────────────────────────────────────────────
     /// Allocate a UTF-8 string object. Returns handle bits, 0 on failure.
     pub alloc_str: unsafe extern "C" fn(data: *const u8, len: usize) -> u64,
@@ -700,9 +705,23 @@ unsafe extern "C" fn stub_object_call(_callable: u64, _args: u64, _kwargs: u64) 
 unsafe extern "C" fn stub_foreign_new(_c_ptr: usize) -> u64 {
     0
 }
+unsafe extern "C" fn stub_gil_ensure() -> std::os::raw::c_int {
+    0
+}
+unsafe extern "C" fn stub_gil_leave(_state: std::os::raw::c_int) {}
+unsafe extern "C" fn stub_gil_release() {}
+unsafe extern "C" fn stub_gil_restore() {}
+unsafe extern "C" fn stub_gil_check() -> std::os::raw::c_int {
+    1
+}
 
 /// A no-op hooks table used when the runtime hasn't registered yet.
 pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
+    gil_ensure: stub_gil_ensure,
+    gil_leave: stub_gil_leave,
+    gil_release: stub_gil_release,
+    gil_restore: stub_gil_restore,
+    gil_check: stub_gil_check,
     alloc_str: stub_alloc_str,
     alloc_bytes: stub_alloc_bytes,
     int_from_i64: stub_int_from_i64,

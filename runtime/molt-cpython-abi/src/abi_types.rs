@@ -409,6 +409,16 @@ pub struct PyMemberDescrObject {
 unsafe impl Send for PyMemberDescrObject {}
 unsafe impl Sync for PyMemberDescrObject {}
 
+/// wrapper_descriptor object - CPython PyWrapperDescrObject.
+#[repr(C)]
+pub struct PyWrapperDescrObject {
+    pub d_common: PyDescrObject,
+    pub d_wrapped: *mut c_void,
+}
+
+unsafe impl Send for PyWrapperDescrObject {}
+unsafe impl Sync for PyWrapperDescrObject {}
+
 /// Module definition — used by `PyModuleDef_Init`.
 #[repr(C)]
 pub struct PyModuleDef {
@@ -1006,6 +1016,9 @@ pub static mut PyMemberDescr_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 pub static mut PyGetSetDescr_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 #[allow(non_upper_case_globals)]
 #[unsafe(no_mangle)]
+pub static mut PyWrapperDescr_Type: PyTypeObject = unsafe { std::mem::zeroed() };
+#[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
 pub static mut PyCapsule_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 #[allow(non_upper_case_globals)]
 #[unsafe(no_mangle)]
@@ -1074,6 +1087,7 @@ pub unsafe fn init_static_types() {
         set_name!(PyMethodDescr_Type, b"method_descriptor\0");
         set_name!(PyMemberDescr_Type, b"member_descriptor\0");
         set_name!(PyGetSetDescr_Type, b"getset_descriptor\0");
+        set_name!(PyWrapperDescr_Type, b"wrapper_descriptor\0");
         set_name!(PyCapsule_Type, b"PyCapsule\0");
         set_name!(PySlice_Type, b"slice\0");
         set_name!(PyMemoryView_Type, b"memoryview\0");

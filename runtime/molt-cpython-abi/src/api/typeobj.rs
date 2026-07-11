@@ -164,6 +164,9 @@ pub unsafe extern "C" fn PyType_Ready(tp: *mut PyTypeObject) -> c_int {
         if add_getset_to_dict(tp) < 0 {
             return -1;
         }
+        if add_operators_to_dict(tp) < 0 {
+            return -1;
+        }
 
         // (4) Compute tp_mro for single inheritance: [tp, ...base.tp_mro...].
         //     A null MRO makes attribute resolution and isinstance checks fail.
@@ -288,6 +291,447 @@ unsafe fn add_methods_to_dict(tp: *mut PyTypeObject) -> c_int {
                 return -1;
             }
             methods = methods.add(1);
+        }
+        0
+    }
+}
+
+#[derive(Clone, Copy)]
+enum SlotWrapper {
+    Direct(DirectSlot),
+    Number(NumberSlot),
+    Sequence(SequenceSlot),
+    Mapping(MappingSlot),
+    Async(AsyncSlot),
+    Buffer(BufferSlot),
+}
+
+#[derive(Clone, Copy)]
+enum DirectSlot {
+    Repr,
+    Hash,
+    Call,
+    Str,
+    GetAttr,
+    SetAttr,
+    RichCompare,
+    Iter,
+    IterNext,
+    DescrGet,
+    DescrSet,
+    Init,
+    Finalize,
+}
+
+#[derive(Clone, Copy)]
+enum NumberSlot {
+    Add,
+    Subtract,
+    Multiply,
+    Remainder,
+    Power,
+    Negative,
+    Positive,
+    Absolute,
+    Bool,
+    Invert,
+    LShift,
+    RShift,
+    And,
+    Xor,
+    Or,
+    Int,
+    Float,
+    InPlaceAdd,
+    InPlaceSubtract,
+    InPlaceMultiply,
+    InPlaceRemainder,
+    InPlacePower,
+    InPlaceLShift,
+    InPlaceRShift,
+    InPlaceAnd,
+    InPlaceXor,
+    InPlaceOr,
+    FloorDivide,
+    TrueDivide,
+    InPlaceFloorDivide,
+    InPlaceTrueDivide,
+    Index,
+    MatrixMultiply,
+    InPlaceMatrixMultiply,
+}
+
+#[derive(Clone, Copy)]
+enum SequenceSlot {
+    Length,
+    Concat,
+    Repeat,
+    Item,
+    AssItem,
+    Contains,
+    InPlaceConcat,
+    InPlaceRepeat,
+}
+
+#[derive(Clone, Copy)]
+enum MappingSlot {
+    Length,
+    Subscript,
+    AssSubscript,
+}
+
+#[derive(Clone, Copy)]
+enum AsyncSlot {
+    Await,
+    Iter,
+    Next,
+}
+
+#[derive(Clone, Copy)]
+enum BufferSlot {
+    Get,
+    Release,
+}
+
+struct SlotWrapperDef {
+    name: &'static [u8],
+    slot: SlotWrapper,
+}
+
+macro_rules! direct {
+    ($name:literal, $slot:ident) => {
+        SlotWrapperDef {
+            name: concat!($name, "\0").as_bytes(),
+            slot: SlotWrapper::Direct(DirectSlot::$slot),
+        }
+    };
+}
+macro_rules! number {
+    ($name:literal, $slot:ident) => {
+        SlotWrapperDef {
+            name: concat!($name, "\0").as_bytes(),
+            slot: SlotWrapper::Number(NumberSlot::$slot),
+        }
+    };
+}
+macro_rules! sequence {
+    ($name:literal, $slot:ident) => {
+        SlotWrapperDef {
+            name: concat!($name, "\0").as_bytes(),
+            slot: SlotWrapper::Sequence(SequenceSlot::$slot),
+        }
+    };
+}
+macro_rules! mapping {
+    ($name:literal, $slot:ident) => {
+        SlotWrapperDef {
+            name: concat!($name, "\0").as_bytes(),
+            slot: SlotWrapper::Mapping(MappingSlot::$slot),
+        }
+    };
+}
+
+static SLOT_WRAPPER_DEFS: &[SlotWrapperDef] = &[
+    direct!("__repr__", Repr),
+    direct!("__hash__", Hash),
+    direct!("__call__", Call),
+    direct!("__str__", Str),
+    direct!("__getattribute__", GetAttr),
+    direct!("__setattr__", SetAttr),
+    direct!("__delattr__", SetAttr),
+    direct!("__lt__", RichCompare),
+    direct!("__le__", RichCompare),
+    direct!("__eq__", RichCompare),
+    direct!("__ne__", RichCompare),
+    direct!("__gt__", RichCompare),
+    direct!("__ge__", RichCompare),
+    direct!("__iter__", Iter),
+    direct!("__next__", IterNext),
+    direct!("__get__", DescrGet),
+    direct!("__set__", DescrSet),
+    direct!("__delete__", DescrSet),
+    direct!("__init__", Init),
+    direct!("__del__", Finalize),
+    SlotWrapperDef {
+        name: b"__buffer__\0",
+        slot: SlotWrapper::Buffer(BufferSlot::Get),
+    },
+    SlotWrapperDef {
+        name: b"__release_buffer__\0",
+        slot: SlotWrapper::Buffer(BufferSlot::Release),
+    },
+    SlotWrapperDef {
+        name: b"__await__\0",
+        slot: SlotWrapper::Async(AsyncSlot::Await),
+    },
+    SlotWrapperDef {
+        name: b"__aiter__\0",
+        slot: SlotWrapper::Async(AsyncSlot::Iter),
+    },
+    SlotWrapperDef {
+        name: b"__anext__\0",
+        slot: SlotWrapper::Async(AsyncSlot::Next),
+    },
+    number!("__add__", Add),
+    number!("__radd__", Add),
+    number!("__sub__", Subtract),
+    number!("__rsub__", Subtract),
+    number!("__mul__", Multiply),
+    number!("__rmul__", Multiply),
+    number!("__mod__", Remainder),
+    number!("__rmod__", Remainder),
+    number!("__pow__", Power),
+    number!("__rpow__", Power),
+    number!("__neg__", Negative),
+    number!("__pos__", Positive),
+    number!("__abs__", Absolute),
+    number!("__bool__", Bool),
+    number!("__invert__", Invert),
+    number!("__lshift__", LShift),
+    number!("__rlshift__", LShift),
+    number!("__rshift__", RShift),
+    number!("__rrshift__", RShift),
+    number!("__and__", And),
+    number!("__rand__", And),
+    number!("__xor__", Xor),
+    number!("__rxor__", Xor),
+    number!("__or__", Or),
+    number!("__ror__", Or),
+    number!("__int__", Int),
+    number!("__float__", Float),
+    number!("__iadd__", InPlaceAdd),
+    number!("__isub__", InPlaceSubtract),
+    number!("__imul__", InPlaceMultiply),
+    number!("__imod__", InPlaceRemainder),
+    number!("__ipow__", InPlacePower),
+    number!("__ilshift__", InPlaceLShift),
+    number!("__irshift__", InPlaceRShift),
+    number!("__iand__", InPlaceAnd),
+    number!("__ixor__", InPlaceXor),
+    number!("__ior__", InPlaceOr),
+    number!("__floordiv__", FloorDivide),
+    number!("__rfloordiv__", FloorDivide),
+    number!("__truediv__", TrueDivide),
+    number!("__rtruediv__", TrueDivide),
+    number!("__ifloordiv__", InPlaceFloorDivide),
+    number!("__itruediv__", InPlaceTrueDivide),
+    number!("__index__", Index),
+    number!("__matmul__", MatrixMultiply),
+    number!("__rmatmul__", MatrixMultiply),
+    number!("__imatmul__", InPlaceMatrixMultiply),
+    mapping!("__len__", Length),
+    mapping!("__getitem__", Subscript),
+    mapping!("__setitem__", AssSubscript),
+    mapping!("__delitem__", AssSubscript),
+    sequence!("__len__", Length),
+    sequence!("__add__", Concat),
+    sequence!("__mul__", Repeat),
+    sequence!("__rmul__", Repeat),
+    sequence!("__getitem__", Item),
+    sequence!("__setitem__", AssItem),
+    sequence!("__delitem__", AssItem),
+    sequence!("__contains__", Contains),
+    sequence!("__iadd__", InPlaceConcat),
+    sequence!("__imul__", InPlaceRepeat),
+];
+
+unsafe fn direct_slot_ptr(tp: *mut PyTypeObject, slot: DirectSlot) -> *mut c_void {
+    macro_rules! fn_ptr {
+        ($field:ident) => {
+            (*tp)
+                .$field
+                .map_or(ptr::null_mut(), |f| f as *const () as *mut c_void)
+        };
+    }
+    unsafe {
+        match slot {
+            DirectSlot::Repr => fn_ptr!(tp_repr),
+            DirectSlot::Hash => fn_ptr!(tp_hash),
+            DirectSlot::Call => fn_ptr!(tp_call),
+            DirectSlot::Str => fn_ptr!(tp_str),
+            DirectSlot::GetAttr => fn_ptr!(tp_getattro),
+            DirectSlot::SetAttr => fn_ptr!(tp_setattro),
+            DirectSlot::RichCompare => fn_ptr!(tp_richcompare),
+            DirectSlot::Iter => fn_ptr!(tp_iter),
+            DirectSlot::IterNext => fn_ptr!(tp_iternext),
+            DirectSlot::DescrGet => fn_ptr!(tp_descr_get),
+            DirectSlot::DescrSet => fn_ptr!(tp_descr_set),
+            DirectSlot::Init => fn_ptr!(tp_init),
+            DirectSlot::Finalize => fn_ptr!(tp_finalize),
+        }
+    }
+}
+
+unsafe fn slot_wrapper_ptr(tp: *mut PyTypeObject, slot: SlotWrapper) -> *mut c_void {
+    unsafe {
+        match slot {
+            SlotWrapper::Direct(slot) => direct_slot_ptr(tp, slot),
+            SlotWrapper::Number(slot) => {
+                let table = (*tp)
+                    .tp_as_number
+                    .cast::<crate::abi_types::PyNumberMethods>();
+                if table.is_null() {
+                    return ptr::null_mut();
+                }
+                match slot {
+                    NumberSlot::Add => (*table).nb_add,
+                    NumberSlot::Subtract => (*table).nb_subtract,
+                    NumberSlot::Multiply => (*table).nb_multiply,
+                    NumberSlot::Remainder => (*table).nb_remainder,
+                    NumberSlot::Power => (*table).nb_power,
+                    NumberSlot::Negative => (*table).nb_negative,
+                    NumberSlot::Positive => (*table).nb_positive,
+                    NumberSlot::Absolute => (*table).nb_absolute,
+                    NumberSlot::Bool => (*table).nb_bool,
+                    NumberSlot::Invert => (*table).nb_invert,
+                    NumberSlot::LShift => (*table).nb_lshift,
+                    NumberSlot::RShift => (*table).nb_rshift,
+                    NumberSlot::And => (*table).nb_and,
+                    NumberSlot::Xor => (*table).nb_xor,
+                    NumberSlot::Or => (*table).nb_or,
+                    NumberSlot::Int => (*table).nb_int,
+                    NumberSlot::Float => (*table).nb_float,
+                    NumberSlot::InPlaceAdd => (*table).nb_inplace_add,
+                    NumberSlot::InPlaceSubtract => (*table).nb_inplace_subtract,
+                    NumberSlot::InPlaceMultiply => (*table).nb_inplace_multiply,
+                    NumberSlot::InPlaceRemainder => (*table).nb_inplace_remainder,
+                    NumberSlot::InPlacePower => (*table).nb_inplace_power,
+                    NumberSlot::InPlaceLShift => (*table).nb_inplace_lshift,
+                    NumberSlot::InPlaceRShift => (*table).nb_inplace_rshift,
+                    NumberSlot::InPlaceAnd => (*table).nb_inplace_and,
+                    NumberSlot::InPlaceXor => (*table).nb_inplace_xor,
+                    NumberSlot::InPlaceOr => (*table).nb_inplace_or,
+                    NumberSlot::FloorDivide => (*table).nb_floor_divide,
+                    NumberSlot::TrueDivide => (*table).nb_true_divide,
+                    NumberSlot::InPlaceFloorDivide => (*table).nb_inplace_floor_divide,
+                    NumberSlot::InPlaceTrueDivide => (*table).nb_inplace_true_divide,
+                    NumberSlot::Index => (*table).nb_index,
+                    NumberSlot::MatrixMultiply => (*table).nb_matrix_multiply,
+                    NumberSlot::InPlaceMatrixMultiply => (*table).nb_inplace_matrix_multiply,
+                }
+            }
+            SlotWrapper::Sequence(slot) => {
+                let table = (*tp)
+                    .tp_as_sequence
+                    .cast::<crate::abi_types::PySequenceMethods>();
+                if table.is_null() {
+                    return ptr::null_mut();
+                }
+                match slot {
+                    SequenceSlot::Length => (*table).sq_length,
+                    SequenceSlot::Concat => (*table).sq_concat,
+                    SequenceSlot::Repeat => (*table).sq_repeat,
+                    SequenceSlot::Item => (*table).sq_item,
+                    SequenceSlot::AssItem => (*table).sq_ass_item,
+                    SequenceSlot::Contains => (*table).sq_contains,
+                    SequenceSlot::InPlaceConcat => (*table).sq_inplace_concat,
+                    SequenceSlot::InPlaceRepeat => (*table).sq_inplace_repeat,
+                }
+            }
+            SlotWrapper::Mapping(slot) => {
+                let table = (*tp)
+                    .tp_as_mapping
+                    .cast::<crate::abi_types::PyMappingMethods>();
+                if table.is_null() {
+                    return ptr::null_mut();
+                }
+                match slot {
+                    MappingSlot::Length => (*table).mp_length,
+                    MappingSlot::Subscript => (*table).mp_subscript,
+                    MappingSlot::AssSubscript => (*table).mp_ass_subscript,
+                }
+            }
+            SlotWrapper::Async(slot) => {
+                let table = (*tp).tp_as_async.cast::<crate::abi_types::PyAsyncMethods>();
+                if table.is_null() {
+                    return ptr::null_mut();
+                }
+                match slot {
+                    AsyncSlot::Await => (*table).am_await,
+                    AsyncSlot::Iter => (*table).am_aiter,
+                    AsyncSlot::Next => (*table).am_anext,
+                }
+            }
+            SlotWrapper::Buffer(slot) => {
+                let table = (*tp).tp_as_buffer.cast::<crate::abi_types::PyBufferProcs>();
+                if table.is_null() {
+                    return ptr::null_mut();
+                }
+                match slot {
+                    BufferSlot::Get => (*table).bf_getbuffer,
+                    BufferSlot::Release => (*table).bf_releasebuffer,
+                }
+            }
+        }
+    }
+}
+
+unsafe fn new_wrapper_descr(
+    tp: *mut PyTypeObject,
+    name: *const c_char,
+    wrapped: *mut c_void,
+) -> *mut PyObject {
+    let common = unsafe { descr_alloc(&raw mut crate::abi_types::PyWrapperDescr_Type, tp, name) };
+    if common.is_null() {
+        return ptr::null_mut();
+    }
+    unsafe {
+        let header = *Box::from_raw(common);
+        let descr = Box::new(crate::abi_types::PyWrapperDescrObject {
+            d_common: header,
+            d_wrapped: wrapped,
+        });
+        let ptr = Box::into_raw(descr).cast::<PyObject>();
+        let handle = crate::bridge::GLOBAL_BRIDGE.register_raw_pyobj(ptr);
+        crate::bridge::GLOBAL_BRIDGE.register_pyobj_for_handle(ptr, handle);
+        ptr
+    }
+}
+
+unsafe fn add_operators_to_dict(tp: *mut PyTypeObject) -> c_int {
+    unsafe {
+        let dict = (*tp).tp_dict;
+        for def in SLOT_WRAPPER_DEFS {
+            let wrapped = slot_wrapper_ptr(tp, def.slot);
+            if wrapped.is_null() {
+                continue;
+            }
+            let name = def.name.as_ptr().cast::<c_char>();
+            if !crate::api::mapping::PyDict_GetItemString(dict, name).is_null() {
+                continue;
+            }
+            let hash_not_implemented = matches!(def.slot, SlotWrapper::Direct(DirectSlot::Hash))
+                && wrapped == PyObject_HashNotImplemented as *const () as *mut c_void;
+            if hash_not_implemented {
+                if crate::api::mapping::PyDict_SetItemString(
+                    dict,
+                    name,
+                    &raw mut crate::abi_types::Py_None,
+                ) < 0
+                {
+                    return -1;
+                }
+            } else {
+                let descr = new_wrapper_descr(tp, name, wrapped);
+                if descr.is_null() {
+                    return -1;
+                }
+                let stored = crate::api::mapping::PyDict_SetItemString(dict, name, descr);
+                crate::api::refcount::Py_DECREF(descr);
+                if stored < 0 {
+                    return -1;
+                }
+            }
+        }
+        if (*tp).tp_hash.is_none()
+            && crate::api::mapping::PyDict_GetItemString(dict, c"__hash__".as_ptr()).is_null()
+            && crate::api::mapping::PyDict_SetItemString(
+                dict,
+                c"__hash__".as_ptr(),
+                &raw mut crate::abi_types::Py_None,
+            ) < 0
+        {
+            return -1;
         }
         0
     }
@@ -2930,6 +3374,11 @@ unsafe fn hash_not_implemented(op: *mut PyObject) -> isize {
         }
     }
     -1
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyObject_HashNotImplemented(op: *mut PyObject) -> isize {
+    unsafe { hash_not_implemented(op) }
 }
 
 /// Generic `tp_hash` slot for the builtin value types (int/bool/float/str/bytes/
