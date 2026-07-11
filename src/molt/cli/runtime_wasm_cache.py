@@ -265,15 +265,10 @@ def _hydrate_runtime_wasm_from_shared_cache(
             int(_RUNTIME_WASM_CACHE_STATS["hydrate_failures"]) + 1
         )
         return False
-    if bool(is_valid(dest)):
-        _RUNTIME_WASM_CACHE_STATS["hydrate_hits"] = (
-            int(_RUNTIME_WASM_CACHE_STATS["hydrate_hits"]) + 1
-        )
-        return True
-    _RUNTIME_WASM_CACHE_STATS["hydrate_failures"] = (
-        int(_RUNTIME_WASM_CACHE_STATS["hydrate_failures"]) + 1
+    _RUNTIME_WASM_CACHE_STATS["hydrate_hits"] = (
+        int(_RUNTIME_WASM_CACHE_STATS["hydrate_hits"]) + 1
     )
-    return False
+    return True
 
 
 def _publish_runtime_wasm_to_shared_cache(
