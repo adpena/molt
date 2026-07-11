@@ -52,6 +52,9 @@ jobs:
       - name: Check suite-honesty ratchet (tracked-fail manifest, down-only)
         run: uv run python3 tools/check_suite_honesty.py
 
+      - name: Check Cargo test execution truth (all binaries, no masking)
+        run: uv run python3 tools/check_cargo_test_truth.py
+
       - name: Check perf-doc freshness (no unstamped stale perf snapshot)
         run: |
           git fetch --no-tags --depth=1 origin main || true
@@ -115,7 +118,7 @@ jobs:
       - name: Run docs architecture tests
         run: |
           python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
-            uv run python3 -m pytest -q tests/test_update_status_blocks.py tests/test_bench_report.py tests/test_check_docs_architecture.py tests/test_compatibility_contract_docs.py tests/test_ecosystem_compat.py tests/test_check_suite_honesty.py tests/test_gen_op_kinds.py tests/test_gen_wasm_abi.py tests/test_gen_intrinsics.py tests/test_molt_dev.py tests/test_structural_audit.py tests/test_call_fact_coverage.py tests/test_llvm_runtime_abi_audit.py tests/tools/test_perf_authority.py tests/tools/test_analysis_capsule.py tests/tools/test_runtime_bridge_test_stubs.py
+            uv run python3 -m pytest -q tests/test_update_status_blocks.py tests/test_bench_report.py tests/test_check_docs_architecture.py tests/test_compatibility_contract_docs.py tests/test_ecosystem_compat.py tests/test_check_suite_honesty.py tests/test_gen_op_kinds.py tests/test_gen_wasm_abi.py tests/test_gen_intrinsics.py tests/test_molt_dev.py tests/test_structural_audit.py tests/test_call_fact_coverage.py tests/test_llvm_runtime_abi_audit.py tests/tools/test_perf_authority.py tests/tools/test_analysis_capsule.py tests/tools/test_runtime_bridge_test_stubs.py tests/tools/test_cargo_test_truth.py
 
       - name: Summarize guarded command hotspots
         if: always()
@@ -255,18 +258,14 @@ jobs:
       - uses: astral-sh/setup-uv@v8.2.0
 
       - name: Run molt-backend unit tests (native backend)
-        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test -p molt-backend --features native-backend --lib
+        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test -p molt-backend --features native-backend --tests --no-fail-fast
 
-      - name: Run molt-tir tests (midend authority + invariants)
-        # TIR owns residual lowering and representation-planning invariants.
-        # Its integration gates, including representation_unification.rs, must
-        # run in CI rather than merely compile under clippy.
-        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test -p molt-tir
-
-      - name: Run molt-runtime call-bind trace integration tests
-        # Keep this integration binary explicit: workspace clippy only compiles
-        # it, and a broad fail-fast runtime run can stop at an earlier binary.
-        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test -p molt-runtime --test debug_call_bind
+      - name: Run every default-feature workspace test binary without masking
+        # Cargo owns test-target discovery. --tests executes library/unit and
+        # integration test executables; --no-fail-fast keeps one executable from
+        # hiding failures in later executables. Feature-specific lanes stay
+        # separate, but no default test target may depend on hand enumeration.
+        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test --workspace --tests --no-fail-fast
 
       - name: Clippy (molt-backend)
         run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo clippy -p molt-backend --features native-backend -- -D warnings
@@ -352,16 +351,16 @@ jobs:
         run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Test molt-snapshot
-        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test -p molt-snapshot
+        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test -p molt-snapshot --no-fail-fast
 
       - name: Test molt-embed
-        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test -p molt-embed
+        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test -p molt-embed --no-fail-fast
 
       - name: Test molt-harness
-        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test -p molt-harness
+        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test -p molt-harness --no-fail-fast
 
       - name: Test molt-runtime-protobuf
-        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test -p molt-runtime-protobuf
+        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test -p molt-runtime-protobuf --no-fail-fast
 
       - name: Test molt-lang-cpython-abi (incl. buffer-export allocation-budget gate)
         # Runs the crate's lib unit tests, which include
@@ -458,7 +457,7 @@ jobs:
       - name: Run LLVM lowering + int-overflow regression tests
         run: |
           python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
-            cargo test -p molt-backend --features "native-backend llvm" --lib llvm_backend::lowering
+            cargo test -p molt-backend --features "native-backend llvm" --lib llvm_backend::lowering --no-fail-fast
 
       - name: Clippy (molt-backend, llvm feature)
         run: |
