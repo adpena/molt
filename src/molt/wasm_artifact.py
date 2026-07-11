@@ -8,6 +8,8 @@ from molt._wasm_abi_generated import WASM_TABLE_REF_EXPORT_PREFIX
 
 WASM_HEADER = b"\x00asm\x01\x00\x00\x00"
 
+WASM_FINAL_ARTIFACT_FORBIDDEN_CUSTOM_SECTIONS = frozenset({"linking"})
+
 WASM_SECTION_NAMES: dict[int, str] = {
     0: "custom",
     1: "type",
@@ -159,6 +161,65 @@ def _read_wasm_custom_section_name(payload: bytes) -> str:
     except (UnicodeDecodeError, ValueError):
         return "<unparseable>"
     return name
+
+
+def wasm_custom_section_names(data: bytes) -> tuple[str, ...]:
+    return tuple(
+        _read_wasm_custom_section_name(payload)
+        for section_id, payload in _parse_wasm_sections(data)
+        if section_id == 0
+    )
+
+
+def is_wasm_debug_custom_section(name: str) -> bool:
+    return name == "name" or name.startswith(".debug")
+
+
+def is_wasm_final_artifact_forbidden_custom_section(name: str) -> bool:
+    return (
+        name in WASM_FINAL_ARTIFACT_FORBIDDEN_CUSTOM_SECTIONS
+        or name.startswith("reloc.")
+    )
+
+
+def strip_wasm_publication_sections(
+    data: bytes,
+    *,
+    final_artifact: bool,
+    preserve_debug: bool,
+) -> bytes:
+    sections = _parse_wasm_sections(data)
+    kept: list[tuple[int, bytes]] = []
+    changed = False
+    for section_id, payload in sections:
+        if section_id != 0:
+            kept.append((section_id, payload))
+            continue
+        name = _read_wasm_custom_section_name(payload)
+        should_strip = (
+            final_artifact
+            and is_wasm_final_artifact_forbidden_custom_section(name)
+        ) or (not preserve_debug and is_wasm_debug_custom_section(name))
+        if should_strip:
+            changed = True
+            continue
+        kept.append((section_id, payload))
+    return _build_wasm_sections(kept) if changed else data
+
+
+def wasm_publication_policy_violations(
+    data: bytes,
+    *,
+    final_artifact: bool,
+    preserve_debug: bool,
+) -> tuple[str, ...]:
+    violations: list[str] = []
+    for name in wasm_custom_section_names(data):
+        if final_artifact and is_wasm_final_artifact_forbidden_custom_section(name):
+            violations.append(name)
+        elif not preserve_debug and is_wasm_debug_custom_section(name):
+            violations.append(name)
+    return tuple(violations)
 
 
 def parse_wasm_section_spans(data: bytes) -> list[WasmSectionSpan]:
