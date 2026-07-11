@@ -99,6 +99,11 @@ fn limited_tracker_memory_limit() {
 
 #[test]
 fn env_var_init_installs_tracker() {
+    let _g = ENV_GUARD
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    clear_all_resource_env();
+
     // Set the env var
     unsafe { std::env::set_var("MOLT_RESOURCE_MAX_MEMORY", "1048576") };
     unsafe { std::env::set_var("MOLT_RESOURCE_MAX_ALLOCATIONS", "1000") };
@@ -117,8 +122,7 @@ fn env_var_init_installs_tracker() {
     assert_eq!(max_alloc, Some(1000));
 
     // Clean up
-    unsafe { std::env::remove_var("MOLT_RESOURCE_MAX_MEMORY") };
-    unsafe { std::env::remove_var("MOLT_RESOURCE_MAX_ALLOCATIONS") };
+    clear_all_resource_env();
 }
 
 /// End-to-end demonstration: `MOLT_MEMORY_LIMIT=64M` set BEFORE runtime init
