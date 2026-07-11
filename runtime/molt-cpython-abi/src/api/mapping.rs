@@ -725,6 +725,88 @@ pub unsafe extern "C" fn PyDict_Check(op: *mut PyObject) -> c_int {
     }
 }
 
+/// Return `Py_True`/`Py_False` as a new reference (richcompare contract).
+#[inline]
+fn dict_richcmp_bool(b: bool) -> *mut PyObject {
+    let res = if b {
+        (&raw mut crate::abi_types::Py_True).cast::<PyObject>()
+    } else {
+        (&raw mut crate::abi_types::Py_False).cast::<PyObject>()
+    };
+    unsafe { crate::api::refcount::Py_INCREF(res) };
+    res
+}
+
+/// CPython `Objects/dictobject.c` `dict_equal`: 1 = equal, 0 = unequal, -1 =
+/// error. Equal iff same length AND every `(key, aval)` of `a` has a `key` in
+/// `b` whose value compares `==`. Guards `aval`/`bval` with a temporary
+/// reference across the (re-entrant) value comparison, exactly as CPython does.
+unsafe fn dict_equal(a: *mut PyObject, b: *mut PyObject) -> c_int {
+    const PY_EQ: c_int = 2;
+    let alen = unsafe { PyDict_Size(a) };
+    let blen = unsafe { PyDict_Size(b) };
+    if alen < 0 || blen < 0 {
+        return -1;
+    }
+    if alen != blen {
+        return 0;
+    }
+    let mut pos: Py_ssize_t = 0;
+    let mut key: *mut PyObject = ptr::null_mut();
+    let mut aval: *mut PyObject = ptr::null_mut();
+    while unsafe { PyDict_Next(a, &raw mut pos, &raw mut key, &raw mut aval) } != 0 {
+        // Hold `aval` across the comparison (it may mutate `a`).
+        unsafe { crate::api::refcount::Py_INCREF(aval) };
+        let bval = unsafe { PyDict_GetItem(b, key) }; // borrowed; NULL if absent
+        if bval.is_null() {
+            unsafe { crate::api::refcount::Py_DECREF(aval) };
+            return 0; // key absent in `b` -> dicts unequal
+        }
+        unsafe { crate::api::refcount::Py_INCREF(bval) };
+        let cmp = unsafe { crate::api::typeobj::PyObject_RichCompareBool(aval, bval, PY_EQ) };
+        unsafe {
+            crate::api::refcount::Py_DECREF(aval);
+            crate::api::refcount::Py_DECREF(bval);
+        }
+        if cmp <= 0 {
+            return cmp; // 0 = values differ (unequal), -1 = error (already set)
+        }
+    }
+    1
+}
+
+/// CPython `Objects/dictobject.c` `dict_richcompare` — dicts implement only
+/// EQ/NE (every ordering op returns `NotImplemented`, which `do_richcompare`
+/// turns into a `TypeError`). Without this slot two *distinct* equal dict objects
+/// compare unequal by object identity in `do_richcompare` — the same zeroed-shell
+/// defect the tuple/list slots close (the coordinator's container-sibling class).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_dict_richcompare(
+    v: *mut PyObject,
+    w: *mut PyObject,
+    op: c_int,
+) -> *mut PyObject {
+    const PY_EQ: c_int = 2;
+    const PY_NE: c_int = 3;
+
+    if (op != PY_EQ && op != PY_NE)
+        || unsafe { PyDict_Check(v) } == 0
+        || unsafe { PyDict_Check(w) } == 0
+    {
+        // Ordering, or a non-dict operand: defer with NotImplemented.
+        let ni = &raw mut crate::abi_types::Py_NotImplementedSentinel;
+        unsafe { crate::api::refcount::Py_INCREF(ni) };
+        return ni;
+    }
+
+    let cmp = unsafe { dict_equal(v, w) };
+    if cmp < 0 {
+        return ptr::null_mut(); // comparison raised; exception already set
+    }
+    let equal = cmp == 1;
+    dict_richcmp_bool(if op == PY_EQ { equal } else { !equal })
+}
+
 /// Dispatch a dict-iteration op through the runtime dict authority.
 ///
 /// Ignoring `op` and returning an empty dict/list (the previous behavior) is
