@@ -5,7 +5,10 @@
 //! most common format codes: `i`, `l`, `d`, `f`, `s`, `z`, `s#`, `O`, `p`,
 //! `n`, `L`, `K`, `b`, `B`, `H`, `I`, `k`, `y`, `y#`, `C`.
 
-use crate::abi_types::{MoltTypeTag, Py_ssize_t, PyBaseExceptionObject, PyObject, PyTypeObject};
+use crate::abi_types::{
+    MoltTypeTag, Py_buffer, Py_complex, Py_ssize_t, PyBaseExceptionObject, PyObject, PyTypeObject,
+    PyBUF_SIMPLE, PyBUF_WRITABLE,
+};
 use crate::bridge::GLOBAL_BRIDGE;
 use molt_lang_obj_model::MoltObject;
 use std::ffi::{CStr, c_void};
@@ -811,6 +814,7 @@ pub unsafe extern "C" fn molt_pyarg_parse_tuple_inner(
                 min_units = arg_idx;
                 continue;
             }
+            '$' => continue,
             ':' | ';' => break,
             '(' | ')' => continue,
             _ => {}
@@ -949,15 +953,140 @@ pub unsafe extern "C" fn molt_pyarg_parse_tuple_inner(
                 };
                 write_out!(f32, v);
             }
+            'D' => {
+                let py_ptr = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) };
+                let value = unsafe { crate::api::numbers::PyComplex_AsCComplex(py_ptr) };
+                if !unsafe { PyErr_Occurred() }.is_null() {
+                    return 0;
+                }
+                write_out!(Py_complex, value);
+            }
+            'e' => {
+                if i >= fmt.len() || (fmt[i] != b's' && fmt[i] != b't') {
+                    unsafe { set_parse_format_error() };
+                    return 0;
+                }
+                let accepts_bytes = fmt[i] == b't';
+                i += 1;
+                let has_len = i < fmt.len() && fmt[i] == b'#';
+                if has_len {
+                    i += 1;
+                }
+                let encoding = outs_slice
+                    .get(out_idx)
+                    .copied()
+                    .unwrap_or(ptr::null_mut())
+                    .cast::<c_char>();
+                let dest = outs_slice
+                    .get(out_idx + 1)
+                    .copied()
+                    .unwrap_or(ptr::null_mut())
+                    .cast::<*mut c_char>();
+                let len_dest = if has_len {
+                    outs_slice
+                        .get(out_idx + 2)
+                        .copied()
+                        .unwrap_or(ptr::null_mut())
+                        .cast::<Py_ssize_t>()
+                } else {
+                    ptr::null_mut()
+                };
+                out_idx += if has_len { 3 } else { 2 };
+                if dest.is_null() {
+                    unsafe { set_parse_format_error() };
+                    return 0;
+                }
+                let py_ptr = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) };
+                let mut owned_bytes = ptr::null_mut();
+                let source = if accepts_bytes && arg_is_bytes(&obj, bits) {
+                    py_ptr
+                } else if arg_is_str(&obj, bits) {
+                    owned_bytes = unsafe {
+                        crate::api::strings::PyUnicode_AsEncodedString(
+                            py_ptr,
+                            if encoding.is_null() { c"utf-8".as_ptr() } else { encoding },
+                            c"strict".as_ptr(),
+                        )
+                    };
+                    if owned_bytes.is_null() {
+                        return 0;
+                    }
+                    owned_bytes
+                } else {
+                    unsafe { set_parse_type_error("argument must be str") };
+                    return 0;
+                };
+                let mut source_ptr = ptr::null_mut();
+                let mut source_len = 0;
+                if unsafe {
+                    crate::api::strings::PyBytes_AsStringAndSize(
+                        source,
+                        &raw mut source_ptr,
+                        &raw mut source_len,
+                    )
+                } != 0
+                {
+                    unsafe { crate::api::refcount::Py_XDECREF(owned_bytes) };
+                    return 0;
+                }
+                if !has_len && unsafe {
+                    std::slice::from_raw_parts(source_ptr.cast::<u8>(), source_len as usize)
+                }
+                .contains(&0)
+                {
+                    unsafe { crate::api::refcount::Py_XDECREF(owned_bytes) };
+                    unsafe { set_parse_type_error("encoded string without null bytes") };
+                    return 0;
+                }
+                let required = source_len as usize + 1;
+                let buffer = unsafe { *dest };
+                let output = if buffer.is_null() {
+                    unsafe { crate::api::memory::PyMem_Malloc(required) }.cast::<c_char>()
+                } else {
+                    if !has_len || len_dest.is_null() || unsafe { *len_dest } < required as Py_ssize_t {
+                        unsafe { crate::api::refcount::Py_XDECREF(owned_bytes) };
+                        unsafe { set_parse_value_error("encoded string too long") };
+                        return 0;
+                    }
+                    buffer
+                };
+                if output.is_null() {
+                    unsafe { crate::api::refcount::Py_XDECREF(owned_bytes) };
+                    return 0;
+                }
+                unsafe {
+                    ptr::copy_nonoverlapping(source_ptr, output, source_len as usize);
+                    *output.add(source_len as usize) = 0;
+                    *dest = output;
+                    if has_len && !len_dest.is_null() {
+                        *len_dest = source_len;
+                    }
+                    crate::api::refcount::Py_XDECREF(owned_bytes);
+                }
+            }
             's' | 'z' => {
                 // CPython 's' requires str; 'z' also accepts None (→ NULL).
                 // A non-str non-None object is a TypeError — NOT a fabricated
                 // empty string (the prior `molt_str_ptr` theater on an int/list).
                 let has_len = i < fmt.len() && fmt[i] == b'#';
+                let has_buffer = i < fmt.len() && fmt[i] == b'*';
                 if obj.is_none() {
                     if ch != 'z' {
                         unsafe { set_parse_type_error("argument must be str, not None") };
                         return 0;
+                    }
+                    if has_buffer {
+                        i += 1;
+                        let view = outs_slice
+                            .get(out_idx)
+                            .copied()
+                            .unwrap_or(ptr::null_mut())
+                            .cast::<Py_buffer>();
+                        out_idx += 1;
+                        if !view.is_null() {
+                            unsafe { ptr::write_bytes(view, 0, 1) };
+                        }
+                        continue;
                     }
                     write_out!(*const c_char, std::ptr::null());
                     if has_len {
@@ -965,6 +1094,30 @@ pub unsafe extern "C" fn molt_pyarg_parse_tuple_inner(
                         write_out!(Py_ssize_t, 0 as Py_ssize_t);
                     }
                 } else if arg_is_str(&obj, bits) {
+                    if has_buffer {
+                        i += 1;
+                        let view = outs_slice
+                            .get(out_idx)
+                            .copied()
+                            .unwrap_or(ptr::null_mut())
+                            .cast::<Py_buffer>();
+                        out_idx += 1;
+                        let py_ptr = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) };
+                        if unsafe {
+                            crate::api::buffer::PyBuffer_FillInfo(
+                                view,
+                                py_ptr,
+                                molt_str_ptr(bits).cast_mut().cast(),
+                                molt_str_len(bits) as Py_ssize_t,
+                                1,
+                                PyBUF_SIMPLE,
+                            )
+                        } != 0
+                        {
+                            return 0;
+                        }
+                        continue;
+                    }
                     if !has_len && str_has_interior_nul(bits) {
                         unsafe { set_parse_value_error("embedded null character") };
                         return 0;
@@ -983,6 +1136,24 @@ pub unsafe extern "C" fn molt_pyarg_parse_tuple_inner(
                 // CPython 'y' requires a bytes-like object (buffer protocol), NOT
                 // the str authority. Non-'#' form rejects an interior NUL.
                 let has_len = i < fmt.len() && fmt[i] == b'#';
+                let has_buffer = i < fmt.len() && fmt[i] == b'*';
+                if has_buffer {
+                    i += 1;
+                    let view = outs_slice
+                        .get(out_idx)
+                        .copied()
+                        .unwrap_or(ptr::null_mut())
+                        .cast::<Py_buffer>();
+                    out_idx += 1;
+                    let py_ptr = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) };
+                    if unsafe {
+                        crate::api::buffer::PyObject_GetBuffer(py_ptr, view, PyBUF_SIMPLE)
+                    } != 0
+                    {
+                        return 0;
+                    }
+                    continue;
+                }
                 if arg_is_bytes(&obj, bits) {
                     if !has_len && bytes_has_interior_nul(bits) {
                         unsafe { set_parse_value_error("embedded null byte") };
@@ -1005,6 +1176,15 @@ pub unsafe extern "C" fn molt_pyarg_parse_tuple_inner(
                     write_out!(*mut PyObject, py_ptr);
                 } else {
                     unsafe { set_parse_type_error("argument must be bytes") };
+                    return 0;
+                }
+            }
+            'Y' => {
+                let py_ptr = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) };
+                if unsafe { crate::api::strings::PyByteArray_Check(py_ptr) } != 0 {
+                    write_out!(*mut PyObject, py_ptr);
+                } else {
+                    unsafe { set_parse_type_error("argument must be bytearray") };
                     return 0;
                 }
             }
@@ -1045,6 +1225,26 @@ pub unsafe extern "C" fn molt_pyarg_parse_tuple_inner(
                         };
                         return 0;
                     }
+                }
+            }
+            'w' => {
+                if i >= fmt.len() || fmt[i] != b'*' {
+                    unsafe { set_parse_format_error() };
+                    return 0;
+                }
+                i += 1;
+                let view = outs_slice
+                    .get(out_idx)
+                    .copied()
+                    .unwrap_or(ptr::null_mut())
+                    .cast::<Py_buffer>();
+                out_idx += 1;
+                let py_ptr = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) };
+                if unsafe {
+                    crate::api::buffer::PyObject_GetBuffer(py_ptr, view, PyBUF_WRITABLE)
+                } != 0
+                {
+                    return 0;
                 }
             }
             'O' => {

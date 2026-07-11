@@ -12,6 +12,7 @@
  */
 
 #include <errno.h>
+#include <limits.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stddef.h>
@@ -23,8 +24,6 @@
 typedef struct _object PyObject;
 typedef ptrdiff_t Py_ssize_t;
 
-/* Maximum number of output pointers PyArg_ParseTuple can write. */
-#define MOLT_PYARG_MAX_OUTS 32
 #define MOLT_VARARG_MAX_ARGS 64
 
 extern PyObject *PyObject_GetAttr(PyObject *op, PyObject *name);
@@ -38,9 +37,12 @@ extern PyObject *PyLong_FromLongLong(long long value);
 extern PyObject *PyLong_FromUnsignedLongLong(unsigned long long value);
 extern PyObject *PyLong_FromSsize_t(Py_ssize_t value);
 extern PyObject *PyFloat_FromDouble(double value);
+typedef struct { double real; double imag; } Py_complex;
+extern PyObject *PyComplex_FromCComplex(Py_complex value);
 extern PyObject *PyBool_FromLong(long value);
 extern PyObject *PyUnicode_FromString(const char *s);
 extern PyObject *PyUnicode_FromStringAndSize(const char *s, Py_ssize_t size);
+extern PyObject *PyUnicode_FromOrdinal(int ordinal);
 extern const char *PyUnicode_AsUTF8(PyObject *op);
 extern PyObject *PyObject_Repr(PyObject *op);
 extern PyObject *PyObject_Str(PyObject *op);
@@ -72,8 +74,8 @@ extern int molt_pyarg_parse_tuple_inner(
  * Stops at ':', ';', or end of string. Optional fields after '|' still have
  * output pointers when present, so collect them for the shared Rust parser.
  */
-static int count_format_outs(const char *fmt) {
-    int count = 0;
+static size_t count_format_outs(const char *fmt) {
+    size_t count = 0;
     for (const char *p = fmt; *p; p++) {
         char c = *p;
         if (c == ':' || c == ';') break;
@@ -87,21 +89,33 @@ static int count_format_outs(const char *fmt) {
             break;
         case 's': case 'z': case 'y':
             count++;
-            if (*(p+1) == '#') { count++; p++; } /* s#, z#, y# take two outs */
+            if (*(p+1) == '#' || *(p+1) == '*') {
+                if (*(p+1) == '#') count++;
+                p++;
+            }
+            break;
+        case 'e':
+            count += 2;
+            if (*(p+1) == 's' || *(p+1) == 't') p++;
+            if (*(p+1) == '#') { count++; p++; }
+            break;
+        case 'w':
+            count++;
+            if (*(p+1) == '*') p++;
             break;
         case 'i': case 'l': case 'd': case 'f':
         case 'p': case 'n': case 'L': case 'K': case 'H':
         case 'I': case 'k': case 'B': case 'C': case 'b':
-        case 'h': case 'c': case 'S': case 'U':
+        case 'h': case 'c': case 'S': case 'Y': case 'U': case 'D':
             count++;
             break;
-        case '(': case ')': case '|': case 'e': case 'w':
+        case '(': case ')': case '|': case '$':
             break; /* skip grouping / optional-marker / encoding flags */
         default:
             break;
         }
     }
-    return count < MOLT_PYARG_MAX_OUTS ? count : MOLT_PYARG_MAX_OUTS;
+    return count;
 }
 
 /*
@@ -117,12 +131,18 @@ static int collect_and_dispatch(
     const char *format,
     va_list ap)
 {
-    void *outs[MOLT_PYARG_MAX_OUTS];
-    int n = count_format_outs(format);
-    for (int i = 0; i < n; i++) {
+    size_t n = count_format_outs(format);
+    void **outs = n == 0 ? NULL : (void **)malloc(n * sizeof(*outs));
+    if (n != 0 && outs == NULL) {
+        PyErr_SetString(&PyExc_TypeError, "PyArg_ParseTuple vararg allocation failed");
+        return 0;
+    }
+    for (size_t i = 0; i < n; i++) {
         outs[i] = va_arg(ap, void *);
     }
-    return molt_pyarg_parse_tuple_inner(args, format, outs, n);
+    int result = molt_pyarg_parse_tuple_inner(args, format, outs, (int)n);
+    free(outs);
+    return result;
 }
 
 int PyArg_VaParseTupleAndKeywords(
@@ -405,6 +425,14 @@ static PyObject *molt_buildvalue_parse_item(const char **cursor, va_list *ap) {
     case 'd':
     case 'f':
         return PyFloat_FromDouble(va_arg(*ap, double));
+    case 'D': {
+        Py_complex *value = va_arg(*ap, Py_complex *);
+        if (value == NULL) {
+            PyErr_SetString(&PyExc_TypeError, "Py_BuildValue 'D' received NULL");
+            return NULL;
+        }
+        return PyComplex_FromCComplex(*value);
+    }
     case 'p':
         return PyBool_FromLong(va_arg(*ap, int) != 0);
     case 's':
@@ -455,18 +483,8 @@ static PyObject *molt_buildvalue_parse_item(const char **cursor, va_list *ap) {
         return PyBytes_FromStringAndSize(&ch, 1);
     }
     case 'C': {
-        // A single character, returned as a length-1 str. The varargs value
-        // is promoted to int; encode ASCII directly and reject non-ASCII
-        // rather than mis-encoding (a full ordinal path would need
-        // PyUnicode_FromOrdinal).
         int ordinal = va_arg(*ap, int);
-        if (ordinal < 0 || ordinal > 0x7f) {
-            PyErr_SetString(&PyExc_TypeError,
-                            "Py_BuildValue 'C' supports only ASCII ordinals");
-            return NULL;
-        }
-        char ch = (char)ordinal;
-        return PyUnicode_FromStringAndSize(&ch, 1);
+        return PyUnicode_FromOrdinal(ordinal);
     }
     default: {
         char detail[64];
@@ -579,15 +597,20 @@ int PyArg_UnpackTuple(
 {
     (void)name;
     (void)min;
-    /* Build a synthetic "OOO..." format with up to `max` entries. */
-    char fmt[MOLT_PYARG_MAX_OUTS + 4];
-    int take = (int)(max < MOLT_PYARG_MAX_OUTS ? max : MOLT_PYARG_MAX_OUTS);
+    if (max < 0 || max > INT_MAX - 2) return 0;
+    int take = (int)max;
+    char *fmt = (char *)malloc((size_t)take + 2);
+    void **outs = take == 0 ? NULL : (void **)malloc((size_t)take * sizeof(*outs));
+    if (fmt == NULL || (take != 0 && outs == NULL)) {
+        free(fmt);
+        free(outs);
+        PyErr_SetString(&PyExc_TypeError, "PyArg_UnpackTuple allocation failed");
+        return 0;
+    }
     int i;
     for (i = 0; i < take; i++) fmt[i] = 'O';
-    fmt[i] = '|'; /* mark remaining as optional */
+    fmt[i] = '|';
     fmt[i+1] = '\0';
-
-    void *outs[MOLT_PYARG_MAX_OUTS];
     va_list ap;
     va_start(ap, max);
     for (int j = 0; j < take; j++) {
@@ -595,7 +618,10 @@ int PyArg_UnpackTuple(
     }
     va_end(ap);
 
-    return molt_pyarg_parse_tuple_inner(args, fmt, outs, take);
+    int result = molt_pyarg_parse_tuple_inner(args, fmt, outs, take);
+    free(outs);
+    free(fmt);
+    return result;
 }
 
 static PyObject *molt_call_with_collected_args(PyObject *callable, va_list ap) {

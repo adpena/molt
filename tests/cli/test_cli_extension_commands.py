@@ -1286,6 +1286,22 @@ def test_cpython_abi_variadic_shim_owns_variadic_exports() -> None:
     assert "vsnprintf(str, size, format, ap)" in shim
 
 
+def test_cpython_abi_pyarg_format_parity_masks() -> None:
+    shim = (ROOT / "runtime/molt-cpython-abi/shims/pyarg_variadic.c").read_text()
+    parser = (ROOT / "runtime/molt-cpython-abi/src/api/errors.rs").read_text()
+
+    assert "MOLT_PYARG_MAX_OUTS" not in shim
+    assert "void **outs = n == 0 ? NULL : (void **)malloc" in shim
+    assert "PyComplex_FromCComplex(*value)" in shim
+    assert "PyUnicode_FromOrdinal(ordinal)" in shim
+    for unit in ("'D'", "'Y'", "'w'", "'e'"):
+        assert unit in parser
+    assert "PyBUF_WRITABLE" in parser
+    assert "PyObject_GetBuffer(py_ptr, view, PyBUF_WRITABLE)" in parser
+    assert "PyUnicode_AsEncodedString" in parser
+    assert "PyByteArray_Check" in parser
+
+
 def test_extension_build_emits_wheel_and_manifest(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / "extproj"
     project_root.mkdir()
