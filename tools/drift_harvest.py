@@ -37,7 +37,6 @@ from __future__ import annotations
 import argparse
 import os
 import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -45,6 +44,49 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Worktrees that must never be pruned regardless of freshness.
 _PROTECTED_SUBSTRINGS = ("OneDrive", "recover-mainclean-20260707", "molt-cli")
+
+
+def _contains_path(parent: Path, child: Path) -> bool:
+    try:
+        child.resolve().relative_to(parent.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _leave_prune_targets(targets: list[Path]) -> Path:
+    current = Path.cwd().resolve()
+    if not any(_contains_path(target, current) for target in targets):
+        return current
+    destination = REPO_ROOT.parent.resolve()
+    if any(_contains_path(target, destination) for target in targets):
+        raise RuntimeError(
+            "cannot prune a worktree containing the process cwd; rerun from "
+            f"outside the targets, for example: Set-Location {REPO_ROOT.parent}"
+        )
+    os.chdir(destination)
+    return destination
+
+
+def _sweep_empty_orphan_worktree_dirs() -> list[Path]:
+    registered = {Path(row["path"]).resolve() for row in _worktrees()}
+    removed: list[Path] = []
+    canonical_root = REPO_ROOT.parent.resolve()
+    roots = (canonical_root, (canonical_root / "worktrees").resolve())
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for candidate in root.iterdir():
+            if not candidate.is_dir() or candidate.resolve() in registered:
+                continue
+            if root == canonical_root and not candidate.name.startswith("wt-"):
+                continue
+            try:
+                candidate.rmdir()
+            except OSError:
+                continue
+            removed.append(candidate)
+    return removed
 
 
 def _git(args: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess:
@@ -298,6 +340,15 @@ def main() -> int:
     if not args.prune:
         return 0
 
+    prune_targets = [
+        Path(r["path"])
+        for r in rows
+        if r["state"] == "SUPERSEDED"
+        or (args.include_signal and r["state"] == "SIGNAL" and r["path"] in captured)
+    ]
+    cleanup_cwd = _leave_prune_targets(prune_targets)
+    print(f"cleanup cwd: {cleanup_cwd}")
+
     removed = 0
     deleted = 0
     for r in rows:
@@ -326,6 +377,7 @@ def main() -> int:
                 if _git(["branch", flag, r["branch"]]).returncode == 0:
                     deleted += 1
     _git(["worktree", "prune"])
+    swept = _sweep_empty_orphan_worktree_dirs()
     # Delete any remaining fully-merged branches (not checked out anywhere).
     merged = _git(["branch", "--merged", "origin/main", "--format=%(refname:short)"]).stdout
     for b in merged.splitlines():
@@ -334,6 +386,7 @@ def main() -> int:
             if _git(["branch", "-d", b]).returncode == 0:
                 deleted += 1
     print(f"pruned worktrees={removed} branches={deleted}")
+    print(f"swept empty orphan worktree dirs={len(swept)}")
     print(f"remaining worktrees: {len(_worktrees())}")
     return 0
 
