@@ -1018,9 +1018,10 @@ pub unsafe extern "C" fn PyObject_IsTrue(o: *mut PyObject) -> c_int {
     }
     // ── Tier 2: native Molt object. Resolve the handle once (the lock is dropped
     // immediately so the length hooks below never re-enter a held bridge lock). ──
-    let handle = GLOBAL_BRIDGE.lock().pyobj_to_handle(o);
-    if let Some(bits) = handle {
-        let obj = MoltObject::from_bits(bits);
+    let handle = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(o);
+    if let Some(value) = handle {
+        let bits = value.bits();
+        let obj = value.decode();
         // Scalar fast paths — preserved byte-identical.
         if obj.is_none() {
             return 0;
@@ -2015,9 +2016,9 @@ pub unsafe extern "C" fn PyObject_Dir(o: *mut PyObject) -> *mut PyObject {
         }
         return ptr::null_mut();
     }
-    let o_handle = GLOBAL_BRIDGE.lock().pyobj_to_handle(o);
+    let o_handle = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(o);
     let bits = match o_handle {
-        Some(b) => b,
+        Some(value) => value.bits(),
         None => {
             unsafe {
                 crate::api::errors::PyErr_SetString(

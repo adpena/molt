@@ -2129,9 +2129,9 @@ pub unsafe extern "C" fn PyObject_Hash(op: *mut PyObject) -> isize {
     }
     // Molt-native (bridge-managed) objects hash through the runtime hash
     // authority over their handle bits (hash(int) == int, etc.), not tp_hash.
-    let native = crate::bridge::GLOBAL_BRIDGE.lock().pyobj_to_handle(op);
-    if let Some(bits) = native {
-        return crate::bridge::molt_hash_from_bits(bits);
+    let native = crate::bridge::GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(op);
+    if let Some(value) = native {
+        return crate::bridge::molt_hash_from_bits(value.bits());
     }
     // Foreign object: dispatch tp_hash.
     let tp = unsafe { (*op).ob_type };
@@ -2444,9 +2444,9 @@ pub unsafe extern "C" fn PyObject_Repr(op: *mut PyObject) -> *mut PyObject {
     // resolving Some means a genuine Molt handle; None means a foreign C object.
     // Bind the handle in its own statement so the bridge lock is released before
     // `native_stringify` re-enters the bridge (parking_lot mutex is not reentrant).
-    let native = crate::bridge::GLOBAL_BRIDGE.lock().pyobj_to_handle(op);
-    if let Some(bits) = native {
-        return unsafe { native_stringify(bits, true) };
+    let native = crate::bridge::GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(op);
+    if let Some(value) = native {
+        return unsafe { native_stringify(value.bits(), true) };
     }
     // Foreign object: dispatch its own `tp_repr`, else the CPython default
     // "<%s object at %p>" from tp_name + address.
@@ -2480,9 +2480,9 @@ pub unsafe extern "C" fn PyObject_Str(op: *mut PyObject) -> *mut PyObject {
     }
     // Molt-native (bridge-managed) non-str object: runtime str primitive.
     // Release the bridge lock before re-entering the bridge (non-reentrant).
-    let native = crate::bridge::GLOBAL_BRIDGE.lock().pyobj_to_handle(op);
-    if let Some(bits) = native {
-        return unsafe { native_stringify(bits, false) };
+    let native = crate::bridge::GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(op);
+    if let Some(value) = native {
+        return unsafe { native_stringify(value.bits(), false) };
     }
     // Foreign object: dispatch its own `tp_str`, else fall back to repr
     // (CPython: tp_str == NULL -> PyObject_Repr).
@@ -2588,13 +2588,13 @@ unsafe fn native_value_richcompare(
 ) -> Option<*mut PyObject> {
     let (vb, wb) = {
         let bridge = crate::bridge::GLOBAL_BRIDGE.lock();
-        (bridge.pyobj_to_handle(v), bridge.pyobj_to_handle(w))
+        (
+            bridge.molt_handle_for_pyobj(v),
+            bridge.molt_handle_for_pyobj(w),
+        )
     };
     let (vb, wb) = (vb?, wb?);
-    let (mv, mw) = (
-        molt_lang_obj_model::MoltObject::from_bits(vb),
-        molt_lang_obj_model::MoltObject::from_bits(wb),
-    );
+    let (mv, mw) = (vb.decode(), wb.decode());
 
     // Numeric pair (inline int / bool exact in i64; float via f64 — inline ints
     // are 47-bit, exact in f64, so a mixed compare loses nothing).
@@ -2637,7 +2637,7 @@ unsafe fn native_value_richcompare(
         }
         Some(unsafe { std::slice::from_raw_parts(p, len) }.to_vec())
     };
-    if let (Some(a), Some(b)) = (str_bytes(vb), str_bytes(wb)) {
+    if let (Some(a), Some(b)) = (str_bytes(vb.bits()), str_bytes(wb.bits())) {
         return ordering_to_result(a.cmp(&b), op);
     }
 
@@ -2661,7 +2661,7 @@ unsafe fn native_value_richcompare(
         }
         Some(unsafe { std::slice::from_raw_parts(p, len) }.to_vec())
     };
-    if let (Some(a), Some(b)) = (bytes_bytes(vb), bytes_bytes(wb)) {
+    if let (Some(a), Some(b)) = (bytes_bytes(vb.bits()), bytes_bytes(wb.bits())) {
         return ordering_to_result(a.cmp(&b), op);
     }
 
