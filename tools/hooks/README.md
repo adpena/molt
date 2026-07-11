@@ -10,13 +10,15 @@ Claude Code lifecycle points. Full design: `docs/agent/APPARATUS_FROM_COMMA_LAB.
 | Event | Script | Job | Mechanizes |
 |---|---|---|---|
 | `SessionStart` | `session_digest.py` | <5s read-only digest (goal pointer, custody, drift debt, build-wall, standing directives) injected as context; writes the landing-gate window baseline | M01, M09, M67 |
+| `PreToolUse` (write/edit/bash) | `path_guard.py` | refuses mutations and builds targeting the retired OneDrive checkout while allowing reads and canonical `C:\Molt` work | retired-checkout recurring harm |
 | `PreToolUse` (Bash) | `bash_guard.py` | refuses destructive-git-on-shared-checkout, `git add` sweeps, build-bypasses-live-queue, https-push | M17, M18, M20, M27, M19 |
-| `Stop` | `stop_gates.py` -> `landing_gate.py` | land-or-blocker nudge: a substantive turn that landed no commit / queue row / blocker is re-engaged | M12, M05 |
+| `Stop` | `stop_gates.py` -> `session_learning.py` + gates | persists landings/cruxes/frontiers into the memory corpus, warns on uncaptured bug-class learning, then applies the land-or-blocker/triality/verdict gates | M12, M05, M22 |
 
 Supporting: `_common.py` (fail-open wrapper, UTF-8 backstop, locked jsonl,
 git/queue helpers), `waivers.py` (A9 waiver grammar), `../check_gate_flips.py`
 (A9 warn->strict auditor), `../check_gate_liveness.py` (canary: each gate still
-fires on a known-bad fixture).
+fires on a known-bad fixture), and `../recurring_harms.toml` (one canonical
+harm -> guard -> live-canary registry).
 
 ## Non-negotiable invariants
 
@@ -27,6 +29,10 @@ fires on a known-bad fixture).
   allows).
 - **Pure decision surface.** Every hook's `decide()` / `evaluate()` is a pure,
   separately unit-tested function; the fail-open wrapper is thin.
+- **No process actuation.** `tools/apparatus_agent_safety.py --check` scans the
+  hook spine and apparatus guards for termination capability; read-only bounded
+  observations may use `subprocess.run`, but `Popen`, kill/terminate calls,
+  signals, and taskkill-style actuation are forbidden.
 - **Loop-safe + event-triggered.** The `Stop` block is a re-engage NUDGE
   (exit 0), never a wedge: guarded by `stop_hook_active` + a persisted
   `last_block_head` marker (blocks at most once per HEAD state), silent when no

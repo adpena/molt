@@ -27,14 +27,14 @@ import json
 import sys
 
 try:
-    from tools.hooks import _common, landing_gate
-    from tools import triality_gate, magnitude_dismissal_gate
+    from tools.hooks import _common, landing_gate, session_learning
+    from tools import anti_recurrence_gate, triality_gate, magnitude_dismissal_gate
 except Exception:  # pragma: no cover - path-invocation fallback
     import os as _os
 
     sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(__file__))))
-    from tools.hooks import _common, landing_gate
-    from tools import triality_gate, magnitude_dismissal_gate
+    from tools.hooks import _common, landing_gate, session_learning
+    from tools import anti_recurrence_gate, triality_gate, magnitude_dismissal_gate
 
 
 # Ordered Stop-leg gates. Each is a ``(name, evaluate(data, root) -> str|None)``
@@ -62,6 +62,20 @@ def run() -> int:
 
     cwd = data.get("cwd")
     root = _common.repo_root(cwd)
+
+    try:
+        session_learning.record(data, root)
+    except Exception as exc:
+        _common.log_error("stop_gates.session_learning", exc, root)
+
+    try:
+        for finding in anti_recurrence_gate.evaluate(root):
+            print(
+                f"ADVISORY anti-recurrence [{finding.lane}]: {finding.message}",
+                file=sys.stderr,
+            )
+    except Exception as exc:
+        _common.log_error("stop_gates.anti_recurrence", exc, root)
 
     for name, evaluate in GATES:
         try:

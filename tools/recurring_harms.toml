@@ -1,0 +1,43 @@
+schema_version = 1
+
+[[harm]]
+id = "forbidden-checkout-mutation"
+harm = "A cwd reset or explicit path mutates/builds the retired OneDrive checkout."
+guard = "tools.forbidden_checkout_guard"
+canary = "forbidden_checkout_guard.synthetic-onedrive-mutation-refused"
+
+[[harm]]
+id = "agent-process-termination"
+harm = "A guard, gate, or hook gains capability to terminate an agent process."
+guard = "tools.apparatus_agent_safety"
+canary = "apparatus_agent_safety.synthetic-process-actuation-refused"
+
+[[harm]]
+id = "destructive-git-shared-checkout"
+harm = "Destructive git mutates the shared canonical checkout."
+guard = "tools.hooks.bash_guard"
+canary = "bash_guard.destructive-git-on-shared-checkout"
+
+[[harm]]
+id = "disk-fill"
+harm = "Build artifacts exhaust the primary artifact volume."
+guard = "tools.disk_guard"
+canary = "disk_guard.below-high-water-reclaims-stale"
+
+[[harm]]
+id = "cp1252-default-codec"
+harm = "Platform-default text encoding breaks Windows tools."
+guard = "tools.encoding_gate"
+canary = "encoding_gate.synthetic-default-codec-refused"
+
+[[harm]]
+id = "uncaptured-bug-class-learning"
+harm = "A completed bug-class fix ships without anti-recurrence teeth or a durable lesson."
+guard = "tools.anti_recurrence_gate"
+canary = "anti_recurrence_gate.synthetic-uncaptured-bug-class-warned"
+
+[[harm]]
+id = "session-learning-loss"
+harm = "A session ends without persisting its landings, crux learning, and open frontier."
+guard = "tools.hooks.session_learning"
+canary = "session_learning.digest-carries-crux-and-frontier"
