@@ -81,6 +81,9 @@ pub struct RuntimeHooks {
     pub int_as_i64_checked: unsafe extern "C" fn(bits: u64, out: *mut i64) -> std::os::raw::c_int,
     /// Checked int-compatible object conversion to u64. Returns 0 on success, -1 on failure.
     pub int_as_u64_checked: unsafe extern "C" fn(bits: u64, out: *mut u64) -> std::os::raw::c_int,
+    /// Return the low `width` bits of an int-compatible object. Returns 0 on success.
+    pub int_as_u64_mask:
+        unsafe extern "C" fn(bits: u64, width: u32, out: *mut u64) -> std::os::raw::c_int,
     /// Allocate an empty list. Returns handle bits.
     pub alloc_list: unsafe extern "C" fn() -> u64,
     /// Append `item_bits` to the list at `list_bits`.
@@ -457,6 +460,13 @@ unsafe extern "C" fn stub_int_as_i64_checked(_bits: u64, _out: *mut i64) -> std:
 unsafe extern "C" fn stub_int_as_u64_checked(_bits: u64, _out: *mut u64) -> std::os::raw::c_int {
     -1
 }
+unsafe extern "C" fn stub_int_as_u64_mask(
+    _bits: u64,
+    _width: u32,
+    _out: *mut u64,
+) -> std::os::raw::c_int {
+    -1
+}
 unsafe extern "C" fn stub_alloc_list() -> u64 {
     0
 }
@@ -729,6 +739,7 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     int_as_i64: stub_int_as_i64,
     int_as_i64_checked: stub_int_as_i64_checked,
     int_as_u64_checked: stub_int_as_u64_checked,
+    int_as_u64_mask: stub_int_as_u64_mask,
     alloc_list: stub_alloc_list,
     list_append: stub_list_append,
     list_len: stub_list_len,
