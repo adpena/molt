@@ -1055,6 +1055,7 @@ extern PyObject    *PyObject_Vectorcall (PyObject *callable, PyObject *const *ar
 extern PyObject    *PyObject_VectorcallDict(PyObject *callable, PyObject *const *args, size_t nargs, PyObject *kwargs);
 extern PyObject    *PyObject_VectorcallMethod(PyObject *name, PyObject *const *args, size_t nargsf, PyObject *kwnames);
 extern PyObject    *PyVectorcall_Call   (PyObject *callable, PyObject *args, PyObject *kwargs);
+extern vectorcallfunc PyVectorcall_Function(PyObject *callable);
 extern PyObject    *_PyObject_Vectorcall(PyObject *callable, PyObject *const *args, size_t nargsf, PyObject *kwnames);
 extern PyObject    *PyObject_CallMethodObjArgs(PyObject *callable, PyObject *name, ...);
 extern PyObject    *PyObject_CallMethod(PyObject *callable, const char *name, const char *format, ...);
