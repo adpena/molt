@@ -125,7 +125,7 @@ to ~fp32 rounding; a larger drift means the op diverged — please surface it, d
    the scipy.ndimage stress-test + the interactive payload); then Kernel B. PASS
    on `check_parity.py` is the milestone.
 
-Provenance: generated under numpy 1.26.4 / scipy 1.17.1. The `.npz` files are local generated
+Provenance: generated under numpy 2.5.1 / scipy 1.18.0. The `.npz` files are local generated
 artifacts, not tracked source. `lstar_sample.npz` is a deterministic *synthetic* road-scene
 partition (sufficient for numerical parity); a real witness-φ bundle follows once our GPU-run
 constraint clears — it changes input values, not the kernels or gates.

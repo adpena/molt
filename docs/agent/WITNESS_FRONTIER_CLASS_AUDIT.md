@@ -14,7 +14,7 @@ vendored numpy source, not memory (M06).
 
 **Anchor.** `origin/main` @ `5be9dad3e1` (worktree off it).
 
-**Version correction (load-bearing).** The witness builds **numpy 2.4.2** + **scipy
+**Version correction (load-bearing).** The witness builds **numpy 2.5.1** + **scipy
 1.18.0**, NOT 1.26.4. numpy 2.x lives in `numpy/_core/` (not `numpy/core/`) and its
 `_multiarray_umath` init is a **`Py_mod_exec` slot** (`_multiarray_umath_exec`,
 `bench/friends/repos/numpy_off_the_shelf/numpy/_core/src/multiarray/multiarraymodule.c:4909`),
@@ -47,7 +47,7 @@ class* view. It complements — and cites rather than repeats —
 | 2 — molt↔C boundary mis-decode | **~28 decode-as-value sites** (7 HIGH incl. richcompare / hash / repr-str / float-decode / IsTrue, 6 MED, ~15 LOW; all ~80 `pyobj_to_handle` sites classified in §2.4) — reachable via raw-registered type/exc/dtype objects | (c) object.rs call path FIXED; sibling API sites OPEN | **CLASS2-DECODE (P0)** |
 | 3 — Dispatch / trampoline completeness | **1** unhandled kind (METH_METHOD, latent) + reserved-table completeness (latent) | (d) `molt_type_new` reserved slot CLOSED (index 1) | CLASS3-DISPATCH (P2/P3) |
 
-Ranking uses the witness call-surface evidence in §4 (numpy 2.4.2 init).
+Ranking uses the witness call-surface evidence in §4 (numpy 2.5.1 init).
 
 ---
 
@@ -350,7 +350,7 @@ model constructors + `molt_cpython_abi_cext_call_trampoline` +
 
 ## Class 4 — numpy/scipy call-surface RANKING (witness-reachability)
 
-Evidence-based ranking of what numpy 2.4.2 `_multiarray_umath_exec` + `_core`
+Evidence-based ranking of what numpy 2.5.1 `_multiarray_umath_exec` + `_core`
 import actually call (source citations under
 `bench/friends/repos/numpy_off_the_shelf/numpy/_core/src`), mapped onto the classes
 above. Init-reachable = P0.
