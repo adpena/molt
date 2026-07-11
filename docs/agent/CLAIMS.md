@@ -603,3 +603,4 @@ steps below are the contract it implements.
 | E1-ORACLE-DISPATCH-PIN | fable/e1-parity-endgame | 2026-07-11T13:29:52Z | COMPLETE | Oracle determinism pin e11b1a4753: NPY_DISABLE_CPU_FEATURES=X86_V3 (setdefault) in pact_witness_acceptance._prepare_reference_oracle + pact_witness_oracle lane, so the numpy-fp32 reference is generated on the wheel's portable baseline tier (sole above-baseline tier per __cpu_dispatch__). MASK-PROOF: measured bitwise no-op on the acceptance host (26/26 stages identical tier on/off) so the pin cannot absorb a candidate divergence; env-capture tests on both lanes. |
 | PERF-DETERMINISM-DOCTRINE | codex/principal-detperf-20260711 | 2026-07-11T14:02:46Z | CLAIMED |  |
 | PERF-GAUSSIAN-BITSAFE | codex/principal-detperf-20260711 | 2026-07-11T14:03:35Z | CLAIMED |  |
+| KERNELB-MARGINS | codex/principal-detperf-20260711 | 2026-07-11T14:04:30Z | CLAIMED |  |
