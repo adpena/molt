@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "policy": "warn-only until a release baseline is checked in; --strict promotes warn checks",
+  "strict_when": "operator_or_release_gate_requests_strict",
+  "budgets": {
+    "native_hello_ms": {"mode": "warn", "max_ms": null, "comparison": "must remain below cpython_hello_ms once seeded"},
+    "cpython_hello_ms": {"mode": "observe", "max_ms": null},
+    "wasm_linked_hello_ms": {"mode": "warn", "max_ms": null, "comparison": "node end-to-end linked instantiate and execute"}
+  }
+}
