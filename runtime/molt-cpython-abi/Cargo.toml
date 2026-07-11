@@ -31,5 +31,10 @@ unicode-properties  = { version = "0.1", default-features = false, features = ["
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 libloading = { version = "0.9", optional = true }
 
+[dev-dependencies]
+# Integration tests mint NaN-boxed pointer handles (so the bridge's classify
+# path stamps the right builtin ob_type) via MoltObject::from_ptr.
+molt-lang-obj-model = { path = "../molt-obj-model" }
+
 [build-dependencies]
 cc = "1"

@@ -114,6 +114,34 @@ pub unsafe extern "C" fn PyUnstable_Module_SetGIL(_module: *mut PyObject, _gil: 
     0
 }
 
+/// CPython `PyModule_GetNameObject` (Objects/moduleobject.c): return the module's
+/// real `__name__` (a borrowed reference read from the module dict), or NULL with
+/// a `SystemError("nameless module")` if it is absent / not a str. Kept private
+/// (unexported) because the ABI header declares only `PyModule_GetName`; folding
+/// the logic in here mirrors CPython's structure without minting a dead export.
+unsafe fn module_get_name_object(module: *mut PyObject) -> *mut PyObject {
+    // md_dict, borrowed (PyModule_GetDict returns the module's own dict).
+    let dict = unsafe { PyModule_GetDict(module) };
+    let name = if dict.is_null() {
+        ptr::null_mut()
+    } else {
+        // Borrowed reference; PyDict_GetItemString suppresses errors like CPython.
+        unsafe { crate::api::mapping::PyDict_GetItemString(dict, c"__name__".as_ptr()) }
+    };
+    if name.is_null() || unsafe { crate::api::strings::PyUnicode_Check(name) } == 0 {
+        unsafe {
+            if crate::api::errors::PyErr_Occurred().is_null() {
+                crate::api::errors::PyErr_SetString(
+                    &raw mut crate::abi_types::PyExc_SystemError,
+                    c"nameless module".as_ptr(),
+                );
+            }
+        }
+        return ptr::null_mut();
+    }
+    name
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyModule_GetName(module: *mut PyObject) -> *const c_char {
     if module.is_null() {
@@ -125,7 +153,17 @@ pub unsafe extern "C" fn PyModule_GetName(module: *mut PyObject) -> *const c_cha
         }
         return ptr::null();
     }
-    c"molt.module".as_ptr()
+    // CPython moduleobject.c: PyUnicode_AsUTF8(PyModule_GetNameObject(m)). Return
+    // the module's actual __name__, never a fabricated constant — collapsing every
+    // module under one key (the previous hardcoded c"molt.module") broke
+    // PyImport_AddModule(PyModule_GetName(m)) identity. The returned pointer aliases
+    // the __name__ str's runtime UTF-8 buffer, kept alive by the module dict (the
+    // borrowed reference contract CPython relies on).
+    let name = unsafe { module_get_name_object(module) };
+    if name.is_null() {
+        return ptr::null();
+    }
+    unsafe { crate::api::strings::PyUnicode_AsUTF8(name) }
 }
 
 #[unsafe(no_mangle)]
