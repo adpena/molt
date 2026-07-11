@@ -270,6 +270,8 @@ def verify_source_checkout(
         ["git", "-C", str(root), "rev-parse", "HEAD"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
     actual = result.stdout.strip()
