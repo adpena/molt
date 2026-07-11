@@ -1594,9 +1594,9 @@ pub unsafe extern "C" fn PyMember_GetOne(
             PY_T_BOOL => {
                 let b = *(field as *const i8) != 0;
                 let obj = if b {
-                    &raw mut crate::abi_types::Py_True
+                    (&raw mut crate::abi_types::Py_True).cast::<PyObject>()
                 } else {
-                    &raw mut crate::abi_types::Py_False
+                    (&raw mut crate::abi_types::Py_False).cast::<PyObject>()
                 };
                 crate::api::refcount::Py_INCREF(obj);
                 obj
@@ -1716,8 +1716,8 @@ pub unsafe extern "C" fn PyMember_SetOne(
         // error/return contract are identical here — the warning is elided.
         match ty {
             PY_T_BOOL => {
-                let is_true = std::ptr::eq(value, &raw mut crate::abi_types::Py_True);
-                let is_false = std::ptr::eq(value, &raw mut crate::abi_types::Py_False);
+                let is_true = std::ptr::eq(value, (&raw mut crate::abi_types::Py_True).cast::<PyObject>());
+                let is_false = std::ptr::eq(value, (&raw mut crate::abi_types::Py_False).cast::<PyObject>());
                 if !is_true && !is_false {
                     crate::api::errors::PyErr_SetString(
                         &raw mut crate::abi_types::PyExc_TypeError,
@@ -2397,9 +2397,9 @@ unsafe fn try_slot_richcompare(
 #[inline]
 fn cmp_bool_result(b: bool) -> *mut PyObject {
     let res = if b {
-        &raw mut crate::abi_types::Py_True
+        (&raw mut crate::abi_types::Py_True).cast::<PyObject>()
     } else {
-        &raw mut crate::abi_types::Py_False
+        (&raw mut crate::abi_types::Py_False).cast::<PyObject>()
     };
     unsafe { crate::api::refcount::Py_INCREF(res) };
     res
@@ -2547,9 +2547,9 @@ unsafe fn do_richcompare(v: *mut PyObject, w: *mut PyObject, op: c_int) -> *mut 
             let equal = std::ptr::eq(v, w);
             let want = if op == CMP_EQ { equal } else { !equal };
             let res = if want {
-                &raw mut crate::abi_types::Py_True
+                (&raw mut crate::abi_types::Py_True).cast::<PyObject>()
             } else {
-                &raw mut crate::abi_types::Py_False
+                (&raw mut crate::abi_types::Py_False).cast::<PyObject>()
             };
             unsafe { crate::api::refcount::Py_INCREF(res) };
             res
@@ -2618,9 +2618,9 @@ pub unsafe extern "C" fn PyObject_RichCompareBool(
         return -1;
     }
     // PyBool_Check fast path, else route the result through PyObject_IsTrue.
-    let ok = if std::ptr::eq(res, &raw mut crate::abi_types::Py_True) {
+    let ok = if std::ptr::eq(res, (&raw mut crate::abi_types::Py_True).cast::<PyObject>()) {
         1
-    } else if std::ptr::eq(res, &raw mut crate::abi_types::Py_False) {
+    } else if std::ptr::eq(res, (&raw mut crate::abi_types::Py_False).cast::<PyObject>()) {
         0
     } else {
         unsafe { crate::api::object::PyObject_IsTrue(res) }

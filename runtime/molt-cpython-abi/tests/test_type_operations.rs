@@ -236,7 +236,7 @@ fn test_type_tag_discriminants() {
 fn test_py_true_has_bool_type() {
     init();
     unsafe {
-        assert!(std::ptr::eq(Py_True.ob_type, &raw mut PyBool_Type));
+        assert!(std::ptr::eq(Py_True.ob_base.ob_type, &raw mut PyBool_Type));
     }
 }
 
@@ -244,7 +244,7 @@ fn test_py_true_has_bool_type() {
 fn test_py_false_has_bool_type() {
     init();
     unsafe {
-        assert!(std::ptr::eq(Py_False.ob_type, &raw mut PyBool_Type));
+        assert!(std::ptr::eq(Py_False.ob_base.ob_type, &raw mut PyBool_Type));
     }
 }
 

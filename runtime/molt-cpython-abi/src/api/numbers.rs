@@ -1527,9 +1527,9 @@ pub unsafe extern "C" fn PyComplex_Check(op: *mut PyObject) -> c_int {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyBool_FromLong(v: c_long) -> *mut PyObject {
     if v != 0 {
-        &raw mut Py_True
+        (&raw mut Py_True).cast::<PyObject>()
     } else {
-        &raw mut Py_False
+        (&raw mut Py_False).cast::<PyObject>()
     }
 }
 

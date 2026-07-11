@@ -384,28 +384,28 @@ fn test_pycomplex_as_c_complex_from_int() {
 fn test_pybool_from_long_true() {
     init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyBool_FromLong(1) };
-    assert!(std::ptr::eq(py, &raw mut Py_True));
+    assert!(std::ptr::eq(py, (&raw mut Py_True).cast()));
 }
 
 #[test]
 fn test_pybool_from_long_false() {
     init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyBool_FromLong(0) };
-    assert!(std::ptr::eq(py, &raw mut Py_False));
+    assert!(std::ptr::eq(py, (&raw mut Py_False).cast()));
 }
 
 #[test]
 fn test_pybool_from_long_nonzero_is_true() {
     init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyBool_FromLong(42) };
-    assert!(std::ptr::eq(py, &raw mut Py_True));
+    assert!(std::ptr::eq(py, (&raw mut Py_True).cast()));
 }
 
 #[test]
 fn test_pybool_from_long_negative_is_true() {
     init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyBool_FromLong(-1) };
-    assert!(std::ptr::eq(py, &raw mut Py_True));
+    assert!(std::ptr::eq(py, (&raw mut Py_True).cast()));
 }
 
 // ---------------------------------------------------------------------------
@@ -509,7 +509,7 @@ fn test_pyindex_check_matches_integer_index_contract() {
         1
     );
     assert_eq!(
-        unsafe { molt_cpython_abi::api::abstract_number::PyIndex_Check(&raw mut Py_True) },
+        unsafe { molt_cpython_abi::api::abstract_number::PyIndex_Check((&raw mut Py_True).cast()) },
         1
     );
     assert_eq!(
@@ -534,7 +534,7 @@ fn test_pyindex_check_matches_integer_index_contract() {
 #[test]
 fn test_pylong_aslong_on_true_returns_one() {
     init();
-    let py_true = &raw mut Py_True;
+    let py_true = (&raw mut Py_True).cast();
     let val = unsafe { molt_cpython_abi::api::numbers::PyLong_AsLong(py_true) };
     assert_eq!(val, 1);
 }
@@ -542,7 +542,7 @@ fn test_pylong_aslong_on_true_returns_one() {
 #[test]
 fn test_pylong_aslong_on_false_returns_zero() {
     init();
-    let py_false = &raw mut Py_False;
+    let py_false = (&raw mut Py_False).cast();
     let val = unsafe { molt_cpython_abi::api::numbers::PyLong_AsLong(py_false) };
     assert_eq!(val, 0);
 }
