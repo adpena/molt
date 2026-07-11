@@ -1,6 +1,7 @@
 import hashlib
 import importlib.machinery
 import importlib.util
+import json
 import tempfile
 from pathlib import Path
 
@@ -1828,9 +1829,9 @@ def test_run_wasm_ld_split_runtime_forces_native_direct_symbols(
     monkeypatch,
 ) -> None:
     symbol = "PyInit__demo"
+    sealed_symbol = "PyInit__sealed_only"
     runtime_bytes = _build_exported_runtime_module_many(["molt_main"])
     output_bytes = _build_native_direct_import_module(symbol)
-    linked_bytes = _build_exported_function_module(symbol)
     runtime = tmp_path / "molt_runtime_reloc.wasm"
     output = tmp_path / "output.wasm"
     linked = tmp_path / "output_linked.wasm"
@@ -1842,12 +1843,26 @@ def test_run_wasm_ld_split_runtime_forces_native_direct_symbols(
     output.write_bytes(output_bytes)
     native_object.parent.mkdir()
     native_object.write_bytes(b"\x00asm\x01\x00\x00\x00native-object")
+    native_object.with_name(
+        native_object.name + ".extension_manifest.json"
+    ).write_text(
+        json.dumps(
+            {
+                "module": "nativepkg._demo",
+                "init_symbol": sealed_symbol,
+            }
+        ),
+        encoding="utf-8",
+    )
 
     def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
         del kwargs
         if cmd and cmd[0] == "wasm-ld":
             link_calls.append(list(cmd))
-        _write_wasm_ld_output(cmd, linked_bytes)
+        _write_wasm_ld_output(
+            cmd,
+            _build_exported_runtime_module_many([symbol, sealed_symbol]),
+        )
 
         class Result:
             returncode = 0
@@ -1884,8 +1899,37 @@ def test_run_wasm_ld_split_runtime_forces_native_direct_symbols(
     assert rc == 0
     assert len(link_calls) == 2
     for cmd in link_calls:
-        assert f"--undefined={symbol}" in cmd
-        assert f"--export-if-defined={symbol}" in cmd
+        assert f"--export={symbol}" in cmd
+        assert f"--export={sealed_symbol}" in cmd
+        assert f"--undefined={symbol}" not in cmd
+        assert f"--export-if-defined={symbol}" not in cmd
+
+
+def test_sealed_native_init_symbols_fail_closed_on_invalid_manifest(
+    tmp_path: Path,
+) -> None:
+    native_object = tmp_path / "_demo.molt.wasm"
+    native_object.write_bytes(b"\x00asm\x01\x00\x00\x00")
+    native_object.with_name(
+        native_object.name + ".extension_manifest.json"
+    ).write_text('{"init_symbol": "demo"}', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="invalid init_symbol"):
+        wasm_link._sealed_native_init_symbols((native_object,))
+
+
+def test_public_export_restoration_preserves_sealed_init_symbol() -> None:
+    symbol = "PyInit__demo"
+    linked = _build_exported_function_module(symbol)
+
+    restored = wasm_link._restore_public_output_exports(
+        linked,
+        {"nativepkg___demo": symbol},
+        preserved_symbol_names=(symbol,),
+    )
+
+    exports = wasm_link._collect_function_exports(restored)
+    assert symbol in exports
 
 
 def test_native_direct_symbol_validation_rejects_trap_stub() -> None:
