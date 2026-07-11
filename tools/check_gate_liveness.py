@@ -26,6 +26,7 @@ if str(ROOT) not in sys.path:
 
 from tools.hooks import bash_guard, landing_gate  # noqa: E402
 from tools.hooks import waivers  # noqa: E402
+from tools import triality_gate, magnitude_dismissal_gate  # noqa: E402
 
 
 @dataclass
@@ -148,6 +149,99 @@ def _canaries() -> list[Canary]:
             "real-rationale-accepted",
             lambda: waivers.is_valid_rationale(
                 "origin remote intentionally https for CI mirror"
+            ),
+        ),
+        # --- Wave 2, A3: triality drift gate -------------------------------
+        Canary(
+            "triality_gate",
+            "bug-fix-without-net-fires",
+            lambda: bool(
+                triality_gate.window_drift(
+                    ["fix(runtime): PyLong_AsLong silent truncation on >2**46"],
+                    ["runtime/molt-lang-cpython-abi/src/numbers.rs"],
+                )
+            ),
+        ),
+        Canary(
+            "triality_gate",
+            "bug-fix-with-test-allows",
+            # known-GOOD counter-fixture: a test in the window neutralizes the drift.
+            lambda: (
+                not triality_gate.window_drift(
+                    ["fix(runtime): silent truncation"],
+                    [
+                        "runtime/src/numbers.rs",
+                        "runtime/tests/test_long_conversions.rs",
+                    ],
+                )
+            ),
+        ),
+        Canary(
+            "triality_gate",
+            "perf-claim-without-bench-fires",
+            lambda: bool(
+                triality_gate.window_drift(
+                    ["perf(runtime): int-mul peel -- 1.65x CPython"],
+                    ["runtime/src/arith.rs"],
+                )
+            ),
+        ),
+        Canary(
+            "triality_gate",
+            "bare-opt-out-token-not-honored",
+            # a [no-triality] with NO rationale must NOT opt out (fires as drift).
+            lambda: triality_gate.opt_out_rationale(["fix: x [no-triality]"]) is None,
+        ),
+        # --- Wave 2, A6: magnitude-dismissal + verdict-scope gate ----------
+        Canary(
+            "magnitude_dismissal_gate",
+            "absolute-dismissal-fires",
+            lambda: bool(
+                magnitude_dismissal_gate.classify_window(
+                    ["weak delta on the erasure lane; not worth chasing, deferring"],
+                    {},
+                )
+            ),
+        ),
+        Canary(
+            "magnitude_dismissal_gate",
+            "relative-significance-allows",
+            lambda: (
+                not magnitude_dismissal_gate.classify_window(
+                    [
+                        "erasure delta 0.012 is 18% of the remaining gap to green, keep it "
+                        "(relative significance)"
+                    ],
+                    {},
+                )
+            ),
+        ),
+        Canary(
+            "magnitude_dismissal_gate",
+            "unscoped-kill-fires",
+            lambda: bool(
+                magnitude_dismissal_gate.classify_window(
+                    [],
+                    {
+                        "docs/agent/POISON_ORPHAN_LEDGER.md": [
+                            "Lever-D is FALSIFIED, dropping it"
+                        ]
+                    },
+                )
+            ),
+        ),
+        Canary(
+            "magnitude_dismissal_gate",
+            "scoped-verdict-allows",
+            lambda: (
+                not magnitude_dismissal_gate.classify_window(
+                    [],
+                    {
+                        "docs/agent/POISON_ORPHAN_LEDGER.md": [
+                            "Lever-D FALSIFIED  verdict_scope: instance -- only the toy formulation"
+                        ]
+                    },
+                )
             ),
         ),
     ]
