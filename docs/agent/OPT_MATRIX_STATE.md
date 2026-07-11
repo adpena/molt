@@ -1,0 +1,43 @@
+# Optimization Matrix State
+
+Persistent objective: optimize targets `wasm-browser split`, `wasm-server/wasi`, and `native exe` across artifact size, build wall-clock, runtime performance, startup, and memory. Release evidence follows A12 Variant-II acceptance; determinism, witness correctness, publication stripping, export contracts, package seals, and memory custody remain hard rails.
+
+## Ranked Rungs
+
+Ranking uses `tools.powerplay_acceptance.rank_backlog`: expected gain divided by validation cost. The largest size prize is temporarily dependency-blocked because the active `wasmld-toolchain` lane owns `tools/wasm_link.py` and `tools/wasm_toolchain.py`; it remains first for re-evaluation next iteration but cannot be attacked concurrently.
+
+Ranking-helper input:
+
+| Item | Expected gain | Validation cost |
+| wasm code/data/export tree-shake | 10 | 2 |
+| backend prepare/codegen unblock re-evaluation | 9 | 2 |
+| duplicate WASM startup scans | 7 | 2 |
+| runtime-wasm shared-cache hit rate | 8 | 3 |
+| native hello below CPython | 7 | 3 |
+| determinism-safe runtime hot loops | 8 | 4 |
+| WASM section startup attribution | 5 | 3 |
+| release memory ceilings | 5 | 4 |
+| browser instantiateStreaming | 4 | 4 |
+
+| Rank | Target | Axis | Rung | Expected gain | Validation cost | Ratio | Status |
+|---:|---|---|---|---:|---:|---:|---|
+| 1 | wasm-browser split + wasm-server/wasi | size | Provision Binaryen through toolchain custody and tree-shake the measured 20,032,474 B code / 5,275,490 B data / 416,470 B exports | 10 | 2 | 5.00 | DEPENDENCY-BLOCKED: wasmld-toolchain lane owns required files this cycle |
+| 2 | wasm-server/wasi | build wall-clock | Re-evaluate backend prepare/codegen instrumentation unblock contract | 9 | 2 | 4.50 | DOCUMENTED-BLOCKED: re-evaluated 2026-07-11; required phase/counter fields remain absent outside the unblock contract |
+| 3 | wasm-browser split + wasm-server/wasi | startup | Remove duplicate full-byte import/export-signature scans | 7 | 2 | 3.50 | ATTESTED-IMPROVED OPT-MATRIX-R1: 36.3275 ms -> 22.6561 ms median, 1.6034x |
+| 4 | wasm-browser split + wasm-server/wasi | build wall-clock | Audit effective runtime-wasm shared-cache hit rate | 8 | 3 | 2.67 | UNATTACKED |
+| 5 | native exe | startup | Measure and reduce native hello below the 58.274 ms CPython median | 7 | 3 | 2.33 | UNATTACKED |
+| 6 | all | runtime perf | Profile target-specific hot loops under determinism-safe classes | 8 | 4 | 2.00 | UNATTACKED |
+| 7 | wasm-browser split + wasm-server/wasi | startup | Attribute read/instantiate cost by section and active data | 5 | 3 | 1.67 | UNATTACKED |
+| 8 | all | memory | Profile release peak RSS / linear-memory ceilings and remove proven excess reservation | 5 | 4 | 1.25 | UNATTACKED |
+| 9 | wasm-browser split | startup | Measure browser `instantiateStreaming` independently | 4 | 4 | 1.00 | UNATTACKED |
+
+## Iteration Log
+
+### OPT-MATRIX-R1 — Node WASM metadata scan
+
+- Aperture: split-runtime Node startup before V8 instantiation.
+- Profile: import discovery and export-signature discovery each walked the entire module section table, `2 * O(module_bytes)` on the same bytes.
+- Artifact: canonical publication stripping applied to the existing release runtime produced a 9,720,086 B final-form artifact; no reserved toolchain files were edited.
+- Landing: one `parseWasmMetadata` authority produces imports and export function signatures in one `O(module_bytes)` walk; independent consumers retain thin views over that authority.
+- Evidence: `tools/opt_matrix_r1_wasm_metadata_attestation.json` (seven serial alternating fresh Node processes per side; 36.3275 ms -> 22.6561 ms median, 1.6034x; metadata parity; 77,664,256 B maximum RSS).
+- Gates: focused pytest 37 passed; link validation 116 passed; fail-closed, table drift, generated WASM ABI, determinism, NumPy 2.5.1 seal, final-form artifact poison, and strict A12 acceptance all pass. No full witness run was consumed because this landing changes loader analysis only and does not change compiled or published WASM bytes.
