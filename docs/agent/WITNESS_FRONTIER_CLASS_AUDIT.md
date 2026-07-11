@@ -357,7 +357,12 @@ model constructors + `molt_cpython_abi_cext_call_trampoline` +
 
 - **`molt_type_new` is present (index 1)** — the M58 "molt_type_new reserved-callable
   frontier" (d) is **CLOSED**.
-- **Gap class (latent, P2):** a runtime callable numpy reaches via the fixed-arity
+- **CLOSED (`e1baed8d8e`):** `[witness_frontier].reserved_runtime_callables` in
+  the manifest names the numpy/scipy reachable fixed-arity surface, and manifest
+  validation rejects any member absent from the reserved/shared callable-table
+  authority. The mask-proof test removes `molt_type_new` and requires a hard
+  validation failure, so the index-2688 class is gate-caught before witness run.
+  The prior gap class was: a runtime callable numpy reaches via the fixed-arity
   lanes but NOT among the 24 → reject. The table is generated from
   `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml` (via `tools/gen_wasm_abi.py`)
   and guarded by the generated-file drift gate (`tools/molt_dev_gates.toml:216`).
