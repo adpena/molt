@@ -519,6 +519,43 @@ def _build_checks() -> list[Check]:
     )
     checks.append(
         Check(
+            # APPARATUS A4: the findings registry + memo lint have TEETH (M05). The
+            # ORPHAN BAN refuses a no-producer/no-consumer finding; latest-event-
+            # per-id resolves across appended events; the memo lint BLOCKS an
+            # un-formalized "2.3x speedup" line and PASSES it once a finding_id /
+            # FORMALIZATION_PENDING is added; the msvcrt/fcntl lock provides real
+            # mutual exclusion; and the seeded keystones (M46/M47/M55/M09) load +
+            # validate. A registry that only accepts clean records certifies nothing.
+            name="findings-registry-teeth",
+            tier=1,
+            cmd=_uv_pytest(str(TESTS / "tools" / "test_findings_registry.py"), "-q"),
+            timeout=120,
+            needs_pytest=True,
+        )
+    )
+    checks.append(
+        Check(
+            # APPARATUS A4 memo->registry lint, WARN-ONLY (A9 discipline). A
+            # docs/agent or memory line stating a measured finding (speedup /
+            # residual / bench number / parity) with no finding_id reference is
+            # reported but does NOT fail the tier yet: molt carries an existing
+            # backlog of such lines, and a fresh gate must not flip tier-1 red.
+            # NAMED strict-flip condition lives in the tools/molt_dev_gates.toml
+            # [[gate_flip]] registry (name="findings_memo_lint", strict_when =
+            # "live_count == 0", count_cmd = "findings_memo_lint.py --count"), read
+            # by check_gate_flips.py: burn the backlog to zero via
+            # tools/findings_registry.py, then set state="strict" and swap this to
+            # `findings_memo_lint.py --strict`. required=False + warn mode so it is
+            # purely advisory until the flip.
+            name="findings-memo-lint-warn",
+            tier=1,
+            cmd=_uv_run(str(TOOLS / "findings_memo_lint.py")),
+            timeout=60,
+            required=False,
+        )
+    )
+    checks.append(
+        Check(
             # Proves the blast-radius ratchet's falsification logic (doc 56 §5):
             # a synthetic re-coupling edge MUST be flagged as a back-edge and
             # widen the offending crate's radius, and --check MUST fail on it. A
