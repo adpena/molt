@@ -635,6 +635,47 @@ def _build_checks() -> list[Check]:
             needs_pytest=True,
         )
     )
+    checks.append(
+        Check(
+            # APPARATUS Wave 1 (A1/A2/A9): the hook spine's pure decision surfaces,
+            # fail-open wrapper, waiver grammar, and gate-flip auditor. These
+            # guards run on the operator's OWN sessions -- a regression that made
+            # a hook wedge (not fail-open) or a guard go inert must fail CI here.
+            name="apparatus-hooks",
+            tier=1,
+            cmd=_uv_pytest(
+                str(TESTS / "tools" / "test_hooks_bash_guard.py"),
+                str(TESTS / "tools" / "test_hooks_landing_gate.py"),
+                str(TESTS / "tools" / "test_hooks_session_digest.py"),
+                str(TESTS / "tools" / "test_hooks_fail_open.py"),
+                str(TESTS / "tools" / "test_hooks_waivers.py"),
+                str(TESTS / "tools" / "test_check_gate_flips.py"),
+                str(TESTS / "tools" / "test_check_gate_liveness.py"),
+                "-q",
+            ),
+            timeout=90,
+            needs_pytest=True,
+        )
+    )
+    checks.append(
+        Check(
+            # Fail closed if any hook guard can no longer FIRE on its known-bad
+            # fixture (M34/M42: a gate that cannot fail certifies nothing).
+            name="apparatus-gate-liveness",
+            tier=1,
+            cmd=_uv_run(str(TOOLS / "check_gate_liveness.py"), "--check"),
+            timeout=30,
+        )
+    )
+    checks.append(
+        Check(
+            # A9: report (and fail on) any warn gate whose flip condition is met.
+            name="apparatus-gate-flips",
+            tier=1,
+            cmd=_uv_run(str(TOOLS / "check_gate_flips.py"), "--check"),
+            timeout=30,
+        )
+    )
 
     # ── Tier 2: Medium (< 10min, on PR) ────────────────────────────────
 
