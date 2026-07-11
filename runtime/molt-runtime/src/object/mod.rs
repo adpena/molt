@@ -35,8 +35,6 @@ pub mod float_repr;
 pub(crate) mod foreign;
 pub(crate) mod gc;
 #[allow(dead_code)]
-pub mod gil;
-#[allow(dead_code)]
 pub mod inline_cache;
 pub(crate) mod layout;
 pub(crate) mod memoryview;

@@ -1,5 +1,5 @@
 {
-  "total": 218,
+  "total": 180,
   "by_area": {
     "runtime/build_support": 4,
     "runtime/molt-backend": 2,
@@ -11,8 +11,8 @@
     "runtime/molt-cpython-abi": 8,
     "runtime/molt-gpu": 6,
     "runtime/molt-ir": 3,
-    "runtime/molt-passes": 9,
-    "runtime/molt-runtime": 69,
+    "runtime/molt-passes": 2,
+    "runtime/molt-runtime": 68,
     "runtime/molt-runtime-collections": 4,
     "runtime/molt-runtime-compression": 2,
     "runtime/molt-runtime-constants": 2,
@@ -33,7 +33,6 @@
     "runtime/molt-stdlib-difflib": 2,
     "runtime/molt-stdlib-graphlib": 1,
     "runtime/molt-stdlib-text": 3,
-    "runtime/molt-tir": 2,
-    "runtime/molt-worker": 30
+    "runtime/molt-tir": 2
   }
 }

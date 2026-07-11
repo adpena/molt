@@ -56,7 +56,6 @@ impl DbResultFormat {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(super) struct DbQueryRequest {
     #[serde(default)]
@@ -74,7 +73,6 @@ pub(super) struct DbQueryRequest {
     pub(super) tag: Option<String>,
 }
 
-#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub(super) enum DbParams {
@@ -88,7 +86,6 @@ impl Default for DbParams {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 #[serde(untagged)]
 pub(super) enum DbParam {
@@ -100,7 +97,6 @@ pub(super) enum DbParam {
     },
 }
 
-#[allow(dead_code)]
 #[derive(Deserialize)]
 pub(super) struct DbNamedParam {
     pub(super) name: String,
@@ -130,7 +126,6 @@ impl serde::Serialize for DbNamedParam {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug, Serialize)]
 #[serde(untagged)]
 pub(super) enum DbParamValue {
@@ -207,7 +202,6 @@ impl<'de> Deserialize<'de> for DbParamValue {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
 pub(super) struct DbQueryResponse {
     pub(super) columns: Vec<String>,
@@ -222,7 +216,6 @@ pub(super) struct DbExecResponse {
     pub(super) last_insert_id: Option<i64>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(untagged)]
 pub(super) enum DbRowValue {
@@ -313,7 +306,6 @@ pub(super) struct ExecError {
     pub(super) message: String,
 }
 
-#[allow(dead_code)]
 pub(super) enum PgParam {
     Bool(bool),
     Int2(i16),
@@ -345,7 +337,6 @@ pub(super) enum PgParam {
     NullTimestampTz(Option<DateTime<Utc>>),
 }
 
-#[allow(dead_code)]
 impl PgParam {
     pub(super) fn as_tosql(&self) -> &(dyn ToSql + Sync) {
         match self {
@@ -381,14 +372,12 @@ impl PgParam {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Clone)]
 pub(super) struct DbParamSpec {
     pub(super) value: DbParamValue,
     pub(super) type_hint: Option<String>,
 }
 
-#[allow(dead_code)]
 pub(super) fn parse_param_spec(param: DbParam) -> DbParamSpec {
     match param {
         DbParam::Raw(value) => DbParamSpec {
@@ -402,7 +391,6 @@ pub(super) fn parse_param_spec(param: DbParam) -> DbParamSpec {
     }
 }
 
-#[allow(dead_code)]
 pub(super) fn normalize_params_and_sql(
     sql: &str,
     params: DbParams,
@@ -417,7 +405,6 @@ pub(super) fn normalize_params_and_sql(
     }
 }
 
-#[allow(dead_code)]
 pub(super) fn normalize_named_params(
     sql: &str,
     params: Vec<DbNamedParam>,
@@ -608,7 +595,6 @@ pub(super) fn normalize_named_params(
     Ok((out, ordered))
 }
 
-#[allow(dead_code)]
 #[derive(Clone)]
 pub(super) enum SqlScanState {
     Normal,
@@ -619,7 +605,6 @@ pub(super) enum SqlScanState {
     DollarQuote(String),
 }
 
-#[allow(dead_code)]
 impl SqlScanState {
     pub(super) fn len(&self) -> usize {
         match self {
@@ -629,7 +614,6 @@ impl SqlScanState {
     }
 }
 
-#[allow(dead_code)]
 pub(super) fn parse_dollar_tag(sql: &str, start: usize) -> Option<String> {
     let bytes = sql.as_bytes();
     if bytes[start] != b'$' {
@@ -649,17 +633,14 @@ pub(super) fn parse_dollar_tag(sql: &str, start: usize) -> Option<String> {
     Some(sql[start..=end].to_string())
 }
 
-#[allow(dead_code)]
 pub(super) fn is_ident_start(ch: char) -> bool {
     ch == '_' || ch.is_ascii_alphabetic()
 }
 
-#[allow(dead_code)]
 pub(super) fn is_ident_continue(ch: char) -> bool {
     is_ident_start(ch) || ch.is_ascii_digit()
 }
 
-#[allow(dead_code)]
 pub(super) fn validate_query(
     sql: &str,
     max_rows: u32,
@@ -693,13 +674,11 @@ pub(super) fn validate_query(
     }
 }
 
-#[allow(dead_code)]
 pub(super) struct ValidatedExec {
     pub(super) sql: String,
     pub(super) is_insert: bool,
 }
 
-#[allow(dead_code)]
 pub(super) fn validate_exec(
     sql: &str,
     allow_write: bool,
@@ -737,12 +716,10 @@ pub(super) fn validate_exec(
     }
 }
 
-#[allow(dead_code)]
 pub(super) fn wrap_query_limit(query: SqlQuery, max_rows: u32) -> String {
     format!("SELECT * FROM ({query}) AS _molt_sub LIMIT {max_rows}")
 }
 
-#[allow(dead_code)]
 pub(super) fn resolve_pg_params(
     specs: Vec<DbParamSpec>,
 ) -> Result<(Vec<PgParam>, Vec<Type>), ExecError> {
@@ -756,7 +733,6 @@ pub(super) fn resolve_pg_params(
     Ok((params, types))
 }
 
-#[allow(dead_code)]
 pub(super) fn resolve_pg_param(spec: DbParamSpec) -> Result<(PgParam, Type), ExecError> {
     let type_hint = spec.type_hint.as_ref().map(|t| t.trim().to_lowercase());
     let hint = type_hint.as_deref();
@@ -816,7 +792,6 @@ pub(super) fn resolve_pg_param(spec: DbParamSpec) -> Result<(PgParam, Type), Exe
     }
 }
 
-#[allow(dead_code)]
 pub(super) fn resolve_int_param(
     value: i64,
     hint: Option<&str>,
@@ -847,7 +822,6 @@ pub(super) fn resolve_int_param(
     }
 }
 
-#[allow(dead_code)]
 pub(super) fn resolve_float_param(
     value: f64,
     hint: Option<&str>,
@@ -863,7 +837,6 @@ pub(super) fn resolve_float_param(
     }
 }
 
-#[allow(dead_code)]
 pub(super) fn resolve_string_param(
     value: String,
     hint: Option<&str>,
@@ -908,7 +881,6 @@ pub(super) fn resolve_string_param(
     }
 }
 
-#[allow(dead_code)]
 pub(super) fn parse_pg_type(name: &str) -> Option<Type> {
     match name {
         "bool" | "boolean" => Some(Type::BOOL),
