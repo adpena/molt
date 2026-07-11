@@ -205,17 +205,23 @@ def test_verify_runtime_integrity_rejects_missing_sidecar(
 
 def test_verify_runtime_integrity_accepts_writer_published_pin(tmp_path: Path) -> None:
     """Round trip: the CLI writer's keyed pin satisfies the linker check and
-    deterministically supersedes a stale single-slot sidecar."""
+    deterministically supersedes every stale contract for the same filename."""
     from molt.cli.runtime_wasm_validation import _write_runtime_wasm_integrity_sidecar
 
     runtime = tmp_path / "molt_runtime.wasm"
     runtime.write_bytes(_build_exported_runtime_module("molt_main"))
     legacy = runtime.with_name(f"{runtime.name}.sha256")
     legacy.write_text("0" * 64 + "\n", encoding="utf-8")
+    stale_keyed = runtime.with_name(f"{runtime.name}.{'b' * 64}.sha256")
+    stale_keyed.write_text("0" * 64 + "\n", encoding="utf-8")
 
     _write_runtime_wasm_integrity_sidecar(runtime, integrity_key=_PIN_KEY_A)
 
     assert not legacy.exists()
+    assert not stale_keyed.exists()
+    assert list(tmp_path.glob(f"{runtime.name}.*.sha256")) == [
+        runtime.with_name(f"{runtime.name}.{_PIN_KEY_A}.sha256")
+    ]
     wasm_link._verify_runtime_integrity(runtime)
 
 
@@ -1035,6 +1041,26 @@ def test_strip_debug_sections_removes_all_dwarf_custom_sections() -> None:
         if section_id == 0
     ]
     assert custom_names == ["molt.keep"]
+
+
+def test_publication_strip_removes_link_metadata_after_export_rewrite() -> None:
+    module = wasm_link._build_sections(
+        [
+            (7, b"exports-already-canonical"),
+            (0, wasm_link._build_custom_section("linking", b"symbols")),
+            (0, wasm_link._build_custom_section("reloc.CODE", b"relocs")),
+            (0, wasm_link._build_custom_section("name", b"debug names")),
+        ]
+    )
+
+    stripped = wasm_link.strip_wasm_publication_sections(
+        module,
+        final_artifact=True,
+        preserve_debug=False,
+    )
+
+    sections = wasm_link._parse_sections(stripped)
+    assert sections == [(7, b"exports-already-canonical")]
 
 
 def test_canonicalize_standard_section_order_moves_element_before_code_data() -> None:
@@ -4016,8 +4042,18 @@ def test_run_wasm_ld_split_runtime_publishes_only_after_staged_validation(
     assert validate_seen
     assert split_validate_seen
     assert linked.read_bytes() != b"old-linked"
-    assert app_wasm.read_bytes() == output_bytes
-    assert rt_wasm.read_bytes() == runtime_bytes
+    expected_app = wasm_link.strip_wasm_publication_sections(
+        output_bytes,
+        final_artifact=True,
+        preserve_debug=False,
+    )
+    expected_runtime = wasm_link.strip_wasm_publication_sections(
+        runtime_bytes,
+        final_artifact=True,
+        preserve_debug=False,
+    )
+    assert app_wasm.read_bytes() == expected_app
+    assert rt_wasm.read_bytes() == expected_runtime
 
 
 def test_run_wasm_ld_split_runtime_materializes_final_optimized_app(
@@ -4105,6 +4141,11 @@ def test_run_wasm_ld_split_runtime_materializes_final_optimized_app(
         wasm_link, "_collect_exports", lambda _data: {"molt_memory", "molt_table"}
     )
     monkeypatch.setattr(wasm_link, "_validate_elements", lambda _data: (True, None))
+    monkeypatch.setattr(
+        wasm_link,
+        "strip_wasm_publication_sections",
+        lambda data, **_kwargs: data,
+    )
 
     rc = wasm_link._run_wasm_ld(
         "wasm-ld",

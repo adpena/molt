@@ -19298,7 +19298,7 @@ def test_ensure_runtime_wasm_writes_integrity_sidecar_after_copy(
         / "molt_runtime-test.wasm"
     )
     built_src.parent.mkdir(parents=True, exist_ok=True)
-    built_src.write_bytes(b"\0asm\x01\0\0\0runtime")
+    built_src.write_bytes(b"\0asm\x01\0\0\0")
 
     monkeypatch.setattr(
         RUNTIME_BUILD,
@@ -19458,7 +19458,7 @@ def test_ensure_runtime_wasm_writes_integrity_sidecar_when_reusing_valid_artifac
 ) -> None:
     runtime_wasm = tmp_path / "wasm" / "molt_runtime.wasm"
     runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
-    runtime_wasm.write_bytes(b"\0asm\x01\0\0\0runtime")
+    runtime_wasm.write_bytes(b"\0asm\x01\0\0\0")
     stored_fingerprint = {"artifact_sha256": cli._sha256_file(runtime_wasm)}
     # A stale single-slot pin from the retired convention must be superseded
     # deterministically by the keyed writer.
@@ -19529,7 +19529,7 @@ def test_prepare_non_native_build_result_stages_runtime_wasm_sidecar(
     output_wasm.write_bytes(b"\0asm\x01\0\0\0")
     runtime_wasm = tmp_path / "runtime" / "molt_runtime.wasm"
     runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
-    runtime_wasm.write_bytes(b"\0asm\x01\0\0\0runtime")
+    runtime_wasm.write_bytes(b"\0asm\x01\0\0\0")
 
     prepared, err = cli_non_native_output._prepare_non_native_build_result(
         is_rust_transpile=False,

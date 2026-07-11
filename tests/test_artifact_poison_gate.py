@@ -10,8 +10,6 @@ from pathlib import Path
 import subprocess
 import sys
 
-import pytest
-
 ROOT = Path(__file__).resolve().parents[1]
 GATE = ROOT / "tools" / "artifact_poison_gate.py"
 REGISTRY = ROOT / "tools" / "artifact_poison_registry.toml"
@@ -31,14 +29,20 @@ def _run_gate(*wasm: Path) -> subprocess.CompletedProcess[str]:
 
 
 def _fake_wasm(tmp_path: Path, name: str, payload: bytes) -> Path:
-    # Minimal wasm header so the file is plausible; the gate scans raw bytes.
+    encoded_length = bytes([len(payload)])
     p = tmp_path / name
-    p.write_bytes(b"\x00asm\x01\x00\x00\x00" + payload)
+    p.write_bytes(b"\x00asm\x01\x00\x00\x00\x00" + encoded_length + payload)
     return p
 
 
+def _custom_section(name: str, payload: bytes = b"") -> bytes:
+    name_bytes = name.encode("utf-8")
+    body = bytes([len(name_bytes)]) + name_bytes + payload
+    return b"\x00" + bytes([len(body)]) + body
+
+
 def test_registry_loads_and_has_long_double_marker() -> None:
-    proc = _run_gate()  # no args -> argparse usage error (exit 2 from argparse)
+    _run_gate()  # no args -> argparse usage error (exit 2 from argparse)
     # A real load-failure would be exit 3; here we just assert the registry parses
     # by invoking with a clean artifact below. Sanity: the marker string is in the
     # registry file verbatim.
@@ -75,3 +79,45 @@ def test_gate_scans_multiple_artifacts_and_reports_the_poisoned_one(tmp_path: Pa
 def test_gate_errors_on_missing_artifact(tmp_path: Path) -> None:
     proc = _run_gate(tmp_path / "does_not_exist.wasm")
     assert proc.returncode == 3, proc.stdout
+
+
+def test_gate_fails_on_planted_unstripped_publication_sections(tmp_path: Path) -> None:
+    artifact = tmp_path / "app.wasm"
+    artifact.write_bytes(
+        b"\x00asm\x01\x00\x00\x00"
+        + _custom_section("linking")
+        + _custom_section("reloc.CODE")
+        + _custom_section(".debug_info")
+        + _custom_section("name")
+    )
+
+    proc = _run_gate(artifact)
+
+    assert proc.returncode == 2, proc.stdout
+    assert "PUBLICATION CRUFT" in proc.stdout
+    assert "linking" in proc.stdout
+    assert "reloc.CODE" in proc.stdout
+    assert ".debug_info" in proc.stdout
+    assert "name" in proc.stdout
+
+
+def test_debug_knob_never_allows_link_time_metadata(tmp_path: Path) -> None:
+    artifact = tmp_path / "app.wasm"
+    artifact.write_bytes(
+        b"\x00asm\x01\x00\x00\x00"
+        + _custom_section("linking")
+        + _custom_section("name")
+    )
+
+    proc = subprocess.run(
+        [sys.executable, str(GATE), "--preserve-debug-sections", str(artifact)],
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+    )
+
+    assert proc.returncode == 2, proc.stdout
+    assert "linking" in proc.stdout
+    assert "sections:   linking" in proc.stdout

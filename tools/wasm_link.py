@@ -38,6 +38,7 @@ from molt._wasm_runtime_exports import (  # noqa: E402
 from molt._wasm_abi_generated import (  # noqa: E402
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_SYMBOL_KINDS,
 )
+from molt.wasm_artifact import strip_wasm_publication_sections  # noqa: E402
 
 from wasm_link_format import (  # noqa: E402
     CALL_INDIRECT_MANGLED_RE as CALL_INDIRECT_MANGLED_RE,
@@ -2546,6 +2547,7 @@ def _run_wasm_ld(
     split_output_dir: Path | None = None,
     deploy_runtime_override: Path | None = None,
     native_objects: Sequence[Path] = (),
+    preserve_debug_sections: bool = False,
 ) -> int:
     for native_object in native_objects:
         if not native_object.exists():
@@ -3361,6 +3363,31 @@ def _run_wasm_ld(
         if canonical_sections is not None:
             work_linked.write_bytes(canonical_sections)
             linked_bytes = canonical_sections
+        work_linked.write_bytes(
+            strip_wasm_publication_sections(
+                work_linked.read_bytes(),
+                final_artifact=True,
+                preserve_debug=preserve_debug_sections,
+            )
+        )
+        if split_runtime:
+            assert app_stage is not None
+            assert rt_stage is not None
+            app_stage.write_bytes(
+                strip_wasm_publication_sections(
+                    app_stage.read_bytes(),
+                    final_artifact=True,
+                    preserve_debug=preserve_debug_sections,
+                )
+            )
+            rt_stage.write_bytes(
+                strip_wasm_publication_sections(
+                    rt_stage.read_bytes(),
+                    final_artifact=True,
+                    preserve_debug=preserve_debug_sections,
+                )
+            )
+
         linked_ok = _validate_linked(work_linked)
         if not linked_ok:
             if split_runtime:
@@ -3445,6 +3472,11 @@ def main() -> int:
         dest="native_objects",
         help="Validated external static package WASM object/archive input",
     )
+    parser.add_argument(
+        "--preserve-debug-sections",
+        action="store_true",
+        help="Preserve name and DWARF sections while still removing final-link metadata",
+    )
     args = parser.parse_args()
 
     runtime = args.runtime
@@ -3480,6 +3512,7 @@ def main() -> int:
         split_output_dir=args.split_output_dir,
         deploy_runtime_override=args.deploy_runtime_override,
         native_objects=tuple(args.native_objects),
+        preserve_debug_sections=args.preserve_debug_sections,
     )
 
 

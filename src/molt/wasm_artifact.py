@@ -172,7 +172,11 @@ def wasm_custom_section_names(data: bytes) -> tuple[str, ...]:
 
 
 def is_wasm_debug_custom_section(name: str) -> bool:
-    return name == "name" or name.startswith(".debug")
+    return (
+        name == "name"
+        or name.startswith(".debug")
+        or name.startswith("reloc..debug")
+    )
 
 
 def is_wasm_final_artifact_forbidden_custom_section(name: str) -> bool:

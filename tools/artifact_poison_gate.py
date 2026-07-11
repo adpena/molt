@@ -28,6 +28,13 @@ import argparse
 from pathlib import Path
 import sys
 
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from molt.wasm_artifact import wasm_publication_policy_violations  # noqa: E402
+
 try:
     import tomllib  # py3.11+
 except ModuleNotFoundError:  # pragma: no cover - py<3.11 fallback
@@ -45,6 +52,14 @@ class PoisonHit:
         self.capability = entry.get("capability", "?")
         self.why = entry.get("why", "")
         self.fix = entry.get("fix", "")
+
+
+class SectionPolicyHit:
+    __slots__ = ("artifact", "sections")
+
+    def __init__(self, artifact: Path, sections: tuple[str, ...]) -> None:
+        self.artifact = artifact
+        self.sections = sections
 
 
 def load_markers(registry_path: Path) -> dict[str, dict[str, str]]:
@@ -78,6 +93,11 @@ def main(argv: list[str] | None = None) -> int:
         default=_DEFAULT_REGISTRY,
         help="poison registry TOML (default: tools/artifact_poison_registry.toml)",
     )
+    parser.add_argument(
+        "--preserve-debug-sections",
+        action="store_true",
+        help="Allow name/DWARF sections for an explicit debug publication",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -93,10 +113,22 @@ def main(argv: list[str] | None = None) -> int:
         return 3
 
     all_hits: list[PoisonHit] = []
+    section_hits: list[SectionPolicyHit] = []
     for path in args.wasm:
         all_hits.extend(scan_artifact(path, markers))
+        try:
+            violations = wasm_publication_policy_violations(
+                path.read_bytes(),
+                final_artifact=True,
+                preserve_debug=args.preserve_debug_sections,
+            )
+        except ValueError as exc:
+            print(f"artifact_poison_gate: invalid wasm {path}: {exc}", file=sys.stderr)
+            return 3
+        if violations:
+            section_hits.append(SectionPolicyHit(path, violations))
 
-    if not all_hits:
+    if not all_hits and not section_hits:
         names = ", ".join(p.name for p in args.wasm)
         print(f"artifact_poison_gate: PASS — no stub markers in {names} "
               f"({len(markers)} markers checked)")
@@ -112,6 +144,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"    why:        {hit.why}", file=sys.stderr)
         if hit.fix:
             print(f"    fix:        {hit.fix}", file=sys.stderr)
+    for hit in section_hits:
+        print("\n  PUBLICATION CRUFT", file=sys.stderr)
+        print(f"    artifact:   {hit.artifact}", file=sys.stderr)
+        print(f"    sections:   {', '.join(hit.sections)}", file=sys.stderr)
+        print(
+            "    fix:        route the artifact through the canonical wasm publication strip",
+            file=sys.stderr,
+        )
     print("\nA resolving-config check is NOT enough; the stub is in the BUILT wasm. "
           "Do not mark the capability done until this gate passes.", file=sys.stderr)
     return 2

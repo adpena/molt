@@ -105,6 +105,7 @@ from molt.cli.models import BuildProfile, _RuntimeArtifactState
 from molt.wasm_artifact import (
     inspect_wasm_binary as _inspect_wasm_binary,
     rename_wasm_export_names,
+    strip_wasm_publication_sections,
 )
 
 
@@ -2163,6 +2164,19 @@ def _ensure_runtime_wasm(
     }
 
     def _publish_runtime_integrity_pin() -> None:
+        preserve_debug = any(
+            marker in profile_name.lower()
+            for profile_name in (requested_cargo_profile, cargo_profile)
+            for marker in ("dev", "debug")
+        )
+        published = runtime_wasm.read_bytes()
+        stripped = strip_wasm_publication_sections(
+            published,
+            final_artifact=not reloc,
+            preserve_debug=preserve_debug,
+        )
+        if stripped != published:
+            _atomic_write_bytes(runtime_wasm, stripped)
         # One integrity-pin slot per resolved build identity: the fingerprint
         # meta digest keys the sidecar so different-profile builds never
         # contend for a single pinned hash.
