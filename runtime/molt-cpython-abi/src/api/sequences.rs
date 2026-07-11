@@ -1030,19 +1030,6 @@ pub unsafe extern "C" fn PySet_Add(anyset: *mut PyObject, key: *mut PyObject) ->
         }
         return -1;
     }
-    let mutable_set = unsafe { PySet_Check(anyset) } != 0;
-    let unique_exact_frozen = unsafe {
-        !anyset.is_null()
-            && std::ptr::eq(
-                (*anyset).ob_type,
-                &raw mut crate::abi_types::PyFrozenSet_Type,
-            )
-            && (*anyset).ob_refcnt == 1
-    };
-    if !mutable_set && !unique_exact_frozen {
-        unsafe { crate::api::errors::PyErr_BadInternalCall() };
-        return -1;
-    }
     let set_bits =
         match unsafe { set_arg_handle(anyset, c"PySet_Add: argument is not a bridge-managed set") }
         {
