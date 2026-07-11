@@ -504,7 +504,8 @@ pub unsafe extern "C" fn PyTuple_GetSlice(
     start: Py_ssize_t,
     end: Py_ssize_t,
 ) -> *mut PyObject {
-    if op.is_null() {
+    if unsafe { PyTuple_Check(op) } == 0 {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return ptr::null_mut();
     }
     let len = unsafe { PyTuple_GET_SIZE(op) };
@@ -530,6 +531,44 @@ pub unsafe extern "C" fn PyTuple_GetSlice(
         }
     }
     out
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn _PyTuple_Resize(pv: *mut *mut PyObject, newsize: Py_ssize_t) -> c_int {
+    if pv.is_null() || newsize < 0 {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return -1;
+    }
+    let op = unsafe { *pv };
+    let Some(tuple) = (unsafe { tuple_layout_object(op) }) else {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return -1;
+    };
+    if unsafe { (*op).ob_refcnt } != 1 {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return -1;
+    }
+    let oldsize = unsafe { (*tuple).ob_base.ob_size };
+    let oldptr = unsafe { (*tuple).ob_item };
+    let mut items = vec![ptr::null_mut(); newsize as usize].into_boxed_slice();
+    let copied = oldsize.min(newsize);
+    for index in 0..copied {
+        items[index as usize] = unsafe { *oldptr.add(index as usize) };
+    }
+    if newsize < oldsize {
+        for index in newsize..oldsize {
+            unsafe { crate::api::refcount::Py_XDECREF(*oldptr.add(index as usize)) };
+        }
+    }
+    if !oldptr.is_null() && oldsize > 0 {
+        let slice = std::ptr::slice_from_raw_parts_mut(oldptr, oldsize as usize);
+        unsafe { drop(Box::from_raw(slice)) };
+    }
+    unsafe {
+        (*tuple).ob_item = Box::leak(items).as_mut_ptr();
+        (*tuple).ob_base.ob_size = newsize;
+    }
+    0
 }
 
 /// Faithful `Objects/tupleobject.c` `PyTuple_SetItem`: steals the reference to
@@ -823,9 +862,7 @@ pub unsafe extern "C" fn PySet_Check(op: *mut PyObject) -> c_int {
     if std::ptr::eq(ob_type, &raw const crate::abi_types::PySet_Type) {
         return 1;
     }
-    unsafe {
-        crate::api::typeobj::PyType_IsSubtype(ob_type, &raw mut crate::abi_types::PySet_Type)
-    }
+    unsafe { crate::api::typeobj::PyType_IsSubtype(ob_type, &raw mut crate::abi_types::PySet_Type) }
 }
 
 #[unsafe(no_mangle)]
@@ -981,6 +1018,19 @@ pub unsafe extern "C" fn PySet_Add(anyset: *mut PyObject, key: *mut PyObject) ->
         }
         return -1;
     }
+    let mutable_set = unsafe { PySet_Check(anyset) } != 0;
+    let unique_exact_frozen = unsafe {
+        !anyset.is_null()
+            && std::ptr::eq(
+                (*anyset).ob_type,
+                &raw mut crate::abi_types::PyFrozenSet_Type,
+            )
+            && (*anyset).ob_refcnt == 1
+    };
+    if !mutable_set && !unique_exact_frozen {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return -1;
+    }
     let set_bits =
         match unsafe { set_arg_handle(anyset, c"PySet_Add: argument is not a bridge-managed set") }
         {
@@ -996,6 +1046,60 @@ pub unsafe extern "C" fn PySet_Add(anyset: *mut PyObject, key: *mut PyObject) ->
     let rc = unsafe { (h.set_add)(set_bits, key_bits) };
     if rc != 0 {
         unsafe { ensure_set_error(c"PySet_Add failed: runtime set authority unavailable") };
+        return -1;
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyFrozenSet_New(iterable: *mut PyObject) -> *mut PyObject {
+    let iterable_bits = if iterable.is_null() {
+        0
+    } else {
+        match unsafe {
+            set_arg_handle(iterable, c"PyFrozenSet_New: iterable is not bridge-managed")
+        } {
+            Some(bits) => bits,
+            None => return ptr::null_mut(),
+        }
+    };
+    let h = hooks_or_stubs();
+    let result = unsafe { (h.set_op)(crate::hooks::SetOp::FrozenNew as u32, iterable_bits) };
+    if result == 0 {
+        unsafe { ensure_set_error(c"PyFrozenSet_New failed") };
+        return ptr::null_mut();
+    }
+    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(result) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PySet_Pop(anyset: *mut PyObject) -> *mut PyObject {
+    if unsafe { PySet_Check(anyset) } == 0 {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return ptr::null_mut();
+    }
+    let Some(bits) = (unsafe { set_arg_handle(anyset, c"PySet_Pop: invalid set") }) else {
+        return ptr::null_mut();
+    };
+    let result = unsafe { (hooks_or_stubs().set_op)(crate::hooks::SetOp::Pop as u32, bits) };
+    if result == 0 {
+        unsafe { ensure_set_error(c"PySet_Pop failed") };
+        return ptr::null_mut();
+    }
+    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(result) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PySet_Clear(anyset: *mut PyObject) -> c_int {
+    if unsafe { PySet_Check(anyset) } == 0 {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return -1;
+    }
+    let Some(bits) = (unsafe { set_arg_handle(anyset, c"PySet_Clear: invalid set") }) else {
+        return -1;
+    };
+    let result = unsafe { (hooks_or_stubs().set_op)(crate::hooks::SetOp::Clear as u32, bits) };
+    if result == 0 && !unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
         return -1;
     }
     0
@@ -1159,9 +1263,7 @@ pub unsafe extern "C" fn PyList_Reverse(op: *mut PyObject) -> c_int {
     let h = hooks_or_stubs();
     let rc = unsafe { (h.list_reverse)(list_bits) };
     if rc != 0 {
-        unsafe {
-            ensure_set_error(c"PyList_Reverse failed: runtime list authority unavailable")
-        };
+        unsafe { ensure_set_error(c"PyList_Reverse failed: runtime list authority unavailable") };
         return -1;
     }
     0
@@ -1169,26 +1271,28 @@ pub unsafe extern "C" fn PyList_Reverse(op: *mut PyObject) -> c_int {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyList_AsTuple(op: *mut PyObject) -> *mut PyObject {
-    if op.is_null() {
+    if unsafe { PyList_Check(op) } == 0 {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return ptr::null_mut();
     }
-    let bridge = GLOBAL_BRIDGE.lock();
-    let bits = match bridge.pyobj_to_handle(op) {
-        Some(b) => b,
-        None => return ptr::null_mut(),
-    };
-    drop(bridge);
-    let h = hooks_or_stubs();
-    let len = unsafe { (h.list_len)(bits) };
-    let new_tuple = unsafe { (h.alloc_tuple)(len) };
-    if new_tuple == 0 {
+    let len = unsafe { PyList_Size(op) };
+    let new_tuple = unsafe { PyTuple_New(len) };
+    if new_tuple.is_null() {
         return ptr::null_mut();
     }
     for i in 0..len {
-        let item = unsafe { (h.list_item)(bits, i) };
-        unsafe { (h.tuple_set)(new_tuple, i, item) };
+        let item = unsafe { PyList_GetItem(op, i) };
+        if item.is_null() {
+            unsafe { crate::api::refcount::Py_DECREF(new_tuple) };
+            return ptr::null_mut();
+        }
+        unsafe { crate::api::refcount::Py_INCREF(item) };
+        if unsafe { PyTuple_SetItem(new_tuple, i, item) } != 0 {
+            unsafe { crate::api::refcount::Py_DECREF(new_tuple) };
+            return ptr::null_mut();
+        }
     }
-    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(new_tuple) }
+    new_tuple
 }
 
 // ─── PyList_Insert ───────────────────────────────────────────────────────
