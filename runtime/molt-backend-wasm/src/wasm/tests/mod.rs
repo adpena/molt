@@ -5,8 +5,8 @@ use crate::wasm::lir_fast::is_production_lir_wasm_fast_path_name;
 use crate::wasm_abi::{
     CALL_INDIRECT_IMPORTS, CALL_INDIRECT_MAX_ARITY, POLL_TABLE_IMPORTS,
     RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,
-    ReservedRuntimeCallableDispatch, STATIC_TYPE_COUNT, WasmRuntimeImport,
-    wasm_runtime_export_name, wasm_runtime_import,
+    ReservedRuntimeCallableDispatch, WasmRuntimeImport, wasm_runtime_export_name,
+    wasm_runtime_import,
 };
 use crate::wasm_options::RELOC_TABLE_BASE_DEFAULT;
 use crate::wasm_plan::{
@@ -456,3 +456,4 @@ mod exception_eh;
 mod import_codegen;
 mod native_callable;
 mod runtime_callable;
+mod task_trampoline;

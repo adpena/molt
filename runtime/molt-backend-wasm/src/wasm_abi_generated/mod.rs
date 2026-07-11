@@ -52,8 +52,7 @@ pub(crate) use object_new_bound_selector::{
 pub(crate) use pure_profile::pure_profile_skips_import;
 pub(crate) use runtime_callables::{
     POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,
-    RUNTIME_CALLABLE_IMPORTS, ReservedRuntimeCallableDispatch,
-    ReservedRuntimeCallableTrampolineAbi, RuntimeCallableResult, poll_table_import_slot,
-    runtime_callable_arity, runtime_callable_import,
+    RUNTIME_CALLABLE_IMPORTS, ReservedRuntimeCallableDispatch, RuntimeCallableResult,
+    poll_table_import_slot, runtime_callable_arity, runtime_callable_import,
 };
 pub(crate) use static_types::{STATIC_FUNC_TYPES, STATIC_TYPE_COUNT};
