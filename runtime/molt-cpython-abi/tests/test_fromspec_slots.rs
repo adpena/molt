@@ -334,3 +334,57 @@ fn fromspec_unknown_slot_fails_closed() {
         molt_cpython_abi::api::errors::PyErr_Clear();
     }
 }
+
+// ===========================================================================
+// HEAPTYPE: a spec-built type is a real PyHeapTypeObject — Py_TPFLAGS_HEAPTYPE
+// set, ht_name populated, and ht_module an in-bounds field the public getter
+// resolves. Pre-fix the type was a bare Box<PyTypeObject>, so ht_* reads/writes
+// ran OOB past the 416-byte allocation and module state was dropped (matrix
+// PyTypeObject #3, L3 / ABI-TYPEOBJECT-L4 #4).
+// ===========================================================================
+#[test]
+fn fromspec_type_is_heaptype_with_inbounds_ht_module_and_name() {
+    install_hooks();
+    let mut term = [PyType_Slot {
+        slot: 0,
+        pfunc: ptr::null_mut(),
+    }];
+    let mut spec = PyType_Spec {
+        name: c"mymod.MyHeapType".as_ptr(),
+        basicsize: std::mem::size_of::<PyObject>() as c_int,
+        itemsize: 0,
+        flags: Py_TPFLAGS_BASETYPE,
+        slots: term.as_mut_ptr(),
+    };
+    let obj = unsafe {
+        molt_cpython_abi::api::typeobj::PyType_FromSpecWithBases(&mut spec, ptr::null_mut())
+    };
+    assert!(!obj.is_null(), "PyType_FromSpecWithBases returned NULL");
+    let tp = obj.cast::<PyTypeObject>();
+    unsafe {
+        // (1) HEAPTYPE is set (pre-fix: a bare Box<PyTypeObject> never ORed it).
+        assert_ne!(
+            (*tp).tp_flags & Py_TPFLAGS_HEAPTYPE,
+            0,
+            "a spec-built type must carry Py_TPFLAGS_HEAPTYPE"
+        );
+        // (2) The allocation is a full PyHeapTypeObject: the ht_* tail is in
+        //     bounds, and ht_name (segment after the last '.') was populated.
+        let et = obj.cast::<PyHeapTypeObject>();
+        assert!(!(*et).ht_name.is_null(), "ht_name populated (in-bounds)");
+        // (3) ht_module is an in-bounds field: install a module pointer and read it
+        //     back through the public getter. Pre-fix this offset lay OOB past the
+        //     416-byte PyTypeObject (a corrupting write).
+        let fake_module: *mut PyObject = &raw mut Py_None;
+        (*et).ht_module = fake_module;
+        assert_eq!(
+            molt_cpython_abi::api::typeobj::PyType_GetModule(tp),
+            fake_module,
+            "PyType_GetModule reads the in-bounds ht_module"
+        );
+        // (4) A non-heap builtin (int) has no module: GetModule errors, not OOB.
+        let no_module = molt_cpython_abi::api::typeobj::PyType_GetModule(&raw mut PyLong_Type);
+        assert!(no_module.is_null(), "non-heap type has no module -> NULL");
+        molt_cpython_abi::api::errors::PyErr_Clear();
+    }
+}

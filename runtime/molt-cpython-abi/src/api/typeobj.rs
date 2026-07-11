@@ -1083,34 +1083,75 @@ unsafe fn apply_spec_slots(
     }
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyType_FromSpecWithBases(
+/// Shared body for `PyType_FromSpec*` / `PyType_FromMetaclass`. Allocates a real
+/// `PyHeapTypeObject` (NOT a bare `Box<PyTypeObject>`), sets `Py_TPFLAGS_HEAPTYPE`
+/// and populates `ht_name`/`ht_qualname`/`ht_module`, so an extension's inlined
+/// `((PyHeapTypeObject*)type)->ht_name`/`ht_module` reads land IN BOUNDS and the
+/// per-module state a spec type carries is retained (matrix PyTypeObject #3, L3).
+/// Mirrors CPython v3.12.0 `_PyType_FromMetaclass_impl` (Objects/typeobject.c):
+/// `type->tp_flags = spec->flags | Py_TPFLAGS_HEAPTYPE`, `ht_name` = the segment
+/// after the last '.' in `spec->name`, `ht_qualname = ht_name`, `ht_module =
+/// Py_XNewRef(module)`.
+///
+/// The heap type is intentionally leaked (like every static/extension type in the
+/// process): heap types created during extension import live for the process, and
+/// molt has no type teardown path that would reclaim it — so the larger allocation
+/// never causes a size-mismatched free.
+unsafe fn type_from_spec_impl(
     spec: *mut PyType_Spec,
     bases: *mut PyObject,
+    module: *mut PyObject,
 ) -> *mut PyObject {
     if spec.is_null() {
         return ptr::null_mut();
     }
-    let mut ty: Box<PyTypeObject> = Box::new(unsafe { std::mem::zeroed() });
+    let heap: Box<crate::abi_types::PyHeapTypeObject> = Box::new(unsafe { std::mem::zeroed() });
+    let heap_ptr = Box::into_raw(heap);
     unsafe {
-        ty.ob_base.ob_base.ob_refcnt = 1;
-        ty.ob_base.ob_base.ob_type = &raw mut crate::abi_types::PyType_Type;
-        ty.ob_base.ob_size = 0;
-        ty.tp_name = (*spec).name;
-        ty.tp_basicsize = (*spec).basicsize as Py_ssize_t;
-        ty.tp_itemsize = (*spec).itemsize as Py_ssize_t;
-        // Carry the caller's flags but do NOT pre-mark READY — PyType_Ready must
-        // run its full inherit/dict/mro pipeline below, and it early-returns if
-        // READY is already set.
-        ty.tp_flags = (*spec).flags as std::os::raw::c_ulong & !Py_TPFLAGS_READY;
-        let tp = Box::into_raw(ty);
+        let tp: *mut PyTypeObject = &raw mut (*heap_ptr).ht_type;
+        (*tp).ob_base.ob_base.ob_refcnt = 1;
+        (*tp).ob_base.ob_base.ob_type = &raw mut crate::abi_types::PyType_Type;
+        (*tp).ob_base.ob_size = 0;
+        (*tp).tp_name = (*spec).name;
+        (*tp).tp_basicsize = (*spec).basicsize as Py_ssize_t;
+        (*tp).tp_itemsize = (*spec).itemsize as Py_ssize_t;
+        // HEAPTYPE is mandatory for a spec-built type (CPython always ORs it), but
+        // do NOT pre-mark READY — PyType_Ready must run its full pipeline below.
+        (*tp).tp_flags = ((*spec).flags as std::os::raw::c_ulong & !Py_TPFLAGS_READY)
+            | crate::abi_types::Py_TPFLAGS_HEAPTYPE;
 
-        // (1) Apply every spec slot to its destination field/sub-table. A bad
-        //     slot id fails closed with a pending exception.
+        // ht_name / ht_qualname: the `spec->name` segment after the last '.', as a
+        // str object. The C string is null-terminated, so the after-dot pointer is
+        // itself a valid C string — no copy needed. Best-effort: a NULL (str
+        // allocation unavailable) is still IN BOUNDS, never OOB.
+        let name_ptr = (*spec).name;
+        if !name_ptr.is_null() {
+            let short = match std::ffi::CStr::from_ptr(name_ptr)
+                .to_bytes()
+                .iter()
+                .rposition(|&b| b == b'.')
+            {
+                Some(dot) => name_ptr.add(dot + 1),
+                None => name_ptr,
+            };
+            let ht_name = crate::api::strings::PyUnicode_FromString(short);
+            if !ht_name.is_null() {
+                (*heap_ptr).ht_name = ht_name;
+                crate::api::refcount::Py_INCREF(ht_name);
+                (*heap_ptr).ht_qualname = ht_name;
+            }
+        }
+
+        // ht_module: retain the defining module (Py_XNewRef) so PyType_GetModule /
+        // PyType_GetModuleState resolve instead of dropping per-module state.
+        if !module.is_null() {
+            crate::api::refcount::Py_INCREF(module);
+            (*heap_ptr).ht_module = module;
+        }
+
+        // (1) Apply every spec slot to its destination field/sub-table. A bad slot
+        //     id fails closed with a pending exception.
         if apply_spec_slots(tp, (*spec).slots) < 0 {
-            // Leave the pending exception; the type is unusable. (The partial
-            // allocation is intentionally not reclaimed — a slot error aborts
-            // module init, matching CPython's fail-closed behaviour.)
             return ptr::null_mut();
         }
 
@@ -1127,10 +1168,7 @@ pub unsafe extern "C" fn PyType_FromSpecWithBases(
             }
         }
 
-        // (3) Instantiation defaults: object (PyBaseObject_Type) ships no tp_new/
-        //     tp_alloc, so nothing is inherited for them. Provide the generic
-        //     allocator/constructor only where the spec left them unset, so a
-        //     spec that supplies its own Py_tp_new/Py_tp_alloc keeps it.
+        // (3) Instantiation defaults where the spec left them unset.
         if (*tp).tp_alloc.is_none() {
             (*tp).tp_alloc = Some(PyType_GenericAlloc);
         }
@@ -1138,9 +1176,8 @@ pub unsafe extern "C" fn PyType_FromSpecWithBases(
             (*tp).tp_new = Some(PyType_GenericNew);
         }
 
-        // (4) Run the comprehensive readiness pipeline: default tp_base, inherit
-        //     unset slots from the base, build tp_dict and install
-        //     tp_methods/tp_members/tp_getset, compute the MRO, mark READY.
+        // (4) Comprehensive readiness pipeline (base default, slot inherit, dict,
+        //     mro, mark READY).
         if PyType_Ready(tp) < 0 {
             return ptr::null_mut();
         }
@@ -1149,12 +1186,20 @@ pub unsafe extern "C" fn PyType_FromSpecWithBases(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyType_FromModuleAndSpec(
-    _module: *mut PyObject,
+pub unsafe extern "C" fn PyType_FromSpecWithBases(
     spec: *mut PyType_Spec,
     bases: *mut PyObject,
 ) -> *mut PyObject {
-    unsafe { PyType_FromSpecWithBases(spec, bases) }
+    unsafe { type_from_spec_impl(spec, bases, ptr::null_mut()) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyType_FromModuleAndSpec(
+    module: *mut PyObject,
+    spec: *mut PyType_Spec,
+    bases: *mut PyObject,
+) -> *mut PyObject {
+    unsafe { type_from_spec_impl(spec, bases, module) }
 }
 
 #[unsafe(no_mangle)]
@@ -1164,7 +1209,83 @@ pub unsafe extern "C" fn PyType_FromMetaclass(
     spec: *mut PyType_Spec,
     bases: *mut PyObject,
 ) -> *mut PyObject {
-    unsafe { PyType_FromModuleAndSpec(module, spec, bases) }
+    unsafe { type_from_spec_impl(spec, bases, module) }
+}
+
+/// CPython `PyType_GetModule` (Objects/typeobject.c): the module a heap type was
+/// defined in. Requires `Py_TPFLAGS_HEAPTYPE` (TypeError otherwise) and reads
+/// `((PyHeapTypeObject*)type)->ht_module` — in bounds now that spec types are full
+/// `PyHeapTypeObject`s.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyType_GetModule(ty: *mut PyTypeObject) -> *mut PyObject {
+    if ty.is_null() {
+        return ptr::null_mut();
+    }
+    if unsafe { (*ty).tp_flags } & crate::abi_types::Py_TPFLAGS_HEAPTYPE == 0 {
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                &raw mut crate::abi_types::PyExc_TypeError,
+                c"PyType_GetModule: Type is not a heap type".as_ptr(),
+            );
+        }
+        return ptr::null_mut();
+    }
+    let et = ty.cast::<crate::abi_types::PyHeapTypeObject>();
+    let m = unsafe { (*et).ht_module };
+    if m.is_null() {
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                &raw mut crate::abi_types::PyExc_TypeError,
+                c"PyType_GetModule: This type has no module associated with it".as_ptr(),
+            );
+        }
+        return ptr::null_mut();
+    }
+    m
+}
+
+/// CPython `PyType_GetModuleState`: the per-module state of the heap type's
+/// defining module, or NULL (with the `PyType_GetModule` exception on a non-heap
+/// type, or cleanly when the module carries no state).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyType_GetModuleState(ty: *mut PyTypeObject) -> *mut c_void {
+    let m = unsafe { PyType_GetModule(ty) };
+    if m.is_null() {
+        return ptr::null_mut();
+    }
+    unsafe { crate::api::modules::PyModule_GetState(m) }
+}
+
+/// CPython `PyType_GetModuleByDef` (Objects/typeobject.c): walk `type`'s MRO and
+/// return the first *heap* super whose `ht_module` belongs to `def`. molt has no
+/// `PyModule_GetDef`, so it matches via `PyState_FindModule(def)` (the runtime's
+/// def→module registry) and returns that module iff it is the `ht_module` of some
+/// heap type on the MRO/base chain. Sufficient for the single-module extension
+/// shape numpy/Cython use; the strict def-per-super match is specced, not fully
+/// implemented (PEP 573 long tail).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyType_GetModuleByDef(
+    ty: *mut PyTypeObject,
+    def: *mut crate::abi_types::PyModuleDef,
+) -> *mut PyObject {
+    if ty.is_null() || def.is_null() {
+        return ptr::null_mut();
+    }
+    let target = unsafe { crate::api::modules::PyState_FindModule(def) };
+    // Walk the base chain (falling back from tp_mro), returning the target module
+    // if it is the ht_module of a heap super — otherwise NULL (no matching super).
+    let mut cursor = ty;
+    while !cursor.is_null() {
+        if unsafe { (*cursor).tp_flags } & crate::abi_types::Py_TPFLAGS_HEAPTYPE != 0 {
+            let et = cursor.cast::<crate::abi_types::PyHeapTypeObject>();
+            let m = unsafe { (*et).ht_module };
+            if !m.is_null() && (target.is_null() || std::ptr::eq(m, target)) {
+                return m;
+            }
+        }
+        cursor = unsafe { (*cursor).tp_base };
+    }
+    ptr::null_mut()
 }
 
 #[unsafe(no_mangle)]
