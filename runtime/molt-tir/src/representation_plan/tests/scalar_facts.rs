@@ -787,8 +787,6 @@ fn typed_operands_prove_integer_runtime_lane_without_transport_hints() {
     assert!(plan.op_prefers_integer_runtime_lane(&mul));
     assert!(plan.op_args_are_integer_family(&add));
     assert!(plan.op_args_are_integer_family(&mul));
-    assert!(!plan.op_args_are_inline_safe_ints(&add));
-    assert!(!plan.op_result_is_inline_safe_int(&add));
     assert_eq!(plan.op_direct_numeric_repr(0, &add), None);
     assert_eq!(plan.op_direct_numeric_repr(1, &mul), None);
 }
@@ -817,10 +815,6 @@ fn const_numeric_ops_prove_direct_numeric_result_lanes() {
 
     let plan = ScalarRepresentationPlan::for_function_ir(&func);
 
-    assert!(plan.op_args_are_inline_safe_ints(&add));
-    assert!(plan.op_result_is_inline_safe_int(&add));
-    assert!(plan.op_args_are_float_unboxed(&f_add));
-    assert!(plan.op_result_is_float_unboxed(&f_add));
     assert_eq!(plan.op_direct_numeric_repr(2, &add), Some(Repr::RawI64Safe));
     assert_eq!(
         plan.op_direct_numeric_repr(5, &f_add),

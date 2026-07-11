@@ -335,7 +335,7 @@ impl OwnershipRootFacts {
     /// Alias roots whose result bits are valid only on a specific outgoing edge
     /// (currently the `IterNextUnboxed` value-out). These roots are never
     /// unconditionally droppable at joins or retained from the invalid edge.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn conditionally_valid_result_roots(&self) -> &HashSet<ValueId> {
         &self.conditionally_valid_result_roots
     }
@@ -552,15 +552,13 @@ pub(crate) struct StatementReleaseFinalizerBoundary {
 pub(crate) struct OwnershipLattice {
     root_facts: OwnershipRootFacts,
     finalizer_sensitive_roots: HashSet<ValueId>,
-    #[allow(dead_code)]
-    statement_release_finalizer_roots: HashSet<ValueId>,
     statement_release_finalizer_boundaries: Vec<StatementReleaseFinalizerBoundary>,
 }
 
 impl OwnershipLattice {
     /// Compute the FinalizerSensitive set: every value whose release would
     /// (transitively) fire a `__del__`.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn compute(func: &TirFunction, aliases: &AliasUnionFind) -> Self {
         Self::compute_with_root_facts(func, aliases, OwnershipRootFacts::compute(func, aliases))
     }
@@ -576,14 +574,12 @@ impl OwnershipLattice {
             .into_iter()
             .map(|value| aliases.root(value))
             .collect();
-        let mut statement_release_finalizer_roots = HashSet::new();
         let mut statement_release_finalizer_boundaries = Vec::new();
         let mut statement_release_finalizer_boundary_keys = HashSet::new();
         if finalizer_sensitive_roots.is_empty() {
             return Self {
                 root_facts,
                 finalizer_sensitive_roots,
-                statement_release_finalizer_roots,
                 statement_release_finalizer_boundaries,
             };
         }
@@ -606,8 +602,6 @@ impl OwnershipLattice {
                             .filter(|root| finalizer_sensitive_roots.contains(root))
                             .collect();
                         if !absorbed_sensitive.is_empty() {
-                            statement_release_finalizer_roots
-                                .extend(absorbed_sensitive.iter().copied());
                             for &absorbed in &absorbed_sensitive {
                                 if statement_release_finalizer_boundary_keys
                                     .insert((block_id, op_index, absorbed))
@@ -635,7 +629,6 @@ impl OwnershipLattice {
                         if !finalizer_sensitive_roots.contains(&absorbed_root) {
                             continue;
                         }
-                        statement_release_finalizer_roots.insert(absorbed_root);
                         if statement_release_finalizer_boundary_keys.insert((
                             block_id,
                             op_index,
@@ -662,7 +655,6 @@ impl OwnershipLattice {
                         if finalizer_sensitive_roots.contains(&source_root) {
                             for &result in &op.results {
                                 let result_root = aliases.root(result);
-                                statement_release_finalizer_roots.insert(result_root);
                                 if finalizer_sensitive_roots.insert(result_root) {
                                     changed = true;
                                 }
@@ -677,7 +669,6 @@ impl OwnershipLattice {
         Self {
             root_facts,
             finalizer_sensitive_roots,
-            statement_release_finalizer_roots,
             statement_release_finalizer_boundaries,
         }
     }
@@ -696,7 +687,7 @@ impl OwnershipLattice {
     /// Alias roots whose result bits are valid only on a specific outgoing edge
     /// (currently the `IterNextUnboxed` value-out). These roots are never
     /// unconditionally droppable at joins or retained from the invalid edge.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn conditionally_valid_result_roots(&self) -> &HashSet<ValueId> {
         self.root_facts.conditionally_valid_result_roots()
     }
@@ -705,24 +696,9 @@ impl OwnershipLattice {
         self.root_facts.is_conditionally_valid_result_root(root)
     }
 
-    /// Alias roots for `Copy` results that do not own an independent heap ref.
-    #[allow(dead_code)]
-    pub(crate) fn non_owning_copy_result_roots(&self) -> &HashSet<ValueId> {
-        self.root_facts.non_owning_copy_result_roots()
-    }
-
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn is_non_owning_copy_result_root(&self, root: ValueId) -> bool {
         self.root_facts.is_non_owning_copy_result_root(root)
-    }
-
-    /// Finalizer-sensitive values whose own producer/extraction reference should
-    /// release at the statement boundary unless Python-bound. This includes
-    /// producer refs retained by a container owner and fresh extracted results
-    /// such as discarded `list_pop`.
-    #[allow(dead_code)]
-    pub(crate) fn statement_release_finalizer_roots(&self) -> &HashSet<ValueId> {
-        &self.statement_release_finalizer_roots
     }
 
     pub fn statement_release_finalizer_boundaries(&self) -> &[StatementReleaseFinalizerBoundary] {
@@ -1361,7 +1337,9 @@ mod tests {
             "the list absorbing the __del__ object must be sensitive (#58 c_scope)"
         );
         assert!(
-            lat.statement_release_finalizer_roots().contains(&a),
+            lat.statement_release_finalizer_boundaries()
+                .iter()
+                .any(|boundary| boundary.op_index == 1 && boundary.root == a),
             "the producer temp has a separate absorption-boundary release fact"
         );
     }
@@ -1388,7 +1366,9 @@ mod tests {
             "Copy-preserved list_new must absorb the __del__ object's lifetime"
         );
         assert!(
-            lat.statement_release_finalizer_roots().contains(&a),
+            lat.statement_release_finalizer_boundaries()
+                .iter()
+                .any(|boundary| boundary.op_index == 1 && boundary.root == a),
             "Copy-preserved list_new must mark the absorbed producer"
         );
     }
@@ -1419,11 +1399,6 @@ mod tests {
             "Copy-preserved class_def must keep class-body descriptor lifetime behind the class owner"
         );
         assert!(
-            lat.statement_release_finalizer_roots()
-                .contains(&descriptor_root),
-            "Copy-preserved class_def must mark the absorbed descriptor temp"
-        );
-        assert!(
             lat.statement_release_finalizer_boundaries()
                 .iter()
                 .any(|boundary| {
@@ -1431,7 +1406,7 @@ mod tests {
                         && boundary.op_index == 1
                         && boundary.root == descriptor_root
                 }),
-            "class_def must expose the exact class-construction absorption boundary"
+            "class_def must expose the exact class-construction absorption boundary (the absorbed descriptor temp)"
         );
     }
 
@@ -1459,7 +1434,9 @@ mod tests {
             "Copy-preserved list_new must absorb the call-created finalizer object"
         );
         assert!(
-            lat.statement_release_finalizer_roots().contains(&a),
+            lat.statement_release_finalizer_boundaries()
+                .iter()
+                .any(|boundary| boundary.op_index == 1 && boundary.root == a),
             "call-created finalizer temp must release at the list_new boundary"
         );
     }
@@ -1500,14 +1477,10 @@ mod tests {
             "list_append must make the existing container finalizer-sensitive"
         );
         assert!(
-            lat.statement_release_finalizer_roots().contains(&a_root),
-            "the appended producer temp has an absorption-boundary release fact"
-        );
-        assert!(
             lat.statement_release_finalizer_boundaries()
                 .iter()
                 .any(|boundary| boundary.op_index == 3 && boundary.root == a_root),
-            "list_append must expose the exact absorbed producer root boundary"
+            "list_append must expose the exact absorbed producer root boundary (the appended producer temp)"
         );
     }
 
@@ -1540,16 +1513,12 @@ mod tests {
             "module storage now owns a finalizer-sensitive value"
         );
         assert!(
-            lat.statement_release_finalizer_roots().contains(&list),
-            "module_set_attr must release the compiler-owned value ref at the storage boundary"
-        );
-        assert!(
             lat.statement_release_finalizer_boundaries()
                 .iter()
                 .any(|boundary| {
                     boundary.block == entry_id && boundary.op_index == 2 && boundary.root == list
                 }),
-            "module_set_attr must expose the exact storage absorption boundary"
+            "module_set_attr must release the compiler-owned value ref at the exact storage absorption boundary"
         );
     }
 
@@ -1573,11 +1542,8 @@ mod tests {
         assert!(lat.is_finalizer_sensitive_root(list));
         assert!(
             lat.is_finalizer_sensitive_root(popped),
-            "list_pop result must inherit finalizer sensitivity from the source container"
-        );
-        assert!(
-            lat.statement_release_finalizer_roots().contains(&popped),
-            "discarded pop result is a statement-release temporary unless Python-bound"
+            "list_pop result must inherit finalizer sensitivity from the source container \
+             (the discarded pop result then releases via the normal dead-result DecRef path)"
         );
     }
 
