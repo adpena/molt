@@ -415,3 +415,98 @@ pure-Python modules into molt's module cache via the ABI (a discovery
 instrumentation, tagged packaging-artifact, exactly like the singleton stubs) —
 to punch past the import wall and surface the Tier-B/Tier-C runtime-semantic
 frontiers of numpy's array machinery natively.
+
+---
+
+## Progress update — 2026-07-10 (lane FAST-WITNESS-ITER)
+
+> Cash the native discovery engine into a **repeatable inner loop**. The engine
+> above surfaces frontiers in seconds; this lane wraps it in a re-runnable driver
+> with a machine-checkable PASS/RED gate, incremental relink, and warm-cache
+> wiring, so a single-frontier CPython-ABI edit is *provable* in seconds — not
+> the ~30-min full wasm witness. Driven on x86_64 Linux (WSL Ubuntu 24.04,
+> rustc 1.96.1, numpy 1.26.4 cp312) — the FIRST native drive of the engine on
+> x86_64 Linux (the doc's prior runs were macOS arm64).
+
+### The runner — `tools/witness_iter.py`
+
+A pure-Python driver around `tools/native_numpy_discovery.sh` (single source of
+truth for the drive mechanics) that adds the three levers a real inner loop needs:
+
+* **(a) warm frontend-lowering cache** — for the RESERVED wasm confirmation
+  (`--wasm-confirm`): sets the persistent, content-addressed
+  `MOLT_CACHE/module_lowering` tier and attests the hit-rate via
+  `MOLT_TRACE_LOWERING_CTX`, so a fresh witness session reuses unchanged numpy
+  modules instead of re-lowering them. Enabled by the idempotent-AST-encoding
+  fix this lane carries (`cache_keys.py`/`module_cache.py`): the lowering
+  context-digest is now provenance-independent, so a fresh session HITS the slot
+  a prior session wrote (predicted warm hit_rate 0.19 → 1.00).
+* **(b) incremental relink** — `--measure-relink` touches one `molt-cpython-abi`
+  source and times a single `cargo build -p molt-cext-discovery`: a crate object
+  relink into the cdylib, NOT a whole-runtime rebuild. Measured: 24.98 s (crate recompile + relink) on WSL 9p.
+* **(c) native PyInit drive as the correctness check** — a two-sided PASS/RED
+  gate (the #39 pattern) against a committed known-good frontier baseline:
+  reaching the far frontier (`numpy.exceptions`, past the datetime CAPI + symbol
+  fixes, within the known-good static-symbol ceiling) PASSES; each
+  reverted-landed-fix signature turns it RED. The runtime frontier is the
+  authoritative signal; the static symbol GAP is an advisory ceiling (`nm`
+  overcounts weak/lazy Py* that do not block init — see below).
+
+On native Windows (the canonical build box — no `dlopen`/`RTLD_GLOBAL`) the
+runner auto-dispatches into WSL.
+
+### Two x86_64-Linux native frontiers fixed to run the engine there at all
+
+The engine had only ever been driven on macOS arm64. Bringing it up on x86_64
+Linux surfaced two real molt native-link/runtime frontiers (Tier-0 class, like
+the `libc_compat`/`hypot` ones — platform-independent bugs the wasm witness
+could not surface):
+
+* **`molt-cpython-abi` duplicate-symbol link failure (rust-lld).** `build.rs`
+  force-included the `pyarg_variadic` C shim via a `--whole-archive <path>`
+  link-arg ON TOP of cc's automatic lazy `-lmolt_pyarg_shims`; LLD pulled the one
+  archive two ways → `duplicate symbol: PyTuple_Pack` (+~20). macOS ld64 dedups
+  the `-l`+`-force_load` overlap; LLD does not, so molt-cpython-abi did not even
+  BUILD on native x86_64 Linux. Fix (`runtime/molt-cpython-abi/build.rs`):
+  suppress cc's link metadata and emit ONE **propagating** `static:+whole-archive`
+  link-lib — the shim is pulled exactly once and still propagates to the
+  discovery-harness cdylib. (`nm` still lists ~20 weak/lazy Py* as "missing" from
+  the harness — those bind at array-op runtime, not init, and do not block PyInit,
+  proven by the drive reaching `numpy.exceptions`.)
+* **`dlopen` static-TLS-block failure.** molt-runtime's global allocator
+  (mimalloc) uses initial-exec TLS; the C driver `dlopen`s the harness after
+  program start, so glibc fails `cannot allocate memory in static TLS block`
+  unless extra static-TLS surplus is reserved. Fix (runner): set
+  `GLIBC_TUNABLES=glibc.rtld.optional_static_tls=…` for the driver process
+  (overridable via `MOLT_WITNESS_STATIC_TLS`).
+
+### VERIFIED — the gate reproduces PASS and turns RED on a real break
+
+1. **Reproduced a known-good frontier PASS natively.** Clean tree, all fixes
+   landed: `witness_iter.py` drove `PyInit__multiarray_umath`, `PyCapsule_Import`
+   of the `datetime.datetime_CAPI` capsule RESOLVED (zero silent-failures), and
+   the drive reached the `numpy.exceptions` AOT import wall
+   (`PyExc_ImportError`) — the exact macOS known-good frontier, reproduced on
+   x86_64 Linux — and returned **PASS**. Warm inner-loop wall-time:
+   **12.66 s** (vs ~1800 s for one full wasm witness cycle → **~142×**).
+2. **Injected regression → RED.** Reverting the datetime CAPI capsule fix
+   (`09c8d2337`) in the ABI, the runner rebuilt only `molt-cpython-abi`
+   (incremental relink), re-drove PyInit, and turned **RED**: `PyCapsule_Import`
+   silent-failure reappeared and the `numpy.exceptions` frontier was no longer
+   reached — exactly the two-sided gate firing (forbidden marker present AND
+   required marker absent). RED-cycle wall-time: **26.99 s**. Restoring the fix
+   returned the loop to PASS (determinism confirmed). A runner that could not
+   fail on this real break would be theater (M05); it fails on it.
+3. **Host-independent gate proof.** `tests/cli/test_witness_iter_gate.py` feeds
+   synthetic known-good and regressed engine output to the parse+evaluate logic
+   (datetime revert, widened symbol GAP, engine panic, shrunk GAP) — proving the
+   gate is two-sided without needing a built harness. 6/6 green.
+
+### Measured inner-loop vs full wasm witness
+
+| Step | Time |
+|---|---|
+| Cold harness build (molt-runtime `stdlib_micro` + molt-cpython-abi + cdylib, x86_64 Linux) | ~49 s (WSL 9p, debug) |
+| **Warm edit → next frontier** (incremental relink + static sweep + PyInit drive) | **12.66 s** |
+| Incremental ABI relink only (one `molt-cpython-abi` object → cdylib) | 24.98 s |
+| One numpy/scipy **wasm witness** frontier cycle (baseline) | ~1800 s (~30 min) |
