@@ -77,6 +77,8 @@ def _run_count_cmd(count_cmd: str, cwd: Path) -> int | None:
             shell=True,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=60,
         )
         if r.returncode != 0:
