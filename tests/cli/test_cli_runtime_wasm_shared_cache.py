@@ -166,6 +166,32 @@ def test_publish_then_hydrate_across_sessions(
     assert dest_b.read_bytes() == payload
 
 
+def test_hydrate_validates_source_once_before_atomic_copy(
+    tmp_path: Path,
+) -> None:
+    fp = _fingerprint(_HASH_A, _META_A)
+    payload = _valid_wasm_bytes(b"runtime-body")
+    src = tmp_path / "built" / "molt_runtime.wasm"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_bytes(payload)
+    RWC._publish_runtime_wasm_to_shared_cache(src=src, fingerprint=fp, reloc=False)
+
+    validated: list[Path] = []
+    dest = tmp_path / "hydrated" / "molt_runtime.wasm"
+    assert RWC._hydrate_runtime_wasm_from_shared_cache(
+        dest=dest,
+        fingerprint=fp,
+        reloc=False,
+        is_valid=lambda path: validated.append(path) is None
+        and path.read_bytes() == payload,
+    )
+
+    cache_path = RWC._shared_runtime_wasm_cache_path(fp, reloc=False)
+    assert cache_path is not None
+    assert validated == [cache_path]
+    assert dest.read_bytes() == payload
+
+
 def test_hydrate_misses_for_different_identity(
     tmp_path: Path,
 ) -> None:
@@ -205,6 +231,31 @@ def test_hydrate_rejects_corrupt_cache_entry(tmp_path: Path) -> None:
         is_valid=lambda p: False,  # validator rejects the corrupt entry
     )
     assert hydrated is False
+    assert not dest.exists()
+
+
+def test_hydrate_copy_failure_remains_a_cache_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fp = _fingerprint(_HASH_A, _META_A)
+    cache_path = RWC._shared_runtime_wasm_cache_path(fp, reloc=False)
+    assert cache_path is not None
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_bytes(_valid_wasm_bytes(b"runtime-body"))
+    monkeypatch.setattr(
+        RWC,
+        "_atomic_copy_file",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("copy failed")),
+    )
+
+    dest = tmp_path / "wasm" / "molt_runtime.wasm"
+    assert not RWC._hydrate_runtime_wasm_from_shared_cache(
+        dest=dest,
+        fingerprint=fp,
+        reloc=False,
+        is_valid=lambda _path: True,
+    )
     assert not dest.exists()
 
 
