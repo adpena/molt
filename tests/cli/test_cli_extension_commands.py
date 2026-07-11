@@ -2570,12 +2570,38 @@ def test_source_extension_toolchain_accepts_target_specific_wasi_sysroot_layout(
     ]
 
 
-def test_wasm_libcxx_archives_resolve_matching_exception_variant(
+def test_wasm_cxx_runtime_archives_resolve_matching_exception_variant(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     sysroot = tmp_path / "wasi-sysroot"
     library_root = sysroot / "lib" / "wasm32-wasip1" / "eh"
+    library_root.mkdir(parents=True)
+    libcxx = library_root / "libc++.a"
+    libcxxabi = library_root / "libc++abi.a"
+    libunwind = library_root / "libunwind.a"
+    libcxx.write_bytes(b"!<arch>\nlibcxx")
+    libcxxabi.write_bytes(b"!<arch>\nlibcxxabi")
+    libunwind.write_bytes(b"!<arch>\nlibunwind")
+    monkeypatch.setattr(
+        cli_wasm_toolchain,
+        "resolve_wasi_sysroot",
+        lambda: sysroot,
+    )
+
+    assert cli_wasm_toolchain.wasm_cxx_runtime_archives() == (
+        libcxx.resolve(strict=False),
+        libcxxabi.resolve(strict=False),
+        libunwind.resolve(strict=False),
+    )
+
+
+def test_wasm_cxx_runtime_archives_resolve_matching_no_exception_variant(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sysroot = tmp_path / "wasi-sysroot"
+    library_root = sysroot / "lib" / "wasm32-wasip1" / "noeh"
     library_root.mkdir(parents=True)
     libcxx = library_root / "libc++.a"
     libcxxabi = library_root / "libc++abi.a"
@@ -2587,7 +2613,7 @@ def test_wasm_libcxx_archives_resolve_matching_exception_variant(
         lambda: sysroot,
     )
 
-    assert cli_wasm_toolchain.wasm_libcxx_archives() == (
+    assert cli_wasm_toolchain.wasm_cxx_runtime_archives(exceptions=False) == (
         libcxx.resolve(strict=False),
         libcxxabi.resolve(strict=False),
     )
