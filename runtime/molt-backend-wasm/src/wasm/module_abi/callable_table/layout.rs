@@ -10,7 +10,7 @@ use crate::wasm_abi::{
     RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,
     ReservedRuntimeCallableDispatch, runtime_callable_import, wasm_runtime_import,
 };
-use crate::{SimpleIR, TrampolineKind, TrampolineSpec};
+use crate::{SimpleIR, TrampolineBehavior, TrampolineKind, TrampolineSpec};
 
 impl WasmBackend {
     pub(in crate::wasm::module_abi) fn build_table_abi(
