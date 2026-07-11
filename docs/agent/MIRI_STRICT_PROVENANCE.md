@@ -263,3 +263,46 @@ closes the flaky cross-binary buffer SIGSEGV (same provenance hazard); and the
 `PyModuleDef_Init`-return finding (E5) it un-masked is fixed in-test. All named
 findings are RESOLVED — `test_modules`, `test_object_protocol`, and the `lib`
 unit suite are green under Stacked Borrows *and* Tree Borrows.
+
+---
+
+## Addendum — BUFFER-DISTILL-55 (2026-07-10)
+
+The registry-free buffer rewrite (`src/api/buffer.rs`, task #55) preserved the
+finding-C discipline (all C-visible descriptor pointers are raw projections;
+the `ExportInternal` allocation is `std::alloc`-raw with **no** reference ever
+formed over it) and surfaced two further items, both fixed at the root:
+
+### F. REAL UB (model-dependent) — self-referential `Py_buffer` vs `&mut` re-borrow
+
+`PyBuffer_FillInfo` is now CPython-exact: `shape = &view->len`,
+`strides = &view->itemsize` (self-pointers INTO the struct). A **Rust** caller
+that re-borrows the filled struct (`&mut view`) to pass it onward (e.g. to
+`PyMemoryView_FromBuffer`) mints a Unique retag over the whole struct that pops
+the stored self-pointer tags — a later deref of `info.shape` reads through a
+dead tag even though the address is right. Pure C flows never retag and are
+unaffected. **Fix:** `descriptor_from_pybuffer` detects the two CPython
+self-referential patterns by **address equality** (access-free — tags do not
+participate in comparison) and reads the *fields* instead of dereferencing the
+interior pointers (1-D enforced; other ranks with self-pointers fail closed).
+Caught by the new anti-dangle gate
+`test_memoryview_descriptor_outlives_constructing_frame` under SB.
+
+### G. Miri limitation — counting global allocator (bench), excluded under Miri
+
+`buffer_export_bench.rs`'s `CountingAlloc` (`#[global_allocator]`, test-binary
+only; landed with the Phase-1 profile `e7d2f82332`) made **lib under Miri red
+on main**: with a custom global allocator Miri interprets the REAL Windows
+`System` code, whose dealloc of an over-aligned allocation reads the alignment
+header stored *before* the payload — outside the payload-ranged Unique tag a
+`Box` carries (trips in libtest's own mpmc-channel teardown, 128-byte-aligned
+nodes). Not molt code and not reachable in production. **Fix:** the allocator
+is `#[cfg(not(miri))]`; the budget test still runs every export cycle under
+the interpreter (UB coverage), and the deterministic allocation counts are
+asserted on every native `cargo test` run.
+
+Post-rewrite matrix: lib (57) + `test_modules` (25) + `test_object_protocol`
+(38, incl. the anti-dangle gate) — **0 UB under Stacked Borrows AND Tree
+Borrows** (`-Zmiri-ignore-leaks` for the documented immortal-global exception,
+which now also covers the datetime capsule/timezone statics the newer lib
+tests initialize).

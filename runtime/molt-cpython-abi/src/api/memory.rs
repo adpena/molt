@@ -321,6 +321,44 @@ pub unsafe extern "C" fn PyTraceMalloc_Untrack(_domain: u32, _ptr: usize) -> c_i
     0
 }
 
+/// Allocate a memoryview object with an EMPTY (zeroed) view and zeroed
+/// embedded descriptor storage, published as a raw pointer.
+///
+/// Constructors MUST fill `(*mv).view` **in place** through the returned raw
+/// pointer — never fill a stack `Py_buffer` and move it into the object. A
+/// `PyBuffer_FillInfo`'d view is self-referential (`shape = &view.len`,
+/// `strides = &view.itemsize` — CPython's field model), and a foreign
+/// `bf_getbuffer` is allowed the same trick, so the view's final home must
+/// exist before it is filled. This is CPython's own construction order:
+/// `PyMemoryView_FromMemory` fills `&mbuf->master` directly inside the heap
+/// object (Objects/memoryobject.c).
+///
+/// `Box::into_raw` happens BEFORE any interior pointer is derived, so every
+/// pointer later published into the view (self-pointers, embedded-storage
+/// pointers) is a raw projection off the post-`into_raw` pointer and stays
+/// valid until `Box::from_raw` at dealloc (Miri finding-C discipline).
+fn alloc_memoryview_object() -> *mut PyMemoryViewObject {
+    Box::into_raw(Box::new(PyMemoryViewObject {
+        ob_base: PyObject {
+            ob_refcnt: 1,
+            ob_type: &raw mut PyMemoryView_Type,
+        },
+        // SAFETY: `Py_buffer` is a plain `#[repr(C)]` pointers+integers struct;
+        // all-zero is its canonical empty state.
+        view: unsafe { std::mem::zeroed() },
+        base: std::ptr::null_mut(),
+        ob_shape: [0; crate::hooks::MOLT_BUFFER_MAX_NDIM],
+        ob_strides: [0; crate::hooks::MOLT_BUFFER_MAX_NDIM],
+        ob_format: [0; crate::hooks::MOLT_BUFFER_FORMAT_CAP],
+    }))
+}
+
+/// Free a memoryview object whose view was never successfully filled (the
+/// constructor's error path). The zeroed/reset view owns nothing.
+unsafe fn free_unfilled_memoryview(mv: *mut PyMemoryViewObject) {
+    unsafe { drop(Box::from_raw(mv)) };
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyMemoryView_FromMemory(
     mem: *mut c_char,
@@ -330,11 +368,13 @@ pub unsafe extern "C" fn PyMemoryView_FromMemory(
     if size < 0 || (mem.is_null() && size != 0) {
         return std::ptr::null_mut();
     }
-    let mut view: Py_buffer = unsafe { std::mem::zeroed() };
     let readonly = (flags & PyBUF_WRITE == 0) as c_int;
+    // The object exists FIRST; FillInfo writes its self-referential view
+    // directly into its final home (see `alloc_memoryview_object`).
+    let mv = alloc_memoryview_object();
     if unsafe {
         crate::api::buffer::PyBuffer_FillInfo(
-            &mut view,
+            &raw mut (*mv).view,
             std::ptr::null_mut(),
             mem.cast(),
             size,
@@ -343,17 +383,10 @@ pub unsafe extern "C" fn PyMemoryView_FromMemory(
         )
     } != 0
     {
+        unsafe { free_unfilled_memoryview(mv) };
         return std::ptr::null_mut();
     }
-    let object = Box::new(PyMemoryViewObject {
-        ob_base: PyObject {
-            ob_refcnt: 1,
-            ob_type: &raw mut PyMemoryView_Type,
-        },
-        view,
-        base: std::ptr::null_mut(),
-    });
-    Box::into_raw(object).cast()
+    mv.cast()
 }
 
 #[unsafe(no_mangle)]
@@ -361,22 +394,26 @@ pub unsafe extern "C" fn PyMemoryView_FromBuffer(info: *mut Py_buffer) -> *mut P
     if info.is_null() {
         return std::ptr::null_mut();
     }
-    let mut view: Py_buffer = unsafe { std::mem::zeroed() };
-    if unsafe { crate::api::buffer::copy_pybuffer_for_memoryview(&mut view, info.cast_const()) }
-        != 0
-    {
+    let mv = alloc_memoryview_object();
+    if unsafe { crate::api::buffer::init_memoryview_from_pybuffer(mv, info.cast_const()) } != 0 {
+        unsafe { free_unfilled_memoryview(mv) };
         return std::ptr::null_mut();
     }
-    let base = view.obj;
-    let object = Box::new(PyMemoryViewObject {
-        ob_base: PyObject {
-            ob_refcnt: 1,
-            ob_type: &raw mut PyMemoryView_Type,
-        },
-        view,
-        base,
-    });
-    Box::into_raw(object).cast()
+    // Pin the exporter for the memoryview's lifetime. CPython treats
+    // `info->obj` as a borrowed reference and sets `master.obj = NULL`
+    // (Objects/memoryobject.c) — the copied view must NOT re-run the
+    // exporter's `bf_releasebuffer` (the caller still owns `info` and its
+    // exactly-once release). Molt additionally holds a strong reference in
+    // `base`, dropped at dealloc, which is strictly safer than CPython's
+    // borrowed pointer.
+    unsafe {
+        let base = (*info).obj;
+        if !base.is_null() {
+            crate::api::refcount::Py_INCREF(base);
+        }
+        (*mv).base = base;
+    }
+    mv.cast()
 }
 
 #[unsafe(no_mangle)]
@@ -423,56 +460,50 @@ pub unsafe extern "C" fn PyMemoryView_FromObject(op: *mut PyObject) -> *mut PyOb
             }
             return std::ptr::null_mut();
         }
-        // Share the descriptor; the new view holds its own reference to the
-        // SOURCE memoryview (obj), so the exporter release still happens
-        // exactly once — in the source's dealloc. `internal` stays NULL so
-        // PyBuffer_Release on the copy only drops our obj reference.
-        let mut view: Py_buffer = unsafe { std::ptr::read(&raw const (*src).view) };
-        unsafe { crate::api::refcount::Py_INCREF(op) };
-        view.obj = op;
-        view.internal = std::ptr::null_mut();
-        let object = Box::new(PyMemoryViewObject {
-            ob_base: PyObject {
-                ob_refcnt: 1,
-                ob_type: &raw mut PyMemoryView_Type,
-            },
-            view,
-            base: op,
-        });
-        return Box::into_raw(object).cast();
+        // Share the descriptor: copy the source's Py_buffer struct. Its
+        // format/shape/strides pointers keep pointing into the SOURCE object's
+        // storage (embedded ob_* arrays, its GetBuffer export internal, or its
+        // own self-referential FillInfo fields), which the strong `base`
+        // reference on the source keeps alive for the copy's whole lifetime —
+        // CPython's mbuf model (the managed buffer outlives every exported
+        // view). `internal` stays NULL so PyBuffer_Release on the copy only
+        // drops our obj reference; the exporter release still happens exactly
+        // once, in the source's dealloc.
+        let mv = alloc_memoryview_object();
+        unsafe {
+            (&raw mut (*mv).view).write(std::ptr::read(&raw const (*src).view));
+            crate::api::refcount::Py_INCREF(op);
+            (*mv).view.obj = op;
+            (*mv).view.internal = std::ptr::null_mut();
+            (*mv).base = op;
+        }
+        return mv.cast();
     }
-    let mut view = Py_buffer {
-        buf: std::ptr::null_mut(),
-        obj: std::ptr::null_mut(),
-        len: 0,
-        itemsize: 1,
-        readonly: 1,
-        ndim: 0,
-        format: std::ptr::null_mut(),
-        shape: std::ptr::null_mut(),
-        strides: std::ptr::null_mut(),
-        suboffsets: std::ptr::null_mut(),
-        internal: std::ptr::null_mut(),
-    };
-    if unsafe { crate::api::buffer::PyObject_GetBuffer(op, &raw mut view, PyBUF_FULL_RO) } != 0 {
+    // The object exists FIRST and GetBuffer fills its view IN PLACE: a foreign
+    // `bf_getbuffer` may fill CPython-style self-referential shape/strides
+    // (see `alloc_memoryview_object`), which would dangle if the view were
+    // filled on the stack and moved in. Molt-native exports store their
+    // descriptor in the heap `internal` allocation, which is position-
+    // independent either way.
+    let mv = alloc_memoryview_object();
+    if unsafe {
+        crate::api::buffer::PyObject_GetBuffer(op, &raw mut (*mv).view, PyBUF_FULL_RO)
+    } != 0
+    {
+        unsafe { free_unfilled_memoryview(mv) };
         return std::ptr::null_mut();
     }
-    let base = if view.obj.is_null() {
-        unsafe { crate::api::refcount::Py_INCREF(op) };
-        op
-    } else {
-        view.obj
-    };
-    view.obj = base;
-    let object = Box::new(PyMemoryViewObject {
-        ob_base: PyObject {
-            ob_refcnt: 1,
-            ob_type: &raw mut PyMemoryView_Type,
-        },
-        view,
-        base,
-    });
-    Box::into_raw(object).cast()
+    unsafe {
+        let base = if (*mv).view.obj.is_null() {
+            crate::api::refcount::Py_INCREF(op);
+            op
+        } else {
+            (*mv).view.obj
+        };
+        (*mv).view.obj = base;
+        (*mv).base = base;
+    }
+    mv.cast()
 }
 
 pub unsafe extern "C" fn molt_memoryview_dealloc(op: *mut PyObject) {
@@ -481,7 +512,19 @@ pub unsafe extern "C" fn molt_memoryview_dealloc(op: *mut PyObject) {
     }
     let view = op.cast::<PyMemoryViewObject>();
     unsafe {
+        // `PyBuffer_Release` drops the reference held in `view.obj` (and, for
+        // molt-native exports, the runtime pin + `internal` allocation).
+        let obj_before = (*view).view.obj;
         crate::api::buffer::PyBuffer_Release(&raw mut (*view).view);
+        // A `PyMemoryView_FromBuffer` view keeps `view.obj` NULL (CPython's
+        // `master.obj = NULL` borrowed-reference model) while `base` holds the
+        // molt-added exporter pin — drop it here, exactly once. When `base`
+        // aliases the released `view.obj` (FromObject / shared-copy paths),
+        // the release above already dropped the only reference.
+        let base = (*view).base;
+        if !base.is_null() && base != obj_before {
+            crate::api::refcount::Py_DECREF(base);
+        }
         drop(Box::from_raw(view));
     }
 }
