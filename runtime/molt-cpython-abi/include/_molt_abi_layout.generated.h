@@ -298,13 +298,19 @@ _MOLT_ABI_SASSERT(offsetof(Py_buffer, internal) == 72u, "layout drift: offsetof(
 
 /* PyMemoryViewObject  <-  abi_types.rs */
 #if _MOLT_ABI_PTR32
-_MOLT_ABI_SASSERT(sizeof(PyMemoryViewObject) == 56u, "layout drift: sizeof(PyMemoryViewObject) != 56 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(sizeof(PyMemoryViewObject) == 584u, "layout drift: sizeof(PyMemoryViewObject) != 584 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyMemoryViewObject, view) == 8u, "layout drift: offsetof(PyMemoryViewObject, view) != 8");
 _MOLT_ABI_SASSERT(offsetof(PyMemoryViewObject, base) == 52u, "layout drift: offsetof(PyMemoryViewObject, base) != 52");
+_MOLT_ABI_SASSERT(offsetof(PyMemoryViewObject, ob_shape) == 56u, "layout drift: offsetof(PyMemoryViewObject, ob_shape) != 56");
+_MOLT_ABI_SASSERT(offsetof(PyMemoryViewObject, ob_strides) == 312u, "layout drift: offsetof(PyMemoryViewObject, ob_strides) != 312");
+_MOLT_ABI_SASSERT(offsetof(PyMemoryViewObject, ob_format) == 568u, "layout drift: offsetof(PyMemoryViewObject, ob_format) != 568");
 #else
-_MOLT_ABI_SASSERT(sizeof(PyMemoryViewObject) == 104u, "layout drift: sizeof(PyMemoryViewObject) != 104 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(sizeof(PyMemoryViewObject) == 1144u, "layout drift: sizeof(PyMemoryViewObject) != 1144 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyMemoryViewObject, view) == 16u, "layout drift: offsetof(PyMemoryViewObject, view) != 16");
 _MOLT_ABI_SASSERT(offsetof(PyMemoryViewObject, base) == 96u, "layout drift: offsetof(PyMemoryViewObject, base) != 96");
+_MOLT_ABI_SASSERT(offsetof(PyMemoryViewObject, ob_shape) == 104u, "layout drift: offsetof(PyMemoryViewObject, ob_shape) != 104");
+_MOLT_ABI_SASSERT(offsetof(PyMemoryViewObject, ob_strides) == 616u, "layout drift: offsetof(PyMemoryViewObject, ob_strides) != 616");
+_MOLT_ABI_SASSERT(offsetof(PyMemoryViewObject, ob_format) == 1128u, "layout drift: offsetof(PyMemoryViewObject, ob_format) != 1128");
 #endif
 
 /* PyTupleObject  <-  abi_types.rs */

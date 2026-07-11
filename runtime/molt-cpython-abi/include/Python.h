@@ -326,6 +326,15 @@ typedef struct {
     PyObject_HEAD
     Py_buffer view;
     PyObject *base;
+    /* Embedded descriptor storage — CPython's ob_array model
+       (Objects/memoryobject.c): for memoryviews built by
+       PyMemoryView_FromBuffer, view.shape/strides/format point HERE, so the
+       descriptor dies with the object and PyBuffer_Release stays pure
+       obj-dispatch. Appended after `base`; the prefix layout is unchanged.
+       Capacities mirror molt's MOLT_BUFFER_MAX_NDIM / MOLT_BUFFER_FORMAT_CAP. */
+    Py_ssize_t ob_shape[64];
+    Py_ssize_t ob_strides[64];
+    char       ob_format[16];
 } PyMemoryViewObject;
 
 typedef int (*getbufferproc)(PyObject *, Py_buffer *, int);

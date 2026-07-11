@@ -94,10 +94,21 @@ fn test_memoryview_from_memory_has_type_and_null_base() {
     let buffer = unsafe { molt_cpython_abi::api::memory::PyMemoryView_GET_BUFFER(view) };
     assert!(!buffer.is_null());
     assert_eq!(unsafe { (*buffer).len }, 1);
-    assert!(!unsafe { (*buffer).internal }.is_null());
+    // FromMemory fills the embedded view IN PLACE via the CPython-exact
+    // (allocation-free) FillInfo: internal is NULL and shape/strides are the
+    // self-referential field pointers, which live inside the memoryview
+    // object itself and stay valid for its whole lifetime.
+    assert!(unsafe { (*buffer).internal }.is_null());
     assert!(!unsafe { (*buffer).format }.is_null());
     assert!(!unsafe { (*buffer).shape }.is_null());
     assert!(!unsafe { (*buffer).strides }.is_null());
+    assert!(
+        std::ptr::eq(
+            unsafe { (*buffer).shape }.cast_const(),
+            unsafe { &raw const (*buffer).len },
+        ),
+        "FromMemory shape must self-point at the embedded view's len",
+    );
     unsafe {
         assert_eq!(*(*buffer).format as u8, b'B');
         assert_eq!(*(*buffer).shape, 1);
@@ -149,18 +160,44 @@ fn test_memoryview_from_buffer_copies_descriptor_without_sharing_release() {
         )
     };
     assert_eq!(rc, 0);
-    let original_internal = info.internal;
-    assert!(!original_internal.is_null());
+    // CPython-exact FillInfo: allocation-free, `internal` NULL, shape/strides
+    // self-referential.
+    assert!(info.internal.is_null());
+    assert!(std::ptr::eq(info.shape.cast_const(), &raw const info.len));
 
     let view = unsafe { molt_cpython_abi::api::memory::PyMemoryView_FromBuffer(&mut info) };
     assert!(!view.is_null());
+    // The caller still owns `info` and releases it exactly once; the
+    // memoryview's copied descriptor must be unaffected.
     unsafe { molt_cpython_abi::api::buffer::PyBuffer_Release(&mut info) };
     assert!(info.internal.is_null());
 
     assert!(unsafe { molt_cpython_abi::api::memory::PyMemoryView_GET_BASE(view) }.is_null());
     let buffer = unsafe { molt_cpython_abi::api::memory::PyMemoryView_GET_BUFFER(view) };
     assert!(!buffer.is_null());
-    assert_ne!(unsafe { (*buffer).internal }, original_internal);
+    // The copy's descriptor VALUES live in the memoryview object's own
+    // embedded storage (CPython's ob_array model): no side allocation
+    // (`internal` NULL) and shape/strides/format point INTO the object.
+    assert!(unsafe { (*buffer).internal }.is_null());
+    let mv = view.cast::<molt_cpython_abi::abi_types::PyMemoryViewObject>();
+    assert!(
+        std::ptr::eq(unsafe { (*buffer).shape }.cast_const(), unsafe {
+            (&raw const (*mv).ob_shape).cast()
+        }),
+        "FromBuffer shape must point into the object's embedded ob_shape",
+    );
+    assert!(
+        std::ptr::eq(unsafe { (*buffer).strides }.cast_const(), unsafe {
+            (&raw const (*mv).ob_strides).cast()
+        }),
+        "FromBuffer strides must point into the object's embedded ob_strides",
+    );
+    assert!(
+        std::ptr::eq(unsafe { (*buffer).format }.cast_const(), unsafe {
+            (&raw const (*mv).ob_format).cast()
+        }),
+        "FromBuffer format must point into the object's embedded ob_format",
+    );
     assert_eq!(unsafe { (*buffer).buf }, bytes.as_mut_ptr().cast());
     assert_eq!(unsafe { (*buffer).len }, bytes.len() as isize);
     assert_eq!(unsafe { (*buffer).itemsize }, 1);
@@ -245,6 +282,97 @@ fn test_memoryview_from_buffer_ignores_foreign_private_internal_pointer() {
     assert_ne!(unsafe { (*buffer).internal }, info.internal);
     assert_eq!(unsafe { (*buffer).len }, bytes.len() as isize);
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(view) };
+}
+
+/// Constructs a memoryview over `data` in ITS OWN stack frame, so any
+/// descriptor pointer that (incorrectly) targeted this frame's locals dangles
+/// as soon as it returns.
+#[inline(never)]
+fn build_memoryview_from_memory(data: *mut c_char, len: isize) -> *mut PyObject {
+    unsafe { molt_cpython_abi::api::memory::PyMemoryView_FromMemory(data, len, PyBUF_READ) }
+}
+
+/// Same for the FromBuffer path: the source `Py_buffer` is a FillInfo'd STACK
+/// view that is released and dies with this frame — exactly the shape of the
+/// reverted `7da58cff8f` field-trick UAF (a self-referential `shape =
+/// &view.len` on a stack view that the memoryview then outlived).
+#[inline(never)]
+fn build_memoryview_from_stack_buffer(data: *mut c_void, len: isize) -> *mut PyObject {
+    let mut info: Py_buffer = unsafe { std::mem::zeroed() };
+    let rc = unsafe {
+        molt_cpython_abi::api::buffer::PyBuffer_FillInfo(
+            &mut info,
+            ptr::null_mut(),
+            data,
+            len,
+            1,
+            PyBUF_FORMAT | PyBUF_STRIDES,
+        )
+    };
+    assert_eq!(rc, 0);
+    let view = unsafe { molt_cpython_abi::api::memory::PyMemoryView_FromBuffer(&mut info) };
+    // The caller of FromBuffer keeps ownership of the original and releases it
+    // exactly once — here, before the stack view goes out of scope.
+    unsafe { molt_cpython_abi::api::buffer::PyBuffer_Release(&mut info) };
+    view
+}
+
+/// Overwrites a stretch of stack so a dangling into-dead-frame pointer reads
+/// garbage rather than accidentally-intact values on non-Miri runs.
+#[inline(never)]
+fn clobber_stack() -> u64 {
+    let mut junk = [0u8; 4096];
+    let mut acc = 0u64;
+    for (i, byte) in junk.iter_mut().enumerate() {
+        *byte = (i as u8) ^ 0xA5;
+        acc = acc.wrapping_add(u64::from(*byte));
+    }
+    std::hint::black_box(acc)
+}
+
+/// Anti-dangle gate: the C-visible `shape`/`strides`/`format` pointers of a
+/// memoryview must remain valid AFTER the constructing stack frame has
+/// returned (they must point into the object's own storage — never into a
+/// stack `Py_buffer`). Under Miri (Stacked + Tree Borrows) a dangling read
+/// here is flagged deterministically; natively, `clobber_stack` makes it
+/// fail loudly on values too.
+#[test]
+fn test_memoryview_descriptor_outlives_constructing_frame() {
+    init();
+    let mut data = [7_u8; 32];
+
+    let mv_mem = build_memoryview_from_memory(data.as_mut_ptr().cast(), data.len() as isize);
+    assert!(!mv_mem.is_null());
+    let mv_buf = build_memoryview_from_stack_buffer(data.as_mut_ptr().cast(), data.len() as isize);
+    assert!(!mv_buf.is_null());
+    std::hint::black_box(clobber_stack());
+
+    for (label, mv) in [("FromMemory", mv_mem), ("FromBuffer", mv_buf)] {
+        let buffer = unsafe { molt_cpython_abi::api::memory::PyMemoryView_GET_BUFFER(mv) };
+        assert!(!buffer.is_null(), "{label}: GET_BUFFER");
+        unsafe {
+            assert!(!(*buffer).shape.is_null(), "{label}: shape");
+            assert!(!(*buffer).strides.is_null(), "{label}: strides");
+            assert!(!(*buffer).format.is_null(), "{label}: format");
+            assert_eq!(
+                *(*buffer).shape,
+                data.len() as isize,
+                "{label}: shape[0] read after the constructing frame returned",
+            );
+            assert_eq!(
+                *(*buffer).strides,
+                1,
+                "{label}: strides[0] read after the constructing frame returned",
+            );
+            assert_eq!(
+                *(*buffer).format as u8,
+                b'B',
+                "{label}: format read after the constructing frame returned",
+            );
+            assert_eq!((*buffer).len, data.len() as isize, "{label}: len");
+        }
+        unsafe { molt_cpython_abi::api::refcount::Py_DECREF(mv) };
+    }
 }
 
 #[test]

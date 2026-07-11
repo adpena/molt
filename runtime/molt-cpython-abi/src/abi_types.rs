@@ -1396,7 +1396,26 @@ pub struct PyMemoryViewObject {
     pub ob_base: PyObject,
     pub view: Py_buffer,
     pub base: *mut PyObject,
+    /// Embedded descriptor storage — CPython's `ob_array` model
+    /// (Objects/memoryobject.c `memory_alloc` places shape/strides in the
+    /// memoryview object's own tail storage and `init_shape_strides` re-points
+    /// `view.shape`/`view.strides` into it). For memoryviews built by
+    /// `PyMemoryView_FromBuffer` the copied descriptor VALUES live here, so
+    /// `view.format`/`shape`/`strides` point into the object itself: the
+    /// descriptor dies with the object, there is no side allocation to free,
+    /// and `PyBuffer_Release` stays pure obj-dispatch (no registry, no
+    /// `internal` deref). Fields are appended after `base`, so the
+    /// `ob_base`/`view`/`base` prefix layout seen by C is unchanged.
+    pub ob_shape: [Py_ssize_t; 64],
+    pub ob_strides: [Py_ssize_t; 64],
+    pub ob_format: [u8; 16],
 }
+
+// Literal capacities above keep the C-layout generator
+// (tools/gen_cpython_abi_layout.py) parseable; these bind them to the single
+// authority so they cannot drift.
+const _: () = assert!(crate::hooks::MOLT_BUFFER_MAX_NDIM == 64);
+const _: () = assert!(crate::hooks::MOLT_BUFFER_FORMAT_CAP == 16);
 
 unsafe impl Send for PyMemoryViewObject {}
 unsafe impl Sync for PyMemoryViewObject {}
