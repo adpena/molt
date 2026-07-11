@@ -22,10 +22,11 @@ pub unsafe extern "C" fn Py_INCREF(op: *mut PyObject) {
     if op.is_null() {
         return;
     }
-    // Immortal check: large refcnt means static singleton, skip.
+    // Immortal check via the single authority (mirrors CPython _Py_IsImmortal):
+    // a static singleton is never incremented.
     unsafe {
         let rc = (*op).ob_refcnt;
-        if rc < (1 << 29) {
+        if !crate::abi_types::is_immortal_refcnt(rc) {
             (*op).ob_refcnt = rc.wrapping_add(1);
         }
     }
@@ -42,8 +43,8 @@ pub unsafe extern "C" fn Py_DECREF(op: *mut PyObject) {
     }
     unsafe {
         let rc = (*op).ob_refcnt;
-        if rc >= (1 << 29) {
-            return; // immortal singleton
+        if crate::abi_types::is_immortal_refcnt(rc) {
+            return; // immortal singleton — permanent no-op, never freed
         }
         let new_rc = rc.wrapping_sub(1);
         (*op).ob_refcnt = new_rc;
