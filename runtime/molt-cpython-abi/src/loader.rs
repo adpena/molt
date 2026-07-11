@@ -127,7 +127,7 @@ pub unsafe fn load_cpython_extension(path: &Path, name: &str) -> Result<u64, Loa
     // runtime hook to classify them — only a `MoltTypeTag::Module` is a
     // legitimate result for a `PyInit_<name>()` return value.
     let molt_bits = {
-        let mut bridge = GLOBAL_BRIDGE.lock();
+        let bridge = &*GLOBAL_BRIDGE;
         let candidate_bits = match bridge.molt_handle_for_pyobj(module_ptr) {
             Some(value) => value.bits(),
             None => unsafe { bridge.molt_value_for_pyobj(module_ptr) }.ok_or_else(|| {
@@ -136,7 +136,6 @@ pub unsafe fn load_cpython_extension(path: &Path, name: &str) -> Result<u64, Loa
                 }
             })?,
         };
-        drop(bridge);
         let h = crate::hooks::hooks_or_stubs();
         let tag = unsafe { (h.classify_heap)(candidate_bits) };
         if tag != crate::abi_types::MoltTypeTag::Module as u8 {

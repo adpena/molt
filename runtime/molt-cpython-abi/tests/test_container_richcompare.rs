@@ -39,16 +39,30 @@ fn fresh_handle() -> u64 {
 // ── fake list runtime ──────────────────────────────────────────────────────
 unsafe extern "C" fn fx_alloc_list() -> u64 {
     let bits = fresh_handle();
-    LISTS.lock().unwrap().get_or_insert_default().insert(bits, Vec::new());
+    LISTS
+        .lock()
+        .unwrap()
+        .get_or_insert_default()
+        .insert(bits, Vec::new());
     bits
 }
 unsafe extern "C" fn fx_list_append(list_bits: u64, item_bits: u64) {
-    if let Some(v) = LISTS.lock().unwrap().get_or_insert_default().get_mut(&list_bits) {
+    if let Some(v) = LISTS
+        .lock()
+        .unwrap()
+        .get_or_insert_default()
+        .get_mut(&list_bits)
+    {
         v.push(item_bits);
     }
 }
 unsafe extern "C" fn fx_list_len(bits: u64) -> usize {
-    LISTS.lock().unwrap().get_or_insert_default().get(&bits).map_or(0, |v| v.len())
+    LISTS
+        .lock()
+        .unwrap()
+        .get_or_insert_default()
+        .get(&bits)
+        .map_or(0, |v| v.len())
 }
 unsafe extern "C" fn fx_list_item(bits: u64, i: usize) -> u64 {
     LISTS
@@ -63,7 +77,11 @@ unsafe extern "C" fn fx_list_item(bits: u64, i: usize) -> u64 {
 // ── fake dict runtime (insertion-ordered assoc list; int keys hash by bits) ──
 unsafe extern "C" fn fx_alloc_dict() -> u64 {
     let bits = fresh_handle();
-    DICTS.lock().unwrap().get_or_insert_default().insert(bits, Vec::new());
+    DICTS
+        .lock()
+        .unwrap()
+        .get_or_insert_default()
+        .insert(bits, Vec::new());
     bits
 }
 unsafe extern "C" fn fx_dict_set(d: u64, k: u64, v: u64) {
@@ -85,7 +103,12 @@ unsafe extern "C" fn fx_dict_get(d: u64, k: u64) -> u64 {
         .unwrap_or(0)
 }
 unsafe extern "C" fn fx_dict_len(bits: u64) -> usize {
-    DICTS.lock().unwrap().get_or_insert_default().get(&bits).map_or(0, |e| e.len())
+    DICTS
+        .lock()
+        .unwrap()
+        .get_or_insert_default()
+        .get(&bits)
+        .map_or(0, |e| e.len())
 }
 unsafe extern "C" fn fx_dict_entry(
     d: u64,
@@ -93,7 +116,13 @@ unsafe extern "C" fn fx_dict_entry(
     out_key: *mut u64,
     out_val: *mut u64,
 ) -> c_int {
-    match DICTS.lock().unwrap().get_or_insert_default().get(&d).and_then(|e| e.get(index).copied()) {
+    match DICTS
+        .lock()
+        .unwrap()
+        .get_or_insert_default()
+        .get(&d)
+        .and_then(|e| e.get(index).copied())
+    {
         Some((k, v)) => {
             unsafe {
                 if !out_key.is_null() {
@@ -110,10 +139,20 @@ unsafe extern "C" fn fx_dict_entry(
 }
 
 unsafe extern "C" fn fx_classify_heap(bits: u64) -> u8 {
-    if LISTS.lock().unwrap().get_or_insert_default().contains_key(&bits) {
+    if LISTS
+        .lock()
+        .unwrap()
+        .get_or_insert_default()
+        .contains_key(&bits)
+    {
         return MoltTypeTag::List as u8;
     }
-    if DICTS.lock().unwrap().get_or_insert_default().contains_key(&bits) {
+    if DICTS
+        .lock()
+        .unwrap()
+        .get_or_insert_default()
+        .contains_key(&bits)
+    {
         return MoltTypeTag::Dict as u8;
     }
     MoltTypeTag::Other as u8
@@ -139,7 +178,7 @@ fn install() {
 
 /// Mint a `*mut PyObject` for a runtime handle (ob_type set from classify_heap).
 fn register(bits: u64) -> *mut PyObject {
-    unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) }
+    unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_pyobj(bits) }
 }
 fn int_bits(v: i64) -> u64 {
     MoltObject::from_int(v).bits()
@@ -173,11 +212,27 @@ fn list_structural_richcompare_over_distinct_objects() {
         // slot -> identity fallback -> 0).
         assert_eq!(PyObject_RichCompareBool(a, b, PY_EQ), 1, "[7,7,7]==[7,7,7]");
         let c = mk_list(&[7, 7, 8]);
-        assert_eq!(PyObject_RichCompareBool(a, c, PY_EQ), 0, "differing lists unequal");
-        assert_eq!(PyObject_RichCompareBool(a, c, PY_NE), 1, "differing lists != True");
-        assert_eq!(PyObject_RichCompareBool(a, c, PY_LT), 1, "[7,7,7] < [7,7,8]");
+        assert_eq!(
+            PyObject_RichCompareBool(a, c, PY_EQ),
+            0,
+            "differing lists unequal"
+        );
+        assert_eq!(
+            PyObject_RichCompareBool(a, c, PY_NE),
+            1,
+            "differing lists != True"
+        );
+        assert_eq!(
+            PyObject_RichCompareBool(a, c, PY_LT),
+            1,
+            "[7,7,7] < [7,7,8]"
+        );
         let short = mk_list(&[7, 7]);
-        assert_eq!(PyObject_RichCompareBool(a, short, PY_EQ), 0, "different length unequal");
+        assert_eq!(
+            PyObject_RichCompareBool(a, short, PY_EQ),
+            0,
+            "different length unequal"
+        );
     }
 }
 
@@ -192,16 +247,36 @@ fn dict_structural_richcompare_over_distinct_objects() {
         let b = mk_dict(&[(2, 20), (1, 10)]);
         assert!(!a.is_null() && !b.is_null(), "dict minting failed");
         assert_ne!(a, b, "must be two distinct dict objects");
-        assert_eq!(PyObject_RichCompareBool(a, b, PY_EQ), 1, "equal dicts (order-independent)");
+        assert_eq!(
+            PyObject_RichCompareBool(a, b, PY_EQ),
+            1,
+            "equal dicts (order-independent)"
+        );
         // Differing value at an equal key.
         let c = mk_dict(&[(1, 10), (2, 99)]);
-        assert_eq!(PyObject_RichCompareBool(a, c, PY_EQ), 0, "differing value -> unequal");
-        assert_eq!(PyObject_RichCompareBool(a, c, PY_NE), 1, "differing dicts != True");
+        assert_eq!(
+            PyObject_RichCompareBool(a, c, PY_EQ),
+            0,
+            "differing value -> unequal"
+        );
+        assert_eq!(
+            PyObject_RichCompareBool(a, c, PY_NE),
+            1,
+            "differing dicts != True"
+        );
         // Different length.
         let d2 = mk_dict(&[(1, 10)]);
-        assert_eq!(PyObject_RichCompareBool(a, d2, PY_EQ), 0, "different length -> unequal");
+        assert_eq!(
+            PyObject_RichCompareBool(a, d2, PY_EQ),
+            0,
+            "different length -> unequal"
+        );
         // A key present in `a` but absent in `e` -> unequal (dict_equal key miss).
         let e = mk_dict(&[(1, 10), (3, 20)]);
-        assert_eq!(PyObject_RichCompareBool(a, e, PY_EQ), 0, "disjoint key -> unequal");
+        assert_eq!(
+            PyObject_RichCompareBool(a, e, PY_EQ),
+            0,
+            "disjoint key -> unequal"
+        );
     }
 }

@@ -123,10 +123,9 @@ fn test_memoryview_from_memory_has_type_and_null_base() {
     assert!(!unsafe { (*buffer).shape }.is_null());
     assert!(!unsafe { (*buffer).strides }.is_null());
     assert!(
-        std::ptr::eq(
-            unsafe { (*buffer).shape }.cast_const(),
-            unsafe { &raw const (*buffer).len },
-        ),
+        std::ptr::eq(unsafe { (*buffer).shape }.cast_const(), unsafe {
+            &raw const (*buffer).len
+        },),
         "FromMemory shape must self-point at the embedded view's len",
     );
     unsafe {
@@ -602,7 +601,10 @@ fn test_pyeval_save_restore_thread_uses_singleton_thread_state() {
 fn test_pythreadstate_getframe_returns_null_not_synthetic_frame() {
     let _guard = init();
     let tstate = unsafe { molt_cpython_abi::api::object::PyThreadState_Get() };
-    assert!(!tstate.is_null(), "a valid thread state is needed for the test");
+    assert!(
+        !tstate.is_null(),
+        "a valid thread state is needed for the test"
+    );
     let frame = unsafe { molt_cpython_abi::api::object::PyThreadState_GetFrame(tstate) };
     assert!(
         frame.is_null(),
@@ -848,7 +850,10 @@ fn test_richcompare_native_int_ordering_is_computed() {
     let b = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(2) };
     let result = unsafe { molt_cpython_abi::api::typeobj::PyObject_RichCompare(a, b, PY_LT) };
     assert!(
-        std::ptr::eq(result, (&raw mut molt_cpython_abi::abi_types::Py_True).cast::<PyObject>()),
+        std::ptr::eq(
+            result,
+            (&raw mut molt_cpython_abi::abi_types::Py_True).cast::<PyObject>()
+        ),
         "1 < 2 must be Py_True, never NotImplemented"
     );
     assert!(!std::ptr::eq(result, &raw mut Py_NotImplementedSentinel));
@@ -917,7 +922,7 @@ fn test_object_dir_null_fails_closed() {
 fn test_object_dir_foreign_nonbridge_does_not_hang() {
     // CPYTHON-ABI-LOCK-SWEEP regression test: PyObject_Dir(o) with a non-NULL,
     // non-bridge-managed `o` takes the `None` arm of what was
-    // `match GLOBAL_BRIDGE.lock()...`. That arm calls PyErr_SetString, which
+    // `match GLOBAL_BRIDGE...`. That arm calls PyErr_SetString, which
     // itself locks GLOBAL_BRIDGE — a self-deadlock (hang, not a crash) on a
     // non-reentrant Mutex. Reproduced live against the pre-fix code (the
     // spawned thread below hung past the 10s bound); the fix binds the lock's

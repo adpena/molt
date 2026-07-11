@@ -6,11 +6,7 @@ unsafe extern "C" fn accept_set_add(_set: u64, _key: u64) -> std::os::raw::c_int
 }
 
 fn register(bits: u64) -> *mut PyObject {
-    unsafe {
-        molt_cpython_abi::bridge::GLOBAL_BRIDGE
-            .lock()
-            .handle_to_pyobj(bits)
-    }
+    unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_pyobj(bits) }
 }
 
 #[test]
@@ -26,9 +22,7 @@ fn pyset_add_rejects_shared_frozenset() {
         ob_type: &raw mut molt_cpython_abi::abi_types::PyFrozenSet_Type,
     }));
     unsafe {
-        molt_cpython_abi::bridge::GLOBAL_BRIDGE
-            .lock()
-            .register_raw_pyobj(frozen);
+        molt_cpython_abi::bridge::GLOBAL_BRIDGE.register_raw_pyobj(frozen);
     }
     let key = register(MoltObject::from_int(9).bits());
     unsafe { molt_cpython_abi::api::refcount::Py_INCREF(frozen) };

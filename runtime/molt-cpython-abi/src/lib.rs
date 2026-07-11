@@ -53,7 +53,7 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 // Apparatus for the CPYTHON-ABI-LOCK-SWEEP class: a `match`/`if let`/`while let`
-// scrutinee that locks a non-reentrant `Mutex` (e.g. `GLOBAL_BRIDGE.lock()`)
+// scrutinee that locks a non-reentrant `Mutex` (e.g. `GLOBAL_BRIDGE`)
 // extends that guard's lifetime across every arm body (Rust's temporary
 // lifetime extension for match scrutinees). Any arm that re-locks the same
 // mutex — directly, or via a helper that locks it (e.g. `PyErr_SetString`,

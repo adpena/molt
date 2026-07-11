@@ -292,7 +292,6 @@ fn ready_populates_tp_dict_from_members_and_getset() {
     }
     assert!(
         molt_cpython_abi::bridge::GLOBAL_BRIDGE
-            .lock()
             .pyobj_to_handle(num_descr)
             .is_some(),
         "member_descriptor must be bridge-resolvable for dict round trips"

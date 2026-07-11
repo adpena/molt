@@ -143,9 +143,7 @@ fn cfunction_newex_returns_bridge_resolvable_object() {
     assert!(!func.is_null(), "PyCFunction_NewEx must return a callable");
     // The returned object must resolve back to a Molt handle — the whole point
     // of the fix. A raw, unregistered object would return None here.
-    let handle = molt_cpython_abi::bridge::GLOBAL_BRIDGE
-        .lock()
-        .pyobj_to_handle(func);
+    let handle = molt_cpython_abi::bridge::GLOBAL_BRIDGE.pyobj_to_handle(func);
     assert!(
         handle.is_some(),
         "PyCFunction_NewEx result must be bridge-registered so PyDict_SetItem can store it"

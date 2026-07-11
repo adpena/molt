@@ -99,13 +99,9 @@ fn get_item_native_dict_miss_raises_keyerror_with_key() {
     let backing: Box<u8> = Box::new(0);
     let dict_ptr = Box::into_raw(backing);
     let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
-    let dict_obj = unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(dict_bits) };
+    let dict_obj = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(dict_bits) };
     // A native int key so `PyErr_SetObject(KeyError, key)` can format its value.
-    let key = unsafe {
-        GLOBAL_BRIDGE
-            .lock()
-            .handle_to_pyobj(MoltObject::from_int(4242).bits())
-    };
+    let key = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(MoltObject::from_int(4242).bits()) };
 
     let result = unsafe { molt_cpython_abi::api::object::PyObject_GetItem(dict_obj, key) };
     assert!(

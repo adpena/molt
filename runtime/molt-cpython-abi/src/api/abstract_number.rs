@@ -21,7 +21,6 @@ fn resolve_bits(op: *mut PyObject) -> Option<u64> {
         return None;
     }
     GLOBAL_BRIDGE
-        .lock()
         .molt_handle_for_pyobj(op)
         .map(|value| value.bits())
 }
@@ -55,7 +54,7 @@ unsafe fn pyobj_from_result(result_bits: u64) -> *mut PyObject {
         unsafe { ensure_exception_set() };
         return ptr::null_mut();
     }
-    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(result_bits) }
+    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(result_bits) }
 }
 
 type BinaryFunc = unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> *mut PyObject;
@@ -432,7 +431,7 @@ fn as_i64(bits: u64) -> Option<i64> {
 /// Helper: build a PyObject from a float result.
 fn pyobj_from_float(v: f64) -> *mut PyObject {
     let bits = MoltObject::from_float(v).bits();
-    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) }
+    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) }
 }
 
 /// Helper: build a PyObject from an int result.
@@ -449,12 +448,12 @@ fn pyobj_from_int(v: i64) -> *mut PyObject {
         // valid only for the inline window. Out-of-window values fail closed as
         // a null with a set exception rather than a truncated wrong answer.
         if let Some(inline) = MoltObject::try_from_int(v) {
-            return unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(inline.bits()) };
+            return unsafe { GLOBAL_BRIDGE.handle_to_pyobj(inline.bits()) };
         }
         unsafe { ensure_exception_set() };
         return ptr::null_mut();
     }
-    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) }
+    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) }
 }
 
 // ─── Binary arithmetic ───────────────────────────────────────────────────

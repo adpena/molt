@@ -1372,7 +1372,7 @@ pub unsafe fn init_static_types() {
 /// call from the `Once`-guarded `molt_cpython_abi_init` and to overlap with the
 /// per-type `PyType_Ready` registration.
 pub fn register_static_abi_objects() {
-    let mut bridge = crate::bridge::GLOBAL_BRIDGE.lock();
+    let bridge = &*crate::bridge::GLOBAL_BRIDGE;
     for ptr in exc_singleton_ptrs() {
         unsafe { bridge.register_raw_pyobj(ptr) };
     }
@@ -1884,7 +1884,7 @@ mod unresolved_pyobject_tests {
         // asserts the bridge RESOLVES the canonical objects — it does NOT weaken the
         // unresolved-object check (an unregistered pointer still returns `None`).
         register_static_abi_objects();
-        let bridge = crate::bridge::GLOBAL_BRIDGE.lock();
+        let bridge = &*crate::bridge::GLOBAL_BRIDGE;
         for ptr in type_static_ptrs() {
             assert!(
                 bridge.pyobj_to_handle(ptr).is_some(),
@@ -1996,10 +1996,7 @@ mod immortal_authority_tests {
             "PyExc_ValueError must be immortal (pre-fix it was the mortal `1`)"
         );
         assert!(
-            crate::bridge::GLOBAL_BRIDGE
-                .lock()
-                .pyobj_to_handle(exc)
-                .is_some(),
+            crate::bridge::GLOBAL_BRIDGE.pyobj_to_handle(exc).is_some(),
             "exc singleton must be bridge-registered before the over-DECREF"
         );
         // 8 net-negative DECREFs — for a mortal `1` this reaches 0 and frees.
@@ -2012,10 +2009,7 @@ mod immortal_authority_tests {
             "immortal exception singleton refcount changed under DECREF"
         );
         assert!(
-            crate::bridge::GLOBAL_BRIDGE
-                .lock()
-                .pyobj_to_handle(exc)
-                .is_some(),
+            crate::bridge::GLOBAL_BRIDGE.pyobj_to_handle(exc).is_some(),
             "exc singleton lost bridge identity after over-DECREF (static-free regression)"
         );
     }
@@ -2058,7 +2052,7 @@ mod immortal_authority_tests {
     fn bridge_never_increments_a_registered_immortal_singleton() {
         crate::bridge::molt_cpython_abi_init();
         let exc = &raw mut PyExc_TypeError;
-        let mut bridge = crate::bridge::GLOBAL_BRIDGE.lock();
+        let bridge = &*crate::bridge::GLOBAL_BRIDGE;
         let bits = bridge
             .pyobj_to_handle(exc)
             .expect("registered exc singleton resolves to a handle");
@@ -2094,7 +2088,7 @@ mod immortal_authority_tests {
             "_Py_NoneStruct.ob_type must be &PyNone_Type (was NULL → null-deref)"
         );
         assert!(is_immortal_refcnt(unsafe { (*none_struct).ob_refcnt }));
-        let mut bridge = crate::bridge::GLOBAL_BRIDGE.lock();
+        let bridge = &*crate::bridge::GLOBAL_BRIDGE;
         let via_struct = unsafe { bridge.molt_value_for_pyobj(none_struct) };
         let via_py_none = unsafe { bridge.molt_value_for_pyobj(&raw mut Py_None) };
         assert_eq!(
@@ -2139,7 +2133,7 @@ mod immortal_authority_tests {
         }
         let t_obj = (&raw mut crate::api::object::_Py_TrueStruct).cast::<PyObject>();
         let f_obj = (&raw mut crate::api::object::_Py_FalseStruct).cast::<PyObject>();
-        let mut bridge = crate::bridge::GLOBAL_BRIDGE.lock();
+        let bridge = &*crate::bridge::GLOBAL_BRIDGE;
         assert_eq!(
             unsafe { bridge.molt_value_for_pyobj(t_obj) },
             unsafe { bridge.molt_value_for_pyobj((&raw mut Py_True).cast::<PyObject>()) },

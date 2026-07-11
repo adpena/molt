@@ -447,7 +447,7 @@ pub unsafe extern "C" fn PyObject_GetBuffer(
         return -1;
     }
     // Resolve in its own statement (NOT as a `match` scrutinee): a `match
-    // GLOBAL_BRIDGE.lock()....` scrutinee keeps the MutexGuard alive for the
+    // GLOBAL_BRIDGE....` scrutinee keeps the MutexGuard alive for the
     // ENTIRE match statement, including the `None` arm's body (Rust temporary
     // lifetime extension). That arm calls `raise_bytes_like_type_error` ->
     // `PyErr_SetString`, which itself locks `GLOBAL_BRIDGE` — with the outer
@@ -461,7 +461,7 @@ pub unsafe extern "C" fn PyObject_GetBuffer(
     // below, not to the runtime `buffer_acquire` hook. `PyBuffer_Release`
     // classifies with the SAME function, so export and release dispatch can
     // never disagree about who owns `view.internal`.
-    let resolved = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(obj);
+    let resolved = GLOBAL_BRIDGE.molt_handle_for_pyobj(obj);
     let bits = match resolved {
         Some(bits) => bits,
         None => {
@@ -580,7 +580,7 @@ pub unsafe extern "C" fn PyBuffer_Release(view: *mut Py_buffer) {
         // a strong reference from export until the DECREF below, which also
         // pins the bridge identity entry, so this classification cannot drift
         // from the one `PyObject_GetBuffer` made at export time.
-        let is_molt_native = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(obj).is_some();
+        let is_molt_native = GLOBAL_BRIDGE.molt_handle_for_pyobj(obj).is_some();
         if is_molt_native {
             let internal = (*view).internal;
             if !internal.is_null() {
@@ -615,7 +615,7 @@ pub unsafe extern "C" fn PyObject_CheckBuffer(obj: *mut PyObject) -> c_int {
     // raw-registered C object is FOREIGN (its synthetic identity bits are not
     // a `MoltObject`, so `classify_heap` on them would be garbage) — it gets
     // the honest slot test.
-    let bits = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(obj);
+    let bits = GLOBAL_BRIDGE.molt_handle_for_pyobj(obj);
     match bits {
         None => {
             // Foreign object: honest slot test.

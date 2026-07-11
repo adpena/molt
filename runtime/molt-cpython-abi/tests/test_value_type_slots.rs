@@ -21,8 +21,8 @@
 #![allow(non_snake_case)]
 
 use molt_cpython_abi::abi_types::{
-    MoltTypeTag, PyBool_Type, PyBytes_Type, PyComplex_Type, PyFloat_Type, PyLong_Type, PyObject,
-    PyTypeObject, PyUnicode_Type, Py_False, Py_NotImplementedSentinel, Py_True,
+    MoltTypeTag, Py_False, Py_NotImplementedSentinel, Py_True, PyBool_Type, PyBytes_Type,
+    PyComplex_Type, PyFloat_Type, PyLong_Type, PyObject, PyTypeObject, PyUnicode_Type,
 };
 use molt_cpython_abi::api::numbers::PyComplex_FromDoubles;
 use molt_cpython_abi::api::typeobj::{PyObject_Hash, PyObject_RichCompareBool};
@@ -52,16 +52,31 @@ fn fresh_handle() -> u64 {
 
 // ── fake str/bytes runtime ─────────────────────────────────────────────────
 unsafe extern "C" fn fx_classify_heap(bits: u64) -> u8 {
-    if STRS.lock().unwrap().get_or_insert_default().contains_key(&bits) {
+    if STRS
+        .lock()
+        .unwrap()
+        .get_or_insert_default()
+        .contains_key(&bits)
+    {
         return MoltTypeTag::Str as u8;
     }
-    if BYTES.lock().unwrap().get_or_insert_default().contains_key(&bits) {
+    if BYTES
+        .lock()
+        .unwrap()
+        .get_or_insert_default()
+        .contains_key(&bits)
+    {
         return MoltTypeTag::Bytes as u8;
     }
     MoltTypeTag::Other as u8
 }
 unsafe extern "C" fn fx_str_data(bits: u64, out_len: *mut usize) -> *const u8 {
-    let data = STRS.lock().unwrap().get_or_insert_default().get(&bits).copied();
+    let data = STRS
+        .lock()
+        .unwrap()
+        .get_or_insert_default()
+        .get(&bits)
+        .copied();
     match data {
         Some(b) => {
             unsafe {
@@ -82,7 +97,12 @@ unsafe extern "C" fn fx_str_data(bits: u64, out_len: *mut usize) -> *const u8 {
     }
 }
 unsafe extern "C" fn fx_bytes_data(bits: u64, out_len: *mut usize) -> *const u8 {
-    let data = BYTES.lock().unwrap().get_or_insert_default().get(&bits).copied();
+    let data = BYTES
+        .lock()
+        .unwrap()
+        .get_or_insert_default()
+        .get(&bits)
+        .copied();
     match data {
         Some(b) => {
             unsafe {
@@ -116,7 +136,7 @@ fn install() {
 
 // ── minting molt-native operands ───────────────────────────────────────────
 fn register(bits: u64) -> *mut PyObject {
-    unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) }
+    unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_pyobj(bits) }
 }
 fn mk_int(v: i64) -> *mut PyObject {
     register(MoltObject::from_int(v).bits())
@@ -127,13 +147,20 @@ fn mk_float(v: f64) -> *mut PyObject {
 fn mk_str(s: &str) -> *mut PyObject {
     let leaked: &'static [u8] = Box::leak(s.as_bytes().to_vec().into_boxed_slice());
     let bits = fresh_handle();
-    STRS.lock().unwrap().get_or_insert_default().insert(bits, leaked);
+    STRS.lock()
+        .unwrap()
+        .get_or_insert_default()
+        .insert(bits, leaked);
     register(bits)
 }
 fn mk_bytes(b: &[u8]) -> *mut PyObject {
     let leaked: &'static [u8] = Box::leak(b.to_vec().into_boxed_slice());
     let bits = fresh_handle();
-    BYTES.lock().unwrap().get_or_insert_default().insert(bits, leaked);
+    BYTES
+        .lock()
+        .unwrap()
+        .get_or_insert_default()
+        .insert(bits, leaked);
     register(bits)
 }
 
@@ -191,9 +218,15 @@ fn numpy_dual_inherit_copy_off_float_type_gets_nonnull_slots() {
     scalar.tp_hash = unsafe { (*parent).tp_hash };
     scalar.tp_richcompare = unsafe { (*parent).tp_richcompare };
     assert!(scalar.tp_hash.is_some(), "copied tp_hash must be non-NULL");
-    assert!(scalar.tp_richcompare.is_some(), "copied tp_richcompare must be non-NULL");
+    assert!(
+        scalar.tp_richcompare.is_some(),
+        "copied tp_richcompare must be non-NULL"
+    );
     // And the same for the DUAL_INHERIT2 String/Unicode sources.
-    for parent in [std::ptr::addr_of!(PyBytes_Type), std::ptr::addr_of!(PyUnicode_Type)] {
+    for parent in [
+        std::ptr::addr_of!(PyBytes_Type),
+        std::ptr::addr_of!(PyUnicode_Type),
+    ] {
         let mut s: PyTypeObject = unsafe { std::mem::zeroed() };
         s.tp_hash = unsafe { (*parent).tp_hash };
         s.tp_richcompare = unsafe { (*parent).tp_richcompare };
@@ -222,7 +255,10 @@ fn hash_values_match_cpython_and_are_cross_type_consistent() {
 
         // A non-integral / non-zero-imag complex is hashable (no error, not -1).
         let h = PyObject_Hash(PyComplex_FromDoubles(3.0, 4.0));
-        assert!(molt_cpython_abi::api::errors::PyErr_Occurred().is_null(), "no pending error");
+        assert!(
+            molt_cpython_abi::api::errors::PyErr_Occurred().is_null(),
+            "no pending error"
+        );
         assert_ne!(h, -1, "complex(3,4) is hashable");
         clear_err();
 
@@ -255,7 +291,10 @@ fn richcompare_slots_invoked_directly_compare_by_value() {
         assert!(is_true(ff(a, b, PY_EQ)), "1.5 == 1.5");
         assert!(is_false(ff(a, b, PY_NE)), "not (1.5 != 1.5)");
         assert!(is_true(ff(a, mk_float(2.5), PY_LT)), "1.5 < 2.5");
-        assert!(is_not_implemented(ff(a, mk_str("x"), PY_EQ)), "float vs str -> NotImplemented");
+        assert!(
+            is_not_implemented(ff(a, mk_str("x"), PY_EQ)),
+            "float vs str -> NotImplemented"
+        );
         // float vs int (equal value) compares numerically.
         assert!(is_true(ff(mk_float(1.0), mk_int(1), PY_EQ)), "1.0 == 1");
 
@@ -264,7 +303,10 @@ fn richcompare_slots_invoked_directly_compare_by_value() {
         let lf = cmp_slot(std::ptr::addr_of!(PyLong_Type));
         assert!(is_true(lf(mk_int(3), mk_int(3), PY_EQ)), "3 == 3");
         assert!(is_true(lf(mk_int(3), mk_int(2), PY_GT)), "3 > 2");
-        assert!(is_not_implemented(lf(mk_int(3), mk_float(3.0), PY_EQ)), "int vs float -> NI");
+        assert!(
+            is_not_implemented(lf(mk_int(3), mk_float(3.0), PY_EQ)),
+            "int vs float -> NI"
+        );
 
         // complex slot: only ==/!=; ordering -> NotImplemented.
         let cf = cmp_slot(std::ptr::addr_of!(PyComplex_Type));
@@ -274,22 +316,51 @@ fn richcompare_slots_invoked_directly_compare_by_value() {
         assert!(is_true(cf(c1, c2, PY_EQ)), "(1+2j) == (1+2j)");
         assert!(is_false(cf(c1, c3, PY_EQ)), "(1+2j) != (1+3j)");
         assert!(is_true(cf(c1, c3, PY_NE)), "(1+2j) != (1+3j) is True");
-        assert!(is_not_implemented(cf(c1, c2, PY_LT)), "complex ordering -> NotImplemented");
+        assert!(
+            is_not_implemented(cf(c1, c2, PY_LT)),
+            "complex ordering -> NotImplemented"
+        );
         // complex vs float: (2+0j) == 2.0 True; (2+1j) == 2.0 False.
-        assert!(is_true(cf(PyComplex_FromDoubles(2.0, 0.0), mk_float(2.0), PY_EQ)));
-        assert!(is_false(cf(PyComplex_FromDoubles(2.0, 1.0), mk_float(2.0), PY_EQ)));
+        assert!(is_true(cf(
+            PyComplex_FromDoubles(2.0, 0.0),
+            mk_float(2.0),
+            PY_EQ
+        )));
+        assert!(is_false(cf(
+            PyComplex_FromDoubles(2.0, 1.0),
+            mk_float(2.0),
+            PY_EQ
+        )));
 
         // str slot: "abc" == "abc" True; "abc" < "abd" True; vs bytes NI.
         let sf = cmp_slot(std::ptr::addr_of!(PyUnicode_Type));
-        assert!(is_true(sf(mk_str("abc"), mk_str("abc"), PY_EQ)), "'abc' == 'abc'");
-        assert!(is_true(sf(mk_str("abc"), mk_str("abd"), PY_LT)), "'abc' < 'abd'");
-        assert!(is_not_implemented(sf(mk_str("abc"), mk_bytes(b"abc"), PY_EQ)), "str vs bytes -> NI");
+        assert!(
+            is_true(sf(mk_str("abc"), mk_str("abc"), PY_EQ)),
+            "'abc' == 'abc'"
+        );
+        assert!(
+            is_true(sf(mk_str("abc"), mk_str("abd"), PY_LT)),
+            "'abc' < 'abd'"
+        );
+        assert!(
+            is_not_implemented(sf(mk_str("abc"), mk_bytes(b"abc"), PY_EQ)),
+            "str vs bytes -> NI"
+        );
 
         // bytes slot: b"abc" == b"abc" True; b"abc" < b"abd" True; vs str NI.
         let bf = cmp_slot(std::ptr::addr_of!(PyBytes_Type));
-        assert!(is_true(bf(mk_bytes(b"abc"), mk_bytes(b"abc"), PY_EQ)), "b'abc' == b'abc'");
-        assert!(is_true(bf(mk_bytes(b"abc"), mk_bytes(b"abd"), PY_LT)), "b'abc' < b'abd'");
-        assert!(is_not_implemented(bf(mk_bytes(b"abc"), mk_str("abc"), PY_EQ)), "bytes vs str -> NI");
+        assert!(
+            is_true(bf(mk_bytes(b"abc"), mk_bytes(b"abc"), PY_EQ)),
+            "b'abc' == b'abc'"
+        );
+        assert!(
+            is_true(bf(mk_bytes(b"abc"), mk_bytes(b"abd"), PY_LT)),
+            "b'abc' < b'abd'"
+        );
+        assert!(
+            is_not_implemented(bf(mk_bytes(b"abc"), mk_str("abc"), PY_EQ)),
+            "bytes vs str -> NI"
+        );
     }
 }
 
@@ -303,21 +374,50 @@ fn richcompare_via_public_api_over_distinct_objects() {
         let b1 = mk_bytes(b"abc");
         let b2 = mk_bytes(b"abc");
         assert_ne!(b1, b2, "distinct bytes objects");
-        assert_eq!(PyObject_RichCompareBool(b1, b2, PY_EQ), 1, "b'abc' == b'abc'");
-        assert_eq!(PyObject_RichCompareBool(b1, mk_bytes(b"abd"), PY_LT), 1, "b'abc' < b'abd'");
-        assert_eq!(PyObject_RichCompareBool(b1, mk_bytes(b"abd"), PY_NE), 1, "!= across distinct");
+        assert_eq!(
+            PyObject_RichCompareBool(b1, b2, PY_EQ),
+            1,
+            "b'abc' == b'abc'"
+        );
+        assert_eq!(
+            PyObject_RichCompareBool(b1, mk_bytes(b"abd"), PY_LT),
+            1,
+            "b'abc' < b'abd'"
+        );
+        assert_eq!(
+            PyObject_RichCompareBool(b1, mk_bytes(b"abd"), PY_NE),
+            1,
+            "!= across distinct"
+        );
 
         // complex via the public compare: distinct-but-equal -> EQUAL (mask-proof
         // for the complex slot: NULL slot fell to identity -> 0).
         let c1 = PyComplex_FromDoubles(1.0, 2.0);
         let c2 = PyComplex_FromDoubles(1.0, 2.0);
         assert_ne!(c1, c2, "distinct complex objects");
-        assert_eq!(PyObject_RichCompareBool(c1, c2, PY_EQ), 1, "(1+2j) == (1+2j)");
-        assert_eq!(PyObject_RichCompareBool(c1, PyComplex_FromDoubles(9.0, 9.0), PY_EQ), 0);
+        assert_eq!(
+            PyObject_RichCompareBool(c1, c2, PY_EQ),
+            1,
+            "(1+2j) == (1+2j)"
+        );
+        assert_eq!(
+            PyObject_RichCompareBool(c1, PyComplex_FromDoubles(9.0, 9.0), PY_EQ),
+            0
+        );
 
         // float / str end-to-end.
-        assert_eq!(PyObject_RichCompareBool(mk_float(1.0), mk_int(1), PY_EQ), 1, "1.0 == 1");
-        assert_eq!(PyObject_RichCompareBool(mk_str("abc"), mk_str("abc"), PY_EQ), 1);
-        assert_eq!(PyObject_RichCompareBool(mk_str("abc"), mk_str("abc"), PY_NE), 0);
+        assert_eq!(
+            PyObject_RichCompareBool(mk_float(1.0), mk_int(1), PY_EQ),
+            1,
+            "1.0 == 1"
+        );
+        assert_eq!(
+            PyObject_RichCompareBool(mk_str("abc"), mk_str("abc"), PY_EQ),
+            1
+        );
+        assert_eq!(
+            PyObject_RichCompareBool(mk_str("abc"), mk_str("abc"), PY_NE),
+            0
+        );
     }
 }

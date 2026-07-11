@@ -20,8 +20,8 @@
 use molt_cpython_abi::abi_types::{Py_None, Py_True, PyObject};
 use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
 use molt_lang_obj_model::MoltObject;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 // Handles the mock hooks answer for (0 until installed).
 static BIG_U64_BITS: AtomicU64 = AtomicU64::new(0); // value: u64::MAX - 1
@@ -83,7 +83,7 @@ fn install_hooks() {
 }
 
 fn proxy(bits: u64) -> *mut PyObject {
-    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) }
+    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) }
 }
 fn int_obj(v: i64) -> *mut PyObject {
     proxy(MoltObject::from_int(v).bits())
@@ -123,7 +123,9 @@ fn as_ssize_t_non_int_raises_typeerror_not_silent_minus_one() {
     // None is also a non-int (strict PyLong_Check contract, no __index__).
     let v = unsafe { molt_cpython_abi::api::numbers::PyLong_AsSsize_t(&raw mut Py_None) };
     assert_eq!(v, -1);
-    assert!(err_is(&raw mut molt_cpython_abi::abi_types::PyExc_TypeError));
+    assert!(err_is(
+        &raw mut molt_cpython_abi::abi_types::PyExc_TypeError
+    ));
     clear_err();
 }
 
@@ -168,7 +170,9 @@ fn as_long_beyond_c_long_raises_overflow() {
     let big = proxy(BIG_U64_BITS.load(Ordering::SeqCst));
     let v = unsafe { molt_cpython_abi::api::numbers::PyLong_AsLong(big) };
     assert_eq!(v, -1);
-    assert!(err_is(&raw mut molt_cpython_abi::abi_types::PyExc_OverflowError));
+    assert!(err_is(
+        &raw mut molt_cpython_abi::abi_types::PyExc_OverflowError
+    ));
     let msg = molt_cpython_abi::api::errors::take_current_error_message();
     assert_eq!(
         msg.as_deref(),
@@ -187,7 +191,9 @@ fn as_int_2_pow_40_raises_overflow_everywhere() {
     let big = int_obj(1 << 40); // inline int, > i32 on all hosts
     let v = unsafe { molt_cpython_abi::api::numbers::_PyLong_AsInt(big) };
     assert_eq!(v, -1);
-    assert!(err_is(&raw mut molt_cpython_abi::abi_types::PyExc_OverflowError));
+    assert!(err_is(
+        &raw mut molt_cpython_abi::abi_types::PyExc_OverflowError
+    ));
     let msg = molt_cpython_abi::api::errors::take_current_error_message();
     assert_eq!(
         msg.as_deref(),
@@ -213,7 +219,11 @@ fn as_unsigned_long_negative_raises_overflow_not_wrap() {
     clear_err();
     let neg = int_obj(-1);
     let v = unsafe { molt_cpython_abi::api::numbers::PyLong_AsUnsignedLong(neg) };
-    assert_eq!(v, std::os::raw::c_ulong::MAX, "error sentinel is (unsigned long)-1");
+    assert_eq!(
+        v,
+        std::os::raw::c_ulong::MAX,
+        "error sentinel is (unsigned long)-1"
+    );
     assert!(
         err_is(&raw mut molt_cpython_abi::abi_types::PyExc_OverflowError),
         "PyLong_AsUnsignedLong(-1) must raise OverflowError, not wrap to ULONG_MAX"
@@ -236,7 +246,9 @@ fn as_unsigned_long_long_contracts() {
     let f = float_obj(3.5);
     let v = unsafe { molt_cpython_abi::api::numbers::PyLong_AsUnsignedLongLong(f) };
     assert_eq!(v, u64::MAX);
-    assert!(err_is(&raw mut molt_cpython_abi::abi_types::PyExc_TypeError));
+    assert!(err_is(
+        &raw mut molt_cpython_abi::abi_types::PyExc_TypeError
+    ));
     clear_err();
 
     // The (i64::MAX, u64::MAX] band converts exactly.
@@ -249,7 +261,9 @@ fn as_unsigned_long_long_contracts() {
     let huge = proxy(HUGE_BITS.load(Ordering::SeqCst));
     let v = unsafe { molt_cpython_abi::api::numbers::PyLong_AsUnsignedLongLong(huge) };
     assert_eq!(v, u64::MAX);
-    assert!(err_is(&raw mut molt_cpython_abi::abi_types::PyExc_OverflowError));
+    assert!(err_is(
+        &raw mut molt_cpython_abi::abi_types::PyExc_OverflowError
+    ));
     clear_err();
 }
 
@@ -262,9 +276,8 @@ fn as_long_long_and_overflow_returns_minus_one_not_clamp() {
     clear_err();
     let big = proxy(BIG_U64_BITS.load(Ordering::SeqCst));
     let mut overflow = 0;
-    let v = unsafe {
-        molt_cpython_abi::api::numbers::PyLong_AsLongLongAndOverflow(big, &mut overflow)
-    };
+    let v =
+        unsafe { molt_cpython_abi::api::numbers::PyLong_AsLongLongAndOverflow(big, &mut overflow) };
     assert_eq!(
         v, -1,
         "CPython returns -1 on overflow (the pre-fix clamp to LLONG_MAX was divergent)"
@@ -275,9 +288,8 @@ fn as_long_long_and_overflow_returns_minus_one_not_clamp() {
     // Non-int: TypeError with *overflow = 0.
     let f = float_obj(0.5);
     let mut overflow = 99;
-    let v = unsafe {
-        molt_cpython_abi::api::numbers::PyLong_AsLongLongAndOverflow(f, &mut overflow)
-    };
+    let v =
+        unsafe { molt_cpython_abi::api::numbers::PyLong_AsLongLongAndOverflow(f, &mut overflow) };
     assert_eq!(v, -1);
     assert_eq!(overflow, 0);
     assert!(err_pending());
@@ -336,7 +348,9 @@ fn float_as_double_non_number_raises_typeerror_not_nan() {
         "CPython returns -1.0 with TypeError — the pre-fix silent NaN poisoned \
          numpy compute paths with fake values"
     );
-    assert!(err_is(&raw mut molt_cpython_abi::abi_types::PyExc_TypeError));
+    assert!(err_is(
+        &raw mut molt_cpython_abi::abi_types::PyExc_TypeError
+    ));
     clear_err();
 
     // The bignum band converts exactly through the checked hooks.
@@ -366,7 +380,9 @@ fn long_as_double_routes_beyond_u64_through_the_authority() {
     let f = float_obj(2.0);
     let v = unsafe { molt_cpython_abi::api::numbers::PyLong_AsDouble(f) };
     assert_eq!(v, -1.0);
-    assert!(err_is(&raw mut molt_cpython_abi::abi_types::PyExc_TypeError));
+    assert!(err_is(
+        &raw mut molt_cpython_abi::abi_types::PyExc_TypeError
+    ));
     clear_err();
 }
 
@@ -397,14 +413,22 @@ fn pylong_check_true_is_one_and_bignum_is_int() {
     let _g = TEST_LOCK.lock().unwrap();
     install_hooks();
     assert_eq!(
-        unsafe { molt_cpython_abi::api::numbers::PyLong_Check((&raw mut Py_True).cast::<PyObject>()) },
+        unsafe {
+            molt_cpython_abi::api::numbers::PyLong_Check((&raw mut Py_True).cast::<PyObject>())
+        },
         1,
         "PyLong_Check(True) is 1 in CPython (Py_TPFLAGS_LONG_SUBCLASS)"
     );
     // A heap bignum is an int too (the pre-fix is_int() said 0).
     let big = proxy(BIG_U64_BITS.load(Ordering::SeqCst));
-    assert_eq!(unsafe { molt_cpython_abi::api::numbers::PyLong_Check(big) }, 1);
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::numbers::PyLong_Check(big) },
+        1
+    );
     // And a float still is not.
     let f = float_obj(1.0);
-    assert_eq!(unsafe { molt_cpython_abi::api::numbers::PyLong_Check(f) }, 0);
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::numbers::PyLong_Check(f) },
+        0
+    );
 }
