@@ -403,6 +403,30 @@ def wasm_compiler_builtins_archive(target_triple: str = "wasm32-wasip1") -> Path
     return None
 
 
+def wasm_libcxx_archives(
+    target_triple: str = "wasm32-wasip1",
+    *,
+    exceptions: bool = True,
+) -> tuple[Path, Path] | None:
+    sysroot = resolve_wasi_sysroot()
+    if sysroot is None:
+        return None
+    exception_mode = "eh" if exceptions else "noeh"
+    target_names = [target_triple]
+    if target_triple == "wasm32-wasip1":
+        target_names.append("wasm32-wasi")
+    for target_name in target_names:
+        library_root = sysroot / "lib" / target_name / exception_mode
+        libcxx = library_root / "libc++.a"
+        libcxxabi = library_root / "libc++abi.a"
+        if libcxx.is_file() and libcxxabi.is_file():
+            return (
+                libcxx.resolve(strict=False),
+                libcxxabi.resolve(strict=False),
+            )
+    return None
+
+
 # WASI sysroots use the wasm32-wasip1 (and legacy wasm32-wasi) multilib layout.
 _WASI_SYSROOT_LIB_SUBDIRS = ("wasm32-wasip1", "wasm32-wasi")
 

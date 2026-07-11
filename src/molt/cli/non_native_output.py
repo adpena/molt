@@ -500,6 +500,17 @@ def _staged_artifacts_need_wasm_compiler_rt_link(
     )
 
 
+def _staged_artifacts_need_wasm_libcxx_link(
+    artifacts: tuple[_StagedExternalPackageNativeArtifact, ...],
+) -> bool:
+    return any(
+        symbol.status == "external_link"
+        and symbol.primitive_class == "wasm_libcxx_link_import"
+        for artifact in artifacts
+        for symbol in artifact.abi_symbols
+    )
+
+
 def _staged_artifact_runtime_export_symbols(
     artifacts: tuple[_StagedExternalPackageNativeArtifact, ...],
 ) -> frozenset[str]:
@@ -652,6 +663,9 @@ def _prepare_non_native_build_result(
                             staged_external_native_artifacts
                         )
                     )
+                    needs_wasm_libcxx_link = _staged_artifacts_need_wasm_libcxx_link(
+                        staged_external_native_artifacts
+                    )
                     if needs_wasm_libc_link:
                         libc_provider = wasm_toolchain.wasm_wasi_libc_archive()
                         if libc_provider is None:
@@ -687,6 +701,25 @@ def _prepare_non_native_build_result(
                         external_native_fingerprint_inputs = (
                             *external_native_fingerprint_inputs,
                             compiler_rt_provider,
+                        )
+                    if needs_wasm_libcxx_link:
+                        libcxx_providers = wasm_toolchain.wasm_libcxx_archives()
+                        if libcxx_providers is None:
+                            raise ValueError(
+                                "wasm_libcxx_link_import symbols require matching "
+                                "WASI SDK eh/libc++.a and eh/libc++abi.a archives"
+                            )
+                        resolved_libcxx_providers = tuple(
+                            provider.resolve(strict=False)
+                            for provider in libcxx_providers
+                        )
+                        wasm_static_link_native_inputs = (
+                            *wasm_static_link_native_inputs,
+                            *resolved_libcxx_providers,
+                        )
+                        external_native_fingerprint_inputs = (
+                            *external_native_fingerprint_inputs,
+                            *resolved_libcxx_providers,
                         )
                 except (OSError, ValueError) as exc:
                     return None, _fail(

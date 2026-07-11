@@ -210,26 +210,6 @@ def _resolve_source_extension_wasm_toolchain() -> _SourceExtensionWasmToolchain:
             wasm_ld_path=wasm_ld_path,
         )
 
-    zig_path = shutil.which("zig")
-    if zig_path is not None:
-        if wasm_ld_path is None:
-            return _SourceExtensionWasmToolchain(
-                ok=False,
-                compiler_kind="zig",
-                compiler_cmd=(zig_path, "cc"),
-                wasm_ld=None,
-                wasi_sysroot=None,
-                detail="missing wasm-ld; zig is available",
-            )
-        return _SourceExtensionWasmToolchain(
-            ok=True,
-            compiler_kind="zig",
-            compiler_cmd=(zig_path, "cc"),
-            wasm_ld=wasm_ld_path,
-            wasi_sysroot=None,
-            detail=f"wasm-ld={wasm_ld_path}; zig={zig_path}",
-        )
-
     clang_path = shutil.which("clang")
     wasi_sysroot = _resolve_wasi_sysroot()
     if clang_path is not None and wasi_sysroot is not None:
@@ -267,6 +247,26 @@ def _resolve_source_extension_wasm_toolchain() -> _SourceExtensionWasmToolchain:
                 f"wasm-ld={wasm_ld_path}; clang={clang_path}; "
                 f"WASI sysroot={wasi_sysroot}"
             ),
+        )
+
+    zig_path = shutil.which("zig")
+    if zig_path is not None:
+        if wasm_ld_path is None:
+            return _SourceExtensionWasmToolchain(
+                ok=False,
+                compiler_kind="zig",
+                compiler_cmd=(zig_path, "cc"),
+                wasm_ld=None,
+                wasi_sysroot=None,
+                detail="missing wasm-ld; zig is available",
+            )
+        return _SourceExtensionWasmToolchain(
+            ok=True,
+            compiler_kind="zig",
+            compiler_cmd=(zig_path, "cc"),
+            wasm_ld=wasm_ld_path,
+            wasi_sysroot=None,
+            detail=f"wasm-ld={wasm_ld_path}; zig={zig_path}",
         )
 
     missing: list[str] = []
