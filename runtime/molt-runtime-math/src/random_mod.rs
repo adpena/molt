@@ -5,13 +5,11 @@
 // molt-runtime crate.
 
 use crate::bridge::*;
-#[cfg(feature = "crypto")]
 use digest::Digest;
 use molt_runtime_core::prelude::*;
 use num_bigint::{BigInt, BigUint, Sign};
 use num_integer::Integer;
 use num_traits::{One, Signed, ToPrimitive, Zero};
-#[cfg(feature = "crypto")]
 use sha2::Sha512;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -505,19 +503,26 @@ fn seed_bigint_from_bits(_py: &PyToken, seed_bits: u64) -> Option<BigInt> {
         }
     };
 
-    #[cfg(feature = "crypto")]
-    {
-        let digest = Sha512::digest(&seed_bytes);
-        let mut payload = Vec::with_capacity(seed_bytes.len() + digest.len());
-        payload.extend_from_slice(&seed_bytes);
-        payload.extend_from_slice(&digest);
-        Some(BigInt::from(BigUint::from_bytes_be(&payload)))
-    }
-    #[cfg(not(feature = "crypto"))]
-    {
-        // Without crypto support, fall back to using the raw seed bytes.
-        Some(BigInt::from(BigUint::from_bytes_be(&seed_bytes)))
-    }
+    // str is UTF-8 encoded above via compat_string_bytes; bytes/bytearray taken
+    // as-is. The version=2 SHA-512 hashing is done in the pure helper below.
+    Some(seed_bytes_to_bigint(&seed_bytes))
+}
+
+/// CPython `random.seed` version=2 seed derivation for str/bytes/bytearray:
+/// `int.from_bytes(a + sha512(a).digest())` (Lib/random.py). `int.from_bytes`
+/// defaults to big-endian, so the concatenated `a || sha512(a)` byte string is
+/// decoded big-endian into the integer later split (LSW-first) into the MT
+/// key array by `seed_key_from_bigint`.
+///
+/// The SHA-512 digest suffix is MANDATORY: omitting it (the former digest-less
+/// fallback that a missing `crypto` feature always compiled) yields a
+/// deterministic-but-non-CPython MT stream with no error — a silent-wrong path.
+fn seed_bytes_to_bigint(seed_bytes: &[u8]) -> BigInt {
+    let digest = Sha512::digest(seed_bytes);
+    let mut payload = Vec::with_capacity(seed_bytes.len() + digest.len());
+    payload.extend_from_slice(seed_bytes);
+    payload.extend_from_slice(&digest);
+    BigInt::from(BigUint::from_bytes_be(&payload))
 }
 
 // ─── Allocation helpers ───────────────────────────────────────────────────────
@@ -1724,4 +1729,78 @@ pub extern "C" fn molt_random_randbytes(handle_bits: u64, n_bits: u64) -> u64 {
         }
         MoltObject::from_ptr(ptr).bits()
     })
+}
+
+#[cfg(test)]
+mod seed_parity_tests {
+    //! Mask-proof parity tests for `random.seed(str|bytes|bytearray)`.
+    //!
+    //! Golden values are from CPython 3.12.13:
+    //! ```text
+    //! import random, hashlib
+    //! a = b"abc"
+    //! int.from_bytes(a + hashlib.sha512(a).digest())  # SEED_INT_ABC
+    //! r = random.Random(); r.seed("abc")
+    //! [r.getrandbits(32) for _ in range(5)]            # GENRAND_U32_ABC
+    //! r2 = random.Random(); r2.seed("abc")
+    //! [r2.random() for _ in range(5)]                  # DRAWS_ABC
+    //! ```
+    //! These FAIL against the former digest-less fallback
+    //! (`int.from_bytes(a)`), which produced a non-CPython MT stream.
+    use super::*;
+    use num_traits::Num;
+
+    /// `int.from_bytes(b"abc" + sha512(b"abc").digest())` per CPython 3.12.
+    const SEED_INT_ABC: &str = "85571041817067873992041138347641016354456918831916673741293400749085379359116291718050987976247409749763027896156521255865258153487064776821535988569281374495903";
+
+    fn seeded_rng(bytes: &[u8]) -> MersenneTwisterRng {
+        let big = seed_bytes_to_bigint(bytes);
+        let key = seed_key_from_bigint(&big);
+        MersenneTwisterRng::new_from_seed_key(&key)
+    }
+
+    #[test]
+    fn seed_bytes_to_bigint_matches_cpython_version2() {
+        let expected = BigInt::from_str_radix(SEED_INT_ABC, 10).unwrap();
+        assert_eq!(seed_bytes_to_bigint(b"abc"), expected);
+    }
+
+    #[test]
+    fn digest_suffix_is_load_bearing() {
+        // The removed fallback used `int.from_bytes(a)` (no SHA-512 suffix).
+        // Prove it diverges from the correct CPython seed integer, so a
+        // regression to the digest-less path would fail the parity tests.
+        let digestless = BigInt::from(BigUint::from_bytes_be(b"abc"));
+        let correct = seed_bytes_to_bigint(b"abc");
+        assert_ne!(digestless, correct);
+        assert_eq!(correct, BigInt::from_str_radix(SEED_INT_ABC, 10).unwrap());
+    }
+
+    #[test]
+    fn seed_abc_genrand_u32_stream_matches_cpython() {
+        // CPython `getrandbits(32)` == one `genrand_uint32()`.
+        const GENRAND_U32_ABC: [u32; 5] =
+            [3315820543, 4246262336, 2397318194, 1976556168, 3047419019];
+        let mut rng = seeded_rng(b"abc");
+        let got: Vec<u32> = (0..5).map(|_| rng.rand_u32()).collect();
+        assert_eq!(got.as_slice(), &GENRAND_U32_ABC);
+    }
+
+    #[test]
+    fn seed_abc_random_draws_match_cpython() {
+        // First 5 `random.random()` draws for `random.Random().seed("abc")`.
+        // Decimal reprs are CPython's shortest round-tripping form → bit-exact.
+        const DRAWS_ABC: [f64; 5] = [
+            0.7720246314157545,
+            0.5581691373899791,
+            0.7095325359498886,
+            0.3543265309713739,
+            0.8275650946403316,
+        ];
+        let mut rng = seeded_rng(b"abc");
+        for (i, want) in DRAWS_ABC.iter().enumerate() {
+            let got = rng.random();
+            assert_eq!(got.to_bits(), want.to_bits(), "draw {i}: {got} != {want}");
+        }
+    }
 }

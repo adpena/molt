@@ -18,10 +18,14 @@ num-traits = "0.2"
 num-integer = "0.1"
 libm = "0.2"
 
-# Optional crypto support (for statistics seed hashing)
-digest = { version = "0.11", optional = true }
-sha2 = { version = "0.11", optional = true }
+# SHA-512 seed hashing for random.seed(str|bytes|bytearray) and
+# statistics seeding. NON-optional: CPython's `random.seed` version=2 semantics
+# require `int.from_bytes(a + sha512(a).digest())`; a feature-gated digest that
+# no crate enables silently compiled the digest-less fallback (a non-CPython MT
+# stream with no error — POISON). These must ALWAYS compile so the correct
+# seed-hash path is the only path.
+digest = "0.11"
+sha2 = "0.11"
 
 [features]
 default = []
-crypto = ["dep:digest", "dep:sha2"]
