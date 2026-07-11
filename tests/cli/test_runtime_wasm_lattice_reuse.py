@@ -58,7 +58,9 @@ def _publish(tmp_path: Path, profile: str, *, reloc: bool = False) -> None:
 
 
 def test_profile_rank_ordering() -> None:
-    assert rc._profile_reuse_rank("release-output") > rc._profile_reuse_rank("wasm-release")
+    assert rc._profile_reuse_rank("release-output") > rc._profile_reuse_rank(
+        "wasm-release"
+    )
     assert rc._profile_reuse_rank("wasm-release") > rc._profile_reuse_rank("dev-fast")
     assert rc._profile_reuse_rank("dev-fast") > rc._profile_reuse_rank("dev")
     assert rc._profile_reuse_rank("totally-unknown") == -1
@@ -100,6 +102,31 @@ def test_release_output_serves_dev_fast_request(tmp_path: Path) -> None:
     assert ok is True
     assert dest.read_bytes().endswith(b"release-output")
     assert rc._RUNTIME_WASM_CACHE_STATS["compat_hydrate_hits"] == 1
+
+
+def test_compat_index_avoids_full_sidecar_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _publish(tmp_path, "release-output")
+    original_glob = Path.glob
+
+    def _guarded_glob(path: Path, pattern: str):
+        if pattern.startswith("molt_runtime.shared."):
+            raise AssertionError("indexed compatibility hit scanned all sidecars")
+        return original_glob(path, pattern)
+
+    monkeypatch.setattr(Path, "glob", _guarded_glob)
+    dest = tmp_path / "hydrated-indexed.wasm"
+    assert rc._hydrate_runtime_wasm_from_compatible_cache(
+        dest=dest,
+        reloc=False,
+        inputs_digest=_hex("inputs-v1"),
+        compat_digest=_compat("dev-fast")["compat_digest"],
+        request_profile="dev-fast",
+        is_valid=lambda p: True,
+        exports_ok=lambda p: True,
+    )
+    assert dest.read_bytes().endswith(b"release-output")
 
 
 def test_lower_opt_does_not_serve_higher_request(tmp_path: Path) -> None:
