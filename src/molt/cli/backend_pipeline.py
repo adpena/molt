@@ -207,8 +207,10 @@ def _run_backend_pipeline(
 
     pipeline_stage_ms: dict[str, float] | None = None
     if prepared_build_preamble.diagnostics_enabled:
-        pipeline_stage_ms = prepared_frontend_run_ticket.frontend_parallel_details.setdefault(
-            "pipeline_stage_ms", {}
+        pipeline_stage_ms = (
+            prepared_frontend_run_ticket.frontend_parallel_details.setdefault(
+                "pipeline_stage_ms", {}
+            )
         )
     backend_setup_start = time.perf_counter()
     prepared_backend_setup, prepared_backend_setup_error = (
@@ -374,6 +376,7 @@ def _run_backend_pipeline(
         artifacts_root=artifacts_root,
         resolved_modules=resolved_modules,
         build_diagnostics_payload=build_diagnostics_payload,
+        pipeline_stage_ms=pipeline_stage_ms,
         target=target,
         deterministic=deterministic,
         trusted=trusted,

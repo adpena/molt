@@ -2826,7 +2826,10 @@ def _run_wasm_ld_with_custodied_inputs(
     deploy_runtime_override: Path | None = None,
     native_objects: Sequence[Path] = (),
     preserve_debug_sections: bool = False,
+    phase_timings_file: Path | None = None,
 ) -> int:
+    phase_timings_ms: dict[str, float] = {}
+    total_start = time.perf_counter()
     for native_object in native_objects:
         if not native_object.exists():
             print(f"Native WASM link input not found: {native_object}", file=sys.stderr)
@@ -3391,6 +3394,7 @@ def _run_wasm_ld_with_custodied_inputs(
                 return 1
 
         # -- Split-runtime: emit app.wasm + molt_runtime.wasm ---------------
+        split_runtime_start = time.perf_counter()
         if split_runtime:
             out_dir = split_output_dir or linked.parent
             out_dir.mkdir(parents=True, exist_ok=True)
@@ -3680,10 +3684,19 @@ def _run_wasm_ld_with_custodied_inputs(
                 f"{(1 - rt_size / full_rt_size) * 100:.0f}% reduction)",
                 file=sys.stderr,
             )
+        if split_runtime:
+            phase_timings_ms["split_runtime_processing"] = round(
+                max(0.0, (time.perf_counter() - split_runtime_start) * 1000.0), 6
+            )
 
+        validation_start = time.perf_counter()
         if freestanding:
             if not _validate_freestanding(linked_bytes):
                 return 1
+        phase_timings_ms["fail_closed_validation"] = round(
+            max(0.0, (time.perf_counter() - validation_start) * 1000.0), 6
+        )
+        strip_start = time.perf_counter()
         stripped_debug = _strip_debug_sections(linked_bytes)
         if stripped_debug is not None:
             work_linked.write_bytes(stripped_debug)
@@ -3722,6 +3735,9 @@ def _run_wasm_ld_with_custodied_inputs(
                     preserve_debug=preserve_debug_sections,
                 )
             )
+        phase_timings_ms["wasm_strip"] = round(
+            max(0.0, (time.perf_counter() - strip_start) * 1000.0), 6
+        )
 
         linked_ok = _validate_linked(work_linked)
         if not linked_ok:
@@ -3734,6 +3750,7 @@ def _run_wasm_ld_with_custodied_inputs(
             return 1
 
         publish_pairs = [(work_linked, linked)]
+        validation_start = time.perf_counter()
         if split_runtime:
             assert app_stage is not None
             assert rt_stage is not None
@@ -3742,6 +3759,11 @@ def _run_wasm_ld_with_custodied_inputs(
             if not _validate_split_runtime_outputs(app_stage, rt_stage):
                 return 1
             publish_pairs.extend([(rt_stage, rt_wasm), (app_stage, app_wasm)])
+        phase_timings_ms["fail_closed_validation"] = round(
+            phase_timings_ms.get("fail_closed_validation", 0.0)
+            + max(0.0, (time.perf_counter() - validation_start) * 1000.0),
+            6,
+        )
         try:
             artifact_publish.publish_validated_outputs(publish_pairs)
         except OSError as exc:
@@ -3750,6 +3772,21 @@ def _run_wasm_ld_with_custodied_inputs(
 
         return 0
     finally:
+        if split_runtime and "split_runtime_processing" not in phase_timings_ms:
+            phase_timings_ms["split_runtime_processing"] = round(
+                max(0.0, (time.perf_counter() - split_runtime_start) * 1000.0), 6
+            )
+        phase_timings_ms.setdefault("wasm_strip", 0.0)
+        phase_timings_ms.setdefault("fail_closed_validation", 0.0)
+        phase_timings_ms["wasm_link_total"] = round(
+            max(0.0, (time.perf_counter() - total_start) * 1000.0), 6
+        )
+        if phase_timings_file is not None:
+            phase_timings_file.parent.mkdir(parents=True, exist_ok=True)
+            phase_timings_file.write_text(
+                json.dumps(phase_timings_ms, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
         for staged_output in staged_outputs:
             with contextlib.suppress(OSError):
                 staged_output.unlink()
@@ -3771,6 +3808,7 @@ def _run_wasm_ld(
     deploy_runtime_override: Path | None = None,
     native_objects: Sequence[Path] = (),
     preserve_debug_sections: bool = False,
+    phase_timings_file: Path | None = None,
 ) -> int:
     for native_object in native_objects:
         if not native_object.exists():
@@ -3873,6 +3911,7 @@ def _run_wasm_ld(
                 deploy_runtime_override=deploy_runtime_snapshot,
                 native_objects=native_snapshots,
                 preserve_debug_sections=preserve_debug_sections,
+                phase_timings_file=phase_timings_file,
             )
     except OSError as exc:
         print(f"Failed to establish wasm linker input custody: {exc}", file=sys.stderr)
@@ -3935,6 +3974,7 @@ def main() -> int:
         action="store_true",
         help="Preserve name and DWARF sections while still removing final-link metadata",
     )
+    parser.add_argument("--phase-timings-file", type=Path, default=None)
     args = parser.parse_args()
 
     runtime = args.runtime
@@ -3971,6 +4011,7 @@ def main() -> int:
         deploy_runtime_override=args.deploy_runtime_override,
         native_objects=tuple(args.native_objects),
         preserve_debug_sections=args.preserve_debug_sections,
+        phase_timings_file=args.phase_timings_file,
     )
 
 

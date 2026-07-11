@@ -10,6 +10,7 @@ from molt.cli.build_results import (
     _emit_native_link_result,
     _emit_non_native_build_result,
 )
+from molt.cli.build_diagnostics import _emit_build_diagnostics_if_present
 from molt.cli.models import (
     BuildProfile,
     _BuildOutputLayout,
@@ -40,6 +41,7 @@ def _emit_backend_pipeline_outputs(
     artifacts_root: Path,
     resolved_modules: frozenset[str],
     build_diagnostics_payload: Callable[[], tuple[Any, Path | None]],
+    pipeline_stage_ms: dict[str, float] | None,
     target: str,
     deterministic: bool,
     trusted: bool,
@@ -52,7 +54,6 @@ def _emit_backend_pipeline_outputs(
     json_output: bool = False,
     stdlib_profile: str | None = DEFAULT_RUNTIME_STDLIB_PROFILE,
 ) -> int:
-    diagnostics_payload, diagnostics_path = build_diagnostics_payload()
     runtime_lib = prepared_backend_runtime_context.runtime_lib
     runtime_wasm = prepared_backend_runtime_context.runtime_wasm
     runtime_reloc_wasm = prepared_backend_runtime_context.runtime_reloc_wasm
@@ -62,9 +63,7 @@ def _emit_backend_pipeline_outputs(
     ensure_runtime_wasm_reloc = (
         prepared_backend_runtime_context.ensure_runtime_wasm_reloc
     )
-    ensure_runtime_wasm_both = (
-        prepared_backend_runtime_context.ensure_runtime_wasm_both
-    )
+    ensure_runtime_wasm_both = prepared_backend_runtime_context.ensure_runtime_wasm_both
     cache = prepared_backend_compile.cache_enabled
     cache_hit = prepared_backend_compile.cache_hit
     cache_key = prepared_backend_runtime_context.cache_key
@@ -109,11 +108,20 @@ def _emit_backend_pipeline_outputs(
                 split_runtime=output_layout.split_runtime,
                 native_artifact_plan=native_artifact_plan,
                 artifacts_root=artifacts_root,
+                stage_timings_ms=pipeline_stage_ms,
             )
         )
         if prepared_non_native_result_error is not None:
+            diagnostics_payload, diagnostics_path = build_diagnostics_payload()
+            _emit_build_diagnostics_if_present(
+                diagnostics_payload=diagnostics_payload,
+                diagnostics_path=diagnostics_path,
+                json_output=json_output,
+                verbosity=prepared_build_preamble.resolved_diagnostics_verbosity,
+            )
             return prepared_non_native_result_error
         assert prepared_non_native_result is not None
+        diagnostics_payload, diagnostics_path = build_diagnostics_payload()
 
         # -- Snapshot header generation (Plan D) ----------------------------
         if snapshot and output_layout.is_wasm:
