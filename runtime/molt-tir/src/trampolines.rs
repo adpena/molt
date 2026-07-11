@@ -9,6 +9,7 @@ use crate::{FunctionIR, OpIR};
 )]
 pub enum TrampolineKind {
     Plain,
+    CallFrame,
     Generator,
     Coroutine,
     AsyncGen,

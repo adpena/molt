@@ -803,6 +803,7 @@
       const importName = entry.import_name;
       const arity = Number(entry.arity);
       const dispatch = entry.dispatch === undefined ? 'direct' : entry.dispatch;
+      const trampolineAbi = entry.trampoline_abi === undefined ? 'unpack_args' : entry.trampoline_abi;
       if (!Number.isInteger(index) || index < 0) {
         throw new Error(`reserved runtime callable manifest entry ${idx} has invalid index`);
       }
@@ -818,7 +819,10 @@
       if (dispatch !== 'direct' && dispatch !== 'trampoline') {
         throw new Error(`reserved runtime callable manifest entry ${idx} has invalid dispatch`);
       }
-      return { index, runtimeExport, importName, arity, dispatch };
+      if (trampolineAbi !== 'unpack_args' && trampolineAbi !== 'call_frame') {
+        throw new Error(`reserved runtime callable manifest entry ${idx} has invalid trampoline_abi`);
+      }
+      return { index, runtimeExport, importName, arity, dispatch, trampolineAbi };
     });
   };
 
@@ -899,13 +903,17 @@
           `${indirectName} reserved runtime trampoline ${entry.runtimeExport} expects closure, argv, argc; got ${args.length} args`,
         );
       }
-      const closureBits = normalizeI64BridgeValue(args[0], `${indirectName} closure`);
-      if (closureBits !== 0n) {
-        throw new Error(
-          `${indirectName} reserved runtime trampoline ${entry.runtimeExport} does not accept closure bits ${closureBits}`,
-        );
+      if (entry.trampolineAbi === 'call_frame') {
+        callArgs = args;
+      } else {
+        const closureBits = normalizeI64BridgeValue(args[0], `${indirectName} closure`);
+        if (closureBits !== 0n) {
+          throw new Error(
+            `${indirectName} reserved runtime trampoline ${entry.runtimeExport} does not accept closure bits ${closureBits}`,
+          );
+        }
+        callArgs = readRuntimeCallargsVector(memory, args[1], args[2]);
       }
-      callArgs = readRuntimeCallargsVector(memory, args[1], args[2]);
     }
     if (
       typeof process !== 'undefined' &&

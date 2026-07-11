@@ -45,6 +45,15 @@ impl WasmBackend {
             let _ = ret_count; // suppress unused warning
         }
         let mut func = Function::new_with_locals_types(local_types);
+        if kind == TrampolineKind::CallFrame {
+            func.instruction(&Instruction::LocalGet(0));
+            func.instruction(&Instruction::LocalGet(1));
+            func.instruction(&Instruction::LocalGet(2));
+            emit_call(&mut func, reloc_enabled, target_func_index);
+            func.instruction(&Instruction::End);
+            self.codes.function(&func);
+            return;
+        }
         if emit_task_trampoline(
             self,
             &mut func,

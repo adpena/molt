@@ -49,6 +49,10 @@ const runtimeExports = {
   },
   // Declared arity 2: used to prove under-supply is still rejected.
   molt_needs_two: (a, b) => 456n,
+  molt_cpython_abi_cext_call_trampoline: (...args) => {
+    received = args;
+    return 789n;
+  },
 };
 
 // Case 1: declared arity 1, caller supplies 4 (the `(cls, *args)` __new__ lane).
@@ -104,6 +108,32 @@ try {
   );
 }
 assert(threw, "under-supply did not throw");
+
+// Case 4: the C-extension trampoline owns the call-frame ABI itself. Its
+// NaN-boxed closure is the callable registry id and must be forwarded with the
+// argv pointer and argc rather than rejected as a closureless adapter.
+received = null;
+const closureBits = 9221401712017801271n;
+const callFrameResult = callReservedRuntimeCallable({
+  runtimeExports,
+  memory: null,
+  entry: {
+    runtimeExport: "molt_cpython_abi_cext_call_trampoline",
+    arity: 3,
+    trampoline: true,
+    trampolineAbi: "call_frame",
+  },
+  indirectName: "molt_call_indirect3",
+  args: [closureBits, 4096n, 2n],
+});
+assert(
+  received.length === 3 &&
+    received[0] === closureBits &&
+    received[1] === 4096n &&
+    received[2] === 2n,
+  "call-frame trampoline did not preserve closure/argv/argc: [" + received + "]",
+);
+assert(callFrameResult === 789n, "unexpected call-frame result " + callFrameResult);
 
 console.log("OK");
 """

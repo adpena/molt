@@ -879,6 +879,7 @@ def _validate_reserved_runtime_callables(data: dict) -> list[dict]:
         import_name = entry.get("import_name")
         callable_arity = entry.get("callable_arity")
         callable_dispatch = entry.get("callable_dispatch", "direct")
+        trampoline_abi = entry.get("trampoline_abi", "unpack_args")
         if not isinstance(table_index, int) or table_index < 0:
             raise WasmAbiManifestError(
                 f"reserved_runtime_callable entry {idx} has invalid index"
@@ -914,6 +915,16 @@ def _validate_reserved_runtime_callables(data: dict) -> list[dict]:
             raise WasmAbiManifestError(
                 f"reserved runtime callable {runtime_name!r} has invalid "
                 f"callable_dispatch {callable_dispatch!r}"
+            )
+        if trampoline_abi not in {"unpack_args", "call_frame"}:
+            raise WasmAbiManifestError(
+                f"reserved runtime callable {runtime_name!r} has invalid "
+                f"trampoline_abi {trampoline_abi!r}"
+            )
+        if trampoline_abi == "call_frame" and callable_arity != 3:
+            raise WasmAbiManifestError(
+                f"reserved runtime callable {runtime_name!r} call_frame "
+                "trampoline_abi requires callable_arity = 3"
             )
     expected_reserved_indices = set(range(len(reserved_callables)))
     if seen_reserved_indices != expected_reserved_indices:
