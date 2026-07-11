@@ -318,7 +318,6 @@ impl ValueRangeResult {
         let bound = self.resolve(bound);
         self.symbolic_lt_bound.insert((bid, var), bound);
     }
-
 }
 
 // ---------------------------------------------------------------------------
