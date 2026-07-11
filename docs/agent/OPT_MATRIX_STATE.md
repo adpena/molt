@@ -24,7 +24,7 @@ Ranking-helper input:
 | 1 | wasm-browser split + wasm-server/wasi | size | Provision Binaryen through toolchain custody and tree-shake the measured 20,032,474 B code / 5,275,490 B data / 416,470 B exports | 10 | 2 | 5.00 | DEPENDENCY-BLOCKED: wasmld-toolchain lane owns required files this cycle |
 | 2 | wasm-server/wasi | build wall-clock | Re-evaluate backend prepare/codegen instrumentation unblock contract | 9 | 2 | 4.50 | DOCUMENTED-BLOCKED: re-evaluated 2026-07-11; required phase/counter fields remain absent outside the unblock contract |
 | 3 | wasm-browser split + wasm-server/wasi | startup | Remove duplicate full-byte import/export-signature scans | 7 | 2 | 3.50 | ATTESTED-IMPROVED OPT-MATRIX-R1: 36.3275 ms -> 22.6561 ms median, 1.6034x |
-| 4 | wasm-browser split + wasm-server/wasi | build wall-clock | Audit effective runtime-wasm shared-cache hit rate | 8 | 3 | 2.67 | UNATTACKED |
+| 4 | wasm-browser split + wasm-server/wasi | build wall-clock | Audit effective runtime-wasm shared-cache hit rate | 8 | 3 | 2.67 | ATTESTED-IMPROVED OPT-MATRIX-R2: 1,111.2847 ms -> 554.2158 ms median, 2.0051x |
 | 5 | native exe | startup | Measure and reduce native hello below the 58.274 ms CPython median | 7 | 3 | 2.33 | UNATTACKED |
 | 6 | all | runtime perf | Profile target-specific hot loops under determinism-safe classes | 8 | 4 | 2.00 | UNATTACKED |
 | 7 | wasm-browser split + wasm-server/wasi | startup | Attribute read/instantiate cost by section and active data | 5 | 3 | 1.67 | UNATTACKED |
@@ -41,3 +41,11 @@ Ranking-helper input:
 - Landing: one `parseWasmMetadata` authority produces imports and export function signatures in one `O(module_bytes)` walk; independent consumers retain thin views over that authority.
 - Evidence: `tools/opt_matrix_r1_wasm_metadata_attestation.json` (seven serial alternating fresh Node processes per side; 36.3275 ms -> 22.6561 ms median, 1.6034x; metadata parity; 77,664,256 B maximum RSS).
 - Gates: focused pytest 37 passed; link validation 116 passed; fail-closed, table drift, generated WASM ABI, determinism, NumPy 2.5.1 seal, final-form artifact poison, and strict A12 acceptance all pass. No full witness run was consumed because this landing changes loader analysis only and does not change compiled or published WASM bytes.
+
+### OPT-MATRIX-R2 — Exact runtime-WASM cache hydrate
+
+- Aperture: exact-identity release runtime-WASM hydration after a shared-cache hit.
+- Profile: the cache artifact was structurally validated before copy and the byte-identical destination was structurally validated again, `2 * O(artifact_bytes)` validation plus one `O(artifact_bytes)` atomic copy.
+- Landing: retain the source structural/export validation and atomic-copy failure boundary; delete the redundant destination validation because `_atomic_copy_file` copies the already-validated bytes to a temporary file and atomically replaces the destination only after copy success.
+- Evidence: `tools/opt_matrix_r2_runtime_wasm_hydrate_attestation.json` (seven serial alternating release samples on a 45,871,431 B real shared runtime; 1,111.2847 ms -> 554.2158 ms median, 2.0051x; byte identity; 144,908,288 B maximum RSS).
+- Teeth: focused cache tests assert one source validation, byte-identical hydration, corrupt-source rejection, and copy-failure rejection.
