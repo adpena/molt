@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import platform as platform_module
 import sys
 import tomllib
 from dataclasses import dataclass
@@ -41,6 +42,9 @@ _SUPPORTED_TARGET_PYTHON_BY_SHORT = {
     version.short: version for version in _SUPPORTED_TARGET_PYTHON_VERSIONS
 }
 _DEFAULT_TARGET_PYTHON_VERSION = _SUPPORTED_TARGET_PYTHON_BY_SHORT["3.12"]
+_CPYTHON_COVERAGE_CONFIG = (
+    Path(__file__).resolve().parents[3] / "config" / "cpython_coverage.toml"
+)
 
 # Single authority for the set of supported target-Python short versions
 # ("3.12", "3.13", ...). This is the `TargetPythonVersion` authority; the
@@ -52,6 +56,52 @@ _DEFAULT_TARGET_PYTHON_VERSION = _SUPPORTED_TARGET_PYTHON_BY_SHORT["3.12"]
 SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS: tuple[str, ...] = tuple(
     version.short for version in _SUPPORTED_TARGET_PYTHON_VERSIONS
 )
+
+
+def _target_platform_name(value: str | None = None) -> str:
+    raw = (platform_module.system() if value is None else value).strip().lower()
+    return {"win32": "windows", "darwin": "macos"}.get(raw, raw)
+
+
+def verified_target_python_tuples() -> tuple[tuple[str, str], ...]:
+    data = tomllib.loads(_CPYTHON_COVERAGE_CONFIG.read_text(encoding="utf-8"))
+    return tuple(
+        (str(row["cpython"]), str(row["platform"])) for row in data["verified"]
+    )
+
+
+def require_known_cpython_coverage_version(
+    target: TargetPythonVersion,
+) -> TargetPythonVersion:
+    data = tomllib.loads(_CPYTHON_COVERAGE_CONFIG.read_text(encoding="utf-8"))
+    known = {
+        str(row["cpython"])
+        for key in ("verified", "candidate")
+        for row in data.get(key, [])
+    }
+    if target.short not in known:
+        rendered = ", ".join(sorted(known))
+        raise ValueError(
+            f"CPython {target.short} has no coverage-boundary entry; known: {rendered}"
+        )
+    return target
+
+
+def require_verified_target_python(
+    target: TargetPythonVersion, *, platform: str | None = None
+) -> TargetPythonVersion:
+    selected = (target.short, _target_platform_name(platform))
+    verified = verified_target_python_tuples()
+    if selected not in verified:
+        rendered = ", ".join(
+            f"CPython {version} on {name}" for version, name in verified
+        )
+        raise ValueError(
+            f"unverified Molt target tuple: CPython {selected[0]} on {selected[1]}; "
+            f"verified tuples: {rendered}. This is an honest coverage boundary, "
+            "not a claim that the tuple is unsupported by CPython."
+        )
+    return target
 
 
 def _parse_target_python_version(value: str | None) -> TargetPythonVersion:

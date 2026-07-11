@@ -60,6 +60,20 @@ generated_scan_roots = ["runtime", "src", "tools"]
 # ===========================================================================
 
 [[generator]]
+tool = "tools/gen_cpython_coverage.py"
+outputs = [
+  "runtime/molt-cpython-abi/cpython_abi_coverage.generated.json",
+  "docs/spec/areas/compat/surfaces/cpython_abi_coverage.generated.md",
+  "docs/spec/areas/compat/surfaces/cpython_version_assumptions.generated.md",
+]
+source = "config/cpython_coverage.toml + config/cpython_stable_abi_3_12.toml + runtime/molt-cpython-abi/src + runtime/molt-cpython-abi/shims/pyarg_variadic.exports"
+check_mode = true
+check_command = "tools/gen_cpython_coverage.py --check"
+idempotent = true
+sync_test = "tests/tools/test_gen_cpython_coverage.py"
+discovery_only = false
+
+[[generator]]
 tool = "tools/gen_op_kinds.py"
 outputs = [
   "runtime/molt-ir/src/tir/op_kinds_generated.rs",

@@ -11,6 +11,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from molt.cli.target_python import (
+    TargetPythonVersion,
+    require_known_cpython_coverage_version,
+)
+
 ROOT = Path(__file__).resolve().parents[2]
 NUMPY_WITNESS_SEAL_NAME = "pact_numpy_multiarray_sealed_for_witness"
 DEFAULT_CONFIG_PATH = ROOT / "config" / "scientific_stack_versions.toml"
@@ -166,6 +171,8 @@ def resolve_scientific_stack(
     selected, entries, path = load_verified_support_matrix(config_path)
     for entry in entries:
         if selected == (entry.numpy, entry.scipy, entry.cpython):
+            major, minor = (int(part) for part in entry.cpython.split(".", 1))
+            require_known_cpython_coverage_version(TargetPythonVersion(major, minor, 0))
             return entry
     verified = ", ".join(entry.tuple_label for entry in entries)
     numpy, scipy, cpython = selected
