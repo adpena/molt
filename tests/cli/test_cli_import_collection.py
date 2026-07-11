@@ -2182,7 +2182,7 @@ def test_materialize_import_plan_rejects_missing_native_support_artifact(
     assert "target-specific source plan" in message
 
 
-def test_materialize_import_plan_accepts_object_closure_native_support_custody(
+def test_materialize_import_plan_accepts_relocated_object_closure_source_custody(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2197,6 +2197,9 @@ def test_materialize_import_plan_accepts_object_closure_native_support_custody(
         "int PyInit__ni_label(void) { return 0; }\n", encoding="utf-8"
     )
     source_sha = hashlib.sha256(source_candidate.read_bytes()).hexdigest()
+    manifest_source = tmp_path / "upstream" / "nativepkg" / "_ni_label.c"
+    manifest_source.parent.mkdir(parents=True)
+    manifest_source.write_bytes(source_candidate.read_bytes())
     support_path.write_text(
         "from . import _ni_label\n\n"
         "def label(value):\n"
@@ -2223,7 +2226,7 @@ def test_materialize_import_plan_accepts_object_closure_native_support_custody(
             "object_closure": {
                 "objects": [
                     {
-                        "source": str(source_candidate),
+                        "source": str(manifest_source),
                         "object": "_ni_label.o",
                         "source_sha256": source_sha,
                         "object_sha256": "0" * 64,
