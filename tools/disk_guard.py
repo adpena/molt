@@ -301,6 +301,25 @@ def plan_reclaim(
     return plan
 
 
+def decide_completed_lane_reclaim(
+    candidate: Candidate,
+    *,
+    completed: bool,
+    active: bool,
+    protected: Iterable[Path] = (),
+) -> tuple[bool, str]:
+    """PURE: completion bypasses TTL, never activity/lock/protection safety."""
+    if not completed:
+        return False, "lane-not-completed"
+    if active:
+        return False, "lane-active"
+    if candidate.lock_held:
+        return False, "lock-held"
+    if _norm(candidate.path) in {_norm(path) for path in protected}:
+        return False, "protected"
+    return True, "completed-lane"
+
+
 def gc_plan(
     candidates: Iterable[Candidate],
     *,
@@ -988,6 +1007,80 @@ def gc(
     if log:
         _write_log(resolved_root, result)
     return result
+
+
+def reclaim_completed_lane(
+    target: Path,
+    *,
+    root: str | os.PathLike[str] | None = None,
+    env: Mapping[str, str] | None = None,
+    apply: bool = True,
+) -> ReclaimResult:
+    """Immediately reclaim one completed registered lane target."""
+    env = os.environ if env is None else env
+    inferred_root = root or (
+        target.resolve().parents[1]
+        if target.resolve().parent.name == "target"
+        else None
+    )
+    resolved_root = resolve_root(inferred_root, env=env)
+    cfg = GuardConfig.from_env(env)
+    result = ReclaimResult(
+        root=str(resolved_root),
+        triggered=True,
+        free_before=0,
+        free_after=0,
+        mode="apply" if apply else "dry-run",
+    )
+    target = target.resolve()
+    candidate = Candidate(
+        path=target,
+        kind="registered",
+        mtime=_newest_activity_mtime(target) if target.is_dir() else 0.0,
+        lock_held=_cargo_lock_held(target) if target.is_dir() else False,
+    )
+    allowed, reason = decide_completed_lane_reclaim(
+        candidate,
+        completed=True,
+        active=False,
+        protected=_protected_paths(resolved_root, env),
+    )
+    if not allowed:
+        result.skipped.append({"path": str(target), "reason": reason})
+        return result
+    if not target.is_dir():
+        return result
+    assert_safe_to_delete(target, resolved_root, cfg.lane_globs)
+    if apply:
+        ok, error = _delete_dir(target)
+        if not ok:
+            result.errors.append(f"{target}: {error}")
+            return result
+    result.reclaimed.append({"path": str(target), "kind": "completed-lane"})
+    registry = read_registry(resolved_root)
+    keep = {
+        key: value
+        for key, value in registry.items()
+        if _norm(Path(str(value.get("path", "")))) != _norm(target)
+    }
+    if apply and len(keep) != len(registry):
+        _rewrite_registry(resolved_root, keep)
+    return result
+
+
+def reclaim_completed_lane_fail_open(
+    target: Path,
+    *,
+    root: str | os.PathLike[str] | None = None,
+    env: Mapping[str, str] | None = None,
+) -> ReclaimResult | None:
+    try:
+        return reclaim_completed_lane(target, root=root, env=env)
+    except Exception as exc:
+        print(
+            f"disk_guard completed-lane reclaim LOUD fail-open: {exc}", file=sys.stderr
+        )
+        return None
 
 
 def _protected_paths(root: Path, env: Mapping[str, str]) -> list[Path]:
