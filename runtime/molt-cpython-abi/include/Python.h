@@ -1132,6 +1132,7 @@ extern long      PyLong_AsLong           (PyObject *op);
 extern long      PyLong_AsLongAndOverflow(PyObject *op, int *overflow);
 extern long long PyLong_AsLongLong       (PyObject *op);
 extern long long PyLong_AsLongLongAndOverflow(PyObject *op, int *overflow);
+extern int       PyLong_IsZero           (PyObject *op);
 extern double    PyLong_AsDouble         (PyObject *op);
 extern Py_ssize_t PyLong_AsSsize_t       (PyObject *op);
 extern unsigned long PyLong_AsUnsignedLong(PyObject *op);
@@ -1173,6 +1174,7 @@ extern int       PyBool_Check    (PyObject *op);
 /* Unicode / str */
 extern PyObject    *PyUnicode_FromString          (const char *s);
 extern PyObject    *PyUnicode_FromStringAndSize   (const char *s, Py_ssize_t size);
+extern PyObject    *PyUnicode_FromObject          (PyObject *obj);
 extern PyObject    *PyUnicode_New                 (Py_ssize_t size, Py_UCS4 maxchar);
 extern const char  *PyUnicode_AsUTF8              (PyObject *op);
 extern PyObject    *PyUnicode_AsUTF8String        (PyObject *op);
@@ -1350,6 +1352,7 @@ extern int         PyList_SetSlice(PyObject *op, Py_ssize_t low, Py_ssize_t high
 
 /* Tuple */
 extern PyObject   *PyTuple_New     (Py_ssize_t size);
+extern PyObject   *PyTuple_FromArray(PyObject *const *array, Py_ssize_t size);
 extern PyObject   *PyTuple_Pack    (Py_ssize_t n, ...);
 extern PyObject   *PyTuple_GetItem (PyObject *op, Py_ssize_t i);
 extern PyObject   *PyTuple_GetSlice(PyObject *op, Py_ssize_t start, Py_ssize_t end);
@@ -1514,6 +1517,12 @@ extern void      Py_LeaveRecursiveCall (void);
 #define PyMem_CALLOC(nelem, elsize) PyMem_Calloc((nelem), (elsize))
 #define PyMem_REALLOC(ptr, size) PyMem_Realloc((ptr), (size))
 #define PyMem_FREE(ptr) PyMem_Free(ptr)
+
+typedef enum {
+    PYMEM_DOMAIN_RAW = 0,
+    PYMEM_DOMAIN_MEM = 1,
+    PYMEM_DOMAIN_OBJ = 2
+} PyMemAllocatorDomain;
 
 static inline size_t _Py_SIZE_ROUND_UP(size_t n, size_t alignment) {
     return (n + alignment - 1U) & ~(alignment - 1U);

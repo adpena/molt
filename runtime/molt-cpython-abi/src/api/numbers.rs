@@ -735,6 +735,21 @@ pub unsafe extern "C" fn PyLong_AsLong(op: *mut PyObject) -> c_long {
     }
 }
 
+/// CPython 3.14 `PyLong_IsZero`: return 1 for a zero int, 0 for a non-zero
+/// int, and -1 with TypeError for any non-int object.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyLong_IsZero(op: *mut PyObject) -> c_int {
+    match py_long_value(op, false) {
+        Ok(LongValue::Signed(value)) => (value == 0) as c_int,
+        Ok(LongValue::Big(value)) => (value == 0) as c_int,
+        Err(LongError::NotInt | LongError::OutOf64) => {
+            set_long_type_error();
+            -1
+        }
+        Err(LongError::Raised) => -1,
+    }
+}
+
 /// CPython ``PyLong_AsDouble`` (Objects/longobject.c): converts any Python
 /// int — including heap bignums — to ``double``, raising OverflowError only
 /// past f64 range and TypeError "an integer is required" for a non-int; -1.0
