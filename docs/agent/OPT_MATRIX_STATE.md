@@ -18,6 +18,7 @@ Ranking-helper input:
 | WASM section startup attribution | 5 | 3 |
 | release memory ceilings | 5 | 4 |
 | browser instantiateStreaming | 4 | 4 |
+| WASM code/data instantiate attribution | 5 | 6 |
 
 | Rank | Target | Axis | Rung | Expected gain | Validation cost | Ratio | Status |
 |---:|---|---|---|---:|---:|---:|---|
@@ -27,9 +28,10 @@ Ranking-helper input:
 | 4 | wasm-browser split + wasm-server/wasi | build wall-clock | Audit effective runtime-wasm shared-cache hit rate | 8 | 3 | 2.67 | ATTESTED-IMPROVED OPT-MATRIX-R2: 1,111.2847 ms -> 554.2158 ms median, 2.0051x |
 | 5 | native exe | startup | Measure and reduce native hello below the CPython process median | 7 | 3 | 2.33 | DOCUMENTED-BLOCKED OPT-MATRIX-R3: current release median 11.954 ms vs CPython 167.438 ms; exposed duplicate-init candidate failed A12 (10.7531 ms -> 10.9078 ms) and was deleted |
 | 6 | all | runtime perf | Profile target-specific hot loops under determinism-safe classes | 8 | 4 | 2.00 | ATTESTED-IMPROVED OPT-MATRIX-R4: native multi-byte reverse search 5.062 s -> 0.266 s median, 19.0301x; shared primitive benefits bytes/string/bytearray on native and WASM |
-| 7 | wasm-browser split + wasm-server/wasi | startup | Attribute read/instantiate cost by section and active data | 5 | 3 | 1.67 | UNATTACKED |
+| 7 | wasm-browser split + wasm-server/wasi | startup | Remove linked-only metadata payload decoding before instantiation | 5 | 3 | 1.67 | ATTESTED-IMPROVED OPT-MATRIX-R5: linked metadata parse 10.6805 ms -> 3.0449 ms median, 3.5077x |
 | 8 | all | memory | Profile release peak RSS / linear-memory ceilings and remove proven excess reservation | 5 | 4 | 1.25 | UNATTACKED |
 | 9 | wasm-browser split | startup | Measure browser `instantiateStreaming` independently | 4 | 4 | 1.00 | UNATTACKED |
+| 10 | wasm-browser split + wasm-server/wasi | startup | Attribute V8 compile/instantiate cost to code, active data, and retained custom sections | 5 | 6 | 0.83 | UNATTACKED |
 
 ## Iteration Log
 
@@ -69,3 +71,12 @@ Ranking-helper input:
 - Evidence: `tools/opt_matrix_r4_bytes_rfind_attestation.json` (three serial native release samples per side; 5.062 s -> 0.266 s median, 19.0301x; exact output parity; peak RSS 64 MiB -> 40 MiB).
 - Teeth: canonical benchmark-suite registration plus runtime tests for empty, single-byte, overlapping multi-byte, and missing needles.
 - Correctness seal: link validation exposed and deleted duplicate JS normal-startup calls to `molt_host_init` and `molt_isolate_bootstrap` before `molt_main`; 135 link tests pass with 3 skips. The single witness run `20260711T194951-pact-witness-acceptance-d4ed20bdf9dc47aa` rebuilt the runtime and preserved the current frontier `Split-runtime app has no restoration source for export molt_main kind 0`.
+
+### OPT-MATRIX-R5 - Linked WASM metadata materialization
+
+- Aperture: Node linked-WASM startup between the artifact read and V8 instantiation.
+- Profile: linked execution requires import descriptors but the shared parser also decoded the function section and all 4,409 export function signatures. The old path was `O(type + import + function + export entries)` even though linked dispatch never reads those signatures.
+- Landing: `parseWasmMetadata` now makes export-signature materialization explicit. Linked execution parses only type/import payloads plus section headers; direct-link and auto-split execution retain the full signature contract in the same parser authority.
+- Evidence: `tools/opt_matrix_r5_linked_metadata_attestation.json` (seven serial alternating release-artifact samples; 10.6805 ms -> 3.0449 ms median, 3.5077x; identical 90 function imports; 4,409 unused linked exports skipped; peak RSS 65,130,496 B).
+- Teeth: `tools/benchmark_wasm_linked_metadata.py` is the reproducible A12 differential, static loader-authority tests pin the mode selection, and 125 link-validation tests preserve the linked artifact contract.
+- Gates: strict powerplay acceptance, fail-closed, table drift, generated WASM ABI, determinism, NumPy 2.5.1 seal, artifact poison, Node syntax, focused loader tests, and link validation pass. Published WASM bytes are unchanged, so the iteration does not consume another full witness run.
