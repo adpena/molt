@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "claim": "PERF-GOAL-R4",
+  "rung": "seal/validation isolated instrumentation",
+  "machine": "same Windows workstation and Python 3.12 environment",
+  "git_base": "ddc00f12f19006e53986dccdd291e3a7e0935d27",
+  "scenario": "fresh-process tools/verify_numpy_seal.py against effective NumPy 2.5.1 witness seal; five before and five after runs",
+  "profile": {
+    "object_sources": 132,
+    "hot_path": "source_extension_manifest_source_path -> _source_extension_relocation_roots -> Path.resolve",
+    "before_path_resolutions": 3089,
+    "before_hot_path_cumulative_seconds": 1.182,
+    "big_o_before": "O(objects * relocation candidates)",
+    "big_o_after": "O(relocation candidates + objects * candidate checks)"
+  },
+  "before": {
+    "runs": [
+      {
+        "run": 1,
+        "wall_seconds": 1.486777,
+        "returncode": 0
+      },
+      {
+        "run": 2,
+        "wall_seconds": 1.442964,
+        "returncode": 0
+      },
+      {
+        "run": 3,
+        "wall_seconds": 1.421591,
+        "returncode": 0
+      },
+      {
+        "run": 4,
+        "wall_seconds": 1.426075,
+        "returncode": 0
+      },
+      {
+        "run": 5,
+        "wall_seconds": 1.441451,
+        "returncode": 0
+      }
+    ],
+    "median_wall_seconds": 1.441451
+  },
+  "after": {
+    "runs": [
+      {
+        "run": 1,
+        "wall_seconds": 0.899965,
+        "returncode": 0
+      },
+      {
+        "run": 2,
+        "wall_seconds": 0.92158,
+        "returncode": 0
+      },
+      {
+        "run": 3,
+        "wall_seconds": 0.869927,
+        "returncode": 0
+      },
+      {
+        "run": 4,
+        "wall_seconds": 0.853306,
+        "returncode": 0
+      },
+      {
+        "run": 5,
+        "wall_seconds": 0.853664,
+        "returncode": 0
+      }
+    ],
+    "median_wall_seconds": 0.869927
+  },
+  "delta": {
+    "seconds": -0.571524,
+    "percent": -39.649215,
+    "speedup": 1.656979
+  },
+  "correctness_gate": "tools/verify_numpy_seal.py PASS for configured/effective NumPy 2.5.1 and all 132 object source checks"
+}

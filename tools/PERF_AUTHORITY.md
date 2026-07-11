@@ -103,7 +103,7 @@ numbers remain valid and queue-custodied.
 | 2 | Backend prepare/codegen | 198-410s, including first population of thousands of functions | 295.0s total build to the current import-strip frontier; only 12 uncached TIR functions in the steady sample | Rebuild the changed runtime/compiler cone and changed functions | Next target: function/object cache misses plus import-strip frontier |
 | 3 | Runtime wasm cargo compile | 23.9-265.5s historical; 124.7s recent cold sample | Target/shared reuse is fingerprint-controlled; final patched sample did not rebuild runtime | One changed runtime crate compile | Audit configured vs effective runtime-wasm hydrate hit rate |
 | 4 | Runtime reloc link | 1.5-8.3s | ~1-3s when required | One relink | Low |
-| 5 | Seal / validate | Included in prepare/link; no dominant standalone phase in diagnostics | Unchanged package seals are preflight-attested | Fingerprint check only | Instrument separately before optimizing |
+| 5 | Seal / validate | Isolated NumPy 2.5.1 seal validation was 1.441451s median across five fresh processes; 1.182s cumulative was repeated relocation-root discovery across 132 objects | 0.869927s median after one resolver precomputes manifest relocation roots once | Hash each source once; discover relocation roots once per manifest | 0.571524s eliminated (39.65%, 1.657x); `tools/perf_goal_r4_seal_validation_attestation.json` |
 | 6 | Replay / parity | Not reached: current frontier is WASM import stripping | Not reached | One replay | Outside this build-time landing |
 
 Root cause: the synthetic `_molt_native_runtime_python_imports.py` entry lived

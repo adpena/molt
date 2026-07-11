@@ -13,6 +13,7 @@ from molt._wasm_runtime_exports import wasm_static_link_runtime_symbols_for_impo
 from molt.cli import commands as cli_commands
 from molt.cli import backend_cache as cli_backend_cache
 from molt.cli import entrypoint_parser as cli_entrypoint_parser
+from molt.cli import source_extensions as cli_source_extensions
 from molt.cli.extension_manifest import (
     _CURRENT_MOLT_C_API_VERSION,
     _default_molt_c_api_version,
@@ -28,6 +29,45 @@ from tests.cli.process_guard import run_cli_test_process
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_manifest_source_resolver_computes_relocation_roots_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "source"
+    build_root = tmp_path / "build"
+    source_root.mkdir()
+    build_root.mkdir()
+    manifest_path = tmp_path / "sealed" / "extension_manifest.json"
+    manifest_path.parent.mkdir()
+    manifest = {
+        "source_plan": {
+            "source_root": str(source_root),
+            "build_root": str(build_root),
+        }
+    }
+    calls: list[Path] = []
+    original = cli_source_extensions._source_extension_relocation_roots
+
+    def counted(source: Path, *, manifest_path: Path) -> tuple[Path, ...]:
+        calls.append(source)
+        return original(source, manifest_path=manifest_path)
+
+    monkeypatch.setattr(
+        cli_source_extensions,
+        "_source_extension_relocation_roots",
+        counted,
+    )
+    resolver = cli_source_extensions.SourceExtensionManifestSourceResolver(
+        manifest=manifest,
+        manifest_path=manifest_path,
+    )
+
+    resolver.resolve("missing-a.c")
+    resolver.resolve("missing-b.c")
+
+    assert calls == [source_root, build_root]
 
 
 def test_manifest_support_file_object_can_alias_build_source_path(
