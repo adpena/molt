@@ -18,7 +18,7 @@ Pipeline:  `witness_forward.levelset_argmax` (INR → lstar) → `field_solve(ls
 | `check_parity.py` | the oracle: `check_parity.py candidate.npz [reference_outputs.npz]` → per-field gates, exit 0 = PASS. |
 
 Generated `.npz` outputs are ignored, not committed. Recreate them locally with
-the commands below under numpy 1.26.4 / scipy 1.17.1; the scripts and parity
+the commands below under numpy 2.5.1 / scipy 1.18.0; the scripts and parity
 gates are the tracked authority.
 
 ## Reproduce + verify (CPython)

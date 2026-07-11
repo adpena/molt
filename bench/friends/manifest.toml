@@ -142,7 +142,7 @@ friend = "numpy"
 display_name = "NumPy Off-The-Shelf Source And API Probe"
 source = "git"
 repo_url = "https://github.com/numpy/numpy.git"
-repo_ref = "c81c49f77451340651a751e76bca607d85e4fd55"
+repo_ref = "5e1d03ffac5f2c0a9c39bfcaa9fc853b2b83151e"
 semantic_mode = "c_api_probe"
 adapter_notes = "Canonical NumPy C-API scan and source-custody lane. The source runner verifies the pinned checkout; the CPython runner executes a pinned isolated NumPy baseline through tools/numpy_off_shelf_adapter.py for comparator evidence; the Molt workload runner attempts the same public workloads through MOLT_EXTERNAL_STATIC_PACKAGES=numpy, fail-closed package-local native artifact sidecars, and must stay red until no-host libmolt source-recompiled package build/staging/import/runtime custody is complete. The green c_api_scan lane is missing-symbol closure only: it scans compile-relevant source, not package build, link, import, or runtime execution. No host-Python fallback or patched NumPy sources are allowed."
 tags = ["ecosystem", "numpy", "c-api", "scientific-python", "compile-time"]
@@ -152,7 +152,7 @@ timeout_sec = 1800
 [suite.runners.cpython]
 role = "workload"
 json_stdout = true
-run_cmd = ["uv", "run", "--isolated", "--python", "{python}", "--with", "numpy==2.4.2", "python", "{repo_root}/tools/numpy_off_shelf_adapter.py", "--workload", "all", "--iterations", "5", "--json", "--require-version", "2.4.2"]
+run_cmd = ["uv", "run", "--isolated", "--python", "{python}", "--with", "numpy==2.5.1", "python", "{repo_root}/tools/numpy_off_shelf_adapter.py", "--workload", "all", "--iterations", "5", "--json", "--require-version", "2.5.1"]
 
 [suite.runners.molt]
 role = "workload"

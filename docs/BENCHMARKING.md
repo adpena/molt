@@ -480,12 +480,12 @@ uv run --python 3.12 python3 tools/bench_friends.py \
 ```
 
 `numpy_off_the_shelf` is enabled and pinned to upstream NumPy commit
-`c81c49f77451340651a751e76bca607d85e4fd55` (the peeled `v2.4.2` commit). The
+`5e1d03ffac5f2c0a9c39bfcaa9fc853b2b83151e` (the peeled `v2.5.1` commit). The
 suite is classified as `c_api_probe`, because the green lane is source C-API
 missing-symbol evidence rather than unchanged NumPy runtime execution through
 Molt.
 `source_audit` runner verifies pinned source-tree custody, the `cpython` runner
-executes an isolated `numpy==2.4.2` baseline through
+executes an isolated `numpy==2.5.1` baseline through
 `tools/numpy_off_shelf_adapter.py`, the `c_api_scan` runner executes
 `molt extension scan --source {suite_root}/numpy --fail-on-missing`, and the
 `molt` runner attempts the same public workloads through

@@ -104,12 +104,12 @@ UV_NO_SYNC=1 uv run --python 3.12 python3 tools/bench_friends.py \
   project evidence.
 - `numpy_off_the_shelf` is the canonical upstream NumPy C-API probe lane. It
   is enabled and pinned to upstream NumPy commit
-  `c81c49f77451340651a751e76bca607d85e4fd55` (the peeled `v2.4.2` commit).
+  `5e1d03ffac5f2c0a9c39bfcaa9fc853b2b83151e` (the peeled `v2.5.1` commit).
   Its suite-level `semantic_mode` is `c_api_probe`: the green scan evidence is
   missing-symbol/source-boundary evidence, not unchanged NumPy runtime
   execution through Molt.
   The `source_audit` runner verifies the pinned source tree as custody-only
-  evidence, the `cpython` runner executes an isolated `numpy==2.4.2` public-API
+  evidence, the `cpython` runner executes an isolated `numpy==2.5.1` public-API
   baseline through `tools/numpy_off_shelf_adapter.py`, and the `c_api_scan`
   runner executes the canonical `molt extension scan` directory source audit
   over `{suite_root}/numpy` with `--fail-on-missing`, using symbol statuses that
