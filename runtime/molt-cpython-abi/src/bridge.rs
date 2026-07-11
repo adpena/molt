@@ -112,6 +112,7 @@ pub static GLOBAL_BRIDGE: once_cell::sync::Lazy<ObjectBridge> =
 
 struct AddressShard {
     from_py: HashMap<usize, AbiHandle>,
+    direct_molt_py: HashMap<usize, AbiHandle>,
     foreign: HashMap<usize, AbiHandle>,
     foreign_inflight: HashSet<usize>,
 }
@@ -301,6 +302,7 @@ impl ObjectBridge {
             .map(|_| {
                 Mutex::new(AddressShard {
                     from_py: HashMap::new(),
+                    direct_molt_py: HashMap::new(),
                     foreign: HashMap::new(),
                     foreign_inflight: HashSet::new(),
                 })
@@ -532,6 +534,9 @@ impl ObjectBridge {
         }
         let addr = ptr.addr();
         let address = self.address_shard(addr).lock();
+        if let Some(bits) = address.direct_molt_py.get(&addr).copied() {
+            return Some(MoltValueHandle(bits));
+        }
         let bits = address.from_py.get(&addr).copied()?;
         let handle = self.handle_shard(bits).lock();
         if handle.raw_py.contains_key(&bits) {
@@ -636,6 +641,17 @@ impl ObjectBridge {
         }
     }
 
+    pub unsafe fn register_pyobj_for_handle(&self, ptr: *mut PyObject, bits: AbiHandle) {
+        if ptr.is_null() || bits == 0 {
+            return;
+        }
+        let addr = ptr.expose_provenance();
+        let (mut address, mut handle) = self.lock_address_then_handle(addr, bits);
+        address.from_py.insert(addr, bits);
+        address.direct_molt_py.insert(addr, bits);
+        handle.raw_py.insert(bits, addr);
+    }
+
     pub fn release_pyobj(&self, ptr: *mut PyObject) -> bool {
         let addr = ptr.addr();
         let mut address = self.address_shard(addr).lock();
@@ -643,6 +659,7 @@ impl ObjectBridge {
             return false;
         };
         let mut handle = self.handle_shard(bits).lock();
+        address.direct_molt_py.remove(&addr);
         address.from_py.remove(&addr);
         if handle.raw_py.remove(&bits).is_some() {
             false

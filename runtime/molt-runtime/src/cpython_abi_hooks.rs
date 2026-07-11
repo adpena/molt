@@ -1631,7 +1631,6 @@ unsafe fn static_pyinit_registered_bridge_module_bits(
     result_pyobj: *mut PyObject,
 ) -> Result<Option<u64>, &'static str> {
     let Some(module_bits) = molt_cpython_abi::bridge::GLOBAL_BRIDGE
-        .lock()
         .molt_handle_for_pyobj(result_pyobj)
         .map(molt_cpython_abi::bridge::MoltValueHandle::bits)
     else {
@@ -1918,11 +1917,7 @@ unsafe fn cext_pyobject_from_bits(bits: u64) -> *mut PyObject {
     if bits == 0 {
         return ptr::null_mut();
     }
-    unsafe {
-        molt_cpython_abi::bridge::GLOBAL_BRIDGE
-            .lock()
-            .handle_to_pyobj(bits)
-    }
+    unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_pyobj(bits) }
 }
 
 unsafe fn cext_tuple_for_args(args: &[u64]) -> Option<(u64, *mut PyObject)> {
@@ -2371,9 +2366,7 @@ mod tests {
         };
         let raw_ptr = &raw mut raw_obj;
         unsafe {
-            molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                .lock()
-                .register_raw_pyobj(raw_ptr);
+            molt_cpython_abi::bridge::GLOBAL_BRIDGE.register_raw_pyobj(raw_ptr);
         }
 
         let result = unsafe {
@@ -2389,9 +2382,7 @@ mod tests {
             !with_gil(|_py| crate::exception_pending(&_py)),
             "raw C identity handles must not be decoded as Molt floats before tp_getattro"
         );
-        molt_cpython_abi::bridge::GLOBAL_BRIDGE
-            .lock()
-            .release_pyobj(raw_ptr);
+        molt_cpython_abi::bridge::GLOBAL_BRIDGE.release_pyobj(raw_ptr);
     }
 
     #[test]
@@ -2420,9 +2411,7 @@ mod tests {
         );
         let raw_type_ptr = (&raw mut raw_type).cast::<PyObject>();
         unsafe {
-            molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                .lock()
-                .register_raw_pyobj(raw_type_ptr);
+            molt_cpython_abi::bridge::GLOBAL_BRIDGE.register_raw_pyobj(raw_type_ptr);
         }
 
         let result = unsafe {
@@ -2446,9 +2435,7 @@ mod tests {
             molt_cpython_abi::api::refcount::Py_DECREF(finalize);
             molt_cpython_abi::api::refcount::Py_DECREF(raw_type.tp_dict);
         }
-        molt_cpython_abi::bridge::GLOBAL_BRIDGE
-            .lock()
-            .release_pyobj(raw_type_ptr);
+        molt_cpython_abi::bridge::GLOBAL_BRIDGE.release_pyobj(raw_type_ptr);
     }
 
     #[test]
@@ -2638,11 +2625,7 @@ mod tests {
         assert_eq!(unsafe { (*flags).ob_refcnt }, 2);
         unsafe { molt_cpython_abi::api::refcount::Py_DECREF(flags) };
         assert_eq!(unsafe { (*flags).ob_refcnt }, 1);
-        assert!(
-            molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                .lock()
-                .release_pyobj(flags)
-        );
+        assert!(molt_cpython_abi::bridge::GLOBAL_BRIDGE.release_pyobj(flags));
 
         with_gil(|_py| {
             let flags_ptr = MoltObject::from_bits(expected_flags_bits)
@@ -3434,11 +3417,7 @@ mod tests {
         // SAFETY: handle_to_pyobj materializes a bridge PyObject entry for a
         // live runtime handle; `bits` here always comes from a hook that just
         // allocated the object, so it is valid for the bridge round-trip.
-        unsafe {
-            molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                .lock()
-                .handle_to_pyobj(bits)
-        }
+        unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_pyobj(bits) }
     }
 
     fn bridge_int_pyobj(value: i64) -> *mut PyObject {
@@ -3448,9 +3427,7 @@ mod tests {
     }
 
     fn release_bridge_pyobj(ptr: *mut PyObject) {
-        molt_cpython_abi::bridge::GLOBAL_BRIDGE
-            .lock()
-            .release_pyobj(ptr);
+        molt_cpython_abi::bridge::GLOBAL_BRIDGE.release_pyobj(ptr);
     }
 
     #[test]

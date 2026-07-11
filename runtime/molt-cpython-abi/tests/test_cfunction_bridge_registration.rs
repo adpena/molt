@@ -141,6 +141,16 @@ fn cfunction_newex_returns_bridge_resolvable_object() {
         molt_cpython_abi::api::object::PyCFunction_NewEx(&mut ml, ptr::null_mut(), ptr::null_mut())
     };
     assert!(!func.is_null(), "PyCFunction_NewEx must return a callable");
+    assert_eq!(
+        unsafe { (*func).ob_type },
+        &raw mut PyCFunction_Type,
+        "runtime-backed C functions must retain exact PyCFunction_Type identity",
+    );
+    assert_eq!(
+        unsafe { (*(func.cast::<PyCFunctionObject>())).m_ml },
+        &raw mut ml,
+        "runtime-backed C functions must retain their PyMethodDef layout",
+    );
     // The returned object must resolve back to a Molt handle — the whole point
     // of the fix. A raw, unregistered object would return None here.
     let handle = molt_cpython_abi::bridge::GLOBAL_BRIDGE.pyobj_to_handle(func);
