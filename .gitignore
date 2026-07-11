@@ -118,5 +118,11 @@ collab/pact/pact_witness_kernel/*.npz
 # APPARATUS Wave 1 hook runtime state (per-machine, per-worktree): window
 # markers, fail-open error logs, and the append-only blocker/waiver audit
 # ledgers. These are local runtime artifacts, never committed (committing them
-# would collide across the multi-agent / multi-worktree setup).
-.molt/state/
+# would collide across the multi-agent / multi-worktree setup). The `/*` form
+# (ignore everything INSIDE the dir, not the dir itself) lets the one committed
+# A4 ledger below be re-included; its lock/tmp/corrupt sidecars stay ignored.
+.molt/state/*
+# APPARATUS A4: the findings registry is a committed, curated, append-only
+# provenance ledger (like pact's canonical-equations registry), seeded with real
+# keystones -- re-included here so it IS tracked at origin/main.
+!.molt/state/findings_registry.jsonl

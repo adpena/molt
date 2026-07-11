@@ -468,6 +468,20 @@ gates = [
   "python3 tools/venv_exec.py python -m pytest -q tests/test_table_drift_gate.py",
 ]
 
+# --- APPARATUS A4 findings registry + memo lint --------------------------
+[[rule]]
+name = "findings-registry"
+description = "Findings registry / memo lint / seeded ledger (A4): run the teeth tests."
+globs = [
+  "tools/findings_registry.py",
+  "tools/findings_memo_lint.py",
+  "tests/tools/test_findings_registry.py",
+  ".molt/state/findings_registry.jsonl",
+]
+gates = [
+  "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_findings_registry.py",
+]
+
 # --- CI workflow / pyproject lint wiring ---------------------------------
 [[rule]]
 name = "ci-wiring"
@@ -546,3 +560,17 @@ name = "gate_liveness_canary"
 state = "strict"
 strict_when = "landed_functional"
 rationale = "check_gate_liveness must always fire on known-bad fixtures; a canary that cannot fire is worthless, so it lands strict."
+# --- APPARATUS A4 memo->registry lint (warn-only; A9 [[gate_flip]] entry) ---
+# Lands WARN-ONLY: molt carries an existing backlog of docs/agent + memory lines
+# stating a measured finding (speedup / residual / bench / parity) with no
+# finding_id reference. live_count = that backlog (findings_memo_lint.py --count).
+# ci_gate runs the check `findings-memo-lint-warn` (warn mode). Flip = burn the
+# backlog to zero (formalize each via tools/findings_registry.py + cite its
+# finding_id, or waive the line with '# FORMALIZATION_PENDING:<why>'), set
+# state = "strict" here, and swap the ci_gate cmd to `findings_memo_lint.py --strict`.
+[[gate_flip]]
+name = "findings_memo_lint"
+state = "warn"
+strict_when = "live_count == 0"
+count_cmd = "python3 tools/findings_memo_lint.py --count"
+rationale = "APPARATUS A4 memo->registry lint (ci_gate check findings-memo-lint-warn). A docs/agent or memory line stating a measured finding with no finding_id reference is un-formalized prose that will rot. live_count is the current backlog; flip to strict once it reaches zero."
