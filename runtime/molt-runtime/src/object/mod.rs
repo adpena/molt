@@ -63,7 +63,6 @@ pub(crate) mod refcount_opt;
 #[allow(dead_code)]
 pub mod string_intern;
 #[allow(dead_code)]
-pub mod string_repr;
 pub(crate) mod type_ids;
 pub(crate) mod utf8_cache;
 pub(crate) mod weakref;

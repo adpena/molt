@@ -87,6 +87,39 @@ non_runtime_callable_intrinsic = [
 legacy_table_base = 256
 table_ref_export_prefix = "__molt_table_ref_"
 
+[witness_frontier]
+# Runtime callables reachable from the numpy/scipy extension-init and later
+# fixed-arity dispatch surfaces. This is deliberately cross-checked against
+# [[reserved_runtime_callable]]: adding a later witness-facing callable without
+# reserving its callable + trampoline slots must fail manifest validation rather
+# than surfacing as an out-of-range table index in the witness.
+reserved_runtime_callables = [
+  "molt_type_call",
+  "molt_type_new",
+  "molt_type_init",
+  "molt_object_new_bound",
+  "molt_object_init",
+  "molt_object_init_subclass",
+  "molt_exception_new_bound",
+  "molt_exception_init",
+  "molt_exceptiongroup_init",
+  "molt_types_mappingproxy_new",
+  "molt_types_mappingproxy_init",
+  "molt_types_method_new",
+  "molt_types_method_init",
+  "molt_types_simplenamespace_init",
+  "molt_types_capsule_new",
+  "molt_types_cell_new",
+  "molt_types_dynamic_class_attr_init",
+  "molt_types_coroutine",
+  "molt_types_get_original_bases",
+  "molt_types_prepare_class",
+  "molt_types_resolve_bases",
+  "molt_types_new_class",
+  "molt_cpython_abi_cext_call_trampoline",
+  "molt_importlib_import_transaction",
+]
+
 [[reserved_runtime_callable]]
 index = 0
 runtime_name = "molt_type_call"

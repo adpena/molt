@@ -695,6 +695,20 @@ def test_cli_build_toolchain_probes_use_memory_guard(
     assert set(prefixes[1:]) == {"MOLT_BUILD"}
 
 
+def test_runtime_wasm_structural_validation_fails_loud_without_wasm_tools(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    wasm_path = tmp_path / "runtime.wasm"
+    wasm_path.write_bytes(b"\x00asm\x01\x00\x00\x00")
+    monkeypatch.setattr(RUNTIME_WASM_VALIDATION.shutil, "which", lambda _name: None)
+
+    error = RUNTIME_WASM_VALIDATION._validate_wasm_structural(wasm_path)
+
+    assert error is not None
+    assert "wasm-tools is required" in error
+    assert "reuse is disabled" in error
+
+
 def test_cli_diff_command_uses_diff_memory_guard(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
