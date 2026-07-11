@@ -394,6 +394,30 @@ pub unsafe extern "C" fn PyTuple_New(size: Py_ssize_t) -> *mut PyObject {
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyTuple_FromArray(
+    array: *const *mut PyObject,
+    size: Py_ssize_t,
+) -> *mut PyObject {
+    if size < 0 || (size > 0 && array.is_null()) {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return ptr::null_mut();
+    }
+    let tuple = unsafe { PyTuple_New(size) };
+    if tuple.is_null() {
+        return ptr::null_mut();
+    }
+    for index in 0..size {
+        let item = unsafe { *array.add(index as usize) };
+        unsafe { crate::api::refcount::Py_XINCREF(item) };
+        if unsafe { PyTuple_SetItem(tuple, index, item) } != 0 {
+            unsafe { crate::api::refcount::Py_DECREF(tuple) };
+            return ptr::null_mut();
+        }
+    }
+    tuple
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyTuple_GET_ITEM(op: *mut PyObject, i: Py_ssize_t) -> *mut PyObject {
     if op.is_null() || i < 0 {
         return ptr::null_mut();

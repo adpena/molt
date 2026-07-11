@@ -765,6 +765,24 @@ pub unsafe extern "C" fn PyUnicode_AsUTF8AndSize(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyUnicode_FromObject(obj: *mut PyObject) -> *mut PyObject {
+    if unsafe { PyUnicode_Check(obj) } == 0 {
+        unsafe { crate::api::errors::PyErr_BadArgument() };
+        return ptr::null_mut();
+    }
+    if unsafe { (*obj).ob_type == &raw mut crate::abi_types::PyUnicode_Type } {
+        unsafe { crate::api::refcount::Py_INCREF(obj) };
+        return obj;
+    }
+    let mut size = 0;
+    let data = unsafe { PyUnicode_AsUTF8AndSize(obj, &raw mut size) };
+    if data.is_null() {
+        return ptr::null_mut();
+    }
+    unsafe { PyUnicode_FromStringAndSize(data, size) }
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyUnicode_GetLength(op: *mut PyObject) -> Py_ssize_t {
     // CPython: `if (!PyUnicode_Check(unicode)) { PyErr_BadArgument(); return -1; }`
     // — the -1 sentinel always carries a TypeError.
