@@ -640,6 +640,7 @@
       "_ZNSt20bad_array_new_lengthC1Ev": "wasm_libcxx_link_import",
       "_ZNSt20bad_array_new_lengthD1Ev": "wasm_libcxx_link_import",
       "_ZNSt3__212__next_primeEm": "wasm_libcxx_link_import",
+      "_ZNSt3__212basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEPKc": "wasm_libcxx_link_import",
       "_ZNSt3__213__hash_memoryEPKvm": "wasm_libcxx_link_import",
       "_ZNSt3__217bad_function_callD1Ev": "wasm_libcxx_link_import",
       "_ZNSt3__222__libcpp_verbose_abortEPKcz": "wasm_libcxx_link_import",

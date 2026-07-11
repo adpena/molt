@@ -2531,6 +2531,7 @@ def test_source_extension_toolchain_accepts_target_specific_wasi_sysroot_layout(
         "which",
         lambda tool: {
             "clang": "/tools/clang",
+            "zig": "/tools/zig",
             "wasm-ld": "/tools/wasm-ld",
         }.get(tool),
     )
@@ -2559,6 +2560,7 @@ def test_source_extension_toolchain_accepts_target_specific_wasi_sysroot_layout(
         str(sysroot.resolve(strict=False)),
     )
     assert toolchain.wasi_sysroot == sysroot.resolve(strict=False)
+    assert "/tools/zig" not in toolchain.detail
     assert seen_commands
     assert seen_commands[0][:4] == [
         "/tools/clang",
@@ -2566,6 +2568,29 @@ def test_source_extension_toolchain_accepts_target_specific_wasi_sysroot_layout(
         str(sysroot.resolve(strict=False)),
         "-target",
     ]
+
+
+def test_wasm_libcxx_archives_resolve_matching_exception_variant(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sysroot = tmp_path / "wasi-sysroot"
+    library_root = sysroot / "lib" / "wasm32-wasip1" / "eh"
+    library_root.mkdir(parents=True)
+    libcxx = library_root / "libc++.a"
+    libcxxabi = library_root / "libc++abi.a"
+    libcxx.write_bytes(b"!<arch>\nlibcxx")
+    libcxxabi.write_bytes(b"!<arch>\nlibcxxabi")
+    monkeypatch.setattr(
+        cli_wasm_toolchain,
+        "resolve_wasi_sysroot",
+        lambda: sysroot,
+    )
+
+    assert cli_wasm_toolchain.wasm_libcxx_archives() == (
+        libcxx.resolve(strict=False),
+        libcxxabi.resolve(strict=False),
+    )
 
 
 def test_extension_build_wasm_target_emits_static_link_artifact_and_manifest(

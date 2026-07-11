@@ -7091,6 +7091,10 @@ name = "_ZNSt3__222__libcpp_verbose_abortEPKcz"
 primitive_class = "wasm_libcxx_link_import"
 
 [[external_native_link_import]]
+name = "_ZNSt3__212basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEPKc"
+primitive_class = "wasm_libcxx_link_import"
+
+[[external_native_link_import]]
 name = "_ZTVN10__cxxabiv117__class_type_infoE"
 primitive_class = "wasm_libcxx_link_import"
 symbol_kind = "data"
