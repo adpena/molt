@@ -25,8 +25,8 @@ pub use molt_tir::passes::{
 };
 pub use molt_tir::simpleir_debug::{DumpIrConfig, dump_ir_matches, dump_ir_ops, should_dump_ir};
 pub use molt_tir::trampolines::{
-    TrampolineKind, TrampolineSpec, externalize_function_with_signature,
-    function_requires_value_return,
+    TrampolineBehavior, TrampolineKind, TrampolineSpec, TrampolineTaskKind,
+    externalize_function_with_signature, function_requires_value_return,
 };
 pub use molt_tir::{passes, representation_plan, tir};
 

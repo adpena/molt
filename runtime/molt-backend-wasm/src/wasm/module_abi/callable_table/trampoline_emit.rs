@@ -7,7 +7,7 @@ use task::{emit_task_trampoline, task_trampoline_local_types};
 use crate::wasm::WasmBackend;
 use crate::wasm_binary::emit_call;
 use crate::wasm_values::box_int;
-use crate::{TrampolineKind, TrampolineSpec};
+use crate::{TrampolineBehavior, TrampolineSpec};
 
 impl WasmBackend {
     pub(super) fn compile_trampoline(
@@ -25,17 +25,19 @@ impl WasmBackend {
             closure_size,
             target_has_ret: _,
         } = spec;
+        let behavior = kind.behavior();
         self.funcs.function(5);
         self.func_count += 1;
         let mut local_types = Vec::new();
-        if let Some(task_local_types) = task_trampoline_local_types(kind) {
+        if let TrampolineBehavior::Task(task_kind) = behavior {
+            let task_local_types = task_trampoline_local_types(task_kind);
             local_types.extend(task_local_types);
         }
         // For multi-value return trampolines (Plain kind only): allocate
         // N temp locals for the return values + 1 local for the tuple builder.
         // Params occupy locals 0..=2, so extra locals start at index 3.
         let mr_locals_start: u32 = 3 + local_types.len() as u32;
-        if let (Some(ret_count), TrampolineKind::Plain) = (multi_return_count, &kind) {
+        if let (Some(ret_count), TrampolineBehavior::UnpackArgs) = (multi_return_count, behavior) {
             // N temp locals for storing each return value
             for _ in 0..ret_count {
                 local_types.push(ValType::I64);
@@ -45,42 +47,44 @@ impl WasmBackend {
             let _ = ret_count; // suppress unused warning
         }
         let mut func = Function::new_with_locals_types(local_types);
-        if kind == TrampolineKind::CallFrame {
-            func.instruction(&Instruction::LocalGet(0));
-            func.instruction(&Instruction::LocalGet(1));
-            func.instruction(&Instruction::LocalGet(2));
-            emit_call(&mut func, reloc_enabled, target_func_index);
-            func.instruction(&Instruction::End);
-            self.codes.function(&func);
-            return;
+        match behavior {
+            TrampolineBehavior::ForwardCallFrame => {
+                func.instruction(&Instruction::LocalGet(0));
+                func.instruction(&Instruction::LocalGet(1));
+                func.instruction(&Instruction::LocalGet(2));
+                emit_call(&mut func, reloc_enabled, target_func_index);
+            }
+            TrampolineBehavior::Task(task_kind) => emit_task_trampoline(
+                self,
+                &mut func,
+                reloc_enabled,
+                table_idx,
+                task_kind,
+                arity,
+                has_closure,
+                closure_size,
+            ),
+            TrampolineBehavior::UnpackArgs => {
+                if has_closure {
+                    func.instruction(&Instruction::LocalGet(0));
+                }
+                for idx in 0..arity {
+                    func.instruction(&Instruction::LocalGet(1));
+                    func.instruction(&Instruction::I32WrapI64);
+                    func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
+                        align: 3,
+                        offset: (idx * std::mem::size_of::<u64>()) as u64,
+                        memory_index: 0,
+                    }));
+                }
+                emit_call(&mut func, reloc_enabled, target_func_index);
+            }
         }
-        if emit_task_trampoline(
-            self,
-            &mut func,
-            reloc_enabled,
-            table_idx,
-            kind,
-            arity,
-            has_closure,
-            closure_size,
-        ) {
-            self.codes.function(&func);
-            return;
-        }
-        if has_closure {
-            func.instruction(&Instruction::LocalGet(0));
-        }
-        for idx in 0..arity {
-            func.instruction(&Instruction::LocalGet(1));
-            func.instruction(&Instruction::I32WrapI64);
-            func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
-                align: 3,
-                offset: (idx * std::mem::size_of::<u64>()) as u64,
-                memory_index: 0,
-            }));
-        }
-        emit_call(&mut func, reloc_enabled, target_func_index);
         if let Some(ret_count) = multi_return_count {
+            assert!(
+                matches!(behavior, TrampolineBehavior::UnpackArgs),
+                "multi-value returns require an unpack-args trampoline"
+            );
             // The target function pushed `ret_count` i64 values onto the
             // stack.  Pop them into temp locals (last return value is on
             // top, so store in reverse order) then reconstruct a tuple.

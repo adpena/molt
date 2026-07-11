@@ -37,12 +37,7 @@ impl SimpleBackend {
         let closure_suffix = if has_closure { "_closure" } else { "" };
         let import_suffix = if is_import { "_import" } else { "" };
         let ret_suffix = if target_has_ret { "" } else { "_void" };
-        let kind_suffix = match kind {
-            TrampolineKind::Plain => "",
-            TrampolineKind::Generator => "_gen",
-            TrampolineKind::Coroutine => "_coro",
-            TrampolineKind::AsyncGen => "_asyncgen",
-        };
+        let kind_suffix = kind.symbol_suffix();
         let trampoline_name = format!(
             "{func_name}__molt_trampoline_{arity}{closure_suffix}{kind_suffix}{ret_suffix}{import_suffix}"
         );
@@ -62,12 +57,10 @@ impl SimpleBackend {
 
         let closure_bits = builder.block_params(entry_block)[0];
         let args_ptr = builder.block_params(entry_block)[1];
-        let _args_len = builder.block_params(entry_block)[2];
+        let args_len = builder.block_params(entry_block)[2];
+        let behavior = kind.behavior();
 
-        let poll_target = if matches!(
-            kind,
-            TrampolineKind::Generator | TrampolineKind::Coroutine | TrampolineKind::AsyncGen
-        ) {
+        let poll_target = if matches!(behavior, TrampolineBehavior::Task(_)) {
             if func_name.ends_with("_poll") {
                 func_name.to_string()
             } else {
@@ -77,8 +70,8 @@ impl SimpleBackend {
             String::new()
         };
 
-        match kind {
-            TrampolineKind::Generator => {
+        match behavior {
+            TrampolineBehavior::Task(TrampolineTaskKind::Generator) => {
                 if closure_size < 0 {
                     panic!("generator closure size must be non-negative");
                 }
@@ -139,7 +132,7 @@ impl SimpleBackend {
                 }
                 builder.ins().return_(&[obj]);
             }
-            TrampolineKind::Coroutine => {
+            TrampolineBehavior::Task(TrampolineTaskKind::Coroutine) => {
                 if closure_size < 0 {
                     panic!("coroutine closure size must be non-negative");
                 }
@@ -219,7 +212,7 @@ impl SimpleBackend {
 
                 builder.ins().return_(&[obj]);
             }
-            TrampolineKind::AsyncGen => {
+            TrampolineBehavior::Task(TrampolineTaskKind::AsyncGen) => {
                 if closure_size < 0 {
                     panic!("async generator closure size must be non-negative");
                 }
@@ -286,7 +279,30 @@ impl SimpleBackend {
                 let asyncgen_obj = builder.inst_results(asyncgen_call)[0];
                 builder.ins().return_(&[asyncgen_obj]);
             }
-            TrampolineKind::Plain => {
+            TrampolineBehavior::ForwardCallFrame => {
+                let mut target_sig = module.make_signature();
+                target_sig.params.push(AbiParam::new(types::I64));
+                target_sig.params.push(AbiParam::new(types::I64));
+                target_sig.params.push(AbiParam::new(types::I64));
+                if target_has_ret {
+                    target_sig.returns.push(AbiParam::new(types::I64));
+                }
+                let target_id = module
+                    .declare_function(func_name, Linkage::Import, &target_sig)
+                    .unwrap();
+                let target_ref = module.declare_func_in_func(target_id, builder.func);
+                let call = builder
+                    .ins()
+                    .call(target_ref, &[closure_bits, args_ptr, args_len]);
+                if target_has_ret {
+                    let result = builder.inst_results(call)[0];
+                    builder.ins().return_(&[result]);
+                } else {
+                    let none_val = builder.ins().iconst(types::I64, box_none());
+                    builder.ins().return_(&[none_val]);
+                }
+            }
+            TrampolineBehavior::UnpackArgs => {
                 let mut call_args = Vec::with_capacity(arity + if has_closure { 1 } else { 0 });
                 if has_closure {
                     call_args.push(closure_bits);

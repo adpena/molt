@@ -1,6 +1,6 @@
 use wasm_encoder::{Function, Instruction, ValType};
 
-use crate::TrampolineKind;
+use crate::TrampolineTaskKind;
 use crate::wasm::WasmBackend;
 use crate::wasm::task_runtime::{
     WasmTaskRuntimeLayout, emit_store_task_payload_local, emit_task_payload_base,
@@ -11,8 +11,8 @@ const BASE_LOCAL: u32 = 4;
 const VAL_LOCAL: u32 = 5;
 const ARGS_BASE_LOCAL: u32 = 6;
 
-pub(super) fn task_trampoline_local_types(kind: TrampolineKind) -> Option<[ValType; 4]> {
-    WasmTaskRuntimeLayout::for_trampoline_kind(kind).map(|layout| layout.trampoline_local_types())
+pub(super) fn task_trampoline_local_types(task_kind: TrampolineTaskKind) -> [ValType; 4] {
+    WasmTaskRuntimeLayout::for_trampoline_task_kind(task_kind).trampoline_local_types()
 }
 
 pub(super) fn emit_task_trampoline(
@@ -20,14 +20,12 @@ pub(super) fn emit_task_trampoline(
     func: &mut Function,
     reloc_enabled: bool,
     table_idx: u32,
-    kind: TrampolineKind,
+    task_kind: TrampolineTaskKind,
     arity: usize,
     has_closure: bool,
     closure_size: i64,
-) -> bool {
-    let Some(layout) = WasmTaskRuntimeLayout::for_trampoline_kind(kind) else {
-        return false;
-    };
+) {
+    let layout = WasmTaskRuntimeLayout::for_trampoline_task_kind(task_kind);
     layout.validate_closure_size(closure_size, arity, has_closure);
 
     layout.emit_task_new(
@@ -49,7 +47,6 @@ pub(super) fn emit_task_trampoline(
     );
     layout.emit_completion_result(func, &backend.import_ids, reloc_enabled, TASK_LOCAL);
     func.instruction(&Instruction::End);
-    true
 }
 
 fn emit_payload_slots(
