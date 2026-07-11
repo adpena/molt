@@ -93,6 +93,11 @@ impl GilGuard {
     pub(crate) fn token(&self) -> PyToken<'_> {
         PyToken { _guard: self }
     }
+
+    #[inline(always)]
+    pub(crate) fn new_extension_call() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -128,6 +133,12 @@ impl Drop for GilReleaseGuard {
 #[inline(always)]
 pub(crate) fn gil_held() -> bool {
     // On wasm32 the GIL is logically always held (single-threaded).
+    true
+}
+
+#[cfg(target_arch = "wasm32")]
+#[inline(always)]
+pub(crate) fn gil_owned_by_current_thread() -> bool {
     true
 }
 
@@ -213,6 +224,14 @@ enum GilGuardLane {
 pub(crate) struct GilGuard {
     fallback_guard: Option<MutexGuard<'static, ()>>,
     lane: GilGuardLane,
+    restore_after_drop: Option<SavedGilRelease>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy)]
+struct SavedGilRelease {
+    depth: usize,
+    had_runtime_guard: bool,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -223,6 +242,27 @@ pub(crate) struct PyToken<'gil> {
 #[cfg(not(target_arch = "wasm32"))]
 impl GilGuard {
     pub(crate) fn new() -> Self {
+        let thread_count = GIL_THREAD_COUNT.load(AtomicOrdering::Relaxed);
+        if thread_count > 1 {
+            let owns_runtime_guard = RUNTIME_GIL_GUARD
+                .try_with(|slot| slot.borrow().is_some())
+                .unwrap_or(false);
+            if owns_runtime_guard {
+                let release = GilReleaseGuard::new();
+                let saved = SavedGilRelease {
+                    depth: release.depth,
+                    had_runtime_guard: release.had_runtime_guard,
+                };
+                std::mem::forget(release);
+                let mut guard = Self::new_with_thread_count(thread_count);
+                guard.restore_after_drop = Some(saved);
+                return guard;
+            }
+        }
+        Self::new_with_thread_count(thread_count)
+    }
+
+    fn new_with_thread_count(thread_count: usize) -> Self {
         // Zero-overhead re-entrant fast path: when only one thread has ever
         // touched the GIL (`GIL_THREAD_COUNT <= 1`) AND we are already inside a
         // GIL-protected region (`GIL_DEPTH > 0`), this acquisition is a pure
@@ -244,7 +284,7 @@ impl GilGuard {
         // `new`, one in `Drop`) per acquisition is the dominant win on the
         // exception/refcount FFI hot path, where every `molt_inc_ref`,
         // `molt_dec_ref`, `molt_raise`, and `molt_exception_*` call enters here.
-        if GIL_THREAD_COUNT.load(AtomicOrdering::Relaxed) <= 1 {
+        if thread_count <= 1 {
             match GIL_DEPTH.try_with(|depth| depth.get() > 0) {
                 Ok(true) => {
                     // Re-entrant on the single GIL thread: depth gate already
@@ -252,6 +292,7 @@ impl GilGuard {
                     return Self {
                         fallback_guard: None,
                         lane: GilGuardLane::ReentrantNoop,
+                        restore_after_drop: None,
                     };
                 }
                 Ok(false) => { /* depth == 0, fall through to full path */ }
@@ -287,7 +328,13 @@ impl GilGuard {
         Self {
             fallback_guard: None,
             lane: GilGuardLane::MainLock,
+            restore_after_drop: None,
         }
+    }
+
+    #[inline(always)]
+    pub(crate) fn new_extension_call() -> Self {
+        Self::new()
     }
 
     pub(crate) fn token(&self) -> PyToken<'_> {
@@ -302,6 +349,7 @@ impl GilGuard {
             return Self {
                 fallback_guard: None,
                 lane: GilGuardLane::Fallback,
+                restore_after_drop: None,
             };
         }
         let guard = molt_gil().lock().unwrap_or_else(|e| e.into_inner());
@@ -310,6 +358,7 @@ impl GilGuard {
         Self {
             fallback_guard: Some(guard),
             lane: GilGuardLane::Fallback,
+            restore_after_drop: None,
         }
     }
 }
@@ -330,21 +379,26 @@ impl Drop for GilGuard {
                 }
             }
             GilGuardLane::MainLock => {
-                let should_release = match GIL_DEPTH.try_with(|depth| {
-                    let current = depth.get();
-                    let next = current.saturating_sub(1);
-                    depth.set(next);
-                    next == 0
-                }) {
-                    Ok(should_release) => should_release,
-                    Err(_) => return,
-                };
+                let should_release = GIL_DEPTH
+                    .try_with(|depth| {
+                        let current = depth.get();
+                        let next = current.saturating_sub(1);
+                        depth.set(next);
+                        next == 0
+                    })
+                    .unwrap_or_default();
                 if should_release {
                     let _ = GIL_GUARD.try_with(|slot| {
                         let _ = slot.borrow_mut().take();
                     });
                 }
             }
+        }
+        if let Some(saved) = self.restore_after_drop.take() {
+            drop(GilReleaseGuard {
+                depth: saved.depth,
+                had_runtime_guard: saved.had_runtime_guard,
+            });
         }
     }
 }
@@ -422,6 +476,20 @@ pub(crate) fn gil_held() -> bool {
     // zero-cost `GilGuard::new_unchecked()` path used by `with_gil_entry!`.
     if GIL_THREAD_COUNT.load(AtomicOrdering::Relaxed) == 1 {
         return true;
+    }
+    match GIL_DEPTH.try_with(|depth| depth.get()) {
+        Ok(depth) => depth > 0 || fallback_gil_held(),
+        Err(_) => fallback_gil_held(),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn gil_owned_by_current_thread() -> bool {
+    let registered = GIL_THREAD_REGISTERED
+        .try_with(|registered| registered.get())
+        .unwrap_or(false);
+    if !registered {
+        return fallback_gil_held();
     }
     match GIL_DEPTH.try_with(|depth| depth.get()) {
         Ok(depth) => depth > 0 || fallback_gil_held(),
