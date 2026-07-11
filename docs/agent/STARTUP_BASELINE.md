@@ -67,10 +67,13 @@ or substitute stale artifacts. Therefore:
 
 1. **Restore release buildability.** This is the gating dependency for every
    native and WASM startup cell. Until it is green, no startup claim is citable.
-2. **Remove duplicate full-byte WASM scans before instantiation.** The Node
-   runner reads app/linked/runtime bytes, then separately runs import parsing
-   and export-signature parsing before V8 instantiation. The preload probe will
-   quantify the resulting pre-instantiate tax once artifacts exist.
+2. **Remove duplicate full-byte WASM scans before instantiation — COMPLETE.**
+   `OPT-MATRIX-R1` replaces the separate import and export-signature section
+   walks with one `parseWasmMetadata` authority. On a 9,720,086 B final-form
+   release runtime, seven serial fresh-process samples improved the median from
+   36.3275 ms to 22.6561 ms (1.6034x) with identical 90 function imports and
+   4,409 function export signatures. Evidence:
+   `tools/opt_matrix_r1_wasm_metadata_attestation.json`.
 3. **Attribute artifact footprint by section.** Record code, data, name/debug,
    and custom-section bytes beside read and instantiate medians. Large active
    data segments impose eager initialization; name/debug sections impose parse
