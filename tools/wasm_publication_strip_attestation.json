@@ -111,8 +111,9 @@
     ],
     "witness_attempts": [
       "20260711T171157-pact-witness-acceptance-a9a8ee45699a4e66",
-      "20260711T172628-pact-witness-acceptance-ef3778cc8b674e26"
+      "20260711T172628-pact-witness-acceptance-ef3778cc8b674e26",
+      "20260711T173338-pact-witness-acceptance-4b5ee1b789d44435"
     ],
-    "witness_blocker": "Both attempts stopped before wasm link/publication at reserved runtime/molt-cpython-abi/src/api/typeobj.rs E0133; CLAIMS records the same origin/main blocker for STARTUP-BASELINE and E1-SPLIT-EXPORT-CONTRACT."
+    "witness_blocker": "The first two attempts stopped before wasm link/publication at reserved runtime/molt-cpython-abi/src/api/typeobj.rs E0133. After origin/main fixed that blocker, the third reached the system LLVM linker and wasm-ld.exe crashed with Windows exception 0xC0000005 before producing a linked artifact; the publication strip did not execute."
   }
 }
