@@ -24,6 +24,15 @@ from molt.cli.native_toolchain import (
 )
 
 
+_CPYTHON_SINGLETON_CANONICAL_ALIASES = (
+    ("_Py_NoneStruct", "Py_None"),
+    ("_Py_TrueStruct", "Py_True"),
+    ("_Py_FalseStruct", "Py_False"),
+    ("_Py_NotImplementedStruct", "Py_NotImplementedSentinel"),
+    ("_Py_EllipsisObject", "Py_EllipsisObject"),
+)
+
+
 def _resolve_available_fast_linker() -> str | None:
     if shutil.which("mold"):
         return "mold"
@@ -211,6 +220,9 @@ def _build_native_link_command(
         exported_symbols = ["_main"]
         if export_molt_runtime_symbols:
             exported_symbols.extend(f"_{name}" for name in _molt_c_api_export_names())
+            for canonical, storage in _CPYTHON_SINGLETON_CANONICAL_ALIASES:
+                exported_symbols.extend((f"_{canonical}", f"_{storage}"))
+                link_cmd.append(f"-Wl,-alias,_{storage},_{canonical}")
         _atomic_write_text(exported_symbols_path, "\n".join(exported_symbols) + "\n")
         link_cmd.append(f"-Wl,-exported_symbols_list,{exported_symbols_path}")
         if os.environ.get("MOLT_KEEP_SYMBOLS") != "1":
@@ -225,7 +237,17 @@ def _build_native_link_command(
         link_cmd.append("-Wl,--as-needed")
         link_cmd.append("-Wl,-O2")
         version_script_path = output_binary.parent / ".molt_version.ver"
-        globals = "main; molt_*;" if export_molt_runtime_symbols else "main;"
+        globals = "main;"
+        if export_molt_runtime_symbols:
+            singleton_globals = " ".join(
+                f"{canonical}; {storage};"
+                for canonical, storage in _CPYTHON_SINGLETON_CANONICAL_ALIASES
+            )
+            globals = f"main; molt_*; {singleton_globals}"
+            link_cmd.extend(
+                f"-Wl,--defsym={canonical}={storage}"
+                for canonical, storage in _CPYTHON_SINGLETON_CANONICAL_ALIASES
+            )
         _atomic_write_text(version_script_path, f"{{ global: {globals} local: *; }};\n")
         link_cmd.append(f"-Wl,--version-script={version_script_path}")
         if export_molt_runtime_symbols:
@@ -236,7 +258,15 @@ def _build_native_link_command(
         link_cmd.extend(["-Wl,/OPT:REF"])
         if export_molt_runtime_symbols:
             def_path = output_binary.parent / ".molt_exports.def"
-            exports = "\n".join(_molt_c_api_export_names())
+            exports = "\n".join(
+                (
+                    *_molt_c_api_export_names(),
+                    *(
+                        f"{canonical}={storage}"
+                        for canonical, storage in _CPYTHON_SINGLETON_CANONICAL_ALIASES
+                    ),
+                )
+            )
             _atomic_write_text(def_path, f"EXPORTS\n{exports}\n")
             link_cmd.append(f"-Wl,/DEF:{def_path}")
     _append_darwin_runtime_frameworks(link_cmd, target_triple=target_triple)
