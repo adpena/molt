@@ -39,7 +39,7 @@ BASELINE = WI.DEFAULT_BASELINES["_multiarray_umath"]
 # ── Synthetic engine outputs ──────────────────────────────────────────────────
 KNOWN_GOOD = """\
 == static symbol-gap check ...
-   numpy needs 301 Py* symbols; harness exports 605; GAP=5
+   numpy needs 301 Py* symbols; harness exports 581; GAP=20
    --- MISSING Py* symbols (symbol-gap frontiers) ---
      _PyArg_ParseTuple_SizeT
      _PyArg_ParseTupleAndKeywords_SizeT
@@ -55,23 +55,25 @@ KNOWN_GOOD = """\
 """
 
 # Regression 1: datetime CAPI capsule reverted (09c8d2337) -> PyCapsule_Import
-# silently fails, numpy stops BEFORE the numpy.exceptions import.
+# silently fails, numpy stops BEFORE the numpy.exceptions import. (Mirrors the
+# real x86_64-Linux drive captured 2026-07-10.)
 REGRESSION_DATETIME = """\
 == static symbol-gap check ...
-   numpy needs 301 Py* symbols; harness exports 605; GAP=5
+   numpy needs 301 Py* symbols; harness exports 581; GAP=20
 == driving PyInit__multiarray_umath against molt ABI ...
 [MOLT_TRACE_CAPI] call PyCapsule_Import(datetime.datetime_CAPI)
+[MOLT_TRACE_CAPI] call PyImport_ImportModule(datetime)
 [MOLT_TRACE_CAPI] silent-failure PyCapsule_Import(datetime.datetime_CAPI)
-===MOLT_DISCOVERY_STUB_FIRST_CALL: _Py_Dealloc — object finalization
 ===MOLT_DISCOVERY_FRONTIER (LoadError): InitReturnedNull { name: "_multiarray_umath" }
+===MOLT_DISCOVERY_EXC: pending exception value = "PyCapsule_Import could not import module capsule \\"datetime.datetime_CAPI\\""
 == driver exit code: 10
 """
 
 # Regression 2: allocator/private-symbol batch reverted (61093cb4a) -> the
-# static Py* symbol wall widens.
+# static Py* symbol wall widens above the known-good ceiling.
 REGRESSION_SYMBOLS = """\
 == static symbol-gap check ...
-   numpy needs 301 Py* symbols; harness exports 598; GAP=8
+   numpy needs 301 Py* symbols; harness exports 578; GAP=25
      PyObject_Malloc
      PyObject_Calloc
      PyObject_Realloc
@@ -83,7 +85,7 @@ REGRESSION_SYMBOLS = """\
 
 # Regression 3: a hard panic mid-drive is never a valid frontier.
 REGRESSION_PANIC = """\
-   numpy needs 301 Py* symbols; harness exports 605; GAP=5
+   numpy needs 301 Py* symbols; harness exports 581; GAP=20
 == driving PyInit__multiarray_umath against molt ABI ...
 ===MOLT_FRONTIER_PANIC===
 panic: called `Option::unwrap()` on a `None` value
@@ -101,7 +103,7 @@ def _verdict(sample: str):
 
 def test_known_good_reaches_frontier_and_passes():
     fp, v = _verdict(KNOWN_GOOD)
-    assert fp.symbol_gap == 5
+    assert fp.symbol_gap == 20
     assert not fp.pyinit_ok  # AOT wall: PyInit returns NULL here, by design
     assert "numpy.exceptions" in fp.haystack()
     assert v.passed, v.reasons
@@ -120,9 +122,17 @@ def test_datetime_revert_turns_red():
 
 def test_symbol_gap_widening_turns_red():
     fp, v = _verdict(REGRESSION_SYMBOLS)
-    assert fp.symbol_gap == 8
+    assert fp.symbol_gap == 25
     assert not v.passed
-    assert any("symbol GAP 8 != known-good 5" in r for r in v.reasons)
+    assert any("symbol GAP 25 > known-good ceiling 20" in r for r in v.reasons)
+
+
+def test_shrinking_symbol_gap_is_not_a_regression():
+    # Better aliasing on a platform (fewer missing symbols) must NOT false-RED.
+    sample = KNOWN_GOOD.replace("GAP=20", "GAP=2")
+    fp, v = _verdict(sample)
+    assert fp.symbol_gap == 2
+    assert v.passed, v.reasons
 
 
 def test_panic_turns_red():
