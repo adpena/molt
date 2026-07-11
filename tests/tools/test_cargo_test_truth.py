@@ -24,9 +24,11 @@ def test_truth_runner_accepts_only_the_exact_registered_set() -> None:
     context = {"platform": "windows", "target": "default"}
     registered = [entry["identity"] for entry in runner.check_suite_honesty.load_manifest()["execution_reds"]]
     output = "\n".join(f"test {identity} ... FAILED" for identity in registered)
-    assert runner.verdict(output, 101, context) == []
+    returncode = 101 if registered else 0
+    assert runner.verdict(output, returncode, context) == []
     assert runner.verdict(output + "\ntest new_red ... FAILED", 101, context)
-    assert runner.verdict(output.replace("FAILED", "ok", 1), 101, context)
+    if registered:
+        assert runner.verdict(output.replace("FAILED", "ok", 1), 101, context)
 
 
 def test_truth_runner_rejects_compile_failures_without_test_identity() -> None:
