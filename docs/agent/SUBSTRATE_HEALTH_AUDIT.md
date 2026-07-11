@@ -1,7 +1,7 @@
 # Substrate Health Audit
 
-Date: 2026-07-11  
-Scope: test truth, Windows behavior, build/proof orchestration, and durable artifact custody.  
+Date: 2026-07-11
+Scope: test truth, Windows behavior, build/proof orchestration, and durable artifact custody.
 Method: live `origin/main` inspection, `cargo metadata --no-deps --format-version 1`, CI/dev-gate command tracing, focused source review, and primary Cargo/Python/Windows documentation.
 
 ## Executive map
