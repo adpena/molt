@@ -39,8 +39,7 @@ fn main() {
 
     // Compile the C variadic shim into a static library.
     let mut build = cc::Build::new();
-    let owns_archive_link = target_arch == "wasm32"
-        || target_os == "linux"
+    let owns_archive_link = target_os == "linux"
         || target_os == "macos"
         || (target_os == "windows" && target_env == "msvc");
     if owns_archive_link {
@@ -163,24 +162,10 @@ fn main() {
             }
         }
         "wasi" if target_arch == "wasm32" => {
-            // wasm32-wasip1: link the C shim archive LAZILY (no --whole-archive)
-            // so this crate's own cdylib (molt_cpython_abi.wasm) resolves the
-            // errno accessors molt_capi_errno / molt_capi_strerror that
-            // errors.rs's PyErr_SetFromErrno calls (added by ab87dd425f) — before
-            // this the wasm cdylib link failed `undefined symbol: molt_capi_errno`
-            // (the variadic PyArg_*/Py_BuildValue/... are exported from the
-            // runtime via molt-runtime's own whole-archive anchor, so this cdylib
-            // only needs the symbols its Rust actually references).
-            //
-            // MUST be lazy, not --whole-archive: a build-script cdylib-link-arg
-            // propagates to any downstream cdylib, and molt-runtime's cdylib
-            // (molt_runtime.wasm) ALREADY whole-archives this same shim via its
-            // cpython_abi_wasm_exports anchor. A propagated --whole-archive would
-            // pull the shim objects a SECOND time -> `duplicate symbol:
-            // molt_capi_errno`. A lazy reference finds every symbol already
-            // defined there and pulls nothing, so the runtime link stays clean.
-            // No `-Wl,` prefix: rustc drives rust-lld directly for wasm.
-            println!("cargo:rustc-cdylib-link-arg={}", unix_lib_path.display());
+            // cc owns the wasm shim archive and emits normal Cargo link metadata.
+            // That bundles the single archive into molt-cpython-abi's rlib/staticlib,
+            // so reloc links retain errno and variadic definitions without a second
+            // downstream archive link arm or duplicate-symbol risk.
         }
         _ => {}
     }
