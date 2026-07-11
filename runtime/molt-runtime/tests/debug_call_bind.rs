@@ -82,29 +82,29 @@ fn setattr_bytes(obj_bits: u64, name: &[u8], value_bits: u64) {
     );
 }
 
-fn plain_function_with_metadata() -> u64 {
+fn function_with_required_kwonly_metadata() -> u64 {
     let fn_ptr = molt_bool_builtin as *const () as usize as u64;
     let func_bits = unsafe { molt_func_new_builtin(fn_ptr, fn_ptr, 1) };
-    let arg_list_bits = empty_list();
-    let name_bits = string_bits("value");
+    let arg_names_bits = empty_tuple();
+    let kwonly_list_bits = empty_list();
+    let kwonly_name_bits = string_bits("required");
     unsafe {
-        let _ = molt_list_append(arg_list_bits, name_bits);
+        let _ = molt_list_append(kwonly_list_bits, kwonly_name_bits);
     }
-    let arg_names_bits = unsafe { molt_tuple_from_list(arg_list_bits) };
+    let kwonly_names_bits = unsafe { molt_tuple_from_list(kwonly_list_bits) };
     let zero_bits = int(0);
     let none_bits = none();
-    let empty_tuple_bits = empty_tuple();
     setattr_bytes(func_bits, b"__molt_arg_names__", arg_names_bits);
     setattr_bytes(func_bits, b"__molt_posonly__", zero_bits);
-    setattr_bytes(func_bits, b"__molt_kwonly_names__", empty_tuple_bits);
+    setattr_bytes(func_bits, b"__molt_kwonly_names__", kwonly_names_bits);
     setattr_bytes(func_bits, b"__molt_vararg__", none_bits);
     setattr_bytes(func_bits, b"__molt_varkw__", none_bits);
     setattr_bytes(func_bits, b"__defaults__", none_bits);
     setattr_bytes(func_bits, b"__kwdefaults__", none_bits);
-    molt_runtime::molt_dec_ref_obj(empty_tuple_bits);
+    molt_runtime::molt_dec_ref_obj(kwonly_names_bits);
+    molt_runtime::molt_dec_ref_obj(kwonly_name_bits);
+    molt_runtime::molt_dec_ref_obj(kwonly_list_bits);
     molt_runtime::molt_dec_ref_obj(arg_names_bits);
-    molt_runtime::molt_dec_ref_obj(name_bits);
-    molt_runtime::molt_dec_ref_obj(arg_list_bits);
     func_bits
 }
 
@@ -170,6 +170,8 @@ fn trace_function_bind_meta_emits_summary() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("[molt bind_meta]"));
+    assert!(stderr.contains("total_pos=0"));
+    assert!(stderr.contains("kwonly=1"));
 }
 
 #[test]
@@ -219,7 +221,7 @@ fn trace_function_bind_meta_child() {
         return;
     }
     init();
-    let func_bits = plain_function_with_metadata();
+    let func_bits = function_with_required_kwonly_metadata();
     let args_bits = empty_tuple();
     let _ = unsafe { molt_object_call(func_bits, args_bits, none()) };
     molt_runtime::molt_dec_ref_obj(args_bits);

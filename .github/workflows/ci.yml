@@ -251,6 +251,11 @@ jobs:
         # run in CI rather than merely compile under clippy.
         run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test -p molt-tir
 
+      - name: Run molt-runtime call-bind trace integration tests
+        # Keep this integration binary explicit: workspace clippy only compiles
+        # it, and a broad fail-fast runtime run can stop at an earlier binary.
+        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test -p molt-runtime --test debug_call_bind
+
       - name: Clippy (molt-backend)
         run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo clippy -p molt-backend --features native-backend -- -D warnings
 
