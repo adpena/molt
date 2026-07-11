@@ -24,6 +24,8 @@ from pathlib import Path
 
 from molt.cli.source_extensions import source_extension_manifest_source_path
 from molt.scientific_stack_versions import (
+    attest_numpy_witness_seal,
+    numpy_witness_seal_root,
     resolve_scientific_stack,
     verify_cpython_abi_headers,
     verify_source_checkout,
@@ -40,14 +42,25 @@ def main() -> int:
     stack = resolve_scientific_stack()
     verify_cpython_abi_headers(stack=stack)
     ap = argparse.ArgumentParser()
-    ap.add_argument("--manifest", required=True, type=Path)
+    ap.add_argument("--manifest", type=Path)
     args = ap.parse_args()
 
-    manifest, mpath = _load(args.manifest)
+    requested = args.manifest or numpy_witness_seal_root(stack=stack)
+    manifest, mpath = _load(requested)
+    seal_root = mpath.parent
     print(f"[verify] manifest: {mpath}")
     print(f"[verify] module:   {manifest.get('module') or manifest.get('name')}")
 
     failures: list[str] = []
+
+    try:
+        effective_version = attest_numpy_witness_seal(seal_root, stack=stack)
+        print(
+            f"[verify] NumPy version attestation: configured={stack.numpy} "
+            f"effective={effective_version}"
+        )
+    except ValueError as exc:
+        failures.append(str(exc))
 
     # (1) runtime_python_import_modules present + non-empty.
     rpim = manifest.get("runtime_python_import_modules")
@@ -125,6 +138,7 @@ def main() -> int:
     print("  - runtime_python_import_modules present + non-empty")
     print("  - every object_closure source resolves on this host")
     print("  - source_plan roots resolve")
+    print(f"  - configured NumPy {stack.numpy} equals effective sealed version")
     return 0
 
 

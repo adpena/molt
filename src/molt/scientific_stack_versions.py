@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import os
 import re
 import subprocess
@@ -11,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
+NUMPY_WITNESS_SEAL_NAME = "pact_numpy_multiarray_sealed_for_witness"
 DEFAULT_CONFIG_PATH = ROOT / "config" / "scientific_stack_versions.toml"
 CONFIG_ENV = "MOLT_SCIENTIFIC_STACK_CONFIG"
 _PUBLIC_VERSION_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)+$")
@@ -184,6 +186,75 @@ def apply_scientific_stack_substitutions(value: str) -> str:
         raise ValueError(
             f"unknown scientific-stack placeholder {exc.args[0]!r}"
         ) from exc
+
+
+def scientific_artifact_root(env: dict[str, str] | None = None) -> Path:
+    env_view = os.environ if env is None else env
+    configured = env_view.get("MOLT_EXT_ROOT", "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    roots = env_view.get("MOLT_EXTERNAL_ARTIFACT_ROOTS", "").strip()
+    if roots:
+        first = next(
+            (item.strip() for item in roots.split(os.pathsep) if item.strip()), ""
+        )
+        if first:
+            return Path(first).expanduser().resolve()
+    raise ValueError(
+        "scientific package seals require MOLT_EXT_ROOT or "
+        "MOLT_EXTERNAL_ARTIFACT_ROOTS so effective artifacts have durable shared custody"
+    )
+
+
+def numpy_witness_seal_root(
+    *,
+    stack: ScientificStackVersion | None = None,
+    artifact_root: Path | None = None,
+) -> Path:
+    selected = resolve_scientific_stack() if stack is None else stack
+    root = scientific_artifact_root() if artifact_root is None else artifact_root.resolve()
+    return root / "package-seals" / "numpy" / selected.numpy / NUMPY_WITNESS_SEAL_NAME
+
+
+def read_numpy_seal_version(root: Path) -> str:
+    version_path = root / "numpy" / "version.py"
+    try:
+        tree = ast.parse(
+            version_path.read_text(encoding="utf-8"), filename=str(version_path)
+        )
+    except (OSError, SyntaxError) as exc:
+        raise ValueError(
+            f"cannot read effective NumPy seal version from {version_path}: {exc}"
+        ) from exc
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(
+            isinstance(target, ast.Name) and target.id == "version"
+            for target in node.targets
+        ):
+            continue
+        if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            return node.value.value
+        break
+    raise ValueError(
+        f"effective NumPy seal has no literal version assignment: {version_path}"
+    )
+
+
+def attest_numpy_witness_seal(
+    root: Path,
+    *,
+    stack: ScientificStackVersion | None = None,
+) -> str:
+    selected = resolve_scientific_stack() if stack is None else stack
+    effective = read_numpy_seal_version(root)
+    if effective != selected.numpy:
+        raise ValueError(
+            f"NumPy seal attestation failed: configured={selected.numpy} "
+            f"effective={effective} root={root}"
+        )
+    return effective
 
 
 def verify_source_checkout(

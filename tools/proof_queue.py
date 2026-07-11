@@ -41,7 +41,11 @@ from tools.dirty_tree_policy import (  # noqa: E402
     DEFAULT_DIRTY_TREE_IGNORE_GLOBS,
     filter_status_lines,
 )
-from molt.scientific_stack_versions import resolve_scientific_stack  # noqa: E402
+from molt.scientific_stack_versions import (  # noqa: E402
+    attest_numpy_witness_seal,
+    numpy_witness_seal_root,
+    resolve_scientific_stack,
+)
 
 RUNNING = {"queued", "dispatched", "running"}
 LAUNCHED = {"dispatched", "running"}
@@ -3092,6 +3096,10 @@ def _pact_manifest_object_sources_resolve(
 
 
 def _pact_numpy_multiarray_seal_root_is_current(root: Path) -> bool:
+    try:
+        attest_numpy_witness_seal(root)
+    except ValueError:
+        return False
     manifest = _load_json_mapping(root / "extension_manifest.json")
     if manifest is None:
         return False
@@ -3160,12 +3168,18 @@ def _pact_witness_native_roots(repo_root: Path = ROOT) -> list[Path]:
     stack = resolve_scientific_stack()
     selected: list[Path] = []
     candidate_repo_roots = _pact_witness_candidate_repo_roots(repo_root)
+    durable_numpy_root = numpy_witness_seal_root(stack=stack)
+    if not (
+        durable_numpy_root.exists()
+        and _pact_numpy_multiarray_seal_root_is_current(durable_numpy_root)
+    ):
+        raise ValueError(
+            "no attested NumPy witness seal matches configured version "
+            f"{stack.numpy}; expected durable root {durable_numpy_root}. "
+            "Run tools/provision_numpy_witness_seal.py with a genuine matching seal."
+        )
     artifact_roots = [
-        _first_existing_manifest_root_across(
-            candidate_repo_roots,
-            list(stack.numpy_seal_root_candidates),
-            validator=_pact_numpy_multiarray_seal_root_is_current,
-        ),
+        durable_numpy_root,
         _first_existing_manifest_root_across(
             candidate_repo_roots, list(stack.scipy_primary_seal_root_candidates)
         ),
