@@ -85,6 +85,22 @@ unsafe extern "C" fn fake_classify_heap(_bits: u64) -> u8 {
 
 unsafe extern "C" fn fake_noop_ref(_bits: u64) {}
 
+// A working PyCFunction registration so `add_methods_to_dict`'s
+// `PyDict_SetItemString(dict, name, func)` stores a bridge-resolvable callable.
+// Without it, `PyCFunction_NewEx` falls back to a raw, non-bridge-registered
+// object that `PyDict_SetItem` cannot store, so `PyType_Ready` fails CLOSED
+// (the correct post-POISON-Lane-A #2 behaviour) — which is not what these
+// structure tests intend to exercise (they want a genuinely-populated tp_dict).
+unsafe extern "C" fn fake_register_c_function(
+    _meth: u64,
+    _flags: c_int,
+    _self_bits: u64,
+    _data: *const u8,
+    _len: usize,
+) -> u64 {
+    fresh_handle()
+}
+
 fn init() {
     let mut hooks: RuntimeHooks = molt_cpython_abi::hooks::STUB_HOOKS;
     hooks.alloc_dict = fake_alloc_dict;
@@ -94,6 +110,7 @@ fn init() {
     hooks.classify_heap = fake_classify_heap;
     hooks.inc_ref = fake_noop_ref;
     hooks.dec_ref = fake_noop_ref;
+    hooks.register_c_function = fake_register_c_function;
     unsafe {
         molt_cpython_abi::bridge::molt_cpython_abi_init();
         let _ = molt_cpython_abi::try_set_runtime_hooks(hooks);
