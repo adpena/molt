@@ -41,6 +41,21 @@ tail.release()
 arr.append(4)
 print(arr.tolist())
 
+cast_arr = array.array("h", [11, 22, 33])
+cast_root = memoryview(cast_arr)
+cast_bytes = cast_root.cast("B")
+cast_tail = cast_bytes[cast_root.itemsize :].cast("h")
+print(cast_tail.format, cast_tail.tolist())
+cast_root.release()
+cast_bytes.release()
+try:
+    cast_arr.append(44)
+except Exception as exc:
+    print("cast pin", type(exc).__name__, str(exc))
+cast_tail.release()
+cast_arr.append(44)
+print(cast_arr.tolist())
+
 buf = bytearray(b"abc")
 buf_view = memoryview(buf)
 try:
