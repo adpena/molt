@@ -172,6 +172,18 @@ runtime improved the median from 1,111.2847 ms to 554.2158 ms (2.0051x), with
 byte identity, corrupt-source rejection, copy-failure rejection, and a
 144,908,288 B maximum RSS ceiling.
 
+### Linked WASM metadata materialization
+
+`tools/opt_matrix_r5_linked_metadata_attestation.json` records the A12-citable
+release differential for linked Node startup. Linked execution needs import
+descriptors but does not consume app export function signatures, so
+`parseWasmMetadata` now skips the function and export payloads in linked mode
+while direct-link and auto-split mode retain the full shared parser contract.
+Seven serial alternating samples on the 9,720,086 B release runtime improved
+the median from 10.6805 ms to 3.0449 ms (3.5077x), preserved all 90 function
+imports, skipped 4,409 unused linked exports, and stayed below a 65,130,496 B
+maximum RSS ceiling.
+
 ### Native multi-byte reverse search
 
 `tools/opt_matrix_r4_bytes_rfind_attestation.json` records the A12-citable

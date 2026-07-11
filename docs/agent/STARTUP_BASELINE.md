@@ -74,7 +74,12 @@ or substitute stale artifacts. Therefore:
    36.3275 ms to 22.6561 ms (1.6034x) with identical 90 function imports and
    4,409 function export signatures. Evidence:
    `tools/opt_matrix_r1_wasm_metadata_attestation.json`.
-3. **Attribute artifact footprint by section.** Record code, data, name/debug,
+3. **Attribute artifact footprint by section - PARTIAL, LINKED METADATA CLOSED.**
+   `OPT-MATRIX-R5` proves that linked startup paid to decode 4,409 export
+   signatures it never consumed. Optional signature materialization improves
+   the release metadata median from 10.6805 ms to 3.0449 ms (3.5077x) while
+   preserving all 90 imports; direct-link keeps full signatures. Continue to
+   record code, data, name/debug,
    and custom-section bytes beside read and instantiate medians. Large active
    data segments impose eager initialization; name/debug sections impose parse
    bytes but should be owned by the concurrent publication-strip lane.

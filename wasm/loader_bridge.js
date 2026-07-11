@@ -384,6 +384,7 @@
     const funcTypeIndices = [];
     let importedFuncCount = 0;
     const exportFuncIndices = new Map();
+    const includeExportFunctionSignatures = options.exportFunctionSignatures !== false;
     while (offset < view.length) {
       const sectionId = view[offset++];
       const sizeRes = readVarUint(view, offset);
@@ -413,6 +414,10 @@
         continue;
       }
       if (sectionId === 3) {
+        if (!includeExportFunctionSignatures) {
+          offset = end;
+          continue;
+        }
         let inner = offset;
         const countRes = readVarUint(view, inner);
         let count = countRes.value;
@@ -427,6 +432,10 @@
         continue;
       }
       if (sectionId === 7) {
+        if (!includeExportFunctionSignatures) {
+          offset = end;
+          continue;
+        }
         let inner = offset;
         const countRes = readVarUint(view, inner);
         let count = countRes.value;
