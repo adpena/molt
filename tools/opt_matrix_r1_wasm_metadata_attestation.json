@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "claim": "OPT-MATRIX-R1",
+  "scenario": "real release WASM startup metadata serial differential",
+  "profile": "release",
+  "hot_path": "Node split-runtime startup parses type/import/function/export sections before WebAssembly instantiation",
+  "complexity": {
+    "before": "2 * O(module_bytes) section walks",
+    "after": "1 * O(module_bytes) section walk"
+  },
+  "artifact": "C:\\Molt\\wt-optmatrix\\tmp\\opt_matrix_r1\\molt_runtime.release.wasm",
+  "artifact_sha256": "7588e70cb3bb990c0c572af631d8c3af6f37bc5e5316da2088fb105a9576766d",
+  "git_revision": "1ead493fd3d0b050d2673d1c23fd5ab031f389a2",
+  "before": {
+    "mode": "duplicate import plus export-signature scans",
+    "runs": [
+      40.5624,
+      33.223600000000005,
+      36.3275,
+      37.09969999999999,
+      35.60849999999999,
+      38.41709999999999,
+      34.5906
+    ],
+    "median_ms": 36.3275
+  },
+  "after": {
+    "mode": "unified metadata scan",
+    "runs": [
+      23.524499999999996,
+      22.4724,
+      25.029400000000003,
+      22.656099999999995,
+      23.504800000000003,
+      20.800600000000003,
+      20.211199999999998
+    ],
+    "median_ms": 22.656099999999995
+  },
+  "held_benches": {
+    "metadata_contract_parity": true
+  },
+  "memory_ceiling": {
+    "pass": true,
+    "max_rss_bytes": 77664256
+  },
+  "contract": {
+    "artifact_bytes": 9720086,
+    "function_imports": 90,
+    "function_exports": 4409
+  }
+}
