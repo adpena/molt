@@ -4324,7 +4324,26 @@ def _cmd_submit(args: argparse.Namespace) -> int:
     return 0
 
 
+def _ensure_disk_headroom_before_build() -> None:
+    """Preemptive, AGENT-SAFE disk reclaim before launching a queued build.
+
+    A heavy Cargo/witness build is exactly the point where C: filled to 0 bytes.
+    The disk guard reclaims ONLY stale build-artifact dirs (never a process, never
+    an active/lock-held dir) and is a fast no-op above the high-water mark.
+    Fail-open: a guard error must never block the build.
+    """
+    if any(os.environ.get(k) for k in ("PYTEST_CURRENT_TEST", "PYTEST_VERSION")):
+        return  # never reclaim real artifacts during a test run
+    try:
+        from tools import disk_guard
+
+        disk_guard.ensure_free_fail_open()
+    except Exception:
+        pass
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
+    _ensure_disk_headroom_before_build()
     conn = _connect(_db_path(args))
     conn.row_factory = sqlite3.Row
     queue_size = _configured_queue_size(getattr(args, "queue_size", None))

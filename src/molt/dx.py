@@ -304,6 +304,88 @@ def _maybe_sweep_stale_artifacts(ext_root: Path) -> None:
         pass
 
 
+def _maybe_ensure_disk_headroom(ext_root: Path) -> None:
+    """Preemptive, agent-SAFE disk reclamation before a build. Never raises.
+
+    Spawns ``tools/disk_guard.py --ensure-free`` DETACHED (never blocks or slows
+    a build). The disk guard reclaims ONLY stale build-artifact dirs (per-lane
+    ``target/*`` builds, ``target/sessions/*``, cargo-incremental quarantine) in
+    age order, never an active/lock-held/current-session dir, and NEVER touches a
+    process. It exists because the C: NVMe filled to 0 bytes mid-session when the
+    only disk sweep was disabled by ``MOLT_DISABLE_AUTO_JANITOR=1`` (set to
+    protect agents from the DANGEROUS orphan-process reaper it was bundled with).
+
+    Gate: ``MOLT_DISABLE_DISK_GUARD`` (defaults OFF == guard ON) -- INDEPENDENT
+    of ``MOLT_DISABLE_AUTO_JANITOR`` on purpose, so protecting agents never again
+    disables disk protection. This is the decoupling fix.
+    """
+    try:
+        if os.environ.get("MOLT_DISABLE_DISK_GUARD", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        ):
+            return
+        if _running_under_pytest():
+            return
+        guard = (
+            Path(__file__).resolve().parent.parent.parent / "tools" / "disk_guard.py"
+        )
+        if not guard.exists():
+            return
+        creationflags = 0
+        if os.name == "nt":
+            # DETACHED_PROCESS | CREATE_NO_WINDOW — outlive this process, no console.
+            creationflags = 0x00000008 | 0x08000000
+        subprocess.Popen(
+            [
+                sys.executable,
+                str(guard),
+                "--root",
+                str(ext_root),
+                "--ensure-free",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            creationflags=creationflags,
+            close_fds=True,
+            cwd=str(Path(__file__).resolve().parent.parent.parent),
+        )
+    except Exception:
+        # Disk protection is best-effort — a guard error must never break a build.
+        pass
+
+
+def _maybe_register_lane_target(ext_root: Path, target_dir: Path) -> None:
+    """Best-effort: register an isolated per-lane target dir for TTL GC.
+
+    So a completed lane's isolated ``CARGO_TARGET_DIR`` is garbage-collected by
+    ``disk_guard --gc`` once it ages past the TTL, killing the accumulation at
+    the source (the orchestrator never has to ``rm`` by hand). Never raises;
+    gated by the same independent ``MOLT_DISABLE_DISK_GUARD`` flag.
+    """
+    try:
+        if os.environ.get("MOLT_DISABLE_DISK_GUARD", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        ):
+            return
+        if _running_under_pytest():
+            return
+        tools_dir = Path(__file__).resolve().parent.parent.parent / "tools"
+        if str(tools_dir.parent) not in sys.path:
+            sys.path.insert(0, str(tools_dir.parent))
+        from tools import disk_guard  # noqa: PLC0415 - lazy, best-effort
+
+        disk_guard.register_lane_target(target_dir, root=str(ext_root))
+    except Exception:
+        pass
+
+
 def _env_bool(
     env: Mapping[str, str],
     names: Collection[str],
@@ -1108,6 +1190,11 @@ class RunContext:
             # Keep the artifact volume tidy BY DEFAULT — throttled, detached,
             # best-effort. Only in real (create_dirs) contexts, never in tests.
             _maybe_sweep_stale_artifacts(Path(ext_root))
+            # PREEMPTIVE disk protection, DECOUPLED from the agent-reaper flag:
+            # keep C: free above the high-water mark before a build so the volume
+            # can never fill to 0 mid-session again (gated only by
+            # MOLT_DISABLE_DISK_GUARD, NOT MOLT_DISABLE_AUTO_JANITOR).
+            _maybe_ensure_disk_headroom(Path(ext_root))
 
         def install_default(key: str, value: Path | str) -> None:
             if key in forced or not env.get(key):
@@ -1135,6 +1222,10 @@ class RunContext:
             "CARGO_TARGET_DIR",
             cargo_target_dir_for_artifact_root(ext_root, target_session_id),
         )
+        if create_dirs and target_session_id is not None:
+            # This is an ISOLATED per-lane target dir; register it so a completed
+            # lane's dir is TTL-garbage-collected without a manual rm (item 4).
+            _maybe_register_lane_target(Path(ext_root), Path(env["CARGO_TARGET_DIR"]))
         install_default("MOLT_DIFF_CARGO_TARGET_DIR", env["CARGO_TARGET_DIR"])
         # Incremental ON by default (fast warm rebuilds against the persistent
         # per-artifact-root CARGO_TARGET_DIR above). _ensure_sccache_wrapper forces
