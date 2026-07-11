@@ -53,7 +53,13 @@ if str(_SRC_ROOT) not in sys.path:
 import tools.memory_guard as memory_guard  # noqa: E402
 import tools.harness_memory_guard as harness_memory_guard  # noqa: E402
 import tools.compile_governor as compile_governor  # noqa: E402
+from tools._io_utf8 import force_utf8_stdio  # noqa: E402
 from molt.dx import CANONICAL_ROOT_ENV_KEYS, development_artifact_env  # noqa: E402
+
+# This gate captures and relays every check's subprocess stdout/stderr via
+# print(); on Windows a non-cp1252 byte in that relay would abort the whole run
+# with UnicodeEncodeError (the M43 bug class). Backstop stdio once at import.
+force_utf8_stdio()
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -395,6 +401,21 @@ def _build_checks() -> list[Check]:
     )
     checks.append(
         Check(
+            # The encoding-safety ratchet (M43 — recurring Windows cp1252 bug
+            # class): no NEW text-I/O call site may rely on the platform codec —
+            # open()/read_text()/write_text() without encoding=, or subprocess
+            # text-mode without encoding=. A single non-cp1252 byte in a relayed
+            # subprocess capture aborts an otherwise-successful build with
+            # UnicodeEncodeError. Count is monotonically non-increasing vs the
+            # committed baseline — burn down to zero, never up.
+            name="encoding-safety-ratchet",
+            tier=1,
+            cmd=_uv_run(str(TOOLS / "encoding_gate.py"), "--check"),
+            timeout=60,
+        )
+    )
+    checks.append(
+        Check(
             # The semantic-fact-plane meta-gate (doc 59 Phases 1-3): every
             # generated authority is registered + --check-gated, no orphan
             # generated files, and no NEW silent-default `match` over a closed
@@ -479,6 +500,19 @@ def _build_checks() -> list[Check]:
             tier=1,
             cmd=_uv_pytest(str(TESTS / "tools" / "test_build_graph_audit.py"), "-q"),
             timeout=60,
+            needs_pytest=True,
+        )
+    )
+    checks.append(
+        Check(
+            # Proves the encoding-safety ratchet has TEETH (M05): a planted
+            # `open("x")` in the scanned tree MUST trip `--check` (exit 2) and a
+            # clean tree MUST pass, plus every rule flags its unsafe form and NOT
+            # its safe variant. A gate that only passes clean certifies nothing.
+            name="encoding-gate-contract",
+            tier=1,
+            cmd=_uv_pytest(str(TESTS / "tools" / "test_encoding_gate.py"), "-q"),
+            timeout=120,
             needs_pytest=True,
         )
     )
