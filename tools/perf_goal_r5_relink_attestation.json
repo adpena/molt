@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "claim": "PERF-GOAL-R5",
+  "rung": "runtime reloc relink",
+  "git_base": "27145158604d177da05747e8b6ee13251041aa9e",
+  "machine": "same Windows workstation, AMD64, Python 3.12, LLVM wasm-ld",
+  "scenario": "69,510,495-byte real molt_runtime staticlib reloc link versus exact shared-cache hydrate of the resulting valid reloc wasm; three fresh destinations per path",
+  "profile": {
+    "hot_path": "_ensure_runtime_wasm target staticlib reuse branch ran wasm-ld -r before consulting exact/compatible shared runtime-wasm cache",
+    "artifact_bytes": 69510495,
+    "big_o_before": "O(symbols + relocations + archive bytes) wasm-ld graph construction and relocation emission on every target-staticlib reuse",
+    "big_o_after": "O(artifact bytes) atomic cache copy plus wasm structural validation; wasm-ld remains the miss fallback",
+    "phase_change": "exact and compatible cache hydration now precede target staticlib relink"
+  },
+  "before": {
+    "operation": "_link_runtime_staticlib_to_reloc_wasm with long_double_required=true",
+    "runs": [
+      {
+        "run": 1,
+        "wall_seconds": 8.9130001,
+        "ok": true
+      },
+      {
+        "run": 2,
+        "wall_seconds": 3.7076012,
+        "ok": true
+      },
+      {
+        "run": 3,
+        "wall_seconds": 3.8311934,
+        "ok": true
+      }
+    ],
+    "median_wall_seconds": 3.8311934
+  },
+  "after": {
+    "operation": "_hydrate_runtime_wasm_from_shared_cache with real artifact validation",
+    "runs": [
+      {
+        "run": 1,
+        "wall_seconds": 2.8761991,
+        "ok": true
+      },
+      {
+        "run": 2,
+        "wall_seconds": 1.2877836,
+        "ok": true
+      },
+      {
+        "run": 3,
+        "wall_seconds": 1.2754374,
+        "ok": true
+      }
+    ],
+    "median_wall_seconds": 1.2877836
+  },
+  "delta": {
+    "seconds": -2.5434098,
+    "percent": -66.386881,
+    "speedup": 2.975029
+  },
+  "regression_protection": "tests/cli/test_runtime_wasm_build_timings.py::test_exact_cache_hydration_precedes_reloc_target_relink"
+}

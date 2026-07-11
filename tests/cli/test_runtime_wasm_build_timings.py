@@ -57,3 +57,17 @@ def test_negative_wall_is_clamped_and_detail_preserved() -> None:
     assert snap["phases"][0]["wall_s"] == 0.0
     assert snap["phases"][0]["detail"] == "hydrated"
     assert snap["cargo_compile_reuses"] == 1
+
+
+def test_exact_cache_hydration_precedes_reloc_target_relink() -> None:
+    import inspect
+
+    from molt.cli import runtime_build
+
+    source = inspect.getsource(runtime_build._ensure_runtime_wasm)
+    hydrate_offset = source.index("_hydrate_runtime_wasm_from_shared_cache(")
+    target_relink_offset = source.index(
+        "target_runtime_staticlib_current = _current_runtime_target_artifact("
+    )
+
+    assert hydrate_offset < target_relink_offset
