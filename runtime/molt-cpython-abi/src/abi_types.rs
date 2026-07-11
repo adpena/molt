@@ -1096,6 +1096,38 @@ pub unsafe fn init_static_types() {
         // list/dict objects compare unequal by object identity in do_richcompare.
         PyList_Type.tp_richcompare = Some(crate::api::sequences::molt_list_richcompare);
         PyDict_Type.tp_richcompare = Some(crate::api::mapping::molt_dict_richcompare);
+
+        // ── Builtin VALUE-type slots (CLASS1-SLOTS): `tp_hash` + `tp_richcompare`
+        // on int/bool/float/complex/str/bytes. numpy 2.4.2 `DUAL_INHERIT`/
+        // `DUAL_INHERIT2` (`multiarraymodule.c:4827-4835`) copies these straight
+        // off molt's statics onto its Double/CDouble/String/Unicode scalar types
+        // (and the `Long` scalar inherits `PyLong_Type`'s via the `tp_base` chain
+        // at `PyType_Ready`); a NULL slot left those numpy scalars UNHASHABLE and
+        // NON-COMPARABLE and broke `_multiarray_umath` init. Values verified
+        // against CPython 3.12 `Objects/{long,float,complex,unicode,bytes}object.c`.
+        //
+        // `tp_hash`: one generic slot routing a molt-native value through the
+        // runtime hash authority (`bridge::molt_hash_from_bits`, the same path
+        // `PyObject_Hash` takes — `hash(2)==2`), a foreign complex/float through
+        // its CPython-compatible layout. bool is a `PyLongObject` (lv_tag 8/1),
+        // so it shares the int slots.
+        PyLong_Type.tp_hash = Some(crate::api::typeobj::molt_generic_hash);
+        PyBool_Type.tp_hash = Some(crate::api::typeobj::molt_generic_hash);
+        PyFloat_Type.tp_hash = Some(crate::api::typeobj::molt_generic_hash);
+        PyComplex_Type.tp_hash = Some(crate::api::typeobj::molt_generic_hash);
+        PyUnicode_Type.tp_hash = Some(crate::api::typeobj::molt_generic_hash);
+        PyBytes_Type.tp_hash = Some(crate::api::typeobj::molt_generic_hash);
+        // `tp_richcompare`: per-type value comparison mirroring the landed
+        // container slots. int-vs-non-int / float-vs-other / str-vs-non-str /
+        // bytes-vs-non-bytes / complex-ordering all defer with NotImplemented
+        // exactly where CPython does. bool inherits int's `long_richcompare`.
+        PyLong_Type.tp_richcompare = Some(crate::api::typeobj::molt_long_richcompare);
+        PyBool_Type.tp_richcompare = Some(crate::api::typeobj::molt_long_richcompare);
+        PyFloat_Type.tp_richcompare = Some(crate::api::typeobj::molt_float_richcompare);
+        PyComplex_Type.tp_richcompare = Some(crate::api::typeobj::molt_complex_richcompare);
+        PyUnicode_Type.tp_richcompare = Some(crate::api::typeobj::molt_str_richcompare);
+        PyBytes_Type.tp_richcompare = Some(crate::api::typeobj::molt_bytes_richcompare);
+
         PyByteArray_Type.tp_dealloc = Some(crate::api::strings::molt_bytearray_dealloc);
         PyComplex_Type.tp_dealloc = Some(crate::api::numbers::molt_complex_dealloc);
         PyDictProxy_Type.tp_basicsize = std::mem::size_of::<PyDictProxyObject>() as Py_ssize_t;

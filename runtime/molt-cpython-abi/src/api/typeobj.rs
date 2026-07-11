@@ -2641,11 +2641,270 @@ unsafe fn native_value_richcompare(
         return ordering_to_result(a.cmp(&b), op);
     }
 
+    // bytes pair: lexicographic over the raw bytes as UNSIGNED (CPython
+    // `Objects/bytesobject.c bytes_richcompare` ordering — `Py_CHARMASK` +
+    // `memcmp`, shorter-is-less on a full-prefix tie; `Vec<u8>::cmp` is exactly
+    // that). Mirrors the `str_bytes` path above for the `bytes` builtin.
+    let bytes_bytes = |bits: u64| -> Option<Vec<u8>> {
+        let h = crate::hooks::hooks_or_stubs();
+        let m = molt_lang_obj_model::MoltObject::from_bits(bits);
+        if !m.is_ptr() {
+            return None;
+        }
+        if unsafe { (h.classify_heap)(bits) } != crate::abi_types::MoltTypeTag::Bytes as u8 {
+            return None;
+        }
+        let mut len: usize = 0;
+        let p = unsafe { (h.bytes_data)(bits, &raw mut len) };
+        if p.is_null() {
+            return Some(Vec::new());
+        }
+        Some(unsafe { std::slice::from_raw_parts(p, len) }.to_vec())
+    };
+    if let (Some(a), Some(b)) = (bytes_bytes(vb), bytes_bytes(wb)) {
+        return ordering_to_result(a.cmp(&b), op);
+    }
+
     // Same handle bits: identity implies equality for EQ/NE.
     if vb == wb && (op == CMP_EQ || op == CMP_NE) {
         return Some(cmp_bool_result(op == CMP_EQ));
     }
     None
+}
+
+/// Return a new reference to `NotImplemented` — CPython's contract when a
+/// `tp_richcompare` slot does not handle the operand pair (the caller then tries
+/// the reflected slot / resolves EQ-NE by identity). Mirrors
+/// `api::sequences::richcompare_not_implemented`.
+#[inline]
+unsafe fn richcmp_not_implemented() -> *mut PyObject {
+    let ni = &raw mut crate::abi_types::Py_NotImplementedSentinel;
+    unsafe { crate::api::refcount::Py_INCREF(ni) };
+    ni
+}
+
+// ─── Builtin value-type `tp_richcompare` slots (CLASS1-SLOTS) ────────────────
+//
+// numpy 2.4.2 `DUAL_INHERIT`/`DUAL_INHERIT2` (`multiarraymodule.c:4827-4835`)
+// copies `tp_richcompare`/`tp_hash` straight off molt's builtin
+// `PyFloat_Type`/`PyComplex_Type`/`PyBytes_Type`/`PyUnicode_Type` (and the
+// `Long` scalar inherits `PyLong_Type`'s via the `tp_base` chain at
+// `PyType_Ready`). Those slots were NULL (zeroed-shell statics), leaving numpy's
+// Double/CDouble/String/Unicode scalar types non-comparable and unhashable and
+// breaking `_multiarray_umath` init. These slots close that as a batch, mirroring
+// the landed `molt_tuple_richcompare`: each guards the concrete builtin type and
+// routes value comparison through the single `native_value_richcompare`
+// authority (so `do_richcompare`'s fast path and the slot never drift), deferring
+// with `NotImplemented` for cross-type pairs exactly where CPython does.
+
+/// CPython `Objects/longobject.c` `long_richcompare` (:3312). `CHECK_BINOP`: if
+/// either operand is not a `PyLong` → `NotImplemented` (int-vs-float defers to
+/// float's reflected slot). Value order via the runtime int authority.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_long_richcompare(
+    v: *mut PyObject,
+    w: *mut PyObject,
+    op: c_int,
+) -> *mut PyObject {
+    if unsafe { crate::api::numbers::PyLong_Check(v) } == 0
+        || unsafe { crate::api::numbers::PyLong_Check(w) } == 0
+    {
+        return unsafe { richcmp_not_implemented() };
+    }
+    match unsafe { native_value_richcompare(v, w, op) } {
+        Some(res) => res,
+        None => unsafe { richcmp_not_implemented() },
+    }
+}
+
+/// CPython `Objects/floatobject.c` `float_richcompare` (:417). `float` compares
+/// with `float` and (exactly) with `int`; any other `w` → `NotImplemented`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_float_richcompare(
+    v: *mut PyObject,
+    w: *mut PyObject,
+    op: c_int,
+) -> *mut PyObject {
+    if unsafe { crate::api::numbers::PyFloat_Check(v) } == 0 {
+        return unsafe { richcmp_not_implemented() };
+    }
+    if unsafe { crate::api::numbers::PyFloat_Check(w) } == 0
+        && unsafe { crate::api::numbers::PyLong_Check(w) } == 0
+    {
+        return unsafe { richcmp_not_implemented() };
+    }
+    match unsafe { native_value_richcompare(v, w, op) } {
+        Some(res) => res,
+        None => unsafe { richcmp_not_implemented() },
+    }
+}
+
+/// CPython `Objects/unicodeobject.c` `PyUnicode_RichCompare` (:10952). Non-`str`
+/// operand → `NotImplemented`; else lexicographic by code point (UTF-8 byte
+/// order == code-point order).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_str_richcompare(
+    v: *mut PyObject,
+    w: *mut PyObject,
+    op: c_int,
+) -> *mut PyObject {
+    if unsafe { crate::api::strings::PyUnicode_Check(v) } == 0
+        || unsafe { crate::api::strings::PyUnicode_Check(w) } == 0
+    {
+        return unsafe { richcmp_not_implemented() };
+    }
+    match unsafe { native_value_richcompare(v, w, op) } {
+        Some(res) => res,
+        None => unsafe { richcmp_not_implemented() },
+    }
+}
+
+/// CPython `Objects/bytesobject.c` `bytes_richcompare` (:1544). Non-`bytes`
+/// operand → `NotImplemented`; else lexicographic over the raw unsigned bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_bytes_richcompare(
+    v: *mut PyObject,
+    w: *mut PyObject,
+    op: c_int,
+) -> *mut PyObject {
+    if unsafe { crate::api::strings::PyBytes_Check(v) } == 0
+        || unsafe { crate::api::strings::PyBytes_Check(w) } == 0
+    {
+        return unsafe { richcmp_not_implemented() };
+    }
+    match unsafe { native_value_richcompare(v, w, op) } {
+        Some(res) => res,
+        None => unsafe { richcmp_not_implemented() },
+    }
+}
+
+/// CPython `Objects/complexobject.c` `complex_richcompare` (:582). `complex`
+/// supports ONLY `==`/`!=` (ordering → `NotImplemented` → TypeError). Self-
+/// contained (molt complex is a C-layout `PyComplexObject`, not a bridge handle):
+/// vs `int` with zero imag defers to `float(real)`-vs-int; vs `float` equal iff
+/// `imag==0 && real==w`; vs `complex` both parts match exactly; else
+/// `NotImplemented`. Faithful to numpy's `CDouble` DUAL_INHERIT layout.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_complex_richcompare(
+    v: *mut PyObject,
+    w: *mut PyObject,
+    op: c_int,
+) -> *mut PyObject {
+    if op != CMP_EQ && op != CMP_NE {
+        return unsafe { richcmp_not_implemented() };
+    }
+    if unsafe { crate::api::numbers::PyComplex_Check(v) } == 0 {
+        return unsafe { richcmp_not_implemented() };
+    }
+    let i = unsafe { crate::api::numbers::PyComplex_AsCComplex(v) };
+    let equal: bool;
+    if unsafe { crate::api::numbers::PyLong_Check(w) } != 0 {
+        if i.imag == 0.0 {
+            // Defer to `float(real) <op> int` so the exact float/int comparison
+            // (and its NotImplemented rules) applies. Matches CPython.
+            let j = unsafe { crate::api::numbers::PyFloat_FromDouble(i.real) };
+            if j.is_null() {
+                return ptr::null_mut();
+            }
+            let sub = unsafe { PyObject_RichCompare(j, w, op) };
+            unsafe { crate::api::refcount::Py_DECREF(j) };
+            return sub;
+        }
+        equal = false;
+    } else if unsafe { crate::api::numbers::PyFloat_Check(w) } != 0 {
+        let wd = unsafe { crate::api::numbers::PyFloat_AsDouble(w) };
+        equal = i.real == wd && i.imag == 0.0;
+    } else if unsafe { crate::api::numbers::PyComplex_Check(w) } != 0 {
+        let j = unsafe { crate::api::numbers::PyComplex_AsCComplex(w) };
+        equal = i.real == j.real && i.imag == j.imag;
+    } else {
+        return unsafe { richcmp_not_implemented() };
+    }
+    cmp_bool_result(equal == (op == CMP_EQ))
+}
+
+// ─── Builtin value-type `tp_hash` slot (CLASS1-SLOTS) ────────────────────────
+
+/// Read `ob_fval` off a foreign object whose type is `float`-layout-compatible
+/// (CPython `PyFloatObject = {PyObject_HEAD; double}`; `np.float64` shares it —
+/// which is exactly why numpy DUAL_INHERITs `PyFloat_Type`'s slots onto its
+/// Double scalar). Unaligned: a statically C-minted object may be pointer- (4-byte
+/// on wasm32) aligned while the `double` wants 8 — same UB class the complex
+/// readers guard.
+#[inline]
+unsafe fn read_foreign_ob_fval(op: *mut PyObject) -> f64 {
+    let field = unsafe { (op as *const u8).add(std::mem::size_of::<PyObject>()) as *const f64 };
+    unsafe { std::ptr::read_unaligned(field) }
+}
+
+/// CPython `Objects/complexobject.c` `complex_hash` (:405):
+/// `hash(z) = hash(z.real) + _PyHASH_IMAG * hash(z.imag)` in wrapping unsigned
+/// arithmetic, `-1 → -2`. `_PyHASH_IMAG = 1000003` (`Include/pyhash.h`). Each part
+/// hashes through the runtime float-hash authority (`molt_hash_from_bits`), so
+/// when `imag == 0` the result is exactly `hash(float real)` — preserving the
+/// cross-type invariant `hash(x+0j) == hash(x)` within molt.
+#[inline]
+unsafe fn complex_hash_from_cval(op: *mut PyObject) -> isize {
+    let cval = unsafe { crate::api::numbers::PyComplex_AsCComplex(op) };
+    let part_hash = |d: f64| -> isize {
+        crate::bridge::molt_hash_from_bits(molt_lang_obj_model::MoltObject::from_float(d).bits())
+    };
+    const PY_HASH_IMAG: usize = 1000003;
+    let hr = part_hash(cval.real) as usize;
+    let hi = part_hash(cval.imag) as usize;
+    let combined = hr.wrapping_add(PY_HASH_IMAG.wrapping_mul(hi)) as isize;
+    if combined == -1 { -2 } else { combined }
+}
+
+/// Set the CPython `unhashable type: '<name>'` TypeError and return the `-1`
+/// error sentinel — the `PyObject_HashNotImplemented` contract. Used when a
+/// foreign object reaches a copied builtin hash slot but has no molt-native
+/// handle and no known-compatible C layout (never fabricate an identity hash).
+#[inline]
+unsafe fn hash_not_implemented(op: *mut PyObject) -> isize {
+    let name = unsafe { foreign_type_name(op) };
+    let msg = format!("unhashable type: '{}'", &name[..name.len().min(200)]);
+    if let Ok(cmsg) = std::ffi::CString::new(msg) {
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                &raw mut crate::abi_types::PyExc_TypeError,
+                cmsg.as_ptr(),
+            );
+        }
+    }
+    -1
+}
+
+/// Generic `tp_hash` slot for the builtin value types (int/bool/float/str/bytes/
+/// complex). numpy DUAL_INHERIT copies these off molt's statics; a NULL slot
+/// leaves numpy's scalars unhashable and breaks init. Routes a molt-native value
+/// through `bridge::molt_hash_from_bits` (the same authority `PyObject_Hash`
+/// uses — `hash(int)==int`, consistent, no drift); a foreign `complex`/`float`
+/// through its layout-compatible C struct; else honest `unhashable` TypeError.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_generic_hash(op: *mut PyObject) -> isize {
+    if op.is_null() {
+        return -1;
+    }
+    // Molt-native value. Decode-safe converter excludes a raw-registered foreign
+    // object's `0xA11C` identity anchor (Class-2 mis-decode), so it is NEVER
+    // hashed as a garbage float. Resolve then drop the bridge lock before hashing.
+    let native = crate::bridge::GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(op);
+    if let Some(bits) = native {
+        return crate::bridge::molt_hash_from_bits(bits);
+    }
+    // Foreign object carrying a copied builtin hash slot. complex and float have
+    // CPython-defined layouts numpy's CDouble/Double scalars share.
+    if unsafe { crate::api::numbers::PyComplex_Check(op) } != 0 {
+        return unsafe { complex_hash_from_cval(op) };
+    }
+    if unsafe { crate::api::numbers::PyFloat_Check(op) } != 0 {
+        let d = unsafe { read_foreign_ob_fval(op) };
+        return crate::bridge::molt_hash_from_bits(
+            molt_lang_obj_model::MoltObject::from_float(d).bits(),
+        );
+    }
+    unsafe { hash_not_implemented(op) }
 }
 
 /// Faithful port of CPython `Objects/object.c` `do_richcompare`: reflected
