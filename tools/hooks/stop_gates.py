@@ -28,16 +28,27 @@ import sys
 
 try:
     from tools.hooks import _common, landing_gate
+    from tools import triality_gate, magnitude_dismissal_gate
 except Exception:  # pragma: no cover - path-invocation fallback
     import os as _os
 
     sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(__file__))))
     from tools.hooks import _common, landing_gate
+    from tools import triality_gate, magnitude_dismissal_gate
 
 
-# Ordered Stop-leg gates. Wave 2 appends (triality_gate, magnitude_dismissal).
+# Ordered Stop-leg gates. Each is a ``(name, evaluate(data, root) -> str|None)``
+# pair; the FIRST to return a reason is emitted and the rest are skipped this
+# turn. A leg raising is caught per-leg below (independent fail-open), so one
+# leg's bug can never sink the others.
+#   * landing_gate (A2)              -- land-or-name-a-blocker (M12)
+#   * triality_gate (A3)             -- keep the DAG/DSL/equations legs in sync (M63)
+#   * magnitude_dismissal_gate (A6)  -- no absolute-magnitude dismissal / unscoped
+#                                       verdict (M46/M47, M11, M16)
 GATES = [
     ("landing_gate", landing_gate.evaluate),
+    ("triality_gate", triality_gate.evaluate),
+    ("magnitude_dismissal_gate", magnitude_dismissal_gate.evaluate),
 ]
 
 
