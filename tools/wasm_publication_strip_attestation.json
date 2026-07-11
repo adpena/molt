@@ -98,5 +98,21 @@
     "app_export_bytes": 416470,
     "app_element_bytes": 52230,
     "scope_note": "Publication stripping stops here; code/data reachability and contributor attribution belong to task #22."
+  },
+  "proof": {
+    "focused_pytest": "123 passed: tests/test_artifact_poison_gate.py + tests/test_wasm_link_validation.py",
+    "runtime_publication_pytest": "3 passed: publication sidecar and runtime integrity selections",
+    "static_gates": [
+      "fail_closed_gate: pass",
+      "check_table_drift --check: pass",
+      "gen_wasm_abi --check: pass",
+      "verify_numpy_seal: pass",
+      "determinism_perf_gate: pass"
+    ],
+    "witness_attempts": [
+      "20260711T171157-pact-witness-acceptance-a9a8ee45699a4e66",
+      "20260711T172628-pact-witness-acceptance-ef3778cc8b674e26"
+    ],
+    "witness_blocker": "Both attempts stopped before wasm link/publication at reserved runtime/molt-cpython-abi/src/api/typeobj.rs E0133; CLAIMS records the same origin/main blocker for STARTUP-BASELINE and E1-SPLIT-EXPORT-CONTRACT."
   }
 }
