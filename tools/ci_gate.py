@@ -720,6 +720,32 @@ def _build_checks() -> list[Check]:
     )
     checks.append(
         Check(
+            # APPARATUS disk guard (the C:-hits-0-bytes fix): prove the
+            # deterministic reclaim reclaims stale dirs + STOPS at the target,
+            # NEVER reclaims an active/lock-held/current-session dir, is idempotent
+            # + fail-open, and -- critically -- is AGENT-SAFE (source scan finds
+            # ZERO process-actuation tokens; the guard reclaims disk only, it can
+            # never kill a process). A gate that only passes clean certifies nothing.
+            name="disk-guard-teeth",
+            tier=1,
+            cmd=_uv_pytest(str(TESTS / "tools" / "test_disk_guard.py"), "-q"),
+            timeout=90,
+            needs_pytest=True,
+        )
+    )
+    checks.append(
+        Check(
+            # Fail closed if the disk-guard's pure decision surface can no longer
+            # FIRE on a below-high-water/stale-dir input or STAND DOWN on an
+            # active/lock-held/above-threshold input (M34/M42).
+            name="disk-guard-self-test",
+            tier=1,
+            cmd=_uv_run(str(TOOLS / "disk_guard.py"), "--check"),
+            timeout=30,
+        )
+    )
+    checks.append(
+        Check(
             # APPARATUS A10: the memory-graph engine's pure teeth -- typed graph
             # parses a fixture; neighbors/supersedes/what-consumes/nearest return
             # the right nodes; a dangling [[link]] is REPORTED not crashed on; the

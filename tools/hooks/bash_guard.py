@@ -53,6 +53,31 @@ except Exception:  # pragma: no cover - path-invocation fallback
     from tools.hooks.waivers import record_waiver
 
 
+def _ensure_disk_headroom_for_build() -> None:
+    """Preemptive, AGENT-SAFE reclaim before a heavy build. Never raises/blocks.
+
+    Fires the decoupled disk guard (tools/disk_guard.py) so a build never starts
+    on a near-full disk -- the fix for the C:-hits-0-bytes class. The guard
+    reclaims ONLY stale build-artifact dirs and NEVER touches a process; it is a
+    fast no-op when free space is already above the high-water mark, so calling
+    it before every build is cheap. Fail-open: any error is swallowed (logged by
+    the guard) and the build proceeds.
+    """
+    if any(
+        os.environ.get(k)
+        for k in ("PYTEST_CURRENT_TEST", "PYTEST_VERSION")
+    ):
+        return  # never reclaim real artifacts during a test run
+    try:
+        from tools import disk_guard
+    except Exception:
+        return
+    try:
+        disk_guard.ensure_free_fail_open()
+    except Exception:
+        pass
+
+
 OVERRIDE_TOKEN = "MOLT_GUARD_OK"
 
 
@@ -380,7 +405,12 @@ def run() -> int:
     if _maybe_destructive_git(command):
         # Shared checkout = the MAIN worktree (not a linked worktree / plumbing).
         in_shared = not _common.is_linked_worktree(root)
-    queue_live = _queue_live(root) if _maybe_heavy_build(command) else False
+    heavy_build = _maybe_heavy_build(command)
+    if heavy_build:
+        # Preemptive, agent-safe disk reclamation BEFORE the build starts, so a
+        # near-full C: can never fail the build mid-compile (fail-open).
+        _ensure_disk_headroom_for_build()
+    queue_live = _queue_live(root) if heavy_build else False
     origin_https = _common.origin_is_https(root) if "push" in command else False
 
     decision = decide(

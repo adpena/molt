@@ -29,6 +29,9 @@ from tools.hooks import bash_guard, landing_gate  # noqa: E402
 from tools.hooks import waivers  # noqa: E402
 from tools import triality_gate, magnitude_dismissal_gate  # noqa: E402
 from tools import claims_status, check_sister_landed, commit_serializer  # noqa: E402
+from tools import disk_guard  # noqa: E402
+
+_GB = 1024 ** 3
 
 # Fixed clock + timestamp helper for the A11 claims-status canaries (the pure
 # classifier takes an explicit ``now`` so the liveness check is deterministic).
@@ -327,6 +330,75 @@ def _canaries() -> list[Canary]:
             "named-pathspec-allowed",
             # known-GOOD counter-fixture: a clean named file must NOT be refused.
             lambda: commit_serializer.validate_pathspec(["runtime/src/x.rs"]) is None,
+        ),
+        # --- APPARATUS disk guard: deterministic preemptive reclaim ---------
+        Canary(
+            "disk_guard",
+            "below-high-water-reclaims-stale",
+            lambda: (
+                disk_guard.plan_reclaim(
+                    [
+                        disk_guard.Candidate(
+                            Path("/x/target/sessions/old"),
+                            "sessions",
+                            mtime=0.0,
+                            size=5 * _GB,
+                        )
+                    ],
+                    free_bytes=10 * _GB,
+                    high_water_bytes=25 * _GB,
+                    target_bytes=40 * _GB,
+                    now=1_000_000.0,
+                    min_idle_s=900.0,
+                ).triggered
+            ),
+        ),
+        Canary(
+            "disk_guard",
+            "above-high-water-stands-down",
+            # known-GOOD counter-fixture: above the threshold, NOTHING is selected.
+            lambda: not disk_guard.plan_reclaim(
+                [
+                    disk_guard.Candidate(
+                        Path("/x/target/sessions/old"),
+                        "sessions",
+                        mtime=0.0,
+                        size=5 * _GB,
+                    )
+                ],
+                free_bytes=30 * _GB,
+                high_water_bytes=25 * _GB,
+                target_bytes=40 * _GB,
+                now=1_000_000.0,
+                min_idle_s=900.0,
+            ).selected,
+        ),
+        Canary(
+            "disk_guard",
+            "active-dir-never-reclaimed",
+            lambda: (
+                disk_guard.Candidate(
+                    Path("/x/target/codex-live"),
+                    "lane",
+                    mtime=999_999.0,  # touched ~1s before now -> ACTIVE
+                    size=9 * _GB,
+                )
+                not in disk_guard.plan_reclaim(
+                    [
+                        disk_guard.Candidate(
+                            Path("/x/target/codex-live"),
+                            "lane",
+                            mtime=999_999.0,
+                            size=9 * _GB,
+                        )
+                    ],
+                    free_bytes=1 * _GB,
+                    high_water_bytes=25 * _GB,
+                    target_bytes=40 * _GB,
+                    now=1_000_000.0,
+                    min_idle_s=900.0,
+                ).selected
+            ),
         ),
     ]
 
