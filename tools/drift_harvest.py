@@ -37,12 +37,18 @@ from __future__ import annotations
 import argparse
 import os
 import subprocess
+import sys
 import time
 from pathlib import Path
 
-from tools import lane_maturity
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# The pre-push hook invokes this script without the repo root on sys.path;
+# bootstrap it so `from tools import ...` resolves in every invocation context.
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from tools import lane_maturity  # noqa: E402
 
 # Worktrees that must never be pruned regardless of freshness.
 _PROTECTED_SUBSTRINGS = ("OneDrive", "recover-mainclean-20260707", "molt-cli")
