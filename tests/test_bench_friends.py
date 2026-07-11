@@ -10,6 +10,8 @@ import textwrap
 import types
 from pathlib import Path
 
+from molt.scientific_stack_versions import resolve_scientific_stack
+
 import pytest
 
 from tests.native_process_guard import run_native_test_process
@@ -1729,6 +1731,7 @@ def test_friend_manifest_does_not_register_upat_compile_diagnostic_lane() -> Non
 
 def test_friend_manifest_registers_numpy_off_the_shelf_suite() -> None:
     module = _load_tool_module()
+    stack = resolve_scientific_stack()
     _meta, suites = module._load_manifest(REPO_ROOT / "bench/friends/manifest.toml")
     suite = next(s for s in suites if s.id == "numpy_off_the_shelf")
 
@@ -1736,7 +1739,7 @@ def test_friend_manifest_registers_numpy_off_the_shelf_suite() -> None:
     assert suite.friend == "numpy"
     assert suite.source == "git"
     assert suite.repo_url == "https://github.com/numpy/numpy.git"
-    assert suite.repo_ref == "c81c49f77451340651a751e76bca607d85e4fd55"
+    assert suite.repo_ref == stack.numpy_repo_ref
     assert suite.semantic_mode == "c_api_probe"
     assert {"ecosystem", "numpy", "c-api", "scientific-python", "compile-time"} <= set(
         suite.tags
@@ -1756,13 +1759,13 @@ def test_friend_manifest_registers_numpy_off_the_shelf_suite() -> None:
         "--python",
         "{python}",
         "--with",
-        "numpy==2.4.2",
+        stack.numpy_requirement,
     ]
     assert any(
         part.endswith("tools/numpy_off_shelf_adapter.py") for part in cpython.run_cmd
     )
     assert "--require-version" in cpython.run_cmd
-    assert "2.4.2" in cpython.run_cmd
+    assert stack.numpy in cpython.run_cmd
     assert molt.skip_reason is None
     assert molt.role == "workload"
     assert molt.json_stdout is True

@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 import tools.proof_queue as proof_queue
+from molt.scientific_stack_versions import resolve_scientific_stack
 
 _TEST_GIT_SNAPSHOT = {
     "available": True,
@@ -8677,11 +8678,12 @@ def test_proof_queue_pact_witness_acceptance_is_queue_native() -> None:
         "--python",
         "3.12",
     ]
+    stack = resolve_scientific_stack()
     assert command[7:11] == [
         "--with",
-        "numpy==2.5.1",
+        stack.numpy_requirement,
         "--with",
-        "scipy==1.18.0",
+        stack.scipy_requirement,
     ]
     python_index = command.index("python")
     assert command[python_index : python_index + 2] == [
@@ -9071,8 +9073,9 @@ def test_proof_queue_pact_witness_oracle_regenerates_parity_fixture() -> None:
         "3.12",
     ]
     assert "--with" in command
-    assert "numpy==2.5.1" in command
-    assert "scipy==1.18.0" in command
+    stack = resolve_scientific_stack()
+    assert stack.numpy_requirement in command
+    assert stack.scipy_requirement in command
     assert command[-2:] == ["python", "tools/pact_witness_oracle.py"]
     assert "collab/pact/pact_witness_kernel/make_fixture.py" in spec["scopes"]
     assert proof_queue._proof_command_policy_error(command) is None
