@@ -237,6 +237,41 @@ fn ws_ref_dec(_py: &PyToken<'_>, ws_ptr: *mut MoltWebSocket) {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HostSendOutcome {
+    Sent,
+    Pending,
+    Error(i32),
+}
+
+fn classify_host_send_result(rc: i32) -> HostSendOutcome {
+    if rc == 0 {
+        HostSendOutcome::Sent
+    } else if rc == -libc::EWOULDBLOCK || rc == -libc::EAGAIN {
+        HostSendOutcome::Pending
+    } else {
+        HostSendOutcome::Error(rc)
+    }
+}
+
+#[cfg(test)]
+mod host_send_result_tests {
+    use super::{HostSendOutcome, classify_host_send_result};
+
+    #[test]
+    fn websocket_host_send_errors_never_masquerade_as_closed() {
+        assert_eq!(classify_host_send_result(0), HostSendOutcome::Sent);
+        assert_eq!(
+            classify_host_send_result(-libc::EWOULDBLOCK),
+            HostSendOutcome::Pending
+        );
+        assert_eq!(
+            classify_host_send_result(-libc::ECONNRESET),
+            HostSendOutcome::Error(-libc::ECONNRESET)
+        );
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 extern "C" fn ws_send_host_hook(ctx: *mut u8, data_ptr: *const u8, len: usize) -> i64 {
     if ctx.is_null() {
@@ -244,13 +279,17 @@ extern "C" fn ws_send_host_hook(ctx: *mut u8, data_ptr: *const u8, len: usize) -
     }
     let handle = unsafe { *(ctx as *mut i64) };
     let rc = unsafe { crate::molt_ws_send_host(handle, data_ptr, len as u64) };
-    if rc == 0 {
-        0
-    } else if rc == -libc::EWOULDBLOCK || rc == -libc::EAGAIN {
-        pending_bits_i64()
-    } else {
-        // Treat send errors as a closed socket for now.
-        MoltObject::none().bits() as i64
+    match classify_host_send_result(rc) {
+        HostSendOutcome::Sent => 0,
+        HostSendOutcome::Pending => pending_bits_i64(),
+        HostSendOutcome::Error(errno) => {
+            let guard = crate::GilGuard::new();
+            raise_exception::<i64>(
+                &guard.token(),
+                "OSError",
+                &format!("websocket host send failed with errno {}", -errno),
+            )
+        }
     }
 }
 

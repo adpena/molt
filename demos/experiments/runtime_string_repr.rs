@@ -1,4 +1,8 @@
-//! Multi-representation string types for Project TITAN Phase 0.
+//! Non-shipping multi-representation string experiment from Project TITAN Phase 0.
+//!
+//! This file is intentionally outside `runtime/` and is not compiled or packaged.
+//! The live string authority remains the runtime's flat UTF-8 representation until
+//! a future structural migration replaces it end-to-end.
 //!
 //! # Overview
 //!

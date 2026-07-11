@@ -934,6 +934,37 @@ def _validate_reserved_runtime_callables(data: dict) -> list[dict]:
     return reserved_callables
 
 
+def _validate_witness_frontier_reserved_callables(
+    data: dict, reserved_callables: list[dict]
+) -> None:
+    frontier = data.get("witness_frontier")
+    if not isinstance(frontier, dict):
+        raise WasmAbiManifestError("manifest must define [witness_frontier]")
+    required = _validate_string_list(
+        "witness_frontier",
+        "reserved_runtime_callables",
+        frontier.get("reserved_runtime_callables"),
+    )
+    required_set = set(required)
+    if len(required_set) != len(required):
+        raise WasmAbiManifestError(
+            "witness_frontier.reserved_runtime_callables contains duplicates"
+        )
+    reserved_names = {entry["runtime_name"] for entry in reserved_callables}
+    reserved_names.update(
+        entry["runtime_name"]
+        for entry in data.get("import", [])
+        if entry.get("shared_runtime_callable") is True
+        and isinstance(entry.get("runtime_name"), str)
+    )
+    missing = sorted(required_set - reserved_names)
+    if missing:
+        raise WasmAbiManifestError(
+            "witness-frontier runtime callables are not reserved: "
+            + ", ".join(missing)
+        )
+
+
 def _non_reserved_import_name_references(
     data: dict, reserved_import_names: set[str]
 ) -> set[str]:
@@ -1345,6 +1376,7 @@ def validate_loaded_manifest(
     if not isinstance(imports, list) or not imports:
         raise WasmAbiManifestError("manifest must define at least one [[import]]")
     reserved_callables = _validate_reserved_runtime_callables(data)
+    _validate_witness_frontier_reserved_callables(data, reserved_callables)
     reserved_import_names = {entry["import_name"] for entry in reserved_callables}
     non_reserved_import_refs = _non_reserved_import_name_references(
         data, reserved_import_names

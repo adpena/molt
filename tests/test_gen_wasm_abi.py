@@ -785,7 +785,6 @@ def test_wasm_abi_reserved_runtime_callable_import_names_are_fail_closed() -> No
         manifest.WasmAbiManifestError, match="duplicated in \\[\\[import\\]\\]"
     ):
         manifest.validate_loaded_manifest(broken)
-
     broken = copy.deepcopy(data)
     for entry in broken["import"]:
         if entry["name"] == "object_new_bound":
@@ -821,6 +820,26 @@ def test_wasm_abi_reserved_runtime_callable_import_names_are_fail_closed() -> No
     with pytest.raises(
         manifest.WasmAbiManifestError,
         match="reserved runtime callable 'molt_type_call'",
+    ):
+        manifest.validate_loaded_manifest(broken)
+
+
+def test_witness_frontier_runtime_callables_must_be_reserved() -> None:
+    gen = _load_gen_wasm_abi()
+    data = gen.load_manifest()
+
+    broken = copy.deepcopy(data)
+    broken["reserved_runtime_callable"] = [
+        entry
+        for entry in broken["reserved_runtime_callable"]
+        if entry["runtime_name"] != "molt_type_new"
+    ]
+    for index, entry in enumerate(broken["reserved_runtime_callable"]):
+        entry["index"] = index
+
+    with pytest.raises(
+        manifest.WasmAbiManifestError,
+        match="witness-frontier runtime callables are not reserved: molt_type_new",
     ):
         manifest.validate_loaded_manifest(broken)
 

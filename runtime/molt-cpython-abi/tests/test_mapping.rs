@@ -144,6 +144,11 @@ fn test_dict_setitem_null_dict_returns_error() {
     let result =
         unsafe { molt_cpython_abi::api::mapping::PyDict_SetItem(ptr::null_mut(), key, val) };
     assert_eq!(result, -1);
+    assert!(
+        !unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null(),
+        "PyDict_SetItem(NULL, ...) must set an exception with its -1 sentinel"
+    );
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     unsafe {
         molt_cpython_abi::api::refcount::Py_DECREF(key);
         molt_cpython_abi::api::refcount::Py_DECREF(val);
@@ -158,6 +163,11 @@ fn test_dict_setitem_null_key_returns_error() {
     let result =
         unsafe { molt_cpython_abi::api::mapping::PyDict_SetItem(dict, ptr::null_mut(), val) };
     assert_eq!(result, -1);
+    assert!(
+        !unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null(),
+        "PyDict_SetItem(..., NULL, ...) must set an exception"
+    );
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     unsafe {
         molt_cpython_abi::api::refcount::Py_DECREF(val);
         molt_cpython_abi::api::refcount::Py_DECREF(dict);
@@ -172,6 +182,11 @@ fn test_dict_setitem_null_value_returns_error() {
     let result =
         unsafe { molt_cpython_abi::api::mapping::PyDict_SetItem(dict, key, ptr::null_mut()) };
     assert_eq!(result, -1);
+    assert!(
+        !unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null(),
+        "PyDict_SetItem(..., NULL) must set an exception"
+    );
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     unsafe {
         molt_cpython_abi::api::refcount::Py_DECREF(key);
         molt_cpython_abi::api::refcount::Py_DECREF(dict);
@@ -189,6 +204,11 @@ fn test_dict_setitem_all_null_returns_error() {
         )
     };
     assert_eq!(result, -1);
+    assert!(
+        !unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null(),
+        "PyDict_SetItem(NULL, NULL, NULL) must set an exception"
+    );
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 }
 
 // ---------------------------------------------------------------------------

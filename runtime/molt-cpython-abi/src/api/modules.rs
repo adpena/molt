@@ -267,6 +267,14 @@ pub unsafe extern "C" fn PyModule_GetDict(module: *mut PyObject) -> *mut PyObjec
     let dict_bits = unsafe { (h.module_get_dict)(module_bits) };
     if dict_bits == 0 {
         crate::capi_trace::record_silent_failure("PyModule_GetDict", None);
+        if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+            unsafe {
+                crate::api::errors::PyErr_SetString(
+                    &raw mut crate::abi_types::PyExc_SystemError,
+                    c"PyModule_GetDict: runtime module dict hook returned no dict".as_ptr(),
+                );
+            }
+        }
         return ptr::null_mut();
     }
     unsafe { GLOBAL_BRIDGE.handle_to_pyobj(dict_bits) }
@@ -511,6 +519,7 @@ unsafe fn module_from_def_and_slots(
                     }
                     type ExecFn = unsafe extern "C" fn(module: *mut PyObject) -> c_int;
                     let exec: ExecFn = std::mem::transmute(slot.value);
+                    crate::capi_trace::clear_last_silent_failure();
                     crate::capi_trace::trace_call("Py_mod_exec:enter", None);
                     let exec_rc = exec(module);
                     crate::capi_trace::trace_call(
@@ -586,6 +595,7 @@ pub unsafe extern "C" fn PyModule_ExecDef(module: *mut PyObject, def: *mut PyMod
                     }
                     type ExecFn = unsafe extern "C" fn(module: *mut PyObject) -> c_int;
                     let exec: ExecFn = std::mem::transmute(slot.value);
+                    crate::capi_trace::clear_last_silent_failure();
                     if exec(module) != 0 {
                         set_module_system_error_if_clear(
                             "Py_mod_exec slot returned non-zero without setting an exception",

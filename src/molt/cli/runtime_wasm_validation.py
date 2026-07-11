@@ -97,7 +97,10 @@ def _write_runtime_wasm_integrity_sidecar(path: Path, *, integrity_key: str) -> 
 def _validate_wasm_structural(path: Path) -> str | None:
     exe = shutil.which("wasm-tools")
     if exe is None:
-        return None
+        return (
+            "wasm-tools is required for deep structural validation; "
+            "artifact reuse is disabled until the validator is provisioned"
+        )
     try:
         result = _run_completed_command(
             [exe, "validate", str(path)],
