@@ -31,7 +31,9 @@ use crate::object::layout::{
     function_set_call_target_ptr, function_set_dict_bits, function_set_trampoline_ptr,
     module_dict_bits, seq_vec, seq_vec_ref,
 };
-use crate::object::ops::{dict_del_in_place, dict_get_str_bytes_borrowed, dict_set_in_place};
+use crate::object::ops::{
+    dict_del_in_place, dict_get_in_place, dict_get_str_bytes_borrowed, dict_set_in_place,
+};
 use crate::object::type_ids::{
     TYPE_ID_BIGINT, TYPE_ID_BYTES, TYPE_ID_DICT, TYPE_ID_LIST, TYPE_ID_MODULE, TYPE_ID_SET,
     TYPE_ID_STRING, TYPE_ID_TUPLE,
@@ -321,45 +323,29 @@ unsafe extern "C" fn hook_alloc_dict() -> u64 {
 }
 
 unsafe extern "C" fn hook_dict_set(dict_bits: u64, key_bits: u64, val_bits: u64) {
-    let obj = MoltObject::from_bits(dict_bits);
-    let ptr = match obj.as_ptr() {
-        Some(p) => p,
-        None => return,
-    };
-    if unsafe { object_type_id(ptr) } != TYPE_ID_DICT {
-        return;
-    }
-    let order = unsafe { dict_order(ptr) };
-    let mut found = false;
-    for chunk in order.chunks_mut(2) {
-        if chunk[0] == key_bits {
-            chunk[1] = val_bits;
-            found = true;
-            break;
+    with_gil(|_py| {
+        let obj = MoltObject::from_bits(dict_bits);
+        let Some(ptr) = obj.as_ptr() else {
+            return;
+        };
+        if unsafe { object_type_id(ptr) } != TYPE_ID_DICT {
+            return;
         }
-    }
-    if !found {
-        order.push(key_bits);
-        order.push(val_bits);
-    }
+        unsafe { dict_set_in_place(&_py, ptr, key_bits, val_bits) };
+    });
 }
 
 unsafe extern "C" fn hook_dict_get(dict_bits: u64, key_bits: u64) -> u64 {
-    let obj = MoltObject::from_bits(dict_bits);
-    let ptr = match obj.as_ptr() {
-        Some(p) => p,
-        None => return 0,
-    };
-    if unsafe { object_type_id(ptr) } != TYPE_ID_DICT {
-        return 0;
-    }
-    let order = unsafe { dict_order(ptr) };
-    for chunk in order.chunks(2) {
-        if chunk[0] == key_bits {
-            return chunk[1];
+    with_gil(|_py| {
+        let obj = MoltObject::from_bits(dict_bits);
+        let Some(ptr) = obj.as_ptr() else {
+            return 0;
+        };
+        if unsafe { object_type_id(ptr) } != TYPE_ID_DICT {
+            return 0;
         }
-    }
-    0
+        unsafe { dict_get_in_place(&_py, ptr, key_bits).unwrap_or(0) }
+    })
 }
 
 unsafe extern "C" fn hook_dict_del(dict_bits: u64, key_bits: u64) -> i32 {
@@ -2245,6 +2231,40 @@ mod tests {
             dec_ref_bits(&_py, exc_bits);
             message
         })
+    }
+
+    #[test]
+    fn dict_hook_set_preserves_order_hash_table_invariant_at_index_78() {
+        let _guard = cpython_abi_test_guard();
+        let dict_bits = unsafe { hook_alloc_dict() };
+        assert_ne!(dict_bits, 0);
+        let dict_ptr = MoltObject::from_bits(dict_bits).as_ptr().unwrap();
+
+        with_gil(|_py| unsafe {
+            for index in 0..78 {
+                let key_bits = MoltObject::from_int(index).bits();
+                let value_bits = MoltObject::from_int(index * 10).bits();
+                dict_set_in_place(&_py, dict_ptr, key_bits, value_bits);
+            }
+        });
+
+        let key_bits = MoltObject::from_int(78).bits();
+        let value_bits = MoltObject::from_int(780).bits();
+        unsafe { hook_dict_set(dict_bits, key_bits, value_bits) };
+
+        with_gil(|_py| unsafe {
+            let order = crate::builtins::containers::dict_order(dict_ptr);
+            let hashes = crate::builtins::containers::dict_hashes(dict_ptr);
+            let table = crate::builtins::containers::dict_table(dict_ptr);
+            assert_eq!(order.len() / 2, 79);
+            assert_eq!(hashes.len(), 79);
+            let capacity = crate::object::ops::dict_table_capacity(79);
+            crate::object::ops::dict_rebuild(&_py, order, hashes, table, capacity);
+            assert_eq!(
+                dict_get_in_place(&_py, dict_ptr, key_bits),
+                Some(value_bits)
+            );
+        });
     }
 
     struct ModuleCacheRestore {
