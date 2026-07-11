@@ -17,10 +17,12 @@ use super::target_info::TargetInfo;
 
 pub const TIR_OPTIMIZATION_BATCH_FUNCTION_LIMIT: usize = 128;
 pub const TIR_OPTIMIZATION_BATCH_OP_BUDGET: usize = 8_000;
-pub const TIR_OPTIMIZATION_BASELINE_MEMORY_BYTES: usize = 4 * 1024 * 1024 * 1024;
-pub const TIR_OPTIMIZATION_WORKER_MEMORY_BYTES: usize = 8 * 1024 * 1024 * 1024;
+pub const TIR_OPTIMIZATION_BASELINE_MEMORY_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+pub const TIR_OPTIMIZATION_WORKER_MEMORY_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 pub const TIR_OPTIMIZATION_WAVE_FUNCTIONS_PER_THREAD: usize = 1;
 pub const TIR_OPTIMIZATION_WAVE_OPS_PER_THREAD: usize = 1_000;
+
+const GIB_BYTES: u64 = 1024 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum TirPipelineCacheFlavor {
@@ -313,15 +315,15 @@ pub fn parse_positive_usize_env(name: &str) -> Option<usize> {
         .filter(|value| *value > 0)
 }
 
-pub fn parse_nonnegative_gb_env(name: &str) -> Option<usize> {
+pub fn parse_nonnegative_gb_env(name: &str) -> Option<u64> {
     let gb = std::env::var(name)
         .ok()
         .and_then(|raw| raw.trim().parse::<f64>().ok())
         .filter(|value| value.is_finite() && *value >= 0.0)?;
-    Some((gb * 1024.0 * 1024.0 * 1024.0) as usize)
+    Some((gb * GIB_BYTES as f64).min(u64::MAX as f64) as u64)
 }
 
-pub fn env_memory_limit_bytes() -> Option<usize> {
+pub fn env_memory_limit_bytes() -> Option<u64> {
     let available = [
         "MOLT_BACKEND_MEMORY_AVAILABLE_GB",
         "MOLT_CLI_MEMORY_AVAILABLE_GB",
@@ -346,7 +348,7 @@ pub fn env_memory_limit_bytes() -> Option<usize> {
 }
 
 #[cfg(unix)]
-pub fn rlimit_address_space_bytes() -> Option<usize> {
+pub fn rlimit_address_space_bytes() -> Option<u64> {
     unsafe {
         let mut limit = libc::rlimit {
             rlim_cur: 0,
@@ -359,16 +361,16 @@ pub fn rlimit_address_space_bytes() -> Option<usize> {
         if raw == libc::RLIM_INFINITY || raw == 0 {
             return None;
         }
-        Some(raw.min(usize::MAX as libc::rlim_t) as usize)
+        Some(raw.min(u64::MAX as libc::rlim_t) as u64)
     }
 }
 
 #[cfg(not(unix))]
-pub fn rlimit_address_space_bytes() -> Option<usize> {
+pub fn rlimit_address_space_bytes() -> Option<u64> {
     None
 }
 
-pub fn backend_memory_limit_bytes() -> Option<usize> {
+pub fn backend_memory_limit_bytes() -> Option<u64> {
     match (env_memory_limit_bytes(), rlimit_address_space_bytes()) {
         (Some(env_limit), Some(rlimit)) => Some(env_limit.min(rlimit)),
         (Some(env_limit), None) => Some(env_limit),
@@ -386,7 +388,7 @@ pub fn tir_optimization_cpu_thread_limit() -> usize {
 
 pub fn tir_optimization_resource_plan_from_limits(
     cpu_threads: usize,
-    memory_limit_bytes: Option<usize>,
+    memory_limit_bytes: Option<u64>,
 ) -> TirOptimizationResourcePlan {
     let cpu_threads = cpu_threads.max(1);
     let memory_threads = memory_limit_bytes
@@ -394,9 +396,10 @@ pub fn tir_optimization_resource_plan_from_limits(
             if limit <= TIR_OPTIMIZATION_BASELINE_MEMORY_BYTES {
                 1
             } else {
-                ((limit - TIR_OPTIMIZATION_BASELINE_MEMORY_BYTES)
+                let worker_threads = ((limit - TIR_OPTIMIZATION_BASELINE_MEMORY_BYTES)
                     / TIR_OPTIMIZATION_WORKER_MEMORY_BYTES)
-                    .max(1)
+                    .max(1);
+                usize::try_from(worker_threads).unwrap_or(usize::MAX)
             }
         })
         .unwrap_or(cpu_threads);
