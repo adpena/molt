@@ -218,6 +218,36 @@ def test_execution_red_registry_rejects_expired_entries(sandbox, guard):
     assert guard.cmd_lint_only() == 1
 
 
+def test_execution_red_registry_ignores_inactive_platform_entries(sandbox, guard):
+    sandbox.make_baseline()
+    manifest = sandbox.load(sandbox.MANIFEST_PATH)
+    manifest["execution_reds"] = [
+        {
+            "identity": "molt-runtime::windows_only_red",
+            "owner": "substrate-health",
+            "predicate": {"platform": "windows", "target": "default"},
+            "expiry": "2099-01-01",
+            "evidence": "synthetic platform predicate",
+            "introduced_sha": "abcdef0",
+        }
+    ]
+    sandbox.save(sandbox.MANIFEST_PATH, manifest)
+    observed = sandbox.MANIFEST_PATH.parent / "execution.json"
+    sandbox.save(
+        observed,
+        {
+            "results": [
+                {
+                    "identity": "molt-runtime::linux_green",
+                    "status": "pass",
+                    "context": {"platform": "linux", "target": "default"},
+                }
+            ]
+        },
+    )
+    assert guard.cmd_check(sandbox.RESULTS_PATH, False, observed) == 0
+
+
 def test_sandbox_default_is_green(sandbox, guard):
     sandbox.make_baseline()
     assert guard.cmd_check(sandbox.RESULTS_PATH, False) == 0
