@@ -46,7 +46,10 @@ pub(super) fn emit_task_trampoline(
         has_closure,
     );
     layout.emit_completion_result(func, &backend.import_ids, reloc_enabled, TASK_LOCAL);
-    func.instruction(&Instruction::End);
+    // NOTE: no `Instruction::End` here — the shared tail in trampoline_emit.rs
+    // is the single function-body `End` authority for every TrampolineBehavior.
+    // A second End here made task trampoline bodies malformed ("operators
+    // remaining after end of function body", witness run 20260711T133429).
 }
 
 fn emit_payload_slots(
