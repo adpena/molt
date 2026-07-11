@@ -660,4 +660,8 @@ steps below are the contract it implements.
 =======
 | OPT-MATRIX-R1 | Codex/opt-matrix-loop | 2026-07-11T19:00:00Z | CLAIMED | Target-matrix iteration 1: profile and remove duplicate full-byte Node WASM import/export-signature startup scans without touching the reserved wasmld-toolchain lane. |
 | OPT-MATRIX-R1 | Codex/opt-matrix-loop | 2026-07-12T00:40:00Z | COMPLETE | Unified Node WASM import + export-signature parsing behind one `parseWasmMetadata` authority and deleted the duplicate full-module startup walk. A12 release final-form artifact, 7 serial fresh-process samples: 36.3275 ms -> 22.6561 ms median (1.6034x), identical 90 function imports + 4,409 function export signatures, max RSS 77,664,256 B. Focused pytest 37 PASS; link validation 116 PASS; fail_closed, table_drift, gen_wasm_abi --check, determinism_perf_gate, NumPy 2.5.1 seal, final-form artifact_poison, and strict powerplay acceptance PASS. No wasmld-toolchain files touched. |
+<<<<<<< HEAD
 >>>>>>> 3d727fa3fe (perf(wasm): unify startup metadata scan)
+=======
+| OPT-MATRIX-R2 | Codex/opt-matrix-loop | 2026-07-12T01:20:00Z | COMPLETE | Exact release runtime-WASM shared-cache hydration now validates the cache source once, then trusts the byte-for-byte atomic copy instead of rescanning the identical destination. Seven serial alternating samples on a real 45,871,431 B release runtime: 1,111.2847 ms -> 554.2158 ms median (2.0051x), byte identity, corrupt-source and copy-failure rejection, max RSS 144,908,288 B. Evidence: `tools/opt_matrix_r2_runtime_wasm_hydrate_attestation.json`. |
+>>>>>>> c0d3f90c35 (perf(wasm): halve exact runtime cache hydrate validation)
