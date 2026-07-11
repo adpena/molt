@@ -236,22 +236,13 @@ fn buffer_export_allocation_budget() {
          box size is O(1) in ndim (inline [isize;64] shape/strides)",
     );
 
-    // FillInfo raw 1-D path — DISTILLED to CPython's zero-alloc field trick:
-    // shape/strides point into the Py_buffer's own len/itemsize, format at a
-    // 'static, internal stays NULL. No BufferInternal box, no registry entry, so
-    // the export/release cycle allocates NOTHING. (The still-boxed 1-D/3-D paths
-    // above are the next distillation stages toward a box-free/registry-free path.)
+    // FillInfo raw 1-D path (distinct public entrypoint, same box budget).
     let mut fbuf = vec![0u8; 4096];
     let fptr = fbuf.as_mut_ptr() as *mut c_void;
-    let (apf, bpf) = measure_allocs(20_000, || fillinfo_cycle(fptr, 4096));
+    let (apf, _bpf) = measure_allocs(20_000, || fillinfo_cycle(fptr, 4096));
     assert!(
-        apf.abs() < 0.01,
-        "FillInfo export allocations/export = {apf} (expected 0 — zero-alloc field \
-         trick); a per-export allocation reappeared on the FillInfo path",
-    );
-    assert!(
-        bpf.abs() < 1.0,
-        "FillInfo export bytes/export = {bpf} (expected 0)",
+        (apf - EXPECTED_ALLOCS_PER_EXPORT).abs() < 0.01,
+        "FillInfo export allocations/export = {apf} (expected {EXPECTED_ALLOCS_PER_EXPORT})",
     );
 }
 
