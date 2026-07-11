@@ -2342,6 +2342,16 @@ def test_run_wasm_ld_split_runtime_forces_native_direct_symbols(
         del kwargs
         if cmd and cmd[0] == "wasm-ld" and "-r" not in cmd:
             link_calls.append(list(cmd))
+            linked_input = Path(cmd[cmd.index("-o") + 2]).read_bytes()
+            function_imports = {
+                (module, name)
+                for module, name, kind, _desc in wasm_link._collect_imports(
+                    linked_input
+                )
+                if kind == 0
+            }
+            assert ("env", symbol) in function_imports
+            assert ("molt_native", symbol) not in function_imports
         _write_wasm_ld_output(
             cmd,
             _build_exported_runtime_module_many([symbol, sealed_symbol]),
@@ -2418,6 +2428,59 @@ def test_public_export_restoration_preserves_sealed_init_symbol() -> None:
 
     exports = wasm_link._collect_function_exports(restored)
     assert symbol in exports
+
+
+def test_public_export_restoration_recovers_sealed_init_symbol_from_linking_name() -> None:
+    symbol = "PyInit__demo"
+    linked = _build_exported_function_module(symbol)
+    linked = wasm_link._append_linking_function_symbols(
+        linked,
+        [(symbol, 0, wasm_link.FLAG_BINDING_GLOBAL | wasm_link.FLAG_EXPLICIT_NAME)],
+    )
+    assert linked is not None
+    stripped = wasm_link._strip_internal_exports(linked, preserve_table_refs=False)
+    assert stripped is not None
+    assert symbol not in wasm_link._collect_function_exports(stripped)
+
+    restored = wasm_link._restore_public_output_exports(
+        stripped,
+        {},
+        preserved_symbol_names=(symbol,),
+    )
+
+    assert wasm_link._collect_function_exports(restored)[symbol] == 0
+    assert (
+        wasm_link._validate_required_native_direct_symbols(
+            restored,
+            (symbol,),
+            description="Split-runtime native app link",
+        )
+        is None
+    )
+
+
+def test_native_direct_export_index_restoration_recovers_stripped_real_body() -> None:
+    symbol = "PyInit__demo"
+    linked = _build_exported_function_module(symbol)
+    function_index = wasm_link._collect_function_exports(linked)[symbol]
+    stripped = wasm_link._strip_internal_exports(linked, preserve_table_refs=False)
+    assert stripped is not None
+
+    restored = wasm_link._ensure_function_exports_by_indices(
+        stripped,
+        {symbol: function_index},
+    )
+
+    assert restored is not None
+    assert wasm_link._collect_function_exports(restored)[symbol] == function_index
+    assert (
+        wasm_link._validate_required_native_direct_symbols(
+            restored,
+            (symbol,),
+            description="Split-runtime native app link",
+        )
+        is None
+    )
 
 
 def test_native_direct_symbol_validation_rejects_trap_stub() -> None:
