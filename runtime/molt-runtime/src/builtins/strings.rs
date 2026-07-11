@@ -39,12 +39,22 @@ pub(crate) fn bytes_rfind_impl(hay_bytes: &[u8], needle_bytes: &[u8]) -> i64 {
             .map(|v| v as i64)
             .unwrap_or(-1);
     }
-    let finder = memmem::Finder::new(needle_bytes);
-    let mut last = None;
-    for idx in finder.find_iter(hay_bytes) {
-        last = Some(idx);
+    memmem::rfind(hay_bytes, needle_bytes)
+        .map(|v| v as i64)
+        .unwrap_or(-1)
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::bytes_rfind_impl;
+
+    #[test]
+    fn reverse_search_preserves_empty_single_and_overlapping_semantics() {
+        assert_eq!(bytes_rfind_impl(b"ababab", b""), 6);
+        assert_eq!(bytes_rfind_impl(b"ababab", b"b"), 5);
+        assert_eq!(bytes_rfind_impl(b"ababab", b"abab"), 2);
+        assert_eq!(bytes_rfind_impl(b"ababab", b"xyz"), -1);
     }
-    last.map(|v| v as i64).unwrap_or(-1)
 }
 
 pub(crate) fn bytes_count_impl(hay_bytes: &[u8], needle_bytes: &[u8]) -> i64 {
