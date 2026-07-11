@@ -407,16 +407,16 @@ def _collect_output_export_symbol_map(data: bytes) -> dict[str, str]:
         if is_table_ref_export_name(public_name):
             mapping[public_name] = public_name
             continue
-        preferred = next((name for name in candidates if name == public_name), None)
+        preferred = next(
+            (
+                name
+                for name in candidates
+                if name.startswith("__molt_output_export_")
+            ),
+            None,
+        )
         if preferred is None:
-            preferred = next(
-                (
-                    name
-                    for name in candidates
-                    if name.startswith("__molt_output_export_")
-                ),
-                None,
-            )
+            preferred = next((name for name in candidates if name == public_name), None)
         if preferred is None and candidates:
             preferred = candidates[0]
         if preferred is not None:

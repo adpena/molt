@@ -13,7 +13,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 
 TOOLS_ROOT = Path(__file__).resolve().parent
@@ -222,8 +222,8 @@ def _read_runtime_integrity_pins(path: Path) -> dict[Path, str]:
     """Read every keyed integrity pin published next to ``path``.
 
     Pins are keyed by the runtime build's fingerprint meta digest
-    (``<artifact>.<meta_digest>.sha256``) — one slot per resolved
-    profile/feature identity — so like builds verify against like pins and
+    (``<artifact>.<meta_digest>.sha256``) â€” one slot per resolved
+    profile/feature identity â€” so like builds verify against like pins and
     different-profile builds never contend for a single pinned hash.
     """
     pins: dict[Path, str] = {}
@@ -492,6 +492,62 @@ def _tree_shake_runtime_cache_root() -> Path:
 @functools.lru_cache(maxsize=1)
 def _wasm_link_source_digest() -> str:
     return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+
+
+def _snapshot_link_input(
+    source: Path,
+    snapshot_root: Path,
+    *,
+    label: str,
+    attempts: int = 100,
+    retry_delay_seconds: float = 0.05,
+    accept: Callable[[bytes], bool] | None = None,
+    accept_path: Callable[[Path], bool] | None = None,
+) -> Path:
+    """Capture one complete immutable linker input from a mutable build path."""
+    last_observation = "unreadable"
+    snapshot_root.mkdir(parents=True, exist_ok=True)
+    for _attempt in range(attempts):
+        try:
+            before = source.stat()
+            first = source.read_bytes()
+            middle = source.stat()
+            second = source.read_bytes()
+            after = source.stat()
+        except OSError as exc:
+            last_observation = str(exc)
+            time.sleep(retry_delay_seconds)
+            continue
+        stable_identity = (
+            before.st_size == middle.st_size == after.st_size == len(first)
+            and before.st_mtime_ns == middle.st_mtime_ns == after.st_mtime_ns
+        )
+        if stable_identity and first == second:
+            if accept is not None and not accept(first):
+                last_observation = "stable bytes failed linker input contract"
+                time.sleep(retry_delay_seconds)
+                continue
+            digest = hashlib.sha256(first).hexdigest()
+            snapshot_dir = snapshot_root / label
+            snapshot_dir.mkdir(parents=True, exist_ok=True)
+            snapshot = snapshot_dir / source.name
+            snapshot.write_bytes(first)
+            if hashlib.sha256(snapshot.read_bytes()).hexdigest() != digest:
+                raise OSError(f"Failed to attest linker input snapshot: {snapshot}")
+            if accept_path is not None and not accept_path(snapshot):
+                last_observation = "stable snapshot failed linker metadata preflight"
+                time.sleep(retry_delay_seconds)
+                continue
+            return snapshot
+        last_observation = (
+            f"size={before.st_size}/{middle.st_size}/{after.st_size} "
+            f"mtime={before.st_mtime_ns}/{middle.st_mtime_ns}/{after.st_mtime_ns}"
+        )
+        time.sleep(retry_delay_seconds)
+    raise OSError(
+        f"Linker input remained mutable while snapshotting {label}: "
+        f"{source} ({last_observation})"
+    )
 
 
 @functools.lru_cache(maxsize=4)
@@ -772,7 +828,7 @@ def _runtime_exported_data_symbol_addresses(runtime_data: bytes) -> dict[str, in
     ``--export[-if-defined]``) as an immutable ``i32`` global whose init value
     is the symbol's absolute linear-memory address. Reading those exports from
     the deploy runtime is the authoritative source for the runtime's canonical
-    singleton/type/exception addresses — the split app links against imported
+    singleton/type/exception addresses â€” the split app links against imported
     memory and shares those addresses at run time.
     """
     imported_globals = _count_imported_globals(runtime_data)
@@ -955,7 +1011,7 @@ def _split_runtime_data_alias_object(
     runtime's* canonical linear-memory address.
 
     The absolute addresses come from the deploy (shared, non-relocatable)
-    runtime's exported address globals — wasm-ld exports a defined data symbol
+    runtime's exported address globals â€” wasm-ld exports a defined data symbol
     as an immutable i32 global whose init value is that symbol's address (see
     ``_runtime_exported_data_symbol_addresses``). The split app links against
     imported memory and shares those addresses with the deployed runtime at run
@@ -995,7 +1051,7 @@ def _split_runtime_data_alias_object(
             f"{deploy_runtime.name} exports no address global for CPython-ABI "
             "data symbol(s): "
             + ", ".join(missing)
-            + " — the shared runtime must publish these via "
+            + " â€” the shared runtime must publish these via "
             "--export-if-defined (wasm_cpython_abi_data_symbol_names / "
             "wasm_runtime_shared_export_link_args)."
         )
@@ -1112,17 +1168,17 @@ def _rewrite_split_app_got_data_globals(
     singletons/type/exception objects (``Py_None``/``Py_False``/``PyExc_*``/
     ``Py*_Type``/...) through GOT data relocations. wasm-ld resolves each against
     the active-data-segment alias and emits a *defined*
-    ``GOT.data.internal.molt_<sym>`` global — but the alias's zero-size segments
+    ``GOT.data.internal.molt_<sym>`` global â€” but the alias's zero-size segments
     are relocated into the split app's own region, so every such global
     initialises to the same app-local placeholder address (the extension then
     reads an all-zero object, ``ob_type == NULL``). Those globals are the exact
     word the extension loads at run time, so we retarget each to the runtime's
     canonical address (published as an address-bearing wasm global on the shared
-    runtime; read here from the deploy runtime — the runtime is byte-identical
+    runtime; read here from the deploy runtime â€” the runtime is byte-identical
     across apps, so the address is stable and CDN-safe).
 
     Fails loud (M34) if a ``GOT.data.internal.molt_<sym>`` global names a
-    CPython-ABI data symbol for which the runtime publishes no address — a silent
+    CPython-ABI data symbol for which the runtime publishes no address â€” a silent
     skip would leave the extension reading the app-local placeholder.
 
     Returns ``(new_bytes, retargeted_count)``.
@@ -1143,7 +1199,7 @@ def _rewrite_split_app_got_data_globals(
             canonical = split_name
         if canonical not in cpython_abi_data_symbols:
             # Not a runtime-owned CPython-ABI singleton/type/exception (e.g. a
-            # GOT global for the extension's own or libc data) — leave as linked.
+            # GOT global for the extension's own or libc data) â€” leave as linked.
             continue
         address = runtime_addresses.get(canonical)
         if address is None:
@@ -1156,10 +1212,10 @@ def _rewrite_split_app_got_data_globals(
         new_inits[defined_index] = address
     if missing:
         raise ValueError(
-            f"{description}: split-runtime GOT data bridge — deploy runtime "
+            f"{description}: split-runtime GOT data bridge â€” deploy runtime "
             "publishes no canonical address for CPython-ABI data symbol(s): "
             + ", ".join(sorted(missing))
-            + " — the shared runtime must export these via --export-if-defined "
+            + " â€” the shared runtime must export these via --export-if-defined "
             "(wasm_cpython_abi_data_symbol_names / "
             "wasm_runtime_shared_export_link_args)."
         )
@@ -1273,14 +1329,14 @@ def _split_app_native_link_args(native_inputs: Sequence[Path]) -> list[str]:
     """wasm-ld args for the SPLIT app link, overriding wasi-libc's ``%L`` stub.
 
     The split ``app.wasm`` statically links numpy/scipy + their own wasi-libc
-    ``libc.a`` but — unlike the combined ``output_linked.wasm`` — does NOT link
+    ``libc.a`` but â€” unlike the combined ``output_linked.wasm`` â€” does NOT link
     the reloc runtime object, so numpy's ``NumPyOS_ascii_formatl`` ->
     ``snprintf("%Lg")`` binds ``libc.a``'s ``long_double_not_supported`` stub
     (raw ``unreachable`` trap at ``_multiarray_umath`` import).
 
     Applies the SINGLE long-double link authority
     (:func:`wasm_toolchain.resolve_long_double_link_policy` +
-    :func:`wasm_toolchain.long_double_whole_archive_link_argv`) — the SAME policy
+    :func:`wasm_toolchain.long_double_whole_archive_link_argv`) â€” the SAME policy
     the reloc runtime and deploy cdylib links apply: whole-archive
     ``libc-printscan-long-double.a`` ahead of ``libc.a`` so its real
     ``vfprintf``/``__floatscan``/``strtold`` override the stub objects (they stay
@@ -1482,7 +1538,9 @@ def _ensure_export_by_index(
     return rebuilt if canonical is None else canonical
 
 
-def _restore_split_runtime_contract_exports(data: bytes, *, artifact: str) -> bytes:
+def _restore_split_runtime_contract_exports(
+    data: bytes, *, artifact: str, stage: str = "unspecified"
+) -> bytes:
     restored = data
     import_names = {1: "__indirect_function_table", 2: "memory"}
     for entry in _split_runtime_export_contract(artifact):
@@ -1492,6 +1550,11 @@ def _restore_split_runtime_contract_exports(data: bytes, *, artifact: str) -> by
             for name in entry.accepted_names
         ):
             continue
+        if entry.kind == 0:
+            raise ValueError(
+                f"Split-runtime {artifact} is missing app-owned function export "
+                f"{entry.canonical_name} after symbol restoration at {stage}"
+            )
         import_name = import_names.get(entry.kind)
         if import_name is None:
             raise ValueError(
@@ -1857,7 +1920,7 @@ def _tree_shake_runtime(
         # --all-features which enables custom-descriptors (rejected by V8).
         # `--disable-gc` keeps wasm-opt from re-encoding the type section as a
         # GC-proposal recursive type group (`0x4E`), which non-GC engines (the
-        # molt host runner, Cloudflare V8) reject — see wasm_optimize.py.
+        # molt host runner, Cloudflare V8) reject â€” see wasm_optimize.py.
         feature_flags = [
             "--enable-bulk-memory",
             "--enable-mutable-globals",
@@ -2358,8 +2421,8 @@ def _materialize_import_targeted_table_refs(
     imports cannot carry defined linker symbols through wasm-ld (the object
     format has no defined alias of an import), so no ``__molt_table_ref_*``
     name survives the link for them. Re-resolve those targets against the
-    current module — the runtime's defined export in a fully linked module,
-    the surviving import in a split app module — and install them as active
+    current module â€” the runtime's defined export in a fully linked module,
+    the surviving import in a split app module â€” and install them as active
     element segments. Must run before export stripping / dead-code passes so
     the resolved targets stay rooted. Fails closed when a published slot
     cannot be resolved.
@@ -2571,7 +2634,7 @@ def _run_wasm_opt_via_optimize(
     return True
 
 
-def _run_wasm_ld(
+def _run_wasm_ld_with_custodied_inputs(
     wasm_ld: str,
     runtime: Path,
     output: Path,
@@ -2739,12 +2802,12 @@ def _run_wasm_ld(
     # the non-relocatable runtime's export section (e.g. inlined away by
     # LTO), check whether the actual link runtime is a relocatable object
     # that retains the symbols in its linking section.  If so, wasm-ld
-    # will resolve them — no extra action needed.  If the link runtime is
+    # will resolve them â€” no extra action needed.  If the link runtime is
     # the non-relocatable module itself, we need the relocatable variant.
     if force_exports:
         is_reloc_runtime = runtime.name.endswith("_reloc.wasm")
         if is_reloc_runtime:
-            # The relocatable runtime retains all symbols — the pre-check
+            # The relocatable runtime retains all symbols â€” the pre-check
             # against the non-reloc export list was overly conservative.
             pass
         else:
@@ -2812,7 +2875,7 @@ def _run_wasm_ld(
         "--export-if-defined=molt_set_wasm_table_base",
     ]
     # Force-export symbols that were rewritten but missing from the
-    # non-relocatable runtime — they exist in the relocatable runtime
+    # non-relocatable runtime â€” they exist in the relocatable runtime
     # and wasm-ld needs to know to keep them in the linked output.
     cmd.extend(
         _deduplicated_export_flags(
@@ -2888,6 +2951,7 @@ def _run_wasm_ld(
             if part == "--stack-first"
             else part
             for part in cmd[: cmd.index("-o")]
+            if part != "--export=molt_main"
         ]
         try:
             split_native_app_args = _split_app_native_link_args(split_native_inputs)
@@ -3185,6 +3249,7 @@ def _run_wasm_ld(
                     restored_rewritten_data = _restore_split_runtime_contract_exports(
                         rewritten_data,
                         artifact="app",
+                        stage="native-link",
                     )
                 except ValueError as exc:
                     print(str(exc), file=sys.stderr)
@@ -3307,6 +3372,7 @@ def _run_wasm_ld(
                 optimized_app = _restore_split_runtime_contract_exports(
                     optimized_app,
                     artifact="app",
+                    stage="optimized-app",
                 )
             except ValueError as exc:
                 print(str(exc), file=sys.stderr)
@@ -3326,13 +3392,13 @@ def _run_wasm_ld(
             deploy_runtime = _resolve_deploy_runtime(runtime, deploy_runtime_override)
 
             # Tree-shake the runtime against its OWN canonical, app-independent
-            # public export surface — never against the current app's import
+            # public export surface â€” never against the current app's import
             # subset.  The shared runtime is a single artifact cached once by the
             # CDN and reused by every app, so it MUST be byte-identical across
             # builds (see test_runtime_hash_identical).  Shaking by per-app
             # imports made appA (a class) and appB (fib) keep different export
             # sets, which drove wasm-opt's dead-code GC to retain different
-            # functions and produced divergent runtime bytes — silently breaking
+            # functions and produced divergent runtime bytes â€” silently breaking
             # CDN cacheability.  Keeping the full canonical ABI lets wasm-opt
             # strip only functions unreachable from ANY public export (debug
             # tables, producers, dead internal helpers) while every app's import
@@ -3368,9 +3434,9 @@ def _run_wasm_ld(
                     # surface does not advertise.  This is a hard ABI contract
                     # violation (the shared runtime cannot satisfy the app).
                     # Raising here is deliberately caught below and degrades to
-                    # shipping the full (un-shaken) runtime — which is itself
+                    # shipping the full (un-shaken) runtime â€” which is itself
                     # byte-identical across apps, so CDN cacheability survives
-                    # the fallback — rather than papering over the mismatch with
+                    # the fallback â€” rather than papering over the mismatch with
                     # a per-app reshake that would reintroduce the cacheability
                     # bug.  The raise also surfaces the offending symbols so the
                     # runtime export allowlist can be fixed at the source.
@@ -3475,6 +3541,123 @@ def _run_wasm_ld(
             with contextlib.suppress(OSError):
                 staged_output.unlink()
         temp_dir.cleanup()
+
+
+def _run_wasm_ld(
+    wasm_ld: str,
+    runtime: Path,
+    output: Path,
+    linked: Path,
+    *,
+    allowlist_override: Path | None = None,
+    optimize: bool = False,
+    optimize_level: str = "Oz",
+    freestanding: bool = False,
+    split_runtime: bool = False,
+    split_output_dir: Path | None = None,
+    deploy_runtime_override: Path | None = None,
+    native_objects: Sequence[Path] = (),
+    preserve_debug_sections: bool = False,
+) -> int:
+    for native_object in native_objects:
+        if not native_object.exists():
+            print(f"Native WASM link input not found: {native_object}", file=sys.stderr)
+            return 1
+    try:
+        with tempfile.TemporaryDirectory(prefix="molt-wasm-link-custody-") as tmp:
+            snapshot_root = Path(tmp)
+            runtime_snapshot_root = snapshot_root / "runtime-pair"
+            runtime_snapshot = _snapshot_link_input(
+                runtime,
+                runtime_snapshot_root,
+                label="selected",
+                accept_path=(
+                    lambda path: _preflight_relocatable_runtime(
+                        wasm_ld, path, type("CustodyDir", (), {"name": tmp})()
+                    )
+                    is None
+                )
+                if runtime.name.endswith("_reloc.wasm")
+                else None,
+                retry_delay_seconds=0.25,
+            )
+            runtime_snapshot = runtime_snapshot_root / runtime_snapshot.parent.name / runtime.name
+            for sibling_name in {
+                runtime.name.replace("_reloc.wasm", ".wasm"),
+                runtime.name.replace(".wasm", "_reloc.wasm"),
+            }:
+                sibling = runtime.with_name(sibling_name)
+                if sibling != runtime and sibling.exists():
+                    sibling_snapshot = _snapshot_link_input(
+                        sibling,
+                        runtime_snapshot_root,
+                        label=f"sibling-{sibling_name}",
+                        accept_path=(
+                            lambda path: _preflight_relocatable_runtime(
+                                wasm_ld,
+                                path,
+                                type("CustodyDir", (), {"name": tmp})(),
+                            )
+                            is None
+                        )
+                        if sibling.name.endswith("_reloc.wasm")
+                        else None,
+                        retry_delay_seconds=0.25,
+                    )
+                    target = runtime_snapshot.parent / sibling.name
+                    if sibling_snapshot != target:
+                        target.write_bytes(sibling_snapshot.read_bytes())
+            output_snapshot = _snapshot_link_input(
+                output,
+                snapshot_root,
+                label="app",
+                accept=_is_wasm_binary,
+            )
+            native_snapshot_list: list[Path] = []
+            for index, native_object in enumerate(native_objects):
+                native_snapshot = _snapshot_link_input(
+                    native_object,
+                    snapshot_root,
+                    label=f"native-{index}",
+                )
+                manifest = native_object.with_name(
+                    native_object.name + ".extension_manifest.json"
+                )
+                if manifest.exists():
+                    manifest_snapshot = _snapshot_link_input(
+                        manifest,
+                        snapshot_root,
+                        label=f"native-{index}-manifest",
+                    )
+                    (native_snapshot.parent / manifest.name).write_bytes(
+                        manifest_snapshot.read_bytes()
+                    )
+                native_snapshot_list.append(native_snapshot)
+            native_snapshots = tuple(native_snapshot_list)
+            deploy_runtime = _resolve_deploy_runtime(runtime, deploy_runtime_override)
+            deploy_runtime_snapshot = _snapshot_link_input(
+                deploy_runtime,
+                snapshot_root,
+                label="deploy-runtime",
+            )
+            return _run_wasm_ld_with_custodied_inputs(
+                wasm_ld,
+                runtime_snapshot,
+                output_snapshot,
+                linked,
+                allowlist_override=allowlist_override,
+                optimize=optimize,
+                optimize_level=optimize_level,
+                freestanding=freestanding,
+                split_runtime=split_runtime,
+                split_output_dir=split_output_dir,
+                deploy_runtime_override=deploy_runtime_snapshot,
+                native_objects=native_snapshots,
+                preserve_debug_sections=preserve_debug_sections,
+            )
+    except OSError as exc:
+        print(f"Failed to establish wasm linker input custody: {exc}", file=sys.stderr)
+        return 1
 
 
 def main() -> int:

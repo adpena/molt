@@ -229,6 +229,34 @@ def test_ensure_runtime_reloc_wasm_exports_wasi_clock_ids(
     assert "D <_CLOCK_THREAD_CPUTIME_ID>" in exports
 
 
+def test_reloc_runtime_publication_preserves_linker_metadata_bytes() -> None:
+    reloc = (
+        b"\0asm\x01\0\0\0"
+        b"linking-reloc-debug-metadata-must-remain-byte-identical"
+    )
+
+    assert RUNTIME_BUILD._runtime_publication_bytes(
+        reloc, reloc=True, preserve_debug=False
+    ) == reloc
+
+
+def test_shared_runtime_publication_still_uses_final_artifact_strip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_strip(data: bytes, **kwargs: object) -> bytes:
+        seen.update(kwargs)
+        return data + b"-stripped"
+
+    monkeypatch.setattr(RUNTIME_BUILD, "strip_wasm_publication_sections", fake_strip)
+
+    assert RUNTIME_BUILD._runtime_publication_bytes(
+        b"shared", reloc=False, preserve_debug=False
+    ) == b"shared-stripped"
+    assert seen == {"final_artifact": True, "preserve_debug": False}
+
+
 def test_ensure_runtime_wasm_artifact_all_exports_satisfies_later_subset(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1342,8 +1370,9 @@ def test_ensure_runtime_wasm_reloc_requests_staticlib_build(
         json_output: bool,
         link_timeout: float | None,
         export_link_args: str = "",
+        long_double_required: bool = False,
     ) -> bool:
-        del json_output, link_timeout
+        del json_output, link_timeout, long_double_required
         captured["linked_staticlib_path"] = staticlib_path
         captured["export_link_args"] = export_link_args
         output_path.parent.mkdir(parents=True, exist_ok=True)
