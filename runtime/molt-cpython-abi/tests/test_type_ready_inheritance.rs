@@ -89,11 +89,19 @@ unsafe extern "C" fn fake_alloc_str(data: *const u8, len: usize) -> u64 {
     if guard.is_none() {
         *guard = Some(HashMap::new());
     }
-    *guard.as_mut().unwrap().entry(bytes).or_insert_with(fresh_handle)
+    *guard
+        .as_mut()
+        .unwrap()
+        .entry(bytes)
+        .or_insert_with(fresh_handle)
 }
 
-unsafe extern "C" fn fake_classify_heap(_bits: u64) -> u8 {
-    MoltTypeTag::Other as u8
+unsafe extern "C" fn fake_classify_heap(bits: u64) -> u8 {
+    if dicts().as_ref().is_some_and(|all| all.contains_key(&bits)) {
+        MoltTypeTag::Dict as u8
+    } else {
+        MoltTypeTag::Other as u8
+    }
 }
 
 unsafe extern "C" fn fake_noop_ref(_bits: u64) {}
@@ -137,6 +145,25 @@ fn init() -> MutexGuard<'static, ()> {
 
 unsafe fn ready(tp: *mut PyTypeObject) -> c_int {
     unsafe { molt_cpython_abi::api::typeobj::PyType_Ready(tp) }
+}
+
+fn dict_value_by_name(dict: *mut PyObject, name: &[u8]) -> *mut PyObject {
+    let dict_bits = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+        .molt_handle_for_pyobj(dict)
+        .expect("tp_dict must be bridge-backed")
+        .bits();
+    let key_bits = STRINGS
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|strings| strings.get(name).copied())
+        .expect("dunder name must be interned");
+    let value_bits = dicts()
+        .as_ref()
+        .and_then(|all| all.get(&dict_bits))
+        .and_then(|entries| entries.get(&key_bits).copied())
+        .expect("dunder must be present in tp_dict");
+    unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_borrowed_pyobj(value_bits) }
 }
 
 /// A trivial C method used to populate a `tp_methods` table.
@@ -255,6 +282,100 @@ fn ready_inherits_slots_through_single_inherit_chain() {
         "tp_hash must inherit transitively down the chain"
     );
     assert_eq!(integer.tp_as_number, number_methods_ptr);
+}
+
+unsafe extern "C" fn slot_repr(_o: *mut PyObject) -> *mut PyObject {
+    &raw mut Py_None
+}
+
+unsafe extern "C" fn slot_richcompare(
+    _left: *mut PyObject,
+    _right: *mut PyObject,
+    _op: c_int,
+) -> *mut PyObject {
+    &raw mut Py_NotImplementedSentinel
+}
+
+unsafe extern "C" fn slot_call(
+    _callable: *mut PyObject,
+    _args: *mut PyObject,
+    _kwargs: *mut PyObject,
+) -> *mut PyObject {
+    &raw mut Py_None
+}
+
+unsafe extern "C" fn slot_marker() {}
+
+#[test]
+fn ready_synthesizes_slot_wrapper_dunders_and_unhashable_none() {
+    let _guard = init();
+    let mut sequence: PySequenceMethods = unsafe { std::mem::zeroed() };
+    let marker = slot_marker as *const () as *mut std::ffi::c_void;
+    sequence.sq_length = marker;
+    sequence.sq_item = marker;
+    sequence.sq_contains = marker;
+
+    let mut base: PyTypeObject = unsafe { std::mem::zeroed() };
+    base.tp_name = c"slot_wrapper_base".as_ptr();
+    base.tp_hash = Some(base_hash);
+    base.tp_repr = Some(slot_repr);
+    base.tp_call = Some(slot_call);
+    base.tp_richcompare = Some(slot_richcompare);
+    base.tp_as_sequence = (&mut sequence as *mut PySequenceMethods).cast();
+    assert_eq!(unsafe { ready(&mut base) }, 0);
+
+    let mut derived: PyTypeObject = unsafe { std::mem::zeroed() };
+    derived.tp_name = c"slot_wrapper_derived".as_ptr();
+    derived.tp_base = &mut base;
+    assert_eq!(unsafe { ready(&mut derived) }, 0);
+
+    for name in [
+        c"__hash__",
+        c"__repr__",
+        c"__call__",
+        c"__eq__",
+        c"__ne__",
+        c"__lt__",
+        c"__le__",
+        c"__gt__",
+        c"__ge__",
+        c"__len__",
+        c"__getitem__",
+        c"__contains__",
+    ] {
+        let name_bytes = name.to_bytes();
+        let value = dict_value_by_name(derived.tp_dict, name_bytes);
+        assert!(
+            !value.is_null(),
+            "{} must be synthesized",
+            name.to_string_lossy()
+        );
+        assert_eq!(
+            unsafe { (*value).ob_type },
+            &raw mut PyWrapperDescr_Type,
+            "{} must be a wrapper_descriptor",
+            name.to_string_lossy()
+        );
+    }
+
+    let mut instance = PyObject {
+        ob_refcnt: 1,
+        ob_type: &mut derived,
+    };
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::typeobj::PyObject_Hash(&mut instance) },
+        42
+    );
+
+    let mut unhashable: PyTypeObject = unsafe { std::mem::zeroed() };
+    unhashable.tp_name = c"unhashable".as_ptr();
+    unhashable.tp_hash = Some(molt_cpython_abi::api::typeobj::PyObject_HashNotImplemented);
+    assert_eq!(unsafe { ready(&mut unhashable) }, 0);
+    let hash_attr = dict_value_by_name(unhashable.tp_dict, b"__hash__");
+    assert_eq!(
+        hash_attr, &raw mut Py_None,
+        "unhashable __hash__ must be None"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -393,7 +514,10 @@ fn ready_fills_tp_free_for_non_gc_type_like_bound_array_method() {
     tp.tp_basicsize = 32;
     tp.tp_dealloc = Some(dummy_dealloc);
     tp.tp_flags = Py_TPFLAGS_DEFAULT; // non-GC (no Py_TPFLAGS_HAVE_GC)
-    assert!(tp.tp_free.is_none(), "precondition: extension leaves tp_free NULL");
+    assert!(
+        tp.tp_free.is_none(),
+        "precondition: extension leaves tp_free NULL"
+    );
     assert_eq!(unsafe { ready(&mut tp) }, 0);
     assert_eq!(
         free_addr(tp.tp_free),
