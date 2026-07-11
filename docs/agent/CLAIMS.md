@@ -115,6 +115,7 @@ steps below are the contract it implements.
 
 | lane | agent-id | UTC (ISO) | status | note / evidence |
 |------|----------|-----------|--------|-----------------|
+| STARTUP-BASELINE | codex/startup-baseline | 2026-07-11T17:20:00Z | BLOCKED | Release-only five-sample harness, Node preload phase probe, warn/strict budget skeleton, docs, and refused attestation landed in this lane. Valid medians: CPython hello 58.274 ms, small-compute 137.179 ms, Node boot 39.085 ms. Native and WASM cells fail closed because current `origin/main` does not compile `runtime/molt-cpython-abi/src/api/typeobj.rs` (`E0133` at lines 59, 1939, 1972) under either stdlib-micro or stdlib-full. Proof: `20260711T171843-startup-baseline-010b0b8cdd484105`; attestation: `docs/agent/evidence/startup/startup_baseline.json`. |
 | _(none yet — first claimant of E1-WITNESS-TO-GREEN appends here)_ | | | | |
 | E1-WITNESS-TO-GREEN | Codex/codex-e1-seal-regen-20260707 | 2026-07-07T21:02:53Z | CLAIMED | Start from clean origin/main 6e1494cb8; first step is seal-regen artifact custody, re-seal gate, then pact-witness-acceptance. |
 | E1-WITNESS-TO-GREEN | orchestrator (obs) | 2026-07-08T01:20:00Z | PROGRESS | Orchestrator-observed ALIVE: codex-e1 worktree active (14 dirty, static_truth/analysis_collect_static <2h), seal machinery landing (8e4fae62b skip-stale, 36b11f58f relativize). Claim is LIVE — do NOT reclaim. E1 agent: post your own PROGRESS rows + drive the 17-source seal regen (still 0 runtime_python_import_modules on disk). |
