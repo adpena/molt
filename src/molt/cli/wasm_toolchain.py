@@ -403,11 +403,11 @@ def wasm_compiler_builtins_archive(target_triple: str = "wasm32-wasip1") -> Path
     return None
 
 
-def wasm_libcxx_archives(
+def wasm_cxx_runtime_archives(
     target_triple: str = "wasm32-wasip1",
     *,
     exceptions: bool = True,
-) -> tuple[Path, Path] | None:
+) -> tuple[Path, ...] | None:
     sysroot = resolve_wasi_sysroot()
     if sysroot is None:
         return None
@@ -419,11 +419,11 @@ def wasm_libcxx_archives(
         library_root = sysroot / "lib" / target_name / exception_mode
         libcxx = library_root / "libc++.a"
         libcxxabi = library_root / "libc++abi.a"
-        if libcxx.is_file() and libcxxabi.is_file():
-            return (
-                libcxx.resolve(strict=False),
-                libcxxabi.resolve(strict=False),
-            )
+        archives = [libcxx, libcxxabi]
+        if exceptions:
+            archives.append(library_root / "libunwind.a")
+        if all(archive.is_file() for archive in archives):
+            return tuple(archive.resolve(strict=False) for archive in archives)
     return None
 
 

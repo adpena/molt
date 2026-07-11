@@ -703,23 +703,26 @@ def _prepare_non_native_build_result(
                             compiler_rt_provider,
                         )
                     if needs_wasm_libcxx_link:
-                        libcxx_providers = wasm_toolchain.wasm_libcxx_archives()
-                        if libcxx_providers is None:
+                        cxx_runtime_providers = (
+                            wasm_toolchain.wasm_cxx_runtime_archives()
+                        )
+                        if cxx_runtime_providers is None:
                             raise ValueError(
                                 "wasm_libcxx_link_import symbols require matching "
-                                "WASI SDK eh/libc++.a and eh/libc++abi.a archives"
+                                "WASI SDK eh/libc++.a, eh/libc++abi.a, and "
+                                "eh/libunwind.a archives"
                             )
-                        resolved_libcxx_providers = tuple(
+                        resolved_cxx_runtime_providers = tuple(
                             provider.resolve(strict=False)
-                            for provider in libcxx_providers
+                            for provider in cxx_runtime_providers
                         )
                         wasm_static_link_native_inputs = (
                             *wasm_static_link_native_inputs,
-                            *resolved_libcxx_providers,
+                            *resolved_cxx_runtime_providers,
                         )
                         external_native_fingerprint_inputs = (
                             *external_native_fingerprint_inputs,
-                            *resolved_libcxx_providers,
+                            *resolved_cxx_runtime_providers,
                         )
                 except (OSError, ValueError) as exc:
                     return None, _fail(

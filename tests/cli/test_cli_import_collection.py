@@ -20210,9 +20210,11 @@ def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
     compiler_rt_provider.write_bytes(b"!<arch>\ncompiler-rt")
     libcxx_provider = tmp_path / "wasi-sysroot" / "eh" / "libc++.a"
     libcxxabi_provider = tmp_path / "wasi-sysroot" / "eh" / "libc++abi.a"
+    libunwind_provider = tmp_path / "wasi-sysroot" / "eh" / "libunwind.a"
     libcxx_provider.parent.mkdir(parents=True)
     libcxx_provider.write_bytes(b"!<arch>\nlibcxx")
     libcxxabi_provider.write_bytes(b"!<arch>\nlibcxxabi")
+    libunwind_provider.write_bytes(b"!<arch>\nlibunwind")
     native_artifact_plan = _ExternalPackageNativeArtifactPlan(
         artifacts=(
             _ExternalPackageNativeArtifact(
@@ -20290,8 +20292,8 @@ def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
     )
     monkeypatch.setattr(
         cli_wasm_toolchain,
-        "wasm_libcxx_archives",
-        lambda: (libcxx_provider, libcxxabi_provider),
+        "wasm_cxx_runtime_archives",
+        lambda: (libcxx_provider, libcxxabi_provider, libunwind_provider),
         raising=True,
     )
 
@@ -20334,6 +20336,7 @@ def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
     assert compiler_rt_provider in native_inputs
     assert libcxx_provider in native_inputs
     assert libcxxabi_provider in native_inputs
+    assert libunwind_provider in native_inputs
     assert reloc_required == [{"PyErr_Format", "molt_cpython_abi_date_from_date"}]
     assert shared_required == [{"PyErr_Format", "molt_cpython_abi_date_from_date"}]
     staged_native_inputs = [
