@@ -5601,16 +5601,6 @@ const runDirectLink = async () => {
     const res = outputInstance.exports.molt_call_indirect2(298n, 0n, 0n);
     console.error(`[molt wasm] call_indirect2 smoke result=${res}`);
   }
-  runMoltHostInit(outputInstance, 'direct');
-  if (typeof outputInstance.exports.molt_isolate_bootstrap === 'function') {
-    if (traceRun) {
-      console.error('[molt wasm] direct: call molt_isolate_bootstrap');
-    }
-    outputInstance.exports.molt_isolate_bootstrap();
-    if (traceRun) {
-      console.error('[molt wasm] direct: molt_isolate_bootstrap returned');
-    }
-  }
   if (traceRun) {
     console.error('[molt wasm] direct: call molt_main');
   }
@@ -5777,16 +5767,6 @@ const runLinked = async () => {
   if (linkedMemory) {
     initializeWasiForInstance(linkedModule.instance, linkedMemory);
     setWasmMemory(linkedMemory);
-  }
-  runMoltHostInit(linkedModule.instance, 'linked');
-  if (typeof linkedModule.instance.exports.molt_isolate_bootstrap === 'function') {
-    if (traceRun) {
-      console.error('[molt wasm] linked: call molt_isolate_bootstrap');
-    }
-    linkedModule.instance.exports.molt_isolate_bootstrap();
-    if (traceRun) {
-      console.error('[molt wasm] linked: molt_isolate_bootstrap returned');
-    }
   }
   runMainWithWasiExit(() => {
     molt_main();
