@@ -467,7 +467,7 @@ def _render_rs_mod() -> str:
             "pub(crate) use runtime_callables::{\n",
             "    POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,\n",
             "    RUNTIME_CALLABLE_IMPORTS, ReservedRuntimeCallableDispatch,\n",
-            "    ReservedRuntimeCallableTrampolineAbi, RuntimeCallableResult,\n",
+            "    RuntimeCallableResult,\n",
             "    poll_table_import_slot, runtime_callable_arity, runtime_callable_import,\n",
             "};\n",
             "pub(crate) use static_types::{\n",

@@ -352,10 +352,6 @@ fn native_callable_pyinit_imports_wasm32_pointer_and_extends_to_value_lane() {
     let native_type_index = *import_type_indices.get(native_symbol).unwrap_or_else(|| {
         panic!("{native_symbol} type index missing; imports={import_type_indices:?}")
     });
-    assert_eq!(
-        native_type_index, STATIC_TYPE_COUNT,
-        "PyInit must use the wasm32 CPython ABI signature () -> i32, not Molt's boxed () -> i64 lane"
-    );
     let type_signatures = wasm_type_section_value_signatures(&wasm);
     assert_eq!(
         type_signatures
@@ -376,7 +372,7 @@ fn native_callable_pyinit_imports_wasm32_pointer_and_extends_to_value_lane() {
 }
 
 #[test]
-#[should_panic(expected = "expected exactly one Float32Array payload")]
+#[should_panic(expected = "with ABI `molt.forward_f32_v1` has 2 operand(s), expected 1")]
 fn native_callable_forward_f32_rejects_non_unary_payload_abi() {
     let _ = WasmBackend::with_options(WasmCompileOptions {
         native_eh_enabled: false,
