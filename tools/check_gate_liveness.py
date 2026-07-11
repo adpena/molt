@@ -27,9 +27,9 @@ if str(ROOT) not in sys.path:
 
 from tools.hooks import bash_guard, landing_gate  # noqa: E402
 from tools.hooks import waivers  # noqa: E402
-from tools import triality_gate, magnitude_dismissal_gate  # noqa: E402
+from tools import triality, triality_gate, magnitude_dismissal_gate  # noqa: E402
 from tools import claims_status, check_sister_landed, commit_serializer  # noqa: E402
-from tools import disk_guard  # noqa: E402
+from tools import advisory_classifier, disk_guard  # noqa: E402
 
 _GB = 1024 ** 3
 
@@ -51,6 +51,9 @@ class Canary:
 
 def _canaries() -> list[Canary]:
     return [
+        Canary("advisory_classifier", "closed-enum-rejects-explanation", lambda: advisory_classifier.decide_output("poison because maybe", text="x", schema=("poison", "benign")).verdict is None),
+        Canary("advisory_classifier", "prompt-echo-rejected", lambda: advisory_classifier.decide_output("source text", text="source text", schema=("benign",)).reason == "prompt-echo"),
+        Canary("triality", "missing-equations-leg-fires", lambda: not triality.decide({"finding_id":"bad","invariant":"one fact","legs":{"dag":{"authority":"x","fingerprint":triality.invariant_fingerprint("one fact")},"dsl":{"authority":"x","fingerprint":triality.invariant_fingerprint("one fact")}}}).known),
         Canary(
             "bash_guard",
             "destructive-git-on-shared-checkout",

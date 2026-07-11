@@ -164,6 +164,14 @@ VALID_EVENT_TYPES = frozenset(
     }
 )
 
+def advisory_leg_suggestion(text: str) -> str | None:
+    """Suggest a triality leg for lint output; never writes registry state."""
+    try:
+        from tools.advisory_classifier import finding_tag_suggestion
+    except Exception:
+        return None
+    return finding_tag_suggestion(text)
+
 
 class InvalidFindingError(ValueError):
     """Raised when a Finding or EmpiricalAnchor violates a construction invariant.
