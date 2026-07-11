@@ -1,0 +1,4564 @@
+{
+  "authority": "TargetPythonVersion",
+  "candidate_tuples": [
+    {
+      "cpython": "3.12",
+      "evidence": "Ubuntu CI exercises Molt broadly, but no dedicated CPython binary-contract parity gate proves this tuple.",
+      "platform": "linux",
+      "status": "unverified"
+    },
+    {
+      "cpython": "3.12",
+      "evidence": "Release packaging covers macOS, but no dedicated CPython binary-contract parity gate proves this tuple.",
+      "platform": "macos",
+      "status": "unverified"
+    }
+  ],
+  "counts": {
+    "molt-private": 41,
+    "private": 48,
+    "private-representation": 1,
+    "public-version-specific": 129,
+    "stable-abi": 412,
+    "stable-values-version-specific-layout": 1,
+    "total": 640,
+    "unstable": 6,
+    "version-specific-public": 2
+  },
+  "future_divergences": [
+    {
+      "introduced": "3.13",
+      "source": "https://docs.python.org/3.13/c-api/module.html",
+      "summary": "Python 3.13 adds the Py_mod_gil module slot and its stable-ABI constants.",
+      "surface": "PyModuleDef_Slot.Py_mod_gil"
+    },
+    {
+      "introduced": "3.14",
+      "source": "https://docs.python.org/3.14/c-api/init.html#c.PyGILState_Ensure",
+      "summary": "During interpreter finalization, Python 3.14 hangs the calling thread instead of terminating it.",
+      "surface": "PyGILState_Ensure"
+    },
+    {
+      "introduced": "3.13",
+      "source": "https://docs.python.org/3.13/c-api/refcounting.html",
+      "summary": "Free-threaded 3.13 builds add refcount and immortality behavior that must be accessed through public refcount APIs, not private header bits.",
+      "surface": "object-header.immortal-refcount"
+    },
+    {
+      "introduced": "3.13",
+      "source": "https://docs.python.org/3.13/c-api/stable.html",
+      "summary": "Private _Py APIs may change without notice and several were removed or restored during the 3.13 cycle.",
+      "surface": "private-_Py-symbols"
+    }
+  ],
+  "schema_version": 1,
+  "structural_surfaces": [
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "version-specific-public",
+      "surface": "layout",
+      "symbol": "PyObject.layout",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "version-specific-public",
+      "surface": "layout",
+      "symbol": "PyTypeObject.layout",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/include/Python.h",
+      "stability": "stable-values-version-specific-layout",
+      "surface": "flags",
+      "symbol": "Py_TPFLAGS",
+      "verified_at": "3.12"
+    },
+    {
+      "known_divergence": {
+        "introduced": "3.13",
+        "source": "https://docs.python.org/3.13/c-api/module.html",
+        "summary": "Python 3.13 adds the Py_mod_gil module slot and its stable-ABI constants.",
+        "surface": "PyModuleDef_Slot.Py_mod_gil"
+      },
+      "source": "runtime/molt-cpython-abi/include/Python.h",
+      "stability": "stable-abi",
+      "surface": "module-slot",
+      "symbol": "PyModuleDef_Slot",
+      "verified_at": "3.12"
+    },
+    {
+      "known_divergence": {
+        "introduced": "3.13",
+        "source": "https://docs.python.org/3.13/c-api/refcounting.html",
+        "summary": "Free-threaded 3.13 builds add refcount and immortality behavior that must be accessed through public refcount APIs, not private header bits.",
+        "surface": "object-header.immortal-refcount"
+      },
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "private-representation",
+      "surface": "layout",
+      "symbol": "object-header.immortal-refcount",
+      "verified_at": "3.12"
+    }
+  ],
+  "symbols": [
+    {
+      "source": "runtime/molt-cpython-abi/shims/pyarg_variadic.exports",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyArg_ParseTuple",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/shims/pyarg_variadic.exports",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyArg_ParseTupleAndKeywords",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/shims/pyarg_variadic.exports",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyArg_UnpackTuple",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/shims/pyarg_variadic.exports",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyArg_VaParseTupleAndKeywords",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "stable-abi",
+      "surface": "type-object",
+      "symbol": "PyBaseObject_Type",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyBool_FromLong",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "stable-abi",
+      "surface": "type-object",
+      "symbol": "PyBool_Type",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/buffer.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyBuffer_FillInfo",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/buffer.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyBuffer_IsContiguous",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/buffer.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyBuffer_Release",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyByteArray_AsString",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyByteArray_Check",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyByteArray_FromStringAndSize",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyByteArray_Size",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "stable-abi",
+      "surface": "type-object",
+      "symbol": "PyByteArray_Type",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyBytes_AS_STRING",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyBytes_AsString",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyBytes_AsStringAndSize",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyBytes_Check",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyBytes_Concat",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyBytes_FromString",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyBytes_FromStringAndSize",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyBytes_GET_SIZE",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyBytes_Size",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "stable-abi",
+      "surface": "type-object",
+      "symbol": "PyBytes_Type",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyCFunction_Check",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyCFunction_GetFlags",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyCFunction_GetFunction",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyCFunction_GetSelf",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyCFunction_New",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyCFunction_NewEx",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "stable-abi",
+      "surface": "type-object",
+      "symbol": "PyCFunction_Type",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyCMethod_New",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyCallable_Check",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/capsule.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyCapsule_CheckExact",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/capsule.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyCapsule_GetContext",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/capsule.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyCapsule_GetName",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/capsule.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyCapsule_GetPointer",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/capsule.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyCapsule_Import",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/capsule.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyCapsule_IsValid",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/capsule.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyCapsule_New",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/capsule.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyCapsule_SetContext",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/capsule.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyCapsule_SetName",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/capsule.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyCapsule_SetPointer",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "stable-abi",
+      "surface": "type-object",
+      "symbol": "PyCapsule_Type",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyCode_NewEmpty",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyComplex_AsCComplex",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyComplex_Check",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyComplex_FromCComplex",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyComplex_FromDoubles",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyComplex_ImagAsDouble",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyComplex_RealAsDouble",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "stable-abi",
+      "surface": "type-object",
+      "symbol": "PyComplex_Type",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/contextvars.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyContextVar_Get",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/contextvars.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyContextVar_New",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/contextvars.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyContextVar_Reset",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/contextvars.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyContextVar_Set",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "public-version-specific",
+      "surface": "type-object",
+      "symbol": "PyContextVar_Type",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "public-version-specific",
+      "surface": "type-object",
+      "symbol": "PyDateTime_DateTimeType",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "public-version-specific",
+      "surface": "type-object",
+      "symbol": "PyDateTime_DateType",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "public-version-specific",
+      "surface": "type-object",
+      "symbol": "PyDateTime_DeltaType",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "public-version-specific",
+      "surface": "type-object",
+      "symbol": "PyDateTime_TZInfoType",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "public-version-specific",
+      "surface": "type-object",
+      "symbol": "PyDateTime_TimeType",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "public-version-specific",
+      "surface": "data",
+      "symbol": "PyDateTime_TimeZone_UTC_Object",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyDescr_IsData",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyDescr_NAME",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyDescr_NewGetSet",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyDescr_NewMember",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/mapping.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyDictProxy_New",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "stable-abi",
+      "surface": "type-object",
+      "symbol": "PyDictProxy_Type",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/mapping.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyDict_Check",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/mapping.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyDict_Clear",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/mapping.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyDict_Contains",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/mapping.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyDict_ContainsString",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/mapping.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyDict_Copy",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/mapping.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyDict_DelItem",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/mapping.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyDict_DelItemString",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/mapping.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyDict_GetItem",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/mapping.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyDict_GetItemRef",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/mapping.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyDict_GetItemString",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/mapping.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyDict_GetItemStringRef",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/mapping.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyDict_GetItemWithError",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/mapping.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyDict_Items",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/mapping.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyDict_Keys",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/mapping.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyDict_Merge",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/mapping.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyDict_MergeFromSeq2",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/mapping.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyDict_New",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/mapping.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyDict_Next",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/mapping.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyDict_SetDefault",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/mapping.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyDict_SetDefaultRef",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/mapping.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyDict_SetItem",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/mapping.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyDict_SetItemString",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/mapping.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyDict_Size",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "stable-abi",
+      "surface": "type-object",
+      "symbol": "PyDict_Type",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/mapping.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyDict_Update",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/mapping.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyDict_Values",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/errors.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyErr_BadArgument",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/errors.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyErr_BadInternalCall",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/errors.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyErr_CheckSignals",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/errors.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyErr_Clear",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/errors.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyErr_ExceptionMatches",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/errors.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyErr_Fetch",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/shims/pyarg_variadic.exports",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyErr_Format",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/shims/pyarg_variadic.exports",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyErr_FormatUnraisable",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/shims/pyarg_variadic.exports",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyErr_FormatV",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/errors.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyErr_GivenExceptionMatches",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/errors.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyErr_NewException",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/errors.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyErr_NewExceptionWithDoc",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/errors.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyErr_NoMemory",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/errors.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyErr_NormalizeException",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/errors.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyErr_Occurred",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/errors.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyErr_Print",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/errors.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyErr_PrintEx",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/errors.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyErr_Restore",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/errors.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyErr_SetFromErrno",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/errors.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyErr_SetNone",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/errors.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyErr_SetObject",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/errors.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyErr_SetString",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/errors.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyErr_WarnEx",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/shims/pyarg_variadic.exports",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyErr_WarnFormat",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/errors.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyErr_WriteUnraisable",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/eval.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyEval_EvalCode",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/eval.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyEval_GetBuiltins",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyEval_RestoreThread",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyEval_SaveThread",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/errors.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyException_GetTraceback",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/errors.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyException_SetCause",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/errors.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyException_SetContext",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/errors.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyException_SetTraceback",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyFloat_AsDouble",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyFloat_Check",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyFloat_FromDouble",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyFloat_FromString",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "stable-abi",
+      "surface": "type-object",
+      "symbol": "PyFloat_Type",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyFrame_GetBack",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyFrame_GetCode",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyFrame_New",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyFrozenSet_Check",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyFrozenSet_New",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "stable-abi",
+      "surface": "type-object",
+      "symbol": "PyFrozenSet_Type",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/memory.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyGC_Disable",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/memory.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyGC_Enable",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyGILState_Check",
+      "verified_at": "3.12"
+    },
+    {
+      "known_divergence": {
+        "introduced": "3.14",
+        "source": "https://docs.python.org/3.14/c-api/init.html#c.PyGILState_Ensure",
+        "summary": "During interpreter finalization, Python 3.14 hangs the calling thread instead of terminating it.",
+        "surface": "PyGILState_Ensure"
+      },
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyGILState_Ensure",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyGILState_Release",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "stable-abi",
+      "surface": "type-object",
+      "symbol": "PyGetSetDescr_Type",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/imports.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyImport_AddModule",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/imports.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyImport_GetModule",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/imports.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyImport_GetModuleDict",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/imports.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyImport_Import",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/imports.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyImport_ImportModule",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/imports.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyImport_ImportModuleLevel",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/imports.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyImport_ImportModuleLevelObject",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_number.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyIndex_Check",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyInterpreterState_Get",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyInterpreterState_GetID",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyInterpreterState_GetIDFromThreadState",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyInterpreterState_Main",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyIter_Check",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyIter_Next",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyList_Append",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyList_AsTuple",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyList_Check",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyList_GET_ITEM",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyList_GET_SIZE",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyList_GetItem",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyList_GetItemRef",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyList_GetSlice",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyList_Insert",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyList_New",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyList_Reverse",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyList_SET_ITEM",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyList_SetItem",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyList_SetSlice",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyList_Size",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyList_Sort",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "stable-abi",
+      "surface": "type-object",
+      "symbol": "PyList_Type",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyLong_AsDouble",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyLong_AsInt",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyLong_AsLong",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyLong_AsLongAndOverflow",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyLong_AsLongLong",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyLong_AsLongLongAndOverflow",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyLong_AsNativeBytes",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyLong_AsSsize_t",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyLong_AsUnsignedLong",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyLong_AsUnsignedLongLong",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyLong_AsUnsignedLongLongMask",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyLong_AsUnsignedLongMask",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyLong_AsVoidPtr",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyLong_Check",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyLong_FromDouble",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyLong_FromLong",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyLong_FromLongLong",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyLong_FromNativeBytes",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyLong_FromSize_t",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyLong_FromSsize_t",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyLong_FromUnicodeObject",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyLong_FromUnsignedLong",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyLong_FromUnsignedLongLong",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyLong_FromUnsignedNativeBytes",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyLong_FromVoidPtr",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyLong_IsZero",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "stable-abi",
+      "surface": "type-object",
+      "symbol": "PyLong_Type",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_mapping.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyMapping_Check",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_mapping.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyMapping_GetItemString",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_mapping.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyMapping_GetOptionalItem",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_mapping.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyMapping_HasKey",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_mapping.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyMapping_HasKeyString",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyMapping_HasKeyStringWithError",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyMapping_HasKeyWithError",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_mapping.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyMapping_Items",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_mapping.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyMapping_Keys",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_mapping.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyMapping_Length",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_mapping.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyMapping_SetItemString",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_mapping.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyMapping_Size",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_mapping.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyMapping_Values",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/memory.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyMem_Calloc",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/memory.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyMem_Free",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/memory.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyMem_Malloc",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/memory.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyMem_RawCalloc",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/memory.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyMem_RawFree",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/memory.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyMem_RawMalloc",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/memory.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyMem_RawRealloc",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/memory.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyMem_Realloc",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "stable-abi",
+      "surface": "type-object",
+      "symbol": "PyMemberDescr_Type",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyMember_GetOne",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyMember_SetOne",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/memory.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyMemoryView_Check",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/memory.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyMemoryView_FromBuffer",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/memory.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyMemoryView_FromMemory",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/memory.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyMemoryView_FromObject",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/memory.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyMemoryView_GET_BASE",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/memory.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyMemoryView_GET_BUFFER",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "stable-abi",
+      "surface": "type-object",
+      "symbol": "PyMemoryView_Type",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "stable-abi",
+      "surface": "type-object",
+      "symbol": "PyMethodDescr_Type",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyMethod_Check",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyMethod_GET_FUNCTION",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyMethod_GET_SELF",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyMethod_New",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "public-version-specific",
+      "surface": "type-object",
+      "symbol": "PyMethod_Type",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/modules.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyModuleDef_Init",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "stable-abi",
+      "surface": "type-object",
+      "symbol": "PyModuleDef_Type",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/modules.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyModule_AddIntConstant",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/modules.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyModule_AddObject",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/modules.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyModule_AddObjectRef",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/modules.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyModule_AddStringConstant",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/modules.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyModule_Check",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/modules.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyModule_Create2",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/modules.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyModule_ExecDef",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/modules.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyModule_FromDefAndSpec",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/modules.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyModule_FromDefAndSpec2",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/modules.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyModule_GetDict",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/modules.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyModule_GetName",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/modules.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyModule_GetState",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/modules.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyModule_New",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/modules.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyModule_NewObject",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "stable-abi",
+      "surface": "type-object",
+      "symbol": "PyModule_Type",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyMutex_Lock",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyMutex_Unlock",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "public-version-specific",
+      "surface": "type-object",
+      "symbol": "PyNone_Type",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "public-version-specific",
+      "surface": "type-object",
+      "symbol": "PyNotImplemented_Type",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_number.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyNumber_Absolute",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_number.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyNumber_Add",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_number.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyNumber_And",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_number.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyNumber_AsSsize_t",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyNumber_Check",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_number.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyNumber_Divmod",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_number.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyNumber_Float",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_number.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyNumber_FloorDivide",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_number.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyNumber_InPlaceAdd",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_number.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyNumber_InPlaceAnd",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_number.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyNumber_InPlaceFloorDivide",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_number.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyNumber_InPlaceLshift",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_number.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyNumber_InPlaceMultiply",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_number.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyNumber_InPlaceOr",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_number.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyNumber_InPlaceRemainder",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_number.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyNumber_InPlaceRshift",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_number.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyNumber_InPlaceSubtract",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_number.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyNumber_InPlaceTrueDivide",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_number.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyNumber_InPlaceXor",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_number.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyNumber_Index",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_number.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyNumber_Int",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_number.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyNumber_Invert",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_number.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyNumber_Long",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_number.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyNumber_Lshift",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_number.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyNumber_MatrixMultiply",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_number.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyNumber_Multiply",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_number.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyNumber_Negative",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_number.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyNumber_Or",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_number.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyNumber_Positive",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_number.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyNumber_Power",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_number.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyNumber_Remainder",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_number.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyNumber_Rshift",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_number.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyNumber_Subtract",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_number.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyNumber_TrueDivide",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_number.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyNumber_Xor",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sys.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyOS_setsig",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/shims/pyarg_variadic.exports",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyOS_snprintf",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/shims/pyarg_variadic.exports",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyOS_string_to_double",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/shims/pyarg_variadic.exports",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyOS_strtol",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/shims/pyarg_variadic.exports",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyOS_strtoul",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/shims/pyarg_variadic.exports",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyOS_vsnprintf",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_ASCII",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_AsFileDescriptor",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_Bytes",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_Call",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/memory.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyObject_CallFinalizerFromDealloc",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/shims/pyarg_variadic.exports",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_CallFunction",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/shims/pyarg_variadic.exports",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_CallFunctionObjArgs",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/shims/pyarg_variadic.exports",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_CallMethod",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyObject_CallMethodNoArgs",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/shims/pyarg_variadic.exports",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_CallMethodObjArgs",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyObject_CallMethodOneArg",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_CallNoArgs",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_CallObject",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyObject_CallOneArg",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/memory.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_Calloc",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/buffer.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_CheckBuffer",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_ClearWeakRefs",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_DelItem",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_Dir",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_Format",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/memory.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_Free",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/memory.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_GC_Del",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/memory.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_GC_IsFinalized",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/memory.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_GC_Track",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/memory.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_GC_UnTrack",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_GenericGetAttr",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_GenericGetDict",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_GenericSetAttr",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_GenericSetDict",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_GetAttr",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_GetAttrString",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/buffer.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_GetBuffer",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_GetItem",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_GetIter",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyObject_GetOptionalAttr",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyObject_GetOptionalAttrString",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_HasAttr",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_HasAttrString",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyObject_HasAttrStringWithError",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyObject_HasAttrWithError",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_Hash",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_HashNotImplemented",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/memory.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_Init",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/memory.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_InitVar",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_IsInstance",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_IsSubclass",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_IsTrue",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_Length",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyObject_LengthHint",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/memory.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_Malloc",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyObject_Next",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_Not",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyObject_Print",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/memory.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_Realloc",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_Repr",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_RichCompare",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_RichCompareBool",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_SelfIter",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_SetAttr",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_SetAttrString",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_SetItem",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_Size",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_Str",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_Type",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyObject_TypeCheck",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_Vectorcall",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyObject_VectorcallDict",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyObject_VectorcallMethod",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PySeqIter_New",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_sequence.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PySequence_Check",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_sequence.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PySequence_Concat",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_sequence.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PySequence_Contains",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_sequence.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PySequence_Count",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_sequence.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PySequence_DelItem",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_sequence.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PySequence_Fast",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_sequence.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PySequence_Fast_GET_ITEM",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_sequence.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PySequence_Fast_GET_SIZE",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_sequence.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PySequence_Fast_ITEMS",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_sequence.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PySequence_GetItem",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_sequence.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PySequence_InPlaceConcat",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_sequence.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PySequence_InPlaceRepeat",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_sequence.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PySequence_Index",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_sequence.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PySequence_Length",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_sequence.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PySequence_List",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_sequence.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PySequence_Repeat",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_sequence.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PySequence_SetItem",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_sequence.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PySequence_Size",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_sequence.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PySequence_Tuple",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PySet_Add",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PySet_Check",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PySet_Clear",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PySet_Contains",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PySet_Discard",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PySet_New",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PySet_Pop",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PySet_Size",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "stable-abi",
+      "surface": "type-object",
+      "symbol": "PySet_Type",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/slice.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PySlice_AdjustIndices",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/slice.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PySlice_Check",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/slice.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PySlice_GetIndices",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/slice.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PySlice_GetIndicesEx",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/slice.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PySlice_New",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "stable-abi",
+      "surface": "type-object",
+      "symbol": "PySlice_Type",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/slice.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PySlice_Unpack",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/modules.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyState_AddModule",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/modules.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyState_FindModule",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/modules.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyState_RemoveModule",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sys.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PySys_GetObject",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/shims/pyarg_variadic.exports",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PySys_WriteStderr",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyThreadState_Get",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sys.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyThreadState_GetDict",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyThreadState_GetFrame",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyThreadState_GetID",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyThreadState_GetInterpreter",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/thread.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyThread_acquire_lock",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/thread.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyThread_allocate_lock",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/thread.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyThread_free_lock",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/thread.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyThread_release_lock",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/thread.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyThread_tss_alloc",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/thread.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyThread_tss_create",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/thread.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyThread_tss_delete",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/thread.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyThread_tss_free",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/thread.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyThread_tss_get",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/thread.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyThread_tss_is_created",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/thread.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyThread_tss_set",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyTraceBack_Here",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/memory.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyTraceMalloc_Track",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/memory.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyTraceMalloc_Untrack",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyTuple_Check",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyTuple_FromArray",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyTuple_GET_ITEM",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyTuple_GET_SIZE",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyTuple_GetItem",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyTuple_GetSlice",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyTuple_New",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/shims/pyarg_variadic.exports",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyTuple_Pack",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyTuple_SetItem",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyTuple_Size",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "stable-abi",
+      "surface": "type-object",
+      "symbol": "PyTuple_Type",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyType_Check",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyType_FromMetaclass",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyType_FromModuleAndSpec",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyType_FromSpecWithBases",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyType_GenericAlloc",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyType_GenericNew",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyType_GetFlags",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyType_GetModule",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyType_GetModuleByDef",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyType_GetModuleState",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyType_GetName",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyType_GetQualName",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyType_HasFeature",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyType_IsSubtype",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyType_Modified",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyType_Ready",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "stable-abi",
+      "surface": "type-object",
+      "symbol": "PyType_Type",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyUnicode_AsASCIIString",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyUnicode_AsEncodedString",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyUnicode_AsLatin1String",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyUnicode_AsUCS4",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyUnicode_AsUCS4Copy",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyUnicode_AsUTF8",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyUnicode_AsUTF8AndSize",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyUnicode_AsUTF8String",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyUnicode_Check",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyUnicode_Compare",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyUnicode_CompareWithASCIIString",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyUnicode_Concat",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyUnicode_Contains",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyUnicode_Decode",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyUnicode_DecodeASCII",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyUnicode_DecodeLatin1",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyUnicode_DecodeUTF16",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyUnicode_DecodeUTF8",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyUnicode_FindChar",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyUnicode_Format",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyUnicode_FromEncodedObject",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/shims/pyarg_variadic.exports",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyUnicode_FromFormat",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/shims/pyarg_variadic.exports",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyUnicode_FromFormatV",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyUnicode_FromKindAndData",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyUnicode_FromObject",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyUnicode_FromOrdinal",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyUnicode_FromString",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyUnicode_FromStringAndSize",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyUnicode_GET_LENGTH",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyUnicode_GetLength",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyUnicode_IS_ASCII",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyUnicode_InternFromString",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyUnicode_InternInPlace",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyUnicode_Join",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyUnicode_New",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyUnicode_Replace",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyUnicode_Substring",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyUnicode_Tailmatch",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "stable-abi",
+      "surface": "type-object",
+      "symbol": "PyUnicode_Type",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "unstable",
+      "surface": "function",
+      "symbol": "PyUnstable_Code_NewWithPosOnlyArgs",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/modules.rs",
+      "stability": "unstable",
+      "surface": "function",
+      "symbol": "PyUnstable_Module_SetGIL",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "unstable",
+      "surface": "function",
+      "symbol": "PyUnstable_Object_EnableDeferredRefcount",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "unstable",
+      "surface": "function",
+      "symbol": "PyUnstable_Object_IsUniqueReferencedTemporary",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "unstable",
+      "surface": "function",
+      "symbol": "PyUnstable_Object_IsUniquelyReferenced",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "unstable",
+      "surface": "function",
+      "symbol": "PyUnstable_SetImmortal",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyVectorcall_Call",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyVectorcall_Function",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/weakref.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyWeakref_Check",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/weakref.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyWeakref_GetObject",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "stable-abi",
+      "surface": "type-object",
+      "symbol": "PyWrapperDescr_Type",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/shims/pyarg_variadic.exports",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "Py_BuildValue",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/refcount.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "Py_CLEAR",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/refcount.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "Py_DECREF",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/bridge.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "Py_DecRef",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "public-version-specific",
+      "surface": "data",
+      "symbol": "Py_EQ",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "public-version-specific",
+      "surface": "data",
+      "symbol": "Py_EllipsisObject",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/memory.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "Py_EnterRecursiveCall",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "public-version-specific",
+      "surface": "data",
+      "symbol": "Py_False",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/memory.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "Py_FatalError",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "public-version-specific",
+      "surface": "data",
+      "symbol": "Py_GE",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "public-version-specific",
+      "surface": "data",
+      "symbol": "Py_GT",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "Py_GenericAlias",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "stable-abi",
+      "surface": "type-object",
+      "symbol": "Py_GenericAliasType",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sys.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "Py_GetVersion",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/refcount.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "Py_INCREF",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "Py_IS_TYPE",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/bridge.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "Py_IncRef",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/bridge.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "Py_IncRef_Repr",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/bridge.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "Py_IncRef_Str",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/eval.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "Py_IsFinalizing",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "Py_IsInitialized",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "public-version-specific",
+      "surface": "data",
+      "symbol": "Py_LE",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "public-version-specific",
+      "surface": "data",
+      "symbol": "Py_LT",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/memory.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "Py_LeaveRecursiveCall",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "public-version-specific",
+      "surface": "data",
+      "symbol": "Py_NE",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "Py_NewRef",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "public-version-specific",
+      "surface": "data",
+      "symbol": "Py_None",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "public-version-specific",
+      "surface": "data",
+      "symbol": "Py_NotImplementedSentinel",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "public-version-specific",
+      "surface": "data",
+      "symbol": "Py_OptimizeFlag",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "Py_TYPE",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "public-version-specific",
+      "surface": "data",
+      "symbol": "Py_True",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/shims/pyarg_variadic.exports",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "Py_VaBuildValue",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "stable-abi",
+      "surface": "data",
+      "symbol": "Py_Version",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/refcount.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "Py_XDECREF",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/refcount.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "Py_XINCREF",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "Py_XNewRef",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/shims/pyarg_variadic.exports",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyArg_ParseTupleAndKeywords_SizeT",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/shims/pyarg_variadic.exports",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyArg_ParseTuple_SizeT",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/shims/pyarg_variadic.exports",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyArg_VaParseTupleAndKeywords_SizeT",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/shims/pyarg_variadic.exports",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyArg_VaParse_SizeT",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/mapping.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyDict_GetItemStringWithError",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/mapping.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyDict_GetItem_KnownHash",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/mapping.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyDict_NewPresized",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/errors.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyErr_BadInternalCall",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/abstract_sequence.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyList_Extend",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyLong_AsByteArray",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyLong_AsInt",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyLong_FromByteArray",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyLong_Sign",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/shims/pyarg_variadic.exports",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyObject_CallFunction_SizeT",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/shims/pyarg_variadic.exports",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyObject_CallMethod_SizeT",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyObject_ClearManagedDict",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/memory.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyObject_GC_New",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyObject_GenericGetAttrWithDict",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyObject_GetDictPtr",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyObject_LookupAttr",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/memory.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyObject_New",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/memory.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyObject_NewVar",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyObject_Vectorcall",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyObject_VisitManagedDict",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyThreadState_UncheckedGet",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyTuple_Resize",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyType_Lookup",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyUnicode_FastCopyCharacters",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyUnicode_IsAlpha",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyUnicode_IsDecimalDigit",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyUnicode_IsDigit",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyUnicode_IsLinebreak",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyUnicode_IsLowercase",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyUnicode_IsNumeric",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyUnicode_IsPrintable",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyUnicode_IsTitlecase",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyUnicode_IsUppercase",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyUnicode_IsWhitespace",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/shims/pyarg_variadic.exports",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_Py_BuildValue_SizeT",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/refcount.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_Py_Dealloc",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "private",
+      "surface": "data",
+      "symbol": "_Py_FalseStruct",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_Py_HashDouble",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/eval.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_Py_IsFinalizing",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_Py_IsOwnedByCurrentThread",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "private",
+      "surface": "data",
+      "symbol": "_Py_NoneStruct",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_Py_TYPE",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/object.rs",
+      "stability": "private",
+      "surface": "data",
+      "symbol": "_Py_TrueStruct",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/strings.rs",
+      "stability": "private",
+      "surface": "data",
+      "symbol": "_Py_ascii_whitespace",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/bridge.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_bridge_call",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/bridge.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_bridge_dict_new",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/bridge.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_bridge_dict_set",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/bridge.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_bridge_err_occurred",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/bridge.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_bridge_err_set_string",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/bridge.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_bridge_float_from_double",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/bridge.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_bridge_get_attr_string",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/bridge.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_bridge_hash",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/bridge.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_bridge_is_true",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/bridge.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_bridge_length",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/bridge.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_bridge_list_append",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/bridge.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_bridge_list_new",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/bridge.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_bridge_long_as_long",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/bridge.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_bridge_long_from_long",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/bridge.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_bridge_set_attr_string",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/bridge.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_bridge_string_from_cstr",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_bytes_richcompare",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_complex_richcompare",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/datetime.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_cpython_abi_date_from_date",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/datetime.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_cpython_abi_date_from_timestamp",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/datetime.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_cpython_abi_datetime_from_date_and_time",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/datetime.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_cpython_abi_datetime_from_date_and_time_and_fold",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/datetime.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_cpython_abi_datetime_from_timestamp",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/datetime.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_cpython_abi_delta_from_delta",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/bridge.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_cpython_abi_init",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/hooks.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_cpython_abi_register_hooks",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/datetime.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_cpython_abi_time_from_time",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/datetime.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_cpython_abi_time_from_time_and_fold",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/datetime.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_cpython_abi_timezone_from_timezone",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_cpython_abi_type_canonicalize",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/datetime.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_datetime_dealloc",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/mapping.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_dict_richcompare",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_float_richcompare",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_generic_hash",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_list_richcompare",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_long_richcompare",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_native_repr",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_native_str",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/errors.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_pyarg_parse_tuple_inner",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_str_richcompare",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/sequences.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_tuple_richcompare",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "public-version-specific",
+      "surface": "data",
+      "symbol": "mut",
+      "verified_at": "3.12"
+    }
+  ],
+  "verified_tuples": [
+    {
+      "cpython": "3.12",
+      "evidence": "Local Windows contract lanes and the checked-in CPython 3.12 ABI headers.",
+      "platform": "windows"
+    }
+  ]
+}

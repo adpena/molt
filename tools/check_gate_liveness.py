@@ -33,6 +33,11 @@ from tools import claims_status, check_sister_landed, commit_serializer  # noqa:
 from tools import advisory_classifier, disk_guard  # noqa: E402
 from tools import anti_recurrence_gate, apparatus_agent_safety  # noqa: E402
 from tools import encoding_gate, forbidden_checkout_guard  # noqa: E402
+from tools import gen_cpython_coverage  # noqa: E402
+from molt.cli.target_python import (  # noqa: E402
+    TargetPythonVersion,
+    require_verified_target_python,
+)
 
 _GB = 1024**3
 
@@ -52,8 +57,32 @@ class Canary:
     fires: Callable[[], bool]  # True == the gate correctly fired on known-bad input
 
 
+def _raises_value_error(callback: Callable[[], object]) -> bool:
+    try:
+        callback()
+    except ValueError:
+        return True
+    return False
+
+
 def _canaries() -> list[Canary]:
     return [
+        Canary(
+            "cpython_version_boundary",
+            "unverified-version-platform-tuple-fires",
+            lambda: _raises_value_error(
+                lambda: require_verified_target_python(
+                    TargetPythonVersion(3, 13, 0), platform="windows"
+                )
+            ),
+        ),
+        Canary(
+            "cpython_abi_coverage",
+            "missing-export-fires",
+            lambda: not gen_cpython_coverage.coverage_complete(
+                {"PyLong_FromLong"}, {"PyLong_FromLong", "PyLong_AsLong"}
+            ),
+        ),
         Canary(
             "advisory_classifier",
             "closed-enum-rejects-explanation",
