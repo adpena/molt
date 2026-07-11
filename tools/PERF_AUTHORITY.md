@@ -88,3 +88,30 @@ See also:
 
 - `docs/perf/SCOREBOARD.md`
 - `docs/design/foundation/64_perf_scoreboards_and_harness.md`
+
+## Witness Iteration Build Profile (2026-07-11)
+
+Canonical machine-checkable record: `tools/perf_witness_iteration_attestation.json`.
+The measured aperture is the real `pact-witness-acceptance` build through the
+current runtime frontier. The acceptance run currently fails after codegen in
+WASM import stripping, so replay is not measurable in this revision; build-path
+numbers remain valid and queue-custodied.
+
+| Rank | Phase | Cold / miss path | Warm incremental path | Inherent floor | Ranked waste |
+|---:|---|---:|---:|---:|---:|
+| 1 | Frontend graph + analysis + lowering | 390-604s across same-machine diagnostics; 0-24% lowering hits | 467.6s avoidable before this landing; unique output path changed all contexts | Reuse unchanged 145 module lowerings; lower only changed modules | 467.6s eliminated (61.3% wall, 2.59x) |
+| 2 | Backend prepare/codegen | 198-410s, including first population of thousands of functions | 295.0s total build to the current import-strip frontier; only 12 uncached TIR functions in the steady sample | Rebuild the changed runtime/compiler cone and changed functions | Next target: function/object cache misses plus import-strip frontier |
+| 3 | Runtime wasm cargo compile | 23.9-265.5s historical; 124.7s recent cold sample | Target/shared reuse is fingerprint-controlled; final patched sample did not rebuild runtime | One changed runtime crate compile | Audit configured vs effective runtime-wasm hydrate hit rate |
+| 4 | Runtime reloc link | 1.5-8.3s | ~1-3s when required | One relink | Low |
+| 5 | Seal / validate | Included in prepare/link; no dominant standalone phase in diagnostics | Unchanged package seals are preflight-attested | Fingerprint check only | Instrument separately before optimizing |
+| 6 | Replay / parity | Not reached: current frontier is WASM import stripping | Not reached | One replay | Outside this build-time landing |
+
+Root cause: the synthetic `_molt_native_runtime_python_imports.py` entry lived
+under each queue run's unique output directory but was named against source roots.
+That turned `tmp/pact_witness_acceptance_queue/runs/<run>/build/...` into seven
+namespace pseudo-modules. Because `known_modules` is a lowering-context input,
+every run invalidated the whole module set: `O(M)` relowering for output-path
+churn. The synthetic artifact root is now the first module-naming root, so the
+entry keeps its stable logical module name and output-directory churn invalidates
+zero contexts. The regression test uses an acceptance-shaped nested output path
+and rejects any `tmp.acceptance` module admission.

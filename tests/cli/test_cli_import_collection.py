@@ -778,11 +778,12 @@ def test_materialize_import_plan_does_not_rescan_importlib_support(
         fail_extend_module_graph_with_closure,
     )
 
+    artifacts_root = tmp_path / "tmp" / "acceptance" / "runs" / "unique" / "build"
     import_plan = cli._materialize_import_plan(
         prepared_module_graph=prepared,
         module_reasons=module_reasons,
         stdlib_root=cli_module_resolution._stdlib_root_path(),
-        artifacts_root=tmp_path,
+        artifacts_root=artifacts_root,
         entry_module="demo",
         diagnostics_enabled=False,
     )
@@ -1111,6 +1112,7 @@ def test_materialize_import_plan_adds_native_runtime_python_import_closure(
     assert "nativepkg.exceptions" in import_plan.compile_modules
     assert "native_runtime_python_import" in module_reasons["math"]
     assert "native_support_source" in module_reasons["nativepkg.exceptions"]
+    assert not any(name.startswith("tmp.acceptance") for name in import_plan.module_graph)
 
 
 def _sealed_manifest_custody_overrides() -> dict[str, Any]:
