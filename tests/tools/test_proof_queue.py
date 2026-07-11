@@ -8837,6 +8837,10 @@ def _write_current_numpy_seal_manifest(root: Path, source_root: Path) -> None:
         encoding="utf-8",
     )
     root.mkdir(parents=True, exist_ok=True)
+    (root / "numpy").mkdir()
+    (root / "numpy/version.py").write_text(
+        'version = "2.5.1"\n', encoding="utf-8"
+    )
     (root / "extension_manifest.json").write_text(
         json.dumps(
             {
@@ -8907,9 +8911,12 @@ def test_proof_queue_r6_target_version_parity_print_spec(
 
 def test_proof_queue_pact_witness_acceptance_admits_staged_native_roots(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
     expected_roots = [
-        tmp_path / "tmp/pact_numpy_multiarray_sealed_for_witness",
+        tmp_path
+        / "artifacts/package-seals/numpy/2.5.1/pact_numpy_multiarray_sealed_for_witness",
         tmp_path / "tmp/pact_scipy_ndimage_sealed_for_witness_next",
         tmp_path / "tmp/pact_scipy_ni_label_molt_ext_wasm_cpython_abi",
         tmp_path / "tmp/pact_scipy_ccallback_c_molt_ext_wasm_cpython_abi",
@@ -8939,15 +8946,19 @@ def test_proof_queue_pact_witness_acceptance_admits_staged_native_roots(
     assert any("manifest-led" in note for note in spec["notes"])
 
 
-def test_proof_queue_pact_witness_acceptance_discovers_sibling_worktree_roots(
+def test_proof_queue_pact_witness_acceptance_uses_durable_numpy_not_sibling(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     side_worktree = tmp_path / "worktrees" / "side"
     shared_worktree = tmp_path / "main"
     side_worktree.mkdir(parents=True)
+    durable_numpy = (
+        tmp_path
+        / "artifacts/package-seals/numpy/2.5.1/pact_numpy_multiarray_sealed_for_witness"
+    )
     expected_roots = [
-        shared_worktree / "tmp/pact_numpy_multiarray_sealed_for_witness",
+        durable_numpy,
         shared_worktree / "tmp/pact_scipy_ndimage_sealed_for_witness_next",
         shared_worktree / "bench/friends/repos/numpy_off_the_shelf",
         shared_worktree / "bench/friends/repos/scipy_off_the_shelf",
@@ -8963,6 +8974,7 @@ def test_proof_queue_pact_witness_acceptance_discovers_sibling_worktree_roots(
         "_git_worktree_roots",
         lambda repo_root: (shared_worktree,) if repo_root == side_worktree else (),
     )
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
 
     spec = proof_queue._pact_witness_acceptance_spec(repo_root=side_worktree)
     env = spec["env_overrides"]
@@ -8982,7 +8994,8 @@ def test_proof_queue_pact_witness_acceptance_skips_stale_numpy_seal_root(
     side_worktree.mkdir(parents=True)
     stale_numpy = stale_worktree / "tmp/pact_numpy_multiarray_sealed_for_witness"
     current_numpy = (
-        current_worktree / "tmp/pact_numpy_multiarray_sealed_for_witness"
+        tmp_path
+        / "artifacts/package-seals/numpy/2.5.1/pact_numpy_multiarray_sealed_for_witness"
     )
     current_numpy_source = current_worktree / "bench/friends/repos/numpy_off_the_shelf"
     _write_stale_numpy_seal_manifest(
@@ -8997,6 +9010,7 @@ def test_proof_queue_pact_witness_acceptance_skips_stale_numpy_seal_root(
             (stale_worktree, current_worktree) if repo_root == side_worktree else ()
         ),
     )
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
 
     roots = proof_queue._pact_witness_native_roots(repo_root=side_worktree)
 
@@ -9009,6 +9023,12 @@ def test_proof_queue_pact_witness_acceptance_prefers_canonical_sibling_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    durable_numpy = (
+        tmp_path
+        / "artifacts/package-seals/numpy/2.5.1/pact_numpy_multiarray_sealed_for_witness"
+    )
+    _write_current_numpy_seal_manifest(durable_numpy, tmp_path / "numpy-source")
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
     side_worktree = tmp_path / "worktrees" / "side"
     shared_worktree = tmp_path / "main"
     stale_scipy = (
@@ -9034,8 +9054,14 @@ def test_proof_queue_pact_witness_acceptance_prefers_canonical_sibling_root(
 
 
 def test_proof_queue_pact_witness_roots_accept_artifact_specific_manifests(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    durable_numpy = (
+        tmp_path
+        / "artifacts/package-seals/numpy/2.5.1/pact_numpy_multiarray_sealed_for_witness"
+    )
+    _write_current_numpy_seal_manifest(durable_numpy, tmp_path / "numpy-source")
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
     artifact_root = tmp_path / "tmp/pact_scipy_ndimage_sealed_for_witness_next"
     artifact_root.joinpath("scipy", "ndimage").mkdir(parents=True)
     artifact_root.joinpath(
@@ -9051,6 +9077,7 @@ def test_proof_queue_pact_witness_roots_accept_artifact_specific_manifests(
     roots = proof_queue._pact_witness_native_roots(repo_root=tmp_path)
 
     assert roots == [
+        durable_numpy.resolve(),
         artifact_root.resolve(),
         *(root.resolve() for root in source_roots),
     ]

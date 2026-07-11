@@ -9,6 +9,8 @@ import pytest
 from molt.cli.source_extension_toolchain import _python_pc_text
 from molt.scientific_stack_versions import (
     CONFIG_ENV,
+    attest_numpy_witness_seal,
+    numpy_witness_seal_root,
     resolve_scientific_stack,
     verify_cpython_abi_headers,
 )
@@ -64,6 +66,29 @@ def test_current_verified_stack_and_cpython_abi_are_aligned() -> None:
     stack = resolve_scientific_stack()
     assert (stack.numpy, stack.scipy, stack.cpython) == ("2.5.1", "1.18.0", "3.12")
     verify_cpython_abi_headers(stack=stack, repo_root=ROOT)
+
+
+def test_numpy_seal_root_is_version_keyed(tmp_path: Path) -> None:
+    stack = resolve_scientific_stack()
+    assert numpy_witness_seal_root(stack=stack, artifact_root=tmp_path) == (
+        tmp_path
+        / "package-seals"
+        / "numpy"
+        / "2.5.1"
+        / "pact_numpy_multiarray_sealed_for_witness"
+    )
+
+
+def test_numpy_seal_attestation_rejects_config_effective_drift(tmp_path: Path) -> None:
+    seal = tmp_path / "seal"
+    (seal / "numpy").mkdir(parents=True)
+    (seal / "numpy/version.py").write_text(
+        'version = "2.4.2"\n__version__ = version\n', encoding="utf-8"
+    )
+    with pytest.raises(
+        ValueError, match=r"configured=2\.5\.1 effective=2\.4\.2"
+    ):
+        attest_numpy_witness_seal(seal)
 
 
 def test_unsupported_selection_fails_honestly_early(

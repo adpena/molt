@@ -14,6 +14,12 @@ import sys
 import time
 from typing import Any
 
+from molt.scientific_stack_versions import (
+    attest_numpy_witness_seal,
+    numpy_witness_seal_root,
+    resolve_scientific_stack,
+)
+
 # Defensive UTF-8 stdio (recurring Windows cp1252 encoding bug class): this tool
 # relays captured subprocess output via print(); if that capture contains a
 # non-cp1252 char, the default Windows codec raises UnicodeEncodeError and aborts
@@ -729,6 +735,31 @@ def _check_parity(candidate: Path, reference: Path) -> None:
     )
 
 
+def _attest_effective_numpy_seal() -> Path:
+    stack = resolve_scientific_stack()
+    configured_roots = [
+        Path(raw)
+        for raw in os.environ.get("MOLT_MODULE_ROOTS", "").split(os.pathsep)
+        if raw.strip()
+    ]
+    durable_root = numpy_witness_seal_root(stack=stack)
+    candidates = [durable_root, *configured_roots]
+    for root in candidates:
+        if not (root / "numpy/version.py").is_file():
+            continue
+        effective = attest_numpy_witness_seal(root, stack=stack)
+        print(
+            f"[preflight] NumPy seal attested: configured={stack.numpy} "
+            f"effective={effective} root={root}",
+            flush=True,
+        )
+        return root
+    raise SystemExit(
+        f"NumPy seal attestation failed: no effective seal for configured={stack.numpy}; "
+        f"expected {durable_root}"
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Build, execute, and parity-check the Pact Kernel A WASM witness."
@@ -741,6 +772,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    _attest_effective_numpy_seal()
     build_dir, run_dir = _prepare_attempt_dirs(args.out_dir)
 
     if _iteration_mode():
