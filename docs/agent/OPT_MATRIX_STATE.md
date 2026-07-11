@@ -25,7 +25,7 @@ Ranking-helper input:
 | 2 | wasm-server/wasi | build wall-clock | Re-evaluate backend prepare/codegen instrumentation unblock contract | 9 | 2 | 4.50 | DOCUMENTED-BLOCKED: re-evaluated 2026-07-11; required phase/counter fields remain absent outside the unblock contract |
 | 3 | wasm-browser split + wasm-server/wasi | startup | Remove duplicate full-byte import/export-signature scans | 7 | 2 | 3.50 | ATTESTED-IMPROVED OPT-MATRIX-R1: 36.3275 ms -> 22.6561 ms median, 1.6034x |
 | 4 | wasm-browser split + wasm-server/wasi | build wall-clock | Audit effective runtime-wasm shared-cache hit rate | 8 | 3 | 2.67 | ATTESTED-IMPROVED OPT-MATRIX-R2: 1,111.2847 ms -> 554.2158 ms median, 2.0051x |
-| 5 | native exe | startup | Measure and reduce native hello below the 58.274 ms CPython median | 7 | 3 | 2.33 | UNATTACKED |
+| 5 | native exe | startup | Measure and reduce native hello below the CPython process median | 7 | 3 | 2.33 | DOCUMENTED-BLOCKED OPT-MATRIX-R3: current release median 11.954 ms vs CPython 167.438 ms; exposed duplicate-init candidate failed A12 (10.7531 ms -> 10.9078 ms) and was deleted |
 | 6 | all | runtime perf | Profile target-specific hot loops under determinism-safe classes | 8 | 4 | 2.00 | UNATTACKED |
 | 7 | wasm-browser split + wasm-server/wasi | startup | Attribute read/instantiate cost by section and active data | 5 | 3 | 1.67 | UNATTACKED |
 | 8 | all | memory | Profile release peak RSS / linear-memory ceilings and remove proven excess reservation | 5 | 4 | 1.25 | UNATTACKED |
@@ -49,3 +49,14 @@ Ranking-helper input:
 - Landing: retain the source structural/export validation and atomic-copy failure boundary; delete the redundant destination validation because `_atomic_copy_file` copies the already-validated bytes to a temporary file and atomically replaces the destination only after copy success.
 - Evidence: `tools/opt_matrix_r2_runtime_wasm_hydrate_attestation.json` (seven serial alternating release samples on a 45,871,431 B real shared runtime; 1,111.2847 ms -> 554.2158 ms median, 2.0051x; byte identity; 144,908,288 B maximum RSS).
 - Teeth: focused cache tests assert one source validation, byte-identical hydration, corrupt-source rejection, and copy-failure rejection.
+
+
+### OPT-MATRIX-R3 ? Native hello startup floor
+
+- Aperture: native release process entry from the generated C launcher through `molt_main`.
+- Profile: queue run `20260711T185428-opt-matrix-r3-startup-profile-1c835cc901814022` built the 4,193,792 B release native artifact successfully in 268.172 s. Seven direct serial launches measured an 11.954 ms median versus 167.438 ms for isolated CPython on the same machine; traced runtime initialization completed in 1.024 ms, with the largest stage 0.254 ms.
+- Candidate: native `molt_main` redundantly called idempotent `molt_runtime_init` after the C launcher already initialized the runtime. A target-specific deletion retained WASM and `molt_host_init` initialization and rebuilt successfully in queue run `20260711T190943-opt-matrix-r3-native-rebuild-0349735db84c4a45`.
+- A12 verdict: REJECTED. Nine alternating release samples measured 10.7531 ms before and 10.9078 ms after; the candidate produced no net improvement and was removed rather than landed.
+- Blocker: native hello is already roughly 14x below the current CPython process bar, and the remaining runtime-init stages are below the Windows process-launch noise floor. Reopen only when profiling exposes a target-specific component costing at least 0.5 ms with a predicted >=2% end-to-end win, using at least seven alternating samples plus cold-start treatment.
+- Harness finding: `tools/startup_bench.py` currently couples native and WASM builds, so the successful native artifact was discarded when the independent WASM linked build failed. The blocker contract requires target evidence to survive another target's build failure.
+- Evidence: `tools/opt_matrix_r3_native_startup_blocker.json`; no source optimization was retained.
