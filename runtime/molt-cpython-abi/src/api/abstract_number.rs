@@ -8,7 +8,7 @@
 //! to runtime handle bits and delegates to that authority through the numeric
 //! hooks (`number_binary_op` / `number_unary_op` / `number_power`).
 
-use crate::abi_types::{Py_ssize_t, PyObject};
+use crate::abi_types::{Py_ssize_t, PyNumberMethods, PyObject, PyTypeObject};
 use crate::bridge::GLOBAL_BRIDGE;
 use crate::hooks::{NumberBinaryOp, NumberUnaryOp};
 use molt_lang_obj_model::MoltObject;
@@ -55,21 +55,308 @@ unsafe fn pyobj_from_result(result_bits: u64) -> *mut PyObject {
     unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(result_bits) }
 }
 
+type BinaryFunc = unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> *mut PyObject;
+type UnaryFunc = unsafe extern "C" fn(*mut PyObject) -> *mut PyObject;
+type TernaryFunc =
+    unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut PyObject) -> *mut PyObject;
+
+#[derive(Clone, Copy)]
+enum BinarySlot {
+    Add,
+    Subtract,
+    Multiply,
+    Remainder,
+    Divmod,
+    Lshift,
+    Rshift,
+    And,
+    Xor,
+    Or,
+    FloorDivide,
+    TrueDivide,
+    MatrixMultiply,
+}
+
+#[derive(Clone, Copy)]
+enum InPlaceSlot {
+    Add,
+    Subtract,
+    Multiply,
+    Remainder,
+    Lshift,
+    Rshift,
+    And,
+    Xor,
+    Or,
+    FloorDivide,
+    TrueDivide,
+}
+
+unsafe fn number_methods(o: *mut PyObject) -> *mut PyNumberMethods {
+    if o.is_null() {
+        return ptr::null_mut();
+    }
+    let ty = unsafe { (*o).ob_type };
+    if ty.is_null() {
+        return ptr::null_mut();
+    }
+    unsafe { (*ty).tp_as_number }.cast::<PyNumberMethods>()
+}
+
+unsafe fn binary_slot(o: *mut PyObject, slot: BinarySlot) -> *mut c_void {
+    let methods = unsafe { number_methods(o) };
+    if methods.is_null() {
+        return ptr::null_mut();
+    }
+    unsafe {
+        match slot {
+            BinarySlot::Add => (*methods).nb_add,
+            BinarySlot::Subtract => (*methods).nb_subtract,
+            BinarySlot::Multiply => (*methods).nb_multiply,
+            BinarySlot::Remainder => (*methods).nb_remainder,
+            BinarySlot::Divmod => (*methods).nb_divmod,
+            BinarySlot::Lshift => (*methods).nb_lshift,
+            BinarySlot::Rshift => (*methods).nb_rshift,
+            BinarySlot::And => (*methods).nb_and,
+            BinarySlot::Xor => (*methods).nb_xor,
+            BinarySlot::Or => (*methods).nb_or,
+            BinarySlot::FloorDivide => (*methods).nb_floor_divide,
+            BinarySlot::TrueDivide => (*methods).nb_true_divide,
+            BinarySlot::MatrixMultiply => (*methods).nb_matrix_multiply,
+        }
+    }
+}
+
+unsafe fn inplace_slot(o: *mut PyObject, slot: InPlaceSlot) -> *mut c_void {
+    let methods = unsafe { number_methods(o) };
+    if methods.is_null() {
+        return ptr::null_mut();
+    }
+    unsafe {
+        match slot {
+            InPlaceSlot::Add => (*methods).nb_inplace_add,
+            InPlaceSlot::Subtract => (*methods).nb_inplace_subtract,
+            InPlaceSlot::Multiply => (*methods).nb_inplace_multiply,
+            InPlaceSlot::Remainder => (*methods).nb_inplace_remainder,
+            InPlaceSlot::Lshift => (*methods).nb_inplace_lshift,
+            InPlaceSlot::Rshift => (*methods).nb_inplace_rshift,
+            InPlaceSlot::And => (*methods).nb_inplace_and,
+            InPlaceSlot::Xor => (*methods).nb_inplace_xor,
+            InPlaceSlot::Or => (*methods).nb_inplace_or,
+            InPlaceSlot::FloorDivide => (*methods).nb_inplace_floor_divide,
+            InPlaceSlot::TrueDivide => (*methods).nb_inplace_true_divide,
+        }
+    }
+}
+
+fn is_not_implemented(result: *mut PyObject) -> bool {
+    ptr::eq(result, &raw mut crate::abi_types::Py_NotImplementedSentinel)
+}
+
+unsafe fn discard_not_implemented(result: *mut PyObject) {
+    unsafe { crate::api::refcount::Py_DECREF(result) };
+}
+
+unsafe fn binop_type_error(o1: *mut PyObject, o2: *mut PyObject, op_name: &str) -> *mut PyObject {
+    let message = format!(
+        "unsupported operand type(s) for {op_name}: '{}' and '{}'",
+        unsafe { type_name_of(o1) },
+        unsafe { type_name_of(o2) }
+    );
+    let message = std::ffi::CString::new(message).expect("operator error contains no NUL");
+    unsafe {
+        crate::api::errors::PyErr_SetString(
+            &raw mut crate::abi_types::PyExc_TypeError,
+            message.as_ptr(),
+        )
+    };
+    ptr::null_mut()
+}
+
+unsafe fn call_binary_func(
+    slot: *mut c_void,
+    o1: *mut PyObject,
+    o2: *mut PyObject,
+) -> *mut PyObject {
+    let func: BinaryFunc = unsafe { std::mem::transmute(slot) };
+    unsafe { func(o1, o2) }
+}
+
+unsafe fn foreign_binary_op1(
+    slot: BinarySlot,
+    o1: *mut PyObject,
+    o2: *mut PyObject,
+) -> *mut PyObject {
+    let type1: *mut PyTypeObject = unsafe { (*o1).ob_type };
+    let type2: *mut PyTypeObject = unsafe { (*o2).ob_type };
+    let slot1 = unsafe { binary_slot(o1, slot) };
+    let mut slot2 = if !ptr::eq(type1, type2) {
+        unsafe { binary_slot(o2, slot) }
+    } else {
+        ptr::null_mut()
+    };
+    if slot2 == slot1 {
+        slot2 = ptr::null_mut();
+    }
+
+    if !slot1.is_null() {
+        if !slot2.is_null() && unsafe { crate::api::typeobj::PyType_IsSubtype(type2, type1) } == 1 {
+            let result = unsafe { call_binary_func(slot2, o1, o2) };
+            if result.is_null() || !is_not_implemented(result) {
+                return result;
+            }
+            unsafe { discard_not_implemented(result) };
+            slot2 = ptr::null_mut();
+        }
+        let result = unsafe { call_binary_func(slot1, o1, o2) };
+        if result.is_null() || !is_not_implemented(result) {
+            return result;
+        }
+        unsafe { discard_not_implemented(result) };
+    }
+    if !slot2.is_null() {
+        let result = unsafe { call_binary_func(slot2, o1, o2) };
+        if result.is_null() || !is_not_implemented(result) {
+            return result;
+        }
+        unsafe { discard_not_implemented(result) };
+    }
+    &raw mut crate::abi_types::Py_NotImplementedSentinel
+}
+
+unsafe fn foreign_binary_op(
+    slot: BinarySlot,
+    op_name: &str,
+    o1: *mut PyObject,
+    o2: *mut PyObject,
+) -> *mut PyObject {
+    let result = unsafe { foreign_binary_op1(slot, o1, o2) };
+    if is_not_implemented(result) {
+        return unsafe { binop_type_error(o1, o2, op_name) };
+    }
+    result
+}
+
+unsafe fn power_slot(o: *mut PyObject) -> *mut c_void {
+    let methods = unsafe { number_methods(o) };
+    if methods.is_null() {
+        ptr::null_mut()
+    } else {
+        unsafe { (*methods).nb_power }
+    }
+}
+
+unsafe fn call_ternary_func(
+    slot: *mut c_void,
+    o1: *mut PyObject,
+    o2: *mut PyObject,
+    o3: *mut PyObject,
+) -> *mut PyObject {
+    let func: TernaryFunc = unsafe { std::mem::transmute(slot) };
+    unsafe { func(o1, o2, o3) }
+}
+
+unsafe fn foreign_power(o1: *mut PyObject, o2: *mut PyObject, o3: *mut PyObject) -> *mut PyObject {
+    let type1 = unsafe { (*o1).ob_type };
+    let type2 = unsafe { (*o2).ob_type };
+    let slot1 = unsafe { power_slot(o1) };
+    let mut slot2 = if !ptr::eq(type1, type2) {
+        unsafe { power_slot(o2) }
+    } else {
+        ptr::null_mut()
+    };
+    if slot2 == slot1 {
+        slot2 = ptr::null_mut();
+    }
+    if !slot1.is_null() {
+        if !slot2.is_null() && unsafe { crate::api::typeobj::PyType_IsSubtype(type2, type1) } == 1 {
+            let result = unsafe { call_ternary_func(slot2, o1, o2, o3) };
+            if result.is_null() || !is_not_implemented(result) {
+                return result;
+            }
+            unsafe { discard_not_implemented(result) };
+            slot2 = ptr::null_mut();
+        }
+        let result = unsafe { call_ternary_func(slot1, o1, o2, o3) };
+        if result.is_null() || !is_not_implemented(result) {
+            return result;
+        }
+        unsafe { discard_not_implemented(result) };
+    }
+    if !slot2.is_null() {
+        let result = unsafe { call_ternary_func(slot2, o1, o2, o3) };
+        if result.is_null() || !is_not_implemented(result) {
+            return result;
+        }
+        unsafe { discard_not_implemented(result) };
+    }
+    if !o3.is_null() {
+        let slot3 = unsafe { power_slot(o3) };
+        if !slot3.is_null() && slot3 != slot1 && slot3 != slot2 {
+            let result = unsafe { call_ternary_func(slot3, o1, o2, o3) };
+            if result.is_null() || !is_not_implemented(result) {
+                return result;
+            }
+            unsafe { discard_not_implemented(result) };
+        }
+    }
+    unsafe { binop_type_error(o1, o2, "** or pow()") }
+}
+
+unsafe fn inplace_binary_op(
+    inplace: InPlaceSlot,
+    binary: BinarySlot,
+    op_name: &str,
+    o1: *mut PyObject,
+    o2: *mut PyObject,
+) -> *mut PyObject {
+    let slot = unsafe { inplace_slot(o1, inplace) };
+    if !slot.is_null() {
+        let result = unsafe { call_binary_func(slot, o1, o2) };
+        if result.is_null() || !is_not_implemented(result) {
+            return result;
+        }
+        unsafe { discard_not_implemented(result) };
+    }
+    if resolve_bits(o1).is_some() && resolve_bits(o2).is_some() {
+        return unsafe {
+            match binary {
+                BinarySlot::Add => PyNumber_Add(o1, o2),
+                BinarySlot::Subtract => PyNumber_Subtract(o1, o2),
+                BinarySlot::Multiply => PyNumber_Multiply(o1, o2),
+                BinarySlot::Remainder => PyNumber_Remainder(o1, o2),
+                BinarySlot::Lshift => PyNumber_Lshift(o1, o2),
+                BinarySlot::Rshift => PyNumber_Rshift(o1, o2),
+                BinarySlot::And => PyNumber_And(o1, o2),
+                BinarySlot::Xor => PyNumber_Xor(o1, o2),
+                BinarySlot::Or => PyNumber_Or(o1, o2),
+                BinarySlot::FloorDivide => PyNumber_FloorDivide(o1, o2),
+                BinarySlot::TrueDivide => PyNumber_TrueDivide(o1, o2),
+                BinarySlot::Divmod | BinarySlot::MatrixMultiply => unreachable!(),
+            }
+        };
+    }
+    unsafe { foreign_binary_op(binary, op_name, o1, o2) }
+}
+
 /// Dispatch a binary numeric op through the runtime authority.
 unsafe fn binary_op(op: NumberBinaryOp, o1: *mut PyObject, o2: *mut PyObject) -> *mut PyObject {
-    let a = match resolve_bits(o1) {
-        Some(b) => b,
-        None => {
-            unsafe { ensure_exception_set() };
-            return ptr::null_mut();
-        }
-    };
-    let b = match resolve_bits(o2) {
-        Some(b) => b,
-        None => {
-            unsafe { ensure_exception_set() };
-            return ptr::null_mut();
-        }
+    let (Some(a), Some(b)) = (resolve_bits(o1), resolve_bits(o2)) else {
+        let (slot, op_name) = match op {
+            NumberBinaryOp::Add => (BinarySlot::Add, "+"),
+            NumberBinaryOp::Subtract => (BinarySlot::Subtract, "-"),
+            NumberBinaryOp::Multiply => (BinarySlot::Multiply, "*"),
+            NumberBinaryOp::TrueDivide => (BinarySlot::TrueDivide, "/"),
+            NumberBinaryOp::FloorDivide => (BinarySlot::FloorDivide, "//"),
+            NumberBinaryOp::Remainder => (BinarySlot::Remainder, "%"),
+            NumberBinaryOp::Lshift => (BinarySlot::Lshift, "<<"),
+            NumberBinaryOp::Rshift => (BinarySlot::Rshift, ">>"),
+            NumberBinaryOp::And => (BinarySlot::And, "&"),
+            NumberBinaryOp::Or => (BinarySlot::Or, "|"),
+            NumberBinaryOp::Xor => (BinarySlot::Xor, "^"),
+            NumberBinaryOp::MatrixMultiply => (BinarySlot::MatrixMultiply, "@"),
+        };
+        return unsafe { foreign_binary_op(slot, op_name, o1, o2) };
     };
     let h = crate::hooks::hooks_or_stubs();
     let result = unsafe { (h.number_binary_op)(op as u32, a, b) };
@@ -78,12 +365,35 @@ unsafe fn binary_op(op: NumberBinaryOp, o1: *mut PyObject, o2: *mut PyObject) ->
 
 /// Dispatch a unary numeric op through the runtime authority.
 unsafe fn unary_op(op: NumberUnaryOp, o: *mut PyObject) -> *mut PyObject {
-    let a = match resolve_bits(o) {
-        Some(b) => b,
-        None => {
-            unsafe { ensure_exception_set() };
-            return ptr::null_mut();
+    let Some(a) = resolve_bits(o) else {
+        let methods = unsafe { number_methods(o) };
+        let (slot, op_name) = if methods.is_null() {
+            (ptr::null_mut(), "")
+        } else {
+            unsafe {
+                match op {
+                    NumberUnaryOp::Negative => ((*methods).nb_negative, "unary -"),
+                    NumberUnaryOp::Positive => ((*methods).nb_positive, "unary +"),
+                    NumberUnaryOp::Absolute => ((*methods).nb_absolute, "abs()"),
+                    NumberUnaryOp::Invert => ((*methods).nb_invert, "unary ~"),
+                }
+            }
+        };
+        if !slot.is_null() {
+            let func: UnaryFunc = unsafe { std::mem::transmute(slot) };
+            return unsafe { func(o) };
         }
+        let message = format!("bad operand type for {op_name}: '{}'", unsafe {
+            type_name_of(o)
+        });
+        let message = std::ffi::CString::new(message).expect("unary error contains no NUL");
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                &raw mut crate::abi_types::PyExc_TypeError,
+                message.as_ptr(),
+            )
+        };
+        return ptr::null_mut();
     };
     let h = crate::hooks::hooks_or_stubs();
     let result = unsafe { (h.number_unary_op)(op as u32, a) };
@@ -188,6 +498,12 @@ pub unsafe extern "C" fn PyNumber_Power(
     o2: *mut PyObject,
     o3: *mut PyObject,
 ) -> *mut PyObject {
+    if resolve_bits(o1).is_none()
+        || resolve_bits(o2).is_none()
+        || (!o3.is_null() && resolve_bits(o3).is_none())
+    {
+        return unsafe { foreign_power(o1, o2, o3) };
+    }
     // CPython's `PyNumber_Power(base, exp, mod)` computes `pow(base, exp, mod)`:
     // a genuine 3-argument modular exponentiation, NOT `base ** exp` with the
     // modulus dropped. When `mod` is None (or absent), it is plain `base ** exp`.
@@ -371,7 +687,11 @@ unsafe fn finalize_slot_result(
 /// No native or foreign conversion applied: record the site on the permanent
 /// silent-failure surface and raise the CPython-shaped `TypeError`, so a failing
 /// conversion is never a bare NULL (the C-API contract every caller relies on).
-unsafe fn conversion_type_error(o: *mut PyObject, capi_name: &str, message: String) -> *mut PyObject {
+unsafe fn conversion_type_error(
+    o: *mut PyObject,
+    capi_name: &str,
+    message: String,
+) -> *mut PyObject {
     crate::capi_trace::record_silent_failure(capi_name, Some(&unsafe { type_name_of(o) }));
     if !conversion_exception_pending()
         && let Ok(cmsg) = std::ffi::CString::new(message)
@@ -487,10 +807,9 @@ pub unsafe extern "C" fn PyNumber_Index(o: *mut PyObject) -> *mut PyObject {
     if let Some(result) = unsafe { call_number_unary_slot(o, NumberSlot::Index) } {
         return unsafe { finalize_slot_result(o, result, "PyNumber_Index") };
     }
-    let message = format!(
-        "'{}' object cannot be interpreted as an integer",
-        unsafe { type_name_of(o) }
-    );
+    let message = format!("'{}' object cannot be interpreted as an integer", unsafe {
+        type_name_of(o)
+    });
     unsafe { conversion_type_error(o, "PyNumber_Index", message) }
 }
 
@@ -549,7 +868,7 @@ pub unsafe extern "C" fn PyNumber_InPlaceAdd(
     o1: *mut PyObject,
     o2: *mut PyObject,
 ) -> *mut PyObject {
-    unsafe { PyNumber_Add(o1, o2) }
+    unsafe { inplace_binary_op(InPlaceSlot::Add, BinarySlot::Add, "+=", o1, o2) }
 }
 
 #[unsafe(no_mangle)]
@@ -557,7 +876,7 @@ pub unsafe extern "C" fn PyNumber_InPlaceSubtract(
     o1: *mut PyObject,
     o2: *mut PyObject,
 ) -> *mut PyObject {
-    unsafe { PyNumber_Subtract(o1, o2) }
+    unsafe { inplace_binary_op(InPlaceSlot::Subtract, BinarySlot::Subtract, "-=", o1, o2) }
 }
 
 #[unsafe(no_mangle)]
@@ -565,7 +884,7 @@ pub unsafe extern "C" fn PyNumber_InPlaceMultiply(
     o1: *mut PyObject,
     o2: *mut PyObject,
 ) -> *mut PyObject {
-    unsafe { PyNumber_Multiply(o1, o2) }
+    unsafe { inplace_binary_op(InPlaceSlot::Multiply, BinarySlot::Multiply, "*=", o1, o2) }
 }
 
 #[unsafe(no_mangle)]
@@ -573,7 +892,15 @@ pub unsafe extern "C" fn PyNumber_InPlaceTrueDivide(
     o1: *mut PyObject,
     o2: *mut PyObject,
 ) -> *mut PyObject {
-    unsafe { PyNumber_TrueDivide(o1, o2) }
+    unsafe {
+        inplace_binary_op(
+            InPlaceSlot::TrueDivide,
+            BinarySlot::TrueDivide,
+            "/=",
+            o1,
+            o2,
+        )
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -581,7 +908,15 @@ pub unsafe extern "C" fn PyNumber_InPlaceFloorDivide(
     o1: *mut PyObject,
     o2: *mut PyObject,
 ) -> *mut PyObject {
-    unsafe { PyNumber_FloorDivide(o1, o2) }
+    unsafe {
+        inplace_binary_op(
+            InPlaceSlot::FloorDivide,
+            BinarySlot::FloorDivide,
+            "//=",
+            o1,
+            o2,
+        )
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -589,7 +924,7 @@ pub unsafe extern "C" fn PyNumber_InPlaceRemainder(
     o1: *mut PyObject,
     o2: *mut PyObject,
 ) -> *mut PyObject {
-    unsafe { PyNumber_Remainder(o1, o2) }
+    unsafe { inplace_binary_op(InPlaceSlot::Remainder, BinarySlot::Remainder, "%=", o1, o2) }
 }
 
 #[unsafe(no_mangle)]
@@ -597,7 +932,7 @@ pub unsafe extern "C" fn PyNumber_InPlaceLshift(
     o1: *mut PyObject,
     o2: *mut PyObject,
 ) -> *mut PyObject {
-    unsafe { PyNumber_Lshift(o1, o2) }
+    unsafe { inplace_binary_op(InPlaceSlot::Lshift, BinarySlot::Lshift, "<<=", o1, o2) }
 }
 
 #[unsafe(no_mangle)]
@@ -605,7 +940,7 @@ pub unsafe extern "C" fn PyNumber_InPlaceRshift(
     o1: *mut PyObject,
     o2: *mut PyObject,
 ) -> *mut PyObject {
-    unsafe { PyNumber_Rshift(o1, o2) }
+    unsafe { inplace_binary_op(InPlaceSlot::Rshift, BinarySlot::Rshift, ">>=", o1, o2) }
 }
 
 #[unsafe(no_mangle)]
@@ -613,12 +948,12 @@ pub unsafe extern "C" fn PyNumber_InPlaceAnd(
     o1: *mut PyObject,
     o2: *mut PyObject,
 ) -> *mut PyObject {
-    unsafe { PyNumber_And(o1, o2) }
+    unsafe { inplace_binary_op(InPlaceSlot::And, BinarySlot::And, "&=", o1, o2) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyNumber_InPlaceOr(o1: *mut PyObject, o2: *mut PyObject) -> *mut PyObject {
-    unsafe { PyNumber_Or(o1, o2) }
+    unsafe { inplace_binary_op(InPlaceSlot::Or, BinarySlot::Or, "|=", o1, o2) }
 }
 
 #[unsafe(no_mangle)]
@@ -626,11 +961,14 @@ pub unsafe extern "C" fn PyNumber_InPlaceXor(
     o1: *mut PyObject,
     o2: *mut PyObject,
 ) -> *mut PyObject {
-    unsafe { PyNumber_Xor(o1, o2) }
+    unsafe { inplace_binary_op(InPlaceSlot::Xor, BinarySlot::Xor, "^=", o1, o2) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyNumber_Divmod(o1: *mut PyObject, o2: *mut PyObject) -> *mut PyObject {
+    if resolve_bits(o1).is_none() || resolve_bits(o2).is_none() {
+        return unsafe { foreign_binary_op(BinarySlot::Divmod, "divmod()", o1, o2) };
+    }
     let quotient = unsafe { PyNumber_FloorDivide(o1, o2) };
     let remainder = unsafe { PyNumber_Remainder(o1, o2) };
     if quotient.is_null() || remainder.is_null() {
@@ -675,9 +1013,143 @@ mod conversion_slot_tests {
         ob_refcnt: 1,
         ob_type: ptr::null_mut(),
     };
+    static mut ADD_RESULT: PyObject = PyObject {
+        ob_refcnt: 1,
+        ob_type: ptr::null_mut(),
+    };
+    static mut BASE_RESULT: PyObject = PyObject {
+        ob_refcnt: 1,
+        ob_type: ptr::null_mut(),
+    };
+    static mut SUBCLASS_RESULT: PyObject = PyObject {
+        ob_refcnt: 1,
+        ob_type: ptr::null_mut(),
+    };
+    static mut INPLACE_RESULT: PyObject = PyObject {
+        ob_refcnt: 1,
+        ob_type: ptr::null_mut(),
+    };
 
     unsafe extern "C" fn fake_nb_int(_o: *mut PyObject) -> *mut PyObject {
         &raw mut FAKE_INT_RESULT
+    }
+
+    unsafe extern "C" fn fake_nb_add(_left: *mut PyObject, _right: *mut PyObject) -> *mut PyObject {
+        &raw mut ADD_RESULT
+    }
+
+    unsafe extern "C" fn base_nb_add(_left: *mut PyObject, _right: *mut PyObject) -> *mut PyObject {
+        &raw mut BASE_RESULT
+    }
+
+    unsafe extern "C" fn subclass_nb_add(
+        _left: *mut PyObject,
+        _right: *mut PyObject,
+    ) -> *mut PyObject {
+        &raw mut SUBCLASS_RESULT
+    }
+
+    unsafe extern "C" fn fake_nb_inplace_add(
+        _left: *mut PyObject,
+        _right: *mut PyObject,
+    ) -> *mut PyObject {
+        &raw mut INPLACE_RESULT
+    }
+
+    unsafe extern "C" fn not_implemented_nb_add(
+        _left: *mut PyObject,
+        _right: *mut PyObject,
+    ) -> *mut PyObject {
+        let result = &raw mut crate::abi_types::Py_NotImplementedSentinel;
+        unsafe { crate::api::refcount::Py_INCREF(result) };
+        result
+    }
+
+    unsafe fn foreign_object(
+        name: &'static std::ffi::CStr,
+        methods: *mut PyNumberMethods,
+        base: *mut PyTypeObject,
+    ) -> (PyTypeObject, PyObject) {
+        let mut ty: PyTypeObject = unsafe { std::mem::zeroed() };
+        ty.tp_as_number = methods.cast::<c_void>();
+        ty.tp_name = name.as_ptr();
+        ty.tp_base = base;
+        let obj = PyObject {
+            ob_refcnt: 1,
+            ob_type: &raw mut ty,
+        };
+        (ty, obj)
+    }
+
+    #[test]
+    fn py_number_add_dispatches_to_foreign_nb_add() {
+        let mut methods: PyNumberMethods = unsafe { std::mem::zeroed() };
+        methods.nb_add = fake_nb_add as *mut c_void;
+        let (mut ty, mut left) =
+            unsafe { foreign_object(c"foreign_add", &raw mut methods, ptr::null_mut()) };
+        left.ob_type = &raw mut ty;
+        let mut right = PyObject {
+            ob_refcnt: 1,
+            ob_type: &raw mut ty,
+        };
+
+        let result = unsafe { PyNumber_Add(&raw mut left, &raw mut right) };
+        assert_eq!(result, &raw mut ADD_RESULT);
+    }
+
+    #[test]
+    fn py_number_add_prioritizes_subclass_reflected_slot() {
+        let mut base_methods: PyNumberMethods = unsafe { std::mem::zeroed() };
+        base_methods.nb_add = base_nb_add as *mut c_void;
+        let (mut base_ty, mut left) =
+            unsafe { foreign_object(c"base_number", &raw mut base_methods, ptr::null_mut()) };
+        left.ob_type = &raw mut base_ty;
+
+        let mut subclass_methods: PyNumberMethods = unsafe { std::mem::zeroed() };
+        subclass_methods.nb_add = subclass_nb_add as *mut c_void;
+        let (mut subclass_ty, mut right) =
+            unsafe { foreign_object(c"sub_number", &raw mut subclass_methods, &raw mut base_ty) };
+        right.ob_type = &raw mut subclass_ty;
+
+        let result = unsafe { PyNumber_Add(&raw mut left, &raw mut right) };
+        assert_eq!(result, &raw mut SUBCLASS_RESULT);
+    }
+
+    #[test]
+    fn py_number_inplace_add_calls_nb_inplace_add() {
+        let mut methods: PyNumberMethods = unsafe { std::mem::zeroed() };
+        methods.nb_add = fake_nb_add as *mut c_void;
+        methods.nb_inplace_add = fake_nb_inplace_add as *mut c_void;
+        let (mut ty, mut left) =
+            unsafe { foreign_object(c"foreign_iadd", &raw mut methods, ptr::null_mut()) };
+        left.ob_type = &raw mut ty;
+        let mut right = PyObject {
+            ob_refcnt: 1,
+            ob_type: &raw mut ty,
+        };
+
+        let result = unsafe { PyNumber_InPlaceAdd(&raw mut left, &raw mut right) };
+        assert_eq!(result, &raw mut INPLACE_RESULT);
+    }
+
+    #[test]
+    fn py_number_add_not_implemented_raises_cpython_type_error() {
+        unsafe { crate::api::errors::PyErr_Clear() };
+        let mut methods: PyNumberMethods = unsafe { std::mem::zeroed() };
+        methods.nb_add = not_implemented_nb_add as *mut c_void;
+        let (mut left_ty, mut left) =
+            unsafe { foreign_object(c"left_number", &raw mut methods, ptr::null_mut()) };
+        left.ob_type = &raw mut left_ty;
+        let (mut right_ty, mut right) =
+            unsafe { foreign_object(c"right_number", ptr::null_mut(), ptr::null_mut()) };
+        right.ob_type = &raw mut right_ty;
+
+        let result = unsafe { PyNumber_Add(&raw mut left, &raw mut right) };
+        assert!(result.is_null());
+        assert_eq!(
+            crate::api::errors::take_current_error_message().as_deref(),
+            Some("unsupported operand type(s) for +: 'left_number' and 'right_number'")
+        );
     }
 
     /// A foreign object whose type exposes `nb_int` must have `PyNumber_Long`
