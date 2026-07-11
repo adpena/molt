@@ -3223,7 +3223,24 @@ pub unsafe extern "C" fn PyCFunction_NewEx(
             )
         };
         if func_bits != 0 {
-            return unsafe { GLOBAL_BRIDGE.handle_to_pyobj(func_bits) };
+            unsafe {
+                crate::api::refcount::Py_XINCREF(self_);
+                crate::api::refcount::Py_XINCREF(module);
+            }
+            let obj = Box::new(PyCFunctionObject {
+                ob_base: PyObject {
+                    ob_refcnt: 1,
+                    ob_type: &raw mut crate::abi_types::PyCFunction_Type,
+                },
+                m_ml: ml,
+                m_self: self_,
+                m_module: module,
+                m_weakreflist: ptr::null_mut(),
+                vectorcall: None,
+            });
+            let ptr = Box::into_raw(obj).cast::<PyObject>();
+            unsafe { GLOBAL_BRIDGE.register_pyobj_for_handle(ptr, func_bits) };
+            return ptr;
         }
     }
 
