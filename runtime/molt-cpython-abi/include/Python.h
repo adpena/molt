@@ -1065,6 +1065,8 @@ extern PyObject    *_PyObject_Vectorcall(PyObject *callable, PyObject *const *ar
 extern PyObject    *PyObject_CallMethodObjArgs(PyObject *callable, PyObject *name, ...);
 extern PyObject    *PyObject_CallMethod(PyObject *callable, const char *name, const char *format, ...);
 extern PyObject    *PyObject_CallFunction(PyObject *callable, const char *format, ...);
+extern PyObject    *_PyObject_CallMethod_SizeT(PyObject *callable, const char *name, const char *format, ...);
+extern PyObject    *_PyObject_CallFunction_SizeT(PyObject *callable, const char *format, ...);
 extern PyObject    *PyObject_CallFunctionObjArgs(PyObject *callable, ...);
 extern int          PyObject_AsFileDescriptor(PyObject *op);
 extern int          PyDescr_IsData      (PyObject *descr);
@@ -1913,6 +1915,7 @@ extern int _PyArg_ParseTuple_SizeT(PyObject *args, const char *format, ...);
 extern int _PyArg_ParseTupleAndKeywords_SizeT(PyObject *args, PyObject *kwargs, const char *format, char **kwlist, ...);
 extern int _PyArg_VaParse_SizeT(PyObject *args, const char *format, va_list vargs);
 extern int _PyArg_VaParseTupleAndKeywords_SizeT(PyObject *args, PyObject *kwargs, const char *format, char **kwlist, va_list vargs);
+extern int _PyLong_Sign(PyObject *obj);
 
 /* Validate that every key of a keyword dict is a str. 1 = ok, 0 = TypeError. */
 static inline int PyArg_ValidateKeywordArguments(PyObject *kwargs) {

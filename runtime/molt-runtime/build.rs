@@ -6,6 +6,8 @@ use cc::Build;
 
 #[path = "../build_support/unicode_tables.rs"]
 mod unicode_tables;
+#[path = "../build_support/variadic_exports.rs"]
+mod variadic_exports;
 #[path = "../build_support/wasi_sysroot.rs"]
 mod wasi_sysroot;
 
@@ -36,6 +38,7 @@ fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR missing"));
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     let build_python = resolve_build_python();
+    emit_cpython_abi_variadic_export_anchors(&manifest_dir, &out_dir);
 
     // Keep cdylib in the crate types so plain `cargo build -p molt-runtime`
     // still emits a stable `molt_runtime.wasm` artifact for wasm lanes that
@@ -78,8 +81,18 @@ fn main() {
     println!("cargo:rerun-if-env-changed=PYTHONPATH");
     println!("cargo:rerun-if-changed=../build_support/unicode_tables.rs");
     println!("cargo:rerun-if-changed=../build_support/wasi_sysroot.rs");
+    println!("cargo:rerun-if-changed=../build_support/variadic_exports.rs");
     println!("cargo:rerun-if-changed=src/object/ops.rs");
     println!("cargo:rerun-if-changed=build.rs");
+}
+
+fn emit_cpython_abi_variadic_export_anchors(manifest_dir: &Path, out_dir: &Path) {
+    let manifest = manifest_dir.join("../molt-cpython-abi/shims/pyarg_variadic.exports");
+    let symbols = variadic_exports::load_variadic_exports(&manifest);
+    let output = out_dir.join("molt_cpython_abi_variadic_exports.rs");
+    fs::write(&output, variadic_exports::render_rust_anchors(&symbols))
+        .unwrap_or_else(|error| panic!("failed to write {}: {error}", output.display()));
+    println!("cargo:rerun-if-changed={}", manifest.display());
 }
 
 fn emit_cpython_abi_requested_export_anchors(out_dir: &Path, target_arch: &str) {
@@ -239,9 +252,10 @@ fn emit_wasm_long_double_link_policy(out_dir: &Path, target_arch: &str) {
     // of the staticlib/rlib the reloc runtime consumes.
     println!("cargo:rustc-link-lib=static:-bundle=c-printscan-long-double");
     // binary128 soft-float (__addtf3/__multf3/…) the real long-double path calls.
-    if let Some(builtins) =
-        resolve_wasm_link_archive("MOLT_WASM_BUILTINS_ARCHIVE", "libclang_rt.builtins-wasm32.a")
-    {
+    if let Some(builtins) = resolve_wasm_link_archive(
+        "MOLT_WASM_BUILTINS_ARCHIVE",
+        "libclang_rt.builtins-wasm32.a",
+    ) {
         let builtins_dst = out_dir.join("libclang_rt.builtins-wasm32.a");
         if let Err(err) = fs::copy(&builtins, &builtins_dst) {
             panic!(

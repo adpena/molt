@@ -145,13 +145,20 @@ unsafe fn dump_pending_exception() {
     // Name the exception TYPE by resolving its pointer to the nearest exported
     // symbol (e.g. `PyExc_ImportError`) — robust regardless of molt's internal
     // exception representation, and needs no debugger.
-    let mut info: libc::Dl_info = unsafe { std::mem::zeroed() };
-    if unsafe { libc::dladdr(occ, &mut info) } != 0 && !info.dli_sname.is_null() {
-        let sym = unsafe { CStr::from_ptr(info.dli_sname) }.to_string_lossy();
-        eprintln!("===MOLT_DISCOVERY_EXC_TYPE (dladdr symbol): {sym}");
-    } else {
-        eprintln!("===MOLT_DISCOVERY_EXC_TYPE: exception type at {occ:p} (no symbol via dladdr)");
+    #[cfg(unix)]
+    {
+        let mut info: libc::Dl_info = unsafe { std::mem::zeroed() };
+        if unsafe { libc::dladdr(occ, &mut info) } != 0 && !info.dli_sname.is_null() {
+            let sym = unsafe { CStr::from_ptr(info.dli_sname) }.to_string_lossy();
+            eprintln!("===MOLT_DISCOVERY_EXC_TYPE (dladdr symbol): {sym}");
+        } else {
+            eprintln!(
+                "===MOLT_DISCOVERY_EXC_TYPE: exception type at {occ:p} (no symbol via dladdr)"
+            );
+        }
     }
+    #[cfg(not(unix))]
+    eprintln!("===MOLT_DISCOVERY_EXC_TYPE: exception type at {occ:p}");
     // Secondary: try tp_name at the CPython PyTypeObject offset (24).
     let tp_name_ptr = unsafe { *(occ.cast::<u8>().add(24) as *const *const c_char) };
     if !tp_name_ptr.is_null() {

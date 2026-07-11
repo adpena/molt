@@ -32,6 +32,7 @@
 
 fn main() {
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
 
     // (molt C symbol -> canonical CPython C name). The macho `_` prefix is added
     // below for Darwin; the `to` names carry CPython's own leading underscore.
@@ -39,11 +40,6 @@ fn main() {
         ("Py_None", "_Py_NoneStruct"),
         ("Py_True", "_Py_TrueStruct"),
         ("Py_False", "_Py_FalseStruct"),
-        ("PyArg_ParseTuple", "_PyArg_ParseTuple_SizeT"),
-        ("PyArg_ParseTupleAndKeywords", "_PyArg_ParseTupleAndKeywords_SizeT"),
-        ("PyArg_VaParseTupleAndKeywords", "_PyArg_VaParseTupleAndKeywords_SizeT"),
-        ("PyObject_CallFunction", "_PyObject_CallFunction_SizeT"),
-        ("PyObject_CallMethod", "_PyObject_CallMethod_SizeT"),
     ];
 
     if target_os == "macos" || target_os == "ios" {
@@ -52,7 +48,7 @@ fn main() {
             println!("cargo:rustc-link-arg=-Wl,-alias,_{from},_{to}");
         }
         println!("cargo:rustc-link-arg=-Wl,-export_dynamic");
-    } else {
+    } else if !(target_os == "windows" && target_env == "msvc") {
         for (from, to) in aliases {
             // GNU ld / lld: --defsym NEW=OLD.
             println!("cargo:rustc-link-arg=-Wl,--defsym,{to}={from}");
