@@ -492,6 +492,33 @@ def _build_checks() -> list[Check]:
     )
     checks.append(
         Check(
+            # APPARATUS A7 anti-rot gate: the named subagent-dispatch contract
+            # constants (tools/subagent_contract.py) must all still EXIST and keep
+            # their load-bearing key phrase. A removed/renamed/blanked constant --
+            # or an emptied registry hiding the removal -- fails here, so a spawn
+            # composed via tools/dispatch_prompt.py cannot silently lose a clause
+            # (e.g. "verify the FULL test surface", the exact recent drift miss).
+            name="subagent-contract-integrity",
+            tier=1,
+            cmd=_uv_run(str(TOOLS / "check_subagent_contract.py")),
+            timeout=30,
+        )
+    )
+    checks.append(
+        Check(
+            # Proves the A7 integrity gate has TEETH (M05): a synthetic deletion /
+            # blank / lost-key-phrase / emptied-registry MUST fail audit(), and
+            # compose() must contain exactly the requested blocks. A gate that only
+            # passes clean certifies nothing.
+            name="subagent-contract-teeth",
+            tier=1,
+            cmd=_uv_pytest(str(TESTS / "tools" / "test_subagent_contract.py"), "-q"),
+            timeout=60,
+            needs_pytest=True,
+        )
+    )
+    checks.append(
+        Check(
             # Proves the blast-radius ratchet's falsification logic (doc 56 §5):
             # a synthetic re-coupling edge MUST be flagged as a back-edge and
             # widen the offending crate's radius, and --check MUST fail on it. A
