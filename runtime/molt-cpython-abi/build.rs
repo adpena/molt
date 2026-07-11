@@ -135,7 +135,6 @@ fn main() {
     //
     // macOS: -force_load <path> includes every object file in the archive.
     // Linux: --whole-archive / --no-whole-archive does the same.
-    let unix_lib_path = out_dir.join("libmolt_pyarg_shims.a");
     match target_os.as_str() {
         "macos" => {
             // Apple targets emit SUBSECTIONS_VIA_SYMBOLS, so the section-level dead-stripper
