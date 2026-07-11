@@ -3043,3 +3043,102 @@ pub unsafe extern "C" fn PyObject_RichCompareBool(
     unsafe { crate::api::refcount::Py_DECREF(res) };
     ok
 }
+
+#[cfg(test)]
+mod class2_decode_tests {
+    use super::*;
+    use crate::abi_types::{PyNumberMethods, PyTypeObject};
+    use std::ffi::c_void;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static HASH_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static REPR_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static FLOAT_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static RICHCOMPARE_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static BOOL_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    static mut REPR_RESULT: PyObject = PyObject {
+        ob_refcnt: 1,
+        ob_type: ptr::null_mut(),
+    };
+
+    unsafe extern "C" fn foreign_hash(_op: *mut PyObject) -> isize {
+        HASH_CALLS.fetch_add(1, Ordering::SeqCst);
+        4242
+    }
+
+    unsafe extern "C" fn foreign_repr(_op: *mut PyObject) -> *mut PyObject {
+        REPR_CALLS.fetch_add(1, Ordering::SeqCst);
+        &raw mut REPR_RESULT
+    }
+
+    unsafe extern "C" fn foreign_float(_op: *mut PyObject) -> *mut PyObject {
+        FLOAT_CALLS.fetch_add(1, Ordering::SeqCst);
+        unsafe { crate::api::numbers::PyFloat_FromDouble(42.5) }
+    }
+
+    unsafe extern "C" fn foreign_richcompare(
+        _left: *mut PyObject,
+        _right: *mut PyObject,
+        _op: c_int,
+    ) -> *mut PyObject {
+        RICHCOMPARE_CALLS.fetch_add(1, Ordering::SeqCst);
+        unsafe { crate::api::object::Py_NewRef((&raw mut crate::abi_types::Py_True).cast()) }
+    }
+
+    unsafe extern "C" fn foreign_bool(_op: *mut PyObject) -> c_int {
+        BOOL_CALLS.fetch_add(1, Ordering::SeqCst);
+        0
+    }
+
+    #[test]
+    fn raw_registered_foreign_object_never_decodes_as_molt_value() {
+        crate::bridge::molt_cpython_abi_init();
+        HASH_CALLS.store(0, Ordering::SeqCst);
+        REPR_CALLS.store(0, Ordering::SeqCst);
+        FLOAT_CALLS.store(0, Ordering::SeqCst);
+        RICHCOMPARE_CALLS.store(0, Ordering::SeqCst);
+        BOOL_CALLS.store(0, Ordering::SeqCst);
+
+        let mut number: PyNumberMethods = unsafe { std::mem::zeroed() };
+        number.nb_float = foreign_float as *mut c_void;
+        number.nb_bool = foreign_bool as *mut c_void;
+        let mut ty: PyTypeObject = unsafe { std::mem::zeroed() };
+        ty.tp_name = c"numpy_like_foreign".as_ptr();
+        ty.tp_hash = Some(foreign_hash);
+        ty.tp_repr = Some(foreign_repr);
+        ty.tp_richcompare = Some(foreign_richcompare);
+        ty.tp_as_number = (&raw mut number).cast();
+        let mut obj = PyObject {
+            ob_refcnt: 1,
+            ob_type: &raw mut ty,
+        };
+        unsafe {
+            REPR_RESULT.ob_type = &raw mut crate::abi_types::PyUnicode_Type;
+            crate::bridge::GLOBAL_BRIDGE
+                .lock()
+                .register_raw_pyobj(&raw mut obj);
+        }
+
+        assert_eq!(unsafe { PyObject_Hash(&raw mut obj) }, 4242);
+        assert_eq!(HASH_CALLS.load(Ordering::SeqCst), 1);
+
+        assert_eq!(unsafe { PyObject_Repr(&raw mut obj) }, &raw mut REPR_RESULT);
+        assert_eq!(REPR_CALLS.load(Ordering::SeqCst), 1);
+
+        assert_eq!(unsafe { crate::api::numbers::PyFloat_AsDouble(&raw mut obj) }, 42.5);
+        assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 1);
+
+        assert!(unsafe { native_value_richcompare(&raw mut obj, &raw mut obj, CMP_EQ) }.is_none());
+        assert_eq!(
+            unsafe { PyObject_RichCompare(&raw mut obj, &raw mut obj, CMP_EQ) },
+            (&raw mut crate::abi_types::Py_True).cast()
+        );
+        assert_eq!(RICHCOMPARE_CALLS.load(Ordering::SeqCst), 1);
+
+        assert_eq!(unsafe { crate::api::object::PyObject_IsTrue(&raw mut obj) }, 0);
+        assert_eq!(BOOL_CALLS.load(Ordering::SeqCst), 1);
+
+        assert!(!crate::bridge::GLOBAL_BRIDGE.lock().release_pyobj(&raw mut obj));
+    }
+}

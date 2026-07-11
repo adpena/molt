@@ -127,21 +127,24 @@ pub unsafe fn load_cpython_extension(path: &Path, name: &str) -> Result<u64, Loa
     // runtime hook to classify them — only a `MoltTypeTag::Module` is a
     // legitimate result for a `PyInit_<name>()` return value.
     let molt_bits = {
-        let candidate_bits = unsafe { crate::bridge::read_bridge_header_bits(module_ptr) };
-        let h = crate::hooks::hooks_or_stubs();
-        let tag = unsafe { (h.classify_heap)(candidate_bits) };
-        if tag == crate::abi_types::MoltTypeTag::Module as u8 {
-            candidate_bits
-        } else {
-            // Fall through to the per-bridge map for foreign-object PyObject*
-            // headers (legacy callers that did not go through PyModule_New).
-            let bridge = GLOBAL_BRIDGE.lock();
-            bridge.pyobj_to_handle(module_ptr).ok_or_else(|| {
+        let mut bridge = GLOBAL_BRIDGE.lock();
+        let candidate_bits = match bridge.molt_handle_for_pyobj(module_ptr) {
+            Some(value) => value.bits(),
+            None => unsafe { bridge.molt_value_for_pyobj(module_ptr) }.ok_or_else(|| {
                 LoadError::InitReturnedUnmappedObject {
                     name: name.to_owned(),
                 }
-            })?
+            })?,
+        };
+        drop(bridge);
+        let h = crate::hooks::hooks_or_stubs();
+        let tag = unsafe { (h.classify_heap)(candidate_bits) };
+        if tag != crate::abi_types::MoltTypeTag::Module as u8 {
+            return Err(LoadError::InitReturnedUnmappedObject {
+                name: name.to_owned(),
+            });
         }
+        candidate_bits
     };
 
     // Keep the library alive for the process lifetime; extension code/data may
