@@ -80,6 +80,10 @@ from molt.cli.source_extensions import (  # noqa: E402
     _source_extension_relocation_roots,
     source_extension_manifest_source_path,
 )
+from molt.scientific_stack_versions import (  # noqa: E402
+    resolve_scientific_stack,
+    verify_cpython_abi_headers,
+)
 
 # Sibling tool: stages NumPy's full pure-Python subtree + build-generated
 # modules into every witness sealed root so a re-seal leaves the witness import
@@ -234,7 +238,9 @@ def _object_closure_source_problems(
 ) -> list[str]:
     problems: list[str] = []
     object_closure = manifest.get("object_closure")
-    objects = object_closure.get("objects") if isinstance(object_closure, dict) else None
+    objects = (
+        object_closure.get("objects") if isinstance(object_closure, dict) else None
+    )
     if not isinstance(objects, list):
         return problems
     for index, item in enumerate(objects):
@@ -301,7 +307,9 @@ def _source_plan_relative_source(
 def _relativize_object_closure_sources(manifest_path: Path) -> bool:
     manifest = _load_manifest(manifest_path)
     object_closure = manifest.get("object_closure")
-    objects = object_closure.get("objects") if isinstance(object_closure, dict) else None
+    objects = (
+        object_closure.get("objects") if isinstance(object_closure, dict) else None
+    )
     if not isinstance(objects, list):
         return False
     changed = False
@@ -372,7 +380,9 @@ def _check_root(root: Path, expected_abi: str, expected_tag: str) -> list[str]:
                 f"{manifest_path}: molt_c_api_version={abi} abi_tag={tag} "
                 f"(expected {expected_abi} / {expected_tag})"
             )
-        problems.extend(_runtime_python_import_custody_problems(manifest, manifest_path))
+        problems.extend(
+            _runtime_python_import_custody_problems(manifest, manifest_path)
+        )
         problems.extend(_object_closure_source_problems(manifest, manifest_path))
         # Only per-artifact manifests declare a resealable artifact path we can
         # checksum; the root manifest mirrors the primary artifact manifest.
@@ -409,6 +419,8 @@ def _regenerate_root(root: Path, expected_abi: str, expected_tag: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    stack = resolve_scientific_stack()
+    verify_cpython_abi_headers(stack=stack, repo_root=_repo_root())
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--check",
@@ -460,7 +472,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  missing: {path}", file=sys.stderr)
         return 1
 
-    print(f"current runtime ABI: {expected_abi} ({expected_tag})")
+    print(
+        f"verified scientific stack: {stack.tuple_label}; "
+        f"current runtime ABI: {expected_abi} ({expected_tag})"
+    )
     for path in missing:
         print(f"  note: witness root not present, skipping: {path}")
 
@@ -502,9 +517,7 @@ def main(argv: list[str] | None = None) -> int:
                 print("OK    numpy pure-Python closure staged + current")
         else:
             written = _numpy_python_closure.stage(repo_root)
-            print(
-                f"STAGED {len(written)} numpy module files across witness roots"
-            )
+            print(f"STAGED {len(written)} numpy module files across witness roots")
     except (
         _numpy_python_closure.ClosureStagingError,
         _numpy_python_closure._generated.GeneratedModuleError,
@@ -531,9 +544,7 @@ def main(argv: list[str] | None = None) -> int:
                 print("OK    scipy pure-Python closure staged + current")
         else:
             written = _scipy_python_closure.stage(repo_root)
-            print(
-                f"STAGED {len(written)} scipy module files across witness roots"
-            )
+            print(f"STAGED {len(written)} scipy module files across witness roots")
     except (
         _scipy_python_closure.ClosureStagingError,
         _scipy_python_closure._generated.GeneratedModuleError,

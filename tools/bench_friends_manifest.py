@@ -10,6 +10,7 @@ from bench_friends_types import (
     RunnerSpec,
     SuiteSpec,
 )
+from molt.scientific_stack_versions import apply_scientific_stack_substitutions
 
 
 def _load_manifest(path: Path) -> tuple[dict[str, Any], list[SuiteSpec]]:
@@ -79,7 +80,7 @@ def _parse_suite(raw: dict[str, Any], defaults: dict[str, Any]) -> SuiteSpec:
 def _optional_str(value: Any) -> str | None:
     if value is None:
         return None
-    text = str(value).strip()
+    text = apply_scientific_stack_substitutions(str(value)).strip()
     return text or None
 
 
@@ -90,7 +91,7 @@ def _parse_env(raw_env: Any) -> dict[str, str]:
         raise ValueError("env must be a table/object of string values")
     parsed: dict[str, str] = {}
     for key, value in raw_env.items():
-        parsed[str(key)] = str(value)
+        parsed[str(key)] = apply_scientific_stack_substitutions(str(value))
     return parsed
 
 
@@ -103,7 +104,9 @@ def _parse_command_list(raw: Any, field_name: str) -> list[list[str]]:
     for idx, entry in enumerate(raw):
         if not isinstance(entry, list) or not entry:
             raise ValueError(f"{field_name}[{idx}] must be a non-empty command array")
-        parsed.append([str(part) for part in entry])
+        parsed.append(
+            [apply_scientific_stack_substitutions(str(part)) for part in entry]
+        )
     return parsed
 
 
@@ -161,7 +164,7 @@ def _parse_single_command(raw: Any, field_name: str) -> list[str] | None:
         return None
     if not isinstance(raw, list) or not raw:
         raise ValueError(f"{field_name} must be a non-empty command array")
-    return [str(part) for part in raw]
+    return [apply_scientific_stack_substitutions(str(part)) for part in raw]
 
 
 def _resolve_tokenized(parts: list[str], tokens: dict[str, str]) -> list[str]:

@@ -47,6 +47,16 @@ import subprocess
 import sys
 from pathlib import Path
 
+_SRC = Path(__file__).resolve().parents[1] / "src"
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+
+from molt.scientific_stack_versions import (  # noqa: E402
+    resolve_scientific_stack,
+    verify_cpython_abi_headers,
+    verify_source_checkout,
+)
+
 
 def _clang() -> str:
     exe = shutil.which("clang") or r"C:\Program Files\LLVM\bin\clang.exe"
@@ -75,7 +85,7 @@ def _rust_compiler_builtins_rlib() -> Path:
     return candidates[0]
 
 
-def _write_pkgconfig(pkgdir: Path, molt_root: Path) -> None:
+def _write_pkgconfig(pkgdir: Path, molt_root: Path, python_version: str) -> None:
     pkgdir.mkdir(parents=True, exist_ok=True)
     # The CPython-ABI tier is ONE self-complete header authority. Only expose
     # ``runtime/molt-cpython-abi/include`` (Python.h, structmember.h, pymem.h,
@@ -90,7 +100,7 @@ def _write_pkgconfig(pkgdir: Path, molt_root: Path) -> None:
         "includedir={inc_abi}\n\n"
         "Name: Python\n"
         "Description: Molt Python C API for source-recompiled extensions\n"
-        "Version: 3.12\n"
+        f"Version: {python_version}\n"
         "Cflags: -I{inc_abi}\n"
         "Libs:\n".format(prefix=molt_root.as_posix(), inc_abi=inc_abi),
         encoding="utf-8",
@@ -175,7 +185,11 @@ def main() -> int:
     )
     args = ap.parse_args()
 
+    stack = resolve_scientific_stack()
+    verify_cpython_abi_headers(stack=stack, repo_root=args.molt_root.resolve())
+
     numpy_root = args.numpy_root.resolve()
+    verify_source_checkout("numpy", numpy_root, stack=stack)
     build_root = args.build_root.resolve()
     wasi_sysroot = args.wasi_sysroot.resolve()
     molt_root = args.molt_root.resolve()
@@ -209,7 +223,7 @@ def main() -> int:
     if not Path(cython).is_file():
         raise SystemExit(f"cython executable not found: {cython}")
 
-    _write_pkgconfig(pkgdir, molt_root)
+    _write_pkgconfig(pkgdir, molt_root, stack.cpython)
     _write_cross_file(
         cross_path,
         wasi_sysroot=wasi_sysroot,
@@ -224,8 +238,7 @@ def main() -> int:
     # https://mesonbuild.com/Cross-compilation.html). Declare it in a native
     # file to avoid Meson probing a bare `cython`/`cython3` off PATH.
     native_path.write_text(
-        "[binaries]\n"
-        f"cython = ['{str(cython).replace(chr(92), chr(92) * 2)}']\n",
+        f"[binaries]\ncython = ['{str(cython).replace(chr(92), chr(92) * 2)}']\n",
         encoding="utf-8",
     )
     print(f"[regen] cross file:  {cross_path}")
@@ -268,7 +281,9 @@ def main() -> int:
         "--targets",
     ]
     print("[regen] meson introspect --targets")
-    r = subprocess.run(intro_cmd, cwd=str(numpy_root), env=env, capture_output=True, text=True)
+    r = subprocess.run(
+        intro_cmd, cwd=str(numpy_root), env=env, capture_output=True, text=True
+    )
     if r.returncode != 0:
         sys.stderr.write(r.stderr)
         raise SystemExit(f"meson introspect failed rc={r.returncode}")
@@ -400,9 +415,7 @@ def main() -> int:
         if not sep:
             continue
         target = target.strip()
-        if rule.strip() == "CUSTOM_COMMAND" and target.endswith(
-            _GEN_INCLUDE_SUFFIXES
-        ):
+        if rule.strip() == "CUSTOM_COMMAND" and target.endswith(_GEN_INCLUDE_SUFFIXES):
             gen_hdr.add((build_root / target).as_posix())
     if not gen_hdr:
         print(
@@ -426,9 +439,7 @@ def main() -> int:
         gen_cmd = [ninja, "-C", str(build_root), *rel_targets]
         r = subprocess.run(gen_cmd, cwd=str(build_root), env=env)
         if r.returncode != 0:
-            raise SystemExit(
-                f"ninja generated-output build failed rc={r.returncode}"
-            )
+            raise SystemExit(f"ninja generated-output build failed rc={r.returncode}")
     # Downstream verification (below) treats gen_hdr as the generated-header set.
     gen_hdr = gen_hdr | gen_api_c
 
@@ -436,7 +447,9 @@ def main() -> int:
     if not cc.is_file():
         # Meson emits compile_commands.json at setup; if absent, ask ninja.
         with open(cc, "w", encoding="utf-8") as fh:
-            subprocess.run([ninja, "-C", str(build_root), "-t", "compdb"], stdout=fh, env=env)
+            subprocess.run(
+                [ninja, "-C", str(build_root), "-t", "compdb"], stdout=fh, env=env
+            )
     print(f"[regen] compile_commands.json: {cc} exists={cc.is_file()}")
 
     # Confirm every generated source AND generated header for the target now

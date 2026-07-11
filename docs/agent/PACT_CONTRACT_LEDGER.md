@@ -131,13 +131,15 @@ no plan, effectively unowned).
 #### Canonical scientific stack
 
 Kernel-A candidate and oracle authority is aligned on **NumPy 2.5.1 / SciPy
-1.18.0**. Future multi-version support is a standing follow-on: parameterize
-NumPy/SciPy selection through a single fail-closed version gate, analogous to
-`TargetPythonVersion`, rather than adding per-version witness lanes or fallback
-behavior. This latest-version alignment does not implement that parameterization.
+1.18.0 / CPython 3.12** through the fail-closed verified-support matrix at
+`config/scientific_stack_versions.toml`. Proof-queue commands, friend source
+pins, seal/source-regeneration tooling, and CPython-ABI pkg-config generation
+resolve through `molt.scientific_stack_versions`; adding support requires a
+verified matrix entry plus matching seals, not a new witness lane or fallback.
 
 | id | obligation | source doc§ | status | evidence | owner / next action |
 |---|---|---|---|---|---|
+| <a id="VERSION-GATING"></a>`VERSION-GATING` | **Parameterize the canonical scientific stack behind one verified-support matrix and fail before install/seal/link/runtime work for unsupported tuples.** | M02; M05; M08; canonical scientific stack follow-on | **done** | `config/scientific_stack_versions.toml` contains the sole selected tuple and verified matrix (currently exactly NumPy 2.5.1 / SciPy 1.18.0 / CPython 3.12 plus the existing source refs/seal roots). `molt.scientific_stack_versions` gates proof queue, friend manifest substitution, NumPy/SciPy source regeneration, seal verification/restamping, and CPython-ABI pkg-config generation. Mask proof: `tests/tools/test_scientific_stack_versions.py` rejects 9.9.9 outside the matrix and proves a config-only supported tuple change propagates without resealing. | Add a matrix entry only after matching source refs and seals are produced and verified; do not widen the claim from this row alone. |
 | <a id="RESPOND"></a>`RESPOND` | **Propose the parity-harness interface shape back to pact.** Tell pact the interface it should deliver new-kernel references + parity harness in, so it ships Kernel C/D… in exactly that shape; and (soft) close the loop on 008/009/010 with a molt-authored reply — `007` is the last molt-side doc. | 009 §5; 010 §Open invitation | **done** | **Authored** `collab/pact/011_molt_reply_progress_sync_and_harness_proposal_20260710.md`: (a) honest Kernel-A progress sync (the numpy/scipy frontier chain landed this session, **not green** — halts at the split-runtime call-indirect trap, RUN_ID `20260710T033748...ae136709`); (b) the parity-harness interface (per-kernel file-set + declarative `<k>_gates.json` mirroring Kernel A's exact/exact_set/atol/order-robust gates, drop-in for B..7); (c) ack of the 010 work package with the converged W3→W1→P1 ranking; (d) `EMBED-API` flagged done-but-unproven. | — (open the `KERN-CD` ingest once pact ships extracts in this shape). |
 
 ### pact → molt inputs (their side — tracked for completeness)
