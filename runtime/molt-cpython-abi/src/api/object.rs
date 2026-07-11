@@ -3174,25 +3174,50 @@ pub unsafe extern "C" fn PyInterpreterState_GetIDFromThreadState(
     0
 }
 
-/// _Py_NoneStruct — alias for Py_None, used by some extensions.
+/// `_Py_NoneStruct` — the canonical CPython data symbol for `None` (genuine
+/// CPython headers define `#define Py_None (&_Py_NoneStruct)`). Immortal via the
+/// ONE authority and typed `PyNone_Type` so `Py_TYPE(Py_None)` is non-null (was
+/// `ob_type = NULL` → null-deref); `bridge::pyobj_to_handle_static` resolves it
+/// to the SAME canonical `None` handle as the molt-header `Py_None`, so
+/// `_Py_NoneStruct is None` holds across the header boundary (matrix L1 #3/#4).
 #[unsafe(no_mangle)]
 pub static mut _Py_NoneStruct: PyObject = PyObject {
     ob_refcnt: crate::abi_types::IMMORTAL_REFCNT,
-    ob_type: std::ptr::null_mut(),
+    ob_type: &raw mut crate::abi_types::PyNone_Type,
 };
 
-/// _Py_TrueStruct — alias for Py_True.
+/// `_Py_TrueStruct` — canonical CPython `True`, a real value-carrying
+/// `PyLongObject` (CPython v3.12.0 Objects/boolobject.c:
+/// `PyObject_HEAD_INIT(&PyBool_Type) { .lv_tag = _PyLong_TRUE_TAG, { 1 } }`), so
+/// an extension's inlined `((PyLongObject*)Py_True)->long_value.ob_digit[0]`
+/// reads `1` IN BOUNDS instead of OOB past a bare `PyObject` (matrix L1 #5).
+/// `_PyLong_TRUE_TAG = TAG_FROM_SIGN_AND_SIZE(1,1) = (1-1)|(1<<3) = 8`
+/// (Include/internal/pycore_long.h). Resolves to the canonical `True` handle.
 #[unsafe(no_mangle)]
-pub static mut _Py_TrueStruct: PyObject = PyObject {
-    ob_refcnt: crate::abi_types::IMMORTAL_REFCNT,
-    ob_type: std::ptr::null_mut(),
+pub static mut _Py_TrueStruct: crate::abi_types::PyLongObject = crate::abi_types::PyLongObject {
+    ob_base: PyObject {
+        ob_refcnt: crate::abi_types::IMMORTAL_REFCNT,
+        ob_type: &raw mut crate::abi_types::PyBool_Type,
+    },
+    long_value: crate::abi_types::PyLongValue {
+        lv_tag: 8,
+        ob_digit: [1],
+    },
 };
 
-/// _Py_FalseStruct — alias for Py_False.
+/// `_Py_FalseStruct` — canonical CPython `False`, a `PyLongObject` with
+/// `_PyLong_FALSE_TAG = TAG_FROM_SIGN_AND_SIZE(0,0) = (1-0)|(0<<3) = 1` and
+/// `ob_digit[0] = 0` (CPython v3.12.0 boolobject.c / pycore_long.h).
 #[unsafe(no_mangle)]
-pub static mut _Py_FalseStruct: PyObject = PyObject {
-    ob_refcnt: crate::abi_types::IMMORTAL_REFCNT,
-    ob_type: std::ptr::null_mut(),
+pub static mut _Py_FalseStruct: crate::abi_types::PyLongObject = crate::abi_types::PyLongObject {
+    ob_base: PyObject {
+        ob_refcnt: crate::abi_types::IMMORTAL_REFCNT,
+        ob_type: &raw mut crate::abi_types::PyBool_Type,
+    },
+    long_value: crate::abi_types::PyLongValue {
+        lv_tag: 1,
+        ob_digit: [0],
+    },
 };
 
 // ─── Comparison constants ─────────────────────────────────────────────────

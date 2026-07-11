@@ -1699,4 +1699,71 @@ mod immortal_authority_tests {
             "singleton must remain immortal after bridge round-trips"
         );
     }
+
+    /// Fix #3: the canonical `_Py_NoneStruct` data symbol has a non-null, correct
+    /// `ob_type` (pre-fix `NULL` → `Py_TYPE(Py_None)->tp_name` null-deref) and
+    /// resolves to the SAME `None` handle the runtime hands out for `Py_None`, so
+    /// a real-CPython-header extension's `_Py_NoneStruct is None` holds.
+    #[test]
+    fn canonical_none_struct_is_typed_and_reconciled() {
+        crate::bridge::molt_cpython_abi_init();
+        let none_struct = &raw mut crate::api::object::_Py_NoneStruct;
+        assert!(
+            std::ptr::eq(unsafe { (*none_struct).ob_type }, &raw mut PyNone_Type),
+            "_Py_NoneStruct.ob_type must be &PyNone_Type (was NULL → null-deref)"
+        );
+        assert!(is_immortal_refcnt(unsafe { (*none_struct).ob_refcnt }));
+        let mut bridge = crate::bridge::GLOBAL_BRIDGE.lock();
+        let via_struct = unsafe { bridge.molt_value_for_pyobj(none_struct) };
+        let via_py_none = unsafe { bridge.molt_value_for_pyobj(&raw mut Py_None) };
+        assert_eq!(
+            via_struct, via_py_none,
+            "_Py_NoneStruct must resolve to the same handle as Py_None"
+        );
+        assert_eq!(
+            via_struct,
+            Some(molt_lang_obj_model::MoltObject::none().bits()),
+            "and that handle is canonical None"
+        );
+    }
+
+    /// Fix #1: the canonical bool data symbols are value-carrying `PyLongObject`s,
+    /// so an extension's inlined `((PyLongObject*)Py_True)->long_value.ob_digit[0]`
+    /// reads `1`/`0` IN BOUNDS (pre-fix they were bare `PyObject` → OOB read).
+    /// `lv_tag`/`ob_digit` verified against CPython v3.12.0 (`_PyLong_TRUE_TAG`=8,
+    /// `_PyLong_FALSE_TAG`=1). Also reconciled to the same True/False handles.
+    #[test]
+    fn canonical_bool_structs_have_pylongobject_shape_and_reconcile() {
+        crate::bridge::molt_cpython_abi_init();
+        let t = &raw const crate::api::object::_Py_TrueStruct;
+        let f = &raw const crate::api::object::_Py_FalseStruct;
+        unsafe {
+            assert_eq!((*t).long_value.ob_digit[0], 1, "True ob_digit[0]");
+            assert_eq!((*t).long_value.lv_tag, 8, "True lv_tag == _PyLong_TRUE_TAG");
+            assert!(
+                std::ptr::eq((*t).ob_base.ob_type, &raw mut PyBool_Type),
+                "True ob_type == &PyBool_Type"
+            );
+            assert!(is_immortal_refcnt((*t).ob_base.ob_refcnt));
+            assert_eq!((*f).long_value.ob_digit[0], 0, "False ob_digit[0]");
+            assert_eq!((*f).long_value.lv_tag, 1, "False lv_tag == _PyLong_FALSE_TAG");
+            assert!(
+                std::ptr::eq((*f).ob_base.ob_type, &raw mut PyBool_Type),
+                "False ob_type == &PyBool_Type"
+            );
+        }
+        let t_obj = (&raw mut crate::api::object::_Py_TrueStruct).cast::<PyObject>();
+        let f_obj = (&raw mut crate::api::object::_Py_FalseStruct).cast::<PyObject>();
+        let mut bridge = crate::bridge::GLOBAL_BRIDGE.lock();
+        assert_eq!(
+            unsafe { bridge.molt_value_for_pyobj(t_obj) },
+            unsafe { bridge.molt_value_for_pyobj(&raw mut Py_True) },
+            "_Py_TrueStruct must resolve to the same handle as Py_True"
+        );
+        assert_eq!(
+            unsafe { bridge.molt_value_for_pyobj(f_obj) },
+            unsafe { bridge.molt_value_for_pyobj(&raw mut Py_False) },
+            "_Py_FalseStruct must resolve to the same handle as Py_False"
+        );
+    }
 }
