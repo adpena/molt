@@ -237,14 +237,7 @@ impl WasmBackend {
                         spec: TrampolineSpec {
                             arity: *arity,
                             has_closure: false,
-                            kind: match spec.trampoline_abi {
-                                crate::wasm_abi_generated::ReservedRuntimeCallableTrampolineAbi::UnpackArgs => {
-                                    TrampolineKind::Plain
-                                }
-                                crate::wasm_abi_generated::ReservedRuntimeCallableTrampolineAbi::CallFrame => {
-                                    TrampolineKind::CallFrame
-                                }
-                            },
+                            kind: spec.trampoline_abi.trampoline_kind(),
                             closure_size: 0,
                             target_has_ret: true,
                         },
@@ -344,30 +337,27 @@ impl WasmBackend {
                 .get(&func_ir.name)
                 .copied()
                 .unwrap_or(TrampolineKind::Plain);
-            let poll_name = if kind != TrampolineKind::Plain && !func_ir.name.ends_with("_poll") {
+            let is_task = matches!(kind.behavior(), TrampolineBehavior::Task(_));
+            let poll_name = if is_task && !func_ir.name.ends_with("_poll") {
                 format!("{}_poll", func_ir.name)
             } else {
                 func_ir.name.clone()
             };
-            let target_name = if kind != TrampolineKind::Plain {
-                &poll_name
-            } else {
-                &func_ir.name
-            };
+            let target_name = if is_task { &poll_name } else { &func_ir.name };
             let target_func_index = *func_to_index
                 .get(target_name)
                 .unwrap_or_else(|| panic!("trampoline target missing for {target_name}"));
             let table_slot = *func_to_table_idx
                 .get(target_name)
                 .unwrap_or_else(|| panic!("trampoline table slot missing for {target_name}"));
-            let closure_size = if kind == TrampolineKind::Plain {
-                0
-            } else {
+            let closure_size = if is_task {
                 *task_closure_sizes
                     .get(&func_ir.name)
                     .unwrap_or_else(|| panic!("task closure size missing for {}", func_ir.name))
+            } else {
+                0
             };
-            let multi_return_count = if kind == TrampolineKind::Plain {
+            let multi_return_count = if matches!(kind.behavior(), TrampolineBehavior::UnpackArgs) {
                 multi_return_candidates
                     .get(&func_ir.name)
                     .copied()

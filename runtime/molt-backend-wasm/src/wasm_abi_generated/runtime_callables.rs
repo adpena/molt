@@ -15564,6 +15564,15 @@ pub(crate) enum ReservedRuntimeCallableTrampolineAbi {
     CallFrame,
 }
 
+impl ReservedRuntimeCallableTrampolineAbi {
+    pub(crate) const fn trampoline_kind(self) -> crate::TrampolineKind {
+        match self {
+            Self::UnpackArgs => crate::TrampolineKind::Plain,
+            Self::CallFrame => crate::TrampolineKind::CallFrame,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ReservedRuntimeCallableSpec {
     pub(crate) index: u32,
