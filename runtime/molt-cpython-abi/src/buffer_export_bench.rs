@@ -31,10 +31,10 @@
 #![allow(clippy::undocumented_unsafe_blocks)]
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::ffi::c_void;
 use std::hint::black_box;
 use std::os::raw::c_char;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::abi_types::{Py_buffer, PyBUF_FORMAT, PyBUF_READ, PyBUF_STRIDES, PyMemoryViewObject};
 use crate::api::buffer::{PyBuffer_FillInfo, PyBuffer_Release};
@@ -47,28 +47,44 @@ use crate::api::memory::{
 // Wraps the System allocator and tallies allocation count + bytes. Installed as
 // THE global allocator for this crate's test binary only (`#[cfg(test)]`).
 
-static ALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
-static ALLOC_BYTES: AtomicUsize = AtomicUsize::new(0);
+// PER-THREAD tallies, not process-global. The budget test runs its export
+// cycles AND reads the before/after delta on ONE thread, so a thread-local
+// counter measures exactly that thread's allocations — immune to allocations
+// from OTHER libtest threads running concurrently in this same binary. The
+// former process-global `AtomicUsize` counters tallied every thread, so a
+// sibling unit test allocating during the measurement window inflated
+// allocations/export past the tight ±0.01 budget and flaked under parallel
+// `cargo test` (a pure test-measurement isolation defect, not a real
+// per-export allocation). `const` initialization keeps the TLS access
+// allocation-free, and `try_with` never panics, so incrementing inside the
+// global allocator can neither re-enter the allocator nor abort the process.
+thread_local! {
+    static ALLOC_COUNT: Cell<usize> = const { Cell::new(0) };
+    static ALLOC_BYTES: Cell<usize> = const { Cell::new(0) };
+}
+
+#[inline]
+fn tally(count_delta: usize, bytes_delta: usize) {
+    let _ = ALLOC_COUNT.try_with(|c| c.set(c.get() + count_delta));
+    let _ = ALLOC_BYTES.try_with(|b| b.set(b.get() + bytes_delta));
+}
 
 struct CountingAlloc;
 
 unsafe impl GlobalAlloc for CountingAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
-        ALLOC_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
+        tally(1, layout.size());
         unsafe { System.alloc(layout) }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         unsafe { System.dealloc(ptr, layout) }
     }
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
-        ALLOC_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
+        tally(1, layout.size());
         unsafe { System.alloc_zeroed(layout) }
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
-        ALLOC_BYTES.fetch_add(new_size, Ordering::Relaxed);
+        tally(1, new_size);
         unsafe { System.realloc(ptr, layout, new_size) }
     }
 }
@@ -86,10 +102,10 @@ unsafe impl GlobalAlloc for CountingAlloc {
 static GLOBAL: CountingAlloc = CountingAlloc;
 
 fn allocs() -> usize {
-    ALLOC_COUNT.load(Ordering::Relaxed)
+    ALLOC_COUNT.with(Cell::get)
 }
 fn bytes() -> usize {
-    ALLOC_BYTES.load(Ordering::Relaxed)
+    ALLOC_BYTES.with(Cell::get)
 }
 
 // ── Synthetic Py_buffer construction (no runtime hooks required) ────────────
