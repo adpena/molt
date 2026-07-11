@@ -705,7 +705,7 @@ def _parse_memory_index(graph: MemoryGraph, memory_dir: Path) -> None:
 def _parse_topic_files(graph: MemoryGraph, memory_dir: Path) -> None:
     """Each memory/*.md topic file is a memory node; extract wikilinks (links),
     M## / finding_id / tool references (cites), supersedes, and produces."""
-    for path in sorted(memory_dir.glob("*.md")):
+    for path in sorted(memory_dir.rglob("*.md")):
         stem = path.stem
         if stem in ("MEMORY", "POINTERS"):
             continue
@@ -715,41 +715,43 @@ def _parse_topic_files(graph: MemoryGraph, memory_dir: Path) -> None:
             if line.startswith("# "):
                 title = line[2:].strip()
                 break
+        relpath = path.relative_to(memory_dir).as_posix()
+        node_id = stem if path.parent == memory_dir else f"memory:{relpath[:-3]}"
         graph.add_node(
-            stem,
+            node_id,
             "memory",
             title=title or stem,
-            source=f"memory/{path.name}",
+            source=f"memory/{relpath}",
             keywords=_tokenize(title + "\n" + text),
         )
         for lineno, line in _iter_code_lines(text):
-            src = f"memory/{path.name}:{lineno}"
+            src = f"memory/{relpath}:{lineno}"
             for wm in _WIKILINK_RE.finditer(line):
                 tgt = wm.group(1).strip()
-                if _slugify_target(tgt) != stem:
-                    graph.add_edge(stem, tgt, "links", src)
+                if _slugify_target(tgt) != node_id:
+                    graph.add_edge(node_id, tgt, "links", src)
             for md in _MD_LINK_RE.finditer(line):
                 tgt = _slugify_target(md.group(1))
-                if tgt and tgt != stem:
-                    graph.add_edge(stem, tgt, "links", src)
+                if tgt and tgt != node_id:
+                    graph.add_edge(node_id, tgt, "links", src)
             for mm in _MREF_RE.finditer(line):
-                graph.add_edge(stem, f"M{int(mm.group(1)):02d}", "cites", src)
+                graph.add_edge(node_id, f"M{int(mm.group(1)):02d}", "cites", src)
             for fm in _FINDING_ID_RE.finditer(line):
-                graph.add_edge(stem, fm.group(0), "cites", src)
+                graph.add_edge(node_id, fm.group(0), "cites", src)
             for tm in _TOOL_PATH_RE.finditer(line):
                 tool = tm.group(0)
                 graph.add_node(tool, "tool", title=Path(tool).name, source="")
                 if _LANDED_RE.search(line):
-                    graph.add_edge(stem, tool, "produces", src)
+                    graph.add_edge(node_id, tool, "produces", src)
                 else:
-                    graph.add_edge(stem, tool, "cites", src)
+                    graph.add_edge(node_id, tool, "cites", src)
             if _SUPERSEDE_RE.search(line):
                 for tgt in _supersede_targets(line):
-                    if _slugify_target(tgt) != stem:
-                        graph.add_edge(stem, tgt, "supersedes", src)
+                    if _slugify_target(tgt) != node_id:
+                        graph.add_edge(node_id, tgt, "supersedes", src)
             dm = _DECISION_RE.match(line.strip())
             if dm:
-                did = f"decision:{stem}:{lineno}"
+                did = f"decision:{node_id}:{lineno}"
                 graph.add_node(
                     did,
                     "decision",
@@ -757,7 +759,7 @@ def _parse_topic_files(graph: MemoryGraph, memory_dir: Path) -> None:
                     source=src,
                     keywords=_tokenize(dm.group(2)),
                 )
-                graph.add_edge(stem, did, "cites", src)
+                graph.add_edge(node_id, did, "cites", src)
 
 
 def _supersede_targets(line: str) -> list[str]:

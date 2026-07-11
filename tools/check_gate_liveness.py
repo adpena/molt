@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import datetime as _dt
 import sys
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -25,13 +26,15 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.hooks import bash_guard, landing_gate  # noqa: E402
+from tools.hooks import bash_guard, landing_gate, session_learning  # noqa: E402
 from tools.hooks import waivers  # noqa: E402
 from tools import triality, triality_gate, magnitude_dismissal_gate  # noqa: E402
 from tools import claims_status, check_sister_landed, commit_serializer  # noqa: E402
 from tools import advisory_classifier, disk_guard  # noqa: E402
+from tools import anti_recurrence_gate, apparatus_agent_safety  # noqa: E402
+from tools import encoding_gate, forbidden_checkout_guard  # noqa: E402
 
-_GB = 1024 ** 3
+_GB = 1024**3
 
 # Fixed clock + timestamp helper for the A11 claims-status canaries (the pure
 # classifier takes an explicit ``now`` so the liveness check is deterministic).
@@ -51,9 +54,52 @@ class Canary:
 
 def _canaries() -> list[Canary]:
     return [
-        Canary("advisory_classifier", "closed-enum-rejects-explanation", lambda: advisory_classifier.decide_output("poison because maybe", text="x", schema=("poison", "benign")).verdict is None),
-        Canary("advisory_classifier", "prompt-echo-rejected", lambda: advisory_classifier.decide_output("source text", text="source text", schema=("benign",)).reason == "prompt-echo"),
-        Canary("triality", "missing-equations-leg-fires", lambda: not triality.decide({"finding_id":"bad","invariant":"one fact","legs":{"dag":{"authority":"x","fingerprint":triality.invariant_fingerprint("one fact")},"dsl":{"authority":"x","fingerprint":triality.invariant_fingerprint("one fact")}}}).known),
+        Canary(
+            "advisory_classifier",
+            "closed-enum-rejects-explanation",
+            lambda: (
+                advisory_classifier.decide_output(
+                    "poison because maybe", text="x", schema=("poison", "benign")
+                ).verdict
+                is None
+            ),
+        ),
+        Canary(
+            "advisory_classifier",
+            "prompt-echo-rejected",
+            lambda: (
+                advisory_classifier.decide_output(
+                    "source text", text="source text", schema=("benign",)
+                ).reason
+                == "prompt-echo"
+            ),
+        ),
+        Canary(
+            "triality",
+            "missing-equations-leg-fires",
+            lambda: (
+                not triality.decide(
+                    {
+                        "finding_id": "bad",
+                        "invariant": "one fact",
+                        "legs": {
+                            "dag": {
+                                "authority": "x",
+                                "fingerprint": triality.invariant_fingerprint(
+                                    "one fact"
+                                ),
+                            },
+                            "dsl": {
+                                "authority": "x",
+                                "fingerprint": triality.invariant_fingerprint(
+                                    "one fact"
+                                ),
+                            },
+                        },
+                    }
+                ).known
+            ),
+        ),
         Canary(
             "bash_guard",
             "destructive-git-on-shared-checkout",
@@ -360,21 +406,23 @@ def _canaries() -> list[Canary]:
             "disk_guard",
             "above-high-water-stands-down",
             # known-GOOD counter-fixture: above the threshold, NOTHING is selected.
-            lambda: not disk_guard.plan_reclaim(
-                [
-                    disk_guard.Candidate(
-                        Path("/x/target/sessions/old"),
-                        "sessions",
-                        mtime=0.0,
-                        size=5 * _GB,
-                    )
-                ],
-                free_bytes=30 * _GB,
-                high_water_bytes=25 * _GB,
-                target_bytes=40 * _GB,
-                now=1_000_000.0,
-                min_idle_s=900.0,
-            ).selected,
+            lambda: (
+                not disk_guard.plan_reclaim(
+                    [
+                        disk_guard.Candidate(
+                            Path("/x/target/sessions/old"),
+                            "sessions",
+                            mtime=0.0,
+                            size=5 * _GB,
+                        )
+                    ],
+                    free_bytes=30 * _GB,
+                    high_water_bytes=25 * _GB,
+                    target_bytes=40 * _GB,
+                    now=1_000_000.0,
+                    min_idle_s=900.0,
+                ).selected
+            ),
         ),
         Canary(
             "disk_guard",
@@ -403,12 +451,57 @@ def _canaries() -> list[Canary]:
                 ).selected
             ),
         ),
+        Canary(
+            "forbidden_checkout_guard",
+            "synthetic-onedrive-mutation-refused",
+            forbidden_checkout_guard.self_test,
+        ),
+        Canary(
+            "apparatus_agent_safety",
+            "synthetic-process-actuation-refused",
+            apparatus_agent_safety.self_test,
+        ),
+        Canary(
+            "encoding_gate",
+            "synthetic-default-codec-refused",
+            lambda: bool(
+                encoding_gate.scan_source("open('x.txt', 'w')\n", "synthetic.py")
+            ),
+        ),
+        Canary(
+            "anti_recurrence_gate",
+            "synthetic-uncaptured-bug-class-warned",
+            anti_recurrence_gate.self_test,
+        ),
+        Canary(
+            "session_learning",
+            "digest-carries-crux-and-frontier",
+            session_learning.self_test,
+        ),
     ]
+
+
+def _registered_canaries() -> set[str]:
+    try:
+        payload = tomllib.loads(
+            (ROOT / "tools" / "recurring_harms.toml").read_text(encoding="utf-8")
+        )
+        return {str(item["canary"]) for item in payload.get("harm", [])}
+    except Exception:
+        return set()
+
+
+def _live_canary_keys(canaries: list[Canary]) -> set[str]:
+    return {f"{canary.gate}.{canary.name}" for canary in canaries}
 
 
 def run() -> list[tuple[Canary, bool]]:
     results: list[tuple[Canary, bool]] = []
-    for c in _canaries():
+    canaries = _canaries()
+    missing = _registered_canaries() - _live_canary_keys(canaries)
+    for name in sorted(missing):
+        canaries.append(Canary("recurring_harms", f"missing:{name}", lambda: False))
+    for c in canaries:
         try:
             ok = bool(c.fires())
         except Exception:
