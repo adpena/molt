@@ -1013,10 +1013,10 @@ pub unsafe extern "C" fn PyObject_IsTrue(o: *mut PyObject) -> c_int {
         return 0;
     }
     // ── Tier 1: singletons — byte-identical zero-overhead fast path. ──
-    if std::ptr::eq(o, &raw mut Py_True) {
+    if std::ptr::eq(o, (&raw mut Py_True).cast::<PyObject>()) {
         return 1;
     }
-    if std::ptr::eq(o, &raw mut Py_False) || std::ptr::eq(o, &raw mut Py_None) {
+    if std::ptr::eq(o, (&raw mut Py_False).cast::<PyObject>()) || std::ptr::eq(o, &raw mut Py_None) {
         return 0;
     }
     // ── Tier 2: native Molt object. Resolve the handle once (the lock is dropped

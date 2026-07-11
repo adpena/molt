@@ -286,7 +286,7 @@ fn set_one_bool_rejects_non_bool() {
         molt_cpython_abi::api::typeobj::PyMember_SetOne(
             storage.as_mut_ptr().cast(),
             &mut m,
-            &raw mut Py_True,
+            (&raw mut Py_True).cast::<PyObject>(),
         )
     };
     assert_eq!(rc2, 0);
@@ -329,10 +329,10 @@ fn set_one_delete_numeric_is_typeerror() {
 // ===========================================================================
 
 unsafe extern "C" fn cmp_true(_v: *mut PyObject, _w: *mut PyObject, _op: c_int) -> *mut PyObject {
-    &raw mut Py_True
+    (&raw mut Py_True).cast::<PyObject>()
 }
 unsafe extern "C" fn cmp_false(_v: *mut PyObject, _w: *mut PyObject, _op: c_int) -> *mut PyObject {
-    &raw mut Py_False
+    (&raw mut Py_False).cast::<PyObject>()
 }
 unsafe extern "C" fn cmp_notimpl(
     _v: *mut PyObject,
@@ -375,7 +375,7 @@ fn richcompare_reflected_subtype_priority() {
     let res = unsafe {
         molt_cpython_abi::api::typeobj::PyObject_RichCompare(base_inst, sub_inst, PY_EQ)
     };
-    assert!(std::ptr::eq(res, &raw mut Py_True), "reflected subtype slot wins");
+    assert!(std::ptr::eq(res, (&raw mut Py_True).cast::<PyObject>()), "reflected subtype slot wins");
 }
 
 #[test]
@@ -392,7 +392,7 @@ fn richcompare_both_notimplemented_resolves_identity_and_ordering() {
     // EQ of two distinct objects: both NotImplemented -> identity -> False.
     let eq = unsafe { molt_cpython_abi::api::typeobj::PyObject_RichCompare(a, b, PY_EQ) };
     assert!(
-        std::ptr::eq(eq, &raw mut Py_False),
+        std::ptr::eq(eq, (&raw mut Py_False).cast::<PyObject>()),
         "both-NotImplemented EQ resolves by identity, never leaks NotImplemented"
     );
     assert!(!std::ptr::eq(eq, &raw mut Py_NotImplementedSentinel));

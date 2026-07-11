@@ -143,7 +143,7 @@ fn test_incref_on_none_singleton_is_immortal() {
 #[test]
 fn test_decref_on_true_singleton_is_immortal() {
     init();
-    let true_ptr = &raw mut Py_True;
+    let true_ptr = (&raw mut Py_True).cast::<PyObject>();
     let rc_before = unsafe { (*true_ptr).ob_refcnt };
     assert!(rc_before >= (1 << 29), "True should be immortal");
 
@@ -155,7 +155,7 @@ fn test_decref_on_true_singleton_is_immortal() {
 #[test]
 fn test_decref_on_false_singleton_is_immortal() {
     init();
-    let false_ptr = &raw mut Py_False;
+    let false_ptr = (&raw mut Py_False).cast::<PyObject>();
     let rc_before = unsafe { (*false_ptr).ob_refcnt };
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(false_ptr) };
     let rc_after = unsafe { (*false_ptr).ob_refcnt };

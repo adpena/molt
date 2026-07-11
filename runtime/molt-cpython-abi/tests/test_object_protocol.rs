@@ -828,7 +828,7 @@ fn test_richcompare_native_int_ordering_is_computed() {
     let b = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(2) };
     let result = unsafe { molt_cpython_abi::api::typeobj::PyObject_RichCompare(a, b, PY_LT) };
     assert!(
-        std::ptr::eq(result, &raw mut molt_cpython_abi::abi_types::Py_True),
+        std::ptr::eq(result, (&raw mut molt_cpython_abi::abi_types::Py_True).cast::<PyObject>()),
         "1 < 2 must be Py_True, never NotImplemented"
     );
     assert!(!std::ptr::eq(result, &raw mut Py_NotImplementedSentinel));

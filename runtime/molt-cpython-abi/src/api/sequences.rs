@@ -663,9 +663,9 @@ pub unsafe extern "C" fn PyTuple_Check(op: *mut PyObject) -> c_int {
 #[inline]
 fn tuple_richcmp_bool(b: bool) -> *mut PyObject {
     let res = if b {
-        &raw mut crate::abi_types::Py_True
+        (&raw mut crate::abi_types::Py_True).cast::<PyObject>()
     } else {
-        &raw mut crate::abi_types::Py_False
+        (&raw mut crate::abi_types::Py_False).cast::<PyObject>()
     };
     unsafe { crate::api::refcount::Py_INCREF(res) };
     res
