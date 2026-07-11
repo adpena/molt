@@ -116,6 +116,36 @@ entry keeps its stable logical module name and output-directory churn invalidate
 zero contexts. The regression test uses an acceptance-shaped nested output path
 and rejects any `tmp.acceptance` module admission.
 
+## WASM Publication Strip (2026-07-11)
+
+Canonical machine-checkable record: `tools/wasm_publication_strip_attestation.json`.
+This aperture removes publication-only custom sections without touching code or
+data reachability. Final artifacts run the export-contract rewrite first, then
+the canonical strip, then link validation.
+
+| Artifact contract | Before | After | Removed | Reduction |
+|---|---:|---:|---:|---:|
+| app final (`output.wasm`) | 34,442,899 B | 25,819,855 B | 8,623,044 B | 25.0358% |
+| deploy runtime final (`molt_runtime.wasm`) | 41,915,494 B | 18,812,380 B | 23,103,114 B | 55.1183% |
+| relink runtime cache input (`molt_runtime_reloc.wasm`) | 78,546,783 B | 42,089,702 B | 36,457,081 B | 46.4145% |
+
+The reloc-runtime decision is structural: relink consumers read the `linking`
+symbol table and code/data/element relocation sections, but not DWARF, debug
+relocations, or the `name` section. Those debug families are stripped before
+cache publication while the real relink authority remains intact. The live
+`C:/Molt` inventory contained 81 content-addressed reloc runtimes totaling
+4.442 GiB; applying the measured ratio projects 2.380 GiB retained and 2.062
+GiB reclaimed.
+
+The former dual-profile smell is closed by making the keyed integrity sidecar
+the single live contract for a published filename. A new publication deletes
+the retired unkeyed pin and every sibling keyed pin; profile variants remain
+separate only in the content-addressed runtime cache.
+
+Task #22 retains the code/data optimization frontier. Its measured map is
+20,032,474 B code, 5,275,490 B data, 416,470 B exports, and 52,230 B elements.
+This landing intentionally does not tree-shake those sections.
+
 ## Variant-II Landing Acceptance
 
 `tools/powerplay_acceptance.py` is the acceptance authority for perf landings.

@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "attestation_id": "wasm-publication-strip-20260711",
+  "measured_at_utc": "2026-07-11T17:30:00Z",
+  "base_revision": "d36658a1ce",
+  "authority": "src/molt/wasm_artifact.py",
+  "publication_order": [
+    "contract_exports",
+    "strip_publication_sections",
+    "validate"
+  ],
+  "debug_policy": {
+    "config_authority": "BuildProfile",
+    "preserve_when": "profile == dev or resolved cargo profile contains dev/debug",
+    "always_forbidden_in_final_artifacts": [
+      "linking",
+      "reloc.*"
+    ],
+    "release_forbidden": [
+      "name",
+      ".debug*",
+      "reloc..debug*"
+    ]
+  },
+  "artifacts": [
+    {
+      "contract": "app-final",
+      "source_path": "C:/Molt/molt-src/tmp/pact_witness_acceptance_queue/runs/20260711T135848-pact-witness-acceptance-183027c0473c4cdf/build/output.wasm",
+      "before_bytes": 34442899,
+      "after_bytes": 25819855,
+      "removed_bytes": 8623044,
+      "reduction_percent": 25.0358,
+      "before_sha256": "d98a4125acf076037037845810d8dc84b10576560c938c4f4b8f1195ec4f05c0",
+      "after_sha256": "055142c14ca679035768325f244e9819c35389220d5908219ab4bf6bee049d8c",
+      "removed_sections": {
+        "linking": 842745,
+        "reloc.CODE": 7585259,
+        "reloc.DATA": 135671,
+        "reloc.ELEM": 59352
+      },
+      "remaining_policy_violations": []
+    },
+    {
+      "contract": "deploy-runtime-final",
+      "source_path": "C:/Molt/molt-src/wasm/molt_runtime.wasm",
+      "before_bytes": 41915494,
+      "after_bytes": 18812380,
+      "removed_bytes": 23103114,
+      "reduction_percent": 55.1183,
+      "before_sha256": "9572836a457973bec9b1b7ee4d41467937f2ee2acdae521864f6148914742986",
+      "after_sha256": "84e504c5ae0817aa541cf833514c934cb73643c0ecfa5c4f937584f0ec5fac63",
+      "removed_section_families": [
+        ".debug*",
+        "name"
+      ],
+      "remaining_policy_violations": []
+    },
+    {
+      "contract": "relink-runtime-cache-input",
+      "source_path": "C:/Molt/molt-src/wasm/molt_runtime_reloc.wasm",
+      "before_bytes": 78546783,
+      "after_bytes": 42089702,
+      "removed_bytes": 36457081,
+      "reduction_percent": 46.4145,
+      "before_sha256": "e858e4c12632c8fa892d6580283942cb4c16acd2e66ae96976aa71eddf82080c",
+      "after_sha256": "a9109802450af73d21ea1f7f8693a80941416605bb885e8019c61bf9b3ebbf75",
+      "kept_link_authority": [
+        "linking",
+        "reloc.CODE",
+        "reloc.DATA",
+        "reloc.ELEM"
+      ],
+      "removed_section_families": [
+        ".debug*",
+        "reloc..debug*",
+        "name"
+      ],
+      "remaining_policy_violations": []
+    }
+  ],
+  "reloc_cache_inventory": {
+    "root": "C:/Molt",
+    "matching_artifacts": 81,
+    "before_bytes": 4769616652,
+    "before_gib": 4.442,
+    "projected_after_gib_at_measured_ratio": 2.38,
+    "projected_saved_gib": 2.062,
+    "decision": "strip name, DWARF, and debug-relocation sections; retain linking and code/data/element relocations required by relink consumers"
+  },
+  "dual_profile_resolution": {
+    "rule": "one filename has exactly one live keyed integrity sidecar",
+    "cache_rule": "profile/fingerprint variants remain separate content-addressed cache objects",
+    "stale_pin_behavior": "publication deletes legacy and sibling keyed sidecars before exposing the current contract"
+  },
+  "tree_shake_task_22_map": {
+    "app_code_bytes": 20032474,
+    "app_data_bytes": 5275490,
+    "app_export_bytes": 416470,
+    "app_element_bytes": 52230,
+    "scope_note": "Publication stripping stops here; code/data reachability and contributor attribution belong to task #22."
+  }
+}

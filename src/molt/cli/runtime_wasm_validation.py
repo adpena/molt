@@ -88,9 +88,9 @@ def _write_runtime_wasm_integrity_sidecar(path: Path, *, integrity_key: str) -> 
     digest = _sha256_file(path)
     sidecar = _runtime_wasm_integrity_sidecar_path(path, integrity_key)
     _atomic_write_text(sidecar, f"{digest}\n")
-    # The retired single-slot convention pinned every profile's build into one
-    # `<artifact>.sha256` file; remove it so the keyed pins are the only
-    # integrity authority.
+    for stale_sidecar in path.parent.glob(f"{path.name}.*.sha256"):
+        if stale_sidecar != sidecar:
+            stale_sidecar.unlink(missing_ok=True)
     path.with_name(f"{path.name}.sha256").unlink(missing_ok=True)
 
 

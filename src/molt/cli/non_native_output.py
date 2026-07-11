@@ -853,6 +853,8 @@ def _prepare_non_native_build_result(
                 link_cmd.append("--freestanding")
             if wasm_opt_enabled:
                 link_cmd.extend(["--optimize", "--optimize-level", wasm_opt_level])
+            if profile == "dev":
+                link_cmd.append("--preserve-debug-sections")
             link_project_root = project_root or molt_root
             link_fingerprint_path = _link_pipeline._link_fingerprint_path(
                 link_project_root,
