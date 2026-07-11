@@ -182,7 +182,9 @@ class Scenarios:
         assert rc == 0, out
         rc, out = _run_cli("final", str(final), str(self.base_final))
         assert rc == 1, out
-        assert "FRONTIER (earliest ops that introduced divergence): ['m_smooth']" in out, out
+        assert (
+            "FRONTIER (earliest ops that introduced divergence): ['m_smooth']" in out
+        ), out
         assert "FAIL crit_min_rc" in out, out
         # Everything except the 630-tie keep-cut must still pass its gate.
         for key in (
