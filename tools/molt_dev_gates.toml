@@ -533,6 +533,32 @@ gates = [
   "python3 tools/venv_exec.py python tools/check_gate_flips.py --check",
 ]
 
+[[rule]]
+name = "apparatus-learning-protection"
+description = "Recurring-harm registry, forbidden-checkout policy, no-agent-termination meta-gate, anti-recurrence advisory, and Stop-session learning persistence."
+globs = [
+  ".claude/settings.json",
+  "tools/forbidden_checkout_guard.py",
+  "tools/apparatus_agent_safety.py",
+  "tools/anti_recurrence_gate.py",
+  "tools/recurring_harms.toml",
+  "tools/hooks/path_guard.py",
+  "tools/hooks/session_learning.py",
+  "tools/hooks/stop_gates.py",
+  "tools/memory_graph.py",
+  "tools/check_gate_liveness.py",
+  "tests/tools/test_forbidden_checkout_guard.py",
+  "tests/tools/test_apparatus_agent_safety.py",
+  "tests/tools/test_anti_recurrence_gate.py",
+  "tests/tools/test_hooks_session_learning.py",
+  "tests/tools/test_memory_graph.py",
+]
+gates = [
+  "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_forbidden_checkout_guard.py tests/tools/test_apparatus_agent_safety.py tests/tools/test_anti_recurrence_gate.py tests/tools/test_hooks_session_learning.py tests/tools/test_check_gate_liveness.py tests/tools/test_memory_graph.py",
+  "python3 tools/venv_exec.py python tools/apparatus_agent_safety.py --check",
+  "python3 tools/venv_exec.py python tools/anti_recurrence_gate.py --check",
+]
+
 # --- APPARATUS Wave 4 A11 claims custody + preflight + commit serializer ---
 [[rule]]
 name = "apparatus-a11"

@@ -556,6 +556,37 @@ def _build_checks() -> list[Check]:
     )
     checks.append(
         Check(
+            name="apparatus-learning-protection-teeth",
+            tier=1,
+            cmd=_uv_pytest(
+                str(TESTS / "tools" / "test_forbidden_checkout_guard.py"),
+                str(TESTS / "tools" / "test_apparatus_agent_safety.py"),
+                str(TESTS / "tools" / "test_anti_recurrence_gate.py"),
+                str(TESTS / "tools" / "test_hooks_session_learning.py"),
+                "-q",
+            ),
+            timeout=90,
+            needs_pytest=True,
+        )
+    )
+    checks.append(
+        Check(
+            name="apparatus-agent-safety",
+            tier=1,
+            cmd=_uv_run(str(TOOLS / "apparatus_agent_safety.py"), "--check"),
+            timeout=30,
+        )
+    )
+    checks.append(
+        Check(
+            name="anti-recurrence-advisory-self-test",
+            tier=1,
+            cmd=_uv_run(str(TOOLS / "anti_recurrence_gate.py"), "--check"),
+            timeout=30,
+        )
+    )
+    checks.append(
+        Check(
             # Proves the blast-radius ratchet's falsification logic (doc 56 §5):
             # a synthetic re-coupling edge MUST be flagged as a back-edge and
             # widen the offending crate's radius, and --check MUST fail on it. A

@@ -279,6 +279,23 @@ def test_session_digest_renders_nearest(tmp_path, monkeypatch):
     assert "witness-note" in text
 
 
+def test_session_digest_subdirectory_is_searchable_memory(tmp_path):
+    mem = _write_corpus(tmp_path)
+    session_dir = mem / "session_digests"
+    session_dir.mkdir()
+    (session_dir / "20260711-s1.md").write_text(
+        "# Session learning s1\n\n## Crux learnings\n- forbidden checkout path policy\n",
+        encoding="utf-8",
+    )
+    ranked = mg.nearest_memories(
+        "forbidden checkout path policy",
+        k=3,
+        memory_dir=mem,
+        repo_root=tmp_path,
+    )
+    assert any(node.id.startswith("memory:session_digests/") for node, _ in ranked)
+
+
 def test_session_digest_nearest_fails_open(tmp_path, monkeypatch):
     from tools.hooks import session_digest as sd
 
