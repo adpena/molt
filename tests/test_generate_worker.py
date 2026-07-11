@@ -6,6 +6,7 @@ from pathlib import Path
 
 from molt._wasm_abi_generated import (
     WASM_RESERVED_RUNTIME_CALLABLES,
+    WASM_RESERVED_RUNTIME_CALLABLE_TRAMPOLINE_ABI_BY_RUNTIME,
     WASM_TABLE_REF_EXPORT_PREFIX,
 )
 from molt.wasm_artifact import wasm_table_ref_export_name
@@ -23,6 +24,9 @@ def _reserved_runtime_callable_manifest_entries() -> list[dict[str, object]]:
             "import_name": import_name,
             "arity": arity,
             "dispatch": dispatch,
+            "trampoline_abi": WASM_RESERVED_RUNTIME_CALLABLE_TRAMPOLINE_ABI_BY_RUNTIME[
+                runtime_name
+            ],
         }
         for (
             index,
@@ -47,7 +51,8 @@ def _reserved_runtime_callable_js_entries(content: str) -> list[dict[str, object
             r"\{\s*index:\s*(?P<index>\d+),\s*"
             r"runtimeExport:\s*'(?P<runtime>[^']+)',\s*"
             r"arity:\s*(?P<arity>\d+)"
-            r"(?:,\s*dispatch:\s*'(?P<dispatch>[^']+)')?\s*\}"
+            r"(?:,\s*dispatch:\s*'(?P<dispatch>[^']+)')?"
+            r"(?:,\s*trampolineAbi:\s*'(?P<trampoline_abi>[^']+)')?\s*\}"
         ),
         match.group("body"),
     ):
@@ -57,6 +62,7 @@ def _reserved_runtime_callable_js_entries(content: str) -> list[dict[str, object
                 "runtime_export": item.group("runtime"),
                 "arity": int(item.group("arity")),
                 "dispatch": item.group("dispatch") or "direct",
+                "trampoline_abi": item.group("trampoline_abi") or "unpack_args",
             }
         )
     return entries
@@ -457,9 +463,12 @@ def test_static_browser_runners_reserved_runtime_callable_tables_track_generated
         {
             "index": index,
             "runtime_export": runtime_name,
-            "arity": arity,
-            "dispatch": dispatch,
-        }
+                "arity": arity,
+                "dispatch": dispatch,
+                "trampoline_abi": WASM_RESERVED_RUNTIME_CALLABLE_TRAMPOLINE_ABI_BY_RUNTIME[
+                    runtime_name
+                ],
+            }
         for (
             index,
             runtime_name,

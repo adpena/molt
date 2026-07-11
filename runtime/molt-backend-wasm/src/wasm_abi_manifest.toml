@@ -224,6 +224,7 @@ index = 22
 runtime_name = "molt_cpython_abi_cext_call_trampoline"
 import_name = "cpython_abi_cext_call_trampoline"
 callable_arity = 3
+trampoline_abi = "call_frame"
 
 
 [[import]]
@@ -8578,4 +8579,3 @@ dispatch_runtime_seed = true
 parse_scalar_literal = true
 raw_int_effect = "clear"
 lir_fast = "materialize"
-

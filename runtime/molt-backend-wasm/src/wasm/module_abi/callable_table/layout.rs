@@ -237,7 +237,14 @@ impl WasmBackend {
                         spec: TrampolineSpec {
                             arity: *arity,
                             has_closure: false,
-                            kind: TrampolineKind::Plain,
+                            kind: match spec.trampoline_abi {
+                                crate::wasm_abi_generated::ReservedRuntimeCallableTrampolineAbi::UnpackArgs => {
+                                    TrampolineKind::Plain
+                                }
+                                crate::wasm_abi_generated::ReservedRuntimeCallableTrampolineAbi::CallFrame => {
+                                    TrampolineKind::CallFrame
+                                }
+                            },
                             closure_size: 0,
                             target_has_ret: true,
                         },

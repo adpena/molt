@@ -466,7 +466,8 @@ def _render_rs_mod() -> str:
             "pub(crate) use pure_profile::pure_profile_skips_import;\n",
             "pub(crate) use runtime_callables::{\n",
             "    POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,\n",
-            "    RUNTIME_CALLABLE_IMPORTS, ReservedRuntimeCallableDispatch, RuntimeCallableResult,\n",
+            "    RUNTIME_CALLABLE_IMPORTS, ReservedRuntimeCallableDispatch,\n",
+            "    ReservedRuntimeCallableTrampolineAbi, RuntimeCallableResult,\n",
             "    poll_table_import_slot, runtime_callable_arity, runtime_callable_import,\n",
             "};\n",
             "pub(crate) use static_types::{\n",
@@ -1595,6 +1596,11 @@ def _render_rs_runtime_callables(data: dict) -> str:
             "    Trampoline,\n",
             "}\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) enum ReservedRuntimeCallableTrampolineAbi {\n",
+            "    UnpackArgs,\n",
+            "    CallFrame,\n",
+            "}\n\n",
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) struct ReservedRuntimeCallableSpec {\n",
             "    pub(crate) index: u32,\n",
             "    pub(crate) runtime_name: &'static str,\n",
@@ -1602,6 +1608,7 @@ def _render_rs_runtime_callables(data: dict) -> str:
             "    pub(crate) import: Option<WasmRuntimeImport>,\n",
             "    pub(crate) arity: usize,\n",
             "    pub(crate) dispatch: ReservedRuntimeCallableDispatch,\n",
+            "    pub(crate) trampoline_abi: ReservedRuntimeCallableTrampolineAbi,\n",
             "}\n\n",
             "pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec] = &[\n",
         ]
@@ -1624,6 +1631,8 @@ def _render_rs_runtime_callables(data: dict) -> str:
                 f"        arity: {entry['callable_arity']},\n",
                 "        dispatch: ReservedRuntimeCallableDispatch::"
                 f"{_rust_callable_dispatch(entry.get('callable_dispatch'))},\n",
+                "        trampoline_abi: ReservedRuntimeCallableTrampolineAbi::"
+                f"{'CallFrame' if entry.get('trampoline_abi') == 'call_frame' else 'UnpackArgs'},\n",
                 "    },\n",
             ]
         )
@@ -1702,6 +1711,7 @@ def _shared_runtime_callables(data: dict) -> list[dict]:
             "callable_arity": entry["callable_arity"],
             "callable_result": import_entry.get("callable_result"),
             "callable_dispatch": entry.get("callable_dispatch", "direct"),
+            "trampoline_abi": entry.get("trampoline_abi", "unpack_args"),
             "runtime_feature": import_entry.get("runtime_feature"),
             "symbol_path": entry["runtime_name"],
         }
@@ -2182,6 +2192,14 @@ def render_py(data: dict) -> str:
             f"    ({_py_tuple(entry['params'])}, {_py_tuple(entry['results'])}),\n"
         )
     lines.append(")\n\n")
+    lines.append(
+        "WASM_RESERVED_RUNTIME_CALLABLE_TRAMPOLINE_ABI_BY_RUNTIME: dict[str, str] = {\n"
+    )
+    for entry in reserved_callables:
+        lines.append(
+            f'    "{entry["runtime_name"]}": "{entry.get("trampoline_abi", "unpack_args")}",\n'
+        )
+    lines.append("}\n\n")
     lines.append(f"WASM_STATIC_TYPE_COUNT: int = {len(data['static_type'])}\n\n")
     lines.append("WASM_IMPORT_REGISTRY: tuple[str, ...] = (\n")
     for entry in data["import"]:

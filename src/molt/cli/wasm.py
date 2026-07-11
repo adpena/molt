@@ -14,6 +14,7 @@ from molt._wasm_abi_generated import (
     WASM_RUNTIME_IMPORT_FALLBACK_SPECS,
     WASM_RESERVED_RUNTIME_CALLABLE_BASE,
     WASM_RESERVED_RUNTIME_CALLABLES,
+    WASM_RESERVED_RUNTIME_CALLABLE_TRAMPOLINE_ABI_BY_RUNTIME,
     WASM_RESERVED_RUNTIME_CALLABLE_COUNT,
     wasm_import_result_kind,
     wasm_import_signature,
@@ -315,6 +316,9 @@ def _reserved_runtime_callables_from_manifest() -> list[dict[str, object]]:
             "import_name": import_name,
             "arity": arity,
             "dispatch": dispatch,
+            "trampoline_abi": WASM_RESERVED_RUNTIME_CALLABLE_TRAMPOLINE_ABI_BY_RUNTIME[
+                runtime_name
+            ],
         }
         for index, runtime_name, import_name, arity, dispatch in WASM_RESERVED_RUNTIME_CALLABLES
     ]
@@ -1215,13 +1219,17 @@ export default {
             `${indirectName} reserved runtime trampoline ${entry.runtime_export} expects closure, argv, argc; got ${args.length} args`,
           );
         }
-        const closureBits = normalizeI64BridgeValue(args[0], `${indirectName} closure`);
-        if (closureBits !== 0n) {
-          throw new Error(
-            `${indirectName} reserved runtime trampoline ${entry.runtime_export} does not accept closure bits ${closureBits}`,
-          );
+        if (entry.trampoline_abi === "call_frame") {
+          callArgs = args;
+        } else {
+          const closureBits = normalizeI64BridgeValue(args[0], `${indirectName} closure`);
+          if (closureBits !== 0n) {
+            throw new Error(
+              `${indirectName} reserved runtime trampoline ${entry.runtime_export} does not accept closure bits ${closureBits}`,
+            );
+          }
+          callArgs = readRuntimeCallargsVector(args[1], args[2]);
         }
-        callArgs = readRuntimeCallargsVector(args[1], args[2]);
       }
       if (callArgs.length !== entry.arity) {
         throw new Error(

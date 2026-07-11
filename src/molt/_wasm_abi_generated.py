@@ -59,6 +59,33 @@ WASM_STATIC_TYPES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     ((), ("i32",)),
 )
 
+WASM_RESERVED_RUNTIME_CALLABLE_TRAMPOLINE_ABI_BY_RUNTIME: dict[str, str] = {
+    "molt_type_call": "unpack_args",
+    "molt_type_new": "unpack_args",
+    "molt_type_init": "unpack_args",
+    "molt_object_new_bound": "unpack_args",
+    "molt_object_init": "unpack_args",
+    "molt_object_init_subclass": "unpack_args",
+    "molt_exception_new_bound": "unpack_args",
+    "molt_exception_init": "unpack_args",
+    "molt_exceptiongroup_init": "unpack_args",
+    "molt_types_mappingproxy_new": "unpack_args",
+    "molt_types_mappingproxy_init": "unpack_args",
+    "molt_types_method_new": "unpack_args",
+    "molt_types_method_init": "unpack_args",
+    "molt_types_simplenamespace_init": "unpack_args",
+    "molt_types_capsule_new": "unpack_args",
+    "molt_types_cell_new": "unpack_args",
+    "molt_types_dynamic_class_attr_init": "unpack_args",
+    "molt_types_coroutine": "unpack_args",
+    "molt_types_get_original_bases": "unpack_args",
+    "molt_types_prepare_class": "unpack_args",
+    "molt_types_resolve_bases": "unpack_args",
+    "molt_types_new_class": "unpack_args",
+    "molt_cpython_abi_cext_call_trampoline": "call_frame",
+    "molt_importlib_import_transaction": "unpack_args",
+}
+
 WASM_STATIC_TYPE_COUNT: int = 53
 
 WASM_IMPORT_REGISTRY: tuple[str, ...] = (

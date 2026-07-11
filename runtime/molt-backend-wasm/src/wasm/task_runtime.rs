@@ -52,6 +52,7 @@ impl WasmTaskRuntimeLayout {
                 completion: WasmTaskCompletion::WrapAsyncGen,
             }),
             TrampolineKind::Plain => None,
+            TrampolineKind::CallFrame => None,
         }
     }
 

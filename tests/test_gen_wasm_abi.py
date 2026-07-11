@@ -480,9 +480,13 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
             "runtime_name": entry["runtime_name"],
             "import_name": entry["import_name"],
             "callable_arity": entry["callable_arity"],
+            "trampoline_abi": entry["trampoline_abi"],
         }
         for entry in shared_callables[: len(reserved_callables)]
-    ] == reserved_callables
+    ] == [
+        {**entry, "trampoline_abi": entry.get("trampoline_abi", "unpack_args")}
+        for entry in reserved_callables
+    ]
     assert shared_callables[-1] == {
         "index": len(reserved_callables),
         "runtime_name": "molt_importlib_import_transaction",
@@ -637,10 +641,10 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "def wasm_runtime_callable_result" in rendered_py
     assert "RuntimeCallableResult::Void" in rendered_rs
     assert "ReservedRuntimeCallableSpec" in rendered_rs
-    assert (
-        "RUNTIME_CALLABLE_IMPORTS, ReservedRuntimeCallableDispatch, RuntimeCallableResult"
-        in rendered_rs
-    )
+    assert "RUNTIME_CALLABLE_IMPORTS" in rendered_rs
+    assert "ReservedRuntimeCallableDispatch" in rendered_rs
+    assert "ReservedRuntimeCallableTrampolineAbi" in rendered_rs
+    assert "RuntimeCallableResult" in rendered_rs
     assert "RESERVED_RUNTIME_CALLABLE_SPECS" in rendered_rs
     assert "RESERVED_RUNTIME_CALLABLE_COUNT" in rendered_rs
     assert "runtime_callable_key_from_symbol_name" in rendered_runtime_rs
@@ -1471,6 +1475,7 @@ def test_wasm_abi_manifest_owns_split_runtime_table_prefix() -> None:
         "runtime_name": "molt_cpython_abi_cext_call_trampoline",
         "import_name": "cpython_abi_cext_call_trampoline",
         "callable_arity": 3,
+        "trampoline_abi": "call_frame",
     }
     assert [entry["index"] for entry in reserved] == list(range(len(reserved)))
 
