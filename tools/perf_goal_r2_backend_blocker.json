@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "claim": "PERF-GOAL-R2",
+  "rung": "backend prepare/codegen",
+  "verdict": "DOCUMENTED-BLOCKED",
+  "git_sha": "c5b1d8bb283f11f01ec45e6869565f3b6f001ff8",
+  "profile": {
+    "hot_path": "pact-witness-acceptance backend prepare/codegen after frontend IR construction and before final split-WASM output",
+    "expected_complexity": "O(changed functions) with function/object-cache reuse; a full-IR handoff remains required only after the daemon cache probe misses",
+    "observed_numbers": {
+      "canonical_after_wall_seconds": [600.2, 295.0],
+      "canonical_steady_uncached_tir_functions": 12,
+      "backend_prepare_seconds": null,
+      "backend_codegen_seconds": null,
+      "function_cache_hits": null,
+      "function_cache_misses": null,
+      "object_cache_hits": null,
+      "object_cache_misses": null
+    }
+  },
+  "blocking_evidence": [
+    "tools/perf_witness_iteration_attestation.json records total wall time but no backend prepare/codegen phase breakdown or effective function/object-cache counters",
+    "the referenced pact-witness queue run artifacts are not present under logs/proof_queue/runs or tmp/pact_witness_acceptance_queue in this worktree",
+    "tools/PERF_AUTHORITY.md records wasm import stripping as the failure frontier, while the current docs/agent/CLAIMS.md witness record advances to unresolved import-targeted callable table refs",
+    "the required at-least-two-run same-machine before/after comparison cannot be reconstructed from the canonical record without inventing phase numbers"
+  ],
+  "unblock_condition": {
+    "git_contract": "current origin/main exact SHA for every sample",
+    "samples": "at least two acceptance-shaped runs before any optimization",
+    "required_measurements": [
+      "wall_seconds",
+      "backend_prepare_seconds",
+      "backend_codegen_seconds",
+      "backend function-cache hits and misses",
+      "backend object-cache hits and misses",
+      "failure frontier or successful output artifact"
+    ],
+    "custody": "proof-queue run IDs and retained log/evidence paths",
+    "optimization_admission": "only a measured cost above the inherent changed-function floor may be changed"
+  },
+  "next_rung": "runtime-compile shared-cache effective hit rate"
+}
