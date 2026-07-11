@@ -1,7 +1,7 @@
 //! Module API — PyModule_New, PyModule_AddObject, PyModuleDef_Init.
 
 use crate::abi_types::{PyModuleDef, PyObject};
-use crate::bridge::{GLOBAL_BRIDGE, read_bridge_header_bits};
+use crate::bridge::GLOBAL_BRIDGE;
 use crate::hooks;
 use molt_lang_obj_model::MoltObject;
 use std::ffi::{CStr, CString};
@@ -113,14 +113,11 @@ fn bridge_pyobj_to_bits(obj: *mut PyObject) -> u64 {
     if obj.is_null() {
         return MoltObject::none().bits();
     }
-    let handle = GLOBAL_BRIDGE.lock().pyobj_to_handle(obj);
-    if let Some(bits) = handle {
-        return bits;
+    let mut bridge = GLOBAL_BRIDGE.lock();
+    if let Some(value) = bridge.molt_handle_for_pyobj(obj) {
+        return value.bits();
     }
-    // No singleton match and no entry in the local map — the pointer most
-    // likely came from another copy of this bridge.  Read the trailing
-    // handle bits directly.
-    unsafe { read_bridge_header_bits(obj) }
+    unsafe { bridge.molt_value_for_pyobj(obj) }.unwrap_or_else(|| MoltObject::none().bits())
 }
 
 #[unsafe(no_mangle)]

@@ -279,7 +279,7 @@ impl ObjectBridge {
             to_py: HashMap::new(),
             raw_py: HashMap::new(),
             from_py: HashMap::new(),
-            next_raw_handle: 1,
+            next_raw_handle: 0xA11C_0000_0000_0000,
             foreign: HashMap::new(),
         }
     }
@@ -576,9 +576,8 @@ impl ObjectBridge {
         // `from_py` key is identity-only and needs no exposure.
         let addr = ptr.expose_provenance();
         loop {
-            let payload = self.next_raw_handle;
-            self.next_raw_handle = self.next_raw_handle.wrapping_add(1);
-            let bits = molt_lang_obj_model::box_bridge_identity_bits(payload) as u64;
+            let bits = self.next_raw_handle;
+            self.next_raw_handle = self.next_raw_handle.wrapping_add(0x10);
             if bits != 0 && !self.to_py.contains_key(&bits) && !self.raw_py.contains_key(&bits) {
                 self.raw_py.insert(bits, addr);
                 self.from_py.insert(addr, bits);
