@@ -319,17 +319,6 @@ impl ValueRangeResult {
         self.symbolic_lt_bound.insert((bid, var), bound);
     }
 
-    /// Test-only: directly seed the global range of `v` to `[lo, hi]`. Used by
-    /// sibling-pass unit tests (e.g. LICM's throw-disproof gate) that need to
-    /// exercise range-dependent logic against a hand-built result without
-    /// standing up a full TIR function + the analysis pipeline. The
-    /// `global_range` field is private, so this is the sanctioned cross-module
-    /// test seam.
-    #[cfg(any(test, feature = "test-util"))]
-    pub fn set_global_range_for_test(&mut self, v: ValueId, lo: i64, hi: i64) {
-        let v = self.resolve(v);
-        self.global_range.insert(v, IntRange::new(lo, hi));
-    }
 }
 
 // ---------------------------------------------------------------------------
