@@ -2274,6 +2274,41 @@ unsafe extern "C" fn type_getattro(o: *mut PyObject, name: *mut PyObject) -> *mu
             }
         }
     }
+    let tp = o.cast::<PyTypeObject>();
+    let metatype = unsafe { (*o).ob_type };
+    let meta_attribute = unsafe { _PyType_Lookup(metatype, name) };
+    if !meta_attribute.is_null() && unsafe { PyDescr_IsData(meta_attribute) } != 0 {
+        let descriptor_type = unsafe { (*meta_attribute).ob_type };
+        if !descriptor_type.is_null()
+            && let Some(get) = unsafe { (*descriptor_type).tp_descr_get }
+        {
+            return unsafe { get(meta_attribute, o, metatype.cast::<PyObject>()) };
+        }
+    }
+
+    let attribute = unsafe { _PyType_Lookup(tp, name) };
+    if !attribute.is_null() {
+        let descriptor_type = unsafe { (*attribute).ob_type };
+        if !descriptor_type.is_null()
+            && let Some(get) = unsafe { (*descriptor_type).tp_descr_get }
+        {
+            return unsafe { get(attribute, ptr::null_mut(), o) };
+        }
+        unsafe { crate::api::refcount::Py_INCREF(attribute) };
+        return attribute;
+    }
+
+    if !meta_attribute.is_null() {
+        let descriptor_type = unsafe { (*meta_attribute).ob_type };
+        if !descriptor_type.is_null()
+            && let Some(get) = unsafe { (*descriptor_type).tp_descr_get }
+        {
+            return unsafe { get(meta_attribute, o, metatype.cast::<PyObject>()) };
+        }
+        unsafe { crate::api::refcount::Py_INCREF(meta_attribute) };
+        return meta_attribute;
+    }
+
     unsafe { crate::api::object::PyObject_GenericGetAttr(o, name) }
 }
 
