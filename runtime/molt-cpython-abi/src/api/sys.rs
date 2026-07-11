@@ -19,7 +19,7 @@ pub unsafe extern "C" fn PySys_GetObject(name: *const c_char) -> *mut PyObject {
     if bits == 0 {
         return ptr::null_mut();
     }
-    unsafe { GLOBAL_BRIDGE.lock().handle_to_borrowed_pyobj(bits) }
+    unsafe { GLOBAL_BRIDGE.handle_to_borrowed_pyobj(bits) }
 }
 
 #[unsafe(no_mangle)]

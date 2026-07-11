@@ -19,7 +19,6 @@ fn resolve_bits(op: *mut PyObject) -> Option<u64> {
         return None;
     }
     GLOBAL_BRIDGE
-        .lock()
         .molt_handle_for_pyobj(op)
         .map(|value| value.bits())
 }

@@ -65,7 +65,7 @@ unsafe fn import_module_bytes(name: &[u8]) -> *mut PyObject {
         }
         return ptr::null_mut();
     }
-    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(module_bits) }
+    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(module_bits) }
 }
 
 #[unsafe(no_mangle)]
@@ -118,7 +118,7 @@ pub unsafe extern "C" fn PyImport_AddModule(name: *const c_char) -> *mut PyObjec
     let existing = unsafe { (h.dict_get)(modules_bits, key_bits) };
     if existing != 0 {
         unsafe { (h.dec_ref)(key_bits) };
-        return unsafe { GLOBAL_BRIDGE.lock().handle_to_borrowed_pyobj(existing) };
+        return unsafe { GLOBAL_BRIDGE.handle_to_borrowed_pyobj(existing) };
     }
     // Absent: create an empty module and register it in sys.modules.
     let module_bits = unsafe { (h.alloc_module)(name_bytes.as_ptr(), name_bytes.len()) };
@@ -128,7 +128,7 @@ pub unsafe extern "C" fn PyImport_AddModule(name: *const c_char) -> *mut PyObjec
     }
     unsafe { (h.dict_set)(modules_bits, key_bits, module_bits) };
     unsafe { (h.dec_ref)(key_bits) };
-    unsafe { GLOBAL_BRIDGE.lock().handle_to_borrowed_pyobj(module_bits) }
+    unsafe { GLOBAL_BRIDGE.handle_to_borrowed_pyobj(module_bits) }
 }
 
 #[unsafe(no_mangle)]
@@ -139,7 +139,7 @@ pub unsafe extern "C" fn PyImport_GetModuleDict() -> *mut PyObject {
     // OnceCell dict remains only as the hook-less fallback.
     let bits = unsafe { sys_modules_bits() };
     if bits != 0 {
-        return unsafe { GLOBAL_BRIDGE.lock().handle_to_borrowed_pyobj(bits) };
+        return unsafe { GLOBAL_BRIDGE.handle_to_borrowed_pyobj(bits) };
     }
     let raw = MODULE_DICT.get_or_init(|| unsafe { crate::api::mapping::PyDict_New() as usize });
     *raw as *mut PyObject
@@ -224,8 +224,7 @@ unsafe fn resolve_relative_name(
                         unsafe {
                             crate::api::errors::PyErr_SetString(
                                 &raw mut crate::abi_types::PyExc_ImportError,
-                                c"attempted relative import with no known parent package"
-                                    .as_ptr(),
+                                c"attempted relative import with no known parent package".as_ptr(),
                             );
                         }
                         return None;
@@ -305,9 +304,7 @@ unsafe fn import_module_level_bytes(
     if leaf.is_null() {
         return ptr::null_mut();
     }
-    if fromlist_empty
-        && let Some(dot) = name.iter().position(|byte| *byte == b'.')
-    {
+    if fromlist_empty && let Some(dot) = name.iter().position(|byte| *byte == b'.') {
         let root = unsafe { import_module_bytes(&name[..dot]) };
         unsafe { crate::api::refcount::Py_DECREF(leaf) };
         return root;

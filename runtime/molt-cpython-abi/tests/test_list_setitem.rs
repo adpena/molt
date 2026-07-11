@@ -155,7 +155,6 @@ fn setitem_places_items_at_index_out_of_order() {
     );
     let bridge_bits = |p: *mut PyObject| {
         molt_cpython_abi::bridge::GLOBAL_BRIDGE
-            .lock()
             .pyobj_to_handle(p)
             .map(|identity| identity.as_handle())
             .unwrap()
@@ -205,7 +204,6 @@ fn setitem_oob_sets_indexerror_and_releases_stolen_ref() {
     // which releases the bridge proxy, severing the pointer↔handle mapping.
     assert!(
         molt_cpython_abi::bridge::GLOBAL_BRIDGE
-            .lock()
             .pyobj_to_handle(item)
             .is_none(),
         "the stolen reference must be released on the OOB error path"
@@ -257,8 +255,6 @@ fn setitem_foreign_item_gets_custody_and_is_retrievable() {
     // Detach the wrapper identity (foreign/raw_py maps) so the stack object
     // cannot dangle in the process-global bridge after this test.
     unsafe {
-        molt_cpython_abi::bridge::GLOBAL_BRIDGE
-            .lock()
-            .release_foreign(fp as usize);
+        molt_cpython_abi::bridge::GLOBAL_BRIDGE.release_foreign(fp as usize);
     }
 }

@@ -47,7 +47,7 @@ fn native_list() -> *mut PyObject {
     // A genuine is_ptr handle -> classify_heap reports List for it.
     let backing: Box<u8> = Box::new(0);
     let bits = MoltObject::from_ptr(Box::into_raw(backing)).bits();
-    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) }
+    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) }
 }
 
 #[test]

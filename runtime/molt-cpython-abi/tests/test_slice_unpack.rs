@@ -22,8 +22,8 @@
 use molt_cpython_abi::abi_types::{Py_None, PyObject};
 use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
 use molt_lang_obj_model::MoltObject;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 static BIG_U64_BITS: AtomicU64 = AtomicU64::new(0); // u64::MAX - 3 (Big band)
 static HUGE_NEG_BITS: AtomicU64 = AtomicU64::new(0); // < -2^64 (sign via Rshift)
@@ -32,8 +32,7 @@ static TEST_LOCK: Mutex<()> = Mutex::new(());
 const BIG_U64_VALUE: u64 = u64::MAX - 3;
 
 unsafe extern "C" fn mock_classify_heap(bits: u64) -> u8 {
-    if bits == BIG_U64_BITS.load(Ordering::SeqCst) || bits == HUGE_NEG_BITS.load(Ordering::SeqCst)
-    {
+    if bits == BIG_U64_BITS.load(Ordering::SeqCst) || bits == HUGE_NEG_BITS.load(Ordering::SeqCst) {
         molt_cpython_abi::abi_types::MoltTypeTag::Int as u8
     } else {
         molt_cpython_abi::abi_types::MoltTypeTag::Other as u8
@@ -82,7 +81,7 @@ fn install_hooks() {
 }
 
 fn proxy(bits: u64) -> *mut PyObject {
-    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) }
+    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) }
 }
 fn int_obj(v: i64) -> *mut PyObject {
     proxy(MoltObject::from_int(v).bits())
@@ -109,9 +108,7 @@ fn new_slice(start: *mut PyObject, stop: *mut PyObject, step: *mut PyObject) -> 
 fn unpack(slice: *mut PyObject) -> (i32, isize, isize, isize) {
     let (mut start, mut stop, mut step) = (0isize, 0isize, 0isize);
     let rc = unsafe {
-        molt_cpython_abi::api::slice::PySlice_Unpack(
-            slice, &mut start, &mut stop, &mut step,
-        )
+        molt_cpython_abi::api::slice::PySlice_Unpack(slice, &mut start, &mut stop, &mut step)
     };
     (rc, start, stop, step)
 }
@@ -165,9 +162,16 @@ fn unpack_big_positive_stop_clamps_to_ssize_max() {
     install_hooks();
     clear_err();
     // The (i64::MAX, u64::MAX] band: > isize on every host → clamp MAX.
-    let s = new_slice(int_obj(0), proxy(BIG_U64_BITS.load(Ordering::SeqCst)), none());
+    let s = new_slice(
+        int_obj(0),
+        proxy(BIG_U64_BITS.load(Ordering::SeqCst)),
+        none(),
+    );
     let (rc, start, stop, step) = unpack(s);
-    assert_eq!(rc, 0, "an out-of-range stop CLAMPS (sliceobject.c), no error");
+    assert_eq!(
+        rc, 0,
+        "an out-of-range stop CLAMPS (sliceobject.c), no error"
+    );
     assert!(!err_pending());
     assert_eq!(start, 0);
     assert_eq!(
@@ -185,7 +189,11 @@ fn unpack_huge_negative_start_clamps_to_ssize_min() {
     install_hooks();
     clear_err();
     // Beyond -2^64: sign resolves through the runtime `>> 128` authority.
-    let s = new_slice(proxy(HUGE_NEG_BITS.load(Ordering::SeqCst)), int_obj(3), none());
+    let s = new_slice(
+        proxy(HUGE_NEG_BITS.load(Ordering::SeqCst)),
+        int_obj(3),
+        none(),
+    );
     let (rc, start, stop, step) = unpack(s);
     assert_eq!(rc, 0);
     assert!(!err_pending());
@@ -254,9 +262,7 @@ fn legacy_get_indices_rejects_out_of_range_and_non_long() {
     let s = new_slice(int_obj(0), int_obj(11), none());
     let (mut start, mut stop, mut step) = (0isize, 0isize, 0isize);
     let rc = unsafe {
-        molt_cpython_abi::api::slice::PySlice_GetIndices(
-            s, 10, &mut start, &mut stop, &mut step,
-        )
+        molt_cpython_abi::api::slice::PySlice_GetIndices(s, 10, &mut start, &mut stop, &mut step)
     };
     assert_eq!(rc, -1, "legacy GetIndices must REJECT stop > length");
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(s) };
@@ -264,9 +270,7 @@ fn legacy_get_indices_rejects_out_of_range_and_non_long() {
     // A float field is not a PyLong: -1 (legacy PyLong_Check gate).
     let s = new_slice(float_obj(1.0), none(), none());
     let rc = unsafe {
-        molt_cpython_abi::api::slice::PySlice_GetIndices(
-            s, 10, &mut start, &mut stop, &mut step,
-        )
+        molt_cpython_abi::api::slice::PySlice_GetIndices(s, 10, &mut start, &mut stop, &mut step)
     };
     assert_eq!(rc, -1, "legacy GetIndices requires exact ints per field");
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(s) };
@@ -275,9 +279,7 @@ fn legacy_get_indices_rejects_out_of_range_and_non_long() {
     // The happy path with a negative index adjusts once by length.
     let s = new_slice(int_obj(-3), int_obj(9), none());
     let rc = unsafe {
-        molt_cpython_abi::api::slice::PySlice_GetIndices(
-            s, 10, &mut start, &mut stop, &mut step,
-        )
+        molt_cpython_abi::api::slice::PySlice_GetIndices(s, 10, &mut start, &mut stop, &mut step)
     };
     assert_eq!(rc, 0);
     assert_eq!((start, stop, step), (7, 9, 1));

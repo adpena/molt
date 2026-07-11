@@ -112,7 +112,7 @@ pub unsafe extern "C" fn PyCapsule_New(
     // `_ARRAY_API` / `DATETIMEUNITS` capsules) resolves it via `pyobj_to_handle`
     // instead of failing the bridge lookup — the same `register_raw_pyobj` bridging
     // the type/descriptor constructors use.
-    unsafe { crate::bridge::GLOBAL_BRIDGE.lock().register_raw_pyobj(ptr) };
+    unsafe { crate::bridge::GLOBAL_BRIDGE.register_raw_pyobj(ptr) };
     ptr
 }
 
@@ -256,7 +256,9 @@ pub unsafe extern "C" fn PyCapsule_Import(name: *const c_char, _no_block: c_int)
     // validate with PyCapsule_IsValid, and return the capsule's pointer.
     if let Some((module_name, rest)) = {
         let mut parts = key.splitn(2, '.');
-        parts.next().map(|m| (m.to_string(), parts.next().map(str::to_string)))
+        parts
+            .next()
+            .map(|m| (m.to_string(), parts.next().map(str::to_string)))
     } && let Ok(cmodule) = std::ffi::CString::new(module_name)
     {
         let mut obj = unsafe { crate::api::imports::PyImport_ImportModule(cmodule.as_ptr()) };
