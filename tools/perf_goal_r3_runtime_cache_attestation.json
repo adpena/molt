@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "claim": "PERF-GOAL-R3",
+  "git_rev": "995da996dd27c8b125d20b169da05191d7c73a87",
+  "machine": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "AMD64 Family 23 Model 113 Stepping 0, AuthenticAMD",
+    "python": "3.12.13"
+  },
+  "scenario": "runtime-wasm compatible-cache effective hydrate, 116 cache entries, matching release-output artifact, dev-fast request",
+  "big_o_before": "O(N) JSON sidecar parses per compatibility hydrate",
+  "big_o_after": "O(P) indexed profile pointers; P is compatible profiles, legacy O(N) scan only when no index exists",
+  "configured_candidates": 1,
+  "effective_hits": {
+    "before": 7,
+    "after": 7
+  },
+  "phase_breakdown": {
+    "before_sidecars_parsed_per_run": 116,
+    "after_index_files_parsed_per_run": 1,
+    "artifact_validation_and_copy": "identical in both paths"
+  },
+  "before_ms": [
+    781.4224,
+    17.3408,
+    17.2,
+    18.3132,
+    16.012,
+    18.0016,
+    16.8324
+  ],
+  "after_ms": [
+    9.7953,
+    2.787,
+    3.1869,
+    2.3644,
+    2.0295,
+    2.3534,
+    2.2365
+  ],
+  "median_before_ms": 17.3408,
+  "median_after_ms": 2.3644,
+  "speedup": 7.334123,
+  "percent_reduction": 86.365104
+}
