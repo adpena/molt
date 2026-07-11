@@ -172,6 +172,17 @@ runtime improved the median from 1,111.2847 ms to 554.2158 ms (2.0051x), with
 byte identity, corrupt-source rejection, copy-failure rejection, and a
 144,908,288 B maximum RSS ceiling.
 
+### Native multi-byte reverse search
+
+`tools/opt_matrix_r4_bytes_rfind_attestation.json` records the A12-citable
+release differential for repeated multi-byte `bytes.rfind` calls. The shared
+bytes/string/bytearray reverse-search primitive now uses `memmem::rfind`
+directly; the superseded forward `find_iter` enumeration that visited every
+match only to retain the last index is deleted. Three serial release samples
+on 200 searches of a 10,000,000-byte overlapping haystack improved the median
+from 5,062 ms to 266 ms (19.0301x), preserved exact output semantics, and
+reduced observed peak RSS from 64 MiB to 40 MiB.
+
 ## Variant-II Landing Acceptance
 
 `tools/powerplay_acceptance.py` is the acceptance authority for perf landings.
