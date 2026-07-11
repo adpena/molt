@@ -8,6 +8,8 @@ commits are SUPERSEDED (prunable); clean+old WITH unique commits is SIGNAL
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import tools.drift_harvest as dh
 
 
@@ -79,7 +81,6 @@ def test_classify_computes_uniq_lazily(monkeypatch):
 def test_only_superseded_and_stale_are_prunable_without_include_signal(monkeypatch):
     # The prune path must never touch FRESH/PROTECTED/LOCKED, and SIGNAL only with
     # --include-signal (after its commits are bundled).
-    now = 1_000_000.0
     rows = [
         {"path": "/p", "branch": "p", "uniq": 0, "dirty": 0, "state": "PROTECTED"},
         {"path": "/f", "branch": "f", "uniq": 3, "dirty": 1, "state": "FRESH"},
@@ -94,6 +95,40 @@ def test_only_superseded_and_stale_are_prunable_without_include_signal(monkeypat
         r for r in rows if r["state"] in ("SUPERSEDED", "SIGNAL")
     ]
     assert sorted(r["path"] for r in prunable_with_signal) == ["/sig", "/sup"]
+
+
+def test_prune_leaves_target_cwd_before_removal(monkeypatch, tmp_path):
+    repo_root = tmp_path / "molt"
+    worktree = repo_root / "wt-old"
+    worktree.mkdir(parents=True)
+    monkeypatch.setattr(dh, "REPO_ROOT", repo_root)
+    monkeypatch.chdir(worktree)
+
+    destination = dh._leave_prune_targets([worktree])
+
+    assert destination == tmp_path.resolve()
+    assert Path.cwd() == tmp_path.resolve()
+
+
+def test_empty_orphan_sweep_is_bounded_and_preserves_nonempty(monkeypatch, tmp_path):
+    repo_root = tmp_path / "molt"
+    repo_root.mkdir()
+    empty = tmp_path / "wt-empty"
+    nonempty = tmp_path / "wt-nonempty"
+    unrelated = tmp_path / "empty-unrelated"
+    empty.mkdir()
+    nonempty.mkdir()
+    unrelated.mkdir()
+    (nonempty / "signal.txt").write_text("keep", encoding="utf-8")
+    monkeypatch.setattr(dh, "REPO_ROOT", repo_root)
+    monkeypatch.setattr(dh, "_worktrees", lambda: [])
+
+    removed = dh._sweep_empty_orphan_worktree_dirs()
+
+    assert removed == [empty]
+    assert not empty.exists()
+    assert nonempty.exists()
+    assert unrelated.exists()
 
 
 def test_bundle_signal_captures_detached_head_signal(monkeypatch, tmp_path):
