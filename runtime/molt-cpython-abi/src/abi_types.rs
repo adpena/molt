@@ -499,6 +499,29 @@ pub struct PyCMethodObject {
 }
 
 #[repr(C)]
+pub struct Py_tss_t {
+    pub _is_initialized: c_int,
+    pub _key: usize,
+}
+
+#[repr(C)]
+pub struct PyASCIIObject {
+    pub ob_base: PyObject,
+    pub length: Py_ssize_t,
+    pub hash: Py_hash_t,
+    pub state: c_uint,
+    pub wstr: *mut u32,
+}
+
+#[repr(C)]
+pub struct PyCompactUnicodeObject {
+    pub base: PyASCIIObject,
+    pub utf8_length: Py_ssize_t,
+    pub utf8: *mut c_char,
+    pub wstr_length: Py_ssize_t,
+}
+
+#[repr(C)]
 pub struct PyMethodObject {
     pub ob_base: PyObject,
     pub im_func: *mut PyObject,
@@ -959,6 +982,7 @@ pub static mut PyModuleDef_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 #[allow(non_upper_case_globals)]
 #[unsafe(no_mangle)]
 pub static mut PyCFunction_Type: PyTypeObject = unsafe { std::mem::zeroed() };
+pub static mut PyCMethod_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 #[allow(non_upper_case_globals)]
 #[unsafe(no_mangle)]
 pub static mut PyMethod_Type: PyTypeObject = unsafe { std::mem::zeroed() };
@@ -1036,6 +1060,7 @@ pub unsafe fn init_static_types() {
         set_name!(PyModule_Type, b"module\0");
         set_name!(PyModuleDef_Type, b"moduledef\0");
         set_name!(PyCFunction_Type, b"builtin_function_or_method\0");
+        set_name!(PyCMethod_Type, b"builtin_method\0");
         set_name!(PyMethod_Type, b"method\0");
         set_name!(PyMethodDescr_Type, b"method_descriptor\0");
         set_name!(PyMemberDescr_Type, b"member_descriptor\0");
@@ -1086,6 +1111,8 @@ pub unsafe fn init_static_types() {
         PyDateTime_DeltaType.tp_dealloc = Some(crate::api::datetime::molt_datetime_dealloc);
         PyCFunction_Type.tp_call = Some(crate::api::object::molt_cfunction_call);
         PyCFunction_Type.tp_dealloc = Some(crate::api::object::molt_cfunction_dealloc);
+        PyCMethod_Type.tp_call = Some(crate::api::object::molt_cfunction_call);
+        PyCMethod_Type.tp_dealloc = Some(crate::api::object::molt_cfunction_dealloc);
         PyMethod_Type.tp_call = Some(crate::api::object::molt_method_call);
         PyMethod_Type.tp_dealloc = Some(crate::api::object::molt_method_dealloc);
         // CPython's `PyType_Type.tp_call = type_call` — calling a type object

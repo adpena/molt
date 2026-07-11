@@ -44,5 +44,6 @@ pub mod sequences;
 pub mod slice;
 pub mod strings;
 pub mod sys;
+pub mod thread;
 pub mod typeobj;
 pub mod weakref;

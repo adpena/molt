@@ -1111,6 +1111,30 @@ pub unsafe extern "C" fn PySequence_List(o: *mut PyObject) -> *mut PyObject {
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn _PyList_Extend(
+    list: *mut PyObject,
+    iterable: *mut PyObject,
+) -> *mut PyObject {
+    if list.is_null() || iterable.is_null() {
+        unsafe { set_null_error() };
+        return ptr::null_mut();
+    }
+    let Some(items) = (unsafe { materialize_iterable(iterable) }) else {
+        return ptr::null_mut();
+    };
+    let list_bits = GLOBAL_BRIDGE.lock().pyobj_to_handle(list);
+    let Some(list_bits) = list_bits else {
+        unsafe { set_type_error("_PyList_Extend requires a list".to_string()) };
+        return ptr::null_mut();
+    };
+    let h = hooks_or_stubs();
+    for item in items {
+        unsafe { (h.list_append)(list_bits, item) };
+    }
+    unsafe { crate::api::object::Py_NewRef(&raw mut crate::abi_types::Py_None) }
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn PySequence_Tuple(o: *mut PyObject) -> *mut PyObject {
     // CPython: PyObject_GetIter(v) drained into a tuple (tuple('abc') ==
     // ('a','b','c'), tuple(dict) == keys); non-iterable raises TypeError. The

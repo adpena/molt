@@ -12,6 +12,99 @@ use std::ffi::{CStr, c_void};
 use std::os::raw::{c_char, c_int, c_long, c_ulong};
 use std::ptr;
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyErr_NewException(
+    name: *const c_char,
+    base: *mut PyObject,
+    dict: *mut PyObject,
+) -> *mut PyObject {
+    if name.is_null() {
+        unsafe { PyErr_SetString(&raw mut crate::abi_types::PyExc_SystemError, c"PyErr_NewException: name must be module.class".as_ptr()) };
+        return ptr::null_mut();
+    }
+    let bytes = unsafe { CStr::from_ptr(name).to_bytes() };
+    let Some(dot) = bytes.iter().rposition(|byte| *byte == b'.') else {
+        unsafe { PyErr_SetString(&raw mut crate::abi_types::PyExc_SystemError, c"PyErr_NewException: name must be module.class".as_ptr()) };
+        return ptr::null_mut();
+    };
+    let mut owned_dict = ptr::null_mut();
+    let dict = if dict.is_null() {
+        owned_dict = unsafe { crate::api::mapping::PyDict_New() };
+        owned_dict
+    } else {
+        dict
+    };
+    if dict.is_null() {
+        return ptr::null_mut();
+    }
+    let module = unsafe {
+        crate::api::strings::PyUnicode_FromStringAndSize(name, dot as Py_ssize_t)
+    };
+    if module.is_null()
+        || unsafe { crate::api::mapping::PyDict_SetItemString(dict, c"__module__".as_ptr(), module) } < 0
+    {
+        unsafe { crate::api::refcount::Py_XDECREF(module); crate::api::refcount::Py_XDECREF(owned_dict); }
+        return ptr::null_mut();
+    }
+    unsafe { crate::api::refcount::Py_DECREF(module) };
+    let base = if base.is_null() { &raw mut crate::abi_types::PyExc_Exception } else { base };
+    let bases = if unsafe { crate::api::sequences::PyTuple_Check(base) } != 0 {
+        unsafe { crate::api::object::Py_NewRef(base) }
+    } else {
+        let tuple = unsafe { crate::api::sequences::PyTuple_New(1) };
+        if !tuple.is_null() {
+            unsafe { crate::api::refcount::Py_INCREF(base); crate::api::sequences::PyTuple_SetItem(tuple, 0, base); }
+        }
+        tuple
+    };
+    let class_name = unsafe {
+        crate::api::strings::PyUnicode_FromStringAndSize(
+            name.add(dot + 1),
+            (bytes.len() - dot - 1) as Py_ssize_t,
+        )
+    };
+    let args = unsafe { crate::api::sequences::PyTuple_New(3) };
+    if bases.is_null() || class_name.is_null() || args.is_null() {
+        unsafe { crate::api::refcount::Py_XDECREF(bases); crate::api::refcount::Py_XDECREF(class_name); crate::api::refcount::Py_XDECREF(args); crate::api::refcount::Py_XDECREF(owned_dict); }
+        return ptr::null_mut();
+    }
+    unsafe {
+        crate::api::sequences::PyTuple_SetItem(args, 0, class_name);
+        crate::api::sequences::PyTuple_SetItem(args, 1, bases);
+        crate::api::refcount::Py_INCREF(dict);
+        crate::api::sequences::PyTuple_SetItem(args, 2, dict);
+    }
+    let result = unsafe { crate::api::object::PyObject_Call((&raw mut crate::abi_types::PyType_Type).cast(), args, ptr::null_mut()) };
+    unsafe { crate::api::refcount::Py_DECREF(args); crate::api::refcount::Py_XDECREF(owned_dict); }
+    result
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyErr_NewExceptionWithDoc(
+    name: *const c_char,
+    doc: *const c_char,
+    base: *mut PyObject,
+    dict: *mut PyObject,
+) -> *mut PyObject {
+    let mut owned_dict = ptr::null_mut();
+    let dict = if dict.is_null() {
+        owned_dict = unsafe { crate::api::mapping::PyDict_New() };
+        owned_dict
+    } else { dict };
+    if dict.is_null() { return ptr::null_mut(); }
+    if !doc.is_null() {
+        let doc_obj = unsafe { crate::api::strings::PyUnicode_FromString(doc) };
+        if doc_obj.is_null() || unsafe { crate::api::mapping::PyDict_SetItemString(dict, c"__doc__".as_ptr(), doc_obj) } < 0 {
+            unsafe { crate::api::refcount::Py_XDECREF(doc_obj); crate::api::refcount::Py_XDECREF(owned_dict); }
+            return ptr::null_mut();
+        }
+        unsafe { crate::api::refcount::Py_DECREF(doc_obj) };
+    }
+    let result = unsafe { PyErr_NewException(name, base, dict) };
+    unsafe { crate::api::refcount::Py_XDECREF(owned_dict) };
+    result
+}
+
 // ─── Thread-local error state ─────────────────────────────────────────────
 
 thread_local! {

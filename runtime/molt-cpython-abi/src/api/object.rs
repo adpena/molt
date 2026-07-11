@@ -3236,6 +3236,57 @@ pub unsafe extern "C" fn PyCFunction_NewEx(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyCMethod_New(
+    ml: *mut PyMethodDef,
+    self_: *mut PyObject,
+    module: *mut PyObject,
+    cls: *mut PyTypeObject,
+) -> *mut PyObject {
+    if ml.is_null() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return ptr::null_mut();
+    }
+    let is_method = unsafe { (*ml).ml_flags } & METH_METHOD != 0;
+    if is_method == cls.is_null() {
+        let message = if is_method {
+            c"attempting to create PyCMethod with a METH_METHOD flag but no class"
+        } else {
+            c"attempting to create PyCFunction with class but no METH_METHOD flag"
+        };
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                &raw mut crate::abi_types::PyExc_SystemError,
+                message.as_ptr(),
+            );
+        }
+        return ptr::null_mut();
+    }
+    if !is_method {
+        return unsafe { PyCFunction_NewEx(ml, self_, module) };
+    }
+    unsafe {
+        crate::api::refcount::Py_XINCREF(self_);
+        crate::api::refcount::Py_XINCREF(module);
+        crate::api::refcount::Py_INCREF(cls.cast());
+    }
+    let obj = Box::new(crate::abi_types::PyCMethodObject {
+        func: PyCFunctionObject {
+            ob_base: PyObject {
+                ob_refcnt: 1,
+                ob_type: &raw mut crate::abi_types::PyCMethod_Type,
+            },
+            m_ml: ml,
+            m_self: self_,
+            m_module: module,
+            m_weakreflist: ptr::null_mut(),
+            vectorcall: None,
+        },
+        mm_class: cls,
+    });
+    Box::into_raw(obj).cast()
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyMethod_New(func: *mut PyObject, self_: *mut PyObject) -> *mut PyObject {
     if func.is_null() {
         return ptr::null_mut();
