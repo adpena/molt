@@ -10,7 +10,7 @@ use crate::abi_types::{
     Py_False, Py_None, Py_True, Py_ssize_t, PyCFunction, PyCFunctionFast,
     PyCFunctionFastWithKeywords, PyCFunctionObject, PyCFunctionWithKeywords, PyCodeObject,
     PyFrameObject, PyGenericAliasObject, PyInterpreterState, PyMethodDef, PyMethodObject, PyMutex,
-    PyObject, PyThreadState, PyTypeObject,
+    PyObject, PyThreadState, PyTypeObject, PyVectorcallFunc, Py_TPFLAGS_HAVE_VECTORCALL,
 };
 use crate::bridge::GLOBAL_BRIDGE;
 use crate::hooks::hooks_or_stubs;
@@ -2063,6 +2063,15 @@ pub unsafe extern "C" fn PyObject_Call(
     if callable.is_null() {
         return ptr::null_mut();
     }
+    // Vectorcall-first (CPython 3.12 `_PyObject_Call`, Objects/call.c): if the
+    // callable advertises a `vectorcallfunc`, invoke it via the PEP-590
+    // `_PyVectorcall_Call` conversion (tuple/dict → flat stack) rather than
+    // `tp_call`. This is what makes the documented `tp_call = PyVectorcall_Call`
+    // pattern TERMINATE: the object's own slot is read directly here, so we never
+    // fall into `tp_call → PyVectorcall_Call → PyObject_Call → tp_call → …`.
+    if let Some(func) = unsafe { vectorcall_function(callable) } {
+        return unsafe { vectorcall_call_with_tuple(func, callable, args, kwargs) };
+    }
     let tp = unsafe { (*callable).ob_type };
     if !tp.is_null()
         && let Some(call) = unsafe { (*tp).tp_call }
@@ -2462,6 +2471,170 @@ unsafe fn tuple_from_vectorcall_args(args: *mut *mut PyObject, nargs: isize) -> 
     tuple
 }
 
+/// Read a callable's `vectorcallfunc`, mirroring CPython 3.12
+/// `_PyVectorcall_FunctionInline` (`Include/internal/pycore_call.h`) and the
+/// public `PyVectorcall_Function` (`Objects/call.c`): return the pointer stored
+/// at `Py_TYPE(callable)->tp_vectorcall_offset` inside the object, but ONLY when
+/// the type advertises `Py_TPFLAGS_HAVE_VECTORCALL`. Returns `None` (CPython's
+/// NULL — the "fall back to `tp_call`" signal) when the flag is absent, the
+/// offset is non-positive, or the per-object slot itself is NULL.
+///
+/// The slot read is unaligned on purpose: a statically-declared C object on
+/// wasm32 is only 4-byte aligned, so its pointer-sized `vectorcall` field can be
+/// under-aligned relative to `align_of::<*const ()>()` (the `bridge.rs`
+/// wasm32-alignment class). `read_unaligned` is correct on every target.
+unsafe fn vectorcall_function(callable: *mut PyObject) -> Option<PyVectorcallFunc> {
+    if callable.is_null() {
+        return None;
+    }
+    let tp = unsafe { (*callable).ob_type };
+    if tp.is_null() {
+        return None;
+    }
+    if unsafe { (*tp).tp_flags } & Py_TPFLAGS_HAVE_VECTORCALL == 0 {
+        return None;
+    }
+    let offset = unsafe { (*tp).tp_vectorcall_offset };
+    if offset <= 0 {
+        return None;
+    }
+    // memcpy(&ptr, (char *)callable + offset, sizeof(ptr)); a NULL slot decodes
+    // to `None` via the fn-pointer niche, which the callers treat as "no slot".
+    let slot = unsafe { (callable as *const u8).add(offset as usize) }
+        .cast::<Option<PyVectorcallFunc>>();
+    unsafe { ptr::read_unaligned(slot) }
+}
+
+/// CPython 3.12 `PyVectorcall_Function` (`Objects/call.c`): public accessor for a
+/// callable's `vectorcallfunc` (or NULL). Declared in `include/Python.h` and
+/// consumed by Cython's `__Pyx_PyVectorcall_Function` fast path (scipy/pandas);
+/// previously absent from the runtime — an undefined-symbol build break for
+/// Cython-generated modules.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyVectorcall_Function(
+    callable: *mut PyObject,
+) -> Option<PyVectorcallFunc> {
+    unsafe { vectorcall_function(callable) }
+}
+
+/// Mirror CPython `_Py_CheckFunctionResult` for the vectorcall paths: a NULL
+/// return MUST carry a pending exception (the ABI contract). If a slot returned
+/// NULL without setting one, raise `SystemError` so a C caller's canonical
+/// `res == NULL && PyErr_Occurred()` check is honoured instead of stranding on a
+/// bare NULL (a `SystemError: NULL result without error` / wrong-answer crash).
+unsafe fn check_vectorcall_result(
+    callable: *mut PyObject,
+    result: *mut PyObject,
+) -> *mut PyObject {
+    if result.is_null() && !exception_already_pending() {
+        let type_name = unsafe { type_name_lossy(callable) };
+        crate::capi_trace::record_silent_failure("PyObject_Vectorcall", Some(&type_name));
+        let message =
+            format!("vectorcall of '{type_name}' object returned NULL without setting an exception");
+        if let Ok(cmessage) = std::ffi::CString::new(message) {
+            unsafe {
+                crate::api::errors::PyErr_SetString(
+                    &raw mut crate::abi_types::PyExc_SystemError,
+                    cmessage.as_ptr(),
+                );
+            }
+        }
+    }
+    result
+}
+
+/// Flatten a positional args array (`args[0..nargs]`, borrowed) plus a non-empty
+/// `kwargs` dict into a single vectorcall stack + a `kwnames` tuple, then invoke
+/// `func`. Mirrors CPython `_PyStack_UnpackDict` + the trailing `func(...)`:
+/// the stack reserves one slot at the front so `PY_VECTORCALL_ARGUMENTS_OFFSET`
+/// is set and the callee may borrow `args[-1]` as `self` scratch.
+unsafe fn vectorcall_with_kwargs_dict(
+    func: PyVectorcallFunc,
+    callable: *mut PyObject,
+    args: *mut *mut PyObject,
+    nargs: isize,
+    kwargs: *mut PyObject,
+) -> *mut PyObject {
+    let nkw = unsafe { crate::api::mapping::PyDict_Size(kwargs) };
+    if nkw < 0 {
+        return ptr::null_mut();
+    }
+    let kwnames = unsafe { crate::api::sequences::PyTuple_New(nkw) };
+    if kwnames.is_null() {
+        return ptr::null_mut();
+    }
+    // Layout: [reserved][pos0..pos_{nargs-1}][kwval0..kwval_{nkw-1}].
+    let mut stack: Vec<*mut PyObject> =
+        Vec::with_capacity(1 + nargs.max(0) as usize + nkw as usize);
+    stack.push(ptr::null_mut());
+    for i in 0..nargs {
+        stack.push(unsafe { *args.add(i as usize) });
+    }
+    let mut pos: Py_ssize_t = 0;
+    let mut key: *mut PyObject = ptr::null_mut();
+    let mut value: *mut PyObject = ptr::null_mut();
+    let mut idx: isize = 0;
+    while unsafe {
+        crate::api::mapping::PyDict_Next(kwargs, &raw mut pos, &raw mut key, &raw mut value)
+    } != 0
+    {
+        // `PyTuple_SetItem` steals a ref; `PyDict_Next` hands back a borrowed key.
+        unsafe { crate::api::refcount::Py_INCREF(key) };
+        if unsafe { crate::api::sequences::PyTuple_SetItem(kwnames, idx, key) } != 0 {
+            unsafe { crate::api::refcount::Py_DECREF(kwnames) };
+            return ptr::null_mut();
+        }
+        stack.push(value);
+        idx += 1;
+    }
+    // Args pointer starts AFTER the reserved slot; ARGUMENTS_OFFSET signals it.
+    let args_ptr = unsafe { stack.as_ptr().add(1) } as *mut *mut PyObject;
+    let result = unsafe {
+        func(
+            callable,
+            args_ptr,
+            (nargs as usize) | PY_VECTORCALL_ARGUMENTS_OFFSET,
+            kwnames,
+        )
+    };
+    unsafe { crate::api::refcount::Py_DECREF(kwnames) };
+    // `stack` (and thus the reserved slot the callee may have written) stays live
+    // until here — do not drop it before `func` returns.
+    unsafe { check_vectorcall_result(callable, result) }
+}
+
+/// CPython 3.12 `_PyVectorcall_Call` (`Objects/call.c`): invoke `func` from a
+/// positional-args tuple + optional `kwargs` dict. The no-keyword fast path
+/// passes the tuple's items with a plain `nargs` (NO `ARGUMENTS_OFFSET`); the
+/// keyword path flattens the dict via `vectorcall_with_kwargs_dict`. Never
+/// re-enters `PyObject_Call`, so it cannot recurse through `tp_call`.
+unsafe fn vectorcall_call_with_tuple(
+    func: PyVectorcallFunc,
+    callable: *mut PyObject,
+    args_tuple: *mut PyObject,
+    kwargs: *mut PyObject,
+) -> *mut PyObject {
+    let nargs = if args_tuple.is_null() {
+        0
+    } else {
+        unsafe { crate::api::sequences::PyTuple_Size(args_tuple) }.max(0)
+    };
+    // Collect the tuple's items (borrowed) into a flat stack — CPython uses the
+    // zero-copy `_PyTuple_ITEMS`; a `Vec` is correct for molt's dual-path
+    // (ABI-layout and bridge-managed) tuples and is bounded by this frame.
+    let mut pos_args: Vec<*mut PyObject> = Vec::with_capacity(nargs as usize);
+    for i in 0..nargs {
+        pos_args.push(unsafe { crate::api::sequences::PyTuple_GetItem(args_tuple, i) });
+    }
+    let has_kwargs =
+        !kwargs.is_null() && unsafe { crate::api::mapping::PyDict_Size(kwargs) } > 0;
+    if !has_kwargs {
+        let result = unsafe { func(callable, pos_args.as_mut_ptr(), nargs as usize, ptr::null_mut()) };
+        return unsafe { check_vectorcall_result(callable, result) };
+    }
+    unsafe { vectorcall_with_kwargs_dict(func, callable, pos_args.as_mut_ptr(), nargs, kwargs) }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_Vectorcall(
     callable: *mut PyObject,
@@ -2469,16 +2642,71 @@ pub unsafe extern "C" fn PyObject_Vectorcall(
     nargsf: usize,
     kwnames: *mut PyObject,
 ) -> *mut PyObject {
-    if !kwnames.is_null() {
+    if callable.is_null() {
         return ptr::null_mut();
     }
+    // PEP-590 fast path (CPython `_PyObject_VectorcallTstate`): if the callable
+    // carries a `vectorcallfunc`, call it DIRECTLY with the caller's argument
+    // array + `kwnames` tuple. `nargsf` is forwarded UNMASKED — the callee
+    // applies `PyVectorcall_NARGS` itself and may read
+    // `PY_VECTORCALL_ARGUMENTS_OFFSET`.
+    if let Some(func) = unsafe { vectorcall_function(callable) } {
+        let result = unsafe { func(callable, args, nargsf, kwnames) };
+        return unsafe { check_vectorcall_result(callable, result) };
+    }
+    // No vectorcall slot → `_PyObject_MakeTpCall`: build a positional tuple and
+    // (when `kwnames` is non-empty) a keyword dict, then route through
+    // `PyObject_Call`. We are here only because `callable` has NO slot, so
+    // `PyObject_Call`'s own vectorcall-first probe also misses — no re-entry.
+    unsafe { vectorcall_tpcall_fallback(callable, args, nargsf, kwnames) }
+}
+
+/// CPython `_PyObject_MakeTpCall` shape (the vectorcall→`tp_call` slow path):
+/// materialise a positional args tuple from the vectorcall stack, a keyword dict
+/// from the `kwnames` tuple (`kwnames[i] -> args[nargs + i]`), then dispatch via
+/// `PyObject_Call` (which itself handles a real `tp_call` and molt's
+/// bridge-managed callables). Refcount-clean: temporaries are released here.
+unsafe fn vectorcall_tpcall_fallback(
+    callable: *mut PyObject,
+    args: *mut *mut PyObject,
+    nargsf: usize,
+    kwnames: *mut PyObject,
+) -> *mut PyObject {
     let nargs = vectorcall_nargs(nargsf);
-    let tuple = unsafe { tuple_from_vectorcall_args(args, nargs) };
-    if tuple.is_null() {
+    let argstuple = unsafe { tuple_from_vectorcall_args(args, nargs) };
+    if argstuple.is_null() {
         return ptr::null_mut();
     }
-    let result = unsafe { PyObject_Call(callable, tuple, ptr::null_mut()) };
-    unsafe { crate::api::refcount::Py_DECREF(tuple) };
+    let mut kwdict: *mut PyObject = ptr::null_mut();
+    if !kwnames.is_null() {
+        let nkw = unsafe { crate::api::sequences::PyTuple_Size(kwnames) };
+        if nkw > 0 {
+            kwdict = unsafe { crate::api::mapping::PyDict_New() };
+            if kwdict.is_null() {
+                unsafe { crate::api::refcount::Py_DECREF(argstuple) };
+                return ptr::null_mut();
+            }
+            for i in 0..nkw {
+                let name = unsafe { crate::api::sequences::PyTuple_GetItem(kwnames, i) };
+                let value = unsafe { *args.add((nargs + i) as usize) };
+                if name.is_null()
+                    || value.is_null()
+                    || unsafe { crate::api::mapping::PyDict_SetItem(kwdict, name, value) } != 0
+                {
+                    unsafe {
+                        crate::api::refcount::Py_DECREF(argstuple);
+                        crate::api::refcount::Py_DECREF(kwdict);
+                    }
+                    return ptr::null_mut();
+                }
+            }
+        }
+    }
+    let result = unsafe { PyObject_Call(callable, argstuple, kwdict) };
+    unsafe { crate::api::refcount::Py_DECREF(argstuple) };
+    if !kwdict.is_null() {
+        unsafe { crate::api::refcount::Py_DECREF(kwdict) };
+    }
     result
 }
 
@@ -2496,15 +2724,32 @@ pub unsafe extern "C" fn _PyObject_Vectorcall(
 pub unsafe extern "C" fn PyObject_VectorcallDict(
     callable: *mut PyObject,
     args: *mut *mut PyObject,
-    nargs: usize,
+    nargsf: usize,
     kwargs: *mut PyObject,
 ) -> *mut PyObject {
-    let tuple = unsafe { tuple_from_vectorcall_args(args, nargs as isize) };
-    if tuple.is_null() {
+    if callable.is_null() {
         return ptr::null_mut();
     }
-    let result = unsafe { PyObject_Call(callable, tuple, kwargs) };
-    unsafe { crate::api::refcount::Py_DECREF(tuple) };
+    // CPython `_PyObject_FastCallDictTstate`: MASK `PY_VECTORCALL_ARGUMENTS_OFFSET`
+    // out of `nargsf` — the previous `nargs as isize` leaked the high offset bit
+    // into a negative / bogus count and dropped the call. Vectorcall-first, else
+    // the `_PyObject_MakeTpCall` tuple/dict fallback.
+    let nargs = vectorcall_nargs(nargsf);
+    if let Some(func) = unsafe { vectorcall_function(callable) } {
+        let has_kwargs =
+            !kwargs.is_null() && unsafe { crate::api::mapping::PyDict_Size(kwargs) } > 0;
+        if !has_kwargs {
+            let result = unsafe { func(callable, args, nargsf, ptr::null_mut()) };
+            return unsafe { check_vectorcall_result(callable, result) };
+        }
+        return unsafe { vectorcall_with_kwargs_dict(func, callable, args, nargs, kwargs) };
+    }
+    let argstuple = unsafe { tuple_from_vectorcall_args(args, nargs) };
+    if argstuple.is_null() {
+        return ptr::null_mut();
+    }
+    let result = unsafe { PyObject_Call(callable, argstuple, kwargs) };
+    unsafe { crate::api::refcount::Py_DECREF(argstuple) };
     result
 }
 
@@ -2514,7 +2759,46 @@ pub unsafe extern "C" fn PyVectorcall_Call(
     args: *mut PyObject,
     kwargs: *mut PyObject,
 ) -> *mut PyObject {
-    unsafe { PyObject_Call(callable, args, kwargs) }
+    if callable.is_null() {
+        return ptr::null_mut();
+    }
+    // CPython 3.12 `PyVectorcall_Call` (`Objects/call.c`): read
+    // `tp_vectorcall_offset` DIRECTLY — deliberately WITHOUT the
+    // `Py_TPFLAGS_HAVE_VECTORCALL` gate, because this function is the documented
+    // value for a vectorcall type's `tp_call`, so the object already claims
+    // support. A missing offset or NULL slot raises `TypeError`; it NEVER
+    // re-enters `PyObject_Call`, so `tp_call = PyVectorcall_Call` TERMINATES
+    // instead of `tp_call → PyVectorcall_Call → PyObject_Call → tp_call → …`.
+    let tp = unsafe { (*callable).ob_type };
+    let offset = if tp.is_null() {
+        0
+    } else {
+        unsafe { (*tp).tp_vectorcall_offset }
+    };
+    let func = if offset > 0 {
+        let slot = unsafe { (callable as *const u8).add(offset as usize) }
+            .cast::<Option<PyVectorcallFunc>>();
+        unsafe { ptr::read_unaligned(slot) }
+    } else {
+        None
+    };
+    let Some(func) = func else {
+        if !exception_already_pending() {
+            let type_name = unsafe { type_name_lossy(callable) };
+            crate::capi_trace::record_silent_failure("PyVectorcall_Call", Some(&type_name));
+            let message = format!("'{type_name}' object does not support vectorcall");
+            if let Ok(cmessage) = std::ffi::CString::new(message) {
+                unsafe {
+                    crate::api::errors::PyErr_SetString(
+                        &raw mut crate::abi_types::PyExc_TypeError,
+                        cmessage.as_ptr(),
+                    );
+                }
+            }
+        }
+        return ptr::null_mut();
+    };
+    unsafe { vectorcall_call_with_tuple(func, callable, args, kwargs) }
 }
 
 #[unsafe(no_mangle)]
