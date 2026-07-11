@@ -359,104 +359,6 @@
     return { values: out, offset };
   };
 
-  const parseWasmExportFunctionSignatures = (buffer) => {
-    if (!buffer) {
-      return {};
-    }
-    const bytes = new Uint8Array(buffer);
-    if (bytes.length < 8) {
-      return {};
-    }
-    let offset = 8;
-    const types = [];
-    const funcTypeIndices = [];
-    let importedFuncCount = 0;
-    const exportFuncIndices = new Map();
-
-    while (offset < bytes.length) {
-      const sectionId = bytes[offset++];
-      const sizeRes = readVarUint(bytes, offset);
-      const sectionSize = sizeRes.value;
-      offset = sizeRes.offset;
-      const sectionEnd = offset + sectionSize;
-      if (sectionEnd > bytes.length) {
-        throw new Error('Malformed wasm section bounds');
-      }
-      if (sectionId === 1) {
-        let count;
-        ({ value: count, offset } = readVarUint(bytes, offset));
-        for (let idx = 0; idx < count; idx += 1) {
-          if (offset >= bytes.length || bytes[offset++] !== 0x60) {
-            throw new Error('Unsupported wasm type form');
-          }
-          const params = readWasmValTypeVec(bytes, offset);
-          offset = params.offset;
-          const results = readWasmValTypeVec(bytes, offset);
-          offset = results.offset;
-          types.push({
-            params: params.values,
-            result: results.values.length ? results.values[0] : null,
-          });
-        }
-      } else if (sectionId === 2) {
-        let count;
-        ({ value: count, offset } = readVarUint(bytes, offset));
-        for (let idx = 0; idx < count; idx += 1) {
-          ({ offset } = readString(bytes, offset));
-          ({ offset } = readString(bytes, offset));
-          if (offset >= bytes.length) {
-            throw new Error('Unexpected EOF in import kind');
-          }
-          const kind = bytes[offset++];
-          if (kind === 0) {
-            importedFuncCount += 1;
-          }
-          offset = skipImportDesc(bytes, offset, kind);
-        }
-      } else if (sectionId === 3) {
-        let count;
-        ({ value: count, offset } = readVarUint(bytes, offset));
-        for (let idx = 0; idx < count; idx += 1) {
-          let typeIdx;
-          ({ value: typeIdx, offset } = readVarUint(bytes, offset));
-          funcTypeIndices.push(typeIdx);
-        }
-      } else if (sectionId === 7) {
-        let count;
-        ({ value: count, offset } = readVarUint(bytes, offset));
-        for (let idx = 0; idx < count; idx += 1) {
-          let name;
-          ({ value: name, offset } = readString(bytes, offset));
-          if (offset >= bytes.length) {
-            throw new Error('Unexpected EOF in export kind');
-          }
-          const kind = bytes[offset++];
-          let index;
-          ({ value: index, offset } = readVarUint(bytes, offset));
-          if (kind === 0) {
-            exportFuncIndices.set(name, index);
-          }
-        }
-      } else {
-        offset = sectionEnd;
-      }
-    }
-
-    const signatures = {};
-    for (const [name, index] of exportFuncIndices.entries()) {
-      if (index < importedFuncCount) {
-        continue;
-      }
-      const definedIndex = index - importedFuncCount;
-      const typeIndex = funcTypeIndices[definedIndex];
-      const sig = types[typeIndex];
-      if (sig) {
-        signatures[name] = sig;
-      }
-    }
-    return signatures;
-  };
-
   const importSelectorMatches = (module, name, selector) => {
     if (!selector) {
       return true;
@@ -467,7 +369,7 @@
     return selector.name === undefined || selector.name === name;
   };
 
-  const parseWasmImports = (buffer, options = {}) => {
+  const parseWasmMetadata = (buffer, options = {}) => {
     const view = new Uint8Array(buffer);
     const header = new DataView(view.buffer, view.byteOffset, view.byteLength);
     if (view.length < 8 || header.getUint32(0, true) !== WASM_MAGIC) {
@@ -477,8 +379,11 @@
       throw new Error('Unsupported WASM version');
     }
     let offset = 8;
-    const result = { funcImports: [], tagImports: [], memory: null, table: null };
+    const imports = { funcImports: [], tagImports: [], memory: null, table: null };
     const types = [];
+    const funcTypeIndices = [];
+    let importedFuncCount = 0;
+    const exportFuncIndices = new Map();
     while (offset < view.length) {
       const sectionId = view[offset++];
       const sizeRes = readVarUint(view, offset);
@@ -507,6 +412,42 @@
         offset = end;
         continue;
       }
+      if (sectionId === 3) {
+        let inner = offset;
+        const countRes = readVarUint(view, inner);
+        let count = countRes.value;
+        inner = countRes.offset;
+        while (count > 0) {
+          const typeRes = readVarUint(view, inner);
+          funcTypeIndices.push(typeRes.value);
+          inner = typeRes.offset;
+          count -= 1;
+        }
+        offset = end;
+        continue;
+      }
+      if (sectionId === 7) {
+        let inner = offset;
+        const countRes = readVarUint(view, inner);
+        let count = countRes.value;
+        inner = countRes.offset;
+        while (count > 0) {
+          const nameRes = readString(view, inner);
+          inner = nameRes.offset;
+          if (inner >= end) {
+            throw new Error('Unexpected EOF in export kind');
+          }
+          const kind = view[inner++];
+          const indexRes = readVarUint(view, inner);
+          inner = indexRes.offset;
+          if (kind === 0) {
+            exportFuncIndices.set(nameRes.value, indexRes.value);
+          }
+          count -= 1;
+        }
+        offset = end;
+        continue;
+      }
       if (sectionId !== 2) {
         offset = end;
         continue;
@@ -526,19 +467,20 @@
         if (kind === 0) {
           const typeRes = readVarUint(view, inner);
           inner = typeRes.offset;
-          result.funcImports.push({ module, name });
+          importedFuncCount += 1;
+          imports.funcImports.push({ module, name });
         } else if (kind === 1) {
           inner += 1;
           const limits = readLimits(view, inner);
           inner = limits.offset;
           if (importSelectorMatches(module, name, options.tableImport)) {
-            result.table = { min: limits.min, max: limits.max };
+            imports.table = { min: limits.min, max: limits.max };
           }
         } else if (kind === 2) {
           const limits = readLimits(view, inner);
           inner = limits.offset;
           if (importSelectorMatches(module, name, options.memoryImport)) {
-            result.memory = { min: limits.min, max: limits.max };
+            imports.memory = { min: limits.min, max: limits.max };
           }
         } else if (kind === 3) {
           if (inner + 2 > view.length) {
@@ -559,7 +501,7 @@
           if (!type) {
             throw new Error(`Tag import ${module}.${name} references unknown type index ${typeIndex}`);
           }
-          result.tagImports.push({
+          imports.tagImports.push({
             module,
             name,
             attribute,
@@ -574,8 +516,28 @@
       }
       offset = end;
     }
-    return result;
+    const exportFunctionSignatures = {};
+    for (const [name, index] of exportFuncIndices.entries()) {
+      if (index < importedFuncCount) {
+        continue;
+      }
+      const typeIndex = funcTypeIndices[index - importedFuncCount];
+      const type = types[typeIndex];
+      if (type) {
+        exportFunctionSignatures[name] = {
+          params: type.params,
+          result: type.results.length ? type.results[0] : null,
+        };
+      }
+    }
+    return { imports, exportFunctionSignatures };
   };
+
+  const parseWasmImports = (buffer, options = {}) =>
+    parseWasmMetadata(buffer, options).imports;
+
+  const parseWasmExportFunctionSignatures = (buffer) =>
+    parseWasmMetadata(buffer).exportFunctionSignatures;
 
   const makeWasmTagImport = (entry) => {
     if (typeof WebAssembly.Tag !== 'function') {
@@ -1084,6 +1046,7 @@
     normalizeI64BridgeValue,
     normalizeImportResult,
     normalizeValueForKind,
+    parseWasmMetadata,
     parseWasmExportFunctionSignatures,
     parseWasmImports,
     planReservedRuntimeDispatch,

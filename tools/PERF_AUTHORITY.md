@@ -146,6 +146,16 @@ Task #22 retains the code/data optimization frontier. Its measured map is
 20,032,474 B code, 5,275,490 B data, 416,470 B exports, and 52,230 B elements.
 This landing intentionally does not tree-shake those sections.
 
+### WASM startup metadata scan
+
+`tools/opt_matrix_r1_wasm_metadata_attestation.json` records the A12-citable
+release differential for the Node pre-instantiation metadata path. A single
+`parseWasmMetadata` section walk now produces both import descriptors and
+export function signatures; the superseded second full-module walk is deleted
+from `run_wasm.js`. Seven serial fresh-process samples on a 9,720,086 B
+final-form release runtime improved the median from 36.3275 ms to 22.6561 ms
+(1.6034x), with metadata parity and a 77,664,256 B maximum RSS ceiling.
+
 ## Variant-II Landing Acceptance
 
 `tools/powerplay_acceptance.py` is the acceptance authority for perf landings.
