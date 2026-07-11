@@ -21,6 +21,7 @@ from wasm_abi_gen.paths import (
     FRONTEND_TYPES,
     MANIFEST,
     OUT_RUNTIME_CALLABLES_RS,
+    ROOT,
     RUNTIME_ROOT,
 )
 
@@ -200,6 +201,46 @@ def _is_cpython_abi_export_name(name: str) -> bool:
     return name.startswith(CPYTHON_ABI_EXPORT_PREFIXES)
 
 
+@lru_cache(maxsize=1)
+def _rust_comment_string_masker():
+    """Return the single canonical Rust comment/string masking function.
+
+    Loads it from ``tools/structural_audit.py`` — doc 46 rule #1 keeps exactly
+    ONE Rust-match parser authority in the tree, so we reuse it rather than
+    hand-rolling a second (drift-prone) scanner. The masker blanks the
+    *contents* of ``//``/``/* */`` comments and string/char literals while
+    preserving every character offset and newline.
+
+    Why the derivation below MUST run on masked text: a comment or string that
+    happens to contain a ``;``, ``(`` or ``)`` otherwise corrupts the structural
+    regexes. That is precisely the drift that silently dropped every
+    ``PyExc_*`` singleton from the generated link tables: the ``exc_singletons!``
+    invocation carries a doc comment containing ``…object itself; the ABI…`` and
+    ``// (an `except OSError` …)``, and the raw-text ``[^;]*`` arg capture in
+    ``CPYTHON_ABI_MACRO_INVOCATION_RE`` truncated at that comment semicolon, so
+    the invocation never matched and no ``PyExc_*`` name was derived — breaking
+    the numpy witness link, which references ``PyExc_*``.
+    """
+    import importlib.util
+    import sys
+
+    tool = ROOT / "tools" / "structural_audit.py"
+    spec = importlib.util.spec_from_file_location(
+        "molt_structural_audit_for_wasm_abi", tool
+    )
+    if spec is None or spec.loader is None:  # pragma: no cover - defensive
+        raise WasmAbiManifestError(f"cannot load Rust-scan authority {tool}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module._mask_rust_comments_and_strings
+
+
+def _mask_rust_source(text: str) -> str:
+    """Blank comment/string contents so structural regexes see code only."""
+    return _rust_comment_string_masker()(text)
+
+
 def _matching_brace_index(text: str, open_index: int) -> int:
     depth = 0
     for index in range(open_index, len(text)):
@@ -213,14 +254,19 @@ def _matching_brace_index(text: str, open_index: int) -> int:
     raise WasmAbiManifestError("unterminated macro_rules! block in CPython ABI source")
 
 
-def _no_mangle_macro_names(text: str) -> set[str]:
+def _no_mangle_macro_names(masked: str) -> set[str]:
+    """Names of `macro_rules!` whose body declares a `#[no_mangle]` export.
+
+    Runs on comment/string-masked text so a `{`/`}` inside a comment or string
+    literal cannot misalign brace matching and pick up the wrong body.
+    """
     names: set[str] = set()
-    for match in CPYTHON_ABI_MACRO_RULES_RE.finditer(text):
-        open_index = text.find("{", match.end() - 1)
+    for match in CPYTHON_ABI_MACRO_RULES_RE.finditer(masked):
+        open_index = masked.find("{", match.end() - 1)
         if open_index < 0:
             continue
-        close_index = _matching_brace_index(text, open_index)
-        body = text[open_index:close_index]
+        close_index = _matching_brace_index(masked, open_index)
+        body = masked[open_index:close_index]
         if "#[unsafe(no_mangle)]" in body or "#[no_mangle]" in body:
             names.add(match.group("name"))
     return names
@@ -236,20 +282,36 @@ def _record_cpython_abi_export_kind(kinds: dict[str, str], name: str, kind: str)
     kinds[name] = kind
 
 
-def _macro_generated_cpython_abi_export_kinds(text: str) -> dict[str, str]:
-    exported_macros = _no_mangle_macro_names(text)
+def _macro_generated_cpython_abi_export_kinds(source: str) -> dict[str, str]:
+    """Symbols (and object kind) exported by `#[no_mangle]`-generating macros.
+
+    Structural scanning (macro-body brace matching + invocation-arg capture)
+    runs on comment/string-masked text so a `;`/`(`/`)`/`{`/`}` inside a
+    comment can never truncate or misalign it. That drift is exactly what
+    silently dropped every `PyExc_*` singleton: the `exc_singletons!(…)`
+    invocation carries a doc comment containing `…object itself; the ABI…` and
+    `// (an `except OSError` …)`, and the raw-text `[^;]*` arg capture truncated
+    at that comment semicolon, so no `PyExc_*` name was ever derived.
+
+    Symbol-kind classification reads the *unmasked* macro body, because masking
+    blanks the `C` inside the `extern "C" fn` marker that distinguishes a
+    function from a `pub static`. Masking preserves every character offset, so
+    the brace indices found on masked text slice the unmasked source exactly.
+    """
+    masked = _mask_rust_source(source)
+    exported_macros = _no_mangle_macro_names(masked)
     if not exported_macros:
         return {}
     macro_bodies: dict[str, str] = {}
-    for macro_match in CPYTHON_ABI_MACRO_RULES_RE.finditer(text):
+    for macro_match in CPYTHON_ABI_MACRO_RULES_RE.finditer(masked):
         macro_name = macro_match.group("name")
         if macro_name not in exported_macros:
             continue
-        open_index = text.find("{", macro_match.end() - 1)
-        close_index = _matching_brace_index(text, open_index)
-        macro_bodies[macro_name] = text[open_index:close_index]
+        open_index = masked.find("{", macro_match.end() - 1)
+        close_index = _matching_brace_index(masked, open_index)
+        macro_bodies[macro_name] = source[open_index:close_index]
     kinds: dict[str, str] = {}
-    for match in CPYTHON_ABI_MACRO_INVOCATION_RE.finditer(text):
+    for match in CPYTHON_ABI_MACRO_INVOCATION_RE.finditer(masked):
         if match.group("macro") not in exported_macros:
             continue
         body = macro_bodies[match.group("macro")]
