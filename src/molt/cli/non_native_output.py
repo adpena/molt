@@ -601,6 +601,7 @@ def _prepare_non_native_build_result(
     warnings: list[str] | None = None,
     native_artifact_plan: _ExternalPackageNativeArtifactPlan | None = None,
     artifacts_root: Path | None = None,
+    stage_timings_ms: dict[str, float] | None = None,
 ) -> tuple[_PreparedNonNativeResult | None, _CliFailure | None]:
     if is_rust_transpile:
         return _PreparedNonNativeResult(
@@ -849,6 +850,11 @@ def _prepare_non_native_build_result(
                         str(split_dir),
                     ]
                 )
+            link_timings_path = output_wasm.with_name(
+                f".{output_wasm.name}.link-phase-timings.json"
+            )
+            if stage_timings_ms is not None:
+                link_cmd.extend(["--phase-timings-file", str(link_timings_path)])
             if is_wasm_freestanding:
                 link_cmd.append("--freestanding")
             if wasm_opt_enabled:
@@ -942,6 +948,22 @@ def _prepare_non_native_build_result(
                         with contextlib.suppress(OSError):
                             if linked_tmp_output.exists():
                                 linked_tmp_output.unlink()
+                    if stage_timings_ms is not None:
+                        try:
+                            link_timings = json.loads(
+                                link_timings_path.read_text(encoding="utf-8")
+                            )
+                        except (OSError, ValueError, TypeError):
+                            link_timings = {}
+                        for name, value in link_timings.items():
+                            if isinstance(name, str) and isinstance(
+                                value, (int, float)
+                            ):
+                                stage_timings_ms[name] = round(
+                                    max(0.0, float(value)), 6
+                                )
+                        with contextlib.suppress(OSError):
+                            link_timings_path.unlink()
                 link_fingerprint_warning = _write_link_fingerprint_if_needed(
                     link_skipped=False,
                     link_fingerprint=link_fingerprint,
@@ -1120,9 +1142,7 @@ def _prepare_non_native_build_result(
             )
             app_env_import_names = _collect_wasm_module_import_names(app_wasm, "env")
             runtime_env_import_names = _collect_wasm_module_import_names(rt_wasm, "env")
-            browser_host_import_names = (
-                app_env_import_names | runtime_env_import_names
-            )
+            browser_host_import_names = app_env_import_names | runtime_env_import_names
             app_runtime_export_signatures = _runtime_export_signatures_for_imports(
                 rt_wasm, app_runtime_import_names
             )
@@ -1371,9 +1391,7 @@ def _prepare_non_native_build_result(
                     json_output,
                     command="build",
                 )
-            target_feature_manifest_dst = (
-                split_dir / TARGET_FEATURE_MANIFEST_ASSET_NAME
-            )
+            target_feature_manifest_dst = split_dir / TARGET_FEATURE_MANIFEST_ASSET_NAME
             try:
                 _atomic_copy_file(
                     target_feature_manifest_src,

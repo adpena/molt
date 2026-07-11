@@ -63,6 +63,64 @@ def _phase_duration_map(phase_starts: Mapping[str, float]) -> dict[str, float]:
     return durations
 
 
+def _build_phase_attribution(
+    *,
+    total_sec: float,
+    phase_sec: Mapping[str, float],
+    pipeline_stage_ms: Mapping[str, Any],
+) -> dict[str, Any]:
+    frontend_names = ("resolve_entry", "module_graph", "module_analysis", "ir_lowering")
+    phases: dict[str, float] = {
+        name: round(max(0.0, float(phase_sec.get(name, 0.0))), 6)
+        for name in frontend_names
+    }
+    phases["frontend_lowering"] = round(sum(phases.values()), 6)
+    phases["backend_codegen"] = round(
+        max(0.0, float(phase_sec.get("backend_codegen", 0.0))), 6
+    )
+    phases["final_app_codegen"] = phases["backend_codegen"]
+    phases["seal"] = 0.0
+    for name, value in pipeline_stage_ms.items():
+        if name in {
+            "wasm_link_total",
+            "split_runtime_processing",
+            "wasm_strip",
+            "fail_closed_validation",
+        } and isinstance(value, (int, float)):
+            phases[name] = round(max(0.0, float(value)) / 1000.0, 6)
+    for name in (
+        "wasm_link_total",
+        "split_runtime_processing",
+        "wasm_strip",
+        "fail_closed_validation",
+    ):
+        phases.setdefault(name, 0.0)
+    link_total = phases.get("wasm_link_total")
+    if link_total is not None:
+        children = sum(
+            phases.get(name, 0.0)
+            for name in (
+                "split_runtime_processing",
+                "wasm_strip",
+                "fail_closed_validation",
+            )
+        )
+        phases["wasm_link_core"] = round(max(0.0, link_total - children), 6)
+    denominator = max(total_sec, 0.0)
+    shares = {
+        name: round(value / denominator, 8) if denominator > 0.0 else 0.0
+        for name, value in phases.items()
+    }
+    ranked = sorted(phases, key=lambda name: (-phases[name], name))
+    return {
+        "schema_version": 1,
+        "total_sec": round(total_sec, 6),
+        "phase_sec": {name: phases[name] for name in sorted(phases)},
+        "phase_share": {name: shares[name] for name in sorted(shares)},
+        "ranked_phases": ranked,
+    }
+
+
 def _resolve_build_diagnostics_path(
     output_spec: str,
     artifacts_root: Path,
@@ -1041,12 +1099,12 @@ def _build_build_diagnostics_payload(
         name: sorted(reasons)
         for name, reasons in sorted(diagnostics_context.module_reasons.items())
     }
+    total_sec = round(time.perf_counter() - diagnostics_context.diagnostics_start, 6)
+    phase_sec = _phase_duration_map(diagnostics_context.phase_starts)
     payload: dict[str, Any] = {
         "enabled": True,
-        "total_sec": round(
-            time.perf_counter() - diagnostics_context.diagnostics_start, 6
-        ),
-        "phase_sec": _phase_duration_map(diagnostics_context.phase_starts),
+        "total_sec": total_sec,
+        "phase_sec": phase_sec,
         "module_count": len(diagnostics_context.module_graph),
         "module_reason_summary": _build_reason_summary(
             diagnostics_context.module_reasons
@@ -1085,6 +1143,14 @@ def _build_build_diagnostics_payload(
             payload["allocations"] = allocations_payload
     frontend_parallel_payload = dict(diagnostics_context.frontend_parallel_details)
     payload["frontend_parallel"] = frontend_parallel_payload
+    pipeline_stage_ms = frontend_parallel_payload.get("pipeline_stage_ms", {})
+    if not isinstance(pipeline_stage_ms, Mapping):
+        pipeline_stage_ms = {}
+    payload["phase_attribution"] = _build_phase_attribution(
+        total_sec=total_sec,
+        phase_sec=phase_sec,
+        pipeline_stage_ms=pipeline_stage_ms,
+    )
     lowering_cache_summary = _frontend_lowering_cache_summary(frontend_parallel_payload)
     if lowering_cache_summary is not None:
         payload["frontend_lowering_cache"] = lowering_cache_summary

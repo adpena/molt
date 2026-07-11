@@ -2022,6 +2022,9 @@ def test_run_wasm_ld_split_runtime_falls_back_when_env_deploy_runtime_is_stale(
     output = tmp_path / "output.wasm"
     linked = tmp_path / "output_linked.wasm"
     split_dir = tmp_path / "split"
+    control_linked = tmp_path / "control_linked.wasm"
+    control_split_dir = tmp_path / "control_split"
+    timings_path = tmp_path / "phase_timings.json"
     stale_runtime = tmp_path / "missing-runtime.wasm"
 
     runtime.write_bytes(runtime_bytes)
@@ -2057,10 +2060,34 @@ def test_run_wasm_ld_split_runtime_falls_back_when_env_deploy_runtime_is_stale(
         linked,
         split_runtime=True,
         split_output_dir=split_dir,
+        phase_timings_file=timings_path,
+    )
+    control_rc = wasm_link._run_wasm_ld(
+        "wasm-ld",
+        runtime,
+        output,
+        control_linked,
+        split_runtime=True,
+        split_output_dir=control_split_dir,
     )
 
     assert rc == 0
+    assert control_rc == 0
     assert (split_dir / "molt_runtime.wasm").read_bytes() == runtime.read_bytes()
+    assert linked.read_bytes() == control_linked.read_bytes()
+    assert (split_dir / "app.wasm").read_bytes() == (
+        control_split_dir / "app.wasm"
+    ).read_bytes()
+    assert (split_dir / "molt_runtime.wasm").read_bytes() == (
+        control_split_dir / "molt_runtime.wasm"
+    ).read_bytes()
+    timings = json.loads(timings_path.read_text(encoding="utf-8"))
+    assert set(timings) >= {
+        "wasm_link_total",
+        "split_runtime_processing",
+        "wasm_strip",
+        "fail_closed_validation",
+    }
 
 
 def test_run_wasm_ld_monolithic_prefers_relocatable_runtime_for_table_relocations(

@@ -4,13 +4,23 @@
 
 | Rank | Rung | Live evidence | Gain / validation cost | Status |
 |---:|---|---|---|---|
-| 1 | Final app codegen and link/post-link pipeline | Current-origin warm witness median is 331.6s; function-digest correction did not move the floor beyond variance | High / high | BUILD-TIME-R8 NEXT |
+| 1 | Frontend lowering cache admission | R8 attributed sample was 82.40% frontend lowering with 0/145 cache hits and 199.8s re-lowered | Very high / medium | BUILD-TIME-R9 NEXT |
 | 2 | Runtime-wasm cache-first combined-build ordering | Original 319.6s -> 259.8s signal did not reproduce after origin/main advanced | Marginal / medium | BUILD-TIME-R6 DROPPED |
 | 3 | Import-strip / split restoration frontier | Every sample reaches linked validation after app/runtime generation | Correctness blocker / separate owner | OBSERVED |
 | 4 | Runtime crate split for true source misses | Current-origin fingerprint population sample was 576.5s | Medium / high | OPEN |
 | 5 | R73.3 provisioned extension archives | Cold ecosystem cross-compile remains outside warm iteration floor | Very high / very high | OPEN |
 
 ## Iteration Log
+
+### BUILD-TIME-R8 — durable per-phase attribution
+
+- Landed one canonical phase_attribution schema inside build diagnostics with per-phase seconds, share-of-total, ranked phases, child-link timings, and fail-closed flushing. tools/build_phase_attribution.py validates and prints the machine-checkable schema.
+- Link instrumentation records inclusive wasm-link time plus split-runtime processing, publication stripping, and fail-closed validation. Unreached phases are explicit zeroes; an early split-runtime failure records partial split processing instead of losing the sample.
+- Representative attributed witness row: 20260711T232839-pact-witness-acceptance-c8bde803db9842d4. The build reached the same known frontier, Split-runtime app is missing app-owned function export molt_main after symbol restoration at optimized-app; no support or wall-clock improvement is claimed.
+- Share breakdown from tmp/pact_witness_acceptance_queue/runs/20260711T232839-pact-witness-acceptance-c8bde803db9842d4/build/build_diagnostics.json: frontend lowering 82.40% (457.23s inclusive), wasm link 15.77% (87.52s inclusive), split-runtime processing 10.35% (57.43s), wasm-link core 5.42% (30.08s). The frontend aggregate contains IR lowering 39.93%, module graph 37.22%, and module analysis 5.02%.
+- The decisive cache evidence is frontend_lowering_cache: hits=0 misses=145 reused_s=0.0 relowered_s=199.822393. Backend/final-app codegen was a cache hit in this sample and is explicitly 0.0%; seal, strip, and final validation were not reached and are explicitly 0.0%.
+- Artifact invariance is covered by the split-runtime linker regression: identical linked/app/runtime bytes with phase timing enabled versus disabled; the timing sidecar contains only diagnostics.
+- Highest-value next rung: repair the frontend lowering cache admission/fingerprint path that made all 145 modules miss. Do not return to absolute witness cohorts until the host is quiescent.
 
 ### BUILD-TIME-R6 — cache authority before combined Cargo prepopulation — DROPPED
 
@@ -34,6 +44,6 @@
 
 ## Next Actions
 
-1. Instrument final app codegen, wasm link, strip, split-runtime bridge, and validation as separate durable phase timers even on fail-closed exits.
-2. Attribute the remaining ~324s floor to one dominant consumer before changing code; the next rung must exceed host variance before held gates.
-3. Preserve the 331.6s current-origin baseline cohort as the comparison authority unless origin/main or toolchain fingerprints change.
+1. Trace why the representative build admitted zero of 145 modules into the persisted frontend lowering cache, then unify the invalidation/admission authority rather than adding another cache lane.
+2. Preserve R8's share-of-total schema for every future build-time landing; use absolute cohorts only on a quiescent host.
+3. Preserve the 331.6s current-origin baseline cohort as the absolute comparison authority unless origin/main or toolchain fingerprints change.
