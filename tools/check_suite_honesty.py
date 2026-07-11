@@ -366,6 +366,16 @@ def execution_reality_check(data: dict, rows: list[dict]) -> list[str]:
             )
         )
 
+    def active(entry: dict) -> bool:
+        return any(
+            isinstance(row.get("context"), dict)
+            and all(
+                row["context"].get(key) == value
+                for key, value in entry.get("predicate", {}).items()
+            )
+            for row in rows
+        )
+
     for row in rows:
         if row.get("status") not in {"pass", "fail"}:
             problems.append(f"execution result has invalid status: {row!r}")
@@ -377,6 +387,8 @@ def execution_reality_check(data: dict, rows: list[dict]) -> list[str]:
                 f"UNTRACKED EXECUTION RED: {row.get('identity')!r} context={row.get('context', {})!r}"
             )
     for entry in entries:
+        if not active(entry):
+            continue
         matched = [row for row in rows if matches(entry, row)]
         if not matched:
             problems.append(
