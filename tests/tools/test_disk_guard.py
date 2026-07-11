@@ -432,3 +432,23 @@ def test_selftest_canaries_all_live():
     dead = [name for name, ok in results if not ok]
     assert not dead, f"dead disk_guard canaries: {dead}"
     assert len(results) >= 6
+
+
+def test_completed_lane_event_reclaims_registered_target(tmp_path):
+    target = tmp_path / "target" / "codex-finished"
+    target.mkdir(parents=True)
+    (target / "artifact.bin").write_bytes(b"x")
+    dg.register_lane_target(target, root=tmp_path, now=10.0)
+    result = dg.reclaim_completed_lane(target, root=tmp_path, env={})
+    assert result.reclaimed == [
+        {"path": str(target.resolve()), "kind": "completed-lane"}
+    ]
+    assert not target.exists()
+
+
+def test_completed_lane_event_never_reclaims_active_lane():
+    candidate = dg.Candidate(Path("/x/target/live"), "registered", 0.0)
+    assert dg.decide_completed_lane_reclaim(candidate, completed=True, active=True) == (
+        False,
+        "lane-active",
+    )

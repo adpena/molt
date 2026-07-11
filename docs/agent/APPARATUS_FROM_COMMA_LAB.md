@@ -1,6 +1,6 @@
 # APPARATUS FROM COMMA-LAB — harness engineering molt should adopt
 
-**Status:** research synthesis + ranked adoption plan (doc-only landing).
+**Status (2026-07-11): COMPLETE.** All twelve adoption items now have executable authorities, teeth, and liveness coverage; A8 and A12 close the roadmap.
 **Sources studied (2026-07-10):**
 
 - GitHub `adpena/comma-lab` @ `1fbcc84ca` (2026-07-10), cloned and read in depth.
@@ -551,6 +551,8 @@ ORCHESTRATION.md conventions.
 
 ### A8. Lane maturity ladder (L0-L7, molt-shaped) + gate liveness canaries
 
+**Status (2026-07-11): COMPLETE.** `tools/lane_maturity.py` stores the shared worktree-lane registry, evidence-keyed rung transitions, and the one proof-queue admission decision. `logical_id` is the lane identity already used by queue rows; no parallel ceremony was added.
+
 **Build:** add `maturity` to proof-queue/lane records
 (`.molt/state/lane_registry.json`): L0 sketch -> L1 mechanism unit-tested ->
 L2 native E2E (differential) -> L3 artifact-real (hash-bound wasm/seal) ->
@@ -616,6 +618,8 @@ Windows).
 ff_land.py, tree_drift_check.py.
 
 ### A12. PowerPlay acceptance for molt's own perf/apparatus changes
+
+**Status (2026-07-11): COMPLETE.** `tools/powerplay_acceptance.py` implements `variant_ii_accept`, `CorrectnessDemonstration`, checked-in attestation-shape validation, and gain-per-validation-cost ranking. The canonical perf workflow consumes the audit advisory-loud; an actual perf landing calls the same decision strictly.
 
 **Build:** `variant_ii_accept` + `CorrectnessDemonstration` as a small module
 consumed by perf landings and apparatus changes: admit a perf lane only with

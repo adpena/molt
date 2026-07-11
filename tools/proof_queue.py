@@ -37,6 +37,7 @@ from tools.process_spawn import (  # noqa: E402
     detached_process_group_kwargs,
     hidden_windows_process_group_kwargs,
 )
+from tools import lane_maturity  # noqa: E402
 from tools.dirty_tree_policy import (  # noqa: E402
     DEFAULT_DIRTY_TREE_IGNORE_GLOBS,
     filter_status_lines,
@@ -2095,6 +2096,30 @@ def _diagnosis_note_body(row: sqlite3.Row, diagnostics: list[dict[str, object]])
     )
 
 
+def _lane_maturity_admission(
+    *,
+    conn: sqlite3.Connection,
+    repo_root: Path,
+    logical_id: str,
+    resource_family: str,
+    depends_on: Sequence[str] = (),
+) -> lane_maturity.Decision:
+    parent_lanes = {
+        str(row[0])
+        for parent in depends_on
+        for row in conn.execute(
+            "SELECT logical_id FROM proof_runs WHERE run_id = ?", (parent,)
+        ).fetchall()
+    }
+    cross_lane = bool(parent_lanes - {logical_id})
+    return lane_maturity.admission_check(
+        repo_root=repo_root,
+        lane_id=logical_id,
+        resource_family=resource_family,
+        cross_lane=cross_lane,
+    )
+
+
 def _active_for_key(conn: sqlite3.Connection, key: str) -> list[sqlite3.Row]:
     conn.row_factory = sqlite3.Row
     return list(
@@ -3600,6 +3625,13 @@ def _queue_one(
         allowed = ", ".join(sorted(EDGE_KINDS))
         raise SystemExit(f"unknown proof edge kind {edge_kind!r}; allowed: {allowed}")
     _refresh_blocked_queued_runs(args, conn)
+    maturity = _lane_maturity_admission(
+        conn=conn, repo_root=repo_root, logical_id=logical_id,
+        resource_family=resource_family, depends_on=depends_on or (),
+    )
+    if not maturity.allow:
+        print(f"lane maturity refused {logical_id}: {maturity.reason}", file=sys.stderr)
+        return 2, None
     run_id = f"{_compact_utc()}-{_slug(logical_id)}-{uuid.uuid4().hex[:16]}"
     logs_root.mkdir(parents=True, exist_ok=True)
     log_path = logs_root / f"{run_id}.log"

@@ -31,6 +31,7 @@ from tools.hooks import waivers  # noqa: E402
 from tools import triality, triality_gate, magnitude_dismissal_gate  # noqa: E402
 from tools import claims_status, check_sister_landed, commit_serializer  # noqa: E402
 from tools import advisory_classifier, disk_guard  # noqa: E402
+from tools import lane_maturity, powerplay_acceptance  # noqa: E402
 from tools import anti_recurrence_gate, apparatus_agent_safety  # noqa: E402
 from tools import encoding_gate, forbidden_checkout_guard  # noqa: E402
 from tools import gen_cpython_coverage  # noqa: E402
@@ -79,8 +80,10 @@ def _canaries() -> list[Canary]:
         Canary(
             "cpython_abi_coverage",
             "missing-export-fires",
-            lambda: not gen_cpython_coverage.coverage_complete(
-                {"PyLong_FromLong"}, {"PyLong_FromLong", "PyLong_AsLong"}
+            lambda: (
+                not gen_cpython_coverage.coverage_complete(
+                    {"PyLong_FromLong"}, {"PyLong_FromLong", "PyLong_AsLong"}
+                )
             ),
         ),
         Canary(
@@ -478,6 +481,44 @@ def _canaries() -> list[Canary]:
                     now=1_000_000.0,
                     min_idle_s=900.0,
                 ).selected
+            ),
+        ),
+        Canary(
+            "lane_maturity",
+            "expensive-wasm-below-l1-refused",
+            lambda: (
+                not lane_maturity.decide(
+                    maturity="L0", resource_family="wasm-browser"
+                ).allow
+            ),
+        ),
+        Canary(
+            "powerplay_acceptance",
+            "dev-profile-single-run-proxy-refused",
+            lambda: (
+                not powerplay_acceptance.variant_ii_accept(
+                    before=10.0,
+                    after=8.0,
+                    demonstration=powerplay_acceptance.CorrectnessDemonstration(
+                        real_authority=False,
+                        release_profile=False,
+                        serial_differential=True,
+                        held_benches_pass=True,
+                        memory_ceiling_pass=True,
+                        sample_count=1,
+                    ),
+                ).accepted
+            ),
+        ),
+        Canary(
+            "disk_guard",
+            "active-completed-lane-refused",
+            lambda: (
+                not disk_guard.decide_completed_lane_reclaim(
+                    disk_guard.Candidate(Path("/x/target/live"), "registered", 0.0),
+                    completed=True,
+                    active=True,
+                )[0]
             ),
         ),
         Canary(

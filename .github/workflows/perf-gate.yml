@@ -106,6 +106,14 @@ jobs:
       - name: Sync Python environment
         run: uv sync --frozen --group bench --group dev
 
+      - name: Audit checked-in perf attestations (Variant-II advisory)
+        run: >-
+          uv run python3 tools/powerplay_acceptance.py
+          tools/perf_goal_r3_runtime_cache_attestation.json
+          tools/perf_goal_r4_seal_validation_attestation.json
+          tools/perf_goal_r5_relink_attestation.json
+          tools/perf_witness_iteration_attestation.json
+
       - name: Make origin/main resolvable for provenance
         run: git fetch --no-tags origin main || true
 
