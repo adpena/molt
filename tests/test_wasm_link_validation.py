@@ -22,6 +22,123 @@ def _load_wasm_link():
 wasm_link = _load_wasm_link()
 
 
+def test_snapshot_link_input_retries_until_source_is_stable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "output.wasm"
+    source.write_bytes(b"partial")
+    reads = 0
+    original_read_bytes = Path.read_bytes
+
+    def racing_read_bytes(path: Path) -> bytes:
+        nonlocal reads
+        data = original_read_bytes(path)
+        if path == source:
+            reads += 1
+            if reads == 1:
+                source.write_bytes(b"complete-molt-main")
+        return data
+
+    monkeypatch.setattr(Path, "read_bytes", racing_read_bytes)
+
+    snapshot = wasm_link._snapshot_link_input(
+        source,
+        tmp_path / "snapshots",
+        label="app",
+        retry_delay_seconds=0,
+        accept=lambda data: b"molt-main" in data,
+    )
+
+    assert original_read_bytes(snapshot) == b"complete-molt-main"
+    assert snapshot != source
+
+
+def test_snapshot_link_input_retries_failed_path_attestation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "runtime_reloc.wasm"
+    source.write_bytes(b"bad-generation")
+    attempts = 0
+
+    def accept_path(snapshot: Path) -> bool:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            source.write_bytes(b"good-generation")
+            return False
+        return snapshot.read_bytes() == b"good-generation"
+
+    snapshot = wasm_link._snapshot_link_input(
+        source,
+        tmp_path / "snapshots",
+        label="runtime",
+        retry_delay_seconds=0,
+        accept_path=accept_path,
+    )
+
+    assert snapshot.read_bytes() == b"good-generation"
+    assert attempts == 2
+
+
+def test_snapshot_link_input_rejects_stable_stripped_restoration_source(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "output.wasm"
+    source.write_bytes(b"stable-but-stripped")
+
+    with pytest.raises(
+        OSError, match="stable bytes failed linker input contract"
+    ):
+        wasm_link._snapshot_link_input(
+            source,
+            tmp_path / "snapshots",
+            label="app",
+            attempts=2,
+            retry_delay_seconds=0,
+            accept=lambda data: b"molt-main" in data,
+        )
+
+
+def test_split_contract_rejects_missing_app_owned_molt_main() -> None:
+    module = b"\0asm\x01\0\0\0"
+
+    with pytest.raises(
+        ValueError,
+        match="missing app-owned function export molt_main after symbol restoration at unspecified",
+    ):
+        wasm_link._restore_split_runtime_contract_exports(module, artifact="app")
+
+
+def test_output_export_symbol_map_prefers_unique_restoration_alias() -> None:
+    module = _build_exported_runtime_module("molt_main")
+    module = wasm_link._append_linking_function_symbols(
+        module,
+        [
+            (
+                "molt_main",
+                0,
+                wasm_link.FLAG_BINDING_GLOBAL
+                | wasm_link.FLAG_EXPLICIT_NAME
+                | wasm_link.FLAG_EXPORTED
+                | wasm_link.FLAG_NO_STRIP,
+            ),
+            (
+                "__molt_output_export_0",
+                0,
+                wasm_link.FLAG_BINDING_GLOBAL
+                | wasm_link.FLAG_EXPLICIT_NAME
+                | wasm_link.FLAG_EXPORTED
+                | wasm_link.FLAG_NO_STRIP,
+            ),
+        ],
+    )
+    assert module is not None
+
+    assert wasm_link._collect_output_export_symbol_map(module)["molt_main"] == (
+        "__molt_output_export_0"
+    )
+
+
 def test_deduplicated_export_flags_preserve_first_contract_order() -> None:
     assert wasm_link._deduplicated_export_flags(
         ("--export-if-defined=molt_Py_None", "--export=molt_main"),
@@ -1734,8 +1851,8 @@ def test_run_wasm_ld_monolithic_prefers_relocatable_runtime_for_table_relocation
     rc = wasm_link._run_wasm_ld("wasm-ld", runtime, output, linked)
 
     assert rc == 0
-    assert str(reloc_runtime) in wasm_ld_inputs
-    assert str(runtime) not in wasm_ld_inputs
+    assert any(Path(part).name == reloc_runtime.name for part in wasm_ld_inputs)
+    assert not any(Path(part).name == runtime.name for part in wasm_ld_inputs)
 
 
 def test_run_wasm_ld_links_staged_native_objects(
@@ -1785,7 +1902,7 @@ def test_run_wasm_ld_links_staged_native_objects(
 
     assert rc == 0
     output_index = wasm_ld_inputs.index("-o") + 2
-    assert wasm_ld_inputs[output_index + 2] == str(native_object)
+    assert Path(wasm_ld_inputs[output_index + 2]).name == native_object.name
 
 
 def test_run_wasm_ld_rejects_signature_mismatch_warning(
@@ -1920,6 +2037,61 @@ def test_run_wasm_ld_rejects_missing_native_object(
     assert str(missing_native_object) in captured.err
 
 
+def test_split_native_app_uses_unique_molt_main_restoration_alias(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_bytes = _build_exported_runtime_module_many(["molt_main"])
+    output_bytes = _build_exported_runtime_module("molt_main")
+    output_bytes = wasm_link._append_linking_function_symbols(
+        output_bytes,
+        [
+            (
+                "__molt_output_export_0",
+                0,
+                wasm_link.FLAG_BINDING_GLOBAL
+                | wasm_link.FLAG_EXPLICIT_NAME
+                | wasm_link.FLAG_EXPORTED
+                | wasm_link.FLAG_NO_STRIP,
+            )
+        ],
+    )
+    assert output_bytes is not None
+    runtime = tmp_path / "molt_runtime_reloc.wasm"
+    output = tmp_path / "output.wasm"
+    linked = tmp_path / "output_linked.wasm"
+    native_object = tmp_path / "native.molt.wasm"
+    runtime.write_bytes(runtime_bytes)
+    output.write_bytes(output_bytes)
+    native_object.write_bytes(b"\0asm\x01\0\0\0native")
+    commands: list[list[str]] = []
+
+    def fake_run(cmd, **_kwargs):
+        if cmd and cmd[0] == "wasm-ld" and "-r" not in cmd:
+            commands.append(list(cmd))
+        _write_wasm_ld_output(cmd, output_bytes)
+        return wasm_link.subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
+    monkeypatch.setattr(wasm_link, "_validate_linked", lambda _path: True)
+    monkeypatch.setattr(wasm_link, "_validate_split_runtime_outputs", lambda *_a: True)
+    monkeypatch.setattr(wasm_link, "_restore_split_runtime_contract_exports", lambda data, **_kwargs: data)
+    monkeypatch.setattr(wasm_link, "_tree_shake_runtime", lambda *_a, **_k: runtime_bytes)
+    monkeypatch.setattr(wasm_link, "_validate_elements", lambda _data: (True, None))
+
+    assert wasm_link._run_wasm_ld(
+        "wasm-ld",
+        runtime,
+        output,
+        linked,
+        split_runtime=True,
+        split_output_dir=tmp_path / "split",
+        native_objects=(native_object,),
+    ) == 0
+    split_cmd = commands[1]
+    assert "--export=molt_main" not in split_cmd
+    assert "--export=__molt_output_export_0" in split_cmd
+
+
 def test_run_wasm_ld_split_runtime_links_native_objects_into_app(
     tmp_path: Path,
     monkeypatch,
@@ -1997,10 +2169,10 @@ def test_run_wasm_ld_split_runtime_links_native_objects_into_app(
     assert rc == 0
     assert len(link_calls) == 2
     monolithic_cmd, split_app_cmd = link_calls
-    assert str(native_object) in monolithic_cmd
-    assert str(native_object) in split_app_cmd
-    assert str(runtime) in monolithic_cmd
-    assert str(runtime) not in split_app_cmd
+    assert any(Path(part).name == native_object.name for part in monolithic_cmd)
+    assert any(Path(part).name == native_object.name for part in split_app_cmd)
+    assert any(Path(part).name == runtime.name for part in monolithic_cmd)
+    assert not any(Path(part).name == runtime.name for part in split_app_cmd)
     assert "--stack-first" in monolithic_cmd
     assert "--import-memory" in split_app_cmd
     assert "--no-stack-first" in split_app_cmd
@@ -2296,10 +2468,10 @@ def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
     assert rc == 0
     assert len(link_calls) == 2
     monolithic_cmd, split_app_cmd = link_calls
-    assert str(native_object) in monolithic_cmd
+    assert any(Path(part).name == native_object.name for part in monolithic_cmd)
     assert str(compiler_rt_provider) in monolithic_cmd
-    assert str(runtime) in monolithic_cmd
-    assert str(native_object) not in split_app_cmd
+    assert any(Path(part).name == runtime.name for part in monolithic_cmd)
+    assert not any(Path(part).name == native_object.name for part in split_app_cmd)
     assert str(compiler_rt_provider) in split_app_cmd
     assert "--import-memory" not in monolithic_cmd
     assert "--import-memory" in split_app_cmd
@@ -2732,7 +2904,7 @@ def test_split_runtime_data_alias_object_uses_deploy_runtime_export_addresses(
 ) -> None:
     # The alias must point the native object's undefined (split-renamed) data
     # symbol at the DEPLOY runtime's canonical address, read from the runtime's
-    # exported address global — NOT the relocatable runtime's segment-relative
+    # exported address global â€” NOT the relocatable runtime's segment-relative
     # offset (which is not a final address).
     deploy_runtime = tmp_path / "molt_runtime.wasm"
     native = tmp_path / "native_runtime_imports_0.wasm"
@@ -5326,7 +5498,7 @@ def test_resolve_native_link_inputs_rejects_missing_compiler_rt_provider(
 # singletons/type/exception objects (Py_None, Py_False, PyExc_*, Py*_Type) as
 # *undefined data symbols*. In a split-runtime build the app links against
 # imported memory and must resolve those references to the DEPLOY runtime's
-# single copy — otherwise the extension links its own zero-initialized
+# single copy â€” otherwise the extension links its own zero-initialized
 # duplicate and pointer-identity bridges (pyobj_to_handle) fail. The deploy
 # runtime publishes each address as an exported i32 global (wasm-ld's encoding
 # for --export-if-defined of a defined data symbol); the aliaser reads those
@@ -5363,7 +5535,7 @@ def _build_data_address_export_runtime(addresses: dict[str, int]) -> bytes:
 
 def _add_data_address_global_exports(module: bytes, addresses: dict[str, int]) -> bytes:
     """Return *module* with an added i32 global (init = address) exported under
-    each name — the wasm-ld shape for --export-if-defined of a defined data
+    each name â€” the wasm-ld shape for --export-if-defined of a defined data
     symbol. Appends to any existing global/export sections."""
     write_varuint = wasm_link._write_varuint
     sections = wasm_link._parse_sections(module)
