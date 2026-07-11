@@ -363,7 +363,22 @@ unsafe extern "C" fn fake_exception_pending() -> std::os::raw::c_int {
     0
 }
 
+unsafe extern "C" fn fake_gil_ensure() -> std::os::raw::c_int {
+    0
+}
+unsafe extern "C" fn fake_gil_leave(_state: std::os::raw::c_int) {}
+unsafe extern "C" fn fake_gil_release() {}
+unsafe extern "C" fn fake_gil_restore() {}
+unsafe extern "C" fn fake_gil_check() -> std::os::raw::c_int {
+    1
+}
+
 const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
+    gil_ensure: fake_gil_ensure,
+    gil_leave: fake_gil_leave,
+    gil_release: fake_gil_release,
+    gil_restore: fake_gil_restore,
+    gil_check: fake_gil_check,
     alloc_str: fake_alloc_str,
     alloc_bytes: fake_alloc_bytes,
     int_from_i64: fake_int_from_i64,
