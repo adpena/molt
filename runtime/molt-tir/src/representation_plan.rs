@@ -926,34 +926,6 @@ impl ScalarRepresentationPlan {
     }
 
     #[cfg_attr(not(feature = "wasm-backend"), allow(dead_code))]
-    pub fn op_args_are_inline_safe_ints(&self, op: &OpIR) -> bool {
-        op.args.as_ref().is_some_and(|args| {
-            !args.is_empty() && args.iter().all(|arg| self.is_inline_safe_int_name(arg))
-        })
-    }
-
-    #[cfg_attr(not(feature = "wasm-backend"), allow(dead_code))]
-    pub fn op_result_is_inline_safe_int(&self, op: &OpIR) -> bool {
-        op.out
-            .as_deref()
-            .is_some_and(|out| self.is_inline_safe_int_name(out))
-    }
-
-    #[cfg_attr(not(feature = "wasm-backend"), allow(dead_code))]
-    pub fn op_args_are_float_unboxed(&self, op: &OpIR) -> bool {
-        op.args.as_ref().is_some_and(|args| {
-            !args.is_empty() && args.iter().all(|arg| self.is_float_unboxed(arg))
-        })
-    }
-
-    #[cfg_attr(not(feature = "wasm-backend"), allow(dead_code))]
-    pub fn op_result_is_float_unboxed(&self, op: &OpIR) -> bool {
-        op.out
-            .as_deref()
-            .is_some_and(|out| self.is_float_unboxed(out))
-    }
-
-    #[cfg_attr(not(feature = "wasm-backend"), allow(dead_code))]
     pub fn op_direct_numeric_repr(&self, op_index: usize, op: &OpIR) -> Option<Repr> {
         Self::simple_op_supports_direct_numeric_result(op.kind.as_str())
             .then(|| self.direct_numeric_op_reprs.get(&op_index).copied())

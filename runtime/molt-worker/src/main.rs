@@ -185,7 +185,6 @@ struct DecodedRequest {
 }
 
 type CancelSet = Arc<Mutex<HashSet<u64>>>;
-#[allow(dead_code)]
 type AsyncCancelRegistry = Arc<CancelRegistry>;
 
 type DbPool = Arc<Pool<DbConn>>;
@@ -195,7 +194,6 @@ struct CancelRegistry {
     tokens: Mutex<HashMap<u64, CancelToken>>,
 }
 
-#[allow(dead_code)]
 impl CancelRegistry {
     fn new() -> Self {
         Self {
@@ -232,11 +230,6 @@ impl CancelRegistry {
         if let Some(token) = token {
             token.cancel();
         }
-    }
-
-    fn take_cancelled(&self, request_id: u64) -> bool {
-        let mut pending = self.pending.lock().unwrap();
-        pending.remove(&request_id)
     }
 
     fn clear(&self, request_id: u64) {
