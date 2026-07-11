@@ -205,15 +205,16 @@ sibling module, which is not in the native discovery harness's import closure
 so this resolves through package/import symbol-closure custody — the E1
 numpy-closure lane's concern, not `molt-cpython-abi`.
 
-### DEFERRED (honest, not fakes — see CLAIMS `DISCOVERY-FRONTIER-FIXES`)
-* **A.1 singleton aliases** (`_Py_NoneStruct`/`_Py_TrueStruct`/`_Py_FalseStruct`/
-  `_Py_NotImplementedStruct`/`_Py_EllipsisObject`): need a same-storage GLOBAL
-  alias to molt's `Py_None`/etc. Verified on this host that an in-crate
-  `core::arch::global_asm` `.set`/`=` alias emits a **LOCAL** symbol on Mach-O
-  LLVM (`.globl` does not promote it → it can't satisfy numpy's
-  `dynamic_lookup`). The correct fix is a linker `-alias`/`--defsym` at the
-  FINAL native link (a library crate cannot emit link-args) — belongs at molt's
-  native-artifact link layer, exactly as this harness's `build.rs` already does.
+### FIXED - A.1 singleton aliases
+The final native-artifact link now creates canonical same-storage aliases for
+`_Py_NoneStruct`, `_Py_TrueStruct`, `_Py_FalseStruct`,
+`_Py_NotImplementedStruct`, and `_Py_EllipsisObject`. Darwin uses `ld64 -alias`,
+ELF uses `--defsym`, and PE/COFF uses DEF-file aliases. The aliases are emitted
+only when native artifacts require runtime symbol export, so extension-side
+identity checks resolve to the runtime's existing singleton storage rather than
+to duplicate objects.
+
+### DEFERRED (honest, not fakes - see CLAIMS `DISCOVERY-FRONTIER-FIXES`)
 * **`PyStructSequence_New`/`InitType2`**: numpy does not call them on the path
   to the `numpy.exceptions` frontier (the loud stub never fires during
   `_multiarray_umath` init). molt's member machinery supports the named-field
