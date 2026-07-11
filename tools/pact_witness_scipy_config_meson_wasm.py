@@ -69,6 +69,16 @@ import subprocess
 import sys
 from pathlib import Path
 
+_SRC = Path(__file__).resolve().parents[1] / "src"
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+
+from molt.scientific_stack_versions import (  # noqa: E402
+    resolve_scientific_stack,
+    verify_cpython_abi_headers,
+    verify_source_checkout,
+)
+
 
 # Canonical location of the emitted, fully-substituted module. Mirrors the
 # ``_CONFIG_BUILD_CANDIDATES`` entry in tools/pact_witness_scipy_generated_modules.
@@ -288,7 +298,11 @@ def main() -> int:
     ap.add_argument("--cython", default=None, type=Path)
     args = ap.parse_args()
 
+    stack = resolve_scientific_stack()
+    verify_cpython_abi_headers(stack=stack, repo_root=args.molt_root.resolve())
+
     scipy_root = args.scipy_root.resolve()
+    verify_source_checkout("scipy", scipy_root, stack=stack)
     build_root = args.build_root.resolve()
     wasi_sysroot = args.wasi_sysroot.resolve()
     molt_root = args.molt_root.resolve()
@@ -308,6 +322,7 @@ def main() -> int:
         / "meson"
         / "meson.py"
     )
+    verify_source_checkout("numpy", meson_py.parents[2], stack=stack)
     if not meson_py.is_file():
         raise SystemExit(f"vendored meson not found: {meson_py}")
 
@@ -320,6 +335,11 @@ def main() -> int:
         raise SystemExit(f"cython executable not found: {cython}")
 
     scipy_version = _scipy_pyproject_version(scipy_root)
+    if scipy_version != stack.scipy:
+        raise SystemExit(
+            f"SciPy source version {scipy_version} does not match verified "
+            f"scientific stack {stack.tuple_label}"
+        )
 
     # Staging: a standalone meson source dir carrying the mirror + the real
     # SciPy template.

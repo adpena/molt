@@ -14,6 +14,10 @@ from typing import Any
 from molt.cli.file_hashing import _sha256_file
 from molt.cli.native_toolchain import _zig_target_query
 from molt.cli.wasm_toolchain import resolve_wasi_sysroot as _resolve_wasi_sysroot
+from molt.scientific_stack_versions import (
+    resolve_scientific_stack,
+    verify_cpython_abi_headers,
+)
 
 _SOURCE_EXTENSION_ABI_TIERS = {"source-compat", "cpython-abi"}
 _SOURCE_EXTENSION_INCLUDE_FILE_SUFFIXES = {
@@ -454,6 +458,8 @@ def _source_extension_meson_cross_properties(target_triple: str) -> dict[str, ob
 
 
 def _python_pc_text(*, molt_root: Path, abi_tier: str) -> str:
+    stack = resolve_scientific_stack()
+    verify_cpython_abi_headers(stack=stack, repo_root=molt_root)
     prefix = _pc_path(molt_root)
     include_dirs = _source_extension_include_dirs_for_abi_tier(
         molt_root=molt_root,
@@ -468,7 +474,7 @@ def _python_pc_text(*, molt_root: Path, abi_tier: str) -> str:
         "\n"
         "Name: Python\n"
         "Description: Molt Python C API for source-recompiled extensions\n"
-        "Version: 3.12\n"
+        f"Version: {stack.cpython}\n"
         f"Cflags: {cflags}\n"
         "Libs:\n"
     )

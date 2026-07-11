@@ -72,6 +72,16 @@ import subprocess
 import sys
 from pathlib import Path
 
+_SRC = Path(__file__).resolve().parents[1] / "src"
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+
+from molt.scientific_stack_versions import (  # noqa: E402
+    resolve_scientific_stack,
+    verify_cpython_abi_headers,
+    verify_source_checkout,
+)
+
 _MODULE = "numpy.linalg._umath_linalg"
 _ARTIFACT_NAME = "_umath_linalg.molt.wasm"
 _MANIFEST_NAME = "_umath_linalg.molt.wasm.extension_manifest.json"
@@ -131,7 +141,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = ap.parse_args(argv)
 
+    stack = resolve_scientific_stack()
+    verify_cpython_abi_headers(stack=stack, repo_root=repo_root)
+
     numpy_root = _abs(repo_root, args.numpy_root)
+    verify_source_checkout("numpy", numpy_root, stack=stack)
     meson_build_root = _abs(repo_root, args.meson_build_root)
     seal_root = _abs(repo_root, args.seal_root)
     intro_targets = meson_build_root / "intro-targets.json"

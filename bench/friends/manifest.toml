@@ -142,7 +142,7 @@ friend = "numpy"
 display_name = "NumPy Off-The-Shelf Source And API Probe"
 source = "git"
 repo_url = "https://github.com/numpy/numpy.git"
-repo_ref = "5e1d03ffac5f2c0a9c39bfcaa9fc853b2b83151e"
+repo_ref = "{scientific_numpy_repo_ref}"
 semantic_mode = "c_api_probe"
 adapter_notes = "Canonical NumPy C-API scan and source-custody lane. The source runner verifies the pinned checkout; the CPython runner executes a pinned isolated NumPy baseline through tools/numpy_off_shelf_adapter.py for comparator evidence; the Molt workload runner attempts the same public workloads through MOLT_EXTERNAL_STATIC_PACKAGES=numpy, fail-closed package-local native artifact sidecars, and must stay red until no-host libmolt source-recompiled package build/staging/import/runtime custody is complete. The green c_api_scan lane is missing-symbol closure only: it scans compile-relevant source, not package build, link, import, or runtime execution. No host-Python fallback or patched NumPy sources are allowed."
 tags = ["ecosystem", "numpy", "c-api", "scientific-python", "compile-time"]
@@ -152,7 +152,7 @@ timeout_sec = 1800
 [suite.runners.cpython]
 role = "workload"
 json_stdout = true
-run_cmd = ["uv", "run", "--isolated", "--python", "{python}", "--with", "numpy==2.5.1", "python", "{repo_root}/tools/numpy_off_shelf_adapter.py", "--workload", "all", "--iterations", "5", "--json", "--require-version", "2.5.1"]
+run_cmd = ["uv", "run", "--isolated", "--python", "{python}", "--with", "{scientific_numpy_requirement}", "python", "{repo_root}/tools/numpy_off_shelf_adapter.py", "--workload", "all", "--iterations", "5", "--json", "--require-version", "{scientific_numpy_version}"]
 
 [suite.runners.molt]
 role = "workload"
@@ -178,7 +178,7 @@ friend = "scipy"
 display_name = "SciPy Off-The-Shelf Source And API Probe"
 source = "git"
 repo_url = "https://github.com/scipy/scipy.git"
-repo_ref = "54ef5423f2e4376230ec3bfda6912a07a50958e3"
+repo_ref = "{scientific_scipy_repo_ref}"
 semantic_mode = "c_api_probe"
 adapter_notes = "Canonical SciPy C-API scan and missing-symbol closure lane. The C-API scan verifies SciPy's pinned compile-relevant source tree against Molt's CPython/NumPy source-compile surface without host-Python fallback, patched SciPy sources, or scanning non-build test/doc/benchmark/build trees. It does not compile, link, import, or execute SciPy package workloads."
 tags = ["ecosystem", "scipy", "c-api", "scientific-python", "compile-time"]

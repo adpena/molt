@@ -1,0 +1,30 @@
+schema_version = 1
+
+[selection]
+numpy = "2.5.1"
+scipy = "1.18.0"
+cpython = "3.12"
+
+[[verified]]
+numpy = "2.5.1"
+scipy = "1.18.0"
+cpython = "3.12"
+numpy_repo_ref = "5e1d03ffac5f2c0a9c39bfcaa9fc853b2b83151e"
+scipy_repo_ref = "54ef5423f2e4376230ec3bfda6912a07a50958e3"
+numpy_seal_root_candidates = [
+  "tmp/pact_numpy_multiarray_sealed_for_witness",
+  "tmp/pact_numpy_multiarray_sealed_axiserror",
+  "tmp/worktrees/pact-collab/tmp/pact_numpy_multiarray_molt_ext_wasm_cpython_abi",
+]
+scipy_primary_seal_root_candidates = [
+  "tmp/pact_scipy_ndimage_sealed_for_witness_next",
+  "tmp/pact_scipy_ndimage_sealed_for_witness",
+  "tmp/pact_scipy_ndimage_provider_sealed_support_closure",
+  "tmp/pact_scipy_ndimage_provider_sealed_helpers",
+  "tmp/pact_scipy_ndimage_provider_sealed",
+]
+scipy_additional_seal_roots = [
+  "tmp/pact_scipy_ni_label_molt_ext_wasm_cpython_abi",
+  "tmp/pact_scipy_rank_filter_1d_molt_ext_wasm_cpython_abi",
+  "tmp/pact_scipy_ccallback_c_molt_ext_wasm_cpython_abi",
+]

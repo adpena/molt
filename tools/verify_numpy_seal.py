@@ -23,6 +23,11 @@ import json
 from pathlib import Path
 
 from molt.cli.source_extensions import source_extension_manifest_source_path
+from molt.scientific_stack_versions import (
+    resolve_scientific_stack,
+    verify_cpython_abi_headers,
+    verify_source_checkout,
+)
 
 
 def _load(path: Path) -> tuple[dict, Path]:
@@ -32,6 +37,8 @@ def _load(path: Path) -> tuple[dict, Path]:
 
 
 def main() -> int:
+    stack = resolve_scientific_stack()
+    verify_cpython_abi_headers(stack=stack)
     ap = argparse.ArgumentParser()
     ap.add_argument("--manifest", required=True, type=Path)
     args = ap.parse_args()
@@ -45,9 +52,7 @@ def main() -> int:
     # (1) runtime_python_import_modules present + non-empty.
     rpim = manifest.get("runtime_python_import_modules")
     if not rpim:
-        failures.append(
-            f"runtime_python_import_modules missing/empty (value={rpim!r})"
-        )
+        failures.append(f"runtime_python_import_modules missing/empty (value={rpim!r})")
     else:
         print(f"[verify] runtime_python_import_modules: {len(rpim)} entries")
         for m in rpim[:8]:
@@ -96,6 +101,12 @@ def main() -> int:
 
     # (3) source_plan roots resolve.
     sp = manifest.get("source_plan") or {}
+    source_root = sp.get("source_root")
+    if source_root:
+        try:
+            verify_source_checkout("numpy", Path(source_root), stack=stack)
+        except ValueError as exc:
+            failures.append(str(exc))
     for key in ("build_root", "source_root", "compile_commands"):
         val = sp.get(key)
         if val and not Path(val).expanduser().exists():

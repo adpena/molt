@@ -1,0 +1,115 @@
+from __future__ import annotations
+
+import importlib.util
+import sys
+from pathlib import Path
+
+import pytest
+
+from molt.cli.source_extension_toolchain import _python_pc_text
+from molt.scientific_stack_versions import (
+    CONFIG_ENV,
+    resolve_scientific_stack,
+    verify_cpython_abi_headers,
+)
+
+ROOT = Path(__file__).resolve().parents[2]
+TOOLS = ROOT / "tools"
+
+
+def _write_config(
+    path: Path,
+    *,
+    selected_numpy: str,
+    selected_scipy: str = "1.18.0",
+    selected_cpython: str = "3.12",
+    verified_numpy: str = "2.5.1",
+    verified_scipy: str = "1.18.0",
+    verified_cpython: str = "3.12",
+) -> None:
+    path.write_text(
+        f'''schema_version = 1
+
+[selection]
+numpy = "{selected_numpy}"
+scipy = "{selected_scipy}"
+cpython = "{selected_cpython}"
+
+[[verified]]
+numpy = "{verified_numpy}"
+scipy = "{verified_scipy}"
+cpython = "{verified_cpython}"
+numpy_repo_ref = "numpy-ref"
+scipy_repo_ref = "scipy-ref"
+numpy_seal_root_candidates = ["tmp/numpy-seal"]
+scipy_primary_seal_root_candidates = ["tmp/scipy-seal"]
+scipy_additional_seal_roots = ["tmp/scipy-helper-seal"]
+''',
+        encoding="utf-8",
+    )
+
+
+def _load_tool(name: str, *, filename: str | None = None):
+    spec = importlib.util.spec_from_file_location(
+        name, TOOLS / f"{filename or name}.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_current_verified_stack_and_cpython_abi_are_aligned() -> None:
+    stack = resolve_scientific_stack()
+    assert (stack.numpy, stack.scipy, stack.cpython) == ("2.5.1", "1.18.0", "3.12")
+    verify_cpython_abi_headers(stack=stack, repo_root=ROOT)
+
+
+def test_unsupported_selection_fails_honestly_early(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "scientific.toml"
+    _write_config(config, selected_numpy="9.9.9")
+    monkeypatch.setenv(CONFIG_ENV, str(config))
+
+    with pytest.raises(
+        ValueError,
+        match=r"numpy 9\.9\.9/scipy 1\.18\.0/cpython 3\.12 .*verified-support matrix",
+    ):
+        resolve_scientific_stack()
+
+    proof_queue = _load_tool("proof_queue")
+    with pytest.raises(ValueError, match="not in Molt's verified-support matrix"):
+        proof_queue._pact_witness_acceptance_spec()
+
+
+def test_config_only_version_change_propagates_to_consumers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "scientific.toml"
+    _write_config(
+        config,
+        selected_numpy="9.9.9",
+        selected_scipy="8.8.8",
+        verified_numpy="9.9.9",
+        verified_scipy="8.8.8",
+    )
+    monkeypatch.setenv(CONFIG_ENV, str(config))
+
+    proof_queue = _load_tool("proof_queue_config_propagation", filename="proof_queue")
+    command = proof_queue._pact_witness_oracle_spec()["command"]
+    assert "numpy==9.9.9" in command
+    assert "scipy==8.8.8" in command
+
+    bench_manifest = _load_tool("bench_friends_manifest")
+    _, suites = bench_manifest._load_manifest(
+        ROOT / "bench" / "friends" / "manifest.toml"
+    )
+    numpy_suite = next(suite for suite in suites if suite.id == "numpy_off_the_shelf")
+    assert numpy_suite.repo_ref == "numpy-ref"
+    assert "numpy==9.9.9" in numpy_suite.runners["cpython"].run_cmd
+    assert "9.9.9" in numpy_suite.runners["cpython"].run_cmd
+
+    python_pc = _python_pc_text(molt_root=ROOT, abi_tier="cpython-abi")
+    assert "Version: 3.12" in python_pc

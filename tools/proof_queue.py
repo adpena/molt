@@ -41,6 +41,7 @@ from tools.dirty_tree_policy import (  # noqa: E402
     DEFAULT_DIRTY_TREE_IGNORE_GLOBS,
     filter_status_lines,
 )
+from molt.scientific_stack_versions import resolve_scientific_stack  # noqa: E402
 
 RUNNING = {"queued", "dispatched", "running"}
 LAUNCHED = {"dispatched", "running"}
@@ -3156,46 +3157,25 @@ def _first_existing_manifest_root_across(
 
 def _pact_witness_native_roots(repo_root: Path = ROOT) -> list[Path]:
     repo_root = Path(repo_root)
+    stack = resolve_scientific_stack()
     selected: list[Path] = []
     candidate_repo_roots = _pact_witness_candidate_repo_roots(repo_root)
-    artifact_groups = [
-        [
-            "tmp/pact_numpy_multiarray_sealed_for_witness",
-            "tmp/pact_numpy_multiarray_sealed_axiserror",
-            "tmp/worktrees/pact-collab/tmp/pact_numpy_multiarray_molt_ext_wasm_cpython_abi",
-        ],
-        [
-            "tmp/pact_scipy_ndimage_sealed_for_witness_next",
-            "tmp/pact_scipy_ndimage_sealed_for_witness",
-            "tmp/pact_scipy_ndimage_provider_sealed_support_closure",
-            "tmp/pact_scipy_ndimage_provider_sealed_helpers",
-            "tmp/pact_scipy_ndimage_provider_sealed",
-        ],
-    ]
     artifact_roots = [
         _first_existing_manifest_root_across(
             candidate_repo_roots,
-            artifact_groups[0],
+            list(stack.numpy_seal_root_candidates),
             validator=_pact_numpy_multiarray_seal_root_is_current,
         ),
-        _first_existing_manifest_root_across(candidate_repo_roots, artifact_groups[1]),
+        _first_existing_manifest_root_across(
+            candidate_repo_roots, list(stack.scipy_primary_seal_root_candidates)
+        ),
     ]
     artifact_roots.extend(
         root
-        for root in [
-            _first_existing_manifest_root_across(
-                candidate_repo_roots,
-                ["tmp/pact_scipy_ni_label_molt_ext_wasm_cpython_abi"],
-            ),
-            _first_existing_manifest_root_across(
-                candidate_repo_roots,
-                ["tmp/pact_scipy_rank_filter_1d_molt_ext_wasm_cpython_abi"],
-            ),
-            _first_existing_manifest_root_across(
-                candidate_repo_roots,
-                ["tmp/pact_scipy_ccallback_c_molt_ext_wasm_cpython_abi"],
-            ),
-        ]
+        for root in (
+            _first_existing_manifest_root_across(candidate_repo_roots, [seal_root])
+            for seal_root in stack.scipy_additional_seal_roots
+        )
         if root is not None
     )
     source_roots = []
@@ -3215,7 +3195,6 @@ def _pact_witness_native_roots(repo_root: Path = ROOT) -> list[Path]:
         if resolved not in selected:
             selected.append(resolved)
     return selected
-
 
 def _pact_witness_env_overrides(repo_root: Path = ROOT) -> dict[str, str]:
     # Force UTF-8 across the ENTIRE witness process tree (the parent tool + every
@@ -3237,6 +3216,7 @@ def _pact_witness_env_overrides(repo_root: Path = ROOT) -> dict[str, str]:
 def _pact_witness_acceptance_spec(
     timeout: float | None = None, repo_root: Path = ROOT
 ) -> dict[str, object]:
+    stack = resolve_scientific_stack()
     return {
         "logical_id": "pact-witness-acceptance",
         "reason": (
@@ -3247,7 +3227,7 @@ def _pact_witness_acceptance_spec(
             "tools/pact_witness_acceptance.py",
             "--out-dir",
             "tmp/pact_witness_acceptance_queue",
-            with_packages=["numpy==2.5.1", "scipy==1.18.0"],
+            with_packages=[stack.numpy_requirement, stack.scipy_requirement],
         ),
         "resource_family": "wasm-browser",
         "contention_key": "wasm:pact-witness",
@@ -3259,14 +3239,7 @@ def _pact_witness_acceptance_spec(
             "wasm/browser_host.js",
             "wasm/run_wasm.js",
             "tools/pact_witness_acceptance.py",
-            "tmp/pact_numpy_multiarray_sealed_axiserror",
-            "tmp/pact_numpy_multiarray_sealed_for_witness",
-            "tmp/pact_scipy_ndimage_provider_sealed_support_closure",
-            "tmp/pact_scipy_ndimage_sealed_for_witness_next",
-            "tmp/pact_scipy_ndimage_sealed_for_witness",
-            "tmp/pact_scipy_ndimage_provider_sealed_helpers",
-            "tmp/pact_scipy_ni_label_molt_ext_wasm_cpython_abi",
-            "tmp/pact_scipy_ccallback_c_molt_ext_wasm_cpython_abi",
+            *stack.seal_roots,
         ],
         "env_overrides": _pact_witness_env_overrides(repo_root),
         "notes": [
@@ -3281,6 +3254,7 @@ def _pact_witness_acceptance_spec(
 
 
 def _pact_witness_oracle_spec(timeout: float | None = None) -> dict[str, object]:
+    stack = resolve_scientific_stack()
     return {
         "logical_id": "pact-witness-oracle-parity",
         "reason": (
@@ -3289,7 +3263,7 @@ def _pact_witness_oracle_spec(timeout: float | None = None) -> dict[str, object]
         ),
         "command": _uv_active_python_command(
             "tools/pact_witness_oracle.py",
-            with_packages=["numpy==2.5.1", "scipy==1.18.0"],
+            with_packages=[stack.numpy_requirement, stack.scipy_requirement],
         ),
         "resource_family": "wasm-browser",
         "contention_key": "wasm:pact-witness",
