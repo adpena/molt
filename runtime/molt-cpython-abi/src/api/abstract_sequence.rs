@@ -319,8 +319,7 @@ unsafe fn materialize_iterable(o: *mut PyObject) -> Option<Vec<u64>> {
             let mut idx: usize = 0;
             loop {
                 let mut key: u64 = 0;
-                let found =
-                    unsafe { (h.dict_entry)(bits, idx, &raw mut key, ptr::null_mut()) };
+                let found = unsafe { (h.dict_entry)(bits, idx, &raw mut key, ptr::null_mut()) };
                 if found != 1 {
                     break;
                 }
@@ -547,7 +546,8 @@ pub unsafe extern "C" fn PySequence_GetItem(o: *mut PyObject, i: Py_ssize_t) -> 
                 }
                 idx += l;
             }
-            let f: SsizeArgFunc = unsafe { std::mem::transmute::<*mut c_void, SsizeArgFunc>(sq_item) };
+            let f: SsizeArgFunc =
+                unsafe { std::mem::transmute::<*mut c_void, SsizeArgFunc>(sq_item) };
             return unsafe { f(o, idx) };
         }
     }
@@ -946,10 +946,9 @@ pub unsafe extern "C" fn PySequence_Concat(s1: *mut PyObject, s2: *mut PyObject)
         }
         if tag1 == tag_str() {
             if tag2 == Some(tag_str())
-                && let (Some(a), Some(b)) = (
-                    unsafe { str_slice(bits1) },
-                    unsafe { str_slice(bits2.unwrap()) },
-                )
+                && let (Some(a), Some(b)) = (unsafe { str_slice(bits1) }, unsafe {
+                    str_slice(bits2.unwrap())
+                })
             {
                 let mut joined = Vec::with_capacity(a.len() + b.len());
                 joined.extend_from_slice(a);
@@ -970,10 +969,9 @@ pub unsafe extern "C" fn PySequence_Concat(s1: *mut PyObject, s2: *mut PyObject)
         }
         if tag1 == tag_bytes() {
             if tag2 == Some(tag_bytes())
-                && let (Some(a), Some(b)) = (
-                    unsafe { bytes_slice(bits1) },
-                    unsafe { bytes_slice(bits2.unwrap()) },
-                )
+                && let (Some(a), Some(b)) = (unsafe { bytes_slice(bits1) }, unsafe {
+                    bytes_slice(bits2.unwrap())
+                })
             {
                 let mut joined = Vec::with_capacity(a.len() + b.len());
                 joined.extend_from_slice(a);
@@ -985,10 +983,7 @@ pub unsafe extern "C" fn PySequence_Concat(s1: *mut PyObject, s2: *mut PyObject)
                 return ptr::null_mut();
             }
             unsafe {
-                set_type_error(format!(
-                    "can't concat {} to bytes",
-                    type_name(s2)
-                ));
+                set_type_error(format!("can't concat {} to bytes", type_name(s2)));
             }
             return ptr::null_mut();
         }
@@ -1003,10 +998,7 @@ pub unsafe extern "C" fn PySequence_Concat(s1: *mut PyObject, s2: *mut PyObject)
         }
     }
     unsafe {
-        set_type_error(format!(
-            "'{}' object can't be concatenated",
-            type_name(s1)
-        ));
+        set_type_error(format!("'{}' object can't be concatenated", type_name(s1)));
     }
     ptr::null_mut()
 }
@@ -1299,9 +1291,8 @@ pub unsafe extern "C" fn PySequence_Fast(
     for (index, item_bits) in items.iter().enumerate() {
         let item = unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(*item_bits) };
         if item.is_null()
-            || unsafe {
-                crate::api::sequences::PyTuple_SetItem(tuple, index as Py_ssize_t, item)
-            } != 0
+            || unsafe { crate::api::sequences::PyTuple_SetItem(tuple, index as Py_ssize_t, item) }
+                != 0
         {
             unsafe { crate::api::refcount::Py_DECREF(tuple) };
             return ptr::null_mut();
@@ -1427,8 +1418,9 @@ pub unsafe extern "C" fn PySequence_InPlaceRepeat(
                 return ptr::null_mut();
             }
         } else if count > 1 {
-            let snapshot: Vec<u64> =
-                (0..len).map(|i| unsafe { (h.list_item)(bits, i) }).collect();
+            let snapshot: Vec<u64> = (0..len)
+                .map(|i| unsafe { (h.list_item)(bits, i) })
+                .collect();
             {
                 let mut bridge = GLOBAL_BRIDGE.lock();
                 for &item in &snapshot {

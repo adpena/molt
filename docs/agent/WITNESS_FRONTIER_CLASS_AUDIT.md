@@ -287,6 +287,25 @@ applied across ~13 primary + ~15 low sites in one sweep.
 
 ---
 
+### 2.5 CLASS2-DECODE landing result (2026-07-11)
+
+**Move A complete:** `BridgeIdentity` and `MoltValueHandle` make identity and
+decodable runtime values distinct at the molt↔C boundary. The compiler emitted
+**125 diagnostics** across the migration, forcing every typed consumer to choose
+identity-only access, native value resolution, or foreign-wrapper minting. The
+source audit covered ~80 production call sites: bucket B was 7 HIGH + 6 MEDIUM +
+~15 LOW decode risks; bucket A identity sites remain identity-only, and bucket C
+guarded sites now resolve through `molt_handle_for_pyobj` before decoding.
+Foreign dict/list/tuple keys and stored values use `molt_value_for_pyobj`. Live
+`read_bridge_header_bits` fallback consumers were removed; arbitrary foreign
+pointers are never decoded from trailing memory.
+
+**Move B deferred:** the reserved non-decodable NaN-box anchor tag was reverted
+from `molt-codegen-abi` / `molt-obj-model`. Move A closes the bug class without
+touching the shared object-model tag authority, avoiding collision with the
+free-threading lane. The reserved tag remains an optional defense-in-depth
+follow-on, not a prerequisite for CLASS2-DECODE correctness.
+
 ## Class 3 — DISPATCH / TRAMPOLINE COMPLETENESS
 
 There are **two independent dispatch surfaces**; both were audited.

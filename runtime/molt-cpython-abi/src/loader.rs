@@ -220,8 +220,7 @@ unsafe fn build_min_module_spec(name: &str, origin: &Path) -> *mut PyObject {
         if value.is_null() {
             return;
         }
-        let rc =
-            unsafe { crate::api::object::PyObject_SetAttrString(spec, key.as_ptr(), value) };
+        let rc = unsafe { crate::api::object::PyObject_SetAttrString(spec, key.as_ptr(), value) };
         unsafe { crate::api::refcount::Py_DECREF(value) };
         if rc != 0 {
             unsafe { crate::api::errors::PyErr_Clear() };
@@ -238,8 +237,7 @@ unsafe fn build_min_module_spec(name: &str, origin: &Path) -> *mut PyObject {
     }
     // origin -> spec.origin = <.so path> (copied to __file__)
     if let Ok(corigin) = std::ffi::CString::new(origin.to_string_lossy().into_owned()) {
-        let origin_obj =
-            unsafe { crate::api::strings::PyUnicode_FromString(corigin.as_ptr()) };
+        let origin_obj = unsafe { crate::api::strings::PyUnicode_FromString(corigin.as_ptr()) };
         unsafe { set_owned(spec, c"origin", origin_obj) };
     }
     // parent -> spec.parent = "" (copied to __package__)
@@ -258,8 +256,7 @@ unsafe fn build_min_module_spec(name: &str, origin: &Path) -> *mut PyObject {
         unsafe { crate::api::errors::PyErr_Clear() };
     }
     // cached -> spec.cached = None (copied to __cached__)
-    let rc =
-        unsafe { crate::api::object::PyObject_SetAttrString(spec, c"cached".as_ptr(), none) };
+    let rc = unsafe { crate::api::object::PyObject_SetAttrString(spec, c"cached".as_ptr(), none) };
     if rc != 0 {
         unsafe { crate::api::errors::PyErr_Clear() };
     }

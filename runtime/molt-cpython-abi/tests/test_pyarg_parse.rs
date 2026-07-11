@@ -25,8 +25,8 @@ use molt_cpython_abi::abi_types::{PyObject, PyTypeObject};
 use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
 use molt_lang_obj_model::MoltObject;
 use std::ffi::{c_char, c_int, c_void};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 // The bits of the one synthetic tuple the mock hooks answer for.
 static TUPLE_BITS: AtomicU64 = AtomicU64::new(0);
@@ -160,7 +160,9 @@ fn pyarg_b_range_checks_raise_overflow() {
     let args = args_with(&[int_item(-1)]);
     let rc = unsafe { PyArg_ParseTuple(args, c"b".as_ptr(), &mut out as *mut u8) };
     assert_eq!(rc, 0, "'b' with -1 must fail (< 0)");
-    assert!(err_is(&raw mut molt_cpython_abi::abi_types::PyExc_OverflowError));
+    assert!(err_is(
+        &raw mut molt_cpython_abi::abi_types::PyExc_OverflowError
+    ));
     clear_err();
 }
 
@@ -182,15 +184,12 @@ fn pyarg_o_bang_does_not_clobber_type_header_and_fills_dest() {
     // Poison destination; must stay untouched on failure.
     let poison: *mut PyObject = std::ptr::dangling_mut::<PyObject>();
     let mut dest: *mut PyObject = poison;
-    let rc = unsafe {
-        PyArg_ParseTuple(
-            args,
-            c"O!".as_ptr(),
-            &raw mut sentinel_type,
-            &raw mut dest,
-        )
-    };
-    assert_eq!(rc, 0, "int is not a subtype of the sentinel type -> O! fails");
+    let rc =
+        unsafe { PyArg_ParseTuple(args, c"O!".as_ptr(), &raw mut sentinel_type, &raw mut dest) };
+    assert_eq!(
+        rc, 0,
+        "int is not a subtype of the sentinel type -> O! fails"
+    );
     assert!(
         err_is(&raw mut molt_cpython_abi::abi_types::PyExc_TypeError),
         "an O! type mismatch must raise TypeError"
@@ -207,8 +206,12 @@ fn pyarg_o_bang_does_not_clobber_type_header_and_fills_dest() {
 
     // Positive case: expected type == PyLong_Type, arg is an int -> stored.
     let args = args_with(&[int_item(7)]);
-    let refcnt_before =
-        unsafe { molt_cpython_abi::abi_types::PyLong_Type.ob_base.ob_base.ob_refcnt };
+    let refcnt_before = unsafe {
+        molt_cpython_abi::abi_types::PyLong_Type
+            .ob_base
+            .ob_base
+            .ob_refcnt
+    };
     let mut dest2: *mut PyObject = std::ptr::null_mut();
     let rc = unsafe {
         PyArg_ParseTuple(
@@ -219,14 +222,22 @@ fn pyarg_o_bang_does_not_clobber_type_header_and_fills_dest() {
         )
     };
     assert_eq!(rc, 1, "an int against PyLong_Type must satisfy O!");
-    assert!(!dest2.is_null(), "O! must store the object into the destination");
+    assert!(
+        !dest2.is_null(),
+        "O! must store the object into the destination"
+    );
     assert_eq!(
         unsafe { molt_cpython_abi::api::numbers::PyLong_Check(dest2) },
         1,
         "the stored O! object is the int argument"
     );
     assert_eq!(
-        unsafe { molt_cpython_abi::abi_types::PyLong_Type.ob_base.ob_base.ob_refcnt },
+        unsafe {
+            molt_cpython_abi::abi_types::PyLong_Type
+                .ob_base
+                .ob_base
+                .ob_refcnt
+        },
         refcnt_before,
         "even on success O! must not touch the type-object header"
     );
@@ -251,7 +262,11 @@ fn pyarg_s_rejects_non_string_argument() {
     let poison: *const c_char = std::ptr::dangling::<c_char>();
     let mut out: *const c_char = poison;
     let rc = unsafe {
-        PyArg_ParseTuple(args, c"s".as_ptr(), &mut out as *mut *const c_char as *mut c_void)
+        PyArg_ParseTuple(
+            args,
+            c"s".as_ptr(),
+            &mut out as *mut *const c_char as *mut c_void,
+        )
     };
     assert_eq!(rc, 0, "'s' on a non-str must FAIL, not fake success");
     assert!(

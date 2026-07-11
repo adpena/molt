@@ -197,7 +197,10 @@ fn as_utf8_non_str_is_null_with_typeerror_not_empty_string() {
     unsafe { err_clear() };
     let n = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(3) };
     let p = unsafe { molt_cpython_abi::api::strings::PyUnicode_AsUTF8(n) };
-    assert!(p.is_null(), "non-str must yield NULL, not a fabricated \"\"");
+    assert!(
+        p.is_null(),
+        "non-str must yield NULL, not a fabricated \"\""
+    );
     assert!(unsafe { err_set() });
     unsafe { err_clear() };
 }
@@ -210,7 +213,10 @@ fn unicode_compare_non_str_sets_typeerror() {
     let n = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1) };
     let r = unsafe { molt_cpython_abi::api::strings::PyUnicode_Compare(s, n) };
     assert_eq!(r, -1);
-    assert!(unsafe { err_set() }, "-1 is also a valid ordering; must carry TypeError");
+    assert!(
+        unsafe { err_set() },
+        "-1 is also a valid ordering; must carry TypeError"
+    );
     unsafe { err_clear() };
 }
 
@@ -221,7 +227,10 @@ fn as_ascii_string_non_ascii_raises_unicode_encode_error() {
     let s = unsafe { str_obj("café") };
     let r = unsafe { molt_cpython_abi::api::strings::PyUnicode_AsASCIIString(s) };
     assert!(r.is_null());
-    assert!(unsafe { err_set() }, "must raise UnicodeEncodeError, not bare NULL");
+    assert!(
+        unsafe { err_set() },
+        "must raise UnicodeEncodeError, not bare NULL"
+    );
     unsafe { err_clear() };
 }
 
@@ -245,18 +254,15 @@ fn tailmatch_uses_codepoint_indices_and_cpython_direction() {
     // inside the second é and never match).
     let text = unsafe { str_obj("ééx") };
     let needle = unsafe { str_obj("x") };
-    let starts = unsafe {
-        molt_cpython_abi::api::strings::PyUnicode_Tailmatch(text, needle, 2, 3, -1)
-    };
+    let starts =
+        unsafe { molt_cpython_abi::api::strings::PyUnicode_Tailmatch(text, needle, 2, 3, -1) };
     assert_eq!(starts, 1, "code-point window [2,3) must equal \"x\"");
     // direction > 0 is the SUFFIX match in CPython.
-    let ends = unsafe {
-        molt_cpython_abi::api::strings::PyUnicode_Tailmatch(text, needle, 0, 3, 1)
-    };
+    let ends =
+        unsafe { molt_cpython_abi::api::strings::PyUnicode_Tailmatch(text, needle, 0, 3, 1) };
     assert_eq!(ends, 1);
-    let not_prefix = unsafe {
-        molt_cpython_abi::api::strings::PyUnicode_Tailmatch(text, needle, 0, 3, -1)
-    };
+    let not_prefix =
+        unsafe { molt_cpython_abi::api::strings::PyUnicode_Tailmatch(text, needle, 0, 3, -1) };
     assert_eq!(not_prefix, 0, "direction<=0 is the PREFIX match");
 }
 
@@ -390,7 +396,10 @@ fn format_not_enough_and_surplus_args_are_typeerrors() {
     let args = unsafe { molt_cpython_abi::api::sequences::PyTuple_New(1) };
     unsafe { molt_cpython_abi::api::sequences::PyTuple_SetItem(args, 0, str_obj("a")) };
     let out = unsafe { molt_cpython_abi::api::strings::PyUnicode_Format(fmt, args) };
-    assert!(out.is_null(), "argument exhaustion must raise, not truncate");
+    assert!(
+        out.is_null(),
+        "argument exhaustion must raise, not truncate"
+    );
     assert!(unsafe { err_set() });
     unsafe { err_clear() };
 
@@ -534,7 +543,10 @@ fn finalizer_resurrection_aborts_the_free() {
         ob_type: &mut ty,
     };
     let rc = unsafe { molt_cpython_abi::api::memory::PyObject_CallFinalizerFromDealloc(&mut obj) };
-    assert_eq!(rc, -1, "resurrection must abort the free (old body returned 0)");
+    assert_eq!(
+        rc, -1,
+        "resurrection must abort the free (old body returned 0)"
+    );
 }
 
 // ===========================================================================
@@ -547,7 +559,10 @@ fn weakref_getobject_fails_loud_never_fabricates_none() {
     unsafe { err_clear() };
     let n = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1) };
     let r = unsafe { molt_cpython_abi::api::weakref::PyWeakref_GetObject(n) };
-    assert!(r.is_null(), "old body returned a fabricated Py_None referent");
+    assert!(
+        r.is_null(),
+        "old body returned a fabricated Py_None referent"
+    );
     assert!(unsafe { err_set() });
     unsafe { err_clear() };
 }
@@ -595,7 +610,10 @@ fn contextvar_get_no_value_is_success_with_null() {
     let rc = unsafe {
         molt_cpython_abi::api::contextvars::PyContextVar_Get(var, ptr::null_mut(), &mut out)
     };
-    assert_eq!(rc, 0, "C API returns SUCCESS for no-value (never LookupError)");
+    assert_eq!(
+        rc, 0,
+        "C API returns SUCCESS for no-value (never LookupError)"
+    );
     assert!(out.is_null());
     assert!(!unsafe { err_set() });
 }
@@ -617,9 +635,7 @@ fn contextvar_set_returns_token_and_reset_restores() {
     );
     // The bound value is observable via Get.
     let mut out: *mut PyObject = ptr::null_mut();
-    unsafe {
-        molt_cpython_abi::api::contextvars::PyContextVar_Get(var, ptr::null_mut(), &mut out)
-    };
+    unsafe { molt_cpython_abi::api::contextvars::PyContextVar_Get(var, ptr::null_mut(), &mut out) };
     assert_eq!(out, v1);
     // Reset consumes the token and restores the unbound state.
     let rc = unsafe { molt_cpython_abi::api::contextvars::PyContextVar_Reset(var, token) };
@@ -643,9 +659,13 @@ fn contextvar_get_rejects_non_contextvar_without_ducktyping() {
     unsafe { err_clear() };
     let n = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(5) };
     let mut out: *mut PyObject = ptr::null_mut();
-    let rc =
-        unsafe { molt_cpython_abi::api::contextvars::PyContextVar_Get(n, ptr::null_mut(), &mut out) };
-    assert_eq!(rc, -1, "non-exact ContextVar must be a TypeError (no duck-typing)");
+    let rc = unsafe {
+        molt_cpython_abi::api::contextvars::PyContextVar_Get(n, ptr::null_mut(), &mut out)
+    };
+    assert_eq!(
+        rc, -1,
+        "non-exact ContextVar must be a TypeError (no duck-typing)"
+    );
     assert!(unsafe { err_set() });
     unsafe { err_clear() };
 }
@@ -671,10 +691,18 @@ fn failed_import_always_leaves_a_pending_exception() {
 fn add_module_creates_and_registers_in_sys_modules() {
     install();
     unsafe { err_clear() };
-    let first = unsafe { molt_cpython_abi::api::imports::PyImport_AddModule(c"fresh_mod".as_ptr()) };
-    assert!(!first.is_null(), "AddModule was an unconditional ImportError stub");
-    let again = unsafe { molt_cpython_abi::api::imports::PyImport_AddModule(c"fresh_mod".as_ptr()) };
-    assert_eq!(first, again, "second AddModule returns the registered module");
+    let first =
+        unsafe { molt_cpython_abi::api::imports::PyImport_AddModule(c"fresh_mod".as_ptr()) };
+    assert!(
+        !first.is_null(),
+        "AddModule was an unconditional ImportError stub"
+    );
+    let again =
+        unsafe { molt_cpython_abi::api::imports::PyImport_AddModule(c"fresh_mod".as_ptr()) };
+    assert_eq!(
+        first, again,
+        "second AddModule returns the registered module"
+    );
 }
 
 #[test]
@@ -682,7 +710,9 @@ fn get_module_dict_is_backed_by_sys_modules() {
     install();
     let d1 = unsafe { molt_cpython_abi::api::imports::PyImport_GetModuleDict() };
     assert!(!d1.is_null());
-    let bits = GLOBAL_BRIDGE.lock().pyobj_to_handle(d1)
+    let bits = GLOBAL_BRIDGE
+        .lock()
+        .pyobj_to_handle(d1)
         .map(|identity| identity.as_handle())
         .expect("dict handle");
     assert_eq!(
@@ -739,9 +769,7 @@ fn get_buffer_dispatches_foreign_bf_getbuffer() {
     let inst = foreign_instance(ty);
     let before = *GETBUFFER_CALLS.lock().unwrap();
     let mut view: Py_buffer = unsafe { std::mem::zeroed() };
-    let rc = unsafe {
-        molt_cpython_abi::api::buffer::PyObject_GetBuffer(inst, &mut view, 0)
-    };
+    let rc = unsafe { molt_cpython_abi::api::buffer::PyObject_GetBuffer(inst, &mut view, 0) };
     assert_eq!(rc, 0, "the installed bf_getbuffer slot must be dispatched");
     assert_eq!(*GETBUFFER_CALLS.lock().unwrap(), before + 1);
     assert_eq!(view.len, 4);
@@ -757,7 +785,10 @@ fn get_buffer_without_slot_is_typeerror() {
     let mut view: Py_buffer = unsafe { std::mem::zeroed() };
     let rc = unsafe { molt_cpython_abi::api::buffer::PyObject_GetBuffer(inst, &mut view, 0) };
     assert_eq!(rc, -1);
-    assert!(unsafe { err_set() }, "no-slot failure is TypeError, not BufferError");
+    assert!(
+        unsafe { err_set() },
+        "no-slot failure is TypeError, not BufferError"
+    );
     unsafe { err_clear() };
 }
 
@@ -777,14 +808,23 @@ fn check_buffer_is_pure_and_side_effect_free() {
         );
     }
     let calls_before = *GETBUFFER_CALLS.lock().unwrap();
-    assert_eq!(unsafe { molt_cpython_abi::api::buffer::PyObject_CheckBuffer(with) }, 1);
-    assert_eq!(unsafe { molt_cpython_abi::api::buffer::PyObject_CheckBuffer(without) }, 0);
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::buffer::PyObject_CheckBuffer(with) },
+        1
+    );
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::buffer::PyObject_CheckBuffer(without) },
+        0
+    );
     assert_eq!(
         *GETBUFFER_CALLS.lock().unwrap(),
         calls_before,
         "CheckBuffer must not ACQUIRE the buffer"
     );
-    assert!(unsafe { err_set() }, "CheckBuffer must not clear the error indicator");
+    assert!(
+        unsafe { err_set() },
+        "CheckBuffer must not clear the error indicator"
+    );
     unsafe { err_clear() };
 }
 
@@ -839,19 +879,37 @@ fn feb_30_is_rejected_leap_aware() {
     install();
     unsafe { err_clear() };
     let bad = unsafe {
-        molt_cpython_abi::api::datetime::molt_cpython_abi_date_from_date(2023, 2, 30, ptr::null_mut())
+        molt_cpython_abi::api::datetime::molt_cpython_abi_date_from_date(
+            2023,
+            2,
+            30,
+            ptr::null_mut(),
+        )
     };
-    assert!(bad.is_null(), "Feb 30 must be ValueError (day bound was a flat 1..=31)");
+    assert!(
+        bad.is_null(),
+        "Feb 30 must be ValueError (day bound was a flat 1..=31)"
+    );
     assert!(unsafe { err_set() });
     unsafe { err_clear() };
     // Feb 29 in a leap year is fine; in a non-leap year it is not.
     let leap = unsafe {
-        molt_cpython_abi::api::datetime::molt_cpython_abi_date_from_date(2024, 2, 29, ptr::null_mut())
+        molt_cpython_abi::api::datetime::molt_cpython_abi_date_from_date(
+            2024,
+            2,
+            29,
+            ptr::null_mut(),
+        )
     };
     assert!(!leap.is_null());
     unsafe { err_clear() };
     let nonleap = unsafe {
-        molt_cpython_abi::api::datetime::molt_cpython_abi_date_from_date(2023, 2, 29, ptr::null_mut())
+        molt_cpython_abi::api::datetime::molt_cpython_abi_date_from_date(
+            2023,
+            2,
+            29,
+            ptr::null_mut(),
+        )
     };
     assert!(nonleap.is_null());
     unsafe { err_clear() };
@@ -912,7 +970,13 @@ fn timezone_utc_singleton_and_range_check() {
     install();
     // Zero offset + no name -> the UTC singleton.
     let zero = unsafe {
-        molt_cpython_abi::api::datetime::molt_cpython_abi_delta_from_delta(0, 0, 0, 1, ptr::null_mut())
+        molt_cpython_abi::api::datetime::molt_cpython_abi_delta_from_delta(
+            0,
+            0,
+            0,
+            1,
+            ptr::null_mut(),
+        )
     };
     let utc = unsafe {
         molt_cpython_abi::api::datetime::molt_cpython_abi_timezone_from_timezone(
@@ -920,7 +984,10 @@ fn timezone_utc_singleton_and_range_check() {
             ptr::null_mut(),
         )
     };
-    assert!(!utc.is_null(), "timezone construction was NotImplementedError");
+    assert!(
+        !utc.is_null(),
+        "timezone construction was NotImplementedError"
+    );
     assert_eq!(
         utc,
         &raw mut molt_cpython_abi::abi_types::PyDateTime_TimeZone_UTC_Object,
@@ -996,7 +1063,10 @@ fn datetime_fold_out_of_range_is_valueerror() {
             ptr::null_mut(),
         )
     };
-    assert!(dt.is_null(), "fold=2 must be ValueError, not silently coerced to 1");
+    assert!(
+        dt.is_null(),
+        "fold=2 must be ValueError, not silently coerced to 1"
+    );
     assert!(unsafe { err_set() });
     unsafe { err_clear() };
 }
@@ -1019,7 +1089,10 @@ fn non_tzinfo_argument_is_typeerror() {
             ptr::null_mut(),
         )
     };
-    assert!(dt.is_null(), "an int as tzinfo must be TypeError, not stored");
+    assert!(
+        dt.is_null(),
+        "an int as tzinfo must be TypeError, not stored"
+    );
     assert!(unsafe { err_set() });
     unsafe { err_clear() };
 }
@@ -1053,6 +1126,11 @@ fn capsule_import_registry_fast_path_still_resolves() {
     };
     assert!(!capsule.is_null());
     unsafe { err_clear() };
-    let p = unsafe { molt_cpython_abi::api::capsule::PyCapsule_Import(c"regmod._CAPI".as_ptr(), 0) };
-    assert_eq!(p, (&mut data as *mut u32).cast(), "registry fast path preserved");
+    let p =
+        unsafe { molt_cpython_abi::api::capsule::PyCapsule_Import(c"regmod._CAPI".as_ptr(), 0) };
+    assert_eq!(
+        p,
+        (&mut data as *mut u32).cast(),
+        "registry fast path preserved"
+    );
 }
