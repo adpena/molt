@@ -242,3 +242,40 @@ pact-side `KERN-CD`, 10 not-started. 30 obligations total. This refresh moved
   budget, not a calendar deadline. The contest itself is noted **closed** (010 §5),
   so the methods are open-source-destined — no external clock is ticking on the
   collaboration.
+
+---
+
+## 2026-07-11 refresh — memos 011 (pact webgpu) + 012 (molt reply); harness DELIVERED
+
+- **Inbound `011_webgpu_webnn_witness_demo` (pact→molt) mirrored** to main `2fbffb22d0`.
+  Kernel B (`witness_forward`) ported to a WebGPU WGSL compute shader, **parity PASS vs
+  numpy-fp32 (1.000000, 0/73,728)** + WebNN trunk cross-check. Pact **explicitly holds
+  molt's P0 unchanged** (Kernel A field_solve WASM parity) — no competing acceptance bar.
+  New ask **W6**: a shared `(shader|wasm, fixture.json, reference.bin) → pixel-match`
+  parity-harness interface.
+- **W6 → DELIVERED and VERIFIED (state change from 011's "proposed").** The generalized
+  fail-loud engine `collab/pact/parity/check_parity.py` (exit 0/1/2, atol ceiling 1e-3
+  no-widen, gate classes exact/bitwise/exact_set/atol/order_robust_atol) is the SINGLE
+  wired acceptance authority (`tools/pact_witness_acceptance.py` delegates to it; the old
+  inline `pact_witness_kernel/check_parity.py` is SUPERSEDED, kept only as the frozen
+  equivalence proof). Kernel A manifest `field_solve_gates.json` (status ready, 11 outputs,
+  numpy 2.5.1). Scaffolder `make_kernel_scaffold.py` emits un-passable NOT-IMPLEMENTED
+  slots for B..7. **Independently reproduced 2026-07-11: 40/40 harness tests green**
+  (`test_pact_parity_engine` equivalence proof on the real Kernel A reference +
+  `test_pact_kernel_scaffold` refusal + `test_parity_gate`).
+- **Molt reply `012_molt_reply_parity_harness_interface_and_kernel_b_intake` LANDED**
+  `a92be3a0cf`: answers W6 (interface documented), opens Kernel B intake
+  (`witness_forward → witness_forward_gates.json`, partition=exact uint8, trunk=atol 1e-3),
+  restates P0 + feasibility verdict + gaussian serial-accumulation constraint + the live
+  split-runtime restoration/custody frontier.
+- **Post-A obligation ownership — STILL the honest picture (unchanged by these memos):**
+  W3 (ONNX trunk export, ranked #1 post-A) remains unowned; EMBED-API proof
+  `test_browser_embed_forward_roundtrips_float32_typed_arrays` remains done-but-unproven
+  (needs a quiet-machine rerun); NUMPY-MATRIX (002) / `docs/CAPABILITIES.md` numpy content
+  remains unpublished (correctly — the numpy runtime is not end-to-end proven until the
+  witness executes; documenting a capability matrix before that would be theater).
+- **P0 status:** the split-runtime restoration/custody fix is IN (producer reloc
+  publication byte-identical, immutable-input preflight, app-owned molt_main export
+  contract; focused surface 155 passed/1 skipped). The full witness proof run is IN FLIGHT
+  — the run that should PUBLISH the split pair and EXECUTE numpy → field_solve →
+  candidate_outputs.npz. Verdict to be recorded verbatim (pass or first divergence).
