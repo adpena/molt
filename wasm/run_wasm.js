@@ -19,6 +19,7 @@ const {
   extractWasmTableBase,
   installManifestLinkImportTraps,
   installWasmTagImports,
+  parseWasmMetadata,
   parseWasmExportFunctionSignatures: parseWasmExportFunctionSignaturesFromBridge,
   parseWasmImports,
   planReservedRuntimeDispatch,
@@ -5797,8 +5798,9 @@ const runMain = async () => {
   appInstanceForExceptions = null;
   initWasmAssets();
   traceMark('runMain:init');
-  outputImports = parseWasmImports(wasmBuffer);
-  outputExportSignatures = parseWasmExportFunctionSignatures(wasmBuffer, wasmPath);
+  const outputMetadata = parseWasmMetadata(wasmBuffer);
+  outputImports = outputMetadata.imports;
+  outputExportSignatures = outputMetadata.exportFunctionSignatures;
   inputHasRuntimeImports = outputImports.funcImports.some(
     (entry) => entry.module === 'molt_runtime'
   );
@@ -5843,8 +5845,9 @@ const runMain = async () => {
         `Direct-link mode requires runtime wasm at ${expected}; provide MOLT_RUNTIME_WASM or use linked execution.`,
       );
     }
-    runtimeImportsDesc = parseWasmImports(runtimeBuffer);
-    runtimeExportSignatures = parseWasmExportFunctionSignatures(runtimeBuffer, runtimePath);
+    const runtimeMetadata = parseWasmMetadata(runtimeBuffer);
+    runtimeImportsDesc = runtimeMetadata.imports;
+    runtimeExportSignatures = runtimeMetadata.exportFunctionSignatures;
     runtimeCallIndirectNames = runtimeImportsDesc.funcImports
       .filter((entry) => entry.module === 'env' && entry.name.startsWith('molt_call_indirect'))
       .map((entry) => entry.name);
