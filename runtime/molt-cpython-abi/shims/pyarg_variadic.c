@@ -141,6 +141,36 @@ int PyArg_VaParseTupleAndKeywords(
     return result;
 }
 
+int _PyArg_VaParseTupleAndKeywords_SizeT(PyObject *args, PyObject *kwargs,
+    const char *format, char **kwlist, va_list vargs) {
+    return PyArg_VaParseTupleAndKeywords(args, kwargs, format, kwlist, vargs);
+}
+
+int _PyArg_VaParse_SizeT(PyObject *args, const char *format, va_list vargs) {
+    va_list ap;
+    va_copy(ap, vargs);
+    int result = collect_and_dispatch(args, format, ap);
+    va_end(ap);
+    return result;
+}
+
+int _PyArg_ParseTuple_SizeT(PyObject *args, const char *format, ...) {
+    va_list ap;
+    va_start(ap, format);
+    int result = collect_and_dispatch(args, format, ap);
+    va_end(ap);
+    return result;
+}
+
+int _PyArg_ParseTupleAndKeywords_SizeT(PyObject *args, PyObject *kwargs,
+    const char *format, char **kwlist, ...) {
+    va_list ap;
+    va_start(ap, kwlist);
+    int result = PyArg_VaParseTupleAndKeywords(args, kwargs, format, kwlist, ap);
+    va_end(ap);
+    return result;
+}
+
 PyObject *PyTuple_Pack(Py_ssize_t n, ...) {
     if (n < 0 || n > MOLT_VARARG_MAX_ARGS) return NULL;
     PyObject *tuple = PyTuple_New(n);
