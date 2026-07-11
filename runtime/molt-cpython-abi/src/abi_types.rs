@@ -781,16 +781,40 @@ pub static mut Py_None: PyObject = PyObject {
     ob_type: std::ptr::null_mut(),
 };
 
+/// `Py_True` — the live molt-header singleton (`include/Python.h`:
+/// `#define Py_True (&Py_True)`), the symbol every witness extension compiled
+/// against molt's own header resolves. It is a value-carrying `PyLongObject`
+/// (CPython v3.12.0 `Objects/boolobject.c`:
+/// `struct _longobject _Py_TrueStruct = { PyObject_HEAD_INIT(&PyBool_Type)
+/// { .lv_tag = _PyLong_TRUE_TAG, { 1 } } }`), so an extension's inlined
+/// `((PyLongObject*)Py_True)->long_value.ob_digit[0]` reads `1` IN BOUNDS instead
+/// of reading OOB past a bare `PyObject` into adjacent static memory (matrix L1
+/// #5 / binary-contract data-symbol #5, the `LAYOUT_MISMATCH` corruption vector).
+/// `_PyLong_TRUE_TAG = TAG_FROM_SIGN_AND_SIZE(1,1) = (1-1)|(1<<3) = 8`
+/// (Include/internal/pycore_long.h). `ob_type = &PyBool_Type` is set in the
+/// const initialiser (was patched at runtime); immortal via the ONE
+/// [`IMMORTAL_REFCNT`] authority. Reconciled to the same canonical `True` handle
+/// as `_Py_TrueStruct` through `bridge::pyobj_to_handle_static`.
 #[unsafe(no_mangle)]
-pub static mut Py_True: PyObject = PyObject {
-    ob_refcnt: IMMORTAL_REFCNT,
-    ob_type: std::ptr::null_mut(),
+pub static mut Py_True: PyLongObject = PyLongObject {
+    ob_base: PyObject {
+        ob_refcnt: IMMORTAL_REFCNT,
+        ob_type: &raw mut PyBool_Type,
+    },
+    long_value: PyLongValue { lv_tag: 8, ob_digit: [1] },
 };
 
+/// `Py_False` — value-carrying `PyLongObject` twin of [`Py_True`] (CPython
+/// v3.12.0 boolobject.c: `_PyLong_FALSE_TAG = TAG_FROM_SIGN_AND_SIZE(0,0) =
+/// (1-0)|(0<<3) = 1`, `ob_digit[0] = 0`), so `((PyLongObject*)Py_False)->
+/// long_value.ob_digit[0]` reads `0` IN BOUNDS.
 #[unsafe(no_mangle)]
-pub static mut Py_False: PyObject = PyObject {
-    ob_refcnt: IMMORTAL_REFCNT,
-    ob_type: std::ptr::null_mut(),
+pub static mut Py_False: PyLongObject = PyLongObject {
+    ob_base: PyObject {
+        ob_refcnt: IMMORTAL_REFCNT,
+        ob_type: &raw mut PyBool_Type,
+    },
+    long_value: PyLongValue { lv_tag: 1, ob_digit: [0] },
 };
 
 /// Sentinel returned by rich comparison when the operation is not supported.
@@ -1001,8 +1025,9 @@ pub unsafe fn init_static_types() {
         set_name!(PyFrozenSet_Type, b"frozenset\0");
 
         Py_None.ob_type = &raw mut PyNone_Type;
-        Py_True.ob_type = &raw mut PyBool_Type;
-        Py_False.ob_type = &raw mut PyBool_Type;
+        // `Py_True`/`Py_False` set `ob_base.ob_type = &PyBool_Type` in their const
+        // initialiser (they are value-carrying `PyLongObject`s now), so no runtime
+        // ob_type patch is needed here.
         Py_NotImplementedSentinel.ob_type = &raw mut PyNotImplemented_Type;
         Py_EllipsisObject.ob_type = &raw mut PyBaseObject_Type;
         PyDateTime_TimeZone_UTC_Object.ob_type = &raw mut PyDateTime_TZInfoType;
@@ -1615,8 +1640,8 @@ mod immortal_authority_tests {
         crate::bridge::molt_cpython_abi_init();
         let mut singletons: Vec<*mut PyObject> = vec![
             &raw mut Py_None,
-            &raw mut Py_True,
-            &raw mut Py_False,
+            (&raw mut Py_True).cast::<PyObject>(),
+            (&raw mut Py_False).cast::<PyObject>(),
             &raw mut Py_NotImplementedSentinel,
             &raw mut Py_EllipsisObject,
             &raw mut PyDateTime_TimeZone_UTC_Object,
@@ -1781,13 +1806,61 @@ mod immortal_authority_tests {
         let mut bridge = crate::bridge::GLOBAL_BRIDGE.lock();
         assert_eq!(
             unsafe { bridge.molt_value_for_pyobj(t_obj) },
-            unsafe { bridge.molt_value_for_pyobj(&raw mut Py_True) },
+            unsafe { bridge.molt_value_for_pyobj((&raw mut Py_True).cast::<PyObject>()) },
             "_Py_TrueStruct must resolve to the same handle as Py_True"
         );
         assert_eq!(
             unsafe { bridge.molt_value_for_pyobj(f_obj) },
-            unsafe { bridge.molt_value_for_pyobj(&raw mut Py_False) },
+            unsafe { bridge.molt_value_for_pyobj((&raw mut Py_False).cast::<PyObject>()) },
             "_Py_FalseStruct must resolve to the same handle as Py_False"
         );
+    }
+
+    /// Mask-proof (ABI-TYPEOBJECT-L4, singleton residual): the *live* molt-header
+    /// singletons `Py_True`/`Py_False` — the exact storage `include/Python.h`'s
+    /// `#define Py_True (&Py_True)` resolves for every witness extension — are now
+    /// value-carrying `PyLongObject`s, NOT bare `PyObject`. So an extension's
+    /// inlined `((PyLongObject*)Py_True)->long_value.ob_digit[0]` reads `1`/`0`
+    /// IN BOUNDS. Pre-fix `Py_True` was a bare `PyObject` (16B native / 8B wasm32);
+    /// the read of `long_value` at offset 16/8 landed OUT OF BOUNDS in adjacent
+    /// static memory. Values verified against CPython v3.12.0 Objects/boolobject.c
+    /// (`_PyLong_TRUE_TAG`=8, `_PyLong_FALSE_TAG`=1) + pycore_long.h
+    /// (`TAG_FROM_SIGN_AND_SIZE`). This is the residual that made the LIVE symbol
+    /// match the canonical `_Py_TrueStruct`/`_Py_FalseStruct` shape.
+    #[test]
+    fn live_bool_singletons_are_pylongobject_shaped_in_bounds() {
+        crate::bridge::molt_cpython_abi_init();
+        // The static's Rust TYPE is now `PyLongObject`; the whole crate would fail
+        // to compile if it were still `PyObject` (the `long_value` field access
+        // below requires it). Read the value-carrying bytes through a raw pointer,
+        // exactly as an extension's `(PyLongObject*)Py_True` cast would.
+        let t = &raw const Py_True;
+        let f = &raw const Py_False;
+        unsafe {
+            // True: lv_tag == _PyLong_TRUE_TAG == 8, ob_digit[0] == 1, in bounds.
+            assert_eq!((*t).long_value.lv_tag, 8, "Py_True lv_tag");
+            assert_eq!(
+                (*t).long_value.ob_digit[0],
+                1,
+                "((PyLongObject*)Py_True)->ob_digit[0] == 1 (in bounds)"
+            );
+            assert!(
+                std::ptr::eq((*t).ob_base.ob_type, &raw mut PyBool_Type),
+                "Py_True ob_type == &PyBool_Type"
+            );
+            assert!(is_immortal_refcnt((*t).ob_base.ob_refcnt));
+            // False: lv_tag == _PyLong_FALSE_TAG == 1, ob_digit[0] == 0.
+            assert_eq!((*f).long_value.lv_tag, 1, "Py_False lv_tag");
+            assert_eq!(
+                (*f).long_value.ob_digit[0],
+                0,
+                "((PyLongObject*)Py_False)->ob_digit[0] == 0 (in bounds)"
+            );
+            assert!(
+                std::ptr::eq((*f).ob_base.ob_type, &raw mut PyBool_Type),
+                "Py_False ob_type == &PyBool_Type"
+            );
+            assert!(is_immortal_refcnt((*f).ob_base.ob_refcnt));
+        }
     }
 }

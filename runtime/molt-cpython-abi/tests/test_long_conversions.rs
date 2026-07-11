@@ -397,7 +397,7 @@ fn pylong_check_true_is_one_and_bignum_is_int() {
     let _g = TEST_LOCK.lock().unwrap();
     install_hooks();
     assert_eq!(
-        unsafe { molt_cpython_abi::api::numbers::PyLong_Check(&raw mut Py_True) },
+        unsafe { molt_cpython_abi::api::numbers::PyLong_Check((&raw mut Py_True).cast::<PyObject>()) },
         1,
         "PyLong_Check(True) is 1 in CPython (Py_TPFLAGS_LONG_SUBCLASS)"
     );

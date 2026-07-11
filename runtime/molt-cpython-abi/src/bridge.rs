@@ -259,9 +259,9 @@ impl ObjectBridge {
         }
         if obj.is_bool() {
             return Some(if obj.as_bool().unwrap_or(false) {
-                &raw mut Py_True
+                (&raw mut Py_True).cast::<PyObject>()
             } else {
-                &raw mut Py_False
+                (&raw mut Py_False).cast::<PyObject>()
             });
         }
         None

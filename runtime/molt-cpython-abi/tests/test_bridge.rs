@@ -60,7 +60,7 @@ fn test_bridge_true_returns_singleton() {
     init();
     let bits = MoltObject::from_bool(true).bits();
     let py = unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) };
-    assert!(std::ptr::eq(py, &raw mut Py_True));
+    assert!(std::ptr::eq(py, (&raw mut Py_True).cast::<PyObject>()));
 }
 
 #[test]
@@ -68,7 +68,7 @@ fn test_bridge_false_returns_singleton() {
     init();
     let bits = MoltObject::from_bool(false).bits();
     let py = unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) };
-    assert!(std::ptr::eq(py, &raw mut Py_False));
+    assert!(std::ptr::eq(py, (&raw mut Py_False).cast::<PyObject>()));
 }
 
 // ---------------------------------------------------------------------------
@@ -86,7 +86,7 @@ fn test_pyobj_to_handle_none() {
 #[test]
 fn test_pyobj_to_handle_true() {
     init();
-    let true_ptr = &raw mut Py_True;
+    let true_ptr = (&raw mut Py_True).cast::<PyObject>();
     let handle = GLOBAL_BRIDGE.lock().pyobj_to_handle(true_ptr);
     assert_eq!(handle, Some(MoltObject::from_bool(true).bits()));
 }
@@ -94,7 +94,7 @@ fn test_pyobj_to_handle_true() {
 #[test]
 fn test_pyobj_to_handle_false() {
     init();
-    let false_ptr = &raw mut Py_False;
+    let false_ptr = (&raw mut Py_False).cast::<PyObject>();
     let handle = GLOBAL_BRIDGE.lock().pyobj_to_handle(false_ptr);
     assert_eq!(handle, Some(MoltObject::from_bool(false).bits()));
 }
