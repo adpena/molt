@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 import functools
 import os
+import re
 import shutil
 from pathlib import Path
 import tomllib
@@ -17,6 +18,22 @@ _REQUIRED_WASM_RUST_TARGETS = ("wasm32-wasip1",)
 
 class RustToolchainContractError(ValueError):
     pass
+
+
+class WasmLinkerContractError(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class WasmLinkerIdentity:
+    path: Path
+    version: str
+    wasi_sdk_llvm_version: str | None
+
+    @property
+    def diagnostic(self) -> str:
+        expected = self.wasi_sdk_llvm_version or "unattested"
+        return f"wasm-ld={self.path} version={self.version} wasi-sdk-llvm={expected}"
 
 
 @dataclass(frozen=True)
@@ -354,6 +371,84 @@ def resolve_wasi_sysroot() -> Path | None:
         os.environ.get("WASI_SDK_PREFIX"),
         os.environ.get("MOLT_TARGET_ROOT"),
     )
+
+
+def _wasi_sdk_root_for_sysroot(sysroot: Path) -> Path | None:
+    if sysroot.name == "wasi-sysroot" and sysroot.parent.name == "share":
+        return sysroot.parent.parent
+    if sysroot.name == "wasi-sysroot":
+        return sysroot.parent
+    return None
+
+
+def _wasi_sysroot_llvm_version(sysroot: Path | None) -> str | None:
+    if sysroot is None:
+        return None
+    version_file = sysroot / "VERSION"
+    if not version_file.is_file():
+        return None
+    try:
+        text = version_file.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = re.search(
+        r"^llvm-version:\s*(\d+\.\d+(?:\.\d+)?)\s*$", text, re.MULTILINE
+    )
+    return match.group(1) if match is not None else None
+
+
+def _wasm_linker_version(path: Path) -> str:
+    result = _run_completed_command(
+        [str(path), "--version"],
+        capture_output=True,
+        env=None,
+        cwd=None,
+        memory_guard_prefix="MOLT_BUILD",
+    )
+    output = f"{result.stdout}\n{result.stderr}"
+    match = re.search(r"\b(?:LLD\s+)?(\d+\.\d+(?:\.\d+)?)\b", output)
+    if result.returncode != 0 or match is None:
+        detail = output.strip() or f"exit code {result.returncode}"
+        raise WasmLinkerContractError(
+            f"unable to attest wasm-ld identity for {path}: {detail}"
+        )
+    return match.group(1)
+
+
+def _llvm_release_line(version: str) -> tuple[int, int]:
+    major, minor, *_ = version.split(".")
+    return int(major), int(minor)
+
+
+def resolve_wasm_linker() -> WasmLinkerIdentity | None:
+    sysroot = resolve_wasi_sysroot()
+    candidates: list[Path] = []
+    override = os.environ.get("MOLT_WASM_LD", "").strip()
+    if override:
+        candidates.append(Path(override).expanduser())
+    if sysroot is not None:
+        sdk_root = _wasi_sdk_root_for_sysroot(sysroot)
+        if sdk_root is not None:
+            candidates.append(
+                sdk_root / "bin" / ("wasm-ld.exe" if os.name == "nt" else "wasm-ld")
+            )
+    on_path = shutil.which("wasm-ld")
+    if on_path:
+        candidates.append(Path(on_path))
+    linker = next(
+        (path.resolve(strict=False) for path in candidates if path.is_file()), None
+    )
+    if linker is None:
+        return None
+    version = _wasm_linker_version(linker)
+    expected = _wasi_sysroot_llvm_version(sysroot)
+    if expected is not None and _llvm_release_line(version) != _llvm_release_line(expected):
+        raise WasmLinkerContractError(
+            "wasm linker/toolchain mismatch: "
+            f"{linker} reports {version}, but {sysroot / 'VERSION'} requires LLVM "
+            f"{expected}; use the matching wasi-sdk bin/wasm-ld or set MOLT_WASM_LD"
+        )
+    return WasmLinkerIdentity(linker, version, expected)
 
 
 @functools.lru_cache(maxsize=8)

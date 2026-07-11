@@ -22,6 +22,57 @@ def _load_wasm_link():
 wasm_link = _load_wasm_link()
 
 
+def test_deduplicated_export_flags_preserve_first_contract_order() -> None:
+    assert wasm_link._deduplicated_export_flags(
+        ("--export-if-defined=molt_Py_None", "--export=molt_main"),
+        ("--export-if-defined=molt_Py_None", "--export=PyInit_numpy"),
+        ("--export=molt_main",),
+    ) == [
+        "--export-if-defined=molt_Py_None",
+        "--export=molt_main",
+        "--export=PyInit_numpy",
+    ]
+
+
+def test_relocatable_runtime_preflight_classifies_linker_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = tmp_path / "molt_runtime_reloc.wasm"
+    runtime.write_bytes(b"\0asm\x01\0\0\0")
+
+    def fake_run(cmd, **_kwargs):  # type: ignore[no-untyped-def]
+        return wasm_link.subprocess.CompletedProcess(
+            cmd,
+            3221225477,
+            stdout="",
+            stderr="PLEASE submit a bug report to llvm-project",
+        )
+
+    monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
+
+    error = wasm_link._preflight_relocatable_runtime(
+        "wasm-ld", runtime, type("TempDir", (), {"name": str(tmp_path)})()
+    )
+
+    assert error is not None
+    assert "linking/reloc custom-section indices" in error
+    assert "returncode=3221225477" in error
+
+
+def test_find_wasm_ld_uses_attested_toolchain_authority(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    identity = wasm_link.wasm_toolchain.WasmLinkerIdentity(
+        Path("C:/wasi-sdk/bin/wasm-ld.exe"), "22.1.7", "22.1.0"
+    )
+    monkeypatch.setattr(
+        wasm_link.wasm_toolchain, "resolve_wasm_linker", lambda: identity
+    )
+
+    assert wasm_link._find_wasm_ld() == str(identity.path)
+    assert "version=22.1.7 wasi-sdk-llvm=22.1.0" in capsys.readouterr().err
+
+
 def _write_wasm_ld_output(cmd: list[str], data: bytes) -> Path | None:
     if "-o" not in cmd:
         return None
@@ -1894,7 +1945,7 @@ def test_run_wasm_ld_split_runtime_links_native_objects_into_app(
 
     def fake_run(cmd, **kwargs):
         del kwargs
-        if cmd and cmd[0] == "wasm-ld":
+        if cmd and cmd[0] == "wasm-ld" and "-r" not in cmd:
             link_calls.append(list(cmd))
         link_output = app_link_bytes if len(link_calls) == 2 else output_bytes
         _write_wasm_ld_output(cmd, link_output)
@@ -1994,7 +2045,7 @@ def test_run_wasm_ld_split_runtime_forces_native_direct_symbols(
 
     def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
         del kwargs
-        if cmd and cmd[0] == "wasm-ld":
+        if cmd and cmd[0] == "wasm-ld" and "-r" not in cmd:
             link_calls.append(list(cmd))
         _write_wasm_ld_output(
             cmd,
@@ -2181,7 +2232,7 @@ def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
 
     def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
         del kwargs
-        if cmd and cmd[0] == "wasm-ld":
+        if cmd and cmd[0] == "wasm-ld" and "-r" not in cmd:
             link_calls.append(list(cmd))
             for part in cmd:
                 path = Path(part)
