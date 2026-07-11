@@ -62,6 +62,9 @@ def _emit_backend_pipeline_outputs(
     ensure_runtime_wasm_reloc = (
         prepared_backend_runtime_context.ensure_runtime_wasm_reloc
     )
+    ensure_runtime_wasm_both = (
+        prepared_backend_runtime_context.ensure_runtime_wasm_both
+    )
     cache = prepared_backend_compile.cache_enabled
     cache_hit = prepared_backend_compile.cache_hit
     cache_key = prepared_backend_runtime_context.cache_key
@@ -96,6 +99,7 @@ def _emit_backend_pipeline_outputs(
                 runtime_reloc_wasm=runtime_reloc_wasm,
                 ensure_runtime_wasm_shared=ensure_runtime_wasm_shared,
                 ensure_runtime_wasm_reloc=ensure_runtime_wasm_reloc,
+                ensure_runtime_wasm_both=ensure_runtime_wasm_both,
                 runtime_cargo_profile=prepared_build_config.runtime_cargo_profile,
                 molt_root=prepared_build_roots.molt_root,
                 project_root=prepared_build_roots.project_root,
