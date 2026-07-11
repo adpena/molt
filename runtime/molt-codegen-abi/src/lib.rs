@@ -73,6 +73,7 @@ pub const TAG_BOOL: u64 = 0x0002_0000_0000_0000;
 pub const TAG_NONE: u64 = 0x0003_0000_0000_0000;
 pub const TAG_PTR: u64 = 0x0004_0000_0000_0000;
 pub const TAG_PENDING: u64 = 0x0005_0000_0000_0000;
+pub const TAG_BRIDGE_IDENTITY: u64 = 0x0006_0000_0000_0000;
 pub const TAG_MASK: u64 = 0x0007_0000_0000_0000;
 pub const POINTER_MASK: u64 = (1u64 << POINTER_PAYLOAD_BITS) - 1;
 
@@ -91,6 +92,7 @@ pub const QNAN_TAG_BOOL_I64: i64 = (QNAN | TAG_BOOL) as i64;
 pub const QNAN_TAG_NONE_I64: i64 = (QNAN | TAG_NONE) as i64;
 pub const QNAN_TAG_PTR_I64: i64 = (QNAN | TAG_PTR) as i64;
 pub const QNAN_TAG_PENDING_I64: i64 = (QNAN | TAG_PENDING) as i64;
+pub const QNAN_TAG_BRIDGE_IDENTITY_I64: i64 = (QNAN | TAG_BRIDGE_IDENTITY) as i64;
 
 // ListIntStorage (#[repr(C)]) field offsets. Must match
 // runtime/molt-runtime/src/object/layout.rs.
@@ -192,6 +194,10 @@ pub const fn box_none_bits() -> i64 {
 
 pub const fn box_pending_bits() -> i64 {
     QNAN_TAG_PENDING_I64
+}
+
+pub const fn box_bridge_identity_bits(payload: u64) -> i64 {
+    (QNAN | TAG_BRIDGE_IDENTITY | (payload & POINTER_MASK)) as i64
 }
 
 pub const fn box_ptr_bits(addr: u64) -> i64 {

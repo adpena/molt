@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{OnceLock, RwLock};
 
 pub use molt_codegen_abi::{INT_MAX_INLINE as INLINE_INT_MAX, INT_MIN_INLINE as INLINE_INT_MIN};
+pub use molt_codegen_abi::box_bridge_identity_bits;
 use molt_codegen_abi::{
     box_bool_bits, box_float_bits, box_int_bits, box_none_bits, box_pending_bits, box_ptr_bits,
     canonical_addr_from_masked_bits, fits_inline_int, is_bool_bits, is_float_bits, is_int_bits,

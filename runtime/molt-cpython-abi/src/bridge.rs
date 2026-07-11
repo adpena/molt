@@ -35,10 +35,38 @@ use once_cell::sync::OnceCell;
 use parking_lot::Mutex;
 use std::cell::UnsafeCell;
 use std::collections::HashMap;
+use std::hash::Hash;
 use std::sync::Once;
 
 /// A MoltHandle cast to u64, used as bridge map key.
 pub type AbiHandle = u64;
+
+#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
+#[repr(transparent)]
+pub struct BridgeIdentity(AbiHandle);
+
+impl BridgeIdentity {
+    #[inline]
+    pub(crate) const fn as_handle(self) -> AbiHandle {
+        self.0
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[repr(transparent)]
+pub struct MoltValueHandle(AbiHandle);
+
+impl MoltValueHandle {
+    #[inline]
+    pub(crate) const fn bits(self) -> AbiHandle {
+        self.0
+    }
+
+    #[inline]
+    pub(crate) fn decode(self) -> MoltObject {
+        MoltObject::from_bits(self.0)
+    }
+}
 
 /// Mapping from MoltHandle bits → allocated PyObject header.
 /// Entries live until the extension signals dealloc via Py_DECREF → 0.
@@ -251,7 +279,7 @@ impl ObjectBridge {
             to_py: HashMap::new(),
             raw_py: HashMap::new(),
             from_py: HashMap::new(),
-            next_raw_handle: 0xA11C_0000_0000_0000,
+            next_raw_handle: 1,
             foreign: HashMap::new(),
         }
     }
@@ -396,8 +424,10 @@ impl ObjectBridge {
     /// Translate a `*mut PyObject` back to a Molt handle.
     ///
     /// Returns `None` for static singletons or unknown pointers.
-    pub fn pyobj_to_handle(&self, ptr: *mut PyObject) -> Option<AbiHandle> {
-        pyobj_to_handle_static(ptr).or_else(|| self.from_py.get(&ptr.addr()).copied())
+    pub fn pyobj_to_handle(&self, ptr: *mut PyObject) -> Option<BridgeIdentity> {
+        pyobj_to_handle_static(ptr)
+            .or_else(|| self.from_py.get(&ptr.addr()).copied())
+            .map(BridgeIdentity)
     }
 
     /// Return the object-owned, NUL-terminated UTF-8 cache for a bridge string,
@@ -424,15 +454,15 @@ impl ObjectBridge {
     /// handle will be passed to a runtime hook that interprets the bits as a
     /// `MoltObject` (e.g. the `object_call` call authority); use
     /// [`Self::pyobj_to_handle`] for pure identity resolution.
-    pub fn molt_handle_for_pyobj(&self, ptr: *mut PyObject) -> Option<AbiHandle> {
+    pub fn molt_handle_for_pyobj(&self, ptr: *mut PyObject) -> Option<MoltValueHandle> {
         if let Some(bits) = pyobj_to_handle_static(ptr) {
-            return Some(bits);
+            return Some(MoltValueHandle(bits));
         }
         let bits = self.from_py.get(&ptr.addr()).copied()?;
         if self.raw_py.contains_key(&bits) {
             return None;
         }
-        Some(bits)
+        Some(MoltValueHandle(bits))
     }
 
     /// Translate a `*mut PyObject` to a Molt value usable *inside* compiled
@@ -462,10 +492,10 @@ impl ObjectBridge {
         }
         // A genuine Molt object that previously crossed to C is a bridge proxy;
         // resolve it to its real Molt handle and hand the caller an owned ref.
-        if let Some(bits) = self.molt_handle_for_pyobj(ptr) {
+        if let Some(value) = self.molt_handle_for_pyobj(ptr) {
             let h = crate::hooks::hooks_or_stubs();
-            unsafe { (h.inc_ref)(bits) };
-            return Some(bits);
+            unsafe { (h.inc_ref)(value.bits()) };
+            return Some(value.bits());
         }
         // Otherwise this is a genuine C-extension object (a raw-registered
         // identity anchor, or one not yet seen): give it a first-class foreign
@@ -546,8 +576,9 @@ impl ObjectBridge {
         // `from_py` key is identity-only and needs no exposure.
         let addr = ptr.expose_provenance();
         loop {
-            let bits = self.next_raw_handle;
-            self.next_raw_handle = self.next_raw_handle.wrapping_add(0x10);
+            let payload = self.next_raw_handle;
+            self.next_raw_handle = self.next_raw_handle.wrapping_add(1);
+            let bits = molt_lang_obj_model::box_bridge_identity_bits(payload) as u64;
             if bits != 0 && !self.to_py.contains_key(&bits) && !self.raw_py.contains_key(&bits) {
                 self.raw_py.insert(bits, addr);
                 self.from_py.insert(addr, bits);
