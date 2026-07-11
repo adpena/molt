@@ -690,6 +690,44 @@ def _split_runtime_contract_export_names(artifact: str) -> set[str]:
     }
 
 
+def _split_artifact_contract_keep_set(
+    artifact: str,
+    *,
+    public_export_map: Mapping[str, str] | None = None,
+    required_native_direct_symbols: Sequence[str] = (),
+) -> set[str]:
+    """Return the single export keep-set for a split publication artifact."""
+    return (
+        _split_runtime_contract_export_names(artifact)
+        | set(public_export_map or ())
+        | set(required_native_direct_symbols)
+    )
+
+
+def _split_artifact_contract_function_symbols(
+    artifact: str,
+    *,
+    public_export_map: Mapping[str, str] | None = None,
+    required_native_direct_symbols: Sequence[str] = (),
+) -> dict[str, str]:
+    export_map = public_export_map or {}
+    keep = _split_artifact_contract_keep_set(
+        artifact,
+        public_export_map=export_map,
+        required_native_direct_symbols=required_native_direct_symbols,
+    )
+    function_symbols = {
+        public_name: symbol_name
+        for public_name, symbol_name in export_map.items()
+        if public_name in keep
+    }
+    function_symbols.update({name: name for name in required_native_direct_symbols})
+    for entry in _split_runtime_export_contract(artifact):
+        if entry.kind == 0:
+            function_symbols.setdefault(entry.canonical_name, entry.canonical_name)
+    return function_symbols
+
+
 def _external_native_host_link_imports() -> tuple[str, ...]:
     return tuple(
         symbol
@@ -1460,11 +1498,6 @@ def _restore_public_output_exports(
     *,
     preserved_symbol_names: Sequence[str] = (),
 ) -> bytes:
-    preserved_export_indices = {
-        name: index
-        for name, index in _collect_function_exports(data).items()
-        if name in preserved_symbol_names
-    }
     restored = data
     updated = _ensure_function_exports_by_symbol_names(restored, public_export_map)
     if updated is not None:
@@ -1486,12 +1519,6 @@ def _restore_public_output_exports(
     )
     if updated is not None:
         restored = updated
-    if preserved_export_indices:
-        updated = _ensure_function_exports_by_indices(
-            restored, preserved_export_indices
-        )
-        if updated is not None:
-            restored = updated
     return restored
 
 
@@ -1561,10 +1588,10 @@ def _ensure_defined_memory_export(data: bytes) -> bytes | None:
         return None
     memory_imports = [entry for entry in facts.imports if entry[2] == 2]
     if memory_imports:
-        raise ValueError(
-            "cannot restore linked memory export from an imported memory"
-        )
-    memory_sections = [payload for section_id, payload in _parse_sections(data) if section_id == 5]
+        raise ValueError("cannot restore linked memory export from an imported memory")
+    memory_sections = [
+        payload for section_id, payload in _parse_sections(data) if section_id == 5
+    ]
     if not memory_sections:
         return None
     if len(memory_sections) != 1:
@@ -1584,9 +1611,68 @@ def _restore_split_runtime_contract_exports(
     *,
     artifact: str,
     stage: str = "unspecified",
-    function_export_indices: Mapping[str, int] | None = None,
+    public_export_map: Mapping[str, str] | None = None,
+    required_native_direct_symbols: Sequence[str] = (),
 ) -> bytes:
-    restored = data
+    function_symbols = _split_artifact_contract_function_symbols(
+        artifact,
+        public_export_map=public_export_map,
+        required_native_direct_symbols=required_native_direct_symbols,
+    )
+    input_exports = _collect_function_exports(data)
+    input_bodies = _function_body_payloads_by_index(data)
+    contract_function_bodies = {
+        public_name: input_bodies[index]
+        for public_name, symbol_name in function_symbols.items()
+        if (index := input_exports.get(public_name, input_exports.get(symbol_name)))
+        is not None
+        and index in input_bodies
+        and input_bodies[index] != _TRAP_FUNC_BODY
+    }
+    restored = _restore_public_output_exports(
+        data,
+        public_export_map or {},
+        preserved_symbol_names=required_native_direct_symbols,
+    )
+    updated = _ensure_function_exports_by_symbol_names(restored, function_symbols)
+    if updated is not None:
+        restored = updated
+    current_exports = _collect_function_exports(restored)
+    current_bodies = _function_body_payloads_by_index(restored)
+    body_indices: dict[bytes, list[int]] = {}
+    for index, body in current_bodies.items():
+        if body != _TRAP_FUNC_BODY:
+            body_indices.setdefault(body, []).append(index)
+    for public_name, body in contract_function_bodies.items():
+        if public_name in current_exports:
+            continue
+        matches = body_indices.get(body, [])
+        if len(matches) != 1:
+            continue
+        updated = _ensure_export_by_index(
+            restored,
+            name=public_name,
+            kind=0,
+            index=matches[0],
+        )
+        if updated is not None:
+            restored = updated
+            current_exports[public_name] = matches[0]
+    missing_native_direct = sorted(
+        set(required_native_direct_symbols) - set(current_exports)
+    )
+    if missing_native_direct:
+        details = []
+        for name in missing_native_direct:
+            body = contract_function_bodies.get(name)
+            details.append(
+                f"{name}(input_export={name in input_exports}, "
+                f"body_matches={len(body_indices.get(body, [])) if body else 0})"
+            )
+        raise ValueError(
+            f"Split-runtime {artifact} cannot relocate required native direct "
+            f"function export(s) at {stage}: {', '.join(details)}"
+        )
     import_names = {1: "__indirect_function_table", 2: "memory"}
     for entry in _split_runtime_export_contract(artifact):
         facts = parse_wasm_module_facts(restored)
@@ -1596,21 +1682,10 @@ def _restore_split_runtime_contract_exports(
         ):
             continue
         if entry.kind == 0:
-            index = (function_export_indices or {}).get(entry.canonical_name)
-            if index is None:
-                raise ValueError(
-                    f"Split-runtime {artifact} is missing app-owned function export "
-                    f"{entry.canonical_name} after symbol restoration at {stage}"
-                )
-            updated = _ensure_export_by_index(
-                restored,
-                name=entry.canonical_name,
-                kind=entry.kind,
-                index=index,
+            raise ValueError(
+                f"Split-runtime {artifact} is missing app-owned function export "
+                f"{entry.canonical_name} after symbol restoration at {stage}"
             )
-            if updated is not None:
-                restored = updated
-            continue
         import_name = import_names.get(entry.kind)
         if import_name is None:
             raise ValueError(
@@ -1639,52 +1714,45 @@ def _restore_split_runtime_contract_exports(
     return restored
 
 
-def _ensure_function_exports_by_indices(
+def _strip_and_restore_split_artifact(
     data: bytes,
-    required_exports: Mapping[str, int],
-) -> bytes | None:
-    existing = _collect_function_exports(data)
-    additions = [
-        (name, index)
-        for name, index in required_exports.items()
-        if name not in existing
-    ]
-    if not additions:
-        return None
-    sections = _parse_sections(data)
-    rebuilt_sections: list[tuple[int, bytes]] = []
-    inserted = False
-    for section_id, payload in sections:
-        if section_id == 7:
-            count, offset = _read_varuint(payload, 0)
-            rebuilt = bytearray(_write_varuint(count + len(additions)))
-            rebuilt.extend(payload[offset:])
-            for name, index in additions:
-                rebuilt.extend(_write_string(name))
-                rebuilt.append(0)
-                rebuilt.extend(_write_varuint(index))
-            rebuilt_sections.append((section_id, bytes(rebuilt)))
-            inserted = True
-            continue
-        if not inserted and section_id > 7:
-            export_payload = bytearray(_write_varuint(len(additions)))
-            for name, index in additions:
-                export_payload.extend(_write_string(name))
-                export_payload.append(0)
-                export_payload.extend(_write_varuint(index))
-            rebuilt_sections.append((7, bytes(export_payload)))
-            inserted = True
-        rebuilt_sections.append((section_id, payload))
-    if not inserted:
-        export_payload = bytearray(_write_varuint(len(additions)))
-        for name, index in additions:
-            export_payload.extend(_write_string(name))
-            export_payload.append(0)
-            export_payload.extend(_write_varuint(index))
-        rebuilt_sections.append((7, bytes(export_payload)))
-    rebuilt = _build_sections(rebuilt_sections)
-    canonical = _canonicalize_standard_section_order(rebuilt)
-    return rebuilt if canonical is None else canonical
+    *,
+    artifact: str,
+    stage: str,
+    preserve_debug: bool,
+    public_export_map: Mapping[str, str] | None = None,
+    required_native_direct_symbols: Sequence[str] = (),
+) -> bytes:
+    keep_set = _split_artifact_contract_keep_set(
+        artifact,
+        public_export_map=public_export_map,
+        required_native_direct_symbols=required_native_direct_symbols,
+    )
+    stripped = strip_wasm_publication_sections(
+        data,
+        final_artifact=True,
+        preserve_debug=preserve_debug,
+    )
+    restored = _restore_split_runtime_contract_exports(
+        stripped,
+        artifact=artifact,
+        stage=stage,
+        public_export_map=public_export_map,
+        required_native_direct_symbols=required_native_direct_symbols,
+    )
+    facts = parse_wasm_module_facts(restored)
+    missing = sorted(
+        name
+        for name in keep_set
+        if name not in facts.export_kinds
+        and name not in _split_runtime_contract_export_names(artifact)
+    )
+    if missing:
+        raise ValueError(
+            f"Split-runtime {artifact} publication lost required export(s) at "
+            f"{stage}: {', '.join(missing)}"
+        )
+    return restored
 
 
 _TRAP_FUNC_BODY = bytes([0x00, 0x00, 0x0B])
@@ -2127,6 +2195,7 @@ def _optimize_split_app_module(
     reference_data: bytes | None,
     optimize: bool,
     optimize_level: str,
+    contract_keep_set: set[str],
 ) -> bytes:
     """Deforest the split-runtime app artifact without collapsing its imports.
 
@@ -2138,10 +2207,7 @@ def _optimize_split_app_module(
     optimized = _post_link_optimize(
         app_data,
         reference_data=reference_data,
-        preserve_exports=(
-            _split_app_reference_function_exports(reference_data)
-            | _split_runtime_contract_export_names("app")
-        ),
+        preserve_exports=contract_keep_set,
         preserve_reference_exports=False,
     )
     stripped = _strip_unused_module_function_imports(
@@ -2156,7 +2222,14 @@ def _optimize_split_app_module(
     with tempfile.TemporaryDirectory(prefix="molt-split-app-opt-") as tmp:
         app_path = Path(tmp) / "app_split_preopt.wasm"
         app_path.write_bytes(optimized)
-        if not _run_wasm_opt_via_optimize(app_path, level=optimize_level):
+        required_function_exports = (
+            set(_collect_function_exports(optimized)) & contract_keep_set
+        )
+        if not _run_wasm_opt_via_optimize(
+            app_path,
+            level=optimize_level,
+            required_exports=required_function_exports,
+        ):
             return optimized
         return app_path.read_bytes()
 
@@ -2959,7 +3032,9 @@ def _run_wasm_ld_with_custodied_inputs(
     # unreachable runtime stub.
     link_runtime_path = runtime
 
-    preflight_error = _preflight_relocatable_runtime(wasm_ld, link_runtime_path, temp_dir)
+    preflight_error = _preflight_relocatable_runtime(
+        wasm_ld, link_runtime_path, temp_dir
+    )
     if preflight_error is not None:
         print(f"Wasm link failed: {preflight_error}", file=sys.stderr)
         return 1
@@ -3192,7 +3267,12 @@ def _run_wasm_ld_with_custodied_inputs(
             output_reference = output.read_bytes()
         except OSError:
             output_reference = None
-        post_link_preserve_exports = _split_runtime_contract_export_names("app")
+        split_app_contract_keep_set = _split_artifact_contract_keep_set(
+            "app",
+            public_export_map=public_export_map,
+            required_native_direct_symbols=required_native_direct_symbols,
+        )
+        post_link_preserve_exports = set(split_app_contract_keep_set)
         if not split_runtime:
             post_link_preserve_exports.update(preserved_output_exports)
         linked_bytes = _post_link_optimize(
@@ -3217,6 +3297,10 @@ def _run_wasm_ld_with_custodied_inputs(
                 work_linked,
                 level=optimize_level,
                 converge=False,
+                required_exports=(
+                    set(_collect_function_exports(linked_bytes))
+                    & post_link_preserve_exports
+                ),
             ):
                 # Re-read after optimization since the file changed on disk
                 linked_bytes = work_linked.read_bytes()
@@ -3363,68 +3447,20 @@ def _run_wasm_ld_with_custodied_inputs(
                 if canonical_rewritten_data != rewritten_data:
                     split_native_app_path.write_bytes(canonical_rewritten_data)
                     rewritten_data = canonical_rewritten_data
-                native_preserved_function_indices = {
-                    name: index
-                    for name, index in _collect_function_exports(rewritten_data).items()
-                    if name in _split_runtime_contract_export_names("app")
-                    or name in required_native_direct_symbols
-                }
-                if "molt_main" not in native_preserved_function_indices:
-                    symbol_name = public_export_map.get("molt_main")
-                    if symbol_name is not None:
-                        symbol_indices = {
-                            symbol: index
-                            for _flags, index, symbol, _kind in (
-                                _collect_linking_function_symbols(rewritten_data)
-                            )
-                            if symbol
-                        }
-                        if symbol_name not in symbol_indices:
-                            symbol_indices.update(
-                                {
-                                    function_name: index
-                                    for index, function_name in _collect_func_names(
-                                        rewritten_data
-                                    ).items()
-                                }
-                            )
-                        if symbol_name in symbol_indices:
-                            native_preserved_function_indices["molt_main"] = (
-                                symbol_indices[symbol_name]
-                            )
-                restored_rewritten_data = _restore_public_output_exports(
-                    rewritten_data,
-                    public_export_map,
-                    preserved_symbol_names=required_native_direct_symbols,
-                )
-                if restored_rewritten_data != rewritten_data:
-                    split_native_app_path.write_bytes(restored_rewritten_data)
-                    rewritten_data = restored_rewritten_data
                 try:
                     restored_rewritten_data = _restore_split_runtime_contract_exports(
                         rewritten_data,
                         artifact="app",
                         stage="native-link",
-                        function_export_indices=native_preserved_function_indices,
+                        public_export_map=public_export_map,
+                        required_native_direct_symbols=required_native_direct_symbols,
                     )
                 except ValueError as exc:
                     print(str(exc), file=sys.stderr)
                     return 1
                 if restored_rewritten_data != rewritten_data:
                     split_native_app_path.write_bytes(restored_rewritten_data)
-                    rewritten_data = restored_rewritten_data
-                required_native_export_indices = {
-                    name: native_preserved_function_indices[name]
-                    for name in required_native_direct_symbols
-                    if name in native_preserved_function_indices
-                }
-                restored_rewritten_data = _ensure_function_exports_by_indices(
-                    rewritten_data,
-                    required_native_export_indices,
-                )
-                if restored_rewritten_data is not None:
-                    split_native_app_path.write_bytes(restored_rewritten_data)
-                    rewritten_data = restored_rewritten_data
+                rewritten_data = restored_rewritten_data
                 try:
                     native_link_error = _validate_required_native_direct_symbols(
                         rewritten_data,
@@ -3508,6 +3544,7 @@ def _run_wasm_ld_with_custodied_inputs(
                 reference_data=output_data,
                 optimize=optimize,
                 optimize_level=optimize_level,
+                contract_keep_set=split_app_contract_keep_set,
             )
             if output_memory_min is not None:
                 try:
@@ -3541,6 +3578,8 @@ def _run_wasm_ld_with_custodied_inputs(
                     optimized_app,
                     artifact="app",
                     stage="optimized-app",
+                    public_export_map=public_export_map,
+                    required_native_direct_symbols=required_native_direct_symbols,
                 )
             except ValueError as exc:
                 print(str(exc), file=sys.stderr)
@@ -3663,13 +3702,19 @@ def _run_wasm_ld_with_custodied_inputs(
         if split_runtime:
             assert app_stage is not None
             assert rt_stage is not None
-            app_stage.write_bytes(
-                strip_wasm_publication_sections(
+            try:
+                published_app = _strip_and_restore_split_artifact(
                     app_stage.read_bytes(),
-                    final_artifact=True,
+                    artifact="app",
+                    stage="publication-strip",
                     preserve_debug=preserve_debug_sections,
+                    public_export_map=public_export_map,
+                    required_native_direct_symbols=required_native_direct_symbols,
                 )
-            )
+            except ValueError as exc:
+                print(str(exc), file=sys.stderr)
+                return 1
+            app_stage.write_bytes(published_app)
             rt_stage.write_bytes(
                 strip_wasm_publication_sections(
                     rt_stage.read_bytes(),
@@ -3740,16 +3785,20 @@ def _run_wasm_ld(
                 runtime_snapshot_root,
                 label="selected",
                 accept_path=(
-                    lambda path: _preflight_relocatable_runtime(
-                        wasm_ld, path, type("CustodyDir", (), {"name": tmp})()
+                    lambda path: (
+                        _preflight_relocatable_runtime(
+                            wasm_ld, path, type("CustodyDir", (), {"name": tmp})()
+                        )
+                        is None
                     )
-                    is None
                 )
                 if runtime.name.endswith("_reloc.wasm")
                 else None,
                 retry_delay_seconds=0.25,
             )
-            runtime_snapshot = runtime_snapshot_root / runtime_snapshot.parent.name / runtime.name
+            runtime_snapshot = (
+                runtime_snapshot_root / runtime_snapshot.parent.name / runtime.name
+            )
             for sibling_name in {
                 runtime.name.replace("_reloc.wasm", ".wasm"),
                 runtime.name.replace(".wasm", "_reloc.wasm"),
@@ -3761,12 +3810,14 @@ def _run_wasm_ld(
                         runtime_snapshot_root,
                         label=f"sibling-{sibling_name}",
                         accept_path=(
-                            lambda path: _preflight_relocatable_runtime(
-                                wasm_ld,
-                                path,
-                                type("CustodyDir", (), {"name": tmp})(),
+                            lambda path: (
+                                _preflight_relocatable_runtime(
+                                    wasm_ld,
+                                    path,
+                                    type("CustodyDir", (), {"name": tmp})(),
+                                )
+                                is None
                             )
-                            is None
                         )
                         if sibling.name.endswith("_reloc.wasm")
                         else None,

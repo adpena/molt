@@ -86,9 +86,7 @@ def test_snapshot_link_input_rejects_stable_stripped_restoration_source(
     source = tmp_path / "output.wasm"
     source.write_bytes(b"stable-but-stripped")
 
-    with pytest.raises(
-        OSError, match="stable bytes failed linker input contract"
-    ):
+    with pytest.raises(OSError, match="stable bytes failed linker input contract"):
         wasm_link._snapshot_link_input(
             source,
             tmp_path / "snapshots",
@@ -1592,10 +1590,35 @@ def test_split_runtime_contract_keep_set_includes_all_external_kinds() -> None:
         "molt_table",
     }
 
+    assert wasm_link._split_artifact_contract_keep_set(
+        "app",
+        public_export_map={"user_export": "internal_user_export"},
+        required_native_direct_symbols=("PyInit__demo",),
+    ) == {
+        "__indirect_function_table",
+        "memory",
+        "molt_main",
+        "molt_memory",
+        "molt_table",
+        "PyInit__demo",
+        "user_export",
+    }
+
 
 def test_split_app_post_link_preserves_and_restores_contract_exports() -> None:
     app = _build_split_runtime_app_module([])
     molt_main_index = wasm_link._collect_function_exports(app)["molt_main"]
+    app = wasm_link._append_linking_function_symbols(
+        app,
+        [
+            (
+                "molt_main",
+                molt_main_index,
+                wasm_link.FLAG_BINDING_GLOBAL | wasm_link.FLAG_EXPLICIT_NAME,
+            )
+        ],
+    )
+    assert app is not None
     optimized = wasm_link._post_link_optimize(
         app,
         reference_data=_build_exported_runtime_module_many(["reference_only"]),
@@ -1610,14 +1633,13 @@ def test_split_app_post_link_preserves_and_restores_contract_exports() -> None:
     }
 
     masked = _strip_export(
-        _strip_export(_strip_export(optimized, "molt_main"), "molt_memory"),
+        _strip_export(_strip_export(app, "molt_main"), "molt_memory"),
         "molt_table",
     )
     restored = wasm_link._restore_split_runtime_contract_exports(
         masked,
         artifact="app",
         stage="test-post-link-mask",
-        function_export_indices={"molt_main": molt_main_index},
     )
 
     assert wasm_link.parse_wasm_module_facts(restored).export_kinds == {
@@ -1625,6 +1647,112 @@ def test_split_app_post_link_preserves_and_restores_contract_exports() -> None:
         "molt_memory": (2, 0),
         "molt_table": (1, 0),
     }
+
+
+def test_split_publication_pipeline_preserves_complete_contract_after_every_stage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    required_native = ("PyInit__demo",)
+    public_export_map = {
+        "molt_main": "molt_main",
+        "user_export": "user_export",
+    }
+    app = _build_split_runtime_app_module([])
+    main_index = wasm_link._collect_function_exports(app)["molt_main"]
+    for name in (*required_native, "user_export"):
+        updated = wasm_link._ensure_export_by_index(
+            app,
+            name=name,
+            kind=0,
+            index=main_index,
+        )
+        assert updated is not None
+        app = updated
+    function_exports = wasm_link._collect_function_exports(app)
+    app = wasm_link._append_linking_function_symbols(
+        app,
+        [
+            (
+                name,
+                index,
+                wasm_link.FLAG_BINDING_GLOBAL | wasm_link.FLAG_EXPLICIT_NAME,
+            )
+            for name, index in function_exports.items()
+        ],
+    )
+    assert app is not None
+    keep_set = wasm_link._split_artifact_contract_keep_set(
+        "app",
+        public_export_map=public_export_map,
+        required_native_direct_symbols=required_native,
+    )
+
+    def assert_complete(stage: str, data: bytes) -> None:
+        facts = wasm_link.parse_wasm_module_facts(data)
+        assert facts.export_kinds["molt_main"][0] == 0, stage
+        assert facts.export_kinds["molt_memory"][0] == 2, stage
+        assert facts.export_kinds["molt_table"][0] == 1, stage
+        assert facts.export_kinds["PyInit__demo"][0] == 0, stage
+        assert facts.export_kinds["user_export"][0] == 0, stage
+        assert (
+            wasm_link._validate_required_native_direct_symbols(
+                data,
+                required_native,
+                description=stage,
+            )
+            is None
+        )
+
+    native_masked = app
+    for name in ("molt_main", "molt_memory", "molt_table", *required_native):
+        native_masked = _strip_export(native_masked, name)
+    native_restored = wasm_link._restore_split_runtime_contract_exports(
+        native_masked,
+        artifact="app",
+        stage="native-link",
+        public_export_map=public_export_map,
+        required_native_direct_symbols=required_native,
+    )
+    assert_complete("native-link", native_restored)
+
+    seen_required_exports: set[str] = set()
+
+    def fake_optimize(path: Path, **kwargs) -> bool:
+        del path
+        seen_required_exports.update(kwargs["required_exports"])
+        return True
+
+    monkeypatch.setattr(wasm_link, "_run_wasm_opt_via_optimize", fake_optimize)
+    optimized = wasm_link._optimize_split_app_module(
+        native_restored,
+        reference_data=app,
+        optimize=True,
+        optimize_level="Oz",
+        contract_keep_set=keep_set,
+    )
+    optimized_restored = wasm_link._restore_split_runtime_contract_exports(
+        optimized,
+        artifact="app",
+        stage="optimized-app",
+        public_export_map=public_export_map,
+        required_native_direct_symbols=required_native,
+    )
+    assert seen_required_exports == {
+        "molt_main",
+        "PyInit__demo",
+        "user_export",
+    }
+    assert_complete("optimized-app", optimized_restored)
+
+    published = wasm_link._strip_and_restore_split_artifact(
+        optimized_restored,
+        artifact="app",
+        stage="publication-strip",
+        preserve_debug=False,
+        public_export_map=public_export_map,
+        required_native_direct_symbols=required_native,
+    )
+    assert_complete("publication-strip", published)
 
 
 def test_split_combined_post_link_preserves_linker_memory_and_table_aliases() -> None:
@@ -2197,19 +2325,28 @@ def test_split_native_app_uses_unique_molt_main_restoration_alias(
     monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
     monkeypatch.setattr(wasm_link, "_validate_linked", lambda _path: True)
     monkeypatch.setattr(wasm_link, "_validate_split_runtime_outputs", lambda *_a: True)
-    monkeypatch.setattr(wasm_link, "_restore_split_runtime_contract_exports", lambda data, **_kwargs: data)
-    monkeypatch.setattr(wasm_link, "_tree_shake_runtime", lambda *_a, **_k: runtime_bytes)
+    monkeypatch.setattr(
+        wasm_link,
+        "_restore_split_runtime_contract_exports",
+        lambda data, **_kwargs: data,
+    )
+    monkeypatch.setattr(
+        wasm_link, "_tree_shake_runtime", lambda *_a, **_k: runtime_bytes
+    )
     monkeypatch.setattr(wasm_link, "_validate_elements", lambda _data: (True, None))
 
-    assert wasm_link._run_wasm_ld(
-        "wasm-ld",
-        runtime,
-        output,
-        linked,
-        split_runtime=True,
-        split_output_dir=tmp_path / "split",
-        native_objects=(native_object,),
-    ) == 0
+    assert (
+        wasm_link._run_wasm_ld(
+            "wasm-ld",
+            runtime,
+            output,
+            linked,
+            split_runtime=True,
+            split_output_dir=tmp_path / "split",
+            native_objects=(native_object,),
+        )
+        == 0
+    )
     split_cmd = commands[1]
     assert "--export=molt_main" not in split_cmd
     assert "--export=__molt_output_export_0" in split_cmd
@@ -2430,7 +2567,9 @@ def test_public_export_restoration_preserves_sealed_init_symbol() -> None:
     assert symbol in exports
 
 
-def test_public_export_restoration_recovers_sealed_init_symbol_from_linking_name() -> None:
+def test_public_export_restoration_recovers_sealed_init_symbol_from_linking_name() -> (
+    None
+):
     symbol = "PyInit__demo"
     linked = _build_exported_function_module(symbol)
     linked = wasm_link._append_linking_function_symbols(
@@ -2459,19 +2598,26 @@ def test_public_export_restoration_recovers_sealed_init_symbol_from_linking_name
     )
 
 
-def test_native_direct_export_index_restoration_recovers_stripped_real_body() -> None:
+def test_native_direct_contract_restoration_recovers_stripped_real_body_by_name() -> (
+    None
+):
     symbol = "PyInit__demo"
     linked = _build_exported_function_module(symbol)
+    linked = wasm_link._append_linking_function_symbols(
+        linked,
+        [(symbol, 0, wasm_link.FLAG_BINDING_GLOBAL | wasm_link.FLAG_EXPLICIT_NAME)],
+    )
+    assert linked is not None
     function_index = wasm_link._collect_function_exports(linked)[symbol]
     stripped = wasm_link._strip_internal_exports(linked, preserve_table_refs=False)
     assert stripped is not None
 
-    restored = wasm_link._ensure_function_exports_by_indices(
+    restored = wasm_link._restore_public_output_exports(
         stripped,
-        {symbol: function_index},
+        {},
+        preserved_symbol_names=(symbol,),
     )
 
-    assert restored is not None
     assert wasm_link._collect_function_exports(restored)[symbol] == function_index
     assert (
         wasm_link._validate_required_native_direct_symbols(
@@ -4553,6 +4699,11 @@ def test_run_wasm_ld_split_runtime_materializes_final_optimized_app(
     monkeypatch.setattr(
         wasm_link,
         "strip_wasm_publication_sections",
+        lambda data, **_kwargs: data,
+    )
+    monkeypatch.setattr(
+        wasm_link,
+        "_strip_and_restore_split_artifact",
         lambda data, **_kwargs: data,
     )
 
