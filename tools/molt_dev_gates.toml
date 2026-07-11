@@ -482,6 +482,22 @@ gates = [
   "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_findings_registry.py",
 ]
 
+# --- APPARATUS A10 memory graph + integrity + recall consumers -----------
+[[rule]]
+name = "memory-graph"
+description = "A10 memory graph (typed recall over memory/*.md + POINTERS + ledgers + findings), integrity check, and the session_digest / memo-lint recall consumers: run the teeth + the warn-only integrity canary."
+globs = [
+  "tools/memory_graph.py",
+  "tools/check_memory_graph.py",
+  "tools/findings_memo_lint.py",
+  "tools/hooks/session_digest.py",
+  "tests/tools/test_memory_graph.py",
+]
+gates = [
+  "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_memory_graph.py",
+  "python3 tools/venv_exec.py python tools/check_memory_graph.py --check",
+]
+
 # --- CI workflow / pyproject lint wiring ---------------------------------
 [[rule]]
 name = "ci-wiring"
@@ -574,3 +590,25 @@ state = "warn"
 strict_when = "live_count == 0"
 count_cmd = "python3 tools/findings_memo_lint.py --count"
 rationale = "APPARATUS A4 memo->registry lint (ci_gate check findings-memo-lint-warn). A docs/agent or memory line stating a measured finding with no finding_id reference is un-formalized prose that will rot. live_count is the current backlog; flip to strict once it reaches zero."
+
+# --- APPARATUS A10 memory-graph integrity (warn-only; A9 [[gate_flip]] entry) ---
+# The memory corpus is a [[wikilink]] graph with an M## hook index resolved by
+# POINTERS.md. `tools/check_memory_graph.py --check` REPORTS (a) dangling
+# [[wikilinks]] -- which the memory system EXPLICITLY ALLOWS as "worth writing
+# later", so they are never a failure -- and (b) any M## in MEMORY.md not
+# resolved by POINTERS.md (a real index break). ci_gate runs the warn-only check
+# `memory-graph-integrity` (required=False; ALWAYS exits 0).
+#
+# strict_when is a MANUAL-REVIEW (free-text) token, NOT a machine `live_count ==
+# 0`: the live corpus is Claude's auto-memory dir, which CI cannot see
+# (discover_memory_dir -> None -> 0/0 in CI), so `live_count == 0` would be
+# vacuously met in CI and falsely flagged should-flip. Only the operator, looking
+# at the real corpus, can decide to tighten (swap the ci_gate check to
+# `check_memory_graph.py --strict`, which fails on unresolved M## while danglers
+# stay warn-only even then). count_cmd remains for the human-visible live_count.
+[[gate_flip]]
+name = "memory_graph_integrity"
+state = "warn"
+strict_when = "manual: unresolved M## sustained at 0 on the live auto-memory corpus AND dangling-link triage reviewed (operator-box only; CI cannot see the corpus)"
+count_cmd = "python3 tools/check_memory_graph.py --count"
+rationale = "APPARATUS A10 memory-graph integrity (ci_gate check memory-graph-integrity, warn-only). Reports dangling [[wikilinks]] (ALLOWED) + unresolved MEMORY.md M## (index break). Free-text manual strict_when because CI cannot see the auto-memory corpus; flip is an operator decision made against the live corpus."

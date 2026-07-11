@@ -149,6 +149,42 @@ def _load_registered_ids() -> frozenset[str]:
         return frozenset()
 
 
+def suggest_links(
+    violations: list[MemoViolation], *, root: Path | None = None
+) -> dict[tuple[str, int], list[str]]:
+    """A10 consumer: for each un-formalized measured line, SUGGEST candidate link
+    targets from the memory graph -- the nearest existing finding_id(s) to
+    formalize/cite, and the nearest memory note to ``[[link]]``. Purely ADVISORY
+    (printed as hints, never auto-written). Fail-open: any error -> no hints."""
+    out: dict[tuple[str, int], list[str]] = {}
+    try:
+        from tools import memory_graph
+
+        graph = memory_graph.build_graph(
+            repo_root=root or REPO_ROOT,
+            include_memory=True,
+            include_ledgers=False,
+            include_findings=True,
+            include_gates=False,
+        )
+    except Exception:
+        return out
+    for v in violations:
+        try:
+            hints: list[str] = []
+            near_findings = graph.nearest(v.text, k=2, node_type="finding")
+            for node, _ in near_findings:
+                hints.append(f"cite finding_id {node.id} ({(node.title or '')[:48]})")
+            near_mem = graph.nearest(v.text, k=1, node_type="memory")
+            for node, _ in near_mem:
+                hints.append(f"or link [[{node.id}]]")
+            if hints:
+                out[(v.file, v.line)] = hints
+        except Exception:
+            continue
+    return out
+
+
 def scan_text(
     text: str, *, registered_ids: frozenset[str] | None = None, rel: str = "<text>"
 ) -> list[MemoViolation]:
@@ -237,6 +273,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--json", action="store_true")
     parser.add_argument(
+        "--no-suggest",
+        action="store_true",
+        help="disable the A10 memory-graph link suggestions (advisory hints)",
+    )
+    parser.add_argument(
         "paths", nargs="*", help="explicit files to scan (default: the doc tiers)"
     )
     args = parser.parse_args(argv)
@@ -258,6 +299,12 @@ def main(argv: list[str] | None = None) -> int:
         # Integer-only stdout for check_gate_flips.py count_cmd (live_count).
         print(backlog)
         return 0
+
+    # A10 advisory: nearest link targets for each violation (never auto-written).
+    suggestions: dict[tuple[str, int], list[str]] = {}
+    if backlog and not args.no_suggest:
+        suggestions = suggest_links(violations[:50])
+
     if args.json:
         print(
             json.dumps(
@@ -265,7 +312,12 @@ def main(argv: list[str] | None = None) -> int:
                     "backlog_count": backlog,
                     "strict": args.strict,
                     "violations": [
-                        {"file": v.file, "line": v.line, "text": v.text.strip()}
+                        {
+                            "file": v.file,
+                            "line": v.line,
+                            "text": v.text.strip(),
+                            "suggestions": suggestions.get((v.file, v.line), []),
+                        }
                         for v in violations
                     ],
                 },
@@ -286,6 +338,8 @@ def main(argv: list[str] | None = None) -> int:
             )
             for v in violations[:50]:
                 print(f"  {v}", file=sys.stderr)
+                for hint in suggestions.get((v.file, v.line), []):
+                    print(f"      suggest: {hint}", file=sys.stderr)
             if backlog > 50:
                 print(f"  ... and {backlog - 50} more", file=sys.stderr)
 

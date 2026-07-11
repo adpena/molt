@@ -713,6 +713,36 @@ def _build_checks() -> list[Check]:
             timeout=30,
         )
     )
+    checks.append(
+        Check(
+            # APPARATUS A10: the memory-graph engine's pure teeth -- typed graph
+            # parses a fixture; neighbors/supersedes/what-consumes/nearest return
+            # the right nodes; a dangling [[link]] is REPORTED not crashed on; the
+            # session_digest + memo-lint consumers render (and fail open). A
+            # regression that made the graph mis-recall or a consumer wedge must
+            # fail CI here.
+            name="memory-graph-teeth",
+            tier=1,
+            cmd=_uv_pytest(str(TESTS / "tools" / "test_memory_graph.py"), "-q"),
+            timeout=90,
+            needs_pytest=True,
+        )
+    )
+    checks.append(
+        Check(
+            # A10 warn-only: report dangling [[wikilinks]] (ALLOWED -- worth
+            # writing later) + any MEMORY.md M## not resolved by POINTERS.md.
+            # required=False so it never reds the tier; the check ALWAYS exits 0
+            # in --check mode. The NAMED flip condition (manual review; CI cannot
+            # see the auto-memory corpus) lives in the molt_dev_gates.toml
+            # [[gate_flip]] registry (name="memory_graph_integrity").
+            name="memory-graph-integrity",
+            tier=1,
+            cmd=_uv_run(str(TOOLS / "check_memory_graph.py"), "--check"),
+            timeout=45,
+            required=False,
+        )
+    )
 
     # ── Tier 2: Medium (< 10min, on PR) ────────────────────────────────
 
