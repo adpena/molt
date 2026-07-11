@@ -88,6 +88,11 @@ See also:
 
 - `docs/perf/SCOREBOARD.md`
 - `docs/design/foundation/64_perf_scoreboards_and_harness.md`
+- `docs/agent/CODEGEN_RUNTIME_OPT_CATALOG.md` — the codegen + runtime hot-path lever
+  catalog (Agner-grounded), tagged LANDED/OPEN + determinism-safety. This authority
+  covers build-time + publication; that one covers the emitted-code / runtime surface
+  (loops, dependency chains, int/float division, NaN-box bit-tricks, SIMD, memory
+  layout). Opt-matrix rung selection should read both.
 
 ## Witness Iteration Build Profile (2026-07-11)
 
