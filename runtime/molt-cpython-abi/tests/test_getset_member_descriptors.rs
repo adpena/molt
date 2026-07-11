@@ -104,6 +104,10 @@ unsafe extern "C" fn fake_classify_heap(_bits: u64) -> u8 {
 
 unsafe extern "C" fn fake_noop_ref(_bits: u64) {}
 
+unsafe extern "C" fn fake_foreign_new(_c_ptr: usize) -> u64 {
+    fresh_handle()
+}
+
 fn install_runtime_hooks() {
     let mut hooks: RuntimeHooks = molt_cpython_abi::hooks::STUB_HOOKS;
     hooks.alloc_dict = fake_alloc_dict;
@@ -113,6 +117,7 @@ fn install_runtime_hooks() {
     hooks.classify_heap = fake_classify_heap;
     hooks.inc_ref = fake_noop_ref;
     hooks.dec_ref = fake_noop_ref;
+    hooks.foreign_new = fake_foreign_new;
     unsafe {
         molt_cpython_abi::bridge::molt_cpython_abi_init();
         let _ = molt_cpython_abi::try_set_runtime_hooks(hooks);

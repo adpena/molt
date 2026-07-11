@@ -1798,7 +1798,9 @@ unsafe fn percent_int_arg(arg: *mut PyObject, conv: u8) -> Option<i128> {
         set_exc(&raw mut crate::abi_types::PyExc_TypeError, &msg);
     };
     // Native int / bool via the bridge handle (exact, no width truncation).
-    let bits = crate::bridge::GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(arg);
+    let bits = crate::bridge::GLOBAL_BRIDGE
+        .lock()
+        .molt_handle_for_pyobj(arg);
     if let Some(bits) = bits {
         let mo = bits.decode();
         if let Some(i) = mo.as_int() {

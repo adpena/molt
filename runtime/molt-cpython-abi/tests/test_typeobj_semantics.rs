@@ -104,13 +104,19 @@ fn issubtype_base_chain_and_object_terminal() {
     b.tp_base = a;
     let b = leak_type(b);
 
-    assert_eq!(unsafe { molt_cpython_abi::api::typeobj::PyType_IsSubtype(b, a) }, 1);
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::typeobj::PyType_IsSubtype(b, a) },
+        1
+    );
     assert_eq!(
         unsafe { molt_cpython_abi::api::typeobj::PyType_IsSubtype(b, object) },
         1,
         "every type is a subtype of object"
     );
-    assert_eq!(unsafe { molt_cpython_abi::api::typeobj::PyType_IsSubtype(a, b) }, 0);
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::typeobj::PyType_IsSubtype(a, b) },
+        0
+    );
 
     // Uninitialized type (tp_base == NULL, tp_mro == NULL): the base-chain
     // terminal must still report subtype-of-object.
@@ -229,8 +235,9 @@ fn generic_new_dispatches_custom_tp_alloc() {
     let mut ty = new_type();
     ty.tp_alloc = Some(custom_alloc);
     let ty = leak_type(ty);
-    let obj =
-        unsafe { molt_cpython_abi::api::typeobj::PyType_GenericNew(ty, ptr::null_mut(), ptr::null_mut()) };
+    let obj = unsafe {
+        molt_cpython_abi::api::typeobj::PyType_GenericNew(ty, ptr::null_mut(), ptr::null_mut())
+    };
     assert!(!obj.is_null());
     assert!(
         *ALLOC_CALLED.lock().unwrap(),
@@ -266,7 +273,10 @@ fn set_one_writes_int_member() {
     };
     assert_eq!(rc, 0);
     let got = i32::from_ne_bytes(storage[0..4].try_into().unwrap());
-    assert_eq!(got, 999, "T_INT member must be written (was a fail-closed no-op)");
+    assert_eq!(
+        got, 999,
+        "T_INT member must be written (was a fail-closed no-op)"
+    );
 }
 
 #[test]
@@ -373,10 +383,12 @@ fn richcompare_reflected_subtype_priority() {
 
     let base_inst = make_instance(base);
     let sub_inst = make_instance(sub);
-    let res = unsafe {
-        molt_cpython_abi::api::typeobj::PyObject_RichCompare(base_inst, sub_inst, PY_EQ)
-    };
-    assert!(std::ptr::eq(res, (&raw mut Py_True).cast::<PyObject>()), "reflected subtype slot wins");
+    let res =
+        unsafe { molt_cpython_abi::api::typeobj::PyObject_RichCompare(base_inst, sub_inst, PY_EQ) };
+    assert!(
+        std::ptr::eq(res, (&raw mut Py_True).cast::<PyObject>()),
+        "reflected subtype slot wins"
+    );
 }
 
 #[test]
@@ -400,7 +412,10 @@ fn richcompare_both_notimplemented_resolves_identity_and_ordering() {
 
     // Ordering with both NotImplemented -> TypeError + NULL.
     let lt = unsafe { molt_cpython_abi::api::typeobj::PyObject_RichCompare(a, b, PY_LT) };
-    assert!(lt.is_null(), "unsupported ordering must raise, not return NotImplemented");
+    assert!(
+        lt.is_null(),
+        "unsupported ordering must raise, not return NotImplemented"
+    );
     assert!(!unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 }
@@ -416,7 +431,10 @@ fn richcompare_propagates_slot_error() {
     let a = make_instance(ty);
     let b = make_instance(ty);
     let res = unsafe { molt_cpython_abi::api::typeobj::PyObject_RichCompare(a, b, PY_EQ) };
-    assert!(res.is_null(), "a NULL slot result must propagate, not mask the error");
+    assert!(
+        res.is_null(),
+        "a NULL slot result must propagate, not mask the error"
+    );
     assert!(!unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 }

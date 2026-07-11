@@ -135,9 +135,8 @@ pub unsafe extern "C" fn PyMapping_Size(o: *mut PyObject) -> Py_ssize_t {
             let mp_length = unsafe { (*m).mp_length };
             if !mp_length.is_null() {
                 type LenFunc = unsafe extern "C" fn(*mut PyObject) -> Py_ssize_t;
-                let f: LenFunc = unsafe {
-                    std::mem::transmute::<*mut std::os::raw::c_void, LenFunc>(mp_length)
-                };
+                let f: LenFunc =
+                    unsafe { std::mem::transmute::<*mut std::os::raw::c_void, LenFunc>(mp_length) };
                 return unsafe { f(o) };
             }
         }
