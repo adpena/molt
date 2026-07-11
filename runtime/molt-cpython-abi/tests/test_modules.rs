@@ -98,6 +98,13 @@ unsafe extern "C" fn fake_int_as_u64_checked(_bits: u64, out: *mut u64) -> std::
     }
     0
 }
+unsafe extern "C" fn fake_int_as_u64_mask(
+    _bits: u64,
+    _width: u32,
+    _out: *mut u64,
+) -> std::os::raw::c_int {
+    -1
+}
 unsafe extern "C" fn fake_alloc_list() -> u64 {
     next_fake_handle()
 }
@@ -386,6 +393,7 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     int_as_i64: fake_int_as_i64,
     int_as_i64_checked: fake_int_as_i64_checked,
     int_as_u64_checked: fake_int_as_u64_checked,
+    int_as_u64_mask: fake_int_as_u64_mask,
     alloc_list: fake_alloc_list,
     list_append: fake_list_append,
     list_len: fake_list_len,

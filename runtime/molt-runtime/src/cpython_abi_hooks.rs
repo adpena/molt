@@ -18,6 +18,7 @@ use molt_cpython_abi::abi_types::{
 };
 use molt_cpython_abi::{MoltBufferView as AbiMoltBufferView, RuntimeHooks};
 use molt_obj_model::MoltObject;
+use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 
 use crate::builtins::containers::{dict_len, dict_order, list_len, tuple_len};
@@ -176,6 +177,24 @@ unsafe extern "C" fn hook_int_as_u64_checked(bits: u64, out: *mut u64) -> i32 {
             return 0;
         }
         -1
+    })
+}
+
+unsafe extern "C" fn hook_int_as_u64_mask(bits: u64, width: u32, out: *mut u64) -> i32 {
+    if out.is_null() || width == 0 || width > 64 {
+        return -1;
+    }
+    with_gil(|_py| {
+        let Some(value) = to_bigint(MoltObject::from_bits(bits)) else {
+            return -1;
+        };
+        let modulus = BigInt::from(1u8) << width;
+        let masked = ((value % &modulus) + &modulus) % &modulus;
+        let Some(masked) = masked.to_u64() else {
+            return -1;
+        };
+        unsafe { *out = masked };
+        0
     })
 }
 
@@ -2285,6 +2304,7 @@ pub fn register_cpython_hooks() {
         int_as_i64: hook_int_as_i64,
         int_as_i64_checked: hook_int_as_i64_checked,
         int_as_u64_checked: hook_int_as_u64_checked,
+        int_as_u64_mask: hook_int_as_u64_mask,
         alloc_list: hook_alloc_list,
         list_append: hook_list_append,
         list_len: hook_list_len,

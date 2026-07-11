@@ -1137,6 +1137,8 @@ extern double    PyLong_AsDouble         (PyObject *op);
 extern Py_ssize_t PyLong_AsSsize_t       (PyObject *op);
 extern unsigned long PyLong_AsUnsignedLong(PyObject *op);
 extern unsigned long long PyLong_AsUnsignedLongLong(PyObject *op);
+extern unsigned long PyLong_AsUnsignedLongMask(PyObject *op);
+extern unsigned long long PyLong_AsUnsignedLongLongMask(PyObject *op);
 extern void     *PyLong_AsVoidPtr        (PyObject *op);
 extern Py_ssize_t PyLong_AsNativeBytes   (PyObject *op, void *buffer, Py_ssize_t n_bytes, int flags);
 extern PyObject *PyLong_FromNativeBytes  (const void *buffer, size_t n_bytes, int flags);

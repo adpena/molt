@@ -163,9 +163,6 @@ fn harness_drives_real_abi_code() {
 // ═════════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore = "FRONTIER: reproduces divergence-ledger #8 (numbers.rs PyLong_AsLong \
-            silent truncation, no OverflowError). Delete this #[ignore] once fixed \
-            to convert into a regression guard."]
 fn frontier_08_pylong_aslong_silent_overflow() {
     install_min_hooks();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
@@ -176,6 +173,7 @@ fn frontier_08_pylong_aslong_silent_overflow() {
     assert!(!py.is_null());
     let got = unsafe { molt_cpython_abi::api::numbers::PyLong_AsLong(py) };
     let err = unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() };
+    assert_eq!(got, -1, "overflow must return the C-API -1 sentinel");
 
     // CPython 3.12 contract on a 32-bit `long` platform: return -1 AND set
     // OverflowError. Molt returns a silently-truncated value and sets nothing.
