@@ -17,13 +17,13 @@ from typing import Any
 # Defensive UTF-8 stdio (recurring Windows cp1252 encoding bug class): this tool
 # relays captured subprocess output via print(); if that capture contains a
 # non-cp1252 char, the default Windows codec raises UnicodeEncodeError and aborts
-# an otherwise-successful run. Reconfigure once at import (the proof-queue env
-# also sets PYTHONUTF8=1 tree-wide; this is the belt for direct invocation).
-for _stream in (sys.stdout, sys.stderr):
-    try:
-        _stream.reconfigure(encoding="utf-8", errors="backslashreplace")  # type: ignore[union-attr]
-    except (AttributeError, ValueError):
-        pass
+# an otherwise-successful run. One shared primitive backstops it (the proof-queue
+# env also sets PYTHONUTF8=1 tree-wide; this is the belt for direct invocation).
+try:  # importable whether launched as a script (tools/ on path) or as tools.X
+    from _io_utf8 import force_utf8_stdio
+except ModuleNotFoundError:
+    from tools._io_utf8 import force_utf8_stdio
+force_utf8_stdio()
 
 ROOT = Path(__file__).resolve().parents[1]
 KERNEL_ROOT = ROOT / "collab" / "pact" / "pact_witness_kernel"
@@ -332,7 +332,9 @@ def _run_build_health_gate(diagnostics_path: Path) -> None:
         check=False,
     )
     if result.stdout:
-        print(result.stdout, end="" if result.stdout.endswith("\n") else "\n", flush=True)
+        print(
+            result.stdout, end="" if result.stdout.endswith("\n") else "\n", flush=True
+        )
 
 
 def _assert_no_poison_stubs(build_dir: Path, entry: Path) -> None:

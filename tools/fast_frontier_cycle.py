@@ -44,12 +44,13 @@ import time
 from pathlib import Path
 
 # Windows consoles default to cp1252 and choke on non-ASCII; force UTF-8 so this
-# tool never dies on an encode error (recurring Windows bug class).
-for _stream in (sys.stdout, sys.stderr):
-    try:
-        _stream.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
-    except Exception:
-        pass
+# tool never dies on an encode error while relaying subprocess output (recurring
+# Windows bug class). One shared primitive backstops it.
+try:  # importable whether launched as a script (tools/ on path) or as tools.X
+    from _io_utf8 import force_utf8_stdio
+except ModuleNotFoundError:
+    from tools._io_utf8 import force_utf8_stdio
+force_utf8_stdio()
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CRATE = "molt-lang-cpython-abi"
@@ -65,6 +66,8 @@ def _cargo(args: list[str], capture: bool) -> subprocess.CompletedProcess:
         cwd=REPO_ROOT,
         env=env,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=capture,
     )
 
@@ -87,7 +90,9 @@ def verify() -> int:
     proc = _cargo(["test", "-p", CRATE, "--test", TEST], capture=True)
     secs = time.time() - start
     ok = proc.returncode == 0
-    print(f"FRONTIER verify {'ok' if ok else 'FAILED'}  {secs:.1f}s  (green control: harness is live)")
+    print(
+        f"FRONTIER verify {'ok' if ok else 'FAILED'}  {secs:.1f}s  (green control: harness is live)"
+    )
     if not ok:
         sys.stderr.write(proc.stdout + proc.stderr)
     return proc.returncode
@@ -128,14 +133,18 @@ def repro(filt: str | None) -> int:
     if reproduced:
         return 0
     if proc.returncode == 0:
-        print("  NOTE: no frontier reproduced — was it fixed? Delete its #[ignore] line.")
+        print(
+            "  NOTE: no frontier reproduced — was it fixed? Delete its #[ignore] line."
+        )
         return 3
     sys.stderr.write(out)
     return proc.returncode
 
 
 def list_frontiers() -> int:
-    proc = _cargo(["test", "-p", CRATE, "--test", TEST, "--", "--list", "--ignored"], capture=True)
+    proc = _cargo(
+        ["test", "-p", CRATE, "--test", TEST, "--", "--list", "--ignored"], capture=True
+    )
     for ln in (proc.stdout or "").splitlines():
         if ln.strip().endswith(": test"):
             print("  " + ln.strip())
@@ -143,13 +152,31 @@ def list_frontiers() -> int:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     g = ap.add_mutually_exclusive_group()
-    g.add_argument("--build", action="store_true", help="build the frontier test binary only")
-    g.add_argument("--verify", action="store_true", help="run the GREEN control (harness-is-live) only")
-    g.add_argument("--repro", nargs="?", const="", metavar="FILTER", help="reproduce frontiers (optional name substring)")
-    g.add_argument("--list", action="store_true", help="list the frontier reproductions")
-    ap.add_argument("--cycle", action="store_true", help="build then reproduce (default)")
+    g.add_argument(
+        "--build", action="store_true", help="build the frontier test binary only"
+    )
+    g.add_argument(
+        "--verify",
+        action="store_true",
+        help="run the GREEN control (harness-is-live) only",
+    )
+    g.add_argument(
+        "--repro",
+        nargs="?",
+        const="",
+        metavar="FILTER",
+        help="reproduce frontiers (optional name substring)",
+    )
+    g.add_argument(
+        "--list", action="store_true", help="list the frontier reproductions"
+    )
+    ap.add_argument(
+        "--cycle", action="store_true", help="build then reproduce (default)"
+    )
     args = ap.parse_args()
 
     if args.build:
