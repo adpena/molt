@@ -356,6 +356,14 @@ def classify_window(subjects: list[str], doc_added: dict[str, list[str]]) -> lis
             msgs.extend(verdict_scope_violations(path, lines))
     return msgs
 
+def advisory_confirmations(subjects: list[str], doc_added: dict[str, list[str]]) -> list[dict[str, str]]:
+    """Suggestion-only confirmations; deterministic violations remain authority."""
+    try:
+        from tools.advisory_classifier import magnitude_confirmation
+    except Exception:
+        return []
+    return [{"violation": message, "advisory": verdict} for message in classify_window(subjects, doc_added) if (verdict := magnitude_confirmation(message)) is not None]
+
 
 def build_reason(msgs: list[str]) -> str:
     mag = [m for m in msgs if "magnitude-based dismissal" in m]

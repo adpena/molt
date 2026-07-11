@@ -433,6 +433,12 @@ fail-open, block-JSON) pointed at molt's most-repeated directive.
 
 ### A3. Molt triality drift detector (M63 made mechanical)
 
+**Status (2026-07-11): COMPLETE.** The commit-window hook is complemented by
+`tools/triality.py` and `.molt/state/triality_registry.json`: a lesson is KNOWN
+only when DAG, DSL, and equations name the same invariant fingerprint. The seed
+set covers content-addressed custody, GLOBAL_BRIDGE serialization,
+configured-vs-effective attestation, and exhaustive-by-construction dispatch.
+
 Molt's three legs already exist in nascent form; name them and gate them:
 
 | pact leg | molt leg |
@@ -485,6 +491,12 @@ a home). **Composes with:** bench_evidence.py, apparatus_ledger.py,
 PERF_AUTHORITY.md, check_perf_freshness.py.
 
 ### A5. Local-AI advisory classifier (the fmtools pattern, molt-shaped)
+
+**Status (2026-07-11): COMPLETE.** `tools/advisory_classifier.py` provides the
+subprocess-isolated closed-enum contract, prompt-echo firewall, timeout/fail-open
+behavior, and append-only advisory event ledger. The fail-closed, magnitude, and
+findings consumers expose suggestion-only adapters; deterministic results remain
+authoritative.
 
 Apple FM doesn't run on the molt fleet; the CONTRACT does (1.11's six rules).
 **Build:** `tools/advisory_classifier.py` — a thin driver that resolves a
