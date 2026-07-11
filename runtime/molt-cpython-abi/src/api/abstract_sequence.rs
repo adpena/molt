@@ -31,7 +31,10 @@ fn resolve_bits(op: *mut PyObject) -> Option<u64> {
     if op.is_null() {
         return None;
     }
-    GLOBAL_BRIDGE.lock().pyobj_to_handle(op)
+    GLOBAL_BRIDGE
+        .lock()
+        .molt_handle_for_pyobj(op)
+        .map(|value| value.bits())
 }
 
 /// Helper: classify a heap-pointer handle.
@@ -1122,14 +1125,14 @@ pub unsafe extern "C" fn _PyList_Extend(
     let Some(items) = (unsafe { materialize_iterable(iterable) }) else {
         return ptr::null_mut();
     };
-    let list_bits = GLOBAL_BRIDGE.lock().pyobj_to_handle(list);
+    let list_bits = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(list);
     let Some(list_bits) = list_bits else {
         unsafe { set_type_error("_PyList_Extend requires a list".to_string()) };
         return ptr::null_mut();
     };
     let h = hooks_or_stubs();
     for item in items {
-        unsafe { (h.list_append)(list_bits, item) };
+        unsafe { (h.list_append)(list_bits.bits(), item) };
     }
     unsafe { crate::api::object::Py_NewRef(&raw mut crate::abi_types::Py_None) }
 }

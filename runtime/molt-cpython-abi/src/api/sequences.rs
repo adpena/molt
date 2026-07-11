@@ -17,13 +17,13 @@ fn resolve_native_list(op: *mut PyObject) -> Option<u64> {
     if op.is_null() {
         return None;
     }
-    let bits = GLOBAL_BRIDGE.lock().pyobj_to_handle(op)?;
-    if !MoltObject::from_bits(bits).is_ptr() {
+    let bits = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(op)?;
+    if !bits.decode().is_ptr() {
         return None;
     }
     let h = hooks_or_stubs();
-    if unsafe { (h.classify_heap)(bits) } == crate::abi_types::MoltTypeTag::List as u8 {
-        Some(bits)
+    if unsafe { (h.classify_heap)(bits.bits()) } == crate::abi_types::MoltTypeTag::List as u8 {
+        Some(bits.bits())
     } else {
         None
     }
@@ -73,7 +73,7 @@ pub unsafe extern "C" fn PyList_Append(list: *mut PyObject, item: *mut PyObject)
         return -1;
     }
     let mut bridge = GLOBAL_BRIDGE.lock();
-    let list_bits = match bridge.pyobj_to_handle(list) {
+    let list_bits = match bridge.molt_handle_for_pyobj(list) {
         Some(b) => b,
         None => {
             drop(bridge);
@@ -82,8 +82,8 @@ pub unsafe extern "C" fn PyList_Append(list: *mut PyObject, item: *mut PyObject)
         }
     };
     let mut item_is_foreign = false;
-    let item_bits = match bridge.pyobj_to_handle(item) {
-        Some(b) => b,
+    let item_bits = match bridge.molt_handle_for_pyobj(item) {
+        Some(b) => b.bits(),
         None => match unsafe { bridge.molt_value_for_pyobj(item) } {
             // A genuine C-extension object item: give it a first-class
             // `TYPE_ID_FOREIGN` wrapper so it can be stored in the Molt list.
@@ -110,7 +110,7 @@ pub unsafe extern "C" fn PyList_Append(list: *mut PyObject, item: *mut PyObject)
     };
     drop(bridge);
     let h = hooks_or_stubs();
-    unsafe { (h.list_append)(list_bits, item_bits) };
+    unsafe { (h.list_append)(list_bits.bits(), item_bits) };
     // CPython contract: `PyList_Append` takes its own strong reference to the
     // item (it does not steal). Anchor the item proxy so the extension's
     // balancing `Py_DECREF` cannot sever the pointer↔handle mapping while the
@@ -134,8 +134,8 @@ pub unsafe extern "C" fn PyList_GET_ITEM(op: *mut PyObject, i: Py_ssize_t) -> *m
         return ptr::null_mut();
     }
     let bridge = GLOBAL_BRIDGE.lock();
-    let bits = match bridge.pyobj_to_handle(op) {
-        Some(b) => b,
+    let bits = match bridge.molt_handle_for_pyobj(op) {
+        Some(b) => b.bits(),
         None => return ptr::null_mut(),
     };
     drop(bridge);
@@ -242,8 +242,8 @@ pub unsafe extern "C" fn PyList_SetItem(
     }
     let mut bridge = GLOBAL_BRIDGE.lock();
     let mut val_is_foreign = false;
-    let val_bits = match bridge.pyobj_to_handle(v) {
-        Some(b) => b,
+    let val_bits = match bridge.molt_handle_for_pyobj(v) {
+        Some(b) => b.bits(),
         None => match unsafe { bridge.molt_value_for_pyobj(v) } {
             Some(b) => {
                 val_is_foreign = true;
@@ -299,8 +299,8 @@ pub unsafe extern "C" fn PyList_GET_SIZE(op: *mut PyObject) -> Py_ssize_t {
         return 0;
     }
     let bridge = GLOBAL_BRIDGE.lock();
-    let bits = match bridge.pyobj_to_handle(op) {
-        Some(b) => b,
+    let bits = match bridge.molt_handle_for_pyobj(op) {
+        Some(b) => b.bits(),
         None => return 0,
     };
     drop(bridge);
@@ -350,7 +350,7 @@ pub(crate) unsafe fn tuple_layout_object(op: *mut PyObject) -> Option<*mut PyTup
     }
     let ob_type = unsafe { (*op).ob_type };
     if std::ptr::eq(ob_type, &raw mut crate::abi_types::PyTuple_Type)
-        && GLOBAL_BRIDGE.lock().pyobj_to_handle(op).is_none()
+        && GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(op).is_none()
     {
         Some(op.cast::<PyTupleObject>())
     } else {
@@ -430,8 +430,8 @@ pub unsafe extern "C" fn PyTuple_GET_ITEM(op: *mut PyObject, i: Py_ssize_t) -> *
         return unsafe { *(*tuple).ob_item.add(i as usize) };
     }
     let bridge = GLOBAL_BRIDGE.lock();
-    let bits = match bridge.pyobj_to_handle(op) {
-        Some(b) => b,
+    let bits = match bridge.molt_handle_for_pyobj(op) {
+        Some(b) => b.bits(),
         None => return ptr::null_mut(),
     };
     drop(bridge);
@@ -470,9 +470,9 @@ pub unsafe extern "C" fn PyTuple_GetItem(op: *mut PyObject, i: Py_ssize_t) -> *m
         return unsafe { *(*tuple).ob_item.add(i as usize) };
     }
     // Bridge-managed Molt tuple.
-    let op_handle = GLOBAL_BRIDGE.lock().pyobj_to_handle(op);
+    let op_handle = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(op);
     let bits = match op_handle {
-        Some(b) if MoltObject::from_bits(b).is_ptr() => b,
+        Some(b) if b.decode().is_ptr() => b.bits(),
         _ => {
             unsafe { crate::api::errors::PyErr_BadInternalCall() };
             return ptr::null_mut();
@@ -508,8 +508,8 @@ pub unsafe extern "C" fn PyTuple_GET_SIZE(op: *mut PyObject) -> Py_ssize_t {
         return unsafe { (*tuple).ob_base.ob_size };
     }
     let bridge = GLOBAL_BRIDGE.lock();
-    let bits = match bridge.pyobj_to_handle(op) {
-        Some(b) => b,
+    let bits = match bridge.molt_handle_for_pyobj(op) {
+        Some(b) => b.bits(),
         None => return 0,
     };
     drop(bridge);
@@ -637,8 +637,8 @@ pub unsafe extern "C" fn PyTuple_SetItem(
     }
     // Bridge-managed Molt tuple.
     let mut bridge = GLOBAL_BRIDGE.lock();
-    let tuple_bits = match bridge.pyobj_to_handle(op) {
-        Some(b) if MoltObject::from_bits(b).is_ptr() => b,
+    let tuple_bits = match bridge.molt_handle_for_pyobj(op) {
+        Some(b) if b.decode().is_ptr() => b.bits(),
         _ => {
             drop(bridge);
             unsafe {
@@ -649,8 +649,8 @@ pub unsafe extern "C" fn PyTuple_SetItem(
         }
     };
     let mut val_is_foreign = false;
-    let val_bits = match bridge.pyobj_to_handle(v) {
-        Some(b) => b,
+    let val_bits = match bridge.molt_handle_for_pyobj(v) {
+        Some(b) => b.bits(),
         None => match unsafe { bridge.molt_value_for_pyobj(v) } {
             Some(b) => {
                 val_is_foreign = true;
@@ -936,10 +936,10 @@ unsafe fn set_arg_handle(anyset: *mut PyObject, message: &'static core::ffi::CSt
     // re-acquire GLOBAL_BRIDGE, so holding the guard would self-deadlock.
     let handle = {
         let bridge = GLOBAL_BRIDGE.lock();
-        bridge.pyobj_to_handle(anyset)
+        bridge.molt_handle_for_pyobj(anyset)
     };
     match handle {
-        Some(bits) => Some(bits),
+        Some(bits) => Some(bits.bits()),
         None => {
             unsafe {
                 crate::api::errors::PyErr_SetString(
@@ -1176,8 +1176,8 @@ pub unsafe extern "C" fn PyList_GetSlice(
         return ptr::null_mut();
     }
     let bridge = GLOBAL_BRIDGE.lock();
-    let bits = match bridge.pyobj_to_handle(op) {
-        Some(b) => b,
+    let bits = match bridge.molt_handle_for_pyobj(op) {
+        Some(b) => b.bits(),
         None => return ptr::null_mut(),
     };
     drop(bridge);
@@ -1217,9 +1217,9 @@ pub unsafe extern "C" fn PyList_SetSlice(
     let itemlist_bits = if itemlist.is_null() {
         0 // deletion
     } else {
-        let itemlist_handle = GLOBAL_BRIDGE.lock().pyobj_to_handle(itemlist);
+        let itemlist_handle = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(itemlist);
         match itemlist_handle {
-            Some(b) if MoltObject::from_bits(b).is_ptr() => b,
+            Some(b) if b.decode().is_ptr() => b.bits(),
             _ => {
                 unsafe { crate::api::errors::PyErr_BadInternalCall() };
                 return -1;
@@ -1345,8 +1345,8 @@ pub unsafe extern "C" fn PyList_Insert(
     };
     let mut bridge = GLOBAL_BRIDGE.lock();
     let mut item_is_foreign = false;
-    let item_bits = match bridge.pyobj_to_handle(v) {
-        Some(b) => b,
+    let item_bits = match bridge.molt_handle_for_pyobj(v) {
+        Some(b) => b.bits(),
         None => match unsafe { bridge.molt_value_for_pyobj(v) } {
             Some(b) => {
                 item_is_foreign = true;

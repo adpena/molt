@@ -18,7 +18,10 @@ fn resolve_bits(op: *mut PyObject) -> Option<u64> {
     if op.is_null() {
         return None;
     }
-    GLOBAL_BRIDGE.lock().pyobj_to_handle(op)
+    GLOBAL_BRIDGE
+        .lock()
+        .molt_handle_for_pyobj(op)
+        .map(|value| value.bits())
 }
 
 /// Helper: classify a heap-pointer handle.

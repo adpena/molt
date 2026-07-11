@@ -483,7 +483,7 @@ pub unsafe extern "C" fn PyObject_GetBuffer(
     };
     let hooks = hooks_or_stubs();
     let mut descriptor = MoltBufferView::default();
-    if unsafe { (hooks.buffer_acquire)(bits, &mut descriptor as *mut MoltBufferView) } != 0 {
+    if unsafe { (hooks.buffer_acquire)(bits.bits(), &mut descriptor as *mut MoltBufferView) } != 0 {
         unsafe { set_buffer_error(b"object does not export a buffer\0") };
         return -1;
     }
@@ -633,7 +633,7 @@ pub unsafe extern "C" fn PyObject_CheckBuffer(obj: *mut PyObject) -> c_int {
             {
                 return 1;
             }
-            let tag = unsafe { (hooks_or_stubs().classify_heap)(bits) };
+            let tag = unsafe { (hooks_or_stubs().classify_heap)(bits.bits()) };
             (tag == crate::abi_types::MoltTypeTag::Bytes as u8) as c_int
         }
     }

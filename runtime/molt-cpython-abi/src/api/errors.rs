@@ -133,7 +133,11 @@ pub unsafe extern "C" fn PyErr_SetString(exc_type: *mut PyObject, message: *cons
     let type_bits = if exc_type.is_null() {
         0u64
     } else {
-        GLOBAL_BRIDGE.lock().pyobj_to_handle(exc_type).unwrap_or(0)
+        GLOBAL_BRIDGE
+            .lock()
+            .pyobj_to_handle(exc_type)
+            .map(|identity| identity.as_handle())
+            .unwrap_or(0)
     };
     CURRENT_EXC.with(|c| *c.borrow_mut() = Some((type_bits, msg)));
 }
@@ -240,7 +244,8 @@ fn value_str_message(value: *mut PyObject) -> Option<String> {
     if value.is_null() {
         return None;
     }
-    let bits = GLOBAL_BRIDGE.lock().pyobj_to_handle(value)?;
+    let value = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(value)?;
+    let bits = value.bits();
     let obj = MoltObject::from_bits(bits);
     if obj.is_none() {
         return Some("None".to_string());
@@ -255,7 +260,7 @@ fn value_str_message(value: *mut PyObject) -> Option<String> {
         return obj.as_float().map(|f| f.to_string());
     }
     let h = crate::hooks::hooks_or_stubs();
-    if unsafe { (h.classify_heap)(bits) } == crate::abi_types::MoltTypeTag::Str as u8 {
+    if unsafe { (h.classify_heap)(value.bits()) } == crate::abi_types::MoltTypeTag::Str as u8 {
         let mut len: usize = 0;
         let ptr = unsafe { (h.str_data)(bits, std::ptr::addr_of_mut!(len)) };
         if !ptr.is_null() {
@@ -405,7 +410,11 @@ pub unsafe extern "C" fn PyErr_Restore(
     if exc_type.is_null() {
         unsafe { PyErr_Clear() };
     } else {
-        let type_bits = GLOBAL_BRIDGE.lock().pyobj_to_handle(exc_type).unwrap_or(0);
+        let type_bits = GLOBAL_BRIDGE
+            .lock()
+            .pyobj_to_handle(exc_type)
+            .map(|identity| identity.as_handle())
+            .unwrap_or(0);
         let message = value_str_message(value).unwrap_or_default();
         CURRENT_EXC.with(|c| *c.borrow_mut() = Some((type_bits, message)));
     }
@@ -535,15 +544,15 @@ pub unsafe extern "C" fn PyErr_GivenExceptionMatches(
     // tuple hooks). Resolve `exc`'s bits and RELEASE the bridge lock before the
     // per-item `handle_to_pyobj` calls — the bridge Mutex is non-reentrant, so
     // holding the guard across the loop would self-deadlock.
-    let exc_bits = GLOBAL_BRIDGE.lock().pyobj_to_handle(exc);
-    if let Some(bits) = exc_bits
-        && MoltObject::from_bits(bits).is_ptr()
+    let exc_bits = GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(exc);
+    if let Some(value) = exc_bits
+        && value.decode().is_ptr()
     {
         let h = crate::hooks::hooks_or_stubs();
-        if unsafe { (h.classify_heap)(bits) } == MoltTypeTag::Tuple as u8 {
-            let len = unsafe { (h.tuple_len)(bits) };
+        if unsafe { (h.classify_heap)(value.bits()) } == MoltTypeTag::Tuple as u8 {
+            let len = unsafe { (h.tuple_len)(value.bits()) };
             for i in 0..len {
-                let item_bits = unsafe { (h.tuple_item)(bits, i) };
+                let item_bits = unsafe { (h.tuple_item)(value.bits(), i) };
                 if item_bits == 0 {
                     continue;
                 }
@@ -721,7 +730,7 @@ pub unsafe extern "C" fn molt_pyarg_parse_tuple_inner(
     let fmt = unsafe { CStr::from_ptr(format).to_bytes() };
 
     let bridge = GLOBAL_BRIDGE.lock();
-    let args_bits = bridge.pyobj_to_handle(args);
+    let args_bits = bridge.molt_handle_for_pyobj(args).map(|value| value.bits());
     drop(bridge);
 
     let items = args_bits.map(molt_tuple_items).unwrap_or_default();
