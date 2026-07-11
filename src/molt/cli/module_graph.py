@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import os
 import re
@@ -884,8 +885,8 @@ def _missing_native_support_artifact_imports(
     runtime_import_modules = (
         native_artifact_plan.runtime_python_import_module_names()
     )
-    object_closure_source_paths = _native_artifact_object_closure_source_paths(
-        native_artifact_plan
+    object_closure_source_paths, object_closure_source_hashes = (
+        _native_artifact_object_closure_source_custody(native_artifact_plan)
     )
     missing: list[str] = []
     for import_name in sorted(set(support_explicit_imports)):
@@ -904,6 +905,7 @@ def _missing_native_support_artifact_imports(
             if _native_support_import_has_object_closure_custody(
                 source_candidates=source_candidates,
                 object_closure_source_paths=object_closure_source_paths,
+                object_closure_source_hashes=object_closure_source_hashes,
             ):
                 continue
             # A genuine native submodule whose upstream native source
@@ -937,15 +939,28 @@ def _native_support_import_has_object_closure_custody(
     *,
     source_candidates: Sequence[Path],
     object_closure_source_paths: Collection[Path],
+    object_closure_source_hashes: Collection[str],
 ) -> bool:
     if not source_candidates:
         return False
     closure_sources = frozenset(path.resolve() for path in object_closure_source_paths)
-    return any(path.resolve() in closure_sources for path in source_candidates)
+    for path in source_candidates:
+        if path.resolve() in closure_sources:
+            return True
+        try:
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            continue
+        if digest in object_closure_source_hashes:
+            return True
+    return False
 
 
-def _native_artifact_object_closure_source_paths(native_artifact_plan) -> frozenset[Path]:
+def _native_artifact_object_closure_source_custody(
+    native_artifact_plan,
+) -> tuple[frozenset[Path], frozenset[str]]:
     sources: set[Path] = set()
+    source_hashes: set[str] = set()
     for artifact in native_artifact_plan.artifacts:
         try:
             manifest = json.loads(artifact.manifest_path.read_text(encoding="utf-8"))
@@ -968,6 +983,10 @@ def _native_artifact_object_closure_source_paths(native_artifact_plan) -> frozen
             if not isinstance(raw_source, str) or not raw_source.strip():
                 continue
             raw_sha256 = item.get("source_sha256")
+            if isinstance(raw_sha256, str) and re.fullmatch(
+                r"[0-9a-fA-F]{64}", raw_sha256.strip()
+            ):
+                source_hashes.add(raw_sha256.strip().lower())
             source_path, errors = source_extension_manifest_source_path(
                 raw_source,
                 manifest=manifest,
@@ -981,7 +1000,7 @@ def _native_artifact_object_closure_source_paths(native_artifact_plan) -> frozen
             if errors or source_path is None:
                 continue
             sources.add(source_path.resolve())
-    return frozenset(sources)
+    return frozenset(sources), frozenset(source_hashes)
 
 
 def _native_support_artifact_source_candidates(
