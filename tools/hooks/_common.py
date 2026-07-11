@@ -85,6 +85,8 @@ def repo_root(cwd: str | os.PathLike[str] | None = None) -> Path:
                 cwd=str(cwd),
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=5,
             )
             top = out.stdout.strip()
@@ -270,11 +272,16 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 
 def _git(root: Path, *args: str, timeout: float = 5.0) -> subprocess.CompletedProcess:
+    # UTF-8 + replace (M43): commit subjects / diffs carry em-dashes and other
+    # non-cp1252 bytes; the platform codec would abort an otherwise-fine window
+    # read with UnicodeDecodeError on Windows. Decoding never raises here.
     return subprocess.run(
         ["git", *args],
         cwd=str(root),
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=timeout,
     )
 
@@ -337,6 +344,8 @@ def proof_queue_active_count(root: Path, timeout: float = 5.0) -> int | None:
             cwd=str(root),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
         )
         if r.returncode != 0 or not r.stdout.strip():
@@ -363,3 +372,178 @@ def proof_queue_active_count(root: Path, timeout: float = 5.0) -> int | None:
         return len(active)
     except Exception:
         return None
+
+
+# --- git commit-window helpers (shared by the Wave-2 Stop legs) -------------
+# Both Wave-2 gates (triality A3, magnitude-dismissal/verdict-scope A6) classify
+# the commit window ``base..HEAD``. These are the ONE window surface they share
+# (pact's "one window, many legs" discipline). All best-effort + never raise: an
+# unreadable window fails OPEN (empty), so a git hiccup can never wedge a Stop.
+
+
+def git_window_messages(root: Path, base: str | None) -> list[str]:
+    """Non-empty subject+body lines of every commit in ``base..HEAD``.
+
+    The high-signal, LOW-noise classification surface for the vocab legs: commit
+    messages, not raw diffs. (Scanning diffs for tokens like ``poison`` /
+    ``fail_closed`` / ``corruption`` would saturate on the codebase's own
+    identifiers -- exactly the over-fire the pact template warns against.)
+    """
+    if not base:
+        return []
+    try:
+        r = _git(root, "log", f"{base}..HEAD", "--format=%s%n%b")
+        if r.returncode != 0:
+            return []
+        return [ln for ln in r.stdout.splitlines() if ln.strip()]
+    except Exception:
+        return []
+
+
+def git_window_subjects(root: Path, base: str | None) -> list[str]:
+    """Subject lines ONLY (``%s``) of every commit in ``base..HEAD`` -- one per
+    commit. This is the surface the vocab legs (triality, magnitude on commit
+    messages) classify: commit BODIES defensively describe bug classes ("no
+    corruption", "avoids silent truncation", "trivial wrapper") and would flood
+    the deterministic classifier with false positives (measured on the live
+    window). Precision over recall -- the accepted, documented false-negative
+    bound (a fix whose subject hides the class is missed; its body is not read)."""
+    if not base:
+        return []
+    try:
+        r = _git(root, "log", f"{base}..HEAD", "--format=%s")
+        if r.returncode != 0:
+            return []
+        return [ln for ln in r.stdout.splitlines() if ln.strip()]
+    except Exception:
+        return []
+
+
+def git_window_files(root: Path, base: str | None) -> list[str]:
+    """Changed file paths across ``base..HEAD`` (repo-relative, forward slashes)."""
+    if not base:
+        return []
+    try:
+        r = _git(root, "diff", "--name-only", f"{base}..HEAD")
+        if r.returncode != 0:
+            return []
+        return [ln.strip() for ln in r.stdout.splitlines() if ln.strip()]
+    except Exception:
+        return []
+
+
+def git_window_diff(root: Path, base: str | None, path: str | None = None) -> str:
+    """Unified diff of ``base..HEAD`` (optionally restricted to one ``path``)."""
+    if not base:
+        return ""
+    try:
+        args = ["diff", f"{base}..HEAD"]
+        if path:
+            args += ["--", path]
+        r = _git(root, *args, timeout=8.0)
+        return r.stdout if r.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def git_window_shas(root: Path, base: str | None) -> list[str]:
+    """Commit shas in ``base..HEAD`` (newest first). Empty on any failure."""
+    if not base:
+        return []
+    try:
+        r = _git(root, "log", f"{base}..HEAD", "--format=%H")
+        if r.returncode != 0:
+            return []
+        return [ln.strip() for ln in r.stdout.splitlines() if ln.strip()]
+    except Exception:
+        return []
+
+
+def added_lines_from_diff(diff_text: str) -> list[str]:
+    """The ADDED lines of a unified diff (leading ``+`` stripped; ``+++`` skipped).
+
+    Ported from the pact detectors verbatim -- the corpus for the prose legs
+    (magnitude-dismissal / verdict-scope) is the *added* text of ledger docs, so
+    appending one FEED to a long historical doc never re-scans old lines.
+    """
+    out: list[str] = []
+    for line in str(diff_text or "").splitlines():
+        if line.startswith("+") and not line.startswith("+++"):
+            out.append(line[1:])
+    return out
+
+
+# --- loop-safe event-window marker (shared by the Wave-2 Stop legs) ---------
+
+
+def read_window_marker(root: Path, name: str) -> dict[str, Any]:
+    try:
+        p = state_dir(root) / name
+        if p.exists():
+            data = json.loads(p.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        pass
+    return {}
+
+
+def write_window_marker(root: Path, name: str, marker: dict[str, Any]) -> None:
+    try:
+        marker = dict(marker)
+        marker["updated_ts"] = time.time()
+        (state_dir(root) / name).write_text(
+            json.dumps(marker, ensure_ascii=True), encoding="utf-8"
+        )
+    except Exception:
+        pass
+
+
+class EventWindow:
+    """Event-triggered, loop-safe commit-window tracker for one Stop leg.
+
+    Each Wave-2 leg owns its OWN marker file, so a bug in one leg's state can
+    never perturb another (independent fail-open, per the wave contract). The
+    protocol per Stop:
+
+    * ``base(head, stop_hook_active)`` -> the sha to scan ``base..HEAD``, or
+      ``None`` to stay silent. It is silent (and self-advances) on the first
+      run, when there are no new commits, or when this exact HEAD was already
+      nudged -- so the leg blocks AT MOST ONCE per HEAD state (never a wedge).
+    * on a clean window the caller calls ``allow(head)`` (advance past it);
+    * on drift the caller calls ``block(head)`` -- which HOLDS ``last_head`` at
+      the old base (so the fix lands in-window and clears the flag) while
+      recording ``last_block_head`` so the identical position is not re-blocked.
+    """
+
+    def __init__(self, root: Path, marker_name: str) -> None:
+        self.root = root
+        self.name = marker_name
+        self.marker = read_window_marker(root, marker_name)
+
+    def base(self, head: str | None, stop_hook_active: bool) -> str | None:
+        if not head:
+            return None
+        last_head = self.marker.get("last_head")
+        last_block = self.marker.get("last_block_head")
+        if not last_head:
+            self.allow(head)  # first run: initialize to HEAD, never block
+            return None
+        if stop_hook_active or (last_block and last_block == head):
+            self.allow(head)  # already nudged / mid-continuation: advance + hush
+            return None
+        if last_head == head:
+            return None  # no new commits since last stop
+        return str(last_head)
+
+    def allow(self, head: str) -> None:
+        write_window_marker(
+            self.root, self.name, {"last_head": head, "last_block_head": None}
+        )
+        self.marker = {"last_head": head, "last_block_head": None}
+
+    def block(self, head: str) -> None:
+        last_head = self.marker.get("last_head") or head
+        write_window_marker(
+            self.root, self.name, {"last_head": last_head, "last_block_head": head}
+        )
+        self.marker = {"last_head": last_head, "last_block_head": head}
