@@ -215,6 +215,19 @@ def _shared_runtime_wasm_cache_path(
     return _shared_runtime_wasm_cache_root() / filename
 
 
+def _runtime_wasm_compat_index_path(
+    *,
+    reloc: bool,
+    inputs_digest: str,
+    compat_digest: str,
+    cargo_profile: str,
+) -> Path:
+    kind = "reloc" if reloc else "shared"
+    return _shared_runtime_wasm_cache_root() / (
+        f"compat.{kind}.{inputs_digest}.{compat_digest}.{cargo_profile}.json"
+    )
+
+
 def _hydrate_runtime_wasm_from_shared_cache(
     *,
     dest: Path,
@@ -324,6 +337,30 @@ def _publish_runtime_wasm_to_shared_cache(
         )
         _RUNTIME_WASM_CACHE_STATS["last_publish_failure"] = reason
         return reason
+    if all(
+        isinstance(sidecar_payload.get(key), str)
+        for key in ("inputs_digest", "compat_digest", "cargo_profile")
+    ):
+        try:
+            _write_json_sidecar(
+                _runtime_wasm_compat_index_path(
+                    reloc=reloc,
+                    inputs_digest=str(sidecar_payload["inputs_digest"]),
+                    compat_digest=str(sidecar_payload["compat_digest"]),
+                    cargo_profile=str(sidecar_payload["cargo_profile"]),
+                ),
+                {
+                    "artifact": cache_path.name,
+                    "cargo_profile": sidecar_payload["cargo_profile"],
+                },
+            )
+        except OSError as exc:
+            reason = f"compatibility index failed: {exc}"
+            _RUNTIME_WASM_CACHE_STATS["publish_failures"] = (
+                int(_RUNTIME_WASM_CACHE_STATS["publish_failures"]) + 1
+            )
+            _RUNTIME_WASM_CACHE_STATS["last_publish_failure"] = reason
+            return reason
     _RUNTIME_WASM_CACHE_STATS["publish_successes"] = (
         int(_RUNTIME_WASM_CACHE_STATS["publish_successes"]) + 1
     )
@@ -360,9 +397,39 @@ def _hydrate_runtime_wasm_from_compatible_cache(
     kind = "reloc" if reloc else "shared"
     prefix = f"molt_runtime.{kind}."
     candidates: list[tuple[int, str, Path]] = []
+    index_pattern = f"compat.{kind}.{inputs_digest}.{compat_digest}.*.json"
     try:
-        sidecars = sorted(root.glob(f"{prefix}*.wasm.json"))
+        index_paths = sorted(root.glob(index_pattern))
     except OSError:
+        index_paths = []
+    for index_path in index_paths:
+        try:
+            index = json.loads(index_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(index, dict):
+            continue
+        cand_profile = index.get("cargo_profile")
+        artifact_name = index.get("artifact")
+        if not isinstance(cand_profile, str) or not isinstance(artifact_name, str):
+            continue
+        cand_rank = _profile_reuse_rank(cand_profile)
+        if cand_rank < 0 or cand_rank < request_rank:
+            continue
+        artifact = root / artifact_name
+        if (
+            artifact.parent != root
+            or artifact.suffix != ".wasm"
+            or not artifact.is_file()
+        ):
+            continue
+        candidates.append((cand_rank, artifact.name, artifact))
+    if not candidates:
+        try:
+            sidecars = sorted(root.glob(f"{prefix}*.wasm.json"))
+        except OSError:
+            sidecars = []
+    else:
         sidecars = []
     for sidecar in sidecars:
         try:
