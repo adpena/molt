@@ -139,6 +139,20 @@ unsafe extern "C" fn foreign_str_returns_int(_o: *mut PyObject) -> *mut PyObject
     unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(5) }
 }
 
+unsafe extern "C" fn foreign_str_raises(_o: *mut PyObject) -> *mut PyObject {
+    unsafe {
+        molt_cpython_abi::api::errors::PyErr_SetString(
+            &raw mut molt_cpython_abi::abi_types::PyExc_ValueError,
+            c"stringification failed".as_ptr(),
+        );
+    }
+    ptr::null_mut()
+}
+
+unsafe extern "C" fn recursive_repr(o: *mut PyObject) -> *mut PyObject {
+    unsafe { molt_cpython_abi::api::typeobj::PyObject_Repr(o) }
+}
+
 // ===========================================================================
 // Native scalars route through the runtime str/repr primitive (no theater).
 // ===========================================================================
@@ -159,6 +173,26 @@ fn native_int_repr_is_the_decimal_digits() {
     let r = unsafe { molt_cpython_abi::api::typeobj::PyObject_Repr(py) };
     assert!(!r.is_null());
     assert_eq!(unsafe { read_native_str(r) }, b"-17");
+}
+
+#[test]
+fn native_float_bool_and_none_are_exact() {
+    install();
+    let float = unsafe { molt_cpython_abi::api::numbers::PyFloat_FromDouble(3.5) };
+    let true_obj = (&raw mut molt_cpython_abi::abi_types::Py_True).cast::<PyObject>();
+    let false_obj = (&raw mut molt_cpython_abi::abi_types::Py_False).cast::<PyObject>();
+    let none_obj = &raw mut molt_cpython_abi::abi_types::Py_None;
+    for (obj, expected) in [
+        (float, &b"3.5"[..]),
+        (true_obj, &b"True"[..]),
+        (false_obj, &b"False"[..]),
+        (none_obj, &b"None"[..]),
+    ] {
+        let str_obj = unsafe { molt_cpython_abi::api::typeobj::PyObject_Str(obj) };
+        let repr_obj = unsafe { molt_cpython_abi::api::typeobj::PyObject_Repr(obj) };
+        assert_eq!(unsafe { read_native_str(str_obj) }, expected);
+        assert_eq!(unsafe { read_native_str(repr_obj) }, expected);
+    }
 }
 
 #[test]
@@ -251,6 +285,30 @@ fn foreign_str_slot_returning_non_string_raises_typeerror() {
         !err.is_null(),
         "must set TypeError on non-string __str__ result"
     );
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+}
+
+#[test]
+fn foreign_str_slot_exception_propagates_without_placeholder() {
+    install();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+    let ty = make_type(c"Raises".as_ptr(), Some(foreign_str_raises), None);
+    let inst = make_instance(ty);
+    let result = unsafe { molt_cpython_abi::api::typeobj::PyObject_Str(inst) };
+    assert!(result.is_null());
+    assert!(!unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+}
+
+#[test]
+fn recursive_repr_raises_instead_of_overflowing_or_fabricating() {
+    install();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+    let ty = make_type(c"Recursive".as_ptr(), None, Some(recursive_repr));
+    let inst = make_instance(ty);
+    let result = unsafe { molt_cpython_abi::api::typeobj::PyObject_Repr(inst) };
+    assert!(result.is_null());
+    assert!(!unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 }
 
