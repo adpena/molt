@@ -30,6 +30,12 @@ known-bad list — is exactly what the parity contract forbids. This ratchet mak
 
 ## How a verdict is reached (no hand-asserted greenness)
 
+The same manifest also owns `execution_reds` for Rust, target, and build lanes.
+Each entry requires an exact identity, owner, non-empty context predicate,
+evidence, introduced SHA, and expiry. The committed list is intentionally empty:
+the formerly normalized `test_sequences` and
+`pyset_ops_fail_closed_on_non_set` failures are fixed, not baselined.
+
 `tests/molt_diff.py` is the authority on what **happened**: for every test it
 records a raw status (`pass`/`fail`/`error`/`oom`/`skip`) and an `expect_molt_fail`
 flag. That flag is `True` iff the test is **already tracked by another channel** —
@@ -75,6 +81,11 @@ The guard (`python3 tools/check_suite_honesty.py`) exits non-zero when:
   Fixing a test lowers it; a regression that adds a debt is refused.
 
 ## How to add an expected-fail entry (you have a new known-bad test)
+
+For a Rust, target, or build red, add an `execution_reds` entry instead. Then
+run the guard with `--execution-results FILE`; it fails on every unregistered
+failure, registered-but-absent result, unexpected pass, incomplete owner record,
+or expired entry.
 
 1. Confirm it is genuinely a fixable debt (not a by-design exclusion — those go in
    `TOO_DYNAMIC_EXPECTED_FAILURE_TESTS`; not an inline-`expect_fail` case).
@@ -148,6 +159,8 @@ python3 tools/check_suite_honesty.py                 # check vs snapshot+baselin
 python3 tools/check_suite_honesty.py --verbose       # + per-backend table (native + wasm)
 python3 tools/check_suite_honesty.py --show TEST     # one test's expectations
 python3 tools/check_suite_honesty.py --lint-only     # manifest lint only (no reality)
+python3 tools/check_suite_honesty.py --execution-results execution.json
+        # exact Rust/target/build red-set check
 python3 tools/check_suite_honesty.py --update-baseline   # down-only
 python3 tools/check_suite_honesty.py --reconcile --results FILE
         # rewrite native dims FROM a calibration run (placeholders to fill)

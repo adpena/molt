@@ -90,8 +90,10 @@ Usage
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -124,6 +126,14 @@ TOO_DYNAMIC_MANIFEST_PATH = ROOT / "tools" / "stdlib_full_coverage_manifest.py"
 STATUS_FAIL = "fail"
 STATUS_UNCALIBRATED = "uncalibrated"
 VALID_EXPECTED_STATUSES = {STATUS_FAIL, STATUS_UNCALIBRATED}
+EXECUTION_RED_REQUIRED_FIELDS = {
+    "identity",
+    "owner",
+    "predicate",
+    "expiry",
+    "evidence",
+    "introduced_sha",
+}
 
 # Raw statuses emitted by tests/molt_diff.py (_record_diff_result). Anything in
 # FAILING_RAW_STATUSES is a divergence from CPython; "pass" matches; "skip" means
@@ -275,6 +285,107 @@ def validate_manifest(data: dict, too_dynamic: frozenset[str]) -> list[str]:
         problems += _validate_dimensions(
             raw_key, data["compliance"][raw_key], is_compliance=True
         )
+    problems += _validate_execution_reds(data.get("execution_reds", []))
+    return problems
+
+
+def _validate_execution_reds(entries: object) -> list[str]:
+    if not isinstance(entries, list):
+        return ["`execution_reds` must be a list in the suite-honesty manifest."]
+    problems: list[str] = []
+    identities: set[str] = set()
+    today = dt.date.today()
+    for index, entry in enumerate(entries):
+        label = f"execution_reds[{index}]"
+        if not isinstance(entry, dict):
+            problems.append(f"[{label}] must be an object.")
+            continue
+        missing = sorted(EXECUTION_RED_REQUIRED_FIELDS - entry.keys())
+        if missing:
+            problems.append(f"[{label}] missing required fields: {', '.join(missing)}")
+            continue
+        identity = entry["identity"]
+        if not isinstance(identity, str) or not identity.strip():
+            problems.append(
+                f"[{label}] identity must be a non-empty exact test/build identity."
+            )
+        elif identity in identities:
+            problems.append(
+                f"[{label}] duplicates execution-red identity {identity!r}."
+            )
+        else:
+            identities.add(identity)
+        for field in ("owner", "evidence"):
+            if not isinstance(entry[field], str) or not entry[field].strip():
+                problems.append(f"[{label}] {field} must be a non-empty string.")
+        predicate = entry["predicate"]
+        if not isinstance(predicate, dict) or not predicate:
+            problems.append(f"[{label}] predicate must be a non-empty context object.")
+        elif any(
+            not isinstance(k, str) or not isinstance(v, str)
+            for k, v in predicate.items()
+        ):
+            problems.append(f"[{label}] predicate keys and values must all be strings.")
+        sha = entry["introduced_sha"]
+        if not isinstance(sha, str) or re.fullmatch(r"[0-9a-f]{7,40}", sha) is None:
+            problems.append(
+                f"[{label}] introduced_sha must be a 7-40 digit lowercase git SHA."
+            )
+        try:
+            expiry = dt.date.fromisoformat(entry["expiry"])
+        except (TypeError, ValueError):
+            problems.append(f"[{label}] expiry must be an ISO date (YYYY-MM-DD).")
+        else:
+            if expiry < today:
+                problems.append(
+                    f"[{label}] expired on {expiry.isoformat()}; fix or renew with evidence."
+                )
+    return problems
+
+
+def load_execution_results(path: Path) -> list[dict]:
+    payload = _load_json(path)
+    rows = payload.get("results") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        raise GuardError(f"{_rel(path)} must contain a top-level `results` list")
+    return rows
+
+
+def execution_reality_check(data: dict, rows: list[dict]) -> list[str]:
+    entries = data.get("execution_reds", [])
+    problems: list[str] = []
+
+    def matches(entry: dict, row: dict) -> bool:
+        context = row.get("context", {})
+        return (
+            row.get("identity") == entry.get("identity")
+            and isinstance(context, dict)
+            and all(
+                context.get(key) == value
+                for key, value in entry.get("predicate", {}).items()
+            )
+        )
+
+    for row in rows:
+        if row.get("status") not in {"pass", "fail"}:
+            problems.append(f"execution result has invalid status: {row!r}")
+            continue
+        if row["status"] == "fail" and not any(
+            matches(entry, row) for entry in entries
+        ):
+            problems.append(
+                f"UNTRACKED EXECUTION RED: {row.get('identity')!r} context={row.get('context', {})!r}"
+            )
+    for entry in entries:
+        matched = [row for row in rows if matches(entry, row)]
+        if not matched:
+            problems.append(
+                f"REGISTERED EXECUTION RED NOT OBSERVED: {entry['identity']!r} predicate={entry['predicate']!r}"
+            )
+        elif any(row["status"] == "pass" for row in matched):
+            problems.append(
+                f"UNEXPECTED PASS: registered execution red {entry['identity']!r} is fixed; remove the entry"
+            )
     return problems
 
 
@@ -613,7 +724,9 @@ def cmd_update_baseline() -> int:
 # --------------------------------------------------------------------------
 
 
-def cmd_check(results_path: Path, verbose: bool) -> int:
+def cmd_check(
+    results_path: Path, verbose: bool, execution_results_path: Path | None = None
+) -> int:
     try:
         data = load_manifest()
         too_dynamic = load_too_dynamic_set()
@@ -630,6 +743,14 @@ def cmd_check(results_path: Path, verbose: bool) -> int:
 
     if results is not None:
         problems += reality_check(data, results, too_dynamic)
+
+    if execution_results_path is not None:
+        try:
+            problems += execution_reality_check(
+                data, load_execution_results(execution_results_path)
+            )
+        except GuardError as exc:
+            problems.append(str(exc))
 
     # WASM dimension: reality-check the `wasm` manifest dims against the committed
     # wasm snapshot when it exists (symmetric to native). If the snapshot is
@@ -929,6 +1050,10 @@ def main(argv: list[str]) -> int:
         "--results", help="calibration results JSONL (default: committed snapshot)"
     )
     ap.add_argument(
+        "--execution-results",
+        help="JSON results for Rust/target/build reds checked against execution_reds",
+    )
+    ap.add_argument(
         "--verbose", action="store_true", help="print the per-backend table"
     )
     ap.add_argument("--show", metavar="TEST", help="print one test's expectations")
@@ -995,7 +1120,12 @@ def main(argv: list[str]) -> int:
             return cmd_reconcile(results_path)
         if args.update_baseline:
             return cmd_update_baseline()
-        return cmd_check(results_path, args.verbose)
+        execution_results_path = (
+            Path(args.execution_results).expanduser()
+            if args.execution_results
+            else None
+        )
+        return cmd_check(results_path, args.verbose, execution_results_path)
     except GuardError as exc:
         print(f"\nSUITE HONESTY GUARD FAILED:\n  - {exc}\n", file=sys.stderr)
         return 1
