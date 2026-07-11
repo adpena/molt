@@ -67,6 +67,61 @@ def _section_goal(out: io.StringIO, root: Path) -> None:
         pass
 
 
+def _lane_context(root: Path) -> str:
+    """A compact free-text context describing what the current session is likely
+    working on: the witness-closure goal keywords + the freshest CLAIMS activity.
+    This is what A10's ``memory_graph.nearest`` ranks memories against."""
+    ctx = [
+        "witness closure WASM numpy scipy parity candidate_outputs check_parity",
+        "build wall-clock frontend lowering seal apparatus",
+    ]
+    try:
+        claims = (root / "docs" / "agent" / "CLAIMS.md").read_text(
+            encoding="utf-8", errors="replace"
+        )
+        # The freshest pipe rows (end of file) best proxy the active frontier.
+        rows = [
+            ln.strip()
+            for ln in claims.splitlines()
+            if ln.strip().startswith("|") and ln.count("|") >= 5
+        ]
+        for row in rows[-3:]:
+            cells = [c.strip() for c in row.strip("|").split("|")]
+            if len(cells) >= 5:
+                ctx.append(cells[0])  # lane id
+                ctx.append(cells[-1][:400])  # description head
+    except Exception:
+        pass
+    return "\n".join(ctx)
+
+
+def _section_nearest_memories(out: io.StringIO, root: Path, cwd: str | None) -> None:
+    """A10: surface the 3 memories NEAREST the current lane/goal context so the
+    session starts already recalling the relevant lessons instead of re-reading
+    the whole corpus (the goldfish-memory class; M22). Fail-open: any error and
+    this section simply prints nothing extra -- it must NEVER sink the digest."""
+    out.write("NEAREST MEMORIES (A10 recall -- lessons relevant to this lane):\n")
+    ranked = []
+    try:
+        from tools import memory_graph
+
+        ctx = _lane_context(root)
+        ranked = memory_graph.nearest_memories(ctx, k=3, repo_root=root, cwd=cwd)
+    except Exception:
+        ranked = []
+    if not ranked:
+        out.write("  (no corpus resolved; recall unavailable this session)\n")
+        return
+    for node, _score in ranked:
+        mid = ""
+        for a in node.aliases:
+            if a and a[0] == "M" and a[1:].isdigit():
+                mid = f"{a} "
+                break
+        title = (node.title or node.id)[:90]
+        out.write(f"  - {mid}{node.id}: {title}\n")
+
+
 def _section_custody(out: io.StringIO, root: Path) -> None:
     out.write("CUSTODY:\n")
     # Active CLAIMS rows (cheap file scan).
@@ -159,6 +214,7 @@ def run() -> int:
     out.write("== molt session digest (apparatus wave 1) ==\n")
     for section in (
         lambda: _section_goal(out, root),
+        lambda: _section_nearest_memories(out, root, cwd),
         lambda: _section_custody(out, root),
         lambda: _section_drift(out, root),
         lambda: _section_build_wall(out, root),
