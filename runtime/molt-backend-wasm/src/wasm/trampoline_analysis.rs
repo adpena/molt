@@ -1,4 +1,4 @@
-use crate::{SimpleIR, TrampolineKind};
+use crate::{SimpleIR, TrampolineKind, TrampolineTaskKind};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) struct WasmTrampolineAnalysis {
