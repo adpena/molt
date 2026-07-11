@@ -46,6 +46,7 @@ REQUIRED_CONSTANTS: tuple[str, ...] = (
     "DISTILL",
     "MODEL_TIER",
     "TRIALITY_WIRING",
+    "PREMISE_VERIFICATION",
 )
 
 #: The verbatim-grade fragment each required constant must still contain.
@@ -62,6 +63,7 @@ REQUIRED_KEY_PHRASES: dict[str, str] = {
     "DISTILL": "delete as much code as possible",
     "MODEL_TIER": "Fable orchestrates",
     "TRIALITY_WIRING": "all three legs",
+    "PREMISE_VERIFICATION": "before your first Write",
 }
 
 

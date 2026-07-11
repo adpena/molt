@@ -15,6 +15,7 @@ liveness check is deterministic and fast.
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,6 +28,15 @@ if str(ROOT) not in sys.path:
 from tools.hooks import bash_guard, landing_gate  # noqa: E402
 from tools.hooks import waivers  # noqa: E402
 from tools import triality_gate, magnitude_dismissal_gate  # noqa: E402
+from tools import claims_status, check_sister_landed, commit_serializer  # noqa: E402
+
+# Fixed clock + timestamp helper for the A11 claims-status canaries (the pure
+# classifier takes an explicit ``now`` so the liveness check is deterministic).
+_A11_NOW = _dt.datetime(2026, 7, 11, 12, 0, 0, tzinfo=_dt.timezone.utc)
+
+
+def _a11_ts(hours_ago: float) -> str:
+    return (_A11_NOW - _dt.timedelta(hours=hours_ago)).strftime(claims_status._TS_FMT)
 
 
 @dataclass
@@ -243,6 +253,80 @@ def _canaries() -> list[Canary]:
                     },
                 )
             ),
+        ),
+        # --- Wave 4, A11: claims terminal vocabulary + classifier ----------
+        Canary(
+            "claims_status",
+            "falsified-classifies-retired",
+            lambda: (
+                claims_status.classify_status(
+                    claims_status.Row("L", "a", _a11_ts(0.1), "FALSIFIED", ""), _A11_NOW
+                )[0]
+                == claims_status.RETIRED
+            ),
+        ),
+        Canary(
+            "claims_status",
+            "stale-claimed-classifies-stale",
+            lambda: (
+                claims_status.classify_status(
+                    claims_status.Row("L", "a", _a11_ts(9.0), "CLAIMED", ""), _A11_NOW
+                )[0]
+                == claims_status.STALE
+            ),
+        ),
+        Canary(
+            "claims_status",
+            "fresh-claimed-classifies-live",
+            # known-GOOD counter-fixture: a fresh claim must NOT read as retired/stale.
+            lambda: (
+                claims_status.classify_status(
+                    claims_status.Row("L", "a", _a11_ts(0.5), "CLAIMED", ""), _A11_NOW
+                )[0]
+                == claims_status.LIVE
+            ),
+        ),
+        # --- Wave 4, A11: premise-verification preflight -------------------
+        Canary(
+            "check_sister_landed",
+            "landed-stands-down",
+            lambda: (
+                check_sister_landed.classify(["done"], []).code
+                == check_sister_landed.STAND_DOWN_DUPLICATE
+            ),
+        ),
+        Canary(
+            "check_sister_landed",
+            "inflight-waits",
+            lambda: (
+                check_sister_landed.classify([], ["mid"]).code
+                == check_sister_landed.WAIT_AND_REASSESS
+            ),
+        ),
+        Canary(
+            "check_sister_landed",
+            "clean-proceeds",
+            # known-GOOD counter-fixture: no matches must PROCEED, not falsely block.
+            lambda: (
+                check_sister_landed.classify([], []).code == check_sister_landed.PROCEED
+            ),
+        ),
+        # --- Wave 4, A11: serialized commit primitive ----------------------
+        Canary(
+            "commit_serializer",
+            "add-dash-A-refused",
+            lambda: commit_serializer.validate_pathspec(["-A"]) is not None,
+        ),
+        Canary(
+            "commit_serializer",
+            "dot-sweep-refused",
+            lambda: commit_serializer.validate_pathspec(["."]) is not None,
+        ),
+        Canary(
+            "commit_serializer",
+            "named-pathspec-allowed",
+            # known-GOOD counter-fixture: a clean named file must NOT be refused.
+            lambda: commit_serializer.validate_pathspec(["runtime/src/x.rs"]) is None,
         ),
     ]
 

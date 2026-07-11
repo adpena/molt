@@ -46,6 +46,7 @@ __all__ = [
     "MODEL_TIER",
     "NO_ENDING_ON_PROMISES",
     "NO_FAKES",
+    "PREMISE_VERIFICATION",
     "TRIALITY_WIRING",
     "VERIFY_FULL_SUITE",
     "WEB_AUTHORITY",
@@ -168,6 +169,20 @@ TRIALITY_WIRING = (
     "is built to catch."
 )
 
+#: M22/M24 -- premise verification: before the first Write, prove no sister lane already
+#: landed or is mid-flight on this surface (the A11 preflight); commit named-files-only.
+PREMISE_VERIFICATION = (
+    "PREMISE VERIFICATION (M22/M24): before your first Write, run "
+    "`python tools/check_sister_landed.py --files <targets> --topic <lane>` -- exit 8 "
+    "STAND_DOWN_DUPLICATE means a sister lane already LANDED this surface, exit 9 "
+    "WAIT_AND_REASSESS means one is MID-FLIGHT on it. On 8/9, re-read docs/agent/CLAIMS.md "
+    "plus the recent landings (git log) and pick a different lane or a genuinely remaining "
+    "slice -- never duplicate work or collide on shared files. When you land, commit through "
+    "`tools/commit_serializer.py` (named files only, never `git add -A`), and self-retire a "
+    "dead lane with a terminal CLAIMS status (FALSIFIED / SUPERSEDED / "
+    "MEASURED_IMPLEMENTATION_RETIRED / STALE_ASSUMED_DEAD) so stale custody cannot block it."
+)
+
 # --- Registry (consumed by the anti-rot gate + the tests) ----------------------------------
 
 #: Every named contract block this module guarantees. The anti-rot gate hardcodes the same
@@ -185,6 +200,7 @@ CONTRACT_CONSTANT_NAMES: tuple[str, ...] = (
     "DISTILL",
     "MODEL_TIER",
     "TRIALITY_WIRING",
+    "PREMISE_VERIFICATION",
 )
 
 #: The M## directive(s) each constant mechanizes -- so every block documents its provenance
@@ -202,6 +218,7 @@ MECHANIZES: dict[str, str] = {
     "DISTILL": "M33",
     "MODEL_TIER": "M70",
     "TRIALITY_WIRING": "M63",
+    "PREMISE_VERIFICATION": "M22/M24",
 }
 
 #: The verbatim-grade fragment each block must keep. A block may be reworded, but if it drops
@@ -219,6 +236,7 @@ KEY_PHRASES: dict[str, str] = {
     "DISTILL": "delete as much code as possible",
     "MODEL_TIER": "Fable orchestrates",
     "TRIALITY_WIRING": "all three legs",
+    "PREMISE_VERIFICATION": "before your first Write",
 }
 
 

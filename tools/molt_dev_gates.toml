@@ -533,6 +533,30 @@ gates = [
   "python3 tools/venv_exec.py python tools/check_gate_flips.py --check",
 ]
 
+# --- APPARATUS Wave 4 A11 claims custody + preflight + commit serializer ---
+[[rule]]
+name = "apparatus-a11"
+description = "Claims self-retirement terminal vocabulary + premise-verification preflight + serialized-commit primitive (M11/M20/M22/M24): teeth + falsifiable self-tests + gate-liveness canary."
+globs = [
+  "tools/claims_status.py",
+  "tools/check_sister_landed.py",
+  "tools/commit_serializer.py",
+  "tools/claim_lane.py",
+  "tools/subagent_contract.py",
+  "tools/dispatch_prompt.py",
+  "docs/agent/CLAIMS.md",
+  "tests/tools/test_claims_status.py",
+  "tests/tools/test_check_sister_landed.py",
+  "tests/tools/test_commit_serializer.py",
+]
+gates = [
+  "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_claims_status.py tests/tools/test_check_sister_landed.py tests/tools/test_commit_serializer.py",
+  "python3 tools/venv_exec.py python tools/claims_status.py --check",
+  "python3 tools/venv_exec.py python tools/check_sister_landed.py --check",
+  "python3 tools/venv_exec.py python tools/commit_serializer.py --check",
+  "python3 tools/venv_exec.py python tools/check_gate_liveness.py --check",
+]
+
 # =========================================================================
 # GATE-LIFECYCLE REGISTRY (APPARATUS Wave 1, A9)
 #
@@ -612,3 +636,44 @@ state = "warn"
 strict_when = "manual: unresolved M## sustained at 0 on the live auto-memory corpus AND dangling-link triage reviewed (operator-box only; CI cannot see the corpus)"
 count_cmd = "python3 tools/check_memory_graph.py --count"
 rationale = "APPARATUS A10 memory-graph integrity (ci_gate check memory-graph-integrity, warn-only). Reports dangling [[wikilinks]] (ALLOWED) + unresolved MEMORY.md M## (index break). Free-text manual strict_when because CI cannot see the auto-memory corpus; flip is an operator decision made against the live corpus."
+
+# --- APPARATUS Wave 4 A11 claims/preflight/serializer (self-tests land strict) ---
+# The three A11 tools ship falsifiable `--check` self-tests + gate-liveness
+# canaries (a FALSIFIED row must be RETIRED; check_sister_landed must return
+# 8/9/0; the serializer must refuse -A / a stale sha). Those self-tests land
+# FUNCTIONAL/strict -- they are additive and can only fail on a genuine
+# classifier rot -- so `landed_functional` marks them (no flip pending).
+[[gate_flip]]
+name = "claims_status_self_test"
+state = "strict"
+strict_when = "landed_functional"
+rationale = "APPARATUS A11 (ci_gate check apparatus-claims-status-self-test). The terminal/stale classifier's falsifiable --check lands strict: it only fails if a FALSIFIED/SUPERSEDED/... row stops classifying RETIRED or a stale CLAIMED stops classifying STALE (M34/M42). Additive; nothing to flip."
+
+[[gate_flip]]
+name = "check_sister_landed_self_test"
+state = "strict"
+strict_when = "landed_functional"
+rationale = "APPARATUS A11 (ci_gate check apparatus-check-sister-landed-self-test). The premise-verification classifier's falsifiable --check lands strict: it only fails if 8 (landed) / 9 (mid-flight) / 0 (clean) precedence rots. Additive; nothing to flip."
+
+[[gate_flip]]
+name = "commit_serializer_self_test"
+state = "strict"
+strict_when = "landed_functional"
+rationale = "APPARATUS A11 (ci_gate check apparatus-commit-serializer-self-test). The named-files-only / expected-sha guard's falsifiable --check lands strict: it only fails if a sweep pathspec (-A / . / *) or a stale sha stops being refused. Additive; nothing to flip."
+
+# --- APPARATUS A11 claims-custody stale report (warn-only; A9 [[gate_flip]]) ---
+# `tools/claims_status.py` (ci_gate check apparatus-claims-status-warn,
+# required=False) reports live/retired/stale CLAIMS counts and FLAGS any stale
+# CLAIMED lane (no fresh PROGRESS for > 4h). It ALWAYS exits 0: staleness is
+# advisory, NEVER a hard CI failure -- a silent worktree may still be alive, so
+# CLAIMS.md 6 requires an OBJECTIVE-liveness check before any RECLAIM, which CI
+# cannot perform. strict_when is therefore a MANUAL-REVIEW free-text token (like
+# memory_graph_integrity), not a machine `live_count == 0`: the operator, seeing
+# the real worktrees/queue, decides any RECLAIM. count_cmd exposes the live stale
+# count for the human-visible report.
+[[gate_flip]]
+name = "claims_status_stale"
+state = "warn"
+strict_when = "manual: a stale CLAIMED lane is advisory only (CLAIMS.md 6 objective-liveness bar); CI cannot prove a silent worktree dead, so this never flips to a hard fail -- the operator drives any RECLAIM"
+count_cmd = "python3 tools/claims_status.py --json"
+rationale = "APPARATUS A11 claims-custody stale flag (ci_gate check apparatus-claims-status-warn, warn-only). Reports live/retired/stale counts so stale custody cannot silently block a lane, but staleness is never a hard failure: CLAIMS.md 6 needs objective-liveness evidence CI does not have. Free-text manual strict_when; the operator reclaims."
