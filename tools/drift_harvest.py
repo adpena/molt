@@ -40,6 +40,8 @@ import subprocess
 import time
 from pathlib import Path
 
+from tools import lane_maturity
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Worktrees that must never be pruned regardless of freshness.
@@ -365,6 +367,9 @@ def main() -> int:
         rm = _git(["worktree", "remove", r["path"]])
         if rm.returncode == 0:
             removed += 1
+            lane_maturity.complete_worktree_lanes_fail_open(
+                repo_root=REPO_ROOT, worktree=Path(r["path"])
+            )
             if r["branch"]:
                 # Force-delete the branch ONLY if we can PROVE its work is safe: the
                 # tip is an ancestor of origin/main (truly landed — immune to a

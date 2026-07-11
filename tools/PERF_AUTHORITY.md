@@ -115,3 +115,30 @@ churn. The synthetic artifact root is now the first module-naming root, so the
 entry keeps its stable logical module name and output-directory churn invalidates
 zero contexts. The regression test uses an acceptance-shaped nested output path
 and rejects any `tmp.acceptance` module admission.
+
+## Variant-II Landing Acceptance
+
+`tools/powerplay_acceptance.py` is the acceptance authority for perf landings.
+A citable landing requires a positive serial differential on the real authority,
+a release profile, at least three samples, held-bench never-regress evidence,
+and a recorded memory-ceiling run. Checked-in legacy attestations are parsed by
+the canonical perf workflow but remain advisory until all fields needed by
+`CorrectnessDemonstration` are present; this prevents historical shape drift
+from blocking unrelated work while refusing proxy evidence for a perf claim.
+
+The current checked-in attestations validate as follows:
+
+- `perf_goal_r3_runtime_cache_attestation.json`: parsed; dev-fast compatible-cache proxy, not Variant-II citable.
+- `perf_goal_r4_seal_validation_attestation.json`: parsed; real five-run seal differential, missing explicit release-profile and memory-ceiling evidence.
+- `perf_goal_r5_relink_attestation.json`: parsed; real three-run artifact differential, missing explicit release-profile and memory-ceiling evidence.
+- `perf_witness_iteration_attestation.json`: parsed; acceptance-shaped build evidence, not a complete correctness/memory attestation.
+
+### Backlog gain per validation cost
+
+The ranking helper reads this intentionally small table; it does not create a
+second backlog system. Gain and cost are relative planning estimates.
+
+| Item | Expected gain | Validation cost |
+| runtime-wasm cache authority | 8 | 2 |
+| witness lowering-context stability | 10 | 4 |
+| seal relocation-root reuse | 4 | 2 |

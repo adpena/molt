@@ -55,6 +55,16 @@ def _run_one(
     for parent_run_id in depends_on or []:
         if not pq._run_exists(conn, parent_run_id):
             raise SystemExit(f"unknown parent proof run {parent_run_id!r}")
+    maturity = pq._lane_maturity_admission(
+        conn=conn,
+        repo_root=repo_root,
+        logical_id=logical_id,
+        resource_family=resource_family,
+        depends_on=depends_on or (),
+    )
+    if not maturity.allow:
+        print(f"lane maturity refused {logical_id}: {maturity.reason}", file=sys.stderr)
+        return 2
     if edge_kind not in pq.EDGE_KINDS:
         allowed = ", ".join(sorted(pq.EDGE_KINDS))
         raise SystemExit(f"unknown proof edge kind {edge_kind!r}; allowed: {allowed}")

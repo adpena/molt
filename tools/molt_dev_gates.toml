@@ -583,6 +583,29 @@ gates = [
   "python3 tools/venv_exec.py python tools/check_gate_liveness.py --check",
 ]
 
+# --- APPARATUS A8/A12 + event-driven disk reclaim -----------------------
+[[rule]]
+name = "apparatus-a8-a12-disk-reclaim"
+description = "Lane maturity, Variant-II perf acceptance, and completed-lane target reclaim: teeth plus liveness."
+globs = [
+  "tools/lane_maturity.py",
+  "tools/powerplay_acceptance.py",
+  "tools/proof_queue.py",
+  "tools/proof_queue_pkg/runner.py",
+  "tools/disk_guard.py",
+  "tools/drift_harvest.py",
+  "tools/check_gate_liveness.py",
+  "tests/tools/test_lane_maturity.py",
+  "tests/tools/test_powerplay_acceptance.py",
+  "tests/tools/test_proof_queue_lane_maturity.py",
+  "tests/tools/test_disk_guard.py",
+]
+gates = [
+  "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_lane_maturity.py tests/tools/test_powerplay_acceptance.py tests/tools/test_proof_queue_lane_maturity.py tests/tools/test_disk_guard.py tests/tools/test_check_gate_liveness.py",
+  "python3 tools/venv_exec.py python tools/check_gate_liveness.py --check",
+  "python3 tools/venv_exec.py python tools/apparatus_agent_safety.py --check",
+]
+
 # =========================================================================
 # GATE-LIFECYCLE REGISTRY (APPARATUS Wave 1, A9)
 #
@@ -703,3 +726,21 @@ state = "warn"
 strict_when = "manual: a stale CLAIMED lane is advisory only (CLAIMS.md 6 objective-liveness bar); CI cannot prove a silent worktree dead, so this never flips to a hard fail -- the operator drives any RECLAIM"
 count_cmd = "python3 tools/claims_status.py --json"
 rationale = "APPARATUS A11 claims-custody stale flag (ci_gate check apparatus-claims-status-warn, warn-only). Reports live/retired/stale counts so stale custody cannot silently block a lane, but staleness is never a hard failure: CLAIMS.md 6 needs objective-liveness evidence CI does not have. Free-text manual strict_when; the operator reclaims."
+
+[[gate_flip]]
+name = "lane_maturity_admission"
+state = "strict"
+strict_when = "landed_functional"
+rationale = "A8 proof admission has pure teeth and a live known-bad wasm-below-L1 canary; registry faults remain loud fail-open."
+
+[[gate_flip]]
+name = "powerplay_variant_ii_acceptance"
+state = "strict"
+strict_when = "landed_functional"
+rationale = "A12 strict decision refuses proxy, dev-profile, single-run, regression, and missing-memory evidence; legacy artifact auditing is advisory-loud."
+
+[[gate_flip]]
+name = "completed_lane_disk_reclaim"
+state = "strict"
+strict_when = "landed_functional"
+rationale = "Completed-lane reclaim has pure active/lock/protection teeth, event-path integration, fail-open wrapper, and a liveness canary."
