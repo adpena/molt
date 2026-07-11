@@ -185,6 +185,7 @@ def maybe_dispatch_to_wsl(argv: list[str]) -> "int | None":
             target_repo = subprocess.check_output(
                 ["wsl.exe", "-d", WSL_DISTRO, "-e", "wslpath", "-a", str(repo)],
                 text=True,
+                encoding="utf-8",
             ).strip()
         except Exception as exc:  # noqa: BLE001
             log(f"FATAL: could not translate repo path into WSL: {exc}")
@@ -258,6 +259,7 @@ def run_native_drive(module: str, profile: str) -> tuple[Fingerprint, str, float
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     wall = time.monotonic() - t0
     out = (proc.stdout or "") + (proc.stderr or "")
@@ -390,7 +392,9 @@ def measure_incremental_relink(profile: str) -> float | None:
     if profile != "dev":
         cmd += ["--profile", profile]
     t0 = time.monotonic()
-    proc = subprocess.run(cmd, cwd=str(build_dir), env=env, capture_output=True, text=True)
+    proc = subprocess.run(
+        cmd, cwd=str(build_dir), env=env, capture_output=True, text=True, encoding="utf-8"
+    )
     wall = time.monotonic() - t0
     if proc.returncode != 0:
         log("   (measure-relink: relink build FAILED)")
@@ -409,7 +413,12 @@ def run_symbol_sweep(profile: str) -> tuple[int | None, str, float]:
     env["MOLT_DISCOVERY_PROFILE"] = profile
     t0 = time.monotonic()
     proc = subprocess.run(
-        ["bash", str(script)], cwd=str(repo), env=env, capture_output=True, text=True
+        ["bash", str(script)],
+        cwd=str(repo),
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
     )
     wall = time.monotonic() - t0
     out = (proc.stdout or "") + (proc.stderr or "")
