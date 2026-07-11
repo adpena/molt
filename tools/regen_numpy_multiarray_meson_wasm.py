@@ -102,6 +102,7 @@ def _write_cross_file(
     *,
     wasi_sysroot: Path,
     pkgdir: Path,
+    python_include: Path,
     builtins_rlib: Path,
     cython: Path,
 ) -> None:
@@ -115,6 +116,7 @@ def _write_cross_file(
     sysroot = esc(str(wasi_sysroot))
     rlib = esc(str(builtins_rlib))
     cython_exe = esc(str(cython))
+    python_inc = esc(str(python_include))
     cross_path.write_text(
         "[binaries]\n"
         f"ar = ['{ar}']\n"
@@ -128,6 +130,8 @@ def _write_cross_file(
         "\n"
         "[built-in options]\n"
         f"pkg_config_path = ['{pkgdir.as_posix()}']\n"
+        f"c_args = ['-I{python_inc}']\n"
+        f"cpp_args = ['-I{python_inc}']\n"
         "c_link_args = ['-nodefaultlibs', '-lc', '{rlib}']\n".format(rlib=rlib)
         + "cpp_link_args = ['-nodefaultlibs', '-lc', '-lc++', '-lc++abi', '{rlib}']\n".format(
             rlib=rlib
@@ -210,6 +214,7 @@ def main() -> int:
         cross_path,
         wasi_sysroot=wasi_sysroot,
         pkgdir=pkgdir,
+        python_include=molt_root / "runtime" / "molt-cpython-abi" / "include",
         builtins_rlib=_rust_compiler_builtins_rlib(),
         cython=cython,
     )

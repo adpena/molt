@@ -2729,8 +2729,17 @@ def extension_build(
             if capi_error is not None:
                 return _fail(capi_error, json_output, command="extension-build")
             assert source_c_api_requirements is not None
-            missing_c_api = list(source_c_api_requirements.missing_symbols)
-            fail_fast_c_api = list(source_c_api_requirements.fail_fast_symbols)
+            unresolved_object_symbols = set(source_plan_object_closure.runtime_symbols)
+            missing_c_api = [
+                symbol
+                for symbol in source_c_api_requirements.missing_symbols
+                if symbol in unresolved_object_symbols
+            ]
+            fail_fast_c_api = [
+                symbol
+                for symbol in source_c_api_requirements.fail_fast_symbols
+                if symbol in unresolved_object_symbols
+            ]
             if missing_c_api or fail_fast_c_api:
                 details: list[str] = []
                 if missing_c_api:
