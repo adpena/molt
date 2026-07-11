@@ -624,6 +624,46 @@ pub struct PyBufferProcs {
     pub bf_releasebuffer: *mut c_void,
 }
 
+/// `struct _specialization_cache` (CPython v3.12.0 Include/cpython/object.h),
+/// embedded by value at the tail of `PyHeapTypeObject`.
+#[repr(C)]
+pub struct SpecializationCache {
+    pub getitem: *mut PyObject,
+    pub getitem_version: u32,
+}
+
+/// `PyHeapTypeObject` / `struct _heaptypeobject` — the real allocation shape of a
+/// heap type (a type created by `PyType_FromSpec*`). Field order is byte-for-byte
+/// CPython v3.12.0 (Include/cpython/object.h) and matches
+/// `include/Python.h`'s `_heaptypeobject`: the `PyTypeObject` header, the five
+/// inline protocol sub-tables, then `ht_name`/`ht_slots`/`ht_qualname`/
+/// `ht_cached_keys`/`ht_module`/`_ht_tpname`/`_spec_cache`. A `PyType_FromSpec`
+/// type MUST be allocated as this (not a bare `Box<PyTypeObject>`) or an
+/// extension's `((PyHeapTypeObject*)type)->ht_name`/`ht_module` reads run OOB past
+/// the 416-byte `PyTypeObject` (matrix PyTypeObject #3, L3). The five sub-table
+/// fields are present for layout fidelity (so `ht_*` land at the CPython offsets);
+/// the runtime still points `tp_as_*` at the separately-boxed `ensure_*` tables.
+#[repr(C)]
+pub struct PyHeapTypeObject {
+    pub ht_type: PyTypeObject,
+    pub as_async: PyAsyncMethods,
+    pub as_number: PyNumberMethods,
+    pub as_mapping: PyMappingMethods,
+    pub as_sequence: PySequenceMethods,
+    pub as_buffer: PyBufferProcs,
+    pub ht_name: *mut PyObject,
+    pub ht_slots: *mut PyObject,
+    pub ht_qualname: *mut PyObject,
+    /// `struct _dictkeysobject *` — opaque to the ABI.
+    pub ht_cached_keys: *mut c_void,
+    pub ht_module: *mut PyObject,
+    pub _ht_tpname: *mut c_char,
+    pub _spec_cache: SpecializationCache,
+}
+
+unsafe impl Send for PyHeapTypeObject {}
+unsafe impl Sync for PyHeapTypeObject {}
+
 /// CPython METH flags (tp_methods ml_flags).
 pub const METH_VARARGS: c_int = 0x0001;
 pub const METH_KEYWORDS: c_int = 0x0002;
@@ -1098,6 +1138,12 @@ pub unsafe fn init_static_types() {
                 | Py_TPFLAGS_ITEMS_AT_END,
             object
         );
+        // `type` instances ARE heap types: CPython `PyType_Type.tp_basicsize =
+        // sizeof(PyHeapTypeObject)`, `tp_itemsize = sizeof(PyMemberDef)`. A metatype
+        // that leaves its own basicsize 0 (numpy's `_DTypeMeta`, tp_base=&PyType_Type)
+        // inherits this at ready-time, so its instances have room for the ht_* tail.
+        PyType_Type.tp_basicsize = std::mem::size_of::<PyHeapTypeObject>() as Py_ssize_t;
+        PyType_Type.tp_itemsize = std::mem::size_of::<PyMemberDef>() as Py_ssize_t;
         // int — LONG_SUBCLASS|BASETYPE|MATCH_SELF; variable-length (ob_digit tail).
         shell!(
             PyLong_Type,
@@ -2152,5 +2198,43 @@ mod immortal_authority_tests {
                 "complex basicsize == sizeof(PyComplexObject)"
             );
         }
+    }
+
+    /// Layout gate (ABI-TYPEOBJECT-L4 #4): the Rust `PyHeapTypeObject` mirror is
+    /// byte-compatible with `include/Python.h`'s `_heaptypeobject` and CPython
+    /// v3.12.0 `struct _heaptypeobject`. Field order is load-bearing (an
+    /// extension casts `type` to `PyHeapTypeObject*` and reads the ht_* tail by
+    /// offset), so this pins every offset: the header, the five inline protocol
+    /// sub-tables in CPython order (no padding), then the pointer run
+    /// ht_name/ht_slots/ht_qualname/ht_cached_keys/ht_module, _ht_tpname,
+    /// _spec_cache. A reorder or stray pad fails here (drift catch); the C
+    /// compiler's `_Static_assert` on the same struct is the cross-check.
+    #[test]
+    fn pyheaptypeobject_layout_matches_c_header() {
+        use core::mem::{offset_of, size_of};
+        assert_eq!(offset_of!(PyHeapTypeObject, ht_type), 0, "ht_type first");
+        // Sub-tables follow the header in order with no padding.
+        assert_eq!(offset_of!(PyHeapTypeObject, as_async), size_of::<PyTypeObject>());
+        let after_subtables = size_of::<PyTypeObject>()
+            + size_of::<PyAsyncMethods>()
+            + size_of::<PyNumberMethods>()
+            + size_of::<PyMappingMethods>()
+            + size_of::<PySequenceMethods>()
+            + size_of::<PyBufferProcs>();
+        let p = size_of::<*mut PyObject>();
+        assert_eq!(offset_of!(PyHeapTypeObject, ht_name), after_subtables, "ht_name past subtables");
+        assert_eq!(offset_of!(PyHeapTypeObject, ht_slots), after_subtables + p);
+        assert_eq!(offset_of!(PyHeapTypeObject, ht_qualname), after_subtables + 2 * p);
+        assert_eq!(offset_of!(PyHeapTypeObject, ht_cached_keys), after_subtables + 3 * p);
+        assert_eq!(offset_of!(PyHeapTypeObject, ht_module), after_subtables + 4 * p, "ht_module offset");
+        assert_eq!(offset_of!(PyHeapTypeObject, _ht_tpname), after_subtables + 5 * p);
+        // _spec_cache: { PyObject *getitem; uint32_t getitem_version; }.
+        assert_eq!(offset_of!(SpecializationCache, getitem), 0);
+        assert_eq!(offset_of!(SpecializationCache, getitem_version), p);
+        // Strictly larger than a bare PyTypeObject (the pre-fix under-allocation).
+        assert!(
+            size_of::<PyHeapTypeObject>() > size_of::<PyTypeObject>(),
+            "heap type must be larger than a bare PyTypeObject"
+        );
     }
 }

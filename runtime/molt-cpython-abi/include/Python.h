@@ -1012,6 +1012,11 @@ extern unsigned long PyType_GetFlags    (PyTypeObject *tp);
 extern int          PyType_HasFeature   (PyTypeObject *tp, unsigned long feature);
 extern int          PyType_Check        (PyObject *op);
 extern int          PyType_IsSubtype    (PyTypeObject *a, PyTypeObject *b);
+/* Heap-type / per-module state (PEP 573). A spec-built type is a real
+ * PyHeapTypeObject, so ht_module is in bounds and these resolve. */
+extern PyObject    *PyType_GetModule       (PyTypeObject *type);
+extern void        *PyType_GetModuleState  (PyTypeObject *type);
+extern PyObject    *PyType_GetModuleByDef  (PyTypeObject *type, PyModuleDef *def);
 extern PyObject    *PyType_GetQualName  (PyTypeObject *tp);
 extern void         PyType_Modified     (PyTypeObject *tp);
 extern PyObject    *_PyType_Lookup      (PyTypeObject *tp, PyObject *name);
