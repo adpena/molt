@@ -153,6 +153,71 @@ def test_committed_manifest_lint_clean(guard):
     assert guard.main(["--lint-only"]) == 0
 
 
+def test_execution_red_registry_rejects_new_red_and_unexpected_pass(sandbox, guard):
+    manifest = sandbox.load(sandbox.MANIFEST_PATH)
+    manifest["execution_reds"] = [
+        {
+            "identity": "molt-runtime::pyset_ops_fail_closed_on_non_set",
+            "owner": "substrate-health",
+            "predicate": {"platform": "windows", "target": "x86_64-pc-windows-msvc"},
+            "expiry": "2099-01-01",
+            "evidence": "synthetic regression",
+            "introduced_sha": "abcdef0",
+        }
+    ]
+    sandbox.save(sandbox.MANIFEST_PATH, manifest)
+    observed = sandbox.MANIFEST_PATH.parent / "execution.json"
+    context = {"platform": "windows", "target": "x86_64-pc-windows-msvc"}
+    sandbox.save(
+        observed,
+        {
+            "results": [
+                {
+                    "identity": "molt-runtime::pyset_ops_fail_closed_on_non_set",
+                    "status": "fail",
+                    "context": context,
+                },
+                {
+                    "identity": "molt-runtime::brand_new_red",
+                    "status": "fail",
+                    "context": context,
+                },
+            ]
+        },
+    )
+    assert guard.cmd_check(sandbox.RESULTS_PATH, False, observed) == 1
+
+    sandbox.save(
+        observed,
+        {
+            "results": [
+                {
+                    "identity": "molt-runtime::pyset_ops_fail_closed_on_non_set",
+                    "status": "pass",
+                    "context": context,
+                }
+            ]
+        },
+    )
+    assert guard.cmd_check(sandbox.RESULTS_PATH, False, observed) == 1
+
+
+def test_execution_red_registry_rejects_expired_entries(sandbox, guard):
+    manifest = sandbox.load(sandbox.MANIFEST_PATH)
+    manifest["execution_reds"] = [
+        {
+            "identity": "build::wasm32-unknown-unknown::libc",
+            "owner": "wasm-toolchain",
+            "predicate": {"platform": "windows", "target": "wasm32-unknown-unknown"},
+            "expiry": "2000-01-01",
+            "evidence": "synthetic expired debt",
+            "introduced_sha": "abcdef0",
+        }
+    ]
+    sandbox.save(sandbox.MANIFEST_PATH, manifest)
+    assert guard.cmd_lint_only() == 1
+
+
 def test_sandbox_default_is_green(sandbox, guard):
     sandbox.make_baseline()
     assert guard.cmd_check(sandbox.RESULTS_PATH, False) == 0
