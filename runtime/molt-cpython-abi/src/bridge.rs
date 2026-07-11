@@ -58,7 +58,7 @@ pub struct MoltValueHandle(AbiHandle);
 
 impl MoltValueHandle {
     #[inline]
-    pub(crate) const fn bits(self) -> AbiHandle {
+    pub const fn bits(self) -> AbiHandle {
         self.0
     }
 
