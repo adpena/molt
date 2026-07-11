@@ -768,6 +768,72 @@ def _build_checks() -> list[Check]:
             timeout=30,
         )
     )
+    checks.append(
+        Check(
+            # APPARATUS Wave 4 (A11): claims self-retirement terminal vocabulary +
+            # premise-verification preflight + serialized-commit primitive teeth
+            # (M11/M20/M22/M24). Proves a FALSIFIED row retires a lane (not live),
+            # check_sister_landed returns 8/9/0 on landed/mid-flight/clean, and the
+            # commit serializer refuses -A / a stale sha while allowing a clean
+            # named pathspec. A gate that never refuses certifies nothing.
+            name="apparatus-a11-teeth",
+            tier=1,
+            cmd=_uv_pytest(
+                str(TESTS / "tools" / "test_claims_status.py"),
+                str(TESTS / "tools" / "test_check_sister_landed.py"),
+                str(TESTS / "tools" / "test_commit_serializer.py"),
+                "-q",
+            ),
+            timeout=120,
+            needs_pytest=True,
+        )
+    )
+    checks.append(
+        Check(
+            # A11: fail closed if the claims terminal/stale classifier can no longer
+            # FIRE (a FALSIFIED row must be RETIRED, a stale CLAIMED must be STALE).
+            name="apparatus-claims-status-self-test",
+            tier=1,
+            cmd=_uv_run(str(TOOLS / "claims_status.py"), "--check"),
+            timeout=30,
+        )
+    )
+    checks.append(
+        Check(
+            # A11: fail closed if the premise-verification classifier can no longer
+            # return 8 (landed) / 9 (mid-flight) / 0 (clean).
+            name="apparatus-check-sister-landed-self-test",
+            tier=1,
+            cmd=_uv_run(str(TOOLS / "check_sister_landed.py"), "--check"),
+            timeout=30,
+        )
+    )
+    checks.append(
+        Check(
+            # A11: fail closed if the serialized-commit guards can no longer refuse
+            # a sweep pathspec or a stale expected-sha.
+            name="apparatus-commit-serializer-self-test",
+            tier=1,
+            cmd=_uv_run(str(TOOLS / "commit_serializer.py"), "--check"),
+            timeout=30,
+        )
+    )
+    checks.append(
+        Check(
+            # A11 warn-only (A9 discipline): report CLAIMS custody -- live / retired
+            # / stale counts + any stale CLAIMED lane (no fresh PROGRESS for > 4h).
+            # required=False: a stale claim is FLAGGED so stale custody cannot
+            # silently block a lane, but staleness alone is NOT a hard CI failure
+            # (a silent worktree may be alive; CLAIMS.md 6 objective-liveness bar).
+            # The NAMED flip condition lives in tools/molt_dev_gates.toml
+            # [[gate_flip]] name="claims_status_stale".
+            name="apparatus-claims-status-warn",
+            tier=1,
+            cmd=_uv_run(str(TOOLS / "claims_status.py")),
+            timeout=30,
+            required=False,
+        )
+    )
 
     # ── Tier 2: Medium (< 10min, on PR) ────────────────────────────────
 

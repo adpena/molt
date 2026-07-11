@@ -25,6 +25,7 @@ Section keys (map to the named constants in subagent_contract):
     distill     -> DISTILL
     model-tier  -> MODEL_TIER
     triality    -> TRIALITY_WIRING
+    preflight   -> PREMISE_VERIFICATION
     all         -> every block, in canonical order (the default)
 
 Usage:
@@ -68,6 +69,7 @@ SECTIONS: dict[str, tuple[str, ...]] = {
     "distill": ("DISTILL",),
     "model-tier": ("MODEL_TIER",),
     "triality": ("TRIALITY_WIRING",),
+    "preflight": ("PREMISE_VERIFICATION",),
 }
 
 

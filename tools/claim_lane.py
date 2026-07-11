@@ -20,8 +20,12 @@ Usage::
     python tools/claim_lane.py E1-WITNESS-TO-GREEN --append PROGRESS --agent codex-xyz --note "seal regenerated, run 2026...-abc"
 
 A claim with no PROGRESS/CLAIMED row for >STALE_HOURS is treated as STALE
-(reclaimable). COMPLETE / RELEASED free the lane. See CLAIMS.md §5-6 for the
-completion bar (final exit criteria + adversarial review + senior sign-off).
+(reclaimable). Any TERMINAL status frees the lane: the positive COMPLETE /
+RELEASED, or the APPARATUS A11 self-retirement vocabulary a claimant appends with
+evidence -- FALSIFIED, MEASURED_IMPLEMENTATION_RETIRED, STALE_ASSUMED_DEAD,
+SUPERSEDED -- so stale custody cannot silently block a lane. See CLAIMS.md §5-7
+for the completion bar + terminal vocabulary, and tools/claims_status.py for the
+live-vs-retired classifier.
 """
 
 from __future__ import annotations
@@ -35,7 +39,19 @@ from pathlib import Path
 CLAIMS_REL = "docs/agent/CLAIMS.md"
 STALE_HOURS = 4.0
 LIVE_STATUSES = {"CLAIMED", "PROGRESS", "RECLAIM"}
-FREEING_STATUSES = {"RELEASED", "COMPLETE"}
+# Positive terminals + the APPARATUS A11 self-retirement vocabulary (a claim
+# retires ITSELF with evidence): FALSIFIED (premise disproven),
+# MEASURED_IMPLEMENTATION_RETIRED (built, measured, retired), STALE_ASSUMED_DEAD
+# (no objective liveness), SUPERSEDED (another lane subsumed it). Any terminal
+# frees the lane. See docs/agent/CLAIMS.md §7 + tools/claims_status.py.
+FREEING_STATUSES = {
+    "RELEASED",
+    "COMPLETE",
+    "FALSIFIED",
+    "MEASURED_IMPLEMENTATION_RETIRED",
+    "STALE_ASSUMED_DEAD",
+    "SUPERSEDED",
+}
 ALL_STATUSES = LIVE_STATUSES | FREEING_STATUSES
 
 
@@ -95,7 +111,7 @@ def _read_claims_at_origin(root: Path) -> str:
 
 
 def _claimable(state: str) -> bool:
-    return state in {"UNCLAIMED", "STALE", "RELEASED", "COMPLETE"}
+    return state in ({"UNCLAIMED", "STALE"} | FREEING_STATUSES)
 
 
 def _report(lane: str, state: str, row: dict[str, str] | None) -> None:
