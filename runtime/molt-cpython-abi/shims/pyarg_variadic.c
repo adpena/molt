@@ -668,17 +668,29 @@ static PyObject *molt_callfunction_build_args(const char *format, va_list ap) {
     return args;
 }
 
-PyObject *PyObject_CallFunction(PyObject *callable, const char *format, ...) {
+static PyObject *molt_object_call_function_va(
+    PyObject *callable, const char *format, va_list ap) {
     if (callable == NULL) return NULL;
-
-    va_list ap;
-    va_start(ap, format);
     PyObject *args = molt_callfunction_build_args(format, ap);
-    va_end(ap);
-
     if (args == NULL) return NULL;
     PyObject *result = PyObject_Call(callable, args, NULL);
     Py_DECREF(args);
+    return result;
+}
+
+PyObject *PyObject_CallFunction(PyObject *callable, const char *format, ...) {
+    va_list ap;
+    va_start(ap, format);
+    PyObject *result = molt_object_call_function_va(callable, format, ap);
+    va_end(ap);
+    return result;
+}
+
+PyObject *_PyObject_CallFunction_SizeT(PyObject *callable, const char *format, ...) {
+    va_list ap;
+    va_start(ap, format);
+    PyObject *result = molt_object_call_function_va(callable, format, ap);
+    va_end(ap);
     return result;
 }
 
@@ -704,11 +716,11 @@ PyObject *PyObject_CallMethodObjArgs(PyObject *callable, PyObject *name, ...) {
     return result;
 }
 
-PyObject *PyObject_CallMethod(
+static PyObject *molt_object_call_method_va(
     PyObject *callable,
     const char *name,
     const char *format,
-    ...)
+    va_list ap)
 {
     if (callable == NULL || name == NULL) return NULL;
     PyObject *method = PyObject_GetAttrString(callable, name);
@@ -718,10 +730,7 @@ PyObject *PyObject_CallMethod(
      * PyObject_CallFunction. The old shim returned bare NULL (no exception)
      * for ANY non-empty format — a silent failure that strands the
      * extension's error check. */
-    va_list ap;
-    va_start(ap, format);
     PyObject *args = molt_callfunction_build_args(format, ap);
-    va_end(ap);
 
     if (args == NULL) {
         Py_DECREF(method);
@@ -730,6 +739,32 @@ PyObject *PyObject_CallMethod(
     PyObject *result = PyObject_Call(method, args, NULL);
     Py_DECREF(args);
     Py_DECREF(method);
+    return result;
+}
+
+PyObject *PyObject_CallMethod(
+    PyObject *callable,
+    const char *name,
+    const char *format,
+    ...)
+{
+    va_list ap;
+    va_start(ap, format);
+    PyObject *result = molt_object_call_method_va(callable, name, format, ap);
+    va_end(ap);
+    return result;
+}
+
+PyObject *_PyObject_CallMethod_SizeT(
+    PyObject *callable,
+    const char *name,
+    const char *format,
+    ...)
+{
+    va_list ap;
+    va_start(ap, format);
+    PyObject *result = molt_object_call_method_va(callable, name, format, ap);
+    va_end(ap);
     return result;
 }
 

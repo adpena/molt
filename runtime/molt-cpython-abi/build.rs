@@ -3,6 +3,8 @@ use std::path::PathBuf;
 
 #[path = "../build_support/unicode_tables.rs"]
 mod unicode_tables;
+#[path = "../build_support/variadic_exports.rs"]
+mod variadic_exports;
 #[path = "../build_support/wasi_sysroot.rs"]
 mod wasi_sysroot;
 
@@ -27,13 +29,21 @@ fn resolve_build_python() -> String {
 fn main() {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let shim = manifest.join("shims/pyarg_variadic.c");
+    let shim_exports = manifest.join("shims/pyarg_variadic.exports");
+    let variadic_export_symbols = variadic_exports::load_variadic_exports(&shim_exports);
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
     unicode_tables::emit_cpython_abi_unicode_tables(&out_dir, &resolve_build_python());
 
     // Compile the C variadic shim into a static library.
     let mut build = cc::Build::new();
-    if target_arch == "wasm32" {
+    let owns_archive_link = target_arch == "wasm32"
+        || target_os == "linux"
+        || target_os == "macos"
+        || (target_os == "windows" && target_env == "msvc");
+    if owns_archive_link {
         build.cargo_metadata(false);
     }
     build
@@ -45,7 +55,6 @@ fn main() {
 
     // -fno-semantic-interposition is useful on GCC/Linux but triggers a
     // warning on Apple clang; skip it on macOS.
-    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     if target_os != "macos" {
         build.flag_if_supported("-fno-semantic-interposition");
     }
@@ -82,10 +91,10 @@ fn main() {
         build.cargo_metadata(false);
     }
     build.compile("molt_pyarg_shims");
-    if target_arch == "wasm32" {
+    if owns_archive_link {
         println!("cargo:rustc-link-search=native={}", out_dir.display());
     }
-    if target_os == "linux" {
+    if target_arch != "wasm32" && owns_archive_link {
         println!("cargo:rustc-link-search=native={}", out_dir.display());
         println!("cargo:rustc-link-lib=static:+whole-archive=molt_pyarg_shims");
     }
@@ -127,47 +136,14 @@ fn main() {
     //
     // macOS: -force_load <path> includes every object file in the archive.
     // Linux: --whole-archive / --no-whole-archive does the same.
-    let lib_path = out_dir.join("libmolt_pyarg_shims.a");
-    let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+    let unix_lib_path = out_dir.join("libmolt_pyarg_shims.a");
     match target_os.as_str() {
         "macos" => {
-            println!(
-                "cargo:rustc-cdylib-link-arg=-Wl,-force_load,{}",
-                lib_path.display()
-            );
             // Apple targets emit SUBSECTIONS_VIA_SYMBOLS, so the section-level dead-stripper
-            // can still remove symbols from -force_load archives if nothing calls them.
+            // can still remove symbols from whole archives if nothing calls them.
             // Explicitly export the variadic shim symbols to pin them in the dylib exports trie.
-            for sym in &[
-                "_PyArg_ParseTuple",
-                "_PyArg_ParseTupleAndKeywords",
-                "_PyArg_VaParseTupleAndKeywords",
-                "_PyArg_ParseTuple_SizeT",
-                "_PyArg_ParseTupleAndKeywords_SizeT",
-                "_PyArg_VaParse_SizeT",
-                "_PyArg_VaParseTupleAndKeywords_SizeT",
-                "_PyArg_UnpackTuple",
-                "_PyTuple_Pack",
-                "_PyObject_CallFunction",
-                "_PyObject_CallFunctionObjArgs",
-                "_PyObject_CallMethodObjArgs",
-                "_PyObject_CallMethod",
-                "_Py_BuildValue",
-                "__Py_BuildValue_SizeT",
-                "_Py_VaBuildValue",
-                "_PyUnicode_FromFormat",
-                "_PyUnicode_FromFormatV",
-                "_PyOS_snprintf",
-                "_PyOS_vsnprintf",
-                "_PyOS_string_to_double",
-                "_PyOS_strtol",
-                "_PyOS_strtoul",
-                "_PyErr_WarnFormat",
-                "_PyErr_Format",
-                "_PyErr_FormatV",
-                "_PyErr_FormatUnraisable",
-                "_PySys_WriteStderr",
-            ] {
+            for symbol in &variadic_export_symbols {
+                let sym = format!("_{symbol}");
                 println!("cargo:rustc-cdylib-link-arg=-Wl,-exported_symbol,{sym}");
             }
         }
@@ -177,12 +153,14 @@ fn main() {
             // A separate `--whole-archive` link-arg here double-pulled the
             // archive on LLD (`duplicate symbol`) and did not propagate to the
             // discovery harness cdylib.
+            for symbol in &variadic_export_symbols {
+                println!("cargo:rustc-cdylib-link-arg=-Wl,--export-dynamic-symbol={symbol}");
+            }
         }
         "windows" if target_env == "msvc" => {
-            println!(
-                "cargo:rustc-cdylib-link-arg=/WHOLEARCHIVE:{}",
-                lib_path.display()
-            );
+            for symbol in &variadic_export_symbols {
+                println!("cargo:rustc-cdylib-link-arg=/EXPORT:{symbol}");
+            }
         }
         "wasi" if target_arch == "wasm32" => {
             // wasm32-wasip1: link the C shim archive LAZILY (no --whole-archive)
@@ -202,12 +180,14 @@ fn main() {
             // molt_capi_errno`. A lazy reference finds every symbol already
             // defined there and pulls nothing, so the runtime link stays clean.
             // No `-Wl,` prefix: rustc drives rust-lld directly for wasm.
-            println!("cargo:rustc-cdylib-link-arg={}", lib_path.display());
+            println!("cargo:rustc-cdylib-link-arg={}", unix_lib_path.display());
         }
         _ => {}
     }
 
     println!("cargo:rerun-if-changed={}", shim.display());
+    println!("cargo:rerun-if-changed={}", shim_exports.display());
+    println!("cargo:rerun-if-changed=../build_support/variadic_exports.rs");
     println!("cargo:rerun-if-changed=../build_support/unicode_tables.rs");
     println!("cargo:rerun-if-changed=src/api/strings.rs");
     // The layout-assertion TU is generated from the Rust repr(C) authority; rebuild
