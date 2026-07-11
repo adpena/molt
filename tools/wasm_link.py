@@ -5,6 +5,7 @@ import argparse
 import contextlib
 import functools
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -1148,6 +1149,30 @@ def _resolve_native_link_inputs(native_objects: Sequence[Path]) -> tuple[Path, .
     )
 
 
+def _sealed_native_init_symbols(native_objects: Sequence[Path]) -> tuple[str, ...]:
+    symbols: set[str] = set()
+    for native_object in native_objects:
+        manifest_path = native_object.with_name(
+            native_object.name + ".extension_manifest.json"
+        )
+        if not manifest_path.exists():
+            continue
+        try:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                f"sealed native extension manifest is unreadable: {manifest_path}: {exc}"
+            ) from exc
+        init_symbol = payload.get("init_symbol")
+        if not isinstance(init_symbol, str) or not init_symbol.startswith("PyInit_"):
+            raise ValueError(
+                "sealed native extension manifest has invalid init_symbol: "
+                f"{manifest_path}: {init_symbol!r}"
+            )
+        symbols.add(init_symbol)
+    return tuple(sorted(symbols))
+
+
 def _split_app_native_link_args(native_inputs: Sequence[Path]) -> list[str]:
     """wasm-ld args for the SPLIT app link, overriding wasi-libc's ``%L`` stub.
 
@@ -1272,7 +1297,14 @@ def _public_output_export_symbol_map(
 def _restore_public_output_exports(
     data: bytes,
     public_export_map: Mapping[str, str],
+    *,
+    preserved_symbol_names: Sequence[str] = (),
 ) -> bytes:
+    preserved_export_indices = {
+        name: index
+        for name, index in _collect_function_exports(data).items()
+        if name in preserved_symbol_names
+    }
     restored = data
     updated = _ensure_function_exports_by_symbol_names(restored, public_export_map)
     if updated is not None:
@@ -1280,7 +1312,7 @@ def _restore_public_output_exports(
     rename_map = {
         symbol_name: public_name
         for public_name, symbol_name in public_export_map.items()
-        if symbol_name != public_name
+        if symbol_name != public_name and symbol_name not in preserved_symbol_names
     }
     updated = _rename_export_names(restored, rename_map)
     if updated is not None:
@@ -1288,7 +1320,59 @@ def _restore_public_output_exports(
     updated = _restore_output_export_aliases(restored)
     if updated is not None:
         restored = updated
+    if preserved_export_indices:
+        updated = _ensure_function_exports_by_indices(
+            restored, preserved_export_indices
+        )
+        if updated is not None:
+            restored = updated
     return restored
+
+
+def _ensure_function_exports_by_indices(
+    data: bytes,
+    required_exports: Mapping[str, int],
+) -> bytes | None:
+    existing = _collect_function_exports(data)
+    additions = [
+        (name, index)
+        for name, index in required_exports.items()
+        if name not in existing
+    ]
+    if not additions:
+        return None
+    sections = _parse_sections(data)
+    rebuilt_sections: list[tuple[int, bytes]] = []
+    inserted = False
+    for section_id, payload in sections:
+        if section_id == 7:
+            count, offset = _read_varuint(payload, 0)
+            rebuilt = bytearray(_write_varuint(count + len(additions)))
+            rebuilt.extend(payload[offset:])
+            for name, index in additions:
+                rebuilt.extend(_write_string(name))
+                rebuilt.append(0)
+                rebuilt.extend(_write_varuint(index))
+            rebuilt_sections.append((section_id, bytes(rebuilt)))
+            inserted = True
+            continue
+        if not inserted and section_id > 7:
+            export_payload = bytearray(_write_varuint(len(additions)))
+            for name, index in additions:
+                export_payload.extend(_write_string(name))
+                export_payload.append(0)
+                export_payload.extend(_write_varuint(index))
+            rebuilt_sections.append((7, bytes(export_payload)))
+            inserted = True
+        rebuilt_sections.append((section_id, payload))
+    if not inserted:
+        export_payload = bytearray(_write_varuint(len(additions)))
+        for name, index in additions:
+            export_payload.extend(_write_string(name))
+            export_payload.append(0)
+            export_payload.extend(_write_varuint(index))
+        rebuilt_sections.append((7, bytes(export_payload)))
+    return _canonicalize_standard_section_order(_build_sections(rebuilt_sections))
 
 
 _TRAP_FUNC_BODY = bytes([0x00, 0x00, 0x0B])
@@ -2353,7 +2437,12 @@ def _run_wasm_ld(
     output_data = output.read_bytes()
     output_memory_min = _memory_import_min(output_data)
     output_table_min = _table_import_min(output_data)
-    required_native_direct_symbols = _required_native_direct_symbols(output_data)
+    required_native_direct_symbols = tuple(
+        sorted(
+            set(_required_native_direct_symbols(output_data))
+            | set(_sealed_native_init_symbols(native_objects))
+        )
+    )
     preserved_output_exports = _collect_preserved_output_export_names(output_data)
     export_symbol_map = _collect_output_export_symbol_map(output_data)
     user_export_symbol_names = [
@@ -2495,8 +2584,7 @@ def _run_wasm_ld(
     ):
         cmd.append(f"--export-if-defined={sym}")
     for sym in required_native_direct_symbols:
-        cmd.append(f"--undefined={sym}")
-        cmd.append(f"--export-if-defined={sym}")
+        cmd.append(f"--export={sym}")
     for sym in user_export_symbol_names:
         cmd.append(f"--export={sym}")
     cmd += [
@@ -2626,7 +2714,9 @@ def _run_wasm_ld(
             export_symbol_map=export_symbol_map,
         )
         restored_linked_bytes = _restore_public_output_exports(
-            linked_bytes, public_export_map
+            linked_bytes,
+            public_export_map,
+            preserved_symbol_names=required_native_direct_symbols,
         )
         if restored_linked_bytes != linked_bytes:
             work_linked.write_bytes(restored_linked_bytes)
@@ -2842,7 +2932,9 @@ def _run_wasm_ld(
                     split_native_app_path.write_bytes(canonical_rewritten_data)
                     rewritten_data = canonical_rewritten_data
                 restored_rewritten_data = _restore_public_output_exports(
-                    rewritten_data, public_export_map
+                    rewritten_data,
+                    public_export_map,
+                    preserved_symbol_names=required_native_direct_symbols,
                 )
                 if restored_rewritten_data != rewritten_data:
                     split_native_app_path.write_bytes(restored_rewritten_data)
