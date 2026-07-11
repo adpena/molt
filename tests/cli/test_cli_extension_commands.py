@@ -1246,6 +1246,11 @@ def test_cpython_abi_variadic_shim_owns_variadic_exports() -> None:
     ).read_text()
     runtime_c_api_mod = (ROOT / "runtime/molt-runtime/src/c_api/mod.rs").read_text()
     runtime_build_rs = (ROOT / "runtime/molt-runtime/build.rs").read_text()
+    variadic_exports = set(
+        (ROOT / "runtime/molt-cpython-abi/shims/pyarg_variadic.exports")
+        .read_text()
+        .splitlines()
+    )
 
     required_variadic_exports = {
         "PyArg_ParseTuple",
@@ -1264,9 +1269,9 @@ def test_cpython_abi_variadic_shim_owns_variadic_exports() -> None:
     assert "mod cpython_abi_wasm_exports;" in runtime_c_api_mod
     assert "MOLT_CPYTHON_ABI_VARIADIC_EXPORT_ANCHORS" in runtime_anchor
     assert "cargo:rustc-link-search=native=" in build_rs
-    assert 'name = "molt_pyarg_shims"' in runtime_anchor
-    assert 'kind = "static"' in runtime_anchor
-    assert 'modifiers = "+whole-archive"' in runtime_anchor
+    assert 'name = "molt_pyarg_shims"' not in runtime_anchor
+    owns_archive_link = build_rs.split("let owns_archive_link =", 1)[1].split(";", 1)[0]
+    assert 'target_arch == "wasm32"' not in owns_archive_link
     assert "molt_cpython_abi_wasm_export_anchor_count" in runtime_anchor
     assert "molt_cpython_abi_requested_exports.rs" in runtime_anchor
     assert "MOLT_WASM_CPYTHON_ABI_EXPORTS" in runtime_build_rs
@@ -1275,10 +1280,9 @@ def test_cpython_abi_variadic_shim_owns_variadic_exports() -> None:
     assert "core::hint::black_box" in runtime_anchor
     for symbol in required_variadic_exports:
         assert f"{symbol}(" in shim
-        assert f"fn {symbol}();" in runtime_anchor
-        assert symbol in runtime_anchor
+        assert symbol in variadic_exports
     assert "PyOS_snprintf(" in shim
-    assert "fn PyOS_snprintf();" in runtime_anchor
+    assert "PyOS_snprintf" in variadic_exports
     assert "vsnprintf(str, size, format, ap)" in shim
 
 
