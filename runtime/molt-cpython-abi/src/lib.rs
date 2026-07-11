@@ -108,6 +108,7 @@ pub mod abi_types;
 pub mod api;
 pub mod bridge;
 pub mod capi_trace;
+pub mod gil_declarations;
 pub mod hooks;
 
 #[cfg(all(feature = "extension-loader", not(target_arch = "wasm32")))]

@@ -1817,7 +1817,7 @@ extern int PyUnstable_Object_IsUniquelyReferenced(PyObject *obj);
 extern void PyUnstable_Object_EnableDeferredRefcount(PyObject *obj);
 extern void PyUnstable_SetImmortal(PyObject *obj);
 extern int _Py_IsOwnedByCurrentThread(PyObject *obj);
-extern int PyUnstable_Module_SetGIL(PyObject *module, int gil);
+extern int PyUnstable_Module_SetGIL(PyObject *module, void *gil);
 extern int PyOS_snprintf(char *str, size_t size, const char *format, ...);
 extern int PyOS_vsnprintf(char *str, size_t size, const char *format, va_list va);
 extern double PyOS_string_to_double(const char *str, char **endptr, PyObject *overflow_exception);

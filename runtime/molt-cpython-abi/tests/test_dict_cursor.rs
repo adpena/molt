@@ -214,8 +214,7 @@ fn update_overwrites_and_clear_empties() {
     assert!(
         SETS.lock()
             .unwrap()
-            .iter()
-            .any(|entry| *entry == (target_bits, key, new_value))
+            .contains(&(target_bits, key, new_value))
     );
 
     unsafe { molt_cpython_abi::api::mapping::PyDict_Clear(target) };

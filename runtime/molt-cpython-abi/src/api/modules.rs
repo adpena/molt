@@ -5,13 +5,68 @@ use crate::bridge::{GLOBAL_BRIDGE, read_bridge_header_bits};
 use crate::hooks;
 use molt_lang_obj_model::MoltObject;
 use std::ffi::{CStr, CString};
-use std::os::raw::{c_char, c_int, c_long};
+use std::os::raw::{c_char, c_int, c_long, c_void};
 use std::ptr;
 
 const PY_MOD_CREATE: c_int = 1;
 const PY_MOD_EXEC: c_int = 2;
 const PY_MOD_MULTIPLE_INTERPRETERS: c_int = 3;
 const PY_MOD_GIL: c_int = 4;
+
+/// `Py_MOD_GIL_NOT_USED == ((void *)1)` — the slot/SetGIL VALUE declaring the
+/// module safe to run without the GIL. `Py_MOD_GIL_USED == ((void *)0)`.
+/// Cross-header drift for these tokens is bound by
+/// `tools/check_table_drift.py` (`_PYMOD_SLOT_VALUES`); CPython authority is
+/// `Include/moduleobject.h` (3.13+).
+const PY_MOD_GIL_NOT_USED_VALUE: usize = 1;
+
+/// Record the PEP 703 free-threading declaration carried by a module
+/// definition: the `{Py_mod_gil, ...}` slot when present, else the CPython
+/// default (`Py_MOD_GIL_USED` — on a free-threaded interpreter that import
+/// re-enables the GIL). Called at every module-definition entry point
+/// (multi-phase create, exec, single-phase create); recording is idempotent
+/// and an explicit slot is never downgraded by a later default pass (see
+/// `crate::gil_declarations`).
+///
+/// # Safety
+/// `def`, when non-null, must point at a live `PyModuleDef` whose `m_slots`
+/// array (when non-null) is zero-terminated.
+unsafe fn record_def_gil_declaration(def: *mut PyModuleDef) {
+    use crate::gil_declarations::{
+        ModuleGilDeclaration, record_module_gil_declaration, record_unresolved_gil_declaration,
+    };
+    if def.is_null() {
+        return;
+    }
+    let mut decl = ModuleGilDeclaration::GilUsedDefault;
+    let slots = unsafe { (*def).m_slots };
+    if !slots.is_null() {
+        let mut cursor = slots;
+        unsafe {
+            while (*cursor).slot != 0 {
+                if (*cursor).slot == PY_MOD_GIL {
+                    // CPython stores the raw slot value into md_gil and tests
+                    // it against Py_MOD_GIL_NOT_USED; mirror exactly.
+                    decl = if (*cursor).value as usize == PY_MOD_GIL_NOT_USED_VALUE {
+                        ModuleGilDeclaration::GilNotUsed
+                    } else {
+                        ModuleGilDeclaration::GilUsedExplicit
+                    };
+                }
+                cursor = cursor.add(1);
+            }
+        }
+    }
+    let name_ptr = unsafe { (*def).m_name };
+    if name_ptr.is_null() {
+        record_unresolved_gil_declaration();
+        return;
+    }
+    match unsafe { CStr::from_ptr(name_ptr) }.to_str() {
+        Ok(name) => record_module_gil_declaration(name, decl),
+        Err(_) => record_unresolved_gil_declaration(),
+    }
+}
 
 fn set_module_system_error(message: impl AsRef<str>) {
     let message = CString::new(message.as_ref())
@@ -109,8 +164,47 @@ pub unsafe extern "C" fn PyModule_Check(module: *mut PyObject) -> c_int {
     GLOBAL_BRIDGE.lock().pyobj_to_handle(module).is_some() as c_int
 }
 
+/// CPython 3.13+ Unstable API (`Objects/moduleobject.c`):
+/// `int PyUnstable_Module_SetGIL(PyObject *module, void *gil)` — the
+/// single-phase-init counterpart of the `Py_mod_gil` slot. `gil` is one of the
+/// `Py_MOD_GIL_*` tokens (`void*`-typed; the former `c_int` parameter here
+/// deviated from the CPython prototype).
+///
+/// Molt records the declaration in `crate::gil_declarations` instead of
+/// discarding it. Like the historical stub — and unlike CPython, which can
+/// fail with `SystemError` — this always returns 0: molt's runtime GIL makes
+/// the declaration behavior-free today, and a recorder must not introduce a
+/// new failure path into extension init. A declaration whose module name
+/// cannot be resolved is counted as unresolved rather than dropped.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyUnstable_Module_SetGIL(_module: *mut PyObject, _gil: c_int) -> c_int {
+pub unsafe extern "C" fn PyUnstable_Module_SetGIL(
+    module: *mut PyObject,
+    gil: *mut c_void,
+) -> c_int {
+    use crate::gil_declarations::{
+        ModuleGilDeclaration, record_module_gil_declaration, record_unresolved_gil_declaration,
+    };
+    let decl = if gil as usize == PY_MOD_GIL_NOT_USED_VALUE {
+        ModuleGilDeclaration::GilNotUsed
+    } else {
+        ModuleGilDeclaration::GilUsedExplicit
+    };
+    if module.is_null() {
+        record_unresolved_gil_declaration();
+        return 0;
+    }
+    let name_ptr = unsafe { PyModule_GetName(module) };
+    if name_ptr.is_null() {
+        // PyModule_GetName sets SystemError on failure; the recorder contract
+        // is side-effect-free success, so clear it and count the declaration.
+        unsafe { crate::api::errors::PyErr_Clear() };
+        record_unresolved_gil_declaration();
+        return 0;
+    }
+    match unsafe { CStr::from_ptr(name_ptr) }.to_str() {
+        Ok(name) => record_module_gil_declaration(name, decl),
+        Err(_) => record_unresolved_gil_declaration(),
+    }
     0
 }
 
@@ -355,6 +449,9 @@ unsafe fn module_from_def_and_slots(
     module_api_version: c_int,
     spec: *mut PyObject,
 ) -> *mut PyObject {
+    // Record the module's free-threading declaration before creation, exactly
+    // as CPython stamps md_gil from the slots during module_from_def_and_spec.
+    unsafe { record_def_gil_declaration(def) };
     let slots = unsafe { (*def).m_slots };
     if slots.is_null() {
         return unsafe { PyModule_Create2(def, module_api_version) };
@@ -472,6 +569,9 @@ pub unsafe extern "C" fn PyModule_ExecDef(module: *mut PyObject, def: *mut PyMod
     if module.is_null() || def.is_null() {
         return -1;
     }
+    // Loaders may create the module elsewhere and only route exec through
+    // here; recording is idempotent (explicit slot wins over default).
+    unsafe { record_def_gil_declaration(def) };
     let slots = unsafe { (*def).m_slots };
     if slots.is_null() {
         return 0;
@@ -516,6 +616,11 @@ pub unsafe extern "C" fn PyModule_Create2(
     if def.is_null() {
         return ptr::null_mut();
     }
+    // Single-phase init (a legacy PyInit_* returning PyModule_Create(&def))
+    // carries no slots: record the CPython default (GIL used). A slotted def
+    // arriving here via module_from_def_and_slots was already recorded — the
+    // default pass never downgrades it.
+    unsafe { record_def_gil_declaration(def) };
     let name = if unsafe { (*def).m_name.is_null() } {
         c"<unnamed>".as_ptr()
     } else {
