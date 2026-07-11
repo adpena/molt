@@ -827,8 +827,10 @@ def test_static_wasm_loader_bridge_owns_binary_parser_authority() -> None:
     assert "reservedRuntimeCallablesFromManifest," in bridge
     assert "const parseWasmImports = (buffer, options = {}) =>\n    parseWasmMetadata(buffer, options).imports;" in bridge
     assert "const parseWasmExportFunctionSignatures = (buffer) =>\n    parseWasmMetadata(buffer).exportFunctionSignatures;" in bridge
-    assert "const outputMetadata = parseWasmMetadata(wasmBuffer);" in run_wasm
+    assert "const outputMetadata = parseWasmMetadata(wasmBuffer, {" in run_wasm
+    assert "exportFunctionSignatures: directLinkRequested || (!linkedBuffer && Boolean(runtimeBuffer))," in run_wasm
     assert "const runtimeMetadata = parseWasmMetadata(runtimeBuffer);" in run_wasm
+    assert "const includeExportFunctionSignatures = options.exportFunctionSignatures !== false;" in bridge
 
     consumers = {
         "wasm/browser_host.js": (
