@@ -955,6 +955,11 @@ pub unsafe fn init_static_types() {
         set_name!(PyDateTime_TZInfoType, b"datetime.tzinfo\0");
 
         PyTuple_Type.tp_dealloc = Some(crate::api::sequences::molt_tuple_dealloc);
+        // Structural (element-wise) comparison. Without this slot two distinct
+        // tuple objects with equal contents compare unequal by object identity,
+        // which breaks numpy ufunc dispatch (get_info_no_cast) — see
+        // `molt_tuple_richcompare`.
+        PyTuple_Type.tp_richcompare = Some(crate::api::sequences::molt_tuple_richcompare);
         PyByteArray_Type.tp_dealloc = Some(crate::api::strings::molt_bytearray_dealloc);
         PyComplex_Type.tp_dealloc = Some(crate::api::numbers::molt_complex_dealloc);
         PyDictProxy_Type.tp_basicsize = std::mem::size_of::<PyDictProxyObject>() as Py_ssize_t;

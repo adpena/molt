@@ -195,6 +195,110 @@ fn frontier_08_pylong_aslong_silent_overflow() {
 //   are all wrong.
 // ═════════════════════════════════════════════════════════════════════════════
 
+// ═════════════════════════════════════════════════════════════════════════════
+// UFUNC-FRONTIER probe — ABI tuple structural equality (get_info_no_cast root).
+//   numpy `get_info_no_cast` (dispatching.c:1249) matches a ufunc loop with
+//   `PyObject_RichCompareBool(cur_DType_tuple, t_dtypes, Py_EQ)` where the two
+//   are DISTINCT tuple objects holding equal DTypeMeta elements. If ABI tuples
+//   lack `tp_richcompare`, `do_richcompare` falls to tuple-object identity and
+//   returns 0 → the loop is never found → Py_None → "cannot add indexed loop to
+//   ufunc add with NPY_BYTE". This probe is NOT ignored: it is the empirical
+//   confirmation of the root and, once the fix lands, a permanent guard.
+// ═════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn ufunc_frontier_tuple_structural_richcompare() {
+    install_min_hooks();
+    unsafe {
+        use molt_cpython_abi::api::numbers::PyLong_FromLong;
+        use molt_cpython_abi::api::sequences::{PyTuple_New, PyTuple_SetItem};
+        use molt_cpython_abi::api::typeobj::PyObject_RichCompareBool;
+        const PY_EQ: std::os::raw::c_int = 2;
+
+        let mk = || {
+            let t = PyTuple_New(3);
+            for i in 0..3 {
+                // steals the ref; fresh int per slot
+                PyTuple_SetItem(t, i, PyLong_FromLong(7));
+            }
+            t
+        };
+        const PY_NE: std::os::raw::c_int = 3;
+        const PY_LT: std::os::raw::c_int = 0;
+
+        let a = mk();
+        let b = mk();
+        assert!(!a.is_null() && !b.is_null(), "PyTuple_New returned NULL");
+        assert_ne!(a, b, "must be two distinct tuple objects");
+        let eq = PyObject_RichCompareBool(a, b, PY_EQ);
+        eprintln!(
+            "UFUNC-FRONTIER: (7,7,7)==(7,7,7) over distinct ABI tuples -> \
+             RichCompareBool={eq}  (CPython 3.12 -> 1)"
+        );
+        assert_eq!(
+            eq, 1,
+            "ABI tuple structural equality is broken (PyTuple_Type.tp_richcompare \
+             is NULL) -> numpy get_info_no_cast can never match -> 'cannot add \
+             indexed loop to ufunc add with NPY_BYTE'"
+        );
+
+        // Faithful get_info_no_cast shape: the registered DType tuple and the
+        // freshly-built lookup tuple hold the SAME repeated element object (as
+        // `PyArray_DTypeFromTypeNum(NPY_BYTE)` does). Distinct tuple objects,
+        // equal contents → must match.
+        let elem = PyLong_FromLong(11);
+        let mk_same = |e: *mut _| {
+            let t = PyTuple_New(3);
+            for i in 0..3 {
+                molt_cpython_abi::api::refcount::Py_INCREF(e);
+                PyTuple_SetItem(t, i, e);
+            }
+            t
+        };
+        let reg = mk_same(elem);
+        let look = mk_same(elem);
+        assert_ne!(reg, look, "distinct tuple objects expected");
+        assert_eq!(
+            PyObject_RichCompareBool(reg, look, PY_EQ),
+            1,
+            "get_info_no_cast lookup must match the registered loop tuple"
+        );
+
+        // Discriminator: distinct contents must NOT match — otherwise
+        // PyUFunc_AddLoop(ignore_duplicate=1) would silently drop a real loop.
+        let c = PyTuple_New(3);
+        PyTuple_SetItem(c, 0, PyLong_FromLong(7));
+        PyTuple_SetItem(c, 1, PyLong_FromLong(7));
+        PyTuple_SetItem(c, 2, PyLong_FromLong(8)); // differs from (7,7,7)
+        assert_eq!(
+            PyObject_RichCompareBool(a, c, PY_EQ),
+            0,
+            "distinct tuples must compare unequal"
+        );
+        assert_eq!(
+            PyObject_RichCompareBool(a, c, PY_NE),
+            1,
+            "distinct tuples must compare != as True"
+        );
+        // Ordering path stays correct: (7,7,7) < (7,7,8).
+        assert_eq!(
+            PyObject_RichCompareBool(a, c, PY_LT),
+            1,
+            "lexicographic tuple ordering must hold"
+        );
+
+        // Length difference decides when a prefix matches: (7,7,7) != (7,7).
+        let short = PyTuple_New(2);
+        PyTuple_SetItem(short, 0, PyLong_FromLong(7));
+        PyTuple_SetItem(short, 1, PyLong_FromLong(7));
+        assert_eq!(
+            PyObject_RichCompareBool(a, short, PY_EQ),
+            0,
+            "tuples of different length must compare unequal"
+        );
+    }
+}
+
 #[test]
 #[ignore = "FRONTIER: reproduces divergence-ledger #6 (typeobj.rs PyObject_Str/Repr \
             returns the literal '<molt object>'). Delete this #[ignore] once fixed \
