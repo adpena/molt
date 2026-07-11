@@ -138,6 +138,7 @@ class WasmModuleFacts:
     imports: tuple[tuple[str, str, int, bytes], ...]
     exports: frozenset[str]
     function_exports: Mapping[str, int]
+    export_kinds: Mapping[str, tuple[int, int]]
     custom_names: tuple[str, ...]
     module_imports: Mapping[str, frozenset[str]]
     table_import_mins: Mapping[tuple[str, str], int]
@@ -651,9 +652,12 @@ def _collect_func_names(data: bytes) -> dict[int, str]:
     return names
 
 
-def _parse_export_payload(payload: bytes) -> tuple[set[str], dict[str, int]]:
+def _parse_export_payload(
+    payload: bytes,
+) -> tuple[set[str], dict[str, int], dict[str, tuple[int, int]]]:
     exports: set[str] = set()
     function_exports: dict[str, int] = {}
+    export_kinds: dict[str, tuple[int, int]] = {}
     offset = 0
     count, offset = _read_varuint(payload, offset)
     for _ in range(count):
@@ -664,15 +668,16 @@ def _parse_export_payload(payload: bytes) -> tuple[set[str], dict[str, int]]:
         offset += 1
         index, offset = _read_varuint(payload, offset)
         exports.add(name)
+        export_kinds[name] = (kind, index)
         if kind == 0:
             function_exports[name] = index
-    return exports, function_exports
+    return exports, function_exports, export_kinds
 
 
 def _collect_function_exports(data: bytes) -> dict[str, int]:
     for section_id, payload in _parse_sections(data):
         if section_id == 7:
-            _, exports = _parse_export_payload(payload)
+            _, exports, _ = _parse_export_payload(payload)
             return exports
     return {}
 
@@ -1183,7 +1188,7 @@ def _parse_import_payload(
 def _collect_exports(data: bytes) -> set[str]:
     for section_id, payload in _parse_sections(data):
         if section_id == 7:
-            exports, _ = _parse_export_payload(payload)
+            exports, _, _ = _parse_export_payload(payload)
             return exports
     return set()
 
@@ -1337,6 +1342,7 @@ def parse_wasm_module_facts(data: bytes) -> WasmModuleFacts:
     imports: list[tuple[str, str, int, bytes]] = []
     exports: set[str] = set()
     function_exports: dict[str, int] = {}
+    export_kinds: dict[str, tuple[int, int]] = {}
     custom_names: list[str] = []
     module_imports: dict[str, set[str]] = {}
     table_import_mins: dict[tuple[str, str], int] = {}
@@ -1375,7 +1381,7 @@ def parse_wasm_module_facts(data: bytes) -> WasmModuleFacts:
             saw_function_section = True
             continue
         if section_id == 7 and not saw_exports:
-            exports, function_exports = _parse_export_payload(payload)
+            exports, function_exports, export_kinds = _parse_export_payload(payload)
             saw_exports = True
             continue
         if section_id == 9 and not saw_elements:
@@ -1395,6 +1401,7 @@ def parse_wasm_module_facts(data: bytes) -> WasmModuleFacts:
         imports=tuple(imports),
         exports=frozenset(exports),
         function_exports=MappingProxyType(dict(function_exports)),
+        export_kinds=MappingProxyType(dict(export_kinds)),
         custom_names=tuple(custom_names),
         module_imports=MappingProxyType(frozen_module_imports),
         table_import_mins=MappingProxyType(dict(table_import_mins)),
