@@ -13,14 +13,14 @@
 
 #![allow(non_snake_case)]
 
-use molt_cpython_abi::abi_types::{
-    MoltTypeTag, PyMappingMethods, PyObject, PyTypeObject,
-};
+use molt_cpython_abi::abi_types::{MoltTypeTag, PyMappingMethods, PyObject, PyTypeObject};
 use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
 use molt_lang_obj_model::MoltObject;
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+use std::sync::atomic::Ordering;
 
 // A hook table whose `classify_heap` reports Dict (so an is_ptr handle takes the
 // native dict lane in PyObject_GetItem), `dict_get` always MISSES (returns 0),
@@ -28,18 +28,50 @@ use std::sync::atomic::{AtomicU64, Ordering};
 // other hook stays at STUB. classify_heap->Dict only ever fires for a bridged
 // is_ptr `o`; the foreign-mapping test's receiver is unbridged, so it is
 // unaffected.
-static STR_HANDLE: AtomicU64 = AtomicU64::new(0x6900_0000);
+static STRINGS: Mutex<Option<HashMap<u64, &'static [u8]>>> = Mutex::new(None);
 
-unsafe extern "C" fn dict_classify(_bits: u64) -> u8 {
-    MoltTypeTag::Dict as u8
+unsafe extern "C" fn dict_classify(bits: u64) -> u8 {
+    if STRINGS
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|strings| strings.contains_key(&bits))
+    {
+        MoltTypeTag::Str as u8
+    } else {
+        MoltTypeTag::Dict as u8
+    }
 }
 
 unsafe extern "C" fn dict_get_miss(_d: u64, _k: u64) -> u64 {
     0
 }
 
-unsafe extern "C" fn fake_alloc_str(_data: *const u8, _len: usize) -> u64 {
-    STR_HANDLE.fetch_add(0x10, Ordering::Relaxed)
+unsafe extern "C" fn fake_alloc_str(data: *const u8, len: usize) -> u64 {
+    let bytes = if data.is_null() || len == 0 {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(data, len) }
+    };
+    let stored = Box::leak(bytes.to_vec().into_boxed_slice());
+    let bits = MoltObject::from_ptr(stored.as_ptr().cast_mut()).bits();
+    STRINGS
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::new)
+        .insert(bits, stored);
+    bits
+}
+
+unsafe extern "C" fn fake_str_data(bits: u64, out_len: *mut usize) -> *const u8 {
+    let strings = STRINGS.lock().unwrap();
+    let Some(bytes) = strings.as_ref().and_then(|strings| strings.get(&bits)) else {
+        return ptr::null();
+    };
+    if !out_len.is_null() {
+        unsafe { *out_len = bytes.len() };
+    }
+    bytes.as_ptr()
 }
 
 fn init_hooks() {
@@ -48,6 +80,7 @@ fn init_hooks() {
     hooks.classify_heap = dict_classify;
     hooks.dict_get = dict_get_miss;
     hooks.alloc_str = fake_alloc_str;
+    hooks.str_data = fake_str_data;
     // Idempotent: the first test to run installs the shared table; the rest
     // observe it. Both tests need exactly this table.
     unsafe {
@@ -156,8 +189,7 @@ fn mapping_getitemstring_routes_foreign_mapping_through_getitem() {
         molt_cpython_abi::api::abstract_mapping::PyMapping_GetItemString(map_ptr, name.as_ptr())
     };
     assert_eq!(
-        got,
-        &raw mut FAKE_VALUE,
+        got, &raw mut FAKE_VALUE,
         "PyMapping_GetItemString must dispatch the foreign mapping's mp_subscript"
     );
 
