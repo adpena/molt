@@ -265,7 +265,7 @@ jobs:
         # integration test executables; --no-fail-fast keeps one executable from
         # hiding failures in later executables. Feature-specific lanes stay
         # separate, but no default test target may depend on hand enumeration.
-        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test --workspace --tests --no-fail-fast
+        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- python3 tools/run_cargo_test_truth.py
 
       - name: Clippy (molt-backend)
         run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo clippy -p molt-backend --features native-backend -- -D warnings
