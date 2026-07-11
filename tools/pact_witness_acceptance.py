@@ -14,6 +14,17 @@ import sys
 import time
 from typing import Any
 
+# Defensive UTF-8 stdio (recurring Windows cp1252 encoding bug class): this tool
+# relays captured subprocess output via print(); if that capture contains a
+# non-cp1252 char, the default Windows codec raises UnicodeEncodeError and aborts
+# an otherwise-successful run. Reconfigure once at import (the proof-queue env
+# also sets PYTHONUTF8=1 tree-wide; this is the belt for direct invocation).
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="backslashreplace")  # type: ignore[union-attr]
+    except (AttributeError, ValueError):
+        pass
+
 ROOT = Path(__file__).resolve().parents[1]
 KERNEL_ROOT = ROOT / "collab" / "pact" / "pact_witness_kernel"
 DEFAULT_OUT_DIR = ROOT / "tmp" / "pact_witness_acceptance_queue"
