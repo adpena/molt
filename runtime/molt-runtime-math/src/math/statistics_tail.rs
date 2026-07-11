@@ -177,19 +177,14 @@ fn statistics_seed_bigint(_py: &PyToken, seed_bits: u64) -> Option<BigInt> {
             _ => return statistics_seed_type_error(_py),
         }
     };
-    #[cfg(feature = "crypto")]
-    {
-        let digest = Sha512::digest(&seed_bytes);
-        let mut payload = Vec::with_capacity(seed_bytes.len() + digest.len());
-        payload.extend_from_slice(&seed_bytes);
-        payload.extend_from_slice(&digest);
-        Some(BigInt::from(BigUint::from_bytes_be(&payload)))
-    }
-    #[cfg(not(feature = "crypto"))]
-    {
-        // Without crypto support, fall back to using the raw seed bytes.
-        Some(BigInt::from(BigUint::from_bytes_be(&seed_bytes)))
-    }
+    // CPython version=2 seed semantics: `int.from_bytes(a + sha512(a).digest())`
+    // (big-endian). The SHA-512 digest is mandatory — the digest-less fallback
+    // produced a non-CPython stream with no error.
+    let digest = Sha512::digest(&seed_bytes);
+    let mut payload = Vec::with_capacity(seed_bytes.len() + digest.len());
+    payload.extend_from_slice(&seed_bytes);
+    payload.extend_from_slice(&digest);
+    Some(BigInt::from(BigUint::from_bytes_be(&payload)))
 }
 
 fn statistics_seed_key(seed: &BigInt) -> Vec<u32> {
