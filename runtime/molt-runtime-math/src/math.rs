@@ -918,6 +918,26 @@ unsafe fn sum_sq_diff_f64_simd_aarch64(values: &[f64], mean: f64) -> f64 {
     }
 }
 
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn sum_squares_f64_simd_aarch64(values: &[f64]) -> (f64, usize) {
+    unsafe {
+        use std::arch::aarch64::*;
+        let mut index = 0usize;
+        let mut vector_sum = vdupq_n_f64(0.0);
+        while index + 2 <= values.len() {
+            // SAFETY: the loop condition proves two f64 lanes are in bounds.
+            let value = vld1q_f64(values.as_ptr().add(index));
+            vector_sum = vfmaq_f64(vector_sum, value, value);
+            index += 2;
+        }
+        let mut lanes = [0.0_f64; 2];
+        // SAFETY: `lanes` provides writable storage for both vector lanes.
+        vst1q_f64(lanes.as_mut_ptr(), vector_sum);
+        (lanes[0] + lanes[1], index)
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 unsafe fn sum_sq_diff_f64_simd_wasm32(values: &[f64], mean: f64) -> f64 {
     unsafe {
@@ -2423,16 +2443,8 @@ pub extern "C" fn molt_math_hypot(args_bits: u64) -> u64 {
         #[cfg(target_arch = "aarch64")]
         {
             if n >= 2 && std::arch::is_aarch64_feature_detected!("neon") {
-                use std::arch::aarch64::*;
-                let mut vec_sum = vdupq_n_f64(0.0);
-                while i + 2 <= n {
-                    let v = vld1q_f64(vals.as_ptr().add(i));
-                    vec_sum = vfmaq_f64(vec_sum, v, v);
-                    i += 2;
-                }
-                let mut lanes = [0.0f64; 2];
-                vst1q_f64(lanes.as_mut_ptr(), vec_sum);
-                sum_sq = lanes[0] + lanes[1];
+                // SAFETY: runtime feature detection proves NEON is available.
+                (sum_sq, i) = unsafe { sum_squares_f64_simd_aarch64(&vals) };
             }
         }
         #[cfg(target_arch = "x86_64")]
