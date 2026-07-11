@@ -64,6 +64,13 @@ pub fn take_last_silent_failure() -> Option<String> {
     LAST_SILENT_FAILURE.with(|slot| slot.borrow_mut().take())
 }
 
+/// Clear any diagnostic left by an earlier, successfully-handled C-API error.
+/// Module execution calls this at entry so a later bare failure can never be
+/// attributed to stale state from a previous exec transaction.
+pub fn clear_last_silent_failure() {
+    LAST_SILENT_FAILURE.with(|slot| *slot.borrow_mut() = None);
+}
+
 /// Emit an env-gated trace line for a C-API call site. Only writes when
 /// `MOLT_TRACE_CAPI` is set, so it is free on the normal path.
 pub fn trace_call(name: &str, detail: Option<&str>) {
@@ -102,5 +109,12 @@ mod tests {
             take_last_silent_failure().as_deref(),
             Some("PyObject_GetAttr")
         );
+    }
+
+    #[test]
+    fn exec_boundary_clear_removes_stale_failure() {
+        record_silent_failure("PyObject_GetAttr", Some("handled"));
+        clear_last_silent_failure();
+        assert_eq!(take_last_silent_failure(), None);
     }
 }

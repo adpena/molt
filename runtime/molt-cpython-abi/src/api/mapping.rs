@@ -63,6 +63,7 @@ pub unsafe extern "C" fn PyDict_SetItem(
     value: *mut PyObject,
 ) -> c_int {
     if op.is_null() || key.is_null() || value.is_null() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return -1;
     }
     let bridge = &*GLOBAL_BRIDGE;
@@ -75,6 +76,14 @@ pub unsafe extern "C" fn PyDict_SetItem(
             // out-of-bounds linear memory).
             let detail = format!("unresolved dict @ {:p}", op);
             crate::capi_trace::record_silent_failure("PyDict_SetItem", Some(&detail));
+            if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+                unsafe {
+                    crate::api::errors::PyErr_SetString(
+                        &raw mut crate::abi_types::PyExc_SystemError,
+                        c"PyDict_SetItem: dict is not a bridge-managed object".as_ptr(),
+                    );
+                }
+            }
             return -1;
         }
     };
@@ -134,6 +143,15 @@ pub unsafe extern "C" fn PyDict_SetItem(
                     crate::abi_types::describe_unresolved_pyobject(value)
                 });
                 crate::capi_trace::record_silent_failure("PyDict_SetItem", Some(&detail));
+                if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+                    unsafe {
+                        crate::api::errors::PyErr_SetString(
+                            &raw mut crate::abi_types::PyExc_SystemError,
+                            c"PyDict_SetItem: value is not a bridge-managed object and no foreign wrapper could be minted"
+                                .as_ptr(),
+                        );
+                    }
+                }
                 return -1;
             }
         },

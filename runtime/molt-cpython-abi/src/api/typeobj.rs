@@ -56,6 +56,7 @@ pub unsafe extern "C" fn PyType_Ready(tp: *mut PyTypeObject) -> c_int {
         // record so the exec-failure path can name the exact site instead of
         // vanishing before any trace fires.
         crate::capi_trace::record_silent_failure("PyType_Ready", Some("null type"));
+        crate::api::errors::PyErr_BadInternalCall();
         return -1;
     }
     let name = unsafe { (*tp).tp_name };
@@ -1935,6 +1936,7 @@ pub unsafe extern "C" fn PyDescr_NewGetSet(
 ) -> *mut PyObject {
     if type_.is_null() || getset.is_null() {
         crate::capi_trace::record_silent_failure("PyDescr_NewGetSet", Some("null type or getset"));
+        crate::api::errors::PyErr_BadInternalCall();
         return ptr::null_mut();
     }
     let name = unsafe { (*getset).name };
@@ -1967,6 +1969,7 @@ pub unsafe extern "C" fn PyDescr_NewMember(
 ) -> *mut PyObject {
     if type_.is_null() || member.is_null() {
         crate::capi_trace::record_silent_failure("PyDescr_NewMember", Some("null type or member"));
+        crate::api::errors::PyErr_BadInternalCall();
         return ptr::null_mut();
     }
     let name = unsafe { (*member).name };
