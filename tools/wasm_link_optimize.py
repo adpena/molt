@@ -4,6 +4,8 @@ from __future__ import annotations
 import re
 import sys
 
+from molt.wasm_artifact import strip_wasm_publication_sections
+
 from wasm_link_edit import _strip_internal_exports
 from wasm_link_format import (
     CALL_INDIRECT_RE,
@@ -30,43 +32,13 @@ from wasm_link_format import (
 
 
 def _strip_debug_sections(data: bytes) -> bytes | None:
-    """Remove custom debug/name/producer sections that bloat the linked artifact.
-
-    V8 must compile every function in the module at load time.  Large name
-    sections and debug info cause disproportionate memory pressure during
-    compilation — stripping them is the single biggest win for OOM avoidance.
-    """
-    sections = _parse_sections(data)
-    keep: list[tuple[int, bytes]] = []
-    stripped = False
-    for section_id, payload in sections:
-        if section_id != 0:
-            keep.append((section_id, payload))
-            continue
-        try:
-            name, _ = _parse_custom_section(payload)
-        except ValueError:
-            keep.append((section_id, payload))
-            continue
-        # Strip name, debug, producers, source-mapping and reloc sections
-        if (
-            name
-            in (
-                "name",
-                "producers",
-                "sourceMappingURL",
-                "linking",
-                "dylink.0",
-            )
-            or name.startswith(".debug")
-            or name.startswith("reloc.")
-        ):
-            stripped = True
-            continue
-        keep.append((section_id, payload))
-    if not stripped:
-        return None
-    return _build_sections(keep)
+    """Compatibility wrapper over the canonical final-publication policy."""
+    stripped = strip_wasm_publication_sections(
+        data,
+        final_artifact=True,
+        preserve_debug=False,
+    )
+    return stripped if stripped != data else None
 
 
 def _collect_code_referenced_funcs(sections: list[tuple[int, bytes]]) -> set[int]:
