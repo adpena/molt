@@ -9,6 +9,7 @@
       "identity": "wasm::tests::call_indirect_table::reloc_table_ref_exports_do_not_publish_reserved_runtime_sentinels",
       "owner": "E1-NUMPY-2.5.1-UNWIND / wasm-toolchain",
       "predicate": {
+        "platform": "windows",
         "target": "default"
       },
       "expiry": "2026-07-18",
@@ -19,6 +20,7 @@
       "identity": "wasm::tests::native_callable::native_callable_forward_f32_rejects_non_unary_payload_abi",
       "owner": "E1-NUMPY-2.5.1-UNWIND / wasm-toolchain",
       "predicate": {
+        "platform": "windows",
         "target": "default"
       },
       "expiry": "2026-07-18",
@@ -29,6 +31,7 @@
       "identity": "wasm::tests::native_callable::native_callable_pyinit_imports_wasm32_pointer_and_extends_to_value_lane",
       "owner": "E1-NUMPY-2.5.1-UNWIND / wasm-toolchain",
       "predicate": {
+        "platform": "windows",
         "target": "default"
       },
       "expiry": "2026-07-18",
