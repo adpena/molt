@@ -27,21 +27,39 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static BIG_U64_BITS: AtomicU64 = AtomicU64::new(0); // value: u64::MAX - 1
 static HUGE_BITS: AtomicU64 = AtomicU64::new(0); // beyond ±2^64
 static TEST_LOCK: Mutex<()> = Mutex::new(());
+static NEG_HUGE_BITS: AtomicU64 = AtomicU64::new(0);
+static MIN_I64_BITS: AtomicU64 = AtomicU64::new(0);
+static MAX_I64_BITS: AtomicU64 = AtomicU64::new(0);
 
 const BIG_U64_VALUE: u64 = u64::MAX - 1;
+const HUGE_LOW_U64: u64 = 0x1234_5678_9abc_def0;
+const NEG_HUGE_LOW_U64: u64 = 7;
 /// The f64 the mock TrueDivide authority reports for HUGE (exact-authority path).
 const HUGE_AS_F64: f64 = 1.0e25;
 
 unsafe extern "C" fn mock_classify_heap(bits: u64) -> u8 {
-    if bits == BIG_U64_BITS.load(Ordering::SeqCst) || bits == HUGE_BITS.load(Ordering::SeqCst) {
+    if bits == BIG_U64_BITS.load(Ordering::SeqCst)
+        || bits == HUGE_BITS.load(Ordering::SeqCst)
+        || bits == NEG_HUGE_BITS.load(Ordering::SeqCst)
+        || bits == MIN_I64_BITS.load(Ordering::SeqCst)
+        || bits == MAX_I64_BITS.load(Ordering::SeqCst)
+    {
         molt_cpython_abi::abi_types::MoltTypeTag::Int as u8
     } else {
         molt_cpython_abi::abi_types::MoltTypeTag::Other as u8
     }
 }
 
-unsafe extern "C" fn mock_int_as_i64_checked(_bits: u64, _out: *mut i64) -> std::os::raw::c_int {
-    -1 // both mock bignums exceed i64
+unsafe extern "C" fn mock_int_as_i64_checked(bits: u64, out: *mut i64) -> std::os::raw::c_int {
+    if bits == MIN_I64_BITS.load(Ordering::SeqCst) {
+        unsafe { *out = i64::MIN };
+        0
+    } else if bits == MAX_I64_BITS.load(Ordering::SeqCst) {
+        unsafe { *out = i64::MAX };
+        0
+    } else {
+        -1
+    }
 }
 
 unsafe extern "C" fn mock_int_as_u64_checked(bits: u64, out: *mut u64) -> std::os::raw::c_int {
@@ -53,6 +71,29 @@ unsafe extern "C" fn mock_int_as_u64_checked(bits: u64, out: *mut u64) -> std::o
     }
 }
 
+unsafe extern "C" fn mock_int_as_u64_mask(
+    bits: u64,
+    width: u32,
+    out: *mut u64,
+) -> std::os::raw::c_int {
+    let value = if bits == BIG_U64_BITS.load(Ordering::SeqCst) {
+        BIG_U64_VALUE
+    } else if bits == HUGE_BITS.load(Ordering::SeqCst) {
+        HUGE_LOW_U64
+    } else if bits == NEG_HUGE_BITS.load(Ordering::SeqCst) {
+        NEG_HUGE_LOW_U64
+    } else {
+        return -1;
+    };
+    let mask = if width == 64 {
+        u64::MAX
+    } else {
+        (1u64 << width) - 1
+    };
+    unsafe { *out = value & mask };
+    0
+}
+
 /// The runtime numeric authority stand-in: `HUGE / 1` (TrueDivide) yields the
 /// exact float; everything else fails closed.
 unsafe extern "C" fn mock_number_binary_op(op: u32, a: u64, _b: u64) -> u64 {
@@ -60,6 +101,14 @@ unsafe extern "C" fn mock_number_binary_op(op: u32, a: u64, _b: u64) -> u64 {
         && a == HUGE_BITS.load(Ordering::SeqCst)
     {
         return MoltObject::from_float(HUGE_AS_F64).bits();
+    }
+    if op == molt_cpython_abi::hooks::NumberBinaryOp::Rshift as u32 {
+        if a == HUGE_BITS.load(Ordering::SeqCst) {
+            return MoltObject::from_int(0).bits();
+        }
+        if a == NEG_HUGE_BITS.load(Ordering::SeqCst) {
+            return MoltObject::from_int(-1).bits();
+        }
     }
     0
 }
@@ -69,13 +118,20 @@ fn install_hooks() {
     if BIG_U64_BITS.load(Ordering::SeqCst) == 0 {
         let a: *mut u8 = Box::into_raw(Box::new(0u8));
         let b: *mut u8 = Box::into_raw(Box::new(0u8));
+        let c: *mut u8 = Box::into_raw(Box::new(0u8));
+        let d: *mut u8 = Box::into_raw(Box::new(0u8));
+        let e: *mut u8 = Box::into_raw(Box::new(0u8));
         BIG_U64_BITS.store(MoltObject::from_ptr(a).bits(), Ordering::SeqCst);
         HUGE_BITS.store(MoltObject::from_ptr(b).bits(), Ordering::SeqCst);
+        NEG_HUGE_BITS.store(MoltObject::from_ptr(c).bits(), Ordering::SeqCst);
+        MIN_I64_BITS.store(MoltObject::from_ptr(d).bits(), Ordering::SeqCst);
+        MAX_I64_BITS.store(MoltObject::from_ptr(e).bits(), Ordering::SeqCst);
     }
     let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
     hooks.classify_heap = mock_classify_heap;
     hooks.int_as_i64_checked = mock_int_as_i64_checked;
     hooks.int_as_u64_checked = mock_int_as_u64_checked;
+    hooks.int_as_u64_mask = mock_int_as_u64_mask;
     hooks.number_binary_op = mock_number_binary_op;
     unsafe {
         let _ = molt_cpython_abi::try_set_runtime_hooks(hooks);
@@ -294,6 +350,80 @@ fn as_long_long_and_overflow_returns_minus_one_not_clamp() {
     assert_eq!(overflow, 0);
     assert!(err_pending());
     clear_err();
+}
+
+#[test]
+fn signed_boundaries_and_negative_overflow_match_cpython() {
+    let _g = TEST_LOCK.lock().unwrap();
+    install_hooks();
+    clear_err();
+
+    for (bits, value) in [
+        (MIN_I64_BITS.load(Ordering::SeqCst), i64::MIN),
+        (MAX_I64_BITS.load(Ordering::SeqCst), i64::MAX),
+    ] {
+        let py = proxy(bits);
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::numbers::PyLong_AsLongLong(py) },
+            value
+        );
+        assert!(!err_pending());
+    }
+
+    let negative_huge = proxy(NEG_HUGE_BITS.load(Ordering::SeqCst));
+    let mut overflow = 0;
+    assert_eq!(
+        unsafe {
+            molt_cpython_abi::api::numbers::PyLong_AsLongLongAndOverflow(
+                negative_huge,
+                &mut overflow,
+            )
+        },
+        -1
+    );
+    assert_eq!(overflow, -1);
+    assert!(!err_pending());
+
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::numbers::PyLong_AsLongLong(negative_huge) },
+        -1
+    );
+    assert!(err_is(
+        &raw mut molt_cpython_abi::abi_types::PyExc_OverflowError
+    ));
+    clear_err();
+}
+
+#[test]
+fn unsigned_masks_truncate_without_setting_overflow() {
+    let _g = TEST_LOCK.lock().unwrap();
+    install_hooks();
+    clear_err();
+
+    let negative_one = int_obj(-1);
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::numbers::PyLong_AsUnsignedLongMask(negative_one) },
+        std::os::raw::c_ulong::MAX
+    );
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::numbers::PyLong_AsUnsignedLongLongMask(negative_one) },
+        u64::MAX
+    );
+    assert!(!err_pending());
+
+    let huge = proxy(HUGE_BITS.load(Ordering::SeqCst));
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::numbers::PyLong_AsUnsignedLongLongMask(huge) },
+        HUGE_LOW_U64
+    );
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::numbers::PyLong_AsUnsignedLongMask(huge) },
+        (HUGE_LOW_U64 & std::os::raw::c_ulong::MAX as u64) as std::os::raw::c_ulong
+    );
+    assert!(
+        !err_pending(),
+        "mask variants never raise for integer overflow"
+    );
 }
 
 // ── PyLong_AsNativeBytes: true size query ────────────────────────────────────

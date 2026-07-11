@@ -49,6 +49,11 @@ enum LongValue {
     Signed(i64),
     /// In `(i64::MAX, u64::MAX]` — representable only as unsigned 64-bit.
     Big(u64),
+    Wide {
+        bits: u64,
+        low_u64: Option<u64>,
+        sign: i8,
+    },
 }
 
 /// Why a resolution failed. `Raised` means a CPython-shaped exception is
@@ -59,7 +64,6 @@ enum LongError {
     /// A genuine int whose magnitude exceeds the 64-bit hook envelope
     /// (`< i64::MIN` or `> u64::MAX`). For every C target of ≤ 64 bits this is
     /// exactly CPython's OverflowError case.
-    OutOf64,
     /// Exception already set; propagate the sentinel.
     Raised,
 }
@@ -96,7 +100,18 @@ fn py_long_value(op: *mut PyObject, use_index: bool) -> Result<LongValue, LongEr
                     return Ok(LongValue::Big(uv));
                 }
                 // A genuine int beyond ±2^64: overflow for any ≤64-bit target.
-                return Err(LongError::OutOf64);
+                let Some(sign) = big_int_sign(bits).map(|sign| if sign < 0 { -1 } else { 1 })
+                else {
+                    if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+                        set_long_overflow_msg(c"runtime integer sign authority unavailable");
+                    }
+                    return Err(LongError::Raised);
+                };
+                return Ok(LongValue::Wide {
+                    bits,
+                    low_u64: None,
+                    sign,
+                });
             }
         }
     }
@@ -108,7 +123,22 @@ fn py_long_value(op: *mut PyObject, use_index: bool) -> Result<LongValue, LongEr
             return Err(LongError::Raised);
         }
         // The result is a real int; re-resolve WITHOUT __index__ (no loops).
-        let result = py_long_value(index, false);
+        let mut result = py_long_value(index, false);
+        if let Ok(LongValue::Wide {
+            bits,
+            low_u64: None,
+            sign,
+        }) = &result
+        {
+            let mut low_u64 = 0u64;
+            if unsafe { (hooks_or_stubs().int_as_u64_mask)(*bits, 64, &raw mut low_u64) } == 0 {
+                result = Ok(LongValue::Wide {
+                    bits: *bits,
+                    low_u64: Some(low_u64),
+                    sign: *sign,
+                });
+            }
+        }
         unsafe { crate::api::refcount::Py_DECREF(index) };
         return match result {
             Err(LongError::NotInt) => {
@@ -140,6 +170,72 @@ fn set_long_overflow_msg(message: &'static std::ffi::CStr) {
             &raw mut crate::abi_types::PyExc_OverflowError,
             message.as_ptr(),
         );
+    }
+}
+
+enum CheckedLongError {
+    NotInt,
+    Raised,
+    Negative,
+    Overflow(i8),
+}
+
+fn checked_signed_value(
+    op: *mut PyObject,
+    use_index: bool,
+    min: i64,
+    max: i64,
+) -> Result<i64, CheckedLongError> {
+    match py_long_value(op, use_index) {
+        Ok(LongValue::Signed(value)) if value >= min && value <= max => Ok(value),
+        Ok(LongValue::Signed(value)) => {
+            Err(CheckedLongError::Overflow(if value < 0 { -1 } else { 1 }))
+        }
+        Ok(LongValue::Big(_)) => Err(CheckedLongError::Overflow(1)),
+        Ok(LongValue::Wide { sign, .. }) => Err(CheckedLongError::Overflow(sign)),
+        Err(LongError::NotInt) => Err(CheckedLongError::NotInt),
+        Err(LongError::Raised) => Err(CheckedLongError::Raised),
+    }
+}
+
+fn checked_unsigned_value(op: *mut PyObject, max: u64) -> Result<u64, CheckedLongError> {
+    match py_long_value(op, false) {
+        Ok(LongValue::Signed(value)) if value < 0 => Err(CheckedLongError::Negative),
+        Ok(LongValue::Signed(value)) if value as u64 <= max => Ok(value as u64),
+        Ok(LongValue::Signed(_)) => Err(CheckedLongError::Overflow(1)),
+        Ok(LongValue::Big(value)) if value <= max => Ok(value),
+        Ok(LongValue::Big(_)) | Ok(LongValue::Wide { .. }) => Err(CheckedLongError::Overflow(1)),
+        Err(LongError::NotInt) => Err(CheckedLongError::NotInt),
+        Err(LongError::Raised) => Err(CheckedLongError::Raised),
+    }
+}
+
+fn masked_unsigned_value(op: *mut PyObject, width: u32) -> Result<u64, CheckedLongError> {
+    let mask = if width == 64 {
+        u64::MAX
+    } else {
+        (1u64 << width) - 1
+    };
+    match py_long_value(op, true) {
+        Ok(LongValue::Signed(value)) => Ok((value as u64) & mask),
+        Ok(LongValue::Big(value)) => Ok(value & mask),
+        Ok(LongValue::Wide { bits, low_u64, .. }) => {
+            let low_u64 = if let Some(low_u64) = low_u64 {
+                low_u64
+            } else {
+                let mut low_u64 = 0u64;
+                if unsafe { (hooks_or_stubs().int_as_u64_mask)(bits, 64, &raw mut low_u64) } != 0 {
+                    if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+                        set_long_overflow_msg(c"runtime integer mask authority unavailable");
+                    }
+                    return Err(CheckedLongError::Raised);
+                }
+                low_u64
+            };
+            Ok(low_u64 & mask)
+        }
+        Err(LongError::NotInt) => Err(CheckedLongError::NotInt),
+        Err(LongError::Raised) => Err(CheckedLongError::Raised),
     }
 }
 
@@ -200,24 +296,8 @@ pub(crate) fn py_long_as_ssize_clamped(op: *mut PyObject) -> Option<isize> {
             Some(v.clamp(isize::MIN as i64, isize::MAX as i64) as isize)
         }
         Ok(LongValue::Big(_)) => Some(isize::MAX),
-        Err(LongError::OutOf64) => {
-            let bits = GLOBAL_BRIDGE
-                .molt_handle_for_pyobj(op)
-                .map(|value| value.bits())
-                .unwrap_or(0);
-            match (bits != 0).then(|| big_int_sign(bits)).flatten() {
-                Some(sign) if sign < 0 => Some(isize::MIN),
-                Some(_) => Some(isize::MAX),
-                None => {
-                    if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
-                        set_long_overflow_msg(
-                            c"cannot clamp int beyond the Molt numeric authority (runtime hooks absent)",
-                        );
-                    }
-                    None
-                }
-            }
-        }
+        Ok(LongValue::Wide { sign, .. }) if sign < 0 => Some(isize::MIN),
+        Ok(LongValue::Wide { .. }) => Some(isize::MAX),
         Err(LongError::NotInt) => {
             set_long_type_error();
             None
@@ -713,27 +793,17 @@ pub unsafe extern "C" fn _PyLong_FromByteArray(
 /// returned bare -1 sentinels.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyLong_AsLong(op: *mut PyObject) -> c_long {
-    match py_long_value(op, true) {
-        Ok(LongValue::Signed(v)) => match c_long::try_from(v) {
-            Ok(v) => v,
-            Err(_) => {
-                set_long_overflow_msg(c"Python int too large to convert to C long");
-                -1
-            }
-        },
-        Ok(LongValue::Big(_)) => {
+    match checked_signed_value(op, true, c_long::MIN as i64, c_long::MAX as i64) {
+        Ok(value) => value as c_long,
+        Err(CheckedLongError::Overflow(_)) => {
             set_long_overflow_msg(c"Python int too large to convert to C long");
             -1
         }
-        Err(LongError::NotInt) => {
+        Err(CheckedLongError::NotInt) => {
             set_long_type_error();
             -1
         }
-        Err(LongError::OutOf64) => {
-            set_long_overflow_msg(c"Python int too large to convert to C long");
-            -1
-        }
-        Err(LongError::Raised) => -1,
+        Err(CheckedLongError::Raised | CheckedLongError::Negative) => -1,
     }
 }
 
@@ -744,7 +814,8 @@ pub unsafe extern "C" fn PyLong_IsZero(op: *mut PyObject) -> c_int {
     match py_long_value(op, false) {
         Ok(LongValue::Signed(value)) => (value == 0) as c_int,
         Ok(LongValue::Big(value)) => (value == 0) as c_int,
-        Err(LongError::NotInt | LongError::OutOf64) => {
+        Ok(LongValue::Wide { .. }) => 0,
+        Err(LongError::NotInt) => {
             set_long_type_error();
             -1
         }
@@ -767,7 +838,7 @@ pub unsafe extern "C" fn PyLong_AsDouble(op: *mut PyObject) -> c_double {
             set_long_type_error();
             -1.0
         }
-        Err(LongError::OutOf64) => {
+        Ok(LongValue::Wide { .. }) => {
             // A genuine int beyond ±2^64: exact conversion via the runtime
             // authority when available; honest OverflowError otherwise.
             let bits = GLOBAL_BRIDGE
@@ -798,29 +869,17 @@ pub unsafe extern "C" fn PyLong_AsLongAndOverflow(
     overflow: *mut c_int,
 ) -> c_long {
     let mut ov: c_int = 0;
-    let result = match py_long_value(op, true) {
-        Ok(LongValue::Signed(v)) => match c_long::try_from(v) {
-            Ok(v) => v,
-            Err(_) => {
-                ov = if v > 0 { 1 } else { -1 };
-                -1
-            }
-        },
-        Ok(LongValue::Big(_)) => {
-            ov = 1;
+    let result = match checked_signed_value(op, true, c_long::MIN as i64, c_long::MAX as i64) {
+        Ok(value) => value as c_long,
+        Err(CheckedLongError::Overflow(sign)) => {
+            ov = sign as c_int;
             -1
         }
-        Err(LongError::OutOf64) => {
-            // Sign unknown beyond the 64-bit envelope; report overflow loudly
-            // (positive is the only value class numpy feeds here).
-            ov = 1;
-            -1
-        }
-        Err(LongError::NotInt) => {
+        Err(CheckedLongError::NotInt) => {
             set_long_type_error();
             -1
         }
-        Err(LongError::Raised) => -1,
+        Err(CheckedLongError::Raised | CheckedLongError::Negative) => -1,
     };
     if !overflow.is_null() {
         unsafe { *overflow = ov };
@@ -836,30 +895,17 @@ pub unsafe extern "C" fn PyLong_AsLongAndOverflow(
 /// numpy's reshape-"infer" sentinel).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyLong_AsSsize_t(op: *mut PyObject) -> isize {
-    match py_long_value(op, false) {
-        Ok(LongValue::Signed(v)) => match isize::try_from(v) {
-            Ok(v) => v,
-            Err(_) => {
-                set_long_overflow_msg(c"Python int too large to convert to C ssize_t");
-                -1
-            }
-        },
-        Ok(LongValue::Big(v)) => match isize::try_from(v) {
-            Ok(v) => v,
-            Err(_) => {
-                set_long_overflow_msg(c"Python int too large to convert to C ssize_t");
-                -1
-            }
-        },
-        Err(LongError::NotInt) => {
-            set_long_type_error();
-            -1
-        }
-        Err(LongError::OutOf64) => {
+    match checked_signed_value(op, false, isize::MIN as i64, isize::MAX as i64) {
+        Ok(value) => value as isize,
+        Err(CheckedLongError::Overflow(_)) => {
             set_long_overflow_msg(c"Python int too large to convert to C ssize_t");
             -1
         }
-        Err(LongError::Raised) => -1,
+        Err(CheckedLongError::NotInt) => {
+            set_long_type_error();
+            -1
+        }
+        Err(CheckedLongError::Raised | CheckedLongError::Negative) => -1,
     }
 }
 
@@ -868,17 +914,17 @@ pub unsafe extern "C" fn PyLong_AsSsize_t(op: *mut PyObject) -> isize {
 /// an exception set (was: silent truncation through the unchecked hook).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyLong_AsLongLong(op: *mut PyObject) -> c_longlong {
-    match py_long_value(op, true) {
-        Ok(LongValue::Signed(v)) => v as c_longlong,
-        Ok(LongValue::Big(_)) | Err(LongError::OutOf64) => {
+    match checked_signed_value(op, true, i64::MIN, i64::MAX) {
+        Ok(value) => value as c_longlong,
+        Err(CheckedLongError::Overflow(_)) => {
             set_long_overflow_msg(c"Python int too large to convert to C long long");
             -1
         }
-        Err(LongError::NotInt) => {
+        Err(CheckedLongError::NotInt) => {
             set_long_type_error();
             -1
         }
-        Err(LongError::Raised) => -1,
+        Err(CheckedLongError::Raised | CheckedLongError::Negative) => -1,
     }
 }
 
@@ -892,17 +938,17 @@ pub unsafe extern "C" fn PyLong_AsLongLongAndOverflow(
     overflow: *mut c_int,
 ) -> c_longlong {
     let mut ov: c_int = 0;
-    let result = match py_long_value(op, true) {
-        Ok(LongValue::Signed(v)) => v as c_longlong,
-        Ok(LongValue::Big(_)) | Err(LongError::OutOf64) => {
-            ov = 1;
+    let result = match checked_signed_value(op, true, i64::MIN, i64::MAX) {
+        Ok(value) => value as c_longlong,
+        Err(CheckedLongError::Overflow(sign)) => {
+            ov = sign as c_int;
             -1
         }
-        Err(LongError::NotInt) => {
+        Err(CheckedLongError::NotInt) => {
             set_long_type_error();
             -1
         }
-        Err(LongError::Raised) => -1,
+        Err(CheckedLongError::Raised | CheckedLongError::Negative) => -1,
     };
     if !overflow.is_null() {
         unsafe { *overflow = ov };
@@ -919,34 +965,21 @@ pub unsafe extern "C" fn PyLong_AsLongLongAndOverflow(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyLong_AsUnsignedLong(op: *mut PyObject) -> c_ulong {
     const SENTINEL: c_ulong = c_ulong::MAX; // (unsigned long)-1
-    match py_long_value(op, false) {
-        Ok(LongValue::Signed(v)) if v < 0 => {
+    match checked_unsigned_value(op, c_ulong::MAX as u64) {
+        Ok(value) => value as c_ulong,
+        Err(CheckedLongError::Negative) => {
             set_long_overflow_msg(c"can't convert negative value to unsigned int");
             SENTINEL
         }
-        Ok(LongValue::Signed(v)) => match c_ulong::try_from(v) {
-            Ok(v) => v,
-            Err(_) => {
-                set_long_overflow_msg(c"Python int too large to convert to C unsigned long");
-                SENTINEL
-            }
-        },
-        Ok(LongValue::Big(v)) => match c_ulong::try_from(v) {
-            Ok(v) => v,
-            Err(_) => {
-                set_long_overflow_msg(c"Python int too large to convert to C unsigned long");
-                SENTINEL
-            }
-        },
-        Err(LongError::NotInt) => {
-            set_long_type_error();
-            SENTINEL
-        }
-        Err(LongError::OutOf64) => {
+        Err(CheckedLongError::Overflow(_)) => {
             set_long_overflow_msg(c"Python int too large to convert to C unsigned long");
             SENTINEL
         }
-        Err(LongError::Raised) => SENTINEL,
+        Err(CheckedLongError::NotInt) => {
+            set_long_type_error();
+            SENTINEL
+        }
+        Err(CheckedLongError::Raised) => SENTINEL,
     }
 }
 
@@ -954,22 +987,47 @@ pub unsafe extern "C" fn PyLong_AsUnsignedLong(op: *mut PyObject) -> c_ulong {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyLong_AsUnsignedLongLong(op: *mut PyObject) -> c_ulonglong {
     const SENTINEL: c_ulonglong = c_ulonglong::MAX; // (unsigned long long)-1
-    match py_long_value(op, false) {
-        Ok(LongValue::Signed(v)) if v < 0 => {
+    match checked_unsigned_value(op, u64::MAX) {
+        Ok(value) => value as c_ulonglong,
+        Err(CheckedLongError::Negative) => {
             set_long_overflow_msg(c"can't convert negative value to unsigned int");
             SENTINEL
         }
-        Ok(LongValue::Signed(v)) => v as c_ulonglong,
-        Ok(LongValue::Big(v)) => v as c_ulonglong,
-        Err(LongError::NotInt) => {
-            set_long_type_error();
-            SENTINEL
-        }
-        Err(LongError::OutOf64) => {
+        Err(CheckedLongError::Overflow(_)) => {
             set_long_overflow_msg(c"Python int too large to convert to C unsigned long long");
             SENTINEL
         }
-        Err(LongError::Raised) => SENTINEL,
+        Err(CheckedLongError::NotInt) => {
+            set_long_type_error();
+            SENTINEL
+        }
+        Err(CheckedLongError::Raised) => SENTINEL,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyLong_AsUnsignedLongMask(op: *mut PyObject) -> c_ulong {
+    match masked_unsigned_value(op, c_ulong::BITS) {
+        Ok(value) => value as c_ulong,
+        Err(CheckedLongError::NotInt) => {
+            set_long_type_error();
+            c_ulong::MAX
+        }
+        Err(CheckedLongError::Raised) => c_ulong::MAX,
+        Err(CheckedLongError::Negative | CheckedLongError::Overflow(_)) => unreachable!(),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyLong_AsUnsignedLongLongMask(op: *mut PyObject) -> c_ulonglong {
+    match masked_unsigned_value(op, c_ulonglong::BITS) {
+        Ok(value) => value as c_ulonglong,
+        Err(CheckedLongError::NotInt) => {
+            set_long_type_error();
+            c_ulonglong::MAX
+        }
+        Err(CheckedLongError::Raised) => c_ulonglong::MAX,
+        Err(CheckedLongError::Negative | CheckedLongError::Overflow(_)) => unreachable!(),
     }
 }
 
@@ -1004,7 +1062,7 @@ pub unsafe extern "C" fn PyLong_AsVoidPtr(op: *mut PyObject) -> *mut c_void {
             set_long_type_error();
             ptr::null_mut()
         }
-        Err(LongError::OutOf64) => {
+        Ok(LongValue::Wide { .. }) => {
             set_long_overflow_msg(c"Python int too large to convert to C void*");
             ptr::null_mut()
         }
@@ -1045,7 +1103,7 @@ pub unsafe extern "C" fn PyLong_AsNativeBytes(
             set_long_type_error();
             return -1;
         }
-        Err(LongError::OutOf64) => {
+        Ok(LongValue::Wide { .. }) => {
             set_long_overflow_msg(c"Molt int exceeds the 64-bit native-bytes envelope");
             return -1;
         }
@@ -1159,7 +1217,7 @@ pub unsafe extern "C" fn _PyLong_AsByteArray(
             set_long_type_error();
             return -1;
         }
-        Err(LongError::OutOf64) => {
+        Ok(LongValue::Wide { .. }) => {
             set_long_overflow();
             return -1;
         }
