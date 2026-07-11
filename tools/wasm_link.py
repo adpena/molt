@@ -682,11 +682,11 @@ def _split_runtime_export_contract(
     )
 
 
-def _split_runtime_function_export_names(artifact: str) -> set[str]:
+def _split_runtime_contract_export_names(artifact: str) -> set[str]:
     return {
-        entry.canonical_name
+        name
         for entry in _split_runtime_export_contract(artifact)
-        if entry.kind == 0
+        for name in entry.accepted_names
     }
 
 
@@ -1546,6 +1546,33 @@ def _ensure_export_by_index(
     return rebuilt if canonical is None else canonical
 
 
+def _ensure_defined_memory_export(data: bytes) -> bytes | None:
+    facts = parse_wasm_module_facts(data)
+    if any(
+        facts.export_kinds.get(name, (None, None))[0] == 2
+        for name in ("molt_memory", "memory")
+    ):
+        return None
+    memory_imports = [entry for entry in facts.imports if entry[2] == 2]
+    if memory_imports:
+        raise ValueError(
+            "cannot restore linked memory export from an imported memory"
+        )
+    memory_sections = [payload for section_id, payload in _parse_sections(data) if section_id == 5]
+    if not memory_sections:
+        return None
+    if len(memory_sections) != 1:
+        raise ValueError(
+            "cannot restore linked memory export without exactly one memory section"
+        )
+    memory_count, _ = _read_varuint(memory_sections[0], 0)
+    if memory_count != 1:
+        raise ValueError(
+            "cannot restore linked memory export without exactly one defined memory"
+        )
+    return _ensure_export_by_index(data, name="molt_memory", kind=2, index=0)
+
+
 def _restore_split_runtime_contract_exports(
     data: bytes,
     *,
@@ -2062,7 +2089,7 @@ def _optimize_split_app_module(
         reference_data=reference_data,
         preserve_exports=(
             _split_app_reference_function_exports(reference_data)
-            | _split_runtime_function_export_names("app")
+            | _split_runtime_contract_export_names("app")
         ),
         preserve_reference_exports=False,
     )
@@ -3105,7 +3132,7 @@ def _run_wasm_ld_with_custodied_inputs(
             output_reference = output.read_bytes()
         except OSError:
             output_reference = None
-        post_link_preserve_exports = _split_runtime_function_export_names("app")
+        post_link_preserve_exports = _split_runtime_contract_export_names("app")
         if not split_runtime:
             post_link_preserve_exports.update(preserved_output_exports)
         linked_bytes = _post_link_optimize(
@@ -3179,6 +3206,15 @@ def _run_wasm_ld_with_custodied_inputs(
         if updated is not None:
             work_linked.write_bytes(updated)
             linked_bytes = updated
+        if not any(entry[2] == 2 for entry in _collect_imports(linked_bytes)):
+            try:
+                updated = _ensure_defined_memory_export(linked_bytes)
+            except ValueError as exc:
+                print(f"Failed to ensure memory export: {exc}", file=sys.stderr)
+                return 1
+            if updated is not None:
+                work_linked.write_bytes(updated)
+                linked_bytes = updated
         if not split_runtime:
             updated = _strip_internal_exports(
                 linked_bytes,
@@ -3270,7 +3306,7 @@ def _run_wasm_ld_with_custodied_inputs(
                 native_contract_function_indices = {
                     name: index
                     for name, index in _collect_function_exports(rewritten_data).items()
-                    if name in _split_runtime_function_export_names("app")
+                    if name in _split_runtime_contract_export_names("app")
                 }
                 if "molt_main" not in native_contract_function_indices:
                     symbol_name = public_export_map.get("molt_main")
