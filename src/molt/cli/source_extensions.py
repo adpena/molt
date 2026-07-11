@@ -1901,55 +1901,80 @@ def source_extension_manifest_source_path(
     manifest_path: Path,
     expected_sha256: str | None = None,
 ) -> tuple[Path | None, list[str]]:
-    source_path = source_extension_manifest_path(raw_path, manifest_path=manifest_path)
-    if source_path.is_file():
-        if not _source_extension_hash_matches(source_path, expected_sha256):
-            return None, [
-                f"extension_manifest.json source checksum mismatch: {source_path}"
-            ]
-        return source_path, []
+    return SourceExtensionManifestSourceResolver(
+        manifest=manifest,
+        manifest_path=manifest_path,
+    ).resolve(raw_path, expected_sha256=expected_sha256)
 
-    raw_source_path = Path(raw_path).expanduser()
-    source_roots = _manifest_source_plan_relocation_roots(manifest)
-    if not source_roots:
+
+class SourceExtensionManifestSourceResolver:
+    def __init__(
+        self,
+        *,
+        manifest: Mapping[str, Any],
+        manifest_path: Path,
+    ) -> None:
+        self._manifest_path = manifest_path
+        self._source_roots = _manifest_source_plan_relocation_roots(manifest)
+        self._relocation_roots = {
+            source_root: _source_extension_relocation_roots(
+                source_root,
+                manifest_path=manifest_path,
+            )
+            for source_root in self._source_roots
+        }
+
+    def resolve(
+        self,
+        raw_path: str,
+        *,
+        expected_sha256: str | None = None,
+    ) -> tuple[Path | None, list[str]]:
+        source_path = source_extension_manifest_path(
+            raw_path,
+            manifest_path=self._manifest_path,
+        )
+        if source_path.is_file():
+            if not _source_extension_hash_matches(source_path, expected_sha256):
+                return None, [
+                    f"extension_manifest.json source checksum mismatch: {source_path}"
+                ]
+            return source_path, []
+
+        raw_source_path = Path(raw_path).expanduser()
+        if not self._source_roots:
+            return None, []
+        relative_roots: list[tuple[Path, Path]] = []
+        if raw_source_path.is_absolute():
+            for source_root in self._source_roots:
+                try:
+                    relative_roots.append(
+                        (source_root, raw_source_path.relative_to(source_root))
+                    )
+                except ValueError:
+                    continue
+        else:
+            relative_roots.extend(
+                (source_root, raw_source_path) for source_root in self._source_roots
+            )
+        if not relative_roots:
+            return None, []
+        mismatched_candidates: list[Path] = []
+        for source_root, relative_source in relative_roots:
+            for root in self._relocation_roots[source_root]:
+                candidate = (root / relative_source).resolve()
+                if not candidate.is_file():
+                    continue
+                if not _source_extension_hash_matches(candidate, expected_sha256):
+                    mismatched_candidates.append(candidate)
+                    continue
+                return candidate, []
+        if mismatched_candidates:
+            return None, [
+                "extension_manifest.json relocated source checksum mismatch: "
+                + ", ".join(str(path) for path in mismatched_candidates[:3])
+            ]
         return None, []
-    relative_roots: list[tuple[Path, Path]] = []
-    if raw_source_path.is_absolute():
-        for source_root in source_roots:
-            try:
-                relative_roots.append(
-                    (source_root, raw_source_path.relative_to(source_root))
-                )
-            except ValueError:
-                continue
-    else:
-        # Sealed roots normalize relocatable source custody by storing
-        # object_closure.source relative to source_plan.source_root/build_root.
-        # Resolve those through the same root-relocation machinery as stale
-        # absolute source paths so manifests do not need deleted-worktree
-        # absolute paths to remain usable.
-        relative_roots.extend((source_root, raw_source_path) for source_root in source_roots)
-    if not relative_roots:
-        return None, []
-    mismatched_candidates: list[Path] = []
-    for source_root, relative_source in relative_roots:
-        for root in _source_extension_relocation_roots(
-            source_root,
-            manifest_path=manifest_path,
-        ):
-            candidate = (root / relative_source).resolve()
-            if not candidate.is_file():
-                continue
-            if not _source_extension_hash_matches(candidate, expected_sha256):
-                mismatched_candidates.append(candidate)
-                continue
-            return candidate, []
-    if mismatched_candidates:
-        return None, [
-            "extension_manifest.json relocated source checksum mismatch: "
-            + ", ".join(str(path) for path in mismatched_candidates[:3])
-        ]
-    return None, []
 
 
 def _source_extension_object_source_sha256(

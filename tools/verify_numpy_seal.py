@@ -22,7 +22,7 @@ import argparse
 import json
 from pathlib import Path
 
-from molt.cli.source_extensions import source_extension_manifest_source_path
+from molt.cli.source_extensions import SourceExtensionManifestSourceResolver
 from molt.scientific_stack_versions import (
     attest_numpy_witness_seal,
     numpy_witness_seal_root,
@@ -76,6 +76,10 @@ def main() -> int:
     # (2) every object_closure object source resolves.
     oc = manifest.get("object_closure") or {}
     objs = oc.get("objects") or []
+    source_resolver = SourceExtensionManifestSourceResolver(
+        manifest=manifest,
+        manifest_path=mpath,
+    )
     missing = []
     checked = 0
     for o in objs:
@@ -84,10 +88,8 @@ def main() -> int:
             continue
         checked += 1
         source_sha256 = o.get("source_sha256") if isinstance(o, dict) else None
-        source_path, source_errors = source_extension_manifest_source_path(
+        source_path, source_errors = source_resolver.resolve(
             src,
-            manifest=manifest,
-            manifest_path=mpath,
             expected_sha256=(
                 source_sha256.strip()
                 if isinstance(source_sha256, str) and source_sha256.strip()
