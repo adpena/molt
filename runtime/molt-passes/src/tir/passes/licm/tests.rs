@@ -3,6 +3,7 @@ use super::run;
 use super::safety::throw_condition_disproven;
 use crate::tir::blocks::{BlockId, LoopRole, Terminator, TirBlock};
 use crate::tir::function::TirFunction;
+use crate::tir::numeric_facts::IntRange;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::{TirValue, ValueId};
@@ -802,11 +803,11 @@ fn throw_condition_disproven_per_opcode() {
     let divisor_nz = ValueId(6); // [1, 9] (non-zero)
     let divisor_zero = ValueId(7); // [-2, 5] (straddles zero)
     let _ = x;
-    vr.set_global_range_for_test(count_ok, 0, 63);
-    vr.set_global_range_for_test(count_neg, -4, 10);
-    vr.set_global_range_for_test(count_big, 0, 200);
-    vr.set_global_range_for_test(divisor_nz, 1, 9);
-    vr.set_global_range_for_test(divisor_zero, -2, 5);
+    vr.record_global_range(count_ok, IntRange::new(0, 63));
+    vr.record_global_range(count_neg, IntRange::new(-4, 10));
+    vr.record_global_range(count_big, IntRange::new(0, 200));
+    vr.record_global_range(divisor_nz, IntRange::new(1, 9));
+    vr.record_global_range(divisor_zero, IntRange::new(-2, 5));
     // count_unknown deliberately left absent (FULL).
 
     // Shl / Shr: disproven iff count in [0, 63].
