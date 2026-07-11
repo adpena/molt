@@ -136,6 +136,8 @@ def _window_subjects(root: Path, start_head: str | None) -> str:
             cwd=str(root),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
         )
         return r.stdout if r.returncode == 0 else ""
