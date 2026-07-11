@@ -266,11 +266,13 @@ unsafe fn add_methods_to_dict(tp: *mut PyTypeObject) -> c_int {
                 return -1;
             }
             // Store the descriptor. A failure here means the runtime dict layer
-            // could not hold the entry (e.g. an unresolved bridge handle); we
-            // record it for diagnostics but do not abort readiness — the type is
-            // structurally ready regardless of whether the store layer is fully
-            // wired, and aborting would cascade a degraded dict backend into a
-            // spurious extension exec failure.
+            // could not hold the entry (e.g. an unresolved bridge handle). CPython's
+            // add_methods (Objects/typeobject.c) propagates a PyDict store failure
+            // as -1, so PyType_Ready FAILS — it never marks a type ready with a
+            // silently-dropped method (which would surface much later as an
+            // AttributeError / wrong dispatch on the missing method). Match that:
+            // fail CLOSED with a set exception, mirroring the add_members_/
+            // add_getset_ (store_descr) siblings.
             let rc = crate::api::mapping::PyDict_SetItemString(dict, name_ptr, func);
             crate::api::refcount::Py_DECREF(func);
             if rc < 0 {
@@ -278,6 +280,17 @@ unsafe fn add_methods_to_dict(tp: *mut PyTypeObject) -> c_int {
                     "PyType_Ready",
                     Some("PyDict_SetItemString could not store method descriptor"),
                 );
+                // Guarantee a pending exception even if the dict layer returned
+                // -1 without setting one (record-without-exception class), so the
+                // caller's `< 0` check never sees a contentless failure.
+                if crate::api::errors::PyErr_Occurred().is_null() {
+                    crate::api::errors::PyErr_SetString(
+                        &raw mut crate::abi_types::PyExc_SystemError,
+                        c"PyType_Ready could not store method descriptor in tp_dict"
+                            .as_ptr(),
+                    );
+                }
+                return -1;
             }
             methods = methods.add(1);
         }
