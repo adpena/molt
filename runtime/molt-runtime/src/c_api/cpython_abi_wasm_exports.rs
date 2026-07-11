@@ -7,11 +7,6 @@
 
 #![allow(dead_code, improper_ctypes)]
 
-#[link(
-    name = "molt_pyarg_shims",
-    kind = "static",
-    modifiers = "+whole-archive"
-)]
 mod variadic_exports {
     include!(concat!(
         env!("OUT_DIR"),
