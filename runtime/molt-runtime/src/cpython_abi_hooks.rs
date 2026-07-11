@@ -1632,7 +1632,8 @@ unsafe fn static_pyinit_registered_bridge_module_bits(
 ) -> Result<Option<u64>, &'static str> {
     let Some(module_bits) = molt_cpython_abi::bridge::GLOBAL_BRIDGE
         .lock()
-        .pyobj_to_handle(result_pyobj)
+        .molt_handle_for_pyobj(result_pyobj)
+        .map(molt_cpython_abi::bridge::MoltValueHandle::bits)
     else {
         return Ok(None);
     };
@@ -1776,6 +1777,53 @@ fn take_runtime_pyinit_error_message() -> Option<String> {
 fn take_static_pyinit_error_detail() -> Option<String> {
     molt_cpython_abi::api::errors::take_current_error_message()
         .or_else(take_runtime_pyinit_error_message)
+}
+
+fn propagate_pending_cpython_exception(error_type: *mut PyObject) -> i64 {
+    let Some((class_bits, message)) = molt_cpython_abi::api::errors::take_current_error() else {
+        return 0;
+    };
+    with_gil(|_py| {
+        if let Some(type_name) = molt_cpython_abi::abi_types::exc_singleton_name(error_type) {
+            let type_name = type_name.strip_prefix("PyExc_").unwrap_or(type_name);
+            return crate::raise_exception::<i64>(&_py, type_name, &message);
+        }
+        let message_ptr = alloc_string(&_py, message.as_bytes());
+        if message_ptr.is_null() {
+            return crate::raise_exception::<i64>(
+                &_py,
+                "MemoryError",
+                "failed to materialize C extension exception message",
+            );
+        }
+        let message_bits = MoltObject::from_ptr(message_ptr).bits();
+        let args_ptr = if message.is_empty() {
+            crate::alloc_tuple(&_py, &[])
+        } else {
+            crate::alloc_tuple(&_py, &[message_bits])
+        };
+        if args_ptr.is_null() {
+            dec_ref_bits(&_py, message_bits);
+            return crate::raise_exception::<i64>(
+                &_py,
+                "MemoryError",
+                "failed to materialize C extension exception arguments",
+            );
+        }
+        let args_bits = MoltObject::from_ptr(args_ptr).bits();
+        let exception_ptr = crate::alloc_exception_from_class_bits(&_py, class_bits, args_bits);
+        dec_ref_bits(&_py, message_bits);
+        dec_ref_bits(&_py, args_bits);
+        if exception_ptr.is_null() {
+            return crate::raise_exception::<i64>(
+                &_py,
+                "SystemError",
+                "C extension set an exception with an invalid exception type",
+            );
+        }
+        crate::builtins::exceptions::record_exception_owned(&_py, exception_ptr);
+        0
+    })
 }
 
 fn static_pyinit_import_error_message(prefix: &str) -> String {
@@ -2064,13 +2112,20 @@ pub extern "C" fn molt_cpython_abi_cext_call_trampoline(
     }
     match result_bits {
         Some(bits) => bits as i64,
-        None => with_gil(|_py| {
-            let msg = format!(
-                "C extension function returned NULL for convention flags 0x{:x}",
-                entry.flags
-            );
-            crate::raise_exception::<i64>(&_py, "RuntimeError", &msg)
-        }),
+        None => {
+            let error_type = unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() };
+            if !error_type.is_null() {
+                propagate_pending_cpython_exception(error_type)
+            } else {
+                with_gil(|_py| {
+                    let msg = format!(
+                        "C extension function returned NULL without setting an exception (convention flags 0x{:x})",
+                        entry.flags
+                    );
+                    crate::raise_exception::<i64>(&_py, "SystemError", &msg)
+                })
+            }
+        }
     }
 }
 
@@ -2236,7 +2291,8 @@ pub fn register_cpython_hooks() {
 mod tests {
     use super::*;
     use molt_cpython_abi::abi_types::{
-        PyExc_RuntimeError, PyModuleDef_Base, PyModuleDef_Slot, PyObject, PyTypeObject,
+        PyExc_RuntimeError, PyExc_TypeError, PyModuleDef_Base, PyModuleDef_Slot, PyObject,
+        PyTypeObject,
     };
     use std::os::raw::c_int;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
@@ -2262,6 +2318,26 @@ mod tests {
             crate::clear_exception(&_py);
             dec_ref_bits(&_py, exc_bits);
             message
+        })
+    }
+
+    fn pending_exception_type_for_assertion() -> String {
+        with_gil(|_py| {
+            let exc_bits = crate::builtins::exceptions::molt_exception_last_pending();
+            let type_name = MoltObject::from_bits(exc_bits)
+                .as_ptr()
+                .and_then(|exc_ptr| {
+                    let class_bits = unsafe { crate::exception_class_bits(exc_ptr) };
+                    MoltObject::from_bits(class_bits)
+                        .as_ptr()
+                        .and_then(|class_ptr| {
+                            let name_bits = unsafe { crate::class_name_bits(class_ptr) };
+                            crate::string_obj_to_owned(MoltObject::from_bits(name_bits))
+                        })
+                })
+                .unwrap_or_else(|| "<unknown>".to_string());
+            dec_ref_bits(&_py, exc_bits);
+            type_name
         })
     }
 
@@ -3107,6 +3183,90 @@ mod tests {
         }
         let len = unsafe { tuple_len(args_ptr) };
         unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(len as std::os::raw::c_long) }
+    }
+
+    unsafe extern "C" fn fastcall_null_with_type_error(
+        _self_obj: *mut PyObject,
+        _args: *mut *mut PyObject,
+        _nargs: Py_ssize_t,
+    ) -> *mut PyObject {
+        unsafe {
+            molt_cpython_abi::api::errors::PyErr_SetString(
+                &raw mut PyExc_TypeError,
+                c"numpy fastcall detail".as_ptr(),
+            );
+        }
+        std::ptr::null_mut()
+    }
+
+    unsafe extern "C" fn fastcall_null_without_exception(
+        _self_obj: *mut PyObject,
+        _args: *mut *mut PyObject,
+        _nargs: Py_ssize_t,
+    ) -> *mut PyObject {
+        std::ptr::null_mut()
+    }
+
+    #[test]
+    fn cext_null_result_propagates_pending_exception() {
+        let _guard = cpython_abi_test_guard();
+        register_cpython_hooks();
+        unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+        let _ = crate::molt_exception_clear();
+        let method_bits = unsafe {
+            hook_register_c_function(
+                fastcall_null_with_type_error as *const () as usize as u64,
+                METH_FASTCALL,
+                MoltObject::none().bits(),
+                b"masked_fastcall".as_ptr(),
+                b"masked_fastcall".len(),
+            )
+        };
+
+        let out_bits = with_gil(|_py| unsafe {
+            crate::call::function::call_function_obj_bound_vec(&_py, method_bits, &[])
+        });
+
+        assert_eq!(out_bits, 0);
+        assert_eq!(pending_exception_type_for_assertion(), "TypeError");
+        let message = pending_exception_message_for_assertion();
+        assert!(message.contains("numpy fastcall detail"), "{message}");
+        assert!(
+            !message.contains("returned NULL for convention"),
+            "{message}"
+        );
+        unsafe { hook_dec_ref(method_bits) };
+    }
+
+    #[test]
+    fn cext_null_result_without_exception_raises_system_error() {
+        let _guard = cpython_abi_test_guard();
+        register_cpython_hooks();
+        unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+        let _ = crate::molt_exception_clear();
+        let method_bits = unsafe {
+            hook_register_c_function(
+                fastcall_null_without_exception as *const () as usize as u64,
+                METH_FASTCALL,
+                MoltObject::none().bits(),
+                b"broken_fastcall".as_ptr(),
+                b"broken_fastcall".len(),
+            )
+        };
+
+        let out_bits = with_gil(|_py| unsafe {
+            crate::call::function::call_function_obj_bound_vec(&_py, method_bits, &[])
+        });
+
+        assert_eq!(out_bits, 0);
+        assert_eq!(pending_exception_type_for_assertion(), "SystemError");
+        let message = pending_exception_message_for_assertion();
+        assert!(
+            message.contains("returned NULL without setting an exception"),
+            "{message}"
+        );
+        assert!(message.contains("0x80"), "{message}");
+        unsafe { hook_dec_ref(method_bits) };
     }
 
     #[test]

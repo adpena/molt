@@ -161,6 +161,15 @@ pub fn take_current_error_message() -> Option<String> {
     CURRENT_EXC.with(|c| c.borrow_mut().take().map(|(_type_bits, msg)| msg))
 }
 
+/// Transfer the pending C-API exception's runtime class handle and message.
+///
+/// This is the ABI-to-runtime equivalent of consuming CPython's error
+/// indicator at a call boundary: the caller becomes responsible for recording
+/// the same exception in Molt's unified exception state.
+pub fn take_current_error() -> Option<(u64, String)> {
+    CURRENT_EXC.with(|c| c.borrow_mut().take())
+}
+
 /// Non-consuming peek at the currently-pending exception's type-handle bits.
 /// `Some(0)` = an exception is set whose type was NULL/unresolvable; `None` = no
 /// exception pending. Used by `PyErr_ExceptionMatches` to compare the live
