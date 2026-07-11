@@ -191,17 +191,18 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             } else {
                 TrampolineKind::Plain
             };
-            let closure_size = if kind == TrampolineKind::Plain {
-                0
-            } else {
+            let is_task = matches!(kind.behavior(), TrampolineBehavior::Task(_));
+            let closure_size = if is_task {
                 *task_closure_sizes.get(func_name).unwrap_or(&0)
+            } else {
+                0
             };
             let target_ret = function_has_ret
                 .get(func_name.as_str())
                 .copied()
                 .unwrap_or(true);
             let mut func_sig = module.make_signature();
-            if kind != TrampolineKind::Plain {
+            if is_task {
                 func_sig.params.push(AbiParam::new(types::I64));
             } else {
                 for _ in 0..arity {
@@ -272,10 +273,11 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             } else {
                 TrampolineKind::Plain
             };
-            let closure_size = if kind == TrampolineKind::Plain {
-                0
-            } else {
+            let is_task = matches!(kind.behavior(), TrampolineBehavior::Task(_));
+            let closure_size = if is_task {
                 *task_closure_sizes.get(func_name).unwrap_or(&0)
+            } else {
+                0
             };
             let closure_name = op
                 .args
@@ -298,7 +300,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 .copied()
                 .unwrap_or(true);
             let mut func_sig = module.make_signature();
-            if kind != TrampolineKind::Plain {
+            if is_task {
                 func_sig.params.push(AbiParam::new(types::I64));
             } else {
                 func_sig.params.push(AbiParam::new(types::I64));

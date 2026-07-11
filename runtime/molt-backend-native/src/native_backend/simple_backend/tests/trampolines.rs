@@ -1,4 +1,6 @@
 use super::*;
+use crate::TrampolineSpec;
+use cranelift_module::Linkage;
 
 #[test]
 fn trampoline_key_distinguishes_void_and_value_targets() {
@@ -17,6 +19,36 @@ fn trampoline_key_distinguishes_void_and_value_targets() {
     };
 
     assert_ne!(value_key, void_key);
+}
+
+#[test]
+fn native_call_frame_trampoline_forwards_the_canonical_three_argument_abi() {
+    let mut backend = SimpleBackend::new();
+    let SimpleBackend {
+        module,
+        trampoline_ids,
+        import_ids,
+        ..
+    } = &mut backend;
+    let trampoline_id = SimpleBackend::ensure_trampoline(
+        module,
+        trampoline_ids,
+        import_ids,
+        "call_frame_target",
+        Linkage::Import,
+        TrampolineSpec {
+            arity: 3,
+            has_closure: false,
+            kind: TrampolineKind::CallFrame,
+            closure_size: 0,
+            target_has_ret: true,
+        },
+    );
+
+    assert_eq!(trampoline_ids.len(), 1);
+    assert_eq!(trampoline_ids.values().next(), Some(&trampoline_id));
+    let key = trampoline_ids.keys().next().unwrap();
+    assert_eq!(key.kind, TrampolineKind::CallFrame);
 }
 
 #[test]

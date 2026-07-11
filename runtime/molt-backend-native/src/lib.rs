@@ -13,7 +13,8 @@ pub(crate) use molt_tir::simpleir_debug::{dump_ir_matches, dump_ir_ops, should_d
 pub use molt_tir::trampolines::externalize_function_with_signature;
 #[cfg(any(feature = "native-backend", feature = "llvm"))]
 pub(crate) use molt_tir::trampolines::{
-    TrampolineKind, TrampolineSpec, function_requires_value_return,
+    TrampolineBehavior, TrampolineKind, TrampolineSpec, TrampolineTaskKind,
+    function_requires_value_return,
 };
 pub use molt_tir::{passes, representation_plan, tir};
 

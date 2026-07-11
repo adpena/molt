@@ -98,12 +98,9 @@ pub(super) fn analyze_wasm_trampolines(
                         if !func_name.ends_with("_poll") {
                             continue;
                         }
-                        let kind = match attr.as_str() {
-                            "__molt_is_generator__" => TrampolineKind::Generator,
-                            "__molt_is_coroutine__" => TrampolineKind::Coroutine,
-                            "__molt_is_async_generator__" => TrampolineKind::AsyncGen,
-                            _ => TrampolineKind::Plain,
-                        };
+                        let kind = TrampolineTaskKind::from_marker_attr(attr.as_str())
+                            .expect("task marker was filtered above")
+                            .trampoline_kind();
                         if let Some(prev) = task_kinds.insert(func_name.clone(), kind)
                             && prev != kind
                         {

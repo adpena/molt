@@ -1,6 +1,6 @@
 use wasm_encoder::{Function, Instruction, MemArg, ValType};
 
-use crate::TrampolineKind;
+use crate::TrampolineTaskKind;
 use crate::wasm_abi::{
     GEN_CONTROL_SIZE, TASK_KIND_COROUTINE, TASK_KIND_FUTURE, TASK_KIND_GENERATOR, WasmRuntimeImport,
 };
@@ -41,18 +41,16 @@ impl WasmTaskRuntimeLayout {
         }
     }
 
-    pub(in crate::wasm) fn for_trampoline_kind(kind: TrampolineKind) -> Option<Self> {
+    pub(in crate::wasm) fn for_trampoline_task_kind(kind: TrampolineTaskKind) -> Self {
         match kind {
-            TrampolineKind::Generator => Some(Self::generator()),
-            TrampolineKind::Coroutine => Some(Self::coroutine()),
-            TrampolineKind::AsyncGen => Some(Self {
+            TrampolineTaskKind::Generator => Self::generator(),
+            TrampolineTaskKind::Coroutine => Self::coroutine(),
+            TrampolineTaskKind::AsyncGen => Self {
                 diagnostic_name: "async generator",
                 runtime_task_kind: TASK_KIND_GENERATOR,
                 payload_base_offset: GEN_CONTROL_SIZE,
                 completion: WasmTaskCompletion::WrapAsyncGen,
-            }),
-            TrampolineKind::Plain => None,
-            TrampolineKind::CallFrame => None,
+            },
         }
     }
 
