@@ -25,7 +25,7 @@ fn test_bridge_int_roundtrip() {
     assert!(!py.is_null());
 
     let recovered = GLOBAL_BRIDGE.lock().pyobj_to_handle(py);
-    assert_eq!(recovered, Some(bits));
+    assert_eq!(recovered.map(|identity| identity.as_handle()), Some(bits));
 
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(py) };
 }
@@ -38,7 +38,7 @@ fn test_bridge_float_roundtrip() {
     assert!(!py.is_null());
 
     let recovered = GLOBAL_BRIDGE.lock().pyobj_to_handle(py);
-    assert_eq!(recovered, Some(bits));
+    assert_eq!(recovered.map(|identity| identity.as_handle()), Some(bits));
 
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(py) };
 }
@@ -80,7 +80,10 @@ fn test_pyobj_to_handle_none() {
     init();
     let none_ptr = &raw mut Py_None;
     let handle = GLOBAL_BRIDGE.lock().pyobj_to_handle(none_ptr);
-    assert_eq!(handle, Some(MoltObject::none().bits()));
+    assert_eq!(
+        handle.map(|identity| identity.as_handle()),
+        Some(MoltObject::none().bits())
+    );
 }
 
 #[test]
@@ -88,7 +91,10 @@ fn test_pyobj_to_handle_true() {
     init();
     let true_ptr = (&raw mut Py_True).cast::<PyObject>();
     let handle = GLOBAL_BRIDGE.lock().pyobj_to_handle(true_ptr);
-    assert_eq!(handle, Some(MoltObject::from_bool(true).bits()));
+    assert_eq!(
+        handle.map(|identity| identity.as_handle()),
+        Some(MoltObject::from_bool(true).bits())
+    );
 }
 
 #[test]
@@ -96,7 +102,10 @@ fn test_pyobj_to_handle_false() {
     init();
     let false_ptr = (&raw mut Py_False).cast::<PyObject>();
     let handle = GLOBAL_BRIDGE.lock().pyobj_to_handle(false_ptr);
-    assert_eq!(handle, Some(MoltObject::from_bool(false).bits()));
+    assert_eq!(
+        handle.map(|identity| identity.as_handle()),
+        Some(MoltObject::from_bool(false).bits())
+    );
 }
 
 #[test]
@@ -169,7 +178,13 @@ fn test_bridge_borrowed_lookup_materializes_cache_anchor() {
     let py = unsafe { GLOBAL_BRIDGE.lock().handle_to_borrowed_pyobj(bits) };
     assert!(!py.is_null());
     assert_eq!(unsafe { (*py).ob_refcnt }, 1);
-    assert_eq!(GLOBAL_BRIDGE.lock().pyobj_to_handle(py), Some(bits));
+    assert_eq!(
+        GLOBAL_BRIDGE
+            .lock()
+            .pyobj_to_handle(py)
+            .map(|identity| identity.as_handle()),
+        Some(bits)
+    );
     assert!(GLOBAL_BRIDGE.lock().release_pyobj(py));
 }
 

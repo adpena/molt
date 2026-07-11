@@ -2064,7 +2064,7 @@ mod immortal_authority_tests {
             .expect("registered exc singleton resolves to a handle");
         let rc_before = unsafe { (*exc).ob_refcnt };
         for _ in 0..16 {
-            let p = unsafe { bridge.handle_to_pyobj(bits) };
+            let p = unsafe { bridge.handle_to_pyobj(bits.as_handle()) };
             assert!(
                 std::ptr::eq(p, exc),
                 "singleton handle round-trip lost identity"

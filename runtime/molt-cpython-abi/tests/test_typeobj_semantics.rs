@@ -71,6 +71,7 @@ unsafe fn read_str(py: *mut PyObject) -> Vec<u8> {
     let bits = molt_cpython_abi::bridge::GLOBAL_BRIDGE
         .lock()
         .pyobj_to_handle(py)
+        .map(|identity| identity.as_handle())
         .expect("bridge str");
     str_map().as_ref().unwrap().get(&bits).unwrap().to_vec()
 }

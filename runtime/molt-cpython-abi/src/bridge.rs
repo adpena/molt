@@ -47,7 +47,7 @@ pub struct BridgeIdentity(AbiHandle);
 
 impl BridgeIdentity {
     #[inline]
-    pub(crate) const fn as_handle(self) -> AbiHandle {
+    pub const fn as_handle(self) -> AbiHandle {
         self.0
     }
 }
@@ -1652,8 +1652,14 @@ mod bridge_handle_tests {
         // Minted proxy for a genuine Molt handle resolves through both paths.
         let int_bits = MoltObject::from_int(0x5EED).bits();
         let proxy = unsafe { bridge.handle_to_pyobj(int_bits) };
-        assert_eq!(bridge.pyobj_to_handle(proxy), Some(int_bits));
-        assert_eq!(bridge.molt_handle_for_pyobj(proxy), Some(int_bits));
+        assert_eq!(
+            bridge.pyobj_to_handle(proxy).map(BridgeIdentity::as_handle),
+            Some(int_bits)
+        );
+        assert_eq!(
+            bridge.molt_handle_for_pyobj(proxy).map(MoltValueHandle::bits),
+            Some(int_bits)
+        );
         // Raw-registered C object: identity resolution still works, but the
         // synthetic handle is not a Molt object and must be excluded.
         let mut stray = PyObject {

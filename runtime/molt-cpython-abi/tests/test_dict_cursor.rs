@@ -108,6 +108,7 @@ fn handle_of(p: *mut PyObject) -> u64 {
     molt_cpython_abi::bridge::GLOBAL_BRIDGE
         .lock()
         .pyobj_to_handle(p)
+        .map(|identity| identity.as_handle())
         .expect("pointer must round-trip to a handle")
 }
 

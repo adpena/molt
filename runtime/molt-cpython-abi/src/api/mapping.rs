@@ -3,6 +3,8 @@
 use crate::abi_types::{Py_ssize_t, PyDictProxyObject, PyObject};
 use crate::bridge::GLOBAL_BRIDGE;
 use crate::hooks::hooks_or_stubs;
+#[cfg(test)]
+use molt_lang_obj_model::MoltObject;
 use std::os::raw::c_int;
 use std::ptr;
 
