@@ -4825,6 +4825,106 @@ def test_datetime_header_smoke(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
 
 
+def test_datetime_header_overlay_is_not_a_fail_open_stub() -> None:
+    """POISON Lane A #3 — the source-compat include/datetime.h must be the real
+    CPython datetime C-API, not the former fail-open, memory-unsafe stub.
+
+    The stub had a 4-byte ``{ int _molt_reserved; }`` PyDateTime_CAPI (so
+    ``PyDateTimeAPI->DateType`` read OOB), ``PyDate_/PyDateTime_/PyDelta_Check``
+    that unconditionally ``return 0`` (wrong branch, silent), and no
+    ``PyTime_Check``. This text-level check needs no toolchain and fails against
+    that stub.
+    """
+    header = (ROOT / "include" / "datetime.h").read_text(encoding="utf-8")
+    # The fail-open stub markers must be gone.
+    assert "_molt_reserved" not in header, "PyDateTime_CAPI is still the 4-byte placeholder stub"
+    assert "return 0;" not in header, "a *_Check still unconditionally returns 0 (fail-open)"
+    # The 15-field CPython 3.12 PyDateTime_CAPI must be present, in order.
+    for field in (
+        "DateType",
+        "DateTimeType",
+        "TimeType",
+        "DeltaType",
+        "TZInfoType",
+        "TimeZone_UTC",
+        "Date_FromDate",
+        "DateTime_FromDateAndTime",
+        "Time_FromTime",
+        "Delta_FromDelta",
+        "TimeZone_FromTimeZone",
+        "DateTime_FromTimestamp",
+        "Date_FromTimestamp",
+        "DateTime_FromDateAndTimeAndFold",
+        "Time_FromTimeAndFold",
+    ):
+        assert field in header, f"PyDateTime_CAPI is missing the {field} field"
+    # PyDateTime_IMPORT resolves the capsule the runtime publishes.
+    assert '"datetime.datetime_CAPI"' in header
+    assert "PyCapsule_Import(PyDateTime_CAPSULE_NAME" in header
+    # Every check tests the real type via the capsule, and PyTime_Check exists.
+    for check in ("PyDate_Check", "PyDateTime_Check", "PyTime_Check", "PyDelta_Check", "PyTZInfo_Check"):
+        assert check in header, f"{check} is missing from the overlay datetime.h"
+    assert "PyObject_TypeCheck(op, PyDateTimeAPI->" in header, "checks must be real PyObject_TypeCheck"
+
+
+def test_datetime_header_overlay_capi_struct_and_checks_compile(tmp_path: Path) -> None:
+    """POISON Lane A #3 (compile-level mask-proof) — accessing the PyDateTime_CAPI
+    struct fields and every ``*_Check`` (incl. the previously-missing
+    ``PyTime_Check`` / ``PyTZInfo_Check``) must compile against the source-compat
+    tier. Against the former 4-byte stub these were ``no member named 'DateType'``
+    / ``call to undeclared 'PyTime_Check'`` errors — this test fails there.
+    """
+    clang = shutil.which("clang")
+    if clang is None:
+        pytest.skip("clang is required for the datetime.h overlay CAPI compile test")
+    source = tmp_path / "datetime_h_overlay_capi.c"
+    source.write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "#include <datetime.h>",
+                "",
+                "int main(void) {",
+                "    PyObject *op = NULL;",
+                "    PyDateTime_IMPORT;",
+                "    (void)PyDateTimeAPI->DateType;",
+                "    (void)PyDateTimeAPI->DateTimeType;",
+                "    (void)PyDateTimeAPI->TimeType;",
+                "    (void)PyDateTimeAPI->DeltaType;",
+                "    (void)PyDateTimeAPI->TZInfoType;",
+                "    (void)PyDateTimeAPI->TimeZone_UTC;",
+                "    (void)PyDateTimeAPI->Date_FromDate;",
+                "    (void)PyDateTimeAPI->Time_FromTimeAndFold;",
+                "    (void)PyDate_Check(op);",
+                "    (void)PyDateTime_Check(op);",
+                "    (void)PyTime_Check(op);",
+                "    (void)PyDelta_Check(op);",
+                "    (void)PyTZInfo_Check(op);",
+                "    return 0;",
+                "}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    result = run_cli_test_process(
+        [
+            clang,
+            "-std=c11",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            f"-I{ROOT / 'include'}",
+            "-fsyntax-only",
+            str(source),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_datetime_header_cpython_abi_tier_smoke(tmp_path: Path) -> None:
     clang = shutil.which("clang")
     if clang is None:
