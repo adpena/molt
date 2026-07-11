@@ -8679,9 +8679,9 @@ def test_proof_queue_pact_witness_acceptance_is_queue_native() -> None:
     ]
     assert command[7:11] == [
         "--with",
-        "numpy==1.26.4",
+        "numpy==2.5.1",
         "--with",
-        "scipy==1.17.1",
+        "scipy==1.18.0",
     ]
     python_index = command.index("python")
     assert command[python_index : python_index + 2] == [
@@ -9071,8 +9071,8 @@ def test_proof_queue_pact_witness_oracle_regenerates_parity_fixture() -> None:
         "3.12",
     ]
     assert "--with" in command
-    assert "numpy==1.26.4" in command
-    assert "scipy==1.17.1" in command
+    assert "numpy==2.5.1" in command
+    assert "scipy==1.18.0" in command
     assert command[-2:] == ["python", "tools/pact_witness_oracle.py"]
     assert "collab/pact/pact_witness_kernel/make_fixture.py" in spec["scopes"]
     assert proof_queue._proof_command_policy_error(command) is None

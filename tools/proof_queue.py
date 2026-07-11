@@ -3247,7 +3247,7 @@ def _pact_witness_acceptance_spec(
             "tools/pact_witness_acceptance.py",
             "--out-dir",
             "tmp/pact_witness_acceptance_queue",
-            with_packages=["numpy==1.26.4", "scipy==1.17.1"],
+            with_packages=["numpy==2.5.1", "scipy==1.18.0"],
         ),
         "resource_family": "wasm-browser",
         "contention_key": "wasm:pact-witness",
@@ -3289,7 +3289,7 @@ def _pact_witness_oracle_spec(timeout: float | None = None) -> dict[str, object]
         ),
         "command": _uv_active_python_command(
             "tools/pact_witness_oracle.py",
-            with_packages=["numpy==1.26.4", "scipy==1.17.1"],
+            with_packages=["numpy==2.5.1", "scipy==1.18.0"],
         ),
         "resource_family": "wasm-browser",
         "contention_key": "wasm:pact-witness",
