@@ -33,11 +33,20 @@ unsafe extern "C" fn fx_alloc_list() -> u64 {
     let addr = *next as usize;
     *next += 0x100;
     let bits = MoltObject::from_ptr(addr as *mut u8).bits();
-    LISTS.lock().unwrap().get_or_insert_default().insert(bits, Vec::new());
+    LISTS
+        .lock()
+        .unwrap()
+        .get_or_insert_default()
+        .insert(bits, Vec::new());
     bits
 }
 unsafe extern "C" fn fx_list_append(list_bits: u64, item_bits: u64) {
-    if let Some(v) = LISTS.lock().unwrap().get_or_insert_default().get_mut(&list_bits) {
+    if let Some(v) = LISTS
+        .lock()
+        .unwrap()
+        .get_or_insert_default()
+        .get_mut(&list_bits)
+    {
         v.push(item_bits);
     }
 }
@@ -153,9 +162,21 @@ fn setitem_places_items_at_index_out_of_order() {
     };
     let (ab, bb, cb) = (bridge_bits(a), bridge_bits(b), bridge_bits(c));
     unsafe {
-        assert_eq!(bridge_bits(sequences::PyList_GetItem(list, 0)), ab, "slot 0");
-        assert_eq!(bridge_bits(sequences::PyList_GetItem(list, 1)), bb, "slot 1");
-        assert_eq!(bridge_bits(sequences::PyList_GetItem(list, 2)), cb, "slot 2");
+        assert_eq!(
+            bridge_bits(sequences::PyList_GetItem(list, 0)),
+            ab,
+            "slot 0"
+        );
+        assert_eq!(
+            bridge_bits(sequences::PyList_GetItem(list, 1)),
+            bb,
+            "slot 1"
+        );
+        assert_eq!(
+            bridge_bits(sequences::PyList_GetItem(list, 2)),
+            cb,
+            "slot 2"
+        );
     }
     assert!(
         unsafe { errors::PyErr_Occurred() }.is_null(),

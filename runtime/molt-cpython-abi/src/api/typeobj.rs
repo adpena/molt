@@ -286,8 +286,7 @@ unsafe fn add_methods_to_dict(tp: *mut PyTypeObject) -> c_int {
                 if crate::api::errors::PyErr_Occurred().is_null() {
                     crate::api::errors::PyErr_SetString(
                         &raw mut crate::abi_types::PyExc_SystemError,
-                        c"PyType_Ready could not store method descriptor in tp_dict"
-                            .as_ptr(),
+                        c"PyType_Ready could not store method descriptor in tp_dict".as_ptr(),
                     );
                 }
                 return -1;
@@ -931,13 +930,28 @@ unsafe fn apply_spec_slots(
                 ts::Py_tp_bases => (*ty).tp_bases = pfunc.cast::<PyObject>(),
                 ts::Py_tp_call => set_fn!(
                     tp_call,
-                    Option<unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut PyObject) -> *mut PyObject>
+                    Option<
+                        unsafe extern "C" fn(
+                            *mut PyObject,
+                            *mut PyObject,
+                            *mut PyObject,
+                        ) -> *mut PyObject,
+                    >
                 ),
-                ts::Py_tp_clear => set_fn!(tp_clear, Option<unsafe extern "C" fn(*mut PyObject) -> c_int>),
-                ts::Py_tp_dealloc => set_fn!(tp_dealloc, Option<unsafe extern "C" fn(*mut PyObject)>),
+                ts::Py_tp_clear => set_fn!(
+                    tp_clear,
+                    Option<unsafe extern "C" fn(*mut PyObject) -> c_int>
+                ),
+                ts::Py_tp_dealloc => {
+                    set_fn!(tp_dealloc, Option<unsafe extern "C" fn(*mut PyObject)>)
+                }
                 ts::Py_tp_del => set_fn!(tp_del, Option<unsafe extern "C" fn(*mut PyObject)>),
-                ts::Py_tp_descr_get => set_fn!(tp_descr_get, Option<crate::abi_types::PyDescrGetFunc>),
-                ts::Py_tp_descr_set => set_fn!(tp_descr_set, Option<crate::abi_types::PyDescrSetFunc>),
+                ts::Py_tp_descr_get => {
+                    set_fn!(tp_descr_get, Option<crate::abi_types::PyDescrGetFunc>)
+                }
+                ts::Py_tp_descr_set => {
+                    set_fn!(tp_descr_set, Option<crate::abi_types::PyDescrSetFunc>)
+                }
                 ts::Py_tp_doc => {
                     // CPython copies the doc string into fresh storage owned by the
                     // type (the caller's static string need not outlive the spec).
@@ -965,33 +979,65 @@ unsafe fn apply_spec_slots(
                     tp_getattro,
                     Option<unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> *mut PyObject>
                 ),
-                ts::Py_tp_hash => set_fn!(tp_hash, Option<unsafe extern "C" fn(*mut PyObject) -> crate::abi_types::Py_hash_t>),
+                ts::Py_tp_hash => set_fn!(
+                    tp_hash,
+                    Option<unsafe extern "C" fn(*mut PyObject) -> crate::abi_types::Py_hash_t>
+                ),
                 ts::Py_tp_init => set_fn!(
                     tp_init,
-                    Option<unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut PyObject) -> c_int>
+                    Option<
+                        unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut PyObject) -> c_int,
+                    >
                 ),
-                ts::Py_tp_is_gc => set_fn!(tp_is_gc, Option<unsafe extern "C" fn(*mut PyObject) -> c_int>),
-                ts::Py_tp_iter => set_fn!(tp_iter, Option<unsafe extern "C" fn(*mut PyObject) -> *mut PyObject>),
-                ts::Py_tp_iternext => set_fn!(tp_iternext, Option<unsafe extern "C" fn(*mut PyObject) -> *mut PyObject>),
+                ts::Py_tp_is_gc => set_fn!(
+                    tp_is_gc,
+                    Option<unsafe extern "C" fn(*mut PyObject) -> c_int>
+                ),
+                ts::Py_tp_iter => set_fn!(
+                    tp_iter,
+                    Option<unsafe extern "C" fn(*mut PyObject) -> *mut PyObject>
+                ),
+                ts::Py_tp_iternext => set_fn!(
+                    tp_iternext,
+                    Option<unsafe extern "C" fn(*mut PyObject) -> *mut PyObject>
+                ),
                 ts::Py_tp_methods => (*ty).tp_methods = pfunc.cast::<PyMethodDef>(),
                 ts::Py_tp_new => set_fn!(
                     tp_new,
-                    Option<unsafe extern "C" fn(*mut PyTypeObject, *mut PyObject, *mut PyObject) -> *mut PyObject>
+                    Option<
+                        unsafe extern "C" fn(
+                            *mut PyTypeObject,
+                            *mut PyObject,
+                            *mut PyObject,
+                        ) -> *mut PyObject,
+                    >
                 ),
-                ts::Py_tp_repr => set_fn!(tp_repr, Option<unsafe extern "C" fn(*mut PyObject) -> *mut PyObject>),
+                ts::Py_tp_repr => set_fn!(
+                    tp_repr,
+                    Option<unsafe extern "C" fn(*mut PyObject) -> *mut PyObject>
+                ),
                 ts::Py_tp_richcompare => set_fn!(
                     tp_richcompare,
-                    Option<unsafe extern "C" fn(*mut PyObject, *mut PyObject, c_int) -> *mut PyObject>
+                    Option<
+                        unsafe extern "C" fn(*mut PyObject, *mut PyObject, c_int) -> *mut PyObject,
+                    >
                 ),
                 ts::Py_tp_setattr => set_fn!(
                     tp_setattr,
-                    Option<unsafe extern "C" fn(*mut PyObject, *const c_char, *mut PyObject) -> c_int>
+                    Option<
+                        unsafe extern "C" fn(*mut PyObject, *const c_char, *mut PyObject) -> c_int,
+                    >
                 ),
                 ts::Py_tp_setattro => set_fn!(
                     tp_setattro,
-                    Option<unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut PyObject) -> c_int>
+                    Option<
+                        unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut PyObject) -> c_int,
+                    >
                 ),
-                ts::Py_tp_str => set_fn!(tp_str, Option<unsafe extern "C" fn(*mut PyObject) -> *mut PyObject>),
+                ts::Py_tp_str => set_fn!(
+                    tp_str,
+                    Option<unsafe extern "C" fn(*mut PyObject) -> *mut PyObject>
+                ),
                 ts::Py_tp_traverse => set_fn!(
                     tp_traverse,
                     Option<unsafe extern "C" fn(*mut PyObject, *mut c_void, *mut c_void) -> c_int>
@@ -999,7 +1045,9 @@ unsafe fn apply_spec_slots(
                 ts::Py_tp_members => (*ty).tp_members = pfunc,
                 ts::Py_tp_getset => (*ty).tp_getset = pfunc,
                 ts::Py_tp_free => set_fn!(tp_free, Option<unsafe extern "C" fn(*mut c_void)>),
-                ts::Py_tp_finalize => set_fn!(tp_finalize, Option<unsafe extern "C" fn(*mut PyObject)>),
+                ts::Py_tp_finalize => {
+                    set_fn!(tp_finalize, Option<unsafe extern "C" fn(*mut PyObject)>)
+                }
                 // ── nb_* (number) slots ───────────────────────────────────────
                 ts::Py_nb_absolute => (*ensure_number(ty)).nb_absolute = pfunc,
                 ts::Py_nb_add => (*ensure_number(ty)).nb_add = pfunc,
@@ -1837,8 +1885,14 @@ pub unsafe extern "C" fn PyMember_SetOne(
         // error/return contract are identical here — the warning is elided.
         match ty {
             PY_T_BOOL => {
-                let is_true = std::ptr::eq(value, (&raw mut crate::abi_types::Py_True).cast::<PyObject>());
-                let is_false = std::ptr::eq(value, (&raw mut crate::abi_types::Py_False).cast::<PyObject>());
+                let is_true = std::ptr::eq(
+                    value,
+                    (&raw mut crate::abi_types::Py_True).cast::<PyObject>(),
+                );
+                let is_false = std::ptr::eq(
+                    value,
+                    (&raw mut crate::abi_types::Py_False).cast::<PyObject>(),
+                );
                 if !is_true && !is_false {
                     crate::api::errors::PyErr_SetString(
                         &raw mut crate::abi_types::PyExc_TypeError,
@@ -2129,7 +2183,9 @@ pub unsafe extern "C" fn PyObject_Hash(op: *mut PyObject) -> isize {
     }
     // Molt-native (bridge-managed) objects hash through the runtime hash
     // authority over their handle bits (hash(int) == int, etc.), not tp_hash.
-    let native = crate::bridge::GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(op);
+    let native = crate::bridge::GLOBAL_BRIDGE
+        .lock()
+        .molt_handle_for_pyobj(op);
     if let Some(value) = native {
         return crate::bridge::molt_hash_from_bits(value.bits());
     }
@@ -2220,7 +2276,12 @@ pub unsafe extern "C" fn PyType_GetName(tp: *mut PyTypeObject) -> *mut PyObject 
         Some(dot) => &bytes[dot + 1..],
         None => bytes,
     };
-    unsafe { crate::api::strings::PyUnicode_FromStringAndSize(short.as_ptr().cast(), short.len() as isize) }
+    unsafe {
+        crate::api::strings::PyUnicode_FromStringAndSize(
+            short.as_ptr().cast(),
+            short.len() as isize,
+        )
+    }
 }
 
 /// Read a `str` attribute-name `PyObject` into an owned `String`, or `None`.
@@ -2322,7 +2383,6 @@ pub unsafe fn init_type_getattro() {
         crate::abi_types::PyType_Type.tp_getattro = Some(type_getattro);
     }
 }
-
 
 /// Ensure the *metatype* of a just-readied type `tp` carries a `tp_getattro`.
 ///
@@ -2429,7 +2489,10 @@ unsafe fn native_stringify(bits: u64, want_repr: bool) -> *mut PyObject {
     // PyUnicode_FromStringAndSize routes through the runtime `alloc_str` hook and
     // sets MemoryError on failure, so the native path stays fail-closed.
     unsafe {
-        crate::api::strings::PyUnicode_FromStringAndSize(bytes.as_ptr().cast(), bytes.len() as isize)
+        crate::api::strings::PyUnicode_FromStringAndSize(
+            bytes.as_ptr().cast(),
+            bytes.len() as isize,
+        )
     }
 }
 
@@ -2444,7 +2507,9 @@ pub unsafe extern "C" fn PyObject_Repr(op: *mut PyObject) -> *mut PyObject {
     // resolving Some means a genuine Molt handle; None means a foreign C object.
     // Bind the handle in its own statement so the bridge lock is released before
     // `native_stringify` re-enters the bridge (parking_lot mutex is not reentrant).
-    let native = crate::bridge::GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(op);
+    let native = crate::bridge::GLOBAL_BRIDGE
+        .lock()
+        .molt_handle_for_pyobj(op);
     if let Some(value) = native {
         return unsafe { native_stringify(value.bits(), true) };
     }
@@ -2480,7 +2545,9 @@ pub unsafe extern "C" fn PyObject_Str(op: *mut PyObject) -> *mut PyObject {
     }
     // Molt-native (bridge-managed) non-str object: runtime str primitive.
     // Release the bridge lock before re-entering the bridge (non-reentrant).
-    let native = crate::bridge::GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(op);
+    let native = crate::bridge::GLOBAL_BRIDGE
+        .lock()
+        .molt_handle_for_pyobj(op);
     if let Some(value) = native {
         return unsafe { native_stringify(value.bits(), false) };
     }
@@ -2889,7 +2956,9 @@ pub unsafe extern "C" fn molt_generic_hash(op: *mut PyObject) -> isize {
     // Molt-native value. Decode-safe converter excludes a raw-registered foreign
     // object's `0xA11C` identity anchor (Class-2 mis-decode), so it is NEVER
     // hashed as a garbage float. Resolve then drop the bridge lock before hashing.
-    let native = crate::bridge::GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(op);
+    let native = crate::bridge::GLOBAL_BRIDGE
+        .lock()
+        .molt_handle_for_pyobj(op);
     if let Some(bits) = native {
         return crate::bridge::molt_hash_from_bits(bits.bits());
     }
@@ -2945,9 +3014,7 @@ unsafe fn do_richcompare(v: *mut PyObject, w: *mut PyObject, op: c_int) -> *mut 
         unsafe { crate::api::refcount::Py_DECREF(res) };
     }
     // w's slot (unless already tried as the reflected op above).
-    if !checked_reverse
-        && let Some(res) = unsafe { try_slot_richcompare(w, v, swapped_op(op)) }
-    {
+    if !checked_reverse && let Some(res) = unsafe { try_slot_richcompare(w, v, swapped_op(op)) } {
         if res.is_null() {
             return ptr::null_mut();
         }
@@ -3035,7 +3102,10 @@ pub unsafe extern "C" fn PyObject_RichCompareBool(
     // PyBool_Check fast path, else route the result through PyObject_IsTrue.
     let ok = if std::ptr::eq(res, (&raw mut crate::abi_types::Py_True).cast::<PyObject>()) {
         1
-    } else if std::ptr::eq(res, (&raw mut crate::abi_types::Py_False).cast::<PyObject>()) {
+    } else if std::ptr::eq(
+        res,
+        (&raw mut crate::abi_types::Py_False).cast::<PyObject>(),
+    ) {
         0
     } else {
         unsafe { crate::api::object::PyObject_IsTrue(res) }
@@ -3126,7 +3196,10 @@ mod class2_decode_tests {
         assert_eq!(unsafe { PyObject_Repr(&raw mut obj) }, &raw mut REPR_RESULT);
         assert_eq!(REPR_CALLS.load(Ordering::SeqCst), 1);
 
-        assert_eq!(unsafe { crate::api::numbers::PyFloat_AsDouble(&raw mut obj) }, 42.5);
+        assert_eq!(
+            unsafe { crate::api::numbers::PyFloat_AsDouble(&raw mut obj) },
+            42.5
+        );
         assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 1);
 
         assert!(unsafe { native_value_richcompare(&raw mut obj, &raw mut obj, CMP_EQ) }.is_none());
@@ -3136,9 +3209,16 @@ mod class2_decode_tests {
         );
         assert_eq!(RICHCOMPARE_CALLS.load(Ordering::SeqCst), 1);
 
-        assert_eq!(unsafe { crate::api::object::PyObject_IsTrue(&raw mut obj) }, 0);
+        assert_eq!(
+            unsafe { crate::api::object::PyObject_IsTrue(&raw mut obj) },
+            0
+        );
         assert_eq!(BOOL_CALLS.load(Ordering::SeqCst), 1);
 
-        assert!(!crate::bridge::GLOBAL_BRIDGE.lock().release_pyobj(&raw mut obj));
+        assert!(
+            !crate::bridge::GLOBAL_BRIDGE
+                .lock()
+                .release_pyobj(&raw mut obj)
+        );
     }
 }

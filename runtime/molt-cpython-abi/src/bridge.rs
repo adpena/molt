@@ -1657,7 +1657,9 @@ mod bridge_handle_tests {
             Some(int_bits)
         );
         assert_eq!(
-            bridge.molt_handle_for_pyobj(proxy).map(MoltValueHandle::bits),
+            bridge
+                .molt_handle_for_pyobj(proxy)
+                .map(MoltValueHandle::bits),
             Some(int_bits)
         );
         // Raw-registered C object: identity resolution still works, but the

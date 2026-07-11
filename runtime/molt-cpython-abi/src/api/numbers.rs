@@ -159,9 +159,8 @@ fn big_int_sign(bits: u64) -> Option<i64> {
     if shift == 0 {
         return None;
     }
-    let result = unsafe {
-        (h.number_binary_op)(crate::hooks::NumberBinaryOp::Rshift as u32, bits, shift)
-    };
+    let result =
+        unsafe { (h.number_binary_op)(crate::hooks::NumberBinaryOp::Rshift as u32, bits, shift) };
     if result == 0 {
         return None;
     }
@@ -239,13 +238,8 @@ fn big_int_as_f64(bits: u64) -> Option<f64> {
     if one == 0 {
         return None;
     }
-    let result = unsafe {
-        (h.number_binary_op)(
-            crate::hooks::NumberBinaryOp::TrueDivide as u32,
-            bits,
-            one,
-        )
-    };
+    let result =
+        unsafe { (h.number_binary_op)(crate::hooks::NumberBinaryOp::TrueDivide as u32, bits, one) };
     (result != 0)
         .then(|| MoltObject::from_bits(result).as_float())
         .flatten()
@@ -404,22 +398,26 @@ fn build_big_int_from_literal(scanned: &ScannedIntLiteral) -> Option<u64> {
     let mut acc = small_int_bits(0);
     for &digit in &scanned.digits {
         let mul = unsafe {
-            (h.number_binary_op)(crate::hooks::NumberBinaryOp::Multiply as u32, acc, base_bits)
+            (h.number_binary_op)(
+                crate::hooks::NumberBinaryOp::Multiply as u32,
+                acc,
+                base_bits,
+            )
         };
         if mul == 0 {
             return None;
         }
         let digit_bits = small_int_bits(digit as i64);
-        let add =
-            unsafe { (h.number_binary_op)(crate::hooks::NumberBinaryOp::Add as u32, mul, digit_bits) };
+        let add = unsafe {
+            (h.number_binary_op)(crate::hooks::NumberBinaryOp::Add as u32, mul, digit_bits)
+        };
         if add == 0 {
             return None;
         }
         acc = add;
     }
     if scanned.negative {
-        let neg =
-            unsafe { (h.number_unary_op)(crate::hooks::NumberUnaryOp::Negative as u32, acc) };
+        let neg = unsafe { (h.number_unary_op)(crate::hooks::NumberUnaryOp::Negative as u32, acc) };
         if neg == 0 {
             return None;
         }
@@ -1184,7 +1182,10 @@ pub unsafe extern "C" fn _PyLong_AsByteArray(
         let bits = (n * 8) as u32;
         if is_signed != 0 {
             let min = -(1i128.checked_shl(bits - 1).unwrap_or(i128::MAX));
-            let max = 1i128.checked_shl(bits - 1).map(|v| v - 1).unwrap_or(i128::MAX);
+            let max = 1i128
+                .checked_shl(bits - 1)
+                .map(|v| v - 1)
+                .unwrap_or(i128::MAX);
             if value < min || value > max {
                 set_long_overflow();
                 return -1;
@@ -1287,7 +1288,8 @@ pub unsafe extern "C" fn PyFloat_AsDouble(op: *mut PyObject) -> c_double {
         }
         if obj.is_ptr() {
             let h = hooks_or_stubs();
-            if unsafe { (h.classify_heap)(bits.bits()) } == crate::abi_types::MoltTypeTag::Int as u8 {
+            if unsafe { (h.classify_heap)(bits.bits()) } == crate::abi_types::MoltTypeTag::Int as u8
+            {
                 // Heap bignum: checked 64-bit reads, then the exact runtime
                 // conversion authority for the beyond-64-bit band.
                 let mut sv = 0i64;
@@ -1476,7 +1478,9 @@ pub unsafe extern "C" fn PyComplex_AsCComplex(op: *mut PyObject) -> Py_complex {
             imag: 0.0,
         };
     }
-    if unsafe { PyComplex_Check(op) } != 0 && GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(op).is_none() {
+    if unsafe { PyComplex_Check(op) } != 0
+        && GLOBAL_BRIDGE.lock().molt_handle_for_pyobj(op).is_none()
+    {
         // `op` is a genuine (non-bridge-minted) C complex object here. On wasm32
         // a statically declared C `PyObject` is only 4-byte aligned, but
         // `PyComplexObject` (two `c_double`s) has alignment 8, so dereferencing
@@ -1599,10 +1603,7 @@ pub unsafe extern "C" fn PyLong_Check(op: *mut PyObject) -> c_int {
     }
     // Foreign C object: walk the subtype chain against the int type.
     unsafe {
-        crate::api::typeobj::PyType_IsSubtype(
-            (*op).ob_type,
-            &raw mut crate::abi_types::PyLong_Type,
-        )
+        crate::api::typeobj::PyType_IsSubtype((*op).ob_type, &raw mut crate::abi_types::PyLong_Type)
     }
 }
 

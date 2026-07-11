@@ -19,12 +19,22 @@ pub unsafe extern "C" fn PyErr_NewException(
     dict: *mut PyObject,
 ) -> *mut PyObject {
     if name.is_null() {
-        unsafe { PyErr_SetString(&raw mut crate::abi_types::PyExc_SystemError, c"PyErr_NewException: name must be module.class".as_ptr()) };
+        unsafe {
+            PyErr_SetString(
+                &raw mut crate::abi_types::PyExc_SystemError,
+                c"PyErr_NewException: name must be module.class".as_ptr(),
+            )
+        };
         return ptr::null_mut();
     }
     let bytes = unsafe { CStr::from_ptr(name).to_bytes() };
     let Some(dot) = bytes.iter().rposition(|byte| *byte == b'.') else {
-        unsafe { PyErr_SetString(&raw mut crate::abi_types::PyExc_SystemError, c"PyErr_NewException: name must be module.class".as_ptr()) };
+        unsafe {
+            PyErr_SetString(
+                &raw mut crate::abi_types::PyExc_SystemError,
+                c"PyErr_NewException: name must be module.class".as_ptr(),
+            )
+        };
         return ptr::null_mut();
     };
     let mut owned_dict = ptr::null_mut();
@@ -37,23 +47,34 @@ pub unsafe extern "C" fn PyErr_NewException(
     if dict.is_null() {
         return ptr::null_mut();
     }
-    let module = unsafe {
-        crate::api::strings::PyUnicode_FromStringAndSize(name, dot as Py_ssize_t)
-    };
+    let module =
+        unsafe { crate::api::strings::PyUnicode_FromStringAndSize(name, dot as Py_ssize_t) };
     if module.is_null()
-        || unsafe { crate::api::mapping::PyDict_SetItemString(dict, c"__module__".as_ptr(), module) } < 0
+        || unsafe {
+            crate::api::mapping::PyDict_SetItemString(dict, c"__module__".as_ptr(), module)
+        } < 0
     {
-        unsafe { crate::api::refcount::Py_XDECREF(module); crate::api::refcount::Py_XDECREF(owned_dict); }
+        unsafe {
+            crate::api::refcount::Py_XDECREF(module);
+            crate::api::refcount::Py_XDECREF(owned_dict);
+        }
         return ptr::null_mut();
     }
     unsafe { crate::api::refcount::Py_DECREF(module) };
-    let base = if base.is_null() { &raw mut crate::abi_types::PyExc_Exception } else { base };
+    let base = if base.is_null() {
+        &raw mut crate::abi_types::PyExc_Exception
+    } else {
+        base
+    };
     let bases = if unsafe { crate::api::sequences::PyTuple_Check(base) } != 0 {
         unsafe { crate::api::object::Py_NewRef(base) }
     } else {
         let tuple = unsafe { crate::api::sequences::PyTuple_New(1) };
         if !tuple.is_null() {
-            unsafe { crate::api::refcount::Py_INCREF(base); crate::api::sequences::PyTuple_SetItem(tuple, 0, base); }
+            unsafe {
+                crate::api::refcount::Py_INCREF(base);
+                crate::api::sequences::PyTuple_SetItem(tuple, 0, base);
+            }
         }
         tuple
     };
@@ -65,7 +86,12 @@ pub unsafe extern "C" fn PyErr_NewException(
     };
     let args = unsafe { crate::api::sequences::PyTuple_New(3) };
     if bases.is_null() || class_name.is_null() || args.is_null() {
-        unsafe { crate::api::refcount::Py_XDECREF(bases); crate::api::refcount::Py_XDECREF(class_name); crate::api::refcount::Py_XDECREF(args); crate::api::refcount::Py_XDECREF(owned_dict); }
+        unsafe {
+            crate::api::refcount::Py_XDECREF(bases);
+            crate::api::refcount::Py_XDECREF(class_name);
+            crate::api::refcount::Py_XDECREF(args);
+            crate::api::refcount::Py_XDECREF(owned_dict);
+        }
         return ptr::null_mut();
     }
     unsafe {
@@ -74,8 +100,17 @@ pub unsafe extern "C" fn PyErr_NewException(
         crate::api::refcount::Py_INCREF(dict);
         crate::api::sequences::PyTuple_SetItem(args, 2, dict);
     }
-    let result = unsafe { crate::api::object::PyObject_Call((&raw mut crate::abi_types::PyType_Type).cast(), args, ptr::null_mut()) };
-    unsafe { crate::api::refcount::Py_DECREF(args); crate::api::refcount::Py_XDECREF(owned_dict); }
+    let result = unsafe {
+        crate::api::object::PyObject_Call(
+            (&raw mut crate::abi_types::PyType_Type).cast(),
+            args,
+            ptr::null_mut(),
+        )
+    };
+    unsafe {
+        crate::api::refcount::Py_DECREF(args);
+        crate::api::refcount::Py_XDECREF(owned_dict);
+    }
     result
 }
 
@@ -90,12 +125,23 @@ pub unsafe extern "C" fn PyErr_NewExceptionWithDoc(
     let dict = if dict.is_null() {
         owned_dict = unsafe { crate::api::mapping::PyDict_New() };
         owned_dict
-    } else { dict };
-    if dict.is_null() { return ptr::null_mut(); }
+    } else {
+        dict
+    };
+    if dict.is_null() {
+        return ptr::null_mut();
+    }
     if !doc.is_null() {
         let doc_obj = unsafe { crate::api::strings::PyUnicode_FromString(doc) };
-        if doc_obj.is_null() || unsafe { crate::api::mapping::PyDict_SetItemString(dict, c"__doc__".as_ptr(), doc_obj) } < 0 {
-            unsafe { crate::api::refcount::Py_XDECREF(doc_obj); crate::api::refcount::Py_XDECREF(owned_dict); }
+        if doc_obj.is_null()
+            || unsafe {
+                crate::api::mapping::PyDict_SetItemString(dict, c"__doc__".as_ptr(), doc_obj)
+            } < 0
+        {
+            unsafe {
+                crate::api::refcount::Py_XDECREF(doc_obj);
+                crate::api::refcount::Py_XDECREF(owned_dict);
+            }
             return ptr::null_mut();
         }
         unsafe { crate::api::refcount::Py_DECREF(doc_obj) };
@@ -223,7 +269,9 @@ pub unsafe extern "C" fn PyErr_SetFromErrno(exc_type: *mut PyObject) -> *mut PyO
     let detail = if detail.is_null() {
         "operating system error".to_string()
     } else {
-        unsafe { CStr::from_ptr(detail) }.to_string_lossy().into_owned()
+        unsafe { CStr::from_ptr(detail) }
+            .to_string_lossy()
+            .into_owned()
     };
     let message = format!("[Errno {errnum}] {detail}");
     let c_message = std::ffi::CString::new(message).unwrap_or_else(|_| {
@@ -532,9 +580,7 @@ pub unsafe extern "C" fn PyErr_GivenExceptionMatches(
         given
     } else {
         let ob_type = unsafe { (*given).ob_type };
-        if !ob_type.is_null()
-            && crate::abi_types::exc_singleton_name(ob_type.cast()).is_some()
-        {
+        if !ob_type.is_null() && crate::abi_types::exc_singleton_name(ob_type.cast()).is_some() {
             ob_type.cast::<PyObject>()
         } else {
             given
@@ -640,7 +686,9 @@ pub unsafe extern "C" fn PyErr_WarnEx(
     let text = if message.is_null() {
         String::new()
     } else {
-        unsafe { CStr::from_ptr(message) }.to_string_lossy().into_owned()
+        unsafe { CStr::from_ptr(message) }
+            .to_string_lossy()
+            .into_owned()
     };
     let category_name = crate::abi_types::exc_singleton_name(category)
         .map(|name| name.strip_prefix("PyExc_").unwrap_or(name))
@@ -1038,9 +1086,14 @@ pub unsafe extern "C" fn molt_pyarg_parse_tuple_inner(
                     Some(b'&') => {
                         // 'O&' consumes a converter fn + a destination address and
                         // calls `convert(arg, addr)`; a 0 return fails the parse.
-                        let raw = outs_slice.get(out_idx).copied().unwrap_or(std::ptr::null_mut());
-                        let addr =
-                            outs_slice.get(out_idx + 1).copied().unwrap_or(std::ptr::null_mut());
+                        let raw = outs_slice
+                            .get(out_idx)
+                            .copied()
+                            .unwrap_or(std::ptr::null_mut());
+                        let addr = outs_slice
+                            .get(out_idx + 1)
+                            .copied()
+                            .unwrap_or(std::ptr::null_mut());
                         out_idx += 2;
                         if raw.is_null() {
                             unsafe { set_parse_format_error() };
@@ -1159,7 +1212,11 @@ fn molt_bytes_ptr(bits: u64) -> *const c_char {
     let h = crate::hooks::hooks_or_stubs();
     let mut len = 0usize;
     let ptr = unsafe { (h.bytes_data)(bits, std::ptr::addr_of_mut!(len)) };
-    if ptr.is_null() { std::ptr::null() } else { ptr.cast() }
+    if ptr.is_null() {
+        std::ptr::null()
+    } else {
+        ptr.cast()
+    }
 }
 
 fn molt_bytes_len(bits: u64) -> usize {
@@ -1208,7 +1265,10 @@ fn str_single_codepoint_if_str(obj: &MoltObject, bits: u64) -> Option<u32> {
 unsafe fn set_parse_overflow(message: &str) {
     let cmsg = std::ffi::CString::new(message).unwrap_or_default();
     unsafe {
-        PyErr_SetString(&raw mut crate::abi_types::PyExc_OverflowError, cmsg.as_ptr());
+        PyErr_SetString(
+            &raw mut crate::abi_types::PyExc_OverflowError,
+            cmsg.as_ptr(),
+        );
     }
 }
 
@@ -1231,7 +1291,9 @@ unsafe fn set_parse_o_bang_type_error(want: *mut PyTypeObject, got: *mut PyTypeO
         if name.is_null() {
             "<unknown>".to_string()
         } else {
-            unsafe { CStr::from_ptr(name) }.to_string_lossy().into_owned()
+            unsafe { CStr::from_ptr(name) }
+                .to_string_lossy()
+                .into_owned()
         }
     }
     let message = format!("argument must be {}, not {}", tp_name(want), tp_name(got));
@@ -1334,7 +1396,10 @@ mod bad_internal_call_tests {
             msg.contains("multiarraymodule.c:4242"),
             "located message must carry file:line, got {msg:?}"
         );
-        assert!(msg.contains("bad argument to internal function"), "got {msg:?}");
+        assert!(
+            msg.contains("bad argument to internal function"),
+            "got {msg:?}"
+        );
     }
 
     #[test]

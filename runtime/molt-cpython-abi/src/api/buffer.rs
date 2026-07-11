@@ -425,10 +425,7 @@ unsafe fn raise_bytes_like_type_error(obj: *mut PyObject) {
             .to_string_lossy()
             .into_owned()
     };
-    let msg = format!(
-        "a bytes-like object is required, not '{:.100}'",
-        name
-    );
+    let msg = format!("a bytes-like object is required, not '{:.100}'", name);
     if let Ok(c) = std::ffi::CString::new(msg) {
         unsafe { crate::api::errors::PyErr_SetString(&raw mut PyExc_TypeError, c.as_ptr()) };
     }
@@ -792,7 +789,11 @@ pub(crate) unsafe fn init_memoryview_from_pybuffer(
             shape_dst.add(i).write(descriptor.shape[i]);
             strides_dst.add(i).write(descriptor.strides[i]);
         }
-        ptr::copy_nonoverlapping(descriptor.format.as_ptr(), format_dst, MOLT_BUFFER_FORMAT_CAP);
+        ptr::copy_nonoverlapping(
+            descriptor.format.as_ptr(),
+            format_dst,
+            MOLT_BUFFER_FORMAT_CAP,
+        );
         (*view).format = format_dst.cast::<c_char>();
         (*view).shape = shape_dst;
         (*view).strides = strides_dst;

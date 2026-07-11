@@ -194,7 +194,10 @@ fn foreign_object_str_dispatches_tp_str() {
     assert!(!s.is_null());
     let bytes = unsafe { read_native_str(s) };
     assert_eq!(bytes, b"FOREIGN_STR");
-    assert_ne!(bytes, b"<molt object>", "must not be the old theater constant");
+    assert_ne!(
+        bytes, b"<molt object>",
+        "must not be the old theater constant"
+    );
 }
 
 #[test]
@@ -240,9 +243,15 @@ fn foreign_str_slot_returning_non_string_raises_typeerror() {
     let ty = make_type(c"Liar".as_ptr(), Some(foreign_str_returns_int), None);
     let inst = make_instance(ty);
     let s = unsafe { molt_cpython_abi::api::typeobj::PyObject_Str(inst) };
-    assert!(s.is_null(), "a non-str tp_str result must fail, not pass through");
+    assert!(
+        s.is_null(),
+        "a non-str tp_str result must fail, not pass through"
+    );
     let err = unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() };
-    assert!(!err.is_null(), "must set TypeError on non-string __str__ result");
+    assert!(
+        !err.is_null(),
+        "must set TypeError on non-string __str__ result"
+    );
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 }
 
