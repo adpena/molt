@@ -78,9 +78,9 @@ globs = [
 ]
 gates = [
   "cargo clippy -p molt-passes --all-targets --all-features -- -D warnings",
-  "cargo test -p molt-passes --all-features",
+  "cargo test -p molt-passes --all-features --no-fail-fast",
   "cargo clippy -p molt-tir --all-targets --all-features -- -D warnings",
-  "cargo test -p molt-tir --all-features",
+  "cargo test -p molt-tir --all-features --no-fail-fast",
 ]
 
 # --- WASM host Rust -------------------------------------------------------
@@ -124,7 +124,7 @@ globs = [
 ]
 gates = [
   "cargo clippy -p molt-runtime-vfs --all-targets --all-features -- -D warnings",
-  "cargo test -p molt-runtime-vfs --all-features",
+  "cargo test -p molt-runtime-vfs --all-features --no-fail-fast",
   "python3 -m pytest tests/test_browser_vfs.py -q",
 ]
 
