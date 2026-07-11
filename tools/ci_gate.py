@@ -688,6 +688,11 @@ def _build_checks() -> list[Check]:
                 str(TESTS / "tools" / "test_hooks_waivers.py"),
                 str(TESTS / "tools" / "test_check_gate_flips.py"),
                 str(TESTS / "tools" / "test_check_gate_liveness.py"),
+                # APPARATUS Wave 2 (A3/A6): the triality-drift + magnitude-
+                # dismissal/verdict-scope Stop legs' pure classifiers, opt-out
+                # grammar, loop-safety, and fail-open composition.
+                str(TESTS / "tools" / "test_triality_gate.py"),
+                str(TESTS / "tools" / "test_magnitude_dismissal_gate.py"),
                 "-q",
             ),
             timeout=90,
@@ -741,6 +746,26 @@ def _build_checks() -> list[Check]:
             cmd=_uv_run(str(TOOLS / "check_memory_graph.py"), "--check"),
             timeout=45,
             required=False,
+        )
+    )
+    checks.append(
+        Check(
+            # A3: fail closed if the triality drift classifier can no longer FIRE
+            # on drift or PASS a consistent window (its own falsifiable self-test).
+            name="apparatus-triality-gate",
+            tier=1,
+            cmd=_uv_run(str(TOOLS / "triality_gate.py"), "--check"),
+            timeout=30,
+        )
+    )
+    checks.append(
+        Check(
+            # A6: fail closed if the magnitude-dismissal / verdict-scope classifier
+            # can no longer FIRE on a violation or PASS a compliant window.
+            name="apparatus-magnitude-dismissal-gate",
+            tier=1,
+            cmd=_uv_run(str(TOOLS / "magnitude_dismissal_gate.py"), "--check"),
+            timeout=30,
         )
     )
 
