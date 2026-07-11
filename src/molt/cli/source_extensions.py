@@ -1510,7 +1510,13 @@ def _source_extension_wasm_compile_args(
         return []
     tool = Path(cc_cmd[0]).name.lower()
     if tool in {"zig", "zig.exe"} or "clang" in tool:
-        return ["-mexception-handling", "-mllvm", "-wasm-enable-sjlj"]
+        return [
+            "-mexception-handling",
+            "-mllvm",
+            "-wasm-enable-sjlj",
+            "-fno-fast-math",
+            "-ffp-contract=off",
+        ]
     return []
 
 
