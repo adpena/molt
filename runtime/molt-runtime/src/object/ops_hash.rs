@@ -1198,8 +1198,6 @@ pub(crate) fn hash_bits_signed(_py: &PyToken<'_>, bits: u64) -> i64 {
                 }
                 let hash_name_bits =
                     intern_static_name(_py, &runtime_state(_py).interned.hash_name, b"__hash__");
-                let eq_name_bits =
-                    intern_static_name(_py, &runtime_state(_py).interned.eq_name, b"__eq__");
                 let mut meta_overrides_hash = false;
                 if let Some(meta_ptr) = obj_from_bits(metaclass_bits).as_ptr()
                     && object_type_id(meta_ptr) == TYPE_ID_TYPE
@@ -1208,9 +1206,19 @@ pub(crate) fn hash_bits_signed(_py: &PyToken<'_>, bits: u64) -> i64 {
                     if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
                         && object_type_id(dict_ptr) == TYPE_ID_DICT
                     {
-                        meta_overrides_hash = dict_get_in_place(_py, dict_ptr, hash_name_bits)
-                            .is_some()
-                            || dict_get_in_place(_py, dict_ptr, eq_name_bits).is_some();
+                        // A class hashes by IDENTITY unless its METACLASS explicitly
+                        // overrides __hash__ (own-dict __hash__ entry, possibly =None).
+                        // Merely defining __eq__ on the metaclass does NOT make its
+                        // classes unhashable: numpy's `_DTypeMeta` defines __eq__ and
+                        // INHERITS __hash__ (identity) from `type`, so its DType CLASSES
+                        // are hashable in CPython — this was the numpy.dtypes
+                        // `unhashable type: 'type'` frontier. A Python metaclass that
+                        // defines __eq__ without __hash__ gets __hash__=None baked into
+                        // its own dict, so that genuinely-unhashable case is still
+                        // caught by the __hash__-present check below (and raised as
+                        // __hash__=None in hash_from_dunder).
+                        meta_overrides_hash =
+                            dict_get_in_place(_py, dict_ptr, hash_name_bits).is_some();
                     }
                 }
                 if meta_overrides_hash && let Some(hash) = hash_from_dunder(_py, obj, ptr) {
