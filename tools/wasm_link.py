@@ -491,6 +491,75 @@ def _tree_shake_runtime_cache_root() -> Path:
     return _wasm_link_build_state_root() / "wasm_link_cache" / "runtime_tree_shake"
 
 
+def _split_app_optimize_cache_root() -> Path:
+    return _wasm_link_build_state_root() / "wasm_link_cache" / "split_app_optimize"
+
+
+_SPLIT_APP_OPTIMIZE_CACHE_SCHEMA = "split-app-optimize-v1"
+
+
+def _split_app_optimize_cache_key(
+    *, app_data: bytes, reference_data: bytes | None, optimize: bool,
+    optimize_level: str, contract_keep_set: set[str],
+) -> str:
+    hasher = hashlib.sha256()
+    hasher.update(_SPLIT_APP_OPTIMIZE_CACHE_SCHEMA.encode("ascii"))
+    hasher.update(b"\0app\0")
+    hasher.update(app_data)
+    hasher.update(b"\0reference\0")
+    if reference_data is not None:
+        hasher.update(reference_data)
+    hasher.update(b"\0optimize\0")
+    hasher.update(str(int(optimize)).encode("ascii"))
+    hasher.update(b"\0level\0")
+    hasher.update(optimize_level.encode("utf-8"))
+    hasher.update(b"\0exports\0")
+    for name in sorted(contract_keep_set):
+        hasher.update(name.encode("utf-8") + b"\0")
+    if optimize:
+        wasm_opt = find_wasm_opt()
+        hasher.update(b"\0wasm-opt\0")
+        hasher.update((wasm_opt or "unavailable").encode("utf-8"))
+        if wasm_opt is not None:
+            hasher.update(b"\0version\0")
+            hasher.update(_wasm_opt_version(wasm_opt).encode("utf-8"))
+    return hasher.hexdigest()
+
+
+def _read_cached_split_app_optimization(
+    wasm_path: Path, attestation_path: Path
+) -> tuple[bytes, dict[str, object]] | None:
+    try:
+        data = wasm_path.read_bytes()
+        attestation = json.loads(attestation_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    if len(data) < 8 or data[:8] != WASM_MAGIC + WASM_VERSION:
+        return None
+    return (data, attestation) if isinstance(attestation, dict) else None
+
+
+def _write_cached_split_app_optimization(
+    wasm_path: Path, attestation_path: Path, data: bytes,
+    attestation: Mapping[str, object],
+) -> None:
+    staged_wasm = artifact_publish.staged_output_path(wasm_path)
+    staged_attestation = artifact_publish.staged_output_path(attestation_path)
+    try:
+        staged_wasm.write_bytes(data)
+        staged_attestation.write_text(
+            json.dumps(dict(attestation), sort_keys=True) + "\n", encoding="utf-8"
+        )
+        artifact_publish.publish_validated_outputs(
+            [(staged_wasm, wasm_path), (staged_attestation, attestation_path)]
+        )
+    finally:
+        with contextlib.suppress(OSError):
+            staged_wasm.unlink()
+        with contextlib.suppress(OSError):
+            staged_attestation.unlink()
+
+
 @functools.lru_cache(maxsize=1)
 def _wasm_link_source_digest() -> str:
     return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
@@ -2205,6 +2274,7 @@ def _optimize_split_app_module(
     optimize_level: str,
     contract_keep_set: set[str],
     attestation: dict[str, object] | None = None,
+    operation_counts: dict[str, int] | None = None,
 ) -> bytes:
     """Deforest the split-runtime app artifact without collapsing its imports.
 
@@ -2213,6 +2283,26 @@ def _optimize_split_app_module(
     as the fully linked artifact. Apply those cleanup passes first, then run
     wasm-opt when requested.
     """
+    if operation_counts is not None:
+        operation_counts["split_app_optimize_requests"] = 1
+    cache_key = _split_app_optimize_cache_key(
+        app_data=app_data, reference_data=reference_data, optimize=optimize,
+        optimize_level=optimize_level, contract_keep_set=contract_keep_set,
+    )
+    cache_root = _split_app_optimize_cache_root()
+    cache_wasm = cache_root / f"{cache_key}.wasm"
+    cache_attestation = cache_root / f"{cache_key}.json"
+    cached = _read_cached_split_app_optimization(cache_wasm, cache_attestation)
+    if cached is not None:
+        cached_data, cached_attestation = cached
+        if operation_counts is not None:
+            operation_counts["split_app_optimize_cache_hits"] = 1
+        if attestation is not None:
+            attestation.update(cached_attestation)
+            attestation["cache_hit"] = True
+        return cached_data
+    if operation_counts is not None:
+        operation_counts["split_app_optimize_cache_misses"] = 1
     optimized = _post_link_optimize(
         app_data,
         reference_data=reference_data,
@@ -2226,24 +2316,33 @@ def _optimize_split_app_module(
     )
     if stripped is not None:
         optimized = stripped
-    if not optimize:
-        return optimized
-
-    with tempfile.TemporaryDirectory(prefix="molt-split-app-opt-") as tmp:
-        app_path = Path(tmp) / "app_split_preopt.wasm"
-        app_path.write_bytes(optimized)
-        required_function_exports = (
-            set(_collect_function_exports(optimized)) & contract_keep_set
+    result = optimized
+    if optimize:
+        with tempfile.TemporaryDirectory(prefix="molt-split-app-opt-") as tmp:
+            app_path = Path(tmp) / "app_split_preopt.wasm"
+            app_path.write_bytes(optimized)
+            required_function_exports = (
+                set(_collect_function_exports(optimized)) & contract_keep_set
+            )
+            if operation_counts is not None:
+                operation_counts["split_app_wasm_opt_runs"] = 1
+            if _run_wasm_opt_via_optimize(
+                app_path,
+                level=optimize_level,
+                required_exports=required_function_exports,
+                apply_level=optimize_level != "Oz",
+                attestation=attestation,
+            ):
+                result = app_path.read_bytes()
+    cache_payload = dict(attestation or {})
+    cache_payload["cache_hit"] = False
+    try:
+        _write_cached_split_app_optimization(
+            cache_wasm, cache_attestation, result, cache_payload
         )
-        if not _run_wasm_opt_via_optimize(
-            app_path,
-            level=optimize_level,
-            required_exports=required_function_exports,
-            apply_level=optimize_level != "Oz",
-            attestation=attestation,
-        ):
-            return optimized
-        return app_path.read_bytes()
+    except OSError:
+        pass
+    return result
 
 
 def _canonicalize_wasm_ld_output(data: bytes, *, description: str) -> bytes:
@@ -2878,6 +2977,7 @@ def _run_wasm_ld_with_custodied_inputs(
     phase_timings_file: Path | None = None,
 ) -> int:
     phase_timings_ms: dict[str, float] = {}
+    operation_counts: dict[str, int] = {}
     total_start = time.perf_counter()
     for native_object in native_objects:
         if not native_object.exists():
@@ -3623,6 +3723,7 @@ def _run_wasm_ld_with_custodied_inputs(
                     required_native_direct_symbols=required_native_direct_symbols,
                 ),
                 attestation=size_attestation,
+                operation_counts=operation_counts,
             )
             if output_memory_min is not None:
                 try:
@@ -3880,6 +3981,7 @@ def _run_wasm_ld_with_custodied_inputs(
             )
         phase_timings_ms.setdefault("wasm_strip", 0.0)
         phase_timings_ms.setdefault("fail_closed_validation", 0.0)
+        phase_timings_ms.update(operation_counts)
         phase_timings_ms["wasm_link_total"] = round(
             max(0.0, (time.perf_counter() - total_start) * 1000.0), 6
         )
