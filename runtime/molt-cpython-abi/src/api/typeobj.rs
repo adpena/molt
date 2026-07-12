@@ -3442,6 +3442,29 @@ pub unsafe extern "C" fn molt_generic_hash(op: *mut PyObject) -> isize {
     unsafe { hash_not_implemented(op) }
 }
 
+/// `tp_hash` for `type` objects (the metatype). CPython's `type` inherits
+/// `object.__hash__`, i.e. `_Py_HashPointer`: a CLASS is hashable by its
+/// identity (address). `numpy.dtypes` registration hashes its DType CLASSES
+/// into a dict during `_multiarray_umath` `Py_mod_exec`; a NULL `tp_hash` on
+/// `PyType_Type` reports the class "unhashable type: 'type'" and aborts init.
+/// This is the genuine CPython identity hash for type objects — NOT the
+/// forbidden fabrication of an identity hash for an unhashable INSTANCE (that
+/// stays a hard `hash_not_implemented`). numpy's `_DTypeMeta` (tp_base =
+/// &PyType_Type) inherits this slot via PyType_Ready, matching CPython.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_type_identity_hash(op: *mut PyObject) -> isize {
+    if op.is_null() {
+        return -1;
+    }
+    // CPython `Python/pyhash.c` `_Py_HashPointer`: rotate the address right by 4
+    // (usize::BITS matches SIZEOF_VOID_P*8 on both wasm32 and native), then map
+    // the -1 error sentinel to -2. Stable per-object; never the -1 error value.
+    let p = op as usize;
+    let x = (p >> 4) | (p << (usize::BITS - 4));
+    let h = x as isize;
+    if h == -1 { -2 } else { h }
+}
+
 /// Faithful port of CPython `Objects/object.c` `do_richcompare`: reflected
 /// (subtype-priority) slot first, then v's slot, then w's; NULL propagates as an
 /// error; a both-NotImplemented result resolves EQ/NE by identity and raises
