@@ -696,13 +696,24 @@ def _split_artifact_contract_keep_set(
     *,
     public_export_map: Mapping[str, str] | None = None,
     required_native_direct_symbols: Sequence[str] = (),
+    required_runtime_exports: Sequence[str] = (),
 ) -> set[str]:
     """Return the single export keep-set for a split publication artifact."""
     return (
         _split_runtime_contract_export_names(artifact)
         | set(public_export_map or ())
         | set(required_native_direct_symbols)
+        | set(required_runtime_exports)
     )
+
+
+def _required_split_app_runtime_exports(data: bytes) -> set[str]:
+    """Return artifact-proven runtime-resolved exports that must stay public."""
+    return {
+        name
+        for name in _collect_function_exports(data)
+        if is_table_ref_export_name(name)
+    }
 
 
 def _split_artifact_contract_function_symbols(
@@ -1717,10 +1728,12 @@ def _strip_and_restore_split_artifact(
     public_export_map: Mapping[str, str] | None = None,
     required_native_direct_symbols: Sequence[str] = (),
 ) -> bytes:
+    required_runtime_exports = _required_split_app_runtime_exports(data)
     keep_set = _split_artifact_contract_keep_set(
         artifact,
         public_export_map=public_export_map,
         required_native_direct_symbols=required_native_direct_symbols,
+        required_runtime_exports=required_runtime_exports,
     )
     stripped = strip_wasm_publication_sections(
         data,
@@ -1745,6 +1758,12 @@ def _strip_and_restore_split_artifact(
         raise ValueError(
             f"Split-runtime {artifact} publication lost required export(s) at "
             f"{stage}: {', '.join(missing)}"
+        )
+    missing_runtime_exports = sorted(required_runtime_exports - set(facts.export_kinds))
+    if missing_runtime_exports:
+        raise ValueError(
+            f"Split-runtime {artifact} publication lost required runtime export(s) "
+            f"at {stage}: {', '.join(missing_runtime_exports)}"
         )
     return restored
 
@@ -3555,7 +3574,14 @@ def _run_wasm_ld_with_custodied_inputs(
                 reference_data=output_data,
                 optimize=optimize,
                 optimize_level=optimize_level,
-                contract_keep_set=split_app_contract_keep_set,
+                contract_keep_set=_split_artifact_contract_keep_set(
+                    "app",
+                    public_export_map=public_export_map,
+                    required_native_direct_symbols=required_native_direct_symbols,
+                    required_runtime_exports=_required_split_app_runtime_exports(
+                        rewritten_data
+                    ),
+                ),
             )
             if output_memory_min is not None:
                 try:
