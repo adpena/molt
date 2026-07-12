@@ -1230,6 +1230,21 @@ pub unsafe fn init_static_types() {
         PyBaseObject_Type.tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_READY;
         PyBaseObject_Type.tp_base = std::ptr::null_mut();
         PyBaseObject_Type.tp_basicsize = std::mem::size_of::<PyObject>() as Py_ssize_t;
+        // CPython `object.__hash__` is identity (`_Py_HashPointer`): a bare
+        // `object()` and every subclass that does not override it are hashable by
+        // identity. molt previously left this NULL, so a foreign `object()`
+        // instance (numpy hashes one during dtype registration) raised
+        // "unhashable type: 'object'". The genuinely-unhashable builtin CONTAINERS
+        // (list/dict/set/bytearray) set `PyObject_HashNotImplemented` explicitly
+        // just below, so they stay unhashable in the C-ABI path even though the
+        // object root now carries a hash (CPython achieves the same end state via
+        // the tp_richcompare-without-tp_hash reset rule). molt-native containers
+        // are independently gated by `is_unhashable_type` and are unaffected.
+        PyBaseObject_Type.tp_hash = Some(crate::api::typeobj::molt_type_identity_hash);
+        PyList_Type.tp_hash = Some(crate::api::typeobj::PyObject_HashNotImplemented);
+        PyDict_Type.tp_hash = Some(crate::api::typeobj::PyObject_HashNotImplemented);
+        PySet_Type.tp_hash = Some(crate::api::typeobj::PyObject_HashNotImplemented);
+        PyByteArray_Type.tp_hash = Some(crate::api::typeobj::PyObject_HashNotImplemented);
         // type — the metaclass. HAVE_GC|BASETYPE|TYPE_SUBCLASS|HAVE_VECTORCALL|
         // ITEMS_AT_END. (tp_basicsize = sizeof(PyHeapTypeObject) + tp_itemsize are
         // set with the heap-type work.) numpy's `_DTypeMeta` sets tp_base=&PyType_Type.
@@ -2033,6 +2048,38 @@ mod immortal_authority_tests {
         let h2 = unsafe { crate::api::typeobj::molt_type_identity_hash(a) };
         assert_ne!(h1, -1, "identity hash must never be the -1 error sentinel");
         assert_eq!(h1, h2, "identity hash must be stable per address");
+    }
+
+    /// Mask-proof: `object` carries the identity hash (CPython `object.__hash__`)
+    /// so a plain `object()` and inheriting-only-object subtypes are hashable —
+    /// pre-fix the NULL slot made a foreign `object()` raise "unhashable type:
+    /// 'object'", aborting numpy dtype registration. The builtin containers stay
+    /// unhashable via their own `PyObject_HashNotImplemented` slot (not via the
+    /// now-non-NULL object root).
+    #[test]
+    fn object_hashable_but_containers_unhashable() {
+        crate::bridge::molt_cpython_abi_init();
+        unsafe {
+            let obj = &raw const PyBaseObject_Type;
+            assert!(
+                (*obj).tp_hash.is_some(),
+                "object.tp_hash must be identity (else object() is 'unhashable type: object')"
+            );
+            let hni = crate::api::typeobj::PyObject_HashNotImplemented as usize;
+            for (name, t) in [
+                ("list", &raw const PyList_Type),
+                ("dict", &raw const PyDict_Type),
+                ("set", &raw const PySet_Type),
+                ("bytearray", &raw const PyByteArray_Type),
+            ] {
+                let h = (*t).tp_hash.map(|f| f as usize);
+                assert_eq!(
+                    h,
+                    Some(hni),
+                    "{name}.tp_hash must be PyObject_HashNotImplemented (stay unhashable)"
+                );
+            }
+        }
     }
 
     /// Mask-proof (memory-corruption regression): a static exception singleton
