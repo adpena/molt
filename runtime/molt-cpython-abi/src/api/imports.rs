@@ -30,14 +30,13 @@ unsafe fn set_import_unavailable(_name: *const c_char) {
 /// return an owned bridge `PyObject` for the imported module, or null on
 /// failure.
 ///
-/// The C caller contract (Python/import.c) is that a NULL return ALWAYS
-/// leaves `PyErr_Occurred()` non-NULL — extensions branch on it, and CPython
-/// itself raises "returned NULL without setting an exception" otherwise. The
-/// ABI-side `PyErr` reads only `CURRENT_EXC`, never the runtime's pending
-/// exception, so the hook-failure branch must mirror an ImportError here.
-/// To avoid masking the runtime's precise diagnostics (module-init drains the
-/// ABI error first), the mirror is set only when the ABI error state is clear
-/// and names the failing module explicitly.
+/// A failed runtime import can report its exception through either the ABI
+/// `PyErr` state or the runtime's unified pending-exception state. The latter
+/// is the authority for re-entrant imports executed by static extension
+/// `Py_mod_exec` slots. Never synthesize a second ABI `ImportError` while that
+/// runtime exception is pending: static-init diagnostics drain ABI state first,
+/// so a mirror would hide the real exception. A synthetic error is reserved for
+/// the contract violation where neither exception channel was set.
 unsafe fn import_module_bytes(name: &[u8]) -> *mut PyObject {
     if name.is_empty() {
         unsafe { set_import_unavailable(ptr::null()) };
@@ -49,9 +48,11 @@ unsafe fn import_module_bytes(name: &[u8]) -> *mut PyObject {
     };
     let module_bits = unsafe { (h.import_module)(name.as_ptr(), name.len()) };
     if module_bits == 0 {
-        if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+        let abi_error_clear = unsafe { crate::api::errors::PyErr_Occurred() }.is_null();
+        let runtime_error_clear = unsafe { (h.exception_pending)() } == 0;
+        if abi_error_clear && runtime_error_clear {
             let message = format!(
-                "import of '{}' failed (runtime import error pending)",
+                "import of '{}' failed without setting an exception",
                 String::from_utf8_lossy(name)
             );
             if let Ok(cmessage) = std::ffi::CString::new(message) {
