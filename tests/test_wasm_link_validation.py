@@ -1682,21 +1682,25 @@ def test_split_publication_pipeline_preserves_complete_contract_after_every_stag
         ],
     )
     assert app is not None
+    app_with_table_slot = wasm_link._append_active_table_slot_elements(
+        app,
+        {7: main_index},
+    )
+    assert app_with_table_slot is not None
+    app = app_with_table_slot
     keep_set = wasm_link._split_artifact_contract_keep_set(
         "app",
         public_export_map=public_export_map,
         required_native_direct_symbols=required_native,
-        required_runtime_exports=wasm_link._required_split_app_runtime_exports(app),
     )
 
-    def assert_complete(stage: str, data: bytes) -> None:
+    def assert_external_contract(stage: str, data: bytes) -> None:
         facts = wasm_link.parse_wasm_module_facts(data)
         assert facts.export_kinds["molt_main"][0] == 0, stage
         assert facts.export_kinds["molt_memory"][0] == 2, stage
         assert facts.export_kinds["molt_table"][0] == 1, stage
         assert facts.export_kinds["PyInit__demo"][0] == 0, stage
         assert facts.export_kinds["user_export"][0] == 0, stage
-        assert facts.export_kinds[table_ref][0] == 0, stage
         assert (
             wasm_link._validate_required_native_direct_symbols(
                 data,
@@ -1705,6 +1709,10 @@ def test_split_publication_pipeline_preserves_complete_contract_after_every_stag
             )
             is None
         )
+
+    def assert_shared_table_contract(stage: str, data: bytes) -> None:
+        assert table_ref not in wasm_link._collect_function_exports(data), stage
+        assert main_index in wasm_link._collect_element_declared_funcs(data), stage
 
     native_masked = app
     for name in ("molt_main", "molt_memory", "molt_table", *required_native):
@@ -1716,7 +1724,7 @@ def test_split_publication_pipeline_preserves_complete_contract_after_every_stag
         public_export_map=public_export_map,
         required_native_direct_symbols=required_native,
     )
-    assert_complete("native-link", native_restored)
+    assert table_ref in wasm_link._collect_function_exports(native_restored)
 
     seen_required_exports: set[str] = set()
 
@@ -1744,9 +1752,9 @@ def test_split_publication_pipeline_preserves_complete_contract_after_every_stag
         "molt_main",
         "PyInit__demo",
         "user_export",
-        table_ref,
     }
-    assert_complete("optimized-app", optimized_restored)
+    assert_external_contract("optimized-app", optimized_restored)
+    assert_shared_table_contract("optimized-app", optimized_restored)
 
     published = wasm_link._strip_and_restore_split_artifact(
         optimized_restored,
@@ -1756,10 +1764,11 @@ def test_split_publication_pipeline_preserves_complete_contract_after_every_stag
         public_export_map=public_export_map,
         required_native_direct_symbols=required_native,
     )
-    assert_complete("publication-strip", published)
+    assert_external_contract("publication-strip", published)
+    assert_shared_table_contract("publication-strip", published)
 
 
-def test_publication_strip_rejects_dropped_required_table_ref(
+def test_publication_strip_drops_table_ref_alias_but_keeps_shared_table_target(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = _build_split_runtime_app_module([])
@@ -1772,6 +1781,11 @@ def test_publication_strip_rejects_dropped_required_table_ref(
         index=main_index,
     )
     assert updated is not None
+    with_table_slot = wasm_link._append_active_table_slot_elements(
+        updated,
+        {7: main_index},
+    )
+    assert with_table_slot is not None
 
     monkeypatch.setattr(
         wasm_link,
@@ -1779,18 +1793,15 @@ def test_publication_strip_rejects_dropped_required_table_ref(
         lambda data, **_kwargs: _strip_export(data, table_ref),
     )
 
-    with pytest.raises(
-        ValueError,
-        match=(
-            r"publication lost required export\(s\) at publication-strip: " + table_ref
-        ),
-    ):
-        wasm_link._strip_and_restore_split_artifact(
-            updated,
-            artifact="app",
-            stage="publication-strip",
-            preserve_debug=False,
-        )
+    published = wasm_link._strip_and_restore_split_artifact(
+        with_table_slot,
+        artifact="app",
+        stage="publication-strip",
+        preserve_debug=False,
+    )
+
+    assert table_ref not in wasm_link._collect_function_exports(published)
+    assert main_index in wasm_link._collect_element_declared_funcs(published)
 
 
 def test_split_contract_restoration_keeps_function_exports_when_adding_memory_and_table() -> (
@@ -4771,9 +4782,6 @@ def test_run_wasm_ld_split_runtime_materializes_final_optimized_app(
         wasm_link,
         "_materialize_callable_table_refs_and_ref_func_declarations",
         materialize,
-    )
-    monkeypatch.setattr(
-        wasm_link, "_required_split_app_runtime_exports", lambda _data: set()
     )
     monkeypatch.setattr(wasm_link, "_ensure_table_export", lambda data: None)
     monkeypatch.setattr(wasm_link, "_restore_output_export_aliases", lambda data: None)
