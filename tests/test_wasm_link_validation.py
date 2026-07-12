@@ -1808,6 +1808,67 @@ def test_split_publication_pipeline_preserves_complete_contract_after_every_stag
     assert_shared_table_contract("publication-strip", published)
 
 
+def test_split_app_optimization_cache_eliminates_repeat_wasm_opt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = _build_split_runtime_app_module([])
+    optimize_calls = 0
+    monkeypatch.setattr(
+        wasm_link, "_split_app_optimize_cache_root", lambda: tmp_path / "cache"
+    )
+    monkeypatch.setattr(wasm_link, "find_wasm_opt", lambda: "wasm-opt")
+    monkeypatch.setattr(wasm_link, "_wasm_opt_version", lambda _path: "test")
+    monkeypatch.setattr(wasm_link, "_post_link_optimize", lambda data, **_: data)
+    monkeypatch.setattr(
+        wasm_link, "_strip_unused_module_function_imports", lambda *_args, **_kwargs: None
+    )
+
+    def fake_optimize(path: Path, **kwargs) -> bool:  # type: ignore[no-untyped-def]
+        nonlocal optimize_calls
+        optimize_calls += 1
+        kwargs["attestation"]["pipeline"] = ["test-pass"]
+        return True
+
+    monkeypatch.setattr(wasm_link, "_run_wasm_opt_via_optimize", fake_optimize)
+    cold_counts: dict[str, int] = {}
+    warm_counts: dict[str, int] = {}
+    cold_attestation: dict[str, object] = {}
+    warm_attestation: dict[str, object] = {}
+
+    cold = wasm_link._optimize_split_app_module(
+        app,
+        reference_data=None,
+        optimize=True,
+        optimize_level="Oz",
+        contract_keep_set={"molt_main"},
+        attestation=cold_attestation,
+        operation_counts=cold_counts,
+    )
+    warm = wasm_link._optimize_split_app_module(
+        app,
+        reference_data=None,
+        optimize=True,
+        optimize_level="Oz",
+        contract_keep_set={"molt_main"},
+        attestation=warm_attestation,
+        operation_counts=warm_counts,
+    )
+
+    assert warm == cold
+    assert optimize_calls == 1
+    assert cold_counts == {
+        "split_app_optimize_requests": 1,
+        "split_app_optimize_cache_misses": 1,
+        "split_app_wasm_opt_runs": 1,
+    }
+    assert warm_counts == {
+        "split_app_optimize_requests": 1,
+        "split_app_optimize_cache_hits": 1,
+    }
+    assert warm_attestation["pipeline"] == ["test-pass"]
+    assert warm_attestation["cache_hit"] is True
+
+
 def test_publication_strip_drops_table_ref_alias_but_keeps_shared_table_target(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
