@@ -41,6 +41,7 @@ BENCHMARKS: tuple[str, ...] = (
     "tests/benchmarks/bench_matrix_math.py",
     "tests/benchmarks/bench_bytes_find.py",
     "tests/benchmarks/bench_bytes_find_only.py",
+    "tests/benchmarks/bench_bytes_rfind_only.py",
     "tests/benchmarks/bench_bytes_replace.py",
     "tests/benchmarks/bench_bytearray_find.py",
     "tests/benchmarks/bench_bytearray_replace.py",

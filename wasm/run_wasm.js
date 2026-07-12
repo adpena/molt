@@ -19,6 +19,7 @@ const {
   extractWasmTableBase,
   installManifestLinkImportTraps,
   installWasmTagImports,
+  parseWasmMetadata,
   parseWasmExportFunctionSignatures: parseWasmExportFunctionSignaturesFromBridge,
   parseWasmImports,
   planReservedRuntimeDispatch,
@@ -5797,8 +5798,22 @@ const runMain = async () => {
   appInstanceForExceptions = null;
   initWasmAssets();
   traceMark('runMain:init');
-  outputImports = parseWasmImports(wasmBuffer);
-  outputExportSignatures = parseWasmExportFunctionSignatures(wasmBuffer, wasmPath);
+  const directLinkEnv = process.env.MOLT_WASM_DIRECT_LINK;
+  const directLinkRequestedByEnv =
+    directLinkEnv !== undefined &&
+    ['1', 'true', 'yes', 'on'].includes(directLinkEnv.toLowerCase());
+  const preferLinkedEnv = process.env.MOLT_WASM_PREFER_LINKED;
+  const preferLinked =
+    preferLinkedEnv === undefined ||
+    !['0', 'false', 'no', 'off'].includes(preferLinkedEnv.toLowerCase());
+  const forceLinked = process.env.MOLT_WASM_LINKED === '1';
+  const directLinkRequestedByLegacyPrefer = !forceLinked && !preferLinked;
+  const directLinkRequested = directLinkRequestedByEnv || directLinkRequestedByLegacyPrefer;
+  const outputMetadata = parseWasmMetadata(wasmBuffer, {
+    exportFunctionSignatures: directLinkRequested || (!linkedBuffer && Boolean(runtimeBuffer)),
+  });
+  outputImports = outputMetadata.imports;
+  outputExportSignatures = outputMetadata.exportFunctionSignatures;
   inputHasRuntimeImports = outputImports.funcImports.some(
     (entry) => entry.module === 'molt_runtime'
   );
@@ -5812,17 +5827,6 @@ const runMain = async () => {
     linkedBuffer = wasmBuffer;
   }
 
-  const preferLinkedEnv = process.env.MOLT_WASM_PREFER_LINKED;
-  const preferLinked =
-    preferLinkedEnv === undefined ||
-    !['0', 'false', 'no', 'off'].includes(preferLinkedEnv.toLowerCase());
-  const forceLinked = process.env.MOLT_WASM_LINKED === '1';
-  const directLinkEnv = process.env.MOLT_WASM_DIRECT_LINK;
-  const directLinkRequestedByEnv =
-    directLinkEnv !== undefined &&
-    ['1', 'true', 'yes', 'on'].includes(directLinkEnv.toLowerCase());
-  const directLinkRequestedByLegacyPrefer = !forceLinked && !preferLinked;
-  const directLinkRequested = directLinkRequestedByEnv || directLinkRequestedByLegacyPrefer;
   const autoDirectSplitRuntime =
     inputHasRuntimeImports && !linkedBuffer && !forceLinked && Boolean(runtimeBuffer);
   const useLinked = forceLinked || (!directLinkRequested && !autoDirectSplitRuntime);
@@ -5843,8 +5847,9 @@ const runMain = async () => {
         `Direct-link mode requires runtime wasm at ${expected}; provide MOLT_RUNTIME_WASM or use linked execution.`,
       );
     }
-    runtimeImportsDesc = parseWasmImports(runtimeBuffer);
-    runtimeExportSignatures = parseWasmExportFunctionSignatures(runtimeBuffer, runtimePath);
+    const runtimeMetadata = parseWasmMetadata(runtimeBuffer);
+    runtimeImportsDesc = runtimeMetadata.imports;
+    runtimeExportSignatures = runtimeMetadata.exportFunctionSignatures;
     runtimeCallIndirectNames = runtimeImportsDesc.funcImports
       .filter((entry) => entry.module === 'env' && entry.name.startsWith('molt_call_indirect'))
       .map((entry) => entry.name);

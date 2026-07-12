@@ -151,6 +151,50 @@ Task #22 retains the code/data optimization frontier. Its measured map is
 20,032,474 B code, 5,275,490 B data, 416,470 B exports, and 52,230 B elements.
 This landing intentionally does not tree-shake those sections.
 
+### WASM startup metadata scan
+
+`tools/opt_matrix_r1_wasm_metadata_attestation.json` records the A12-citable
+release differential for the Node pre-instantiation metadata path. A single
+`parseWasmMetadata` section walk now produces both import descriptors and
+export function signatures; the superseded second full-module walk is deleted
+from `run_wasm.js`. Seven serial fresh-process samples on a 9,720,086 B
+final-form release runtime improved the median from 36.3275 ms to 22.6561 ms
+(1.6034x), with metadata parity and a 77,664,256 B maximum RSS ceiling.
+
+### Exact runtime-WASM shared-cache hydrate
+
+`tools/opt_matrix_r2_runtime_wasm_hydrate_attestation.json` records the
+A12-citable release differential for an exact-identity shared runtime cache hit.
+The cache source retains full structural/export validation before hydration;
+the superseded second validation of the byte-identical atomic-copy destination
+is deleted. Seven serial alternating samples on a real 45,871,431 B release
+runtime improved the median from 1,111.2847 ms to 554.2158 ms (2.0051x), with
+byte identity, corrupt-source rejection, copy-failure rejection, and a
+144,908,288 B maximum RSS ceiling.
+
+### Linked WASM metadata materialization
+
+`tools/opt_matrix_r5_linked_metadata_attestation.json` records the A12-citable
+release differential for linked Node startup. Linked execution needs import
+descriptors but does not consume app export function signatures, so
+`parseWasmMetadata` now skips the function and export payloads in linked mode
+while direct-link and auto-split mode retain the full shared parser contract.
+Seven serial alternating samples on the 9,720,086 B release runtime improved
+the median from 10.6805 ms to 3.0449 ms (3.5077x), preserved all 90 function
+imports, skipped 4,409 unused linked exports, and stayed below a 65,130,496 B
+maximum RSS ceiling.
+
+### Native multi-byte reverse search
+
+`tools/opt_matrix_r4_bytes_rfind_attestation.json` records the A12-citable
+release differential for repeated multi-byte `bytes.rfind` calls. The shared
+bytes/string/bytearray reverse-search primitive now uses `memmem::rfind`
+directly; the superseded forward `find_iter` enumeration that visited every
+match only to retain the last index is deleted. Three serial release samples
+on 200 searches of a 10,000,000-byte overlapping haystack improved the median
+from 5,062 ms to 266 ms (19.0301x), preserved exact output semantics, and
+reduced observed peak RSS from 64 MiB to 40 MiB.
+
 ## Variant-II Landing Acceptance
 
 `tools/powerplay_acceptance.py` is the acceptance authority for perf landings.
@@ -167,6 +211,15 @@ The current checked-in attestations validate as follows:
 - `perf_goal_r4_seal_validation_attestation.json`: parsed; real five-run seal differential, missing explicit release-profile and memory-ceiling evidence.
 - `perf_goal_r5_relink_attestation.json`: parsed; real three-run artifact differential, missing explicit release-profile and memory-ceiling evidence.
 - `perf_witness_iteration_attestation.json`: parsed; acceptance-shaped build evidence, not a complete correctness/memory attestation.
+
+### OPT-MATRIX-R7 WASM release memory floor
+
+- Aperture: host RSS for the real 9,720,086 B release runtime, separated into Node/V8 baseline, artifact plus metadata residency, exact imported linear memory, and module compilation.
+- Profile: seven serial fresh processes measured medians of 38,072,320 B baseline, 61,435,904 B artifact/metadata, 61,882,368 B artifact plus the exact 48-page memory, and 73,060,352 B compiled module RSS.
+- Linear-memory fact: both Node and browser hosts allocate from the parsed WASM import minimum. The 48 pages reserve 3,145,728 virtual bytes but add only 446,464 B committed RSS over the identical artifact/metadata phase.
+- Verdict: DOCUMENTED-BLOCKED. No Molt-owned committed linear-memory allocation clears the 1 MiB or 10% admission threshold. The measurable RSS is artifact and V8-code driven, so its structural removal belongs to Task #22/Binaryen tree shaking rather than a fake initial-page reduction.
+- Unblock contract: remeasure after the reserved `wasmld-toolchain` authority lands, or identify one removable committed allocation above the admission floor; browser-specific claims require Chromium process-tree RSS on the real release artifact.
+- Evidence: `tools/opt_matrix_r7_wasm_memory_profile.json` and `tools/opt_matrix_r7_wasm_memory_blocker.json`.
 
 ### Backlog gain per validation cost
 
