@@ -3439,6 +3439,16 @@ pub unsafe extern "C" fn molt_generic_hash(op: *mut PyObject) -> isize {
             molt_lang_obj_model::MoltObject::from_float(d).bits(),
         );
     }
+    // A TYPE object (class) reaching this value-type hash slot — a numpy
+    // metatype inherits/copies molt_generic_hash via DUAL_INHERIT, so hashing a
+    // DType CLASS during numpy.dtypes registration lands here — is hashable by
+    // IDENTITY. Types are always hashable in CPython (`object.__hash__` =
+    // _Py_HashPointer); this is the genuine identity hash for a type object, NOT
+    // the forbidden fabrication for an unhashable INSTANCE (non-type foreign
+    // objects still fall through to the honest hash_not_implemented below).
+    if unsafe { PyType_Check(op) } != 0 {
+        return unsafe { molt_type_identity_hash(op) };
+    }
     unsafe { hash_not_implemented(op) }
 }
 
