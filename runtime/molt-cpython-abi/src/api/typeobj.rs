@@ -698,9 +698,12 @@ unsafe fn add_operators_to_dict(tp: *mut PyTypeObject) -> c_int {
         // (PyType_Type) supplies an identity hash, i.e. numpy's `_DTypeMeta`, has
         // its DType CLASSES marked "unhashable type: 'type'" during numpy.dtypes
         // registration. Genuinely-unhashable types set tp_hash =
-        // PyObject_HashNotImplemented (still baked to __hash__=None below), and
-        // PyBaseObject_Type.tp_hash stays NULL, so list/dict/set — whose only
-        // ancestor is object — correctly remain unhashable.
+        // PyObject_HashNotImplemented (still baked to __hash__=None below).
+        // PyBaseObject_Type.tp_hash is now the identity _Py_HashPointer (CPython
+        // object.__hash__), so a plain object() and inheriting-only-object
+        // subtypes are hashable; the builtin containers (list/dict/set/bytearray)
+        // set PyObject_HashNotImplemented on their own type shells in abi_types, so
+        // they stay unhashable despite the now-non-NULL object root.
         if (*tp).tp_hash.is_none() {
             let mut base = (*tp).tp_base;
             while !base.is_null() {
