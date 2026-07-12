@@ -1193,6 +1193,13 @@ pub unsafe fn init_static_types() {
         // every `SomeDTypeClass()` call fails "'numpy._DTypeMeta' object is not
         // callable" during `_multiarray_umath` init.
         PyType_Type.tp_call = Some(crate::api::typeobj::molt_type_call);
+        // CPython `type` inherits `object.__hash__` (identity `_Py_HashPointer`):
+        // a class is hashable by identity. Without this slot, hashing any class
+        // object raises "unhashable type: 'type'" — numpy.dtypes registration
+        // hashes its DType CLASSES during `_multiarray_umath` init and aborts.
+        // numpy's `_DTypeMeta` (tp_base = &PyType_Type) inherits this via
+        // PyType_Ready slot inheritance.
+        PyType_Type.tp_hash = Some(crate::api::typeobj::molt_type_identity_hash);
 
         set_name!(PyNone_Type, b"NoneType\0");
         set_name!(PyNotImplemented_Type, b"NotImplementedType\0");
@@ -2003,6 +2010,29 @@ mod immortal_authority_tests {
                 "singleton @ {p:p} not detected immortal"
             );
         }
+    }
+
+    /// Mask-proof: `PyType_Type` (the `type` metatype) carries an identity
+    /// `tp_hash` after init, so a foreign class object is hashable. Pre-fix the
+    /// slot was NULL and hashing a (foreign) DType CLASS raised "unhashable
+    /// type: 'type'", aborting numpy.dtypes registration during
+    /// `_multiarray_umath` `Py_mod_exec`. CPython's `type` inherits
+    /// `object.__hash__` = identity (`_Py_HashPointer`); numpy's `_DTypeMeta`
+    /// (tp_base = &PyType_Type) inherits this slot via PyType_Ready.
+    #[test]
+    fn type_metatype_carries_identity_hash_slot() {
+        crate::bridge::molt_cpython_abi_init();
+        let t = &raw mut PyType_Type;
+        assert!(
+            unsafe { (*t).tp_hash }.is_some(),
+            "PyType_Type.tp_hash must be set (else every class is 'unhashable type: type')"
+        );
+        // The identity hash is stable per-address and never the -1 error sentinel.
+        let a = 0x1000usize as *mut PyObject;
+        let h1 = unsafe { crate::api::typeobj::molt_type_identity_hash(a) };
+        let h2 = unsafe { crate::api::typeobj::molt_type_identity_hash(a) };
+        assert_ne!(h1, -1, "identity hash must never be the -1 error sentinel");
+        assert_eq!(h1, h2, "identity hash must be stable per address");
     }
 
     /// Mask-proof (memory-corruption regression): a static exception singleton
