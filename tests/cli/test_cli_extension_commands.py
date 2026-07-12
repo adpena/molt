@@ -5230,6 +5230,86 @@ def test_cpython_abi_authority_self_complete_without_repo_include_smoke(
     assert result.returncode == 0, result.stderr
 
 
+def test_l7_integer_headers_expose_one_external_authority(tmp_path: Path) -> None:
+    clang = shutil.which("clang")
+    if clang is None:
+        pytest.skip("clang is required for the L7 integer header smoke test")
+
+    abi_authority = ROOT / "runtime" / "molt-cpython-abi" / "include"
+    source = tmp_path / "l7_integer_header_smoke.c"
+    smoke_source = (
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "int probe(PyObject *value, PyLongObject *long_value, void *out) {",
+                "    char *end = NULL;",
+                "    unsigned char bytes[2] = {0};",
+                "    PyObject *parsed = PyLong_FromString(\"0x_FF\", &end, 0);",
+                "    size_t size = PyLong_AsSize_t(value);",
+                "    size_t bits = _PyLong_NumBits(value);",
+                "    int compact = PyUnstable_Long_IsCompact(long_value);",
+                "    Py_ssize_t compact_value = PyUnstable_Long_CompactValue(long_value);",
+                "    int converted = _PyLong_Size_t_Converter(value, out);",
+                "    converted += _PyLong_UnsignedShort_Converter(value, out);",
+                "    converted += _PyLong_UnsignedInt_Converter(value, out);",
+                "    converted += _PyLong_UnsignedLong_Converter(value, out);",
+                "    converted += _PyLong_UnsignedLongLong_Converter(value, out);",
+                "    converted += _PyLong_AsByteArray(long_value, bytes, 2, 1, 1);",
+                "    Py_XDECREF(parsed);",
+                "    Py_XDECREF(PyLong_GetInfo());",
+                "    return converted + compact + (int)compact_value + (int)size + (int)bits;",
+                "}",
+                "",
+            ]
+        )
+    )
+    for include_root, header in (
+        (abi_authority, "Python.h"),
+        (ROOT / "include", "molt/Python.h"),
+    ):
+        source.write_text(
+            smoke_source.replace("#include <Python.h>", f"#include <{header}>") ,
+            encoding="utf-8",
+        )
+        result = run_cli_test_process(
+            [
+                clang,
+                "-std=c11",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                f"-I{include_root}",
+                "-fsyntax-only",
+                str(source),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, f"{include_root}: {result.stderr}"
+
+    source_overlay = (ROOT / "include" / "molt" / "Python.h").read_text(
+        encoding="utf-8"
+    )
+    assert "static inline PyObject *PyLong_" not in source_overlay
+    assert "static inline long PyLong_" not in source_overlay
+    assert "static inline unsigned long PyLong_" not in source_overlay
+    assert "static inline size_t PyLong_" not in source_overlay
+    for symbol in (
+        "PyLong_FromString",
+        "PyLong_AsSize_t",
+        "PyUnstable_Long_IsCompact",
+        "_PyLong_NumBits",
+        "_PyLong_FromByteArray",
+        "_PyLong_AsByteArray",
+        "PyLong_GetInfo",
+    ):
+        assert any(
+            line.startswith("extern ") and symbol in line
+            for line in source_overlay.splitlines()
+        ), symbol
+
+
 def test_cpython_abi_tier_does_not_shadow_package_numpy_headers(
     tmp_path: Path,
 ) -> None:

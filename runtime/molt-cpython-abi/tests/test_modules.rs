@@ -105,6 +105,30 @@ unsafe extern "C" fn fake_int_as_u64_mask(
 ) -> std::os::raw::c_int {
     -1
 }
+unsafe extern "C" fn fake_int_from_bytes(
+    _data: *const u8,
+    _len: usize,
+    _little_endian: std::os::raw::c_int,
+    _signed: std::os::raw::c_int,
+) -> u64 {
+    next_fake_handle()
+}
+unsafe extern "C" fn fake_int_to_bytes(
+    _bits: u64,
+    _data: *mut u8,
+    _len: usize,
+    _little_endian: std::os::raw::c_int,
+    _signed: std::os::raw::c_int,
+) -> std::os::raw::c_int {
+    -1
+}
+unsafe extern "C" fn fake_int_num_bits(_bits: u64, _out: *mut usize) -> std::os::raw::c_int {
+    -1
+}
+
+unsafe extern "C" fn fake_int_max_str_digits() -> usize {
+    4300
+}
 unsafe extern "C" fn fake_alloc_list() -> u64 {
     next_fake_handle()
 }
@@ -394,6 +418,10 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     int_as_i64_checked: fake_int_as_i64_checked,
     int_as_u64_checked: fake_int_as_u64_checked,
     int_as_u64_mask: fake_int_as_u64_mask,
+    int_from_bytes: fake_int_from_bytes,
+    int_to_bytes: fake_int_to_bytes,
+    int_num_bits: fake_int_num_bits,
+    int_max_str_digits: fake_int_max_str_digits,
     alloc_list: fake_alloc_list,
     list_append: fake_list_append,
     list_len: fake_list_len,

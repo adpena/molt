@@ -2,6 +2,8 @@
 //! Uses NaN-boxing to represent primitives and heap pointers in 64 bits.
 
 pub mod float_bits;
+pub mod int_literal;
+
 use std::backtrace::Backtrace;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};

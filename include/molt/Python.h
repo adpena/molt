@@ -140,6 +140,7 @@ struct _molt_pyobject {
 };
 typedef struct _molt_pyobject PyObject;
 typedef PyObject PyTypeObject;
+typedef PyObject PyLongObject;
 typedef struct {
     PyTypeObject ht_type;
 } PyHeapTypeObject;
@@ -397,11 +398,41 @@ static inline PyObject *PyUnicode_FromString(const char *value);
 static inline const char *PyUnicode_AsUTF8(PyObject *value);
 static inline int PyUnicode_Check(PyObject *obj);
 static inline PyObject *PyBytes_FromStringAndSize(const char *value, Py_ssize_t size);
-static inline long long PyLong_AsLongLong(PyObject *obj);
-static inline long long PyLong_AsLongLongAndOverflow(PyObject *obj, int *overflow);
-static inline PyObject *PyLong_FromLongLong(long long value);
-static inline PyObject *PyLong_FromUnsignedLongLong(unsigned long long value);
-static inline unsigned long long PyLong_AsUnsignedLongLong(PyObject *pylong);
+extern PyObject *PyLong_FromLong(long value);
+extern PyObject *PyLong_FromLongLong(long long value);
+extern PyObject *PyLong_FromSsize_t(Py_ssize_t value);
+extern PyObject *PyLong_FromSize_t(size_t value);
+extern PyObject *PyLong_FromUnsignedLong(unsigned long value);
+extern PyObject *PyLong_FromUnsignedLongLong(unsigned long long value);
+extern PyObject *PyLong_FromDouble(double value);
+extern PyObject *PyLong_FromString(const char *str, char **pend, int base);
+extern PyObject *PyLong_FromUnicodeObject(PyObject *unicode, int base);
+extern PyObject *PyLong_FromVoidPtr(void *ptr);
+extern long PyLong_AsLong(PyObject *obj);
+extern long long PyLong_AsLongLong(PyObject *obj);
+extern long long PyLong_AsLongLongAndOverflow(PyObject *obj, int *overflow);
+extern Py_ssize_t PyLong_AsSsize_t(PyObject *obj);
+extern size_t PyLong_AsSize_t(PyObject *obj);
+extern unsigned long PyLong_AsUnsignedLong(PyObject *obj);
+extern unsigned long long PyLong_AsUnsignedLongLong(PyObject *obj);
+extern unsigned long PyLong_AsUnsignedLongMask(PyObject *obj);
+extern unsigned long long PyLong_AsUnsignedLongLongMask(PyObject *obj);
+extern void *PyLong_AsVoidPtr(PyObject *obj);
+extern double PyLong_AsDouble(PyObject *obj);
+extern int PyLong_AsInt(PyObject *obj);
+extern int PyLong_Check(PyObject *obj);
+extern int PyUnstable_Long_IsCompact(const PyLongObject *obj);
+extern Py_ssize_t PyUnstable_Long_CompactValue(const PyLongObject *obj);
+extern size_t _PyLong_NumBits(PyObject *obj);
+extern int _PyLong_Sign(PyObject *obj);
+extern int _PyLong_Size_t_Converter(PyObject *obj, void *out);
+extern int _PyLong_UnsignedShort_Converter(PyObject *obj, void *out);
+extern int _PyLong_UnsignedInt_Converter(PyObject *obj, void *out);
+extern int _PyLong_UnsignedLong_Converter(PyObject *obj, void *out);
+extern int _PyLong_UnsignedLongLong_Converter(PyObject *obj, void *out);
+extern PyObject *_PyLong_FromByteArray(const unsigned char *bytes, size_t n, int little_endian, int is_signed);
+extern int _PyLong_AsByteArray(PyLongObject *obj, unsigned char *bytes, size_t n, int little_endian, int is_signed);
+extern PyObject *PyLong_GetInfo(void);
 static inline Py_ssize_t PyTuple_Size(PyObject *tuple);
 static inline PyObject *PyTuple_GetItem(PyObject *tuple, Py_ssize_t index);
 static inline PyObject *PyNumber_Long(PyObject *obj);
@@ -4198,48 +4229,8 @@ static inline int PyUnstable_Object_IsUniquelyReferenced(PyObject *obj) {
     return 0;
 }
 
-static inline PyObject *PyLong_FromLong(long value) {
-    return _molt_pyobject_from_result(molt_int_from_i64((int64_t)value));
-}
-
 static inline PyObject *PyBool_FromLong(long value) {
     return _molt_pyobject_from_result(molt_bool_from_i32(value != 0 ? 1 : 0));
-}
-
-static inline PyObject *PyLong_FromLongLong(long long value) {
-    return _molt_pyobject_from_result(molt_int_from_i64((int64_t)value));
-}
-
-static inline PyObject *PyLong_FromSsize_t(Py_ssize_t value) {
-    return _molt_pyobject_from_result(molt_int_from_i64((int64_t)value));
-}
-
-static inline PyObject *PyLong_FromUnsignedLongLong(unsigned long long value) {
-    if (value > (unsigned long long)INT64_MAX) {
-        PyErr_SetString(PyExc_OverflowError,
-            "Python int too large to convert to molt i64");
-        return NULL;
-    }
-    return _molt_pyobject_from_result(molt_int_from_i64((int64_t)value));
-}
-
-static inline long PyLong_AsLong(PyObject *obj) {
-    return (long)molt_int_as_i64(_molt_py_handle(obj));
-}
-
-static inline long long PyLong_AsLongLong(PyObject *obj) {
-    return (long long)molt_int_as_i64(_molt_py_handle(obj));
-}
-
-static inline long long PyLong_AsLongLongAndOverflow(PyObject *obj, int *overflow) {
-    if (overflow != NULL) {
-        *overflow = 0;
-    }
-    return PyLong_AsLongLong(obj);
-}
-
-static inline Py_ssize_t PyLong_AsSsize_t(PyObject *obj) {
-    return (Py_ssize_t)molt_int_as_i64(_molt_py_handle(obj));
 }
 
 static inline PyObject *PyFloat_FromDouble(double value) {
@@ -5467,14 +5458,6 @@ static inline int PyBool_Check(PyObject *obj) {
     return _molt_pyarg_object_matches_type(_molt_py_handle(obj), bool_bits);
 }
 
-static inline int PyLong_Check(PyObject *obj) {
-    MoltHandle int_bits = _molt_builtin_type_handle_cached("int");
-    if (int_bits == 0) {
-        return 0;
-    }
-    return _molt_pyarg_object_matches_type(_molt_py_handle(obj), int_bits);
-}
-
 static inline int PyFloat_Check(PyObject *obj) {
     MoltHandle float_bits = _molt_builtin_type_handle_cached("float");
     if (float_bits == 0) {
@@ -5519,13 +5502,7 @@ static inline int PyTuple_CheckExact(PyObject *obj) {
     return _molt_py_handle((PyObject *)Py_TYPE(obj)) == tuple_bits;
 }
 
-static inline int PyLong_CheckExact(PyObject *obj) {
-    MoltHandle int_bits = _molt_builtin_type_handle_cached("int");
-    if (int_bits == 0) {
-        return 0;
-    }
-    return _molt_py_handle((PyObject *)Py_TYPE(obj)) == int_bits;
-}
+#define PyLong_CheckExact(obj) (Py_TYPE((PyObject *)(obj)) == &PyLong_Type)
 
 static inline int PyFloat_CheckExact(PyObject *obj) {
     MoltHandle float_bits = _molt_builtin_type_handle_cached("float");
@@ -7902,112 +7879,6 @@ static inline int PyWeakref_GetRef(PyObject *ref, PyObject **pobj) {
 
 /* ---- PyLong completions ------------------------------------------------- */
 
-static inline PyObject *PyLong_FromString(const char *str, char **pend, int base) {
-    PyObject *int_type;
-    PyObject *str_obj;
-    PyObject *base_obj;
-    MoltHandle args_arr[2];
-    MoltHandle args_bits;
-    PyObject *result;
-    if (str == NULL) {
-        PyErr_SetString(PyExc_ValueError, "NULL string passed to PyLong_FromString");
-        return NULL;
-    }
-    int_type = _molt_builtin_class_lookup_utf8("int");
-    if (int_type == NULL) {
-        return NULL;
-    }
-    str_obj = _molt_pyobject_from_result(_molt_string_from_utf8(str));
-    if (str_obj == NULL) {
-        Py_DECREF(int_type);
-        return NULL;
-    }
-    base_obj = PyLong_FromLong((long)base);
-    if (base_obj == NULL) {
-        Py_DECREF(int_type);
-        Py_DECREF(str_obj);
-        return NULL;
-    }
-    args_arr[0] = _molt_py_handle(str_obj);
-    args_arr[1] = _molt_py_handle(base_obj);
-    args_bits = molt_tuple_from_array(args_arr, 2);
-    Py_DECREF(str_obj);
-    Py_DECREF(base_obj);
-    if (args_bits == 0 || molt_err_pending() != 0) {
-        Py_DECREF(int_type);
-        return NULL;
-    }
-    result = PyObject_CallObject(int_type, _molt_pyobject_from_handle(args_bits));
-    molt_handle_decref(args_bits);
-    Py_DECREF(int_type);
-    if (pend != NULL) {
-        *pend = (char *)(str + strlen(str));
-    }
-    return result;
-}
-
-static inline PyObject *PyLong_FromVoidPtr(void *p) {
-    return PyLong_FromLongLong((long long)(uintptr_t)p);
-}
-
-static inline void *PyLong_AsVoidPtr(PyObject *pylong) {
-    long long val = PyLong_AsLongLong(pylong);
-    if (molt_err_pending() != 0) {
-        return NULL;
-    }
-    return (void *)(uintptr_t)val;
-}
-
-static inline double PyLong_AsDouble(PyObject *pylong) {
-    long long val = PyLong_AsLongLong(pylong);
-    if (molt_err_pending() != 0) {
-        return -1.0;
-    }
-    return (double)val;
-}
-
-static inline PyObject *PyLong_FromSize_t(size_t v) {
-    if (v > (size_t)INT64_MAX) {
-        return PyLong_FromUnsignedLongLong((unsigned long long)v);
-    }
-    return _molt_pyobject_from_result(molt_int_from_i64((int64_t)v));
-}
-
-static inline size_t PyLong_AsSize_t(PyObject *pylong) {
-    long long val = PyLong_AsLongLong(pylong);
-    if (molt_err_pending() != 0) {
-        return (size_t)-1;
-    }
-    if (val < 0) {
-        PyErr_SetString(PyExc_OverflowError,
-                        "can't convert negative value to size_t");
-        return (size_t)-1;
-    }
-    return (size_t)val;
-}
-
-static inline unsigned long PyLong_AsUnsignedLong(PyObject *pylong) {
-    long long val = PyLong_AsLongLong(pylong);
-    if (molt_err_pending() != 0) {
-        return (unsigned long)-1;
-    }
-    if (val < 0) {
-        PyErr_SetString(PyExc_OverflowError,
-                        "can't convert negative value to unsigned long");
-        return (unsigned long)-1;
-    }
-    return (unsigned long)val;
-}
-
-static inline unsigned long long PyLong_AsUnsignedLongLongMask(PyObject *pylong) {
-    long long val = PyLong_AsLongLong(pylong);
-    if (molt_err_pending() != 0) {
-        PyErr_Clear();
-        return 0;
-    }
-    return (unsigned long long)val;
-}
-
 /* ---- Abstract Object protocol ------------------------------------------- */
 
 static inline PyObject *PyObject_Type(PyObject *o) {
@@ -8729,19 +8600,6 @@ static inline double PyComplex_ImagAsDouble(PyObject *op) {
     result = PyFloat_AsDouble(imag_obj);
     Py_DECREF(imag_obj);
     return result;
-}
-
-static inline PyObject *PyLong_FromUnicodeObject(PyObject *unicode, int base) {
-    const char *utf8;
-    if (unicode == NULL) {
-        PyErr_SetString(PyExc_ValueError, "NULL object passed to PyLong_FromUnicodeObject");
-        return NULL;
-    }
-    utf8 = PyUnicode_AsUTF8(unicode);
-    if (utf8 == NULL) {
-        return NULL;
-    }
-    return PyLong_FromString(utf8, NULL, base);
 }
 
 static inline PyObject *PyComplex_FromCComplex(Py_complex value) {
@@ -12071,19 +11929,6 @@ static inline int PyImport_ImportFrozenModuleObject(PyObject *name) {
  * PyLong additional conversions
  * ======================================================================== */
 
-static inline unsigned long long PyLong_AsUnsignedLongLong(PyObject *pylong) {
-    long long val = PyLong_AsLongLong(pylong);
-    if (PyErr_Occurred()) {
-        return (unsigned long long)-1;
-    }
-    if (val < 0) {
-        PyErr_SetString(PyExc_OverflowError,
-            "can't convert negative value to unsigned long long");
-        return (unsigned long long)-1;
-    }
-    return (unsigned long long)val;
-}
-
 /* ========================================================================
  * PyNumber_ToBase
  * ======================================================================== */
@@ -12843,15 +12688,6 @@ static inline int PyObject_GenericSetAttr(PyObject *obj, PyObject *name, PyObjec
 #define PyMem_DEL PyMem_Free
 
 /* ---- PyLong: FromDouble, FromUnsignedLong ---- */
-
-static inline PyObject *PyLong_FromDouble(double v) {
-    long long truncated = (long long)v;
-    return PyLong_FromLongLong(truncated);
-}
-
-static inline PyObject *PyLong_FromUnsignedLong(unsigned long v) {
-    return PyLong_FromUnsignedLongLong((unsigned long long)v);
-}
 
 /* ---- Error helpers ---- */
 
@@ -13698,10 +13534,6 @@ static inline PyObject *PyFloat_GetInfo(void) {
 
 /* ---- PyLong_AsUnsignedLongLongMask already exists but ensure PyLong_AsUnsignedLongMask ---- */
 
-static inline unsigned long PyLong_AsUnsignedLongMask(PyObject *pylong) {
-    return (unsigned long)PyLong_AsUnsignedLongLongMask(pylong);
-}
-
 /* PyOS_stricmp, PyOS_strnicmp — already defined earlier in this file. */
 
 /* ---- Py_AddPendingCall / Py_MakePendingCalls ---- */
@@ -13853,15 +13685,6 @@ static inline PyObject *PyUnicode_DecodeCharmap(const char *data, Py_ssize_t siz
 #endif
 
 /* ---- PyLong_AsInt (3.12+) ---- */
-
-static inline int PyLong_AsInt(PyObject *obj) {
-    long val = PyLong_AsLong(obj);
-    if (val > INT_MAX || val < INT_MIN) {
-        PyErr_SetString(PyExc_OverflowError, "Python int too large to convert to C int");
-        return -1;
-    }
-    return (int)val;
-}
 
 /* PyObject_CallFunction, PyObject_CallMethod, PyObject_HasAttr,
    PyObject_HasAttrString — already defined earlier in this file. */

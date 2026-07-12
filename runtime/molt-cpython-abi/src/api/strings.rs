@@ -276,6 +276,22 @@ mod unicode_decimal_table {
     pub(super) fn is_decimal(code: u32) -> bool {
         super::unicode_range_contains(UNICODE_DECIMAL_RANGES, code)
     }
+
+    pub(super) fn decimal_value(code: u32) -> Option<u8> {
+        let index = UNICODE_DECIMAL_RANGES
+            .binary_search_by(|&(start, end)| {
+                if code < start {
+                    std::cmp::Ordering::Greater
+                } else if code > end {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            })
+            .ok()?;
+        let start = UNICODE_DECIMAL_RANGES[index].0;
+        Some(((code - start) % 10) as u8)
+    }
 }
 
 #[allow(dead_code)]
@@ -294,6 +310,14 @@ mod unicode_space_table {
     pub(super) fn is_space(code: u32) -> bool {
         super::unicode_range_contains(UNICODE_SPACE_RANGES, code)
     }
+}
+
+pub(crate) fn unicode_decimal_digit_value(code: u32) -> Option<u8> {
+    unicode_decimal_table::decimal_value(code)
+}
+
+pub(crate) fn unicode_is_space(code: u32) -> bool {
+    unicode_space_table::is_space(code)
 }
 
 #[allow(dead_code)]
