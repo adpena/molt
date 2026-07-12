@@ -6,6 +6,7 @@ use super::io_limits::{BackendOutputKind, ensure_output_parent_dir, resolve_back
 
 #[cfg(feature = "luau-backend")]
 mod luau;
+mod luau_pipeline;
 #[cfg(feature = "native-backend")]
 mod native;
 #[cfg(feature = "rust-backend")]
@@ -15,10 +16,13 @@ mod wasm;
 
 #[cfg(feature = "luau-backend")]
 use luau::emit_luau_target;
+pub(crate) use luau_pipeline::run_luau_tir_module_pipeline;
 #[cfg(feature = "native-backend")]
 use native::emit_native_target;
 #[cfg(feature = "rust-backend")]
 use rust::emit_rust_target;
+#[cfg(feature = "rust-backend")]
+pub(crate) use rust::rust_source_for_ir;
 #[cfg(feature = "wasm-backend")]
 use wasm::emit_wasm_target;
 

@@ -5,7 +5,7 @@ use std::io::Write;
 
 use super::super::io_limits::create_backend_output_file;
 
-fn rust_source_for_ir(ir: &SimpleIR) -> io::Result<String> {
+pub(crate) fn rust_source_for_ir(ir: &SimpleIR) -> io::Result<String> {
     let mut ir = ir.clone();
     ir.tree_shake_source_emission();
     let mut backend = RustBackend::new();
