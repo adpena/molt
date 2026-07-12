@@ -1755,6 +1755,31 @@ def test_split_publication_pipeline_preserves_complete_contract_after_every_stag
     assert_complete("publication-strip", published)
 
 
+def test_split_contract_restoration_keeps_function_exports_when_adding_memory_and_table(
+) -> None:
+    required_native = ("PyInit__demo",)
+    app = _build_split_runtime_app_module([])
+    main_index = wasm_link._collect_function_exports(app)["molt_main"]
+    app = wasm_link._ensure_export_by_index(
+        app, name=required_native[0], kind=0, index=main_index
+    )
+    assert app is not None
+    app = _strip_export(_strip_export(app, "molt_memory"), "molt_table")
+
+    restored = wasm_link._restore_split_runtime_contract_exports(
+        app,
+        artifact="app",
+        stage="mask-proof",
+        required_native_direct_symbols=required_native,
+    )
+
+    facts = wasm_link.parse_wasm_module_facts(restored)
+    assert facts.export_kinds[required_native[0]][0] == 0
+    assert facts.export_kinds["molt_main"][0] == 0
+    assert facts.export_kinds["molt_memory"][0] == 2
+    assert facts.export_kinds["molt_table"][0] == 1
+
+
 def test_split_combined_post_link_preserves_linker_memory_and_table_aliases() -> None:
     linked = wasm_link._rename_export_names(
         _build_linked_ref_func_module(),

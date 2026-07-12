@@ -1561,13 +1561,6 @@ def _ensure_export_by_index(
             rebuilt_sections.append((section_id, bytes(rebuilt)))
             inserted = True
             continue
-        if not inserted and section_id > 7:
-            export_payload = bytearray(_write_varuint(1))
-            export_payload.extend(_write_string(name))
-            export_payload.append(kind)
-            export_payload.extend(_write_varuint(index))
-            rebuilt_sections.append((7, bytes(export_payload)))
-            inserted = True
         rebuilt_sections.append((section_id, payload))
     if not inserted:
         export_payload = bytearray(_write_varuint(1))
