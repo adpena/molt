@@ -120,11 +120,9 @@ def _shared_module_lowering_cache_path(
 ) -> Path | None:
     """Shared slot for one lowering identity, or ``None`` for a bad key.
 
-    The session-local lowering filename key (``content_key``) is deliberately
-    coarse (path + module + pkg/mod + target_python only) because the session dir
-    holds a single build identity and the ``context_digest`` guards correctness on
-    read. A *shared* tier serves many identities, so the slot name additionally
-    embeds the ``context_digest``: two distinct lowering identities (e.g. a
+    The lowering filename key (``content_key``) captures source bytes plus module,
+    package, and target-Python identity. The slot name additionally embeds the
+    ``context_digest``: two distinct lowering identities (e.g. a
     different tooling fingerprint, type-facts, or scoped inputs) then occupy
     distinct slots and can neither clobber nor be mis-served for one another.
     """

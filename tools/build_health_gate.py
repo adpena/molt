@@ -21,6 +21,7 @@ exceed 1 once single-compile is routed everywhere).
 
 Usage:
     python tools/build_health_gate.py --diagnostics build_diagnostics.json [--log build.log] [--strict]
+    python tools/build_health_gate.py --diagnostics warm.json --cold-diagnostics cold.json --strict
 """
 from __future__ import annotations
 
@@ -114,9 +115,50 @@ def check(diag: dict, log_text: str | None, th: dict) -> list[Anomaly]:
     return out
 
 
+def check_warm_pair(cold: dict, warm: dict, th: dict) -> list[Anomaly]:
+    cold_cache = cold.get("frontend_lowering_cache") or {}
+    warm_cache = warm.get("frontend_lowering_cache") or {}
+    cold_observed = int(cold_cache.get("observed", 0) or 0)
+    warm_observed = int(warm_cache.get("observed", 0) or 0)
+    minimum = int(th.get("frontend_lowering_cache_min_observed", 40))
+    floor = float(th.get("frontend_lowering_cache_warm_hit_floor", 0.90))
+    anomalies: list[Anomaly] = []
+    if cold_observed < minimum or warm_observed < minimum:
+        anomalies.append(Anomaly(
+            "frontend_lowering_cache_warm_sample_size",
+            f"cold={cold_observed}, warm={warm_observed}",
+            f"both >= {minimum}",
+            None,
+            "the effect-attestation pair is too small to prove frontend cache admission",
+            hard=True,
+        ))
+        return anomalies
+    if cold_observed != warm_observed:
+        anomalies.append(Anomaly(
+            "frontend_lowering_cache_warm_module_set",
+            f"cold={cold_observed}, warm={warm_observed}",
+            "identical observed module counts",
+            None,
+            "the cold and warm diagnostics do not attest the same module workload",
+            hard=True,
+        ))
+    warm_rate = float(warm_cache.get("hit_rate", 0.0) or 0.0)
+    if warm_rate < floor:
+        anomalies.append(Anomaly(
+            "frontend_lowering_cache_warm_hit_rate",
+            f"{warm_rate:.3f} ({warm_cache.get('hits')}/{warm_observed})",
+            f">= {floor:.2f}",
+            f"{float(warm_cache.get('relowered_s', 0.0) or 0.0):.3f}s re-lowered",
+            "a no-change warm rebuild must reuse nearly every module; configured-only caching is a CI failure",
+            hard=True,
+        ))
+    return anomalies
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--diagnostics", type=Path, required=True)
+    ap.add_argument("--cold-diagnostics", type=Path, default=None)
     ap.add_argument("--log", type=Path, default=None)
     ap.add_argument("--strict", action="store_true", help="exit nonzero on a hard invariant")
     args = ap.parse_args(argv)
@@ -133,7 +175,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.log and args.log.is_file():
         log_text = args.log.read_text(encoding="utf-8", errors="replace")
 
-    anomalies = check(diag, log_text, _load_thresholds())
+    thresholds = _load_thresholds()
+    anomalies = check(diag, log_text, thresholds)
+    if args.cold_diagnostics is not None:
+        try:
+            cold_diag = json.loads(args.cold_diagnostics.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            print(f"build_health_gate: cannot read cold diagnostics: {exc}", file=sys.stderr)
+            return 3
+        anomalies.extend(check_warm_pair(cold_diag, diag, thresholds))
     if not anomalies:
         print("build_health_gate: OK — no build-health anomalies")
         return 0

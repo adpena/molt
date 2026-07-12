@@ -12989,6 +12989,31 @@ def test_persisted_module_lowering_roundtrip_respects_context_digest(
     assert miss is None
 
 
+def test_module_lowering_cache_key_ignores_generated_output_path(tmp_path: Path) -> None:
+    first = tmp_path / "run-a" / "namespace_pkg.py"
+    second = tmp_path / "run-b" / "namespace_pkg.py"
+    first.parent.mkdir()
+    second.parent.mkdir()
+    source = "__path__ = []\n"
+    first.write_text(source, encoding="utf-8")
+    second.write_text(source, encoding="utf-8")
+
+    first_key = cli_module_cache._module_lowering_cache_key(
+        first,
+        module_name="pkg",
+        is_package=False,
+        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+    )
+    second_key = cli_module_cache._module_lowering_cache_key(
+        second,
+        module_name="pkg",
+        is_package=False,
+        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+    )
+
+    assert second_key == first_key
+
+
 def test_persisted_module_lowering_rejects_missing_local_function_reference(
     tmp_path: Path,
 ) -> None:
