@@ -857,6 +857,23 @@ pub unsafe fn molt_foreign_object_release(c_ptr: usize) {
     };
 }
 
+/// Hash a foreign wrapper by routing through the wrapped C object's own
+/// `tp_hash` (CPython `PyObject_Hash`). A numpy DType CLASS (a foreign C type
+/// whose metatype inherits `type.__hash__`) hashes by identity here; a
+/// genuinely-unhashable foreign type raises `TypeError` inside the C slot and
+/// `PyObject_Hash` returns -1 with the exception left pending, which the caller
+/// propagates. Returns the CPython hash value, or -1 on error.
+///
+/// # Safety
+/// `c_ptr` must be a live C-extension `PyObject*`.
+pub unsafe fn molt_foreign_hash(c_ptr: usize) -> isize {
+    let obj = core::ptr::with_exposed_provenance_mut::<PyObject>(c_ptr);
+    if obj.is_null() {
+        return -1;
+    }
+    unsafe { crate::api::typeobj::PyObject_Hash(obj) }
+}
+
 /// `getattr` on a foreign wrapper: route through the wrapped C object's own
 /// `tp_getattro` (else CPython generic getattr). `name_bits` is a Molt string
 /// handle. Returns the attribute value as an owned Molt handle, or 0 with the C

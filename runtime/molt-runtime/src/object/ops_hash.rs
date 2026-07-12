@@ -999,6 +999,31 @@ fn hash_unhashable(_py: &PyToken<'_>, obj: MoltObject) -> i64 {
     raise_exception::<_>(_py, "TypeError", &msg)
 }
 
+/// Hash a `TYPE_ID_FOREIGN` wrapper by routing to the wrapped C object's own
+/// `tp_hash` via the ABI bridge (CPython `PyObject_Hash`). A numpy DType CLASS
+/// (a foreign C type whose metatype inherits `type.__hash__`) hashes by identity;
+/// a genuinely-unhashable foreign type raises `TypeError` inside the C slot,
+/// which we propagate. Without this, foreign objects fell through to
+/// `hash_from_dunder`, whose molt-side dict/attr lookup cannot see the C
+/// `tp_hash` and wrongly reported `unhashable type` — the numpy.dtypes
+/// registration frontier (`PyDict_SetItem(dict, <DType class>, ...)`).
+unsafe fn hash_foreign(_py: &PyToken<'_>, obj: MoltObject, ptr: *mut u8) -> i64 {
+    let c_ptr = unsafe { crate::object::foreign::foreign_ptr_from_obj(ptr) };
+    let h = unsafe { molt_cpython_abi::bridge::molt_foreign_hash(c_ptr) };
+    if h == -1 {
+        // The C `tp_hash` failed (e.g. a genuinely-unhashable foreign type). The
+        // slot left its exception pending; surface a molt exception if the bridge
+        // has not already, so the caller propagates rather than masking it.
+        if !exception_pending(_py) {
+            let name = type_name(_py, obj);
+            let msg = format!("unhashable type: '{name}'");
+            return raise_exception::<i64>(_py, "TypeError", &msg);
+        }
+        return 0;
+    }
+    h as i64
+}
+
 fn is_unhashable_type(type_id: u32) -> bool {
     matches!(
         type_id,
@@ -1097,6 +1122,12 @@ pub(crate) fn hash_bits_signed(_py: &PyToken<'_>, bits: u64) -> i64 {
             let type_id = object_type_id(ptr);
             if is_unhashable_type(type_id) {
                 return hash_unhashable(_py, obj);
+            }
+            if type_id == TYPE_ID_FOREIGN {
+                // A foreign C-extension object hashes by its OWN `tp_hash`
+                // (via the ABI bridge → CPython `PyObject_Hash`), never molt's
+                // dunder path — molt cannot see the C hash slot.
+                return hash_foreign(_py, obj, ptr);
             }
             if type_id == TYPE_ID_STRING {
                 return hash_string(_py, ptr);
@@ -1198,6 +1229,8 @@ pub(crate) fn hash_bits_signed(_py: &PyToken<'_>, bits: u64) -> i64 {
                 }
                 let hash_name_bits =
                     intern_static_name(_py, &runtime_state(_py).interned.hash_name, b"__hash__");
+                let eq_name_bits =
+                    intern_static_name(_py, &runtime_state(_py).interned.eq_name, b"__eq__");
                 let mut meta_overrides_hash = false;
                 if let Some(meta_ptr) = obj_from_bits(metaclass_bits).as_ptr()
                     && object_type_id(meta_ptr) == TYPE_ID_TYPE
@@ -1206,19 +1239,17 @@ pub(crate) fn hash_bits_signed(_py: &PyToken<'_>, bits: u64) -> i64 {
                     if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
                         && object_type_id(dict_ptr) == TYPE_ID_DICT
                     {
-                        // A class hashes by IDENTITY unless its METACLASS explicitly
-                        // overrides __hash__ (own-dict __hash__ entry, possibly =None).
-                        // Merely defining __eq__ on the metaclass does NOT make its
-                        // classes unhashable: numpy's `_DTypeMeta` defines __eq__ and
-                        // INHERITS __hash__ (identity) from `type`, so its DType CLASSES
-                        // are hashable in CPython — this was the numpy.dtypes
-                        // `unhashable type: 'type'` frontier. A Python metaclass that
-                        // defines __eq__ without __hash__ gets __hash__=None baked into
-                        // its own dict, so that genuinely-unhashable case is still
-                        // caught by the __hash__-present check below (and raised as
-                        // __hash__=None in hash_from_dunder).
-                        meta_overrides_hash =
-                            dict_get_in_place(_py, dict_ptr, hash_name_bits).is_some();
+                        // This branch only handles a NATIVE class with a NATIVE
+                        // metaclass (foreign C objects are intercepted upstream and
+                        // routed to their own C `tp_hash`). Per CPython's `type_new`
+                        // reset rule, a metaclass that defines `__eq__` OR `__hash__`
+                        // in its own dict overrides its classes' identity hash, so
+                        // defer to `hash_from_dunder` (which raises when the resolved
+                        // `__hash__` is `None`/absent-with-`__eq__`). A metaclass with
+                        // neither falls through to the identity hash below.
+                        meta_overrides_hash = dict_get_in_place(_py, dict_ptr, hash_name_bits)
+                            .is_some()
+                            || dict_get_in_place(_py, dict_ptr, eq_name_bits).is_some();
                     }
                 }
                 if meta_overrides_hash && let Some(hash) = hash_from_dunder(_py, obj, ptr) {
