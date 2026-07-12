@@ -26,6 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # Import project tools (added to path so they are importable)
 sys.path.insert(0, str(ROOT / "tools"))
 from wasm_optimize import find_wasm_opt, optimize  # noqa: E402
+from wasm_metrics import wasm_metrics  # noqa: E402
 from wasm_size_audit import parse_sections  # noqa: E402
 
 
@@ -105,6 +106,37 @@ def _exported_func_module(export_name: str) -> bytes:
         data.extend(_varuint(len(payload)))
         data.extend(payload)
     return bytes(data)
+
+
+def _active_data_module(payload: bytes) -> bytes:
+    import_payload = (
+        b"\x01"
+        + _wasm_string("env")
+        + _wasm_string("memory")
+        + b"\x02\x00\x01"
+    )
+    data_payload = b"\x01\x00\x41\x10\x0b" + _varuint(len(payload)) + payload
+    data = bytearray(b"\x00asm\x01\x00\x00\x00")
+    for section_id, section_payload in ((2, import_payload), (11, data_payload)):
+        data.append(section_id)
+        data.extend(_varuint(len(section_payload)))
+        data.extend(section_payload)
+    return bytes(data)
+
+
+def test_wasm_metrics_profiles_active_data_payload_and_zeros(tmp_path: Path) -> None:
+    wasm_path = tmp_path / "data.wasm"
+    wasm_path.write_bytes(_active_data_module(b"a\x00\x00b"))
+
+    metrics = wasm_metrics(wasm_path)
+
+    assert metrics["data_segments"] == {
+        "count": 1,
+        "active_count": 1,
+        "passive_count": 0,
+        "payload_bytes": 4,
+        "zero_bytes": 2,
+    }
 
 
 def test_build_wasm_uses_wasm_test_guard(
