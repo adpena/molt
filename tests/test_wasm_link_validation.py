@@ -2215,6 +2215,11 @@ def test_run_wasm_ld_split_runtime_falls_back_when_env_deploy_runtime_is_stale(
     assert (split_dir / "molt_runtime.wasm").read_bytes() == (
         control_split_dir / "molt_runtime.wasm"
     ).read_bytes()
+    size_attestation = json.loads(
+        (split_dir / "wasm_size_attestation.json").read_text(encoding="utf-8")
+    )
+    assert size_attestation["published"]["app"]["sections"]["export"] > 0
+    assert size_attestation["published"]["runtime"]["sections"]["export"] > 0
     timings = json.loads(timings_path.read_text(encoding="utf-8"))
     assert set(timings) >= {
         "wasm_link_total",
@@ -3077,15 +3082,20 @@ def test_run_wasm_opt_via_optimize_enforces_current_export_contract(
                 extra_passes,
                 converge,
                 required_exports,
+                apply_level,
             ):
                 seen["input_path"] = input_path
                 seen["level"] = level
                 seen["converge"] = converge
                 seen["required_exports"] = set(required_exports)
+                seen["apply_level"] = apply_level
                 output_path.write_bytes(input_path.read_bytes())
                 return {
                     "ok": True,
                     "output_bytes": output_path.stat().st_size,
+                    "pipeline": extra_passes,
+                    "before": {"file_bytes": input_path.stat().st_size},
+                    "after": {"file_bytes": output_path.stat().st_size},
                     "error": "",
                 }
 
@@ -3102,6 +3112,20 @@ def test_run_wasm_opt_via_optimize_enforces_current_export_contract(
 
     assert wasm_link._run_wasm_opt_via_optimize(linked, level="Oz")
     assert seen["required_exports"] == {"molt_main", "molt_host_init"}
+    assert seen["apply_level"] is True
+
+
+def test_oz_publication_pipeline_is_bounded_and_size_focused() -> None:
+    assert wasm_link._OZ_PASSES == [
+        "--remove-unused-module-elements",
+        "--strip-debug",
+        "--strip-producers",
+        "--dae-optimizing",
+        "--simplify-locals",
+        "--merge-blocks",
+        "--dce",
+        "--vacuum",
+    ]
 
 
 def test_neutralize_dead_element_entries_preserves_host_call_indirect_modules() -> None:

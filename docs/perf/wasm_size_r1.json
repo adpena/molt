@@ -1,0 +1,50 @@
+{
+  "authority": "WASM-SIZE-R1",
+  "binaryen": "wasm-opt version 130 (version_130)",
+  "pipeline": [
+    "--remove-unused-module-elements",
+    "--strip-debug",
+    "--strip-producers",
+    "--dae-optimizing",
+    "--simplify-locals",
+    "--merge-blocks",
+    "--dce",
+    "--vacuum"
+  ],
+  "proof_run_id": "20260712T065930-pact-witness-acceptance-505f78c9b584441d",
+  "witness_frontier": "_multiarray_umath: static-link PyModuleDef Py_mod_exec slot returned non-zero: unhashable type: 'type'",
+  "artifacts": {
+    "app.wasm": {
+      "before": {
+        "file_bytes": 29956228,
+        "code": 24175384,
+        "data": 5624472,
+        "export": 461,
+        "element": 63030
+      },
+      "after": {
+        "file_bytes": 23815980,
+        "code": 18045530,
+        "data": 5624472,
+        "export": 461,
+        "element": 63028
+      }
+    },
+    "molt_runtime.wasm": {
+      "before": {
+        "file_bytes": 9719895,
+        "code": 7586861,
+        "data": 1987100,
+        "export": 119330,
+        "element": 4004
+      },
+      "after": {
+        "file_bytes": 8227530,
+        "code": 6100393,
+        "data": 1987100,
+        "export": 119329,
+        "element": 3961
+      }
+    }
+  }
+}
