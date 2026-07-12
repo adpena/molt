@@ -53,6 +53,12 @@ _NATIVE_SUPPORT_ARTIFACT_SOURCE_SUFFIXES = (".pyx", ".c", ".cc", ".cpp", ".cxx")
 
 
 @dataclass(frozen=True)
+class _NativeSupportSourceSlice:
+    imports: tuple[str, ...]
+    generated_path: Path | None
+
+
+@dataclass(frozen=True)
 class ModuleSyntaxErrorInfo:
     message: str
     filename: str
@@ -464,6 +470,10 @@ def _extend_native_support_source_closure(
     resolver_cache: "_module_resolution._ModuleResolutionCache",
     target_python: TargetPythonVersion,
     capability_config_digest: str,
+    slice_cache: MutableMapping[
+        tuple[Path, tuple[str, ...]], _NativeSupportSourceSlice | None
+    ],
+    operation_counts: MutableMapping[str, int],
 ) -> frozenset[str]:
     support_paths_by_module = native_artifact_plan.support_source_paths_by_module()
     if not support_paths_by_module:
@@ -492,10 +502,12 @@ def _extend_native_support_source_closure(
     if not entry_paths:
         return frozenset()
     module_roots = [root for root in roots if root != stdlib_root]
-    pruned_support_paths = _materialize_pruned_native_support_sources(
+    support_slices = _native_support_source_slices(
         native_artifact_plan=native_artifact_plan,
         roots_by_module=native_support_function_roots_by_module,
         artifacts_root=artifacts_root,
+        slice_cache=slice_cache,
+        operation_counts=operation_counts,
     )
     closure_graph, explicit_imports = (
         _graph_discovery._discover_module_graph_from_paths(
@@ -508,10 +520,10 @@ def _extend_native_support_source_closure(
             skip_modules=STUB_MODULES,
             stub_parents=STUB_PARENT_MODULES,
             resolver_cache=resolver_cache,
-            precomputed_imports_by_path=_native_support_source_imports_by_path(
-                native_artifact_plan,
-                native_support_function_roots_by_module,
-            ),
+            precomputed_imports_by_path={
+                path: support_slice.imports
+                for path, support_slice in support_slices.items()
+            },
             import_admission_policy=_native_support_source_admission_policy(
                 native_artifact_plan
             ),
@@ -523,7 +535,12 @@ def _extend_native_support_source_closure(
     for module_name, path in closure_graph.items():
         module_graph.setdefault(
             module_name,
-            pruned_support_paths.get(path.resolve(), path),
+            (
+                support_slices[path].generated_path
+                if path in support_slices
+                and support_slices[path].generated_path is not None
+                else path
+            ),
         )
         _graph_discovery._record_module_reason(
             module_reasons,
@@ -783,21 +800,59 @@ def _native_support_function_roots_by_module(
     }
 
 
-def _native_support_source_imports_by_path(
+def _native_support_source_slices(
+    *,
     native_artifact_plan,
     roots_by_module: Mapping[str, Sequence[str]],
-) -> dict[Path, tuple[str, ...]]:
-    imports_by_path: dict[Path, tuple[str, ...]] = {}
+    artifacts_root: Path,
+    slice_cache: MutableMapping[
+        tuple[Path, tuple[str, ...]], _NativeSupportSourceSlice | None
+    ],
+    operation_counts: MutableMapping[str, int],
+) -> dict[Path, _NativeSupportSourceSlice]:
+    support_slices: dict[Path, _NativeSupportSourceSlice] = {}
     support_paths_by_module = native_artifact_plan.support_source_paths_by_module()
     for module, path in support_paths_by_module.items():
+        roots = tuple(sorted(set(roots_by_module.get(module, ()))))
+        cache_key = (path.resolve(), roots)
+        operation_counts["native_support_slice_requests"] += 1
+        operation_counts["native_support_legacy_equivalent_source_parses"] += (
+            2 if roots else 1
+        )
+        if cache_key in slice_cache:
+            operation_counts["native_support_slice_cache_hits"] += 1
+            support_slice = slice_cache[cache_key]
+            if support_slice is not None:
+                support_slices[path] = support_slice
+            continue
+        operation_counts["native_support_slice_cache_misses"] += 1
+        if not roots:
+            persisted_imports = _graph_discovery._module_graph_cache._read_persisted_import_scan(
+                artifacts_root,
+                path,
+                module_name=module,
+                is_package=path.name == "__init__.py",
+                import_scan_mode="module_init",
+            )
+            if persisted_imports is not None:
+                operation_counts["native_support_persisted_import_scan_hits"] += 1
+                support_slice = _NativeSupportSourceSlice(
+                    imports=persisted_imports,
+                    generated_path=None,
+                )
+                slice_cache[cache_key] = support_slice
+                support_slices[path] = support_slice
+                continue
+            operation_counts["native_support_persisted_import_scan_misses"] += 1
+        operation_counts["native_support_source_parses"] += 1
         try:
             source = path.read_text(encoding="utf-8")
             tree = ast.parse(source, filename=str(path))
         except (OSError, SyntaxError, UnicodeDecodeError):
+            slice_cache[cache_key] = None
             continue
-        roots = frozenset(roots_by_module.get(module, ()))
         if not roots:
-            imports_by_path[path] = tuple(
+            imports = tuple(
                 _module_import_scanner._collect_imports(
                     tree,
                     module_name=module,
@@ -805,11 +860,26 @@ def _native_support_source_imports_by_path(
                     import_scan_mode="module_init",
                 )
             )
+            _graph_discovery._module_graph_cache._write_persisted_import_scan(
+                artifacts_root,
+                path,
+                module_name=module,
+                is_package=path.name == "__init__.py",
+                import_scan_mode="module_init",
+                imports=imports,
+            )
+            support_slice = _NativeSupportSourceSlice(
+                imports=imports,
+                generated_path=None,
+            )
+            slice_cache[cache_key] = support_slice
+            support_slices[path] = support_slice
             continue
-        pruned_tree, _reachable, _missing = (
-            _native_support_slice.prune_native_support_module(tree, roots)
+        operation_counts["native_support_source_prunes"] += 1
+        pruned_tree, _reachable, missing = (
+            _native_support_slice.prune_native_support_module(tree, frozenset(roots))
         )
-        imports_by_path[path] = tuple(
+        imports = tuple(
             _module_import_scanner._collect_imports(
                 pruned_tree,
                 module_name=module,
@@ -817,7 +887,18 @@ def _native_support_source_imports_by_path(
                 import_scan_mode="full",
             )
         )
-    return imports_by_path
+        generated_path = None
+        if not missing:
+            ast.fix_missing_locations(pruned_tree)
+            generated_path = _native_support_generated_path(module, artifacts_root)
+            _write_text_if_changed(generated_path, ast.unparse(pruned_tree) + "\n")
+        support_slice = _NativeSupportSourceSlice(
+            imports=imports,
+            generated_path=generated_path,
+        )
+        slice_cache[cache_key] = support_slice
+        support_slices[path] = support_slice
+    return support_slices
 
 
 def _native_support_generated_path(module_name: str, artifacts_root: Path) -> Path:
@@ -825,35 +906,6 @@ def _native_support_generated_path(module_name: str, artifacts_root: Path) -> Pa
     if not safe:
         safe = "module"
     return artifacts_root / f"native_support_{safe}.py"
-
-
-def _materialize_pruned_native_support_sources(
-    *,
-    native_artifact_plan,
-    roots_by_module: Mapping[str, Sequence[str]],
-    artifacts_root: Path,
-) -> dict[Path, Path]:
-    generated_paths: dict[Path, Path] = {}
-    support_paths_by_module = native_artifact_plan.support_source_paths_by_module()
-    for module, source_path in support_paths_by_module.items():
-        roots = frozenset(roots_by_module.get(module, ()))
-        if not roots:
-            continue
-        try:
-            source = source_path.read_text(encoding="utf-8")
-            tree = ast.parse(source, filename=str(source_path))
-        except (OSError, SyntaxError, UnicodeDecodeError):
-            continue
-        pruned_tree, _reachable, missing = (
-            _native_support_slice.prune_native_support_module(tree, roots)
-        )
-        if missing:
-            continue
-        ast.fix_missing_locations(pruned_tree)
-        generated_path = _native_support_generated_path(module, artifacts_root)
-        _write_text_if_changed(generated_path, ast.unparse(pruned_tree) + "\n")
-        generated_paths[source_path.resolve()] = generated_path
-    return generated_paths
 
 
 def _longest_module_prefix(
@@ -1121,10 +1173,25 @@ def _materialize_import_plan(
     stdlib_allowlist = set(prepared_module_graph.stdlib_allowlist)
     stub_parents = set(prepared_module_graph.stub_parents)
     support_explicit_imports: set[str] = set()
+    module_graph_operation_counts = {
+        "native_support_iterations": 0,
+        "native_support_slice_requests": 0,
+        "native_support_slice_cache_hits": 0,
+        "native_support_slice_cache_misses": 0,
+        "native_support_persisted_import_scan_hits": 0,
+        "native_support_persisted_import_scan_misses": 0,
+        "native_support_source_parses": 0,
+        "native_support_source_prunes": 0,
+        "native_support_legacy_equivalent_source_parses": 0,
+    }
+    native_support_slice_cache: dict[
+        tuple[Path, tuple[str, ...]], _NativeSupportSourceSlice | None
+    ] = {}
     native_artifact_plan = _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
     for _iteration in range(
         len(prepared_module_graph.native_artifact_plan.artifacts) + 2
     ):
+        module_graph_operation_counts["native_support_iterations"] += 1
         native_artifact_reachable_imports = (
             set(module_graph)
             | set(prepared_module_graph.explicit_imports)
@@ -1171,6 +1238,8 @@ def _materialize_import_plan(
                 resolver_cache=prepared_module_graph.module_resolution_cache,
                 target_python=_DEFAULT_TARGET_PYTHON_VERSION,
                 capability_config_digest="",
+                slice_cache=native_support_slice_cache,
+                operation_counts=module_graph_operation_counts,
             )
         )
         if (
@@ -1257,6 +1326,9 @@ def _materialize_import_plan(
         stdlib_root=stdlib_root,
         module_resolution_cache=prepared_module_graph.module_resolution_cache,
         module_graph=MappingProxyType(dict(module_graph)),
+        module_graph_operation_counts=MappingProxyType(
+            dict(module_graph_operation_counts)
+        ),
         explicit_imports=frozenset(prepared_module_graph.explicit_imports),
         runtime_import_dispatch_roots=runtime_import_dispatch_roots,
         stub_parents=frozenset(stub_parents),
