@@ -1,4 +1,4 @@
-use super::*;
+use super::support::*;
 
 #[test]
 fn production_lir_wasm_fast_path_is_reserved_for_global_builtin_lane() {
