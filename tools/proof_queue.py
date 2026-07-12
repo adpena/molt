@@ -3256,6 +3256,19 @@ def _pact_witness_acceptance_spec(
     timeout: float | None = None, repo_root: Path = ROOT
 ) -> dict[str, object]:
     stack = resolve_scientific_stack()
+    git_snapshot = _git_snapshot(repo_root)
+    expected_head = git_snapshot.get("head")
+    if not isinstance(expected_head, str) or not expected_head:
+        raise SystemExit(
+            "pact-witness-acceptance requires a git worktree with a resolvable HEAD"
+        )
+    env_overrides = _pact_witness_env_overrides(repo_root)
+    env_overrides.update(
+        {
+            "MOLT_WITNESS_EXPECTED_REPO_ROOT": str(repo_root.resolve()),
+            "MOLT_WITNESS_EXPECTED_GIT_HEAD": expected_head,
+        }
+    )
     return {
         "logical_id": "pact-witness-acceptance",
         "reason": (
@@ -3280,7 +3293,7 @@ def _pact_witness_acceptance_spec(
             "tools/pact_witness_acceptance.py",
             *stack.seal_roots,
         ],
-        "env_overrides": _pact_witness_env_overrides(repo_root),
+        "env_overrides": env_overrides,
         "notes": [
             "Named Pact acceptance auto-admits conventional manifest-led "
             "NumPy/SciPy staging roots when present, builds field_solve.py, "
