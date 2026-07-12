@@ -15,14 +15,14 @@
     }
   ],
   "counts": {
-    "molt-private": 41,
-    "private": 48,
+    "molt-private": 42,
+    "private": 54,
     "private-representation": 1,
     "public-version-specific": 129,
-    "stable-abi": 412,
+    "stable-abi": 415,
     "stable-values-version-specific-layout": 1,
-    "total": 640,
-    "unstable": 6,
+    "total": 652,
+    "unstable": 8,
     "version-specific-public": 2
   },
   "future_divergences": [
@@ -1400,6 +1400,13 @@
       "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
       "stability": "stable-abi",
       "surface": "function",
+      "symbol": "PyLong_AsSize_t",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "stable-abi",
+      "surface": "function",
       "symbol": "PyLong_AsSsize_t",
       "verified_at": "3.12"
     },
@@ -1489,6 +1496,13 @@
     },
     {
       "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyLong_FromString",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
       "stability": "public-version-specific",
       "surface": "function",
       "symbol": "PyLong_FromUnicodeObject",
@@ -1520,6 +1534,13 @@
       "stability": "stable-abi",
       "surface": "function",
       "symbol": "PyLong_FromVoidPtr",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "stable-abi",
+      "surface": "function",
+      "symbol": "PyLong_GetInfo",
       "verified_at": "3.12"
     },
     {
@@ -3602,6 +3623,20 @@
       "verified_at": "3.12"
     },
     {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "unstable",
+      "surface": "function",
+      "symbol": "PyUnstable_Long_CompactValue",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "unstable",
+      "surface": "function",
+      "symbol": "PyUnstable_Long_IsCompact",
+      "verified_at": "3.12"
+    },
+    {
       "source": "runtime/molt-cpython-abi/src/api/modules.rs",
       "stability": "unstable",
       "surface": "function",
@@ -4011,7 +4046,49 @@
       "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
       "stability": "private",
       "surface": "function",
+      "symbol": "_PyLong_NumBits",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "private",
+      "surface": "function",
       "symbol": "_PyLong_Sign",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyLong_Size_t_Converter",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyLong_UnsignedInt_Converter",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyLong_UnsignedLongLong_Converter",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyLong_UnsignedLong_Converter",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "private",
+      "surface": "function",
+      "symbol": "_PyLong_UnsignedShort_Converter",
       "verified_at": "3.12"
     },
     {
@@ -4544,6 +4621,13 @@
       "stability": "molt-private",
       "surface": "function",
       "symbol": "molt_tuple_richcompare",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/typeobj.rs",
+      "stability": "molt-private",
+      "surface": "function",
+      "symbol": "molt_type_identity_hash",
       "verified_at": "3.12"
     },
     {

@@ -162,15 +162,15 @@ Within each domain, rows are ordered gaps-first by severity (high → med → lo
 
 ### 3. numbers — `PyLong_*` / `PyFloat_*` / `PyComplex_*` / `PyBool_*` / `PyOS_*` numeric
 
-*88 entries — 52 gap, 36 faithful.*
+*88 entries — 34 gap, 54 faithful.*
 
 | symbol | status | sev | needed_by | note |
 |---|---|:--:|---|---|
 | `PyFloat_Type` | DIVERGENT | high | numpy (references &PyFloat_Type) | abi_types.rs:727 same name+READY shell, no basicsize/flags/number-slots. |
-| `PyLong_FromString` | MISSING | high | cython/numpy (witness A-CYTHON) | Not declared in abi authority nor implemented in numbers.rs. Exists ONLY as a divergent static inline in the to-be-deleted overlay include/molt/Python.h:7905 (routes through int(); sets *pend unconditionally -> trailing-garbage/partial-parse contract wrong). |
+| `PyLong_FromString` | FAITHFUL (claimed) | high | cython/numpy (witness A-CYTHON) | Shared ASCII scanner owns whitespace/sign/base-prefix/underscore/base-zero validation and exact `pend`; ABI and runtime parsing both consume it, with arbitrary magnitude folded through runtime BigInt authority. |
 | `PyLong_Type` | DIVERGENT | high | numpy (references &PyLong_Type) | abi_types.rs:724 zeroed then patched only tp_name='int' + tp_flags=READY. Missing tp_basicsize, Py_TPFLAGS_LONG_SUBCLASS, tp_as_number slots, tp_hash/tp_richcompare, tp_base. numpy PyType_HasFeature(...,LONG_SUBCLASS) fast-paths + slot inheritance see a shell. |
-| `PyUnstable_Long_CompactValue` | MISSING | high | cython 3.x (witness A-CYTHON) | 3.12 fast-int accessor absent; pairs with IsCompact. |
-| `PyUnstable_Long_IsCompact` | MISSING | high | cython 3.x (witness A-CYTHON) | 3.12 fast-int accessor absent. Cython 3.x GENERATES calls to IsCompact/CompactValue for fast int unboxing on 3.12; every cython-compiled ext fails to link/compile without it. |
+| `PyUnstable_Long_CompactValue` | FAITHFUL (claimed) | high | cython 3.x (witness A-CYTHON) | Bridge-first proxy-safe extraction plus genuine foreign `PyLongObject` tag/digit handling at CPython's base-2^30 boundary. |
+| `PyUnstable_Long_IsCompact` | FAITHFUL (claimed) | high | cython 3.x (witness A-CYTHON) | Uses CPython's zero-or-one base-2^30 digit rule rather than Molt's wider inline-int range. |
 | `PyBool_Type` | DIVERGENT | med | numpy/cython | abi_types.rs:763 name+READY shell; tp_base is NOT set to &PyLong_Type, so a foreign subtype walk bool->int would fail (masked today because bool objects are bridge-resolved). |
 | `PyComplex_Type` | DIVERGENT | med | numpy/cmath | abi_types.rs:730 name+READY+tp_dealloc but no basicsize/number-slots/richcompare. |
 | `PyFloat_GetInfo` | MISSING | med | sys.float_info / numpy | Absent from abi authority; only overlay:13681 static inline builds the structseq. |
@@ -180,21 +180,21 @@ Within each domain, rows are ordered gaps-first by severity (high → med → lo
 | `PyFloat_Unpack2` | MISSING | med | numpy float16 / struct | Half-float unpack absent. |
 | `PyFloat_Unpack4` | MISSING | med | struct/numpy | Absent. |
 | `PyFloat_Unpack8` | MISSING | med | struct/numpy | Absent. |
-| `PyLong_AsSize_t` | MISSING | med | numpy (sizes) | Absent from abi authority; overlay:7976 static-inline routes through PyLong_AsLongLong so (2^63,2^64) overflows instead of converting. |
-| `PyLong_AsUnsignedLongLongMask` | MISSING | med | cython/hashing | Absent from abi authority; overlay:8002 uses AsLongLong then clears error for bignums (returns 0 on any pending error) rather than masking the true low 64 bits. |
-| `PyLong_AsUnsignedLongMask` | MISSING | med | cython/hashing | Absent from abi authority; overlay:13701 delegates to LongLongMask which raises for bignums instead of returning the low-bits mask CPython guarantees. |
-| `PyLong_CheckExact` | DIVERGENT | med | cython/numpy fast-path dispatch | Header macro (Python.h:1089) #defines CheckExact -> PyLong_Check, so CheckExact(True)==1 and a foreign int subclass passes; CPython requires exact int identity. |
-| `PyLong_FromSsize_t` | DIVERGENT | med | numpy (shapes) / Windows gating | numbers.rs:513 does PyLong_FromLong(v as c_long): truncates >2^31 on LLP64 Windows-x64 (M02 gated target); correct on wasm32/LP64. Should route py_long_from_i64(v as i64). |
-| `PyLong_GetInfo` | MISSING | med | sys/introspection | No sys.int_info structseq provider in abi crate. |
-| `_PyLong_AsByteArray` | DIVERGENT | med | pickle/struct/cython | numbers.rs:1123 serializes correctly within +/-2^64 (i128 widen) but a genuine >64-bit bignum raises OverflowError instead of writing the true bytes; bignum path unimplemented. |
-| `_PyLong_FromByteArray` | DIVERGENT | med | pickle/marshal/int.from_bytes-C consumers | numbers.rs:666 reads only n.min(8) bytes: SILENTLY truncates arrays >8 bytes to 64 bits (a 16-byte value returns a wrong int). CPython builds an arbitrary-precision int. |
-| `_PyLong_NumBits` | MISSING | med | marshal/pickle | Bit-length query absent; used by marshal/pickle and int.bit_length-adjacent C. |
-| `_PyLong_Sign` | MISSING | med | cython/numpy | Sign query absent; used by numpy/cython and marshal. |
-| `_PyLong_Size_t_Converter` | MISSING | med | stdlib-C/argument-clinic | Argument-clinic converter absent. |
-| `_PyLong_UnsignedInt_Converter` | MISSING | med | stdlib-C/argument-clinic | Argument-clinic converter absent. |
-| `_PyLong_UnsignedLongLong_Converter` | MISSING | med | stdlib-C/argument-clinic | Argument-clinic converter absent. |
-| `_PyLong_UnsignedLong_Converter` | MISSING | med | stdlib-C/argument-clinic | Argument-clinic converter absent. |
-| `_PyLong_UnsignedShort_Converter` | MISSING | med | stdlib-C/argument-clinic | Argument-clinic converter absent; many stdlib-C fns compiled through the ABI reference it. |
+| `PyLong_AsSize_t` | FAITHFUL (claimed) | med | numpy (sizes) | Strict int-only conversion covers the full platform `size_t` range with CPython negative and width overflow errors. |
+| `PyLong_AsUnsignedLongLongMask` | FAITHFUL (claimed) | med | cython/hashing | `LongValue::Wide` and genuine foreign digit lanes return the true low 64 bits without overflow. |
+| `PyLong_AsUnsignedLongMask` | FAITHFUL (claimed) | med | cython/hashing | Shares arbitrary-width mask authority at platform `unsigned long` width. |
+| `PyLong_CheckExact` | FAITHFUL (claimed) | med | cython/numpy fast-path dispatch | Both headers use exact type identity. |
+| `PyLong_FromSsize_t` | FAITHFUL (claimed) | med | numpy (shapes) / Windows gating | Direct signed pointer-width construction avoids LLP64 truncation through C `long`. |
+| `PyLong_GetInfo` | FAITHFUL (claimed) | med | sys/introspection | Returns a new reference to the runtime's single `sys.int_info` authority. |
+| `_PyLong_AsByteArray` | FAITHFUL (claimed) | med | pickle/struct/cython | Arbitrary-width bridge BigInts use raw byte hooks; foreign longs serialize from base-2^30 digits; endian, signed, overflow and required partial fill are tested. |
+| `_PyLong_FromByteArray` | FAITHFUL (claimed) | med | pickle/marshal/int.from_bytes-C consumers | Arbitrary-length signed two's-complement and unsigned decoding shares runtime BigInt byte authority with Python `int.from_bytes`. |
+| `_PyLong_NumBits` | FAITHFUL (claimed) | med | marshal/pickle | Absolute bit length covers inline, `LongValue::Wide`, and foreign digit layouts. |
+| `_PyLong_Sign` | FAITHFUL (claimed) | med | cython/numpy | Bridge and foreign tag paths return normalized -1/0/1 without proxy layout reads. |
+| `_PyLong_Size_t_Converter` | FAITHFUL (claimed) | med | stdlib-C/argument-clinic | Shared strict unsigned converter; destination writes only on success. |
+| `_PyLong_UnsignedInt_Converter` | FAITHFUL (claimed) | med | stdlib-C/argument-clinic | Shared strict unsigned converter with target-specific overflow. |
+| `_PyLong_UnsignedLongLong_Converter` | FAITHFUL (claimed) | med | stdlib-C/argument-clinic | Shared strict unsigned converter with target-specific overflow. |
+| `_PyLong_UnsignedLong_Converter` | FAITHFUL (claimed) | med | stdlib-C/argument-clinic | Shared strict unsigned converter with target-specific overflow. |
+| `_PyLong_UnsignedShort_Converter` | FAITHFUL (claimed) | med | stdlib-C/argument-clinic | Shared strict unsigned converter with target-specific overflow. |
 | `_Py_FalseStruct` | ALIAS_NEEDED | med | stable-ABI / third-party C | As _Py_TrueStruct: alias _Py_FalseStruct -> Py_False. |
 | `_Py_TrueStruct` | ALIAS_NEEDED | med | stable-ABI / third-party C | CPython's canonical exported bool datum is _Py_TrueStruct (PyLongObject), Py_True==((PyObject*)&_Py_TrueStruct). Molt exports Py_True directly; consumers referencing _Py_TrueStruct won't resolve. Alias _Py_TrueStruct -> Py_True. |
 | `_Py_c_abs` | MISSING | med | cython complex / cmath / abs(complex) | Absent (hypot-based abs). |
@@ -503,7 +503,7 @@ This matrix is an **index over** the existing ledgers, not a new tracker. The ma
 | `PyObject_ClearWeakRefs` (STUB_THEATER); `PyType_Ready` add_methods fail-open method-drop | **POISON_ORPHAN_LEDGER.md** (#16, #2 — landed feb4c1ef01) | L8, L4 | **tracked** — L4/L8 reconcile with the poison ledger, do not re-file. |
 | SystemError/NULL fail-closed paths (`PyNumber_*` bridge-miss, vectorcall bare-NULL) | **PANIC_REACHABILITY_LEDGER.md** (panic-adjacent) | L2,L3 | **adjacent** — the fix removes the fail-closed path; coordinate wording. |
 | `_PyDict_GetItemStringWithError`, `_Py_ascii_whitespace`, allocators, datetime CAPI | **CLAIMS.md** DISCOVERY-FRONTIER-FIXES (LANDED) + B.1 | — | **already landed** — marked faithful here; excluded from lanes. |
-| `include/molt/Python.h` overlay-hosted divergent inlines (`PyLong_FromString`, `PyLong_AsSize_t`, `PyFloat_GetInfo` overlay routes) | orchestrator task **B1 / #73.2** (numpy-header-overlay custody) + **D1 / #10** (header-decl drift) | L4,L6,L7 | **coordinate** — the header work in these lanes must land *with* the overlay deletion, not fight it (M56). |
+| `include/molt/Python.h` overlay-hosted divergent inlines (`PyFloat_GetInfo` remains; the complete `PyLong_*` inline family is deleted) | orchestrator task **B1 / #73.2** (numpy-header-overlay custody) + **D1 / #10** (header-decl drift) | L4,L6,L7 | L7 integer APIs now have one external implementation authority in both headers; remaining non-integer overlay retirement stays coordinated with its owning lanes. |
 
 ### 4.1 Net-new in this matrix (not previously catalogued)
 

@@ -1126,6 +1126,7 @@ extern PyObject *PyLong_FromLongLong     (long long v);
 extern PyObject *PyLong_FromSsize_t      (Py_ssize_t v);
 extern PyObject *PyLong_FromSize_t       (size_t v);
 extern PyObject *PyLong_FromDouble       (double v);
+extern PyObject *PyLong_FromString       (const char *str, char **pend, int base);
 extern PyObject *PyLong_FromUnicodeObject(PyObject *u, int base);
 extern PyObject *PyLong_FromUnsignedLong (unsigned long v);
 extern PyObject *PyLong_FromUnsignedLongLong(unsigned long long v);
@@ -1137,6 +1138,7 @@ extern long long PyLong_AsLongLongAndOverflow(PyObject *op, int *overflow);
 extern int       PyLong_IsZero           (PyObject *op);
 extern double    PyLong_AsDouble         (PyObject *op);
 extern Py_ssize_t PyLong_AsSsize_t       (PyObject *op);
+extern size_t    PyLong_AsSize_t         (PyObject *op);
 extern unsigned long PyLong_AsUnsignedLong(PyObject *op);
 extern unsigned long long PyLong_AsUnsignedLongLong(PyObject *op);
 extern unsigned long PyLong_AsUnsignedLongMask(PyObject *op);
@@ -1150,8 +1152,18 @@ extern int       _PyLong_AsInt           (PyObject *op);
 extern int       PyLong_AsInt            (PyObject *op);
 extern PyObject *_PyLong_FromByteArray   (const unsigned char *bytes, size_t n, int little_endian, int is_signed);
 extern int       _PyLong_AsByteArray     (PyLongObject *v, unsigned char *bytes, size_t n, int little_endian, int is_signed);
+extern int       _PyLong_Sign            (PyObject *op);
+extern size_t    _PyLong_NumBits         (PyObject *op);
+extern int       PyUnstable_Long_IsCompact(const PyLongObject *op);
+extern Py_ssize_t PyUnstable_Long_CompactValue(const PyLongObject *op);
+extern int       _PyLong_Size_t_Converter(PyObject *op, void *out);
+extern int       _PyLong_UnsignedShort_Converter(PyObject *op, void *out);
+extern int       _PyLong_UnsignedInt_Converter(PyObject *op, void *out);
+extern int       _PyLong_UnsignedLong_Converter(PyObject *op, void *out);
+extern int       _PyLong_UnsignedLongLong_Converter(PyObject *op, void *out);
+extern PyObject *PyLong_GetInfo          (void);
 
-#define PyLong_CheckExact(op) PyLong_Check((PyObject *)(op))
+#define PyLong_CheckExact(op) Py_IS_TYPE((PyObject *)(op), &PyLong_Type)
 
 /* Float */
 extern PyObject *PyFloat_FromDouble (double v);
@@ -1169,7 +1181,7 @@ extern Py_complex  PyComplex_AsCComplex(PyObject *op);
 extern double      PyComplex_RealAsDouble(PyObject *op);
 extern double      PyComplex_ImagAsDouble(PyObject *op);
 extern int       PyComplex_Check    (PyObject *op);
-#define PyComplex_CheckExact(op) PyComplex_Check((PyObject *)(op))
+#define PyComplex_CheckExact(op) Py_IS_TYPE((PyObject *)(op), &PyComplex_Type)
 
 /* Bool */
 extern PyObject *PyBool_FromLong (long v);
@@ -1915,8 +1927,6 @@ extern int _PyArg_ParseTuple_SizeT(PyObject *args, const char *format, ...);
 extern int _PyArg_ParseTupleAndKeywords_SizeT(PyObject *args, PyObject *kwargs, const char *format, char **kwlist, ...);
 extern int _PyArg_VaParse_SizeT(PyObject *args, const char *format, va_list vargs);
 extern int _PyArg_VaParseTupleAndKeywords_SizeT(PyObject *args, PyObject *kwargs, const char *format, char **kwlist, va_list vargs);
-extern int _PyLong_Sign(PyObject *obj);
-
 /* Validate that every key of a keyword dict is a str. 1 = ok, 0 = TypeError. */
 static inline int PyArg_ValidateKeywordArguments(PyObject *kwargs) {
     Py_ssize_t pos = 0;

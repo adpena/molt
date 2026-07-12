@@ -22,7 +22,10 @@ use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 
 use crate::builtins::containers::{dict_len, dict_order, list_len, tuple_len};
-use crate::builtins::numbers::{int_bits_from_i64, int_bits_from_i128, to_bigint, to_i64};
+use crate::builtins::numbers::{
+    INT_BYTES_INVALID, bigint_from_bytes, bigint_num_bits, bigint_to_bytes, int_bits_from_bigint,
+    int_bits_from_i64, int_bits_from_i128, to_bigint, to_i64,
+};
 use crate::concurrency::gil::with_gil;
 use crate::concurrency::{GilGuard, GilReleaseGuard, gil_owned_by_current_thread};
 use crate::object::builders::{
@@ -196,6 +199,67 @@ unsafe extern "C" fn hook_int_as_u64_mask(bits: u64, width: u32, out: *mut u64) 
         unsafe { *out = masked };
         0
     })
+}
+
+unsafe extern "C" fn hook_int_from_bytes(
+    data: *const u8,
+    len: usize,
+    little_endian: c_int,
+    signed: c_int,
+) -> u64 {
+    if data.is_null() && len != 0 {
+        return 0;
+    }
+    let bytes = if len == 0 {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(data, len) }
+    };
+    let value = bigint_from_bytes(bytes, little_endian != 0, signed != 0);
+    with_gil(|_py| int_bits_from_bigint(&_py, value))
+}
+
+unsafe extern "C" fn hook_int_to_bytes(
+    bits: u64,
+    data: *mut u8,
+    len: usize,
+    little_endian: c_int,
+    signed: c_int,
+) -> c_int {
+    if data.is_null() && len != 0 {
+        return INT_BYTES_INVALID;
+    }
+    with_gil(|_py| {
+        let Some(value) = to_bigint(MoltObject::from_bits(bits)) else {
+            return INT_BYTES_INVALID;
+        };
+        let out = if len == 0 {
+            &mut [][..]
+        } else {
+            unsafe { std::slice::from_raw_parts_mut(data, len) }
+        };
+        bigint_to_bytes(&value, out, little_endian != 0, signed != 0)
+    })
+}
+
+unsafe extern "C" fn hook_int_num_bits(bits: u64, out: *mut usize) -> c_int {
+    if out.is_null() {
+        return -1;
+    }
+    with_gil(|_py| {
+        let Some(value) = to_bigint(MoltObject::from_bits(bits)) else {
+            return -1;
+        };
+        let Some(num_bits) = bigint_num_bits(&value) else {
+            return -1;
+        };
+        unsafe { *out = num_bits };
+        0
+    })
+}
+
+unsafe extern "C" fn hook_int_max_str_digits() -> usize {
+    with_gil(|_py| crate::builtins::sys_ext::current_int_max_str_digits(&_py))
 }
 
 unsafe extern "C" fn hook_alloc_list() -> u64 {
@@ -2366,6 +2430,10 @@ pub fn register_cpython_hooks() {
         int_as_i64_checked: hook_int_as_i64_checked,
         int_as_u64_checked: hook_int_as_u64_checked,
         int_as_u64_mask: hook_int_as_u64_mask,
+        int_from_bytes: hook_int_from_bytes,
+        int_to_bytes: hook_int_to_bytes,
+        int_num_bits: hook_int_num_bits,
+        int_max_str_digits: hook_int_max_str_digits,
         alloc_list: hook_alloc_list,
         list_append: hook_list_append,
         list_len: hook_list_len,
@@ -4054,6 +4122,78 @@ mod tests {
             assert_eq!(hook_tuple_item(int_bits, 0), 0);
             dec_ref_bits(&_py, bool_bits);
             dec_ref_bits(&_py, int_bits);
+        });
+    }
+
+    #[test]
+    fn integer_byte_and_bit_hooks_are_arbitrary_width_and_partial_fill_correct() {
+        let _guard = cpython_abi_test_guard();
+        register_cpython_hooks();
+
+        let mut source = [0u8; 17];
+        source[0] = 0xf0;
+        source[7] = 0x12;
+        source[16] = 0x01; // bit length 129
+        let bits = unsafe { hook_int_from_bytes(source.as_ptr(), source.len(), 1, 0) };
+        assert_ne!(bits, 0);
+        let mut num_bits = 0usize;
+        assert_eq!(unsafe { hook_int_num_bits(bits, &raw mut num_bits) }, 0);
+        assert_eq!(num_bits, 129);
+
+        let mut full = [0u8; 17];
+        assert_eq!(
+            unsafe { hook_int_to_bytes(bits, full.as_mut_ptr(), full.len(), 1, 0) },
+            crate::builtins::numbers::INT_BYTES_OK
+        );
+        assert_eq!(full, source);
+
+        let mut short = [0xaa; 8];
+        assert_eq!(
+            unsafe { hook_int_to_bytes(bits, short.as_mut_ptr(), short.len(), 1, 0) },
+            crate::builtins::numbers::INT_BYTES_OVERFLOW
+        );
+        assert_eq!(short, source[..8]);
+
+        let big_endian_source = [0x12, 0x34, 0x56];
+        let big_endian = unsafe {
+            hook_int_from_bytes(big_endian_source.as_ptr(), big_endian_source.len(), 0, 0)
+        };
+        let mut big_endian_short = [0xaa; 2];
+        assert_eq!(
+            unsafe {
+                hook_int_to_bytes(
+                    big_endian,
+                    big_endian_short.as_mut_ptr(),
+                    big_endian_short.len(),
+                    0,
+                    0,
+                )
+            },
+            crate::builtins::numbers::INT_BYTES_OVERFLOW
+        );
+        assert_eq!(
+            big_endian_short,
+            [0x34, 0x56],
+            "big-endian overflow writes the low bytes, not the MSB prefix"
+        );
+
+        let minus_129 = [0xff, 0x7f];
+        let negative = unsafe { hook_int_from_bytes(minus_129.as_ptr(), 2, 0, 1) };
+        let mut one = [0u8; 1];
+        assert_eq!(
+            unsafe { hook_int_to_bytes(negative, one.as_mut_ptr(), 1, 1, 1) },
+            crate::builtins::numbers::INT_BYTES_OVERFLOW
+        );
+        assert_eq!(one, [0x7f]);
+        assert_eq!(
+            unsafe { hook_int_to_bytes(negative, one.as_mut_ptr(), 1, 1, 0) },
+            crate::builtins::numbers::INT_BYTES_NEGATIVE_UNSIGNED
+        );
+
+        with_gil(|_py| {
+            dec_ref_bits(&_py, bits);
+            dec_ref_bits(&_py, big_endian);
+            dec_ref_bits(&_py, negative);
         });
     }
 

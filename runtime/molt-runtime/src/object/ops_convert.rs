@@ -10,6 +10,7 @@ use crate::object::ops::{as_float_extended, float_result_bits, is_float_extended
 use crate::object::ops_format::{format_bytes, format_string_repr_bytes};
 use crate::*;
 use molt_obj_model::MoltObject;
+use molt_obj_model::int_literal::{IntLiteralErrorKind, scan_int_literal_with_limit};
 use num_bigint::BigInt;
 use num_integer::Integer;
 use num_traits::{Signed, ToPrimitive, Zero};
@@ -340,70 +341,47 @@ fn parse_complex_from_str(text: &str) -> Result<ComplexParts, ()> {
     Ok(ComplexParts { re: real, im: 0.0 })
 }
 
-fn parse_int_from_str(text: &str, base: i64) -> Result<(BigInt, i64), ()> {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return Err(());
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ParseIntError {
+    Invalid,
+    TooManyDigits { limit: usize, digits: usize },
+}
+
+fn parse_int_from_str(
+    text: &str,
+    base: i64,
+    max_str_digits: usize,
+) -> Result<(BigInt, i64), ParseIntError> {
+    let base_arg = i32::try_from(base).map_err(|_| ParseIntError::Invalid)?;
+    let scanned = scan_int_literal_with_limit(text.as_bytes(), base_arg, max_str_digits).map_err(
+        |error| match error.kind {
+            IntLiteralErrorKind::TooManyDigits => ParseIntError::TooManyDigits {
+                limit: max_str_digits,
+                digits: error.offset,
+            },
+            IntLiteralErrorKind::InvalidBase | IntLiteralErrorKind::InvalidLiteral => {
+                ParseIntError::Invalid
+            }
+        },
+    )?;
+    let radix = BigInt::from(scanned.base);
+    let mut parsed = BigInt::zero();
+    for digit in scanned.digits {
+        parsed = parsed * &radix + BigInt::from(digit);
     }
-    let mut sign = 1i32;
-    let mut digits = trimmed;
-    if let Some(rest) = digits.strip_prefix('+') {
-        digits = rest;
-    } else if let Some(rest) = digits.strip_prefix('-') {
-        digits = rest;
-        sign = -1;
+    if scanned.negative {
+        parsed = -parsed;
     }
-    let mut base_val = base;
-    if base_val == 0 {
-        if let Some(rest) = digits
-            .strip_prefix("0x")
-            .or_else(|| digits.strip_prefix("0X"))
-        {
-            base_val = 16;
-            digits = rest;
-        } else if let Some(rest) = digits
-            .strip_prefix("0o")
-            .or_else(|| digits.strip_prefix("0O"))
-        {
-            base_val = 8;
-            digits = rest;
-        } else if let Some(rest) = digits
-            .strip_prefix("0b")
-            .or_else(|| digits.strip_prefix("0B"))
-        {
-            base_val = 2;
-            digits = rest;
-        } else {
-            base_val = 10;
-        }
-    } else if base_val == 16 {
-        if let Some(rest) = digits
-            .strip_prefix("0x")
-            .or_else(|| digits.strip_prefix("0X"))
-        {
-            digits = rest;
-        }
-    } else if base_val == 8 {
-        if let Some(rest) = digits
-            .strip_prefix("0o")
-            .or_else(|| digits.strip_prefix("0O"))
-        {
-            digits = rest;
-        }
-    } else if base_val == 2
-        && let Some(rest) = digits
-            .strip_prefix("0b")
-            .or_else(|| digits.strip_prefix("0B"))
-    {
-        digits = rest;
-    }
-    let digits = digits.replace('_', "");
-    if digits.is_empty() {
-        return Err(());
-    }
-    let parsed = BigInt::parse_bytes(digits.as_bytes(), base_val as u32).ok_or(())?;
-    let parsed = if sign < 0 { -parsed } else { parsed };
-    Ok((parsed, base_val))
+    Ok((parsed, i64::from(scanned.base)))
+}
+
+fn int_digit_limit_message(error: ParseIntError) -> Option<String> {
+    let ParseIntError::TooManyDigits { limit, digits } = error else {
+        return None;
+    };
+    Some(format!(
+        "Exceeds the limit ({limit} digits) for integer string conversion: value has {digits} digits; use sys.set_int_max_str_digits() to increase the limit"
+    ))
 }
 
 #[inline(always)]
@@ -482,9 +460,16 @@ pub unsafe extern "C" fn molt_bigint_from_str(ptr: *const u8, len_bits: u64) -> 
             let bits = if let Some(i) = parse_simple_ascii_decimal_i64(text) {
                 int_bits_from_i64(_py, i)
             } else {
-                let (parsed, _base_used) = match parse_int_from_str(text, 10) {
+                let (parsed, _base_used) = match parse_int_from_str(
+                    text,
+                    10,
+                    crate::builtins::sys_ext::current_int_max_str_digits(_py),
+                ) {
                     Ok(val) => val,
-                    Err(_) => {
+                    Err(error) => {
+                        if let Some(message) = int_digit_limit_message(error) {
+                            return raise_exception::<_>(_py, "ValueError", &message);
+                        }
                         return raise_exception::<_>(
                             _py,
                             "ValueError",
@@ -1680,9 +1665,18 @@ pub extern "C" fn molt_int_from_obj(val_bits: u64, base_bits: u64, has_base_bits
                     {
                         return int_bits_from_i64(_py, i);
                     }
-                    let (parsed, _base_used) = match parse_int_from_str(text, base) {
+                    let (parsed, _base_used) = match parse_int_from_str(
+                        text,
+                        base,
+                        crate::builtins::sys_ext::current_int_max_str_digits(_py),
+                    ) {
                         Ok(val) => val,
-                        Err(_) => return invalid_literal(base, text),
+                        Err(error) => {
+                            if let Some(message) = int_digit_limit_message(error) {
+                                return raise_exception::<_>(_py, "ValueError", &message);
+                            }
+                            return invalid_literal(base, text);
+                        }
                     };
                     if let Some(i) = bigint_to_inline(&parsed) {
                         return MoltObject::from_int(i).bits();
@@ -1699,9 +1693,18 @@ pub extern "C" fn molt_int_from_obj(val_bits: u64, base_bits: u64, has_base_bits
                     {
                         return int_bits_from_i64(_py, i);
                     }
-                    let (parsed, _base_used) = match parse_int_from_str(&text, base) {
+                    let (parsed, _base_used) = match parse_int_from_str(
+                        &text,
+                        base,
+                        crate::builtins::sys_ext::current_int_max_str_digits(_py),
+                    ) {
                         Ok(val) => val,
-                        Err(_) => return invalid_literal(base, &format!("b'{text}'")),
+                        Err(error) => {
+                            if let Some(message) = int_digit_limit_message(error) {
+                                return raise_exception::<_>(_py, "ValueError", &message);
+                            }
+                            return invalid_literal(base, &format!("b'{text}'"));
+                        }
                     };
                     if let Some(i) = bigint_to_inline(&parsed) {
                         return MoltObject::from_int(i).bits();
@@ -1833,9 +1836,16 @@ pub extern "C" fn molt_string_split_field_to_int(
             if let Some(i) = parse_simple_ascii_decimal_i64(field) {
                 return int_bits_from_i64(_py, i);
             }
-            let (parsed, _base_used) = match parse_int_from_str(field, 10) {
+            let (parsed, _base_used) = match parse_int_from_str(
+                field,
+                10,
+                crate::builtins::sys_ext::current_int_max_str_digits(_py),
+            ) {
                 Ok(val) => val,
-                Err(_) => {
+                Err(error) => {
+                    if let Some(message) = int_digit_limit_message(error) {
+                        return raise_exception::<_>(_py, "ValueError", &message);
+                    }
                     let msg = format!("invalid literal for int() with base 10: '{field}'");
                     return raise_exception::<_>(_py, "ValueError", &msg);
                 }
@@ -2050,4 +2060,28 @@ pub(crate) fn maybe_emit_runtime_feedback_file(payload: &serde_json::Value) {
         return;
     }
     eprintln!("molt_runtime_feedback_file {}", path.display());
+}
+
+#[cfg(test)]
+mod int_literal_tests {
+    use super::parse_int_from_str;
+    use num_bigint::BigInt;
+
+    #[test]
+    fn integer_runtime_parser_consumes_shared_cpython_lexical_authority() {
+        assert_eq!(
+            parse_int_from_str("  -0x_FF  ", 0, 4300),
+            Ok((BigInt::from(-255), 16))
+        );
+        assert_eq!(
+            parse_int_from_str("1208925819614629174706176", 10, 4300),
+            Ok((BigInt::from(1u8) << 80, 10))
+        );
+        assert!(parse_int_from_str("010", 0, 4300).is_err());
+        assert!(parse_int_from_str("1__2", 10, 4300).is_err());
+        assert!(parse_int_from_str("123 junk", 10, 4300).is_err());
+        assert!(parse_int_from_str("0x_FF", 16, 4300).is_ok());
+        assert!(parse_int_from_str(&"9".repeat(4301), 10, 4300).is_err());
+        assert!(parse_int_from_str(&format!("0b1{}", "0".repeat(5000)), 0, 4300).is_ok());
+    }
 }

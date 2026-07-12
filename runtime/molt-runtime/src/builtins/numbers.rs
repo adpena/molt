@@ -4,8 +4,8 @@ use std::mem;
 use std::sync::atomic::Ordering as AtomicOrdering;
 
 use molt_obj_model::MoltObject;
-use num_bigint::BigInt;
-use num_traits::{Signed, ToPrimitive};
+use num_bigint::{BigInt, Sign};
+use num_traits::{Signed, ToPrimitive, Zero};
 
 use crate::object::ops::{as_float_extended, is_float_extended};
 use crate::{
@@ -244,6 +244,86 @@ pub(crate) fn to_bigint(obj: MoltObject) -> Option<BigInt> {
         }
     }
     None
+}
+
+pub(crate) const INT_BYTES_OK: i32 = 0;
+pub(crate) const INT_BYTES_OVERFLOW: i32 = 1;
+pub(crate) const INT_BYTES_NEGATIVE_UNSIGNED: i32 = 2;
+pub(crate) const INT_BYTES_INVALID: i32 = -1;
+
+/// Shared arbitrary-width two's-complement decoder for Python `int.from_bytes`
+/// and the CPython ABI `_PyLong_FromByteArray` hook.
+pub(crate) fn bigint_from_bytes(data: &[u8], little_endian: bool, signed: bool) -> BigInt {
+    match (little_endian, signed) {
+        (true, true) => BigInt::from_signed_bytes_le(data),
+        (false, true) => BigInt::from_signed_bytes_be(data),
+        (true, false) => BigInt::from_bytes_le(Sign::Plus, data),
+        (false, false) => BigInt::from_bytes_be(Sign::Plus, data),
+    }
+}
+
+/// Shared arbitrary-width fixed-width encoder.
+///
+/// On magnitude overflow the low `out.len()` bytes are still written before
+/// `INT_BYTES_OVERFLOW` is returned, matching `_PyLong_AsByteArray`.
+pub(crate) fn bigint_to_bytes(
+    value: &BigInt,
+    out: &mut [u8],
+    little_endian: bool,
+    signed: bool,
+) -> i32 {
+    if !signed && value.sign() == Sign::Minus {
+        return INT_BYTES_NEGATIVE_UNSIGNED;
+    }
+
+    let width = out.len().saturating_mul(8);
+    if !out.is_empty() {
+        let modulus = BigInt::from(1u8) << width;
+        let wrapped = ((value % &modulus) + &modulus) % &modulus;
+        let (_, mut bytes) = if little_endian {
+            wrapped.to_bytes_le()
+        } else {
+            wrapped.to_bytes_be()
+        };
+        if bytes.len() < out.len() {
+            let pad = out.len() - bytes.len();
+            if little_endian {
+                bytes.resize(out.len(), 0);
+            } else {
+                let mut padded = vec![0; pad];
+                padded.extend_from_slice(&bytes);
+                bytes = padded;
+            }
+        }
+        let start = if little_endian {
+            0
+        } else {
+            bytes.len().saturating_sub(out.len())
+        };
+        out.copy_from_slice(&bytes[start..start + out.len()]);
+    }
+
+    let fits = if signed {
+        if width == 0 {
+            value.is_zero()
+        } else {
+            let limit = BigInt::from(1u8) << (width - 1);
+            value >= &(-&limit) && value < &limit
+        }
+    } else if width == 0 {
+        value.is_zero()
+    } else {
+        value < &(BigInt::from(1u8) << width)
+    };
+    if fits {
+        INT_BYTES_OK
+    } else {
+        INT_BYTES_OVERFLOW
+    }
+}
+
+pub(crate) fn bigint_num_bits(value: &BigInt) -> Option<usize> {
+    usize::try_from(value.bits()).ok()
 }
 
 pub(crate) fn bigint_to_inline(value: &BigInt) -> Option<i64> {

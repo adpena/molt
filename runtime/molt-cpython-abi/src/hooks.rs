@@ -14,6 +14,11 @@
 
 use std::sync::OnceLock;
 
+pub const INT_BYTES_OK: std::os::raw::c_int = 0;
+pub const INT_BYTES_OVERFLOW: std::os::raw::c_int = 1;
+pub const INT_BYTES_NEGATIVE_UNSIGNED: std::os::raw::c_int = 2;
+pub const INT_BYTES_INVALID: std::os::raw::c_int = -1;
+
 pub const MOLT_BUFFER_MAX_NDIM: usize = 64;
 pub const MOLT_BUFFER_FORMAT_CAP: usize = 16;
 
@@ -84,6 +89,26 @@ pub struct RuntimeHooks {
     /// Return the low `width` bits of an int-compatible object. Returns 0 on success.
     pub int_as_u64_mask:
         unsafe extern "C" fn(bits: u64, width: u32, out: *mut u64) -> std::os::raw::c_int,
+    /// Allocate an arbitrary-width int from a fixed-width byte string.
+    pub int_from_bytes: unsafe extern "C" fn(
+        data: *const u8,
+        len: usize,
+        little_endian: std::os::raw::c_int,
+        signed: std::os::raw::c_int,
+    ) -> u64,
+    /// Encode an arbitrary-width int. Returns `INT_BYTES_*`; overflow still
+    /// fills the output with the low bytes.
+    pub int_to_bytes: unsafe extern "C" fn(
+        bits: u64,
+        data: *mut u8,
+        len: usize,
+        little_endian: std::os::raw::c_int,
+        signed: std::os::raw::c_int,
+    ) -> std::os::raw::c_int,
+    /// Absolute bit length. Returns 0 on success, -1 on invalid input.
+    pub int_num_bits: unsafe extern "C" fn(bits: u64, out: *mut usize) -> std::os::raw::c_int,
+    /// Current `sys.get_int_max_str_digits()` authority; zero disables it.
+    pub int_max_str_digits: unsafe extern "C" fn() -> usize,
     /// Allocate an empty list. Returns handle bits.
     pub alloc_list: unsafe extern "C" fn() -> u64,
     /// Append `item_bits` to the list at `list_bits`.
@@ -467,6 +492,33 @@ unsafe extern "C" fn stub_int_as_u64_mask(
 ) -> std::os::raw::c_int {
     -1
 }
+
+unsafe extern "C" fn stub_int_from_bytes(
+    _data: *const u8,
+    _len: usize,
+    _little_endian: std::os::raw::c_int,
+    _signed: std::os::raw::c_int,
+) -> u64 {
+    0
+}
+
+unsafe extern "C" fn stub_int_to_bytes(
+    _bits: u64,
+    _data: *mut u8,
+    _len: usize,
+    _little_endian: std::os::raw::c_int,
+    _signed: std::os::raw::c_int,
+) -> std::os::raw::c_int {
+    INT_BYTES_INVALID
+}
+
+unsafe extern "C" fn stub_int_num_bits(_bits: u64, _out: *mut usize) -> std::os::raw::c_int {
+    -1
+}
+
+unsafe extern "C" fn stub_int_max_str_digits() -> usize {
+    4300
+}
 unsafe extern "C" fn stub_alloc_list() -> u64 {
     0
 }
@@ -740,6 +792,10 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     int_as_i64_checked: stub_int_as_i64_checked,
     int_as_u64_checked: stub_int_as_u64_checked,
     int_as_u64_mask: stub_int_as_u64_mask,
+    int_from_bytes: stub_int_from_bytes,
+    int_to_bytes: stub_int_to_bytes,
+    int_num_bits: stub_int_num_bits,
+    int_max_str_digits: stub_int_max_str_digits,
     alloc_list: stub_alloc_list,
     list_append: stub_list_append,
     list_len: stub_list_len,

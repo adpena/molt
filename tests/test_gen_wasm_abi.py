@@ -73,6 +73,17 @@ def test_wasm_abi_generator_cache_identity_uses_runtime_abi_surface() -> None:
         "PyMemoryView_FromMemory",
         "Py_None",
         "molt_cpython_abi_date_from_date",
+        "PyLong_FromString",
+        "PyLong_AsSize_t",
+        "PyUnstable_Long_IsCompact",
+        "PyUnstable_Long_CompactValue",
+        "_PyLong_NumBits",
+        "_PyLong_Size_t_Converter",
+        "_PyLong_UnsignedShort_Converter",
+        "_PyLong_UnsignedInt_Converter",
+        "_PyLong_UnsignedLong_Converter",
+        "_PyLong_UnsignedLongLong_Converter",
+        "PyLong_GetInfo",
     } <= set(cpython_abi_imports)
 
 

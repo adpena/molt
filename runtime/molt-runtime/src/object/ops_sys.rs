@@ -2,6 +2,9 @@
 // Split from ops.rs for compilation-unit size reduction.
 
 use crate::audit::{AuditArgs, audit_capability_decision};
+use crate::builtins::numbers::{
+    INT_BYTES_NEGATIVE_UNSIGNED, INT_BYTES_OK, bigint_from_bytes, bigint_to_bytes,
+};
 use crate::object::ops::{range_components_bigint, range_len_bigint};
 use crate::object::ops_string::{
     push_wtf8_codepoint, utf8_codepoint_count_cached, wtf8_codepoint_at,
@@ -9,7 +12,7 @@ use crate::object::ops_string::{
 use crate::state::runtime_state::PythonVersionInfo;
 use crate::*;
 use molt_obj_model::MoltObject;
-use num_bigint::{BigInt, Sign};
+use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive, Zero};
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -3054,33 +3057,17 @@ pub extern "C" fn molt_int_to_bytes(
             );
             return raise_exception::<_>(_py, "TypeError", &msg);
         };
-        if !signed && value.sign() == Sign::Minus {
+        let mut bytes = vec![0; len];
+        let status = bigint_to_bytes(&value, &mut bytes, is_little, signed);
+        if status == INT_BYTES_NEGATIVE_UNSIGNED {
             return raise_exception::<_>(
                 _py,
                 "OverflowError",
                 "can't convert negative int to unsigned",
             );
         }
-        let mut bytes = if signed {
-            value.to_signed_bytes_be()
-        } else {
-            value.to_bytes_be().1
-        };
-        if bytes.len() > len {
+        if status != INT_BYTES_OK {
             return raise_exception::<_>(_py, "OverflowError", "int too big to convert");
-        }
-        if bytes.len() < len {
-            let pad = if signed && value.sign() == Sign::Minus {
-                0xFF
-            } else {
-                0x00
-            };
-            let mut out = vec![pad; len - bytes.len()];
-            out.extend_from_slice(&bytes);
-            bytes = out;
-        }
-        if is_little {
-            bytes.reverse();
         }
         let ptr = alloc_bytes(_py, &bytes);
         if ptr.is_null() {
@@ -3132,15 +3119,7 @@ pub extern "C" fn molt_int_from_bytes(
             let msg = format!("cannot convert '{}' object to bytes", type_name);
             return raise_exception::<_>(_py, "TypeError", &msg);
         };
-        let mut bytes = slice.to_vec();
-        if is_little {
-            bytes.reverse();
-        }
-        let value = if signed {
-            BigInt::from_signed_bytes_be(&bytes)
-        } else {
-            BigInt::from_bytes_be(Sign::Plus, &bytes)
-        };
+        let value = bigint_from_bytes(slice, is_little, signed);
         let int_bits = int_bits_from_bigint(_py, value);
         let builtins = builtin_classes(_py);
         if class_bits == builtins.int {
