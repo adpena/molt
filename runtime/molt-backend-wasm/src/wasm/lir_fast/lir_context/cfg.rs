@@ -2,7 +2,7 @@ use molt_tir::tir::blocks::BlockId;
 use molt_tir::tir::lir::{LirFunction, LirTerminator};
 use std::collections::HashMap;
 
-pub(super) fn compute_lir_rpo(func: &LirFunction) -> Vec<BlockId> {
+pub(in crate::wasm::lir_fast) fn compute_lir_rpo(func: &LirFunction) -> Vec<BlockId> {
     let mut visited = HashMap::new();
     let mut order = Vec::new();
     rpo_visit_lir(func, func.entry_block, &mut visited, &mut order);
@@ -28,7 +28,7 @@ fn rpo_visit_lir(
     order.push(block_id);
 }
 
-pub(super) fn lir_terminator_successors(term: &LirTerminator) -> Vec<BlockId> {
+pub(in crate::wasm::lir_fast) fn lir_terminator_successors(term: &LirTerminator) -> Vec<BlockId> {
     match term {
         LirTerminator::Branch { target, .. } => vec![*target],
         LirTerminator::CondBranch {

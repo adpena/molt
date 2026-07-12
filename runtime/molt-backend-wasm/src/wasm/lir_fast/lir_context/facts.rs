@@ -6,23 +6,25 @@ use molt_tir::tir::values::ValueId;
 use std::collections::HashSet;
 
 impl LirLowerCtx<'_> {
-    pub(super) fn repr_of(&self, vid: ValueId) -> LirRepr {
+    pub(in crate::wasm::lir_fast) fn repr_of(&self, vid: ValueId) -> LirRepr {
         self.value_reprs
             .get(&vid)
             .copied()
             .unwrap_or(LirRepr::DynBox)
     }
 
-    pub(super) fn type_of(&self, vid: ValueId) -> Option<&TirType> {
+    pub(in crate::wasm::lir_fast) fn type_of(&self, vid: ValueId) -> Option<&TirType> {
         self.value_types.get(&vid)
     }
 
-    pub(super) fn has_flat_list_int_storage(&self, vid: ValueId) -> bool {
+    pub(in crate::wasm::lir_fast) fn has_flat_list_int_storage(&self, vid: ValueId) -> bool {
         self.flat_list_int_values.contains(&vid)
     }
 }
 
-pub(super) fn compute_lir_flat_list_int_values(func: &LirFunction) -> HashSet<ValueId> {
+pub(in crate::wasm::lir_fast) fn compute_lir_flat_list_int_values(
+    func: &LirFunction,
+) -> HashSet<ValueId> {
     let mut facts = HashSet::new();
     let mut changed = true;
     while changed {

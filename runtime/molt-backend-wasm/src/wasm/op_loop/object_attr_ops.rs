@@ -10,7 +10,7 @@ mod attribute_ops;
 mod class_ops;
 #[path = "object_attr_ops/dataclass_ops.rs"]
 mod dataclass_ops;
-#[path = "object_attr_ops/method_ops.rs"]
+#[path = "object_attr_ops/method_ops/mod.rs"]
 mod method_ops;
 
 pub(super) fn emit_object_attr_op(
