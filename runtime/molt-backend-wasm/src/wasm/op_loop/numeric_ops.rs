@@ -9,13 +9,13 @@ use wasm_encoder::Function;
 
 #[path = "numeric_ops/additive_ops.rs"]
 mod additive_ops;
-#[path = "numeric_ops/bitwise_ops.rs"]
+#[path = "numeric_ops/bitwise_ops/mod.rs"]
 mod bitwise_ops;
-#[path = "numeric_ops/common.rs"]
+#[path = "numeric_ops/common/mod.rs"]
 mod common;
 #[path = "numeric_ops/comparison_ops.rs"]
 mod comparison_ops;
-#[path = "numeric_ops/division_ops.rs"]
+#[path = "numeric_ops/division_ops/mod.rs"]
 mod division_ops;
 #[path = "numeric_ops/vector_reduction_ops.rs"]
 mod vector_reduction_ops;
