@@ -1,4 +1,4 @@
-use super::super::*;
+use super::*;
 
 #[test]
 fn wasm_compiles_exception_stack_depth_bookkeeping_family() {

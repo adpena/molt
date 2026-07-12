@@ -1,4 +1,4 @@
-use super::*;
+use super::support::*;
 
 #[test]
 fn call_indirect_exports_follow_manifest_imports() {

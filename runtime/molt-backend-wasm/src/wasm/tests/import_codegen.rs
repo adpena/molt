@@ -1,4 +1,4 @@
-use super::*;
+use super::support::*;
 
 #[test]
 fn object_new_bound_import_demand_and_codegen_follow_payload_selector() {
