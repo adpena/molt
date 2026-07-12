@@ -21,6 +21,7 @@ from wasm_link_format import (
     _INTERNAL_OUTPUT_EXPORT_PREFIXES,
     _OUTPUT_EXPORT_ALIAS_PREFIX,
     _OUTPUT_RUNTIME_EXPORT_ALIASES,
+    _STANDARD_SECTION_ORDER,
     _append_linking_function_symbols,
     _build_call_graph,
     _build_custom_section,
@@ -52,22 +53,6 @@ from wasm_link_format import (
 )
 from molt._wasm_runtime_exports import wasm_split_runtime_export_name_for_import
 
-
-_STANDARD_SECTION_ORDER = {
-    1: 1,  # type
-    2: 2,  # import
-    3: 3,  # function
-    4: 4,  # table
-    5: 5,  # memory
-    13: 6,  # tag
-    6: 7,  # global
-    7: 8,  # export
-    8: 9,  # start
-    9: 10,  # element
-    12: 11,  # data count
-    10: 12,  # code
-    11: 13,  # data
-}
 
 _CPYTHON_ABI_LINK_IMPORT_CLASS = "molt_cpython_abi_link_import"
 _SYMBOL_KIND_DATA = 1
