@@ -7,10 +7,10 @@ mod native_objects;
 mod output_paths;
 mod shared_stdlib;
 
-use super::backend_output::run_luau_tir_module_pipeline;
+use super::run_luau_tir_module_pipeline;
 #[cfg(feature = "rust-backend")]
-use super::backend_output::rust_source_for_ir;
-use super::backend_request::validate_fact_graph_cli_contract;
+use super::rust_source_for_ir;
+use super::validate_fact_graph_cli_contract;
 use super::{
     BACKEND_DAEMON_PROTOCOL_VERSION, BackendOutputKind, DEFAULT_BACKEND_BATCH_OP_BUDGET,
     DEFAULT_BACKEND_BATCH_SIZE, DEFAULT_STDLIB_BATCH_SIZE, DaemonCache, DaemonJobRequest,
