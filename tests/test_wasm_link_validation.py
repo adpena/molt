@@ -5058,6 +5058,8 @@ def test_append_table_ref_elements_uses_export_names_without_name_section() -> N
     assert updated is not None
     ok, err = wasm_link._validate_elements(updated)
     assert ok, err
+    section_ids = [section_id for section_id, _payload in wasm_link._parse_sections(updated)]
+    assert section_ids.index(9) < section_ids.index(10)
 
     element_section = next(
         payload
