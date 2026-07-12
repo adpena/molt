@@ -629,6 +629,7 @@ class _BuildDiagnosticsContext:
     binary_image_closure: Mapping[str, Any] | None
     binary_image_analysis: Mapping[str, Any] | None
     module_graph: Mapping[str, Path]
+    module_graph_operation_counts: Mapping[str, int]
     module_reasons: Mapping[str, set[str]]
     frontend_module_timings: Sequence[dict[str, Any]]
     allocation_diagnostics_enabled: bool
@@ -1437,6 +1438,7 @@ class _ImportPlan:
     stdlib_root: Path
     module_resolution_cache: "_ModuleResolutionCache"
     module_graph: Mapping[str, Path]
+    module_graph_operation_counts: Mapping[str, int]
     explicit_imports: frozenset[str]
     runtime_import_dispatch_roots: frozenset[str]
     stub_parents: frozenset[str]
@@ -1476,6 +1478,7 @@ class _ImportPlan:
             stdlib_root=self.stdlib_root,
             module_resolution_cache=self.module_resolution_cache,
             module_graph=self.module_graph,
+            module_graph_operation_counts=self.module_graph_operation_counts,
             explicit_imports=self.explicit_imports,
             runtime_import_dispatch_roots=self.runtime_import_dispatch_roots,
             stub_parents=self.stub_parents,

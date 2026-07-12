@@ -1106,6 +1106,9 @@ def _build_build_diagnostics_payload(
         "total_sec": total_sec,
         "phase_sec": phase_sec,
         "module_count": len(diagnostics_context.module_graph),
+        "module_graph_operation_counts": dict(
+            sorted(diagnostics_context.module_graph_operation_counts.items())
+        ),
         "module_reason_summary": _build_reason_summary(
             diagnostics_context.module_reasons
         ),

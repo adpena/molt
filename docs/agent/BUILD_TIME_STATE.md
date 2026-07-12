@@ -4,13 +4,25 @@
 
 | Rank | Rung | Live evidence | Gain / validation cost | Status |
 |---:|---|---|---|---|
-| 1 | Frontend lowering cache admission | R9 measured 0/145 -> 145/145 hits and 199.140s -> 0.000s re-lowered | Very high / medium | BUILD-TIME-R9 COMPLETE |
-| 2 | Runtime-wasm cache-first combined-build ordering | Original 319.6s -> 259.8s signal did not reproduce after origin/main advanced | Marginal / medium | BUILD-TIME-R6 DROPPED |
-| 3 | Import-strip / split restoration frontier | Every sample reaches linked validation after app/runtime generation | Correctness blocker / separate owner | OBSERVED |
-| 4 | Runtime crate split for true source misses | Current-origin fingerprint population sample was 576.5s | Medium / high | OPEN |
-| 5 | R73.3 provisioned extension archives | Cold ecosystem cross-compile remains outside warm iteration floor | Very high / very high | OPEN |
+| 1 | Native-support import-scan reuse | R10 measured 91 -> 0 warm source parses and 91/91 persisted import-scan hits | High / medium | BUILD-TIME-R10 COMPLETE |
+| 2 | Frontend lowering cache admission | R9 measured 0/145 -> 145/145 hits and 199.140s -> 0.000s re-lowered | Very high / medium | BUILD-TIME-R9 COMPLETE |
+| 3 | Runtime-wasm cache-first combined-build ordering | Original 319.6s -> 259.8s signal did not reproduce after origin/main advanced | Marginal / medium | BUILD-TIME-R6 DROPPED |
+| 4 | Import-strip / split restoration frontier | Every sample reaches linked validation after app/runtime generation | Correctness blocker / separate owner | OBSERVED |
+| 5 | Runtime crate split for true source misses | Current-origin fingerprint population sample was 576.5s | Medium / high | OPEN |
+| 6 | R73.3 provisioned extension archives | Cold ecosystem cross-compile remains outside warm iteration floor | Very high / very high | OPEN |
 
 ## Iteration Log
+
+### BUILD-TIME-R10 - native-support import-scan reuse
+
+- Warm re-attribution row `20260712T063806-pact-witness-acceptance-2360b9d2baf44bb6` confirmed module graph as the dominant leaf phase: 263.006s / 40.78%, ahead of wasm link at 163.084s / 25.29%; frontend lowering remained 145/145 cache hits.
+- Root cause: native extension support-source closure supplied precomputed imports by reparsing all 91 no-prune support files on every build, bypassing the existing persisted import-scan authority. This made warm graph discovery O(total support-source bytes) instead of O(91 metadata/content validations).
+- Fix: one native-support slice authority now owns import extraction and optional pruned-source materialization. No-root support sources read/write the canonical persisted import-scan cache; the superseded unconditional warm AST parse lane is deleted. Build diagnostics publish machine-checkable iteration, request, persisted-hit/miss, parse, and prune counts.
+- Population row `20260712T073638-pact-witness-acceptance-44c58a69249a47cb`: 91 persisted misses and 91 source parses, intentionally excluded. Warm rows `20260712T074833-pact-witness-acceptance-742721a8653d451a`, `20260712T075533-pact-witness-acceptance-7c5831db86444ef9`, and `20260712T080220-pact-witness-acceptance-752925bc516542c4`: each records 91/91 persisted hits and zero native-support source parses.
+- Module-graph seconds were 235.949s, 227.895s, and 235.695s (median 235.695s), versus the current-tree warm baseline 263.006s: -27.311s / -10.38%. Total warm seconds were 411.547s, 397.993s, and 411.716s (median 411.547s); relative phase share rose because other warm phases contracted more, so the operation counts and phase seconds are the primary claim.
+- Artifact identity held across baseline and all three warm rows: `output.wasm` SHA-256 `9e37e67cbc91be7bd60088d1b56be13922eeee8eced67b30d6a7eddd5359847c`; `app.wasm` SHA-256 `338e7f89685500f1c8921ae71c2fa5a3d576ce3921b8fa5389715e8df3562382`. Every row reached the same known `RuntimeError: unreachable` witness frontier.
+- Focused proof: 18 import-collection/build-diagnostics tests passed. Gates: fail_closed_gate, check_table_drift, gen_wasm_abi --check, NumPy 2.5.1 seal verification, artifact_poison_gate, and determinism_perf_gate passed. The held-bench scoreboard correctly refused the dirty pre-commit candidate; authoritative clean-main receipt is recorded after landing.
+- Next prize: split-runtime processing / wasm link now dominates the remaining non-graph warm floor; profile split-runtime app/runtime validation and binary rewrites by operation count before selecting R11.
 
 ### BUILD-TIME-R9 - effective frontend lowering cache admission
 
@@ -53,6 +65,6 @@
 
 ## Next Actions
 
-1. Attack the now-dominant warm module-graph phase (228.06s / 74.02% in the R9 warm attribution) through one content-addressed graph authority.
-2. Preserve R8's share-of-total schema and R9's warm-pair cache-effect gate for every future build-time landing; use absolute cohorts only on a quiescent host.
-3. Preserve the 331.6s current-origin baseline cohort as the absolute comparison authority unless origin/main or toolchain fingerprints change.
+1. Re-attribute the clean landed tree and profile split-runtime processing / wasm link by operation count; it is the next structural prize after R10 removed warm support-source parsing.
+2. Preserve R8's share-of-total schema, R9's warm-pair cache-effect gate, and R10's module-graph operation counts for every future build-time landing.
+3. Preserve the 331.6s historical current-origin cohort only as pre-R9 archaeology; current absolute comparisons require a same-fingerprint warm cohort.
