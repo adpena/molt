@@ -73,8 +73,8 @@ pub unsafe extern "C" fn PyList_Append(list: *mut PyObject, item: *mut PyObject)
         return -1;
     }
     let bridge = &*GLOBAL_BRIDGE;
-    let list_bits = match bridge.molt_handle_for_pyobj(list) {
-        Some(b) => b,
+    let list_bits = match resolve_native_list(list) {
+        Some(bits) => bits,
         None => {
             unsafe { crate::api::errors::PyErr_BadInternalCall() };
             return -1;
@@ -107,7 +107,7 @@ pub unsafe extern "C" fn PyList_Append(list: *mut PyObject, item: *mut PyObject)
         },
     };
     let h = hooks_or_stubs();
-    unsafe { (h.list_append)(list_bits.bits(), item_bits) };
+    unsafe { (h.list_append)(list_bits, item_bits) };
     // CPython contract: `PyList_Append` takes its own strong reference to the
     // item (it does not steal). Anchor the item proxy so the extension's
     // balancing `Py_DECREF` cannot sever the pointer↔handle mapping while the
