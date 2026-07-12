@@ -26,6 +26,22 @@ WASM_MAGIC = b"\x00asm"
 
 WASM_VERSION = b"\x01\x00\x00\x00"
 
+_STANDARD_SECTION_ORDER = {
+    1: 1,
+    2: 2,
+    3: 3,
+    4: 4,
+    5: 5,
+    13: 6,
+    6: 7,
+    7: 8,
+    8: 9,
+    9: 10,
+    12: 11,
+    10: 12,
+    11: 13,
+}
+
 SYMTAB_SUBSECTION_ID = 8
 
 SYMBOL_KIND_FUNCTION = 0
@@ -1037,15 +1053,16 @@ def _declare_ref_func_elements_for_undeclared(
     if not modified:
         # No element section yet -- create one.
         payload = _write_varuint(1) + bytes(new_segment)
-        # Insert before section 10 (code) if possible.
-        inserted = False
-        for idx, (section_id, _payload) in enumerate(new_sections):
-            if section_id > 9:
-                new_sections.insert(idx, (9, payload))
-                inserted = True
+        element_order = _STANDARD_SECTION_ORDER[9]
+        insert_at = len(new_sections)
+        for index, (section_id, _section_payload) in enumerate(new_sections):
+            if (
+                section_id != 0
+                and _STANDARD_SECTION_ORDER.get(section_id, 100) > element_order
+            ):
+                insert_at = index
                 break
-        if not inserted:
-            new_sections.append((9, payload))
+        new_sections.insert(insert_at, (9, payload))
         modified = True
     if not modified:
         return None
