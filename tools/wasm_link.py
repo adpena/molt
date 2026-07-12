@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import contextvars
 import functools
 import hashlib
 import json
@@ -40,7 +41,9 @@ from molt._wasm_runtime_exports import (  # noqa: E402
 from molt._wasm_abi_generated import (  # noqa: E402
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_SYMBOL_KINDS,
 )
-from molt.wasm_artifact import strip_wasm_publication_sections  # noqa: E402
+from molt.wasm_artifact import (  # noqa: E402
+    strip_wasm_publication_sections as _strip_wasm_publication_sections_raw,
+)
 
 from wasm_link_format import (  # noqa: E402
     CALL_INDIRECT_MANGLED_RE as CALL_INDIRECT_MANGLED_RE,
@@ -63,7 +66,7 @@ from wasm_link_format import (  # noqa: E402
     _append_linking_function_symbols as _append_linking_function_symbols,
     _build_custom_section as _build_custom_section,
     _build_linking_payload as _build_linking_payload,
-    _build_sections as _build_sections,
+    _build_sections as _build_sections_raw,
     _collect_custom_names as _collect_custom_names,
     _collect_element_declared_funcs as _collect_element_declared_funcs,
     _collect_exports as _collect_exports,
@@ -85,7 +88,7 @@ from wasm_link_format import (  # noqa: E402
     _parse_import_desc as _parse_import_desc,
     _parse_indexed_symbol as _parse_indexed_symbol,
     _parse_linking_payload as _parse_linking_payload,
-    _parse_sections as _parse_sections,
+    _parse_sections as _parse_sections_raw,
     _parse_symbol_flags as _parse_symbol_flags,
     _parse_type_section as _parse_type_section,
     _read_string as _read_string,
@@ -98,7 +101,7 @@ from wasm_link_format import (  # noqa: E402
     table_ref_export_name as table_ref_export_name,
     wasm_runtime_export_name as wasm_runtime_export_name,
     _get_total_func_count as _get_total_func_count,
-    parse_wasm_module_facts as parse_wasm_module_facts,
+    parse_wasm_module_facts as _parse_wasm_module_facts_raw,
     _scan_code_ref_funcs as _scan_code_ref_funcs,
     _skip_init_expr as _skip_init_expr,
     _validate_elements as _validate_elements,
@@ -106,6 +109,8 @@ from wasm_link_format import (  # noqa: E402
     _write_string as _write_string,
     _write_varuint as _write_varuint,
 )
+
+
 from wasm_link_edit import (  # noqa: E402
     _add_symtab_alias as _add_symtab_alias,
     _append_active_table_slot_elements as _append_active_table_slot_elements,
@@ -146,6 +151,50 @@ from wasm_link_optimize import (  # noqa: E402
     _strip_unused_module_function_imports as _strip_unused_module_function_imports,
     _stub_dead_functions as _stub_dead_functions,
 )
+
+
+_WHOLE_ARTIFACT_OPERATION_COUNTS: contextvars.ContextVar[dict[str, int] | None] = (
+    contextvars.ContextVar("wasm_whole_artifact_operation_counts", default=None)
+)
+
+
+def _increment_whole_artifact_operation(name: str, amount: int = 1) -> None:
+    counts = _WHOLE_ARTIFACT_OPERATION_COUNTS.get()
+    if counts is not None:
+        key = f"wasm_whole_artifact_{name}"
+        counts[key] = counts.get(key, 0) + amount
+
+
+def _parse_sections(data: bytes) -> list[tuple[int, bytes]]:
+    _increment_whole_artifact_operation("section_walks")
+    return _parse_sections_raw(data)
+
+
+def _build_sections(sections: list[tuple[int, bytes]]) -> bytes:
+    _increment_whole_artifact_operation("reserializations")
+    return _build_sections_raw(sections)
+
+
+def parse_wasm_module_facts(data: bytes) -> WasmModuleFacts:
+    _increment_whole_artifact_operation("full_binary_parses")
+    return _parse_wasm_module_facts_raw(data)
+
+
+def strip_wasm_publication_sections(
+    data: bytes,
+    *,
+    final_artifact: bool,
+    preserve_debug: bool,
+) -> bytes:
+    _increment_whole_artifact_operation("section_walks")
+    stripped = _strip_wasm_publication_sections_raw(
+        data,
+        final_artifact=final_artifact,
+        preserve_debug=preserve_debug,
+    )
+    if stripped != data:
+        _increment_whole_artifact_operation("reserializations")
+    return stripped
 
 
 # Rust wasm symbol names include a hash suffix like "17h<hex...>E". Capture the arity
@@ -1687,6 +1736,7 @@ def _restore_split_runtime_contract_exports(
     stage: str = "unspecified",
     public_export_map: Mapping[str, str] | None = None,
     required_native_direct_symbols: Sequence[str] = (),
+    operation_counts: dict[str, int] | None = None,
 ) -> bytes:
     function_symbols = _split_artifact_contract_function_symbols(
         artifact,
@@ -1748,10 +1798,20 @@ def _restore_split_runtime_contract_exports(
             f"function export(s) at {stage}: {', '.join(details)}"
         )
     import_names = {1: "__indirect_function_table", 2: "memory"}
-    for entry in _split_runtime_export_contract(artifact):
-        facts = parse_wasm_module_facts(restored)
+    contract = _split_runtime_export_contract(artifact)
+    facts = parse_wasm_module_facts(restored)
+    export_kinds = dict(facts.export_kinds)
+    if operation_counts is not None:
+        eliminated = max(0, len(contract) - 1)
+        operation_counts["wasm_whole_artifact_redundant_parses_eliminated"] = (
+            operation_counts.get(
+                "wasm_whole_artifact_redundant_parses_eliminated", 0
+            )
+            + eliminated
+        )
+    for entry in contract:
         if any(
-            facts.export_kinds.get(name, (None, None))[0] == entry.kind
+            export_kinds.get(name, (None, None))[0] == entry.kind
             for name in entry.accepted_names
         ):
             continue
@@ -1785,6 +1845,7 @@ def _restore_split_runtime_contract_exports(
         )
         if updated is not None:
             restored = updated
+            export_kinds[entry.canonical_name] = (entry.kind, index)
     return restored
 
 
@@ -1796,6 +1857,7 @@ def _strip_and_restore_split_artifact(
     preserve_debug: bool,
     public_export_map: Mapping[str, str] | None = None,
     required_native_direct_symbols: Sequence[str] = (),
+    operation_counts: dict[str, int] | None = None,
 ) -> bytes:
     keep_set = _split_artifact_contract_keep_set(
         artifact,
@@ -1813,6 +1875,7 @@ def _strip_and_restore_split_artifact(
         stage=stage,
         public_export_map=public_export_map,
         required_native_direct_symbols=required_native_direct_symbols,
+        operation_counts=operation_counts,
     )
     facts = parse_wasm_module_facts(restored)
     missing = sorted(
@@ -2952,7 +3015,12 @@ def _run_wasm_ld_with_custodied_inputs(
     phase_timings_file: Path | None = None,
 ) -> int:
     phase_timings_ms: dict[str, float] = {}
-    operation_counts: dict[str, int] = {}
+    operation_counts: dict[str, int] = {
+        "wasm_whole_artifact_full_binary_parses": 0,
+        "wasm_whole_artifact_section_walks": 0,
+        "wasm_whole_artifact_reserializations": 0,
+        "wasm_whole_artifact_redundant_parses_eliminated": 0,
+    }
     total_start = time.perf_counter()
     for native_object in native_objects:
         if not native_object.exists():
@@ -3288,6 +3356,9 @@ def _run_wasm_ld_with_custodied_inputs(
         ]
 
     res = _run_external_tool(cmd, capture_output=True, text=True)
+    whole_artifact_counts_token = _WHOLE_ARTIFACT_OPERATION_COUNTS.set(
+        operation_counts
+    )
     try:
         if res.returncode != 0:
             err = res.stderr.strip() or res.stdout.strip()
@@ -3590,6 +3661,7 @@ def _run_wasm_ld_with_custodied_inputs(
                         stage="native-link",
                         public_export_map=public_export_map,
                         required_native_direct_symbols=required_native_direct_symbols,
+                        operation_counts=operation_counts,
                     )
                 except ValueError as exc:
                     print(str(exc), file=sys.stderr)
@@ -3735,6 +3807,7 @@ def _run_wasm_ld_with_custodied_inputs(
                     stage="optimized-app",
                     public_export_map=public_export_map,
                     required_native_direct_symbols=required_native_direct_symbols,
+                    operation_counts=operation_counts,
                 )
             except ValueError as exc:
                 print(str(exc), file=sys.stderr)
@@ -3877,6 +3950,7 @@ def _run_wasm_ld_with_custodied_inputs(
                     preserve_debug=preserve_debug_sections,
                     public_export_map=public_export_map,
                     required_native_direct_symbols=required_native_direct_symbols,
+                    operation_counts=operation_counts,
                 )
             except ValueError as exc:
                 print(str(exc), file=sys.stderr)
@@ -3967,6 +4041,7 @@ def _run_wasm_ld_with_custodied_inputs(
                 json.dumps(phase_timings_ms, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
+        _WHOLE_ARTIFACT_OPERATION_COUNTS.reset(whole_artifact_counts_token)
         for staged_output in staged_outputs:
             with contextlib.suppress(OSError):
                 staged_output.unlink()

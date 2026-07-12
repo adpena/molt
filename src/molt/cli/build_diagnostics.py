@@ -1090,6 +1090,26 @@ def _emit_build_diagnostics_if_present(
     )
 
 
+def _wasm_link_operation_counts(
+    pipeline_stage_ms: Mapping[str, object],
+) -> dict[str, int]:
+    return dict(
+        sorted(
+            {
+                str(name): int(value)
+                for name, value in pipeline_stage_ms.items()
+                if (
+                    str(name).startswith("split_app_")
+                    or str(name).startswith("wasm_whole_artifact_")
+                )
+                and isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and float(value).is_integer()
+            }.items()
+        )
+    )
+
+
 def _build_build_diagnostics_payload(
     diagnostics_context: _BuildDiagnosticsContext,
 ) -> tuple[dict[str, Any] | None, Path | None]:
@@ -1154,18 +1174,9 @@ def _build_build_diagnostics_payload(
         phase_sec=phase_sec,
         pipeline_stage_ms=pipeline_stage_ms,
     )
-    wasm_link_operation_counts = {
-        str(name): int(value)
-        for name, value in pipeline_stage_ms.items()
-        if str(name).startswith("split_app_")
-        and isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and float(value).is_integer()
-    }
+    wasm_link_operation_counts = _wasm_link_operation_counts(pipeline_stage_ms)
     if wasm_link_operation_counts:
-        payload["wasm_link_operation_counts"] = dict(
-            sorted(wasm_link_operation_counts.items())
-        )
+        payload["wasm_link_operation_counts"] = wasm_link_operation_counts
     lowering_cache_summary = _frontend_lowering_cache_summary(frontend_parallel_payload)
     if lowering_cache_summary is not None:
         payload["frontend_lowering_cache"] = lowering_cache_summary
