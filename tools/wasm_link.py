@@ -3479,6 +3479,11 @@ def _run_wasm_ld_with_custodied_inputs(
                     return 1
                 if native_link_error is not None:
                     print(native_link_error, file=sys.stderr)
+                    print(
+                        "Split-runtime native app linker argv: "
+                        + shlex.join(split_native_app_cmd),
+                        file=sys.stderr,
+                    )
                     return 1
                 # Retarget the CPython-ABI GOT data globals wasm-ld emitted for
                 # the PIC extension(s) from the app-local placeholder address to
