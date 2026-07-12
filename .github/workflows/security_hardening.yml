@@ -53,10 +53,19 @@ jobs:
     if: needs.classify-changes.outputs.rust_security == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/rust-security
+      MOLT_SESSION_ID: rust-security-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v7
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.96.1
+      - name: Configure adaptive Rust parallelism
+        run: python3 tools/ci_resource_env.py --github-env "$GITHUB_ENV"
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target/sessions/rust-security"
       - name: Install cargo-deny and cargo-audit
         run: |
           python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo install cargo-deny --locked

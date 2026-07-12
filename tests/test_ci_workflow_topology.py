@@ -272,6 +272,28 @@ def test_github_workflows_keep_cargo_target_dirs_cache_stable() -> None:
     assert offenders == []
 
 
+def test_rust_security_reuses_cached_tool_builds() -> None:
+    workflow_text = _read(".github/workflows/security_hardening.yml")
+    rust_security = workflow_text.split("  rust-security:", 1)[1]
+
+    assert (
+        "CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/rust-security"
+        in rust_security
+    )
+    assert (
+        "MOLT_SESSION_ID: rust-security-${{ github.run_id }}-${{ github.run_attempt }}"
+        in rust_security
+    )
+    assert "Configure adaptive Rust parallelism" in rust_security
+    assert 'python3 tools/ci_resource_env.py --github-env "$GITHUB_ENV"' in (
+        rust_security
+    )
+    assert "uses: Swatinem/rust-cache@v2" in rust_security
+    assert 'workspaces: ". -> target/sessions/rust-security"' in rust_security
+    assert "cargo install cargo-deny --locked" in rust_security
+    assert "cargo install cargo-audit --locked" in rust_security
+
+
 def test_proof_queue_portability_workflow_is_cross_os_and_path_filtered() -> None:
     workflow_text = _read(".github/workflows/proof-queue-portability.yml")
 
