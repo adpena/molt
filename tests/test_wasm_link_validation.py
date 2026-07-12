@@ -1620,6 +1620,39 @@ def test_restore_split_runtime_contract_exports_reemits_memory_and_table() -> No
     }
 
 
+def test_restore_split_runtime_contract_exports_parses_contract_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _build_split_runtime_app_module([])
+    stripped = _strip_export(_strip_export(app, "molt_memory"), "molt_table")
+    parse_calls = 0
+    raw_parse = wasm_link._parse_wasm_module_facts_raw
+
+    def counted_parse(data: bytes) -> wasm_link.WasmModuleFacts:
+        nonlocal parse_calls
+        parse_calls += 1
+        return raw_parse(data)
+
+    monkeypatch.setattr(wasm_link, "_parse_wasm_module_facts_raw", counted_parse)
+    operation_counts: dict[str, int] = {}
+
+    restored = wasm_link._restore_split_runtime_contract_exports(
+        stripped,
+        artifact="app",
+        operation_counts=operation_counts,
+    )
+
+    assert parse_calls == 1
+    assert operation_counts == {
+        "wasm_whole_artifact_redundant_parses_eliminated": 2
+    }
+    assert raw_parse(restored).export_kinds == {
+        "molt_main": (0, 0),
+        "molt_memory": (2, 0),
+        "molt_table": (1, 0),
+    }
+
+
 def test_split_runtime_contract_keep_set_includes_all_external_kinds() -> None:
     assert wasm_link._split_runtime_contract_export_names("app") == {
         "__indirect_function_table",

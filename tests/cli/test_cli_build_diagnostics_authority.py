@@ -25,6 +25,7 @@ _BUILD_DIAGNOSTICS_NAMES = (
     "_record_frontend_timing_item",
     "_resolve_build_diagnostics_path",
     "_resolve_build_diagnostics_verbosity",
+    "_wasm_link_operation_counts",
 )
 
 _BUILD_DIAGNOSTICS_DEFINITIONS = (
@@ -47,6 +48,7 @@ _BUILD_DIAGNOSTICS_DEFINITIONS = (
     "def _record_frontend_timing_item(",
     "def _resolve_build_diagnostics_path(",
     "def _resolve_build_diagnostics_verbosity(",
+    "def _wasm_link_operation_counts(",
 )
 
 
@@ -69,6 +71,10 @@ def test_build_phase_attribution_reports_relative_shares_and_link_children() -> 
             "split_runtime_processing": 1000.0,
             "wasm_strip": 500.0,
             "fail_closed_validation": 500.0,
+            "wasm_whole_artifact_full_binary_parses": 17,
+            "wasm_whole_artifact_section_walks": 29,
+            "wasm_whole_artifact_reserializations": 11,
+            "wasm_whole_artifact_redundant_parses_eliminated": 6,
         },
     )
 
@@ -76,3 +82,24 @@ def test_build_phase_attribution_reports_relative_shares_and_link_children() -> 
     assert attribution["phase_share"]["backend_codegen"] == 0.4
     assert attribution["phase_sec"]["frontend_lowering"] == 2.0
     assert attribution["ranked_phases"][0] == "backend_codegen"
+
+
+def test_wasm_link_operation_counts_preserve_all_build_time_rungs() -> None:
+    assert build_diagnostics._wasm_link_operation_counts(
+        {
+            "split_app_optimize_requests": 1,
+            "split_app_wasm_opt_runs": 0,
+            "wasm_whole_artifact_full_binary_parses": 17,
+            "wasm_whole_artifact_section_walks": 29,
+            "wasm_whole_artifact_reserializations": 11,
+            "wasm_whole_artifact_redundant_parses_eliminated": 6,
+            "split_runtime_processing": 1000.0,
+        }
+    ) == {
+        "split_app_optimize_requests": 1,
+        "split_app_wasm_opt_runs": 0,
+        "wasm_whole_artifact_full_binary_parses": 17,
+        "wasm_whole_artifact_redundant_parses_eliminated": 6,
+        "wasm_whole_artifact_reserializations": 11,
+        "wasm_whole_artifact_section_walks": 29,
+    }
