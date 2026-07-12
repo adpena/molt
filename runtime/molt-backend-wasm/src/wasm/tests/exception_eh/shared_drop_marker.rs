@@ -1,4 +1,4 @@
-use super::super::*;
+use super::*;
 
 #[test]
 fn shared_drop_fact_marker_set_is_explicit_for_wasm() {

@@ -1,4 +1,4 @@
-use super::super::*;
+use super::*;
 
 #[test]
 fn generic_wasm_exception_pop_then_drop_keeps_dec_ref_import_across_eh_modes() {
