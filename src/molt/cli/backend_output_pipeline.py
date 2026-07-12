@@ -73,6 +73,8 @@ def _emit_backend_pipeline_outputs(
     cache_hit_tier = prepared_backend_compile.cache_hit_tier
     backend_daemon_cached = prepared_backend_compile.backend_daemon_cached
     backend_daemon_cache_tier = prepared_backend_compile.backend_daemon_cache_tier
+    diagnostics_payload = None
+    diagnostics_path = None
     backend_daemon_config_digest = prepared_backend_compile.backend_daemon_config_digest
     wasm_table_base = prepared_backend_compile.wasm_table_base
 
