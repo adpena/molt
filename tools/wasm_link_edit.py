@@ -163,7 +163,13 @@ def _append_active_table_slot_elements(
         modified = True
     if not modified:
         payload = _write_varuint(len(segments)) + b"".join(segments)
-        new_sections.append((9, payload))
+        element_order = _STANDARD_SECTION_ORDER[9]
+        insert_at = len(new_sections)
+        for index, (section_id, _section_payload) in enumerate(new_sections):
+            if section_id != 0 and _STANDARD_SECTION_ORDER.get(section_id, 100) > element_order:
+                insert_at = index
+                break
+        new_sections.insert(insert_at, (9, payload))
         modified = True
     if not modified:
         return None
