@@ -9,6 +9,33 @@ import pytest
 import tools.pact_witness_acceptance as acceptance
 
 
+def test_pact_witness_acceptance_rejects_unpinned_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MOLT_WITNESS_EXPECTED_REPO_ROOT", raising=False)
+    monkeypatch.delenv("MOLT_WITNESS_EXPECTED_GIT_HEAD", raising=False)
+
+    with pytest.raises(SystemExit, match="provenance is unpinned"):
+        acceptance._assert_build_provenance()
+
+
+def test_pact_witness_acceptance_attests_pinned_worktree(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("MOLT_WITNESS_EXPECTED_REPO_ROOT", str(acceptance.ROOT))
+    monkeypatch.setenv(
+        "MOLT_WITNESS_EXPECTED_GIT_HEAD",
+        acceptance._git_output("rev-parse", "HEAD"),
+    )
+
+    acceptance._assert_build_provenance()
+
+    output = capsys.readouterr().out
+    assert f"root={acceptance.ROOT.resolve()}" in output
+    assert f"wasm_link={(acceptance.ROOT / 'tools' / 'wasm_link.py').resolve()}" in output
+
+
 def test_pact_witness_acceptance_check_parity_uses_shared_engine_and_gates(
     tmp_path: Path,
     monkeypatch,
