@@ -954,6 +954,13 @@ pub extern "C" fn molt_sys_setswitchinterval(interval_bits: u64) -> u64 {
 const DEFAULT_INT_MAX_STR_DIGITS: i64 = 4300;
 const INT_STR_DIGITS_CHECK_THRESHOLD: i64 = 640;
 
+pub(crate) fn current_int_max_str_digits(_py: &PyToken<'_>) -> usize {
+    sys_state(_py)
+        .int_max_str_digits
+        .load(AtomicOrdering::Relaxed)
+        .max(0) as usize
+}
+
 /// `sys.get_int_max_str_digits()` -> int
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_get_int_max_str_digits() -> u64 {
