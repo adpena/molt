@@ -2023,6 +2023,19 @@ def test_validate_linked_rejects_out_of_bounds_ref_func_without_repair(
     assert structural_calls == []
 
 
+def test_declare_ref_func_elements_places_element_after_tag_section() -> None:
+    data = _build_linked_ref_func_module(func_index=0)
+    sections = wasm_link._parse_sections(data)
+    code_index = next(index for index, (section_id, _payload) in enumerate(sections) if section_id == 10)
+    sections.insert(code_index, (13, bytes([1, 0, 0])))
+
+    declared = wasm_link._declare_ref_func_elements(wasm_link._build_sections(sections))
+
+    assert declared is not None
+    section_ids = [section_id for section_id, _payload in wasm_link._parse_sections(declared)]
+    assert section_ids.index(13) < section_ids.index(9) < section_ids.index(10)
+
+
 def test_tree_shake_runtime_preserves_dynamic_required_exports(monkeypatch) -> None:
     module = _build_exported_runtime_module_many(
         [
