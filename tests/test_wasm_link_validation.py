@@ -3186,6 +3186,8 @@ def test_oz_publication_pipeline_is_bounded_and_size_focused() -> None:
         "--merge-blocks",
         "--dce",
         "--vacuum",
+        "--zero-filled-memory",
+        "--memory-packing",
     ]
 
 
