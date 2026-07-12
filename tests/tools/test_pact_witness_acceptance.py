@@ -179,7 +179,8 @@ def test_pact_witness_acceptance_generates_run_scoped_fixture_and_reference(
         cwd: Path,
         env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        assert "wasm/run_wasm.js" in args[1].replace("\\", "/")
+        assert args[1] == "--experimental-wasm-exnref"
+        assert "wasm/run_wasm.js" in args[2].replace("\\", "/")
         assert (cwd / "lstar_sample.npz").read_bytes() == b"fixture"
         assert (cwd / "reference_oracle.npz").read_bytes() == b"reference"
         (cwd / "reference_outputs.npz").write_bytes(b"candidate")

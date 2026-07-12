@@ -770,7 +770,12 @@ def _run_candidate(output_wasm: Path, run_dir: Path) -> tuple[Path, Path]:
     candidate = run_dir / "candidate_outputs.npz"
     raw_output.unlink(missing_ok=True)
     candidate.unlink(missing_ok=True)
-    node_args = [_node_bin(), str(ROOT / "wasm" / "run_wasm.js"), str(output_wasm)]
+    node_args = [
+        _node_bin(),
+        "--experimental-wasm-exnref",
+        str(ROOT / "wasm" / "run_wasm.js"),
+        str(output_wasm),
+    ]
     env = _wasm_run_env(output_wasm)
     result = _run_capture(node_args, cwd=run_dir, env=env)
     if result.returncode != 0:
