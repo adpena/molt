@@ -1,4 +1,4 @@
-use super::*;
+use super::support::*;
 
 fn task_marker_ir(marker: &str, target: &str) -> SimpleIR {
     let mut marker_value = wasm_test_op("const_bool", Some("is_task"), vec![]);

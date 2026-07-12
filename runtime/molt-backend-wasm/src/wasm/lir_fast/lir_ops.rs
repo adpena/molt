@@ -1,30 +1,34 @@
+mod const_ops;
+mod copy_ops;
+mod fallback;
+mod generated_calls;
+mod numeric_selection;
+mod refcount_ops;
+
+use self::const_ops::emit_lir_const;
+use self::copy_ops::{emit_lir_copy_or_original_kind, emit_lir_identity_copy};
+use self::fallback::emit_lir_unsupported_fallback;
+use self::generated_calls::emit_lir_generated_fixed_runtime_call;
+use self::numeric_selection::numeric_selection_for_opcode;
+use self::refcount_ops::emit_lir_refcount_op;
 use super::lir_context::LirLowerCtx;
 use super::lir_runtime_ops::{
     LirSequenceBuilderFinish, emit_lir_alloc, emit_lir_attr, emit_lir_boxed_operands_runtime_call,
     emit_lir_build_dict, emit_lir_build_set, emit_lir_build_slice, emit_lir_closure_load,
-    emit_lir_closure_store, emit_lir_del_index, emit_lir_exception_pending,
-    emit_lir_fixed_runtime_call, emit_lir_get_iter, emit_lir_index, emit_lir_iter_next,
-    emit_lir_membership, emit_lir_object_new_bound, emit_lir_sequence_builder,
-    emit_lir_store_index, emit_lir_unsupported_marker, original_kind,
+    emit_lir_closure_store, emit_lir_del_index, emit_lir_exception_pending, emit_lir_get_iter,
+    emit_lir_index, emit_lir_iter_next, emit_lir_membership, emit_lir_object_new_bound,
+    emit_lir_sequence_builder, emit_lir_store_index,
 };
 use super::lir_scalar::{
-    emit_get_boxed_for_repr, emit_lir_binary_arith, emit_lir_bit_not, emit_lir_bitwise,
-    emit_lir_bool, emit_lir_bool_select, emit_lir_checked_add, emit_lir_checked_mul,
-    emit_lir_comparison, emit_lir_identity_comparison, emit_lir_not, emit_lir_shift,
-    emit_lir_truthy_cond_builtin, emit_lir_unary_arith, emit_lir_unary_pos,
+    emit_lir_binary_arith, emit_lir_bit_not, emit_lir_bitwise, emit_lir_bool, emit_lir_bool_select,
+    emit_lir_checked_add, emit_lir_checked_mul, emit_lir_comparison, emit_lir_identity_comparison,
+    emit_lir_not, emit_lir_shift, emit_lir_truthy_cond_builtin, emit_lir_unary_arith,
+    emit_lir_unary_pos,
 };
-use super::runtime_calls::{lir_fixed_runtime_call, numeric_lir_runtime_call};
-use crate::wasm::body::WasmLirFallbackReason;
-use crate::wasm::const_materialization::{WasmConstMaterializationScratch, WasmConstOpPolicy};
+use super::runtime_calls::numeric_lir_runtime_call;
 use crate::wasm::lir_fast::LirRuntimeCall;
-use crate::wasm_abi_generated::{
-    WasmConstLirFastPolicy, WasmConstScalarValue, WasmNumericRuntimeSelection,
-    wasm_numeric_runtime_selection,
-};
-use molt_codegen_abi::box_none_bits;
-use molt_tir::tir::lir::{LirBlock, LirOp, LirRepr};
+use molt_tir::tir::lir::{LirBlock, LirOp};
 use molt_tir::tir::ops::{AttrValue, OpCode};
-use wasm_encoder::{Ieee64, Instruction, ValType};
 
 pub(super) fn emit_lir_block_ops(ctx: &mut LirLowerCtx, block: &LirBlock) {
     for op in &block.ops {
@@ -32,128 +36,16 @@ pub(super) fn emit_lir_block_ops(ctx: &mut LirLowerCtx, block: &LirBlock) {
     }
 }
 
-fn const_policy_for_opcode(opcode: OpCode) -> WasmConstOpPolicy {
-    WasmConstOpPolicy::for_tir_opcode(opcode)
-        .unwrap_or_else(|| panic!("opcode {opcode:?} is not a WASM const policy opcode"))
-}
-
-fn assert_const_lir_fast_policy(
-    opcode: OpCode,
-    expected: WasmConstLirFastPolicy,
-) -> WasmConstOpPolicy {
-    let policy = const_policy_for_opcode(opcode);
-    assert_eq!(
-        policy.lir_fast_policy(),
-        expected,
-        "generated WASM const LIR-fast policy drifted for {opcode:?}"
-    );
-    policy
-}
-
-fn emit_const_materialization(ctx: &mut LirLowerCtx, op: &LirOp) {
-    let policy =
-        assert_const_lir_fast_policy(op.tir_op.opcode, WasmConstLirFastPolicy::Materialize);
-    let result = op.result_values.first().unwrap_or_else(|| {
-        panic!(
-            "generated WASM const policy requires a result for {:?}",
-            op.tir_op.opcode
-        )
-    });
-    let scratch = policy.needs_literal_scratch().then(|| {
-        WasmConstMaterializationScratch::new(
-            ctx.alloc_scratch_local(ValType::I64),
-            ctx.alloc_scratch_local(ValType::I64),
-        )
-    });
-    let out_local = ctx.get_local(result.id);
-    ctx.emit_const_materialization(policy.tir_materialization(&op.tir_op, out_local, scratch));
-}
-
 fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
     let tir_op = &op.tir_op;
     match tir_op.opcode {
-        OpCode::ConstInt => {
-            let policy = assert_const_lir_fast_policy(tir_op.opcode, WasmConstLirFastPolicy::Lower);
-            let val = match policy.required_tir_scalar_value(tir_op) {
-                WasmConstScalarValue::Int(value) => value,
-                other => panic!(
-                    "generated WASM const policy produced {other:?} for {:?}",
-                    tir_op.opcode
-                ),
-            };
-            if let Some(result) = op.result_values.first() {
-                match result.repr {
-                    LirRepr::F64 => ctx
-                        .instructions
-                        .push(Instruction::F64Const(Ieee64::from(val as f64))),
-                    _ => ctx.instructions.push(Instruction::I64Const(val)),
-                }
-                ctx.emit_set(result.id);
-            }
-        }
-        OpCode::ConstFloat => {
-            let policy = assert_const_lir_fast_policy(tir_op.opcode, WasmConstLirFastPolicy::Lower);
-            let val = match policy.required_tir_scalar_value(tir_op) {
-                WasmConstScalarValue::Float(value) => value,
-                other => panic!(
-                    "generated WASM const policy produced {other:?} for {:?}",
-                    tir_op.opcode
-                ),
-            };
-            if let Some(result) = op.result_values.first() {
-                ctx.instructions
-                    .push(Instruction::F64Const(Ieee64::from(val)));
-                ctx.emit_set(result.id);
-            }
-        }
-        OpCode::ConstBool => {
-            let policy = assert_const_lir_fast_policy(tir_op.opcode, WasmConstLirFastPolicy::Lower);
-            let val = match policy.required_tir_scalar_value(tir_op) {
-                WasmConstScalarValue::Bool(value) => value,
-                other => panic!(
-                    "generated WASM const policy produced {other:?} for {:?}",
-                    tir_op.opcode
-                ),
-            };
-            if let Some(result) = op.result_values.first() {
-                ctx.instructions
-                    .push(Instruction::I32Const(if val { 1 } else { 0 }));
-                ctx.emit_set(result.id);
-            }
-        }
-        OpCode::ConstNone => {
-            let policy = assert_const_lir_fast_policy(tir_op.opcode, WasmConstLirFastPolicy::Lower);
-            assert_eq!(
-                policy.required_tir_scalar_value(tir_op),
-                WasmConstScalarValue::NoneValue,
-                "generated WASM const policy must classify ConstNone as NoneValue"
-            );
-            if let Some(result) = op.result_values.first() {
-                ctx.instructions
-                    .push(Instruction::I64Const(box_none_bits()));
-                ctx.emit_set(result.id);
-            }
-        }
-        OpCode::ConstStr | OpCode::ConstBytes => {
-            match const_policy_for_opcode(tir_op.opcode).lir_fast_policy() {
-                WasmConstLirFastPolicy::Materialize => emit_const_materialization(ctx, op),
-                WasmConstLirFastPolicy::Lower => {
-                    panic!(
-                        "generated WASM const policy requires direct LIR lowering for {:?}",
-                        tir_op.opcode
-                    );
-                }
-            }
-        }
-        OpCode::ConstBigInt => match const_policy_for_opcode(tir_op.opcode).lir_fast_policy() {
-            WasmConstLirFastPolicy::Materialize => emit_const_materialization(ctx, op),
-            WasmConstLirFastPolicy::Lower => {
-                panic!(
-                    "generated WASM const policy requires direct LIR lowering for {:?}",
-                    tir_op.opcode
-                );
-            }
-        },
+        OpCode::ConstInt
+        | OpCode::ConstFloat
+        | OpCode::ConstBool
+        | OpCode::ConstNone
+        | OpCode::ConstStr
+        | OpCode::ConstBytes
+        | OpCode::ConstBigInt => emit_lir_const(ctx, op),
         OpCode::Add | OpCode::InplaceAdd => {
             emit_lir_binary_arith(ctx, op, numeric_selection_for_opcode(tir_op.opcode))
         }
@@ -269,13 +161,7 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         | OpCode::StateBlockStart
         | OpCode::StateBlockEnd
         | OpCode::WarnStderr => {
-            for &operand in &tir_op.operands {
-                ctx.emit_get(operand);
-            }
-            ctx.emit_bail_to_generic_path(WasmLirFallbackReason::UnsupportedOperation);
-            if let Some(result) = op.result_values.first() {
-                ctx.emit_set(result.id);
-            }
+            emit_lir_unsupported_fallback(ctx, op);
         }
         // RC drop-insertion ops (design 20, §4.3 Phase 4). `molt_dec_ref_obj` /
         // `molt_inc_ref_obj` take the NaN-boxed value by value and fast-path
@@ -286,67 +172,8 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         // bailing it to the generic emitter, preserving the WASM perf contract
         // for drop-inserted functions. Neither op has a result.
         OpCode::DecRef | OpCode::DelBoundary => {
-            if let Some(&operand) = tir_op.operands.first() {
-                emit_get_boxed_for_repr(ctx, operand);
-                ctx.emit_runtime_call(LirRuntimeCall::DecRefObj);
-            }
+            emit_lir_refcount_op(ctx, op, LirRuntimeCall::DecRefObj)
         }
-        OpCode::IncRef => {
-            if let Some(&operand) = tir_op.operands.first() {
-                emit_get_boxed_for_repr(ctx, operand);
-                ctx.emit_runtime_call(LirRuntimeCall::IncRefObj);
-            }
-        }
-    }
-}
-
-fn emit_lir_generated_fixed_runtime_call(ctx: &mut LirLowerCtx, op: &LirOp) {
-    let kind = crate::tir::op_kinds_generated::opcode_canonical_kind_table(op.tir_op.opcode);
-    let runtime = lir_fixed_runtime_call(kind)
-        .unwrap_or_else(|| panic!("missing generated WASM LIR fixed runtime call for {kind}"));
-    assert!(
-        op.tir_op.operands.len() >= runtime.operand_count,
-        "generated WASM LIR fixed runtime call for {kind} needs {} operands, got {}",
-        runtime.operand_count,
-        op.tir_op.operands.len()
-    );
-    emit_lir_fixed_runtime_call(ctx, op, runtime);
-}
-
-fn numeric_selection_for_opcode(opcode: OpCode) -> WasmNumericRuntimeSelection {
-    let kind = crate::tir::op_kinds_generated::opcode_canonical_kind_table(opcode);
-    wasm_numeric_runtime_selection(kind)
-        .unwrap_or_else(|| panic!("missing generated WASM numeric selector for {kind}"))
-}
-
-fn emit_lir_identity_copy(ctx: &mut LirLowerCtx, op: &LirOp) {
-    if let (Some(&src), Some(result)) = (op.tir_op.operands.first(), op.result_values.first()) {
-        ctx.emit_get(src);
-        ctx.emit_set(result.id);
-    }
-}
-
-fn emit_lir_binding_alias(ctx: &mut LirLowerCtx, op: &LirOp) {
-    if let (Some(&src), Some(result)) = (op.tir_op.operands.first(), op.result_values.first()) {
-        emit_get_boxed_for_repr(ctx, src);
-        ctx.emit_runtime_call(LirRuntimeCall::IncRefObj);
-        ctx.emit_get(src);
-        ctx.emit_set(result.id);
-    }
-}
-
-fn emit_lir_copy_or_original_kind(ctx: &mut LirLowerCtx, op: &LirOp) {
-    match original_kind(op) {
-        Some("binding_alias") => emit_lir_binding_alias(ctx, op),
-        Some(kind)
-            if crate::tir::op_kinds_generated::copy_kind_is_explicit_no_heap_move_table(kind) =>
-        {
-            emit_lir_identity_copy(ctx, op)
-        }
-        Some(kind) if let Some(runtime) = lir_fixed_runtime_call(kind) => {
-            emit_lir_fixed_runtime_call(ctx, op, runtime)
-        }
-        Some(_) => emit_lir_unsupported_marker(ctx, op),
-        None => emit_lir_identity_copy(ctx, op),
+        OpCode::IncRef => emit_lir_refcount_op(ctx, op, LirRuntimeCall::IncRefObj),
     }
 }

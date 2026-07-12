@@ -14,7 +14,7 @@ mod container_query_ops;
 mod dict_ops;
 #[path = "aggregate_ops/iterator_generator_ops.rs"]
 mod iterator_generator_ops;
-#[path = "aggregate_ops/list_tuple_ops.rs"]
+#[path = "aggregate_ops/list_tuple_ops/mod.rs"]
 mod list_tuple_ops;
 #[path = "aggregate_ops/set_ops.rs"]
 mod set_ops;
