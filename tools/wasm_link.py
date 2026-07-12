@@ -704,9 +704,14 @@ def _split_artifact_contract_keep_set(
     segments install those functions by slot. Keeping the aliases public would
     make every target a Binaryen DCE root without adding cross-module linkage.
     """
+    public_exports = {
+        name
+        for name in (public_export_map or ())
+        if not is_table_ref_export_name(name)
+    }
     return (
         _split_runtime_contract_export_names(artifact)
-        | set(public_export_map or ())
+        | public_exports
         | set(required_native_direct_symbols)
     )
 
