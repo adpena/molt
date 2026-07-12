@@ -1272,6 +1272,45 @@ def test_canonicalize_standard_section_order_places_tag_after_memory() -> None:
     ]
 
 
+def test_canonicalize_standard_section_order_merges_duplicate_export_sections() -> None:
+    first_export = (
+        wasm_link._write_varuint(1)
+        + wasm_link._write_string("molt_main")
+        + bytes([0])
+        + wasm_link._write_varuint(0)
+    )
+    second_export = (
+        wasm_link._write_varuint(2)
+        + wasm_link._write_string("molt_main")
+        + bytes([0])
+        + wasm_link._write_varuint(2)
+        + wasm_link._write_string("PyInit__multiarray_umath")
+        + bytes([0])
+        + wasm_link._write_varuint(1)
+    )
+    module = wasm_link._build_sections(
+        [(1, bytes([1, 0x60, 0, 0])), (7, first_export), (7, second_export)]
+    )
+
+    canonical = wasm_link._canonicalize_standard_section_order(module)
+
+    assert canonical is not None
+    sections = wasm_link._parse_sections(canonical)
+    assert [section_id for section_id, _payload in sections].count(7) == 1
+    assert wasm_link._standard_section_order_error(canonical) is None
+    assert wasm_link.parse_wasm_module_facts(canonical).export_kinds == {
+        "molt_main": (0, 0),
+        "PyInit__multiarray_umath": (0, 1),
+    }
+
+
+def test_canonicalize_standard_section_order_rejects_duplicate_start_sections() -> None:
+    module = wasm_link._build_sections([(8, bytes([0])), (8, bytes([1]))])
+
+    with pytest.raises(ValueError, match="duplicate singleton standard section id 8"):
+        wasm_link._canonicalize_standard_section_order(module)
+
+
 def _build_linked_host_table_module(table_import_name: str) -> bytes:
     write_varuint = wasm_link._write_varuint
     sections: list[tuple[int, bytes]] = []
@@ -2026,13 +2065,19 @@ def test_validate_linked_rejects_out_of_bounds_ref_func_without_repair(
 def test_declare_ref_func_elements_places_element_after_tag_section() -> None:
     data = _build_linked_ref_func_module(func_index=0)
     sections = wasm_link._parse_sections(data)
-    code_index = next(index for index, (section_id, _payload) in enumerate(sections) if section_id == 10)
+    code_index = next(
+        index
+        for index, (section_id, _payload) in enumerate(sections)
+        if section_id == 10
+    )
     sections.insert(code_index, (13, bytes([1, 0, 0])))
 
     declared = wasm_link._declare_ref_func_elements(wasm_link._build_sections(sections))
 
     assert declared is not None
-    section_ids = [section_id for section_id, _payload in wasm_link._parse_sections(declared)]
+    section_ids = [
+        section_id for section_id, _payload in wasm_link._parse_sections(declared)
+    ]
     assert section_ids.index(13) < section_ids.index(9) < section_ids.index(10)
 
 
@@ -5071,7 +5116,9 @@ def test_append_table_ref_elements_uses_export_names_without_name_section() -> N
     assert updated is not None
     ok, err = wasm_link._validate_elements(updated)
     assert ok, err
-    section_ids = [section_id for section_id, _payload in wasm_link._parse_sections(updated)]
+    section_ids = [
+        section_id for section_id, _payload in wasm_link._parse_sections(updated)
+    ]
     assert section_ids.index(9) < section_ids.index(10)
 
     element_section = next(

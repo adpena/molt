@@ -134,6 +134,7 @@ from wasm_link_edit import (  # noqa: E402
     _rewrite_table_import_min as _rewrite_table_import_min,
     _split_app_reference_function_exports as _split_app_reference_function_exports,
     _strip_internal_exports as _strip_internal_exports,
+    _standard_section_order_error as _standard_section_order_error,
     _table_import_min as _table_import_min,
 )
 from wasm_link_optimize import (  # noqa: E402
@@ -705,9 +706,7 @@ def _split_artifact_contract_keep_set(
     make every target a Binaryen DCE root without adding cross-module linkage.
     """
     public_exports = {
-        name
-        for name in (public_export_map or ())
-        if not is_table_ref_export_name(name)
+        name for name in (public_export_map or ()) if not is_table_ref_export_name(name)
     }
     return (
         _split_runtime_contract_export_names(artifact)
@@ -2332,6 +2331,14 @@ def _validate_freestanding(data: bytes) -> bool:
 
 def _validate_wasm_structural(data: bytes, *, description: str) -> bool:
     """Run the canonical wasm structural validator when available."""
+    section_order_error = _standard_section_order_error(data)
+    if section_order_error is not None:
+        print(
+            f"{description} failed canonical section-order validation: "
+            f"{section_order_error}",
+            file=sys.stderr,
+        )
+        return False
     exe = shutil.which("wasm-tools")
     if exe is None:
         return True
@@ -3764,6 +3771,14 @@ def _run_wasm_ld_with_custodied_inputs(
 
         linked_ok = _validate_linked(work_linked)
         if not linked_ok:
+            failed_validation = linked.with_name(
+                f"{linked.stem}.failed-validation.wasm"
+            )
+            failed_validation.write_bytes(work_linked.read_bytes())
+            print(
+                f"Preserved failed linked validation artifact: {failed_validation}",
+                file=sys.stderr,
+            )
             if split_runtime:
                 print(
                     "Linked wasm validation failed before split-runtime publication; "
