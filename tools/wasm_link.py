@@ -3480,6 +3480,14 @@ def _run_wasm_ld_with_custodied_inputs(
                     return 1
                 if native_link_error is not None:
                     print(native_link_error, file=sys.stderr)
+                    failure_artifact = linked.with_name(
+                        linked.stem + ".split-native-link-failure.wasm"
+                    )
+                    failure_artifact.write_bytes(rewritten_data)
+                    print(
+                        f"Split-runtime native app failure artifact: {failure_artifact}",
+                        file=sys.stderr,
+                    )
                     print(
                         "Split-runtime native app linker argv: "
                         + shlex.join(split_native_app_cmd),
