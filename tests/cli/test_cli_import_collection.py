@@ -16659,6 +16659,124 @@ def test_augment_module_graph_does_not_add_entry_alias_as_second_module(
     assert list(module_graph.values()) == [source_path]
 
 
+def test_native_support_source_slices_parse_and_prune_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_path = tmp_path / "support.py"
+    source_path.write_text(
+        "import alpha\n\ndef kept():\n    import beta\n    return 1\n",
+        encoding="utf-8",
+    )
+
+    class _Plan:
+        def support_source_paths_by_module(self) -> dict[str, Path]:
+            return {"nativepkg.support": source_path}
+
+    prune_calls = 0
+    original_prune = cli_module_graph._native_support_slice.prune_native_support_module
+
+    def counted_prune(tree: ast.AST, roots: frozenset[str]):
+        nonlocal prune_calls
+        prune_calls += 1
+        return original_prune(tree, roots)
+
+    monkeypatch.setattr(
+        cli_module_graph._native_support_slice,
+        "prune_native_support_module",
+        counted_prune,
+    )
+    operation_counts = {
+        "native_support_slice_requests": 0,
+        "native_support_slice_cache_hits": 0,
+        "native_support_slice_cache_misses": 0,
+        "native_support_source_parses": 0,
+        "native_support_source_prunes": 0,
+        "native_support_legacy_equivalent_source_parses": 0,
+    }
+    slice_cache: dict[
+        tuple[Path, tuple[str, ...]],
+        cli_module_graph._NativeSupportSourceSlice | None,
+    ] = {}
+
+    first = cli_module_graph._native_support_source_slices(
+        native_artifact_plan=_Plan(),
+        roots_by_module={"nativepkg.support": ("kept",)},
+        artifacts_root=tmp_path / "generated",
+        slice_cache=slice_cache,
+        operation_counts=operation_counts,
+    )
+    second = cli_module_graph._native_support_source_slices(
+        native_artifact_plan=_Plan(),
+        roots_by_module={"nativepkg.support": ("kept",)},
+        artifacts_root=tmp_path / "generated",
+        slice_cache=slice_cache,
+        operation_counts=operation_counts,
+    )
+
+    assert first == second
+    assert prune_calls == 1
+    assert operation_counts == {
+        "native_support_slice_requests": 2,
+        "native_support_slice_cache_hits": 1,
+        "native_support_slice_cache_misses": 1,
+        "native_support_source_parses": 1,
+        "native_support_source_prunes": 1,
+        "native_support_legacy_equivalent_source_parses": 4,
+    }
+    support_slice = first[source_path]
+    assert support_slice.generated_path is not None
+    assert support_slice.generated_path.read_text(encoding="utf-8") == (
+        "def kept():\n    import beta\n    return 1\n"
+    )
+
+
+def test_native_support_source_slices_reuse_persisted_import_scan(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "support.py"
+    source_path.write_text("import alpha\n", encoding="utf-8")
+
+    class _Plan:
+        def support_source_paths_by_module(self) -> dict[str, Path]:
+            return {"nativepkg.support": source_path}
+
+    def operation_counts() -> dict[str, int]:
+        return {
+            "native_support_slice_requests": 0,
+            "native_support_slice_cache_hits": 0,
+            "native_support_slice_cache_misses": 0,
+            "native_support_persisted_import_scan_hits": 0,
+            "native_support_persisted_import_scan_misses": 0,
+            "native_support_source_parses": 0,
+            "native_support_source_prunes": 0,
+            "native_support_legacy_equivalent_source_parses": 0,
+        }
+
+    first_counts = operation_counts()
+    first = cli_module_graph._native_support_source_slices(
+        native_artifact_plan=_Plan(),
+        roots_by_module={},
+        artifacts_root=tmp_path,
+        slice_cache={},
+        operation_counts=first_counts,
+    )
+    second_counts = operation_counts()
+    second = cli_module_graph._native_support_source_slices(
+        native_artifact_plan=_Plan(),
+        roots_by_module={},
+        artifacts_root=tmp_path,
+        slice_cache={},
+        operation_counts=second_counts,
+    )
+
+    assert first == second
+    assert first_counts["native_support_source_parses"] == 1
+    assert first_counts["native_support_persisted_import_scan_misses"] == 1
+    assert second_counts["native_support_source_parses"] == 0
+    assert second_counts["native_support_persisted_import_scan_hits"] == 1
+
+
 def test_module_lowering_metadata_view_reuses_precomputed_maps(tmp_path: Path) -> None:
     module_path = tmp_path / "pkg.py"
     module_path.write_text("VALUE = 1\n")
@@ -19278,6 +19396,7 @@ def test_build_diagnostics_payload_includes_runtime_wasm_cache_snapshot(
             binary_image_closure=None,
             binary_image_analysis=None,
             module_graph={},
+            module_graph_operation_counts={"native_support_source_parses": 3},
             module_reasons={},
             frontend_module_timings=(),
             allocation_diagnostics_enabled=False,
@@ -19299,6 +19418,9 @@ def test_build_diagnostics_payload_includes_runtime_wasm_cache_snapshot(
 
         assert diagnostics_path is None
         assert payload is not None
+        assert payload["module_graph_operation_counts"] == {
+            "native_support_source_parses": 3
+        }
         assert payload["runtime_wasm_cache"]["publish_attempts"] == 1
         assert payload["runtime_wasm_cache"]["publish_failures"] == 1
         assert (
