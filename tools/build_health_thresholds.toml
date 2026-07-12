@@ -10,6 +10,7 @@ max_runtime_rebuilds = 1
 # should approach full reuse. Below this floor (with enough modules + real re-lower
 # time) means a cache-key input is over-sensitive (M34 configured!=effective).
 frontend_lowering_cache_hit_floor = 0.80
+frontend_lowering_cache_warm_hit_floor = 0.90
 frontend_lowering_cache_min_observed = 40   # don't alarm on tiny/first builds
 relowered_waste_floor_s = 30.0              # only alarm when real time is wasted
 

@@ -25,7 +25,7 @@ from molt.cli.file_hashing import (
 )
 
 
-_CACHE_SOURCE_FINGERPRINT_SCHEMA_VERSION = "source-tree-v2"
+_CACHE_SOURCE_FINGERPRINT_SCHEMA_VERSION = "source-tree-v3"
 _BACKEND_FACADE_CRATE = Path("runtime/molt-backend")
 _BACKEND_CACHE_ALL_FEATURES = (
     "cbor",
@@ -676,16 +676,10 @@ def _source_tree_cache_fingerprint(
         cached = transaction.get(transaction_key)
         if cached is not None:
             return cached
-    normalized_paths = [pathlib.Path(path_key) for path_key in path_keys]
     clean_signature = _source_tree_clean_pathspec_signature(root, path_keys)
     if clean_signature is None:
-        metadata = _hash_source_tree_metadata(normalized_paths, root)
-        metadata_digest = metadata[0] if metadata is not None else "metadata-unavailable"
-        file_count = metadata[1] if metadata is not None else -1
         content_signature = _source_tree_content_signature(root, path_keys)
     else:
-        metadata_digest = "git-clean-pathspec"
-        file_count = -1
         content_signature = clean_signature
     content_digest = _source_tree_content_digest(
         root,
@@ -694,17 +688,10 @@ def _source_tree_cache_fingerprint(
         scope,
         extra_fingerprint_inputs,
     )
-    hasher = hashlib.sha256()
-    hasher.update(_CACHE_SOURCE_FINGERPRINT_SCHEMA_VERSION.encode("utf-8"))
-    hasher.update(b"\0")
-    hasher.update(scope.encode("utf-8"))
-    hasher.update(b"\0")
-    hasher.update(f"files:{file_count}".encode("utf-8"))
-    hasher.update(b"\0")
-    hasher.update(metadata_digest.encode("utf-8"))
-    hasher.update(b"\0")
-    hasher.update(content_digest.encode("utf-8"))
-    digest = hasher.hexdigest()
+    # The content digest already commits to schema, scope, root-relative paths,
+    # extra inputs, and every tracked byte. Installation roots and stat metadata
+    # are provenance, not compiler semantics.
+    digest = content_digest
     if transaction is not None:
         transaction[transaction_key] = digest
     return digest

@@ -87,7 +87,7 @@ def test_cache_key_changes_when_compiler_source_content_changes_in_process(
     assert second != first
 
 
-def test_cache_key_changes_when_compiler_source_mtime_changes_in_process(
+def test_cache_key_ignores_compiler_source_mtime_only_changes_in_process(
     isolated_compiler_source: Path,
 ) -> None:
     first = CACHE_KEYS._cache_key(_tiny_ir(), "native", None, "variant")
@@ -98,7 +98,7 @@ def test_cache_key_changes_when_compiler_source_mtime_changes_in_process(
 
     second = CACHE_KEYS._cache_key(_tiny_ir(), "native", None, "variant")
 
-    assert second != first
+    assert second == first
 
 
 def test_cache_fingerprint_threads_selected_backend_and_runtime_features(
@@ -535,6 +535,43 @@ def test_source_tree_content_digest_is_not_metadata_keyed(tmp_path: Path) -> Non
     )
 
     assert second != first
+
+
+def test_source_tree_cache_fingerprint_is_install_root_and_stat_independent(
+    tmp_path: Path,
+) -> None:
+    first_root = tmp_path / "install-a"
+    second_root = tmp_path / "install-b"
+    first = first_root / "src" / "molt" / "frontend" / "cfg_analysis.py"
+    second = second_root / "src" / "molt" / "frontend" / "cfg_analysis.py"
+    first.parent.mkdir(parents=True, exist_ok=True)
+    second.parent.mkdir(parents=True, exist_ok=True)
+    source = "MARKER = 1\n"
+    first.write_text(source, encoding="utf-8")
+    second.write_text(source, encoding="utf-8")
+    first_stat = first.stat()
+    os.utime(
+        second,
+        ns=(
+            first_stat.st_atime_ns + 10_000_000_000,
+            first_stat.st_mtime_ns + 10_000_000_000,
+        ),
+    )
+
+    first_fingerprint = CACHE_FINGERPRINTS._source_tree_cache_fingerprint(
+        root=first_root,
+        source_paths=[first],
+        scope="ephemeral-install-test",
+        extra_fingerprint_inputs="",
+    )
+    second_fingerprint = CACHE_FINGERPRINTS._source_tree_cache_fingerprint(
+        root=second_root,
+        source_paths=[second],
+        scope="ephemeral-install-test",
+        extra_fingerprint_inputs="",
+    )
+
+    assert second_fingerprint == first_fingerprint
 
 
 def test_source_tree_fingerprint_transaction_reuses_content_complete_result(
