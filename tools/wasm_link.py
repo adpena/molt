@@ -696,24 +696,19 @@ def _split_artifact_contract_keep_set(
     *,
     public_export_map: Mapping[str, str] | None = None,
     required_native_direct_symbols: Sequence[str] = (),
-    required_runtime_exports: Sequence[str] = (),
 ) -> set[str]:
-    """Return the single export keep-set for a split publication artifact."""
+    """Return the external export contract for a split publication artifact.
+
+    Callable table-ref aliases are intentionally absent: both split modules
+    import the shared ``env.__indirect_function_table``, and active element
+    segments install those functions by slot. Keeping the aliases public would
+    make every target a Binaryen DCE root without adding cross-module linkage.
+    """
     return (
         _split_runtime_contract_export_names(artifact)
         | set(public_export_map or ())
         | set(required_native_direct_symbols)
-        | set(required_runtime_exports)
     )
-
-
-def _required_split_app_runtime_exports(data: bytes) -> set[str]:
-    """Return artifact-proven runtime-resolved exports that must stay public."""
-    return {
-        name
-        for name in _collect_function_exports(data)
-        if is_table_ref_export_name(name)
-    }
 
 
 def _split_artifact_contract_function_symbols(
@@ -1728,12 +1723,10 @@ def _strip_and_restore_split_artifact(
     public_export_map: Mapping[str, str] | None = None,
     required_native_direct_symbols: Sequence[str] = (),
 ) -> bytes:
-    required_runtime_exports = _required_split_app_runtime_exports(data)
     keep_set = _split_artifact_contract_keep_set(
         artifact,
         public_export_map=public_export_map,
         required_native_direct_symbols=required_native_direct_symbols,
-        required_runtime_exports=required_runtime_exports,
     )
     stripped = strip_wasm_publication_sections(
         data,
@@ -1758,12 +1751,6 @@ def _strip_and_restore_split_artifact(
         raise ValueError(
             f"Split-runtime {artifact} publication lost required export(s) at "
             f"{stage}: {', '.join(missing)}"
-        )
-    missing_runtime_exports = sorted(required_runtime_exports - set(facts.export_kinds))
-    if missing_runtime_exports:
-        raise ValueError(
-            f"Split-runtime {artifact} publication lost required runtime export(s) "
-            f"at {stage}: {', '.join(missing_runtime_exports)}"
         )
     return restored
 
@@ -2222,6 +2209,7 @@ def _optimize_split_app_module(
         reference_data=reference_data,
         preserve_exports=contract_keep_set,
         preserve_reference_exports=False,
+        preserve_table_refs=False,
     )
     stripped = _strip_unused_module_function_imports(
         optimized,
@@ -3578,9 +3566,6 @@ def _run_wasm_ld_with_custodied_inputs(
                     "app",
                     public_export_map=public_export_map,
                     required_native_direct_symbols=required_native_direct_symbols,
-                    required_runtime_exports=_required_split_app_runtime_exports(
-                        rewritten_data
-                    ),
                 ),
             )
             if output_memory_min is not None:
