@@ -20,9 +20,8 @@ use crate::ops::PrimitiveOp;
 use crate::render::indexing::{
     IndexDialect, render_reduction_input_index, render_shapetracker_index, zero_literal_for_dtype,
 };
-use crate::render::{
-    BufferAccess, FusedKernel, FusedOp, FusedSrc, KernelBody, Renderer, detect_fma_pattern,
-};
+use crate::render::source_expr::{self, SourceExprRenderer};
+use crate::render::{BufferAccess, FusedKernel, FusedOp, FusedSrc, KernelBody, Renderer};
 
 /// OpenCL C renderer for all 26 primitive ops.
 pub struct OpenClRenderer {
@@ -124,13 +123,7 @@ impl OpenClRenderer {
     }
 
     fn render_src(&self, src: &FusedSrc, kernel: &FusedKernel, idx_var: &str) -> String {
-        match src {
-            FusedSrc::Buf(buf_idx) => {
-                Self::render_buf_read(*buf_idx, &kernel.bufs[*buf_idx], idx_var)
-            }
-            FusedSrc::Op(prior_idx) => format!("v{}", prior_idx),
-            FusedSrc::Const { val, dtype } => self.format_const(*val, *dtype),
-        }
+        source_expr::render_src(self, src, kernel, idx_var)
     }
 
     /// Render a single op expression as OpenCL C.
@@ -202,24 +195,30 @@ impl OpenClRenderer {
         kernel: &FusedKernel,
         idx_var: &str,
     ) -> Option<(String, String, String)> {
-        let pattern = detect_fma_pattern(
-            op,
-            op_idx,
-            kernel,
-            op.dst_dtype().narrow_opencl(self.has_fp64).is_float(),
-        )?;
-        let prior_op = &kernel.ops[pattern.mul_op_idx];
-        Some((
-            self.render_src(&prior_op.srcs()[0], kernel, idx_var),
-            self.render_src(&prior_op.srcs()[1], kernel, idx_var),
-            self.render_src(&op.srcs()[pattern.add_src_pos], kernel, idx_var),
-        ))
+        source_expr::detect_fma(self, op, op_idx, kernel, idx_var, |dtype| {
+            dtype.narrow_opencl(self.has_fp64).is_float()
+        })
     }
 
     /// Check whether any buffer in the kernel uses Float64 (pre-narrowing).
     fn needs_fp64(kernel: &FusedKernel) -> bool {
         kernel.bufs.iter().any(|b| b.dtype == DType::Float64)
             || kernel.ops.iter().any(|op| op.dst_dtype() == DType::Float64)
+    }
+}
+
+impl SourceExprRenderer for OpenClRenderer {
+    fn render_source_buf_read(
+        &self,
+        binding_idx: usize,
+        binding: &crate::render::BufferBinding,
+        idx_var: &str,
+    ) -> String {
+        Self::render_buf_read(binding_idx, binding, idx_var)
+    }
+
+    fn format_source_const(&self, val: f64, dtype: DType) -> String {
+        self.format_const(val, dtype)
     }
 }
 
