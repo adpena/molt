@@ -692,6 +692,25 @@ unsafe fn new_wrapper_descr(
 unsafe fn add_operators_to_dict(tp: *mut PyTypeObject) -> c_int {
     unsafe {
         let dict = (*tp).tp_dict;
+        // A NULL tp_hash means "inherit from the tp_base chain" (CPython), NOT
+        // "unhashable". Inherit it BEFORE the slot-wrapper loop builds __hash__
+        // and before the __hash__=None baking below — else a metatype whose base
+        // (PyType_Type) supplies an identity hash, i.e. numpy's `_DTypeMeta`, has
+        // its DType CLASSES marked "unhashable type: 'type'" during numpy.dtypes
+        // registration. Genuinely-unhashable types set tp_hash =
+        // PyObject_HashNotImplemented (still baked to __hash__=None below), and
+        // PyBaseObject_Type.tp_hash stays NULL, so list/dict/set — whose only
+        // ancestor is object — correctly remain unhashable.
+        if (*tp).tp_hash.is_none() {
+            let mut base = (*tp).tp_base;
+            while !base.is_null() {
+                if let Some(h) = (*base).tp_hash {
+                    (*tp).tp_hash = Some(h);
+                    break;
+                }
+                base = (*base).tp_base;
+            }
+        }
         for def in SLOT_WRAPPER_DEFS {
             let wrapped = slot_wrapper_ptr(tp, def.slot);
             if wrapped.is_null() {
