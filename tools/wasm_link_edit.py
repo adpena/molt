@@ -151,7 +151,10 @@ def _append_active_table_slot_elements(
         element_order = _STANDARD_SECTION_ORDER[9]
         insert_at = len(new_sections)
         for index, (section_id, _section_payload) in enumerate(new_sections):
-            if section_id != 0 and _STANDARD_SECTION_ORDER.get(section_id, 100) > element_order:
+            if (
+                section_id != 0
+                and _STANDARD_SECTION_ORDER.get(section_id, 100) > element_order
+            ):
                 insert_at = index
                 break
         new_sections.insert(insert_at, (9, payload))
@@ -400,11 +403,7 @@ def _collect_output_export_symbol_map(data: bytes) -> dict[str, str]:
             mapping[public_name] = public_name
             continue
         preferred = next(
-            (
-                name
-                for name in candidates
-                if name.startswith("__molt_output_export_")
-            ),
+            (name for name in candidates if name.startswith("__molt_output_export_")),
             None,
         )
         if preferred is None:
@@ -1172,9 +1171,7 @@ def _rewrite_runtime_imports_in_module(
 
             new_module = module
             new_name = name
-            if module == source_module and _runtime_import_kind_can_rewrite(
-                kind, name
-            ):
+            if module == source_module and _runtime_import_kind_can_rewrite(kind, name):
                 target_name, force_export = _runtime_import_rewrite_target(
                     name, runtime_exports, split_runtime=split_runtime
                 )
@@ -1358,7 +1355,36 @@ def _rewrite_output_imports(
 
 def _canonicalize_standard_section_order(data: bytes) -> bytes | None:
     sections = _parse_sections(data)
-    indexed_sections = list(enumerate(sections))
+    vector_section_ids = {1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 13}
+    merged_sections: list[tuple[int, bytes]] = []
+    merged_indices: dict[int, int] = {}
+    changed = False
+    for section_id, payload in sections:
+        if section_id == 0 or section_id not in merged_indices:
+            merged_indices.setdefault(section_id, len(merged_sections))
+            merged_sections.append((section_id, payload))
+            continue
+        if section_id not in vector_section_ids:
+            raise ValueError(f"duplicate singleton standard section id {section_id}")
+        existing_index = merged_indices[section_id]
+        existing_payload = merged_sections[existing_index][1]
+        if section_id == 7:
+            merged_sections[existing_index] = (
+                section_id,
+                _merge_export_section_payloads(existing_payload, payload),
+            )
+            changed = True
+            continue
+        existing_count, existing_offset = _read_varuint(existing_payload, 0)
+        added_count, added_offset = _read_varuint(payload, 0)
+        merged_sections[existing_index] = (
+            section_id,
+            _write_varuint(existing_count + added_count)
+            + existing_payload[existing_offset:]
+            + payload[added_offset:],
+        )
+        changed = True
+    indexed_sections = list(enumerate(merged_sections))
     canonical = sorted(
         indexed_sections,
         key=lambda item: (
@@ -1366,9 +1392,60 @@ def _canonicalize_standard_section_order(data: bytes) -> bytes | None:
             item[0],
         ),
     )
-    if [index for index, _section in canonical] == list(range(len(sections))):
+    if not changed and [index for index, _section in canonical] == list(
+        range(len(merged_sections))
+    ):
         return None
     return _build_sections([section for _index, section in canonical])
+
+
+def _merge_export_section_payloads(first: bytes, second: bytes) -> bytes:
+    entries: dict[str, tuple[int, int]] = {}
+    ordered: list[tuple[str, int, int]] = []
+    for payload in (first, second):
+        count, offset = _read_varuint(payload, 0)
+        for _ in range(count):
+            name, offset = _read_string(payload, offset)
+            if offset >= len(payload):
+                raise ValueError("Unexpected EOF while merging export sections")
+            kind = payload[offset]
+            index, offset = _read_varuint(payload, offset + 1)
+            existing = entries.get(name)
+            if existing is not None:
+                continue
+            entries[name] = (kind, index)
+            ordered.append((name, kind, index))
+        if offset != len(payload):
+            raise ValueError("Trailing bytes while merging export sections")
+    merged = bytearray(_write_varuint(len(ordered)))
+    for name, kind, index in ordered:
+        merged.extend(_write_string(name))
+        merged.append(kind)
+        merged.extend(_write_varuint(index))
+    return bytes(merged)
+
+
+def _standard_section_order_error(data: bytes) -> str | None:
+    last_section_id: int | None = None
+    last_order = 0
+    seen: set[int] = set()
+    for section_id, _payload in _parse_sections(data):
+        if section_id == 0:
+            continue
+        order = _STANDARD_SECTION_ORDER.get(section_id)
+        if order is None:
+            return f"unknown standard section id {section_id}"
+        if section_id in seen:
+            return f"duplicate standard section id {section_id}"
+        if order < last_order:
+            return (
+                f"standard section id {section_id} follows id {last_section_id}; "
+                "expected canonical WebAssembly section order"
+            )
+        seen.add(section_id)
+        last_section_id = section_id
+        last_order = order
+    return None
 
 
 def _split_app_reference_function_exports(reference_data: bytes | None) -> set[str]:
