@@ -4,13 +4,22 @@
 
 | Rank | Rung | Live evidence | Gain / validation cost | Status |
 |---:|---|---|---|---|
-| 1 | Frontend lowering cache admission | R8 attributed sample was 82.40% frontend lowering with 0/145 cache hits and 199.8s re-lowered | Very high / medium | BUILD-TIME-R9 NEXT |
+| 1 | Frontend lowering cache admission | R9 measured 0/145 -> 145/145 hits and 199.140s -> 0.000s re-lowered | Very high / medium | BUILD-TIME-R9 COMPLETE |
 | 2 | Runtime-wasm cache-first combined-build ordering | Original 319.6s -> 259.8s signal did not reproduce after origin/main advanced | Marginal / medium | BUILD-TIME-R6 DROPPED |
 | 3 | Import-strip / split restoration frontier | Every sample reaches linked validation after app/runtime generation | Correctness blocker / separate owner | OBSERVED |
 | 4 | Runtime crate split for true source misses | Current-origin fingerprint population sample was 576.5s | Medium / high | OPEN |
 | 5 | R73.3 provisioned extension archives | Cold ecosystem cross-compile remains outside warm iteration floor | Very high / very high | OPEN |
 
 ## Iteration Log
+
+### BUILD-TIME-R9 - effective frontend lowering cache admission
+
+- Root cause: every witness invocation runs Molt from a fresh uv overlay installation (`C:\Molt\.uv-cache\builds-v0\.tmp*`). `_compiler_root()` therefore changed every run, and the source-tree fingerprint fallback embedded stat metadata (`mtime`/`ctime` and file count) from that ephemeral copy into the frontend semantic compiler fingerprint. Identical compiler bytes produced a different context digest for all 145 modules. The final residual miss was the same provenance bug in `_module_lowering_cache_key`, which keyed the generated namespace module on its run-specific physical output path.
+- Fix: source-tree cache fingerprints are now content identities only (schema, scope, extra inputs, root-relative file names, and tracked bytes). Module-lowering slots key on source content plus module/package/target identity instead of physical path. The old stat/root and path-provenance identity lanes are deleted; payload context digest and source-sha validation remain the correctness authorities.
+- Final population row `20260712T003540-pact-witness-acceptance-43899784ba3f4b1e`: hits=0 misses=145 reused_s=0.0 relowered_s=199.140232 (intentional one-time schema/key population).
+- Final no-change warm row `20260712T004636-pact-witness-acceptance-3d3aa3098f9e46fa`: hits=145 misses=0 hit_rate=1.0 reused_s=199.140232 relowered_s=0.0. The build reached the identical known split-runtime native direct-symbol frontier.
+- Byte identity: cold and warm `output.wasm` both have SHA-256 `9E37E67CBC91BE7BD60088D1B56BE13922EEEE8ECED67B30D6A7EDDD5359847C`.
+- Anti-recurrence: `tools/build_health_gate.py --cold-diagnostics COLD --diagnostics WARM --strict` hard-fails when the paired warm hit rate is below 90%, the sample is too small, or observed module counts differ. Focused fingerprint/cache/gate tests cover ephemeral install roots, mtime-only churn, generated output-path churn, persisted-result equality, and the measured gate floor.
 
 ### BUILD-TIME-R8 — durable per-phase attribution
 
@@ -44,6 +53,6 @@
 
 ## Next Actions
 
-1. Trace why the representative build admitted zero of 145 modules into the persisted frontend lowering cache, then unify the invalidation/admission authority rather than adding another cache lane.
-2. Preserve R8's share-of-total schema for every future build-time landing; use absolute cohorts only on a quiescent host.
+1. Attack the now-dominant warm module-graph phase (228.06s / 74.02% in the R9 warm attribution) through one content-addressed graph authority.
+2. Preserve R8's share-of-total schema and R9's warm-pair cache-effect gate for every future build-time landing; use absolute cohorts only on a quiescent host.
 3. Preserve the 331.6s current-origin baseline cohort as the absolute comparison authority unless origin/main or toolchain fingerprints change.

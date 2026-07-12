@@ -832,16 +832,22 @@ def _module_lowering_cache_key(
     is_package: bool,
     target_python: TargetPythonVersion,
 ) -> str:
-    """Coarse session-local key for one module-lowering slot.
+    """Content-addressed key for one module-lowering slot.
 
-    Deliberately coarse (path + module + pkg/mod + target Python): the
-    session-local ``.molt_state`` dir holds a single build identity per build, and
-    the ``context_digest`` re-checked on read is the correctness authority. The
-    shared tier folds the ``context_digest`` into its slot name so distinct
-    identities never collide (see ``_shared_module_lowering_cache_path``).
+    The physical source path is provenance, not semantics: generated namespace
+    modules are recreated under each build's output directory. Key on source bytes
+    plus module/package/target identity so identical generated source reuses the
+    same slot across runs. ``context_digest`` remains the full lowering-context
+    correctness authority and the payload source hash is revalidated on read.
     """
+    try:
+        path_stat = path.stat()
+    except OSError:
+        source_identity = os.fspath(path)
+    else:
+        source_identity = _source_content_sha256(path, path_stat) or os.fspath(path)
     return _resolved_module_cache_key(
-        os.fspath(path),
+        source_identity,
         module_name,
         "pkg" if is_package else "mod",
         target_python.tag,
