@@ -1062,6 +1062,12 @@ pub unsafe fn init_static_types() {
             // MORTAL). Immortal-init them through the single authority so a net
             // over-DECREF cannot `tp_dealloc` a statically-allocated type.
             $ty.ob_base.ob_base.ob_refcnt = IMMORTAL_REFCNT;
+            // Every type object's metatype is `type` (CPython `Py_TYPE(&Py*_Type)
+            // == &PyType_Type`). `zeroed()` left `ob_type` NULL, so hashing a
+            // static type object (numpy hashes the `object` type during dtype
+            // registration) found a NULL metatype -> NULL tp_hash -> "unhashable
+            // type: 'object'". `&PyType_Type` is a stable static address here.
+            $ty.ob_base.ob_base.ob_type = &raw mut PyType_Type;
         };
     }
     unsafe {
@@ -1223,6 +1229,9 @@ pub unsafe fn init_static_types() {
             ($ty:expr, $flags:expr, $base:expr) => {
                 $ty.tp_flags = ($flags) | Py_TPFLAGS_READY;
                 $ty.tp_base = $base;
+                // Metatype of every type object is `type` (see set_name!). Without
+                // this, hashing / type(obj) on a static type finds a NULL ob_type.
+                $ty.ob_base.ob_base.ob_type = &raw mut PyType_Type;
             };
         }
         let object: *mut PyTypeObject = &raw mut PyBaseObject_Type;
@@ -2077,6 +2086,32 @@ mod immortal_authority_tests {
                     h,
                     Some(hni),
                     "{name}.tp_hash must be PyObject_HashNotImplemented (stay unhashable)"
+                );
+            }
+        }
+    }
+
+    /// Mask-proof: every static type object's metatype is `type`
+    /// (`Py_TYPE(&Py*_Type) == &PyType_Type`). molt's `set_name!`/`shell!` left
+    /// `ob_type` NULL from `zeroed()`, so hashing a static type object (numpy
+    /// hashes the `object` type during dtype registration) found a NULL metatype
+    /// -> NULL tp_hash -> "unhashable type: 'object'".
+    #[test]
+    fn static_types_carry_type_metatype() {
+        crate::bridge::molt_cpython_abi_init();
+        unsafe {
+            let type_type = &raw mut PyType_Type;
+            for (nm, t) in [
+                ("object", &raw const PyBaseObject_Type),
+                ("type", &raw const PyType_Type),
+                ("int", &raw const PyLong_Type),
+                ("list", &raw const PyList_Type),
+                ("dict", &raw const PyDict_Type),
+                ("tuple", &raw const PyTuple_Type),
+            ] {
+                assert!(
+                    std::ptr::eq((*t).ob_base.ob_base.ob_type, type_type),
+                    "{nm}.ob_type (metatype) must be &PyType_Type, not NULL"
                 );
             }
         }
