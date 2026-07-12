@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "claim": "OPT-MATRIX-R5",
+  "scenario": "real release linked-WASM metadata serial differential",
+  "profile": "release",
+  "hot_path": "linked Node startup needs imports but decoded every function and export signature before instantiation",
+  "complexity": {
+    "before": "O(type + import + function + export entries)",
+    "after": "O(type + import entries + section headers)"
+  },
+  "artifact": "C:\\Molt\\wt-optmatrix\\tmp\\opt_matrix_r1\\molt_runtime.release.wasm",
+  "artifact_sha256": "7588e70cb3bb990c0c572af631d8c3af6f37bc5e5316da2088fb105a9576766d",
+  "git_revision": "e4605e7160870bd49217bb3c08704d5433f49a5e",
+  "before": {
+    "runs": [
+      10.488599999999998,
+      10.680500000000002,
+      11.2366,
+      10.821500000000004,
+      10.630699999999997,
+      12.348500000000001,
+      10.4283
+    ],
+    "median_ms": 10.680500000000002
+  },
+  "after": {
+    "runs": [
+      3.044900000000002,
+      3.003,
+      3.1310000000000002,
+      3.1812000000000005,
+      2.9255999999999993,
+      3.654899999999998,
+      2.9692000000000007
+    ],
+    "median_ms": 3.044900000000002
+  },
+  "held_benches": {
+    "artifact_identity": true,
+    "import_metadata_parity": true,
+    "direct_link_signature_path_retained": true
+  },
+  "memory_ceiling": {
+    "pass": true,
+    "max_rss_bytes": 65130496
+  },
+  "contract": {
+    "artifact_bytes": 9720086,
+    "function_imports": 90,
+    "skipped_linked_function_exports": 4409
+  }
+}

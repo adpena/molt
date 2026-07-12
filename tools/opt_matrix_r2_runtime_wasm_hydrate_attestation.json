@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "claim": "OPT-MATRIX-R2",
+  "scenario": "real release runtime-WASM exact-cache hydrate serial differential",
+  "profile": "release",
+  "hot_path": "exact-identity shared-cache hydrate validates and copies the release runtime WASM",
+  "complexity": {
+    "before": "2 * O(artifact_bytes) structural validation plus O(artifact_bytes) copy",
+    "after": "1 * O(artifact_bytes) structural validation plus O(artifact_bytes) atomic copy"
+  },
+  "artifact": "C:\\Users\\adpen\\AppData\\Local\\Molt\\runtime_wasm\\molt_runtime.shared.a483589efdecb6792fa3d91fd6d9afe7058d71f1d2cde29d3e497480d123892d.4329c1601caeaab3f2aec68410e7dedcb6245b9fcc82a13f1abcfea9103608ee.wasm",
+  "artifact_sha256": "cdb37f9de8219325a66f66b2fd22fad3f54875fc37f21d805272e8d816bf5095",
+  "artifact_bytes": 45871431,
+  "before": {
+    "mode": "validate source, atomic copy, validate destination",
+    "runs": [
+      2204.8351000003095,
+      1136.6379000000961,
+      1088.4134999996604,
+      1094.7572000004584,
+      1110.1237999992009,
+      1127.8393000002325,
+      1111.2847000003967
+    ],
+    "median_ms": 1111.2847000003967
+  },
+  "after": {
+    "mode": "validate source once, atomic copy",
+    "runs": [
+      545.308799999475,
+      555.5496000006315,
+      550.811099999919,
+      554.2158000007475,
+      572.3651999996946,
+      570.1291000004858,
+      546.8736000002536
+    ],
+    "median_ms": 554.2158000007475
+  },
+  "held_benches": {
+    "byte_identity": true,
+    "source_structural_validation": true,
+    "atomic_copy_failure_is_miss": true
+  },
+  "memory_ceiling": {
+    "pass": true,
+    "max_rss_bytes": 144908288
+  }
+}
