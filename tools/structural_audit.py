@@ -1730,11 +1730,14 @@ def probe_duplicate_authorities(root: Path) -> list[Finding]:
     for path in _iter_source_files(root, (".rs",)):
         if _is_generated(path):
             continue
+        rel_path = path.relative_to(root)
+        if path.name == "tests.rs" or "tests" in rel_path.parts:
+            continue
         try:
             text = path.read_text(errors="replace")
         except OSError:
             continue
-        rel = path.relative_to(root).as_posix()
+        rel = rel_path.as_posix()
         # Test code is not a semantic authority: predicates inside the file's test
         # module (`#[cfg(test)]` / `mod tests`) are regression fixtures whose names
         # happen to match a property keyword (e.g. `side_effecting_ops_preserved`).
