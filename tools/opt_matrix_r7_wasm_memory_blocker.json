@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "claim": "OPT-MATRIX-R7",
+  "rung": "wasm-browser split + wasm-server/wasi release memory",
+  "verdict": "DOCUMENTED-BLOCKED",
+  "profile": "release",
+  "artifact": "tmp/opt_matrix_r1/molt_runtime.release.wasm",
+  "artifact_sha256": "7588e70cb3bb990c0c572af631d8c3af6f37bc5e5316da2088fb105a9576766d",
+  "artifact_bytes": 9720086,
+  "samples": 7,
+  "hot_path": "V8 process startup, release artifact residency and metadata parsing, exact declared linear memory, and synchronous module compilation",
+  "complexity": {
+    "linear_memory": "O(declared initial pages)",
+    "artifact_residency": "O(artifact bytes)",
+    "module_compilation": "O(code and data sections)"
+  },
+  "observed_medians": {
+    "node_baseline_rss_bytes": 38072320,
+    "artifact_metadata_rss_bytes": 61435904,
+    "artifact_plus_declared_memory_rss_bytes": 61882368,
+    "compiled_module_rss_bytes": 73060352,
+    "declared_memory_committed_rss_delta_bytes": 446464,
+    "compile_rss_delta_bytes": 11624448
+  },
+  "linear_memory_contract": {
+    "initial_pages": 48,
+    "page_bytes": 65536,
+    "virtual_bytes": 3145728,
+    "node_and_browser_authority": "both wasm/run_wasm.js and wasm/browser_host.js allocate WebAssembly.Memory from the parsed import minimum"
+  },
+  "blocking_evidence": [
+    "The exact 48-page WebAssembly.Memory adds only 446,464 bytes of median committed RSS over the identical artifact-read and metadata-parse phase, below both the 1 MiB and 10% optimization-admission thresholds.",
+    "The 3,145,728-byte linear-memory reservation is virtual address space; reducing it without a committed-working-set win would violate the memory evidence contract.",
+    "The measurable release RSS is artifact-driven: artifact residency and metadata add 23,363,584 bytes over Node baseline, while V8 compilation adds another 11,624,448 bytes.",
+    "The artifact-driven opportunity is the higher-ranked Binaryen tree-shake rung, whose required tools/wasm_link.py and tools/wasm_toolchain.py authority is reserved by the active wasmld-toolchain lane this cycle."
+  ],
+  "unblock_condition": {
+    "admission": "attribute at least 1 MiB or 10% of release host RSS to one removable committed Molt-owned allocation, not virtual reservation",
+    "tree_shake_dependency": "after the wasmld-toolchain lane lands, remeasure the tree-shaken release artifact and V8 compilation RSS using tools/benchmark_wasm_memory.py",
+    "browser_custody": "for a browser-specific reopen, capture Chromium process-tree peak RSS with the same release bytes and exact 48-page contract; JavaScript heap or Node proxy numbers are insufficient",
+    "acceptance": "at least seven alternating release samples, identical artifact/output contract, strict tools/powerplay_acceptance.py Variant-II acceptance, held-bench never-regress proof, and a lower peak-RSS ceiling"
+  },
+  "evidence": "tools/opt_matrix_r7_wasm_memory_profile.json"
+}

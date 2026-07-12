@@ -817,12 +817,20 @@ def test_static_wasm_loader_bridge_owns_binary_parser_authority() -> None:
 
     root = Path(__file__).resolve().parents[1]
     bridge = (root / "wasm/loader_bridge.js").read_text(encoding="utf-8")
+    run_wasm = (root / "wasm/run_wasm.js").read_text(encoding="utf-8")
     assert "const extractWasmTableBase = (buffer) => {" in bridge
-    assert "const parseWasmExportFunctionSignatures = (buffer) => {" in bridge
+    assert "const parseWasmMetadata = (buffer, options = {}) => {" in bridge
     assert "const reservedRuntimeCallablesFromManifest = (manifest) => {" in bridge
     assert "extractWasmTableBase," in bridge
+    assert "parseWasmMetadata," in bridge
     assert "parseWasmExportFunctionSignatures," in bridge
     assert "reservedRuntimeCallablesFromManifest," in bridge
+    assert "const parseWasmImports = (buffer, options = {}) =>\n    parseWasmMetadata(buffer, options).imports;" in bridge
+    assert "const parseWasmExportFunctionSignatures = (buffer) =>\n    parseWasmMetadata(buffer).exportFunctionSignatures;" in bridge
+    assert "const outputMetadata = parseWasmMetadata(wasmBuffer, {" in run_wasm
+    assert "exportFunctionSignatures: directLinkRequested || (!linkedBuffer && Boolean(runtimeBuffer))," in run_wasm
+    assert "const runtimeMetadata = parseWasmMetadata(runtimeBuffer);" in run_wasm
+    assert "const includeExportFunctionSignatures = options.exportFunctionSignatures !== false;" in bridge
 
     consumers = {
         "wasm/browser_host.js": (
@@ -832,6 +840,7 @@ def test_static_wasm_loader_bridge_owns_binary_parser_authority() -> None:
         ),
         "wasm/run_wasm.js": (
             "require('./loader_bridge.js')",
+            "parseWasmMetadata,",
             "parseWasmExportFunctionSignatures: parseWasmExportFunctionSignaturesFromBridge",
             "reservedRuntimeCallablesFromManifest,",
         ),

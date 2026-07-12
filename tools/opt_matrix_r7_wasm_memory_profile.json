@@ -1,0 +1,280 @@
+{
+  "schema_version": 1,
+  "claim": "OPT-MATRIX-R7",
+  "scenario": "real release WASM memory phase profile",
+  "profile": "release",
+  "hot_path": "V8 process startup, exact declared linear memory, artifact residency, and synchronous module compilation",
+  "complexity": {
+    "baseline": "O(1)",
+    "memory": "O(declared initial pages)",
+    "read": "O(artifact bytes)",
+    "compile": "O(code and data sections)"
+  },
+  "artifact": "C:\\Molt\\wt-optmatrix\\tmp\\opt_matrix_r1\\molt_runtime.release.wasm",
+  "artifact_sha256": "7588e70cb3bb990c0c572af631d8c3af6f37bc5e5316da2088fb105a9576766d",
+  "artifact_bytes": 9720086,
+  "git_revision": "95acbca7a9aaed36fe4820b007e409ebeb85f157",
+  "samples": 7,
+  "runs": {
+    "baseline": [
+      {
+        "elapsed_ms": 21.058600000000002,
+        "rss_bytes": 38027264,
+        "artifact_bytes": 0,
+        "memory_pages": null,
+        "linear_memory_bytes": 0,
+        "compiled": false
+      },
+      {
+        "elapsed_ms": 10.051199999999998,
+        "rss_bytes": 38072320,
+        "artifact_bytes": 0,
+        "memory_pages": null,
+        "linear_memory_bytes": 0,
+        "compiled": false
+      },
+      {
+        "elapsed_ms": 23.2952,
+        "rss_bytes": 38252544,
+        "artifact_bytes": 0,
+        "memory_pages": null,
+        "linear_memory_bytes": 0,
+        "compiled": false
+      },
+      {
+        "elapsed_ms": 10.092099999999999,
+        "rss_bytes": 38014976,
+        "artifact_bytes": 0,
+        "memory_pages": null,
+        "linear_memory_bytes": 0,
+        "compiled": false
+      },
+      {
+        "elapsed_ms": 9.9417,
+        "rss_bytes": 38047744,
+        "artifact_bytes": 0,
+        "memory_pages": null,
+        "linear_memory_bytes": 0,
+        "compiled": false
+      },
+      {
+        "elapsed_ms": 10.1389,
+        "rss_bytes": 38137856,
+        "artifact_bytes": 0,
+        "memory_pages": null,
+        "linear_memory_bytes": 0,
+        "compiled": false
+      },
+      {
+        "elapsed_ms": 9.875499999999995,
+        "rss_bytes": 38100992,
+        "artifact_bytes": 0,
+        "memory_pages": null,
+        "linear_memory_bytes": 0,
+        "compiled": false
+      }
+    ],
+    "memory": [
+      {
+        "elapsed_ms": 29.0501,
+        "rss_bytes": 61906944,
+        "artifact_bytes": 9720086,
+        "memory_pages": 48,
+        "linear_memory_bytes": 3145728,
+        "compiled": false
+      },
+      {
+        "elapsed_ms": 26.113,
+        "rss_bytes": 61882368,
+        "artifact_bytes": 9720086,
+        "memory_pages": 48,
+        "linear_memory_bytes": 3145728,
+        "compiled": false
+      },
+      {
+        "elapsed_ms": 27.318499999999997,
+        "rss_bytes": 60477440,
+        "artifact_bytes": 9720086,
+        "memory_pages": 48,
+        "linear_memory_bytes": 3145728,
+        "compiled": false
+      },
+      {
+        "elapsed_ms": 28.527899999999995,
+        "rss_bytes": 61431808,
+        "artifact_bytes": 9720086,
+        "memory_pages": 48,
+        "linear_memory_bytes": 3145728,
+        "compiled": false
+      },
+      {
+        "elapsed_ms": 24.6544,
+        "rss_bytes": 62369792,
+        "artifact_bytes": 9720086,
+        "memory_pages": 48,
+        "linear_memory_bytes": 3145728,
+        "compiled": false
+      },
+      {
+        "elapsed_ms": 27.3418,
+        "rss_bytes": 59596800,
+        "artifact_bytes": 9720086,
+        "memory_pages": 48,
+        "linear_memory_bytes": 3145728,
+        "compiled": false
+      },
+      {
+        "elapsed_ms": 28.769199999999998,
+        "rss_bytes": 63217664,
+        "artifact_bytes": 9720086,
+        "memory_pages": 48,
+        "linear_memory_bytes": 3145728,
+        "compiled": false
+      }
+    ],
+    "read": [
+      {
+        "elapsed_ms": 28.658299999999997,
+        "rss_bytes": 62132224,
+        "artifact_bytes": 9720086,
+        "memory_pages": 48,
+        "linear_memory_bytes": 0,
+        "compiled": false
+      },
+      {
+        "elapsed_ms": 25.8782,
+        "rss_bytes": 61571072,
+        "artifact_bytes": 9720086,
+        "memory_pages": 48,
+        "linear_memory_bytes": 0,
+        "compiled": false
+      },
+      {
+        "elapsed_ms": 28.6939,
+        "rss_bytes": 60354560,
+        "artifact_bytes": 9720086,
+        "memory_pages": 48,
+        "linear_memory_bytes": 0,
+        "compiled": false
+      },
+      {
+        "elapsed_ms": 27.626100000000005,
+        "rss_bytes": 61435904,
+        "artifact_bytes": 9720086,
+        "memory_pages": 48,
+        "linear_memory_bytes": 0,
+        "compiled": false
+      },
+      {
+        "elapsed_ms": 26.498300000000004,
+        "rss_bytes": 61607936,
+        "artifact_bytes": 9720086,
+        "memory_pages": 48,
+        "linear_memory_bytes": 0,
+        "compiled": false
+      },
+      {
+        "elapsed_ms": 27.23420000000001,
+        "rss_bytes": 61034496,
+        "artifact_bytes": 9720086,
+        "memory_pages": 48,
+        "linear_memory_bytes": 0,
+        "compiled": false
+      },
+      {
+        "elapsed_ms": 25.255999999999997,
+        "rss_bytes": 54947840,
+        "artifact_bytes": 9720086,
+        "memory_pages": 48,
+        "linear_memory_bytes": 0,
+        "compiled": false
+      }
+    ],
+    "compile": [
+      {
+        "elapsed_ms": 38.7329,
+        "rss_bytes": 72921088,
+        "artifact_bytes": 9720086,
+        "memory_pages": 48,
+        "linear_memory_bytes": 0,
+        "compiled": true
+      },
+      {
+        "elapsed_ms": 36.8848,
+        "rss_bytes": 73113600,
+        "artifact_bytes": 9720086,
+        "memory_pages": 48,
+        "linear_memory_bytes": 0,
+        "compiled": true
+      },
+      {
+        "elapsed_ms": 38.976099999999995,
+        "rss_bytes": 73093120,
+        "artifact_bytes": 9720086,
+        "memory_pages": 48,
+        "linear_memory_bytes": 0,
+        "compiled": true
+      },
+      {
+        "elapsed_ms": 38.1857,
+        "rss_bytes": 73060352,
+        "artifact_bytes": 9720086,
+        "memory_pages": 48,
+        "linear_memory_bytes": 0,
+        "compiled": true
+      },
+      {
+        "elapsed_ms": 36.9951,
+        "rss_bytes": 74084352,
+        "artifact_bytes": 9720086,
+        "memory_pages": 48,
+        "linear_memory_bytes": 0,
+        "compiled": true
+      },
+      {
+        "elapsed_ms": 38.5313,
+        "rss_bytes": 68493312,
+        "artifact_bytes": 9720086,
+        "memory_pages": 48,
+        "linear_memory_bytes": 0,
+        "compiled": true
+      },
+      {
+        "elapsed_ms": 40.410799999999995,
+        "rss_bytes": 71229440,
+        "artifact_bytes": 9720086,
+        "memory_pages": 48,
+        "linear_memory_bytes": 0,
+        "compiled": true
+      }
+    ]
+  },
+  "medians": {
+    "baseline": {
+      "rss_bytes": 38072320.0,
+      "elapsed_ms": 10.092099999999999
+    },
+    "memory": {
+      "rss_bytes": 61882368.0,
+      "elapsed_ms": 27.3418
+    },
+    "read": {
+      "rss_bytes": 61435904.0,
+      "elapsed_ms": 27.23420000000001
+    },
+    "compile": {
+      "rss_bytes": 73060352.0,
+      "elapsed_ms": 38.5313
+    }
+  },
+  "contract": {
+    "memory_pages": 48,
+    "linear_memory_bytes": 3145728,
+    "page_bytes": 65536
+  },
+  "attribution": {
+    "artifact_metadata_rss_delta_bytes": 23363584.0,
+    "declared_memory_committed_rss_delta_bytes": 446464.0,
+    "compile_rss_delta_bytes": 11624448.0
+  }
+}
