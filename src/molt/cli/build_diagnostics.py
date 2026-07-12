@@ -1154,6 +1154,18 @@ def _build_build_diagnostics_payload(
         phase_sec=phase_sec,
         pipeline_stage_ms=pipeline_stage_ms,
     )
+    wasm_link_operation_counts = {
+        str(name): int(value)
+        for name, value in pipeline_stage_ms.items()
+        if str(name).startswith("split_app_")
+        and isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and float(value).is_integer()
+    }
+    if wasm_link_operation_counts:
+        payload["wasm_link_operation_counts"] = dict(
+            sorted(wasm_link_operation_counts.items())
+        )
     lowering_cache_summary = _frontend_lowering_cache_summary(frontend_parallel_payload)
     if lowering_cache_summary is not None:
         payload["frontend_lowering_cache"] = lowering_cache_summary

@@ -4,14 +4,24 @@
 
 | Rank | Rung | Live evidence | Gain / validation cost | Status |
 |---:|---|---|---|---|
-| 1 | Native-support import-scan reuse | R10 measured 91 -> 0 warm source parses and 91/91 persisted import-scan hits | High / medium | BUILD-TIME-R10 COMPLETE |
-| 2 | Frontend lowering cache admission | R9 measured 0/145 -> 145/145 hits and 199.140s -> 0.000s re-lowered | Very high / medium | BUILD-TIME-R9 COMPLETE |
-| 3 | Runtime-wasm cache-first combined-build ordering | Original 319.6s -> 259.8s signal did not reproduce after origin/main advanced | Marginal / medium | BUILD-TIME-R6 DROPPED |
-| 4 | Import-strip / split restoration frontier | Every sample reaches linked validation after app/runtime generation | Correctness blocker / separate owner | OBSERVED |
-| 5 | Runtime crate split for true source misses | Current-origin fingerprint population sample was 576.5s | Medium / high | OPEN |
-| 6 | R73.3 provisioned extension archives | Cold ecosystem cross-compile remains outside warm iteration floor | Very high / very high | OPEN |
+| 1 | Split-app Binaryen result reuse | R11 measured 1 -> 0 warm wasm-opt runs and split-runtime processing 115.665s -> 64.188s | High / medium | BUILD-TIME-R11 COMPLETE |
+| 2 | Native-support import-scan reuse | R10 measured 91 -> 0 warm source parses and 91/91 persisted import-scan hits | High / medium | BUILD-TIME-R10 COMPLETE |
+| 3 | Frontend lowering cache admission | R9 measured 0/145 -> 145/145 hits and 199.140s -> 0.000s re-lowered | Very high / medium | BUILD-TIME-R9 COMPLETE |
+| 4 | Runtime-wasm cache-first combined-build ordering | Original 319.6s -> 259.8s signal did not reproduce after origin/main advanced | Marginal / medium | BUILD-TIME-R6 DROPPED |
+| 5 | Import-strip / split restoration frontier | Every sample reaches linked validation after app/runtime generation | Correctness blocker / separate owner | OBSERVED |
+| 6 | Runtime crate split for true source misses | Current-origin fingerprint population sample was 576.5s | Medium / high | OPEN |
+| 7 | R73.3 provisioned extension archives | Cold ecosystem cross-compile remains outside warm iteration floor | Very high / very high | OPEN |
 
 ## Iteration Log
+
+### BUILD-TIME-R11 - split-app Binaryen result reuse
+
+- Warm re-attribution row `20260712T084410-pact-witness-acceptance-474acaca80b74c1d` retained 145/145 frontend-lowering hits and 91/91 persisted native-support import-scan hits. WASM link was 200.075s / 42.36% inclusive; split-runtime processing was the dominant link leaf at 115.665s / 24.49% of total, ahead of wasm-link core at 51.677s.
+- Operation profile: every identical warm app issued one split-app optimization request and one Binaryen `wasm-opt` pipeline over the same 29,956,413-byte pre-optimization artifact. Binaryen documents that its tools are deterministic for identical inputs, so the missing authority was a content-addressed result cache keyed by app bytes, reference bytes, contract exports, optimize policy, executable, and Binaryen version.
+- Fix: `tools/wasm_link.py` now owns a durable split-app optimizer cache beside the existing runtime tree-shake cache. The superseded unconditional repeated optimization lane is deleted. Link diagnostics publish request, cache-hit/miss, and wasm-opt-run operation counts; build diagnostics expose them as `wasm_link_operation_counts`.
+- Population row `20260712T090036-pact-witness-acceptance-3a65c6530d2d46a0` recorded request=1, miss=1, wasm-opt runs=1 and is excluded. Authoritative warm row `20260712T091505-pact-witness-acceptance-d1dd6780b4504901` recorded request=1, hit=1, wasm-opt runs=0. Split-runtime processing fell from 115.665s to 64.188s (-51.477s / -44.51%); inclusive WASM link fell from 200.075s to 152.467s (-47.608s / -23.79%). Total fell from 472.297s to 442.764s, but operation counts are the primary host-noise-robust claim.
+- Artifact identity held across baseline, population, and warm hit: `output.wasm` SHA-256 `9e37e67cbc91be7bd60088d1b56be13922eeee8eced67b30d6a7eddd5359847c`; `app.wasm` SHA-256 `91b9b9d64847989cf628acda4a593f7f9514159e6dcae5815ed0a34a267c77b1`; `molt_runtime.wasm` SHA-256 `4b1db262d828734fff9604ac65ab965fbd80cf74fca8336b6ae56346a97d3987`. Both patched rows reached the identical `_multiarray_umath` `Py_mod_exec` unhashable-type frontier.
+- Focused proof covers cache miss then hit, exact output reuse, attestation reuse, and 1 -> 0 optimizer runs. Next prize: profile the remaining 64.188s split-runtime floor by full-binary parse/rewrite counts, especially repeated contract restoration, table-ref materialization, publication stripping, and validation scans.
 
 ### BUILD-TIME-R10 - native-support import-scan reuse
 
@@ -65,6 +75,6 @@
 
 ## Next Actions
 
-1. Re-attribute the clean landed tree and profile split-runtime processing / wasm link by operation count; it is the next structural prize after R10 removed warm support-source parsing.
-2. Preserve R8's share-of-total schema, R9's warm-pair cache-effect gate, and R10's module-graph operation counts for every future build-time landing.
+1. Profile the remaining split-runtime processing floor by full-binary parse/rewrite counts and remove the next repeated whole-artifact scan class.
+2. Preserve R8's share-of-total schema, R9's warm-pair cache-effect gate, R10's module-graph operation counts, and R11's link operation counts for every future build-time landing.
 3. Preserve the 331.6s historical current-origin cohort only as pre-R9 archaeology; current absolute comparisons require a same-fingerprint warm cohort.
