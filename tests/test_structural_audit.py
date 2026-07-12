@@ -705,6 +705,26 @@ def test_generated_marker_inside_string_literal_is_not_generated(tmp_path: Path)
     assert not SA._is_generated(path)
 
 
+def test_duplicate_authority_probe_ignores_split_rust_test_modules(tmp_path: Path):
+    passes = tmp_path / "runtime" / "molt-passes" / "src" / "tir" / "passes"
+    tests = passes / "gvn"
+    tests.mkdir(parents=True)
+    (passes / "effects.rs").write_text(
+        "fn opcode_is_side_effecting(opcode: OpCode) -> bool {\n"
+        "    matches!(opcode, OpCode::Call)\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (tests / "tests.rs").write_text(
+        "fn side_effecting_ops_preserved() {\n"
+        "    assert!(matches!(opcode, OpCode::Call));\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    assert SA.probe_duplicate_authorities(tmp_path) == []
+
+
 def test_kitchen_sink_metrics_are_ratchet_metrics():
     findings = [
         SA.Finding(

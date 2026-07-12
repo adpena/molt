@@ -31,6 +31,15 @@ _REAL_GIT_SNAPSHOT_TESTS = {
 def _proof_queue_unit_git_snapshot(
     request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Lane-maturity admission has its own focused test module. Keep the broad
+    # queue suite deterministic and scoped to the contract each test names;
+    # otherwise a developer's shared .molt registry can reject a synthetic WASM
+    # row before mutex, preflight, or detached-runner behavior is exercised.
+    monkeypatch.setattr(
+        proof_queue,
+        "_lane_maturity_admission",
+        lambda **_kwargs: SimpleNamespace(allow=True, reason="admitted"),
+    )
     if request.node.name in _REAL_GIT_SNAPSHOT_TESTS:
         return
     monkeypatch.setattr(proof_queue, "_git_snapshot", lambda cwd: _TEST_GIT_SNAPSHOT)
