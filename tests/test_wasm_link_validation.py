@@ -1660,6 +1660,7 @@ def test_split_publication_pipeline_preserves_complete_contract_after_every_stag
     app = _build_split_runtime_app_module([])
     main_index = wasm_link._collect_function_exports(app)["molt_main"]
     table_ref = wasm_link.table_ref_export_name(7)
+    public_export_map[table_ref] = table_ref
     for name in (*required_native, "user_export", table_ref):
         updated = wasm_link._ensure_export_by_index(
             app,
