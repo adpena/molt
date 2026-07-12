@@ -15,6 +15,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import shutil
 import subprocess
@@ -113,7 +114,25 @@ def _read_string(data: bytes, offset: int) -> tuple[str, int]:
     return data[offset:end].decode("utf-8"), end
 
 
-def _collect_function_exports(path: Path) -> set[str]:
+_SECTION_NAMES = {
+    0: "custom",
+    1: "type",
+    2: "import",
+    3: "function",
+    4: "table",
+    5: "memory",
+    6: "global",
+    7: "export",
+    8: "start",
+    9: "element",
+    10: "code",
+    11: "data",
+    12: "data_count",
+    13: "tag",
+}
+
+
+def _collect_exports(path: Path) -> set[str]:
     data = path.read_bytes()
     if len(data) < 8 or data[:4] != b"\0asm" or data[4:8] != b"\x01\0\0\0":
         return set()
@@ -136,13 +155,32 @@ def _collect_function_exports(path: Path) -> set[str]:
             name, cursor = _read_string(payload, cursor)
             if cursor >= len(payload):
                 raise ValueError("unexpected EOF while reading export kind")
-            kind = payload[cursor]
             cursor += 1
             _, cursor = _read_varuint(payload, cursor)
-            if kind == 0:
-                exports.add(name)
+            exports.add(name)
         break
     return exports
+
+
+def _section_metrics(path: Path) -> dict[str, object]:
+    data = path.read_bytes()
+    offset = 8
+    sections: dict[str, int] = {}
+    while offset < len(data):
+        section_id = data[offset]
+        offset += 1
+        section_size, offset = _read_varuint(data, offset)
+        section_end = offset + section_size
+        if section_end > len(data):
+            raise ValueError("unexpected EOF while reading section")
+        name = _SECTION_NAMES.get(section_id, f"unknown({section_id})")
+        sections[name] = sections.get(name, 0) + section_size
+        offset = section_end
+    return {
+        "file_bytes": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "sections": dict(sorted(sections.items())),
+    }
 
 
 def optimize(
@@ -153,6 +191,7 @@ def optimize(
     *,
     converge: bool = True,
     required_exports: set[str] | frozenset[str] | None = None,
+    apply_level: bool = True,
 ) -> dict[str, object]:
     """Run ``wasm-opt`` on *input_path*.
 
@@ -203,7 +242,10 @@ def optimize(
 
     input_bytes = input_path.stat().st_size
 
-    cmd = [wasm_opt, f"-{level}", *_DEFAULT_FEATURE_FLAGS, "--strip-producers"]
+    cmd = [wasm_opt]
+    if apply_level:
+        cmd.append(f"-{level}")
+    cmd.extend([*_DEFAULT_FEATURE_FLAGS, "--strip-producers"])
     if converge:
         cmd.append("--converge")
     if extra_passes:
@@ -248,7 +290,7 @@ def optimize(
 
     if required_exports:
         try:
-            exports = _collect_function_exports(output_path)
+            exports = _collect_exports(output_path)
         except (OSError, ValueError) as exc:
             return {
                 "ok": False,
@@ -290,6 +332,15 @@ def optimize(
         "reduction_pct": round(pct, 2),
         "elapsed_s": round(elapsed, 3),
         "output_path": str(output_path),
+        "binaryen_version": subprocess.run(
+            [wasm_opt, "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout.strip(),
+        "pipeline": cmd[1:-3],
+        "before": _section_metrics(input_path),
+        "after": _section_metrics(output_path),
         "error": "",
     }
 

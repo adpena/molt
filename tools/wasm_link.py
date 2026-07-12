@@ -2173,7 +2173,11 @@ def _tree_shake_runtime(
 
         final_path = Path(tmp) / "runtime_final.wasm"
         final_path.write_bytes(shaken_data)
-        if _run_wasm_opt_via_optimize(final_path, level="Oz"):
+        if _run_wasm_opt_via_optimize(
+            final_path,
+            level="Oz",
+            apply_level=False,
+        ):
             final_data = final_path.read_bytes()
             try:
                 _write_cached_tree_shaken_runtime(cache_path, final_data)
@@ -2200,6 +2204,7 @@ def _optimize_split_app_module(
     optimize: bool,
     optimize_level: str,
     contract_keep_set: set[str],
+    attestation: dict[str, object] | None = None,
 ) -> bytes:
     """Deforest the split-runtime app artifact without collapsing its imports.
 
@@ -2234,6 +2239,8 @@ def _optimize_split_app_module(
             app_path,
             level=optimize_level,
             required_exports=required_function_exports,
+            apply_level=optimize_level != "Oz",
+            attestation=attestation,
         ):
             return optimized
         return app_path.read_bytes()
@@ -2538,25 +2545,14 @@ def _validate_split_runtime_outputs(app_wasm: Path, rt_wasm: Path) -> bool:
 
 # Pass pipelines from docs/spec/areas/wasm/WASM_OPTIMIZATION_PLAN.md Section 4.4.
 _OZ_PASSES: list[str] = [
-    "--closed-world",
     "--remove-unused-module-elements",
-    "--remove-unused-names",
     "--strip-debug",
     "--strip-producers",
-    "--coalesce-locals",
-    "--reorder-locals",
-    "--merge-locals",
+    "--dae-optimizing",
+    "--simplify-locals",
+    "--merge-blocks",
     "--dce",
     "--vacuum",
-    "--duplicate-function-elimination",
-    "--code-folding",
-    "--merge-similar-functions",
-    "--simplify-globals-optimizing",
-    "--precompute",
-    "--merge-blocks",
-    "--optimize-stack-ir",
-    "--reorder-functions",
-    "--dae-optimizing",
 ]
 
 _O3_PASSES: list[str] = [
@@ -2581,6 +2577,34 @@ _LEVEL_PASSES: dict[str, list[str]] = {
     "Oz": _OZ_PASSES,
     "O3": _O3_PASSES,
 }
+
+
+def _wasm_section_metrics(data: bytes) -> dict[str, object]:
+    section_names = {
+        0: "custom",
+        1: "type",
+        2: "import",
+        3: "function",
+        4: "table",
+        5: "memory",
+        6: "global",
+        7: "export",
+        8: "start",
+        9: "element",
+        10: "code",
+        11: "data",
+        12: "data_count",
+        13: "tag",
+    }
+    sections: dict[str, int] = {}
+    for section_id, payload in _parse_sections(data):
+        name = section_names.get(section_id, f"unknown({section_id})")
+        sections[name] = sections.get(name, 0) + len(payload)
+    return {
+        "file_bytes": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "sections": dict(sorted(sections.items())),
+    }
 
 
 def _append_table_refs_enabled() -> bool:
@@ -2762,6 +2786,8 @@ def _run_wasm_opt_via_optimize(
     *,
     converge: bool = True,
     required_exports: set[str] | None = None,
+    apply_level: bool = True,
+    attestation: dict[str, object] | None = None,
 ) -> bool:
     """Run wasm-opt on the linked binary via tools/wasm_optimize.py.
 
@@ -2801,6 +2827,7 @@ def _run_wasm_opt_via_optimize(
         extra_passes=extra_passes,
         converge=converge,
         required_exports=required_exports,
+        apply_level=apply_level,
     )
 
     if not result["ok"]:
@@ -2811,6 +2838,15 @@ def _run_wasm_opt_via_optimize(
         return False
 
     artifact_publish.publish_validated_outputs([(temp_output, linked)])
+    if attestation is not None:
+        attestation.update(
+            {
+                "binaryen_version": result.get("binaryen_version", ""),
+                "pipeline": result.get("pipeline", []),
+                "before": result.get("before", {}),
+                "after": result.get("after", {}),
+            }
+        )
 
     post_size = result["output_bytes"]
     savings = pre_size - post_size
@@ -2999,6 +3035,9 @@ def _run_wasm_ld_with_custodied_inputs(
     rt_wasm: Path | None = None
     app_stage: Path | None = None
     rt_stage: Path | None = None
+    size_attestation: dict[str, object] = {}
+    size_attestation_path: Path | None = None
+    size_attestation_stage: Path | None = None
 
     # When imports were rewritten to prefixed names that are missing from
     # the non-relocatable runtime's export section (e.g. inlined away by
@@ -3416,7 +3455,11 @@ def _run_wasm_ld_with_custodied_inputs(
             rt_wasm = out_dir / "molt_runtime.wasm"
             app_stage = artifact_publish.staged_output_path(app_wasm)
             rt_stage = artifact_publish.staged_output_path(rt_wasm)
-            staged_outputs.extend([app_stage, rt_stage])
+            size_attestation_path = out_dir / "wasm_size_attestation.json"
+            size_attestation_stage = artifact_publish.staged_output_path(
+                size_attestation_path
+            )
+            staged_outputs.extend([app_stage, rt_stage, size_attestation_stage])
 
             if split_native_app_cmd is not None:
                 assert split_native_app_path is not None
@@ -3579,6 +3622,7 @@ def _run_wasm_ld_with_custodied_inputs(
                     public_export_map=public_export_map,
                     required_native_direct_symbols=required_native_direct_symbols,
                 ),
+                attestation=size_attestation,
             )
             if output_memory_min is not None:
                 try:
@@ -3649,6 +3693,9 @@ def _run_wasm_ld_with_custodied_inputs(
             # per-app payload.
             full_rt_size = deploy_runtime.stat().st_size
             deploy_runtime_data = deploy_runtime.read_bytes()
+            size_attestation["runtime_before"] = _wasm_section_metrics(
+                deploy_runtime_data
+            )
             try:
                 canonical_required_exports = _canonical_split_runtime_required_exports(
                     deploy_runtime_data
@@ -3765,6 +3812,15 @@ def _run_wasm_ld_with_custodied_inputs(
                     preserve_debug=preserve_debug_sections,
                 )
             )
+            assert size_attestation_stage is not None
+            size_attestation["published"] = {
+                "app": _wasm_section_metrics(app_stage.read_bytes()),
+                "runtime": _wasm_section_metrics(rt_stage.read_bytes()),
+            }
+            size_attestation_stage.write_text(
+                json.dumps(size_attestation, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
         phase_timings_ms["wasm_strip"] = round(
             max(0.0, (time.perf_counter() - strip_start) * 1000.0), 6
         )
@@ -3794,9 +3850,17 @@ def _run_wasm_ld_with_custodied_inputs(
             assert rt_stage is not None
             assert app_wasm is not None
             assert rt_wasm is not None
+            assert size_attestation_path is not None
+            assert size_attestation_stage is not None
             if not _validate_split_runtime_outputs(app_stage, rt_stage):
                 return 1
-            publish_pairs.extend([(rt_stage, rt_wasm), (app_stage, app_wasm)])
+            publish_pairs.extend(
+                [
+                    (rt_stage, rt_wasm),
+                    (app_stage, app_wasm),
+                    (size_attestation_stage, size_attestation_path),
+                ]
+            )
         phase_timings_ms["fail_closed_validation"] = round(
             phase_timings_ms.get("fail_closed_validation", 0.0)
             + max(0.0, (time.perf_counter() - validation_start) * 1000.0),
