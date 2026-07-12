@@ -8692,6 +8692,10 @@ def test_proof_queue_pact_witness_acceptance_is_queue_native() -> None:
     ]
     assert "tmp/pact_witness_acceptance_queue" in command
     assert "tools/pact_witness_acceptance.py" in spec["scopes"]
+    assert spec["env_overrides"]["MOLT_WITNESS_EXPECTED_REPO_ROOT"] == str(
+        proof_queue.ROOT.resolve()
+    )
+    assert spec["env_overrides"]["MOLT_WITNESS_EXPECTED_GIT_HEAD"]
     assert "collab/pact/pact_witness_kernel/make_fixture.py" in spec["scopes"]
     assert "collab/pact/pact_witness_kernel/check_parity.py" in spec["scopes"]
     assert any("regenerates the fixture/reference oracle" in note for note in spec["notes"])

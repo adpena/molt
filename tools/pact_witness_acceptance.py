@@ -43,6 +43,69 @@ DEFAULT_OUT_DIR = ROOT / "tmp" / "pact_witness_acceptance_queue"
 # pact-witness-oracle sanity lane in tools/pact_witness_oracle.py).
 PARITY_ENGINE = ROOT / "collab" / "pact" / "parity" / "check_parity.py"
 KERNEL_A_GATES = KERNEL_ROOT / "field_solve_gates.json"
+
+
+def _git_output(*args: str) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        raise SystemExit(f"pact witness provenance git query failed: {detail}")
+    return result.stdout.strip()
+
+
+def _assert_build_provenance() -> None:
+    expected_root_raw = os.environ.get("MOLT_WITNESS_EXPECTED_REPO_ROOT", "").strip()
+    expected_head = os.environ.get("MOLT_WITNESS_EXPECTED_GIT_HEAD", "").strip()
+    if not expected_root_raw or not expected_head:
+        raise SystemExit(
+            "pact witness provenance is unpinned: queue must provide "
+            "MOLT_WITNESS_EXPECTED_REPO_ROOT and MOLT_WITNESS_EXPECTED_GIT_HEAD"
+        )
+    expected_root = Path(expected_root_raw).resolve()
+    actual_root = Path(_git_output("rev-parse", "--show-toplevel")).resolve()
+    actual_head = _git_output("rev-parse", "HEAD")
+    if actual_root != expected_root or ROOT.resolve() != expected_root:
+        raise SystemExit(
+            "pact witness provenance root mismatch: "
+            f"expected={expected_root} git={actual_root} script={ROOT.resolve()}"
+        )
+    if actual_head != expected_head:
+        raise SystemExit(
+            "pact witness provenance HEAD mismatch: "
+            f"expected={expected_head} actual={actual_head}"
+        )
+    import molt
+    from tools import wasm_link
+
+    molt_path = Path(molt.__file__).resolve()
+    linker_path = Path(wasm_link.__file__).resolve()
+    expected_src = (expected_root / "src").resolve()
+    expected_linker = (expected_root / "tools" / "wasm_link.py").resolve()
+    if expected_src not in molt_path.parents:
+        raise SystemExit(
+            "pact witness provenance imported molt from outside pinned worktree: "
+            f"{molt_path}"
+        )
+    if linker_path != expected_linker:
+        raise SystemExit(
+            "pact witness provenance imported stale linker: "
+            f"expected={expected_linker} actual={linker_path}"
+        )
+    print(
+        "witness_provenance "
+        f"root={expected_root} head={actual_head} molt={molt_path} "
+        f"wasm_link={linker_path}",
+        flush=True,
+    )
 _STATIC_LINK_EXEC_FAILURE_RE = re.compile(
     r"(?:ImportError:|Original error was:)\s+"
     r"(?P<module>[A-Za-z_][A-Za-z0-9_.]*):\s+"
@@ -783,6 +846,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    _assert_build_provenance()
     _attest_effective_numpy_seal()
     build_dir, run_dir = _prepare_attempt_dirs(args.out_dir)
 
