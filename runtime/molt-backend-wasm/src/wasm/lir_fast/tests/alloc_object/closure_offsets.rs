@@ -1,0 +1,72 @@
+use super::super::*;
+
+#[test]
+fn closure_offset_ops_stay_lir_fast_runtime_calls() {
+    let cases = [
+        ("closure_load", OpCode::ClosureLoad, 1, true, "closure_load"),
+        (
+            "closure_store",
+            OpCode::ClosureStore,
+            2,
+            false,
+            "closure_store",
+        ),
+    ];
+
+    for (name, opcode, operand_count, has_result, runtime_call) in cases {
+        let mut func = TirFunction::new(
+            name.into(),
+            vec![TirType::DynBox; operand_count],
+            if has_result {
+                TirType::DynBox
+            } else {
+                TirType::None
+            },
+        );
+        let result_id = has_result.then(|| {
+            let id = func.fresh_value();
+            func.value_types.insert(id, TirType::DynBox);
+            id
+        });
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode,
+            operands: (0..operand_count).map(|idx| ValueId(idx as u32)).collect(),
+            results: result_id.into_iter().collect(),
+            attrs: {
+                let mut m = AttrDict::new();
+                m.insert("value".into(), AttrValue::Int(16));
+                m
+            },
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: result_id.into_iter().collect(),
+        };
+
+        let output = lower_tir_to_wasm(&func).test_view();
+
+        assert!(
+            !output.bails_to_generic_path,
+            "{name} must stay in the LIR fast lane"
+        );
+        assert!(
+            output.runtime_calls.contains(&"handle_resolve"),
+            "{name} must resolve closure object bits before offset access; got {:?}",
+            output.runtime_calls
+        );
+        assert!(
+            output.runtime_calls.contains(&runtime_call),
+            "{name} must call {runtime_call}; got {:?}",
+            output.runtime_calls
+        );
+        assert!(
+            output
+                .instructions
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::I64Const(16))),
+            "{name} must pass the closure offset attr as an immediate"
+        );
+    }
+}
