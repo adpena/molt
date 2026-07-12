@@ -15,7 +15,6 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import hashlib
 import os
 import shutil
 import subprocess
@@ -28,6 +27,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools import harness_memory_guard  # noqa: E402
+from tools.wasm_metrics import wasm_metrics  # noqa: E402
 
 # Optimization levels supported by wasm-opt.
 VALID_LEVELS = {"O1", "O2", "O3", "O4", "Os", "Oz"}
@@ -114,24 +114,6 @@ def _read_string(data: bytes, offset: int) -> tuple[str, int]:
     return data[offset:end].decode("utf-8"), end
 
 
-_SECTION_NAMES = {
-    0: "custom",
-    1: "type",
-    2: "import",
-    3: "function",
-    4: "table",
-    5: "memory",
-    6: "global",
-    7: "export",
-    8: "start",
-    9: "element",
-    10: "code",
-    11: "data",
-    12: "data_count",
-    13: "tag",
-}
-
-
 def _collect_exports(path: Path) -> set[str]:
     data = path.read_bytes()
     if len(data) < 8 or data[:4] != b"\0asm" or data[4:8] != b"\x01\0\0\0":
@@ -160,27 +142,6 @@ def _collect_exports(path: Path) -> set[str]:
             exports.add(name)
         break
     return exports
-
-
-def _section_metrics(path: Path) -> dict[str, object]:
-    data = path.read_bytes()
-    offset = 8
-    sections: dict[str, int] = {}
-    while offset < len(data):
-        section_id = data[offset]
-        offset += 1
-        section_size, offset = _read_varuint(data, offset)
-        section_end = offset + section_size
-        if section_end > len(data):
-            raise ValueError("unexpected EOF while reading section")
-        name = _SECTION_NAMES.get(section_id, f"unknown({section_id})")
-        sections[name] = sections.get(name, 0) + section_size
-        offset = section_end
-    return {
-        "file_bytes": len(data),
-        "sha256": hashlib.sha256(data).hexdigest(),
-        "sections": dict(sorted(sections.items())),
-    }
 
 
 def optimize(
@@ -339,8 +300,8 @@ def optimize(
             check=False,
         ).stdout.strip(),
         "pipeline": cmd[1:-3],
-        "before": _section_metrics(input_path),
-        "after": _section_metrics(output_path),
+        "before": wasm_metrics(input_path),
+        "after": wasm_metrics(output_path),
         "error": "",
     }
 

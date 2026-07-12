@@ -27,6 +27,7 @@ if str(SRC_ROOT) not in sys.path:
 import harness_memory_guard  # noqa: E402
 import artifact_publish  # noqa: E402
 from wasm_optimize import find_wasm_opt  # noqa: E402
+from wasm_metrics import wasm_metrics  # noqa: E402
 from molt.cli import wasm_toolchain  # noqa: E402
 from molt.cli.runtime_wasm_validation import (  # noqa: E402
     _runtime_wasm_integrity_pin_paths,
@@ -2652,6 +2653,8 @@ _OZ_PASSES: list[str] = [
     "--merge-blocks",
     "--dce",
     "--vacuum",
+    "--zero-filled-memory",
+    "--memory-packing",
 ]
 
 _O3_PASSES: list[str] = [
@@ -2676,34 +2679,6 @@ _LEVEL_PASSES: dict[str, list[str]] = {
     "Oz": _OZ_PASSES,
     "O3": _O3_PASSES,
 }
-
-
-def _wasm_section_metrics(data: bytes) -> dict[str, object]:
-    section_names = {
-        0: "custom",
-        1: "type",
-        2: "import",
-        3: "function",
-        4: "table",
-        5: "memory",
-        6: "global",
-        7: "export",
-        8: "start",
-        9: "element",
-        10: "code",
-        11: "data",
-        12: "data_count",
-        13: "tag",
-    }
-    sections: dict[str, int] = {}
-    for section_id, payload in _parse_sections(data):
-        name = section_names.get(section_id, f"unknown({section_id})")
-        sections[name] = sections.get(name, 0) + len(payload)
-    return {
-        "file_bytes": len(data),
-        "sha256": hashlib.sha256(data).hexdigest(),
-        "sections": dict(sorted(sections.items())),
-    }
 
 
 def _append_table_refs_enabled() -> bool:
@@ -3452,6 +3427,7 @@ def _run_wasm_ld_with_custodied_inputs(
                 work_linked,
                 level=optimize_level,
                 converge=False,
+                apply_level=not split_runtime,
                 required_exports=(
                     set(_collect_function_exports(linked_bytes))
                     & post_link_preserve_exports
@@ -3794,7 +3770,7 @@ def _run_wasm_ld_with_custodied_inputs(
             # per-app payload.
             full_rt_size = deploy_runtime.stat().st_size
             deploy_runtime_data = deploy_runtime.read_bytes()
-            size_attestation["runtime_before"] = _wasm_section_metrics(
+            size_attestation["runtime_before"] = wasm_metrics(
                 deploy_runtime_data
             )
             try:
@@ -3915,8 +3891,8 @@ def _run_wasm_ld_with_custodied_inputs(
             )
             assert size_attestation_stage is not None
             size_attestation["published"] = {
-                "app": _wasm_section_metrics(app_stage.read_bytes()),
-                "runtime": _wasm_section_metrics(rt_stage.read_bytes()),
+                "app": wasm_metrics(app_stage.read_bytes()),
+                "runtime": wasm_metrics(rt_stage.read_bytes()),
             }
             size_attestation_stage.write_text(
                 json.dumps(size_attestation, indent=2, sort_keys=True) + "\n",
