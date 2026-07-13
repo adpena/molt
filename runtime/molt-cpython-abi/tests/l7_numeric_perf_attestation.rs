@@ -202,7 +202,11 @@ unsafe extern "C" fn counted_to_bytes(
         return -1;
     }
     if len != 0 {
-        unsafe { std::ptr::write_bytes(data, 0x5a, len) };
+        let payload_len = BYTE_WIDTH.load(Ordering::Relaxed).min(len);
+        unsafe {
+            std::ptr::write_bytes(data, 0xa5, payload_len);
+            std::ptr::write_bytes(data.add(payload_len), 0, len - payload_len);
+        }
     }
     INT_BYTES_OK
 }
@@ -482,6 +486,10 @@ fn byte_case(width: usize) -> CaseResult {
             0,
             "byte preflight export failed for {width}"
         );
+        assert_eq!(
+            output, input,
+            "byte preflight round-trip failed for {width}"
+        );
         assert_ne!(_PyLong_NumBits(value), usize::MAX);
         Py_DECREF(value);
     }
@@ -501,9 +509,9 @@ fn byte_case(width: usize) -> CaseResult {
             let num_bits = _PyLong_NumBits(value);
             let valid = export_status == 0
                 && num_bits == width * 8
-                && output[0] == 0x5a_u8
-                && output[width / 2] == 0x5a_u8
-                && output[width - 1] == 0x5a_u8;
+                && output[0] == 0xa5_u8
+                && output[width / 2] == 0xa5_u8
+                && output[width - 1] == 0xa5_u8;
             Py_DECREF(value);
             u64::from(black_box(valid))
         },
