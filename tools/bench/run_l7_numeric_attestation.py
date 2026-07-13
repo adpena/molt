@@ -18,6 +18,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import secrets
 import statistics
 import subprocess
@@ -45,11 +46,12 @@ CAPSULE_ACTIVE_DIR = REPO_ROOT / "tmp" / "memory_guard" / "active"
 CAPSULE_ARCHIVE_DIR = (
     REPO_ROOT / "logs" / "benchmarks" / "l7_numeric_attestation" / "custody"
 )
-BUNDLE_SCHEMA_VERSION = 2
-CHILD_SCHEMA_VERSION = 1
+BUNDLE_SCHEMA_VERSION = 3
+CHILD_SCHEMA_VERSION = 2
 BUNDLE_KIND = "l7_numeric_performance_attestation_bundle"
 SAMPLE_COUNT = 9
 TIMING_SCOPE = "loop_inclusive; allocation and hook observers are untimed"
+AFFINITY_SCOPE = "current_benchmark_thread"
 BASE_METRICS = (
     "ns_per_op",
     "allocations_per_op",
@@ -262,6 +264,7 @@ _DYNAMIC_ENVIRONMENT_KEYS = {
     "MOLT_L7_BUILD_FINGERPRINT",
     "MOLT_L7_GIT_COMMIT",
     "MOLT_L7_GIT_DIRTY",
+    "MOLT_L7_AFFINITY_MASK",
     "MOLT_L7_RUN_NONCE",
     "MOLT_L7_RUSTC",
 }
@@ -306,6 +309,24 @@ def _summary(values: list[float]) -> dict[str, Any]:
         "max": max(values),
         "samples": values,
     }
+
+
+def _normalize_affinity_mask(value: str) -> str:
+    try:
+        mask = int(value, 0)
+    except ValueError as exc:
+        raise ValueError("affinity mask must be a hexadecimal or decimal integer") from exc
+    if mask <= 0 or mask & (mask - 1):
+        raise ValueError("affinity mask must select exactly one logical CPU")
+    if mask > sys.maxsize:
+        raise ValueError("affinity mask exceeds the native pointer width")
+    logical_cpus = os.cpu_count()
+    if logical_cpus is not None and mask.bit_length() > logical_cpus:
+        raise ValueError(
+            f"affinity mask selects CPU {mask.bit_length() - 1}, but only "
+            f"{logical_cpus} logical CPUs are visible"
+        )
+    return f"0x{mask:x}"
 
 
 def _schema_type_matches(value: Any, expected: str) -> bool:
@@ -408,6 +429,8 @@ def _schema_errors(
     elif isinstance(value, str):
         if len(value) < schema.get("minLength", 0):
             errors.append(f"{path}: string is too short")
+        if "pattern" in schema and re.search(schema["pattern"], value) is None:
+            errors.append(f"{path}: string does not match the required pattern")
     elif isinstance(value, (int, float)) and not isinstance(value, bool):
         number = float(value)
         if "minimum" in schema and number < float(schema["minimum"]):
@@ -685,6 +708,7 @@ def _run_component(
     cargo_lock_sha256: str,
     run_nonce: str,
     max_measured_rss_bytes: int | None,
+    affinity_mask: str,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     executable, build = _build_test_executable(
         config,
@@ -706,6 +730,7 @@ def _run_component(
         "MOLT_L7_GIT_DIRTY": "true" if source["git_dirty"] else "false",
         "MOLT_L7_RUSTC": rustc,
         "MOLT_L7_BUILD_FINGERPRINT": build["artifact_fingerprint"],
+        "MOLT_L7_AFFINITY_MASK": affinity_mask,
         "MOLT_L7_RUN_NONCE": run_nonce,
     }
     run_rows: list[dict[str, Any]] = []
@@ -797,6 +822,12 @@ def _run_component(
         }
         if attestation["source"] != expected_source:
             raise RuntimeError(f"{name} run {index} did not echo parent provenance")
+        expected_execution = {
+            "affinity_mask": affinity_mask,
+            "scope": AFFINITY_SCOPE,
+        }
+        if attestation["execution_control"] != expected_execution:
+            raise RuntimeError(f"{name} run {index} did not enforce execution control")
         canonical = _canonical_bytes(attestation)
         attestations.append(attestation)
         run_rows.append(
@@ -881,10 +912,18 @@ def _recompute_case(
     iterations = case["iterations_per_sample"]
     observer_iterations = case["observer_iterations_per_sample"]
     calibration_target_ns = case["calibration_target_ns"]
+    minimum_sample_ns = case["minimum_sample_ns"]
     if case["sample_count"] != SAMPLE_COUNT or len(case["samples"]) != SAMPLE_COUNT:
         errors.append(f"{context}: sample count must be exactly {SAMPLE_COUNT}")
-    if iterations <= 0 or observer_iterations <= 0 or calibration_target_ns <= 0:
+    if (
+        iterations <= 0
+        or observer_iterations <= 0
+        or calibration_target_ns <= 0
+        or minimum_sample_ns <= 0
+    ):
         errors.append(f"{context}: iteration and calibration counts must be positive")
+    if calibration_target_ns < minimum_sample_ns * 5:
+        errors.append(f"{context}: calibration target lacks 5x minimum headroom")
     if case["timing_scope"] != TIMING_SCOPE:
         errors.append(f"{context}: timing scope drift")
 
@@ -906,10 +945,10 @@ def _recompute_case(
             if len(values["ns_per_op"]) == sample_index
             else None
         )
-        if ns is not None and ns * iterations < calibration_target_ns:
+        if ns is not None and ns * iterations < minimum_sample_ns:
             errors.append(
-                f"{context} sample {sample_index}: calibrated duration "
-                f"{ns * iterations:.0f}ns<{calibration_target_ns}ns"
+                f"{context} sample {sample_index}: sample duration "
+                f"{ns * iterations:.0f}ns<{minimum_sample_ns}ns minimum"
             )
 
     recomputed: dict[str, dict[str, Any]] = {}
@@ -1016,6 +1055,7 @@ def _aggregate_bundle(
             "build_fingerprint": build["artifact_fingerprint"],
             "run_nonce": source["run_nonce"],
         }
+        expected_execution = bundle["runner"]["execution_control"]
 
         elapsed = []
         rss = []
@@ -1059,6 +1099,8 @@ def _aggregate_bundle(
                 errors.append(f"{context}: child sample count drift")
             if attestation["source"] != expected_child_source:
                 errors.append(f"{context}: parent provenance echo mismatch")
+            if attestation["execution_control"] != expected_execution:
+                errors.append(f"{context}: execution control drift")
 
             manifest = [
                 (case["name"], case["family"], case["input"])
@@ -1186,6 +1228,11 @@ def _compare_to_baseline(
     errors.extend(f"baseline: {error}" for error in baseline_errors)
     if current["host"]["fingerprint"] != baseline["host"]["fingerprint"]:
         errors.append("baseline host fingerprint differs from current host")
+    if (
+        current["runner"]["execution_control"]
+        != baseline["runner"]["execution_control"]
+    ):
+        errors.append("baseline execution control differs from current apparatus")
     for key in ("runner_sha256", "schema_sha256"):
         if current["source"][key] != baseline["source"][key]:
             errors.append(f"baseline {key} differs from current apparatus")
@@ -1295,6 +1342,7 @@ def run_attestation(
     max_peak_live_regression: float,
     max_rss_regression: float,
     max_measured_rss_bytes: int | None,
+    affinity_mask: str,
 ) -> dict[str, Any]:
     _validate_policy(
         runs=runs,
@@ -1307,6 +1355,7 @@ def run_attestation(
         max_rss_regression=max_rss_regression,
         max_measured_rss_bytes=max_measured_rss_bytes,
     )
+    affinity_mask = _normalize_affinity_mask(affinity_mask)
     schema = _load_schema()
     source_start = _source_snapshot()
     rustc = _parent_command(["rustc", "--version", "--verbose"]).decode().strip()
@@ -1329,6 +1378,7 @@ def run_attestation(
             cargo_lock_sha256=cargo_lock_sha256,
             run_nonce=run_nonce,
             max_measured_rss_bytes=max_measured_rss_bytes,
+            affinity_mask=affinity_mask,
         )
     source_end = _source_snapshot()
     fingerprint = perf_calibration.host_fingerprint()
@@ -1353,6 +1403,10 @@ def run_attestation(
             "timing_scope": TIMING_SCOPE,
             "case_order": "exact component manifests; order is validated",
             "scope": "native release harness; no wasm32, assembly, or code-size claim",
+            "execution_control": {
+                "affinity_mask": affinity_mask,
+                "scope": AFFINITY_SCOPE,
+            },
             "policy": policy,
         },
         "source": {
@@ -1423,6 +1477,11 @@ def main(argv: list[str] | None = None) -> int:
         help="compatible clean-host bundle required for a performance PASS",
     )
     parser.add_argument("--max-cv", type=float, default=0.10)
+    parser.add_argument(
+        "--affinity-mask",
+        default="0x1",
+        help="single-logical-CPU mask enforced inside every measured child",
+    )
     parser.add_argument("--max-time-regression", type=float, default=0.15)
     parser.add_argument("--max-allocation-regression", type=float, default=0.0)
     parser.add_argument("--max-allocated-bytes-regression", type=float, default=0.0)
@@ -1447,6 +1506,7 @@ def main(argv: list[str] | None = None) -> int:
             max_rss_regression=args.max_rss_regression,
             max_measured_rss_bytes=args.max_measured_rss_bytes,
         )
+        affinity_mask = _normalize_affinity_mask(args.affinity_mask)
     except ValueError as exc:
         parser.error(str(exc))
 
@@ -1467,6 +1527,7 @@ def main(argv: list[str] | None = None) -> int:
         max_peak_live_regression=args.max_peak_live_regression,
         max_rss_regression=args.max_rss_regression,
         max_measured_rss_bytes=args.max_measured_rss_bytes,
+        affinity_mask=affinity_mask,
     )
     output = args.output if args.output.is_absolute() else REPO_ROOT / args.output
     _write_json_atomic(output, result)

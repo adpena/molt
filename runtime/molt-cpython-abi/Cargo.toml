@@ -17,8 +17,10 @@ default = []
 simd = []
 # Enable dlopen-based loading of pre-built CPython .so extensions
 extension-loader = ["dep:libloading"]
-# Link the isolated C overlay witness only for explicit L7 verification.
-l7-test-probe = ["dep:molt-cpython-abi-test-support"]
+# Compile the shared calibration and execution-control authority only for
+# explicit L7 verification. The C overlay witness remains an ABI-only probe.
+l7-attestation-core = []
+l7-test-probe = ["l7-attestation-core", "dep:molt-cpython-abi-test-support"]
 
 [dependencies]
 molt-lang-obj-model = { path = "../molt-obj-model" }

@@ -46,7 +46,8 @@ def _case(name: str, family: str, input_data: dict, invariant: str) -> dict:
         "input": copy.deepcopy(input_data),
         "iterations_per_sample": 2_000_000,
         "observer_iterations_per_sample": 64,
-        "calibration_target_ns": 20_000_000,
+        "calibration_target_ns": 100_000_000,
+        "minimum_sample_ns": 20_000_000,
         "timing_scope": runner.TIMING_SCOPE,
         "sample_count": runner.SAMPLE_COUNT,
         "summary": {
@@ -114,12 +115,16 @@ def _component_fixture(component: str, config: dict, runs: int) -> tuple[dict, l
     process_runs = []
     for index in range(1, runs + 1):
         attestation = {
-            "schema_version": 1,
+            "schema_version": runner.CHILD_SCHEMA_VERSION,
             "kind": config["kind"],
             "profile": "release",
             "allocator_scope": config["allocator_scope"],
             "sample_count": runner.SAMPLE_COUNT,
             "host": {"os": "windows", "arch": "x86_64", "logical_cpus": 8},
+            "execution_control": {
+                "affinity_mask": "0x1",
+                "scope": runner.AFFINITY_SCOPE,
+            },
             "source": source,
             "scope": {
                 "native": True,
@@ -196,6 +201,10 @@ def _bundle() -> dict:
             "timing_scope": runner.TIMING_SCOPE,
             "case_order": "exact",
             "scope": "native",
+            "execution_control": {
+                "affinity_mask": "0x1",
+                "scope": runner.AFFINITY_SCOPE,
+            },
             "policy": policy,
         },
         "source": {
@@ -243,6 +252,16 @@ def test_summary_uses_sample_standard_deviation() -> None:
     assert summary["cv"] == 0.5
 
 
+@pytest.mark.parametrize("value", ["0x0", "0x3", "bogus"])
+def test_affinity_requires_one_logical_cpu(value: str) -> None:
+    with pytest.raises(ValueError):
+        runner._normalize_affinity_mask(value)
+
+
+def test_affinity_is_normalized_for_provenance() -> None:
+    assert runner._normalize_affinity_mask("16") == "0x10"
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -285,6 +304,16 @@ def test_checked_in_schema_rejects_unknown_fields() -> None:
     )
 
 
+def test_checked_in_schema_rejects_noncanonical_affinity() -> None:
+    bundle = _bundle()
+    bundle["runner"]["execution_control"]["affinity_mask"] = "1"
+    schema = runner._load_schema()
+    assert any(
+        "required pattern" in error
+        for error in runner._schema_errors(bundle, schema, root=schema)
+    )
+
+
 def test_aggregate_recomputes_raw_samples_and_rejects_forged_summary() -> None:
     bundle = _bundle()
     case = bundle["attestations"]["abi_boundary"][0]["cases"][0]
@@ -300,7 +329,24 @@ def test_aggregate_requires_calibrated_duration_reached() -> None:
         sample["ns_per_op"] = 5.0
     case["summary"]["ns_per_op"] = _reported([5.0] * runner.SAMPLE_COUNT)
     _aggregated, errors = runner._aggregate_bundle(bundle, 0.1)
-    assert any("calibrated duration" in error for error in errors)
+    assert any("sample duration" in error for error in errors)
+
+
+def test_aggregate_requires_calibration_headroom() -> None:
+    bundle = _bundle()
+    case = bundle["attestations"]["abi_boundary"][0]["cases"][0]
+    case["calibration_target_ns"] = case["minimum_sample_ns"]
+    _aggregated, errors = runner._aggregate_bundle(bundle, 0.1)
+    assert any("lacks 5x minimum headroom" in error for error in errors)
+
+
+def test_aggregate_requires_child_execution_control() -> None:
+    bundle = _bundle()
+    bundle["attestations"]["abi_boundary"][0]["execution_control"][
+        "affinity_mask"
+    ] = "0x2"
+    _aggregated, errors = runner._aggregate_bundle(bundle, 0.1)
+    assert any("execution control drift" in error for error in errors)
 
 
 def test_aggregate_requires_exact_ordered_case_manifest() -> None:
@@ -357,3 +403,25 @@ def test_baseline_requires_identical_build_configuration() -> None:
         "build configuration fingerprint differs" in error
         for error in comparison["errors"]
     )
+
+
+def test_baseline_requires_identical_execution_control() -> None:
+    current = _bundle()
+    baseline = copy.deepcopy(current)
+    baseline["runner"]["execution_control"]["affinity_mask"] = "0x2"
+    for attestations in baseline["attestations"].values():
+        for attestation in attestations:
+            attestation["execution_control"]["affinity_mask"] = "0x2"
+    comparison = runner._compare_to_baseline(
+        current,
+        baseline,
+        schema=runner._load_schema(),
+        max_cv=0.1,
+        max_time_regression=0.15,
+        max_allocation_regression=0.0,
+        max_allocated_bytes_regression=0.0,
+        max_peak_live_regression=0.15,
+        max_rss_regression=0.15,
+    )
+    assert comparison["status"] == "invalid"
+    assert any("execution control differs" in error for error in comparison["errors"])

@@ -80,6 +80,8 @@ pub mod bridge;
 pub mod capi_trace;
 pub mod gil_declarations;
 pub mod hooks;
+#[cfg(feature = "l7-attestation-core")]
+pub mod l7_attestation;
 
 #[cfg(all(feature = "extension-loader", not(target_arch = "wasm32")))]
 pub mod loader;
