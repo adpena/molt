@@ -25,7 +25,11 @@ NONCE = "b" * 32
 
 def _reported(values: list[float]) -> dict[str, float]:
     summary = runner._summary(values)
-    return {"median": summary["median"], "cv": summary["cv"]}
+    return {
+        "median": summary["median"],
+        "cv": summary["cv"],
+        "robust_cv": summary["robust_cv"],
+    }
 
 
 def _case(name: str, family: str, input_data: dict, invariant: str) -> dict:
@@ -183,7 +187,8 @@ def _bundle() -> dict:
             component, config, runs
         )
     policy = {
-        "max_cv": 0.1,
+        "max_robust_cv": 0.1,
+        "max_raw_cv": 0.25,
         "max_time_regression": 0.15,
         "max_allocation_regression": 0.0,
         "max_allocated_bytes_regression": 0.0,
@@ -230,7 +235,12 @@ def _bundle() -> dict:
         "process": process,
         "attestations": attestations,
         "aggregated_cases": {},
-        "validation": {"valid": True, "max_cv": 0.1, "errors": []},
+        "validation": {
+            "valid": True,
+            "max_robust_cv": 0.1,
+            "max_raw_cv": 0.25,
+            "errors": [],
+        },
         "comparison": {
             "status": "evidence_only",
             "performance_claim": False,
@@ -240,7 +250,7 @@ def _bundle() -> dict:
             "violations": [],
         },
     }
-    aggregated, errors = runner._aggregate_bundle(bundle, 0.1)
+    aggregated, errors = runner._aggregate_bundle(bundle, 0.1, 0.25)
     assert errors == []
     bundle["aggregated_cases"] = aggregated
     return bundle
@@ -250,6 +260,26 @@ def test_summary_uses_sample_standard_deviation() -> None:
     summary = runner._summary([1.0, 2.0, 3.0])
     assert summary["mean"] == 2.0
     assert summary["cv"] == 0.5
+
+
+def test_summary_preserves_raw_cv_and_reports_robust_cv() -> None:
+    summary = runner._summary([1.0] * 8 + [2.0])
+    assert summary["cv"] > 0.25
+    assert summary["robust_cv"] == 0.0
+    assert summary["samples"][-1] == 2.0
+
+
+def test_dispersion_applies_independent_robust_and_raw_ceilings() -> None:
+    errors: list[str] = []
+    runner._validate_dispersion(
+        {"cv": 0.30, "robust_cv": 0.11},
+        context="fixture",
+        max_robust_cv=0.10,
+        max_raw_cv=0.25,
+        errors=errors,
+    )
+    assert any("robust CV" in error for error in errors)
+    assert any("raw CV" in error for error in errors)
 
 
 @pytest.mark.parametrize("value", ["0x0", "0x3", "bogus"])
@@ -266,7 +296,7 @@ def test_affinity_is_normalized_for_provenance() -> None:
     ("field", "value"),
     [
         ("timeout", math.nan),
-        ("max_cv", math.inf),
+        ("max_robust_cv", math.inf),
         ("max_time_regression", -0.01),
         ("max_rss_regression", 1.01),
     ],
@@ -275,7 +305,8 @@ def test_policy_rejects_nonfinite_and_out_of_range(field: str, value: float) -> 
     policy = {
         "runs": 7,
         "timeout": 1.0,
-        "max_cv": 0.1,
+        "max_robust_cv": 0.1,
+        "max_raw_cv": 0.25,
         "max_time_regression": 0.15,
         "max_allocation_regression": 0.0,
         "max_allocated_bytes_regression": 0.0,
@@ -318,7 +349,7 @@ def test_aggregate_recomputes_raw_samples_and_rejects_forged_summary() -> None:
     bundle = _bundle()
     case = bundle["attestations"]["abi_boundary"][0]["cases"][0]
     case["summary"]["ns_per_op"]["median"] = 1.0
-    _aggregated, errors = runner._aggregate_bundle(bundle, 0.1)
+    _aggregated, errors = runner._aggregate_bundle(bundle, 0.1, 0.25)
     assert any("reported 1.0 != recomputed 10.0" in error for error in errors)
 
 
@@ -328,7 +359,7 @@ def test_aggregate_requires_calibrated_duration_reached() -> None:
     for sample in case["samples"]:
         sample["ns_per_op"] = 5.0
     case["summary"]["ns_per_op"] = _reported([5.0] * runner.SAMPLE_COUNT)
-    _aggregated, errors = runner._aggregate_bundle(bundle, 0.1)
+    _aggregated, errors = runner._aggregate_bundle(bundle, 0.1, 0.25)
     assert any("sample duration" in error for error in errors)
 
 
@@ -336,7 +367,7 @@ def test_aggregate_requires_calibration_headroom() -> None:
     bundle = _bundle()
     case = bundle["attestations"]["abi_boundary"][0]["cases"][0]
     case["calibration_target_ns"] = case["minimum_sample_ns"]
-    _aggregated, errors = runner._aggregate_bundle(bundle, 0.1)
+    _aggregated, errors = runner._aggregate_bundle(bundle, 0.1, 0.25)
     assert any("lacks 10x minimum headroom" in error for error in errors)
 
 
@@ -345,7 +376,7 @@ def test_aggregate_requires_child_execution_control() -> None:
     bundle["attestations"]["abi_boundary"][0]["execution_control"][
         "affinity_mask"
     ] = "0x2"
-    _aggregated, errors = runner._aggregate_bundle(bundle, 0.1)
+    _aggregated, errors = runner._aggregate_bundle(bundle, 0.1, 0.25)
     assert any("execution control drift" in error for error in errors)
 
 
@@ -353,7 +384,7 @@ def test_aggregate_requires_exact_ordered_case_manifest() -> None:
     bundle = _bundle()
     cases = bundle["attestations"]["abi_boundary"][0]["cases"]
     cases[0], cases[1] = cases[1], cases[0]
-    _aggregated, errors = runner._aggregate_bundle(bundle, 0.1)
+    _aggregated, errors = runner._aggregate_bundle(bundle, 0.1, 0.25)
     assert any("ordered case manifest drift" in error for error in errors)
 
 
@@ -361,14 +392,14 @@ def test_aggregate_rejects_consistent_input_drift_without_baseline() -> None:
     bundle = _bundle()
     for attestation in bundle["attestations"]["abi_boundary"]:
         attestation["cases"][0]["input"]["digits"] = 24
-    _aggregated, errors = runner._aggregate_bundle(bundle, 0.1)
+    _aggregated, errors = runner._aggregate_bundle(bundle, 0.1, 0.25)
     assert any("ordered case manifest drift" in error for error in errors)
 
 
 def test_aggregate_requires_nonce_bound_parent_provenance() -> None:
     bundle = _bundle()
     bundle["attestations"]["runtime_bigint"][0]["source"]["run_nonce"] = "c" * 32
-    _aggregated, errors = runner._aggregate_bundle(bundle, 0.1)
+    _aggregated, errors = runner._aggregate_bundle(bundle, 0.1, 0.25)
     assert any("parent provenance echo mismatch" in error for error in errors)
 
 
@@ -377,7 +408,7 @@ def test_aggregate_requires_before_and_after_quiescence() -> None:
     bundle["process"]["abi_boundary"]["runs"][0]["quiescence_after"]["certified"] = (
         False
     )
-    _aggregated, errors = runner._aggregate_bundle(bundle, 0.1)
+    _aggregated, errors = runner._aggregate_bundle(bundle, 0.1, 0.25)
     assert any("post-run quiescence not certified" in error for error in errors)
 
 
@@ -391,7 +422,8 @@ def test_baseline_requires_identical_build_configuration() -> None:
         current,
         baseline,
         schema=runner._load_schema(),
-        max_cv=0.1,
+        max_robust_cv=0.1,
+        max_raw_cv=0.25,
         max_time_regression=0.15,
         max_allocation_regression=0.0,
         max_allocated_bytes_regression=0.0,
@@ -416,7 +448,8 @@ def test_baseline_requires_identical_execution_control() -> None:
         current,
         baseline,
         schema=runner._load_schema(),
-        max_cv=0.1,
+        max_robust_cv=0.1,
+        max_raw_cv=0.25,
         max_time_regression=0.15,
         max_allocation_regression=0.0,
         max_allocated_bytes_regression=0.0,

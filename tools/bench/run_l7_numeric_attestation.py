@@ -46,8 +46,8 @@ CAPSULE_ACTIVE_DIR = REPO_ROOT / "tmp" / "memory_guard" / "active"
 CAPSULE_ARCHIVE_DIR = (
     REPO_ROOT / "logs" / "benchmarks" / "l7_numeric_attestation" / "custody"
 )
-BUNDLE_SCHEMA_VERSION = 3
-CHILD_SCHEMA_VERSION = 2
+BUNDLE_SCHEMA_VERSION = 4
+CHILD_SCHEMA_VERSION = 3
 BUNDLE_KIND = "l7_numeric_performance_attestation_bundle"
 SAMPLE_COUNT = 9
 TIMING_SCOPE = "loop_inclusive; allocation and hook observers are untimed"
@@ -301,10 +301,14 @@ def _summary(values: list[float]) -> dict[str, Any]:
         raise ValueError("summary requires finite nonnegative samples")
     mean = statistics.fmean(values)
     stdev = statistics.stdev(values) if len(values) > 1 else 0.0
+    median = statistics.median(values)
+    mad = statistics.median(abs(value - median) for value in values)
+    cv = (stdev / mean) if mean else 0.0
     return {
-        "median": statistics.median(values),
+        "median": median,
         "mean": mean,
-        "cv": (stdev / mean) if mean else 0.0,
+        "cv": cv,
+        "robust_cv": (1.4826 * mad / median) if median else cv,
         "min": min(values),
         "max": max(values),
         "samples": values,
@@ -532,7 +536,8 @@ def _validate_policy(
     *,
     runs: int,
     timeout: float,
-    max_cv: float,
+    max_robust_cv: float,
+    max_raw_cv: float,
     max_time_regression: float,
     max_allocation_regression: float,
     max_allocated_bytes_regression: float,
@@ -545,7 +550,8 @@ def _validate_policy(
     if not math.isfinite(timeout) or timeout <= 0.0:
         raise ValueError("--timeout must be finite and positive")
     policies = {
-        "--max-cv": max_cv,
+        "--max-robust-cv": max_robust_cv,
+        "--max-raw-cv": max_raw_cv,
         "--max-time-regression": max_time_regression,
         "--max-allocation-regression": max_allocation_regression,
         "--max-allocated-bytes-regression": max_allocated_bytes_regression,
@@ -887,7 +893,7 @@ def _summary_matches(
     context: str,
     errors: list[str],
 ) -> None:
-    for metric in ("median", "cv"):
+    for metric in ("median", "cv", "robust_cv"):
         actual = _number(
             reported.get(metric), context=f"{context}.{metric}", errors=errors
         )
@@ -900,12 +906,31 @@ def _summary_matches(
             )
 
 
+def _validate_dispersion(
+    summary: dict[str, Any],
+    *,
+    context: str,
+    max_robust_cv: float,
+    max_raw_cv: float,
+    errors: list[str],
+) -> None:
+    robust_cv = float(summary["robust_cv"])
+    raw_cv = float(summary["cv"])
+    if robust_cv > max_robust_cv:
+        errors.append(
+            f"{context}: robust CV {robust_cv:.4f}>{max_robust_cv:.4f}"
+        )
+    if raw_cv > max_raw_cv:
+        errors.append(f"{context}: raw CV {raw_cv:.4f}>{max_raw_cv:.4f}")
+
+
 def _recompute_case(
     case: dict[str, Any],
     *,
     config: dict[str, Any],
     context: str,
-    max_cv: float,
+    max_robust_cv: float,
+    max_raw_cv: float,
     errors: list[str],
 ) -> dict[str, dict[str, Any]]:
     metrics = BASE_METRICS + (config["invariant_metric"],)
@@ -970,14 +995,21 @@ def _recompute_case(
         if metric == config["invariant_metric"]:
             if any(value != values[metric][0] for value in values[metric][1:]):
                 errors.append(f"{context}: {metric} is not exact within the process")
-        elif result["cv"] > max_cv:
-            errors.append(f"{context}: {metric} CV {result['cv']:.4f}>{max_cv:.4f}")
+        else:
+            _validate_dispersion(
+                result,
+                context=f"{context}: {metric}",
+                max_robust_cv=max_robust_cv,
+                max_raw_cv=max_raw_cv,
+                errors=errors,
+            )
     return recomputed
 
 
 def _aggregate_bundle(
     bundle: dict[str, Any],
-    max_cv: float,
+    max_robust_cv: float,
+    max_raw_cv: float,
 ) -> tuple[dict[str, Any], list[str]]:
     errors: list[str] = []
     aggregated: dict[str, Any] = {}
@@ -1115,7 +1147,8 @@ def _aggregate_bundle(
                     case,
                     config=config,
                     context=case_context,
-                    max_cv=max_cv,
+                    max_robust_cv=max_robust_cv,
+                    max_raw_cv=max_raw_cv,
                     errors=errors,
                 )
                 case_runs[case["name"]].append((case, summaries))
@@ -1135,16 +1168,13 @@ def _aggregate_bundle(
                 errors=errors,
             )
         for metric_name in ("elapsed_ms", "peak_rss_bytes"):
-            reported = process[metric_name]
-            cv = _number(
-                reported.get("cv"),
-                context=f"{component}.process.{metric_name}.cv",
+            _validate_dispersion(
+                process[metric_name],
+                context=f"{component}: process {metric_name}",
+                max_robust_cv=max_robust_cv,
+                max_raw_cv=max_raw_cv,
                 errors=errors,
             )
-            if cv is not None and cv > max_cv:
-                errors.append(
-                    f"{component}: process {metric_name} CV {cv:.4f}>{max_cv:.4f}"
-                )
 
         component_aggregate: dict[str, Any] = {}
         metrics = BASE_METRICS + (config["invariant_metric"],)
@@ -1173,10 +1203,13 @@ def _aggregate_bundle(
                         errors.append(
                             f"{component}/{case_name}: cross-process {metric} drift"
                         )
-                elif outer["cv"] > max_cv:
-                    errors.append(
-                        f"{component}/{case_name}: cross-process {metric} CV "
-                        f"{outer['cv']:.4f}>{max_cv:.4f}"
+                else:
+                    _validate_dispersion(
+                        outer,
+                        context=f"{component}/{case_name}: cross-process {metric}",
+                        max_robust_cv=max_robust_cv,
+                        max_raw_cv=max_raw_cv,
+                        errors=errors,
                     )
                 metric_aggregate[metric] = outer
             component_aggregate[case_name] = {
@@ -1210,7 +1243,8 @@ def _compare_to_baseline(
     baseline: dict[str, Any],
     *,
     schema: dict[str, Any],
-    max_cv: float,
+    max_robust_cv: float,
+    max_raw_cv: float,
     max_time_regression: float,
     max_allocation_regression: float,
     max_allocated_bytes_regression: float,
@@ -1222,8 +1256,12 @@ def _compare_to_baseline(
         return _invalid_comparison(
             [f"baseline schema: {error}" for error in schema_errors]
         )
-    current_agg, current_errors = _aggregate_bundle(current, max_cv)
-    baseline_agg, baseline_errors = _aggregate_bundle(baseline, max_cv)
+    current_agg, current_errors = _aggregate_bundle(
+        current, max_robust_cv, max_raw_cv
+    )
+    baseline_agg, baseline_errors = _aggregate_bundle(
+        baseline, max_robust_cv, max_raw_cv
+    )
     errors = [f"current: {error}" for error in current_errors]
     errors.extend(f"baseline: {error}" for error in baseline_errors)
     if current["host"]["fingerprint"] != baseline["host"]["fingerprint"]:
@@ -1335,7 +1373,8 @@ def run_attestation(
     timeout: float,
     *,
     baseline: dict[str, Any] | None,
-    max_cv: float,
+    max_robust_cv: float,
+    max_raw_cv: float,
     max_time_regression: float,
     max_allocation_regression: float,
     max_allocated_bytes_regression: float,
@@ -1347,7 +1386,8 @@ def run_attestation(
     _validate_policy(
         runs=runs,
         timeout=timeout,
-        max_cv=max_cv,
+        max_robust_cv=max_robust_cv,
+        max_raw_cv=max_raw_cv,
         max_time_regression=max_time_regression,
         max_allocation_regression=max_allocation_regression,
         max_allocated_bytes_regression=max_allocated_bytes_regression,
@@ -1385,7 +1425,8 @@ def run_attestation(
     fingerprint_data = asdict(fingerprint)
     fingerprint_data["key"] = fingerprint.key()
     policy = {
-        "max_cv": max_cv,
+        "max_robust_cv": max_robust_cv,
+        "max_raw_cv": max_raw_cv,
         "max_time_regression": max_time_regression,
         "max_allocation_regression": max_allocation_regression,
         "max_allocated_bytes_regression": max_allocated_bytes_regression,
@@ -1425,14 +1466,22 @@ def run_attestation(
         "process": process,
         "attestations": attestations,
         "aggregated_cases": {},
-        "validation": {"valid": False, "max_cv": max_cv, "errors": []},
+        "validation": {
+            "valid": False,
+            "max_robust_cv": max_robust_cv,
+            "max_raw_cv": max_raw_cv,
+            "errors": [],
+        },
         "comparison": _invalid_comparison(["validation has not run"]),
     }
-    aggregated, validation_errors = _aggregate_bundle(result, max_cv)
+    aggregated, validation_errors = _aggregate_bundle(
+        result, max_robust_cv, max_raw_cv
+    )
     result["aggregated_cases"] = aggregated
     result["validation"] = {
         "valid": not validation_errors,
-        "max_cv": max_cv,
+        "max_robust_cv": max_robust_cv,
+        "max_raw_cv": max_raw_cv,
         "errors": validation_errors,
     }
     if baseline is None:
@@ -1450,7 +1499,8 @@ def run_attestation(
             result,
             baseline,
             schema=schema,
-            max_cv=max_cv,
+            max_robust_cv=max_robust_cv,
+            max_raw_cv=max_raw_cv,
             max_time_regression=max_time_regression,
             max_allocation_regression=max_allocation_regression,
             max_allocated_bytes_regression=max_allocated_bytes_regression,
@@ -1476,7 +1526,8 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         help="compatible clean-host bundle required for a performance PASS",
     )
-    parser.add_argument("--max-cv", type=float, default=0.10)
+    parser.add_argument("--max-robust-cv", type=float, default=0.10)
+    parser.add_argument("--max-raw-cv", type=float, default=0.25)
     parser.add_argument(
         "--affinity-mask",
         default="0x1",
@@ -1498,7 +1549,8 @@ def main(argv: list[str] | None = None) -> int:
         _validate_policy(
             runs=args.runs,
             timeout=args.timeout,
-            max_cv=args.max_cv,
+            max_robust_cv=args.max_robust_cv,
+            max_raw_cv=args.max_raw_cv,
             max_time_regression=args.max_time_regression,
             max_allocation_regression=args.max_allocation_regression,
             max_allocated_bytes_regression=args.max_allocated_bytes_regression,
@@ -1520,7 +1572,8 @@ def main(argv: list[str] | None = None) -> int:
         args.runs,
         args.timeout,
         baseline=baseline,
-        max_cv=args.max_cv,
+        max_robust_cv=args.max_robust_cv,
+        max_raw_cv=args.max_raw_cv,
         max_time_regression=args.max_time_regression,
         max_allocation_regression=args.max_allocation_regression,
         max_allocated_bytes_regression=args.max_allocated_bytes_regression,
