@@ -18,7 +18,7 @@
     "comparison"
   ],
   "properties": {
-    "schema_version": { "const": 4 },
+    "schema_version": { "const": 5 },
     "kind": { "const": "l7_numeric_performance_attestation_bundle" },
     "generated_at_utc": { "type": "string", "minLength": 1 },
     "runner": { "$ref": "#/$defs/runner" },
@@ -180,7 +180,7 @@
         },
         "case_order": { "type": "string", "minLength": 1 },
         "scope": { "type": "string", "minLength": 1 },
-        "execution_control": { "$ref": "#/$defs/executionControl" },
+        "execution_control": { "$ref": "#/$defs/runnerExecutionControl" },
         "policy": { "$ref": "#/$defs/policy" }
       }
     },
@@ -192,6 +192,37 @@
         "affinity_mask": {
           "type": "string",
           "pattern": "^0x[0-9a-f]+$"
+        },
+        "scope": { "const": "current_benchmark_thread" }
+      }
+    },
+    "runnerExecutionControl": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "affinity_mask",
+        "allowed_affinity_mask",
+        "logical_cpu",
+        "selection",
+        "selection_policy",
+        "scope"
+      ],
+      "properties": {
+        "affinity_mask": {
+          "type": "string",
+          "pattern": "^0x[1-9a-f][0-9a-f]*$"
+        },
+        "allowed_affinity_mask": {
+          "type": "string",
+          "pattern": "^0x[1-9a-f][0-9a-f]*$"
+        },
+        "logical_cpu": { "type": "integer", "minimum": 0 },
+        "selection": { "enum": ["auto", "explicit"] },
+        "selection_policy": {
+          "enum": [
+            "third_allowed_logical_cpu_avoids_primary_housekeeping",
+            "explicit_cli_mask"
+          ]
         },
         "scope": { "const": "current_benchmark_thread" }
       }

@@ -208,6 +208,10 @@ def _bundle() -> dict:
             "scope": "native",
             "execution_control": {
                 "affinity_mask": "0x1",
+                "allowed_affinity_mask": "0xff",
+                "logical_cpu": 0,
+                "selection": "explicit",
+                "selection_policy": runner.EXPLICIT_AFFINITY_POLICY,
                 "scope": runner.AFFINITY_SCOPE,
             },
             "policy": policy,
@@ -290,6 +294,43 @@ def test_affinity_requires_one_logical_cpu(value: str) -> None:
 
 def test_affinity_is_normalized_for_provenance() -> None:
     assert runner._normalize_affinity_mask("16") == "0x10"
+
+
+def test_auto_affinity_avoids_primary_housekeeping_logicals(monkeypatch) -> None:
+    monkeypatch.setattr(runner, "_allowed_affinity_mask", lambda: 0b11_1111)
+    assert runner._resolve_execution_control("auto") == {
+        "affinity_mask": "0x4",
+        "allowed_affinity_mask": "0x3f",
+        "logical_cpu": 2,
+        "selection": "auto",
+        "selection_policy": runner.AUTO_AFFINITY_POLICY,
+        "scope": runner.AFFINITY_SCOPE,
+    }
+
+
+def test_auto_affinity_uses_last_cpu_when_fewer_than_three_are_allowed(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(runner, "_allowed_affinity_mask", lambda: 0b11)
+    assert runner._resolve_execution_control("auto")["affinity_mask"] == "0x2"
+
+
+def test_explicit_affinity_must_be_available_to_process(monkeypatch) -> None:
+    monkeypatch.setattr(runner, "_allowed_affinity_mask", lambda: 0b101)
+    with pytest.raises(ValueError, match="unavailable to this process"):
+        runner._resolve_execution_control("0x2")
+
+
+def test_explicit_affinity_records_allowed_topology(monkeypatch) -> None:
+    monkeypatch.setattr(runner, "_allowed_affinity_mask", lambda: 0b1_0101)
+    assert runner._resolve_execution_control("0x10") == {
+        "affinity_mask": "0x10",
+        "allowed_affinity_mask": "0x15",
+        "logical_cpu": 4,
+        "selection": "explicit",
+        "selection_policy": runner.EXPLICIT_AFFINITY_POLICY,
+        "scope": runner.AFFINITY_SCOPE,
+    }
 
 
 @pytest.mark.parametrize(
@@ -378,6 +419,28 @@ def test_aggregate_requires_child_execution_control() -> None:
     ] = "0x2"
     _aggregated, errors = runner._aggregate_bundle(bundle, 0.1, 0.25)
     assert any("execution control drift" in error for error in errors)
+
+
+def test_aggregate_requires_runner_affinity_within_recorded_allowed_mask() -> None:
+    bundle = _bundle()
+    bundle["runner"]["execution_control"]["allowed_affinity_mask"] = "0xfe"
+    _aggregated, errors = runner._aggregate_bundle(bundle, 0.1, 0.25)
+    assert any("absent from its recorded allowed mask" in error for error in errors)
+
+
+def test_aggregate_recomputes_automatic_affinity_policy() -> None:
+    bundle = _bundle()
+    execution = bundle["runner"]["execution_control"]
+    execution.update(
+        {
+            "affinity_mask": "0x1",
+            "logical_cpu": 0,
+            "selection": "auto",
+            "selection_policy": runner.AUTO_AFFINITY_POLICY,
+        }
+    )
+    _aggregated, errors = runner._aggregate_bundle(bundle, 0.1, 0.25)
+    assert any("does not follow its recorded policy" in error for error in errors)
 
 
 def test_aggregate_requires_exact_ordered_case_manifest() -> None:
