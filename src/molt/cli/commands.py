@@ -2637,6 +2637,14 @@ def extension_build(
                     )
                     if libcxx_inc is not None:
                         cmd.extend(["-I", str(libcxx_inc)])
+            # Regenerated Cython C must select Cython's limited-API branches.
+            # This named policy is intentionally appended immediately before
+            # the source-plan driver's unit args: only ``regeneration != None``
+            # receives it, while the driver remains authoritative for all
+            # original per-unit flags.
+            cmd.extend(
+                _source_extension_cython.compile_args_for_regeneration(regeneration)
+            )
             cmd.extend(
                 _source_extensions._source_extension_unit_args_for_driver(
                     unit_compile_args,
