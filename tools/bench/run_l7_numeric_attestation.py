@@ -922,8 +922,8 @@ def _recompute_case(
         or minimum_sample_ns <= 0
     ):
         errors.append(f"{context}: iteration and calibration counts must be positive")
-    if calibration_target_ns < minimum_sample_ns * 5:
-        errors.append(f"{context}: calibration target lacks 5x minimum headroom")
+    if calibration_target_ns < minimum_sample_ns * 10:
+        errors.append(f"{context}: calibration target lacks 10x minimum headroom")
     if case["timing_scope"] != TIMING_SCOPE:
         errors.append(f"{context}: timing scope drift")
 
