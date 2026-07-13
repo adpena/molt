@@ -2697,17 +2697,19 @@ unsafe fn materialize_numeric_carrier(bits: u64) -> (*mut PyObject, bool) {
 
 unsafe fn materialize_long_carrier(bits: u64, sign: i32) -> (*mut PyObject, bool) {
     let hooks = hooks_or_stubs();
-    let mut bit_len = 0usize;
-    if unsafe { (hooks.int_num_bits)(bits, &raw mut bit_len) } != 0 {
-        if let Some(value) = MoltObject::from_bits(bits).as_int() {
-            bit_len = value
-                .unsigned_abs()
-                .checked_ilog2()
-                .map_or(0, |n| n as usize + 1);
-        } else {
+    let inline_value = MoltObject::from_bits(bits).as_int();
+    let bit_len = if let Some(value) = inline_value {
+        value
+            .unsigned_abs()
+            .checked_ilog2()
+            .map_or(0, |n| n as usize + 1)
+    } else {
+        let mut bit_len = 0usize;
+        if unsafe { (hooks.int_num_bits)(bits, &raw mut bit_len) } != 0 {
             return (ptr::null_mut(), false);
         }
-    }
+        bit_len
+    };
     if !matches!(sign, -1..=1) || sign == 0 && bit_len != 0 {
         return (ptr::null_mut(), false);
     }
@@ -2722,12 +2724,12 @@ unsafe fn materialize_long_carrier(bits: u64, sign: i32) -> (*mut PyObject, bool
         return (ptr::null_mut(), false);
     }
     magnitude.resize(byte_len, 0);
-    let status = unsafe { (hooks.int_to_bytes)(bits, magnitude.as_mut_ptr(), byte_len, 1, 1) };
-    if status != crate::hooks::INT_BYTES_OK {
-        if let Some(value) = MoltObject::from_bits(bits).as_int() {
-            magnitude.fill(if value < 0 { 0xff } else { 0 });
-            magnitude[..8.min(byte_len)].copy_from_slice(&value.to_le_bytes()[..8.min(byte_len)]);
-        } else {
+    if let Some(value) = inline_value {
+        magnitude.fill(if value < 0 { 0xff } else { 0 });
+        magnitude[..8.min(byte_len)].copy_from_slice(&value.to_le_bytes()[..8.min(byte_len)]);
+    } else {
+        let status = unsafe { (hooks.int_to_bytes)(bits, magnitude.as_mut_ptr(), byte_len, 1, 1) };
+        if status != crate::hooks::INT_BYTES_OK {
             return (ptr::null_mut(), false);
         }
     }
