@@ -348,6 +348,8 @@ unsafe extern "C" fn num_bits(bits: u64, out: *mut usize) -> i32 {
 }
 
 fn init() {
+    #[cfg(feature = "l7-test-probe")]
+    molt_cpython_abi_test_support::link();
     molt_cpython_abi::bridge::molt_cpython_abi_init();
     let mut hooks = STUB_HOOKS;
     hooks.int_from_i64 = int_from_i64;

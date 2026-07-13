@@ -91,7 +91,7 @@ fn numeric_scalar_layout_has_one_header_authority() {
 #[test]
 fn overlay_probe_rejects_raw_pointer_as_pyobject_contract() {
     let probe = std::fs::read_to_string(
-        repo_root().join("runtime/molt-cpython-abi/shims/l7_overlay_probe.c"),
+        repo_root().join("runtime/molt-cpython-abi-test-support/l7_overlay_probe.c"),
     )
     .expect("read overlay probe");
     let raw_symbol = ["molt_l7_overlay_", "raw_"].concat();

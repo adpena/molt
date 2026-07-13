@@ -852,7 +852,7 @@ pub unsafe extern "C" fn PyNumber_Long(o: *mut PyObject) -> *mut PyObject {
         }
     }
     if unsafe { crate::api::numbers::PyLong_Check(o) } != 0 {
-        return unsafe { crate::api::numbers::copy_foreign_long_to_exact(o) };
+        return unsafe { crate::api::numbers::copy_layout_long_to_exact(o) };
     }
     // Foreign object: dispatch to its `nb_int` slot, then `nb_index`
     // (CPython Objects/abstract.c `PyNumber_Long`).
@@ -970,7 +970,7 @@ pub unsafe extern "C" fn PyNumber_Index(o: *mut PyObject) -> *mut PyObject {
         }
     }
     if unsafe { crate::api::numbers::PyLong_Check(o) } != 0 {
-        return unsafe { crate::api::numbers::copy_foreign_long_to_exact(o) };
+        return unsafe { crate::api::numbers::copy_layout_long_to_exact(o) };
     }
     // Foreign object: dispatch to its `nb_index` slot only (CPython's
     // `_PyNumber_Index` never falls back to `nb_int`/`nb_float`).

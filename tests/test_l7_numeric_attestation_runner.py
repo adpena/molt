@@ -46,7 +46,7 @@ def _case(name: str, family: str, input_data: dict, invariant: str) -> dict:
         "input": copy.deepcopy(input_data),
         "iterations_per_sample": 2_000_000,
         "observer_iterations_per_sample": 64,
-        "calibration_target_ns": 100_000_000,
+        "calibration_target_ns": 200_000_000,
         "minimum_sample_ns": 20_000_000,
         "timing_scope": runner.TIMING_SCOPE,
         "sample_count": runner.SAMPLE_COUNT,
@@ -337,7 +337,7 @@ def test_aggregate_requires_calibration_headroom() -> None:
     case = bundle["attestations"]["abi_boundary"][0]["cases"][0]
     case["calibration_target_ns"] = case["minimum_sample_ns"]
     _aggregated, errors = runner._aggregate_bundle(bundle, 0.1)
-    assert any("lacks 5x minimum headroom" in error for error in errors)
+    assert any("lacks 10x minimum headroom" in error for error in errors)
 
 
 def test_aggregate_requires_child_execution_control() -> None:
