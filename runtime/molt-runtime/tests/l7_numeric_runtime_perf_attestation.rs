@@ -15,6 +15,10 @@ use molt_cpython_abi::api::numbers::{
     _PyLong_AsByteArray, _PyLong_FromByteArray, _PyLong_NumBits, PyLong_FromString,
 };
 use molt_cpython_abi::api::refcount::Py_DECREF;
+use molt_cpython_abi::l7_attestation::{
+    CALIBRATION_TARGET_NS, MINIMUM_SAMPLE_NS, SAMPLE_COUNT, calibrate_timed_iterations,
+    enforce_current_thread_affinity, normalized_affinity_mask,
+};
 use molt_obj_model::MoltObject;
 use molt_runtime::attestation_probe;
 use num_bigint::BigUint;
@@ -22,10 +26,6 @@ use serde_json::{Value, json};
 use std::ffi::CString;
 use std::hint::black_box;
 use std::time::Instant;
-
-const SAMPLE_COUNT: usize = 9;
-const TARGET_SAMPLE_NS: u128 = 20_000_000;
-const MAX_TIMED_ITERATIONS: usize = 1 << 28;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_isolate_bootstrap() -> u64 {
@@ -73,21 +73,12 @@ fn assert_semantic_batch(iterations: usize, operation: &mut impl FnMut() -> u64)
     assert_no_pending_exception();
 }
 
-fn calibrate_timed_iterations(
-    seed_iterations: usize,
-    operation: &mut impl FnMut() -> u64,
-) -> usize {
-    let mut iterations = seed_iterations.max(1).min(MAX_TIMED_ITERATIONS);
-    loop {
+fn calibrate_case_iterations(seed_iterations: usize, operation: &mut impl FnMut() -> u64) -> usize {
+    calibrate_timed_iterations(seed_iterations, |iterations| {
         let started = Instant::now();
         assert_semantic_batch(iterations, operation);
-        let elapsed_ns = started.elapsed().as_nanos().max(1);
-        if elapsed_ns >= TARGET_SAMPLE_NS || iterations == MAX_TIMED_ITERATIONS {
-            return iterations;
-        }
-        let growth = TARGET_SAMPLE_NS.div_ceil(elapsed_ns).clamp(2, 64) as usize;
-        iterations = iterations.saturating_mul(growth).min(MAX_TIMED_ITERATIONS);
-    }
+        started.elapsed().as_nanos()
+    })
 }
 
 fn measure(
@@ -97,7 +88,7 @@ fn measure(
     mut operation: impl FnMut() -> u64,
 ) -> Value {
     assert_semantic_batch(observer_iterations.clamp(64, 1024), &mut operation);
-    let iterations = calibrate_timed_iterations(observer_iterations, &mut operation);
+    let iterations = calibrate_case_iterations(observer_iterations, &mut operation);
 
     attestation_probe::reset();
     attestation_probe::set_tracking(true);
@@ -141,7 +132,8 @@ fn measure(
         "input": input,
         "iterations_per_sample": iterations,
         "observer_iterations_per_sample": observer_iterations,
-        "calibration_target_ns": TARGET_SAMPLE_NS,
+        "calibration_target_ns": CALIBRATION_TARGET_NS,
+        "minimum_sample_ns": MINIMUM_SAMPLE_NS,
         "timing_scope": "loop_inclusive; allocation and hook observers are untimed",
         "sample_count": SAMPLE_COUNT,
         "summary": {
@@ -316,6 +308,7 @@ fn l7_numeric_runtime_performance_attestation() {
         !cfg!(debug_assertions),
         "L7 numeric runtime attestation is release-only"
     );
+    let affinity_mask = enforce_current_thread_affinity(&required_env("MOLT_L7_AFFINITY_MASK"));
     initialize_runtime();
     let mut cases = Vec::new();
     for digits in [25, 37, 256, 4096, 4300] {
@@ -325,7 +318,7 @@ fn l7_numeric_runtime_performance_attestation() {
         cases.push(byte_case(width));
     }
     let payload = json!({
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "l7_numeric_runtime_performance_attestation",
         "profile": "release",
         "allocator_scope": "test_feature_counting_wrapper_over_production_mimalloc",
@@ -341,6 +334,10 @@ fn l7_numeric_runtime_performance_attestation() {
             "os": std::env::consts::OS,
             "arch": std::env::consts::ARCH,
             "logical_cpus": std::thread::available_parallelism().map_or(1, usize::from),
+        },
+        "execution_control": {
+            "affinity_mask": normalized_affinity_mask(affinity_mask),
+            "scope": "current_benchmark_thread",
         },
         "source": {
             "git_commit": required_env("MOLT_L7_GIT_COMMIT"),

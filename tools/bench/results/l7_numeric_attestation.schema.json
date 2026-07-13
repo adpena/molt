@@ -18,7 +18,7 @@
     "comparison"
   ],
   "properties": {
-    "schema_version": { "const": 2 },
+    "schema_version": { "const": 3 },
     "kind": { "const": "l7_numeric_performance_attestation_bundle" },
     "generated_at_utc": { "type": "string", "minLength": 1 },
     "runner": { "$ref": "#/$defs/runner" },
@@ -165,6 +165,7 @@
         "timing_scope",
         "case_order",
         "scope",
+        "execution_control",
         "policy"
       ],
       "properties": {
@@ -175,7 +176,20 @@
         },
         "case_order": { "type": "string", "minLength": 1 },
         "scope": { "type": "string", "minLength": 1 },
+        "execution_control": { "$ref": "#/$defs/executionControl" },
         "policy": { "$ref": "#/$defs/policy" }
+      }
+    },
+    "executionControl": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["affinity_mask", "scope"],
+      "properties": {
+        "affinity_mask": {
+          "type": "string",
+          "pattern": "^0x[0-9a-f]+$"
+        },
+        "scope": { "const": "current_benchmark_thread" }
       }
     },
     "fingerprint": {
@@ -431,6 +445,7 @@
         "iterations_per_sample",
         "observer_iterations_per_sample",
         "calibration_target_ns",
+        "minimum_sample_ns",
         "timing_scope",
         "sample_count",
         "summary",
@@ -442,7 +457,8 @@
         "input": { "type": "object" },
         "iterations_per_sample": { "type": "integer", "minimum": 1 },
         "observer_iterations_per_sample": { "type": "integer", "minimum": 1 },
-        "calibration_target_ns": { "type": "integer", "minimum": 1 },
+        "calibration_target_ns": { "const": 100000000 },
+        "minimum_sample_ns": { "const": 20000000 },
         "timing_scope": {
           "const": "loop_inclusive; allocation and hook observers are untimed"
         },
@@ -466,13 +482,14 @@
         "allocator_scope",
         "sample_count",
         "host",
+        "execution_control",
         "source",
         "scope",
         "coverage",
         "cases"
       ],
       "properties": {
-        "schema_version": { "const": 1 },
+        "schema_version": { "const": 2 },
         "kind": {
           "enum": [
             "l7_numeric_performance_attestation",
@@ -488,6 +505,7 @@
         },
         "sample_count": { "const": 9 },
         "host": { "$ref": "#/$defs/childHost" },
+        "execution_control": { "$ref": "#/$defs/executionControl" },
         "source": { "$ref": "#/$defs/childSource" },
         "scope": { "$ref": "#/$defs/childScope" },
         "coverage": {

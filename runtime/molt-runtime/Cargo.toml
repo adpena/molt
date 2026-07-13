@@ -20,7 +20,7 @@ required-features = ["l7-attestation-probe"]
 
 [features]
 default = ["stdlib_full", "wasi_host"]
-l7-attestation-probe = []
+l7-attestation-probe = ["molt-cpython-abi/l7-attestation-core"]
 
 # Full stdlib — everything included (default for native builds).
 # Chains through stdlib_server, adding heavy/optional modules.
