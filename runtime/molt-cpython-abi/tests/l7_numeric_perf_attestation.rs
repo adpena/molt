@@ -18,6 +18,10 @@ use molt_cpython_abi::api::numbers::{
 use molt_cpython_abi::api::refcount::Py_DECREF;
 use molt_cpython_abi::bridge::{GLOBAL_BRIDGE, molt_capi_pyobj_to_handle};
 use molt_cpython_abi::hooks::{INT_BYTES_OK, OwnedHandleResult, STUB_HOOKS};
+use molt_cpython_abi::l7_attestation::{
+    CALIBRATION_TARGET_NS, MINIMUM_SAMPLE_NS, SAMPLE_COUNT, calibrate_timed_iterations,
+    enforce_current_thread_affinity, normalized_affinity_mask,
+};
 use molt_lang_obj_model::MoltObject;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::ffi::{CString, c_char};
@@ -33,10 +37,7 @@ unsafe extern "C" {
     fn molt_l7_prebuilt_direct_decref(value: *mut PyObject) -> isize;
 }
 
-const SAMPLE_COUNT: usize = 9;
-const SCHEMA_VERSION: u32 = 1;
-const TARGET_SAMPLE_NS: u128 = 20_000_000;
-const MAX_TIMED_ITERATIONS: usize = 1 << 28;
+const SCHEMA_VERSION: u32 = 2;
 
 static ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
 static ALLOCATED_BYTES: AtomicU64 = AtomicU64::new(0);
@@ -336,21 +337,15 @@ fn assert_semantic_batch(iterations: usize, operation: &mut impl FnMut(usize) ->
     assert_no_pending_exception();
 }
 
-fn calibrate_timed_iterations(
+fn calibrate_case_iterations(
     seed_iterations: usize,
     operation: &mut impl FnMut(usize) -> u64,
 ) -> usize {
-    let mut iterations = seed_iterations.max(1).min(MAX_TIMED_ITERATIONS);
-    loop {
+    calibrate_timed_iterations(seed_iterations, |iterations| {
         let started = Instant::now();
         assert_semantic_batch(iterations, operation);
-        let elapsed_ns = started.elapsed().as_nanos().max(1);
-        if elapsed_ns >= TARGET_SAMPLE_NS || iterations == MAX_TIMED_ITERATIONS {
-            return iterations;
-        }
-        let growth = TARGET_SAMPLE_NS.div_ceil(elapsed_ns).clamp(2, 64) as usize;
-        iterations = iterations.saturating_mul(growth).min(MAX_TIMED_ITERATIONS);
-    }
+        started.elapsed().as_nanos()
+    })
 }
 
 fn measure_case(
@@ -362,7 +357,7 @@ fn measure_case(
 ) -> CaseResult {
     let warmup = observer_iterations.clamp(64, 2048);
     assert_semantic_batch(warmup, &mut operation);
-    let timed_iterations = calibrate_timed_iterations(observer_iterations, &mut operation);
+    let timed_iterations = calibrate_case_iterations(observer_iterations, &mut operation);
 
     // Prime any lazy path while the allocation observer is active, then reset.
     // This keeps one-time test-harness growth out of the steady-state samples
@@ -820,13 +815,14 @@ fn case_json(case: &CaseResult) -> String {
         .collect::<Vec<_>>()
         .join(",");
     format!(
-        r#"{{"name":{},"family":{},"input":{},"iterations_per_sample":{},"observer_iterations_per_sample":{},"calibration_target_ns":{},"timing_scope":"loop_inclusive; allocation and hook observers are untimed","sample_count":{},"summary":{{"ns_per_op":{},"allocations_per_op":{},"allocated_bytes_per_op":{},"peak_live_bytes":{},"hook_calls_per_op":{}}},"samples":[{}]}}"#,
+        r#"{{"name":{},"family":{},"input":{},"iterations_per_sample":{},"observer_iterations_per_sample":{},"calibration_target_ns":{},"minimum_sample_ns":{},"timing_scope":"loop_inclusive; allocation and hook observers are untimed","sample_count":{},"summary":{{"ns_per_op":{},"allocations_per_op":{},"allocated_bytes_per_op":{},"peak_live_bytes":{},"hook_calls_per_op":{}}},"samples":[{}]}}"#,
         json_string(&case.name),
         json_string(case.family),
         case.input_json,
         case.timed_iterations,
         case.observer_iterations,
-        TARGET_SAMPLE_NS,
+        CALIBRATION_TARGET_NS,
+        MINIMUM_SAMPLE_NS,
         SAMPLE_COUNT,
         ns,
         allocations,
@@ -837,7 +833,7 @@ fn case_json(case: &CaseResult) -> String {
     )
 }
 
-fn attestation_json(cases: &[CaseResult]) -> String {
+fn attestation_json(cases: &[CaseResult], affinity_mask: usize) -> String {
     let git_commit = required_env("MOLT_L7_GIT_COMMIT");
     let git_dirty = required_env("MOLT_L7_GIT_DIRTY") == "true";
     let rustc = required_env("MOLT_L7_RUSTC");
@@ -845,12 +841,13 @@ fn attestation_json(cases: &[CaseResult]) -> String {
     let run_nonce = required_env("MOLT_L7_RUN_NONCE");
     let cases = cases.iter().map(case_json).collect::<Vec<_>>().join(",");
     format!(
-        r#"{{"schema_version":{},"kind":"l7_numeric_performance_attestation","profile":"release","allocator_scope":"rust_global_allocator","sample_count":{},"host":{{"os":{},"arch":{},"logical_cpus":{}}},"source":{{"git_commit":{},"git_dirty":{},"rustc":{},"build_fingerprint":{},"run_nonce":{}}},"scope":{{"native":true,"wasm32":false,"assembly":false,"code_size":false,"component_rss_only":true}},"coverage":{{"runtime_hook_payload":"ABI boundary control only; real BigInt work is in l7_numeric_runtime_perf_attestation","c_header_probe":"compiled test-gated overlay consumer for canonical scalar type identity, arithmetic chaining, managed non-scalars, and foreign numeric objects","legacy_raw_pointer_lane":false,"process_peak_rss":"component harness only; added by tools/bench/run_l7_numeric_attestation.py","absolute_gates":"canonical scalar/managed/foreign/singleton reads, successful float packs, and complex primitives must remain allocation-free"}},"cases":[{}]}}"#,
+        r#"{{"schema_version":{},"kind":"l7_numeric_performance_attestation","profile":"release","allocator_scope":"rust_global_allocator","sample_count":{},"host":{{"os":{},"arch":{},"logical_cpus":{}}},"execution_control":{{"affinity_mask":{},"scope":"current_benchmark_thread"}},"source":{{"git_commit":{},"git_dirty":{},"rustc":{},"build_fingerprint":{},"run_nonce":{}}},"scope":{{"native":true,"wasm32":false,"assembly":false,"code_size":false,"component_rss_only":true}},"coverage":{{"runtime_hook_payload":"ABI boundary control only; real BigInt work is in l7_numeric_runtime_perf_attestation","c_header_probe":"compiled test-gated overlay consumer for canonical scalar type identity, arithmetic chaining, managed non-scalars, and foreign numeric objects","legacy_raw_pointer_lane":false,"process_peak_rss":"component harness only; added by tools/bench/run_l7_numeric_attestation.py","absolute_gates":"canonical scalar/managed/foreign/singleton reads, successful float packs, and complex primitives must remain allocation-free"}},"cases":[{}]}}"#,
         SCHEMA_VERSION,
         SAMPLE_COUNT,
         json_string(std::env::consts::OS),
         json_string(std::env::consts::ARCH),
         std::thread::available_parallelism().map_or(1, usize::from),
+        json_string(&normalized_affinity_mask(affinity_mask)),
         json_string(&git_commit),
         git_dirty,
         json_string(&rustc),
@@ -928,6 +925,7 @@ fn l7_numeric_performance_attestation() {
         !cfg!(debug_assertions),
         "L7 numeric attestation is release-only"
     );
+    let affinity_mask = enforce_current_thread_affinity(&required_env("MOLT_L7_AFFINITY_MASK"));
     enforce_legacy_raw_lane_absent();
     initialize_hooks();
 
@@ -954,5 +952,8 @@ fn l7_numeric_performance_attestation() {
     cases.extend(complex_cases());
 
     enforce_allocation_free_cases(&cases);
-    println!("L7_NUMERIC_ATTESTATION={}", attestation_json(&cases));
+    println!(
+        "L7_NUMERIC_ATTESTATION={}",
+        attestation_json(&cases, affinity_mask)
+    );
 }
