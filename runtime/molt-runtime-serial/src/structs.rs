@@ -549,84 +549,12 @@ fn read_unsigned(bytes: &[u8], endian: StructEndian, size: usize) -> Result<u128
     Ok(val)
 }
 
-fn f16_from_f64(val: f64) -> u16 {
-    let f = val as f32;
-    let bits = f.to_bits();
-    let sign = (bits >> 16) & 0x8000;
-    let exp = ((bits >> 23) & 0xff) as i32;
-    let mant = bits & 0x7fffff;
-
-    if exp == 0xff {
-        if mant == 0 {
-            return (sign | 0x7c00) as u16;
-        }
-        let mut payload = (mant >> 13) as u16;
-        if payload == 0 {
-            payload = 1;
-        }
-        return (sign | 0x7c00 | payload as u32) as u16;
-    }
-
-    let mut exp16 = exp - 127 + 15;
-    if exp16 >= 0x1f {
-        return (sign | 0x7c00) as u16;
-    }
-    if exp16 <= 0 {
-        if exp16 < -10 {
-            return sign as u16;
-        }
-        let mant32 = mant | 0x800000;
-        let shift = 14 - exp16;
-        let mut mant16 = (mant32 >> shift) as u16;
-        let round_bit = 1u32 << (shift - 1);
-        let remainder = mant32 & (round_bit - 1);
-        if (mant32 & round_bit) != 0 && (remainder != 0 || (mant16 & 1) != 0) {
-            mant16 = mant16.wrapping_add(1);
-        }
-        return (sign as u16) | mant16;
-    }
-
-    let mut mant16 = (mant >> 13) as u16;
-    let round_bit = 1u32 << 12;
-    let remainder = mant & (round_bit - 1);
-    if (mant & round_bit) != 0 && (remainder != 0 || (mant16 & 1) != 0) {
-        mant16 = mant16.wrapping_add(1);
-        if (mant16 & 0x400) != 0 {
-            mant16 = 0;
-            exp16 += 1;
-            if exp16 >= 0x1f {
-                return (sign | 0x7c00) as u16;
-            }
-        }
-    }
-    (sign | ((exp16 as u32) << 10) | mant16 as u32) as u16
+fn f16_from_f64(val: f64) -> Result<u16, ()> {
+    molt_obj_model::float_bits::f64_to_f16_bits(val)
 }
 
 fn f16_to_f64(bits: u16) -> f64 {
-    let sign = ((bits & 0x8000) as u32) << 16;
-    let exp = ((bits >> 10) & 0x1f) as i32;
-    let mant = (bits & 0x03ff) as u32;
-    let f32_bits = if exp == 0 {
-        if mant == 0 {
-            sign
-        } else {
-            let mut mant_norm = mant;
-            let mut exp_norm = -14;
-            while (mant_norm & 0x400) == 0 {
-                mant_norm <<= 1;
-                exp_norm -= 1;
-            }
-            mant_norm &= 0x03ff;
-            let exp32 = (exp_norm + 127) as u32;
-            sign | (exp32 << 23) | (mant_norm << 13)
-        }
-    } else if exp == 0x1f {
-        sign | 0x7f800000 | (mant << 13)
-    } else {
-        let exp32 = (exp - 15 + 127) as u32;
-        sign | (exp32 << 23) | (mant << 13)
-    };
-    f32::from_bits(f32_bits) as f64
+    molt_obj_model::float_bits::f16_bits_to_f64(bits)
 }
 
 fn obj_to_bigint(obj: MoltObject) -> Result<BigInt, String> {
@@ -1207,18 +1135,39 @@ pub extern "C" fn molt_struct_pack(format_bits: u64, values_bits: u64) -> u64 {
                         };
                         let bytes = match op.size {
                             2 => {
-                                let bits = f16_from_f64(val);
+                                let bits = match f16_from_f64(val) {
+                                    Ok(bits) => bits,
+                                    Err(()) => {
+                                        return raise_exception::<u64>(
+                                            _py,
+                                            "OverflowError",
+                                            "float too large to pack with e format",
+                                        );
+                                    }
+                                };
                                 match parsed.endian {
                                     StructEndian::Native => bits.to_ne_bytes().to_vec(),
                                     StructEndian::Little => bits.to_le_bytes().to_vec(),
                                     StructEndian::Big => bits.to_be_bytes().to_vec(),
                                 }
                             }
-                            4 => match parsed.endian {
-                                StructEndian::Native => (val as f32).to_ne_bytes().to_vec(),
-                                StructEndian::Little => (val as f32).to_le_bytes().to_vec(),
-                                StructEndian::Big => (val as f32).to_be_bytes().to_vec(),
-                            },
+                            4 => {
+                                let bits = match molt_obj_model::float_bits::f64_to_f32_bits(val) {
+                                    Ok(bits) => bits,
+                                    Err(()) => {
+                                        return raise_exception::<u64>(
+                                            _py,
+                                            "OverflowError",
+                                            "float too large to pack with f format",
+                                        );
+                                    }
+                                };
+                                match parsed.endian {
+                                    StructEndian::Native => bits.to_ne_bytes().to_vec(),
+                                    StructEndian::Little => bits.to_le_bytes().to_vec(),
+                                    StructEndian::Big => bits.to_be_bytes().to_vec(),
+                                }
+                            }
                             8 => match parsed.endian {
                                 StructEndian::Native => { val }.to_ne_bytes().to_vec(),
                                 StructEndian::Little => { val }.to_le_bytes().to_vec(),
@@ -1542,4 +1491,21 @@ pub extern "C" fn molt_struct_iter_unpack(format_bits: u64, buffer_bits: u64) ->
         }
         MoltObject::from_ptr(list_ptr).bits()
     })
+}
+
+#[cfg(test)]
+mod float_pack_tests {
+    use super::*;
+
+    #[test]
+    fn struct_e_and_f_reject_finite_overflow() {
+        assert!(f16_from_f64(65_520.0).is_err());
+        assert!(molt_obj_model::float_bits::f64_to_f32_bits(f64::MAX).is_err());
+    }
+
+    #[test]
+    fn struct_e_uses_direct_f64_ties_to_even_authority() {
+        assert_eq!(f16_from_f64(1.0 + 2f64.powi(-11)), Ok(0x3c00));
+        assert_eq!(f16_from_f64(1.0 + 3.0 * 2f64.powi(-11)), Ok(0x3c02));
+    }
 }
