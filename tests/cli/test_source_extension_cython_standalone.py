@@ -12,6 +12,8 @@ that consumed the ``--shared`` C would fail this test.
 from __future__ import annotations
 
 import os
+import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -67,6 +69,10 @@ requires_cython = pytest.mark.skipif(
     not _cython_available(),
     reason="Cython is not importable by the test interpreter",
 )
+requires_clang = pytest.mark.skipif(
+    shutil.which("clang") is None,
+    reason="clang is required for the regenerated-C preprocess proof",
+)
 
 
 def test_parse_cython_build_requirement_reads_version_floor() -> None:
@@ -91,6 +97,111 @@ def test_cython_build_requirement_from_pyproject() -> None:
     )
     assert requirement is not None
     assert requirement.raw == "Cython==3.1.8"
+
+
+def test_regenerated_c_compile_policy_is_exact_manifested_and_exclusive(
+    tmp_path: Path,
+) -> None:
+    regeneration = cython_authority.CythonRegeneration(
+        pyx_path=tmp_path / "probe.pyx",
+        original_c=tmp_path / "probe.c",
+        regenerated_c=tmp_path / "generated" / "probe.c",
+        cython_version="test",
+        cython_argv=("python", "-m", "cython", "-3"),
+    )
+    exact_policy = ("-DPy_LIMITED_API=0x030C0000",)
+    assert cython_authority.CYTHON_REGENERATED_C_COMPILE_ARGS == exact_policy
+    assert cython_authority.compile_args_for_regeneration(None) == ()
+    assert (
+        cython_authority.compile_args_for_regeneration(regeneration) == exact_policy
+    )
+    assert regeneration.manifest_payload()["compile_args"] == list(exact_policy)
+
+
+@requires_cython
+@requires_clang
+def test_regenerated_cython_limited_api_preprocess_is_fail_closed(
+    tmp_path: Path,
+) -> None:
+    """The compile policy selects limited branches, not direct builtin fields."""
+
+    pyx_path = tmp_path / "limited_probe.pyx"
+    pyx_path.write_text(
+        "def probe(list values, dict mapping, str text, int number):\n"
+        "    return values[0], mapping[text], len(text), number + 1\n",
+        encoding="utf-8",
+    )
+    version = cython_authority._installed_cython_version(sys.executable)
+    assert version is not None
+    regeneration, error = cython_authority.regenerate_cython_c_standalone(
+        pyx_path=pyx_path,
+        original_c=tmp_path / "limited_probe.c",
+        out_dir=tmp_path / "generated",
+        include_dirs=(),
+        cython_version=version,
+        python_exe=sys.executable,
+    )
+    assert error is None, error
+    assert regeneration is not None
+    compile_args = cython_authority.compile_args_for_regeneration(regeneration)
+    assert compile_args == ("-DPy_LIMITED_API=0x030C0000",)
+
+    clang = shutil.which("clang")
+    assert clang is not None
+    abi_include = ROOT / "runtime" / "molt-cpython-abi" / "include"
+    preprocess = subprocess.run(
+        [
+            clang,
+            "-E",
+            *compile_args,
+            "-I",
+            str(abi_include),
+            str(regeneration.regenerated_c),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert preprocess.returncode == 0, preprocess.stderr
+    macro_dump = subprocess.run(
+        [
+            clang,
+            "-dM",
+            "-E",
+            *compile_args,
+            "-I",
+            str(abi_include),
+            str(regeneration.regenerated_c),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert macro_dump.returncode == 0, macro_dump.stderr
+    assert re.search(
+        r"^#define CYTHON_COMPILING_IN_CPYTHON 0$", macro_dump.stdout, re.MULTILINE
+    )
+    assert re.search(
+        r"^#define CYTHON_COMPILING_IN_LIMITED_API 1$",
+        macro_dump.stdout,
+        re.MULTILINE,
+    )
+
+    # Check direct field-access expressions after preprocessing. Type names may
+    # legitimately remain in declarations, so absence of names is not evidence.
+    forbidden_field_access = {
+        "List": r"->\s*ob_item\b",
+        "Long": r"->\s*(?:long_value|ob_digit)\b",
+        "Unicode": (
+            r"->\s*(?:wstr_length|utf8|utf8_length)\b"
+            r"|->\s*state\s*\.\s*(?:kind|ascii|compact|ready)\b"
+        ),
+        "Dict": r"->\s*ma_(?:used|keys|values)\b",
+    }
+    for builtin, pattern in forbidden_field_access.items():
+        assert re.search(pattern, preprocess.stdout) is None, (
+            f"regenerated limited-API C still contains direct {builtin} field access"
+        )
 
 
 def test_parse_cimported_packages_derives_from_source(tmp_path: Path) -> None:
