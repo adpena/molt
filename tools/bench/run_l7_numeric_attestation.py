@@ -46,12 +46,14 @@ CAPSULE_ACTIVE_DIR = REPO_ROOT / "tmp" / "memory_guard" / "active"
 CAPSULE_ARCHIVE_DIR = (
     REPO_ROOT / "logs" / "benchmarks" / "l7_numeric_attestation" / "custody"
 )
-BUNDLE_SCHEMA_VERSION = 4
+BUNDLE_SCHEMA_VERSION = 5
 CHILD_SCHEMA_VERSION = 3
 BUNDLE_KIND = "l7_numeric_performance_attestation_bundle"
 SAMPLE_COUNT = 9
 TIMING_SCOPE = "loop_inclusive; allocation and hook observers are untimed"
 AFFINITY_SCOPE = "current_benchmark_thread"
+AUTO_AFFINITY_POLICY = "third_allowed_logical_cpu_avoids_primary_housekeeping"
+EXPLICIT_AFFINITY_POLICY = "explicit_cli_mask"
 BASE_METRICS = (
     "ns_per_op",
     "allocations_per_op",
@@ -331,6 +333,113 @@ def _normalize_affinity_mask(value: str) -> str:
             f"{logical_cpus} logical CPUs are visible"
         )
     return f"0x{mask:x}"
+
+
+def _allowed_affinity_mask() -> int:
+    """Return the native-pointer-width CPUs this process may execute on."""
+    pointer_bits = sys.maxsize.bit_length() + 1
+    pointer_mask = (1 << pointer_bits) - 1
+    if sys.platform == "win32":
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        get_current_process = kernel32.GetCurrentProcess
+        get_current_process.argtypes = []
+        get_current_process.restype = ctypes.c_void_p
+        get_process_affinity_mask = kernel32.GetProcessAffinityMask
+        get_process_affinity_mask.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_size_t),
+            ctypes.POINTER(ctypes.c_size_t),
+        ]
+        get_process_affinity_mask.restype = ctypes.c_int
+        process_mask = ctypes.c_size_t()
+        system_mask = ctypes.c_size_t()
+        if not get_process_affinity_mask(
+            get_current_process(),
+            ctypes.byref(process_mask),
+            ctypes.byref(system_mask),
+        ):
+            error = ctypes.get_last_error()
+            raise OSError(error, "GetProcessAffinityMask failed")
+        allowed = int(process_mask.value)
+    elif hasattr(os, "sched_getaffinity"):
+        allowed = sum(
+            1 << cpu for cpu in os.sched_getaffinity(0) if 0 <= cpu < pointer_bits
+        )
+    else:
+        logical_cpus = os.cpu_count() or 1
+        allowed = (1 << min(logical_cpus, pointer_bits)) - 1
+    allowed &= pointer_mask
+    if allowed == 0:
+        raise ValueError("no native-pointer-width logical CPU is available")
+    return allowed
+
+
+def _resolve_execution_control(affinity_request: str) -> dict[str, Any]:
+    allowed_mask = _allowed_affinity_mask()
+    allowed_cpus = [
+        cpu for cpu in range(allowed_mask.bit_length()) if allowed_mask & (1 << cpu)
+    ]
+    if affinity_request.strip().lower() == "auto":
+        selected_cpu = allowed_cpus[min(2, len(allowed_cpus) - 1)]
+        affinity_mask = 1 << selected_cpu
+        selection = "auto"
+        selection_policy = AUTO_AFFINITY_POLICY
+    else:
+        normalized = _normalize_affinity_mask(affinity_request)
+        affinity_mask = int(normalized, 16)
+        if affinity_mask & allowed_mask != affinity_mask:
+            raise ValueError(
+                f"affinity mask {normalized} is unavailable to this process; "
+                f"allowed mask is {allowed_mask:#x}"
+            )
+        selected_cpu = affinity_mask.bit_length() - 1
+        selection = "explicit"
+        selection_policy = EXPLICIT_AFFINITY_POLICY
+    return {
+        "affinity_mask": f"0x{affinity_mask:x}",
+        "allowed_affinity_mask": f"0x{allowed_mask:x}",
+        "logical_cpu": selected_cpu,
+        "selection": selection,
+        "selection_policy": selection_policy,
+        "scope": AFFINITY_SCOPE,
+    }
+
+
+def _child_execution_control(execution_control: dict[str, Any]) -> dict[str, str]:
+    return {
+        "affinity_mask": execution_control["affinity_mask"],
+        "scope": execution_control["scope"],
+    }
+
+
+def _execution_control_errors(execution_control: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    affinity_mask = int(execution_control["affinity_mask"], 16)
+    allowed_mask = int(execution_control["allowed_affinity_mask"], 16)
+    if affinity_mask <= 0 or affinity_mask & (affinity_mask - 1):
+        errors.append("runner execution control must select exactly one logical CPU")
+    if affinity_mask & allowed_mask != affinity_mask:
+        errors.append("runner affinity mask is absent from its recorded allowed mask")
+    if execution_control["logical_cpu"] != affinity_mask.bit_length() - 1:
+        errors.append("runner logical CPU does not match its affinity mask")
+    selection = execution_control["selection"]
+    expected_policy = (
+        AUTO_AFFINITY_POLICY if selection == "auto" else EXPLICIT_AFFINITY_POLICY
+    )
+    if execution_control["selection_policy"] != expected_policy:
+        errors.append("runner affinity selection policy does not match its mode")
+    if selection == "auto":
+        allowed_cpus = [
+            cpu
+            for cpu in range(allowed_mask.bit_length())
+            if allowed_mask & (1 << cpu)
+        ]
+        expected_cpu = allowed_cpus[min(2, len(allowed_cpus) - 1)]
+        if affinity_mask != 1 << expected_cpu:
+            errors.append("runner automatic affinity does not follow its recorded policy")
+    return errors
 
 
 def _schema_type_matches(value: Any, expected: str) -> bool:
@@ -1012,6 +1121,9 @@ def _aggregate_bundle(
     max_raw_cv: float,
 ) -> tuple[dict[str, Any], list[str]]:
     errors: list[str] = []
+    errors.extend(
+        _execution_control_errors(bundle["runner"]["execution_control"])
+    )
     aggregated: dict[str, Any] = {}
     source = bundle["source"]
     for label in ("start", "end"):
@@ -1087,7 +1199,9 @@ def _aggregate_bundle(
             "build_fingerprint": build["artifact_fingerprint"],
             "run_nonce": source["run_nonce"],
         }
-        expected_execution = bundle["runner"]["execution_control"]
+        expected_execution = _child_execution_control(
+            bundle["runner"]["execution_control"]
+        )
 
         elapsed = []
         rss = []
@@ -1381,7 +1495,7 @@ def run_attestation(
     max_peak_live_regression: float,
     max_rss_regression: float,
     max_measured_rss_bytes: int | None,
-    affinity_mask: str,
+    execution_control: dict[str, Any],
 ) -> dict[str, Any]:
     _validate_policy(
         runs=runs,
@@ -1395,7 +1509,7 @@ def run_attestation(
         max_rss_regression=max_rss_regression,
         max_measured_rss_bytes=max_measured_rss_bytes,
     )
-    affinity_mask = _normalize_affinity_mask(affinity_mask)
+    affinity_mask = execution_control["affinity_mask"]
     schema = _load_schema()
     source_start = _source_snapshot()
     rustc = _parent_command(["rustc", "--version", "--verbose"]).decode().strip()
@@ -1444,10 +1558,7 @@ def run_attestation(
             "timing_scope": TIMING_SCOPE,
             "case_order": "exact component manifests; order is validated",
             "scope": "native release harness; no wasm32, assembly, or code-size claim",
-            "execution_control": {
-                "affinity_mask": affinity_mask,
-                "scope": AFFINITY_SCOPE,
-            },
+            "execution_control": execution_control,
             "policy": policy,
         },
         "source": {
@@ -1530,8 +1641,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-raw-cv", type=float, default=0.25)
     parser.add_argument(
         "--affinity-mask",
-        default="0x1",
-        help="single-logical-CPU mask enforced inside every measured child",
+        default="auto",
+        help=(
+            "single-logical-CPU mask, or auto to choose the third allowed logical "
+            "CPU and avoid the primary housekeeping lane (default: auto)"
+        ),
     )
     parser.add_argument("--max-time-regression", type=float, default=0.15)
     parser.add_argument("--max-allocation-regression", type=float, default=0.0)
@@ -1558,7 +1672,7 @@ def main(argv: list[str] | None = None) -> int:
             max_rss_regression=args.max_rss_regression,
             max_measured_rss_bytes=args.max_measured_rss_bytes,
         )
-        affinity_mask = _normalize_affinity_mask(args.affinity_mask)
+        execution_control = _resolve_execution_control(args.affinity_mask)
     except ValueError as exc:
         parser.error(str(exc))
 
@@ -1580,7 +1694,7 @@ def main(argv: list[str] | None = None) -> int:
         max_peak_live_regression=args.max_peak_live_regression,
         max_rss_regression=args.max_rss_regression,
         max_measured_rss_bytes=args.max_measured_rss_bytes,
-        affinity_mask=affinity_mask,
+        execution_control=execution_control,
     )
     output = args.output if args.output.is_absolute() else REPO_ROOT / args.output
     _write_json_atomic(output, result)
