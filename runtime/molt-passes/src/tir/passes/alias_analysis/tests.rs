@@ -276,26 +276,6 @@ const OLD_REFCOUNT_BARRIER_OPCODES: &[OpCode] = &[
     OpCode::ChanRecvYield,
 ];
 
-const OLD_REUSE_OPCODE_BARRIERS: &[OpCode] = &[
-    OpCode::Call,
-    OpCode::CallMethod,
-    OpCode::CallMethodIc,
-    OpCode::CallSuperMethodIc,
-    OpCode::CallBuiltin,
-    OpCode::StoreAttr,
-    OpCode::StoreIndex,
-    OpCode::Raise,
-    OpCode::Yield,
-    OpCode::YieldFrom,
-    OpCode::StateSwitch,
-    OpCode::StateTransition,
-    OpCode::StateYield,
-    OpCode::ChanSendYield,
-    OpCode::ChanRecvYield,
-    OpCode::ClosureStore,
-    OpCode::Free,
-];
-
 const OLD_DSE_DIRECT_OBSERVERS: &[OpCode] = &[
     OpCode::LoadAttr,
     OpCode::Index,
@@ -324,12 +304,6 @@ const OLD_DSE_NEVER_OBSERVERS: &[OpCode] =
 /// `refcount_elim::is_barrier` as it stood before S5 phase 1.
 fn old_refcount_is_barrier(opcode: OpCode) -> bool {
     OLD_REFCOUNT_BARRIER_OPCODES.contains(&opcode)
-}
-
-/// `reuse_analysis::is_aliasing_op`'s opcode portion (excluding the
-/// operand-uses-val branch, tested separately).
-fn old_reuse_opcode_barrier(opcode: OpCode) -> bool {
-    OLD_REUSE_OPCODE_BARRIERS.contains(&opcode)
 }
 
 /// `dead_store_elim::may_observe_slot` as it stood before S5 phase 1.
@@ -393,36 +367,6 @@ fn exception_control_transfer_ops_are_rc_barriers() {
         !opcode_is_rc_barrier(OpCode::TryEnd),
         "TryEnd is structural region-close metadata, not a transfer into the handler"
     );
-}
-
-/// `is_barrier_for ⊇ reuse_analysis::is_aliasing_op` for every (opcode, val):
-/// both the opcode branch and the operand-uses-val branch.
-#[test]
-fn reuse_barrier_is_conservative_superset_of_old_aliasing_op() {
-    let v = ValueId(7);
-    let other = ValueId(99);
-    let res = AliasAnalysisResult {
-        aliases: AliasUnionFind::default(),
-        escape: HashMap::new(),
-        alloc_roots: HashSet::new(),
-    };
-    for opcode in all_opcodes() {
-        // Opcode branch: an op NOT using `v`.
-        let no_use = op(opcode, vec![other], vec![]);
-        if old_reuse_opcode_barrier(opcode) {
-            assert!(
-                res.is_barrier_for(&no_use, v),
-                "{opcode:?}: old is_aliasing_op opcode-barrier=true but new is_barrier_for=false"
-            );
-        }
-        // Operand-uses-val branch: ANY op that names `v` is a barrier in the
-        // old list. New must agree.
-        let uses_v = op(opcode, vec![v], vec![]);
-        assert!(
-            res.is_barrier_for(&uses_v, v),
-            "{opcode:?}: old is_aliasing_op returns true when op uses val; new must too"
-        );
-    }
 }
 
 /// `may_observe_slot ⊇ dead_store_elim::may_observe_slot` for every opcode,

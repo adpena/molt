@@ -893,7 +893,6 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
         "molt_weakref_register", ("weakref", "obj", "callback")
     ),
     "molt_weakref_get": BuiltinFuncSpec("molt_weakref_get", ("weakref",)),
-    "molt_weakref_drop": BuiltinFuncSpec("molt_weakref_drop", ("weakref",)),
     "_molt_path_exists": BuiltinFuncSpec("molt_path_exists", ("path",)),
     "_molt_path_listdir": BuiltinFuncSpec("molt_path_listdir", ("path",)),
     "_molt_path_mkdir": BuiltinFuncSpec(

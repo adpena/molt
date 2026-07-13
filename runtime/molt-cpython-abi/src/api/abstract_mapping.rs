@@ -54,7 +54,7 @@ unsafe fn has_mp_subscript(o: *mut PyObject) -> bool {
 unsafe fn set_null_error() {
     unsafe {
         crate::api::errors::PyErr_SetString(
-            &raw mut crate::abi_types::PyExc_SystemError,
+            (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
             c"null argument to internal routine".as_ptr(),
         );
     }
@@ -67,7 +67,7 @@ unsafe fn set_type_error(message: String) {
     if let Ok(cmsg) = std::ffi::CString::new(message) {
         unsafe {
             crate::api::errors::PyErr_SetString(
-                &raw mut crate::abi_types::PyExc_TypeError,
+                (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
                 cmsg.as_ptr(),
             );
         }
@@ -236,7 +236,9 @@ pub unsafe extern "C" fn PyMapping_GetOptionalItem(
         return 1;
     }
     // NULL: KeyError == absent (0); anything else is a real error (-1).
-    let key_error: *mut PyObject = (&raw mut crate::abi_types::PyExc_KeyError).cast::<PyObject>();
+    let key_error: *mut PyObject = ((&raw mut crate::abi_types::PyExc_KeyError)
+        .cast::<crate::abi_types::PyObject>())
+    .cast::<PyObject>();
     if unsafe { crate::api::errors::PyErr_ExceptionMatches(key_error) } != 0 {
         unsafe { crate::api::errors::PyErr_Clear() };
         return 0;

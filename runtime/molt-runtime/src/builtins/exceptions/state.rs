@@ -20,7 +20,7 @@ thread_local! {
     pub(crate) static TASK_RAISE_ACTIVE: Cell<bool> = const { Cell::new(false) };
 }
 
-const EXCEPTIONS_OBJECT_SLOT_COUNT: usize = 26;
+const EXCEPTIONS_OBJECT_SLOT_COUNT: usize = 27;
 
 pub(crate) struct ExceptionsRuntimeState {
     pub(super) errno_attr_name: AtomicU64,
@@ -49,6 +49,7 @@ pub(crate) struct ExceptionsRuntimeState {
     pub(super) name_error_class_cache: AtomicU64,
     pub(super) unbound_local_error_class_cache: AtomicU64,
     pub(super) not_implemented_error_class_cache: AtomicU64,
+    pub(super) unraisable_hook_args_class: AtomicU64,
 }
 
 impl ExceptionsRuntimeState {
@@ -80,6 +81,7 @@ impl ExceptionsRuntimeState {
             name_error_class_cache: AtomicU64::new(0),
             unbound_local_error_class_cache: AtomicU64::new(0),
             not_implemented_error_class_cache: AtomicU64::new(0),
+            unraisable_hook_args_class: AtomicU64::new(0),
         }
     }
 
@@ -111,6 +113,7 @@ impl ExceptionsRuntimeState {
             &self.name_error_class_cache,
             &self.unbound_local_error_class_cache,
             &self.not_implemented_error_class_cache,
+            &self.unraisable_hook_args_class,
         ]
     }
 }

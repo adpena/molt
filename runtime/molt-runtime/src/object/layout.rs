@@ -607,6 +607,30 @@ pub(crate) unsafe fn iter_set_cached_tuple(ptr: *mut u8, tuple_ptr: *mut u8) {
     }
 }
 
+const ITER_EXPECTED_VERSION_OFFSET: usize =
+    ITER_CACHED_TUPLE_OFFSET + std::mem::size_of::<*mut u8>();
+const ITER_PROJECTION_OFFSET: usize = ITER_EXPECTED_VERSION_OFFSET + std::mem::size_of::<u64>();
+
+pub(crate) unsafe fn iter_expected_version(ptr: *mut u8) -> u64 {
+    unsafe { *(ptr.add(ITER_EXPECTED_VERSION_OFFSET) as *const u64) }
+}
+
+pub(crate) unsafe fn iter_set_expected_version(ptr: *mut u8, version: u64) {
+    unsafe { *(ptr.add(ITER_EXPECTED_VERSION_OFFSET) as *mut u64) = version }
+}
+
+pub(crate) unsafe fn iter_projection(ptr: *mut u8) -> u64 {
+    unsafe { *(ptr.add(ITER_PROJECTION_OFFSET) as *const u64) }
+}
+
+pub(crate) unsafe fn iter_set_projection(ptr: *mut u8, projection: u64) {
+    unsafe { *(ptr.add(ITER_PROJECTION_OFFSET) as *mut u64) = projection }
+}
+
+pub(crate) unsafe fn iter_set_target_bits(ptr: *mut u8, target_bits: u64) {
+    unsafe { *(ptr as *mut u64) = target_bits }
+}
+
 pub(crate) unsafe fn enumerate_target_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr as *const u64) }
 }

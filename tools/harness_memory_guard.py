@@ -97,6 +97,8 @@ class GuardedCompletedProcess(subprocess.CompletedProcess[object]):
         *,
         elapsed_s: float | None,
         violation: memory_guard.RssViolation | None = None,
+        peak: memory_guard.RssViolation | None = None,
+        peak_total: memory_guard.RssViolation | None = None,
         timed_out: bool = False,
         limit_at_violation: memory_guard.ResolvedMemoryLimits | None = None,
         orphaned_process_groups: Sequence[int] = (),
@@ -112,6 +114,8 @@ class GuardedCompletedProcess(subprocess.CompletedProcess[object]):
         )
         self.elapsed_s = elapsed_s
         self.violation = violation
+        self.peak = peak
+        self.peak_total = peak_total
         self.timed_out = timed_out
         self.limit_at_violation = limit_at_violation
         self.orphaned_process_groups = tuple(orphaned_process_groups)
@@ -1462,6 +1466,8 @@ def guarded_completed_process(
         stderr,
         elapsed_s=guarded.elapsed_s,
         violation=guarded.violation,
+        peak=guarded.peak,
+        peak_total=guarded.peak_total,
         timed_out=guarded.timed_out,
         limit_at_violation=guarded.limit_at_violation,
         orphaned_process_groups=guarded.orphaned_process_groups,
@@ -1698,6 +1704,8 @@ def guarded_completed_process_to_tempfiles(
         stderr,
         elapsed_s=guarded.elapsed_s,
         violation=guarded.violation,
+        peak=guarded.peak,
+        peak_total=guarded.peak_total,
         timed_out=guarded.timed_out,
         limit_at_violation=guarded.limit_at_violation,
         orphaned_process_groups=guarded.orphaned_process_groups,

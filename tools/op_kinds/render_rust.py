@@ -339,7 +339,6 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append("    }\n}\n\n")
 
     alias_rc_barriers = list(data.get("alias_rc_barrier_opcodes", []))
-    alias_heap_barriers = list(data.get("alias_heap_barrier_opcodes", []))
     out.append(
         "/// Whether an opcode is an alias-analysis refcount barrier. EXHAUSTIVE\n"
         "/// over OpCode; the conservative barrier set lives in op_kinds.toml.\n"
@@ -348,16 +347,6 @@ def _render_rs_unformatted(data: dict) -> str:
         "    match opcode {\n"
     )
     out.append(_render_opcode_bool_arms(opcodes, alias_rc_barriers))
-    out.append("    }\n}\n\n")
-
-    out.append(
-        "/// Whether an opcode may observe, mutate, or escape arbitrary heap memory\n"
-        "/// for alias analysis. EXHAUSTIVE over OpCode.\n"
-        "#[inline]\n"
-        "pub fn opcode_is_alias_heap_barrier_table(opcode: OpCode) -> bool {\n"
-        "    match opcode {\n"
-    )
-    out.append(_render_opcode_bool_arms(opcodes, alias_heap_barriers))
     out.append("    }\n}\n\n")
 
     escape_alloc_sites = list(data.get("escape_alloc_site_opcodes", []))

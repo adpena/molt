@@ -5,6 +5,8 @@
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use molt_lang_obj_model::MoltObject;
+
 fn init() {
     molt_cpython_abi::bridge::molt_cpython_abi_init();
 }
@@ -17,7 +19,8 @@ fn init() {
 static LIST_HANDLE: AtomicU64 = AtomicU64::new(0x6100_0000);
 
 unsafe extern "C" fn fake_alloc_list() -> u64 {
-    LIST_HANDLE.fetch_add(0x10, Ordering::Relaxed)
+    let address = LIST_HANDLE.fetch_add(0x10, Ordering::Relaxed) as usize;
+    MoltObject::from_ptr(ptr::with_exposed_provenance_mut(address)).bits()
 }
 
 fn init_with_working_list_alloc() {

@@ -15,12 +15,14 @@
 
 #![allow(non_snake_case)]
 
+mod support;
+
 use molt_cpython_abi::abi_types::*;
-use molt_cpython_abi::hooks::RuntimeHooks;
+use molt_cpython_abi::hooks::{BorrowedHandleResult, RuntimeHooks};
+use molt_lang_obj_model::MoltObject;
 use std::collections::HashMap;
 use std::os::raw::{c_char, c_int};
 use std::ptr;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 /// Serializes EVERY test in this binary. These tests ready static types against
@@ -42,12 +44,11 @@ static TEST_LOCK: Mutex<()> = Mutex::new(());
 // stub-only test cannot exercise the readiness flow this file is about. We
 // register a real-enough allocator so PyType_Ready genuinely constructs and
 // populates tp_dict — the same approach test_getset_member_descriptors uses.
-static NEXT_HANDLE: AtomicU64 = AtomicU64::new(0x7200_0000);
 static DICTS: Mutex<Option<HashMap<u64, HashMap<u64, u64>>>> = Mutex::new(None);
 static STRINGS: Mutex<Option<HashMap<Vec<u8>, u64>>> = Mutex::new(None);
 
 fn fresh_handle() -> u64 {
-    NEXT_HANDLE.fetch_add(0x10, Ordering::Relaxed)
+    MoltObject::from_ptr(Box::into_raw(Box::new(0_u8))).bits()
 }
 
 fn dicts() -> std::sync::MutexGuard<'static, Option<HashMap<u64, HashMap<u64, u64>>>> {
@@ -64,19 +65,24 @@ unsafe extern "C" fn fake_alloc_dict() -> u64 {
     handle
 }
 
-unsafe extern "C" fn fake_dict_set(dict_bits: u64, key_bits: u64, val_bits: u64) {
+unsafe extern "C" fn fake_dict_set(dict_bits: u64, key_bits: u64, val_bits: u64) -> i32 {
     if let Some(map) = dicts().as_mut().unwrap().get_mut(&dict_bits) {
         map.insert(key_bits, val_bits);
+        return 0;
     }
+    -1
 }
 
-unsafe extern "C" fn fake_dict_get(dict_bits: u64, key_bits: u64) -> u64 {
-    dicts()
+unsafe extern "C" fn fake_dict_get(dict_bits: u64, key_bits: u64) -> BorrowedHandleResult {
+    match dicts()
         .as_ref()
         .unwrap()
         .get(&dict_bits)
         .and_then(|map| map.get(&key_bits).copied())
-        .unwrap_or(0)
+    {
+        Some(bits) => BorrowedHandleResult::ok(bits),
+        None => BorrowedHandleResult::missing(),
+    }
 }
 
 unsafe extern "C" fn fake_alloc_str(data: *const u8, len: usize) -> u64 {
@@ -99,6 +105,13 @@ unsafe extern "C" fn fake_alloc_str(data: *const u8, len: usize) -> u64 {
 unsafe extern "C" fn fake_classify_heap(bits: u64) -> u8 {
     if dicts().as_ref().is_some_and(|all| all.contains_key(&bits)) {
         MoltTypeTag::Dict as u8
+    } else if STRINGS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .is_some_and(|strings| strings.values().any(|value| *value == bits))
+    {
+        MoltTypeTag::Str as u8
     } else {
         MoltTypeTag::Other as u8
     }
@@ -136,6 +149,7 @@ fn init() -> MutexGuard<'static, ()> {
     hooks.inc_ref = fake_noop_ref;
     hooks.dec_ref = fake_noop_ref;
     hooks.register_c_function = fake_register_c_function;
+    hooks.foreign_new = support::fake_foreign::foreign_new;
     unsafe {
         molt_cpython_abi::bridge::molt_cpython_abi_init();
         let _ = molt_cpython_abi::try_set_runtime_hooks(hooks);

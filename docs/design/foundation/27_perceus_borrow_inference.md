@@ -406,42 +406,23 @@ consumes in place — no free, no malloc. This is the FBIP ("functional but
 in-place") pattern: a functional update that allocates a fresh structure and
 discards the old one becomes an in-place mutation when the old one is unique.
 
-**molt already has the analysis AND the runtime ABI** (design 20 §10.3 said the
-ABI was missing — that is now stale):
+**No executable reuse authority exists today.** The former annotation-only pass
+and raw runtime-token exports were deleted because no backend consumed the
+metadata; keeping them created compile-time cost and a false correctness/perf
+claim without changing generated programs.
 
-- **Analysis:** `reuse_analysis::analyze` (`reuse_analysis.rs:160`) scans for
-  `DecRef(x)`→`Alloc` pairs with `reuse_compatible` size classes
-  (`reuse_analysis.rs:132`), barrier-bounded by `AliasAnalysisResult::is_barrier_for`
-  (`alias_analysis.rs:932`), and annotates `reuse_token_id`/`reuse_from_token`
-  attrs (`reuse_analysis.rs:265`).
-- **Runtime ABI:** `molt_reuse_token(bits)` (`object/builders.rs:46`) returns the
-  data pointer iff unique (`ref_count == 1`, `object/builders.rs:70`), excluding
-  immortal (`object/builders.rs:59`) and arena (`object/builders.rs:64`) objects;
-  `molt_reuse_alloc(token, size_bits)` (`object/builders.rs:93`) reuses if the
-  existing allocation is large enough (`object/builders.rs:108`), else frees and
-  mallocs. Both are GIL-Relaxed-safe (`object/builders.rs:68-69`).
+A future reuse implementation must land end-to-end as one structural unit:
 
-**What is missing is the LOWERING and a pipeline-ordering fix:**
-
-1. **Ordering defect (must fix first — perf-correctness gap).**
-   `reuse_analysis` runs at pipeline slot ~11 (`pass_manager.rs:351`, `ReadOnly`)
-   — **before** `drop_insertion` at slot 29 (`pass_manager.rs:455`). It scans for
-   `DecRef`→`Alloc` pairs, but on the production path the DecRefs do not exist
-   until `drop_insertion` runs. So `reuse_analysis` **currently finds almost
-   nothing in the real pipeline** (only pre-existing round-trip DecRefs from
-   `lower_to_simple`). The annotations it produces are vestigial. Rung 2 P3 moves
-   reuse_analysis to run **after** `drop_insertion` (and after `refcount_elim_post`,
-   so it sees the elided-down DecRef set). This is a pure ordering correction — no
-   new analysis logic — and it is exactly the kind of "perf step skipped, come
-   back later" gap the binding directive forbids leaving.
-2. **Lowering (the headline new code):** a `DecRef` carrying `reuse_token_id=N`
-   lowers to `tok_N = molt_reuse_token(x)` *instead of* `molt_dec_ref_obj(x)`;
-   the paired `Alloc` carrying `reuse_from_token=N` lowers to
-   `molt_reuse_alloc(tok_N, size)` *instead of* `molt_alloc(size)`. Per backend:
-   native (`function_compiler.rs` / `simple_backend.rs`), LLVM
-   (`llvm_backend/lowering.rs`), WASM (`tir/lower_to_wasm.rs`). The token is a raw
-   `u64` flowing as an ordinary SSA value between the two ops (no RC on the token
-   itself — it is `Raw`).
+1. Run after ownership-aware drop insertion and refcount elimination, pairing a
+   proven-unique release with a representation- and size-compatible allocation.
+2. Materialize a typed TIR reuse operation whose token lifetime is explicit,
+   rather than attaching inert string attributes to ordinary `DecRef`/`Alloc`
+   operations.
+3. Lower that operation in native, LLVM, and WASM in the same landing; Luau must
+   define an explicit no-op/ordinary-allocation policy.
+4. Introduce a runtime mechanism only with finalizer, weakref, child-edge, aux
+   representation, and allocation-size proofs plus measured allocation-count
+   wins. There is deliberately no dormant ABI to wire up later.
 
 ### 3.3 Which molt shapes qualify (the bench corpus, precisely)
 
@@ -452,8 +433,8 @@ warning):
 
 | Shape | Source | Per-iteration alloc | Reuse-eligible? | Win |
 |---|---|---|---|---|
-| BigInt accumulator `total = total + i` (large `n`) | `bench_fib` (recursive BigInt at large args), the design-20 1M-iter repro | one fresh BigInt per iter; old BigInt `drop`'d on back-edge | **YES** — same size class `TirType::BigInt` (`reuse_analysis.rs:89`); old and new BigInt are size-compatible; old is unique (sole owner is the loop) | **FBIP**: malloc+free per iter → in-place reuse; the headline 3418-alloc→9MiB-RSS class becomes O(1) allocations |
-| String concat `s = s + x` | `bench_string` (via `",".join` the loop builds `parts`; the `s = s + x` shape in the design-20 30M repro) | one fresh `str` per iter (length grows!) | **PARTIAL** — same size *class* only while length stays within the class; growing strings cross size classes, so `molt_reuse_alloc` falls through to free+malloc (`object/builders.rs:120`) once the new string is larger. Reuse fires for the *steady-state-length* sub-case | bounded; the leak is already closed by rung 1's drop, reuse removes the malloc churn for same-length rebuilds |
+| BigInt accumulator `total = total + i` (large `n`) | `bench_fib` (recursive BigInt at large args), the design-20 1M-iter repro | one fresh BigInt per iter; old BigInt `drop`'d on back-edge | **future candidate** — only if the old value is proven unique and the new limb capacity fits the reusable allocation | potential FBIP: malloc+free per iter → in-place reuse; must be proven by allocation counts |
+| String concat `s = s + x` | `bench_string` (via `",".join` the loop builds `parts`; the `s = s + x` shape in the design-20 30M repro) | one fresh `str` per iter (length grows!) | **limited future candidate** — growing strings frequently cross allocation classes; only representation-compatible steady-state shapes qualify | bounded potential; the leak is already closed by rung 1's drop |
 | `lst.append(i)` loop | `bench_list` | **none** — the list *persists* across the loop; `append` mutates in place (amortized realloc), the element `int` is stored (borrowed-then-incref'd) | **NO reuse** (nothing is dropped per iter) | the win here is **elision-to-zero** of the element temp's RC (§0/P2), not reuse |
 | `d[i] = i` loop | `bench_dict` | **none** — the dict persists; `i` is stored | **NO reuse** | elision-to-zero of the stored temp's RC |
 | List comprehension `[x*2 for x in range(n)]` | design-20 corpus | the result list persists; per-element `x*2` is `Raw` (int) | reuse N/A; elements `Raw` | already zero (Raw filter) |
@@ -513,19 +494,13 @@ than a non-reusing allocator (which might hand out a different address).
 This is the parity-critical surface. CPython runs `__del__` at the
 ref-count-zero transition, in a defined order. molt's `dec_ref_ptr` runs the
 finalizer at `prev == 1` (`maybe_run_object_finalizer`, near `object/mod.rs:1883`).
-The reuse rewrite replaces `drop(old)` + `alloc(new)` with `tok =
-reuse_token(old)` + `reuse_alloc(tok, …)`. **Critical:** `molt_reuse_token`
-returns the pointer *without running the finalizer* (`object/builders.rs:70-73`
-returns the data pointer; it does **not** call `dec_ref_ptr`). If `old` has a
-`__del__`, skipping the finalizer is an **observable parity break** — CPython
+Any future reuse rewrite that turns `drop(old)` + `alloc(new)` into tokenized
+storage reuse must still run the old object's terminal semantics. If `old` has
+a `__del__`, skipping the finalizer is an **observable parity break** — CPython
 would run `__del__(old)` before the new object exists.
 
 **Gating condition (fail-closed):** reuse is permitted **only for object types
-that have no Python-level finalizer** — the runtime types `BigInt`, `str`,
-`bytes`, `tuple`, `list`, `dict`, `set` (the `reuse_compatible` set,
-`reuse_analysis.rs:132`) which have *no* `__del__` (their teardown is the runtime
-child-decref + free, which `molt_reuse_alloc` must still honor for child refs —
-see §4.3). A `UserClass` instance (`TirType::UserClass`, `reuse_analysis.rs:106`)
+that have no Python-level finalizer**. A `UserClass` instance
 **may have `__del__`** and is therefore **excluded from reuse at the analysis
 level** unless the class is statically proven to have no `__del__`/`__del__`-bearing
 base (a class-hierarchy fact available from the frontend's `class_info`). **The
@@ -537,13 +512,10 @@ parity gate in the design.
 ### 4.3 Child references on reuse (the deep-correctness condition)
 
 A `list`/`dict`/`tuple`/`set` owns references to its elements. When the old
-container is dropped, its children are decref'd (the type-dispatch teardown,
-`object/mod.rs:2578` region). `molt_reuse_token` returns the pointer *without*
-decref'ing children. So the reuse lowering MUST ensure the children are released
-*before* the slab is reused — OR the reuse must only apply to containers whose
-children were already accounted for. **The current `molt_reuse_alloc` zeroes the
-payload (`object/builders.rs:117`) but does NOT decref the old children** — so
-reusing a non-empty container slab would **leak the children**. Gating condition:
+container is dropped, its children are decref'd by type-dispatch teardown. A
+future reuse mechanism MUST release those children *before* the slab is reused
+or apply only where ownership analysis proves they were independently consumed.
+Merely zeroing the payload would leak the old children. Gating condition:
 reuse of a container is sound only when the container is **empty or its children
 are independently dropped** at the reuse point. For the BigInt/str/bytes case
 (no child references — the payload is inline bytes/limbs) this is automatically
@@ -551,14 +523,14 @@ satisfied; **for list/dict/set/tuple, the reuse lowering must emit child-decrefs
 or restrict to empty containers.** The honest rung-2 Phase 3 scope: **reuse the
 no-child types (BigInt, str, bytes) first** (the accumulator/concat wins, which
 are exactly the bench targets); list/dict/set/tuple reuse needs the child-decref
-extension to `molt_reuse_token` (a `molt_reuse_token_drop_children` variant) and
-lands in a later phase. Marking this clearly avoids the C4-adjacent leak.
+terminal child-release operation and lands in a later phase. Marking this clearly
+avoids the C4-adjacent leak.
 
 ### 4.4 `weakref` and callbacks
 
 A `weakref` to `old` must be invalidated (and its callback run) when `old` dies.
-CPython runs weakref callbacks at the zero transition. `molt_reuse_token` skips
-the teardown, so a live weakref to a reused object would observe the *new* object
+CPython runs weakref callbacks at the zero transition. A mechanism that skips
+teardown would let a live weakref to reused storage observe the *new* object
 through the *old* weakref — a parity break. **Gating condition:** the unique
 check (`ref_count == 1`) does **not** account for weakrefs (weakrefs are
 non-owning and do not bump the strong count). Therefore reuse of any object that
@@ -569,8 +541,7 @@ weakrefs; `list`/`dict`/`set` **do**. So the §4.3 restriction (reuse only the
 no-child types BigInt/str/bytes first) *also* resolves the weakref hazard for the
 Phase-3 set: **BigInt/str/bytes are not weakref-able** (parity with CPython int/str),
 so no weakref can observe their reuse. list/dict/set reuse (later phase) must
-clear weakrefs in `molt_reuse_token` — folded into the same child-decref
-extension as §4.3.
+clear weakrefs as part of the same terminal child-release operation as §4.3.
 
 ### 4.5 Finalizer resurrection
 
@@ -583,9 +554,9 @@ the resurrection surface entirely. No additional gate.
 
 Perceus is **garbage-free for acyclic data** but **leaks reference cycles**
 (PLDI'21 §1 / the explicit limitation; molt inherits this, design 20 §10.1).
-Reuse does not change this — a cyclic object never reaches `ref_count == 1`
-(the cycle holds it ≥1), so `molt_reuse_token` returns 0 (no reuse) and the
-object leaks exactly as it does without reuse. This is the *correct* fail-closed
+Reuse does not change this — a cyclic object cannot satisfy a proven-unique
+release (the cycle keeps an owning edge), so it is ineligible and the object
+leaks exactly as it does without reuse. This is the *correct* fail-closed
 behavior; reuse neither helps nor worsens cycles. The cycle collector is rung 3
 (out of scope).
 
@@ -602,16 +573,16 @@ behavior; reuse neither helps nor worsens cycles. The cycle collector is rung 3
 
 **Net:** Phase-3 reuse restricted to **BigInt/str/bytes** is provably unobservable
 within the verified subset, and captures the headline accumulator/concat wins.
-Container reuse (list/dict/set/tuple) is a clean later phase gated on the
-child-decref + weakref-clear extension to `molt_reuse_token`.
+Container reuse (list/dict/set/tuple) is a clean later phase gated on a
+child-decref + weakref-clear terminal operation.
 
 ---
 
 ## 5. Cross-backend story
 
-The inference runs entirely on TIR (backend-agnostic), exactly like rung 1's
-`DropInsertion`. The lattice, the `dup`/`drop` placement, and the reuse-token
-annotation are computed once; each backend lowers the resulting ops.
+Ownership inference runs entirely on TIR (backend-agnostic), exactly like rung
+1's `DropInsertion`. A future reuse operation should likewise be computed once
+in TIR and lowered explicitly by every backend.
 
 ### 5.1 What each backend already has (rung 1 inheritance)
 
@@ -621,25 +592,14 @@ annotation are computed once; each backend lowers the resulting ops.
 | `IncRef` | `emit_inc_ref_obj` | wired | wired | no-op |
 | activation | **active** (legacy-RC deletion still gated by full ownership-surface proof) | **active** | **active** | **active** |
 
-### 5.2 What rung 2 adds per backend (the reuse-token lowering)
+### 5.2 What rung 2 must add per backend
 
-The only *new* per-backend code is the reuse-token lowering (§3.2). A `DecRef`
-with `reuse_token_id=N` and the paired `Alloc` with `reuse_from_token=N`:
-
-- **Native/Cranelift** (`function_compiler.rs` / `simple_backend.rs`): emit
-  `call molt_reuse_token(x) → tok` for the marked DecRef; thread `tok` as an
-  i64 SSA value to the marked Alloc; emit `call molt_reuse_alloc(tok, size)`.
-  The token value is `Raw` (no RC). New: two `match op.kind` arms keyed on the
-  reuse attrs.
-- **LLVM** (`llvm_backend/lowering.rs`): dedicated lowering arms for the
-  reuse-attr'd DecRef/Alloc → `molt_reuse_token`/`molt_reuse_alloc` calls. The
-  LLVM `Copy`-arm fail-loud gate (`lowering.rs:2348`) is unaffected (reuse ops
-  are real `DecRef`/`Alloc`, not `Copy`).
-- **WASM** (`tir/lower_to_wasm.rs`): emit `call $molt_reuse_token` /
-  `call $molt_reuse_alloc` imports (add the two imports if absent).
-- **Luau**: reuse is a **no-op** — emit the plain `Alloc` (Luau's GC handles
-  reclamation; there is no manual free to fuse). The reuse annotations are
-  ignored on the Luau target, mirroring how `DecRef`/`IncRef` are no-ops there.
+A future implementation introduces a typed reuse operation, not inert attrs on
+ordinary operations. Native/Cranelift, LLVM, and WASM must each lower it to the
+same ownership/terminal-semantics contract. Luau must deliberately lower it to
+an ordinary allocation because host GC owns reclamation. No backend may silently
+ignore reuse metadata, and no runtime export lands before every non-Luau lowering
+consumer exists.
 
 ### 5.3 The dormant/marker mechanism (mirroring rung 1's discipline)
 
@@ -680,7 +640,7 @@ CPython, NEVER `rtk diff` which lies — design 20 workflow lessons).
 |---|---|---|---|
 | **P1 — Lattice replaces the seven sets** | Introduce `Ownership` lattice + the three edge types (alias-union/phi-join/borrow-of) as the single computation feeding `DropInsertion`. Re-derive every placement (straight-line drop, edge-dying, phi-retain, suspension-IncRef, transfer exclusions) from the lattice. | The *ad-hoc derivations* in `drop_insertion.rs`: remaining placement-local ownership sets become `lattice(root) == Owned` or explicit lattice states. Borrowed parameter roots, stack/no-RC roots, C5 non-owning `Copy` roots, and generated `[[result_validity]]` conditionally-valid result roots are already sourced by `OwnershipRootFacts`; `DropEligibility` now composes those roots with the liveness-owned raw-scalar roots, so DropInsertion no longer owns the scattered `droppable` predicate. Python-bound local, named-slot, local-store, explicit-release root facts, the composed boundary-release root set, statement-release eligibility, and return-boundary deferral classification are sourced by `PythonLifetimeFacts`, with local-store boundary releases routed through `PythonLifetimeFacts::boundary_release_roots`. FinalizerSensitive roots, generated result-absorption ownership, statement-release finalizer boundaries, generated terminator transfer roots, and generated consumed-operand roots are sourced by `OwnershipLattice`/the ownership module. Raw-scalar production still comes from `TirLivenessResult`/the representation lattice until the Raw state is folded deliberately. `BorrowProvenance`/`AliasUnionFind` plus generated terminator/operand transfer queries are **kept** (they are the edge sources) but their *consumers* unify. | **Byte-identical RC output** vs current `DropInsertion` on the full differential corpus (native AND LLVM): `cmp -s` the emitted TIR DecRef/IncRef set per function + binary output. Backend lib tests green. `MOLT_ASSERT_NO_LEAK=1` clean. 0 new warnings (`cargo test`, not just `build`). The seven historical repros (design 20 Findings #1–#4) stay green. |
 | **P2 — Elision-to-zero on non-escaping** | The lattice's escape fact (§3.4) replaces `build_heap_exposed_set`. A `Borrowed` root gets no dup/drop (already true); make `Owned(1)` non-escaping roots whose drop is their sole release elide the `DecRef` entirely where the value is **dead with no observable release semantics** (no `__del__`-bearing type) — and promote the surviving sole-release `DecRef` to `Free` (re-enable Step 6 post-drop, soundly). | `refcount_elim` Step 5's `build_heap_exposed_set` consumer (:601) and the `post_drop` early-return that disables Step 6 (:572) — both replaced by the lattice escape fact. `is_heap_exposing` (:61) retires (folded into signatures). | Per-bench perf table showing the boxed-temp DecRef count drops to zero on non-escaping shapes (`bench_fib` intermediate temps; the design-20 accumulator). `bench_sum` (Raw lane) unchanged (zero ops, the contract). RSS bounded (`MOLT_ASSERT_NO_LEAK=1`). Native AND LLVM byte-identical to CPython. **Performance contract: faster-than-CPython on every bench, every target, every profile** (CLAUDE.md). |
-| **P3 — Reuse/FBIP lowering** | (a) Move `reuse_analysis` to run **after** `drop_insertion`+`refcount_elim_post` (the ordering fix, §3.2). (b) Lower `reuse_token_id`/`reuse_from_token` to `molt_reuse_token`/`molt_reuse_alloc` per backend (§5.2). (c) Restrict reuse to **BigInt/str/bytes** (no-child, non-weakref-able, finalizer-free — §4.7); exclude `UserClass` and containers. | The vestigial early `reuse_analysis` slot (`pass_manager.rs:351`) moves; no deletion, a re-order. | **Alloc-count evidence**: `MOLT_PROFILE=1` alloc_count on the BigInt accumulator drops from O(n) to O(1) (the FBIP win). Same-length string-rebuild malloc churn eliminated. **No reuse fires for `UserClass`/containers** (asserted — the §4 parity gate). `__del__`/weakref differential tests byte-identical. `MOLT_ASSERT_NO_LEAK=1` clean (the §4.3 child-leak gate: BigInt/str/bytes have no children, so zero leak). RSS table per bench. |
+| **P3 — Reuse/FBIP end-to-end** | Add ownership-safe candidate analysis after drop insertion, a typed TIR reuse operation, every backend lowering, and the terminal-semantics-aware runtime mechanism in one landing. Restrict the first implementation to proven no-child, non-weakref-able, finalizer-free representations; exclude `UserClass` and containers. | No dormant pass, attrs, or ABI precedes the consumers. | **Alloc-count evidence**: the BigInt accumulator must show an O(n)→O(1) allocation reduction. No reuse fires for `UserClass`/containers. `__del__`/weakref differential tests remain byte-identical; leak and RSS gates remain clean. |
 | **P4 — Registry-column migration** | Move the borrow signatures (§2.1: `result_ownership`, `result_validity`, `operand_ownership[]`, `borrows_source_operand`) into `op_kinds.toml` (design 25) and generate the classifier. The lattice reads generated columns instead of hand lists. *(Optionally: the inliner-gated borrowed-return signatures, §2.2, if the return-alias summary has landed.)* | The hand-maintained `copy_kind_mints_fresh_owned_ref` table, `copy_kind_is_inert_marker_table`, `copy_kind_is_explicit_no_heap_move`, and remaining result-ownership lists are generated from the table. The `classifier_silent_fallthrough` hazard is closed: every kind gets an explicit `result_ownership`. The `IterNextUnboxed` value-out validity fact is already generated via `[[result_validity]]`. | The design-25 sync test (`tests/test_gen_op_kinds.py`) green: drift = build error. **Byte-identical codegen** vs P3 (the columns mirror current reality exactly). `audit_op_kinds.py --check` clean against the baseline. |
 
 Current P1 shrinkage: `StatementReleasePlan` now owns the statement-release
@@ -723,22 +683,21 @@ hide in *this* design and which gate catches it. Plus new risks rung 2 introduce
   risk.** A `UserClass` with `__del__` reused would skip the finalizer. *Gate:*
   reuse restricted to BigInt/str/bytes in P3 (no `UserClass`, no `__del__`);
   a differential test asserting `__del__` runs at the same point with/without
-  reuse; an assertion in `reuse_analysis` that the size class is one of the
-  finalizer-free types. **Round-8 lens:** grep every `reuse_compatible` true
-  result and confirm it is in {BigInt, Str, Bytes} for P3; any `UserClass`/
+  reuse; the typed candidate analysis must accept only finalizer-free
+  representations. **Round-8 lens:** inspect every accepted candidate and
+  confirm it is in the initial proven-safe set; any `UserClass`/
   container match is a P3 bug.
 - **R-reuse-2 (child-ref leak, §4.3).** Reusing a non-empty container slab leaks
   children. *Gate:* P3 excludes containers (no-child types only); `MOLT_ASSERT_NO_LEAK`
-  catches any container reuse leak. **Round-8 lens:** confirm `molt_reuse_token`
-  is never reached for a type with child references in P3.
+  catches any container reuse leak. **Round-8 lens:** confirm the reuse runtime
+  mechanism is never reached for a type with child references in P3.
 - **R-reuse-3 (weakref staleness, §4.4).** *Gate:* the no-child P3 types are
   non-weakref-able (CPython parity); container reuse deferred. **Round-8 lens:**
   a `weakref.ref(x)` differential on a reused-type value.
-- **R-order-1 (the reuse-before-drop ordering defect, §3.2).** Already present on
-  main (reuse_analysis runs before drop_insertion → finds nothing). *Gate:* P3
-  moves it after; a test asserting reuse candidates are non-empty on the BigInt
-  accumulator post-reorder. **Round-8 lens:** confirm `reuse_analysis` slot is
-  after `refcount_elim_post`.
+- **R-order-1 (reuse-before-drop ordering, §3.2).** A future analysis must run
+  after ownership-aware drop insertion and refcount elimination. *Gate:* a test
+  asserts the typed reuse operation appears on the BigInt accumulator and the
+  pass-manager order is pinned.
 - **R-elide-1 (P2 over-elision).** Re-enabling Step 6 (DecRef→Free) post-drop is
   the exact unsoundness `run_post_drop` was created to avoid (`refcount_elim.rs:572`).
   P2 must prove the lattice escape fact is *sound* where `build_heap_exposed_set`
@@ -790,12 +749,9 @@ hide in *this* design and which gate catches it. Plus new risks rung 2 introduce
 | `runtime/molt-passes/src/tir/passes/drop_insertion.rs` | Modify (P1) | Replace the seven ad-hoc sets/predicates with `Ownership` lattice reads; `droppable` → `lattice(root)==Owned`; keep alias-union/borrow-provenance/consumed-operand as the lattice edge sources |
 | `runtime/molt-passes/src/tir/passes/alias_analysis.rs` | Modify (P1/P4) | `CopyLowering`/`copy_kind_*` become the `result_ownership` reading; P4 generates them from `op_kinds.toml` |
 | `runtime/molt-passes/src/tir/passes/refcount_elim.rs` | Modify (P2) | Replace `build_heap_exposed_set` (:89) with the lattice escape fact; re-enable Step 6 post-drop soundly (:572 early-return removed under the lattice proof) |
-| `runtime/molt-passes/src/tir/passes/reuse_analysis.rs` | Modify (P3) | Restrict `reuse_compatible` to {BigInt, Str, Bytes} for P3 (the parity gate, §4.7); exclude `UserClass`/containers |
-| `runtime/molt-passes/src/tir/pass_manager.rs` | Modify (P3) | Move `reuse_analysis` (:351) to AFTER `refcount_elim_post` (:465); add `target_uses_tir_reuse` gate |
-| `runtime/molt-backend/src/native_backend/{function_compiler,simple_backend}.rs` | Modify (P3) | Lower reuse-attr'd DecRef/Alloc → `molt_reuse_token`/`molt_reuse_alloc` |
-| `runtime/molt-backend/src/llvm_backend/lowering.rs` | Modify (P3) | Reuse-token lowering arms |
-| `runtime/molt-tir/src/tir/lower_to_wasm.rs` | Modify (P3) | `molt_reuse_token`/`molt_reuse_alloc` import + lowering |
-| `runtime/molt-runtime/src/object/builders.rs` | Modify (P3-later) | `molt_reuse_token` child-decref + weakref-clear variant (for container reuse, post-P3) |
+| TIR ownership/reuse analysis and IR definition | Add together (P3) | Prove unique release + representation compatibility and emit a typed reuse operation after drop insertion |
+| Native, LLVM, and WASM lowering | Add together (P3) | Lower the typed operation; no backend may ignore metadata |
+| Runtime allocation/terminal-semantics authority | Add together (P3) | Reuse storage only after finalizer, weakref, child-edge, aux, and size proofs |
 | `runtime/molt-ir/src/tir/op_kinds.toml` | Modify (P4) | Add `result_ownership` / `operand_ownership[]` / `borrows_source_operand` columns |
 | `tools/gen_op_kinds.py`, `tests/test_gen_op_kinds.py` | Modify (P4) | Generate + sync-test the ownership columns |
 | `tests/differential/memory/*.py` | Extend (P2/P3) | Alloc-count + `__del__`/weakref reuse-parity regressions |
@@ -806,13 +762,12 @@ hide in *this* design and which gate catches it. Plus new risks rung 2 introduce
 
 - DropInsertion pass + the seven defenses: `runtime/molt-passes/src/tir/passes/drop_insertion.rs` (run at :403; alias-root canon :560; borrowed parameter roots, stack/no-RC roots, C5 non-owning `Copy` roots, and generated `[[result_validity]]` conditionally-valid result roots sourced through `OwnershipRootFacts`; composed droppable/root/raw decision sourced through `DropEligibility`; Python local/slot/release roots, boundary-release root composition, statement-release eligibility, and return-boundary deferral classification sourced through `PythonLifetimeFacts`, including `PythonLifetimeFacts::boundary_release_roots`; result-absorption, generated consumed-operand roots, generated terminator transfer roots, and FinalizerSensitive roots sourced through `OwnershipLattice`/the ownership module; raw scalar production still sourced through `TirLivenessResult`; §5 retain :1005; transfer exclusion `incoming_arg_roots` remains CFG placement; dominance guard :806)
 - Statement-release plan authority: `runtime/molt-passes/src/tir/passes/ownership_lattice_min.rs` (`StatementReleasePlan`) composes `OwnershipLattice::statement_release_finalizer_boundaries`, `PythonLifetimeFacts::is_statement_release_boundary_root`, and `DropEligibility`; `runtime/molt-passes/src/tir/passes/drop_insertion.rs` consumes the plan and owns only DecRef materialization.
-- Alias/borrow machinery: `runtime/molt-passes/src/tir/passes/alias_analysis.rs` (`build_alias_union_find` :226; `BorrowProvenance` :285, `build_borrow_provenance` :334; `op_borrow_source` :272; `CopyLowering` :444; `copy_kind_mints_fresh_owned_ref` :480; `classify_copy_kind` :515; `is_rc_barrier` :917, `is_barrier_for` :932)
+- Alias/borrow machinery: `runtime/molt-passes/src/tir/passes/alias_analysis.rs` (`build_alias_union_find`; `BorrowProvenance`; `build_borrow_provenance`; `op_borrow_source`; `CopyLowering`; `copy_kind_mints_fresh_owned_ref`; `classify_copy_kind`; `is_rc_barrier`)
 - Liveness (repr-filtered, root-space, borrow-keepalive): `runtime/molt-passes/src/tir/passes/liveness.rs` (`raw_i64_safe_values_for` import :47; `live_out_of` :197; `last_use_in_block` :98)
 - refcount_elim (the elision-to-zero machinery): `runtime/molt-passes/src/tir/passes/refcount_elim.rs` (`is_heap_exposing` :61; `build_heap_exposed_set` :89; `run` :130; `run_post_drop` :154; `post_drop` early-return :572; Step 5 :577; Step 6 :628)
-- reuse_analysis (Perceus reuse, annotation-only today): `runtime/molt-passes/src/tir/passes/reuse_analysis.rs` (`analyze` :160; `reuse_compatible` :132; `size_class` :77; `annotate` :265; `run` :293)
-- Reuse runtime ABI (exists; design-20 §10.3 was stale): `runtime/molt-runtime/src/object/builders.rs` (`molt_reuse_token` :46, unique check :70, immortal :59, arena :64; `molt_reuse_alloc` :93, size check :108, payload zero :117)
+- Reuse/FBIP is design-only: there is no annotation pass, backend lowering, or runtime-token ABI in the executable tree.
 - Size classes / allocator: `runtime/molt-runtime/src/object/mod.rs` (`size_class_for` :768; `total_size_from_header_fields` :731; `HEADER_FLAG_IMMORTAL` :444; alloc births :1155,:1228; dealloc zero-transition :1812, finalizer near :1883)
-- Pipeline + gates: `runtime/molt-passes/src/tir/pass_manager.rs` (`target_uses_tir_drop_insertion` :67; `reuse_analysis` slot :351; `refcount_elim` :348; `drop_insertion` :455; `refcount_elim_post` :465; pinned pass-name list :682-701)
+- Pipeline + gates: `runtime/molt-passes/src/tir/pass_manager.rs` (`target_uses_tir_drop_insertion`; `refcount_elim`; `drop_insertion`; `refcount_elim_post`; pinned pass-name list)
 - Repr lattice (the Raw filter source): `runtime/molt-tir/src/representation_plan.rs`
 - Registry (signature home): `docs/design/foundation/25_op_kind_registry.md`; `runtime/molt-ir/src/tir/op_kinds.toml`; `tools/audit_op_kinds.py`
 - Rung 1 design: `docs/design/foundation/20_rc-ownership-drop-insertion.md` (the seven Findings #1–#4 in §4.1)
@@ -823,8 +778,8 @@ hide in *this* design and which gate catches it. Plus new risks rung 2 introduce
 
 - **Reference-cycle collection** — Perceus leaks cycles; molt inherits this
   (§4.6, design 20 §10.1). Rung 3.
-- **Container (list/dict/set/tuple) reuse** — needs the `molt_reuse_token`
-  child-decref + weakref-clear extension (§4.3/§4.4); a clean phase *after* P3.
+- **Container (list/dict/set/tuple) reuse** — needs an explicit terminal
+  child-decref + weakref-clear operation (§4.3/§4.4); a clean phase *after* P3.
 - **Interprocedural borrowed-return signatures** — gated on the inliner's
   `compute_return_alias_summaries` (§2.2, deferred in design 20 §4.1 / S4); P4+.
 - **Native legacy-RC deletion** — a *consequence* to verify (R-native-1), gated

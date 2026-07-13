@@ -23,7 +23,7 @@ fn init() {
 fn test_incref_increments_refcount() {
     init();
     let bits = MoltObject::from_int(42).bits();
-    let py = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) };
+    let py = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
     assert!(!py.is_null());
 
     let rc_before = unsafe { (*py).ob_refcnt };
@@ -42,7 +42,7 @@ fn test_incref_increments_refcount() {
 fn test_decref_decrements_refcount() {
     init();
     let bits = MoltObject::from_int(99).bits();
-    let py = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) };
+    let py = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
     assert!(!py.is_null());
 
     // INCREF to get rc=2 so we can DECREF without releasing
@@ -60,7 +60,7 @@ fn test_decref_decrements_refcount() {
 fn test_decref_to_zero_releases_bridge_entry() {
     init();
     let bits = MoltObject::from_int(7777).bits();
-    let py = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) };
+    let py = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
     assert!(!py.is_null());
 
     // Confirm it's in the bridge
@@ -110,7 +110,7 @@ fn test_xdecref_null_is_noop() {
 fn test_xincref_on_valid_object() {
     init();
     let bits = MoltObject::from_int(123).bits();
-    let py = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) };
+    let py = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
     let rc_before = unsafe { (*py).ob_refcnt };
     unsafe { molt_cpython_abi::api::refcount::Py_XINCREF(py) };
     let rc_after = unsafe { (*py).ob_refcnt };
@@ -170,7 +170,7 @@ fn test_decref_on_false_singleton_is_immortal() {
 fn test_clear_sets_pointer_to_null() {
     init();
     let bits = MoltObject::from_int(555).bits();
-    let py = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) };
+    let py = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
     let mut slot: *mut PyObject = py;
 
     unsafe { molt_cpython_abi::api::refcount::Py_CLEAR(&mut slot) };
@@ -199,7 +199,7 @@ fn test_clear_already_null_slot() {
 fn test_multiple_incref_decref_cycle() {
     init();
     let bits = MoltObject::from_int(9999).bits();
-    let py = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) };
+    let py = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
 
     // INCREF 5 times
     for _ in 0..5 {

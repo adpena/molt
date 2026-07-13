@@ -235,6 +235,10 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_exception_clear",
             crate::molt_exception_clear as *const (),
         )),
+        "molt_unraisable_hook_args_is_exact" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_unraisable_hook_args_is_exact",
+            crate::molt_unraisable_hook_args_is_exact as *const (),
+        )),
         "molt_getargv" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_getargv",
             crate::molt_getargv as *const (),

@@ -5,7 +5,10 @@ use molt_obj_model::MoltObject;
 
 use super::generators_async::{cancel_future_task, molt_future_new};
 use crate::object::accessors::resolve_obj_ptr;
-use crate::object::{HEADER_FLAG_COROUTINE, object_state};
+use crate::object::{
+    HEADER_FLAG_COROUTINE, ObjectAuxPreselection, object_init_poll_fn_unpublished,
+    object_init_state_unpublished, object_state,
+};
 use crate::{
     ACTIVE_EXCEPTION_STACK, ASYNCGEN_CONTROL_SIZE, ASYNCGEN_FIRSTITER_OFFSET, ASYNCGEN_GEN_OFFSET,
     ASYNCGEN_OP_ACLOSE, ASYNCGEN_OP_ANEXT, ASYNCGEN_OP_ASEND, ASYNCGEN_OP_ATHROW,
@@ -14,21 +17,22 @@ use crate::{
     HEADER_FLAG_GEN_RUNNING, HEADER_FLAG_GEN_STARTED, MoltHeader, PtrSlot, TASK_KIND_COROUTINE,
     TASK_KIND_FUTURE, TASK_KIND_GENERATOR, TYPE_ID_ASYNC_GENERATOR, TYPE_ID_EXCEPTION,
     TYPE_ID_GENERATOR, TYPE_ID_OBJECT, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE,
-    alloc_dict_with_pairs, alloc_exception, alloc_object, alloc_tuple, async_sleep_poll_fn_addr,
-    asyncgen_poll_fn_addr, asyncgen_registry, attr_lookup_ptr_allow_missing,
-    attr_name_bits_from_bytes, call_callable0, call_callable1, call_poll_fn, clear_exception,
-    context_stack_store, context_stack_take, current_task_ptr, dec_ref_bits,
-    exception_clear_reason_set, exception_context_align_depth, exception_context_fallback_pop,
-    exception_context_fallback_push, exception_kind_bits, exception_pending, exception_stack_depth,
-    exception_stack_set_depth, exception_type_bits_from_name, fn_ptr_code_get,
-    generator_context_stack_store, generator_context_stack_take, generator_exception_stack_store,
-    generator_exception_stack_take, generator_raise_active, header_from_obj_ptr, inc_ref_bits,
-    io_wait_poll_fn_addr, is_truthy, issubclass_bits, maybe_ptr_from_bits, missing_bits,
-    molt_exception_clear, molt_exception_kind, molt_exception_last, molt_exception_set_last,
-    molt_is_callable, molt_raise, molt_str_from_obj, obj_from_bits, object_mark_has_ptrs,
-    object_type_id, pending_bits_i64, ptr_from_bits, raise_exception, register_task_token,
-    resolve_task_ptr, runtime_state, seq_vec_ref, set_generator_raise, string_obj_to_owned,
-    task_mark_done, task_waiting_on, to_i64, token_id_from_bits, type_name,
+    alloc_dict_with_pairs, alloc_exception, alloc_object, alloc_object_with_aux, alloc_tuple,
+    async_sleep_poll_fn_addr, asyncgen_poll_fn_addr, asyncgen_registry,
+    attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes, call_callable0, call_callable1,
+    call_poll_fn, clear_exception, context_stack_store, context_stack_take, current_task_ptr,
+    dec_ref_bits, exception_clear_reason_set, exception_context_align_depth,
+    exception_context_fallback_pop, exception_context_fallback_push, exception_pending,
+    exception_stack_depth, exception_stack_set_depth, exception_type_bits_from_name,
+    fn_ptr_code_get, generator_context_stack_store, generator_context_stack_take,
+    generator_exception_stack_store, generator_exception_stack_take, generator_raise_active,
+    header_from_obj_ptr, inc_ref_bits, io_wait_poll_fn_addr, is_truthy, issubclass_bits,
+    maybe_ptr_from_bits, missing_bits, molt_exception_clear, molt_exception_last,
+    molt_exception_set_last, molt_is_callable, molt_raise, molt_str_from_obj, obj_from_bits,
+    object_class_bits, object_mark_has_ptrs, object_type_id, pending_bits_i64, ptr_from_bits,
+    raise_exception, register_task_token, resolve_task_ptr, runtime_state, seq_vec_ref,
+    set_generator_raise, string_obj_to_owned, task_mark_done, task_waiting_on, to_i64,
+    token_id_from_bits, type_name,
 };
 
 use crate::state::runtime_state::{AsyncGenLocalsEntry, GenLocalsEntry};
@@ -284,7 +288,12 @@ pub extern "C" fn molt_task_new(poll_fn_addr: u64, closure_size: u64, kind_bits:
             return raise_exception::<_>(_py, "TypeError", "generator task closure too small");
         }
         let total_size = std::mem::size_of::<MoltHeader>() + closure_size as usize;
-        let ptr = alloc_object(_py, total_size, type_id);
+        let ptr = if type_id == TYPE_ID_OBJECT {
+            alloc_object_with_aux(_py, total_size, type_id, ObjectAuxPreselection::Sidecar)
+        } else {
+            // Generator kinds select a sidecar from their type authority.
+            alloc_object(_py, total_size, type_id)
+        };
         if ptr.is_null() {
             return MoltObject::none().bits();
         }
@@ -297,8 +306,12 @@ pub extern "C" fn molt_task_new(poll_fn_addr: u64, closure_size: u64, kind_bits:
                 }
             }
             let header = header_from_obj_ptr(ptr);
-            crate::object::object_set_poll_fn(ptr, poll_fn_addr);
-            crate::object::object_set_state(ptr, 0);
+            if !object_init_poll_fn_unpublished(ptr, poll_fn_addr)
+                || !object_init_state_unpublished(ptr, 0)
+            {
+                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                return MoltObject::none().bits();
+            }
             if is_coroutine {
                 (*header).flags |= HEADER_FLAG_COROUTINE;
             }
@@ -678,10 +691,7 @@ unsafe fn generator_raise_from_pending(_py: &PyToken<'_>, ptr: *mut u8, exc_bits
         if let Some(exc_ptr) = obj_from_bits(exc_bits).as_ptr()
             && object_type_id(exc_ptr) == TYPE_ID_EXCEPTION
         {
-            let kind_bits = exception_kind_bits(exc_ptr);
-            if let Some(kind) = string_obj_to_owned(obj_from_bits(kind_bits))
-                && kind == "StopIteration"
-            {
+            if exception_matches_type(_py, exc_ptr, "StopIteration") {
                 let rt_ptr = alloc_exception(_py, "RuntimeError", "generator raised StopIteration");
                 if !rt_ptr.is_null() {
                     let rt_bits = MoltObject::from_ptr(rt_ptr).bits();
@@ -825,18 +835,10 @@ pub extern "C" fn molt_generator_close(gen_bits: u64) -> u64 {
             exception_context_fallback_pop();
             if pending {
                 let exc_obj = obj_from_bits(exc_bits);
-                let is_exit = if let Some(exc_ptr) = exc_obj.as_ptr() {
-                    if object_type_id(exc_ptr) == TYPE_ID_EXCEPTION {
-                        let kind =
-                            string_obj_to_owned(obj_from_bits(crate::exception_kind_bits(exc_ptr)))
-                                .unwrap_or_default();
-                        kind == "GeneratorExit"
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                };
+                let is_exit = exc_obj.as_ptr().is_some_and(|exc_ptr| {
+                    object_type_id(exc_ptr) == TYPE_ID_EXCEPTION
+                        && exception_matches_type(_py, exc_ptr, "GeneratorExit")
+                });
                 if is_exit {
                     dec_ref_bits(_py, exc_bits);
                     generator_set_closed(_py, ptr, true);
@@ -926,12 +928,7 @@ unsafe fn throw_arg_is_generator_exit(_py: &PyToken<'_>, exc_bits: u64) -> bool 
         };
         match object_type_id(exc_ptr) {
             TYPE_ID_EXCEPTION => {
-                let kind = string_obj_to_owned(obj_from_bits(exception_kind_bits(exc_ptr)))
-                    .unwrap_or_default();
-                if kind == "GeneratorExit" {
-                    return true;
-                }
-                let class_bits = crate::exception_class_bits(exc_ptr);
+                let class_bits = object_class_bits(exc_ptr);
                 class_bits == gen_exit_bits || issubclass_bits(class_bits, gen_exit_bits)
             }
             TYPE_ID_TUPLE => {
@@ -945,6 +942,22 @@ unsafe fn throw_arg_is_generator_exit(_py: &PyToken<'_>, exc_bits: u64) -> bool 
             TYPE_ID_TYPE => exc_bits == gen_exit_bits || issubclass_bits(exc_bits, gen_exit_bits),
             _ => false,
         }
+    }
+}
+
+#[inline]
+unsafe fn exception_matches_type(_py: &PyToken<'_>, exc_ptr: *mut u8, expected_name: &str) -> bool {
+    unsafe {
+        if object_type_id(exc_ptr) != TYPE_ID_EXCEPTION {
+            return false;
+        }
+        let class_bits = object_class_bits(exc_ptr);
+        if class_bits == 0 {
+            return false;
+        }
+        let expected_bits = exception_type_bits_from_name(_py, expected_name);
+        expected_bits != 0
+            && (class_bits == expected_bits || issubclass_bits(class_bits, expected_bits))
     }
 }
 
@@ -2038,14 +2051,12 @@ pub unsafe extern "C" fn molt_asyncgen_poll(obj_bits: u64) -> i64 {
                 }
                 crate::object::object_set_state(obj_ptr, 0);
                 let exc_bits = molt_exception_last();
-                let kind_bits = molt_exception_kind(exc_bits);
-                let kind = string_obj_to_owned(obj_from_bits(kind_bits));
-                dec_ref_bits(_py, kind_bits);
                 if op == ASYNCGEN_OP_ACLOSE {
-                    if matches!(
-                        kind.as_deref(),
-                        Some("GeneratorExit" | "StopAsyncIteration")
-                    ) {
+                    let terminal = obj_from_bits(exc_bits).as_ptr().is_some_and(|exc_ptr| {
+                        exception_matches_type(_py, exc_ptr, "GeneratorExit")
+                            || exception_matches_type(_py, exc_ptr, "StopAsyncIteration")
+                    });
+                    if terminal {
                         exception_clear_reason_set("asyncgen_aclose_swallow");
                         molt_exception_clear();
                         dec_ref_bits(_py, exc_bits);
@@ -2056,7 +2067,11 @@ pub unsafe extern "C" fn molt_asyncgen_poll(obj_bits: u64) -> i64 {
                 } else if matches!(op, ASYNCGEN_OP_ANEXT | ASYNCGEN_OP_ASEND) {
                     // PEP 479 analog for async generators: StopAsyncIteration
                     // raised inside the body must be converted to RuntimeError.
-                    if matches!(kind.as_deref(), Some("StopAsyncIteration")) {
+                    let stop_async_iteration =
+                        obj_from_bits(exc_bits).as_ptr().is_some_and(|exc_ptr| {
+                            exception_matches_type(_py, exc_ptr, "StopAsyncIteration")
+                        });
+                    if stop_async_iteration {
                         exception_clear_reason_set("asyncgen_poll_stop_async_iter_convert");
                         molt_exception_clear();
                         dec_ref_bits(_py, exc_bits);

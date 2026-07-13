@@ -296,7 +296,8 @@ pub unsafe extern "C" fn Py_EnterRecursiveCall(where_: *const c_char) -> c_int {
         if let Ok(c) = std::ffi::CString::new(msg) {
             unsafe {
                 crate::api::errors::PyErr_SetString(
-                    &raw mut crate::abi_types::PyExc_RecursionError,
+                    (&raw mut crate::abi_types::PyExc_RecursionError)
+                        .cast::<crate::abi_types::PyObject>(),
                     c.as_ptr(),
                 );
             }
@@ -454,7 +455,8 @@ pub unsafe extern "C" fn PyMemoryView_FromObject(op: *mut PyObject) -> *mut PyOb
         if src_view.buf.is_null() && src_view.len != 0 {
             unsafe {
                 crate::api::errors::PyErr_SetString(
-                    &raw mut crate::abi_types::PyExc_ValueError,
+                    (&raw mut crate::abi_types::PyExc_ValueError)
+                        .cast::<crate::abi_types::PyObject>(),
                     c"operation forbidden on released memoryview object".as_ptr(),
                 );
             }
@@ -486,9 +488,8 @@ pub unsafe extern "C" fn PyMemoryView_FromObject(op: *mut PyObject) -> *mut PyOb
     // descriptor in the heap `internal` allocation, which is position-
     // independent either way.
     let mv = alloc_memoryview_object();
-    if unsafe {
-        crate::api::buffer::PyObject_GetBuffer(op, &raw mut (*mv).view, PyBUF_FULL_RO)
-    } != 0
+    if unsafe { crate::api::buffer::PyObject_GetBuffer(op, &raw mut (*mv).view, PyBUF_FULL_RO) }
+        != 0
     {
         unsafe { free_unfilled_memoryview(mv) };
         return std::ptr::null_mut();

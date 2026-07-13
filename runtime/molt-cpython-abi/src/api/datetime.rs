@@ -59,7 +59,7 @@ unsafe fn selected_type(
 unsafe fn set_value_error(message: &'static std::ffi::CStr) {
     unsafe {
         crate::api::errors::PyErr_SetString(
-            &raw mut crate::abi_types::PyExc_ValueError,
+            (&raw mut crate::abi_types::PyExc_ValueError).cast::<crate::abi_types::PyObject>(),
             message.as_ptr(),
         );
     }
@@ -68,7 +68,7 @@ unsafe fn set_value_error(message: &'static std::ffi::CStr) {
 unsafe fn set_tzinfo_type_error() {
     unsafe {
         crate::api::errors::PyErr_SetString(
-            &raw mut crate::abi_types::PyExc_TypeError,
+            (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
             c"tzinfo argument must be None or of a tzinfo subclass".as_ptr(),
         );
     }
@@ -77,7 +77,7 @@ unsafe fn set_tzinfo_type_error() {
 unsafe fn set_overflow_error(message: &'static std::ffi::CStr) {
     unsafe {
         crate::api::errors::PyErr_SetString(
-            &raw mut crate::abi_types::PyExc_OverflowError,
+            (&raw mut crate::abi_types::PyExc_OverflowError).cast::<crate::abi_types::PyObject>(),
             message.as_ptr(),
         );
     }
@@ -302,9 +302,7 @@ pub unsafe extern "C" fn molt_cpython_abi_delta_from_delta(
         s = s.rem_euclid(86_400);
     }
     if d.abs() > MAX_DELTA_DAYS {
-        unsafe {
-            set_overflow_error(c"days=...; must have magnitude <= 999999999")
-        };
+        unsafe { set_overflow_error(c"days=...; must have magnitude <= 999999999") };
         return ptr::null_mut();
     }
     let typeobj = unsafe { selected_type(typeobj, &raw mut PyDateTime_DeltaType) };
@@ -362,7 +360,7 @@ pub unsafe extern "C" fn molt_cpython_abi_timezone_from_timezone(
     if !is_delta {
         unsafe {
             crate::api::errors::PyErr_SetString(
-                &raw mut crate::abi_types::PyExc_TypeError,
+                (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
                 c"offset must be a timedelta".as_ptr(),
             );
         }
@@ -497,7 +495,7 @@ pub unsafe extern "C" fn molt_cpython_abi_datetime_from_timestamp(
     let Some(t) = (unsafe { timestamp_arg(args, 0) }) else {
         unsafe {
             crate::api::errors::PyErr_SetString(
-                &raw mut crate::abi_types::PyExc_TypeError,
+                (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
                 c"fromtimestamp() requires a numeric timestamp".as_ptr(),
             );
         }
@@ -558,7 +556,7 @@ pub unsafe extern "C" fn molt_cpython_abi_date_from_timestamp(
     let Some(t) = (unsafe { timestamp_arg(args, 0) }) else {
         unsafe {
             crate::api::errors::PyErr_SetString(
-                &raw mut crate::abi_types::PyExc_TypeError,
+                (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
                 c"fromtimestamp() requires a numeric timestamp".as_ptr(),
             );
         }
@@ -657,7 +655,8 @@ pub struct PyDateTime_CAPI {
     /// singletons
     pub TimeZone_UTC: *mut PyObject,
     /// constructors
-    pub Date_FromDate: unsafe extern "C" fn(c_int, c_int, c_int, *mut PyTypeObject) -> *mut PyObject,
+    pub Date_FromDate:
+        unsafe extern "C" fn(c_int, c_int, c_int, *mut PyTypeObject) -> *mut PyObject,
     pub DateTime_FromDateAndTime: unsafe extern "C" fn(
         c_int,
         c_int,
@@ -669,9 +668,16 @@ pub struct PyDateTime_CAPI {
         *mut PyObject,
         *mut PyTypeObject,
     ) -> *mut PyObject,
-    pub Time_FromTime:
-        unsafe extern "C" fn(c_int, c_int, c_int, c_int, *mut PyObject, *mut PyTypeObject) -> *mut PyObject,
-    pub Delta_FromDelta: unsafe extern "C" fn(c_int, c_int, c_int, c_int, *mut PyTypeObject) -> *mut PyObject,
+    pub Time_FromTime: unsafe extern "C" fn(
+        c_int,
+        c_int,
+        c_int,
+        c_int,
+        *mut PyObject,
+        *mut PyTypeObject,
+    ) -> *mut PyObject,
+    pub Delta_FromDelta:
+        unsafe extern "C" fn(c_int, c_int, c_int, c_int, *mut PyTypeObject) -> *mut PyObject,
     pub TimeZone_FromTimeZone: unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> *mut PyObject,
     /// constructors for the DB API
     pub DateTime_FromTimestamp:
@@ -741,7 +747,10 @@ pub fn register_datetime_capi() {
     let capsule = unsafe {
         crate::api::capsule::PyCapsule_New(capi_ptr, DATETIME_CAPSULE_NAME.as_ptr(), None)
     };
-    debug_assert!(!capsule.is_null(), "datetime CAPI capsule registration failed");
+    debug_assert!(
+        !capsule.is_null(),
+        "datetime CAPI capsule registration failed"
+    );
 }
 
 #[cfg(test)]
@@ -766,14 +775,19 @@ mod capi_tests {
     #[test]
     fn datetime_capi_capsule_roundtrips() {
         crate::bridge::molt_cpython_abi_init();
-        let ptr = unsafe {
-            crate::api::capsule::PyCapsule_Import(DATETIME_CAPSULE_NAME.as_ptr(), 0)
-        };
-        assert!(!ptr.is_null(), "PyCapsule_Import(datetime.datetime_CAPI) returned NULL");
+        let ptr =
+            unsafe { crate::api::capsule::PyCapsule_Import(DATETIME_CAPSULE_NAME.as_ptr(), 0) };
+        assert!(
+            !ptr.is_null(),
+            "PyCapsule_Import(datetime.datetime_CAPI) returned NULL"
+        );
         let capi = ptr.cast::<PyDateTime_CAPI>();
         unsafe {
             assert!(
-                std::ptr::eq((*capi).DateType, &raw mut crate::abi_types::PyDateTime_DateType),
+                std::ptr::eq(
+                    (*capi).DateType,
+                    &raw mut crate::abi_types::PyDateTime_DateType
+                ),
                 "DateType must alias molt's PyDateTime_DateType"
             );
             assert!(
@@ -799,10 +813,11 @@ mod capi_tests {
             );
         }
         // The constructor pointers must be non-null and callable (build a date).
-        let date = unsafe {
-            ((*capi).Date_FromDate)(2026, 7, 10, std::ptr::null_mut())
-        };
-        assert!(!date.is_null(), "CAPI Date_FromDate produced NULL for a valid date");
+        let date = unsafe { ((*capi).Date_FromDate)(2026, 7, 10, std::ptr::null_mut()) };
+        assert!(
+            !date.is_null(),
+            "CAPI Date_FromDate produced NULL for a valid date"
+        );
         unsafe { crate::api::refcount::Py_DECREF(date) };
     }
 }

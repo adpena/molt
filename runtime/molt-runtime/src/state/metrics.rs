@@ -86,7 +86,7 @@ mod wasm_stubs {
         PROFILE_ENABLED.store(u8::from(profile_env_enabled()), AtomicOrdering::Relaxed);
     }
 
-    fn profile_enabled_unchecked() -> bool {
+    pub(crate) fn profile_enabled_unchecked() -> bool {
         match PROFILE_ENABLED.load(AtomicOrdering::Relaxed) {
             0 => false,
             1 => true,
@@ -121,6 +121,12 @@ mod wasm_stubs {
     pub(crate) fn profile_hit_unchecked(counter: &AtomicU64) {
         if profile_enabled_unchecked() {
             counter.fetch_add(1, AtomicOrdering::Relaxed);
+        }
+    }
+
+    pub(crate) fn profile_hit_bytes_unchecked(counter: &AtomicU64, bytes: u64) {
+        if profile_enabled_unchecked() {
+            counter.fetch_add(bytes, AtomicOrdering::Relaxed);
         }
     }
 
@@ -164,7 +170,8 @@ mod wasm_stubs {
 pub(crate) use wasm_stubs::{
     current_rss_bytes, init_profile_enabled_from_env, molt_profile_enabled,
     molt_profile_handle_resolve, molt_profile_snapshot, molt_profile_struct_field_store,
-    profile_enabled, profile_hit, profile_hit_bytes, profile_hit_unchecked, sample_peak_rss,
+    profile_enabled, profile_enabled_unchecked, profile_hit, profile_hit_bytes,
+    profile_hit_bytes_unchecked, profile_hit_unchecked, sample_peak_rss,
 };
 
 // Full profiling implementation for non-wasm32 targets.
@@ -189,7 +196,7 @@ mod native {
         PROFILE_ENABLED.store(u8::from(profile_env_enabled()), AtomicOrdering::Relaxed);
     }
 
-    fn profile_enabled_unchecked() -> bool {
+    pub(crate) fn profile_enabled_unchecked() -> bool {
         match PROFILE_ENABLED.load(AtomicOrdering::Relaxed) {
             0 => false,
             1 => true,
@@ -224,6 +231,12 @@ mod native {
     pub(crate) fn profile_hit_unchecked(counter: &AtomicU64) {
         if profile_enabled_unchecked() {
             counter.fetch_add(1, AtomicOrdering::Relaxed);
+        }
+    }
+
+    pub(crate) fn profile_hit_bytes_unchecked(counter: &AtomicU64, bytes: u64) {
+        if profile_enabled_unchecked() {
+            counter.fetch_add(bytes, AtomicOrdering::Relaxed);
         }
     }
 
@@ -349,7 +362,8 @@ mod native {
 pub(crate) use native::{
     current_rss_bytes, init_profile_enabled_from_env, molt_profile_enabled,
     molt_profile_handle_resolve, molt_profile_snapshot, molt_profile_struct_field_store,
-    profile_enabled, profile_hit, profile_hit_bytes, profile_hit_unchecked, sample_peak_rss,
+    profile_enabled, profile_enabled_unchecked, profile_hit, profile_hit_bytes,
+    profile_hit_bytes_unchecked, profile_hit_unchecked, sample_peak_rss,
 };
 
 /// Mirrors `mach_task_basic_info` from `<mach/task_info.h>`.

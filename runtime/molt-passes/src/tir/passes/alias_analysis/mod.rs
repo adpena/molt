@@ -1,21 +1,20 @@
 //! First-class alias analysis for TIR — Tier-0 substrate **S5, Phase 1**.
 //!
-//! Before this module, FOUR independent ad-hoc "barrier" lists answered slightly
+//! Before this module, three independent ad-hoc classification lists answered
 //! different versions of the same memory-aliasing question, each hand-maintained
 //! and free to drift apart:
 //!
 //! | Old list                                  | Question it answered                                   |
 //! |-------------------------------------------|--------------------------------------------------------|
 //! | `refcount_elim::is_barrier(opcode)`       | could this op capture/store/observe *any* refcount?    |
-//! | `reuse_analysis::is_aliasing_op(op,val)`  | could this op alias/observe the memory of `val`?       |
 //! | `dead_store_elim::may_observe_slot`       | could this op read/escape the slot of object `root`?   |
 //! | `escape_analysis` per-use classification  | does this alloc'd value escape the function?           |
 //!
-//! Four lists ⇒ four chances to forget an opcode, and a *missed* barrier is the
+//! Three lists ⇒ three chances to forget an opcode, and a *missed* barrier is the
 //! worst possible bug in this layer: a wrong (too-permissive) barrier lets RC
-//! elimination / reuse / dead-store-elim drop an operation that was actually
+//! elimination or dead-store elimination drop an operation that was actually
 //! observable, producing a **use-after-free or a leak**. This module collapses
-//! all four into ONE oracle whose queries are, by construction, a **conservative
+//! all three into ONE oracle whose queries are, by construction, a **conservative
 //! superset** of each old list (verified op-by-op in the tests below).
 //!
 //! ## What this analysis computes
@@ -32,10 +31,9 @@
 //!   an opaque attribute lookup (`get_attr*`) that **MayDispatch** a user
 //!   `__getattr__` / `__getattribute__` and is therefore opaque.
 //!
-//! and exposes the queries the three barrier-consuming passes need:
+//! and exposes the queries its consumers need:
 //!
 //! * [`AliasAnalysisResult::is_rc_barrier`] — replaces `refcount_elim::is_barrier`.
-//! * [`AliasAnalysisResult::is_barrier_for`] — replaces `reuse_analysis::is_aliasing_op`.
 //! * [`AliasAnalysisResult::may_observe_slot`] — replaces `dead_store_elim::may_observe_slot`.
 //! * [`AliasAnalysisResult::escape_state`] / [`AliasAnalysisResult::escape`] —
 //!   replaces direct `escape_analysis::analyze` calls.
@@ -89,8 +87,7 @@ pub use super::escape_analysis::EscapeState;
 // the `alias_analysis::MemRegion` / `alias_analysis::LoadPurity` paths.
 pub use regions::{LoadPurity, MemRegion};
 use regions::{
-    classify_load, opcode_is_heap_barrier, opcode_is_rc_barrier, typed_slot_class,
-    typed_slot_obj_offset, typed_slot_store,
+    classify_load, opcode_is_rc_barrier, typed_slot_class, typed_slot_obj_offset, typed_slot_store,
 };
 
 // Copy-lowering ownership classifiers live in `copy_kind`; the crate-facing
@@ -416,32 +413,6 @@ impl AliasAnalysisResult {
     #[inline]
     pub fn is_rc_barrier(&self, op: &TirOp) -> bool {
         opcode_is_rc_barrier(op.opcode)
-    }
-
-    /// Replaces `reuse_analysis::is_aliasing_op`. True if `op` might alias with
-    /// or observe the memory of `val` (so a `DecRef(val) … Alloc` reuse window
-    /// must close here).
-    ///
-    /// CONSERVATIVE SUPERSET of the old predicate: an op aliases if it (a) takes
-    /// `val` (or a transparent alias of it) as a direct operand, OR (b) is an
-    /// opcode that may observe/mutate/escape arbitrary heap memory
-    /// ([`opcode_is_heap_barrier`]). The old list compared operands by raw
-    /// `ValueId` equality; routing through the alias root is *strictly more
-    /// conservative* (it also catches uses through a transparent copy), so the
-    /// superset property holds.
-    pub fn is_barrier_for(&self, op: &TirOp, val: ValueId) -> bool {
-        // (a) A direct (or aliased) use of `val` reads/escapes it.
-        let root = self.aliases.root(val);
-        if op
-            .operands
-            .iter()
-            .any(|&o| o == val || self.aliases.root(o) == root)
-        {
-            return true;
-        }
-        // (b) An opcode that can touch arbitrary heap memory is a barrier even
-        //     without naming `val` (it could reach `val` through global state).
-        opcode_is_heap_barrier(op.opcode)
     }
 
     /// Replaces `dead_store_elim::may_observe_slot`. True if `op` may observe the

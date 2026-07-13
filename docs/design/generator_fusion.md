@@ -42,7 +42,7 @@ backends — Cranelift/LLVM/wasm/luau — benefit, not just LLVM).
   called :23177) inlines BEFORE coroutine-ization — but only for those builtins, only same-module.
 - **NO TIR function inliner; NO mem2reg/SROA** (pass list passes/mod.rs:156-229: range_devirt,
   iter_devirt, deforestation, loop_unroll, canonicalize, unboxing, block_versioning, gvn, licm,
-  escape_analysis, refcount_elim, reuse_analysis, dead_store_elim, sccp, strength_reduction,
+  escape_analysis, refcount_elim, dead_store_elim, sccp, strength_reduction,
   fast_math, branchless_count, bce, vectorize, polyhedral, copy_prop, dce). SCCP + escape_analysis
   exist; inliner + SROA do not.
 - **Whole-program TIR**: cli.py `_build_module_code_ops` assembles ALL modules (stdlib + user) into

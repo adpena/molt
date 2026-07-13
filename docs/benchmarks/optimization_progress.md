@@ -22,7 +22,7 @@ Canonical plan: `OPTIMIZATIONS_PLAN.md`
 
 ## Week 1 Checklist (Observability)
 - [x] Runtime hot-path counters added for call IC, attr site-name cache, split lane selection, dict prehash lane, TAQ ingest, and ASCII int parse failures.
-- [x] `molt_profile_dump` emits machine-readable `molt_profile_json` payload when `MOLT_PROFILE_JSON=1`.
+- [x] `molt_profile_dump` emits the sole versioned `molt_profile_json` authority when `MOLT_PROFILE=1` (schema v2 covers lifetime, aux, GC, and RSS counters).
 - [x] Codon subset profile artifacts captured (`sum.py`, `word_count.py`, `taq.py`) with command reproducibility notes.
 - [x] Correctness gate run: `cargo check -p molt-runtime -p molt-backend`.
 - [x] Correctness gate run: `uv run --python 3.12 pytest -q tests/test_codec_lowering.py` (`33 passed`).

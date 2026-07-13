@@ -508,12 +508,12 @@ unsafe fn exception_class_can_use_cached_message_str(
 
 pub(crate) unsafe fn exception_uses_cached_message_str(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
     unsafe {
-        let class_bits = exception_class_bits(ptr);
-        exception_class_bits_uses_cached_message_str(_py, class_bits)
+        let class_bits = object_class_bits(ptr);
+        exception_class_uses_cached_message_str(_py, class_bits)
     }
 }
 
-pub(crate) unsafe fn exception_class_bits_uses_cached_message_str(
+pub(crate) unsafe fn exception_class_uses_cached_message_str(
     _py: &PyToken<'_>,
     class_bits: u64,
 ) -> bool {

@@ -168,7 +168,7 @@ greenfield build. Verified read-only at HEAD `1d92bc5cf`:
 | Alias analysis + MemorySSA + MemGVN + SROA | `tir/passes/alias_analysis.rs`, `memory_ssa.rs`, `mem_gvn.rs`, `sroa.rs` | **landed** (S5 ph1/2a/2b/2d) |
 | DropInsertion (RC, rung-1 of MM ladder) | `tir/passes/drop_insertion.rs` (342 KB) | **landed + active** native/LLVM/WASM/Luau (doc 27 §0; native RC flip DONE per memory) |
 | `ownership_lattice_min.rs` | `tir/passes/ownership_lattice_min.rs` (64 KB) | **landed** (council #58 keystone slice: alias-root→ownership→boundary→ordered release) |
-| refcount_elim / reuse_analysis / escape_analysis | `tir/passes/{refcount_elim,reuse_analysis,escape_analysis}.rs` | **landed**; the insert-then-remove model Rung 1 replaces |
+| refcount_elim / escape_analysis | `tir/passes/{refcount_elim,escape_analysis}.rs` | **landed**; the insert-then-remove model Rung 1 replaces |
 | Loop passes (licm/loop_unroll/block_versioning/type_guard_hoist/counted_loop) | `tir/passes/*.rs` | **landed but gated**; doc 04 re-enable arc partially done (counted-loop contract `fae639e94`) |
 | `vectorize.rs` (SIMD annotator) | `tir/passes/vectorize.rs` | **landed but DEAD** — backends read zero attrs (doc 05 §1) |
 | PGO (`pgo.rs`, `PgoProfileIR`, `pgo_collect.py`) | `molt-backend/src/llvm_backend/pgo.rs`, `ir.rs`, `src/molt/pgo_collect.py` | **dead code / not wired** (doc 06 §1) |
@@ -260,7 +260,7 @@ typed contract (doc 46 §4.4, council "Free is demoted") is the lowering target.
 `Owned`→stack). **Consumers:** drop placement (replaces the insert-then-remove of
 `drop_insertion.rs` + `refcount_elim.rs` Steps 5/6, doc 27 §0), **CallFacts Rung 2**
 (`no_alloc`/`no_escape_args` become `Proven` from the same escape facts), reuse/FBIP
-(`reuse_analysis.rs`), and the native value-tracking *deletion* (doc 51 §5, the dead
+future end-to-end reuse/FBIP, and the native value-tracking *deletion* (doc 51 §5, the dead
 legacy lane).
 
 **Benchmark class healed:** `bench_struct` 0.04× (per-iter alloc + RC on a non-escaping

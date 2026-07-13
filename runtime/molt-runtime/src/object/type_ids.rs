@@ -23,7 +23,7 @@ pub(crate) const TYPE_ID_INTARRAY: u32 = 220;
 pub(crate) const TYPE_ID_FUNCTION: u32 = molt_codegen_abi::TYPE_ID_FUNCTION;
 pub(crate) const TYPE_ID_BOUND_METHOD: u32 = 222;
 pub(crate) const TYPE_ID_MODULE: u32 = 223;
-pub(crate) const TYPE_ID_TYPE: u32 = 224;
+pub(crate) const TYPE_ID_TYPE: u32 = molt_codegen_abi::TYPE_ID_TYPE;
 pub(crate) const TYPE_ID_GENERATOR: u32 = 225;
 pub(crate) const TYPE_ID_CLASSMETHOD: u32 = 226;
 pub(crate) const TYPE_ID_STATICMETHOD: u32 = 227;
@@ -62,6 +62,8 @@ pub(crate) const TYPE_ID_GLOB_ITER: u32 = 253;
 /// (`tp_getattro`/`tp_setattro`/`tp_call`) via the `molt-cpython-abi` bridge.
 /// See `object::foreign`.
 pub(crate) const TYPE_ID_FOREIGN: u32 = 254;
+/// Native storage authority owned by one weak-container wrapper.
+pub(crate) const TYPE_ID_WEAK_CONTAINER_STATE: u32 = 255;
 
 pub(crate) const TYPE_TAG_ANY: i64 = 0;
 pub(crate) const TYPE_TAG_INT: i64 = 1;
@@ -98,7 +100,8 @@ pub(crate) const BUILTIN_TAG_SUPER: i64 = 229;
 // ---------------------------------------------------------------------------
 
 /// Predefined size classes (in bytes) for object allocations.
-/// Index 0 is reserved for "oversized" (exact size stored in cold header).
+/// Index 0 is reserved for oversized allocations whose exact size lives in the
+/// immutable aux sidecar.
 /// Indices 1..=N map to common allocation sizes up to 64 KB.
 pub(crate) const SIZE_CLASS_TABLE: &[usize] = &[
     0, // 0: sentinel / oversized
@@ -139,7 +142,7 @@ pub(crate) const TYPE_ID_LIST_BOOL: u32 = molt_codegen_abi::TYPE_ID_LIST_BOOL;
 pub(crate) const TYPE_ID_FLOAT: u32 = 249;
 
 pub(crate) const MIN_HEAP_TYPE_ID: u32 = TYPE_ID_STRING;
-pub(crate) const MAX_HEAP_TYPE_ID: u32 = TYPE_ID_FOREIGN;
+pub(crate) const MAX_HEAP_TYPE_ID: u32 = TYPE_ID_WEAK_CONTAINER_STATE;
 
 #[inline]
 pub(crate) fn is_valid_heap_type_id(type_id: u32) -> bool {
@@ -157,6 +160,7 @@ mod tests {
         assert!(is_valid_heap_type_id(TYPE_ID_FLOAT));
         assert!(is_valid_heap_type_id(TYPE_ID_LIST_BOOL));
         assert!(is_valid_heap_type_id(TYPE_ID_GLOB_ITER));
+        assert!(is_valid_heap_type_id(TYPE_ID_WEAK_CONTAINER_STATE));
 
         assert!(!is_valid_heap_type_id(0));
         assert!(!is_valid_heap_type_id(TYPE_ID_OBJECT - 1));

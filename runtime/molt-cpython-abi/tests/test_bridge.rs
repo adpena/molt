@@ -36,7 +36,7 @@ fn bridge_crossing_timing_profile() {
             (0..thread_count)
                 .map(|thread_index| {
                     let bits = MoltObject::from_int(10_000 + thread_index as i64).bits();
-                    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) }.expose_provenance()
+                    unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) }.expose_provenance()
                 })
                 .collect(),
         );
@@ -101,7 +101,7 @@ fn bridge_crossing_timing_profile() {
 fn test_bridge_int_roundtrip() {
     init();
     let bits = MoltObject::from_int(42).bits();
-    let py = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) };
+    let py = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
     assert!(!py.is_null());
 
     let recovered = GLOBAL_BRIDGE.pyobj_to_handle(py);
@@ -114,7 +114,7 @@ fn test_bridge_int_roundtrip() {
 fn test_bridge_float_roundtrip() {
     init();
     let bits = MoltObject::from_float(PI).bits();
-    let py = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) };
+    let py = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
     assert!(!py.is_null());
 
     let recovered = GLOBAL_BRIDGE.pyobj_to_handle(py);
@@ -131,7 +131,7 @@ fn test_bridge_float_roundtrip() {
 fn test_bridge_none_returns_singleton() {
     init();
     let bits = MoltObject::none().bits();
-    let py = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) };
+    let py = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
     assert!(std::ptr::eq(py, &raw mut Py_None));
 }
 
@@ -139,7 +139,7 @@ fn test_bridge_none_returns_singleton() {
 fn test_bridge_true_returns_singleton() {
     init();
     let bits = MoltObject::from_bool(true).bits();
-    let py = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) };
+    let py = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
     assert!(std::ptr::eq(py, (&raw mut Py_True).cast::<PyObject>()));
 }
 
@@ -147,7 +147,7 @@ fn test_bridge_true_returns_singleton() {
 fn test_bridge_false_returns_singleton() {
     init();
     let bits = MoltObject::from_bool(false).bits();
-    let py = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) };
+    let py = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
     assert!(std::ptr::eq(py, (&raw mut Py_False).cast::<PyObject>()));
 }
 
@@ -216,8 +216,8 @@ fn test_none_hash_uses_pointer_width_py_hash() {
 fn test_bridge_caches_second_lookup() {
     init();
     let bits = MoltObject::from_int(12345).bits();
-    let py1 = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) };
-    let py2 = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) };
+    let py1 = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
+    let py2 = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
 
     // Same pointer should be returned (cached)
     assert_eq!(py1, py2);
@@ -234,7 +234,7 @@ fn test_bridge_caches_second_lookup() {
 fn test_bridge_borrowed_lookup_does_not_incref_cached_entry() {
     init();
     let bits = MoltObject::from_int(54321).bits();
-    let py = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) };
+    let py = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
     assert_eq!(unsafe { (*py).ob_refcnt }, 1);
 
     let borrowed = unsafe { GLOBAL_BRIDGE.handle_to_borrowed_pyobj(bits) };
@@ -275,7 +275,7 @@ fn test_bridge_borrowed_lookup_materializes_cache_anchor() {
 fn test_release_pyobj_removes_mapping() {
     init();
     let bits = MoltObject::from_int(77777).bits();
-    let py = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) };
+    let py = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
     assert!(GLOBAL_BRIDGE.pyobj_to_handle(py).is_some());
 
     assert!(GLOBAL_BRIDGE.release_pyobj(py));
@@ -287,87 +287,35 @@ fn test_release_pyobj_removes_mapping() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_tag_to_type_int() {
+fn tag_table_uses_physical_types_only_for_exact_layout_carriers() {
     init();
-    let tp = unsafe { molt_cpython_abi::bridge::tag_to_type(MoltTypeTag::Int) };
-    assert!(std::ptr::eq(tp, &raw mut PyLong_Type));
-}
+    let managed = &raw mut MoltManaged_Type;
+    let expected = [
+        (MoltTypeTag::Bool, &raw mut PyBool_Type),
+        (MoltTypeTag::Int, managed),
+        (MoltTypeTag::Float, managed),
+        (MoltTypeTag::Complex, managed),
+        (MoltTypeTag::Str, managed),
+        (MoltTypeTag::Bytes, managed),
+        (MoltTypeTag::List, managed),
+        (MoltTypeTag::Tuple, &raw mut PyTuple_Type),
+        (MoltTypeTag::Dict, managed),
+        (MoltTypeTag::Set, managed),
+        (MoltTypeTag::FrozenSet, managed),
+        (MoltTypeTag::Type, &raw mut PyType_Type),
+        (MoltTypeTag::Module, managed),
+        (MoltTypeTag::Traceback, managed),
+        (MoltTypeTag::Exception, managed),
+        (MoltTypeTag::Other, managed),
+    ];
 
-#[test]
-fn test_tag_to_type_float() {
-    init();
-    let tp = unsafe { molt_cpython_abi::bridge::tag_to_type(MoltTypeTag::Float) };
-    assert!(std::ptr::eq(tp, &raw mut PyFloat_Type));
-}
-
-#[test]
-fn test_tag_to_type_str() {
-    init();
-    let tp = unsafe { molt_cpython_abi::bridge::tag_to_type(MoltTypeTag::Str) };
-    assert!(std::ptr::eq(tp, &raw mut PyUnicode_Type));
-}
-
-#[test]
-fn test_tag_to_type_list() {
-    init();
-    let tp = unsafe { molt_cpython_abi::bridge::tag_to_type(MoltTypeTag::List) };
-    assert!(std::ptr::eq(tp, &raw mut PyList_Type));
-}
-
-#[test]
-fn test_tag_to_type_tuple() {
-    init();
-    let tp = unsafe { molt_cpython_abi::bridge::tag_to_type(MoltTypeTag::Tuple) };
-    assert!(std::ptr::eq(tp, &raw mut PyTuple_Type));
-}
-
-#[test]
-fn test_tag_to_type_dict() {
-    init();
-    let tp = unsafe { molt_cpython_abi::bridge::tag_to_type(MoltTypeTag::Dict) };
-    assert!(std::ptr::eq(tp, &raw mut PyDict_Type));
-}
-
-#[test]
-fn test_tag_to_type_bool() {
-    init();
-    let tp = unsafe { molt_cpython_abi::bridge::tag_to_type(MoltTypeTag::Bool) };
-    assert!(std::ptr::eq(tp, &raw mut PyBool_Type));
-}
-
-#[test]
-fn test_tag_to_type_bytes() {
-    init();
-    let tp = unsafe { molt_cpython_abi::bridge::tag_to_type(MoltTypeTag::Bytes) };
-    assert!(std::ptr::eq(tp, &raw mut PyBytes_Type));
-}
-
-#[test]
-fn test_tag_to_type_set() {
-    init();
-    let tp = unsafe { molt_cpython_abi::bridge::tag_to_type(MoltTypeTag::Set) };
-    assert!(std::ptr::eq(tp, &raw mut PySet_Type));
-}
-
-#[test]
-fn test_tag_to_type_module() {
-    init();
-    let tp = unsafe { molt_cpython_abi::bridge::tag_to_type(MoltTypeTag::Module) };
-    assert!(std::ptr::eq(tp, &raw mut PyModule_Type));
-}
-
-#[test]
-fn test_tag_to_type_other_falls_back() {
-    init();
-    let tp = unsafe { molt_cpython_abi::bridge::tag_to_type(MoltTypeTag::Other) };
-    // `Other` maps to `PyBaseObject_Type` ("object"), the honest neutral: it
-    // must NOT masquerade as `str` (`PyUnicode_Type`), which made a Molt
-    // function proxy fail `PyObject_Call` with the lying "'str' object is not
-    // callable" (numpy `_multiarray_umath` init). See the tag-table push! for
-    // `MoltTypeTag::Other` and the `other_tag_maps_to_base_object_not_str`
-    // unit test in `bridge.rs`.
-    assert!(std::ptr::eq(tp, &raw mut PyBaseObject_Type));
-    assert!(!std::ptr::eq(tp, &raw mut PyUnicode_Type));
+    for (tag, expected_type) in expected {
+        let actual = unsafe { molt_cpython_abi::bridge::tag_to_type(tag) };
+        assert!(
+            std::ptr::eq(actual, expected_type),
+            "wrong physical carrier for {tag:?}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

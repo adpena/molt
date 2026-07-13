@@ -73,7 +73,7 @@ fn set_module_system_error(message: impl AsRef<str>) {
         .unwrap_or_else(|_| CString::new("module API error").expect("static string has no nul"));
     unsafe {
         crate::api::errors::PyErr_SetString(
-            &raw mut crate::abi_types::PyExc_SystemError,
+            (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
             message.as_ptr(),
         );
     }
@@ -102,13 +102,68 @@ fn set_module_system_error_if_clear(message: impl AsRef<str>) {
     set_module_system_error(message);
 }
 
+fn module_error_pending() -> bool {
+    if !unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+        return true;
+    }
+    crate::api::errors::transfer_runtime_pending_to_current()
+}
+
+unsafe fn validate_module_pointer_result(result: *mut PyObject, call_name: &str) -> *mut PyObject {
+    let has_error = module_error_pending();
+    match (result.is_null(), has_error) {
+        (false, false) => result,
+        (true, true) => ptr::null_mut(),
+        (true, false) => {
+            set_module_system_error(format!(
+                "{call_name} returned NULL without setting an exception"
+            ));
+            ptr::null_mut()
+        }
+        (false, true) => {
+            let pending = crate::api::errors::take_current_error();
+            unsafe { crate::api::refcount::Py_DECREF(result) };
+            drop(crate::api::errors::take_current_error());
+            if let Some(pending) = pending {
+                crate::api::errors::restore_current_error_exact(pending);
+            }
+            unsafe {
+                crate::api::errors::replace_current_with_system_error(&format!(
+                    "{call_name} returned a result with an exception set"
+                ))
+            };
+            ptr::null_mut()
+        }
+    }
+}
+
+fn validate_module_status_result(rc: c_int, call_name: &str) -> c_int {
+    let has_error = module_error_pending();
+    match (rc == 0, has_error) {
+        (true, false) => 0,
+        (false, true) => -1,
+        (false, false) => {
+            set_module_system_error(format!(
+                "{call_name} returned non-zero without setting an exception"
+            ));
+            -1
+        }
+        (true, true) => {
+            unsafe {
+                crate::api::errors::replace_current_with_system_error(&format!(
+                    "{call_name} returned success with an exception set"
+                ))
+            };
+            -1
+        }
+    }
+}
+
 /// Resolve a `*mut PyObject` produced by this bridge to its underlying Molt
 /// handle bits.
 ///
-/// All PyObject blocks our bridge mints carry the canonical Molt handle in a
-/// trailing u64 (see `bridge::handle_to_pyobj`), so we can read it directly
-/// without any per-bridge state.  Foreign pointers fall back to the in-memory
-/// map maintained by this copy of the bridge.
+/// Managed views resolve through the canonical registry. Foreign pointers are
+/// converted through the single first-class foreign-wrapper authority.
 fn bridge_pyobj_to_bits(obj: *mut PyObject) -> u64 {
     if obj.is_null() {
         return MoltObject::none().bits();
@@ -137,7 +192,7 @@ pub unsafe extern "C" fn PyModule_New(name: *const c_char) -> *mut PyObject {
     // 48 bits of address) and so the trailing handle bits give the loader a
     // stateless way to recover the canonical handle even when called from a
     // different copy of this bridge crate.
-    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) }
+    unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) }
 }
 
 #[unsafe(no_mangle)]
@@ -154,11 +209,32 @@ pub unsafe extern "C" fn PyModule_Check(module: *mut PyObject) -> c_int {
     if module.is_null() {
         return 0;
     }
+    if let Some(value) = GLOBAL_BRIDGE.molt_handle_for_pyobj(module) {
+        return (value.decode().is_ptr()
+            && unsafe { (crate::hooks::hooks_or_stubs().classify_heap)(value.bits()) }
+                == crate::abi_types::MoltTypeTag::Module as u8) as c_int;
+    }
     let ob_type = unsafe { (*module).ob_type };
     if std::ptr::eq(ob_type, &raw mut crate::abi_types::PyModule_Type) {
         return 1;
     }
-    GLOBAL_BRIDGE.pyobj_to_handle(module).is_some() as c_int
+    unsafe {
+        crate::api::typeobj::PyType_IsSubtype(ob_type, &raw mut crate::abi_types::PyModule_Type)
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyModule_CheckExact(module: *mut PyObject) -> c_int {
+    if let Some(value) = GLOBAL_BRIDGE.molt_handle_for_pyobj(module) {
+        return (value.decode().is_ptr()
+            && unsafe { (crate::hooks::hooks_or_stubs().classify_heap)(value.bits()) }
+                == crate::abi_types::MoltTypeTag::Module as u8) as c_int;
+    }
+    (!module.is_null()
+        && std::ptr::eq(
+            unsafe { (*module).ob_type },
+            &raw const crate::abi_types::PyModule_Type,
+        )) as c_int
 }
 
 /// CPython 3.13+ Unstable API (`Objects/moduleobject.c`):
@@ -223,7 +299,8 @@ unsafe fn module_get_name_object(module: *mut PyObject) -> *mut PyObject {
         unsafe {
             if crate::api::errors::PyErr_Occurred().is_null() {
                 crate::api::errors::PyErr_SetString(
-                    &raw mut crate::abi_types::PyExc_SystemError,
+                    (&raw mut crate::abi_types::PyExc_SystemError)
+                        .cast::<crate::abi_types::PyObject>(),
                     c"nameless module".as_ptr(),
                 );
             }
@@ -238,7 +315,7 @@ pub unsafe extern "C" fn PyModule_GetName(module: *mut PyObject) -> *const c_cha
     if module.is_null() {
         unsafe {
             crate::api::errors::PyErr_SetString(
-                &raw mut crate::abi_types::PyExc_SystemError,
+                (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
                 c"PyModule_GetName called with NULL".as_ptr(),
             );
         }
@@ -264,20 +341,23 @@ pub unsafe extern "C" fn PyModule_GetDict(module: *mut PyObject) -> *mut PyObjec
     }
     let module_bits = bridge_pyobj_to_bits(module);
     let h = hooks::hooks_or_stubs();
-    let dict_bits = unsafe { (h.module_get_dict)(module_bits) };
-    if dict_bits == 0 {
+    let result = unsafe { (h.module_get_dict_borrowed)(module_bits) };
+    let hooks::DecodedHandleResult::Ok(dict_bits) = result.decode() else {
         crate::capi_trace::record_silent_failure("PyModule_GetDict", None);
-        if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+        if !crate::api::errors::transfer_runtime_pending_to_current()
+            && unsafe { crate::api::errors::PyErr_Occurred() }.is_null()
+        {
             unsafe {
                 crate::api::errors::PyErr_SetString(
-                    &raw mut crate::abi_types::PyExc_SystemError,
-                    c"PyModule_GetDict: runtime module dict hook returned no dict".as_ptr(),
-                );
-            }
+                    (&raw mut crate::abi_types::PyExc_SystemError)
+                        .cast::<crate::abi_types::PyObject>(),
+                    c"PyModule_GetDict: runtime module dict hook failed".as_ptr(),
+                )
+            };
         }
         return ptr::null_mut();
-    }
-    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(dict_bits) }
+    };
+    unsafe { GLOBAL_BRIDGE.handle_to_borrowed_pyobj(dict_bits) }
 }
 
 #[unsafe(no_mangle)]
@@ -306,11 +386,17 @@ pub unsafe extern "C" fn PyState_FindModule(def: *mut PyModuleDef) -> *mut PyObj
         return ptr::null_mut();
     }
     let h = hooks::hooks_or_stubs();
-    let module_bits = unsafe { (h.module_state_find)(def as usize) };
-    if module_bits == 0 {
-        return ptr::null_mut();
+    match unsafe { (h.module_state_find)(def as usize) }.decode() {
+        hooks::DecodedHandleResult::Ok(module_bits) if module_bits != 0 => unsafe {
+            GLOBAL_BRIDGE.handle_to_borrowed_pyobj(module_bits)
+        },
+        hooks::DecodedHandleResult::Ok(_) | hooks::DecodedHandleResult::Missing => ptr::null_mut(),
+        hooks::DecodedHandleResult::Error => {
+            let _ = crate::api::errors::transfer_runtime_pending_to_current();
+            set_module_system_error_if_clear("module state lookup failed");
+            ptr::null_mut()
+        }
     }
-    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(module_bits) }
 }
 
 #[unsafe(no_mangle)]
@@ -368,7 +454,7 @@ pub unsafe extern "C" fn PyModule_AddObjectRef(
     if value.is_null() {
         unsafe {
             crate::api::errors::PyErr_SetString(
-                &raw mut crate::abi_types::PyExc_SystemError,
+                (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
                 c"PyModule_AddObjectRef value must not be NULL".as_ptr(),
             );
         }
@@ -421,7 +507,11 @@ unsafe fn module_state_size(def: *mut PyModuleDef) -> u64 {
     if raw <= 0 { 0 } else { raw as u64 }
 }
 
-unsafe fn register_module_capi(module: *mut PyObject, def: *mut PyModuleDef) -> c_int {
+unsafe fn register_module_capi(
+    module: *mut PyObject,
+    def: *mut PyModuleDef,
+    attach_legacy_state: bool,
+) -> c_int {
     if module.is_null() || def.is_null() {
         return -1;
     }
@@ -432,11 +522,14 @@ unsafe fn register_module_capi(module: *mut PyObject, def: *mut PyModuleDef) -> 
         set_module_system_error_if_clear("module C-API metadata registration failed");
         return rc;
     }
-    let rc = unsafe { (h.module_state_add)(module_bits, def as usize) };
-    if rc != 0 {
-        set_module_system_error_if_clear("module state registration failed");
+    if attach_legacy_state {
+        let rc = unsafe { (h.module_state_add)(module_bits, def as usize) };
+        if rc != 0 {
+            set_module_system_error_if_clear("module state registration failed");
+        }
+        return rc;
     }
-    rc
+    0
 }
 
 unsafe fn unregister_module_state(def: *mut PyModuleDef) {
@@ -447,6 +540,18 @@ unsafe fn unregister_module_state(def: *mut PyModuleDef) {
     unsafe {
         let _ = (h.module_state_remove)(def as usize);
     }
+}
+
+unsafe fn cleanup_module_create_failure(
+    module: *mut PyObject,
+    def: *mut PyModuleDef,
+    attach_legacy_state: bool,
+) -> *mut PyObject {
+    if attach_legacy_state {
+        unsafe { unregister_module_state(def) };
+    }
+    unsafe { crate::api::refcount::Py_DECREF(module) };
+    ptr::null_mut()
 }
 
 unsafe fn module_from_def_and_slots(
@@ -478,11 +583,8 @@ unsafe fn module_from_def_and_slots(
                     def: *mut PyModuleDef,
                 ) -> *mut PyObject;
                 let create: CreateFn = std::mem::transmute(slot.value);
-                module = create(spec, def);
+                module = validate_module_pointer_result(create(spec, def), "Py_mod_create slot");
                 if module.is_null() {
-                    set_module_system_error_if_clear(
-                        "Py_mod_create slot returned NULL without setting an exception",
-                    );
                     return ptr::null_mut();
                 }
                 break;
@@ -492,59 +594,16 @@ unsafe fn module_from_def_and_slots(
     }
 
     if module.is_null() {
-        module = unsafe { PyModule_Create2(def, module_api_version) };
+        module = unsafe { module_create2(def, module_api_version, false) };
         if module.is_null() {
             set_module_system_error_if_clear("PyModule_Create2 failed during PyModuleDef_Init");
             return ptr::null_mut();
         }
         module_capi_registered = true;
     }
-    if !module_capi_registered && unsafe { register_module_capi(module, def) } != 0 {
+    if !module_capi_registered && unsafe { register_module_capi(module, def, false) } != 0 {
         unsafe { crate::api::refcount::Py_DECREF(module) };
         return ptr::null_mut();
-    }
-
-    cursor = slots;
-    unsafe {
-        while (*cursor).slot != 0 {
-            let slot = &*cursor;
-            match slot.slot {
-                PY_MOD_CREATE => {}
-                PY_MOD_EXEC => {
-                    if slot.value.is_null() {
-                        set_module_system_error("Py_mod_exec slot is NULL");
-                        unregister_module_state(def);
-                        crate::api::refcount::Py_DECREF(module);
-                        return ptr::null_mut();
-                    }
-                    type ExecFn = unsafe extern "C" fn(module: *mut PyObject) -> c_int;
-                    let exec: ExecFn = std::mem::transmute(slot.value);
-                    crate::capi_trace::clear_last_silent_failure();
-                    crate::capi_trace::trace_call("Py_mod_exec:enter", None);
-                    let exec_rc = exec(module);
-                    crate::capi_trace::trace_call(
-                        "Py_mod_exec:return",
-                        Some(if exec_rc == 0 { "ok" } else { "nonzero" }),
-                    );
-                    if exec_rc != 0 {
-                        set_module_system_error_if_clear(
-                            "Py_mod_exec slot returned non-zero without setting an exception",
-                        );
-                        unregister_module_state(def);
-                        crate::api::refcount::Py_DECREF(module);
-                        return ptr::null_mut();
-                    }
-                }
-                PY_MOD_MULTIPLE_INTERPRETERS | PY_MOD_GIL => {}
-                _ => {
-                    set_module_system_error(format!("unsupported PyModuleDef slot {}", slot.slot));
-                    unregister_module_state(def);
-                    crate::api::refcount::Py_DECREF(module);
-                    return ptr::null_mut();
-                }
-            }
-            cursor = cursor.add(1);
-        }
     }
 
     module
@@ -596,10 +655,7 @@ pub unsafe extern "C" fn PyModule_ExecDef(module: *mut PyObject, def: *mut PyMod
                     type ExecFn = unsafe extern "C" fn(module: *mut PyObject) -> c_int;
                     let exec: ExecFn = std::mem::transmute(slot.value);
                     crate::capi_trace::clear_last_silent_failure();
-                    if exec(module) != 0 {
-                        set_module_system_error_if_clear(
-                            "Py_mod_exec slot returned non-zero without setting an exception",
-                        );
+                    if validate_module_status_result(exec(module), "Py_mod_exec slot") != 0 {
                         return -1;
                     }
                 }
@@ -618,7 +674,15 @@ pub unsafe extern "C" fn PyModule_ExecDef(module: *mut PyObject, def: *mut PyMod
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyModule_Create2(
     def: *mut PyModuleDef,
+    module_api_version: c_int,
+) -> *mut PyObject {
+    unsafe { module_create2(def, module_api_version, true) }
+}
+
+unsafe fn module_create2(
+    def: *mut PyModuleDef,
     _module_api_version: c_int,
+    attach_legacy_state: bool,
 ) -> *mut PyObject {
     if def.is_null() {
         return ptr::null_mut();
@@ -637,7 +701,7 @@ pub unsafe extern "C" fn PyModule_Create2(
     if module.is_null() {
         return ptr::null_mut();
     }
-    if unsafe { register_module_capi(module, def) } != 0 {
+    if unsafe { register_module_capi(module, def, attach_legacy_state) } != 0 {
         unsafe { crate::api::refcount::Py_DECREF(module) };
         return ptr::null_mut();
     }
@@ -670,9 +734,7 @@ pub unsafe extern "C" fn PyModule_Create2(
                         "molt_cpython_abi: PyModule_Create2 for {mod_name:?}: \
                          method {meth_name_str:?} has a NULL function pointer",
                     );
-                    unregister_module_state(def);
-                    crate::api::refcount::Py_DECREF(module);
-                    return ptr::null_mut();
+                    return cleanup_module_create_failure(module, def, attach_legacy_state);
                 };
                 let meth_addr = fn_ptr as *const () as usize as u64;
                 let func_bits = (h.register_c_function)(
@@ -702,9 +764,7 @@ pub unsafe extern "C" fn PyModule_Create2(
                             "molt_cpython_abi: PyModule_Create2 for {mod_name:?}: \
                              failed to register method {meth_name_str:?}",
                         );
-                        unregister_module_state(def);
-                        crate::api::refcount::Py_DECREF(module);
-                        return ptr::null_mut();
+                        return cleanup_module_create_failure(module, def, attach_legacy_state);
                     }
                 } else {
                     let mod_name = CStr::from_ptr(name).to_string_lossy();
@@ -718,9 +778,7 @@ pub unsafe extern "C" fn PyModule_Create2(
                          runtime rejected method {meth_name_str:?} (flags 0x{:x})",
                         entry.ml_flags,
                     );
-                    unregister_module_state(def);
-                    crate::api::refcount::Py_DECREF(module);
-                    return ptr::null_mut();
+                    return cleanup_module_create_failure(module, def, attach_legacy_state);
                 }
                 cursor = cursor.add(1);
             }

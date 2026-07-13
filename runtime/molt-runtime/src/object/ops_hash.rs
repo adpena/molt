@@ -1503,13 +1503,67 @@ mod numeric_hash_tests {
     //! `decimal_hash_modular.py`, and `numeric_cross_type_hash_invariant.py`
     //! tests assert end-to-end on the compiled binary.
     use super::{
-        hash_bigint_value, hash_float, hash_int, pow_mod_mersenne, py_decimal_hash, py_numeric_hash,
+        hash_bigint_value, hash_bytes_cached, hash_float, hash_int, hash_string, pow_mod_mersenne,
+        py_decimal_hash, py_numeric_hash,
     };
+    use crate::object::{
+        ClassEdgeOwnership, ObjectAuxPreselection, TYPE_ID_BYTES, TYPE_ID_STRING,
+        alloc_object_with_aux, dec_ref_bits, object_init_class_edge_unpublished, object_state,
+    };
+    use crate::{MoltHeader, MoltObject, builtin_classes};
     use num_bigint::BigInt;
     use num_traits::One;
 
     fn frac(n: i128, d: i128) -> i64 {
         py_numeric_hash(&BigInt::from(n), &BigInt::from(d))
+    }
+
+    #[test]
+    fn string_and_bytes_subclasses_cache_hash_in_sidecar_state_lane() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry_nopanic!(_py, {
+            let builtins = builtin_classes(_py);
+            for (type_id, class_bits, bytes) in [
+                (TYPE_ID_STRING, builtins.str, b"subclass-string".as_slice()),
+                (TYPE_ID_BYTES, builtins.bytes, b"subclass-bytes".as_slice()),
+            ] {
+                let total =
+                    std::mem::size_of::<MoltHeader>() + std::mem::size_of::<usize>() + bytes.len();
+                let ptr =
+                    alloc_object_with_aux(_py, total, type_id, ObjectAuxPreselection::Sidecar);
+                assert!(!ptr.is_null());
+                unsafe {
+                    *(ptr as *mut usize) = bytes.len();
+                    std::ptr::copy_nonoverlapping(
+                        bytes.as_ptr(),
+                        ptr.add(std::mem::size_of::<usize>()),
+                        bytes.len(),
+                    );
+                    assert!(object_init_class_edge_unpublished(
+                        _py,
+                        ptr,
+                        class_bits,
+                        ClassEdgeOwnership::Borrowed,
+                    ));
+                }
+
+                let first = if type_id == TYPE_ID_STRING {
+                    hash_string(_py, ptr)
+                } else {
+                    hash_bytes_cached(_py, ptr, bytes)
+                };
+                let cached = object_state(ptr);
+                assert_ne!(cached, 0, "first hash must populate sidecar state");
+                let second = if type_id == TYPE_ID_STRING {
+                    hash_string(_py, ptr)
+                } else {
+                    hash_bytes_cached(_py, ptr, bytes)
+                };
+                assert_eq!(second, first);
+                assert_eq!(object_state(ptr), cached);
+                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+            }
+        });
     }
 
     #[test]

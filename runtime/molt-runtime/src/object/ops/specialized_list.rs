@@ -820,7 +820,8 @@ pub extern "C" fn molt_list_fill_new(count: u64, fill_value: u64) -> u64 {
             + std::mem::size_of::<*mut crate::object::DataclassDesc>()
             + std::mem::size_of::<*mut Vec<u64>>()
             + std::mem::size_of::<u64>();
-        let ptr = alloc_object(_py, total, TYPE_ID_LIST);
+        let ptr =
+            alloc_object_with_aux(_py, total, TYPE_ID_LIST, ObjectAuxPreselection::ClassInline);
         if ptr.is_null() {
             return MoltObject::none().bits();
         }

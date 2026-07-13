@@ -111,15 +111,25 @@ pub const HEADER_ALLOC_ALIGN_BYTES: usize = 8;
 pub const HEADER_TYPE_ID_OFFSET: i32 = -HEADER_SIZE_BYTES;
 pub const HEADER_REFCOUNT_OFFSET: i32 = -(HEADER_SIZE_BYTES - 4);
 pub const HEADER_FLAGS_OFFSET: i32 = -(HEADER_SIZE_BYTES - 8);
-pub const HEADER_COLD_IDX_OFFSET: i32 = -(HEADER_SIZE_BYTES - 16);
+pub const HEADER_AUX_KIND_OFFSET: i32 = -10;
+pub const HEADER_AUX_OFFSET: i32 = -8;
+
+pub const HEADER_AUX_KIND_NONE: u16 = 0;
+pub const HEADER_AUX_KIND_CLASS_INLINE: u16 = 1;
+pub const HEADER_AUX_KIND_STATE_INLINE: u16 = 2;
+pub const HEADER_AUX_KIND_SIDECAR: u16 = 3;
+
+pub const HEADER_CLASS_WORD_BORROWED: u64 = 1;
+pub const HEADER_CLASS_WORD_TAG_MASK: u64 = 0x7;
+pub const HEADER_CLASS_WORD_BITS_MASK: u64 = !HEADER_CLASS_WORD_TAG_MASK;
 
 pub const HEADER_FLAG_HAS_PTRS: u32 = 1;
-pub const HEADER_FLAG_SKIP_CLASS_DECREF: u32 = 1 << 1;
 pub const HEADER_FLAG_IMMORTAL: u32 = 1 << 15;
 pub const HEADER_FLAG_CONTAINS_REFS: u32 = 1 << 19;
 
 pub const TYPE_ID_OBJECT: u32 = 100;
 pub const TYPE_ID_FUNCTION: u32 = 221;
+pub const TYPE_ID_TYPE: u32 = 224;
 pub const TYPE_ID_LIST_BOOL: u32 = 250;
 pub const JIT_TYPE_ID_LIST_BOOL: i64 = TYPE_ID_LIST_BOOL as i64;
 
@@ -371,6 +381,23 @@ mod tests {
         assert_eq!(INLINE_INT_LIMIT, 1_i64 << 47);
         assert_eq!(QNAN_TAG_INT_I64, (QNAN | TAG_INT) as i64);
         assert_eq!(NanBoxConsts::new().int_mask, INT_MASK as i64);
+    }
+
+    #[test]
+    fn header_aux_constants_match_the_packed_header_contract() {
+        assert_eq!(HEADER_AUX_KIND_OFFSET, -(HEADER_SIZE_BYTES - 14));
+        assert_eq!(HEADER_AUX_OFFSET, -(HEADER_SIZE_BYTES - 16));
+        assert_eq!(HEADER_CLASS_WORD_BORROWED & HEADER_CLASS_WORD_TAG_MASK, 1);
+        assert_eq!(HEADER_CLASS_WORD_BITS_MASK & HEADER_CLASS_WORD_TAG_MASK, 0);
+        assert_eq!(
+            [
+                HEADER_AUX_KIND_NONE,
+                HEADER_AUX_KIND_CLASS_INLINE,
+                HEADER_AUX_KIND_STATE_INLINE,
+                HEADER_AUX_KIND_SIDECAR,
+            ],
+            [0, 1, 2, 3]
+        );
     }
 
     #[test]

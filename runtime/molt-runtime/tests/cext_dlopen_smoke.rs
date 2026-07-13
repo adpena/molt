@@ -189,10 +189,10 @@ unsafe fn preload_bridge_dylib_and_register_hooks() {
         !reg_ptr.is_null(),
         "molt_cpython_abi_register_hooks missing in dylib"
     );
-    type RegFn = unsafe extern "C" fn(*const molt_cpython_abi::RuntimeHooks);
+    type RegFn = unsafe extern "C" fn(*const molt_cpython_abi::RuntimeHooks) -> i32;
     let reg_fn: RegFn = unsafe { std::mem::transmute(reg_ptr) };
     let hooks = molt_cpython_abi::hooks().expect("runtime hooks must be registered");
-    unsafe { reg_fn(hooks as *const _) };
+    assert_eq!(unsafe { reg_fn(hooks as *const _) }, 0);
 }
 
 #[test]

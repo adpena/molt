@@ -1,3 +1,5 @@
+mod support;
+
 use molt_cpython_abi::hooks::{RuntimeHooks, STUB_HOOKS};
 
 unsafe extern "C" fn import_fails(_data: *const u8, _len: usize) -> u64 {
@@ -19,9 +21,8 @@ fn runtime_import_exception_is_not_masked_by_synthetic_abi_error() {
     );
 
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
-    let module = unsafe {
-        molt_cpython_abi::api::imports::PyImport_ImportModule(c"numpy.dtypes".as_ptr())
-    };
+    let module =
+        unsafe { molt_cpython_abi::api::imports::PyImport_ImportModule(c"numpy.dtypes".as_ptr()) };
 
     assert!(module.is_null());
     assert!(
@@ -29,7 +30,7 @@ fn runtime_import_exception_is_not_masked_by_synthetic_abi_error() {
         "ABI mirror masked the runtime's real pending import exception"
     );
     assert_eq!(
-        molt_cpython_abi::api::errors::take_current_error_message(),
+        support::take_current_error_text(),
         None,
         "synthetic ABI message displaced the runtime exception authority"
     );

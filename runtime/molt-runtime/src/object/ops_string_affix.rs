@@ -428,19 +428,12 @@ fn exception_is_lookup_error(_py: &PyToken<'_>, exc_bits: u64) -> bool {
         if object_type_id(exc_ptr) != TYPE_ID_EXCEPTION {
             return false;
         }
-        let class_bits = exception_class_bits(exc_ptr);
-        if class_bits != 0 {
-            let lookup_error_bits = exception_type_bits_from_name(_py, "LookupError");
-            if lookup_error_bits != 0 && issubclass_bits(class_bits, lookup_error_bits) {
-                return true;
-            }
+        let class_bits = object_class_bits(exc_ptr);
+        if class_bits == 0 {
+            return false;
         }
-        let kind_bits = exception_kind_bits(exc_ptr);
-        let kind = string_obj_to_owned(obj_from_bits(kind_bits));
-        matches!(
-            kind.as_deref(),
-            Some("LookupError") | Some("IndexError") | Some("KeyError")
-        )
+        let lookup_error_bits = exception_type_bits_from_name(_py, "LookupError");
+        lookup_error_bits != 0 && issubclass_bits(class_bits, lookup_error_bits)
     }
 }
 

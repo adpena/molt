@@ -580,7 +580,7 @@ pub extern "C" fn molt_sys_getsizeof(obj_bits: u64, default_bits: u64) -> u64 {
         TYPE_ID_MODULE => 72,       // CPython module: ~72 bytes
         TYPE_ID_TYPE => 864,        // CPython type: ~864 bytes
         TYPE_ID_COMPLEX => 32,      // CPython complex: 32 bytes
-        TYPE_ID_EXCEPTION => 88,    // CPython BaseException: ~88 bytes
+        TYPE_ID_EXCEPTION => 96,    // CPython-visible BaseException footprint oracle
         TYPE_ID_BIGINT => 32,       // approximation for arbitrary-precision int
         TYPE_ID_CODE => 176,        // CPython code object: ~176 bytes
         _ => 64,                    // reasonable default for other heap objects

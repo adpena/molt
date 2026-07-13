@@ -40,50 +40,48 @@ Tag constants occupy bits 48..50 (`TAG_MASK = 0x0007_0000_0000_0000`), leaving 3
 
 ### 1.2 MoltHeader (Heap Object Header)
 
-**File:** `runtime/molt-runtime/src/object/mod.rs` (line 197)
+**File:** `runtime/molt-runtime/src/object/mod.rs`
 
 ```rust
 #[repr(C)]
 pub struct MoltHeader {
-    type_id: u32,         // 4 bytes — object type discriminator
-    ref_count: AtomicU32, // 4 bytes — reference count
-    poll_fn: u64,         // 8 bytes — async poll function pointer
-    state: i64,           // 8 bytes — state machine state / class bits
-    size: usize,          // 8 bytes — total allocation size
-    flags: u64,           // 8 bytes — header flags (17 flags defined)
+    type_id: u32,            // 4 bytes — object type discriminator
+    ref_count: MoltRefCount, // 4 bytes — target-specific reference count
+    flags: u32,              // 4 bytes — semantic/lifecycle bits
+    size_class: u16,         // 2 bytes — index into SIZE_CLASS_TABLE
+    aux_kind: u16,           // 2 bytes — interpretation of aux
+    aux: MoltAuxWord,        // 8 bytes — inline value or stable sidecar address
 }
-// Total: 40 bytes per heap object
+// Total: 24 bytes per heap object
 ```
 
-**Assessment:** 40 bytes of header overhead per heap object is substantial. The `poll_fn` and `state` fields are only used by generators, async tasks, and class instances (via `state` storing class bits). Every string, tuple, list, dict, range, and slice pays for these 16 bytes of async/class machinery.
+**Assessment:** The landed header keeps type/refcount/flags/size class in 16 bytes
+and one typed 8-byte aux lane. `NONE`, `CLASS_INLINE`, `STATE_INLINE`, or
+`SIDECAR` is selected before publication. Ordinary objects pay no allocation or
+indirection for unused async/class state; the stable sidecar exists only when
+class and state must coexist, polling is required, or an oversized allocation
+needs an exact extended size.
 
-**Optimization opportunities:**
+**Landed optimizations and remaining opportunities:**
 
-- **O1.4 — Split hot/cold header fields.** The first 8 bytes (`type_id` + `ref_count`) are accessed on every refcount operation and type check. The remaining 32 bytes (`poll_fn`, `state`, `size`, `flags`) are cold for most operations. Restructure to:
+- **O1.4 — LANDED: typed aux header.** The former global cold-header slab and
+  mutex were deleted. A 24-byte object header owns one representation-tagged
+  aux word, with stable per-object sidecars only for the uncommon coexistence,
+  polling, and oversized-size cases. There is no parallel legacy storage lane.
 
-  ```
-  HotHeader (8 bytes):
-      type_id: u32
-      ref_count: AtomicU32
+- **O1.5 — LANDED: 32-bit flags.** The complete semantic flag registry fits in
+  `u32`; GC, ABI-view, weakref, finalization, and async bits share that one
+  authority. A `u16` is not sufficient for the current registry.
 
-  ColdHeader (32 bytes, only for types that need it):
-      poll_fn: u64
-      state: i64
-      size: usize
-      flags: u64
-  ```
-
-  Simple types (string, bytes, int-overflow/BigInt, tuple, range, slice) need only the 8-byte hot header. This saves 32 bytes per string and tuple allocation. For a program with 100K live strings, this is 3.2 MB saved.
-
-- **O1.5 — Compress flags field.** Only 17 flag bits are defined (bits 0..16). The `flags` field is `u64` (8 bytes) but could be `u32` (4 bytes) or even `u16` (2 bytes). This saves 4-6 bytes per object when combined with header restructuring.
-
-- **O1.6 — Eliminate `size` field for fixed-size types.** The `size` field stores the total allocation size for `std::alloc::dealloc`. For fixed-size types (bound method = header + 16 bytes, range = header + 24 bytes, etc.), the size is statically known from `type_id`. Only variable-size types (string, bytes, dataclass, generator) need a stored size. This saves 8 bytes per fixed-size object.
+- **O1.6 — LANDED: size classes plus extended sidecar size.** Fixed/common
+  allocations use `size_class`; only oversized objects store an immutable exact
+  size in their typed sidecar.
 
 - **O1.7 — Compress `type_id` to `u16`.** There are currently 48 type IDs (100..247). A `u16` (65K values) is sufficient. Combined with a `u16` flags field, the hot header becomes: `type_id: u16` + `flags: u16` + `ref_count: AtomicU32` = 8 bytes, with no padding.
 
 ### 1.3 Per-Type Payload Sizes
 
-All sizes below are **payload only** (after the 40-byte `MoltHeader`). The total allocation is `MoltHeader + payload`.
+All sizes below are **payload only** (after the 24-byte `MoltHeader`). The total allocation is `MoltHeader + payload`, plus a typed sidecar only for the uncommon cases described above.
 
 | Type | Payload | Layout | Notes |
 |------|---------|--------|-------|
@@ -270,14 +268,17 @@ For a simple function call `f(x)`, the argument `x` gets: inc_ref (push to calla
 
 ### 4.1 Current Cache Behavior
 
-**Assessment:** The current layout has poor cache utilization for several reasons:
-- The 40-byte `MoltHeader` means that accessing the payload (e.g., string data) requires touching a second cache line for objects whose header straddles a 64-byte boundary.
+**Assessment:** The current layout has materially better header locality, while collection payload indirections remain:
+- The 24-byte `MoltHeader` leaves 40 bytes of the first 64-byte cache line for payload when the allocation is cache-line aligned.
 - `Vec<u64>` indirection for lists, tuples, dicts means that iterating over a list requires chasing two pointer hops: `MoltObject` -> payload -> `Vec` heap allocation -> elements.
 - Dict lookup requires hashing (touching the key string bytes), then probing the hash table (a separate `Vec<usize>`), then reading the order vector (another `Vec<u64>`).
 
 ### 4.2 Optimization Opportunities
 
-- **O4.1 — Hot/cold header splitting (see O1.4).** Move `poll_fn`, `state`, `size`, `flags` to a cold header. The hot header (`type_id` + `ref_count`) fits in 8 bytes and shares a cache line with the first 56 bytes of payload. This means that for strings up to 48 bytes (after the 8-byte length field), the entire object fits in one cache line.
+- **O4.1 — LANDED in typed-aux form (see O1.4).** The 24-byte header keeps
+  common class or state data inline and moves only uncommon coexistence,
+  polling, and extended-size data to a stable per-object sidecar. The deleted
+  global cold-header slab is not a fallback path.
 
 - **O4.2 — Pointer compression.** On 64-bit platforms with the GIL, all Molt heap objects live in a single address space region. If we allocate from a contiguous arena (or mmap region), we can represent heap pointers as 32-bit offsets from a base address. This:
   - Halves pointer storage in collections (list elements, dict entries).
@@ -413,7 +414,6 @@ Ordered by expected impact (performance gain) / effort (implementation cost):
 | **P1** | O2.2 | Extend object pool to more types | Medium | Low | Low |
 | **P1** | O1.8 | Inline small tuples | Medium | Medium | Low |
 | **P1** | O2.6 | Switch to mimalloc | Medium | Low | Low |
-| **P2** | O1.4/O4.1 | Hot/cold header splitting | Medium | High | Medium |
 | **P2** | O2.1/O2.4 | Bump allocator nursery / TLABs | High | High | Medium |
 | **P2** | O5.1 | Trial deletion cycle collector | Critical (correctness) | High | Medium |
 | **P2** | O1.1 | Inline small strings in NaN-box | Medium | Medium | Medium |

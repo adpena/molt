@@ -5,6 +5,16 @@ from pathlib import Path
 from molt.cli import native_link_command
 
 
+def test_bool_singletons_need_no_final_link_aliases() -> None:
+    assert ("_Py_TrueStruct", "Py_True") not in native_link_command._CPYTHON_SINGLETON_CANONICAL_ALIASES
+    assert ("_Py_FalseStruct", "Py_False") not in native_link_command._CPYTHON_SINGLETON_CANONICAL_ALIASES
+    discovery = (
+        Path(__file__).parents[2] / "runtime" / "molt-cext-discovery" / "build.rs"
+    ).read_text(encoding="utf-8")
+    assert '("Py_True", "_Py_TrueStruct")' not in discovery
+    assert '("Py_False", "_Py_FalseStruct")' not in discovery
+
+
 def _command(monkeypatch, tmp_path: Path, platform: str) -> list[str]:
     monkeypatch.setattr(native_link_command.sys, "platform", platform)
     monkeypatch.setattr(

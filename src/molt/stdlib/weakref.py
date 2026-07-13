@@ -25,11 +25,12 @@ def _require_callable_intrinsic(name: str):
 
 
 _molt_weakref_register = _require_callable_intrinsic("molt_weakref_register")
+_molt_weakref_bind_reference_type = _require_callable_intrinsic(
+    "molt_weakref_bind_reference_type"
+)
 _molt_weakref_get = _require_callable_intrinsic("molt_weakref_get")
 _molt_weakref_callback = _require_callable_intrinsic("molt_weakref_callback")
 _molt_weakref_peek = _require_callable_intrinsic("molt_weakref_peek")
-_molt_weakref_drop = _require_callable_intrinsic("molt_weakref_drop")
-_molt_weakref_collect = _require_callable_intrinsic("molt_weakref_collect")
 _molt_weakref_find_nocallback = _require_callable_intrinsic(
     "molt_weakref_find_nocallback"
 )
@@ -41,82 +42,82 @@ _molt_weakref_finalize_track = _require_callable_intrinsic(
 _molt_weakref_finalize_untrack = _require_callable_intrinsic(
     "molt_weakref_finalize_untrack"
 )
-_molt_weakkeydict_set = _require_callable_intrinsic("molt_weakkeydict_set")
-_molt_weakkeydict_get = _require_callable_intrinsic("molt_weakkeydict_get")
-_molt_weakkeydict_del = _require_callable_intrinsic("molt_weakkeydict_del")
-_molt_weakkeydict_contains = _require_callable_intrinsic("molt_weakkeydict_contains")
-_molt_weakkeydict_len = _require_callable_intrinsic("molt_weakkeydict_len")
-_molt_weakkeydict_items = _require_callable_intrinsic("molt_weakkeydict_items")
-_molt_weakkeydict_keyrefs = _require_callable_intrinsic("molt_weakkeydict_keyrefs")
-_molt_weakkeydict_popitem = _require_callable_intrinsic("molt_weakkeydict_popitem")
-_molt_weakkeydict_clear = _require_callable_intrinsic("molt_weakkeydict_clear")
-_molt_weakvaluedict_set = _require_callable_intrinsic("molt_weakvaluedict_set")
-_molt_weakvaluedict_get = _require_callable_intrinsic("molt_weakvaluedict_get")
-_molt_weakvaluedict_del = _require_callable_intrinsic("molt_weakvaluedict_del")
-_molt_weakvaluedict_contains = _require_callable_intrinsic(
-    "molt_weakvaluedict_contains"
+_molt_weakcontainer_new = _require_callable_intrinsic("molt_weakcontainer_new")
+_molt_weakcontainer_store_probe = _require_callable_intrinsic(
+    "molt_weakcontainer_store_probe"
 )
-_molt_weakvaluedict_len = _require_callable_intrinsic("molt_weakvaluedict_len")
-_molt_weakvaluedict_items = _require_callable_intrinsic("molt_weakvaluedict_items")
-_molt_weakvaluedict_valuerefs = _require_callable_intrinsic(
-    "molt_weakvaluedict_valuerefs"
+_molt_weakcontainer_store_commit = _require_callable_intrinsic(
+    "molt_weakcontainer_store_commit"
 )
-_molt_weakvaluedict_popitem = _require_callable_intrinsic("molt_weakvaluedict_popitem")
-_molt_weakvaluedict_clear = _require_callable_intrinsic("molt_weakvaluedict_clear")
-_molt_weakset_add = _require_callable_intrinsic("molt_weakset_add")
-_molt_weakset_discard = _require_callable_intrinsic("molt_weakset_discard")
-_molt_weakset_remove = _require_callable_intrinsic("molt_weakset_remove")
-_molt_weakset_pop = _require_callable_intrinsic("molt_weakset_pop")
-_molt_weakset_contains = _require_callable_intrinsic("molt_weakset_contains")
-_molt_weakset_len = _require_callable_intrinsic("molt_weakset_len")
-_molt_weakset_items = _require_callable_intrinsic("molt_weakset_items")
-_molt_weakset_clear = _require_callable_intrinsic("molt_weakset_clear")
+_molt_weakcontainer_get = _require_callable_intrinsic("molt_weakcontainer_get")
+_molt_weakcontainer_take = _require_callable_intrinsic("molt_weakcontainer_take")
+_molt_weakcontainer_contains = _require_callable_intrinsic(
+    "molt_weakcontainer_contains"
+)
+_molt_weakcontainer_len = _require_callable_intrinsic("molt_weakcontainer_len")
+_molt_weakcontainer_iter = _require_callable_intrinsic("molt_weakcontainer_iter")
+_molt_weakcontainer_refs = _require_callable_intrinsic("molt_weakcontainer_refs")
+_molt_weakcontainer_pop = _require_callable_intrinsic("molt_weakcontainer_pop")
+_molt_weakcontainer_clear = _require_callable_intrinsic("molt_weakcontainer_clear")
+_molt_weakcontainer_dead = _require_callable_intrinsic("molt_weakcontainer_dead")
+
+_WEAK_KEY_DICT = 1
+_WEAK_VALUE_DICT = 2
+_WEAK_SET = 3
+_KEYS = 1
+_VALUES = 2
+_ITEMS = 3
 
 _MISSING = object()
 
 
-class ReferenceType:
-    __slots__ = ("_obj", "_callback", "_key", "_hash", "_registered")
+class _ReferenceTypeMeta(type):
+    def __call__(cls, obj, callback=None, *args, **kwargs):
+        # CPython caches callback-free exact weakref.ref objects. Keeping this
+        # in constructor authority means returning a cached object never reruns
+        # its public __init__ and therefore can never retarget its weak slot.
+        if cls is ReferenceType and callback is None:
+            cached = _molt_weakref_find_nocallback(obj)
+            if isinstance(cached, ReferenceType):
+                return cached
+        return super().__call__(obj, callback, *args, **kwargs)
+
+
+class ReferenceType(metaclass=_ReferenceTypeMeta):
+    __slots__ = ("_hash",)
+
+    def _initialize(
+        self,
+        obj: object,
+        callback: Callable[["ReferenceType"], object] | None = None,
+    ) -> bool:
+        if callback is not None and not callable(callback):
+            raise TypeError("weakref callback must be callable")
+        created = _molt_weakref_register(self, obj, callback)  # type: ignore[misc]
+        if created is False:
+            return False
+        self._hash: int | None = None
+        return True
 
     def __init__(
         self,
         obj: object,
         callback: Callable[["ReferenceType"], object] | None = None,
-        *,
-        track: bool = True,
-        register: bool = True,
     ) -> None:
-        del track
-        if callback is not None and not callable(callback):
-            raise TypeError("weakref callback must be callable")
-        self._key = id(obj)
-        self._callback = callback
-        self._hash: int | None = None
-        self._registered = register
-        if register:
-            self._obj = None
-            _molt_weakref_register(self, obj, callback)  # type: ignore[misc]
-        else:
-            self._obj = obj
+        self._initialize(obj, callback)
 
     def __call__(self) -> object | None:
-        if self._registered:
-            return _molt_weakref_get(self)  # type: ignore[misc]
-        return self._obj
+        return _molt_weakref_get(self)  # type: ignore[misc]
 
     @property
     def __callback__(self) -> object | None:
-        if self._registered:
-            callback = _molt_weakref_callback(self)  # type: ignore[misc]
-            if callback is None or callable(callback):
-                return callback
-            raise RuntimeError("weakref callback intrinsic returned invalid value")
-        return self._callback
+        callback = _molt_weakref_callback(self)  # type: ignore[misc]
+        if callback is None or callable(callback):
+            return callback
+        raise RuntimeError("weakref callback intrinsic returned invalid value")
 
     def _peek_obj(self) -> object | None:
-        if self._registered:
-            return _molt_weakref_peek(self)  # type: ignore[misc]
-        return self._obj
+        return _molt_weakref_peek(self)  # type: ignore[misc]
 
     def __repr__(self) -> str:
         obj = self()
@@ -145,42 +146,23 @@ class ReferenceType:
             return self is other
         return self_obj == other_obj
 
-    def __del__(self) -> None:
-        if self._registered:
-            _molt_weakref_drop(self)  # type: ignore[misc]
 
+_molt_weakref_bind_reference_type(ReferenceType)
 
 class KeyedRef(ReferenceType):
-    __slots__ = ()
+    __slots__ = ("key",)
 
     def __init__(
         self,
         obj: object,
         callback: Callable[[ReferenceType], object] | None,
-        key_hash: int | None = None,
-        *,
-        track: bool = True,
-        register: bool = True,
+        key: object,
     ) -> None:
-        super().__init__(obj, callback, track=track, register=register)
-        if key_hash is None:
-            key_hash = hash(obj)
-        self._hash = key_hash
+        if self._initialize(obj, callback):
+            self.key = key
 
 
-def ref(
-    obj: object, callback: Callable[[ReferenceType], object] | None = None
-) -> ReferenceType:
-    if callback is None:
-        cached = _molt_weakref_find_nocallback(obj)
-        if isinstance(cached, ReferenceType):
-            return cached
-    result = ReferenceType(obj, callback)
-    # Drop local strong refs eagerly; some runtime paths keep frame locals alive
-    # longer than CPython, which can delay weakref invalidation/callbacks.
-    obj = None
-    callback = None
-    return result
+ref = ReferenceType
 
 
 def getweakrefcount(obj: object) -> int:
@@ -197,10 +179,6 @@ def getweakrefs(obj: object) -> list[ReferenceType]:
     if not all(isinstance(entry, ReferenceType) for entry in refs):
         raise RuntimeError("weakref refs intrinsic returned invalid value")
     return list(refs)
-
-
-def _gc_collect_hook() -> None:
-    _molt_weakref_collect()  # type: ignore[misc]
 
 
 class ProxyType:
@@ -424,15 +402,10 @@ class WeakMethod:
         self._callback = callback
         self._func = func
         self._self_ref = ref(self_obj, self._handle_dead)
-        self_obj = None
-        meth = None
 
     def _handle_dead(self, _ref: ReferenceType) -> None:
         if self._callback is not None:
-            try:
-                self._callback(self)
-            except Exception:
-                pass
+            self._callback(self)
 
     def __call__(self) -> object | None:
         obj = self._self_ref()
@@ -449,8 +422,7 @@ class WeakMethod:
 
 
 class finalize:
-    atexit = True
-    __slots__ = ("_ref", "_func", "_args", "_kwargs", "_alive", "atexit")
+    __slots__ = ("_ref", "_func", "_args", "_kwargs", "_alive", "_atexit")
 
     def __init__(
         self, obj: object, func: Callable[..., Any], /, *args: Any, **kwargs: Any
@@ -461,31 +433,42 @@ class finalize:
         self._func = func
         self._args = args
         self._kwargs = kwargs
-        self.atexit = True
+        self._atexit = True
         self._ref = ref(obj, self)
         _molt_weakref_finalize_track(self)
-        obj = None
 
     def __call__(self, _ref: ReferenceType | None = None) -> object | None:
+        state = self._take_state()
+        if state is None:
+            return None
+        _, func, args, kwargs = state
+        return func(*args, **kwargs)
+
+    def _take_state(
+        self,
+    ) -> tuple[ReferenceType, object, tuple[object, ...], dict[str, object]] | None:
         if not self._alive:
             return None
         _molt_weakref_finalize_untrack(self)
         self._alive = False
-        return self._func(*self._args, **self._kwargs)
+        state = (self._ref, self._func, self._args, self._kwargs)
+        self._ref = None  # type: ignore[assignment]
+        self._func = None  # type: ignore[assignment]
+        self._args = ()
+        self._kwargs = {}
+        return state
 
     def detach(
         self,
     ) -> tuple[object, object, tuple[object, ...], dict[str, object]] | None:
-        if not self._alive:
+        state = self._take_state()
+        if state is None:
             return None
-        obj = self._ref()
+        ref_obj, func, args, kwargs = state
+        obj = ref_obj()
         if obj is None:
-            _molt_weakref_finalize_untrack(self)
-            self._alive = False
             return None
-        _molt_weakref_finalize_untrack(self)
-        self._alive = False
-        return (obj, self._func, self._args, self._kwargs)
+        return (obj, func, args, kwargs)
 
     def peek(
         self,
@@ -501,57 +484,95 @@ class finalize:
     def alive(self) -> bool:
         return self._alive
 
+    @property
+    def atexit(self) -> bool:
+        return self._atexit
+
+    @atexit.setter
+    def atexit(self, value: object) -> None:
+        normalized = bool(value)
+        self._atexit = normalized
+
     def __repr__(self) -> str:
         state = "alive" if self._alive else "dead"
         return f"<finalize object at {hex(id(self))}; {state}>"
 
-    def __del__(self) -> None:
-        if self._alive:
-            _molt_weakref_finalize_untrack(self)
-
-
 class WeakKeyDictionary:
     def __init__(self, mapping: dict[object, Any] | None = None) -> None:
+        self._state = None
+
+        def remove(weak: ReferenceType, selfref: ReferenceType = ref(self)) -> None:
+            owner = selfref()
+            if owner is not None and owner._state is not None:
+                _molt_weakcontainer_dead(owner._state, weak)
+
+        self._remove = remove
         if mapping is not None:
             self.update(mapping)
 
+    def _ensure_state(self):
+        state = self._state
+        if state is None:
+            state = _molt_weakcontainer_new(_WEAK_KEY_DICT)
+            self._state = state
+        return state
+
     def __setitem__(self, key: object, value: Any) -> None:
         key_hash = hash(key)
-        key_ref = KeyedRef(key, None, key_hash)
-        _molt_weakkeydict_set(self, key, key_ref, key_hash, value)
-        key = None
+        state = self._ensure_state()
+        if _molt_weakcontainer_store_probe(state, key, value, key_hash):
+            return
+        key_ref = ReferenceType(key, self._remove)
+        key_ref._hash = key_hash
+        _molt_weakcontainer_store_commit(
+            state, key, value, key_ref, key_hash
+        )
 
     def __getitem__(self, key: object) -> Any:
         key_hash = hash(key)
-        return _molt_weakkeydict_get(self, key, key_hash)
+        if self._state is None:
+            raise KeyError(key)
+        return _molt_weakcontainer_get(self._state, key, key_hash)
 
     def __delitem__(self, key: object) -> None:
         key_hash = hash(key)
-        _molt_weakkeydict_del(self, key, key_hash)
+        if self._state is None:
+            raise KeyError(key)
+        _molt_weakcontainer_take(self._state, key, key_hash, True)
 
     def __contains__(self, key: object) -> bool:
         key_hash = hash(key)
-        return bool(_molt_weakkeydict_contains(self, key, key_hash))
+        return self._state is not None and bool(
+            _molt_weakcontainer_contains(self._state, key, key_hash)
+        )
 
     def __len__(self) -> int:
-        return int(_molt_weakkeydict_len(self))
+        if self._state is None:
+            return 0
+        return int(_molt_weakcontainer_len(self._state))
 
     def __iter__(self) -> Iterator[object]:
-        return iter([key for key, _ in self.items()])
+        return self.keys()
 
     def items(self) -> Iterator[tuple[object, Any]]:
-        entries = _molt_weakkeydict_items(self)
-        return iter(list(entries))
+        if self._state is None:
+            return iter(())
+        return _molt_weakcontainer_iter(self._state, _ITEMS)
 
     def keys(self) -> Iterator[object]:
-        return iter([key for key, _ in self.items()])
+        if self._state is None:
+            return iter(())
+        return _molt_weakcontainer_iter(self._state, _KEYS)
 
     def values(self) -> Iterator[Any]:
-        return iter([value for _, value in self.items()])
+        if self._state is None:
+            return iter(())
+        return _molt_weakcontainer_iter(self._state, _VALUES)
 
     def keyrefs(self) -> list[ReferenceType]:
-        refs = _molt_weakkeydict_keyrefs(self)
-        return list(refs)
+        if self._state is None:
+            return []
+        return list(_molt_weakcontainer_refs(self._state))
 
     def get(self, key: object, default: Any = None) -> Any:
         try:
@@ -561,16 +582,19 @@ class WeakKeyDictionary:
 
     def pop(self, key: object, default: Any = _MISSING) -> Any:
         try:
-            value = self[key]
+            key_hash = hash(key)
+            if self._state is None:
+                raise KeyError(key)
+            return _molt_weakcontainer_take(self._state, key, key_hash, True)
         except KeyError:
             if default is not _MISSING:
                 return default
             raise
-        del self[key]
-        return value
 
     def popitem(self) -> tuple[object, Any]:
-        return _molt_weakkeydict_popitem(self)
+        if self._state is None:
+            raise KeyError("popitem(): dictionary is empty")
+        return _molt_weakcontainer_pop(self._state)
 
     def setdefault(self, key: object, default: Any = None) -> Any:
         try:
@@ -595,64 +619,97 @@ class WeakKeyDictionary:
             self[key] = value
 
     def clear(self) -> None:
-        _molt_weakkeydict_clear(self)
+        if self._state is not None:
+            _molt_weakcontainer_clear(self._state)
 
     def __repr__(self) -> str:
         return f"<WeakKeyDictionary at {hex(id(self))}>"
 
     def copy(self) -> "WeakKeyDictionary":
         new_map = WeakKeyDictionary()
-        for key, value in list(self.items()):
+        for key, value in self.items():
             new_map[key] = value
         return new_map
 
 
 class WeakValueDictionary:
     def __init__(self, mapping: dict[object, Any] | None = None) -> None:
+        self._state = None
+
+        def remove(weak: ReferenceType, selfref: ReferenceType = ref(self)) -> None:
+            owner = selfref()
+            if owner is not None and owner._state is not None:
+                _molt_weakcontainer_dead(owner._state, weak)
+
+        self._remove = remove
         if mapping is not None:
             self.update(mapping)
 
+    def _ensure_state(self):
+        state = self._state
+        if state is None:
+            state = _molt_weakcontainer_new(_WEAK_VALUE_DICT)
+            self._state = state
+        return state
+
     def __setitem__(self, key: object, value: Any) -> None:
         key_hash = hash(key)
-        value_ref = ReferenceType(value, None)
-        _molt_weakvaluedict_set(self, key, key_hash, value_ref)
-        value = None
+        state = self._ensure_state()
+        if _molt_weakcontainer_store_probe(state, key, value, key_hash):
+            return
+        value_ref = KeyedRef(value, self._remove, key)
+        _molt_weakcontainer_store_commit(
+            state, key, value, value_ref, key_hash
+        )
 
     def __getitem__(self, key: object) -> Any:
         key_hash = hash(key)
-        return _molt_weakvaluedict_get(self, key, key_hash)
+        if self._state is None:
+            raise KeyError(key)
+        return _molt_weakcontainer_get(self._state, key, key_hash)
 
     def __delitem__(self, key: object) -> None:
         key_hash = hash(key)
-        _molt_weakvaluedict_del(self, key, key_hash)
+        if self._state is None:
+            raise KeyError(key)
+        _molt_weakcontainer_take(self._state, key, key_hash, True)
 
     def __contains__(self, key: object) -> bool:
         key_hash = hash(key)
-        return bool(_molt_weakvaluedict_contains(self, key, key_hash))
+        return self._state is not None and bool(
+            _molt_weakcontainer_contains(self._state, key, key_hash)
+        )
 
     def __len__(self) -> int:
-        return int(_molt_weakvaluedict_len(self))
+        if self._state is None:
+            return 0
+        return int(_molt_weakcontainer_len(self._state))
 
     def __iter__(self) -> Iterator[object]:
-        return iter([key for key, _ in self.items()])
+        return self.keys()
 
     def items(self) -> Iterator[tuple[object, Any]]:
-        entries = _molt_weakvaluedict_items(self)
-        return iter(list(entries))
+        if self._state is None:
+            return iter(())
+        return _molt_weakcontainer_iter(self._state, _ITEMS)
 
     def keys(self) -> Iterator[object]:
-        return iter([key for key, _ in self.items()])
+        if self._state is None:
+            return iter(())
+        return _molt_weakcontainer_iter(self._state, _KEYS)
 
     def values(self) -> Iterator[Any]:
-        return iter([val for _, val in self.items()])
+        if self._state is None:
+            return iter(())
+        return _molt_weakcontainer_iter(self._state, _VALUES)
 
     def valuerefs(self) -> list[ReferenceType]:
-        refs = _molt_weakvaluedict_valuerefs(self)
-        return list(refs)
+        if self._state is None:
+            return []
+        return list(_molt_weakcontainer_refs(self._state))
 
     def itervaluerefs(self) -> Iterator[ReferenceType]:
-        refs = _molt_weakvaluedict_valuerefs(self)
-        return iter(list(refs))
+        return iter(self.valuerefs())
 
     def get(self, key: object, default: Any = None) -> Any:
         try:
@@ -662,13 +719,14 @@ class WeakValueDictionary:
 
     def pop(self, key: object, default: Any = _MISSING) -> Any:
         try:
-            val = self[key]
+            key_hash = hash(key)
+            if self._state is None:
+                raise KeyError(key)
+            return _molt_weakcontainer_take(self._state, key, key_hash, True)
         except KeyError:
             if default is not _MISSING:
                 return default
             raise
-        del self[key]
-        return val
 
     def update(
         self,
@@ -693,44 +751,74 @@ class WeakValueDictionary:
             return default
 
     def popitem(self) -> tuple[object, Any]:
-        return _molt_weakvaluedict_popitem(self)
+        if self._state is None:
+            raise KeyError("popitem(): dictionary is empty")
+        return _molt_weakcontainer_pop(self._state)
 
     def clear(self) -> None:
-        _molt_weakvaluedict_clear(self)
+        if self._state is not None:
+            _molt_weakcontainer_clear(self._state)
 
     def __repr__(self) -> str:
         return f"<WeakValueDictionary at {hex(id(self))}>"
 
     def copy(self) -> "WeakValueDictionary":
         new_map = WeakValueDictionary()
-        for key, value in list(self.items()):
+        for key, value in self.items():
             new_map[key] = value
         return new_map
 
 
 class WeakSet:
     def __init__(self, data: Iterable[object] | None = None) -> None:
+        self._state = None
+
+        def remove(weak: ReferenceType, selfref: ReferenceType = ref(self)) -> None:
+            owner = selfref()
+            if owner is not None and owner._state is not None:
+                _molt_weakcontainer_dead(owner._state, weak)
+
+        self._remove = remove
         if data is not None:
             self.update(data)
 
+    def _ensure_state(self):
+        state = self._state
+        if state is None:
+            state = _molt_weakcontainer_new(_WEAK_SET)
+            self._state = state
+        return state
+
     def add(self, item: object) -> None:
         item_hash = hash(item)
-        item_ref = ReferenceType(item, None)
-        _molt_weakset_add(self, item, item_ref, item_hash)
+        state = self._ensure_state()
+        if _molt_weakcontainer_store_probe(state, item, item, item_hash):
+            return
+        item_ref = ReferenceType(item, self._remove)
+        item_ref._hash = item_hash
+        _molt_weakcontainer_store_commit(
+            state, item, item, item_ref, item_hash
+        )
 
     def discard(self, item: object) -> None:
         item_hash = hash(item)
-        _molt_weakset_discard(self, item, item_hash)
+        if self._state is not None:
+            _molt_weakcontainer_take(self._state, item, item_hash, False)
 
     def remove(self, item: object) -> None:
         item_hash = hash(item)
-        _molt_weakset_remove(self, item, item_hash)
+        if self._state is None:
+            raise KeyError(item)
+        _molt_weakcontainer_take(self._state, item, item_hash, True)
 
     def pop(self) -> object:
-        return _molt_weakset_pop(self)
+        if self._state is None:
+            raise KeyError("pop from empty WeakSet")
+        return _molt_weakcontainer_pop(self._state)
 
     def clear(self) -> None:
-        _molt_weakset_clear(self)
+        if self._state is not None:
+            _molt_weakcontainer_clear(self._state)
 
     def update(self, data: Iterable[object]) -> None:
         for item in data:
@@ -806,15 +894,20 @@ class WeakSet:
         return True
 
     def __len__(self) -> int:
-        return int(_molt_weakset_len(self))
+        if self._state is None:
+            return 0
+        return int(_molt_weakcontainer_len(self._state))
 
     def __iter__(self) -> Iterator[object]:
-        items = _molt_weakset_items(self)
-        return iter(list(items))
+        if self._state is None:
+            return iter(())
+        return _molt_weakcontainer_iter(self._state, _KEYS)
 
     def __contains__(self, item: object) -> bool:
         item_hash = hash(item)
-        return bool(_molt_weakset_contains(self, item, item_hash))
+        return self._state is not None and bool(
+            _molt_weakcontainer_contains(self._state, item, item_hash)
+        )
 
     def __repr__(self) -> str:
         items = list(self)

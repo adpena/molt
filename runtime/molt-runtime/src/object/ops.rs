@@ -1,4 +1,6 @@
 // Re-export iter impl functions for backward compatibility with crate::object::ops::* paths
+use crate::object::{ClassEdgeOwnership, object_replace_class_edge};
+
 pub(crate) use crate::object::ops_iter::{
     enumerate_new_impl, filter_new_impl, map_new_impl, reversed_new_impl, zip_new_impl,
 };
@@ -608,6 +610,20 @@ pub(crate) fn profile_dump_with_gil(_py: &PyToken<'_>) {
     let alloc_bytes_dict = ALLOC_BYTES_DICT.load(AtomicOrdering::Relaxed);
     let alloc_bytes_tuple = ALLOC_BYTES_TUPLE.load(AtomicOrdering::Relaxed);
     let alloc_bytes_list = ALLOC_BYTES_LIST.load(AtomicOrdering::Relaxed);
+    let alloc_bytes_exception = ALLOC_BYTES_EXCEPTION.load(AtomicOrdering::Relaxed);
+    let aux_class_inline = AUX_CLASS_INLINE_COUNT.load(AtomicOrdering::Relaxed);
+    let aux_state_inline = AUX_STATE_INLINE_COUNT.load(AtomicOrdering::Relaxed);
+    let aux_sidecar_alloc = AUX_SIDECAR_COUNT.load(AtomicOrdering::Relaxed);
+    let aux_sidecar_free = AUX_SIDECAR_FREE_COUNT.load(AtomicOrdering::Relaxed);
+    let aux_sidecar_alloc_failure = AUX_SIDECAR_ALLOC_FAILURE_COUNT.load(AtomicOrdering::Relaxed);
+    let aux_sidecar_alloc_bytes = AUX_SIDECAR_BYTES.load(AtomicOrdering::Relaxed);
+    let aux_sidecar_free_bytes = AUX_SIDECAR_FREE_BYTES.load(AtomicOrdering::Relaxed);
+    let gc_track = GC_TRACK_COUNT.load(AtomicOrdering::Relaxed);
+    let gc_untrack = GC_UNTRACK_COUNT.load(AtomicOrdering::Relaxed);
+    let gc_registry_lock_contention =
+        GC_REGISTRY_LOCK_CONTENTION_COUNT.load(AtomicOrdering::Relaxed);
+    let gc_registry_lock_wait_ns = GC_REGISTRY_LOCK_WAIT_NS.load(AtomicOrdering::Relaxed);
+    let gc_tracked_high_water = GC_TRACKED_HIGH_WATER.load(AtomicOrdering::Relaxed);
     // RC drop-insertion substrate (design 20): the leak gauge.
     let deallocs = DEALLOC_COUNT.load(AtomicOrdering::Relaxed);
     let dealloc_bytes_total = DEALLOC_BYTES_TOTAL.load(AtomicOrdering::Relaxed);
@@ -616,59 +632,12 @@ pub(crate) fn profile_dump_with_gil(_py: &PyToken<'_>) {
     let dealloc_strings = DEALLOC_STRING_COUNT.load(AtomicOrdering::Relaxed);
     let dealloc_dicts = DEALLOC_DICT_COUNT.load(AtomicOrdering::Relaxed);
     let dealloc_tuples = DEALLOC_TUPLE_COUNT.load(AtomicOrdering::Relaxed);
+    let dealloc_exceptions = DEALLOC_EXCEPTION_COUNT.load(AtomicOrdering::Relaxed);
+    let dealloc_bytes_exception = DEALLOC_BYTES_EXCEPTION.load(AtomicOrdering::Relaxed);
     // Take a final RSS sample before dumping.
     sample_peak_rss();
     let peak_rss = PEAK_RSS_BYTES.load(AtomicOrdering::Relaxed);
     let current_rss = current_rss_bytes();
-    crate::diagnostics::emit_line(&format!(
-        "molt_profile call_dispatch={} string_count_cache_hit={} string_count_cache_miss={} struct_field_store={} attr_lookup={} handle_resolve={} layout_guard={} layout_guard_fail={} alloc_count={} alloc_object={} alloc_exception={} alloc_dict={} alloc_tuple={} alloc_string={} alloc_callargs={} alloc_bytes_callargs={} tb_builds={} tb_frames={} tb_suppressed={} async_polls={} async_pending={} async_wakeups={} async_sleep_register={} call_bind_ic_hit={} call_bind_ic_miss={} call_indirect_noncallable_deopt={} invoke_ffi_bridge_capability_denied={} guard_tag_type_mismatch_deopt={} guard_dict_shape_layout_mismatch_deopt={} attr_site_name_hit={} attr_site_name_miss={} split_ws_ascii={} split_ws_unicode={} dict_str_int_prehash_hit={} dict_str_int_prehash_miss={} dict_str_int_prehash_deopt={} taq_ingest_calls={} taq_ingest_skip_marker={} ascii_i64_parse_fail={} alloc_bytes_total={} alloc_bytes_string={} alloc_bytes_dict={} alloc_bytes_tuple={} alloc_bytes_list={} peak_rss_bytes={} current_rss_bytes={}",
-        call_dispatch,
-        cache_hit,
-        cache_miss,
-        struct_stores,
-        attr_lookups,
-        handle_resolves,
-        layout_guard,
-        layout_guard_fail,
-        allocs,
-        alloc_objects,
-        alloc_exceptions,
-        alloc_dicts,
-        alloc_tuples,
-        alloc_strings,
-        alloc_callargs,
-        alloc_bytes_callargs,
-        tb_builds,
-        tb_frames,
-        tb_suppressed,
-        async_polls,
-        async_pending,
-        async_wakeups,
-        async_sleep_reg,
-        call_bind_ic_hit,
-        call_bind_ic_miss,
-        call_indirect_noncallable_deopt,
-        invoke_ffi_bridge_capability_denied,
-        guard_tag_type_mismatch_deopt,
-        guard_dict_shape_layout_mismatch_deopt,
-        attr_site_name_hit,
-        attr_site_name_miss,
-        split_ws_ascii,
-        split_ws_unicode,
-        dict_str_int_prehash_hit,
-        dict_str_int_prehash_miss,
-        dict_str_int_prehash_deopt,
-        taq_ingest_calls,
-        taq_ingest_skip_marker,
-        ascii_i64_parse_fail,
-        alloc_bytes_total,
-        alloc_bytes_string,
-        alloc_bytes_dict,
-        alloc_bytes_tuple,
-        alloc_bytes_list,
-        peak_rss,
-        current_rss,
-    ));
     // RC drop-insertion substrate (design 20): the leak report. `live` is the
     // count of objects whose final dec-ref never fired by process exit — the
     // immortal bootstrap roots (module dict, builtin types) legitimately survive
@@ -676,19 +645,11 @@ pub(crate) fn profile_dump_with_gil(_py: &PyToken<'_>) {
     // EXPECTED_LIVE_OBJECTS` and a leaking one reports far more.
     let live_objects = allocs.saturating_sub(deallocs);
     let live_bytes = alloc_bytes_total.saturating_sub(dealloc_bytes_total);
-    crate::diagnostics::emit_line(&format!(
-        "molt_profile_mem dealloc_count={} dealloc_bytes_total={} dealloc_object={} dealloc_bigint={} dealloc_string={} dealloc_dict={} dealloc_tuple={} live_objects={} live_bytes={} expected_live={}",
-        deallocs,
-        dealloc_bytes_total,
-        dealloc_objects,
-        dealloc_bigints,
-        dealloc_strings,
-        dealloc_dicts,
-        dealloc_tuples,
-        live_objects,
-        live_bytes,
-        crate::EXPECTED_LIVE_OBJECTS,
-    ));
+    let live_exceptions = alloc_exceptions.saturating_sub(dealloc_exceptions);
+    let live_bytes_exception = alloc_bytes_exception.saturating_sub(dealloc_bytes_exception);
+    let aux_sidecar_live = aux_sidecar_alloc.saturating_sub(aux_sidecar_free);
+    let aux_sidecar_live_bytes = aux_sidecar_alloc_bytes.saturating_sub(aux_sidecar_free_bytes);
+    let gc_tracked_live = GC_TRACKED_LIVE.load(AtomicOrdering::Relaxed);
     if live_objects > crate::EXPECTED_LIVE_OBJECTS {
         crate::diagnostics::emit_line(&format!(
             "[MOLT_PROFILE] LEAK WARNING: {} objects not freed at process exit (expected_live={})",
@@ -696,10 +657,17 @@ pub(crate) fn profile_dump_with_gil(_py: &PyToken<'_>) {
             crate::EXPECTED_LIVE_OBJECTS,
         ));
     }
-    let payload = serde_json::json!({
-        "schema_version": 1,
-        "kind": "runtime_feedback",
-        "profile": {
+    // A flat insertion macro avoids serde_json::json!'s token-recursion cost for
+    // this intentionally wide counter schema without raising a crate-global
+    // recursion limit.
+    macro_rules! json_counter_object {
+        ($($name:literal : $value:expr),* $(,)?) => {{
+            let mut object = serde_json::Map::new();
+            $(object.insert($name.to_owned(), serde_json::Value::from($value));)*
+            serde_json::Value::Object(object)
+        }};
+    }
+    let profile_payload = json_counter_object! {
             "call_dispatch": call_dispatch,
             "string_count_cache_hit": cache_hit,
             "string_count_cache_miss": cache_miss,
@@ -728,12 +696,47 @@ pub(crate) fn profile_dump_with_gil(_py: &PyToken<'_>) {
             "alloc_bytes_dict": alloc_bytes_dict,
             "alloc_bytes_tuple": alloc_bytes_tuple,
             "alloc_bytes_list": alloc_bytes_list,
-        },
-        "memory": {
+            "alloc_bytes_exception": alloc_bytes_exception,
+            "dealloc_count": deallocs,
+            "dealloc_bytes_total": dealloc_bytes_total,
+            "dealloc_object": dealloc_objects,
+            "dealloc_bigint": dealloc_bigints,
+            "dealloc_string": dealloc_strings,
+            "dealloc_dict": dealloc_dicts,
+            "dealloc_tuple": dealloc_tuples,
+            "dealloc_exception": dealloc_exceptions,
+            "dealloc_bytes_exception": dealloc_bytes_exception,
+            "live_objects": live_objects,
+            "live_bytes": live_bytes,
+            "live_exception": live_exceptions,
+            "live_bytes_exception": live_bytes_exception,
+            "expected_live": crate::EXPECTED_LIVE_OBJECTS,
+    };
+    let aux_payload = json_counter_object! {
+            "aux_class_inline_count": aux_class_inline,
+            "aux_state_inline_count": aux_state_inline,
+            "aux_sidecar_alloc_count": aux_sidecar_alloc,
+            "aux_sidecar_free_count": aux_sidecar_free,
+            "aux_sidecar_live_count": aux_sidecar_live,
+            "aux_sidecar_alloc_failure_count": aux_sidecar_alloc_failure,
+            "aux_sidecar_alloc_bytes": aux_sidecar_alloc_bytes,
+            "aux_sidecar_free_bytes": aux_sidecar_free_bytes,
+            "aux_sidecar_live_bytes": aux_sidecar_live_bytes,
+    };
+    let gc_payload = json_counter_object! {
+            "gc_track_count": gc_track,
+            "gc_untrack_count": gc_untrack,
+            "gc_tracked_live": gc_tracked_live,
+            "gc_tracked_high_water": gc_tracked_high_water,
+            "gc_registry_lock_contention_count": gc_registry_lock_contention,
+            "gc_registry_lock_wait_ns": gc_registry_lock_wait_ns,
+            "gc_snapshot_alloc_failure_count": GC_SNAPSHOT_ALLOC_FAILURE_COUNT.load(AtomicOrdering::Relaxed),
+    };
+    let memory_payload = json_counter_object! {
             "peak_rss_bytes": peak_rss,
             "current_rss_bytes": current_rss,
-        },
-        "hot_paths": {
+    };
+    let hot_paths_payload = json_counter_object! {
             "call_bind_ic_hit": call_bind_ic_hit,
             "call_bind_ic_miss": call_bind_ic_miss,
             "attr_site_name_hit": attr_site_name_hit,
@@ -746,8 +749,8 @@ pub(crate) fn profile_dump_with_gil(_py: &PyToken<'_>) {
             "taq_ingest_calls": taq_ingest_calls,
             "taq_ingest_skip_marker": taq_ingest_skip_marker,
             "ascii_i64_parse_fail": ascii_i64_parse_fail,
-        },
-        "deopt_reasons": {
+    };
+    let deopt_reasons_payload = json_counter_object! {
             "call_indirect_noncallable": call_indirect_noncallable_deopt,
             "invoke_ffi_bridge_capability_denied": invoke_ffi_bridge_capability_denied,
             "guard_tag_type_mismatch": guard_tag_type_mismatch_deopt,
@@ -758,11 +761,18 @@ pub(crate) fn profile_dump_with_gil(_py: &PyToken<'_>) {
             "guard_dict_shape_layout_fail_non_type_class": guard_dict_shape_layout_fail_non_type_class,
             "guard_dict_shape_layout_fail_expected_version_invalid": guard_dict_shape_layout_fail_expected_version_invalid,
             "guard_dict_shape_layout_fail_version_mismatch": guard_dict_shape_layout_fail_version_mismatch,
-        },
+    };
+    let payload = serde_json::json!({
+        "schema_version": 2,
+        "kind": "runtime_feedback",
+        "profile": profile_payload,
+        "aux": aux_payload,
+        "gc": gc_payload,
+        "memory": memory_payload,
+        "hot_paths": hot_paths_payload,
+        "deopt_reasons": deopt_reasons_payload,
     });
-    if env_flag_enabled("MOLT_PROFILE_JSON") {
-        crate::diagnostics::emit_line(&format!("molt_profile_json {}", payload));
-    }
+    crate::diagnostics::emit_line(&format!("molt_profile_json {}", payload));
     maybe_emit_runtime_feedback_file(&payload);
 }
 
@@ -1929,19 +1939,17 @@ pub(crate) fn class_break_cycles(_py: &PyToken<'_>, bits: u64) {
         let none_bits = MoltObject::none().bits();
         let bases_bits = class_bases_bits(ptr);
         let mro_bits = class_mro_bits(ptr);
-        let metaclass_bits = object_class_bits(ptr);
         if !obj_from_bits(bases_bits).is_none() {
             dec_ref_bits(_py, bases_bits);
         }
         if !obj_from_bits(mro_bits).is_none() {
             dec_ref_bits(_py, mro_bits);
         }
-        if !obj_from_bits(metaclass_bits).is_none() {
-            dec_ref_bits(_py, metaclass_bits);
-        }
         class_set_bases_bits(ptr, none_bits);
         class_set_mro_bits(ptr, none_bits);
-        object_set_class_bits(_py, ptr, none_bits);
+        if !object_replace_class_edge(_py, ptr, 0, ClassEdgeOwnership::Owned) {
+            return;
+        }
         class_set_annotations_bits(_py, ptr, 0u64);
         class_set_annotate_bits(_py, ptr, 0u64);
         let dict_bits = class_dict_bits(ptr);

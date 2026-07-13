@@ -56,6 +56,9 @@ def test_flatten_counters_and_summary_payload_are_deterministic() -> None:
         "profile": {"call_dispatch": 7, "alloc_count": 10},
         "hot_paths": {"call_bind_ic_hit": 30, "call_bind_ic_miss": 5},
         "deopt_reasons": {"invoke_ffi_bridge_capability_denied": 2},
+        "aux": {"aux_sidecar_live_count": 3},
+        "gc": {"gc_tracked_live": 4},
+        "memory": {"peak_rss_bytes": 5},
     }
     profile_b = {
         "profile": {"call_dispatch": 9, "alloc_count": 20, "alloc_callargs": 8},
@@ -66,6 +69,9 @@ def test_flatten_counters_and_summary_payload_are_deterministic() -> None:
     assert flat["call_dispatch"] == 7
     assert flat["call_bind_ic_hit"] == 30
     assert flat["invoke_ffi_bridge_capability_denied"] == 2
+    assert flat["aux_sidecar_live_count"] == 3
+    assert flat["gc_tracked_live"] == 4
+    assert flat["peak_rss_bytes"] == 5
 
     payload = build_perf_summary_payload({"bench_a": profile_a, "bench_b": profile_b})
     assert payload["profile_count"] == 2

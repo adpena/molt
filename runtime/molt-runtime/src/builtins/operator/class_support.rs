@@ -3,10 +3,10 @@ use std::sync::atomic::AtomicU64;
 use molt_obj_model::MoltObject;
 
 use crate::{
-    PyToken, TYPE_ID_DICT, alloc_class_obj, alloc_dict_with_pairs, alloc_string, alloc_tuple,
-    attr_name_bits_from_bytes, builtin_classes, class_dict_bits, dec_ref_bits, dict_set_in_place,
-    inc_ref_bits, init_atomic_bits, intern_static_name, molt_class_set_base, obj_from_bits,
-    object_class_bits, object_set_class_bits, object_type_id,
+    ClassEdgeOwnership, PyToken, TYPE_ID_DICT, alloc_class_obj, alloc_dict_with_pairs,
+    alloc_string, alloc_tuple, attr_name_bits_from_bytes, builtin_classes, class_dict_bits,
+    dec_ref_bits, dict_set_in_place, init_atomic_bits, intern_static_name, molt_class_set_base,
+    obj_from_bits, object_class_bits, object_type_id,
 };
 
 fn operator_class(
@@ -32,8 +32,15 @@ fn operator_class(
         let builtins = builtin_classes(_py);
         unsafe {
             if let Some(ptr) = obj_from_bits(class_bits).as_ptr() {
-                object_set_class_bits(_py, ptr, builtins.type_obj);
-                inc_ref_bits(_py, builtins.type_obj);
+                if !crate::object::object_init_class_edge_unpublished(
+                    _py,
+                    ptr,
+                    builtins.type_obj,
+                    ClassEdgeOwnership::Owned,
+                ) {
+                    dec_ref_bits(_py, class_bits);
+                    return MoltObject::none().bits();
+                }
             }
         }
         let _ = molt_class_set_base(class_bits, builtins.object);
@@ -72,11 +79,15 @@ fn builtin_func_bits(_py: &PyToken<'_>, slot: &AtomicU64, fn_ptr: u64, arity: u6
                 let builtin_bits = builtin_classes(_py).builtin_function_or_method;
                 let old_bits = object_class_bits(ptr);
                 if old_bits != builtin_bits {
-                    if old_bits != 0 {
-                        dec_ref_bits(_py, old_bits);
+                    if !crate::object::object_init_class_edge_unpublished(
+                        _py,
+                        ptr,
+                        builtin_bits,
+                        ClassEdgeOwnership::Owned,
+                    ) {
+                        dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                        return MoltObject::none().bits();
                     }
-                    object_set_class_bits(_py, ptr, builtin_bits);
-                    inc_ref_bits(_py, builtin_bits);
                 }
             }
             MoltObject::from_ptr(ptr).bits()

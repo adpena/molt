@@ -6,10 +6,10 @@
  *
  *   cc -I include myext.c          (uses include/Python.h -> include/molt/Python.h)
  *
- * This header exists ONLY for extensions that link against the standalone
- * libmolt_cpython_abi shared library. It uses extern declarations and a
- * traditional CPython struct layout (ob_refcnt, ob_type) that is NOT
- * compatible with the main include/molt/Python.h header.
+ * This header provides the linked declaration surface. Object and numeric
+ * scalar layout is shared with include/molt/Python.h through the single
+ * include/molt/_numeric_scalar_abi.h authority; the headers differ only in
+ * how non-scalar operations are transported.
  *
  * If you are unsure which to use, use the top-level one:
  *   cc -O2 -shared -fPIC -I include myext.c -o _myext.so
@@ -156,22 +156,12 @@ typedef struct {
 
 /* ── Forward declarations ─────────────────────────────────────────────────── */
 
-typedef struct _object      PyObject;
-typedef struct _typeobject  PyTypeObject;
-typedef struct _longobject  PyLongObject;
+#include "../../../include/molt/_numeric_scalar_abi.h"
+
 typedef struct PyCodeObject PyCodeObject;
 typedef struct PyFrameObject PyFrameObject;
 
 /* ── Ob_refcnt / Ob_type helpers ──────────────────────────────────────────── */
-
-/* Inline refcount — matches CPython 3.12 non-Py_GIL_DISABLED layout. */
-#define PyObject_HEAD       \
-    Py_ssize_t ob_refcnt;   \
-    PyTypeObject *ob_type;
-
-#define PyObject_VAR_HEAD   \
-    PyObject_HEAD           \
-    Py_ssize_t ob_size;
 
 /* Static objects are immortal (CPython inits them to _Py_IMMORTAL_REFCNT under
  * Py_BUILD_CORE). Route through the one authority so an extension's statically
@@ -181,24 +171,6 @@ typedef struct PyFrameObject PyFrameObject;
 #define PyVarObject_HEAD_INIT(type, size) PyObject_HEAD_INIT(type) (size),
 
 /* ── PyObject ─────────────────────────────────────────────────────────────── */
-
-struct _object {
-    PyObject_HEAD
-};
-
-typedef struct {
-    PyObject_VAR_HEAD
-} PyVarObject;
-
-typedef struct {
-    uintptr_t lv_tag;
-    digit ob_digit[1];
-} _PyLongValue;
-
-struct _longobject {
-    PyObject_HEAD
-    _PyLongValue long_value;
-};
 
 struct PyCodeObject {
     PyObject_HEAD
@@ -406,7 +378,7 @@ typedef struct {
 
 typedef struct {
     PyObject_VAR_HEAD
-    PyObject **ob_item;
+    PyObject *ob_item[1];
 } PyTupleObject;
 
 typedef struct {
@@ -428,11 +400,6 @@ typedef struct {
     char *ob_start;
     Py_ssize_t ob_exports;
 } PyByteArrayObject;
-
-typedef struct {
-    PyObject_HEAD
-    Py_complex cval;
-} PyComplexObject;
 
 typedef struct {
     PyObject_HEAD
@@ -851,8 +818,8 @@ typedef struct PyGetSetDef {
 /* ── Singleton singletons ─────────────────────────────────────────────────── */
 
 extern PyObject Py_None;
-extern PyObject Py_True;
-extern PyObject Py_False;
+extern PyLongObject _Py_TrueStruct;
+extern PyLongObject _Py_FalseStruct;
 extern PyObject Py_NotImplementedSentinel;
 extern PyObject Py_EllipsisObject;
 
@@ -885,6 +852,7 @@ extern PyTypeObject PyMemberDescr_Type;
 extern PyTypeObject PyGetSetDescr_Type;
 extern PyTypeObject PyCapsule_Type;
 extern PyTypeObject PySlice_Type;
+extern PyTypeObject PyTraceBack_Type;
 
 static inline PyTypeObject *_molt_builtin_type_object_borrowed(const char *name) {
     if (name == NULL) return &PyBaseObject_Type;
@@ -918,8 +886,8 @@ static inline PyTypeObject *_molt_builtin_type_object_borrowed(const char *name)
 }
 
 #define Py_None  (&Py_None)
-#define Py_True  (&Py_True)
-#define Py_False (&Py_False)
+#define Py_True  ((PyObject *)&_Py_TrueStruct)
+#define Py_False ((PyObject *)&_Py_FalseStruct)
 #define Py_NotImplemented (&Py_NotImplementedSentinel)
 #define Py_Ellipsis (&Py_EllipsisObject)
 
@@ -927,6 +895,7 @@ static inline PyTypeObject *_molt_builtin_type_object_borrowed(const char *name)
 
 extern void Py_INCREF(PyObject *op);
 extern void Py_DECREF(PyObject *op);
+extern void _Py_Dealloc(PyObject *op);
 extern PyObject *Py_NewRef(PyObject *op);
 extern PyObject *Py_XNewRef(PyObject *op);
 
@@ -1163,16 +1132,25 @@ extern int       _PyLong_UnsignedLong_Converter(PyObject *op, void *out);
 extern int       _PyLong_UnsignedLongLong_Converter(PyObject *op, void *out);
 extern PyObject *PyLong_GetInfo          (void);
 
-#define PyLong_CheckExact(op) Py_IS_TYPE((PyObject *)(op), &PyLong_Type)
+extern int PyLong_CheckExact(PyObject *op);
 
 /* Float */
 extern PyObject *PyFloat_FromDouble (double v);
 extern PyObject *PyFloat_FromString (PyObject *v);
 extern double    PyFloat_AsDouble   (PyObject *op);
 extern int       PyFloat_Check      (PyObject *op);
+extern double    PyFloat_GetMax     (void);
+extern double    PyFloat_GetMin     (void);
+extern PyObject *PyFloat_GetInfo    (void);
+extern int       PyFloat_Pack2      (double x, char *p, int le);
+extern int       PyFloat_Pack4      (double x, char *p, int le);
+extern int       PyFloat_Pack8      (double x, char *p, int le);
+extern double    PyFloat_Unpack2    (const char *p, int le);
+extern double    PyFloat_Unpack4    (const char *p, int le);
+extern double    PyFloat_Unpack8    (const char *p, int le);
 extern Py_hash_t _Py_HashDouble     (PyObject *inst, double v);
 #define PyFloat_AS_DOUBLE(op) PyFloat_AsDouble((PyObject *)(op))
-#define PyFloat_CheckExact(op) Py_IS_TYPE((PyObject *)(op), &PyFloat_Type)
+extern int PyFloat_CheckExact(PyObject *op);
 
 /* Complex */
 extern PyObject   *PyComplex_FromDoubles(double real, double imag);
@@ -1181,7 +1159,14 @@ extern Py_complex  PyComplex_AsCComplex(PyObject *op);
 extern double      PyComplex_RealAsDouble(PyObject *op);
 extern double      PyComplex_ImagAsDouble(PyObject *op);
 extern int       PyComplex_Check    (PyObject *op);
-#define PyComplex_CheckExact(op) Py_IS_TYPE((PyObject *)(op), &PyComplex_Type)
+extern Py_complex _Py_c_sum         (Py_complex a, Py_complex b);
+extern Py_complex _Py_c_diff        (Py_complex a, Py_complex b);
+extern Py_complex _Py_c_neg         (Py_complex a);
+extern Py_complex _Py_c_prod        (Py_complex a, Py_complex b);
+extern Py_complex _Py_c_quot        (Py_complex a, Py_complex b);
+extern Py_complex _Py_c_pow         (Py_complex a, Py_complex b);
+extern double     _Py_c_abs         (Py_complex a);
+extern int PyComplex_CheckExact(PyObject *op);
 
 /* Bool */
 extern PyObject *PyBool_FromLong (long v);
@@ -1227,7 +1212,7 @@ extern void         PyUnicode_InternInPlace       (PyObject **p);
 extern PyObject    *PyUnicode_InternFromString    (const char *s);
 
 #define PyUnicode_GET_LENGTH(op) PyUnicode_GetLength(op)
-#define PyUnicode_CheckExact(op) Py_IS_TYPE((PyObject *)(op), &PyUnicode_Type)
+extern int PyUnicode_CheckExact(PyObject *op);
 #define PyUnicode_1BYTE_KIND 1
 #define PyUnicode_2BYTE_KIND 2
 #define PyUnicode_4BYTE_KIND 4
@@ -1289,7 +1274,7 @@ extern char     *PyBytes_AsString          (PyObject *op);
 extern char     *PyBytes_AS_STRING         (PyObject *op);
 
 #define PyBytes_GET_SIZE(op) PyBytes_Size(op)
-#define PyBytes_CheckExact(op) Py_IS_TYPE((PyObject *)(op), &PyBytes_Type)
+extern int PyBytes_CheckExact(PyObject *op);
 
 /* Bytearray */
 extern PyObject *PyByteArray_FromStringAndSize(const char *s, Py_ssize_t len);
@@ -1299,7 +1284,7 @@ extern Py_ssize_t PyByteArray_Size(PyObject *op);
 
 #define PyByteArray_AS_STRING(op) PyByteArray_AsString((PyObject *)(op))
 #define PyByteArray_GET_SIZE(op) PyByteArray_Size((PyObject *)(op))
-#define PyByteArray_CheckExact(op) PyByteArray_Check((PyObject *)(op))
+extern int PyByteArray_CheckExact(PyObject *op);
 
 /* Memoryview / buffer */
 extern PyObject *PyMemoryView_FromMemory(char *mem, Py_ssize_t size, int flags);
@@ -1364,7 +1349,7 @@ extern int         PyList_SetSlice(PyObject *op, Py_ssize_t low, Py_ssize_t high
 #define PyList_GET_ITEM(op, i)  PyList_GetItem(op, i)
 #define PyList_SET_ITEM(op, i, v) PyList_SetItem(op, i, v)
 #define PyList_GET_SIZE(op)     PyList_Size(op)
-#define PyList_CheckExact(op)   PyList_Check(op)
+extern int PyList_CheckExact(PyObject *op);
 
 /* Tuple */
 extern PyObject   *PyTuple_New     (Py_ssize_t size);
@@ -1379,8 +1364,8 @@ extern int         PyTuple_Check   (PyObject *op);
 
 #define PyTuple_GET_ITEM(op, i) (((PyTupleObject *)(op))->ob_item[(i)])
 #define PyTuple_GET_SIZE(op)    (((PyTupleObject *)(op))->ob_size)
-#define PyTuple_SET_ITEM(op, i, v) (PyTuple_GET_ITEM((op), (i)) = (v))
-#define PyTuple_CheckExact(op)  PyTuple_Check(op)
+#define PyTuple_SET_ITEM(op, i, v) ((void)PyTuple_SetItem((PyObject *)(op), (i), (PyObject *)(v)))
+extern int PyTuple_CheckExact(PyObject *op);
 
 /* Set */
 extern int         PySet_Check    (PyObject *op);
@@ -1396,8 +1381,8 @@ extern int         PySet_Clear    (PyObject *anyset);
 
 #define PySet_GET_SIZE(op) PySet_Size((PyObject *)(op))
 #define PyAnySet_Check(op) (PySet_Check((PyObject *)(op)) || PyFrozenSet_Check((PyObject *)(op)))
-#define PySet_CheckExact(op) PySet_Check((PyObject *)(op))
-#define PyFrozenSet_CheckExact(op) PyFrozenSet_Check((PyObject *)(op))
+extern int PySet_CheckExact(PyObject *op);
+extern int PyFrozenSet_CheckExact(PyObject *op);
 
 /* Dict */
 extern PyObject   *PyDict_New           (void);
@@ -1423,7 +1408,7 @@ extern Py_ssize_t  PyDict_Size          (PyObject *op);
 extern int         PyDict_Next          (PyObject *op, Py_ssize_t *pos, PyObject **key, PyObject **value);
 extern int         PyDict_Check         (PyObject *op);
 
-#define PyDict_CheckExact(op) PyDict_Check((PyObject *)(op))
+extern int PyDict_CheckExact(PyObject *op);
 extern int         PyDict_Contains      (PyObject *op, PyObject *key);
 extern int         PyDict_ContainsString(PyObject *op, const char *key);
 extern PyObject   *PyDict_Copy          (PyObject *op);
@@ -1443,6 +1428,7 @@ extern PyObject *PyModuleDef_Init      (PyModuleDef *def);
 extern PyObject *PyModule_Create2      (PyModuleDef *def, int module_api_version);
 extern PyObject *PyModule_NewObject    (PyObject *name);
 extern int       PyModule_Check        (PyObject *module);
+extern int PyModule_CheckExact(PyObject *module);
 extern const char *PyModule_GetName    (PyObject *module);
 extern void     *PyModule_GetState     (PyObject *module);
 extern int       PyState_AddModule     (PyObject *module, PyModuleDef *def);
@@ -1469,8 +1455,12 @@ extern void      PyErr_Fetch      (PyObject **type, PyObject **value, PyObject *
 extern void      PyErr_Restore    (PyObject *type, PyObject *value, PyObject *traceback);
 extern void      PyErr_NormalizeException(PyObject **type, PyObject **value, PyObject **traceback);
 extern int       PyException_SetTraceback(PyObject *exc, PyObject *tb);
+extern PyObject *PyException_GetCause(PyObject *exc);
 extern void      PyException_SetContext(PyObject *exc, PyObject *context);
 extern void      PyException_SetCause(PyObject *exc, PyObject *cause);
+extern PyObject *PyException_GetContext(PyObject *exc);
+extern PyObject *PyException_GetArgs(PyObject *exc);
+extern void      PyException_SetArgs(PyObject *exc, PyObject *args);
 extern PyObject *PyErr_NoMemory  (void);
 extern int       PyErr_WarnEx    (PyObject *category, const char *message, Py_ssize_t stack_level);
 extern int       PyErr_WarnFormat(PyObject *category, Py_ssize_t stack_level, const char *format, ...);
@@ -1662,7 +1652,6 @@ extern PyObject PyExc_ModuleNotFoundError;
 extern PyObject PyExc_StopIteration;
 extern PyObject PyExc_NotImplementedError;
 extern PyObject PyExc_OSError;
-extern PyObject PyExc_IOError;
 extern PyObject PyExc_FileNotFoundError;
 extern PyObject PyExc_PermissionError;
 extern PyObject PyExc_FileExistsError;
@@ -1711,7 +1700,7 @@ extern PyObject PyExc_UnicodeEncodeError;
 #define PyExc_StopIteration        (&PyExc_StopIteration)
 #define PyExc_NotImplementedError  (&PyExc_NotImplementedError)
 #define PyExc_OSError              (&PyExc_OSError)
-#define PyExc_IOError              (&PyExc_IOError)
+#define PyExc_IOError              PyExc_OSError
 #define PyExc_FileNotFoundError    (&PyExc_FileNotFoundError)
 #define PyExc_PermissionError      (&PyExc_PermissionError)
 #define PyExc_FileExistsError      (&PyExc_FileExistsError)
@@ -1744,7 +1733,19 @@ extern PyObject PyExc_UnicodeEncodeError;
 
 /* ── Convenience macros ───────────────────────────────────────────────────── */
 
-#define Py_TYPE(ob)     (((PyObject *)(ob))->ob_type)
+extern PyTypeObject *molt_capi_semantic_type(PyObject *obj);
+extern int molt_capi_set_semantic_type(PyObject *obj, PyTypeObject *type_obj);
+extern PyTypeObject MoltManaged_Type;
+static inline PyTypeObject *_molt_py_typeof(PyObject *obj) {
+    if (obj == NULL) {
+        return NULL;
+    }
+    if (obj->ob_type != &MoltManaged_Type) {
+        return obj->ob_type;
+    }
+    return molt_capi_semantic_type(obj);
+}
+#define Py_TYPE(ob)     _molt_py_typeof((PyObject *)(ob))
 #define Py_REFCNT(ob)   (((PyObject *)(ob))->ob_refcnt)
 #define Py_SIZE(ob)     (((PyVarObject *)(ob))->ob_size)
 /* No-op on immortals (CPython 3.12+): Py_SET_REFCNT must not mortalize a shared
@@ -1756,7 +1757,7 @@ extern PyObject PyExc_UnicodeEncodeError;
             _molt_setref_o->ob_refcnt = (refcnt);                   \
         }                                                           \
     } while (0)
-#define Py_SET_TYPE(ob, type) (Py_TYPE(ob) = (type))
+#define Py_SET_TYPE(ob, type) ((void)molt_capi_set_semantic_type((PyObject *)(ob), (PyTypeObject *)(type)))
 #define Py_SET_SIZE(ob, size) (Py_SIZE(ob) = (size))
 #define PyExceptionInstance_Class(x) ((PyObject *)Py_TYPE(x))
 
@@ -1822,7 +1823,10 @@ extern PyObject *PyMapping_Keys(PyObject *obj);
 extern PyObject *PyMapping_Values(PyObject *obj);
 extern PyObject *PyMapping_Items(PyObject *obj);
 
-#define PyNumber_Check(op)  (PyLong_Check(op) || PyFloat_Check(op) || PyBool_Check(op))
+/* The runtime owns numeric protocol classification.  A header-local union of
+ * scalar predicates silently excluded complex values and every foreign type
+ * that supplies number slots. */
+extern int PyNumber_Check(PyObject *op);
 #define PyType_FastSubclass(type, flag) ((((PyTypeObject *)(type))->tp_flags & (flag)) != 0)
 #define PyExceptionClass_Check(x) (PyType_Check((PyObject *)(x)) && PyType_FastSubclass((PyTypeObject *)(x), Py_TPFLAGS_BASE_EXC_SUBCLASS))
 
@@ -1887,13 +1891,8 @@ extern PyObject *PyWeakref_GetObject(PyObject *ref);
     PyType_FastSubclass(Py_TYPE(x), Py_TPFLAGS_BASE_EXC_SUBCLASS)
 #endif
 
-/* A traceback is identified by its type name: Molt exports no PyTraceBack_Type
- * symbol, so the CPython `Py_IS_TYPE(x, &PyTraceBack_Type)` form is unavailable. */
 static inline int PyTraceBack_Check(PyObject *ob) {
-    if (ob == NULL) {
-        return 0;
-    }
-    return strcmp(Py_TYPE(ob)->tp_name, "traceback") == 0;
+    return ob != NULL && Py_IS_TYPE(ob, &PyTraceBack_Type);
 }
 
 /* Remove key from dict, returning a new ref to its value; on absence return a

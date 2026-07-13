@@ -354,7 +354,7 @@ unsafe extern "C" fn cmp_notimpl(
 unsafe extern "C" fn cmp_error(_v: *mut PyObject, _w: *mut PyObject, _op: c_int) -> *mut PyObject {
     unsafe {
         molt_cpython_abi::api::errors::PyErr_SetString(
-            &raw mut molt_cpython_abi::abi_types::PyExc_ValueError,
+            (&raw mut molt_cpython_abi::abi_types::PyExc_ValueError).cast::<PyObject>(),
             c"boom".as_ptr(),
         );
     }

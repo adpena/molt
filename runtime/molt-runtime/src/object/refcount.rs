@@ -95,6 +95,33 @@ impl MoltRefCount {
         }
     }
 
+    /// Compare-and-exchange used by checked retain so refcounts never wrap.
+    #[inline(always)]
+    pub fn compare_exchange_weak(
+        &self,
+        current: u32,
+        new: u32,
+        success: Ordering,
+        failure: Ordering,
+    ) -> Result<u32, u32> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.inner
+                .compare_exchange_weak(current, new, success, failure)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (success, failure);
+            let observed = self.inner.get();
+            if observed == current {
+                self.inner.set(new);
+                Ok(observed)
+            } else {
+                Err(observed)
+            }
+        }
+    }
+
     /// Acquire fence after a refcount drop reaches zero.
     /// On native targets, issues an acquire fence.
     /// On wasm32, this is a no-op.

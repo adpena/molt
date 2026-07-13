@@ -225,7 +225,6 @@ __all__ = [
     "__stdin__",
     "__stdout__",
     "__stderr__",
-    "UnraisableHookArgs",
     "getrecursionlimit",
     "setrecursionlimit",
     "exc_info",
@@ -285,6 +284,9 @@ _MOLT_GETRECURSIONLIMIT = _safe_intrinsic("molt_getrecursionlimit", _return_1000
 _MOLT_SETRECURSIONLIMIT = _safe_intrinsic("molt_setrecursionlimit", None)
 _MOLT_EXCEPTION_ACTIVE = _safe_intrinsic("molt_exception_active", None)
 _MOLT_EXCEPTION_LAST = _safe_intrinsic("molt_exception_last", None)
+_MOLT_UNRAISABLE_HOOK_ARGS_IS_EXACT = _safe_intrinsic(
+    "molt_unraisable_hook_args_is_exact", _return_false
+)
 _MOLT_ASYNCGEN_HOOKS_GET = _safe_intrinsic(
     "molt_asyncgen_hooks_get", _return_asyncgen_hooks_default
 )
@@ -400,24 +402,6 @@ def __breakpointhook__(*args: object, **kwargs: object) -> object:
 
 
 breakpointhook = __breakpointhook__
-
-
-class UnraisableHookArgs:
-    __slots__ = ("exc_type", "exc_value", "exc_traceback", "err_msg", "object")
-
-    def __init__(
-        self,
-        exc_type: object,
-        exc_value: object,
-        exc_traceback: object,
-        err_msg: object,
-        object: object,  # noqa: A002
-    ) -> None:
-        self.exc_type = exc_type
-        self.exc_value = exc_value
-        self.exc_traceback = exc_traceback
-        self.err_msg = err_msg
-        self.object = object
 
 
 def _expect_int(value: object, intrinsic_name: str, field: str) -> int:
@@ -1340,18 +1324,23 @@ def _ensure_heavy_api_initialized() -> None:
         _MOLT_SYS_EXCEPTHOOK_WRITE(f"{type_name}\n")
 
     def unraisablehook(unraisable: object) -> None:
+        if not _MOLT_UNRAISABLE_HOOK_ARGS_IS_EXACT(unraisable):
+            raise TypeError(
+                "sys.unraisablehook argument type must be UnraisableHookArgs"
+            )
         err_msg = getattr(unraisable, "err_msg", None)
         obj = getattr(unraisable, "object", None)
         exc_value = getattr(unraisable, "exc_value", None)
         exc_type = getattr(unraisable, "exc_type", None)
         exc_tb = getattr(unraisable, "exc_traceback", None)
 
-        if err_msg is None:
-            err_msg = "Exception ignored in"
-        if obj is not None:
-            _MOLT_SYS_EXCEPTHOOK_WRITE(f"{err_msg}: {obj!r}\n")
-        else:
-            _MOLT_SYS_EXCEPTHOOK_WRITE(f"{err_msg}\n")
+        if err_msg is not None:
+            if obj is not None:
+                _MOLT_SYS_EXCEPTHOOK_WRITE(f"{err_msg}: {obj!r}\n")
+            else:
+                _MOLT_SYS_EXCEPTHOOK_WRITE(f"{err_msg}:\n")
+        elif obj is not None:
+            _MOLT_SYS_EXCEPTHOOK_WRITE(f"Exception ignored in: {obj!r}\n")
 
         if exc_value is not None:
             try:

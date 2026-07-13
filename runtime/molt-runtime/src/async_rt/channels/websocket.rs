@@ -237,6 +237,7 @@ fn ws_ref_dec(_py: &PyToken<'_>, ws_ptr: *mut MoltWebSocket) {
     }
 }
 
+#[cfg(any(target_arch = "wasm32", test))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum HostSendOutcome {
     Sent,
@@ -244,6 +245,7 @@ enum HostSendOutcome {
     Error(i32),
 }
 
+#[cfg(any(target_arch = "wasm32", test))]
 fn classify_host_send_result(rc: i32) -> HostSendOutcome {
     if rc == 0 {
         HostSendOutcome::Sent

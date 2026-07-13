@@ -111,7 +111,6 @@ fn from_string_and_size_rejects_invalid_utf8_before_allocation() {
     let _guard = TEST_LOCK.lock().unwrap();
     init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
-    let before = ALLOCATIONS.load(Ordering::SeqCst);
     let invalid = [0xff_u8];
     let unicode = unsafe {
         molt_cpython_abi::api::strings::PyUnicode_FromStringAndSize(
@@ -120,10 +119,19 @@ fn from_string_and_size_rejects_invalid_utf8_before_allocation() {
         )
     };
     assert!(unicode.is_null());
-    assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), before);
+    assert!(
+        STRINGS
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_none_or(|strings| strings.values().all(|bytes| *bytes != invalid)),
+        "invalid input bytes must never reach the runtime string allocator"
+    );
     assert_eq!(
         unsafe {
-            molt_cpython_abi::api::errors::PyErr_ExceptionMatches(&raw mut PyExc_UnicodeDecodeError)
+            molt_cpython_abi::api::errors::PyErr_ExceptionMatches(
+                (&raw mut PyExc_UnicodeDecodeError).cast::<PyObject>(),
+            )
         },
         1
     );

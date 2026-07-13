@@ -1,9 +1,14 @@
 //! Numeric type bridge — PyLong_*, PyFloat_*, PyBool_*.
 
-use crate::abi_types::{Py_False, Py_True, Py_complex, Py_ssize_t, PyComplexObject, PyObject};
-use crate::bridge::GLOBAL_BRIDGE;
+use crate::abi_types::{
+    Py_False, Py_True, Py_complex, Py_ssize_t, PyComplexObject, PyFloatObject, PyObject,
+};
+use crate::bridge::{GLOBAL_BRIDGE, ResolvedPyObject, resolve_pyobject, resolved_molt_handle};
 use crate::hooks::hooks_or_stubs;
 use molt_lang_obj_model::MoltObject;
+use molt_lang_obj_model::float_bits::{
+    f16_bits_to_f64, f32_bits_to_f64, f64_to_f16_bits, f64_to_f32_bits,
+};
 use molt_lang_obj_model::int_literal::{
     IntLiteralErrorKind, ScannedIntLiteral, scan_int_literal_with_limit,
 };
@@ -20,7 +25,8 @@ fn py_long_from_i64(v: i64) -> *mut PyObject {
     if bits == 0 {
         return ptr::null_mut();
     }
-    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) }
+    let (ptr, _) = unsafe { materialize_numeric_owned_handle(bits) };
+    ptr
 }
 
 fn py_long_from_u64(v: u64) -> *mut PyObject {
@@ -30,7 +36,8 @@ fn py_long_from_u64(v: u64) -> *mut PyObject {
     if bits == 0 {
         return ptr::null_mut();
     }
-    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) }
+    let (ptr, _) = unsafe { materialize_numeric_owned_handle(bits) };
+    ptr
 }
 
 // ─── Checked PyLong_As* conversion core ──────────────────────────────────────
@@ -81,7 +88,11 @@ fn py_long_value(op: *mut PyObject, use_index: bool) -> Result<LongValue, LongEr
         unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return Err(LongError::Raised);
     }
-    let op_handle = GLOBAL_BRIDGE.molt_handle_for_pyobj(op);
+    let resolution = resolve_pyobject(op);
+    let op_handle = match resolution {
+        Some(ResolvedPyObject::ManagedMolt(handle)) => Some(handle),
+        Some(ResolvedPyObject::Foreign) | None => None,
+    };
     if let Some(value) = op_handle {
         let bits = value.bits();
         let obj = value.decode();
@@ -130,9 +141,14 @@ fn py_long_value(op: *mut PyObject, use_index: bool) -> Result<LongValue, LongEr
                 | unsafe { foreign_long_digit(op, index) } as u128;
         }
         if digits > 3 || magnitude > u64::MAX as u128 {
+            let low = magnitude as u64;
             return Ok(LongValue::Wide {
                 bits: 0,
-                low_u64: Some(magnitude as u64),
+                low_u64: Some(if sign < 0 {
+                    0u64.wrapping_sub(low)
+                } else {
+                    low
+                }),
                 sign,
             });
         }
@@ -156,9 +172,10 @@ fn py_long_value(op: *mut PyObject, use_index: bool) -> Result<LongValue, LongEr
         };
     }
     if use_index {
+        let protocol_op = op;
         // `_PyNumber_Index` dispatch: raises the CPython-shaped TypeError
         // ("'X' object cannot be interpreted as an integer") on failure.
-        let index = unsafe { crate::api::abstract_number::PyNumber_Index(op) };
+        let index = unsafe { crate::api::abstract_number::PyNumber_Index(protocol_op) };
         if index.is_null() {
             return Err(LongError::Raised);
         }
@@ -197,7 +214,7 @@ fn py_long_value(op: *mut PyObject, use_index: bool) -> Result<LongValue, LongEr
 fn set_long_type_error() {
     unsafe {
         crate::api::errors::PyErr_SetString(
-            &raw mut crate::abi_types::PyExc_TypeError,
+            (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
             c"an integer is required".as_ptr(),
         );
     }
@@ -207,7 +224,7 @@ fn set_long_type_error() {
 fn set_long_overflow_msg(message: &'static std::ffi::CStr) {
     unsafe {
         crate::api::errors::PyErr_SetString(
-            &raw mut crate::abi_types::PyExc_OverflowError,
+            (&raw mut crate::abi_types::PyExc_OverflowError).cast::<crate::abi_types::PyObject>(),
             message.as_ptr(),
         );
     }
@@ -290,17 +307,12 @@ fn small_int_bits(v: i64) -> u64 {
 /// numeric authority: `v >> 128` is `-1` for negatives and `0` otherwise.
 /// `None` when the authority is unavailable (stub hooks) or errored.
 fn big_int_sign(bits: u64) -> Option<i64> {
-    let h = hooks_or_stubs();
-    let shift = small_int_bits(128);
-    if shift == 0 {
-        return None;
+    match unsafe { (hooks_or_stubs().int_sign)(bits) } {
+        -1 => Some(-1),
+        0 => Some(0),
+        1 => Some(1),
+        _ => None,
     }
-    let result =
-        unsafe { (h.number_binary_op)(crate::hooks::NumberBinaryOp::Rshift as u32, bits, shift) };
-    if result == 0 {
-        return None;
-    }
-    MoltObject::from_bits(result).as_int()
 }
 
 const PYLONG_BITS_IN_DIGIT: usize = 30;
@@ -311,10 +323,7 @@ const PYLONG_NEGATIVE_TAG: usize = 2;
 /// Read the CPython 3.12 long tag only for a genuine foreign object. Bridge
 /// proxies do not contain `PyLongObject` storage and must never reach here.
 unsafe fn foreign_long_tag(op: *mut PyObject) -> Option<usize> {
-    if op.is_null()
-        || GLOBAL_BRIDGE.molt_handle_for_pyobj(op).is_some()
-        || unsafe { PyLong_Check(op) } == 0
-    {
+    if op.is_null() || resolved_molt_handle(op).is_some() || unsafe { PyLong_Check(op) } == 0 {
         return None;
     }
     Some(unsafe {
@@ -445,6 +454,35 @@ unsafe fn foreign_long_as_byte_array(
     }
 }
 
+pub(crate) unsafe fn copy_foreign_long_to_exact(op: *mut PyObject) -> *mut PyObject {
+    let Some(tag) = (unsafe { foreign_long_tag(op) }) else {
+        return ptr::null_mut();
+    };
+    let sign = foreign_long_sign(tag);
+    let bits = unsafe { foreign_long_num_bits(op, tag) };
+    let width = if sign < 0 {
+        let base = bits.div_ceil(8).max(1);
+        if bits != 0 && bits % 8 == 0 && !unsafe { foreign_long_magnitude_is_power_of_two(op, tag) }
+        {
+            base + 1
+        } else {
+            base
+        }
+    } else {
+        bits.saturating_add(1).div_ceil(8).max(1)
+    };
+    let mut bytes = Vec::new();
+    if bytes.try_reserve_exact(width).is_err() {
+        unsafe { crate::api::errors::PyErr_NoMemory() };
+        return ptr::null_mut();
+    }
+    bytes.resize(width, 0);
+    if unsafe { foreign_long_as_byte_array(op, tag, bytes.as_mut_ptr(), width, 1, 1) } != 0 {
+        return ptr::null_mut();
+    }
+    unsafe { _PyLong_FromByteArray(bytes.as_ptr(), width, 1, 1) }
+}
+
 /// True when `op` resolves to a genuine Molt int (inline int, bool, or heap
 /// BigInt) — the objects `py_long_as_ssize_clamped` reads directly without an
 /// `__index__` round-trip. Zero-alloc; the slice fast path depends on it.
@@ -452,7 +490,7 @@ pub(crate) fn is_int_like(op: *mut PyObject) -> bool {
     if op.is_null() {
         return false;
     }
-    let Some(bits) = GLOBAL_BRIDGE.molt_handle_for_pyobj(op) else {
+    let Some(bits) = resolved_molt_handle(op) else {
         return false;
     };
     let obj = bits.decode();
@@ -501,9 +539,18 @@ fn big_int_as_f64(bits: u64) -> Option<f64> {
     }
     let result =
         unsafe { (h.number_binary_op)(crate::hooks::NumberBinaryOp::TrueDivide as u32, bits, one) };
-    (result != 0)
-        .then(|| MoltObject::from_bits(result).as_float())
-        .flatten()
+    match result.decode() {
+        crate::hooks::DecodedHandleResult::Ok(result_bits) => {
+            let value = MoltObject::from_bits(result_bits).as_float();
+            if MoltObject::from_bits(result_bits).is_ptr() {
+                unsafe { (h.dec_ref)(result_bits) };
+            }
+            value
+        }
+        crate::hooks::DecodedHandleResult::Missing | crate::hooks::DecodedHandleResult::Error => {
+            None
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -559,47 +606,6 @@ fn parse_python_int_literal(bytes: &[u8], base_arg: c_int) -> Result<i128, Numer
     }
 }
 
-/// Fold a validated literal beyond the 64-bit fast path into an
-/// arbitrary-precision runtime int by Horner's rule through the runtime
-/// numeric authority (`acc*base + digit` per digit). Returns handle bits or
-/// `None` when the authority is unavailable (stub hooks) or errored.
-fn build_big_int_from_literal(scanned: &ScannedIntLiteral) -> Option<u64> {
-    let h = hooks_or_stubs();
-    let base_bits = small_int_bits(scanned.base as i64);
-    if base_bits == 0 {
-        return None;
-    }
-    let mut acc = small_int_bits(0);
-    for &digit in &scanned.digits {
-        let mul = unsafe {
-            (h.number_binary_op)(
-                crate::hooks::NumberBinaryOp::Multiply as u32,
-                acc,
-                base_bits,
-            )
-        };
-        if mul == 0 {
-            return None;
-        }
-        let digit_bits = small_int_bits(digit as i64);
-        let add = unsafe {
-            (h.number_binary_op)(crate::hooks::NumberBinaryOp::Add as u32, mul, digit_bits)
-        };
-        if add == 0 {
-            return None;
-        }
-        acc = add;
-    }
-    if scanned.negative {
-        let neg = unsafe { (h.number_unary_op)(crate::hooks::NumberUnaryOp::Negative as u32, acc) };
-        if neg == 0 {
-            return None;
-        }
-        acc = neg;
-    }
-    Some(acc)
-}
-
 fn py_long_from_scanned(scanned: &ScannedIntLiteral) -> *mut PyObject {
     let limit = if scanned.negative {
         i64::MAX as u128 + 1
@@ -631,18 +637,24 @@ fn py_long_from_scanned(scanned: &ScannedIntLiteral) -> *mut PyObject {
         }
         return py_long_from_u64(magnitude as u64);
     }
-    match build_big_int_from_literal(scanned) {
-        Some(bits) => unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) },
-        None => {
-            unsafe {
-                set_numeric_parse_error(
-                    NumericParseError::Overflow,
-                    c"int literal exceeds the Molt int authority (runtime hooks absent)",
-                )
-            };
-            ptr::null_mut()
-        }
+    let bits = unsafe {
+        (hooks_or_stubs().int_from_digits)(
+            scanned.digits.as_ptr(),
+            scanned.digits.len(),
+            scanned.base,
+            scanned.negative as c_int,
+        )
+    };
+    if bits == 0 {
+        unsafe {
+            set_numeric_parse_error(
+                NumericParseError::Overflow,
+                c"int literal exceeds the Molt int authority (runtime hooks absent)",
+            )
+        };
+        return ptr::null_mut();
     }
+    unsafe { materialize_numeric_owned_handle(bits).0 }
 }
 
 fn normalize_float_literal(bytes: &[u8]) -> Result<String, NumericParseError> {
@@ -688,6 +700,25 @@ unsafe fn py_textlike_bytes(op: *mut PyObject) -> Result<Vec<u8>, NumericParseEr
     if op.is_null() {
         return Err(NumericParseError::Type);
     }
+    // Overlay inline constructors return raw NaN-box handles. Decode those
+    // through the same runtime hook authority as ABI proxies, without
+    // materializing a bridge proxy solely to parse its bytes.
+    if let Some(handle) = resolved_molt_handle(op) {
+        let hooks = hooks_or_stubs();
+        let tag = unsafe { (hooks.classify_heap)(handle.bits()) };
+        let mut len = 0usize;
+        let data = if tag == crate::abi_types::MoltTypeTag::Str as u8 {
+            unsafe { (hooks.str_data)(handle.bits(), &raw mut len) }
+        } else if tag == crate::abi_types::MoltTypeTag::Bytes as u8 {
+            unsafe { (hooks.bytes_data)(handle.bits(), &raw mut len) }
+        } else {
+            return Err(NumericParseError::Type);
+        };
+        if data.is_null() {
+            return Err(NumericParseError::InvalidLiteral);
+        }
+        return Ok(unsafe { std::slice::from_raw_parts(data, len) }.to_vec());
+    }
     if unsafe { crate::api::strings::PyUnicode_Check(op) } != 0 {
         let mut len: Py_ssize_t = 0;
         let ptr = unsafe { crate::api::strings::PyUnicode_AsUTF8AndSize(op, &raw mut len) };
@@ -718,9 +749,15 @@ unsafe fn set_numeric_parse_error(kind: NumericParseError, message: &'static std
     let exc = match kind {
         NumericParseError::InvalidBase
         | NumericParseError::InvalidLiteral
-        | NumericParseError::TooManyDigits { .. } => &raw mut crate::abi_types::PyExc_ValueError,
-        NumericParseError::Overflow => &raw mut crate::abi_types::PyExc_OverflowError,
-        NumericParseError::Type => &raw mut crate::abi_types::PyExc_TypeError,
+        | NumericParseError::TooManyDigits { .. } => {
+            (&raw mut crate::abi_types::PyExc_ValueError).cast::<crate::abi_types::PyObject>()
+        }
+        NumericParseError::Overflow => {
+            (&raw mut crate::abi_types::PyExc_OverflowError).cast::<crate::abi_types::PyObject>()
+        }
+        NumericParseError::Type => {
+            (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>()
+        }
     };
     unsafe { crate::api::errors::PyErr_SetString(exc, message.as_ptr()) };
 }
@@ -732,7 +769,7 @@ unsafe fn set_digit_limit_error(limit: usize, digits: usize) {
     .expect("digit-limit message has no NUL");
     unsafe {
         crate::api::errors::PyErr_SetString(
-            &raw mut crate::abi_types::PyExc_ValueError,
+            (&raw mut crate::abi_types::PyExc_ValueError).cast::<crate::abi_types::PyObject>(),
             message.as_ptr(),
         )
     };
@@ -782,7 +819,7 @@ pub unsafe extern "C" fn PyLong_FromDouble(v: c_double) -> *mut PyObject {
     if v.is_nan() {
         unsafe {
             crate::api::errors::PyErr_SetString(
-                &raw mut crate::abi_types::PyExc_ValueError,
+                (&raw mut crate::abi_types::PyExc_ValueError).cast::<crate::abi_types::PyObject>(),
                 c"cannot convert float NaN to integer".as_ptr(),
             );
         }
@@ -791,7 +828,8 @@ pub unsafe extern "C" fn PyLong_FromDouble(v: c_double) -> *mut PyObject {
     if !v.is_finite() {
         unsafe {
             crate::api::errors::PyErr_SetString(
-                &raw mut crate::abi_types::PyExc_OverflowError,
+                (&raw mut crate::abi_types::PyExc_OverflowError)
+                    .cast::<crate::abi_types::PyObject>(),
                 c"cannot convert float infinity to integer".as_ptr(),
             );
         }
@@ -804,32 +842,10 @@ pub unsafe extern "C" fn PyLong_FromDouble(v: c_double) -> *mut PyObject {
     }
     // |value| >= 2^63: CPython builds the exact arbitrary-precision integer
     // (Objects/longobject.c PyLong_FromDouble never overflows for a finite
-    // double). Any such double is integral (mantissa 53 bits < magnitude), so
-    // compose it EXACTLY as mantissa << (exponent - 52) through the runtime
-    // numeric authority. The pre-fix body raised OverflowError here.
-    let raw = truncated.abs().to_bits();
-    let exponent = ((raw >> 52) & 0x7ff) as i64 - 1023;
-    let mantissa = (raw & ((1u64 << 52) - 1)) | (1u64 << 52);
-    let shift = exponent - 52; // > 0 whenever |value| >= 2^63
-    let h = hooks_or_stubs();
-    let mantissa_bits = unsafe { (h.int_from_u64)(mantissa) };
-    let shift_bits = small_int_bits(shift);
-    let shifted = if mantissa_bits != 0 && shift_bits != 0 {
-        unsafe {
-            (h.number_binary_op)(
-                crate::hooks::NumberBinaryOp::Lshift as u32,
-                mantissa_bits,
-                shift_bits,
-            )
-        }
-    } else {
-        0
-    };
-    let result = if shifted != 0 && truncated < 0.0 {
-        unsafe { (h.number_unary_op)(crate::hooks::NumberUnaryOp::Negative as u32, shifted) }
-    } else {
-        shifted
-    };
+    // double). Construct it directly through the runtime authority: the old
+    // mantissa/shift/negate pipeline allocated and retained owned BigInt
+    // intermediates instead of producing one final integer.
+    let result = unsafe { (hooks_or_stubs().int_from_f64_trunc)(truncated) };
     if result == 0 {
         // Runtime numeric authority unavailable (stub hooks) or errored: fail
         // loudly, never silently — but only set our message when the authority
@@ -840,14 +856,15 @@ pub unsafe extern "C" fn PyLong_FromDouble(v: c_double) -> *mut PyObject {
         {
             unsafe {
                 crate::api::errors::PyErr_SetString(
-                    &raw mut crate::abi_types::PyExc_OverflowError,
+                    (&raw mut crate::abi_types::PyExc_OverflowError)
+                        .cast::<crate::abi_types::PyObject>(),
                     c"float too large for the Molt int authority (runtime hooks absent)".as_ptr(),
                 );
             }
         }
         return ptr::null_mut();
     }
-    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(result) }
+    unsafe { materialize_numeric_owned_handle(result).0 }
 }
 
 #[unsafe(no_mangle)]
@@ -1043,7 +1060,7 @@ pub unsafe extern "C" fn _PyLong_FromByteArray(
         }
         return ptr::null_mut();
     }
-    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) }
+    unsafe { materialize_numeric_owned_handle(bits).0 }
 }
 
 /// CPython `PyLong_AsLong` (Objects/longobject.c): accepts int and any object
@@ -1099,17 +1116,21 @@ pub unsafe extern "C" fn PyLong_AsDouble(op: *mut PyObject) -> c_double {
             set_long_type_error();
             -1.0
         }
-        Ok(LongValue::Wide { .. }) => {
+        Ok(LongValue::Wide { bits, .. }) => {
             // A genuine int beyond ±2^64: exact conversion via the runtime
             // authority when available; honest OverflowError otherwise.
-            let bits = GLOBAL_BRIDGE
-                .molt_handle_for_pyobj(op)
-                .map(|value| value.bits())
-                .unwrap_or(0);
             if bits != 0
                 && let Some(v) = big_int_as_f64(bits)
             {
                 return v;
+            }
+            if bits == 0
+                && let Some(tag) = unsafe { foreign_long_tag(op) }
+            {
+                let value = unsafe { foreign_long_to_f64_rounded(op, tag) };
+                if value.is_finite() {
+                    return value;
+                }
             }
             if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
                 set_long_overflow_msg(c"int too large to convert to float");
@@ -1118,6 +1139,42 @@ pub unsafe extern "C" fn PyLong_AsDouble(op: *mut PyObject) -> c_double {
         }
         Err(LongError::Raised) => -1.0,
     }
+}
+
+unsafe fn foreign_long_to_f64_rounded(op: *mut PyObject, tag: usize) -> f64 {
+    let bit_len = unsafe { foreign_long_num_bits(op, tag) };
+    if bit_len == 0 {
+        return 0.0;
+    }
+    let bit = |index: usize| unsafe {
+        let digit = foreign_long_digit(op, index / PYLONG_BITS_IN_DIGIT);
+        (digit >> (index % PYLONG_BITS_IN_DIGIT)) & 1
+    };
+    let mut shift = bit_len.saturating_sub(53);
+    let mut significand = 0u64;
+    for source in (shift..bit_len).rev() {
+        significand = (significand << 1) | u64::from(bit(source));
+    }
+    if shift != 0 {
+        let halfway = bit(shift - 1) != 0;
+        let sticky = (0..shift - 1).any(|index| bit(index) != 0);
+        if halfway && (sticky || significand & 1 != 0) {
+            significand += 1;
+            if significand == 1u64 << 53 {
+                significand >>= 1;
+                shift += 1;
+            }
+        }
+    }
+    let mut value = if shift > 1023 {
+        f64::INFINITY
+    } else {
+        (significand as f64) * 2f64.powi(shift as i32)
+    };
+    if foreign_long_sign(tag) < 0 {
+        value = -value;
+    }
+    value
 }
 
 /// CPython `PyLong_AsLongAndOverflow`: on out-of-range returns **-1** with
@@ -1289,7 +1346,7 @@ pub unsafe extern "C" fn PyLong_AsUnsignedLongLong(op: *mut PyObject) -> c_ulong
 fn set_positive_converter_error() {
     unsafe {
         crate::api::errors::PyErr_SetString(
-            &raw mut crate::abi_types::PyExc_ValueError,
+            (&raw mut crate::abi_types::PyExc_ValueError).cast::<crate::abi_types::PyObject>(),
             c"value must be positive".as_ptr(),
         );
     }
@@ -1480,16 +1537,97 @@ pub unsafe extern "C" fn PyLong_AsVoidPtr(op: *mut PyObject) -> *mut c_void {
     }
 }
 
-/// Minimal two's-complement byte width for `v` (CPython's size-query contract
-/// for `PyLong_AsNativeBytes`): the smallest n with
-/// `-(1<<(8n-1)) <= v < 1<<(8n-1)`.
-fn min_signed_byte_width(v: i64) -> usize {
-    let significant = if v >= 0 {
-        65 - v.leading_zeros() as usize
+fn native_bytes_little_endian(flags: c_int) -> Option<bool> {
+    if flags != -1 && (flags < 0 || flags & !0x1f != 0) {
+        return None;
+    }
+    let order = if flags == -1 { 3 } else { flags & 3 };
+    match order {
+        0 => Some(false),
+        1 => Some(true),
+        3 => Some(cfg!(target_endian = "little")),
+        _ => None,
+    }
+}
+
+#[inline]
+fn inline_int_signed_byte_width(value: i64) -> usize {
+    let significant = if value >= 0 {
+        65 - value.leading_zeros() as usize
     } else {
-        65 - (!v).leading_zeros() as usize
+        65 - (!value).leading_zeros() as usize
     };
     significant.div_ceil(8)
+}
+
+#[inline]
+fn inline_int_num_bits(value: i64) -> usize {
+    let magnitude = value.unsigned_abs();
+    (u64::BITS - magnitude.leading_zeros()) as usize
+}
+
+unsafe fn write_inline_native_bytes(
+    value: i64,
+    buffer: *mut c_void,
+    n_bytes: usize,
+    little_endian: bool,
+) {
+    let output = unsafe { std::slice::from_raw_parts_mut(buffer.cast::<u8>(), n_bytes) };
+    let raw = value as u64;
+    let extension = if value < 0 { 0xff } else { 0 };
+    for (index, byte) in output.iter_mut().enumerate() {
+        let significance = if little_endian {
+            index
+        } else {
+            n_bytes - index - 1
+        };
+        *byte = if significance < size_of::<u64>() {
+            (raw >> (significance * 8)) as u8
+        } else {
+            extension
+        };
+    }
+}
+
+fn native_bytes_width_result(required: usize) -> Py_ssize_t {
+    match Py_ssize_t::try_from(required) {
+        Ok(value) => value,
+        Err(_) => {
+            set_long_overflow_msg(c"int too large to convert to native bytes");
+            -1
+        }
+    }
+}
+
+unsafe fn native_bytes_non_int(
+    op: *mut PyObject,
+    buffer: *mut c_void,
+    n_bytes: Py_ssize_t,
+    flags: c_int,
+    allow_index: bool,
+) -> Py_ssize_t {
+    if allow_index {
+        let index = unsafe { crate::api::abstract_number::PyNumber_Index(op) };
+        if index.is_null() {
+            return -1;
+        }
+        let result = unsafe { PyLong_AsNativeBytes(index, buffer, n_bytes, flags & !16) };
+        unsafe { crate::api::refcount::Py_DECREF(index) };
+        return result;
+    }
+    set_long_type_error();
+    -1
+}
+
+fn set_native_bytes_authority_error() {
+    if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
+                c"runtime integer native-bytes authority unavailable".as_ptr(),
+            );
+        }
+    }
 }
 
 /// CPython `PyLong_AsNativeBytes`: returns the number of bytes actually needed
@@ -1501,67 +1639,199 @@ pub unsafe extern "C" fn PyLong_AsNativeBytes(
     op: *mut PyObject,
     buffer: *mut c_void,
     n_bytes: Py_ssize_t,
-    _flags: c_int,
+    flags: c_int,
 ) -> Py_ssize_t {
-    let (bytes, required): ([u8; 8], usize) = match py_long_value(op, false) {
-        Ok(LongValue::Signed(v)) => (v.to_le_bytes(), min_signed_byte_width(v)),
-        Ok(LongValue::Big(v)) => {
-            // Needs the sign byte above the 8 value bytes: 9 total.
-            (v.to_le_bytes(), 9)
-        }
-        Err(LongError::NotInt) => {
-            set_long_type_error();
-            return -1;
-        }
-        Ok(LongValue::Wide { .. }) => {
-            set_long_overflow_msg(c"Molt int exceeds the 64-bit native-bytes envelope");
-            return -1;
-        }
-        Err(LongError::Raised) => return -1,
-    };
-    if !buffer.is_null() && n_bytes > 0 {
-        let count = (n_bytes as usize).min(bytes.len());
+    if n_bytes < 0 || buffer.is_null() && n_bytes != 0 {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return -1;
+    }
+    let Some(little) = native_bytes_little_endian(flags) else {
         unsafe {
-            std::ptr::copy_nonoverlapping(bytes.as_ptr(), buffer.cast::<u8>(), count);
+            crate::api::errors::PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_ValueError).cast::<crate::abi_types::PyObject>(),
+                c"invalid PyLong native-bytes flags".as_ptr(),
+            )
+        };
+        return -1;
+    };
+    let unsigned_buffer = flags == -1 || flags & 4 != 0;
+    let reject_negative = flags != -1 && flags & 8 != 0;
+    let allow_index = flags != -1 && flags & 16 != 0;
+    let Some(handle) = resolved_molt_handle(op) else {
+        let Some(tag) = (unsafe { foreign_long_tag(op) }) else {
+            return unsafe { native_bytes_non_int(op, buffer, n_bytes, flags, allow_index) };
+        };
+        let sign = foreign_long_sign(tag);
+        if sign < 0 && reject_negative {
+            set_long_overflow_msg(c"can't convert negative int to unsigned");
+            return -1;
         }
-        // A 9-byte requirement with a 9+ byte buffer gets its 0x00 sign byte.
-        if required == 9 && (n_bytes as usize) >= 9 {
-            unsafe { *buffer.cast::<u8>().add(8) = 0 };
+        let bits = unsafe { foreign_long_num_bits(op, tag) };
+        let required = if sign < 0 {
+            let base = bits.div_ceil(8).max(1);
+            if bits != 0
+                && bits % 8 == 0
+                && !unsafe { foreign_long_magnitude_is_power_of_two(op, tag) }
+            {
+                base + 1
+            } else {
+                base
+            }
+        } else if unsigned_buffer {
+            bits.div_ceil(8).max(1)
+        } else {
+            bits.saturating_add(1).div_ceil(8).max(1)
+        };
+        if n_bytes != 0 {
+            let rc = unsafe {
+                foreign_long_as_byte_array(
+                    op,
+                    tag,
+                    buffer.cast(),
+                    n_bytes as usize,
+                    little as c_int,
+                    1,
+                )
+            };
+            if rc != 0 {
+                unsafe { crate::api::errors::PyErr_Clear() };
+            }
+        }
+        return native_bytes_width_result(required);
+    };
+    let decoded = handle.decode();
+    let inline_value = decoded
+        .as_int()
+        .or_else(|| decoded.as_bool().map(i64::from));
+    if let Some(value) = inline_value {
+        if value < 0 && reject_negative {
+            set_long_overflow_msg(c"can't convert negative int to unsigned");
+            return -1;
+        }
+        let bits = inline_int_num_bits(value);
+        let required = if value < 0 {
+            inline_int_signed_byte_width(value)
+        } else if unsigned_buffer {
+            bits.div_ceil(8).max(1)
+        } else {
+            bits.saturating_add(1).div_ceil(8).max(1)
+        };
+        if n_bytes != 0 {
+            unsafe {
+                write_inline_native_bytes(value, buffer, n_bytes as usize, little);
+            }
+        }
+        return native_bytes_width_result(required);
+    }
+    let hooks = hooks_or_stubs();
+    if !decoded.is_ptr()
+        || unsafe { (hooks.classify_heap)(handle.bits()) }
+            != crate::abi_types::MoltTypeTag::Int as u8
+    {
+        return unsafe { native_bytes_non_int(op, buffer, n_bytes, flags, allow_index) };
+    }
+    let sign = unsafe { (hooks.int_sign)(handle.bits()) };
+    if sign < 0 && reject_negative {
+        set_long_overflow_msg(c"can't convert negative int to unsigned");
+        return -1;
+    }
+    let mut bits = 0usize;
+    if unsafe { (hooks.int_num_bits)(handle.bits(), &raw mut bits) } != 0 {
+        set_native_bytes_authority_error();
+        return -1;
+    }
+    let required = if sign < 0 {
+        let mut width = 0usize;
+        if unsafe { (hooks.int_signed_byte_width)(handle.bits(), &raw mut width) } != 0 {
+            set_native_bytes_authority_error();
+            return -1;
+        }
+        width
+    } else if unsigned_buffer {
+        bits.div_ceil(8).max(1)
+    } else {
+        bits.saturating_add(1).div_ceil(8).max(1)
+    };
+    if n_bytes != 0 {
+        let status = unsafe {
+            (hooks.int_to_bytes)(
+                handle.bits(),
+                buffer.cast(),
+                n_bytes as usize,
+                little as c_int,
+                1,
+            )
+        };
+        if status == crate::hooks::INT_BYTES_INVALID {
+            set_native_bytes_authority_error();
+            return -1;
         }
     }
-    required as Py_ssize_t
+    native_bytes_width_result(required)
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyLong_FromNativeBytes(
     buffer: *const c_void,
     n_bytes: usize,
-    _flags: c_int,
+    flags: c_int,
 ) -> *mut PyObject {
-    if buffer.is_null() {
+    if buffer.is_null() && n_bytes != 0 {
         return ptr::null_mut();
     }
-    let bytes = unsafe { std::slice::from_raw_parts(buffer.cast::<u8>(), n_bytes.min(8)) };
-    let sign_extend = bytes.last().is_some_and(|byte| (byte & 0x80) != 0);
-    let fill = if sign_extend { 0xff } else { 0x00 };
-    let mut raw = [fill; 8];
-    raw[..bytes.len()].copy_from_slice(bytes);
-    py_long_from_i64(i64::from_le_bytes(raw))
+    let Some(little) = native_bytes_little_endian(flags) else {
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_ValueError).cast::<crate::abi_types::PyObject>(),
+                c"invalid PyLong native-bytes flags".as_ptr(),
+            )
+        };
+        return ptr::null_mut();
+    };
+    let bits =
+        unsafe { (hooks_or_stubs().int_from_bytes)(buffer.cast(), n_bytes, little as c_int, 1) };
+    if bits == 0 {
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
+                c"runtime int_from_bytes authority failed".as_ptr(),
+            )
+        };
+        return ptr::null_mut();
+    }
+    unsafe { crate::bridge::molt_capi_result_to_pyobj(bits) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyLong_FromUnsignedNativeBytes(
     buffer: *const c_void,
     n_bytes: usize,
-    _flags: c_int,
+    flags: c_int,
 ) -> *mut PyObject {
-    if buffer.is_null() {
+    if buffer.is_null() && n_bytes != 0 {
         return ptr::null_mut();
     }
-    let bytes = unsafe { std::slice::from_raw_parts(buffer.cast::<u8>(), n_bytes.min(8)) };
-    let mut raw = [0u8; 8];
-    raw[..bytes.len()].copy_from_slice(bytes);
-    py_long_from_u64(u64::from_le_bytes(raw))
+    let Some(little) = native_bytes_little_endian(flags) else {
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_ValueError).cast::<crate::abi_types::PyObject>(),
+                c"invalid PyLong native-bytes flags".as_ptr(),
+            )
+        };
+        return ptr::null_mut();
+    };
+    let bits =
+        unsafe { (hooks_or_stubs().int_from_bytes)(buffer.cast(), n_bytes, little as c_int, 0) };
+    if bits == 0 {
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
+                c"runtime int_from_bytes authority failed".as_ptr(),
+            )
+        };
+        return ptr::null_mut();
+    }
+    unsafe { crate::bridge::molt_capi_result_to_pyobj(bits) }
 }
 
 /// CPython `_PyLong_AsInt` / `PyLong_AsInt` (Objects/longobject.c): via
@@ -1594,7 +1864,7 @@ pub unsafe extern "C" fn PyLong_AsInt(op: *mut PyObject) -> c_int {
 fn set_long_overflow() {
     unsafe {
         crate::api::errors::PyErr_SetString(
-            &raw mut crate::abi_types::PyExc_OverflowError,
+            (&raw mut crate::abi_types::PyExc_OverflowError).cast::<crate::abi_types::PyObject>(),
             c"int too big to convert".as_ptr(),
         );
     }
@@ -1730,7 +2000,110 @@ pub unsafe extern "C" fn PyLong_GetInfo() -> *mut PyObject {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyFloat_FromDouble(v: c_double) -> *mut PyObject {
     let bits = MoltObject::from_float(v).bits();
-    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) }
+    unsafe { materialize_numeric_owned_handle(bits).0 }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyFloat_GetMax() -> c_double {
+    f64::MAX
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyFloat_GetMin() -> c_double {
+    f64::MIN_POSITIVE
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyFloat_GetInfo() -> *mut PyObject {
+    let info = unsafe { crate::api::sys::PySys_GetObject(c"float_info".as_ptr()) };
+    if info.is_null() {
+        return ptr::null_mut();
+    }
+    unsafe { crate::api::refcount::Py_INCREF(info) };
+    info
+}
+
+fn write_ordered<const N: usize>(data: *mut c_char, bytes: [u8; N], little_endian: c_int) {
+    let output = unsafe { std::slice::from_raw_parts_mut(data.cast::<u8>(), N) };
+    if little_endian != 0 {
+        for (dst, src) in output.iter_mut().zip(bytes.iter().rev()) {
+            *dst = *src;
+        }
+    } else {
+        output.copy_from_slice(&bytes);
+    }
+}
+
+fn read_ordered<const N: usize>(data: *const c_char, little_endian: c_int) -> [u8; N] {
+    let input = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), N) };
+    let mut bytes = [0u8; N];
+    if little_endian != 0 {
+        for (dst, src) in bytes.iter_mut().zip(input.iter().rev()) {
+            *dst = *src;
+        }
+    } else {
+        bytes.copy_from_slice(input);
+    }
+    bytes
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyFloat_Pack2(x: c_double, data: *mut c_char, le: c_int) -> c_int {
+    let bits = match f64_to_f16_bits(x) {
+        Ok(bits) => bits,
+        Err(()) => {
+            unsafe {
+                crate::api::errors::PyErr_SetString(
+                    (&raw mut crate::abi_types::PyExc_OverflowError)
+                        .cast::<crate::abi_types::PyObject>(),
+                    c"float too large to pack with e format".as_ptr(),
+                )
+            };
+            return -1;
+        }
+    };
+    write_ordered(data, bits.to_be_bytes(), le);
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyFloat_Pack4(x: c_double, data: *mut c_char, le: c_int) -> c_int {
+    let bits = match f64_to_f32_bits(x) {
+        Ok(bits) => bits,
+        Err(()) => {
+            unsafe {
+                crate::api::errors::PyErr_SetString(
+                    (&raw mut crate::abi_types::PyExc_OverflowError)
+                        .cast::<crate::abi_types::PyObject>(),
+                    c"float too large to pack with f format".as_ptr(),
+                )
+            };
+            return -1;
+        }
+    };
+    write_ordered(data, bits.to_be_bytes(), le);
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyFloat_Pack8(x: c_double, data: *mut c_char, le: c_int) -> c_int {
+    write_ordered(data, x.to_bits().to_be_bytes(), le);
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyFloat_Unpack2(data: *const c_char, le: c_int) -> c_double {
+    f16_bits_to_f64(u16::from_be_bytes(read_ordered(data, le)))
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyFloat_Unpack4(data: *const c_char, le: c_int) -> c_double {
+    f32_bits_to_f64(u32::from_be_bytes(read_ordered(data, le)))
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyFloat_Unpack8(data: *const c_char, le: c_int) -> c_double {
+    f64::from_bits(u64::from_be_bytes(read_ordered(data, le)))
 }
 
 #[unsafe(no_mangle)]
@@ -1780,7 +2153,15 @@ pub unsafe extern "C" fn PyFloat_AsDouble(op: *mut PyObject) -> c_double {
         unsafe { crate::api::errors::PyErr_BadArgument() };
         return -1.0;
     }
-    let op_handle = GLOBAL_BRIDGE.molt_handle_for_pyobj(op);
+    if resolved_molt_handle(op).is_none() && unsafe { PyFloat_Check(op) } != 0 {
+        let field = unsafe { &raw const (*op.cast::<PyFloatObject>()).ob_fval };
+        return unsafe { std::ptr::read_unaligned(field) };
+    }
+    let resolution = resolve_pyobject(op);
+    let op_handle = match resolution {
+        Some(ResolvedPyObject::ManagedMolt(handle)) => Some(handle),
+        Some(ResolvedPyObject::Foreign) | None => None,
+    };
     if let Some(bits) = op_handle {
         let obj = bits.decode();
         if obj.is_float() {
@@ -1818,11 +2199,15 @@ pub unsafe extern "C" fn PyFloat_AsDouble(op: *mut PyObject) -> c_double {
     }
     // Foreign or non-numeric: dispatch `nb_float` (PyNumber_Float's foreign
     // path), then the `nb_index` route, mirroring floatobject.c.
-    let converted = unsafe { crate::api::abstract_number::PyNumber_Float(op) };
+    let protocol_op = op;
+    let converted = unsafe { crate::api::abstract_number::PyNumber_Float(protocol_op) };
     if !converted.is_null() {
-        let converted_handle = GLOBAL_BRIDGE.molt_handle_for_pyobj(converted);
+        let converted_handle = resolved_molt_handle(converted);
         let value = if let Some(bits) = converted_handle {
             bits.decode().as_float()
+        } else if unsafe { PyFloat_Check(converted) } != 0 {
+            let field = unsafe { &raw const (*converted.cast::<PyFloatObject>()).ob_fval };
+            Some(unsafe { std::ptr::read_unaligned(field) })
         } else {
             None
         };
@@ -1830,9 +2215,9 @@ pub unsafe extern "C" fn PyFloat_AsDouble(op: *mut PyObject) -> c_double {
         if let Some(v) = value {
             return v;
         }
-    } else if unsafe { crate::api::abstract_number::PyIndex_Check(op) } != 0 {
+    } else if unsafe { crate::api::abstract_number::PyIndex_Check(protocol_op) } != 0 {
         unsafe { crate::api::errors::PyErr_Clear() };
-        let index = unsafe { crate::api::abstract_number::PyNumber_Index(op) };
+        let index = unsafe { crate::api::abstract_number::PyNumber_Index(protocol_op) };
         if index.is_null() {
             return -1.0;
         }
@@ -1844,17 +2229,19 @@ pub unsafe extern "C" fn PyFloat_AsDouble(op: *mut PyObject) -> c_double {
     // TypeError has CPython's float()-flavored text; PyFloat_AsDouble's is
     // "must be real number"). Preserve any non-TypeError exception verbatim.
     if unsafe {
-        crate::api::errors::PyErr_ExceptionMatches(&raw mut crate::abi_types::PyExc_TypeError)
+        crate::api::errors::PyErr_ExceptionMatches(
+            (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
+        )
     } == 1
         || unsafe { crate::api::errors::PyErr_Occurred() }.is_null()
     {
         let message = format!("must be real number, not '{}'", unsafe {
-            float_arg_type_name(op)
+            float_arg_type_name(protocol_op)
         });
         let cmsg = std::ffi::CString::new(message).unwrap_or_default();
         unsafe {
             crate::api::errors::PyErr_SetString(
-                &raw mut crate::abi_types::PyExc_TypeError,
+                (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
                 cmsg.as_ptr(),
             );
         }
@@ -1870,6 +2257,143 @@ fn pointer_hash(ptr: *mut PyObject) -> isize {
     let rotated = (raw >> 4) | (raw << (width - 4));
     let hash = rotated as isize;
     if hash == -1 { -2 } else { hash }
+}
+
+unsafe extern "C" {
+    fn molt_capi_errno() -> c_int;
+    fn molt_capi_set_errno(value: c_int);
+}
+
+#[inline]
+fn set_c_errno(value: c_int) {
+    unsafe { molt_capi_set_errno(value) };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn _Py_c_sum(a: Py_complex, b: Py_complex) -> Py_complex {
+    Py_complex {
+        real: a.real + b.real,
+        imag: a.imag + b.imag,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn _Py_c_diff(a: Py_complex, b: Py_complex) -> Py_complex {
+    Py_complex {
+        real: a.real - b.real,
+        imag: a.imag - b.imag,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn _Py_c_neg(a: Py_complex) -> Py_complex {
+    Py_complex {
+        real: -a.real,
+        imag: -a.imag,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn _Py_c_prod(a: Py_complex, b: Py_complex) -> Py_complex {
+    Py_complex {
+        real: a.real * b.real - a.imag * b.imag,
+        imag: a.real * b.imag + a.imag * b.real,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn _Py_c_quot(a: Py_complex, b: Py_complex) -> Py_complex {
+    let abs_real = b.real.abs();
+    let abs_imag = b.imag.abs();
+    if abs_real >= abs_imag {
+        if abs_real == 0.0 {
+            set_c_errno(libc::EDOM);
+            return Py_complex {
+                real: 0.0,
+                imag: 0.0,
+            };
+        }
+        let ratio = b.imag / b.real;
+        let denom = b.real + b.imag * ratio;
+        Py_complex {
+            real: (a.real + a.imag * ratio) / denom,
+            imag: (a.imag - a.real * ratio) / denom,
+        }
+    } else if abs_imag >= abs_real {
+        let ratio = b.real / b.imag;
+        let denom = b.real * ratio + b.imag;
+        Py_complex {
+            real: (a.real * ratio + a.imag) / denom,
+            imag: (a.imag * ratio - a.real) / denom,
+        }
+    } else {
+        Py_complex {
+            real: f64::NAN,
+            imag: f64::NAN,
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn _Py_c_pow(a: Py_complex, b: Py_complex) -> Py_complex {
+    let saved_errno = unsafe { molt_capi_errno() };
+    if b.real == 0.0 && b.imag == 0.0 {
+        return Py_complex {
+            real: 1.0,
+            imag: 0.0,
+        };
+    }
+    if a.real == 0.0 && a.imag == 0.0 {
+        if b.imag != 0.0 || b.real < 0.0 {
+            set_c_errno(libc::EDOM);
+        }
+        return Py_complex {
+            real: 0.0,
+            imag: 0.0,
+        };
+    }
+    let magnitude = a.real.hypot(a.imag);
+    let angle = a.imag.atan2(a.real);
+    let mut len = magnitude.powf(b.real);
+    let mut phase = angle * b.real;
+    if b.imag != 0.0 {
+        len *= (-angle * b.imag).exp();
+        phase += b.imag * magnitude.ln();
+    }
+    let result = Py_complex {
+        real: len * phase.cos(),
+        imag: len * phase.sin(),
+    };
+    if a.real.is_finite()
+        && a.imag.is_finite()
+        && b.real.is_finite()
+        && b.imag.is_finite()
+        && ((!result.real.is_finite() || !result.imag.is_finite())
+            || (result.real == 0.0 && result.imag == 0.0 && len == 0.0))
+    {
+        set_c_errno(libc::ERANGE);
+    } else {
+        set_c_errno(saved_errno);
+    }
+    result
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn _Py_c_abs(value: Py_complex) -> c_double {
+    if value.real.is_infinite() {
+        set_c_errno(0);
+        return value.real.abs();
+    }
+    if value.imag.is_infinite() {
+        set_c_errno(0);
+        return value.imag.abs();
+    }
+    if value.real.is_nan() || value.imag.is_nan() {
+        return f64::NAN;
+    }
+    let result = value.real.hypot(value.imag);
+    set_c_errno(if result.is_finite() { 0 } else { libc::ERANGE });
+    result
 }
 
 fn frexp_abs(value: f64) -> (f64, i32) {
@@ -1939,8 +2463,7 @@ pub unsafe extern "C" fn _Py_HashDouble(inst: *mut PyObject, v: c_double) -> isi
     if signed == -1 { -2 } else { signed }
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyComplex_FromDoubles(real: c_double, imag: c_double) -> *mut PyObject {
+unsafe fn allocate_complex_carrier(real: c_double, imag: c_double, bits: u64) -> *mut PyObject {
     let obj = Box::new(PyComplexObject {
         ob_base: PyObject {
             ob_refcnt: 1,
@@ -1948,7 +2471,33 @@ pub unsafe extern "C" fn PyComplex_FromDoubles(real: c_double, imag: c_double) -
         },
         cval: Py_complex { real, imag },
     });
-    Box::into_raw(obj).cast::<PyObject>()
+    let ptr = Box::into_raw(obj).cast::<PyObject>();
+    GLOBAL_BRIDGE.register_numeric_carrier(
+        ptr,
+        Some(bits),
+        crate::bridge::NumericCarrierKind::Complex,
+    );
+    ptr
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyComplex_FromDoubles(real: c_double, imag: c_double) -> *mut PyObject {
+    let bits = match unsafe { (hooks_or_stubs().complex_from_doubles)(real, imag) }.decode() {
+        crate::hooks::DecodedHandleResult::Ok(bits) => bits,
+        crate::hooks::DecodedHandleResult::Missing | crate::hooks::DecodedHandleResult::Error => {
+            if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+                unsafe {
+                    crate::api::errors::PyErr_SetString(
+                        (&raw mut crate::abi_types::PyExc_SystemError)
+                            .cast::<crate::abi_types::PyObject>(),
+                        c"complex constructor runtime authority unavailable".as_ptr(),
+                    )
+                };
+            }
+            return ptr::null_mut();
+        }
+    };
+    unsafe { allocate_complex_carrier(real, imag, bits) }
 }
 
 #[unsafe(no_mangle)]
@@ -1960,22 +2509,265 @@ pub unsafe extern "C" fn molt_complex_dealloc(op: *mut PyObject) {
     if op.is_null() {
         return;
     }
+    let Some(record) = GLOBAL_BRIDGE.unregister_numeric_carrier(op) else {
+        eprintln!(
+            "molt fatal: complex carrier dealloc missing allocation provenance ptr={:p}",
+            op
+        );
+        std::process::abort();
+    };
+    if let Some(bits) = record.bits
+        && MoltObject::from_bits(bits).is_ptr()
+    {
+        unsafe { (hooks_or_stubs().dec_ref)(bits) };
+    }
     unsafe { drop(Box::from_raw(op.cast::<PyComplexObject>())) };
 }
 
+/// Build a layout-compatible CPython numeric carrier for a runtime handle.
+/// Foreign numeric slots are allowed to read builtin fields directly, so the
+/// generic BridgeHeader proxy must never be exposed as a long/float/complex.
+/// The boolean return says whether the caller owns a temporary C reference.
+pub(crate) unsafe fn materialize_numeric_owned_handle(bits: u64) -> (*mut PyObject, bool) {
+    let result = unsafe { materialize_numeric_carrier(bits) };
+    if result.0.is_null() && MoltObject::from_bits(bits).is_ptr() {
+        unsafe { (hooks_or_stubs().dec_ref)(bits) };
+    }
+    result
+}
+
+pub(crate) unsafe fn materialize_numeric_borrowed_handle(bits: u64) -> (*mut PyObject, bool) {
+    if MoltObject::from_bits(bits).is_ptr() {
+        unsafe { (hooks_or_stubs().inc_ref)(bits) };
+    }
+    unsafe { materialize_numeric_owned_handle(bits) }
+}
+
+pub(crate) fn is_numeric_handle(bits: u64) -> bool {
+    let value = MoltObject::from_bits(bits);
+    value.is_bool()
+        || value.is_int()
+        || value.is_float()
+        || value.is_ptr()
+            && matches!(
+                unsafe { (hooks_or_stubs().classify_heap)(bits) },
+                tag if tag == crate::abi_types::MoltTypeTag::Int as u8
+                    || tag == crate::abi_types::MoltTypeTag::Complex as u8
+            )
+}
+
+unsafe fn materialize_numeric_carrier(bits: u64) -> (*mut PyObject, bool) {
+    let obj = MoltObject::from_bits(bits);
+    if obj.is_bool() {
+        let ptr = if obj.as_bool().unwrap_or(false) {
+            (&raw mut Py_True).cast::<PyObject>()
+        } else {
+            (&raw mut Py_False).cast::<PyObject>()
+        };
+        return (ptr, false);
+    }
+    if let Some(value) = obj.as_float() {
+        let carrier = Box::new(PyFloatObject {
+            ob_base: PyObject {
+                ob_refcnt: 1,
+                ob_type: &raw mut crate::abi_types::PyFloat_Type,
+            },
+            ob_fval: value,
+        });
+        let ptr = Box::into_raw(carrier).cast();
+        GLOBAL_BRIDGE.register_numeric_carrier(
+            ptr,
+            Some(bits),
+            crate::bridge::NumericCarrierKind::Float,
+        );
+        return (ptr, true);
+    }
+    if let Some(value) = obj.as_int() {
+        return unsafe { materialize_long_carrier(bits, value.signum() as i32) };
+    }
+    if obj.is_ptr() {
+        let hooks = hooks_or_stubs();
+        match unsafe { (hooks.classify_heap)(bits) } {
+            tag if tag == crate::abi_types::MoltTypeTag::Int as u8 => {
+                return unsafe { materialize_long_carrier(bits, (hooks.int_sign)(bits)) };
+            }
+            tag if tag == crate::abi_types::MoltTypeTag::Complex as u8 => {
+                let mut real = 0.0;
+                let mut imag = 0.0;
+                if unsafe { (hooks.complex_parts)(bits, &raw mut real, &raw mut imag) } == 0 {
+                    let ptr = unsafe { allocate_complex_carrier(real, imag, bits) };
+                    return (ptr, true);
+                }
+            }
+            _ => {}
+        }
+    }
+    (ptr::null_mut(), false)
+}
+
+unsafe fn materialize_long_carrier(bits: u64, sign: i32) -> (*mut PyObject, bool) {
+    let hooks = hooks_or_stubs();
+    let mut bit_len = 0usize;
+    if unsafe { (hooks.int_num_bits)(bits, &raw mut bit_len) } != 0 {
+        if let Some(value) = MoltObject::from_bits(bits).as_int() {
+            bit_len = value
+                .unsigned_abs()
+                .checked_ilog2()
+                .map_or(0, |n| n as usize + 1);
+        } else {
+            return (ptr::null_mut(), false);
+        }
+    }
+    if !matches!(sign, -1..=1) || sign == 0 && bit_len != 0 {
+        return (ptr::null_mut(), false);
+    }
+    let Some(byte_len) = bit_len.div_ceil(8).checked_add(1) else {
+        unsafe { crate::api::errors::PyErr_NoMemory() };
+        return (ptr::null_mut(), false);
+    };
+    let byte_len = byte_len.max(1);
+    let mut magnitude = Vec::new();
+    if magnitude.try_reserve_exact(byte_len).is_err() {
+        unsafe { crate::api::errors::PyErr_NoMemory() };
+        return (ptr::null_mut(), false);
+    }
+    magnitude.resize(byte_len, 0);
+    let status = unsafe { (hooks.int_to_bytes)(bits, magnitude.as_mut_ptr(), byte_len, 1, 1) };
+    if status != crate::hooks::INT_BYTES_OK {
+        if let Some(value) = MoltObject::from_bits(bits).as_int() {
+            magnitude.fill(if value < 0 { 0xff } else { 0 });
+            magnitude[..8.min(byte_len)].copy_from_slice(&value.to_le_bytes()[..8.min(byte_len)]);
+        } else {
+            return (ptr::null_mut(), false);
+        }
+    }
+    if sign < 0 {
+        let mut carry = 1u16;
+        for byte in &mut magnitude {
+            let next = ((!*byte) as u16) + carry;
+            *byte = next as u8;
+            carry = next >> 8;
+        }
+    }
+    while magnitude.len() > 1 && magnitude.last() == Some(&0) {
+        magnitude.pop();
+    }
+    let digits = if sign == 0 {
+        0
+    } else {
+        bit_len.div_ceil(PYLONG_BITS_IN_DIGIT)
+    };
+    let digit_slots = digits.max(1);
+    let Some(size) = digit_slots
+        .checked_mul(std::mem::size_of::<u32>())
+        .and_then(|digits| digits.checked_add(std::mem::size_of::<usize>()))
+        .and_then(|tail| tail.checked_add(std::mem::size_of::<PyObject>()))
+    else {
+        unsafe { crate::api::errors::PyErr_NoMemory() };
+        return (ptr::null_mut(), false);
+    };
+    let layout = std::alloc::Layout::from_size_align(size, std::mem::align_of::<usize>())
+        .expect("PyLong carrier layout");
+    let raw = unsafe { std::alloc::alloc_zeroed(layout) };
+    if raw.is_null() {
+        return (ptr::null_mut(), false);
+    }
+    let op = raw.cast::<PyObject>();
+    unsafe {
+        std::ptr::write(
+            op,
+            PyObject {
+                ob_refcnt: 1,
+                ob_type: &raw mut crate::abi_types::PyLong_Type,
+            },
+        );
+        let tag_ptr = raw.add(std::mem::size_of::<PyObject>()).cast::<usize>();
+        tag_ptr.write(
+            (digits << 3)
+                | if sign < 0 {
+                    PYLONG_NEGATIVE_TAG
+                } else if sign == 0 {
+                    PYLONG_ZERO_TAG
+                } else {
+                    0
+                },
+        );
+        let digit_ptr = tag_ptr.add(1).cast::<u32>();
+        for digit_index in 0..digits {
+            let mut digit = 0u32;
+            for bit in 0..PYLONG_BITS_IN_DIGIT {
+                let source_bit = digit_index * PYLONG_BITS_IN_DIGIT + bit;
+                let byte = source_bit / 8;
+                if byte < magnitude.len() && magnitude[byte] & (1 << (source_bit % 8)) != 0 {
+                    digit |= 1 << bit;
+                }
+            }
+            digit_ptr.add(digit_index).write(digit);
+        }
+    }
+    GLOBAL_BRIDGE.register_numeric_carrier(
+        op,
+        Some(bits),
+        crate::bridge::NumericCarrierKind::Long {
+            allocation_size: size,
+        },
+    );
+    (op, true)
+}
+
+pub unsafe extern "C" fn molt_numeric_scalar_dealloc(op: *mut PyObject) {
+    if op.is_null() {
+        return;
+    }
+    let Some(record) = GLOBAL_BRIDGE.unregister_numeric_carrier(op) else {
+        eprintln!(
+            "molt fatal: numeric carrier dealloc missing allocation provenance ptr={:p}",
+            op
+        );
+        std::process::abort();
+    };
+    if let Some(bits) = record.bits
+        && MoltObject::from_bits(bits).is_ptr()
+    {
+        unsafe { (hooks_or_stubs().dec_ref)(bits) };
+    }
+    match record.kind {
+        crate::bridge::NumericCarrierKind::Float => {
+            unsafe { drop(Box::from_raw(op.cast::<PyFloatObject>())) };
+        }
+        crate::bridge::NumericCarrierKind::Long { allocation_size } => {
+            let layout =
+                std::alloc::Layout::from_size_align(allocation_size, std::mem::align_of::<usize>())
+                    .expect("PyLong carrier layout");
+            unsafe { std::alloc::dealloc(op.cast(), layout) };
+        }
+        crate::bridge::NumericCarrierKind::Complex => {
+            unsafe { drop(Box::from_raw(op.cast::<PyComplexObject>())) };
+        }
+    }
+}
+
+fn runtime_complex_parts(op: *mut PyObject) -> Option<Py_complex> {
+    let bits = resolved_molt_handle(op)?.bits();
+    let hooks = hooks_or_stubs();
+    if unsafe { (hooks.classify_heap)(bits) } != crate::abi_types::MoltTypeTag::Complex as u8 {
+        return None;
+    }
+    let mut real = 0.0;
+    let mut imag = 0.0;
+    (unsafe { (hooks.complex_parts)(bits, &raw mut real, &raw mut imag) } == 0)
+        .then_some(Py_complex { real, imag })
+}
+
 /// CPython `PyComplex_AsCComplex` (Objects/complexobject.c): a real complex
-/// reads directly; everything else falls back to `PyFloat_AsDouble` (which
-/// dispatches `nb_float`/`nb_index` on foreign objects) for the real part with
-/// imag 0, propagating its TypeError on total failure. The `__complex__`
-/// special-method probe CPython runs first is a documented residual (needs a
-/// `_PyObject_LookupSpecial` equivalent); every numeric type Molt links
-/// exposes `nb_float`/`nb_index`.
+/// reads directly; otherwise call `__complex__`, validate that it returned a
+/// complex instance, then fall back to `PyFloat_AsDouble` for the real part.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyComplex_AsCComplex(op: *mut PyObject) -> Py_complex {
     if op.is_null() {
         unsafe {
             crate::api::errors::PyErr_SetString(
-                &raw mut crate::abi_types::PyExc_TypeError,
+                (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
                 c"complex argument is NULL".as_ptr(),
             );
         }
@@ -1984,7 +2776,10 @@ pub unsafe extern "C" fn PyComplex_AsCComplex(op: *mut PyObject) -> Py_complex {
             imag: 0.0,
         };
     }
-    if unsafe { PyComplex_Check(op) } != 0 && GLOBAL_BRIDGE.molt_handle_for_pyobj(op).is_none() {
+    if let Some(value) = runtime_complex_parts(op) {
+        return value;
+    }
+    if unsafe { PyComplex_Check(op) } != 0 && resolved_molt_handle(op).is_none() {
         // `op` is a genuine (non-bridge-minted) C complex object here. On wasm32
         // a statically declared C `PyObject` is only 4-byte aligned, but
         // `PyComplexObject` (two `c_double`s) has alignment 8, so dereferencing
@@ -1993,6 +2788,59 @@ pub unsafe extern "C" fn PyComplex_AsCComplex(op: *mut PyObject) -> Py_complex {
         // `cval` unaligned.
         let cval = unsafe { &raw const (*op.cast::<PyComplexObject>()).cval };
         return unsafe { std::ptr::read_unaligned(cval) };
+    }
+    if let Some(handle) = resolved_molt_handle(op) {
+        let value = handle.decode();
+        let is_builtin_real = value.is_int()
+            || value.is_bool()
+            || value.is_float()
+            || value.is_ptr()
+                && unsafe { (hooks_or_stubs().classify_heap)(handle.bits()) }
+                    == crate::abi_types::MoltTypeTag::Int as u8;
+        if is_builtin_real {
+            return Py_complex {
+                real: unsafe { PyFloat_AsDouble(op) },
+                imag: 0.0,
+            };
+        }
+    }
+    match unsafe { crate::api::object::call_optional_special_noargs(op, c"__complex__".as_ptr()) } {
+        Err(()) => {
+            return Py_complex {
+                real: -1.0,
+                imag: 0.0,
+            };
+        }
+        Ok(Some(result)) => {
+            if unsafe { PyComplex_Check(result) } == 0 {
+                let type_name = unsafe { crate::api::object::type_name_lossy(result) };
+                let message = std::ffi::CString::new(format!(
+                    "__complex__ returned non-complex (type {type_name})"
+                ))
+                .unwrap_or_default();
+                unsafe {
+                    crate::api::errors::PyErr_SetString(
+                        (&raw mut crate::abi_types::PyExc_TypeError)
+                            .cast::<crate::abi_types::PyObject>(),
+                        message.as_ptr(),
+                    );
+                    crate::api::refcount::Py_DECREF(result);
+                }
+                return Py_complex {
+                    real: -1.0,
+                    imag: 0.0,
+                };
+            }
+            let value = if let Some(value) = runtime_complex_parts(result) {
+                value
+            } else {
+                let cval = unsafe { &raw const (*result.cast::<PyComplexObject>()).cval };
+                unsafe { std::ptr::read_unaligned(cval) }
+            };
+            unsafe { crate::api::refcount::Py_DECREF(result) };
+            return value;
+        }
+        Ok(None) => {}
     }
     let real = unsafe { PyFloat_AsDouble(op) };
     if real == -1.0 && !unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
@@ -2008,10 +2856,10 @@ pub unsafe extern "C" fn PyComplex_AsCComplex(op: *mut PyObject) -> Py_complex {
 /// `PyFloat_AsDouble` (Objects/complexobject.c).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyComplex_RealAsDouble(op: *mut PyObject) -> c_double {
-    if !op.is_null()
-        && unsafe { PyComplex_Check(op) } != 0
-        && GLOBAL_BRIDGE.molt_handle_for_pyobj(op).is_none()
-    {
+    if let Some(value) = runtime_complex_parts(op) {
+        return value.real;
+    }
+    if !op.is_null() && unsafe { PyComplex_Check(op) } != 0 && resolved_molt_handle(op).is_none() {
         // Unaligned read: a C-minted PyComplexObject may sit on a 4-byte
         // boundary on wasm32 (a98ef2978e's misaligned-deref UB class).
         let field = unsafe { &raw const (*op.cast::<PyComplexObject>()).cval.real };
@@ -2026,10 +2874,10 @@ pub unsafe extern "C" fn PyComplex_RealAsDouble(op: *mut PyObject) -> c_double {
 /// returning 0.0.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyComplex_ImagAsDouble(op: *mut PyObject) -> c_double {
-    if !op.is_null()
-        && unsafe { PyComplex_Check(op) } != 0
-        && GLOBAL_BRIDGE.molt_handle_for_pyobj(op).is_none()
-    {
+    if let Some(value) = runtime_complex_parts(op) {
+        return value.imag;
+    }
+    if !op.is_null() && unsafe { PyComplex_Check(op) } != 0 && resolved_molt_handle(op).is_none() {
         // Unaligned read: same C-minted-object alignment class as above.
         let field = unsafe { &raw const (*op.cast::<PyComplexObject>()).cval.imag };
         return unsafe { std::ptr::read_unaligned(field) };
@@ -2045,6 +2893,10 @@ pub unsafe extern "C" fn PyComplex_Check(op: *mut PyObject) -> c_int {
     if op.is_null() {
         return 0;
     }
+    if let Some(value) = resolved_molt_handle(op) {
+        return (unsafe { (hooks_or_stubs().classify_heap)(value.bits()) }
+            == crate::abi_types::MoltTypeTag::Complex as u8) as c_int;
+    }
     let ob_type = unsafe { (*op).ob_type };
     if std::ptr::eq(ob_type, &raw const crate::abi_types::PyComplex_Type) {
         return 1;
@@ -2052,6 +2904,20 @@ pub unsafe extern "C" fn PyComplex_Check(op: *mut PyObject) -> c_int {
     unsafe {
         crate::api::typeobj::PyType_IsSubtype(ob_type, &raw mut crate::abi_types::PyComplex_Type)
     }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyComplex_CheckExact(op: *mut PyObject) -> c_int {
+    if let Some(value) = resolved_molt_handle(op) {
+        return (value.decode().is_ptr()
+            && unsafe { (hooks_or_stubs().classify_heap)(value.bits()) }
+                == crate::abi_types::MoltTypeTag::Complex as u8) as c_int;
+    }
+    (!op.is_null()
+        && std::ptr::eq(
+            unsafe { (*op).ob_type },
+            &raw const crate::abi_types::PyComplex_Type,
+        )) as c_int
 }
 
 // ─── PyBool ──────────────────────────────────────────────────────────────────
@@ -2074,7 +2940,7 @@ macro_rules! type_check {
             if op.is_null() {
                 return 0;
             }
-            let op_handle = GLOBAL_BRIDGE.molt_handle_for_pyobj(op);
+            let op_handle = resolved_molt_handle(op);
             match op_handle {
                 Some(value) => value.decode().$pred() as c_int,
                 None => 0,
@@ -2092,7 +2958,7 @@ pub unsafe extern "C" fn PyLong_Check(op: *mut PyObject) -> c_int {
     if op.is_null() {
         return 0;
     }
-    let op_handle = GLOBAL_BRIDGE.molt_handle_for_pyobj(op);
+    let op_handle = resolved_molt_handle(op);
     if let Some(value) = op_handle {
         let bits = value.bits();
         let obj = value.decode();
@@ -2111,6 +2977,25 @@ pub unsafe extern "C" fn PyLong_Check(op: *mut PyObject) -> c_int {
     }
 }
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyLong_CheckExact(op: *mut PyObject) -> c_int {
+    if let Some(value) = resolved_molt_handle(op) {
+        let object = value.decode();
+        if object.is_bool() {
+            return 0;
+        }
+        return (object.is_int()
+            || object.is_ptr()
+                && unsafe { (hooks_or_stubs().classify_heap)(value.bits()) }
+                    == crate::abi_types::MoltTypeTag::Int as u8) as c_int;
+    }
+    (!op.is_null()
+        && std::ptr::eq(
+            unsafe { (*op).ob_type },
+            &raw const crate::abi_types::PyLong_Type,
+        )) as c_int
+}
+
 /// CPython `PyFloat_Check` (Include/floatobject.h): float plus foreign float
 /// subclasses (numpy `float64` subclasses `float`) via the subtype walk.
 #[unsafe(no_mangle)]
@@ -2118,7 +3003,7 @@ pub unsafe extern "C" fn PyFloat_Check(op: *mut PyObject) -> c_int {
     if op.is_null() {
         return 0;
     }
-    let op_handle = GLOBAL_BRIDGE.molt_handle_for_pyobj(op);
+    let op_handle = resolved_molt_handle(op);
     if let Some(value) = op_handle {
         return value.decode().is_float() as c_int;
     }
@@ -2128,6 +3013,18 @@ pub unsafe extern "C" fn PyFloat_Check(op: *mut PyObject) -> c_int {
             &raw mut crate::abi_types::PyFloat_Type,
         )
     }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyFloat_CheckExact(op: *mut PyObject) -> c_int {
+    if let Some(value) = resolved_molt_handle(op) {
+        return value.decode().is_float() as c_int;
+    }
+    (!op.is_null()
+        && std::ptr::eq(
+            unsafe { (*op).ob_type },
+            &raw const crate::abi_types::PyFloat_Type,
+        )) as c_int
 }
 
 type_check!(PyBool_Check, is_bool);
@@ -2140,18 +3037,33 @@ pub unsafe extern "C" fn PyNumber_Check(op: *mut PyObject) -> c_int {
     if op.is_null() {
         return 0;
     }
-    let op_handle = GLOBAL_BRIDGE.molt_handle_for_pyobj(op);
+    // Scalar layout carriers are real public builtin objects even when their
+    // canonical slot tables have not yet been consulted.  Check physical
+    // identity before bridge resolution so a carrier backed by a Molt handle
+    // cannot fall into the generic heap classifier and lose Complex.
+    let physical_type = unsafe { (*op).ob_type };
+    if std::ptr::eq(physical_type, &raw const crate::abi_types::PyLong_Type)
+        || std::ptr::eq(physical_type, &raw const crate::abi_types::PyBool_Type)
+        || std::ptr::eq(physical_type, &raw const crate::abi_types::PyFloat_Type)
+        || std::ptr::eq(physical_type, &raw const crate::abi_types::PyComplex_Type)
+    {
+        return 1;
+    }
+    let op_handle = resolved_molt_handle(op);
     if let Some(value) = op_handle {
         let bits = value.bits();
         let obj = value.decode();
         if obj.is_int() || obj.is_float() || obj.is_bool() {
             return 1;
         }
-        if obj.is_ptr()
-            && unsafe { (hooks_or_stubs().classify_heap)(bits) }
-                == crate::abi_types::MoltTypeTag::Int as u8
-        {
-            return 1;
+        if obj.is_ptr() {
+            let tag = unsafe { (hooks_or_stubs().classify_heap)(bits) };
+            if tag == crate::abi_types::MoltTypeTag::Int as u8
+                || tag == crate::abi_types::MoltTypeTag::Float as u8
+                || tag == crate::abi_types::MoltTypeTag::Complex as u8
+            {
+                return 1;
+            }
         }
         return 0;
     }

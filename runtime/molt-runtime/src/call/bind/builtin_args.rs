@@ -18,18 +18,19 @@ pub(super) unsafe fn bind_builtin_call(
             ),
         )
         .and_then(|bits| obj_from_bits(bits).as_int());
-        if fn_ptr == fn_addr!(crate::builtins::exceptions::molt_exception_init)
-            || fn_ptr == fn_addr!(crate::builtins::exceptions::molt_exception_new_bound)
-        {
+        let callable_bits = Some(MoltObject::from_ptr(func_ptr).bits());
+        if callable_matches_runtime_symbol(
+            callable_bits,
+            fn_addr!(crate::builtins::exceptions::molt_exception_init),
+        ) || callable_matches_runtime_symbol(
+            callable_bits,
+            fn_addr!(crate::builtins::exceptions::molt_exception_new_bound),
+        ) {
             return bind_builtin_exception_args(_py, args);
         }
-        if callable_matches_runtime_symbol(
-            Some(MoltObject::from_ptr(func_ptr).bits()),
-            fn_addr!(molt_object_init),
-        ) || callable_matches_runtime_symbol(
-            Some(MoltObject::from_ptr(func_ptr).bits()),
-            fn_addr!(molt_object_init_subclass),
-        ) {
+        if callable_matches_runtime_symbol(callable_bits, fn_addr!(molt_object_init))
+            || callable_matches_runtime_symbol(callable_bits, fn_addr!(molt_object_init_subclass))
+        {
             let self_bits = args
                 .pos
                 .first()
@@ -37,10 +38,7 @@ pub(super) unsafe fn bind_builtin_call(
                 .unwrap_or_else(|| MoltObject::none().bits());
             return Some(vec![self_bits]);
         }
-        if callable_matches_runtime_symbol(
-            Some(MoltObject::from_ptr(func_ptr).bits()),
-            fn_addr!(molt_object_new_bound),
-        ) {
+        if callable_matches_runtime_symbol(callable_bits, fn_addr!(molt_object_new_bound)) {
             let self_bits = args
                 .pos
                 .first()
@@ -434,7 +432,7 @@ unsafe fn bind_builtin_exception_args(_py: &PyToken<'_>, args: &CallArgs) -> Opt
                 TYPE_ID_TYPE => true,
                 TYPE_ID_EXCEPTION => {
                     let oserror_bits = exception_type_bits_from_name(_py, "OSError");
-                    issubclass_bits(exception_class_bits(head_ptr), oserror_bits)
+                    issubclass_bits(object_class_bits(head_ptr), oserror_bits)
                 }
                 _ => false,
             };

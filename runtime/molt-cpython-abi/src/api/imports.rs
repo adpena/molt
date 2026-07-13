@@ -10,17 +10,14 @@
 use crate::abi_types::PyObject;
 use crate::bridge::GLOBAL_BRIDGE;
 use crate::hooks;
-use once_cell::sync::OnceCell;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
 use std::ptr;
 
-static MODULE_DICT: OnceCell<usize> = OnceCell::new();
-
 unsafe fn set_import_unavailable(_name: *const c_char) {
     unsafe {
         crate::api::errors::PyErr_SetString(
-            &raw mut crate::abi_types::PyExc_ImportError,
+            (&raw mut crate::abi_types::PyExc_ImportError).cast::<crate::abi_types::PyObject>(),
             c"import API is not available in standalone molt-cpython-abi".as_ptr(),
         );
     }
@@ -58,7 +55,8 @@ unsafe fn import_module_bytes(name: &[u8]) -> *mut PyObject {
             if let Ok(cmessage) = std::ffi::CString::new(message) {
                 unsafe {
                     crate::api::errors::PyErr_SetString(
-                        &raw mut crate::abi_types::PyExc_ImportError,
+                        (&raw mut crate::abi_types::PyExc_ImportError)
+                            .cast::<crate::abi_types::PyObject>(),
                         cmessage.as_ptr(),
                     );
                 }
@@ -66,7 +64,7 @@ unsafe fn import_module_bytes(name: &[u8]) -> *mut PyObject {
         }
         return ptr::null_mut();
     }
-    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(module_bits) }
+    unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(module_bits) }
 }
 
 #[unsafe(no_mangle)]
@@ -83,67 +81,116 @@ pub unsafe extern "C" fn PyImport_ImportModule(name: *const c_char) -> *mut PyOb
     unsafe { import_module_bytes(name_bytes) }
 }
 
-/// Resolve the runtime's real `sys.modules` dict handle, or 0 when the sys
-/// module (or hooks) are unavailable.
-unsafe fn sys_modules_bits() -> u64 {
+/// Resolve the runtime's real `sys.modules` dict without collapsing an
+/// execution error into an ordinary missing value.
+unsafe fn sys_modules_result() -> hooks::DecodedHandleResult {
     let Some(h) = hooks::hooks() else {
-        return 0;
+        return hooks::DecodedHandleResult::Missing;
     };
-    unsafe { (h.sys_get_object_borrowed)(b"modules".as_ptr(), b"modules".len()) }
+    decode_borrowed_hook_result(unsafe {
+        (h.sys_get_object_borrowed)(b"modules".as_ptr(), b"modules".len())
+    })
+}
+
+/// Decode a borrowed runtime-hook result without allowing a non-error status
+/// to escape alongside an already-pending exception. The runtime and C
+/// indicators are one logical error channel at this boundary.
+pub(crate) fn decode_borrowed_hook_result(
+    result: hooks::BorrowedHandleResult,
+) -> hooks::DecodedHandleResult {
+    let decoded = result.decode();
+    if crate::api::errors::transfer_runtime_pending_to_current()
+        || !unsafe { crate::api::errors::PyErr_Occurred() }.is_null()
+    {
+        hooks::DecodedHandleResult::Error
+    } else {
+        decoded
+    }
+}
+
+pub(crate) fn propagate_hook_error(message: &'static CStr) {
+    if crate::api::errors::transfer_runtime_pending_to_current()
+        || !unsafe { crate::api::errors::PyErr_Occurred() }.is_null()
+    {
+        return;
+    }
+    unsafe {
+        crate::api::errors::PyErr_SetString(
+            (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
+            message.as_ptr(),
+        )
+    }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyImport_AddModule(name: *const c_char) -> *mut PyObject {
-    // CPython Python/import.c: return the module registered in sys.modules if
-    // present, else insert a NEW EMPTY module (no import is run) and return a
-    // BORROWED reference. Backed by the runtime's real sys.modules + module
-    // allocator hooks; without hooks this stays honestly fail-closed.
+    // CPython Python/import.c: under one sys.modules critical section, return
+    // the existing value only when it is a module; otherwise create and
+    // publish a new empty module. The runtime hook owns that entire
+    // get/type-check/create/set transaction, including replacement of a
+    // non-module value. This entrypoint validates the UTF-8 C name, preserves
+    // the exact error indicator, and projects the borrowed result.
     if name.is_null() {
         unsafe { set_import_unavailable(name) };
+        return ptr::null_mut();
+    }
+    let name_bytes = unsafe { CStr::from_ptr(name).to_bytes() };
+    if std::str::from_utf8(name_bytes).is_err() {
+        // CPython first calls PyUnicode_FromString, so malformed UTF-8 must
+        // raise the same UnicodeDecodeError before the transaction is entered.
+        // This second decode only runs on the cold error path.
+        let decoded = unsafe { crate::api::strings::PyUnicode_FromString(name) };
+        unsafe { crate::api::refcount::Py_XDECREF(decoded) };
+        if !decoded.is_null() {
+            propagate_hook_error(c"invalid UTF-8 module name decoded without an exception");
+        }
         return ptr::null_mut();
     }
     let Some(h) = hooks::hooks() else {
         unsafe { set_import_unavailable(name) };
         return ptr::null_mut();
     };
-    let modules_bits = unsafe { sys_modules_bits() };
-    if modules_bits == 0 {
-        unsafe { set_import_unavailable(name) };
-        return ptr::null_mut();
+    match decode_borrowed_hook_result(unsafe {
+        (h.import_add_module_borrowed)(name_bytes.as_ptr(), name_bytes.len())
+    }) {
+        hooks::DecodedHandleResult::Ok(module_bits) => unsafe {
+            GLOBAL_BRIDGE.handle_to_borrowed_pyobj(module_bits)
+        },
+        hooks::DecodedHandleResult::Error => {
+            propagate_hook_error(
+                c"atomic sys.modules publication failed without setting an exception",
+            );
+            ptr::null_mut()
+        }
+        hooks::DecodedHandleResult::Missing => {
+            propagate_hook_error(
+                c"atomic sys.modules publication returned no module without setting an exception",
+            );
+            ptr::null_mut()
+        }
     }
-    let name_bytes = unsafe { CStr::from_ptr(name).to_bytes() };
-    let key_bits = unsafe { (h.alloc_str)(name_bytes.as_ptr(), name_bytes.len()) };
-    if key_bits == 0 {
-        return unsafe { crate::api::errors::PyErr_NoMemory() };
-    }
-    let existing = unsafe { (h.dict_get)(modules_bits, key_bits) };
-    if existing != 0 {
-        unsafe { (h.dec_ref)(key_bits) };
-        return unsafe { GLOBAL_BRIDGE.handle_to_borrowed_pyobj(existing) };
-    }
-    // Absent: create an empty module and register it in sys.modules.
-    let module_bits = unsafe { (h.alloc_module)(name_bytes.as_ptr(), name_bytes.len()) };
-    if module_bits == 0 {
-        unsafe { (h.dec_ref)(key_bits) };
-        return unsafe { crate::api::errors::PyErr_NoMemory() };
-    }
-    unsafe { (h.dict_set)(modules_bits, key_bits, module_bits) };
-    unsafe { (h.dec_ref)(key_bits) };
-    unsafe { GLOBAL_BRIDGE.handle_to_borrowed_pyobj(module_bits) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyImport_GetModuleDict() -> *mut PyObject {
     // CPython returns the interpreter's REAL modules dict (== sys.modules).
-    // Route through the runtime's sys module so PyDict_GetItemString(
-    // GetModuleDict(), name) sees genuinely imported modules; the detached
-    // OnceCell dict remains only as the hook-less fallback.
-    let bits = unsafe { sys_modules_bits() };
-    if bits != 0 {
-        return unsafe { GLOBAL_BRIDGE.handle_to_borrowed_pyobj(bits) };
+    // There is one modules-dict authority: the runtime's sys.modules. A
+    // detached hook-less dictionary would make imports and this API disagree.
+    match unsafe { sys_modules_result() } {
+        hooks::DecodedHandleResult::Ok(bits) => {
+            return unsafe { GLOBAL_BRIDGE.handle_to_borrowed_pyobj(bits) };
+        }
+        hooks::DecodedHandleResult::Missing if hooks::hooks().is_none() => unsafe {
+            set_import_unavailable(ptr::null())
+        },
+        hooks::DecodedHandleResult::Missing => {
+            propagate_hook_error(c"runtime has no sys.modules dictionary")
+        }
+        hooks::DecodedHandleResult::Error => {
+            propagate_hook_error(c"sys.modules lookup failed without setting an exception")
+        }
     }
-    let raw = MODULE_DICT.get_or_init(|| unsafe { crate::api::mapping::PyDict_New() as usize });
-    *raw as *mut PyObject
+    ptr::null_mut()
 }
 
 #[unsafe(no_mangle)]
@@ -193,7 +240,7 @@ unsafe fn resolve_relative_name(
     if globals.is_null() {
         unsafe {
             crate::api::errors::PyErr_SetString(
-                &raw mut crate::abi_types::PyExc_KeyError,
+                (&raw mut crate::abi_types::PyExc_KeyError).cast::<crate::abi_types::PyObject>(),
                 c"'__name__' not in globals".as_ptr(),
             );
         }
@@ -206,7 +253,8 @@ unsafe fn resolve_relative_name(
             else {
                 unsafe {
                     crate::api::errors::PyErr_SetString(
-                        &raw mut crate::abi_types::PyExc_KeyError,
+                        (&raw mut crate::abi_types::PyExc_KeyError)
+                            .cast::<crate::abi_types::PyObject>(),
                         c"'__name__' not in globals".as_ptr(),
                     );
                 }
@@ -224,7 +272,8 @@ unsafe fn resolve_relative_name(
                     None => {
                         unsafe {
                             crate::api::errors::PyErr_SetString(
-                                &raw mut crate::abi_types::PyExc_ImportError,
+                                (&raw mut crate::abi_types::PyExc_ImportError)
+                                    .cast::<crate::abi_types::PyObject>(),
                                 c"attempted relative import with no known parent package".as_ptr(),
                             );
                         }
@@ -238,7 +287,7 @@ unsafe fn resolve_relative_name(
     if package.is_empty() {
         unsafe {
             crate::api::errors::PyErr_SetString(
-                &raw mut crate::abi_types::PyExc_ImportError,
+                (&raw mut crate::abi_types::PyExc_ImportError).cast::<crate::abi_types::PyObject>(),
                 c"attempted relative import with no known parent package".as_ptr(),
             );
         }
@@ -253,7 +302,8 @@ unsafe fn resolve_relative_name(
             None => {
                 unsafe {
                     crate::api::errors::PyErr_SetString(
-                        &raw mut crate::abi_types::PyExc_ImportError,
+                        (&raw mut crate::abi_types::PyExc_ImportError)
+                            .cast::<crate::abi_types::PyObject>(),
                         c"attempted relative import beyond top-level package".as_ptr(),
                     );
                 }

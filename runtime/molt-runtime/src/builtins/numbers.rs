@@ -276,44 +276,37 @@ pub(crate) fn bigint_to_bytes(
         return INT_BYTES_NEGATIVE_UNSIGNED;
     }
 
-    let width = out.len().saturating_mul(8);
-    if !out.is_empty() {
-        let modulus = BigInt::from(1u8) << width;
-        let wrapped = ((value % &modulus) + &modulus) % &modulus;
-        let (_, mut bytes) = if little_endian {
-            wrapped.to_bytes_le()
+    // num-bigint already owns the minimal two's-complement/sign-magnitude
+    // encoder. Use its single output buffer directly: the prior modulus,
+    // remainder, normalization and padding path allocated several full-width
+    // BigInts and a second Vec for every conversion.
+    let bytes = if signed {
+        if little_endian {
+            value.to_signed_bytes_le()
         } else {
-            wrapped.to_bytes_be()
-        };
-        if bytes.len() < out.len() {
-            let pad = out.len() - bytes.len();
-            if little_endian {
-                bytes.resize(out.len(), 0);
-            } else {
-                let mut padded = vec![0; pad];
-                padded.extend_from_slice(&bytes);
-                bytes = padded;
-            }
+            value.to_signed_bytes_be()
         }
-        let start = if little_endian {
-            0
-        } else {
-            bytes.len().saturating_sub(out.len())
-        };
-        out.copy_from_slice(&bytes[start..start + out.len()]);
-    }
-
-    let fits = if signed {
-        if width == 0 {
-            value.is_zero()
-        } else {
-            let limit = BigInt::from(1u8) << (width - 1);
-            value >= &(-&limit) && value < &limit
-        }
-    } else if width == 0 {
-        value.is_zero()
+    } else if little_endian {
+        value.to_bytes_le().1
     } else {
-        value < &(BigInt::from(1u8) << width)
+        value.to_bytes_be().1
+    };
+    let fits = value.is_zero() && out.is_empty() || bytes.len() <= out.len();
+    let pad = if signed && value.sign() == Sign::Minus {
+        0xff
+    } else {
+        0
+    };
+    out.fill(pad);
+    let copied = bytes.len().min(out.len());
+    if copied != 0 {
+        if little_endian {
+            out[..copied].copy_from_slice(&bytes[..copied]);
+        } else {
+            let out_start = out.len() - copied;
+            let bytes_start = bytes.len() - copied;
+            out[out_start..].copy_from_slice(&bytes[bytes_start..]);
+        }
     };
     if fits {
         INT_BYTES_OK

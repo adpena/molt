@@ -191,12 +191,8 @@ pub(super) fn insert_exception_region_match_drops(
     // block keep their exact indices. Blocks are independent, so their relative
     // order is irrelevant.
     let mut ordered_positions: Vec<_> = release_to_matches.into_iter().collect();
-    ordered_positions.sort_by(|(a, _), (b, _)| {
-        a.block
-            .0
-            .cmp(&b.block.0)
-            .then(b.op_index.cmp(&a.op_index))
-    });
+    ordered_positions
+        .sort_by(|(a, _), (b, _)| a.block.0.cmp(&b.block.0).then(b.op_index.cmp(&a.op_index)));
 
     for (position, release_facts) in ordered_positions {
         emit_drop_inner_stage_audit(

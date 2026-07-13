@@ -4,8 +4,13 @@
 
 #![allow(non_snake_case)]
 
+mod support;
+
 use molt_cpython_abi::abi_types::*;
-use molt_cpython_abi::hooks::{MoltBufferView, RuntimeHooks};
+use molt_cpython_abi::hooks::{
+    BorrowedHandleResult, MoltBufferView, OwnedHandleResult, RuntimeHooks,
+};
+use molt_lang_obj_model::MoltObject;
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr;
@@ -47,6 +52,8 @@ static TEST_LOCK: Mutex<()> = Mutex::new(());
 static FAKE_BUFFER: [u8; 4] = [1, 2, 3, 4];
 static FAKE_MODULE_STATE: LazyLock<Mutex<FakeModuleState>> =
     LazyLock::new(|| Mutex::new(FakeModuleState::default()));
+static FAKE_REFCOUNTS: LazyLock<Mutex<HashMap<u64, usize>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[derive(Default)]
 struct FakeModuleState {
@@ -64,11 +71,14 @@ fn next_fake_handle() -> u64 {
     // NaN-boxed pointers are 50-bit aligned to ≥2-byte boundaries; bumping
     // by 8 keeps the sequence well clear of inline-int / inline-bool / None
     // bit patterns and stays inside the heap-pointer space.
-    FAKE_HANDLE_COUNTER.fetch_add(8, Ordering::Relaxed)
+    let address = FAKE_HANDLE_COUNTER.fetch_add(8, Ordering::Relaxed) as usize;
+    let bits = MoltObject::from_ptr(ptr::with_exposed_provenance_mut(address)).bits();
+    FAKE_REFCOUNTS.lock().unwrap().insert(bits, 1);
+    bits
 }
 
-unsafe extern "C" fn fake_alloc_str(_data: *const u8, _len: usize) -> u64 {
-    next_fake_handle()
+unsafe extern "C" fn fake_alloc_str(data: *const u8, len: usize) -> u64 {
+    unsafe { support::fake_strings::alloc_str(data, len) }
 }
 unsafe extern "C" fn fake_alloc_bytes(_data: *const u8, _len: usize) -> u64 {
     next_fake_handle()
@@ -113,6 +123,37 @@ unsafe extern "C" fn fake_int_from_bytes(
 ) -> u64 {
     next_fake_handle()
 }
+
+unsafe extern "C" fn fake_int_from_digits(
+    _digits: *const u8,
+    _len: usize,
+    _base: u32,
+    _negative: std::os::raw::c_int,
+) -> u64 {
+    0
+}
+
+unsafe extern "C" fn fake_int_from_f64_trunc(value: f64) -> u64 {
+    unsafe { fake_int_from_i64(value.trunc() as i64) }
+}
+
+unsafe extern "C" fn fake_int_sign(bits: u64) -> i32 {
+    unsafe { fake_int_as_i64(bits) }.signum() as i32
+}
+
+unsafe extern "C" fn fake_int_signed_byte_width(bits: u64, out: *mut usize) -> i32 {
+    let value = unsafe { fake_int_as_i64(bits) };
+    unsafe {
+        *out = ((65
+            - if value >= 0 {
+                value.leading_zeros()
+            } else {
+                (!value).leading_zeros()
+            }) as usize)
+            .div_ceil(8)
+    };
+    0
+}
 unsafe extern "C" fn fake_int_to_bytes(
     _bits: u64,
     _data: *mut u8,
@@ -129,23 +170,28 @@ unsafe extern "C" fn fake_int_num_bits(_bits: u64, _out: *mut usize) -> std::os:
 unsafe extern "C" fn fake_int_max_str_digits() -> usize {
     4300
 }
+
+unsafe extern "C" fn fake_complex_parts(_bits: u64, _real: *mut f64, _imag: *mut f64) -> i32 {
+    -1
+}
 unsafe extern "C" fn fake_alloc_list() -> u64 {
     next_fake_handle()
 }
-unsafe extern "C" fn fake_list_append(_list_bits: u64, _item_bits: u64) {}
+unsafe extern "C" fn fake_list_append(_list_bits: u64, _item_bits: u64) -> i32 {
+    0
+}
 unsafe extern "C" fn fake_list_len(_bits: u64) -> usize {
     0
 }
-unsafe extern "C" fn fake_list_item(_bits: u64, _i: usize) -> u64 {
-    0
+unsafe extern "C" fn fake_list_item(_bits: u64, _i: usize) -> BorrowedHandleResult {
+    BorrowedHandleResult::missing()
 }
 unsafe extern "C" fn fake_list_set(
     _list_bits: u64,
     _i: usize,
     _val_bits: u64,
-    _out_old: *mut u64,
-) -> std::os::raw::c_int {
-    0
+) -> OwnedHandleResult {
+    OwnedHandleResult::ok(MoltObject::none().bits())
 }
 unsafe extern "C" fn fake_list_insert(
     _list_bits: u64,
@@ -171,19 +217,27 @@ unsafe extern "C" fn fake_list_set_slice(
 unsafe extern "C" fn fake_alloc_tuple(_arity: usize) -> u64 {
     next_fake_handle()
 }
-unsafe extern "C" fn fake_tuple_set(_bits: u64, _i: usize, _value: u64) {}
+unsafe extern "C" fn fake_tuple_set(_bits: u64, _i: usize, _value: u64) -> OwnedHandleResult {
+    OwnedHandleResult::ok(MoltObject::none().bits())
+}
 unsafe extern "C" fn fake_tuple_len(_bits: u64) -> usize {
     0
 }
-unsafe extern "C" fn fake_tuple_item(_bits: u64, _i: usize) -> u64 {
-    0
+unsafe extern "C" fn fake_tuple_item(_bits: u64, _i: usize) -> BorrowedHandleResult {
+    BorrowedHandleResult::missing()
 }
 unsafe extern "C" fn fake_alloc_dict() -> u64 {
     next_fake_handle()
 }
-unsafe extern "C" fn fake_dict_set(_d: u64, _k: u64, _v: u64) {}
-unsafe extern "C" fn fake_dict_get(_d: u64, _k: u64) -> u64 {
+unsafe extern "C" fn fake_dict_set(_d: u64, _k: u64, _v: u64) -> i32 {
+    unsafe {
+        fake_inc_ref(_k);
+        fake_inc_ref(_v);
+    }
     0
+}
+unsafe extern "C" fn fake_dict_get(_d: u64, _k: u64) -> BorrowedHandleResult {
+    BorrowedHandleResult::missing()
 }
 unsafe extern "C" fn fake_dict_del(_d: u64, _k: u64) -> std::os::raw::c_int {
     0
@@ -199,13 +253,8 @@ unsafe extern "C" fn fake_dict_entry(
 ) -> std::os::raw::c_int {
     0
 }
-unsafe extern "C" fn fake_str_data(_bits: u64, out_len: *mut usize) -> *const u8 {
-    if !out_len.is_null() {
-        unsafe {
-            *out_len = 0;
-        }
-    }
-    b"".as_ptr()
+unsafe extern "C" fn fake_str_data(bits: u64, out_len: *mut usize) -> *const u8 {
+    unsafe { support::fake_strings::str_data(bits, out_len) }
 }
 unsafe extern "C" fn fake_bytes_data(_bits: u64, out_len: *mut usize) -> *const u8 {
     if !out_len.is_null() {
@@ -249,8 +298,8 @@ unsafe extern "C" fn fake_buffer_release(view: *mut MoltBufferView) -> std::os::
     }
     0
 }
-unsafe extern "C" fn fake_object_get_attr(_obj: u64, _name: u64) -> u64 {
-    0
+unsafe extern "C" fn fake_object_get_attr(_obj: u64, _name: u64) -> OwnedHandleResult {
+    OwnedHandleResult::error()
 }
 unsafe extern "C" fn fake_object_set_attr(
     _obj: u64,
@@ -259,17 +308,47 @@ unsafe extern "C" fn fake_object_set_attr(
 ) -> std::os::raw::c_int {
     0
 }
-unsafe extern "C" fn fake_object_format(_obj: u64, _spec: u64) -> u64 {
-    next_fake_handle()
+unsafe extern "C" fn fake_object_format(_obj: u64, _spec: u64) -> OwnedHandleResult {
+    OwnedHandleResult::ok(next_fake_handle())
 }
-unsafe extern "C" fn fake_sys_get_object_borrowed(_data: *const u8, _len: usize) -> u64 {
-    0
+unsafe extern "C" fn fake_sys_get_object_borrowed(
+    _data: *const u8,
+    _len: usize,
+) -> BorrowedHandleResult {
+    BorrowedHandleResult::missing()
 }
-unsafe extern "C" fn fake_classify_heap(_bits: u64) -> u8 {
-    MoltTypeTag::Other as u8
+unsafe extern "C" fn fake_classify_heap(bits: u64) -> u8 {
+    if support::fake_strings::contains(bits) {
+        MoltTypeTag::Str as u8
+    } else {
+        MoltTypeTag::Other as u8
+    }
 }
-unsafe extern "C" fn fake_inc_ref(_bits: u64) {}
-unsafe extern "C" fn fake_dec_ref(_bits: u64) {}
+unsafe extern "C" fn fake_inc_ref(bits: u64) {
+    if let Some(count) = FAKE_REFCOUNTS.lock().unwrap().get_mut(&bits) {
+        *count = count.checked_add(1).expect("fake refcount overflow");
+    }
+}
+unsafe extern "C" fn fake_dec_ref(bits: u64) {
+    if let Some(count) = FAKE_REFCOUNTS.lock().unwrap().get_mut(&bits) {
+        assert!(*count > 0, "fake refcount underflow");
+        *count -= 1;
+    }
+}
+unsafe extern "C" fn fake_ref_count(bits: u64) -> usize {
+    FAKE_REFCOUNTS
+        .lock()
+        .unwrap()
+        .get(&bits)
+        .copied()
+        .unwrap_or(0)
+}
+unsafe extern "C" fn fake_try_mark_abi_view(
+    _bits: u64,
+    _present: std::os::raw::c_int,
+) -> std::os::raw::c_int {
+    1
+}
 unsafe extern "C" fn fake_alloc_module(_data: *const u8, _len: usize) -> u64 {
     let module_bits = next_fake_handle();
     let dict_bits = next_fake_handle();
@@ -280,14 +359,23 @@ unsafe extern "C" fn fake_alloc_module(_data: *const u8, _len: usize) -> u64 {
         .insert(module_bits, dict_bits);
     module_bits
 }
-unsafe extern "C" fn fake_module_get_dict(module_bits: u64) -> u64 {
+unsafe extern "C" fn fake_module_get_dict(module_bits: u64) -> BorrowedHandleResult {
     FAKE_MODULE_STATE
         .lock()
         .unwrap()
         .dict_by_module
         .get(&module_bits)
         .copied()
-        .unwrap_or(0)
+        .map_or_else(BorrowedHandleResult::error, BorrowedHandleResult::ok)
+}
+unsafe extern "C" fn fake_import_add_module_borrowed(
+    _data: *const u8,
+    _len: usize,
+) -> BorrowedHandleResult {
+    BorrowedHandleResult::error()
+}
+unsafe extern "C" fn fake_eval_get_builtins_borrowed() -> BorrowedHandleResult {
+    BorrowedHandleResult::error()
 }
 unsafe extern "C" fn fake_module_set_attr(
     _m: u64,
@@ -341,30 +429,39 @@ unsafe extern "C" fn fake_module_state_add(
     if module_def_ptr == 0 {
         return -1;
     }
-    FAKE_MODULE_STATE
+    let replaced = FAKE_MODULE_STATE
         .lock()
         .unwrap()
         .by_def
         .insert(module_def_ptr, module_bits);
+    if replaced != Some(module_bits) {
+        unsafe { fake_inc_ref(module_bits) };
+        if let Some(old_bits) = replaced {
+            unsafe { fake_dec_ref(old_bits) };
+        }
+    }
     0
 }
-unsafe extern "C" fn fake_module_state_find(module_def_ptr: usize) -> u64 {
-    FAKE_MODULE_STATE
+unsafe extern "C" fn fake_module_state_find(module_def_ptr: usize) -> BorrowedHandleResult {
+    match FAKE_MODULE_STATE
         .lock()
         .unwrap()
         .by_def
         .get(&module_def_ptr)
         .copied()
-        .unwrap_or(0)
+    {
+        Some(bits) => BorrowedHandleResult::ok(bits),
+        None => BorrowedHandleResult::missing(),
+    }
 }
 unsafe extern "C" fn fake_module_state_remove(module_def_ptr: usize) -> std::os::raw::c_int {
-    if FAKE_MODULE_STATE
+    if let Some(bits) = FAKE_MODULE_STATE
         .lock()
         .unwrap()
         .by_def
         .remove(&module_def_ptr)
-        .is_some()
     {
+        unsafe { fake_dec_ref(bits) };
         0
     } else {
         -1
@@ -393,6 +490,52 @@ unsafe extern "C" fn fake_import_module(_data: *const u8, _len: usize) -> u64 {
 unsafe extern "C" fn fake_exception_pending() -> std::os::raw::c_int {
     0
 }
+unsafe extern "C" fn fake_report_unraisable(
+    _context_bits: u64,
+    _type_bits: u64,
+    _value_bits: u64,
+    _traceback_bits: u64,
+    _message: *const u8,
+    _message_len: usize,
+    _err_msg: *const u8,
+    _err_msg_len: usize,
+    _has_err_msg: std::os::raw::c_int,
+) {
+}
+unsafe extern "C" fn fake_normalize_exception(
+    _requested_class_bits: u64,
+    _args_bits: u64,
+    _value_bits: u64,
+    _has_value: std::os::raw::c_int,
+    _traceback_bits: u64,
+    _has_traceback: std::os::raw::c_int,
+    _actual_class_bits: *mut u64,
+) -> OwnedHandleResult {
+    OwnedHandleResult::error()
+}
+unsafe extern "C" fn fake_exception_set_field(
+    _exception_bits: u64,
+    _field: u32,
+    _value_bits: u64,
+    _has_value: std::os::raw::c_int,
+) -> std::os::raw::c_int {
+    -1
+}
+unsafe extern "C" fn fake_exception_get_field(
+    _exception_bits: u64,
+    _field: u32,
+) -> OwnedHandleResult {
+    OwnedHandleResult::error()
+}
+unsafe extern "C" fn fake_exception_class_borrowed(_exception_bits: u64) -> BorrowedHandleResult {
+    BorrowedHandleResult::error()
+}
+unsafe extern "C" fn fake_take_pending_exception(
+    _actual_class_bits: *mut u64,
+    _traceback_bits: *mut u64,
+) -> OwnedHandleResult {
+    OwnedHandleResult::error()
+}
 
 unsafe extern "C" fn fake_gil_ensure() -> std::os::raw::c_int {
     0
@@ -405,6 +548,9 @@ unsafe extern "C" fn fake_gil_check() -> std::os::raw::c_int {
 }
 
 const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
+    abi_magic: molt_cpython_abi::hooks::RUNTIME_HOOKS_ABI_MAGIC,
+    abi_version: molt_cpython_abi::hooks::RUNTIME_HOOKS_ABI_VERSION,
+    struct_size: std::mem::size_of::<RuntimeHooks>() as u32,
     gil_ensure: fake_gil_ensure,
     gil_leave: fake_gil_leave,
     gil_release: fake_gil_release,
@@ -418,10 +564,15 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     int_as_i64_checked: fake_int_as_i64_checked,
     int_as_u64_checked: fake_int_as_u64_checked,
     int_as_u64_mask: fake_int_as_u64_mask,
+    int_from_digits: fake_int_from_digits,
+    int_from_f64_trunc: fake_int_from_f64_trunc,
+    int_sign: fake_int_sign,
+    int_signed_byte_width: fake_int_signed_byte_width,
     int_from_bytes: fake_int_from_bytes,
     int_to_bytes: fake_int_to_bytes,
     int_num_bits: fake_int_num_bits,
     int_max_str_digits: fake_int_max_str_digits,
+    complex_parts: fake_complex_parts,
     alloc_list: fake_alloc_list,
     list_append: fake_list_append,
     list_len: fake_list_len,
@@ -448,13 +599,17 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     object_get_attr: fake_object_get_attr,
     object_set_attr: fake_object_set_attr,
     object_format: fake_object_format,
-    float_repr: fake_float_repr,
+    float_repr: support::fake_strings::float_repr,
     sys_get_object_borrowed: fake_sys_get_object_borrowed,
+    eval_get_builtins_borrowed: fake_eval_get_builtins_borrowed,
     classify_heap: fake_classify_heap,
     inc_ref: fake_inc_ref,
     dec_ref: fake_dec_ref,
+    ref_count: fake_ref_count,
+    try_mark_abi_view: fake_try_mark_abi_view,
     alloc_module: fake_alloc_module,
-    module_get_dict: fake_module_get_dict,
+    module_get_dict_borrowed: fake_module_get_dict,
+    import_add_module_borrowed: fake_import_add_module_borrowed,
     module_set_attr: fake_module_set_attr,
     module_capi_register: fake_module_capi_register,
     module_capi_get_state: fake_module_capi_get_state,
@@ -468,7 +623,7 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     number_unary_op: fake_number_unary_op,
     number_power: fake_number_power,
     dict_op: fake_dict_op,
-    set_op: fake_dict_op,
+    set_op: fake_set_op,
     set_new: fake_set_new,
     set_size: fake_set_size,
     set_contains: fake_set_contains,
@@ -477,30 +632,33 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     object_dir: fake_object_dir,
     object_call: fake_object_call,
     foreign_new: fake_foreign_new,
+    report_unraisable: fake_report_unraisable,
+    normalize_exception: fake_normalize_exception,
+    exception_set_field: fake_exception_set_field,
+    exception_get_field: fake_exception_get_field,
+    exception_class_borrowed: fake_exception_class_borrowed,
+    take_pending_exception: fake_take_pending_exception,
+    ..molt_cpython_abi::hooks::STUB_HOOKS
 };
 
-unsafe extern "C" fn fake_object_call(_callable: u64, _args: u64, _kwargs: u64) -> u64 {
-    0
+unsafe extern "C" fn fake_object_call(
+    _callable: u64,
+    _args: u64,
+    _kwargs: u64,
+) -> OwnedHandleResult {
+    OwnedHandleResult::error()
 }
 unsafe extern "C" fn fake_foreign_new(_c_ptr: usize) -> u64 {
-    0
+    next_fake_handle()
 }
-unsafe extern "C" fn fake_number_binary_op(_op: u32, _a: u64, _b: u64) -> u64 {
-    0
+unsafe extern "C" fn fake_number_binary_op(_op: u32, _a: u64, _b: u64) -> OwnedHandleResult {
+    OwnedHandleResult::error()
 }
-unsafe extern "C" fn fake_number_unary_op(_op: u32, _a: u64) -> u64 {
-    0
+unsafe extern "C" fn fake_number_unary_op(_op: u32, _a: u64) -> OwnedHandleResult {
+    OwnedHandleResult::error()
 }
-unsafe extern "C" fn fake_number_power(_a: u64, _b: u64, _mod_bits: u64) -> u64 {
-    0
-}
-unsafe extern "C" fn fake_float_repr(value: f64, out: *mut u8, cap: usize) -> usize {
-    let s = format!("{value}");
-    let bytes = s.as_bytes();
-    if bytes.len() <= cap && !out.is_null() {
-        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len()) };
-    }
-    bytes.len()
+unsafe extern "C" fn fake_number_power(_a: u64, _b: u64, _mod_bits: u64) -> OwnedHandleResult {
+    OwnedHandleResult::error()
 }
 unsafe extern "C" fn fake_set_new(_iterable: u64) -> u64 {
     0
@@ -519,6 +677,9 @@ unsafe extern "C" fn fake_set_discard(_set: u64, _key: u64) -> std::os::raw::c_i
 }
 unsafe extern "C" fn fake_dict_op(_op: u32, _dict: u64) -> u64 {
     0
+}
+unsafe extern "C" fn fake_set_op(_op: u32, _set: u64) -> OwnedHandleResult {
+    OwnedHandleResult::error()
 }
 unsafe extern "C" fn fake_object_dir(_obj: u64) -> u64 {
     0
@@ -542,10 +703,76 @@ fn init() -> MutexGuard<'static, ()> {
 }
 
 #[test]
+fn dict_set_item_anchors_key_and_value_proxies() {
+    let _guard = init();
+    let (recv, key, value) = unsafe {
+        (
+            molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(next_fake_handle()),
+            molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(next_fake_handle()),
+            molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(next_fake_handle()),
+        )
+    };
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::mapping::PyDict_SetItem(recv, key, value) },
+        0
+    );
+    unsafe {
+        molt_cpython_abi::api::refcount::Py_DECREF(key);
+        molt_cpython_abi::api::refcount::Py_DECREF(value);
+    }
+    assert!(
+        molt_cpython_abi::bridge::GLOBAL_BRIDGE
+            .molt_handle_for_pyobj(key)
+            .is_some(),
+        "key mapping severed by the extension's balancing DECREF"
+    );
+    assert!(
+        molt_cpython_abi::bridge::GLOBAL_BRIDGE
+            .molt_handle_for_pyobj(value)
+            .is_some(),
+        "value mapping severed by the extension's balancing DECREF"
+    );
+}
+
+#[test]
+fn dict_set_item_gives_foreign_custody_to_key() {
+    let _guard = init();
+    let recv = unsafe {
+        molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(next_fake_handle())
+    };
+    let value = unsafe {
+        molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(next_fake_handle())
+    };
+    let mut foreign_key = PyObject {
+        ob_refcnt: 1,
+        ob_type: &raw mut PyBaseObject_Type,
+    };
+    let key = &raw mut foreign_key;
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::mapping::PyDict_SetItem(recv, key, value) },
+        0,
+        "foreign C-extension object rejected as a dict key"
+    );
+    let bits = unsafe {
+        molt_cpython_abi::bridge::GLOBAL_BRIDGE
+            .molt_value_for_pyobj(key)
+            .expect("foreign key must acquire stable bridge custody")
+    };
+    let round_trip = unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
+    assert_eq!(round_trip, key, "foreign key wrapper lost pointer identity");
+    unsafe {
+        molt_cpython_abi::api::refcount::Py_DECREF(round_trip);
+        fake_dec_ref(bits);
+        molt_cpython_abi::bridge::molt_foreign_object_release(key as usize);
+    }
+}
+
+#[test]
 fn test_getbuffer_uses_runtime_typed_descriptor() {
     let _guard = init();
-    let obj =
-        unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_pyobj(next_fake_handle()) };
+    let obj = unsafe {
+        molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(next_fake_handle())
+    };
     let mut view: Py_buffer = unsafe { std::mem::zeroed() };
     let flags = PyBUF_FORMAT | PyBUF_STRIDES;
     let rc = unsafe { molt_cpython_abi::api::buffer::PyObject_GetBuffer(obj, &mut view, flags) };
@@ -653,8 +880,9 @@ fn test_fillinfo_rejects_writable_request_for_readonly_raw_buffer() {
 fn test_memoryview_uses_runtime_buffer_lifetime() {
     let _guard = init();
     FAKE_BUFFER_RELEASES.store(0, Ordering::Relaxed);
-    let obj =
-        unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_pyobj(next_fake_handle()) };
+    let obj = unsafe {
+        molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(next_fake_handle())
+    };
     let rc_before = unsafe { (*obj).ob_refcnt };
     let memoryview = unsafe { molt_cpython_abi::api::memory::PyMemoryView_FromObject(obj) };
     assert!(!memoryview.is_null());
@@ -715,8 +943,17 @@ fn test_module_getdict_non_null() {
     let _guard = init();
     let m = unsafe { molt_cpython_abi::api::modules::PyModule_New(c"mod".as_ptr()) };
     let d = unsafe { molt_cpython_abi::api::modules::PyModule_GetDict(m) };
-    // Returns the module itself as a placeholder
     assert!(!d.is_null());
+    let borrowed_refcnt = unsafe { (*d).ob_refcnt };
+    for _ in 0..128 {
+        let again = unsafe { molt_cpython_abi::api::modules::PyModule_GetDict(m) };
+        assert_eq!(again, d);
+        assert_eq!(
+            unsafe { (*d).ob_refcnt },
+            borrowed_refcnt,
+            "PyModule_GetDict must not turn its borrowed hook result into a new C reference"
+        );
+    }
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(m) };
 }
 
@@ -881,7 +1118,7 @@ unsafe extern "C" fn fake_module_exec_mutates_state(module: *mut PyObject) -> st
 }
 
 #[test]
-fn test_module_from_def_and_spec_runs_py_mod_exec_slot() {
+fn test_module_from_def_and_spec_defers_py_mod_exec_slot() {
     let _guard = init();
     MODULE_EXEC_CALLED.store(0, Ordering::Relaxed);
     let mut slots = [
@@ -919,6 +1156,12 @@ fn test_module_from_def_and_spec_runs_py_mod_exec_slot() {
     };
 
     assert!(!module.is_null());
+    assert_eq!(MODULE_EXEC_CALLED.load(Ordering::Relaxed), 0);
+    assert!(unsafe { molt_cpython_abi::api::modules::PyState_FindModule(&mut def) }.is_null());
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::modules::PyModule_ExecDef(module, &mut def) },
+        0
+    );
     assert_eq!(MODULE_EXEC_CALLED.load(Ordering::Relaxed), 1);
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(module) };
 }
@@ -970,6 +1213,11 @@ fn test_module_from_def_and_spec_accepts_python312_metadata_slots() {
     };
 
     assert!(!module.is_null());
+    assert_eq!(MODULE_EXEC_CALLED.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::modules::PyModule_ExecDef(module, &mut def) },
+        0
+    );
     assert_eq!(MODULE_EXEC_CALLED.load(Ordering::Relaxed), 1);
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(module) };
 }
@@ -1014,6 +1262,12 @@ fn test_module_from_def_and_spec_registers_capi_state_once_before_exec() {
     };
 
     assert!(!module.is_null());
+    assert_eq!(MODULE_EXEC_CALLED.load(Ordering::Relaxed), 0);
+    assert_eq!(MODULE_EXEC_STATE_BYTE.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::modules::PyModule_ExecDef(module, &mut def) },
+        0
+    );
     assert_eq!(MODULE_EXEC_CALLED.load(Ordering::Relaxed), 1);
     assert_eq!(MODULE_EXEC_STATE_BYTE.load(Ordering::Relaxed), 77);
     let state = unsafe { molt_cpython_abi::api::modules::PyModule_GetState(module) };
@@ -1061,11 +1315,17 @@ fn test_module_from_def_and_spec_exec_failure_sets_error_message() {
         molt_cpython_abi::api::modules::PyModule_FromDefAndSpec2(&mut def, ptr::null_mut(), 0)
     };
 
-    assert!(module.is_null());
+    assert!(!module.is_null());
+    assert_eq!(MODULE_EXEC_CALLED.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::modules::PyModule_ExecDef(module, &mut def) },
+        -1
+    );
     assert_eq!(MODULE_EXEC_CALLED.load(Ordering::Relaxed), 1);
-    let message = molt_cpython_abi::api::errors::take_current_error_message()
+    let message = support::take_current_error_text()
         .expect("exec failure must enter CPython ABI error state");
     assert!(message.contains("Py_mod_exec slot returned non-zero"));
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(module) };
 }
 
 // ---------------------------------------------------------------------------
@@ -1103,6 +1363,10 @@ fn test_module_create2_with_valid_def() {
     };
     let m = unsafe { molt_cpython_abi::api::modules::PyModule_Create2(&mut def, 1013) };
     assert!(!m.is_null());
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::modules::PyState_RemoveModule(&mut def) },
+        0
+    );
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(m) };
 }
 
@@ -1145,7 +1409,6 @@ fn test_module_create2_registers_capi_state_and_pystate_registry_roundtrip() {
 
     let created_found = unsafe { molt_cpython_abi::api::modules::PyState_FindModule(def) };
     assert_eq!(created_found, m);
-    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(created_found) };
 
     assert_eq!(
         unsafe { molt_cpython_abi::api::modules::PyState_AddModule(m, def) },
@@ -1153,7 +1416,6 @@ fn test_module_create2_registers_capi_state_and_pystate_registry_roundtrip() {
     );
     let found = unsafe { molt_cpython_abi::api::modules::PyState_FindModule(def) };
     assert!(!found.is_null());
-    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(found) };
     assert_eq!(
         unsafe { molt_cpython_abi::api::modules::PyState_RemoveModule(def) },
         0
@@ -1187,6 +1449,10 @@ fn test_module_create2_null_name_uses_unnamed() {
     };
     let m = unsafe { molt_cpython_abi::api::modules::PyModule_Create2(&mut def, 1013) };
     assert!(!m.is_null());
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::modules::PyState_RemoveModule(&mut def) },
+        0
+    );
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(m) };
 }
 
@@ -1232,7 +1498,7 @@ fn test_module_create2_fails_closed_when_c_function_registration_fails() {
     };
     let m = unsafe { molt_cpython_abi::api::modules::PyModule_Create2(&mut def, 1013) };
     assert!(m.is_null());
-    let message = molt_cpython_abi::api::errors::take_current_error_message()
+    let message = support::take_current_error_text()
         .expect("method registration failure must enter CPython ABI error state");
     assert!(message.contains("runtime rejected method"));
 }
@@ -1275,7 +1541,7 @@ fn test_module_create2_fails_closed_when_c_function_attr_publication_fails() {
     };
     let m = unsafe { molt_cpython_abi::api::modules::PyModule_Create2(&mut def, 1013) };
     assert!(m.is_null());
-    let message = molt_cpython_abi::api::errors::take_current_error_message()
+    let message = support::take_current_error_text()
         .expect("method publication failure must enter CPython ABI error state");
     assert!(message.contains("failed to register method"));
 }

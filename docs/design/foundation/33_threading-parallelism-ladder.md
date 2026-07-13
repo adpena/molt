@@ -972,8 +972,8 @@ PEP 703's specified algorithm, not improvised; **gated on design-27 landing**
 ### P4 — Container reuse + WASM-threads + Luau-Actor isolates (target completion)
 
 **Scope:** (a) container (list/dict/set) reuse under unleashed — the design-27 §4.3
-`molt_reuse_token` child-decref + weakref-clear extension, now also handling the
-cross-thread case. (b) WASM SharedArrayBuffer+Workers isolate tier (§5.1). (c) Luau
+terminal child-decref + weakref-clear operation, now also handling the cross-thread
+case. (b) WASM SharedArrayBuffer+Workers isolate tier (§5.1). (c) Luau
 host-Actor isolate emission (§5.3). (d) wasi-threads tier (§5.2).
 
 **Gate:** per-target benches (browser Workers-as-isolates roundtrip; Luau Actor

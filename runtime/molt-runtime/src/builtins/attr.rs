@@ -9,15 +9,15 @@ use molt_obj_model::MoltObject;
 use crate::builtins::annotations::pep649_enabled;
 use crate::builtins::exceptions::{exception_matches_builtin_name, molt_exception_last_pending};
 use crate::{
-    FIELD_OFFSET_IC_HIT_COUNT, FIELD_OFFSET_IC_MISS_COUNT, TYPE_ID_CALL_ITER, TYPE_ID_CLASSMETHOD,
-    TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_DICT_ITEMS_VIEW, TYPE_ID_DICT_KEYS_VIEW,
-    TYPE_ID_DICT_VALUES_VIEW, TYPE_ID_ENUMERATE, TYPE_ID_EXCEPTION, TYPE_ID_FILE_HANDLE,
-    TYPE_ID_FILTER, TYPE_ID_FUNCTION, TYPE_ID_GENERATOR, TYPE_ID_ITER, TYPE_ID_LIST, TYPE_ID_MAP,
-    TYPE_ID_MODULE, TYPE_ID_OBJECT, TYPE_ID_PROPERTY, TYPE_ID_REVERSED, TYPE_ID_STATICMETHOD,
-    TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE, TYPE_ID_ZIP, alloc_dict_with_pairs,
-    alloc_function_obj, alloc_property_obj, alloc_string, alloc_tuple, attr_lookup_ptr,
-    builtin_class_method_bits, builtin_classes, builtin_func_bits, call_callable1, call_callable3,
-    call_function_obj1, class_bases_bits, class_bases_vec, class_dict_bits,
+    ClassEdgeOwnership, FIELD_OFFSET_IC_HIT_COUNT, FIELD_OFFSET_IC_MISS_COUNT, TYPE_ID_CALL_ITER,
+    TYPE_ID_CLASSMETHOD, TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_DICT_ITEMS_VIEW,
+    TYPE_ID_DICT_KEYS_VIEW, TYPE_ID_DICT_VALUES_VIEW, TYPE_ID_ENUMERATE, TYPE_ID_EXCEPTION,
+    TYPE_ID_FILE_HANDLE, TYPE_ID_FILTER, TYPE_ID_FUNCTION, TYPE_ID_GENERATOR, TYPE_ID_ITER,
+    TYPE_ID_LIST, TYPE_ID_MAP, TYPE_ID_MODULE, TYPE_ID_OBJECT, TYPE_ID_PROPERTY, TYPE_ID_REVERSED,
+    TYPE_ID_STATICMETHOD, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE, TYPE_ID_ZIP,
+    alloc_dict_with_pairs, alloc_function_obj, alloc_property_obj, alloc_string, alloc_tuple,
+    attr_lookup_ptr, builtin_class_method_bits, builtin_classes, builtin_func_bits, call_callable1,
+    call_callable3, call_function_obj1, class_bases_bits, class_bases_vec, class_dict_bits,
     class_layout_version_bits, class_mro_ref, class_mro_vec, class_name_bits, class_name_for_error,
     classmethod_func_bits, clear_exception, dataclass_desc_ptr, dataclass_dict_bits,
     dataclass_fields_ref, dataclass_set_dict_bits, dec_ref_bits, dict_get_in_place, dict_order,
@@ -27,9 +27,9 @@ use crate::{
     is_missing_bits, is_truthy, issubclass_bits, maybe_ptr_from_bits, module_dict_bits,
     molt_awaitable_await, molt_bound_method_new, molt_function_get_code, molt_function_get_globals,
     molt_iter, molt_iter_next, obj_eq, obj_from_bits, object_class_bits, object_field_get_ptr_raw,
-    object_set_class_bits, object_type_id, profile_hit_unchecked, property_get_bits,
-    raise_exception, runtime_state, seq_vec_ref, staticmethod_func_bits, string_bytes, string_len,
-    string_obj_to_owned, type_name, type_of_bits,
+    object_type_id, profile_hit_unchecked, property_get_bits, raise_exception, runtime_state,
+    seq_vec_ref, staticmethod_func_bits, string_bytes, string_len, string_obj_to_owned, type_name,
+    type_of_bits,
 };
 
 const ATTR_NAME_INLINE_CAP: usize = 32;
@@ -1000,8 +1000,15 @@ fn function_code_descriptor_bits(_py: &PyToken<'_>) -> u64 {
             }
             unsafe {
                 let builtin_bits = builtin_classes(_py).builtin_function_or_method;
-                object_set_class_bits(_py, getter_ptr, builtin_bits);
-                inc_ref_bits(_py, builtin_bits);
+                if !crate::object::object_init_class_edge_unpublished(
+                    _py,
+                    getter_ptr,
+                    builtin_bits,
+                    ClassEdgeOwnership::Owned,
+                ) {
+                    dec_ref_bits(_py, MoltObject::from_ptr(getter_ptr).bits());
+                    return 0;
+                }
             }
             let getter_bits = MoltObject::from_ptr(getter_ptr).bits();
             let none_bits = MoltObject::none().bits();
@@ -1026,8 +1033,15 @@ fn function_globals_descriptor_bits(_py: &PyToken<'_>) -> u64 {
             }
             unsafe {
                 let builtin_bits = builtin_classes(_py).builtin_function_or_method;
-                object_set_class_bits(_py, getter_ptr, builtin_bits);
-                inc_ref_bits(_py, builtin_bits);
+                if !crate::object::object_init_class_edge_unpublished(
+                    _py,
+                    getter_ptr,
+                    builtin_bits,
+                    ClassEdgeOwnership::Owned,
+                ) {
+                    dec_ref_bits(_py, MoltObject::from_ptr(getter_ptr).bits());
+                    return 0;
+                }
             }
             let getter_bits = MoltObject::from_ptr(getter_ptr).bits();
             let none_bits = MoltObject::none().bits();
@@ -1731,31 +1745,32 @@ pub(crate) fn awaitable_await_func_bits(_py: &PyToken<'_>) -> u64 {
 }
 
 pub(crate) struct SlotsInfo {
-    pub(crate) allows_attr: bool,
     pub(crate) allows_dict: bool,
+    pub(crate) allows_weakref: bool,
 }
 
-pub(crate) unsafe fn class_slots_info(
-    _py: &PyToken<'_>,
-    class_ptr: *mut u8,
-    attr_bits: u64,
-) -> Option<SlotsInfo> {
+pub(crate) unsafe fn class_slots_info(_py: &PyToken<'_>, class_ptr: *mut u8) -> Option<SlotsInfo> {
     unsafe {
         crate::gil_assert();
         let slots_name_bits =
             intern_static_name(_py, &runtime_state(_py).interned.slots_name, b"__slots__");
         let dict_name_bits =
             intern_static_name(_py, &runtime_state(_py).interned.dict_name, b"__dict__");
+        let weakref_name_bits = intern_static_name(
+            _py,
+            &runtime_state(_py).interned.weakref_name,
+            b"__weakref__",
+        );
         let class_dict_bits_val = class_dict_bits(class_ptr);
         let class_dict_ptr = obj_from_bits(class_dict_bits_val).as_ptr()?;
         if object_type_id(class_dict_ptr) != TYPE_ID_DICT {
             return None;
         }
         dict_get_in_place(_py, class_dict_ptr, slots_name_bits)?;
-        let mut allows_attr = false;
         let mut allows_dict = false;
-        let attr_obj = obj_from_bits(attr_bits);
+        let mut allows_weakref = false;
         let dict_obj = obj_from_bits(dict_name_bits);
+        let weakref_obj = obj_from_bits(weakref_name_bits);
         let object_class_bits = builtin_classes(_py).object;
         let mro: Cow<'_, [u64]> = if let Some(mro) = class_mro_ref(class_ptr) {
             Cow::Borrowed(mro.as_slice())
@@ -1783,6 +1798,7 @@ pub(crate) unsafe fn class_slots_info(
                 // imply a managed dict.
                 if class_bits != object_class_bits && !is_builtin_class_bits(_py, class_bits) {
                     allows_dict = true;
+                    allows_weakref = true;
                 }
                 continue;
             };
@@ -1790,21 +1806,21 @@ pub(crate) unsafe fn class_slots_info(
             if let Some(slots_ptr) = slots_obj.as_ptr() {
                 match object_type_id(slots_ptr) {
                     TYPE_ID_STRING => {
-                        if obj_eq(_py, attr_obj, slots_obj) {
-                            allows_attr = true;
-                        }
                         if obj_eq(_py, dict_obj, slots_obj) {
                             allows_dict = true;
+                        }
+                        if obj_eq(_py, weakref_obj, slots_obj) {
+                            allows_weakref = true;
                         }
                     }
                     TYPE_ID_TUPLE | TYPE_ID_LIST => {
                         for slot_bits in seq_vec_ref(slots_ptr).iter().copied() {
                             let slot_obj = obj_from_bits(slot_bits);
-                            if obj_eq(_py, attr_obj, slot_obj) {
-                                allows_attr = true;
-                            }
                             if obj_eq(_py, dict_obj, slot_obj) {
                                 allows_dict = true;
+                            }
+                            if obj_eq(_py, weakref_obj, slot_obj) {
+                                allows_weakref = true;
                             }
                         }
                     }
@@ -1813,8 +1829,8 @@ pub(crate) unsafe fn class_slots_info(
             }
         }
         Some(SlotsInfo {
-            allows_attr,
             allows_dict,
+            allows_weakref,
         })
     }
 }
@@ -2301,8 +2317,8 @@ pub(crate) unsafe fn object_attr_lookup_raw(
             obj_from_bits(weakref_name_bits),
         ) {
             if let Some(class_ptr) = class_ptr_opt
-                && let Some(info) = class_slots_info(_py, class_ptr, attr_bits)
-                && !info.allows_attr
+                && let Some(info) = class_slots_info(_py, class_ptr)
+                && !info.allows_weakref
             {
                 return None;
             }
@@ -2310,7 +2326,7 @@ pub(crate) unsafe fn object_attr_lookup_raw(
         }
         if obj_eq(_py, obj_from_bits(attr_bits), obj_from_bits(dict_name_bits)) {
             if let Some(class_ptr) = class_ptr_opt
-                && let Some(info) = class_slots_info(_py, class_ptr, attr_bits)
+                && let Some(info) = class_slots_info(_py, class_ptr)
                 && !info.allows_dict
             {
                 return None;
@@ -2527,7 +2543,7 @@ pub(crate) unsafe fn object_method_ic_resolve(
         // `__dict__` (slots-only without `__dict__`).  Otherwise stay
         // conservative (`true`) and keep the cheap per-call shadow check.
         let has_field_offset = class_field_offset(_py, class_ptr, attr_bits).is_some();
-        let allows_instance_dict = match class_slots_info(_py, class_ptr, attr_bits) {
+        let allows_instance_dict = match class_slots_info(_py, class_ptr) {
             // A slots class permits an instance dict when it declares
             // `__dict__` or inherits a dict-bearing user class.
             Some(info) => info.allows_dict,
@@ -2702,7 +2718,7 @@ pub(crate) unsafe fn dataclass_attr_lookup_raw(
         let slots = (*desc_ptr).slots;
         let allows_dict = (*desc_ptr).allows_dict;
         let attr_name = string_obj_to_owned(obj_from_bits(attr_bits));
-        let class_bits = (*desc_ptr).class_bits;
+        let class_bits = object_class_bits(obj_ptr);
         if class_bits != 0
             && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
             && object_type_id(class_ptr) == TYPE_ID_TYPE

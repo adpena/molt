@@ -26,8 +26,6 @@ from molt.cli.native_toolchain import (
 
 _CPYTHON_SINGLETON_CANONICAL_ALIASES = (
     ("_Py_NoneStruct", "Py_None"),
-    ("_Py_TrueStruct", "Py_True"),
-    ("_Py_FalseStruct", "Py_False"),
     ("_Py_NotImplementedStruct", "Py_NotImplementedSentinel"),
     ("_Py_EllipsisObject", "Py_EllipsisObject"),
 )

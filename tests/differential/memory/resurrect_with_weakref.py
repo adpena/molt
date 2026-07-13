@@ -11,21 +11,9 @@
 # death would be a UAF. This verifies CPython-identical behavior: weakref
 # resolves to the live object after resurrection, to None after final death.
 #
-# STATUS: the IC SIGSEGV is FIXED and the object DOES resurrect into `box`
-# correctly. The remaining byte-divergence is a SEPARATE, pre-existing and BROAD
-# weakref-subsystem defect (NOT the IC bug, NOT resurrection-specific):
-#   (1) `weakref.ref(a); a.()` does not resolve to a live referent in compiled
-#       code (a minimal `a=C(); w=weakref.ref(a); w() is a` returns False), and
-#   (2) molt's `gc.collect()` (`weakref_collect_for_gc`) clears the weakref of any
-#       target not DIRECTLY bound as a module-global value, even when the target is
-#       reachable through a container (`box`) — so a live resurrected object's
-#       weakref is spuriously cleared. CPython only clears weakrefs to objects it
-#       actually collects (unreachable cycles).
-# This case cannot meaningfully validate the resurrection weakref-clear ORDER on
-# molt until the weakref subsystem resolves live referents and traces container
-# reachability. Marked xfail against the weakref-subsystem baton; auto-flips to
-# xpass-failure when weakref resolution is fixed.
-# MOLT_META: xfail=molt xfail_reason=weakref-subsystem-live-resolve+gc-reachability-not-the-IC-fix
+# Explicit collection has no independent weakref sweep: RC-confirmed destruction
+# and the cycle collector's proven-unreachable set are the only clear authorities.
+# This therefore exercises the real resurrection ordering without an xfail lane.
 import weakref
 import gc
 
