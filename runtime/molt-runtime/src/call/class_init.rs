@@ -3,9 +3,11 @@ use crate::builtins::exceptions::{
     molt_exception_init, molt_exception_new_bound, molt_exceptiongroup_init,
 };
 use crate::call::type_policy::{
-    InitArgPolicy, resolved_constructor_init_policy, resolved_new_is_default_object_new,
+    InitArgPolicy, callable_matches_runtime_symbol, resolved_constructor_init_policy,
+    resolved_new_is_default_object_new,
 };
 use crate::object::ops_encoding::DecodeFailure;
+use crate::object::{ClassEdgeOwnership, object_init_class_edge_unpublished};
 use crate::*;
 use std::borrow::Cow;
 
@@ -211,12 +213,20 @@ pub(crate) unsafe fn alloc_instance_for_class(_py: &PyToken<'_>, class_ptr: *mut
         let class_bits = MoltObject::from_ptr(class_ptr).bits();
         let size = class_layout_size(_py, class_ptr);
         let total_size = size + std::mem::size_of::<MoltHeader>();
-        let obj_ptr = alloc_object_zeroed(_py, total_size, TYPE_ID_OBJECT);
+        let obj_ptr = alloc_object_zeroed_with_aux(
+            _py,
+            total_size,
+            TYPE_ID_OBJECT,
+            ObjectAuxPreselection::ClassInline,
+        );
         if obj_ptr.is_null() {
             return MoltObject::none().bits();
         }
-        object_set_class_bits(_py, obj_ptr, class_bits);
-        inc_ref_bits(_py, class_bits);
+        if !object_init_class_edge_unpublished(_py, obj_ptr, class_bits, ClassEdgeOwnership::Owned)
+        {
+            dec_ref_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
+            return MoltObject::none().bits();
+        }
         MoltObject::from_ptr(obj_ptr).bits()
     }
 }
@@ -254,12 +264,20 @@ pub(crate) unsafe fn alloc_instance_for_class_sized(
         );
         let class_bits = MoltObject::from_ptr(class_ptr).bits();
         let total_size = payload_size_bytes + std::mem::size_of::<MoltHeader>();
-        let obj_ptr = alloc_object_zeroed(_py, total_size, TYPE_ID_OBJECT);
+        let obj_ptr = alloc_object_zeroed_with_aux(
+            _py,
+            total_size,
+            TYPE_ID_OBJECT,
+            ObjectAuxPreselection::ClassInline,
+        );
         if obj_ptr.is_null() {
             return MoltObject::none().bits();
         }
-        object_set_class_bits(_py, obj_ptr, class_bits);
-        inc_ref_bits(_py, class_bits);
+        if !object_init_class_edge_unpublished(_py, obj_ptr, class_bits, ClassEdgeOwnership::Owned)
+        {
+            dec_ref_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
+            return MoltObject::none().bits();
+        }
         MoltObject::from_ptr(obj_ptr).bits()
     }
 }
@@ -287,12 +305,20 @@ pub(crate) unsafe fn alloc_instance_for_class_no_pool(
         let class_bits = MoltObject::from_ptr(class_ptr).bits();
         let size = class_layout_size(_py, class_ptr);
         let total_size = size + std::mem::size_of::<MoltHeader>();
-        let obj_ptr = alloc_object_zeroed(_py, total_size, TYPE_ID_OBJECT);
+        let obj_ptr = alloc_object_zeroed_with_aux(
+            _py,
+            total_size,
+            TYPE_ID_OBJECT,
+            ObjectAuxPreselection::ClassInline,
+        );
         if obj_ptr.is_null() {
             return MoltObject::none().bits();
         }
-        object_set_class_bits(_py, obj_ptr, class_bits);
-        inc_ref_bits(_py, class_bits);
+        if !object_init_class_edge_unpublished(_py, obj_ptr, class_bits, ClassEdgeOwnership::Owned)
+        {
+            dec_ref_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
+            return MoltObject::none().bits();
+        }
         MoltObject::from_ptr(obj_ptr).bits()
     }
 }
@@ -326,6 +352,28 @@ pub(crate) unsafe fn resolve_construct_after_init(_py: &PyToken<'_>, inst_bits: 
         return MoltObject::none().bits();
     }
     inst_bits
+}
+
+/// Allocate a fresh tuple payload for a tuple subclass and attach its class
+/// before the value crosses the constructor boundary. Tuple subclass
+/// construction must never reuse and retag an exact tuple input.
+unsafe fn alloc_tuple_subclass_from_items(
+    _py: &PyToken<'_>,
+    class_bits: u64,
+    items: &[u64],
+) -> u64 {
+    let ptr = alloc_tuple(_py, items);
+    if ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    let bits = MoltObject::from_ptr(ptr).bits();
+    if !unsafe {
+        object_init_class_edge_unpublished(_py, ptr, class_bits, ClassEdgeOwnership::Owned)
+    } {
+        dec_ref_bits(_py, bits);
+        return MoltObject::none().bits();
+    }
+    bits
 }
 
 pub(crate) unsafe fn call_class_init_with_args(
@@ -379,13 +427,10 @@ pub(crate) unsafe fn call_class_init_with_args(
                 intern_static_name(_py, &runtime_state(_py).interned.new_name, b"__new__");
             let inst_bits =
                 if let Some(new_bits) = class_attr_lookup_raw_mro(_py, class_ptr, new_name_bits) {
-                    let mut tuple_new = false;
-                    if let Some(new_ptr) = obj_from_bits(new_bits).as_ptr()
-                        && object_type_id(new_ptr) == TYPE_ID_FUNCTION
-                        && function_fn_ptr(new_ptr) == fn_addr!(molt_exception_new_bound)
-                    {
-                        tuple_new = true;
-                    }
+                    let tuple_new = callable_matches_runtime_symbol(
+                        Some(new_bits),
+                        fn_addr!(molt_exception_new_bound),
+                    );
                     let inst_bits = if tuple_new {
                         let args_ptr = alloc_tuple(_py, args);
                         if args_ptr.is_null() {
@@ -443,17 +488,12 @@ pub(crate) unsafe fn call_class_init_with_args(
             else {
                 return inst_bits;
             };
-            let mut tuple_init = false;
-            if let Some(init_ptr) = obj_from_bits(init_bits).as_ptr()
-                && object_type_id(init_ptr) == TYPE_ID_FUNCTION
-            {
-                let fn_ptr = function_fn_ptr(init_ptr);
-                if fn_ptr == fn_addr!(molt_exception_init)
-                    || fn_ptr == fn_addr!(molt_exceptiongroup_init)
-                {
-                    tuple_init = true;
-                }
-            }
+            let tuple_init =
+                callable_matches_runtime_symbol(Some(init_bits), fn_addr!(molt_exception_init))
+                    || callable_matches_runtime_symbol(
+                        Some(init_bits),
+                        fn_addr!(molt_exceptiongroup_init),
+                    );
             if tuple_init {
                 let args_ptr = alloc_tuple(_py, args);
                 if args_ptr.is_null() {
@@ -537,40 +577,30 @@ pub(crate) unsafe fn call_class_init_with_args(
         if class_bits == builtins.tuple || issubclass_bits(class_bits, builtins.tuple) {
             match args.len() {
                 0 => {
-                    let ptr = alloc_tuple(_py, &[]);
-                    if ptr.is_null() {
-                        return MoltObject::none().bits();
-                    }
-                    let out_bits = MoltObject::from_ptr(ptr).bits();
                     if class_bits != builtins.tuple {
-                        let old_class_bits = object_class_bits(ptr);
-                        if old_class_bits != class_bits {
-                            if old_class_bits != 0 {
-                                dec_ref_bits(_py, old_class_bits);
-                            }
-                            object_set_class_bits(_py, ptr, class_bits);
-                            inc_ref_bits(_py, class_bits);
-                        }
+                        return alloc_tuple_subclass_from_items(_py, class_bits, &[]);
                     }
-                    return out_bits;
+                    let ptr = alloc_tuple(_py, &[]);
+                    return if ptr.is_null() {
+                        MoltObject::none().bits()
+                    } else {
+                        MoltObject::from_ptr(ptr).bits()
+                    };
                 }
                 1 => {
                     let Some(bits) = tuple_from_iter_bits(_py, args[0]) else {
                         return MoltObject::none().bits();
                     };
-                    if class_bits != builtins.tuple
-                        && let Some(ptr) = obj_from_bits(bits).as_ptr()
-                    {
-                        let old_class_bits = object_class_bits(ptr);
-                        if old_class_bits != class_bits {
-                            if old_class_bits != 0 {
-                                dec_ref_bits(_py, old_class_bits);
-                            }
-                            object_set_class_bits(_py, ptr, class_bits);
-                            inc_ref_bits(_py, class_bits);
-                        }
+                    if class_bits == builtins.tuple {
+                        return bits;
                     }
-                    return bits;
+                    let out = if let Some(ptr) = obj_from_bits(bits).as_ptr() {
+                        alloc_tuple_subclass_from_items(_py, class_bits, seq_vec_ref(ptr))
+                    } else {
+                        MoltObject::none().bits()
+                    };
+                    dec_ref_bits(_py, bits);
+                    return out;
                 }
                 _ => {
                     let msg = format!("tuple expected at most 1 argument, got {}", args.len());
@@ -1212,5 +1242,70 @@ pub(crate) unsafe fn function_set_attr_bits(
             new_dict
         };
         dict_set_in_place(_py, dict_ptr, attr_bits, val_bits);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::call_class_init_with_args;
+    use crate::object::{ClassEdgeOwnership, object_init_class_edge_unpublished};
+    use crate::*;
+
+    #[test]
+    fn tuple_subclass_constructor_copies_exact_tuple_without_retagging_source() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry_nopanic!(_py, {
+            let builtins = builtin_classes(_py);
+            let name_ptr = alloc_string(_py, b"AuxTupleSubclass");
+            assert!(!name_ptr.is_null());
+            let name_bits = MoltObject::from_ptr(name_ptr).bits();
+            let class_ptr = alloc_class_obj(_py, name_bits);
+            dec_ref_bits(_py, name_bits);
+            assert!(!class_ptr.is_null());
+            let class_bits = MoltObject::from_ptr(class_ptr).bits();
+            assert!(unsafe {
+                object_init_class_edge_unpublished(
+                    _py,
+                    class_ptr,
+                    builtins.type_obj,
+                    ClassEdgeOwnership::Owned,
+                )
+            });
+            let set_base = molt_class_set_base(class_bits, builtins.tuple);
+            assert!(obj_from_bits(set_base).is_none());
+            assert!(!exception_pending(_py));
+
+            let items = [
+                MoltObject::from_int(11).bits(),
+                MoltObject::from_int(29).bits(),
+            ];
+            let source_ptr = alloc_tuple(_py, &items);
+            assert!(!source_ptr.is_null());
+            let source_bits = MoltObject::from_ptr(source_ptr).bits();
+
+            let result_bits = unsafe { call_class_init_with_args(_py, class_ptr, &[source_bits]) };
+            let result_ptr = obj_from_bits(result_bits)
+                .as_ptr()
+                .expect("tuple subclass construction must succeed");
+            assert_ne!(
+                result_ptr, source_ptr,
+                "tuple subclass must own a distinct payload"
+            );
+            assert_eq!(unsafe { object_type_id(result_ptr) }, TYPE_ID_TUPLE);
+            assert_eq!(unsafe { object_class_bits(result_ptr) }, class_bits);
+            assert_eq!(unsafe { object_class_bits(source_ptr) }, 0);
+            assert_eq!(
+                unsafe { seq_vec_ref(result_ptr).as_slice() },
+                items.as_slice()
+            );
+            assert_eq!(
+                unsafe { seq_vec_ref(source_ptr).as_slice() },
+                items.as_slice()
+            );
+
+            dec_ref_bits(_py, result_bits);
+            dec_ref_bits(_py, source_bits);
+            dec_ref_bits(_py, class_bits);
+        });
     }
 }

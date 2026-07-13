@@ -28,8 +28,12 @@
 
 #![allow(non_snake_case)]
 
+#[path = "support/fake_foreign.rs"]
+mod fake_foreign;
+
 use molt_cpython_abi::abi_types::*;
-use molt_cpython_abi::hooks::RuntimeHooks;
+use molt_cpython_abi::hooks::{BorrowedHandleResult, RuntimeHooks};
+use molt_lang_obj_model::MoltObject;
 use std::collections::HashMap;
 use std::os::raw::{c_char, c_int, c_long};
 use std::ptr;
@@ -49,7 +53,8 @@ static DICTS: Mutex<Option<HashMap<u64, HashMap<u64, u64>>>> = Mutex::new(None);
 static STRINGS: Mutex<Option<HashMap<Vec<u8>, u64>>> = Mutex::new(None);
 
 fn fresh_handle() -> u64 {
-    NEXT_HANDLE.fetch_add(0x10, Ordering::Relaxed)
+    let address = NEXT_HANDLE.fetch_add(0x10, Ordering::Relaxed) as usize;
+    MoltObject::from_ptr(address as *mut u8).bits()
 }
 
 fn dicts() -> std::sync::MutexGuard<'static, Option<HashMap<u64, HashMap<u64, u64>>>> {
@@ -66,19 +71,23 @@ unsafe extern "C" fn fake_alloc_dict() -> u64 {
     handle
 }
 
-unsafe extern "C" fn fake_dict_set(dict_bits: u64, key_bits: u64, val_bits: u64) {
+unsafe extern "C" fn fake_dict_set(dict_bits: u64, key_bits: u64, val_bits: u64) -> i32 {
     if let Some(map) = dicts().as_mut().unwrap().get_mut(&dict_bits) {
         map.insert(key_bits, val_bits);
     }
+    0
 }
 
-unsafe extern "C" fn fake_dict_get(dict_bits: u64, key_bits: u64) -> u64 {
-    dicts()
+unsafe extern "C" fn fake_dict_get(dict_bits: u64, key_bits: u64) -> BorrowedHandleResult {
+    match dicts()
         .as_ref()
         .unwrap()
         .get(&dict_bits)
         .and_then(|map| map.get(&key_bits).copied())
-        .unwrap_or(0)
+    {
+        Some(bits) => BorrowedHandleResult::ok(bits),
+        None => BorrowedHandleResult::missing(),
+    }
 }
 
 unsafe extern "C" fn fake_alloc_str(data: *const u8, len: usize) -> u64 {
@@ -98,15 +107,22 @@ unsafe extern "C" fn fake_alloc_str(data: *const u8, len: usize) -> u64 {
         .or_insert_with(fresh_handle)
 }
 
-unsafe extern "C" fn fake_classify_heap(_bits: u64) -> u8 {
+unsafe extern "C" fn fake_classify_heap(bits: u64) -> u8 {
+    if dicts().as_ref().unwrap().contains_key(&bits) {
+        return MoltTypeTag::Dict as u8;
+    }
+    if STRINGS
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|strings| strings.values().any(|value| *value == bits))
+    {
+        return MoltTypeTag::Str as u8;
+    }
     MoltTypeTag::Other as u8
 }
 
 unsafe extern "C" fn fake_noop_ref(_bits: u64) {}
-
-unsafe extern "C" fn fake_foreign_new(_c_ptr: usize) -> u64 {
-    fresh_handle()
-}
 
 fn install_runtime_hooks() {
     let mut hooks: RuntimeHooks = molt_cpython_abi::hooks::STUB_HOOKS;
@@ -117,7 +133,7 @@ fn install_runtime_hooks() {
     hooks.classify_heap = fake_classify_heap;
     hooks.inc_ref = fake_noop_ref;
     hooks.dec_ref = fake_noop_ref;
-    hooks.foreign_new = fake_foreign_new;
+    hooks.foreign_new = fake_foreign::foreign_new;
     unsafe {
         molt_cpython_abi::bridge::molt_cpython_abi_init();
         let _ = molt_cpython_abi::try_set_runtime_hooks(hooks);
@@ -292,10 +308,15 @@ fn ready_populates_tp_dict_from_members_and_getset() {
     }
     assert!(
         molt_cpython_abi::bridge::GLOBAL_BRIDGE
-            .pyobj_to_handle(num_descr)
-            .is_some(),
-        "member_descriptor must be bridge-resolvable for dict round trips"
+            .molt_handle_for_pyobj(num_descr)
+            .is_none(),
+        "a physical descriptor must not masquerade as a managed ABI view"
     );
+    let foreign_bits =
+        unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.molt_value_for_pyobj(num_descr) }
+            .expect("member_descriptor must retain first-class foreign custody");
+    assert!(MoltObject::from_bits(foreign_bits).is_ptr());
+    unsafe { fake_noop_ref(foreign_bits) };
 
     let names_key =
         unsafe { molt_cpython_abi::api::strings::PyUnicode_FromString(c"names".as_ptr()) };

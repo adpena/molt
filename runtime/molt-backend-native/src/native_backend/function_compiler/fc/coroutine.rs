@@ -97,7 +97,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
             // to the native poll function, not to any user-visible
             // local named `self` inside async methods.
             let self_ptr = builder.block_params(entry_block)[0];
-            // State lives in the cold header (HashMap) — call through
+            // State may live inline or in the stable aux sidecar — call through
             // the C API instead of an inline memory load.
             let get_state_ref = import_func_ref(
                 &mut *module,

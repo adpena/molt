@@ -1,6 +1,9 @@
 use std::sync::OnceLock;
 
 use super::*;
+use crate::object::{
+    ClassEdgeOwnership, object_init_class_edge_unpublished, object_replace_class_edge,
+};
 
 mod hierarchy;
 
@@ -56,13 +59,14 @@ pub extern "C" fn molt_class_new(name_bits: u64) -> u64 {
         // new class object is an instance of `type` (CPython parity).
         unsafe {
             let builtins = builtin_classes(_py);
-            let old_bits = object_class_bits(ptr);
-            if old_bits != builtins.type_obj {
-                if old_bits != 0 {
-                    dec_ref_bits(_py, old_bits);
-                }
-                object_set_class_bits(_py, ptr, builtins.type_obj);
-                inc_ref_bits(_py, builtins.type_obj);
+            if !object_init_class_edge_unpublished(
+                _py,
+                ptr,
+                builtins.type_obj,
+                ClassEdgeOwnership::Owned,
+            ) {
+                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                return MoltObject::none().bits();
             }
         }
         // Set __doc__ = None on the class dict (CPython parity).
@@ -213,8 +217,18 @@ pub extern "C" fn molt_type_new(
         }
         let class_bits = MoltObject::from_ptr(class_ptr).bits();
         unsafe {
-            object_set_class_bits(_py, class_ptr, cls_bits);
-            inc_ref_bits(_py, cls_bits);
+            if !object_init_class_edge_unpublished(
+                _py,
+                class_ptr,
+                cls_bits,
+                ClassEdgeOwnership::Owned,
+            ) {
+                dec_ref_bits(_py, class_bits);
+                if bases_owned {
+                    dec_ref_bits(_py, bases_tuple_bits);
+                }
+                return MoltObject::none().bits();
+            }
         }
 
         let dict_bits = unsafe { class_dict_bits(class_ptr) };
@@ -623,16 +637,30 @@ pub extern "C" fn molt_tuple_new_bound(cls_bits: u64, iterable_bits: u64) -> u64
             }
             let new_bits = MoltObject::from_ptr(new_ptr).bits();
             unsafe {
-                object_set_class_bits(_py, new_ptr, cls_bits);
+                if !object_init_class_edge_unpublished(
+                    _py,
+                    new_ptr,
+                    cls_bits,
+                    ClassEdgeOwnership::Owned,
+                ) {
+                    dec_ref_bits(_py, new_bits);
+                    return MoltObject::none().bits();
+                }
             }
-            inc_ref_bits(_py, cls_bits);
             return new_bits;
         }
         if let Some(tuple_ptr) = obj_from_bits(tuple_bits).as_ptr() {
             unsafe {
-                object_set_class_bits(_py, tuple_ptr, cls_bits);
+                if !object_init_class_edge_unpublished(
+                    _py,
+                    tuple_ptr,
+                    cls_bits,
+                    ClassEdgeOwnership::Owned,
+                ) {
+                    dec_ref_bits(_py, tuple_bits);
+                    return MoltObject::none().bits();
+                }
             }
-            inc_ref_bits(_py, cls_bits);
         }
         tuple_bits
     })
@@ -649,7 +677,6 @@ pub unsafe extern "C" fn molt_object_set_class(obj_ptr_bits: u64, class_bits: u6
             if obj_ptr.is_null() {
                 return MoltObject::none().bits();
             }
-            let header = header_from_obj_ptr(obj_ptr);
             if crate::object::object_poll_fn(obj_ptr) != 0 {
                 return raise_exception::<_>(_py, "TypeError", "cannot set class on async object");
             }
@@ -665,14 +692,12 @@ pub unsafe extern "C" fn molt_object_set_class(obj_ptr_bits: u64, class_bits: u6
                     return MoltObject::none().bits();
                 }
             }
-            let skip_class_ref = ((*header).flags & HEADER_FLAG_SKIP_CLASS_DECREF) != 0;
-            let old_bits = object_class_bits(obj_ptr);
-            if old_bits != 0 && !skip_class_ref {
-                dec_ref_bits(_py, old_bits);
-            }
-            object_set_class_bits(_py, obj_ptr, class_bits);
-            if class_bits != 0 && !skip_class_ref {
-                inc_ref_bits(_py, class_bits);
+            if !object_replace_class_edge(_py, obj_ptr, class_bits, ClassEdgeOwnership::Owned) {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "__class__ assignment only supported for mutable types or ModuleType subclasses",
+                );
             }
             MoltObject::none().bits()
         })

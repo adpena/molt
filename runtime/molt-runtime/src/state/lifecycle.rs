@@ -24,6 +24,7 @@ use crate::object::utf8_cache::{
     UTF8_CACHE_MAX_ENTRIES, UTF8_COUNT_CACHE_SHARDS, Utf8CacheStore, Utf8CountCacheStore,
     clear_utf8_count_tls,
 };
+use crate::object::weakref::weakref_clear_runtime_state;
 use crate::{
     ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, BLOCK_ON_TASK, CONTEXT_STACK, CURRENT_TASK,
     CURRENT_TOKEN, DEFAULT_RECURSION_LIMIT, EXCEPTION_STACK, FRAME_STACK,
@@ -123,6 +124,8 @@ pub(crate) fn runtime_teardown_for_process_exit(_py: &PyToken<'_>, state: &Runti
     clear_exception_state(_py);
     trace_shutdown("process_exit_run_atexit_callbacks");
     crate::builtins::atexit::atexit_run_exitfuncs_teardown(_py);
+    trace_shutdown("process_exit_clear_weakref_runtime_state");
+    weakref_clear_runtime_state(_py, state);
     trace_shutdown("process_exit_clear_signal_state");
     signal_clear_state(_py, state);
     trace_shutdown("process_exit_clear_contextvars_state");
@@ -225,6 +228,8 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     clear_exception_state(_py);
     trace_shutdown("run_atexit_callbacks");
     crate::builtins::atexit::atexit_run_exitfuncs_teardown(_py);
+    trace_shutdown("clear_weakref_runtime_state");
+    weakref_clear_runtime_state(_py, state);
     trace_shutdown("clear_signal_state");
     signal_clear_state(_py, state);
     trace_shutdown("clear_contextvars_state");
@@ -235,8 +240,6 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     sys_ext_clear_state(_py, state);
     trace_shutdown("flush_stdio");
     flush_stdio_handles(_py, state);
-    trace_shutdown("clear_weakref_containers");
-    crate::object::weakref::weakref_clear_container_state(_py);
     trace_shutdown("flush_stdio_post_finalizers");
     flush_stdio_handles(_py, state);
     trace_shutdown("clear_c_api_module_state");
@@ -442,6 +445,9 @@ fn clear_thread_local_state(_py: &PyToken<'_>) {
             }
             if entry.globals_bits != 0 && !obj_from_bits(entry.globals_bits).is_none() {
                 dec_ref_bits(_py, entry.globals_bits);
+            }
+            if entry.builtins_bits != 0 && !obj_from_bits(entry.builtins_bits).is_none() {
+                dec_ref_bits(_py, entry.builtins_bits);
             }
         }
     });

@@ -2,7 +2,7 @@
 
 #![allow(non_snake_case)]
 
-use molt_cpython_abi::hooks::hooks_or_stubs;
+use molt_cpython_abi::hooks::{DecodedHandleResult, hooks_or_stubs};
 use std::ptr;
 
 fn init() {
@@ -54,10 +54,9 @@ fn test_stub_list_operations() {
     assert_eq!(len, 0);
 
     let item = unsafe { (h.list_item)(0, 0) };
-    assert_eq!(item, 0);
+    assert!(matches!(item.decode(), DecodedHandleResult::Error));
 
-    // list_append should not crash
-    unsafe { (h.list_append)(0, 0) };
+    assert_eq!(unsafe { (h.list_append)(0, 0) }, -1);
 }
 
 #[test]
@@ -69,10 +68,12 @@ fn test_stub_tuple_operations() {
     assert_eq!(len, 0);
 
     let item = unsafe { (h.tuple_item)(0, 0) };
-    assert_eq!(item, 0);
+    assert!(matches!(item.decode(), DecodedHandleResult::Error));
 
-    // tuple_set should not crash
-    unsafe { (h.tuple_set)(0, 0, 0) };
+    assert!(matches!(
+        unsafe { (h.tuple_set)(0, 0, 0) }.decode(),
+        DecodedHandleResult::Error
+    ));
 }
 
 #[test]
@@ -84,10 +85,9 @@ fn test_stub_dict_operations() {
     assert_eq!(len, 0);
 
     let val = unsafe { (h.dict_get)(0, 0) };
-    assert_eq!(val, 0);
+    assert!(matches!(val.decode(), DecodedHandleResult::Error));
 
-    // dict_set should not crash
-    unsafe { (h.dict_set)(0, 0, 0) };
+    assert_eq!(unsafe { (h.dict_set)(0, 0, 0) }, -1);
 }
 
 #[test]
@@ -163,7 +163,7 @@ fn test_stub_inc_dec_ref_no_crash() {
 }
 
 // ---------------------------------------------------------------------------
-// F2/F3/F6 teeth: the numeric and dict hooks fail closed (return 0) under stubs
+// F2/F3/F6 teeth: the numeric and dict hooks return explicit errors under stubs
 // so the ABI never fabricates a wrong answer when the runtime authority is
 // absent. (The real bignum-correct / exception-setting behavior lives in the
 // runtime authority and is proved there; here we prove the stub fails closed.)
@@ -173,15 +173,27 @@ fn test_stub_inc_dec_ref_no_crash() {
 fn test_stub_number_hooks_fail_closed() {
     init();
     let h = hooks_or_stubs();
-    // Every discriminant must return 0 (error sentinel) under the stub table.
+    // Every discriminant must return the typed error status under the stub table.
     for op in 0..12u32 {
-        assert_eq!(unsafe { (h.number_binary_op)(op, 1, 2) }, 0);
+        assert!(matches!(
+            unsafe { (h.number_binary_op)(op, 1, 2) }.decode(),
+            DecodedHandleResult::Error
+        ));
     }
     for op in 0..4u32 {
-        assert_eq!(unsafe { (h.number_unary_op)(op, 1) }, 0);
+        assert!(matches!(
+            unsafe { (h.number_unary_op)(op, 1) }.decode(),
+            DecodedHandleResult::Error
+        ));
     }
-    assert_eq!(unsafe { (h.number_power)(2, 3, 0) }, 0);
-    assert_eq!(unsafe { (h.number_power)(2, 3, 5) }, 0);
+    assert!(matches!(
+        unsafe { (h.number_power)(2, 3, 0) }.decode(),
+        DecodedHandleResult::Error
+    ));
+    assert!(matches!(
+        unsafe { (h.number_power)(2, 3, 5) }.decode(),
+        DecodedHandleResult::Error
+    ));
 }
 
 #[test]

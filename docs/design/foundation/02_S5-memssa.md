@@ -267,7 +267,6 @@ Add `mem_gvn` and `sroa` passes to `build_default_pipeline`. The updated pipelin
 // ── Memory optimization ──────────────────────────────────────────
 "escape_analysis"    (OpsOnly)
 "refcount_elim"      (OpsOnly)
-"reuse_analysis"     (ReadOnly)
 "dead_store_elim"    (OpsOnly)   ← existing; already cross-block-safe within block
 "mem_gvn"            (OpsOnly)   ← NEW: store-to-load forwarding + redundant-load elim
 "sroa"               (OpsOnly)   ← NEW: field promotion on NoEscape objects

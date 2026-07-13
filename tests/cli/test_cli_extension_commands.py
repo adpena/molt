@@ -5242,7 +5242,7 @@ def test_cpython_abi_authority_self_complete_without_repo_include_smoke(
     assert result.returncode == 0, result.stderr
 
 
-def test_l7_integer_headers_expose_one_external_authority(tmp_path: Path) -> None:
+def test_l7_numeric_headers_expose_one_external_authority(tmp_path: Path) -> None:
     clang = shutil.which("clang")
     if clang is None:
         pytest.skip("clang is required for the L7 integer header smoke test")
@@ -5256,6 +5256,9 @@ def test_l7_integer_headers_expose_one_external_authority(tmp_path: Path) -> Non
                 "int probe(PyObject *value, PyLongObject *long_value, void *out) {",
                 "    char *end = NULL;",
                 "    unsigned char bytes[2] = {0};",
+                "    char packed[8] = {0};",
+                "    Py_complex ca = {3.0, 4.0};",
+                "    Py_complex cb = {1.0, -2.0};",
                 "    PyObject *parsed = PyLong_FromString(\"0x_FF\", &end, 0);",
                 "    size_t size = PyLong_AsSize_t(value);",
                 "    size_t bits = _PyLong_NumBits(value);",
@@ -5267,8 +5270,24 @@ def test_l7_integer_headers_expose_one_external_authority(tmp_path: Path) -> Non
                 "    converted += _PyLong_UnsignedLong_Converter(value, out);",
                 "    converted += _PyLong_UnsignedLongLong_Converter(value, out);",
                 "    converted += _PyLong_AsByteArray(long_value, bytes, 2, 1, 1);",
+                "    converted += PyFloat_Pack2(1.0, packed, 0);",
+                "    converted += PyFloat_Pack4(1.0, packed, 1);",
+                "    converted += PyFloat_Pack8(1.0, packed, 0);",
+                "    converted += (int)PyFloat_Unpack2(packed, 0);",
+                "    converted += (int)PyFloat_Unpack4(packed, 1);",
+                "    converted += (int)PyFloat_Unpack8(packed, 0);",
+                "    ca = _Py_c_sum(ca, cb);",
+                "    ca = _Py_c_diff(ca, cb);",
+                "    ca = _Py_c_neg(ca);",
+                "    ca = _Py_c_prod(ca, cb);",
+                "    ca = _Py_c_quot(ca, cb);",
+                "    ca = _Py_c_pow(ca, cb);",
+                "    converted += (int)_Py_c_abs(ca);",
+                "    converted += (int)PyFloat_GetMax() + (int)PyFloat_GetMin();",
+                "    if (Py_True != (PyObject *)&_Py_TrueStruct || Py_False != (PyObject *)&_Py_FalseStruct) return -2;",
                 "    Py_XDECREF(parsed);",
                 "    Py_XDECREF(PyLong_GetInfo());",
+                "    Py_XDECREF(PyFloat_GetInfo());",
                 "    return converted + compact + (int)compact_value + (int)size + (int)bits;",
                 "}",
                 "",
@@ -5307,6 +5326,12 @@ def test_l7_integer_headers_expose_one_external_authority(tmp_path: Path) -> Non
     assert "static inline long PyLong_" not in source_overlay
     assert "static inline unsigned long PyLong_" not in source_overlay
     assert "static inline size_t PyLong_" not in source_overlay
+    assert "static inline PyObject *PyFloat_" not in source_overlay
+    assert "static inline double PyFloat_" not in source_overlay
+    assert "static inline PyObject *PyComplex_" not in source_overlay
+    assert "static inline double PyComplex_" not in source_overlay
+    assert "static inline Py_complex PyComplex_" not in source_overlay
+    assert "static inline PyObject *PyBool_" not in source_overlay
     for symbol in (
         "PyLong_FromString",
         "PyLong_AsSize_t",
@@ -5315,6 +5340,15 @@ def test_l7_integer_headers_expose_one_external_authority(tmp_path: Path) -> Non
         "_PyLong_FromByteArray",
         "_PyLong_AsByteArray",
         "PyLong_GetInfo",
+        "PyFloat_Pack2",
+        "PyFloat_Pack4",
+        "PyFloat_Pack8",
+        "PyFloat_Unpack2",
+        "PyFloat_Unpack4",
+        "PyFloat_Unpack8",
+        "PyFloat_GetInfo",
+        "_Py_c_sum",
+        "_Py_c_abs",
     ):
         assert any(
             line.startswith("extern ") and symbol in line

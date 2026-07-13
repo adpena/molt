@@ -91,7 +91,7 @@ unsafe fn slice_index(v: *mut PyObject, out: &mut Py_ssize_t) -> bool {
     if unsafe { crate::api::abstract_number::PyIndex_Check(v) } == 0 {
         unsafe {
             crate::api::errors::PyErr_SetString(
-                &raw mut crate::abi_types::PyExc_TypeError,
+                (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
                 c"slice indices must be integers or None or have an __index__ method".as_ptr(),
             );
         }
@@ -131,7 +131,7 @@ pub unsafe extern "C" fn PySlice_Unpack(
     if unsafe { PySlice_Check(slice) } == 0 {
         unsafe {
             crate::api::errors::PyErr_SetString(
-                &raw mut crate::abi_types::PyExc_TypeError,
+                (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
                 c"PySlice_Unpack requires a slice object".as_ptr(),
             );
         }
@@ -148,7 +148,8 @@ pub unsafe extern "C" fn PySlice_Unpack(
         if parsed_step == 0 {
             unsafe {
                 crate::api::errors::PyErr_SetString(
-                    &raw mut crate::abi_types::PyExc_ValueError,
+                    (&raw mut crate::abi_types::PyExc_ValueError)
+                        .cast::<crate::abi_types::PyObject>(),
                     c"slice step cannot be zero".as_ptr(),
                 );
             }

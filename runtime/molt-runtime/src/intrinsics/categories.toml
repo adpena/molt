@@ -135,7 +135,7 @@ feature = "stdlib_stringprep"
 [stdlib.buffer]
 prefixes = ["buffer2d_"]
 [stdlib.weakref]
-prefixes = ["weakref_"]
+prefixes = ["weakref_", "weakcontainer_"]
 [stdlib.contextlib]
 prefixes = ["contextlib_"]
 [stdlib.cancel]

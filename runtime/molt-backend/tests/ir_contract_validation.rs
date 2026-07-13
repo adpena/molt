@@ -225,7 +225,10 @@ fn validate_simple_ir_rejects_fast_float_on_non_scalar_owner() {
     call.fast_float = Some(true);
 
     let ir = SimpleIR {
-        functions: vec![test_func("molt_test_validate_fast_float_owner_reject", vec![call])],
+        functions: vec![test_func(
+            "molt_test_validate_fast_float_owner_reject",
+            vec![call],
+        )],
         profile: None,
     };
     let err = validate_simple_ir(&ir).expect_err("expected fast_float owner rejection");

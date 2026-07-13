@@ -35,6 +35,9 @@ pub(crate) struct FrameEntry {
     /// runtime global lookups and `globals()` observe the active function
     /// namespace even when the same code object is re-bound by `types.FunctionType`.
     pub(crate) globals_bits: u64,
+    /// Effective `f_builtins` selected when the frame is created. This is a
+    /// retained dict edge, not a live re-read of globals["__builtins__"].
+    pub(crate) builtins_bits: u64,
 }
 
 const TRACEBACK_PAYLOAD_CODE_OFFSET: usize = 0;
@@ -74,7 +77,46 @@ pub(crate) fn traceback_payload_is_lazy(bits: u64) -> bool {
 
 // --- Frame stack and traceback helpers ---
 
-fn frame_stack_push_entry(code_bits: u64, globals_bits: u64) {
+fn builtins_dict_from_value(bits: u64) -> Option<u64> {
+    let ptr = obj_from_bits(bits).as_ptr()?;
+    match unsafe { object_type_id(ptr) } {
+        TYPE_ID_DICT => Some(bits),
+        TYPE_ID_MODULE => {
+            let dict_bits = unsafe { module_dict_bits(ptr) };
+            obj_from_bits(dict_bits)
+                .as_ptr()
+                .is_some_and(|dict_ptr| unsafe { object_type_id(dict_ptr) } == TYPE_ID_DICT)
+                .then_some(dict_bits)
+        }
+        _ => None,
+    }
+}
+
+fn frame_effective_builtins_bits(_py: &PyToken<'_>, globals_bits: u64) -> u64 {
+    if let Some(globals_ptr) = obj_from_bits(globals_bits).as_ptr()
+        && unsafe { object_type_id(globals_ptr) } == TYPE_ID_DICT
+    {
+        let key_bits = intern_static_name(
+            _py,
+            &runtime_state(_py).interned.dunder_builtins_name,
+            b"__builtins__",
+        );
+        if let Some(value_bits) = unsafe { dict_get_in_place(_py, globals_ptr, key_bits) }
+            && let Some(dict_bits) = builtins_dict_from_value(value_bits)
+        {
+            return dict_bits;
+        }
+    }
+    let builtins_bits = {
+        let cache = crate::builtins::exceptions::internals::module_cache(_py);
+        cache.lock().unwrap().get("builtins").copied()
+    };
+    builtins_bits
+        .and_then(builtins_dict_from_value)
+        .unwrap_or(0)
+}
+
+fn frame_stack_push_entry(_py: &PyToken<'_>, code_bits: u64, globals_bits: u64) {
     let line = if let Some(ptr) = obj_from_bits(code_bits).as_ptr() {
         unsafe {
             if object_type_id(ptr) == TYPE_ID_CODE {
@@ -86,6 +128,10 @@ fn frame_stack_push_entry(code_bits: u64, globals_bits: u64) {
     } else {
         0
     };
+    let builtins_bits = frame_effective_builtins_bits(_py, globals_bits);
+    if builtins_bits != 0 {
+        inc_ref_bits(_py, builtins_bits);
+    }
     FRAME_STACK.with(|stack| {
         stack.borrow_mut().push(FrameEntry {
             code_bits,
@@ -94,6 +140,7 @@ fn frame_stack_push_entry(code_bits: u64, globals_bits: u64) {
             end_col_offset: -1,
             locals_bits: 0,
             globals_bits,
+            builtins_bits,
         });
     });
 }
@@ -103,7 +150,7 @@ pub(crate) fn frame_stack_push(_py: &PyToken<'_>, code_bits: u64) {
     if code_bits != 0 {
         inc_ref_bits(_py, code_bits);
     }
-    frame_stack_push_entry(code_bits, 0);
+    frame_stack_push_entry(_py, code_bits, 0);
 }
 
 pub(crate) fn frame_stack_push_function(_py: &PyToken<'_>, code_bits: u64, func_ptr: *mut u8) {
@@ -123,9 +170,9 @@ pub(crate) fn frame_stack_push_function(_py: &PyToken<'_>, code_bits: u64, func_
     };
     if globals_bits != 0 && !obj_from_bits(globals_bits).is_none() {
         inc_ref_bits(_py, globals_bits);
-        frame_stack_push_entry(code_bits, globals_bits);
+        frame_stack_push_entry(_py, code_bits, globals_bits);
     } else {
-        frame_stack_push_entry(code_bits, 0);
+        frame_stack_push_entry(_py, code_bits, 0);
     }
 }
 
@@ -137,7 +184,7 @@ pub(crate) fn frame_stack_push_function(_py: &PyToken<'_>, code_bits: u64, func_
 /// ownership protocol at every call site.
 pub(crate) fn frame_stack_push_owned(_py: &PyToken<'_>, code_bits: u64) {
     crate::gil_assert();
-    frame_stack_push_entry(code_bits, 0);
+    frame_stack_push_entry(_py, code_bits, 0);
 }
 
 pub(crate) fn frame_stack_active_globals_bits() -> u64 {
@@ -146,6 +193,16 @@ pub(crate) fn frame_stack_active_globals_bits() -> u64 {
             .borrow()
             .last()
             .map(|entry| entry.globals_bits)
+            .unwrap_or(0)
+    })
+}
+
+pub(crate) fn frame_stack_active_builtins_bits() -> u64 {
+    FRAME_STACK.with(|stack| {
+        stack
+            .borrow()
+            .last()
+            .map(|entry| entry.builtins_bits)
             .unwrap_or(0)
     })
 }
@@ -182,6 +239,9 @@ pub(crate) fn frame_stack_pop(_py: &PyToken<'_>) {
         }
         if entry.globals_bits != 0 && !obj_from_bits(entry.globals_bits).is_none() {
             dec_ref_bits(_py, entry.globals_bits);
+        }
+        if entry.builtins_bits != 0 && !obj_from_bits(entry.builtins_bits).is_none() {
+            dec_ref_bits(_py, entry.builtins_bits);
         }
     }
 }
@@ -834,8 +894,7 @@ pub(crate) fn exception_materialize_traceback_bits(_py: &PyToken<'_>, exc_ptr: *
         if object_type_id(exc_ptr) != TYPE_ID_EXCEPTION {
             return MoltObject::none().bits();
         }
-        let trace_slot = exc_ptr.add(5 * std::mem::size_of::<u64>()) as *mut u64;
-        let trace_bits = *trace_slot;
+        let trace_bits = crate::exception_trace_bits(exc_ptr);
         if !traceback_payload_is_lazy(trace_bits) {
             return trace_bits;
         }
@@ -843,8 +902,13 @@ pub(crate) fn exception_materialize_traceback_bits(_py: &PyToken<'_>, exc_ptr: *
         if obj_from_bits(materialized_bits).is_none() {
             return MoltObject::none().bits();
         }
-        *trace_slot = materialized_bits;
-        dec_ref_bits(_py, trace_bits);
+        crate::builtins::exceptions::exception_publish_field_slot(
+            _py,
+            exc_ptr,
+            crate::builtins::exceptions::ExceptionFieldSlot::Traceback,
+            materialized_bits,
+        );
+        dec_ref_bits(_py, materialized_bits);
         materialized_bits
     }
 }
@@ -1023,10 +1087,15 @@ pub extern "C" fn molt_globals_builtin() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{frame_stack_pop, frame_stack_push, frame_stack_push_owned};
+    use super::{
+        frame_stack_active_builtins_bits, frame_stack_pop, frame_stack_push,
+        frame_stack_push_entry, frame_stack_push_owned,
+    };
     use crate::object::builders::alloc_code_obj;
     use crate::object::header_from_obj_ptr;
-    use crate::{alloc_string, dec_ref_bits, inc_ref_bits};
+    use crate::{
+        alloc_dict_with_pairs, alloc_string, dec_ref_bits, dict_set_in_place, inc_ref_bits,
+    };
     use molt_obj_model::MoltObject;
     use std::sync::atomic::Ordering;
 
@@ -1079,6 +1148,38 @@ mod tests {
             assert_eq!(unsafe { ref_count(code_ptr) }, 1);
 
             dec_ref_bits(_py, code_bits);
+        });
+    }
+
+    #[test]
+    fn frame_builtins_is_captured_once_not_reread_from_globals() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry_nopanic!(_py, {
+            let globals_ptr = alloc_dict_with_pairs(_py, &[]);
+            let first_ptr = alloc_dict_with_pairs(_py, &[]);
+            let second_ptr = alloc_dict_with_pairs(_py, &[]);
+            let key_ptr = alloc_string(_py, b"__builtins__");
+            let globals_bits = MoltObject::from_ptr(globals_ptr).bits();
+            let first_bits = MoltObject::from_ptr(first_ptr).bits();
+            let second_bits = MoltObject::from_ptr(second_ptr).bits();
+            let key_bits = MoltObject::from_ptr(key_ptr).bits();
+            unsafe { dict_set_in_place(_py, globals_ptr, key_bits, first_bits) };
+            inc_ref_bits(_py, globals_bits);
+            frame_stack_push_entry(_py, 0, globals_bits);
+            assert_eq!(frame_stack_active_builtins_bits(), first_bits);
+
+            unsafe { dict_set_in_place(_py, globals_ptr, key_bits, second_bits) };
+            assert_eq!(
+                frame_stack_active_builtins_bits(),
+                first_bits,
+                "PyEval_GetBuiltins follows stored f_builtins, not a later globals mutation"
+            );
+
+            frame_stack_pop(_py);
+            dec_ref_bits(_py, globals_bits);
+            dec_ref_bits(_py, first_bits);
+            dec_ref_bits(_py, second_bits);
+            dec_ref_bits(_py, key_bits);
         });
     }
 }

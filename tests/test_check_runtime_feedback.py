@@ -22,7 +22,7 @@ def _load_module():
 
 def _base_payload() -> dict:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "runtime_feedback",
         "profile": {
             "call_dispatch": 0,
@@ -30,8 +30,41 @@ def _base_payload() -> dict:
             "layout_guard": 0,
             "layout_guard_fail": 0,
             "alloc_count": 0,
+            "alloc_exception": 0,
+            "alloc_bytes_total": 0,
+            "alloc_bytes_exception": 0,
+            "dealloc_count": 0,
+            "dealloc_bytes_total": 0,
+            "dealloc_exception": 0,
+            "dealloc_bytes_exception": 0,
+            "live_objects": 0,
+            "live_bytes": 0,
+            "live_exception": 0,
+            "live_bytes_exception": 0,
+            "expected_live": 200_000,
             "async_polls": 0,
         },
+        "aux": {
+            "aux_class_inline_count": 0,
+            "aux_state_inline_count": 0,
+            "aux_sidecar_alloc_count": 0,
+            "aux_sidecar_free_count": 0,
+            "aux_sidecar_live_count": 0,
+            "aux_sidecar_alloc_failure_count": 0,
+            "aux_sidecar_alloc_bytes": 0,
+            "aux_sidecar_free_bytes": 0,
+            "aux_sidecar_live_bytes": 0,
+        },
+        "gc": {
+            "gc_track_count": 0,
+            "gc_untrack_count": 0,
+            "gc_tracked_live": 0,
+            "gc_tracked_high_water": 0,
+            "gc_registry_lock_contention_count": 0,
+            "gc_registry_lock_wait_ns": 0,
+            "gc_snapshot_alloc_failure_count": 0,
+        },
+        "memory": {"peak_rss_bytes": 0, "current_rss_bytes": 0},
         "hot_paths": {
             "call_bind_ic_hit": 0,
             "call_bind_ic_miss": 0,
@@ -67,6 +100,19 @@ def test_runtime_feedback_validator_requires_deopt_reasons(tmp_path: Path) -> No
     module = _load_module()
     payload = _base_payload()
     payload.pop("deopt_reasons")
+    path = tmp_path / "molt_runtime_feedback.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert module._validate(path) == 1
+
+
+def test_runtime_feedback_validator_rejects_lifetime_identity_drift(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    payload = _base_payload()
+    payload["aux"]["aux_sidecar_alloc_count"] = 2
+    payload["aux"]["aux_sidecar_live_count"] = 1
     path = tmp_path / "molt_runtime_feedback.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
 

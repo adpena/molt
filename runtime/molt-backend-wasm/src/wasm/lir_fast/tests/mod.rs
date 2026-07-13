@@ -16,7 +16,6 @@ use molt_codegen_abi::{
 use std::collections::HashMap;
 use wasm_encoder::{Instruction, ValType};
 
-
 const F64_EXPONENT_MASK: i64 = 0x7ff0_0000_0000_0000u64 as i64;
 
 const F64_FRACTION_MASK: i64 = 0x000f_ffff_ffff_ffffu64 as i64;
@@ -298,15 +297,15 @@ fn has_native_binary_instruction(instructions: &[Instruction<'static>], opcode: 
     })
 }
 
-mod const_materialization;
-mod refcount;
-mod arithmetic;
-mod index_subscript;
-mod membership_iter;
-mod runtime_service;
 mod alloc_object;
-mod name_attrs;
+mod arithmetic;
+mod const_materialization;
 mod control_flow;
-mod peephole;
+mod index_subscript;
 mod int_carrier_abi;
 mod manifest;
+mod membership_iter;
+mod name_attrs;
+mod peephole;
+mod refcount;
+mod runtime_service;

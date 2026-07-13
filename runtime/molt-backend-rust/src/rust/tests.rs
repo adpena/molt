@@ -475,7 +475,10 @@ fn compile_checked_reports_stub_markers() {
         err.contains("refuses to emit fail-open codegen"),
         "error must come from the fail-closed accumulator, got: {err}"
     );
-    assert!(err.contains("matmul"), "diagnostic must name the op kind, got: {err}");
+    assert!(
+        err.contains("matmul"),
+        "diagnostic must name the op kind, got: {err}"
+    );
 }
 
 #[test]
@@ -962,6 +965,12 @@ fn compile_checked_fails_closed_without_emitted_value_marker() {
     let err = backend
         .compile_checked(&ir)
         .expect_err("an unsupported op with no output must still fail closed");
-    assert!(err.contains("refuses to emit fail-open codegen"), "got: {err}");
-    assert!(err.contains("molt_synthetic_unsupported_sink_probe"), "got: {err}");
+    assert!(
+        err.contains("refuses to emit fail-open codegen"),
+        "got: {err}"
+    );
+    assert!(
+        err.contains("molt_synthetic_unsupported_sink_probe"),
+        "got: {err}"
+    );
 }

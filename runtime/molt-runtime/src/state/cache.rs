@@ -66,6 +66,7 @@ define_interned_names! {
     stdout_name,
     stdin_name,
     modules_name,
+    dunder_builtins_name,
     all_name,
     fspath_name,
     dict_name,

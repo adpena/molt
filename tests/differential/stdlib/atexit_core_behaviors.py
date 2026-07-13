@@ -1,6 +1,7 @@
 """Purpose: differential coverage for intrinsic-backed atexit core semantics."""
 
 import atexit
+import sys
 
 
 events: list[tuple[str, tuple[object, ...], tuple[tuple[str, object], ...]]] = []
@@ -57,6 +58,57 @@ print("count-after-unregister", atexit._ncallbacks())
 atexit._run_exitfuncs()
 print("events-after-unregister-run", events)
 print("count-after-unregister-run", atexit._ncallbacks())
+
+atexit._clear()
+same_callback = EqCallable("identity")
+atexit.register(same_callback)
+atexit.register(same_callback)
+atexit.unregister(same_callback)
+print("count-after-identity-unregister", atexit._ncallbacks())
+atexit._clear()
+
+unraisables: list[object] = []
+old_unraisablehook = sys.unraisablehook
+sys.unraisablehook = unraisables.append  # type: ignore[assignment]
+
+
+def returns_caught_exception() -> Exception:
+    try:
+        raise ValueError("caught")
+    except ValueError as exc:
+        return exc
+
+
+atexit.register(returns_caught_exception)
+atexit._run_exitfuncs()
+sys.unraisablehook = old_unraisablehook
+print("caught-exception-return-unraisables", len(unraisables))
+
+events.clear()
+
+
+class ReentrantEqCallable:
+    armed = True
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def __call__(self) -> None:
+        events.append((self.name, (), ()))
+
+    def __eq__(self, other: object) -> bool:
+        if ReentrantEqCallable.armed:
+            ReentrantEqCallable.armed = False
+            atexit.register(callback, "reentrant-register")
+        return isinstance(other, ReentrantEqCallable) and self.name == other.name
+
+
+atexit.register(ReentrantEqCallable("same"))
+atexit.unregister(ReentrantEqCallable("same"))
+print("count-after-reentrant-unregister", atexit._ncallbacks())
+atexit._run_exitfuncs()
+print("events-after-reentrant-unregister", events)
+print("count-after-reentrant-run", atexit._ncallbacks())
 
 events.clear()
 atexit.register(callback, "clear-1")

@@ -285,7 +285,9 @@ For each `StateYield`, `ChanSendYield`, `ChanRecvYield`, `Yield`, `YieldFrom` op
 3. On resume: no additional action — the IncRef'd reference is consumed at the point of last use post-resume.
 4. On generator close (teardown): the frame's coroutine finalizer is responsible for dropping all alive frame slots. The finalizer already walks the GEN frame slots and calls `dec_ref_bits` for each (async_rt/generators.rs). The IncRef-before-yield above ensures the frame slot has a valid reference for the finalizer to release.
 
-This is the minimal correct model. The Perceus optimization (reuse_analysis) handles the common case where the frame slot and the resume-local alias are fused, eliminating the IncRef/DecRef pair.
+This is the minimal correct model. A future ownership-driven fusion could eliminate the
+IncRef/DecRef pair when the frame slot and resume-local alias are proven identical, but no
+executable reuse analysis currently claims that optimization.
 
 ---
 
@@ -342,9 +344,12 @@ During the drop insertion phase, when computing whether a value requires an IncR
 
 This eliminates the dominant pattern: `result = f(x); ...use result...; // x is dead → no IncRef/DecRef for x around the call`.
 
-### 3.3 reuse_analysis Integration (existing, tir/passes/reuse_analysis.rs)
+### 3.3 Future Reuse/FBIP Integration
 
-After drop insertion, reuse_analysis has a richer set of `DecRef` → `Alloc` pairs to work with. The Perceus-style reuse credit means the drop of an old BigInt can be fused with the allocation of the new one (same size class: both are `TYPE_ID_BIGINT`), eliminating one alloc+free pair per iteration in BigInt accumulator loops. The reuse pass already produces `ReuseCandidate` annotations; Phase 2 of this substrate (future, not in this arc) implements the runtime reuse-token emission (`molt_reuse_token` / `molt_reuse_alloc`).
+After drop insertion, a future end-to-end reuse implementation could pair proven-unique
+`DecRef` operations with representation-compatible allocations. No annotation-only pass or
+runtime-token ABI is retained: analysis, lowering, ownership/finalizer safety, and allocation-count
+proof must land as one executable authority.
 
 ### 3.4 Expected Overhead on Hot Benchmarks
 
@@ -478,7 +483,7 @@ The dealloc counter must be incremented in `dec_ref_ptr` in `object/mod.rs` at l
 ```rust
 // In dec_ref_ptr, after acquire_fence() at the prev==1 transition:
 profile_hit(py, &DEALLOC_COUNT);
-profile_hit_bytes(py, &DEALLOC_BYTES_TOTAL, total_size_from_header_fields(header_size_class, header_cold_idx) as u64);
+profile_hit_bytes(py, &DEALLOC_BYTES_TOTAL, total_size_from_header(header, ptr) as u64);
 profile_dealloc_type(py, type_id);
 ```
 
@@ -766,7 +771,9 @@ CPython has a cycle garbage collector that handles reference cycles (`a.next = a
 
 ### 10.3 Perceus Reuse-Token Emission
 
-The `reuse_analysis` pass produces `ReuseCandidate` annotations but does not yet emit runtime reuse tokens. Enabling the actual reuse (eliminating one alloc+free pair per iteration on BigInt accumulator loops) requires adding `molt_reuse_token`/`molt_reuse_alloc` to the runtime ABI and wiring them in the lowering path. This is design 22 (follow-up to this substrate).
+No reuse-token ABI or annotation pass exists. A future implementation must introduce its IR,
+lowering, and safe runtime mechanism together, with BigInt allocation-count evidence and explicit
+weakref/finalizer exclusions. This remains design work rather than dormant executable authority.
 
 ### 10.4 InterProcedural RC Analysis
 
@@ -794,4 +801,4 @@ The TIR inliner (E1) activates via `run_module_pipeline`, which is currently tes
 - loop_reassign_old_val guard (Phase 3 modification): `runtime/molt-backend/src/native_backend/function_compiler.rs:3577-3628`
 - emit_dec_ref_obj (Cranelift inline tag-check, already correct): `runtime/molt-backend/src/native_backend/simple_backend.rs:1076-1103`
 - Repr lattice (filter raw scalars): `runtime/molt-tir/src/representation_plan.rs:78-133`
-- reuse_analysis (Perceus, follow-up optimization): `runtime/molt-passes/src/tir/passes/reuse_analysis.rs`
+- future reuse/FBIP design: `docs/design/foundation/27_perceus_borrow_inference.md`

@@ -34,7 +34,8 @@ unsafe fn raise_utf8_decode_error(bytes: &[u8], error: std::str::Utf8Error) {
     );
     unsafe {
         set_exc(
-            &raw mut crate::abi_types::PyExc_UnicodeDecodeError,
+            (&raw mut crate::abi_types::PyExc_UnicodeDecodeError)
+                .cast::<crate::abi_types::PyObject>(),
             &message,
         )
     };
@@ -50,7 +51,7 @@ unsafe fn unicode_from_utf8_bytes(bytes: &[u8]) -> *mut PyObject {
     if bits == 0 {
         return unsafe { str_alloc_failed() };
     }
-    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) }
+    unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) }
 }
 
 /// Set an exception of type `exc` with a runtime-formatted message.
@@ -451,7 +452,7 @@ pub unsafe extern "C" fn PyUnicode_FromStringAndSize(
     if size < 0 {
         unsafe {
             set_exc(
-                &raw mut crate::abi_types::PyExc_SystemError,
+                (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
                 "Negative size passed to PyUnicode_FromStringAndSize",
             )
         };
@@ -463,7 +464,7 @@ pub unsafe extern "C" fn PyUnicode_FromStringAndSize(
         }
         unsafe {
             set_exc(
-                &raw mut crate::abi_types::PyExc_SystemError,
+                (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
                 "NULL string with positive size passed to PyUnicode_FromStringAndSize",
             )
         };
@@ -577,7 +578,8 @@ pub unsafe extern "C" fn PyUnicode_DecodeASCII(
     if !bytes.is_ascii() {
         unsafe {
             crate::api::errors::PyErr_SetString(
-                &raw mut crate::abi_types::PyExc_UnicodeDecodeError,
+                (&raw mut crate::abi_types::PyExc_UnicodeDecodeError)
+                    .cast::<crate::abi_types::PyObject>(),
                 c"'ascii' codec can't decode byte: ordinal not in range(128)".as_ptr(),
             );
         }
@@ -633,7 +635,8 @@ pub unsafe extern "C" fn PyUnicode_DecodeUTF16(
     if bytes.len() % 2 != 0 {
         unsafe {
             crate::api::errors::PyErr_SetString(
-                &raw mut crate::abi_types::PyExc_UnicodeDecodeError,
+                (&raw mut crate::abi_types::PyExc_UnicodeDecodeError)
+                    .cast::<crate::abi_types::PyObject>(),
                 c"'utf-16' codec can't decode: truncated data".as_ptr(),
             );
         }
@@ -656,7 +659,8 @@ pub unsafe extern "C" fn PyUnicode_DecodeUTF16(
         Err(_) => {
             unsafe {
                 crate::api::errors::PyErr_SetString(
-                    &raw mut crate::abi_types::PyExc_UnicodeDecodeError,
+                    (&raw mut crate::abi_types::PyExc_UnicodeDecodeError)
+                        .cast::<crate::abi_types::PyObject>(),
                     c"'utf-16' codec can't decode: unpaired surrogate".as_ptr(),
                 );
             }
@@ -681,7 +685,7 @@ pub unsafe extern "C" fn PyUnicode_FromOrdinal(ordinal: c_int) -> *mut PyObject 
     let Some(ch) = char::from_u32(ordinal as u32) else {
         unsafe {
             crate::api::errors::PyErr_SetString(
-                &raw mut crate::abi_types::PyExc_ValueError,
+                (&raw mut crate::abi_types::PyExc_ValueError).cast::<crate::abi_types::PyObject>(),
                 c"ordinal not in range".as_ptr(),
             );
         }
@@ -721,7 +725,13 @@ unsafe fn raise_unicode_encode_error(bytes: &[u8], codec: &str, reason: &str, li
         "'{codec}' codec can't encode character '\\u{:04x}' in position {pos}: {reason}",
         ch as u32
     );
-    unsafe { set_exc(&raw mut crate::abi_types::PyExc_UnicodeEncodeError, &msg) };
+    unsafe {
+        set_exc(
+            (&raw mut crate::abi_types::PyExc_UnicodeEncodeError)
+                .cast::<crate::abi_types::PyObject>(),
+            &msg,
+        )
+    };
 }
 
 #[unsafe(no_mangle)]
@@ -827,9 +837,28 @@ pub unsafe extern "C" fn PyUnicode_Check(op: *mut PyObject) -> c_int {
     if op.is_null() {
         return 0;
     }
+    if let Some(value) = GLOBAL_BRIDGE.molt_handle_for_pyobj(op) {
+        return (value.decode().is_ptr()
+            && unsafe { (hooks_or_stubs().classify_heap)(value.bits()) }
+                == crate::abi_types::MoltTypeTag::Str as u8) as c_int;
+    }
     let ob_type = unsafe { (*op).ob_type };
     (!ob_type.is_null() && unsafe { (*ob_type).tp_flags } & Py_TPFLAGS_UNICODE_SUBCLASS != 0)
         as c_int
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyUnicode_CheckExact(op: *mut PyObject) -> c_int {
+    if let Some(value) = GLOBAL_BRIDGE.molt_handle_for_pyobj(op) {
+        return (value.decode().is_ptr()
+            && unsafe { (hooks_or_stubs().classify_heap)(value.bits()) }
+                == crate::abi_types::MoltTypeTag::Str as u8) as c_int;
+    }
+    (!op.is_null()
+        && std::ptr::eq(
+            unsafe { (*op).ob_type },
+            &raw const crate::abi_types::PyUnicode_Type,
+        )) as c_int
 }
 
 #[unsafe(no_mangle)]
@@ -885,7 +914,7 @@ pub unsafe extern "C" fn PyUnicode_AsUCS4(
         // CPython: PyErr_Format(SystemError, "string is longer than the buffer").
         unsafe {
             set_exc(
-                &raw mut crate::abi_types::PyExc_SystemError,
+                (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
                 "string is longer than the buffer",
             )
         };
@@ -944,7 +973,12 @@ pub unsafe extern "C" fn PyUnicode_Compare(left: *mut PyObject, right: *mut PyOb
             unsafe { pyobj_type_name(left) },
             unsafe { pyobj_type_name(right) }
         );
-        unsafe { set_exc(&raw mut crate::abi_types::PyExc_TypeError, &msg) };
+        unsafe {
+            set_exc(
+                (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
+                &msg,
+            )
+        };
         return -1;
     };
     compare_unicode_bytes(left_bytes, right_bytes)
@@ -1087,7 +1121,7 @@ pub unsafe extern "C" fn PyBytes_FromStringAndSize(
         // Out of memory: fail closed with NULL + MemoryError (CPython contract).
         return unsafe { str_alloc_failed() };
     }
-    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) }
+    unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) }
 }
 
 #[unsafe(no_mangle)]
@@ -1102,7 +1136,7 @@ pub unsafe extern "C" fn PyBytes_FromString(s: *const c_char) -> *mut PyObject {
         // Out of memory: fail closed with NULL + MemoryError (CPython contract).
         return unsafe { str_alloc_failed() };
     }
-    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) }
+    unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) }
 }
 
 #[unsafe(no_mangle)]
@@ -1122,7 +1156,12 @@ pub unsafe extern "C" fn PyBytes_AsStringAndSize(
         let msg = format!("expected bytes, {:.200} found", unsafe {
             pyobj_type_name(op)
         });
-        unsafe { set_exc(&raw mut crate::abi_types::PyExc_TypeError, &msg) };
+        unsafe {
+            set_exc(
+                (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
+                &msg,
+            )
+        };
     };
     if op.is_null() {
         expected_bytes_error(op);
@@ -1163,7 +1202,7 @@ pub unsafe extern "C" fn PyBytes_AsStringAndSize(
         // NUL silently truncates — CPython raises ValueError instead.
         unsafe {
             set_exc(
-                &raw mut crate::abi_types::PyExc_ValueError,
+                (&raw mut crate::abi_types::PyExc_ValueError).cast::<crate::abi_types::PyObject>(),
                 "embedded null byte",
             )
         };
@@ -1177,8 +1216,27 @@ pub unsafe extern "C" fn PyBytes_Check(op: *mut PyObject) -> c_int {
     if op.is_null() {
         return 0;
     }
+    if let Some(value) = GLOBAL_BRIDGE.molt_handle_for_pyobj(op) {
+        return (value.decode().is_ptr()
+            && unsafe { (hooks_or_stubs().classify_heap)(value.bits()) }
+                == crate::abi_types::MoltTypeTag::Bytes as u8) as c_int;
+    }
     let ob_type = unsafe { (*op).ob_type };
     (!ob_type.is_null() && unsafe { (*ob_type).tp_flags } & Py_TPFLAGS_BYTES_SUBCLASS != 0) as c_int
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyBytes_CheckExact(op: *mut PyObject) -> c_int {
+    if let Some(value) = GLOBAL_BRIDGE.molt_handle_for_pyobj(op) {
+        return (value.decode().is_ptr()
+            && unsafe { (hooks_or_stubs().classify_heap)(value.bits()) }
+                == crate::abi_types::MoltTypeTag::Bytes as u8) as c_int;
+    }
+    (!op.is_null()
+        && std::ptr::eq(
+            unsafe { (*op).ob_type },
+            &raw const crate::abi_types::PyBytes_Type,
+        )) as c_int
 }
 
 #[unsafe(no_mangle)]
@@ -1219,7 +1277,12 @@ pub unsafe extern "C" fn PyBytes_Size(op: *mut PyObject) -> Py_ssize_t {
         let msg = format!("expected bytes, {:.200} found", unsafe {
             pyobj_type_name(op)
         });
-        unsafe { set_exc(&raw mut crate::abi_types::PyExc_TypeError, &msg) };
+        unsafe {
+            set_exc(
+                (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
+                &msg,
+            )
+        };
     };
     if op.is_null() {
         expected_bytes_error(op);
@@ -1266,7 +1329,7 @@ pub unsafe extern "C" fn PyUnicode_Concat(
         // Out of memory: fail closed with NULL + MemoryError (CPython contract).
         return unsafe { str_alloc_failed() };
     }
-    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) }
+    unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) }
 }
 
 #[unsafe(no_mangle)]
@@ -1290,7 +1353,8 @@ pub unsafe extern "C" fn PyUnicode_Join(
             None => {
                 unsafe {
                     set_exc(
-                        &raw mut crate::abi_types::PyExc_TypeError,
+                        (&raw mut crate::abi_types::PyExc_TypeError)
+                            .cast::<crate::abi_types::PyObject>(),
                         "separator: expected str instance",
                     )
                 };
@@ -1356,7 +1420,13 @@ pub unsafe extern "C" fn PyUnicode_Join(
                 unsafe { pyobj_type_name(item) }
             );
             unsafe { crate::api::refcount::Py_DECREF(item) };
-            unsafe { set_exc(&raw mut crate::abi_types::PyExc_TypeError, &msg) };
+            unsafe {
+                set_exc(
+                    (&raw mut crate::abi_types::PyExc_TypeError)
+                        .cast::<crate::abi_types::PyObject>(),
+                    &msg,
+                )
+            };
             return ptr::null_mut();
         };
         if i > 0 {
@@ -1380,7 +1450,12 @@ pub unsafe extern "C" fn PyUnicode_Contains(
             "'in <string>' requires string as left operand, not {:.100}",
             unsafe { pyobj_type_name(element) }
         );
-        unsafe { set_exc(&raw mut crate::abi_types::PyExc_TypeError, &msg) };
+        unsafe {
+            set_exc(
+                (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
+                &msg,
+            )
+        };
         return -1;
     };
     let Some(c_bytes) = (unsafe { unicode_bytes(container) }) else {
@@ -1469,7 +1544,12 @@ pub unsafe extern "C" fn PyUnicode_Decode(
         return unsafe { PyUnicode_DecodeUTF16(s, size, errors, ptr::null_mut()) };
     }
     let msg = format!("unknown encoding: {}", String::from_utf8_lossy(name));
-    unsafe { set_exc(&raw mut crate::abi_types::PyExc_LookupError, &msg) };
+    unsafe {
+        set_exc(
+            (&raw mut crate::abi_types::PyExc_LookupError).cast::<crate::abi_types::PyObject>(),
+            &msg,
+        )
+    };
     ptr::null_mut()
 }
 
@@ -1492,7 +1572,13 @@ pub unsafe extern "C" fn PyUnicode_DecodeUTF8(
         let msg = format!(
             "'utf-8' codec can't decode byte 0x{byte:02x} in position {pos}: invalid start byte"
         );
-        unsafe { set_exc(&raw mut crate::abi_types::PyExc_UnicodeDecodeError, &msg) };
+        unsafe {
+            set_exc(
+                (&raw mut crate::abi_types::PyExc_UnicodeDecodeError)
+                    .cast::<crate::abi_types::PyObject>(),
+                &msg,
+            )
+        };
         return ptr::null_mut();
     }
     unsafe { PyUnicode_FromStringAndSize(s, size) }
@@ -1515,7 +1601,7 @@ pub unsafe extern "C" fn PyUnicode_FromEncodedObject(
     if unsafe { PyUnicode_Check(obj) } != 0 {
         unsafe {
             set_exc(
-                &raw mut crate::abi_types::PyExc_TypeError,
+                (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
                 "decoding str is not supported",
             )
         };
@@ -1533,7 +1619,12 @@ pub unsafe extern "C" fn PyUnicode_FromEncodedObject(
         "decoding to str: need a bytes-like object, {:.80} found",
         unsafe { pyobj_type_name(obj) }
     );
-    unsafe { set_exc(&raw mut crate::abi_types::PyExc_TypeError, &msg) };
+    unsafe {
+        set_exc(
+            (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
+            &msg,
+        )
+    };
     ptr::null_mut()
 }
 
@@ -1587,7 +1678,12 @@ pub unsafe extern "C" fn PyUnicode_AsEncodedString(
             "unknown encoding: {}",
             String::from_utf8_lossy(encoding_bytes)
         );
-        unsafe { set_exc(&raw mut crate::abi_types::PyExc_LookupError, &msg) };
+        unsafe {
+            set_exc(
+                (&raw mut crate::abi_types::PyExc_LookupError).cast::<crate::abi_types::PyObject>(),
+                &msg,
+            )
+        };
         None
     };
     let Some(encoded) = encoded else {
@@ -1813,7 +1909,10 @@ unsafe fn percent_int_arg(arg: *mut PyObject, conv: u8) -> Option<i128> {
             conv as char,
             pyobj_type_name(arg)
         );
-        set_exc(&raw mut crate::abi_types::PyExc_TypeError, &msg);
+        set_exc(
+            (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
+            &msg,
+        );
     };
     // Native int / bool via the bridge handle (exact, no width truncation).
     let bits = crate::bridge::GLOBAL_BRIDGE.molt_handle_for_pyobj(arg);
@@ -1881,7 +1980,7 @@ pub unsafe extern "C" fn PyUnicode_Format(
 
     let incomplete = || unsafe {
         set_exc(
-            &raw mut crate::abi_types::PyExc_ValueError,
+            (&raw mut crate::abi_types::PyExc_ValueError).cast::<crate::abi_types::PyObject>(),
             "incomplete format",
         );
     };
@@ -1941,7 +2040,8 @@ pub unsafe extern "C" fn PyUnicode_Format(
                 if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
                     unsafe {
                         set_exc(
-                            &raw mut crate::abi_types::PyExc_TypeError,
+                            (&raw mut crate::abi_types::PyExc_TypeError)
+                                .cast::<crate::abi_types::PyObject>(),
                             "format requires a mapping",
                         )
                     };
@@ -1970,7 +2070,8 @@ pub unsafe extern "C" fn PyUnicode_Format(
             if warg.is_null() {
                 unsafe {
                     set_exc(
-                        &raw mut crate::abi_types::PyExc_TypeError,
+                        (&raw mut crate::abi_types::PyExc_TypeError)
+                            .cast::<crate::abi_types::PyObject>(),
                         "not enough arguments for format string",
                     )
                 };
@@ -2002,7 +2103,8 @@ pub unsafe extern "C" fn PyUnicode_Format(
                 if parg.is_null() {
                     unsafe {
                         set_exc(
-                            &raw mut crate::abi_types::PyExc_TypeError,
+                            (&raw mut crate::abi_types::PyExc_TypeError)
+                                .cast::<crate::abi_types::PyObject>(),
                             "not enough arguments for format string",
                         )
                     };
@@ -2040,7 +2142,8 @@ pub unsafe extern "C" fn PyUnicode_Format(
             if a.is_null() {
                 unsafe {
                     set_exc(
-                        &raw mut crate::abi_types::PyExc_TypeError,
+                        (&raw mut crate::abi_types::PyExc_TypeError)
+                            .cast::<crate::abi_types::PyObject>(),
                         "not enough arguments for format string",
                     )
                 };
@@ -2132,7 +2235,8 @@ pub unsafe extern "C" fn PyUnicode_Format(
                     release_arg(arg, mapped);
                     unsafe {
                         set_exc(
-                            &raw mut crate::abi_types::PyExc_TypeError,
+                            (&raw mut crate::abi_types::PyExc_TypeError)
+                                .cast::<crate::abi_types::PyObject>(),
                             "%c requires int or char",
                         )
                     };
@@ -2183,7 +2287,13 @@ pub unsafe extern "C" fn PyUnicode_Format(
                     other,
                     cursor - 1
                 );
-                unsafe { set_exc(&raw mut crate::abi_types::PyExc_ValueError, &msg) };
+                unsafe {
+                    set_exc(
+                        (&raw mut crate::abi_types::PyExc_ValueError)
+                            .cast::<crate::abi_types::PyObject>(),
+                        &msg,
+                    )
+                };
                 return ptr::null_mut();
             }
         }
@@ -2196,7 +2306,7 @@ pub unsafe extern "C" fn PyUnicode_Format(
     {
         unsafe {
             set_exc(
-                &raw mut crate::abi_types::PyExc_TypeError,
+                (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
                 "not all arguments converted during string formatting",
             )
         };
@@ -2306,6 +2416,15 @@ pub unsafe extern "C" fn PyByteArray_Check(op: *mut PyObject) -> c_int {
     }
     let ob_type = unsafe { (*op).ob_type };
     std::ptr::eq(ob_type, &raw const crate::abi_types::PyByteArray_Type) as c_int
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyByteArray_CheckExact(op: *mut PyObject) -> c_int {
+    (!op.is_null()
+        && std::ptr::eq(
+            unsafe { (*op).ob_type },
+            &raw const crate::abi_types::PyByteArray_Type,
+        )) as c_int
 }
 
 #[unsafe(no_mangle)]

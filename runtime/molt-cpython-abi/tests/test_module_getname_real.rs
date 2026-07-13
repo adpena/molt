@@ -17,7 +17,7 @@
 #![allow(non_snake_case)]
 
 use molt_cpython_abi::abi_types::*;
-use molt_cpython_abi::hooks::RuntimeHooks;
+use molt_cpython_abi::hooks::{BorrowedHandleResult, RuntimeHooks};
 use std::collections::HashMap;
 use std::ffi::CStr;
 use std::sync::Mutex;
@@ -58,7 +58,9 @@ unsafe extern "C" fn fake_alloc_str(data: *const u8, len: usize) -> u64 {
     };
     // Intern by content so equal strings (e.g. the "__name__" key at store and
     // lookup time) share a handle, exactly like CPython's interned identifiers.
-    let handle = with(&STR_INTERN, |m| *m.entry(bytes.clone()).or_insert_with(fresh_handle));
+    let handle = with(&STR_INTERN, |m| {
+        *m.entry(bytes.clone()).or_insert_with(fresh_handle)
+    });
     // Store WITH a trailing NUL: PyUnicode_AsUTF8 returns a NUL-terminated
     // buffer, and callers (PyModule_GetName -> CStr::from_ptr) rely on it.
     let mut with_nul = bytes;
@@ -98,20 +100,22 @@ unsafe extern "C" fn fake_alloc_dict() -> u64 {
     h
 }
 
-unsafe extern "C" fn fake_dict_set(dict_bits: u64, key_bits: u64, val_bits: u64) {
+unsafe extern "C" fn fake_dict_set(dict_bits: u64, key_bits: u64, val_bits: u64) -> i32 {
     with(&DICTS, |m| {
         if let Some(d) = m.get_mut(&dict_bits) {
             d.insert(key_bits, val_bits);
         }
     });
+    0
 }
 
-unsafe extern "C" fn fake_dict_get(dict_bits: u64, key_bits: u64) -> u64 {
-    with(&DICTS, |m| {
-        m.get(&dict_bits)
-            .and_then(|d| d.get(&key_bits).copied())
-            .unwrap_or(0)
-    })
+unsafe extern "C" fn fake_dict_get(dict_bits: u64, key_bits: u64) -> BorrowedHandleResult {
+    match with(&DICTS, |m| {
+        m.get(&dict_bits).and_then(|d| d.get(&key_bits).copied())
+    }) {
+        Some(bits) => BorrowedHandleResult::ok(bits),
+        None => BorrowedHandleResult::missing(),
+    }
 }
 
 unsafe extern "C" fn fake_alloc_module(data: *const u8, len: usize) -> u64 {
@@ -127,8 +131,12 @@ unsafe extern "C" fn fake_alloc_module(data: *const u8, len: usize) -> u64 {
     module
 }
 
-unsafe extern "C" fn fake_module_get_dict(module_bits: u64) -> u64 {
-    with(&MODULE_DICT, |m| m.get(&module_bits).copied().unwrap_or(0))
+unsafe extern "C" fn fake_module_get_dict(module_bits: u64) -> BorrowedHandleResult {
+    with(&MODULE_DICT, |m| {
+        m.get(&module_bits)
+            .copied()
+            .map_or_else(BorrowedHandleResult::error, BorrowedHandleResult::ok)
+    })
 }
 
 unsafe extern "C" fn fake_classify_heap(bits: u64) -> u8 {
@@ -153,7 +161,7 @@ fn install_hooks() {
     hooks.dict_set = fake_dict_set;
     hooks.dict_get = fake_dict_get;
     hooks.alloc_module = fake_alloc_module;
-    hooks.module_get_dict = fake_module_get_dict;
+    hooks.module_get_dict_borrowed = fake_module_get_dict;
     hooks.classify_heap = fake_classify_heap;
     hooks.inc_ref = fake_noop_ref;
     hooks.dec_ref = fake_noop_ref;
@@ -201,7 +209,10 @@ fn module_getname_returns_real_distinct_names() {
         s1, s2,
         "distinct modules must have distinct names (pre-fix both were 'molt.module')"
     );
-    assert_ne!(s1, "molt.module", "PyModule_GetName must not fabricate a constant name");
+    assert_ne!(
+        s1, "molt.module",
+        "PyModule_GetName must not fabricate a constant name"
+    );
 }
 
 #[test]

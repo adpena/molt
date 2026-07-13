@@ -16,7 +16,8 @@
 //!   * slot absent — DEFAULT is GIL-used; a free-threaded interpreter
 //!     re-enables the GIL at import.
 //!
-//! These tests run hooks-free on purpose: recording happens at
+//! These tests run runtime-hooks-free on purpose (the static ABI type graph is
+//! still initialized, exactly as the loader does): recording happens at
 //! module-DEFINITION processing time and must not depend on whether module
 //! creation subsequently succeeds (with stub hooks it does not), mirroring
 //! CPython, which stamps `md_gil` from the slots before running any exec slot.
@@ -46,6 +47,7 @@ unsafe extern "C" fn noop_exec(_module: *mut PyObject) -> c_int {
 
 /// Build a leaked (test-'static) PyModuleDef with the given name and slots.
 fn make_def(name: &'static str, slots: Vec<PyModuleDef_Slot>) -> *mut PyModuleDef {
+    molt_cpython_abi::bridge::molt_cpython_abi_init();
     assert!(name.ends_with('\0'), "name must be NUL-terminated");
     let mut slots = slots;
     slots.push(PyModuleDef_Slot {

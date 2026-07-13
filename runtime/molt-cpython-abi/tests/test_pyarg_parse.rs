@@ -25,8 +25,8 @@ use molt_cpython_abi::abi_types::{PyObject, PyTypeObject};
 use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
 use molt_lang_obj_model::MoltObject;
 use std::ffi::{c_char, c_int, c_void};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 // The bits of the one synthetic tuple the mock hooks answer for.
 static TUPLE_BITS: AtomicU64 = AtomicU64::new(0);
@@ -34,6 +34,10 @@ static TUPLE_BITS: AtomicU64 = AtomicU64::new(0);
 static ITEMS: Mutex<Vec<u64>> = Mutex::new(Vec::new());
 // Serializes tests: the mock table + ITEMS + TUPLE_BITS are process-global.
 static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+fn test_guard() -> MutexGuard<'static, ()> {
+    TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 unsafe extern "C" fn mock_tuple_len(bits: u64) -> usize {
     if bits == TUPLE_BITS.load(Ordering::SeqCst) {
@@ -43,11 +47,17 @@ unsafe extern "C" fn mock_tuple_len(bits: u64) -> usize {
     }
 }
 
-unsafe extern "C" fn mock_tuple_item(bits: u64, i: usize) -> u64 {
+unsafe extern "C" fn mock_tuple_item(
+    bits: u64,
+    i: usize,
+) -> molt_cpython_abi::hooks::BorrowedHandleResult {
     if bits == TUPLE_BITS.load(Ordering::SeqCst) {
-        ITEMS.lock().unwrap().get(i).copied().unwrap_or(0)
+        match ITEMS.lock().unwrap().get(i).copied() {
+            Some(value) => molt_cpython_abi::hooks::BorrowedHandleResult::ok(value),
+            None => molt_cpython_abi::hooks::BorrowedHandleResult::missing(),
+        }
     } else {
-        0
+        molt_cpython_abi::hooks::BorrowedHandleResult::missing()
     }
 }
 
@@ -82,7 +92,7 @@ fn install_hooks() {
 fn args_with(items: &[u64]) -> *mut PyObject {
     *ITEMS.lock().unwrap() = items.to_vec();
     let bits = TUPLE_BITS.load(Ordering::SeqCst);
-    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) }
+    unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) }
 }
 
 fn int_item(v: i64) -> u64 {
@@ -106,7 +116,7 @@ fn err_is(exc: *mut PyObject) -> bool {
 
 #[test]
 fn pyarg_b_stores_one_byte_not_four() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = test_guard();
     install_hooks();
     clear_err();
     let args = args_with(&[int_item(0x05)]);
@@ -124,7 +134,7 @@ fn pyarg_b_stores_one_byte_not_four() {
 
 #[test]
 fn pyarg_H_stores_two_bytes_not_four() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = test_guard();
     install_hooks();
     clear_err();
     let args = args_with(&[int_item(0x1234)]);
@@ -143,7 +153,7 @@ fn pyarg_H_stores_two_bytes_not_four() {
 
 #[test]
 fn pyarg_b_range_checks_raise_overflow() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = test_guard();
     install_hooks();
 
     clear_err();
@@ -152,7 +162,7 @@ fn pyarg_b_range_checks_raise_overflow() {
     let rc = unsafe { PyArg_ParseTuple(args, c"b".as_ptr(), &mut out as *mut u8) };
     assert_eq!(rc, 0, "'b' with 256 must fail (> UCHAR_MAX)");
     assert!(
-        err_is(&raw mut molt_cpython_abi::abi_types::PyExc_OverflowError),
+        err_is((&raw mut molt_cpython_abi::abi_types::PyExc_OverflowError).cast::<PyObject>()),
         "'b' overflow must raise OverflowError"
     );
 
@@ -161,7 +171,7 @@ fn pyarg_b_range_checks_raise_overflow() {
     let rc = unsafe { PyArg_ParseTuple(args, c"b".as_ptr(), &mut out as *mut u8) };
     assert_eq!(rc, 0, "'b' with -1 must fail (< 0)");
     assert!(err_is(
-        &raw mut molt_cpython_abi::abi_types::PyExc_OverflowError
+        (&raw mut molt_cpython_abi::abi_types::PyExc_OverflowError).cast::<PyObject>()
     ));
     clear_err();
 }
@@ -170,7 +180,7 @@ fn pyarg_b_range_checks_raise_overflow() {
 
 #[test]
 fn pyarg_o_bang_does_not_clobber_type_header_and_fills_dest() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = test_guard();
     install_hooks();
     clear_err();
 
@@ -191,7 +201,7 @@ fn pyarg_o_bang_does_not_clobber_type_header_and_fills_dest() {
         "int is not a subtype of the sentinel type -> O! fails"
     );
     assert!(
-        err_is(&raw mut molt_cpython_abi::abi_types::PyExc_TypeError),
+        err_is((&raw mut molt_cpython_abi::abi_types::PyExc_TypeError).cast::<PyObject>()),
         "an O! type mismatch must raise TypeError"
     );
     assert_eq!(
@@ -253,7 +263,7 @@ fn PyTypeObject_zeroed() -> PyTypeObject {
 
 #[test]
 fn pyarg_s_rejects_non_string_argument() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = test_guard();
     install_hooks();
     clear_err();
     // An int passed to 's' must be a TypeError, not a fabricated empty string
@@ -270,7 +280,7 @@ fn pyarg_s_rejects_non_string_argument() {
     };
     assert_eq!(rc, 0, "'s' on a non-str must FAIL, not fake success");
     assert!(
-        err_is(&raw mut molt_cpython_abi::abi_types::PyExc_TypeError),
+        err_is((&raw mut molt_cpython_abi::abi_types::PyExc_TypeError).cast::<PyObject>()),
         "'s' on a non-str must raise TypeError"
     );
     assert_eq!(
@@ -284,7 +294,7 @@ fn pyarg_s_rejects_non_string_argument() {
 
 #[test]
 fn pyarg_surplus_positional_args_raise_typeerror() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = test_guard();
     install_hooks();
     clear_err();
     // format "i" consumes ONE unit; a 2-item tuple is one too many.
@@ -293,7 +303,7 @@ fn pyarg_surplus_positional_args_raise_typeerror() {
     let rc = unsafe { PyArg_ParseTuple(args, c"i".as_ptr(), &mut out as *mut c_int) };
     assert_eq!(rc, 0, "extra positional args must fail the parse");
     assert!(
-        err_is(&raw mut molt_cpython_abi::abi_types::PyExc_TypeError),
+        err_is((&raw mut molt_cpython_abi::abi_types::PyExc_TypeError).cast::<PyObject>()),
         "surplus args must raise TypeError (CPython 'takes at most N')"
     );
     clear_err();
@@ -304,24 +314,26 @@ fn pyarg_surplus_positional_args_raise_typeerror() {
 
 #[test]
 fn given_exception_matches_tuple_candidates() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = test_guard();
     install_hooks();
     clear_err();
     // A candidate tuple (KeyError, LookupError). A pending IndexError matches
     // via the LookupError member's subclass walk; TypeError does not match.
-    let key_bits = GLOBAL_BRIDGE
-        .pyobj_to_handle(&raw mut molt_cpython_abi::abi_types::PyExc_KeyError)
-        .map(|identity| identity.as_handle())
-        .expect("exception singletons are bridge-registered");
-    let lookup_bits = GLOBAL_BRIDGE
-        .pyobj_to_handle(&raw mut molt_cpython_abi::abi_types::PyExc_LookupError)
-        .map(|identity| identity.as_handle())
-        .expect("exception singletons are bridge-registered");
-    let tuple = args_with(&[key_bits, lookup_bits]); // the mock tuple object
+    let candidates = [
+        (&raw mut molt_cpython_abi::abi_types::PyExc_KeyError).cast::<PyObject>(),
+        (&raw mut molt_cpython_abi::abi_types::PyExc_LookupError).cast::<PyObject>(),
+    ];
+    let tuple = unsafe {
+        molt_cpython_abi::api::sequences::PyTuple_FromArray(
+            candidates.as_ptr(),
+            candidates.len() as isize,
+        )
+    };
+    assert!(!tuple.is_null());
 
     let hit = unsafe {
         molt_cpython_abi::api::errors::PyErr_GivenExceptionMatches(
-            &raw mut molt_cpython_abi::abi_types::PyExc_IndexError,
+            (&raw mut molt_cpython_abi::abi_types::PyExc_IndexError).cast::<PyObject>(),
             tuple,
         )
     };
@@ -333,9 +345,10 @@ fn given_exception_matches_tuple_candidates() {
 
     let miss = unsafe {
         molt_cpython_abi::api::errors::PyErr_GivenExceptionMatches(
-            &raw mut molt_cpython_abi::abi_types::PyExc_TypeError,
+            (&raw mut molt_cpython_abi::abi_types::PyExc_TypeError).cast::<PyObject>(),
             tuple,
         )
     };
     assert_eq!(miss, 0, "TypeError is in neither candidate's chain");
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(tuple) };
 }

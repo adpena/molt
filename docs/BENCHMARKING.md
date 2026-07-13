@@ -718,23 +718,24 @@ gate bundle (no exceptions):
 
 Use `molt profile <script.py>` to generate flamegraphs and identify bottlenecks in the compiler or runtime.
 
-### Runtime Hot-Path Counters (`MOLT_PROFILE_JSON`)
+### Runtime Feedback (`MOLT_PROFILE`)
 
 For runtime attribution work, emit machine-readable counters from compiled runs:
 
 ```bash
 PYTHONPATH=src \
 MOLT_PROFILE=1 \
-MOLT_PROFILE_JSON=1 \
 uv run --python 3.12 python3 -m molt.cli run --profile dev --trusted \
   bench/friends/repos/codon_benchmarks/bench/codon/sum.py
 ```
 
 Notes:
-- `molt_profile ...` (text) and `molt_profile_json {...}` (JSON) are emitted on
-  the runtime diagnostics channel — stderr by default, so the profiler can scrape
-  them from a captured stderr log as shown above.
-- The diagnostics channel is out-of-band: it carries the `molt_profile*` lines
+- One versioned `molt_profile_json {...}` schema is emitted on the runtime
+  diagnostics channel — stderr by default, so the profiler can scrape it from a
+  captured log. Schema v2 includes allocation/deallocation/live gauges, exception
+  bytes, typed-aux sidecars, GC registry pressure, and runtime RSS. The profiler
+  also records guarded process-tree peak RSS on every host.
+- The diagnostics channel is out-of-band: it carries `molt_profile_json`
   and the `MOLT_ASSERT_NO_LEAK` leak report, neither of which is program output.
   Set `MOLT_DIAGNOSTICS_FILE=<path>` to redirect the whole channel to a file
   instead of stderr. The differential harness (`tests/molt_diff.py`) sets this

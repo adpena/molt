@@ -1,7 +1,7 @@
 //! Out-of-band runtime diagnostics channel.
 //!
-//! Profiling and leak-gauge instrumentation — `molt_profile`, `molt_profile_mem`,
-//! the `[MOLT_PROFILE] LEAK WARNING`, the `MOLT_PROFILE_JSON` payload, and the
+//! Profiling and leak-gauge instrumentation — the versioned `molt_profile_json`
+//! payload, the `[MOLT_PROFILE] LEAK WARNING`, and the
 //! `[MOLT_ASSERT_NO_LEAK]` leak report — is NOT part of a program's observable
 //! behavior. It must never interleave with the program's own stdout/stderr,
 //! because the differential parity harness compares those streams byte-for-byte
@@ -20,7 +20,7 @@
 //!   * `MOLT_DIAGNOSTICS_FILE=<path>` — append diagnostics to that file. The
 //!     differential harness points this at a per-run artifact file so the stderr
 //!     it compares stays clean under any profile.
-//!   * unset — stderr (back-compat: the profiler scrapes `molt_profile` from a
+//!   * unset — stderr (the profiler scrapes `molt_profile_json` from a
 //!     captured stderr log under `MOLT_PROFILE`, and the `safe_run.py`
 //!     leak-assert workflow surfaces the leak report on stderr for the
 //!     developer; neither sets `MOLT_DIAGNOSTICS_FILE`).
@@ -110,11 +110,11 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let target = open_file_target(&path).expect("diagnostics file opens");
-        target.write_line("molt_profile call_dispatch=0 alloc_count=1");
+        target.write_line(r#"molt_profile_json {"schema_version":2,"kind":"runtime_feedback"}"#);
         target.write_line("[MOLT_ASSERT_NO_LEAK] FAIL: live_objects=5 exceeds expected_live=1");
 
         let contents = std::fs::read_to_string(&path).expect("diagnostics file readable");
-        assert!(contents.contains("molt_profile call_dispatch=0 alloc_count=1"));
+        assert!(contents.contains("molt_profile_json"));
         assert!(contents.contains("[MOLT_ASSERT_NO_LEAK] FAIL: live_objects=5"));
         // Each emit is exactly one newline-terminated line, so a downstream
         // line-oriented parser sees clean records.

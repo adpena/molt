@@ -107,7 +107,6 @@ pub(super) fn append_args_on_edges_to(term: &mut Terminator, header: BlockId, ex
     }
 }
 
-
 pub(super) fn rewrite_terminator_values(term: &mut Terminator, f: &dyn Fn(ValueId) -> ValueId) {
     match term {
         Terminator::Branch { args, .. } => {
@@ -249,4 +248,3 @@ pub(super) fn retarget_edge(term: &mut Terminator, old: BlockId, new: BlockId) {
         _ => {}
     }
 }
-

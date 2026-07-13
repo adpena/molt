@@ -191,11 +191,9 @@ pub(in crate::native_backend::function_compiler) fn handle_object_construct_op(
             // MoltHeader + payload on the Cranelift StackSlot
             // and call `molt_object_init_stack` to stamp the
             // header with `HEADER_FLAG_IMMORTAL` (so dec_ref
-            // is a no-op), `HEADER_FLAG_SKIP_CLASS_DECREF`
-            // (the stack object borrows the module-owned
-            // class), and a per-class shared cold idx (so
-            // `object_class_bits()` works without per-instance
-            // mutex contention on `alloc_cold_header`).
+            // is a no-op) plus a borrowed inline class word.
+            // This makes `object_class_bits()` a direct header
+            // read and avoids aux-sidecar allocation.
             //
             // The payload size in bytes lives on `op.value`
             // (set by the frontend from `class_info["size"]`,
@@ -235,6 +233,43 @@ pub(in crate::native_backend::function_compiler) fn handle_object_construct_op(
                 total,
                 3,
             ));
+            // Preserve the runtime helper's fail-closed boundary without
+            // reintroducing its call overhead: validate both the NaN-box pointer
+            // tag and the pointed-to TYPE_ID_TYPE header before stamping a
+            // borrowed class word into the stack object.
+            let tag_mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
+            let tag_bits = builder.ins().band(*cls_bits, tag_mask);
+            let ptr_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_ptr);
+            let is_ptr = builder.ins().icmp(IntCC::Equal, tag_bits, ptr_tag);
+            let type_check_block = builder.create_block();
+            let valid_class_block = builder.create_block();
+            let invalid_class_block = builder.create_block();
+            builder.set_cold_block(invalid_class_block);
+            let merge_block = builder.create_block();
+            builder.append_block_param(merge_block, types::I64);
+            builder
+                .ins()
+                .brif(is_ptr, type_check_block, &[], invalid_class_block, &[]);
+
+            switch_to_block_materialized(&mut *builder, type_check_block);
+            seal_block_once(&mut *builder, &mut *sealed_blocks, type_check_block);
+            let class_ptr = unbox_ptr_value(&mut *builder, *cls_bits, nbc);
+            let class_type_id = builder.ins().load(
+                types::I32,
+                MemFlagsData::trusted(),
+                class_ptr,
+                HEADER_TYPE_ID_OFFSET,
+            );
+            let expected_type_id = builder.ins().iconst(types::I32, i64::from(TYPE_ID_TYPE));
+            let is_type = builder
+                .ins()
+                .icmp(IntCC::Equal, class_type_id, expected_type_id);
+            builder
+                .ins()
+                .brif(is_type, valid_class_block, &[], invalid_class_block, &[]);
+
+            switch_to_block_materialized(&mut *builder, valid_class_block);
+            seal_block_once(&mut *builder, &mut *sealed_blocks, valid_class_block);
             // Inline the body of `molt_object_init_stack`,
             // eliminating the C-call frame + argument
             // marshaling (~30 ns saved per stack alloc on
@@ -257,59 +292,44 @@ pub(in crate::native_backend::function_compiler) fn handle_object_construct_op(
             }
             // Step 2: stamp MoltHeader fields in #[repr(C)]
             // layout (24 bytes total).  The earlier zero-fill
-            // covers size_class@12 (i16) + 2 bytes padding
-            // and reserved@20 (i32) — only the fields below
+            // covers size_class@12 (i16); only the fields below
             // need explicit writes.
             //
             //   offset  0: type_id    (i32) = TYPE_ID_OBJECT (100)
             //   offset  4: ref_count  (i32) = 1
             //              (AtomicU32 raw value — `MoltRefCount`
             //              is `#[repr(transparent)]` over it)
-            //   offset  8: flags      (i32) =
-            //              HEADER_FLAG_IMMORTAL (0x8000)
-            //              | HEADER_FLAG_SKIP_CLASS_DECREF (0x0002)
-            //              = 0x8002.  **Both flags are
-            //              load-bearing**: IMMORTAL prevents
+            //   offset  8: flags      (i32) = HEADER_FLAG_IMMORTAL (0x8000).
+            //              IMMORTAL prevents
             //              `dec_ref_ptr` from freeing the
-            //              stack pointer (heap corruption
-            //              would result); SKIP_CLASS_DECREF
-            //              ensures the class refcount is
-            //              not decremented (the stack object
-            //              borrows the module-owned class).
-            //              Match the existing init_stack
-            //              runtime body at `object/mod.rs:932`
-            //              exactly — using only IMMORTAL
-            //              would leave class-refcount
-            //              corruption as a defense-in-depth
-            //              hazard.
-            //   offset 16: cold_idx   (u32) = result of
-            //              `molt_ensure_shared_cold_idx(cls_bits)`.
-            //              This is the only call we cannot
-            //              inline — it does an atomic
-            //              compare-exchange on the class's
-            //              `MoltHeader::reserved` field plus
-            //              a slab alloc on cache miss.
+            //              stack pointer (heap corruption would result).
+            //   offset 14: aux_kind   (u16) = HEADER_AUX_KIND_CLASS_INLINE.
+            //   offset 16: aux        (u64) = cls_bits | HEADER_CLASS_WORD_BORROWED.
+            //              The low aligned-pointer tag records that the
+            //              stack object borrows its module-owned class.
             let type_id_val = builder.ins().iconst(types::I32, i64::from(TYPE_ID_OBJECT));
             builder.ins().stack_store(type_id_val, slot, 0);
             let ref_count_val = builder.ins().iconst(types::I32, 1);
             builder.ins().stack_store(ref_count_val, slot, 4);
-            let stack_object_flags = HEADER_FLAG_IMMORTAL | HEADER_FLAG_SKIP_CLASS_DECREF;
             let flags_val = builder
                 .ins()
-                .iconst(types::I32, i64::from(stack_object_flags));
+                .iconst(types::I32, i64::from(HEADER_FLAG_IMMORTAL));
             builder.ins().stack_store(flags_val, slot, 8);
-            // cold_idx: one runtime call (atomic CAS + slab).
-            let cold_idx_callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_ensure_shared_cold_idx",
-                &[types::I64],
-                &[types::I32],
+            let aux_kind_val = builder
+                .ins()
+                .iconst(types::I16, i64::from(HEADER_AUX_KIND_CLASS_INLINE));
+            builder.ins().stack_store(
+                aux_kind_val,
+                slot,
+                HEADER_SIZE_BYTES + HEADER_AUX_KIND_OFFSET,
             );
-            let cold_idx_local = module.declare_func_in_func(cold_idx_callee, builder.func);
-            let cold_idx_call = builder.ins().call(cold_idx_local, &[*cls_bits]);
-            let cold_idx_val = builder.inst_results(cold_idx_call)[0];
-            builder.ins().stack_store(cold_idx_val, slot, 16);
+            let borrowed_tag = builder
+                .ins()
+                .iconst(types::I64, HEADER_CLASS_WORD_BORROWED as i64);
+            let class_word = builder.ins().bor(*cls_bits, borrowed_tag);
+            builder
+                .ins()
+                .stack_store(class_word, slot, HEADER_SIZE_BYTES + HEADER_AUX_OFFSET);
             // Step 3: compute data_ptr = header_ptr + 24 and
             // NaN-box it as a TAG_PTR value, matching what
             // `MoltObject::from_ptr(data_ptr).bits()` does
@@ -317,7 +337,17 @@ pub(in crate::native_backend::function_compiler) fn handle_object_construct_op(
             let data_ptr = builder
                 .ins()
                 .stack_addr(types::I64, slot, MOLT_HEADER_SIZE as i32);
-            let res = box_ptr_value(&mut *builder, data_ptr, nbc);
+            let valid_res = box_ptr_value(&mut *builder, data_ptr, nbc);
+            jump_block(&mut *builder, merge_block, &[valid_res]);
+
+            switch_to_block_materialized(&mut *builder, invalid_class_block);
+            seal_block_once(&mut *builder, &mut *sealed_blocks, invalid_class_block);
+            let none_bits = builder.ins().iconst(types::I64, box_none());
+            jump_block(&mut *builder, merge_block, &[none_bits]);
+
+            switch_to_block_materialized(&mut *builder, merge_block);
+            seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
+            let res = builder.block_params(merge_block)[0];
             if let Some(out__) = op.out.as_ref() {
                 def_var_named(&mut *builder, vars, out__, res);
             }

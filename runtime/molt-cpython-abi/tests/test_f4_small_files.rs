@@ -7,7 +7,7 @@
 
 use molt_cpython_abi::abi_types::{Py_buffer, PyObject, PyTypeObject};
 use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
-use molt_cpython_abi::hooks::RuntimeHooks;
+use molt_cpython_abi::hooks::{BorrowedHandleResult, RuntimeHooks};
 use molt_lang_obj_model::MoltObject;
 use std::collections::HashMap;
 use std::os::raw::{c_char, c_int};
@@ -103,30 +103,37 @@ unsafe extern "C" fn fake_alloc_dict() -> u64 {
     dict_map().as_mut().unwrap().insert(handle, HashMap::new());
     handle
 }
-unsafe extern "C" fn fake_dict_get(dict: u64, key: u64) -> u64 {
-    dict_map()
+unsafe extern "C" fn fake_dict_get(dict: u64, key: u64) -> BorrowedHandleResult {
+    match dict_map()
         .as_ref()
         .unwrap()
         .get(&dict)
         .and_then(|m| m.get(&key).copied())
-        .unwrap_or(0)
+    {
+        Some(value) => BorrowedHandleResult::ok(value),
+        None => BorrowedHandleResult::missing(),
+    }
 }
-unsafe extern "C" fn fake_dict_set(dict: u64, key: u64, val: u64) {
+unsafe extern "C" fn fake_dict_set(dict: u64, key: u64, val: u64) -> i32 {
     if let Some(m) = dict_map().as_mut().unwrap().get_mut(&dict) {
         m.insert(key, val);
     }
+    0
 }
 
-unsafe extern "C" fn fake_sys_get_object_borrowed(data: *const u8, len: usize) -> u64 {
+unsafe extern "C" fn fake_sys_get_object_borrowed(
+    data: *const u8,
+    len: usize,
+) -> BorrowedHandleResult {
     let name = unsafe { std::slice::from_raw_parts(data, len) };
     if name == b"modules" {
         let mut g = SYS_MODULES.lock().unwrap();
         if *g == 0 {
             *g = unsafe { fake_alloc_dict() };
         }
-        return *g;
+        return BorrowedHandleResult::ok(*g);
     }
-    0
+    BorrowedHandleResult::missing()
 }
 
 unsafe extern "C" fn fake_alloc_module(_data: *const u8, _len: usize) -> u64 {
@@ -134,6 +141,32 @@ unsafe extern "C" fn fake_alloc_module(_data: *const u8, _len: usize) -> u64 {
     let (handle, _) = leak_handle(b"m");
     *g = handle;
     handle
+}
+
+unsafe extern "C" fn fake_import_add_module_borrowed(
+    data: *const u8,
+    len: usize,
+) -> BorrowedHandleResult {
+    let name = unsafe { std::slice::from_raw_parts(data, len) };
+    let modules = {
+        let mut slot = SYS_MODULES.lock().unwrap();
+        if *slot == 0 {
+            *slot = unsafe { fake_alloc_dict() };
+        }
+        *slot
+    };
+    let key = unsafe { fake_alloc_str(name.as_ptr(), name.len()) };
+    if let Some(module) = dict_map()
+        .as_ref()
+        .unwrap()
+        .get(&modules)
+        .and_then(|entries| entries.get(&key).copied())
+    {
+        return BorrowedHandleResult::ok(module);
+    }
+    let module = unsafe { fake_alloc_module(name.as_ptr(), name.len()) };
+    unsafe { fake_dict_set(modules, key, module) };
+    BorrowedHandleResult::ok(module)
 }
 
 unsafe extern "C" fn fake_import_module_fails(_data: *const u8, _len: usize) -> u64 {
@@ -153,6 +186,7 @@ fn install() {
     hooks.dict_set = fake_dict_set;
     hooks.sys_get_object_borrowed = fake_sys_get_object_borrowed;
     hooks.alloc_module = fake_alloc_module;
+    hooks.import_add_module_borrowed = fake_import_add_module_borrowed;
     hooks.import_module = fake_import_module_fails;
     hooks.inc_ref = noop_ref;
     hooks.dec_ref = noop_ref;
@@ -801,7 +835,7 @@ fn check_buffer_is_pure_and_side_effect_free() {
     let without = foreign_instance(Box::into_raw(ty));
     unsafe {
         molt_cpython_abi::api::errors::PyErr_SetString(
-            &raw mut molt_cpython_abi::abi_types::PyExc_ValueError,
+            (&raw mut molt_cpython_abi::abi_types::PyExc_ValueError).cast::<PyObject>(),
             c"pending".as_ptr(),
         );
     }

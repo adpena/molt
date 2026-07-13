@@ -441,7 +441,7 @@ pub(crate) fn traceback_format_exception_only_line(
         unsafe {
             if object_type_id(exc_ptr) == TYPE_ID_EXCEPTION {
                 let mut kind = "Exception".to_string();
-                let class_bits = exception_class_bits(exc_ptr);
+                let class_bits = object_class_bits(exc_ptr);
                 if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
                     && object_type_id(class_ptr) == TYPE_ID_TYPE
                 {
@@ -495,7 +495,7 @@ pub(crate) fn traceback_exception_type_bits(_py: &PyToken<'_>, value_bits: u64) 
     if let Some(ptr) = obj_from_bits(value_bits).as_ptr() {
         unsafe {
             if object_type_id(ptr) == TYPE_ID_EXCEPTION {
-                return exception_class_bits(ptr);
+                return object_class_bits(ptr);
             }
         }
     }

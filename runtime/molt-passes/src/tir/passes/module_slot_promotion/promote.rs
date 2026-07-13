@@ -282,7 +282,6 @@ pub(super) fn promote_loop(
     true
 }
 
-
 fn apply_promotion(
     func: &mut TirFunction,
     lp: &LoopInfo,

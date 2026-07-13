@@ -8,14 +8,14 @@ use molt_obj_model::MoltObject;
 use crate::builtins::methods::not_implemented_bits;
 use crate::builtins::numbers::index_i64_from_obj;
 use crate::{
-    PyToken, TYPE_ID_DICT, TYPE_ID_TUPLE, alloc_class_obj, alloc_string, alloc_tuple,
-    attr_name_bits_from_bytes, builtin_classes, call_callable2, class_dict_bits, dec_ref_bits,
-    dict_find_entry_kv_in_place, dict_get_in_place, dict_order, dict_set_in_place,
+    ClassEdgeOwnership, PyToken, TYPE_ID_DICT, TYPE_ID_TUPLE, alloc_class_obj, alloc_string,
+    alloc_tuple, attr_name_bits_from_bytes, builtin_classes, call_callable2, class_dict_bits,
+    dec_ref_bits, dict_find_entry_kv_in_place, dict_get_in_place, dict_order, dict_set_in_place,
     dict_update_apply, dict_update_set_in_place, exception_pending, inc_ref_bits, init_atomic_bits,
     intern_static_name, is_truthy, issubclass_runtime, molt_class_set_base, molt_getattr_builtin,
     molt_is_callable, molt_iter, molt_object_setattr, molt_repr_from_obj, obj_from_bits,
-    object_class_bits, object_set_class_bits, object_type_id, raise_exception, raise_not_iterable,
-    seq_vec_ref, string_obj_to_owned, to_i64, type_of_bits,
+    object_class_bits, object_type_id, raise_exception, raise_not_iterable, seq_vec_ref,
+    string_obj_to_owned, to_i64, type_of_bits,
 };
 
 const FUNCTOOLS_OBJECT_SLOT_COUNT: usize = 23;
@@ -183,11 +183,15 @@ fn builtin_func_bits(_py: &PyToken<'_>, slot: &AtomicU64, fn_ptr: u64, arity: u6
                 let builtin_bits = builtin_classes(_py).builtin_function_or_method;
                 let old_bits = object_class_bits(ptr);
                 if old_bits != builtin_bits {
-                    if old_bits != 0 {
-                        dec_ref_bits(_py, old_bits);
+                    if !crate::object::object_init_class_edge_unpublished(
+                        _py,
+                        ptr,
+                        builtin_bits,
+                        ClassEdgeOwnership::Owned,
+                    ) {
+                        dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                        return MoltObject::none().bits();
                     }
-                    object_set_class_bits(_py, ptr, builtin_bits);
-                    inc_ref_bits(_py, builtin_bits);
                 }
             }
             MoltObject::from_ptr(ptr).bits()
@@ -233,8 +237,15 @@ fn functools_class(_py: &PyToken<'_>, slot: &AtomicU64, name: &str, layout_size:
         let builtins = builtin_classes(_py);
         unsafe {
             if let Some(ptr) = obj_from_bits(class_bits).as_ptr() {
-                object_set_class_bits(_py, ptr, builtins.type_obj);
-                inc_ref_bits(_py, builtins.type_obj);
+                if !crate::object::object_init_class_edge_unpublished(
+                    _py,
+                    ptr,
+                    builtins.type_obj,
+                    ClassEdgeOwnership::Owned,
+                ) {
+                    dec_ref_bits(_py, class_bits);
+                    return MoltObject::none().bits();
+                }
             }
         }
         let _ = molt_class_set_base(class_bits, builtins.object);

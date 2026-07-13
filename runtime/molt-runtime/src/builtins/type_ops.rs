@@ -232,33 +232,12 @@ pub(crate) fn type_of_bits(_py: &PyToken<'_>, val_bits: u64) -> u64 {
     if let Some(ptr) = obj.as_ptr() {
         unsafe {
             let tid = object_type_id(ptr);
-            // Exception objects store their class at a type-specific offset,
-            // not in the generic cold-header `state` slot used by
-            // object_class_bits.  Check the exception-specific field first so
-            // user-defined exception subclasses (e.g. `class Foo(Exception)`)
-            // report the correct type even when the cold header is stale.
-            if tid == TYPE_ID_EXCEPTION {
-                let exc_class = exception_class_bits(ptr);
-                if !obj_from_bits(exc_class).is_none() && exc_class != 0 {
-                    return exc_class;
-                }
-                return exception_type_bits(_py, exception_kind_bits(ptr));
-            }
             let class_bits = object_class_bits(ptr);
             if class_bits != 0 {
                 return class_bits;
             }
             return match tid {
-                TYPE_ID_DATACLASS => {
-                    let desc_ptr = dataclass_desc_ptr(ptr);
-                    if !desc_ptr.is_null() {
-                        let class_bits = (*desc_ptr).class_bits;
-                        if class_bits != 0 {
-                            return class_bits;
-                        }
-                    }
-                    builtins.object
-                }
+                TYPE_ID_DATACLASS => builtins.object,
                 TYPE_ID_FLOAT => builtins.float,
                 TYPE_ID_STRING => builtins.str,
                 TYPE_ID_BYTES => builtins.bytes,
@@ -276,26 +255,13 @@ pub(crate) fn type_of_bits(_py: &PyToken<'_>, val_bits: u64) -> u64 {
                 TYPE_ID_RANGE => builtins.range,
                 TYPE_ID_SLICE => builtins.slice,
                 TYPE_ID_MEMORYVIEW => builtins.memoryview,
-                TYPE_ID_FILE_HANDLE => {
-                    let handle_ptr = file_handle_ptr(ptr);
-                    if !handle_ptr.is_null() {
-                        let handle = &*handle_ptr;
-                        if handle.class_bits != 0 {
-                            return handle.class_bits;
-                        }
-                    }
-                    builtins.file
-                }
+                TYPE_ID_FILE_HANDLE => builtins.file,
                 TYPE_ID_NOT_IMPLEMENTED => builtins.not_implemented_type,
                 TYPE_ID_ELLIPSIS => builtins.ellipsis_type,
-                TYPE_ID_EXCEPTION => {
-                    let class_bits = exception_class_bits(ptr);
-                    if !obj_from_bits(class_bits).is_none() && class_bits != 0 {
-                        class_bits
-                    } else {
-                        exception_type_bits(_py, exception_kind_bits(ptr))
-                    }
-                }
+                // Every exception owns an explicit common-header class edge.
+                // A missing edge is corrupt state, not permission to synthesize
+                // type identity from the display name.
+                TYPE_ID_EXCEPTION => 0,
                 TYPE_ID_FUNCTION => {
                     let class_bits = object_class_bits(ptr);
                     if class_bits != 0 {

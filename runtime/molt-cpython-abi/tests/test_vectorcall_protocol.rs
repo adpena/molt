@@ -18,8 +18,8 @@
 #![allow(non_snake_case)]
 
 use molt_cpython_abi::abi_types::{
-    PyObject, PyTypeObject, PyVectorcallFunc, Py_TPFLAGS_DEFAULT, Py_TPFLAGS_HAVE_VECTORCALL,
-    Py_TPFLAGS_READY, Py_ssize_t,
+    Py_TPFLAGS_DEFAULT, Py_TPFLAGS_HAVE_VECTORCALL, Py_TPFLAGS_READY, Py_ssize_t, PyObject,
+    PyTypeObject, PyVectorcallFunc,
 };
 use molt_cpython_abi::api::numbers::{PyLong_AsLong, PyLong_FromLong};
 use molt_cpython_abi::api::object::{
@@ -191,7 +191,11 @@ unsafe extern "C" fn rec_tpcall(
 type TpCall = unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut PyObject) -> *mut PyObject;
 
 /// Leak a type object carrying the given flags / vectorcall-offset / tp_call.
-fn make_type(flags: std::os::raw::c_ulong, vc_offset: Py_ssize_t, tp_call: Option<TpCall>) -> *mut PyTypeObject {
+fn make_type(
+    flags: std::os::raw::c_ulong,
+    vc_offset: Py_ssize_t,
+    tp_call: Option<TpCall>,
+) -> *mut PyTypeObject {
     let mut ty: PyTypeObject = unsafe { std::mem::zeroed() };
     ty.ob_base.ob_base.ob_refcnt = 1 << 30; // immortal-ish; never deallocate
     ty.tp_name = c"molt.test.Vc".as_ptr();
@@ -265,14 +269,30 @@ fn vectorcall_reads_slot_and_forwards_kwnames() {
         "PyObject_Vectorcall returned NULL — the pre-fix kwnames no-op; the slot \
          was never consulted (SystemError-without-error frontier)"
     );
-    assert_eq!(read_long(result), SENTINEL_VC, "the object's vectorcall slot must have run");
+    assert_eq!(
+        read_long(result),
+        SENTINEL_VC,
+        "the object's vectorcall slot must have run"
+    );
 
     let r = *REC.lock().unwrap();
     assert_eq!(r.calls, 1, "slot must be invoked exactly once");
-    assert_eq!(r.nargs, 2, "PyVectorcall_NARGS(nargsf) must be 2 positional");
-    assert_eq!(r.kwnames_size, 1, "the kwnames tuple must be forwarded intact");
-    assert_eq!(r.kwnames_addr, kwnames as usize, "the exact kwnames pointer is forwarded");
-    assert_eq!(r.first_arg_addr, a0 as usize, "the argument array is forwarded verbatim");
+    assert_eq!(
+        r.nargs, 2,
+        "PyVectorcall_NARGS(nargsf) must be 2 positional"
+    );
+    assert_eq!(
+        r.kwnames_size, 1,
+        "the kwnames tuple must be forwarded intact"
+    );
+    assert_eq!(
+        r.kwnames_addr, kwnames as usize,
+        "the exact kwnames pointer is forwarded"
+    );
+    assert_eq!(
+        r.first_arg_addr, a0 as usize,
+        "the argument array is forwarded verbatim"
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -292,7 +312,11 @@ fn vectorcall_uses_slot_not_tp_call() {
     let mut argv: [*mut PyObject; 1] = [a0];
 
     let result = unsafe { PyObject_Vectorcall(inst, argv.as_mut_ptr(), 1, std::ptr::null_mut()) };
-    assert_eq!(read_long(result), SENTINEL_VC, "the vectorcall slot must run, not tp_call");
+    assert_eq!(
+        read_long(result),
+        SENTINEL_VC,
+        "the vectorcall slot must run, not tp_call"
+    );
     assert_eq!(REC.lock().unwrap().calls, 1);
     assert_eq!(
         TPREC.lock().unwrap().calls,
@@ -341,13 +365,25 @@ fn tp_call_is_pyvectorcall_call_terminates() {
     // still terminates at the slot (never touching tp_call).
     let via_flag = make_vc_instance(true, Some(rec_vectorcall), Some(PyVectorcall_Call));
     let r2 = unsafe { PyObject_Call(via_flag, args, std::ptr::null_mut()) };
-    assert_eq!(read_long(r2), SENTINEL_VC, "vectorcall-first path must also reach the slot");
+    assert_eq!(
+        read_long(r2),
+        SENTINEL_VC,
+        "vectorcall-first path must also reach the slot"
+    );
 
     // Scenario 3 — PyVectorcall_Call invoked directly reads the slot, no recursion.
     let calls1 = REC.lock().unwrap().calls;
     let r3 = unsafe { PyVectorcall_Call(via_flag, args, std::ptr::null_mut()) };
-    assert_eq!(read_long(r3), SENTINEL_VC, "direct PyVectorcall_Call must invoke the slot");
-    assert_eq!(REC.lock().unwrap().calls, calls1 + 1, "one further slot call, no recursion");
+    assert_eq!(
+        read_long(r3),
+        SENTINEL_VC,
+        "direct PyVectorcall_Call must invoke the slot"
+    );
+    assert_eq!(
+        REC.lock().unwrap().calls,
+        calls1 + 1,
+        "one further slot call, no recursion"
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -371,7 +407,10 @@ fn pyvectorcall_call_without_slot_raises_typeerror() {
     let args = unsafe { PyTuple_New(0) };
 
     let result = unsafe { PyVectorcall_Call(inst, args, std::ptr::null_mut()) };
-    assert!(result.is_null(), "no-vectorcall object must not return a value");
+    assert!(
+        result.is_null(),
+        "no-vectorcall object must not return a value"
+    );
     assert!(
         !unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null(),
         "a NULL PyVectorcall_Call must set TypeError, never a bare NULL"
@@ -390,7 +429,10 @@ fn pyvectorcall_function_reads_slot() {
 
     let inst = make_vc_instance(true, Some(rec_vectorcall), None);
     let got = unsafe { PyVectorcall_Function(inst) };
-    assert!(got.is_some(), "PyVectorcall_Function must return the object's slot");
+    assert!(
+        got.is_some(),
+        "PyVectorcall_Function must return the object's slot"
+    );
     assert_eq!(
         got.unwrap() as *const (),
         rec_vectorcall as *const (),
@@ -424,11 +466,18 @@ fn vectorcall_forwards_arguments_offset_bit() {
     let mut argv: [*mut PyObject; 2] = [a0, a1];
 
     let nargsf = 2usize | OFFSET_BIT;
-    let result = unsafe { PyObject_Vectorcall(inst, argv.as_mut_ptr(), nargsf, std::ptr::null_mut()) };
+    let result =
+        unsafe { PyObject_Vectorcall(inst, argv.as_mut_ptr(), nargsf, std::ptr::null_mut()) };
     assert_eq!(read_long(result), SENTINEL_VC);
     let r = *REC.lock().unwrap();
-    assert_eq!(r.nargs, 2, "PyVectorcall_NARGS must mask the offset bit → 2");
-    assert!(r.saw_offset_bit, "the ARGUMENTS_OFFSET bit must reach the slot unmasked");
+    assert_eq!(
+        r.nargs, 2,
+        "PyVectorcall_NARGS must mask the offset bit → 2"
+    );
+    assert!(
+        r.saw_offset_bit,
+        "the ARGUMENTS_OFFSET bit must reach the slot unmasked"
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -490,7 +539,11 @@ fn vectorcall_falls_back_to_tp_call_without_slot() {
     let mut argv: [*mut PyObject; 3] = [a0, a1, a2];
 
     let result = unsafe { PyObject_Vectorcall(inst, argv.as_mut_ptr(), 3, std::ptr::null_mut()) };
-    assert_eq!(read_long(result), SENTINEL_TP, "fallback must dispatch through tp_call");
+    assert_eq!(
+        read_long(result),
+        SENTINEL_TP,
+        "fallback must dispatch through tp_call"
+    );
     assert_eq!(
         TPREC.lock().unwrap().args_size,
         3,

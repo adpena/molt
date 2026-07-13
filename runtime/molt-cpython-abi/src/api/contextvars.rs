@@ -78,7 +78,7 @@ unsafe fn ensure_contextvar(var: *mut PyObject) -> bool {
     }
     unsafe {
         crate::api::errors::PyErr_SetString(
-            &raw mut crate::abi_types::PyExc_TypeError,
+            (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
             c"an instance of ContextVar was expected".as_ptr(),
         );
     }
@@ -93,7 +93,7 @@ pub unsafe extern "C" fn PyContextVar_New(
     if name.is_null() {
         unsafe {
             crate::api::errors::PyErr_SetString(
-                &raw mut crate::abi_types::PyExc_TypeError,
+                (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
                 c"context variable name must not be NULL".as_ptr(),
             );
         }
@@ -215,7 +215,7 @@ pub unsafe extern "C" fn PyContextVar_Reset(var: *mut PyObject, token: *mut PyOb
     let Some(token) = (unsafe { token_object(token) }) else {
         unsafe {
             crate::api::errors::PyErr_SetString(
-                &raw mut crate::abi_types::PyExc_TypeError,
+                (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
                 c"an instance of Token was expected".as_ptr(),
             );
         }
@@ -224,7 +224,8 @@ pub unsafe extern "C" fn PyContextVar_Reset(var: *mut PyObject, token: *mut PyOb
     if unsafe { (*token).used } {
         unsafe {
             crate::api::errors::PyErr_SetString(
-                &raw mut crate::abi_types::PyExc_RuntimeError,
+                (&raw mut crate::abi_types::PyExc_RuntimeError)
+                    .cast::<crate::abi_types::PyObject>(),
                 c"Token has already been used once".as_ptr(),
             );
         }
@@ -233,7 +234,7 @@ pub unsafe extern "C" fn PyContextVar_Reset(var: *mut PyObject, token: *mut PyOb
     if !std::ptr::eq(unsafe { (*token).var }, var) {
         unsafe {
             crate::api::errors::PyErr_SetString(
-                &raw mut crate::abi_types::PyExc_ValueError,
+                (&raw mut crate::abi_types::PyExc_ValueError).cast::<crate::abi_types::PyObject>(),
                 c"Token was created by a different ContextVar".as_ptr(),
             );
         }

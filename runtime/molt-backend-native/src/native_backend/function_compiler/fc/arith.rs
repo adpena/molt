@@ -406,10 +406,8 @@ fn handle_add_op(
             let merge_block = builder.create_block();
             builder.append_block_param(merge_block, types::I64); // boxed
             builder.append_block_param(merge_block, types::I64); // raw shadow
-            let (lhs_xored, lhs_val) =
-                fused_tag_check_and_unbox_int(&mut *builder, *lhs, nbc);
-            let (rhs_xored, rhs_val) =
-                fused_tag_check_and_unbox_int(&mut *builder, *rhs, nbc);
+            let (lhs_xored, lhs_val) = fused_tag_check_and_unbox_int(&mut *builder, *lhs, nbc);
+            let (rhs_xored, rhs_val) = fused_tag_check_and_unbox_int(&mut *builder, *rhs, nbc);
             let both_int = fused_both_int_check(&mut *builder, lhs_xored, rhs_xored, nbc);
             let sum = builder.ins().iadd(lhs_val, rhs_val);
             let fast_res = box_int_value(&mut *builder, sum, nbc);
@@ -1354,10 +1352,8 @@ fn handle_sub_op(
             let merge_block = builder.create_block();
             builder.append_block_param(merge_block, types::I64); // boxed
             builder.append_block_param(merge_block, types::I64); // raw shadow
-            let (lhs_xored, lhs_val) =
-                fused_tag_check_and_unbox_int(&mut *builder, *lhs, nbc);
-            let (rhs_xored, rhs_val) =
-                fused_tag_check_and_unbox_int(&mut *builder, *rhs, nbc);
+            let (lhs_xored, lhs_val) = fused_tag_check_and_unbox_int(&mut *builder, *lhs, nbc);
+            let (rhs_xored, rhs_val) = fused_tag_check_and_unbox_int(&mut *builder, *rhs, nbc);
             let both_int = fused_both_int_check(&mut *builder, lhs_xored, rhs_xored, nbc);
             let diff = builder.ins().isub(lhs_val, rhs_val);
             let fast_res = box_int_value(&mut *builder, diff, nbc);
@@ -1590,10 +1586,8 @@ fn handle_inplace_sub_op(
         // Raw chain: both operands already unboxed + overflow guard.
         // Propagate raw shadow via second merge phi.
         // Inside loops, use Variable-only shadows (phi-correct).
-        let lhs_val =
-            int_raw_value(&mut *builder, vars, representation_plan, &args[0]).unwrap();
-        let rhs_val =
-            int_raw_value(&mut *builder, vars, representation_plan, &args[1]).unwrap();
+        let lhs_val = int_raw_value(&mut *builder, vars, representation_plan, &args[0]).unwrap();
+        let rhs_val = int_raw_value(&mut *builder, vars, representation_plan, &args[1]).unwrap();
         // Typed IR: raw i64 is PRIMARY.  Branchless isub
         // with deferred overflow — no boxing emitted here.
         let raw_result = builder.ins().isub(lhs_val, rhs_val);
@@ -1935,10 +1929,8 @@ fn handle_mul_op(
             let merge_block = builder.create_block();
             builder.append_block_param(merge_block, types::I64); // boxed
             builder.append_block_param(merge_block, types::I64); // raw shadow
-            let (lhs_xored, lhs_val) =
-                fused_tag_check_and_unbox_int(&mut *builder, *lhs, nbc);
-            let (rhs_xored, rhs_val) =
-                fused_tag_check_and_unbox_int(&mut *builder, *rhs, nbc);
+            let (lhs_xored, lhs_val) = fused_tag_check_and_unbox_int(&mut *builder, *lhs, nbc);
+            let (rhs_xored, rhs_val) = fused_tag_check_and_unbox_int(&mut *builder, *rhs, nbc);
             let both_int = fused_both_int_check(&mut *builder, lhs_xored, rhs_xored, nbc);
             let (prod, fits) = imul_checked_inline(&mut *builder, lhs_val, rhs_val);
             let fast_res = box_int_value(&mut *builder, prod, nbc);
@@ -2166,10 +2158,8 @@ fn handle_inplace_mul_op(
     {
         // Raw chain: both operands already unboxed + overflow guard.
         // Inside loops, use Variable-only shadows (phi-correct).
-        let lhs_val =
-            int_raw_value(&mut *builder, vars, representation_plan, &args[0]).unwrap();
-        let rhs_val =
-            int_raw_value(&mut *builder, vars, representation_plan, &args[1]).unwrap();
+        let lhs_val = int_raw_value(&mut *builder, vars, representation_plan, &args[0]).unwrap();
+        let rhs_val = int_raw_value(&mut *builder, vars, representation_plan, &args[1]).unwrap();
         // Typed IR: raw i64 is PRIMARY.  Branchless imul
         // with deferred overflow — no boxing emitted here.
         let raw_result = builder.ins().imul(lhs_val, rhs_val);

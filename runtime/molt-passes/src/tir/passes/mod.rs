@@ -34,7 +34,6 @@ pub mod polyhedral;
 pub mod range_devirt;
 mod reachability;
 pub mod refcount_elim;
-pub mod reuse_analysis;
 pub mod sccp;
 pub mod scev;
 pub mod sroa;
@@ -208,7 +207,6 @@ mod tests {
                 "licm",
                 "escape_analysis",
                 "refcount_elim",
-                "reuse_analysis",
                 "dead_store_elim",
                 "mem_gvn",
                 "sroa",

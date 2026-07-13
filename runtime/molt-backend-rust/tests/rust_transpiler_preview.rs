@@ -278,7 +278,10 @@ fn rust_backend_runtime_value_surface_rejects_wrong_arity() {
         err.contains("refuses to emit fail-open codegen"),
         "error must come from the fail-closed accumulator, got: {err}"
     );
-    assert!(err.contains("str_from_obj"), "diagnostic must name the op kind, got: {err}");
+    assert!(
+        err.contains("str_from_obj"),
+        "diagnostic must name the op kind, got: {err}"
+    );
     assert!(err.contains("str_from_obj requires 1 runtime-surface argument(s), got 0"));
 }
 
@@ -313,7 +316,10 @@ fn rust_backend_keeps_unstructured_branch_fail_closed() {
         err.contains("refuses to emit fail-open codegen"),
         "error must come from the fail-closed accumulator, got: {err}"
     );
-    assert!(err.contains("br_if"), "diagnostic must name the op kind, got: {err}");
+    assert!(
+        err.contains("br_if"),
+        "diagnostic must name the op kind, got: {err}"
+    );
     assert!(err.contains("br_if requires Rust backend CFG/block lowering"));
 }
 

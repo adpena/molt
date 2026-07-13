@@ -17,6 +17,8 @@
 
 #![allow(non_snake_case)]
 
+mod support;
+
 use molt_cpython_abi::abi_types::{Py_None, Py_True, PyObject};
 use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
 use molt_lang_obj_model::MoltObject;
@@ -38,7 +40,9 @@ const NEG_HUGE_LOW_U64: u64 = 7;
 const HUGE_AS_F64: f64 = 1.0e25;
 
 unsafe extern "C" fn mock_classify_heap(bits: u64) -> u8 {
-    if bits == BIG_U64_BITS.load(Ordering::SeqCst)
+    if support::fake_strings::contains(bits) {
+        molt_cpython_abi::abi_types::MoltTypeTag::Str as u8
+    } else if bits == BIG_U64_BITS.load(Ordering::SeqCst)
         || bits == HUGE_BITS.load(Ordering::SeqCst)
         || bits == NEG_HUGE_BITS.load(Ordering::SeqCst)
         || bits == MIN_I64_BITS.load(Ordering::SeqCst)
@@ -94,23 +98,39 @@ unsafe extern "C" fn mock_int_as_u64_mask(
     0
 }
 
+unsafe extern "C" fn mock_int_sign(bits: u64) -> std::os::raw::c_int {
+    if bits == NEG_HUGE_BITS.load(Ordering::SeqCst) {
+        -1
+    } else if bits == HUGE_BITS.load(Ordering::SeqCst) {
+        1
+    } else {
+        0
+    }
+}
+
 /// The runtime numeric authority stand-in: `HUGE / 1` (TrueDivide) yields the
 /// exact float; everything else fails closed.
-unsafe extern "C" fn mock_number_binary_op(op: u32, a: u64, _b: u64) -> u64 {
+unsafe extern "C" fn mock_number_binary_op(
+    op: u32,
+    a: u64,
+    _b: u64,
+) -> molt_cpython_abi::hooks::OwnedHandleResult {
     if op == molt_cpython_abi::hooks::NumberBinaryOp::TrueDivide as u32
         && a == HUGE_BITS.load(Ordering::SeqCst)
     {
-        return MoltObject::from_float(HUGE_AS_F64).bits();
+        return molt_cpython_abi::hooks::OwnedHandleResult::ok(
+            MoltObject::from_float(HUGE_AS_F64).bits(),
+        );
     }
     if op == molt_cpython_abi::hooks::NumberBinaryOp::Rshift as u32 {
         if a == HUGE_BITS.load(Ordering::SeqCst) {
-            return MoltObject::from_int(0).bits();
+            return molt_cpython_abi::hooks::OwnedHandleResult::ok(MoltObject::from_int(0).bits());
         }
         if a == NEG_HUGE_BITS.load(Ordering::SeqCst) {
-            return MoltObject::from_int(-1).bits();
+            return molt_cpython_abi::hooks::OwnedHandleResult::ok(MoltObject::from_int(-1).bits());
         }
     }
-    0
+    molt_cpython_abi::hooks::OwnedHandleResult::error()
 }
 
 fn install_hooks() {
@@ -132,14 +152,16 @@ fn install_hooks() {
     hooks.int_as_i64_checked = mock_int_as_i64_checked;
     hooks.int_as_u64_checked = mock_int_as_u64_checked;
     hooks.int_as_u64_mask = mock_int_as_u64_mask;
+    hooks.int_sign = mock_int_sign;
     hooks.number_binary_op = mock_number_binary_op;
+    support::fake_strings::wire(&mut hooks);
     unsafe {
         let _ = molt_cpython_abi::try_set_runtime_hooks(hooks);
     }
 }
 
 fn proxy(bits: u64) -> *mut PyObject {
-    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) }
+    unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) }
 }
 fn int_obj(v: i64) -> *mut PyObject {
     proxy(MoltObject::from_int(v).bits())
@@ -168,11 +190,11 @@ fn as_ssize_t_non_int_raises_typeerror_not_silent_minus_one() {
     let v = unsafe { molt_cpython_abi::api::numbers::PyLong_AsSsize_t(f) };
     assert_eq!(v, -1);
     assert!(
-        err_is(&raw mut molt_cpython_abi::abi_types::PyExc_TypeError),
+        err_is((&raw mut molt_cpython_abi::abi_types::PyExc_TypeError).cast::<PyObject>()),
         "PyLong_AsSsize_t(float) must raise TypeError 'an integer is required' \
          — a bare -1 is numpy's reshape-infer sentinel (silent wrong shapes)"
     );
-    let msg = molt_cpython_abi::api::errors::take_current_error_message();
+    let msg = support::take_current_error_text();
     assert_eq!(msg.as_deref(), Some("an integer is required"));
     clear_err();
 
@@ -180,7 +202,7 @@ fn as_ssize_t_non_int_raises_typeerror_not_silent_minus_one() {
     let v = unsafe { molt_cpython_abi::api::numbers::PyLong_AsSsize_t(&raw mut Py_None) };
     assert_eq!(v, -1);
     assert!(err_is(
-        &raw mut molt_cpython_abi::abi_types::PyExc_TypeError
+        (&raw mut molt_cpython_abi::abi_types::PyExc_TypeError).cast::<PyObject>()
     ));
     clear_err();
 }
@@ -195,7 +217,7 @@ fn as_ssize_t_beyond_range_raises_overflow() {
     let v = unsafe { molt_cpython_abi::api::numbers::PyLong_AsSsize_t(big) };
     assert_eq!(v, -1);
     assert!(
-        err_is(&raw mut molt_cpython_abi::abi_types::PyExc_OverflowError),
+        err_is((&raw mut molt_cpython_abi::abi_types::PyExc_OverflowError).cast::<PyObject>()),
         "an int beyond ssize_t must raise OverflowError, never truncate"
     );
     clear_err();
@@ -212,7 +234,7 @@ fn as_long_non_int_raises_via_index_dispatch() {
     let v = unsafe { molt_cpython_abi::api::numbers::PyLong_AsLong(f) };
     assert_eq!(v, -1);
     assert!(
-        err_is(&raw mut molt_cpython_abi::abi_types::PyExc_TypeError),
+        err_is((&raw mut molt_cpython_abi::abi_types::PyExc_TypeError).cast::<PyObject>()),
         "PyLong_AsLong(float) must raise TypeError (float has no __index__)"
     );
     clear_err();
@@ -227,9 +249,9 @@ fn as_long_beyond_c_long_raises_overflow() {
     let v = unsafe { molt_cpython_abi::api::numbers::PyLong_AsLong(big) };
     assert_eq!(v, -1);
     assert!(err_is(
-        &raw mut molt_cpython_abi::abi_types::PyExc_OverflowError
+        (&raw mut molt_cpython_abi::abi_types::PyExc_OverflowError).cast::<PyObject>()
     ));
-    let msg = molt_cpython_abi::api::errors::take_current_error_message();
+    let msg = support::take_current_error_text();
     assert_eq!(
         msg.as_deref(),
         Some("Python int too large to convert to C long")
@@ -248,9 +270,9 @@ fn as_int_2_pow_40_raises_overflow_everywhere() {
     let v = unsafe { molt_cpython_abi::api::numbers::_PyLong_AsInt(big) };
     assert_eq!(v, -1);
     assert!(err_is(
-        &raw mut molt_cpython_abi::abi_types::PyExc_OverflowError
+        (&raw mut molt_cpython_abi::abi_types::PyExc_OverflowError).cast::<PyObject>()
     ));
-    let msg = molt_cpython_abi::api::errors::take_current_error_message();
+    let msg = support::take_current_error_text();
     assert_eq!(
         msg.as_deref(),
         Some("Python int too large to convert to C int")
@@ -281,10 +303,10 @@ fn as_unsigned_long_negative_raises_overflow_not_wrap() {
         "error sentinel is (unsigned long)-1"
     );
     assert!(
-        err_is(&raw mut molt_cpython_abi::abi_types::PyExc_OverflowError),
+        err_is((&raw mut molt_cpython_abi::abi_types::PyExc_OverflowError).cast::<PyObject>()),
         "PyLong_AsUnsignedLong(-1) must raise OverflowError, not wrap to ULONG_MAX"
     );
-    let msg = molt_cpython_abi::api::errors::take_current_error_message();
+    let msg = support::take_current_error_text();
     assert_eq!(
         msg.as_deref(),
         Some("can't convert negative value to unsigned int")
@@ -303,7 +325,7 @@ fn as_unsigned_long_long_contracts() {
     let v = unsafe { molt_cpython_abi::api::numbers::PyLong_AsUnsignedLongLong(f) };
     assert_eq!(v, u64::MAX);
     assert!(err_is(
-        &raw mut molt_cpython_abi::abi_types::PyExc_TypeError
+        (&raw mut molt_cpython_abi::abi_types::PyExc_TypeError).cast::<PyObject>()
     ));
     clear_err();
 
@@ -318,7 +340,7 @@ fn as_unsigned_long_long_contracts() {
     let v = unsafe { molt_cpython_abi::api::numbers::PyLong_AsUnsignedLongLong(huge) };
     assert_eq!(v, u64::MAX);
     assert!(err_is(
-        &raw mut molt_cpython_abi::abi_types::PyExc_OverflowError
+        (&raw mut molt_cpython_abi::abi_types::PyExc_OverflowError).cast::<PyObject>()
     ));
     clear_err();
 }
@@ -389,7 +411,7 @@ fn signed_boundaries_and_negative_overflow_match_cpython() {
         -1
     );
     assert!(err_is(
-        &raw mut molt_cpython_abi::abi_types::PyExc_OverflowError
+        (&raw mut molt_cpython_abi::abi_types::PyExc_OverflowError).cast::<PyObject>()
     ));
     clear_err();
 }
@@ -440,7 +462,7 @@ fn as_native_bytes_reports_true_minimal_width() {
             five,
             buf.as_mut_ptr().cast(),
             buf.len() as isize,
-            0,
+            1, // Py_ASNATIVEBYTES_LITTLE_ENDIAN
         )
     };
     assert_eq!(
@@ -457,7 +479,7 @@ fn as_native_bytes_reports_true_minimal_width() {
             f,
             buf.as_mut_ptr().cast(),
             buf.len() as isize,
-            0,
+            1,
         )
     };
     assert_eq!(required, -1);
@@ -479,7 +501,7 @@ fn float_as_double_non_number_raises_typeerror_not_nan() {
          numpy compute paths with fake values"
     );
     assert!(err_is(
-        &raw mut molt_cpython_abi::abi_types::PyExc_TypeError
+        (&raw mut molt_cpython_abi::abi_types::PyExc_TypeError).cast::<PyObject>()
     ));
     clear_err();
 
@@ -511,7 +533,7 @@ fn long_as_double_routes_beyond_u64_through_the_authority() {
     let v = unsafe { molt_cpython_abi::api::numbers::PyLong_AsDouble(f) };
     assert_eq!(v, -1.0);
     assert!(err_is(
-        &raw mut molt_cpython_abi::abi_types::PyExc_TypeError
+        (&raw mut molt_cpython_abi::abi_types::PyExc_TypeError).cast::<PyObject>()
     ));
     clear_err();
 }

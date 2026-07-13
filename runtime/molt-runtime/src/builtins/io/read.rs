@@ -1304,7 +1304,8 @@ pub extern "C" fn molt_file_getvalue(handle_bits: u64) -> u64 {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             }
             let builtins = builtin_classes(_py);
-            if handle.class_bits != builtins.bytes_io && handle.class_bits != builtins.string_io {
+            let class_bits = object_class_bits(ptr);
+            if class_bits != builtins.bytes_io && class_bits != builtins.string_io {
                 return raise_exception::<_>(_py, "UnsupportedOperation", "getvalue");
             }
             let backend_state = Arc::clone(&handle.state);
@@ -1317,7 +1318,7 @@ pub extern "C" fn molt_file_getvalue(handle_bits: u64) -> u64 {
             {
                 return bits;
             }
-            if handle.class_bits == builtins.string_io {
+            if class_bits == builtins.string_io {
                 let text = match text_backend_getvalue(_py, backend) {
                     Ok(text) => text,
                     Err(bits) => return bits,
@@ -1367,7 +1368,7 @@ pub extern "C" fn molt_file_getbuffer(handle_bits: u64) -> u64 {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             }
             let builtins = builtin_classes(_py);
-            if handle.class_bits != builtins.bytes_io {
+            if object_class_bits(ptr) != builtins.bytes_io {
                 return raise_exception::<_>(_py, "UnsupportedOperation", "getbuffer");
             }
             let mem_bits = handle.mem_bits;

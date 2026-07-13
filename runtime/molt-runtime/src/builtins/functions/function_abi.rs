@@ -5,6 +5,8 @@
 
 use super::wasm_callables_generated as wasm_callables;
 use super::*;
+use crate::ClassEdgeOwnership;
+use crate::object::{object_init_class_edge_unpublished, object_replace_class_edge};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 #[derive(Copy, Clone)]
@@ -348,8 +350,10 @@ fn molt_func_new_builtin_raw_impl(
     unsafe {
         init_runtime_callable_function_obj(ptr, fn_key, fn_ptr, trampoline_ptr, false);
         let builtin_bits = builtin_classes(_py).builtin_function_or_method;
-        object_set_class_bits(_py, ptr, builtin_bits);
-        inc_ref_bits(_py, builtin_bits);
+        if !object_init_class_edge_unpublished(_py, ptr, builtin_bits, ClassEdgeOwnership::Owned) {
+            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+            return MoltObject::none().bits();
+        }
     }
     let bits = MoltObject::from_ptr(ptr).bits();
     if trace && fn_ptr == trace_enter_ptr {
@@ -422,8 +426,10 @@ fn alloc_python_builtin_function_bits(
     }
     unsafe {
         let builtin_bits = builtin_classes(_py).builtin_function_or_method;
-        object_set_class_bits(_py, ptr, builtin_bits);
-        inc_ref_bits(_py, builtin_bits);
+        if !object_init_class_edge_unpublished(_py, ptr, builtin_bits, ClassEdgeOwnership::Owned) {
+            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+            return None;
+        }
     }
     let bits = MoltObject::from_ptr(ptr).bits();
     if !init_python_builtin_function_metadata(_py, bits, info) {
@@ -728,11 +734,15 @@ pub extern "C" fn molt_func_new_closure(
                                 if old_class_bits == cell_bits {
                                     continue;
                                 }
-                                if old_class_bits != 0 {
-                                    dec_ref_bits(_py, old_class_bits);
+                                if !object_replace_class_edge(
+                                    _py,
+                                    entry_ptr,
+                                    cell_bits,
+                                    ClassEdgeOwnership::Owned,
+                                ) {
+                                    dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                                    return MoltObject::none().bits();
                                 }
-                                object_set_class_bits(_py, entry_ptr, cell_bits);
-                                inc_ref_bits(_py, cell_bits);
                             }
                         }
                     }
@@ -917,11 +927,18 @@ pub extern "C" fn molt_function_set_builtin(func_bits: u64) -> u64 {
             let builtin_bits = builtin_classes(_py).builtin_function_or_method;
             let old_bits = object_class_bits(func_ptr);
             if old_bits != builtin_bits {
-                if old_bits != 0 {
-                    dec_ref_bits(_py, old_bits);
+                if !object_replace_class_edge(
+                    _py,
+                    func_ptr,
+                    builtin_bits,
+                    ClassEdgeOwnership::Owned,
+                ) {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "function class metadata is immutable after publication",
+                    );
                 }
-                object_set_class_bits(_py, func_ptr, builtin_bits);
-                inc_ref_bits(_py, builtin_bits);
             }
         }
         MoltObject::none().bits()
@@ -1486,11 +1503,15 @@ pub extern "C" fn molt_bound_method_new(func_bits: u64, self_bits: u64) -> u64 {
                 unsafe {
                     let old_bits = object_class_bits(ptr);
                     if old_bits != method_bits {
-                        if old_bits != 0 {
-                            dec_ref_bits(_py, old_bits);
+                        if !object_init_class_edge_unpublished(
+                            _py,
+                            ptr,
+                            method_bits,
+                            ClassEdgeOwnership::Owned,
+                        ) {
+                            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                            return MoltObject::none().bits();
                         }
-                        object_set_class_bits(_py, ptr, method_bits);
-                        inc_ref_bits(_py, method_bits);
                     }
                 }
             }

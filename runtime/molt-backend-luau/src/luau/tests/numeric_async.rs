@@ -556,7 +556,10 @@ fn test_compile_via_ir_fails_closed_without_emitted_value_line() {
     let err = backend
         .compile_via_ir(&ir)
         .expect_err("an unsupported op with no output must still fail closed");
-    assert!(err.contains("refuses to emit fail-open codegen"), "got: {err}");
+    assert!(
+        err.contains("refuses to emit fail-open codegen"),
+        "got: {err}"
+    );
     assert!(
         err.contains("`molt_synthetic_unsupported_sink_probe` (luau backend)"),
         "got: {err}"

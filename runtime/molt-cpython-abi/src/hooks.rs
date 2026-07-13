@@ -2,7 +2,7 @@
 //!
 //! `molt-lang-cpython-abi` cannot depend on `molt-lang-runtime` (that would
 //! create a circular dependency). Instead, the runtime registers concrete
-//! implementations at startup via [`set_runtime_hooks`].
+//! implementations at startup via [`try_set_runtime_hooks`].
 //!
 //! Every hook function uses `extern "C"` with primitive types so the
 //! registration call works across crate boundaries without monomorphisation.
@@ -13,6 +13,125 @@
 //! (QNAN-boxed). `0` is reserved for "null / not found / error".
 
 use std::sync::OnceLock;
+
+pub const HANDLE_RESULT_ERROR: i32 = -1;
+pub const HANDLE_RESULT_MISSING: i32 = 0;
+pub const HANDLE_RESULT_OK: i32 = 1;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct OwnedHandleResult {
+    status: i32,
+    _reserved: u32,
+    bits: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct BorrowedHandleResult {
+    status: i32,
+    _reserved: u32,
+    bits: u64,
+}
+
+pub const EXCEPTION_SNAPSHOT_DICT: u32 = 1 << 0;
+pub const EXCEPTION_SNAPSHOT_ARGS: u32 = 1 << 1;
+pub const EXCEPTION_SNAPSHOT_NOTES: u32 = 1 << 2;
+pub const EXCEPTION_SNAPSHOT_TRACEBACK: u32 = 1 << 3;
+pub const EXCEPTION_SNAPSHOT_CONTEXT: u32 = 1 << 4;
+pub const EXCEPTION_SNAPSHOT_CAUSE: u32 = 1 << 5;
+
+/// One atomic runtime/ABI transaction for the complete public
+/// `PyBaseExceptionObject` field set.  Every bit whose mask is present is a
+/// non-zero handle.  A capture owns one reference to each present handle; a
+/// commit borrows every handle.  Missing optional fields are represented only
+/// by their absent mask bit, never by `Ok(0)`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ExceptionSnapshot {
+    pub present_mask: u32,
+    pub suppress_context: u32,
+    pub dict: u64,
+    pub args: u64,
+    pub notes: u64,
+    pub traceback: u64,
+    pub context: u64,
+    pub cause: u64,
+}
+
+pub enum DecodedHandleResult {
+    Ok(u64),
+    Missing,
+    Error,
+}
+
+impl OwnedHandleResult {
+    pub const fn ok(bits: u64) -> Self {
+        if bits == 0 {
+            return Self::error();
+        }
+        Self {
+            status: HANDLE_RESULT_OK,
+            _reserved: 0,
+            bits,
+        }
+    }
+    pub const fn missing() -> Self {
+        Self {
+            status: HANDLE_RESULT_MISSING,
+            _reserved: 0,
+            bits: 0,
+        }
+    }
+    pub const fn error() -> Self {
+        Self {
+            status: HANDLE_RESULT_ERROR,
+            _reserved: 0,
+            bits: 0,
+        }
+    }
+    pub const fn decode(self) -> DecodedHandleResult {
+        match self.status {
+            HANDLE_RESULT_OK if self.bits != 0 => DecodedHandleResult::Ok(self.bits),
+            HANDLE_RESULT_MISSING if self.bits == 0 => DecodedHandleResult::Missing,
+            _ => DecodedHandleResult::Error,
+        }
+    }
+}
+
+impl BorrowedHandleResult {
+    pub const fn ok(bits: u64) -> Self {
+        if bits == 0 {
+            return Self::error();
+        }
+        Self {
+            status: HANDLE_RESULT_OK,
+            _reserved: 0,
+            bits,
+        }
+    }
+    pub const fn missing() -> Self {
+        Self {
+            status: HANDLE_RESULT_MISSING,
+            _reserved: 0,
+            bits: 0,
+        }
+    }
+    pub const fn error() -> Self {
+        Self {
+            status: HANDLE_RESULT_ERROR,
+            _reserved: 0,
+            bits: 0,
+        }
+    }
+    pub const fn decode(self) -> DecodedHandleResult {
+        match self.status {
+            HANDLE_RESULT_OK if self.bits != 0 => DecodedHandleResult::Ok(self.bits),
+            HANDLE_RESULT_MISSING if self.bits == 0 => DecodedHandleResult::Missing,
+            _ => DecodedHandleResult::Error,
+        }
+    }
+}
 
 pub const INT_BYTES_OK: std::os::raw::c_int = 0;
 pub const INT_BYTES_OVERFLOW: std::os::raw::c_int = 1;
@@ -66,6 +185,9 @@ impl Default for MoltBufferView {
 #[allow(dead_code)]
 #[repr(C)]
 pub struct RuntimeHooks {
+    pub abi_magic: u64,
+    pub abi_version: u32,
+    pub struct_size: u32,
     pub gil_ensure: unsafe extern "C" fn() -> std::os::raw::c_int,
     pub gil_leave: unsafe extern "C" fn(state: std::os::raw::c_int),
     pub gil_release: unsafe extern "C" fn(),
@@ -112,22 +234,18 @@ pub struct RuntimeHooks {
     /// Allocate an empty list. Returns handle bits.
     pub alloc_list: unsafe extern "C" fn() -> u64,
     /// Append `item_bits` to the list at `list_bits`.
-    pub list_append: unsafe extern "C" fn(list_bits: u64, item_bits: u64),
+    pub list_append: unsafe extern "C" fn(list_bits: u64, item_bits: u64) -> std::os::raw::c_int,
     /// Return the number of items in a list.
     pub list_len: unsafe extern "C" fn(bits: u64) -> usize,
     /// Return the bits of item `i` in the list, or 0 if out of range.
-    pub list_item: unsafe extern "C" fn(bits: u64, i: usize) -> u64,
+    pub list_item: unsafe extern "C" fn(bits: u64, i: usize) -> BorrowedHandleResult,
     /// Store `val_bits` at index `i` of the list, writing the previous occupant's
     /// bits into `*out_old`. Returns 1 on success, 0 when `i` is out of range or
     /// `list_bits` is not a list. Backs the indexed `PyList_SetItem`/`SET_ITEM`
     /// store: CPython stores directly (`Py_SETREF`), stealing the new reference
     /// and releasing the old — the ABI releases `*out_old` and honors the steal.
-    pub list_set: unsafe extern "C" fn(
-        list_bits: u64,
-        i: usize,
-        val_bits: u64,
-        out_old: *mut u64,
-    ) -> std::os::raw::c_int,
+    pub list_set:
+        unsafe extern "C" fn(list_bits: u64, i: usize, val_bits: u64) -> OwnedHandleResult,
     /// Insert `item_bits` before (clamped) index `where_` in the list, shifting
     /// subsequent elements right. Returns 0 on success, -1 on a non-list.
     /// Routes to the runtime `PyList_Insert` authority (`ins1` semantics).
@@ -151,17 +269,18 @@ pub struct RuntimeHooks {
     /// Allocate a tuple of exactly `n` slots. Slots are uninitialized (None).
     pub alloc_tuple: unsafe extern "C" fn(n: usize) -> u64,
     /// Set slot `i` of tuple `bits` to `val_bits`.
-    pub tuple_set: unsafe extern "C" fn(bits: u64, i: usize, val_bits: u64),
+    pub tuple_set: unsafe extern "C" fn(bits: u64, i: usize, val_bits: u64) -> OwnedHandleResult,
     /// Return the number of items in a tuple.
     pub tuple_len: unsafe extern "C" fn(bits: u64) -> usize,
     /// Return the bits of item `i` in the tuple, or 0 if out of range.
-    pub tuple_item: unsafe extern "C" fn(bits: u64, i: usize) -> u64,
+    pub tuple_item: unsafe extern "C" fn(bits: u64, i: usize) -> BorrowedHandleResult,
     /// Allocate an empty dict. Returns handle bits.
     pub alloc_dict: unsafe extern "C" fn() -> u64,
     /// Insert or overwrite a key→value pair in the dict.
-    pub dict_set: unsafe extern "C" fn(dict_bits: u64, key_bits: u64, val_bits: u64),
+    pub dict_set:
+        unsafe extern "C" fn(dict_bits: u64, key_bits: u64, val_bits: u64) -> std::os::raw::c_int,
     /// Lookup `key_bits` in the dict. Returns 0 if not found.
-    pub dict_get: unsafe extern "C" fn(dict_bits: u64, key_bits: u64) -> u64,
+    pub dict_get: unsafe extern "C" fn(dict_bits: u64, key_bits: u64) -> BorrowedHandleResult,
     /// Delete `key_bits` from the dict. Returns 0 on success, -1 on failure.
     pub dict_del: unsafe extern "C" fn(dict_bits: u64, key_bits: u64) -> std::os::raw::c_int,
     /// Return the number of entries in a dict.
@@ -190,12 +309,12 @@ pub struct RuntimeHooks {
     /// Release a typed strided buffer export previously acquired from the runtime.
     pub buffer_release: unsafe extern "C" fn(view: *mut MoltBufferView) -> std::os::raw::c_int,
     /// Return obj.name using the runtime object model. Returns 0 when absent or unavailable.
-    pub object_get_attr: unsafe extern "C" fn(obj_bits: u64, name_bits: u64) -> u64,
+    pub object_get_attr: unsafe extern "C" fn(obj_bits: u64, name_bits: u64) -> OwnedHandleResult,
     /// Set obj.name using the runtime object model. Returns 0 on success, -1 on failure.
     pub object_set_attr:
         unsafe extern "C" fn(obj_bits: u64, name_bits: u64, value_bits: u64) -> std::os::raw::c_int,
     /// Return format(obj, spec) using the runtime object model. Returns 0 on error.
-    pub object_format: unsafe extern "C" fn(obj_bits: u64, spec_bits: u64) -> u64,
+    pub object_format: unsafe extern "C" fn(obj_bits: u64, spec_bits: u64) -> OwnedHandleResult,
     /// Format an `f64` as CPython's `repr(float)` / `str(float)` using the
     /// runtime's single float-format authority (`object::float_repr`). Writes
     /// up to `cap` UTF-8 bytes into `out` and returns the total byte length of
@@ -204,22 +323,42 @@ pub struct RuntimeHooks {
     /// The ABI MUST NOT reimplement float formatting; Rust's own `{f}` breaks
     /// round-half-to-even ties differently from CPython.
     pub float_repr: unsafe extern "C" fn(value: f64, out: *mut u8, cap: usize) -> usize,
-    pub sys_get_object_borrowed: unsafe extern "C" fn(name_data: *const u8, name_len: usize) -> u64,
+    pub sys_get_object_borrowed:
+        unsafe extern "C" fn(name_data: *const u8, name_len: usize) -> BorrowedHandleResult,
+    /// Resolve the current frame's effective builtins dict, or the interpreter
+    /// default when no frame-specific override exists. Returns borrowed.
+    pub eval_get_builtins_borrowed: unsafe extern "C" fn() -> BorrowedHandleResult,
     // ── Type classification ───────────────────────────────────────────────────
     /// Classify a heap-pointer handle into a `MoltTypeTag` discriminant (u8).
     /// Used by `classify_handle` to fill in the SIMD type-tag table for heap types.
     pub classify_heap: unsafe extern "C" fn(bits: u64) -> u8,
+    /// Compute the CPython hash for a managed heap object. Returns `-1` only
+    /// with a pending exception; every real `-1` hash is normalized to `-2`.
+    pub object_hash: unsafe extern "C" fn(bits: u64) -> i64,
     // ── Reference counting ────────────────────────────────────────────────────
     /// Increment the Molt reference count for a heap object.
     pub inc_ref: unsafe extern "C" fn(bits: u64),
     /// Decrement the Molt reference count; deallocate if it reaches zero.
     pub dec_ref: unsafe extern "C" fn(bits: u64),
+    /// Return the current runtime strong-reference count for a heap object.
+    pub ref_count: unsafe extern "C" fn(bits: u64) -> usize,
+    /// Mark or clear the runtime header's canonical ABI-view membership bit.
+    /// Runtime refcount and GC hot paths use this as the lock-free negative
+    /// test before consulting bridge state.
+    /// Publish or retire the canonical ABI-view fact. Publication fails when
+    /// terminal deallocation has begun; retirement always succeeds.
+    pub try_mark_abi_view:
+        unsafe extern "C" fn(bits: u64, present: std::os::raw::c_int) -> std::os::raw::c_int,
     // ── Module / C-extension support ─────────────────────────────────────────
     /// Allocate a new Molt module object whose `__name__` is the UTF-8 string
     /// in `name_data[..name_len]`.  Returns module handle bits, 0 on failure.
     pub alloc_module: unsafe extern "C" fn(name_data: *const u8, name_len: usize) -> u64,
-    /// Return the runtime-owned module dict handle for a Molt module object.
-    pub module_get_dict: unsafe extern "C" fn(module_bits: u64) -> u64,
+    /// Return the runtime-owned module dict handle as a borrowed result.
+    pub module_get_dict_borrowed: unsafe extern "C" fn(module_bits: u64) -> BorrowedHandleResult,
+    /// Atomically get or create `sys.modules[name]`, replacing an existing
+    /// non-module value with a fresh empty module. Returns borrowed.
+    pub import_add_module_borrowed:
+        unsafe extern "C" fn(name_data: *const u8, name_len: usize) -> BorrowedHandleResult,
     /// Set `module_bits.__dict__[name_data[..name_len]] = value_bits`.
     /// `module_bits` must be a Molt module handle.  Returns 0 on success, -1 on failure.
     pub module_set_attr: unsafe extern "C" fn(
@@ -240,8 +379,9 @@ pub struct RuntimeHooks {
     /// Add `def -> module` to the process module-state registry.
     pub module_state_add:
         unsafe extern "C" fn(module_bits: u64, module_def_ptr: usize) -> std::os::raw::c_int,
-    /// Find the module handle registered for a module definition pointer.
-    pub module_state_find: unsafe extern "C" fn(module_def_ptr: usize) -> u64,
+    /// Find the borrowed module handle registered for a module definition
+    /// pointer. The registry retains its own strong reference.
+    pub module_state_find: unsafe extern "C" fn(module_def_ptr: usize) -> BorrowedHandleResult,
     /// Remove a module definition pointer from the module-state registry.
     pub module_state_remove: unsafe extern "C" fn(module_def_ptr: usize) -> std::os::raw::c_int,
     /// Register a `PyCFunction`-style C function pointer (`meth_addr`) as a
@@ -276,14 +416,16 @@ pub struct RuntimeHooks {
     // runtime exception on error (the ABI turns `0` into a NULL PyObject*).
     /// Binary numeric op. `op` is a [`NumberBinaryOp`] discriminant. Returns
     /// result bits, or 0 with a pending exception on error.
-    pub number_binary_op: unsafe extern "C" fn(op: u32, a_bits: u64, b_bits: u64) -> u64,
+    pub number_binary_op:
+        unsafe extern "C" fn(op: u32, a_bits: u64, b_bits: u64) -> OwnedHandleResult,
     /// Unary numeric op. `op` is a [`NumberUnaryOp`] discriminant. Returns
     /// result bits, or 0 with a pending exception on error.
-    pub number_unary_op: unsafe extern "C" fn(op: u32, a_bits: u64) -> u64,
+    pub number_unary_op: unsafe extern "C" fn(op: u32, a_bits: u64) -> OwnedHandleResult,
     /// Ternary power `pow(base, exp, modulus)`. When `mod_bits` is `0` or None,
     /// computes two-argument `base ** exp`. Returns result bits, or 0 with a
     /// pending exception on error.
-    pub number_power: unsafe extern "C" fn(a_bits: u64, b_bits: u64, mod_bits: u64) -> u64,
+    pub number_power:
+        unsafe extern "C" fn(a_bits: u64, b_bits: u64, mod_bits: u64) -> OwnedHandleResult,
     // ── Mapping protocol (PyDict_*) ───────────────────────────────────────────
     //
     // The runtime owns dict iteration (copy / keys / values / items). The ABI
@@ -292,7 +434,7 @@ pub struct RuntimeHooks {
     // [`DictOp`] discriminant. Returns result bits, or 0 with a pending exception
     // on error.
     pub dict_op: unsafe extern "C" fn(op: u32, dict_bits: u64) -> u64,
-    pub set_op: unsafe extern "C" fn(op: u32, set_bits: u64) -> u64,
+    pub set_op: unsafe extern "C" fn(op: u32, set_bits: u64) -> OwnedHandleResult,
     // ── Set protocol (PySet_*) ────────────────────────────────────────────────
     //
     // The runtime owns the single set authority (hash table, dedup, membership,
@@ -338,8 +480,11 @@ pub struct RuntimeHooks {
     /// arguments (0 = no positional args); `kwargs_bits` is a Molt dict handle
     /// (0 = no keyword args). Returns the result handle bits, or 0 with the
     /// error left in the runtime pending-exception state.
-    pub object_call:
-        unsafe extern "C" fn(callable_bits: u64, args_bits: u64, kwargs_bits: u64) -> u64,
+    pub object_call: unsafe extern "C" fn(
+        callable_bits: u64,
+        args_bits: u64,
+        kwargs_bits: u64,
+    ) -> OwnedHandleResult,
     // ── Foreign-object custody (C-extension objects into Molt) ────────────────
     //
     // When a genuine C-extension `PyObject*` (a numpy static type, an extension
@@ -356,7 +501,99 @@ pub struct RuntimeHooks {
     /// reference custody (`Py_INCREF` on the C object) is handled by the bridge
     /// caller, not this hook.
     pub foreign_new: unsafe extern "C" fn(c_ptr: usize) -> u64,
+    /// Append-only L7 tail: construct one arbitrary-width integer from
+    /// validated numeric digits in one owned allocation.
+    pub int_from_digits: unsafe extern "C" fn(
+        digits: *const u8,
+        len: usize,
+        base: u32,
+        negative: std::os::raw::c_int,
+    ) -> u64,
+    pub int_from_f64_trunc: unsafe extern "C" fn(value: f64) -> u64,
+    pub int_sign: unsafe extern "C" fn(bits: u64) -> std::os::raw::c_int,
+    pub complex_parts:
+        unsafe extern "C" fn(bits: u64, real: *mut f64, imag: *mut f64) -> std::os::raw::c_int,
+    pub complex_from_doubles: unsafe extern "C" fn(real: f64, imag: f64) -> OwnedHandleResult,
+    pub int_signed_byte_width:
+        unsafe extern "C" fn(bits: u64, out: *mut usize) -> std::os::raw::c_int,
+    /// Report an already-captured C-API exception through the runtime's sole
+    /// unraisable transaction. `message` is UTF-8 and borrowed for this call.
+    pub report_unraisable: unsafe extern "C" fn(
+        context_bits: u64,
+        type_bits: u64,
+        value_bits: u64,
+        traceback_bits: u64,
+        message: *const u8,
+        message_len: usize,
+        err_msg: *const u8,
+        err_msg_len: usize,
+        has_err_msg: std::os::raw::c_int,
+    ),
+    /// Normalize a C-API exception through the runtime's canonical class-call
+    /// authority. All handles are borrowed. `args_bits` is the already-shaped
+    /// positional tuple; `value_bits` lets the runtime preserve an already
+    /// normalized matching exception instance by identity. On
+    /// success the result owns one exception-instance handle and
+    /// `actual_class_bits` receives a borrowed handle for the instance's exact
+    /// class (including managed user subclasses and OSError subtype selection),
+    /// valid while the owned instance result remains alive.
+    pub normalize_exception: unsafe extern "C" fn(
+        requested_class_bits: u64,
+        args_bits: u64,
+        value_bits: u64,
+        has_value: std::os::raw::c_int,
+        traceback_bits: u64,
+        has_traceback: std::os::raw::c_int,
+        actual_class_bits: *mut u64,
+    ) -> OwnedHandleResult,
+    /// Replace one managed runtime exception field. Both handles are borrowed;
+    /// `has_value == 0` means C NULL (clear cause/context/traceback). Returns
+    /// zero on success and -1 when the exception or field value violates the
+    /// field contract. Cause/context C wrappers separately honor their stolen
+    /// input-reference contract.
+    pub exception_set_field: unsafe extern "C" fn(
+        exception_bits: u64,
+        field: u32,
+        value_bits: u64,
+        has_value: std::os::raw::c_int,
+    ) -> std::os::raw::c_int,
+    /// Return one managed exception field as an owned handle. `Missing` means
+    /// a cleared cause/context/traceback; args always returns its tuple.
+    pub exception_get_field:
+        unsafe extern "C" fn(exception_bits: u64, field: u32) -> OwnedHandleResult,
+    /// Borrow the exact runtime class handle of a managed exception instance.
+    /// Used when materializing its C view so `Py_TYPE(value)` is the same class
+    /// returned by Fetch/Occurred, never the neutral managed-view type.
+    pub exception_class_borrowed: unsafe extern "C" fn(exception_bits: u64) -> BorrowedHandleResult,
+    /// Capture and pin the complete runtime exception field state in one GIL
+    /// transaction.  On success every present field owns one handle reference.
+    pub exception_snapshot: unsafe extern "C" fn(
+        exception_bits: u64,
+        out: *mut ExceptionSnapshot,
+    ) -> std::os::raw::c_int,
+    /// Validate then publish the complete C sidecar state in one GIL
+    /// transaction.  No runtime field changes if validation fails.
+    pub exception_commit_snapshot: unsafe extern "C" fn(
+        exception_bits: u64,
+        snapshot: *const ExceptionSnapshot,
+    ) -> std::os::raw::c_int,
+    /// Runtime MRO authority for managed type handles, including multiple
+    /// inheritance that cannot be represented by a single C `tp_base` edge.
+    pub type_is_subtype:
+        unsafe extern "C" fn(subclass_bits: u64, class_bits: u64) -> std::os::raw::c_int,
+    /// Detach the exact runtime-pending exception into the C indicator domain.
+    /// The result owns the exception instance; `actual_class_bits` and
+    /// `traceback_bits` are borrowed from that instance and remain valid while
+    /// the owned result is live. The separate traceback out-param uses zero as
+    /// its intentional no-traceback sentinel.
+    pub take_pending_exception: unsafe extern "C" fn(
+        actual_class_bits: *mut u64,
+        traceback_bits: *mut u64,
+    ) -> OwnedHandleResult,
 }
+
+pub const RUNTIME_HOOKS_ABI_MAGIC: u64 = 0x4d4f_4c54_484f_4f4b;
+pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 9;
 
 /// Discriminants for [`RuntimeHooks::dict_op`]. Kept in sync with the match in
 /// the runtime hook implementation (`hook_dict_op`).
@@ -376,6 +613,15 @@ pub enum SetOp {
     FrozenNew = 0,
     Pop = 1,
     Clear = 2,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub enum ExceptionField {
+    Cause = 0,
+    Context = 1,
+    Traceback = 2,
+    Args = 3,
 }
 
 /// Discriminants for [`RuntimeHooks::number_binary_op`]. Kept in sync with the
@@ -411,47 +657,48 @@ pub enum NumberUnaryOp {
 /// Global hook table, set once by `molt-lang-runtime` at init time.
 static RUNTIME_HOOKS: OnceLock<RuntimeHooks> = OnceLock::new();
 
-/// Register the runtime hook vtable. Must be called exactly once, before any
-/// C extension function is invoked. Panics if called more than once.
-///
-/// # Safety
-/// All function pointers in `hooks` must remain valid for the lifetime of the process.
-pub unsafe fn set_runtime_hooks(hooks: RuntimeHooks) {
-    RUNTIME_HOOKS
-        .set(hooks)
-        .unwrap_or_else(|_| panic!("molt_cpython_abi: runtime hooks already registered"));
-}
-
-/// Idempotent variant of [`set_runtime_hooks`] that silently no-ops when the
-/// hook vtable has already been registered.
-///
-/// Intended for test setup paths where multiple integration tests in the same
-/// crate each call `init()` on a shared `OnceLock` — the first wins, the rest
-/// observe the already-registered state without panicking.  Production hosts
-/// should prefer [`set_runtime_hooks`] so that double-registration with
-/// mismatched hooks is caught loudly.
+/// Register the exact runtime hook vtable without panicking on host input.
 ///
 /// Returns `true` if this call installed the hooks, or `false` if a prior
-/// registration was already in effect (the passed-in `hooks` is dropped).
+/// registration was already in effect or the table is incompatible. The
+/// passed-in table is dropped in either failure case.
 ///
 /// # Safety
-/// Same as [`set_runtime_hooks`]: every function pointer in `hooks` must
-/// remain valid for the lifetime of the process.
+/// Every function pointer in `hooks` must remain valid for the lifetime of the
+/// process.
 pub unsafe fn try_set_runtime_hooks(hooks: RuntimeHooks) -> bool {
+    if hooks.abi_magic != RUNTIME_HOOKS_ABI_MAGIC
+        || hooks.abi_version != RUNTIME_HOOKS_ABI_VERSION
+        || hooks.struct_size as usize != std::mem::size_of::<RuntimeHooks>()
+    {
+        return false;
+    }
     RUNTIME_HOOKS.set(hooks).is_ok()
 }
 
 /// C-callable registration entry point for `molt-lang-runtime`.
 ///
 /// # Safety
-/// Same as `set_runtime_hooks`.
+/// Every function pointer in the table must remain valid for the lifetime of
+/// the process.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_cpython_abi_register_hooks(hooks: *const RuntimeHooks) {
+pub unsafe extern "C" fn molt_cpython_abi_register_hooks(hooks: *const RuntimeHooks) -> i32 {
     if hooks.is_null() {
-        return;
+        return -1;
     }
-    unsafe {
-        set_runtime_hooks(*hooks);
+    // Registration accepts exactly the current table.  There is no shorter
+    // append-only/legacy ABI lane: producer and consumer are rebuilt together.
+    let hooks = unsafe { std::ptr::read_unaligned(hooks) };
+    if hooks.abi_magic != RUNTIME_HOOKS_ABI_MAGIC
+        || hooks.abi_version != RUNTIME_HOOKS_ABI_VERSION
+        || hooks.struct_size as usize != std::mem::size_of::<RuntimeHooks>()
+    {
+        return -1;
+    }
+    if unsafe { try_set_runtime_hooks(hooks) } {
+        0
+    } else {
+        -1
     }
 }
 
@@ -502,6 +749,30 @@ unsafe extern "C" fn stub_int_from_bytes(
     0
 }
 
+unsafe extern "C" fn stub_int_from_digits(
+    _digits: *const u8,
+    _len: usize,
+    _base: u32,
+    _negative: std::os::raw::c_int,
+) -> u64 {
+    0
+}
+
+unsafe extern "C" fn stub_int_from_f64_trunc(_value: f64) -> u64 {
+    0
+}
+
+unsafe extern "C" fn stub_int_sign(_bits: u64) -> std::os::raw::c_int {
+    0
+}
+
+unsafe extern "C" fn stub_int_signed_byte_width(
+    _bits: u64,
+    _out: *mut usize,
+) -> std::os::raw::c_int {
+    -1
+}
+
 unsafe extern "C" fn stub_int_to_bytes(
     _bits: u64,
     _data: *mut u8,
@@ -519,23 +790,31 @@ unsafe extern "C" fn stub_int_num_bits(_bits: u64, _out: *mut usize) -> std::os:
 unsafe extern "C" fn stub_int_max_str_digits() -> usize {
     4300
 }
+
+unsafe extern "C" fn stub_complex_parts(_bits: u64, _real: *mut f64, _imag: *mut f64) -> i32 {
+    -1
+}
+unsafe extern "C" fn stub_complex_from_doubles(_real: f64, _imag: f64) -> OwnedHandleResult {
+    OwnedHandleResult::error()
+}
 unsafe extern "C" fn stub_alloc_list() -> u64 {
     0
 }
-unsafe extern "C" fn stub_list_append(_list_bits: u64, _item_bits: u64) {}
+unsafe extern "C" fn stub_list_append(_list_bits: u64, _item_bits: u64) -> std::os::raw::c_int {
+    -1
+}
 unsafe extern "C" fn stub_list_len(_bits: u64) -> usize {
     0
 }
-unsafe extern "C" fn stub_list_item(_bits: u64, _i: usize) -> u64 {
-    0
+unsafe extern "C" fn stub_list_item(_bits: u64, _i: usize) -> BorrowedHandleResult {
+    BorrowedHandleResult::error()
 }
 unsafe extern "C" fn stub_list_set(
     _list_bits: u64,
     _i: usize,
     _val_bits: u64,
-    _out_old: *mut u64,
-) -> std::os::raw::c_int {
-    0
+) -> OwnedHandleResult {
+    OwnedHandleResult::error()
 }
 unsafe extern "C" fn stub_list_insert(
     _list_bits: u64,
@@ -561,19 +840,23 @@ unsafe extern "C" fn stub_list_set_slice(
 unsafe extern "C" fn stub_alloc_tuple(_n: usize) -> u64 {
     0
 }
-unsafe extern "C" fn stub_tuple_set(_bits: u64, _i: usize, _val: u64) {}
+unsafe extern "C" fn stub_tuple_set(_bits: u64, _i: usize, _val: u64) -> OwnedHandleResult {
+    OwnedHandleResult::error()
+}
 unsafe extern "C" fn stub_tuple_len(_bits: u64) -> usize {
     0
 }
-unsafe extern "C" fn stub_tuple_item(_bits: u64, _i: usize) -> u64 {
-    0
+unsafe extern "C" fn stub_tuple_item(_bits: u64, _i: usize) -> BorrowedHandleResult {
+    BorrowedHandleResult::error()
 }
 unsafe extern "C" fn stub_alloc_dict() -> u64 {
     0
 }
-unsafe extern "C" fn stub_dict_set(_d: u64, _k: u64, _v: u64) {}
-unsafe extern "C" fn stub_dict_get(_d: u64, _k: u64) -> u64 {
-    0
+unsafe extern "C" fn stub_dict_set(_d: u64, _k: u64, _v: u64) -> std::os::raw::c_int {
+    -1
+}
+unsafe extern "C" fn stub_dict_get(_d: u64, _k: u64) -> BorrowedHandleResult {
+    BorrowedHandleResult::error()
 }
 unsafe extern "C" fn stub_dict_del(_d: u64, _k: u64) -> std::os::raw::c_int {
     -1
@@ -624,8 +907,8 @@ unsafe extern "C" fn stub_buffer_release(view: *mut MoltBufferView) -> std::os::
     }
     0
 }
-unsafe extern "C" fn stub_object_get_attr(_obj: u64, _name: u64) -> u64 {
-    0
+unsafe extern "C" fn stub_object_get_attr(_obj: u64, _name: u64) -> OwnedHandleResult {
+    OwnedHandleResult::error()
 }
 unsafe extern "C" fn stub_object_set_attr(
     _obj: u64,
@@ -634,50 +917,43 @@ unsafe extern "C" fn stub_object_set_attr(
 ) -> std::os::raw::c_int {
     -1
 }
-unsafe extern "C" fn stub_object_format(_obj: u64, _spec: u64) -> u64 {
+unsafe extern "C" fn stub_object_format(_obj: u64, _spec: u64) -> OwnedHandleResult {
+    OwnedHandleResult::error()
+}
+unsafe extern "C" fn stub_float_repr(_value: f64, _out: *mut u8, _cap: usize) -> usize {
     0
 }
-/// Degraded fallback used only when the runtime float-format authority is not
-/// installed (pure-ABI unit tests without `molt-lang-runtime` linked). This is
-/// NOT CPython-exact — the real authority lives in the runtime and is wired
-/// through the `float_repr` hook. It exists solely so ABI-only tests do not
-/// crash; production always installs the runtime hook.
-unsafe extern "C" fn stub_float_repr(value: f64, out: *mut u8, cap: usize) -> usize {
-    let s = if value.is_nan() {
-        "nan".to_string()
-    } else if value.is_infinite() {
-        if value < 0.0 {
-            "-inf".to_string()
-        } else {
-            "inf".to_string()
-        }
-    } else {
-        let raw = format!("{value}");
-        if raw.contains('.') || raw.contains('e') || raw.contains('E') {
-            raw
-        } else {
-            format!("{raw}.0")
-        }
-    };
-    let bytes = s.as_bytes();
-    if bytes.len() <= cap && !out.is_null() {
-        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len()) };
-    }
-    bytes.len()
+unsafe extern "C" fn stub_sys_get_object_borrowed(
+    _data: *const u8,
+    _len: usize,
+) -> BorrowedHandleResult {
+    BorrowedHandleResult::error()
 }
-unsafe extern "C" fn stub_sys_get_object_borrowed(_data: *const u8, _len: usize) -> u64 {
-    0
+unsafe extern "C" fn stub_eval_get_builtins_borrowed() -> BorrowedHandleResult {
+    BorrowedHandleResult::error()
 }
 unsafe extern "C" fn stub_classify_heap(_bits: u64) -> u8 {
     crate::abi_types::MoltTypeTag::Other as u8
 }
+unsafe extern "C" fn stub_object_hash(_bits: u64) -> i64 {
+    -1
+}
 unsafe extern "C" fn stub_inc_ref(_bits: u64) {}
 unsafe extern "C" fn stub_dec_ref(_bits: u64) {}
+unsafe extern "C" fn stub_ref_count(_bits: u64) -> usize {
+    0
+}
 unsafe extern "C" fn stub_alloc_module(_data: *const u8, _len: usize) -> u64 {
     0
 }
-unsafe extern "C" fn stub_module_get_dict(_module_bits: u64) -> u64 {
-    0
+unsafe extern "C" fn stub_module_get_dict_borrowed(_module_bits: u64) -> BorrowedHandleResult {
+    BorrowedHandleResult::error()
+}
+unsafe extern "C" fn stub_import_add_module_borrowed(
+    _data: *const u8,
+    _len: usize,
+) -> BorrowedHandleResult {
+    BorrowedHandleResult::error()
 }
 unsafe extern "C" fn stub_module_set_attr(
     _m: u64,
@@ -703,8 +979,8 @@ unsafe extern "C" fn stub_module_state_add(
 ) -> std::os::raw::c_int {
     -1
 }
-unsafe extern "C" fn stub_module_state_find(_module_def_ptr: usize) -> u64 {
-    0
+unsafe extern "C" fn stub_module_state_find(_module_def_ptr: usize) -> BorrowedHandleResult {
+    BorrowedHandleResult::missing()
 }
 unsafe extern "C" fn stub_module_state_remove(_module_def_ptr: usize) -> std::os::raw::c_int {
     -1
@@ -724,20 +1000,20 @@ unsafe extern "C" fn stub_import_module(_data: *const u8, _len: usize) -> u64 {
 unsafe extern "C" fn stub_exception_pending() -> std::os::raw::c_int {
     0
 }
-unsafe extern "C" fn stub_number_binary_op(_op: u32, _a: u64, _b: u64) -> u64 {
-    0
+unsafe extern "C" fn stub_number_binary_op(_op: u32, _a: u64, _b: u64) -> OwnedHandleResult {
+    OwnedHandleResult::error()
 }
-unsafe extern "C" fn stub_number_unary_op(_op: u32, _a: u64) -> u64 {
-    0
+unsafe extern "C" fn stub_number_unary_op(_op: u32, _a: u64) -> OwnedHandleResult {
+    OwnedHandleResult::error()
 }
-unsafe extern "C" fn stub_number_power(_a: u64, _b: u64, _mod_bits: u64) -> u64 {
-    0
+unsafe extern "C" fn stub_number_power(_a: u64, _b: u64, _mod_bits: u64) -> OwnedHandleResult {
+    OwnedHandleResult::error()
 }
 unsafe extern "C" fn stub_dict_op(_op: u32, _dict: u64) -> u64 {
     0
 }
-unsafe extern "C" fn stub_set_op(_op: u32, _set: u64) -> u64 {
-    0
+unsafe extern "C" fn stub_set_op(_op: u32, _set: u64) -> OwnedHandleResult {
+    OwnedHandleResult::error()
 }
 // Set stubs fail closed with the CPython error sentinel (0 / -1). Without the
 // runtime set authority registered, returning a fake success would silently
@@ -761,8 +1037,12 @@ unsafe extern "C" fn stub_set_discard(_set: u64, _key: u64) -> std::os::raw::c_i
 unsafe extern "C" fn stub_object_dir(_obj: u64) -> u64 {
     0
 }
-unsafe extern "C" fn stub_object_call(_callable: u64, _args: u64, _kwargs: u64) -> u64 {
-    0
+unsafe extern "C" fn stub_object_call(
+    _callable: u64,
+    _args: u64,
+    _kwargs: u64,
+) -> OwnedHandleResult {
+    OwnedHandleResult::error()
 }
 unsafe extern "C" fn stub_foreign_new(_c_ptr: usize) -> u64 {
     0
@@ -776,9 +1056,90 @@ unsafe extern "C" fn stub_gil_restore() {}
 unsafe extern "C" fn stub_gil_check() -> std::os::raw::c_int {
     1
 }
+unsafe extern "C" fn stub_try_mark_abi_view(
+    _bits: u64,
+    _present: std::os::raw::c_int,
+) -> std::os::raw::c_int {
+    1
+}
+unsafe extern "C" fn stub_report_unraisable(
+    _context_bits: u64,
+    _type_bits: u64,
+    _value_bits: u64,
+    _traceback_bits: u64,
+    message: *const u8,
+    message_len: usize,
+    _err_msg: *const u8,
+    _err_msg_len: usize,
+    _has_err_msg: std::os::raw::c_int,
+) {
+    let text = if message.is_null() {
+        "<unraisable exception>".into()
+    } else {
+        String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(message, message_len) })
+            .into_owned()
+    };
+    eprintln!("[molt-cpython-abi] unraisable exception: {text}");
+}
+unsafe extern "C" fn stub_normalize_exception(
+    _requested_class_bits: u64,
+    _args_bits: u64,
+    _value_bits: u64,
+    _has_value: std::os::raw::c_int,
+    _traceback_bits: u64,
+    _has_traceback: std::os::raw::c_int,
+    _actual_class_bits: *mut u64,
+) -> OwnedHandleResult {
+    OwnedHandleResult::error()
+}
+unsafe extern "C" fn stub_exception_set_field(
+    _exception_bits: u64,
+    _field: u32,
+    _value_bits: u64,
+    _has_value: std::os::raw::c_int,
+) -> std::os::raw::c_int {
+    -1
+}
+unsafe extern "C" fn stub_exception_get_field(
+    _exception_bits: u64,
+    _field: u32,
+) -> OwnedHandleResult {
+    OwnedHandleResult::error()
+}
+unsafe extern "C" fn stub_exception_class_borrowed(_exception_bits: u64) -> BorrowedHandleResult {
+    BorrowedHandleResult::error()
+}
+unsafe extern "C" fn stub_exception_snapshot(
+    _exception_bits: u64,
+    _out: *mut ExceptionSnapshot,
+) -> std::os::raw::c_int {
+    -1
+}
+unsafe extern "C" fn stub_exception_commit_snapshot(
+    _exception_bits: u64,
+    _snapshot: *const ExceptionSnapshot,
+) -> std::os::raw::c_int {
+    -1
+}
+
+unsafe extern "C" fn stub_type_is_subtype(
+    _subclass_bits: u64,
+    _class_bits: u64,
+) -> std::os::raw::c_int {
+    0
+}
+unsafe extern "C" fn stub_take_pending_exception(
+    _actual_class_bits: *mut u64,
+    _traceback_bits: *mut u64,
+) -> OwnedHandleResult {
+    OwnedHandleResult::error()
+}
 
 /// A no-op hooks table used when the runtime hasn't registered yet.
 pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
+    abi_magic: RUNTIME_HOOKS_ABI_MAGIC,
+    abi_version: RUNTIME_HOOKS_ABI_VERSION,
+    struct_size: std::mem::size_of::<RuntimeHooks>() as u32,
     gil_ensure: stub_gil_ensure,
     gil_leave: stub_gil_leave,
     gil_release: stub_gil_release,
@@ -792,10 +1153,16 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     int_as_i64_checked: stub_int_as_i64_checked,
     int_as_u64_checked: stub_int_as_u64_checked,
     int_as_u64_mask: stub_int_as_u64_mask,
+    int_from_digits: stub_int_from_digits,
+    int_from_f64_trunc: stub_int_from_f64_trunc,
+    int_sign: stub_int_sign,
+    int_signed_byte_width: stub_int_signed_byte_width,
     int_from_bytes: stub_int_from_bytes,
     int_to_bytes: stub_int_to_bytes,
     int_num_bits: stub_int_num_bits,
     int_max_str_digits: stub_int_max_str_digits,
+    complex_parts: stub_complex_parts,
+    complex_from_doubles: stub_complex_from_doubles,
     alloc_list: stub_alloc_list,
     list_append: stub_list_append,
     list_len: stub_list_len,
@@ -824,11 +1191,16 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     object_format: stub_object_format,
     float_repr: stub_float_repr,
     sys_get_object_borrowed: stub_sys_get_object_borrowed,
+    eval_get_builtins_borrowed: stub_eval_get_builtins_borrowed,
     classify_heap: stub_classify_heap,
+    object_hash: stub_object_hash,
     inc_ref: stub_inc_ref,
     dec_ref: stub_dec_ref,
+    ref_count: stub_ref_count,
+    try_mark_abi_view: stub_try_mark_abi_view,
     alloc_module: stub_alloc_module,
-    module_get_dict: stub_module_get_dict,
+    module_get_dict_borrowed: stub_module_get_dict_borrowed,
+    import_add_module_borrowed: stub_import_add_module_borrowed,
     module_set_attr: stub_module_set_attr,
     module_capi_register: stub_module_capi_register,
     module_capi_get_state: stub_module_capi_get_state,
@@ -851,11 +1223,59 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     object_dir: stub_object_dir,
     object_call: stub_object_call,
     foreign_new: stub_foreign_new,
+    report_unraisable: stub_report_unraisable,
+    normalize_exception: stub_normalize_exception,
+    exception_set_field: stub_exception_set_field,
+    exception_get_field: stub_exception_get_field,
+    exception_class_borrowed: stub_exception_class_borrowed,
+    exception_snapshot: stub_exception_snapshot,
+    exception_commit_snapshot: stub_exception_commit_snapshot,
+    type_is_subtype: stub_type_is_subtype,
+    take_pending_exception: stub_take_pending_exception,
 };
 
-/// Return the registered hooks or fall back to the no-op stubs.
-/// Use this in API functions where a partial result is better than a panic.
+/// Return the registered hooks or the typed fail-closed bootstrap table.
+/// Stubs provide ABI-safe sentinels, never alternate runtime semantics.
 #[inline]
 pub fn hooks_or_stubs() -> &'static RuntimeHooks {
     RUNTIME_HOOKS.get().unwrap_or(&STUB_HOOKS)
+}
+
+/// Pins the managed-runtime GIL for a complete ABI bridge transaction.
+///
+/// Acquiring once before any bridge shard lock preserves the global lock order
+/// (`runtime GIL -> bridge locks`) and avoids the inversion that would result
+/// from acquiring inside `try_mark_abi_view` while address/handle shards are
+/// held. Calls made from an existing Molt execution frame are a zero-acquire
+/// fast path: `gil_check` observes the current owner and Drop does nothing.
+pub(crate) struct RuntimeGilGuard {
+    state: std::os::raw::c_int,
+    acquired: bool,
+}
+
+impl RuntimeGilGuard {
+    #[inline]
+    pub(crate) fn ensure() -> Self {
+        let hooks = hooks_or_stubs();
+        if unsafe { (hooks.gil_check)() } != 0 {
+            Self {
+                state: 0,
+                acquired: false,
+            }
+        } else {
+            Self {
+                state: unsafe { (hooks.gil_ensure)() },
+                acquired: true,
+            }
+        }
+    }
+}
+
+impl Drop for RuntimeGilGuard {
+    #[inline]
+    fn drop(&mut self) {
+        if self.acquired {
+            unsafe { (hooks_or_stubs().gil_leave)(self.state) };
+        }
+    }
 }

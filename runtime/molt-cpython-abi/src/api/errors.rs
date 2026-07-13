@@ -6,8 +6,8 @@
 //! `n`, `L`, `K`, `b`, `B`, `H`, `I`, `k`, `y`, `y#`, `C`.
 
 use crate::abi_types::{
-    MoltTypeTag, Py_buffer, Py_complex, Py_ssize_t, PyBaseExceptionObject, PyObject, PyTypeObject,
-    PyBUF_SIMPLE, PyBUF_WRITABLE,
+    MoltTypeTag, Py_buffer, Py_complex, Py_ssize_t, PyBUF_SIMPLE, PyBUF_WRITABLE,
+    PyBaseExceptionObject, PyObject, PyTypeObject,
 };
 use crate::bridge::GLOBAL_BRIDGE;
 use molt_lang_obj_model::MoltObject;
@@ -24,7 +24,7 @@ pub unsafe extern "C" fn PyErr_NewException(
     if name.is_null() {
         unsafe {
             PyErr_SetString(
-                &raw mut crate::abi_types::PyExc_SystemError,
+                (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
                 c"PyErr_NewException: name must be module.class".as_ptr(),
             )
         };
@@ -34,7 +34,7 @@ pub unsafe extern "C" fn PyErr_NewException(
     let Some(dot) = bytes.iter().rposition(|byte| *byte == b'.') else {
         unsafe {
             PyErr_SetString(
-                &raw mut crate::abi_types::PyExc_SystemError,
+                (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
                 c"PyErr_NewException: name must be module.class".as_ptr(),
             )
         };
@@ -65,7 +65,7 @@ pub unsafe extern "C" fn PyErr_NewException(
     }
     unsafe { crate::api::refcount::Py_DECREF(module) };
     let base = if base.is_null() {
-        &raw mut crate::abi_types::PyExc_Exception
+        (&raw mut crate::abi_types::PyExc_Exception).cast::<crate::abi_types::PyObject>()
     } else {
         base
     };
@@ -156,107 +156,663 @@ pub unsafe extern "C" fn PyErr_NewExceptionWithDoc(
 
 // ─── Thread-local error state ─────────────────────────────────────────────
 
+pub struct OwnedCError {
+    pub exc_type: *mut PyObject,
+    pub value: *mut PyObject,
+    pub traceback: *mut PyObject,
+}
+
+impl Drop for OwnedCError {
+    fn drop(&mut self) {
+        unsafe {
+            crate::api::refcount::Py_XDECREF(self.exc_type);
+            crate::api::refcount::Py_XDECREF(self.value);
+            crate::api::refcount::Py_XDECREF(self.traceback);
+        }
+    }
+}
+
+impl OwnedCError {
+    pub fn type_bits(&self) -> u64 {
+        GLOBAL_BRIDGE
+            .molt_handle_for_pyobj(self.exc_type)
+            .map(|value| value.bits())
+            .unwrap_or(0)
+    }
+}
+
 thread_local! {
-    static CURRENT_EXC: std::cell::RefCell<Option<(u64, String)>> = const { std::cell::RefCell::new(None) };
+    static CURRENT_EXC: std::cell::RefCell<Option<OwnedCError>> = const { std::cell::RefCell::new(None) };
 }
 
-pub fn take_current_error_message() -> Option<String> {
-    CURRENT_EXC.with(|c| c.borrow_mut().take().map(|(_type_bits, msg)| msg))
+fn replace_current_error(state: Option<OwnedCError>) {
+    let old = CURRENT_EXC.with(|c| std::mem::replace(&mut *c.borrow_mut(), state));
+    drop(old);
 }
 
-/// Transfer the pending C-API exception's runtime class handle and message.
-///
-/// This is the ABI-to-runtime equivalent of consuming CPython's error
-/// indicator at a call boundary: the caller becomes responsible for recording
-/// the same exception in Molt's unified exception state.
-pub fn take_current_error() -> Option<(u64, String)> {
+/// Transfer the exact owned C error-indicator triple.
+pub fn take_current_error() -> Option<OwnedCError> {
     CURRENT_EXC.with(|c| c.borrow_mut().take())
+}
+
+/// Restore a previously detached, already-normalized C error triple without
+/// re-running construction or projecting it through text.
+pub fn restore_current_error_exact(error: OwnedCError) {
+    replace_current_error(Some(error));
 }
 
 /// Non-consuming peek at the currently-pending exception's type-handle bits.
 /// `Some(0)` = an exception is set whose type was NULL/unresolvable; `None` = no
 /// exception pending. Used by `PyErr_ExceptionMatches` to compare the live
 /// exception's type against a candidate rather than answering "is any set".
-fn current_exc_type_bits() -> Option<u64> {
-    CURRENT_EXC.with(|c| c.borrow().as_ref().map(|(type_bits, _)| *type_bits))
+fn current_exc_type_ptr() -> Option<*mut PyObject> {
+    CURRENT_EXC.with(|c| c.borrow().as_ref().map(|state| state.exc_type))
+}
+
+/// Install the only error shape available before runtime hooks are registered:
+/// a concrete SystemError type with no fabricated payload. Production paths
+/// normalize to an exception instance through `normalize_exception`; this
+/// fail-closed state exists only when that authority itself is unavailable.
+unsafe fn install_normalization_failure() {
+    let exc_type =
+        (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>();
+    unsafe { crate::api::refcount::Py_INCREF(exc_type) };
+    replace_current_error(Some(OwnedCError {
+        exc_type,
+        value: ptr::null_mut(),
+        traceback: ptr::null_mut(),
+    }));
+}
+
+/// Move an exact runtime-pending exception into the C indicator without text
+/// conversion. The hook detaches the runtime pending edge; this function takes
+/// independent C references to its exact class and traceback before returning.
+fn take_runtime_pending_error() -> Option<OwnedCError> {
+    let hooks = crate::hooks::hooks_or_stubs();
+    let mut class_bits = 0u64;
+    let mut traceback_bits = 0u64;
+    let result =
+        unsafe { (hooks.take_pending_exception)(&raw mut class_bits, &raw mut traceback_bits) };
+    let crate::hooks::DecodedHandleResult::Ok(exception_bits) = result.decode() else {
+        return None;
+    };
+    if exception_bits == 0 || class_bits == 0 {
+        if exception_bits != 0 {
+            unsafe { (hooks.dec_ref)(exception_bits) };
+        }
+        return None;
+    }
+    let exc_type = unsafe { GLOBAL_BRIDGE.handle_to_borrowed_pyobj(class_bits) };
+    let traceback = if traceback_bits == 0 {
+        ptr::null_mut()
+    } else {
+        unsafe { GLOBAL_BRIDGE.handle_to_borrowed_pyobj(traceback_bits) }
+    };
+    if exc_type.is_null() || (traceback_bits != 0 && traceback.is_null()) {
+        unsafe { (hooks.dec_ref)(exception_bits) };
+        return None;
+    }
+    unsafe {
+        crate::api::refcount::Py_INCREF(exc_type);
+        crate::api::refcount::Py_XINCREF(traceback);
+    }
+    let value = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(exception_bits) };
+    if value.is_null() {
+        unsafe {
+            crate::api::refcount::Py_DECREF(exc_type);
+            crate::api::refcount::Py_XDECREF(traceback);
+        }
+        return None;
+    }
+    Some(OwnedCError {
+        exc_type,
+        value,
+        traceback,
+    })
+}
+
+/// Move the exact runtime pending instance into CURRENT_EXC when the C channel
+/// is clear. Returns whether either canonical channel now has an error.
+pub(crate) fn transfer_runtime_pending_to_current() -> bool {
+    if current_exc_type_ptr().is_some() {
+        return true;
+    }
+    let Some(error) = take_runtime_pending_error() else {
+        return false;
+    };
+    replace_current_error(Some(error));
+    true
+}
+
+/// Explicitly suppress both error channels for APIs such as PyDict_GetItem
+/// whose CPython contract masks lookup/hash failures.
+pub(crate) fn clear_all_pending_errors() {
+    replace_current_error(None);
+    if let Some(error) = take_runtime_pending_error() {
+        drop(error);
+    }
+}
+
+fn clear_new_runtime_pending_error(had_pending: bool) {
+    if had_pending {
+        return;
+    }
+    let hooks = crate::hooks::hooks_or_stubs();
+    if unsafe { (hooks.exception_pending)() } == 0 {
+        return;
+    }
+    let mut class_bits = 0u64;
+    let mut traceback_bits = 0u64;
+    let result =
+        unsafe { (hooks.take_pending_exception)(&raw mut class_bits, &raw mut traceback_bits) };
+    if let crate::hooks::DecodedHandleResult::Ok(exception_bits) = result.decode()
+        && exception_bits != 0
+    {
+        unsafe { (hooks.dec_ref)(exception_bits) };
+    }
+}
+
+/// Consume an owned error ingress and return its canonical exception-instance
+/// form. Managed builtin/user classes normalize through the runtime's class
+/// call authority; genuine foreign exception classes keep their native
+/// `tp_call`/`PyBaseExceptionObject` authority. No branch converts payloads.
+unsafe fn normalize_owned_error(mut error: OwnedCError) -> Option<OwnedCError> {
+    if let Some(requested_class) = GLOBAL_BRIDGE.molt_handle_for_pyobj(error.exc_type) {
+        let hooks = crate::hooks::hooks_or_stubs();
+        let has_value = !error.value.is_null();
+        let (args_bits, value_bits) = if error.value.is_null()
+            || std::ptr::eq(error.value, &raw mut crate::abi_types::Py_None)
+        {
+            let args_bits = unsafe { (hooks.alloc_tuple)(0) };
+            if args_bits == 0 {
+                return None;
+            }
+            (args_bits, has_value.then_some(MoltObject::none().bits()))
+        } else if unsafe { crate::api::sequences::PyTuple_Check(error.value) } != 0 {
+            let args_bits = if let Some(tuple) = GLOBAL_BRIDGE.molt_handle_for_pyobj(error.value) {
+                unsafe { (hooks.inc_ref)(tuple.bits()) };
+                tuple.bits()
+            } else {
+                unsafe { crate::api::object::molt_tuple_bits_from_c_tuple(error.value) }?
+            };
+            (args_bits, Some(args_bits))
+        } else {
+            let value_bits = unsafe { GLOBAL_BRIDGE.molt_value_for_pyobj(error.value) }?;
+            let args_bits = unsafe { (hooks.alloc_tuple)(1) };
+            if args_bits == 0 {
+                unsafe { (hooks.dec_ref)(value_bits) };
+                return None;
+            }
+            let set_result = unsafe { (hooks.tuple_set)(args_bits, 0, value_bits) };
+            match set_result.decode() {
+                crate::hooks::DecodedHandleResult::Ok(old_bits) => unsafe {
+                    (hooks.dec_ref)(old_bits)
+                },
+                crate::hooks::DecodedHandleResult::Missing
+                | crate::hooks::DecodedHandleResult::Error => {
+                    unsafe {
+                        (hooks.dec_ref)(args_bits);
+                        (hooks.dec_ref)(value_bits);
+                    }
+                    return None;
+                }
+            }
+            (args_bits, Some(value_bits))
+        };
+        let traceback_bits = if error.traceback.is_null() {
+            None
+        } else {
+            unsafe { GLOBAL_BRIDGE.molt_value_for_pyobj(error.traceback) }
+        };
+        if !error.traceback.is_null() && traceback_bits.is_none() {
+            unsafe { (hooks.dec_ref)(args_bits) };
+            if let Some(bits) = value_bits
+                && bits != args_bits
+            {
+                unsafe { (hooks.dec_ref)(bits) };
+            }
+            return None;
+        }
+        let mut actual_class_bits = 0u64;
+        let result = unsafe {
+            (hooks.normalize_exception)(
+                requested_class.bits(),
+                args_bits,
+                value_bits.unwrap_or(0),
+                c_int::from(has_value),
+                traceback_bits.unwrap_or(0),
+                c_int::from(!error.traceback.is_null()),
+                &raw mut actual_class_bits,
+            )
+        };
+        unsafe { (hooks.dec_ref)(args_bits) };
+        if let Some(bits) = value_bits
+            && bits != args_bits
+        {
+            unsafe { (hooks.dec_ref)(bits) };
+        }
+        if let Some(bits) = traceback_bits {
+            unsafe { (hooks.dec_ref)(bits) };
+        }
+        let crate::hooks::DecodedHandleResult::Ok(normalized_bits) = result.decode() else {
+            if let Some(runtime_error) = take_runtime_pending_error() {
+                replace_current_error(Some(runtime_error));
+            }
+            return None;
+        };
+        if normalized_bits == 0 || actual_class_bits == 0 {
+            if normalized_bits != 0 {
+                unsafe { (hooks.dec_ref)(normalized_bits) };
+            }
+            return None;
+        }
+        let actual_type = unsafe { GLOBAL_BRIDGE.handle_to_borrowed_pyobj(actual_class_bits) };
+        if actual_type.is_null() {
+            unsafe { (hooks.dec_ref)(normalized_bits) };
+            return None;
+        }
+        let normalized = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(normalized_bits) };
+        if normalized.is_null() {
+            return None;
+        }
+        if !std::ptr::eq(actual_type, error.exc_type) {
+            unsafe {
+                crate::api::refcount::Py_INCREF(actual_type);
+                crate::api::refcount::Py_DECREF(error.exc_type);
+            }
+            error.exc_type = actual_type;
+        }
+        unsafe { crate::api::refcount::Py_XDECREF(error.value) };
+        error.value = normalized;
+        return Some(error);
+    }
+
+    let old_value = error.value;
+    let normalized = if !old_value.is_null()
+        && unsafe { PyErr_GivenExceptionMatches(old_value, error.exc_type) } != 0
+    {
+        unsafe { crate::api::refcount::Py_INCREF(old_value) };
+        old_value
+    } else if old_value.is_null() || std::ptr::eq(old_value, &raw mut crate::abi_types::Py_None) {
+        unsafe { crate::api::object::PyObject_CallNoArgs(error.exc_type) }
+    } else if unsafe { crate::api::sequences::PyTuple_Check(old_value) } != 0 {
+        unsafe { crate::api::object::PyObject_Call(error.exc_type, old_value, ptr::null_mut()) }
+    } else {
+        unsafe { crate::api::object::PyObject_CallOneArg(error.exc_type, old_value) }
+    };
+    if normalized.is_null() {
+        return None;
+    }
+    if !error.traceback.is_null()
+        && unsafe { PyException_SetTraceback(normalized, error.traceback) } != 0
+    {
+        unsafe { crate::api::refcount::Py_DECREF(normalized) };
+        return None;
+    }
+    let actual_type = unsafe { (*normalized).ob_type }.cast::<PyObject>();
+    if !actual_type.is_null() && !std::ptr::eq(actual_type, error.exc_type) {
+        unsafe {
+            crate::api::refcount::Py_INCREF(actual_type);
+            crate::api::refcount::Py_DECREF(error.exc_type);
+        }
+        error.exc_type = actual_type;
+    }
+    unsafe { crate::api::refcount::Py_XDECREF(error.value) };
+    error.value = normalized;
+    Some(error)
+}
+
+unsafe fn normalize_and_replace(error: OwnedCError) {
+    replace_current_error(None);
+    if let Some(error) = unsafe { normalize_owned_error(error) } {
+        replace_current_error(Some(error));
+    } else if current_exc_type_ptr().is_none() {
+        unsafe { install_normalization_failure() };
+    }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_SetString(exc_type: *mut PyObject, message: *const c_char) {
     let msg = if message.is_null() {
-        String::new()
+        ""
     } else {
-        unsafe { CStr::from_ptr(message).to_string_lossy().into_owned() }
+        let bytes = unsafe { CStr::from_ptr(message).to_bytes() };
+        let Ok(message) = std::str::from_utf8(bytes) else {
+            // Use the Unicode constructor's canonical UTF-8 decoder so the
+            // decode failure itself becomes pending. Never turn invalid input
+            // into an unrelated empty exception message.
+            let invalid = unsafe { crate::api::strings::PyUnicode_FromString(message) };
+            unsafe { crate::api::refcount::Py_XDECREF(invalid) };
+            if current_exc_type_ptr().is_none() {
+                unsafe { install_normalization_failure() };
+            }
+            return;
+        };
+        message
     };
-    let type_bits = if exc_type.is_null() {
-        0u64
+    let value = exception_free_str(msg);
+    if value.is_null() {
+        // Bootstrap/partial-hook mode may lack the runtime string allocator.
+        // Preserve the requested exception class with an empty argument tuple
+        // instead of recursively replacing it with an unrelated SystemError.
+        unsafe { PyErr_SetObject(exc_type, ptr::null_mut()) };
+        if current_exc_type_ptr().is_none() {
+            unsafe { install_normalization_failure() };
+        }
+        return;
+    }
+    unsafe {
+        PyErr_SetObject(exc_type, value);
+        crate::api::refcount::Py_DECREF(value);
+    }
+}
+
+/// Allocate a concrete native `PyBaseExceptionObject` for canonical `PyExc_*`
+/// types before (or without) runtime-handle binding. This is also inherited by
+/// honest C subtypes through `PyType_Ready`, so `type_call` has one physical
+/// exception construction authority instead of recursively reporting a missing
+/// `tp_new` slot through `PyErr_SetString`.
+pub unsafe extern "C" fn molt_native_exception_new(
+    subtype: *mut PyTypeObject,
+    args: *mut PyObject,
+    kwds: *mut PyObject,
+) -> *mut PyObject {
+    if subtype.is_null() {
+        unsafe {
+            replace_current_error(None);
+            install_normalization_failure();
+        }
+        return ptr::null_mut();
+    }
+    if !kwds.is_null() && unsafe { crate::api::mapping::PyDict_Size(kwds) } != 0 {
+        unsafe {
+            PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_TypeError).cast::<PyObject>(),
+                c"BaseException does not take keyword arguments".as_ptr(),
+            )
+        };
+        return ptr::null_mut();
+    }
+    let owned_args = if args.is_null() {
+        unsafe { crate::api::sequences::PyTuple_New(0) }
     } else {
-        GLOBAL_BRIDGE
-            .pyobj_to_handle(exc_type)
-            .map(|identity| identity.as_handle())
-            .unwrap_or(0)
+        unsafe { crate::api::refcount::Py_INCREF(args) };
+        args
     };
-    CURRENT_EXC.with(|c| *c.borrow_mut() = Some((type_bits, msg)));
+    if owned_args.is_null() {
+        return ptr::null_mut();
+    }
+    let size = unsafe { (*subtype).tp_basicsize }
+        .max(std::mem::size_of::<PyBaseExceptionObject>() as crate::abi_types::Py_ssize_t)
+        as usize;
+    let Ok(layout) =
+        std::alloc::Layout::from_size_align(size, std::mem::align_of::<PyBaseExceptionObject>())
+    else {
+        unsafe {
+            crate::api::refcount::Py_DECREF(owned_args);
+            replace_current_error(None);
+            install_normalization_failure();
+        }
+        return ptr::null_mut();
+    };
+    let allocation = unsafe { std::alloc::alloc_zeroed(layout) };
+    if allocation.is_null() {
+        unsafe {
+            crate::api::refcount::Py_DECREF(owned_args);
+            replace_current_error(None);
+            install_normalization_failure();
+        }
+        return ptr::null_mut();
+    }
+    let instance = allocation.cast::<PyBaseExceptionObject>();
+    unsafe {
+        crate::api::refcount::Py_INCREF(subtype.cast::<PyObject>());
+        instance.write(PyBaseExceptionObject {
+            ob_base: PyObject {
+                ob_refcnt: 1,
+                ob_type: subtype,
+            },
+            dict: ptr::null_mut(),
+            args: owned_args,
+            notes: ptr::null_mut(),
+            traceback: ptr::null_mut(),
+            context: ptr::null_mut(),
+            cause: ptr::null_mut(),
+            suppress_context: 0,
+        });
+    }
+    instance.cast::<PyObject>()
+}
+
+/// CPython `BaseException.__str__`: zero args -> empty string, one arg ->
+/// `str(arg)`, multiple args -> `str(args)`. Managed exception views expose the
+/// same physical `PyBaseExceptionObject` fields, so this slot is shared by the
+/// bootstrap-native and runtime-backed paths.
+pub unsafe extern "C" fn molt_native_exception_str(op: *mut PyObject) -> *mut PyObject {
+    let (args, owns_args) = if let Some(result) =
+        unsafe { managed_exception_get_field(op, crate::hooks::ExceptionField::Args) }
+    {
+        match result {
+            Ok(args) => (args, true),
+            Err(()) => return ptr::null_mut(),
+        }
+    } else {
+        let Some(base) = foreign_exception_layout(op) else {
+            unsafe {
+                PyErr_SetString(
+                    (&raw mut crate::abi_types::PyExc_TypeError).cast::<PyObject>(),
+                    c"BaseException.__str__ requires an exception instance".as_ptr(),
+                )
+            };
+            return ptr::null_mut();
+        };
+        (unsafe { (*base).args }, false)
+    };
+    let result = if args.is_null() {
+        unsafe { crate::api::strings::PyUnicode_FromStringAndSize(c"".as_ptr(), 0) }
+    } else {
+        match unsafe { crate::api::sequences::PyTuple_Size(args) } {
+            0 => unsafe { crate::api::strings::PyUnicode_FromStringAndSize(c"".as_ptr(), 0) },
+            1 => {
+                let item = unsafe { crate::api::sequences::PyTuple_GetItem(args, 0) };
+                if item.is_null() {
+                    ptr::null_mut()
+                } else {
+                    unsafe { crate::api::typeobj::PyObject_Str(item) }
+                }
+            }
+            value if value > 1 => unsafe { crate::api::typeobj::PyObject_Str(args) },
+            _ => ptr::null_mut(),
+        }
+    };
+    if owns_args {
+        unsafe { crate::api::refcount::Py_XDECREF(args) };
+    }
+    result
+}
+
+/// Release the exact field/type edges owned by [`molt_native_exception_new`].
+pub unsafe extern "C" fn molt_native_exception_dealloc(op: *mut PyObject) {
+    if op.is_null() {
+        return;
+    }
+    let instance = op.cast::<PyBaseExceptionObject>();
+    let subtype = unsafe { (*op).ob_type };
+    let size = if subtype.is_null() {
+        std::mem::size_of::<PyBaseExceptionObject>()
+    } else {
+        unsafe { (*subtype).tp_basicsize }
+            .max(std::mem::size_of::<PyBaseExceptionObject>() as crate::abi_types::Py_ssize_t)
+            as usize
+    };
+    unsafe {
+        crate::api::refcount::Py_XDECREF((*instance).dict);
+        crate::api::refcount::Py_XDECREF((*instance).args);
+        crate::api::refcount::Py_XDECREF((*instance).notes);
+        crate::api::refcount::Py_XDECREF((*instance).traceback);
+        crate::api::refcount::Py_XDECREF((*instance).context);
+        crate::api::refcount::Py_XDECREF((*instance).cause);
+        crate::api::refcount::Py_XDECREF(subtype.cast::<PyObject>());
+    }
+    if let Ok(layout) =
+        std::alloc::Layout::from_size_align(size, std::mem::align_of::<PyBaseExceptionObject>())
+    {
+        unsafe { std::alloc::dealloc(op.cast::<u8>(), layout) };
+    }
+}
+
+/// Replace an already-pending C error with a SystemError while retaining the
+/// exact original exception instance as implicit context. Native-call result
+/// validators use this for the CPython "success result with error set" state.
+pub(crate) unsafe fn replace_current_with_system_error(message: &str) {
+    let original = take_current_error();
+    let c_message = std::ffi::CString::new(message).unwrap_or_else(|_| {
+        std::ffi::CString::new("native call contract violation")
+            .expect("static message contains no nul")
+    });
+    unsafe {
+        PyErr_SetString(
+            (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
+            c_message.as_ptr(),
+        )
+    };
+    let Some(replacement) = take_current_error() else {
+        drop(original);
+        unsafe { install_normalization_failure() };
+        return;
+    };
+    if let Some(original) = original {
+        if !replacement.value.is_null()
+            && !original.value.is_null()
+            && !std::ptr::eq(replacement.value, original.value)
+        {
+            unsafe {
+                crate::api::refcount::Py_INCREF(original.value);
+                PyException_SetContext(replacement.value, original.value);
+            }
+            // The generic field authority should accept both normalized
+            // instances. If it cannot, retain the SystemError rather than let
+            // the attachment failure replace the boundary diagnosis.
+            if current_exc_type_ptr().is_some() {
+                replace_current_error(None);
+            }
+        }
+        drop(original);
+    }
+    replace_current_error(Some(replacement));
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_SetNone(exc_type: *mut PyObject) {
-    unsafe { PyErr_SetString(exc_type, ptr::null()) };
+    unsafe { PyErr_SetObject(exc_type, ptr::null_mut()) };
 }
 
 /// CPython `PyErr_Occurred` (Python/errors.c): returns the pending exception's
 /// actual TYPE (borrowed) or NULL. Consumers do identity/subtype tests on the
 /// result (`PyErr_Occurred() == PyExc_StopIteration`,
 /// `GivenExceptionMatches(PyErr_Occurred(), X)`), so the pre-fix `&Py_None`
-/// sentinel mis-decided every such probe. The stored type-handle bits resolve
-/// back to the original `PyExc_*` pointer through the bridge raw registry;
-/// only an unresolvable/NULL-typed exception falls back to the non-null
-/// `Py_None` sentinel (never NULL while an exception is pending).
+/// sentinel mis-decided every such probe. Normalization stores the exact class
+/// of the canonical exception instance (including an accepted subtype or an
+/// OSError-selected subtype); there is no non-type fallback pointer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_Occurred() -> *mut PyObject {
-    let Some(type_bits) = current_exc_type_bits() else {
+    let Some(exc_type) = current_exc_type_ptr() else {
         return ptr::null_mut();
     };
-    if type_bits != 0 {
-        let resolved = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(type_bits) };
-        if !resolved.is_null() {
-            return resolved;
-        }
-    }
-    &raw mut crate::abi_types::Py_None
+    exc_type
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_Clear() {
-    CURRENT_EXC.with(|c| *c.borrow_mut() = None);
+    replace_current_error(None);
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_Print() {
-    if let Some(msg) = take_current_error_message() {
-        eprintln!("[molt-cpython-abi] PyErr_Print: {msg}");
+    let Some(state) = take_current_error() else {
+        return;
+    };
+    unsafe { print_owned_error(state) };
+}
+
+unsafe fn print_owned_error(state: OwnedCError) {
+    let rendered = if state.value.is_null() {
+        ptr::null_mut()
+    } else {
+        unsafe { crate::api::typeobj::PyObject_Str(state.value) }
+    };
+    if rendered.is_null() {
+        // Display failures must not replace the exception being printed with a
+        // new pending exception. PyErr_Print/PyErr_PrintEx consume the error
+        // indicator even when bootstrap mode cannot allocate its text.
+        replace_current_error(None);
+        let type_name =
+            crate::abi_types::exc_singleton_name(state.exc_type).unwrap_or("<exception>");
+        eprintln!("[molt-cpython-abi] PyErr_Print: {type_name}");
+        return;
     }
+    let text = unsafe { crate::api::strings::PyUnicode_AsUTF8(rendered) };
+    if !text.is_null() {
+        eprintln!(
+            "[molt-cpython-abi] PyErr_Print: {}",
+            unsafe { CStr::from_ptr(text) }.to_string_lossy()
+        );
+    }
+    unsafe { crate::api::refcount::Py_DECREF(rendered) };
+    replace_current_error(None);
 }
 
-/// CPython ``PyErr_PrintEx``: print the pending exception and clear it. The
-/// ``set_sys_last_vars`` flag governs whether CPython also assigns
-/// ``sys.last_type``/``sys.last_value``/``sys.last_traceback``; Molt does not
-/// model those interpreter globals, so the flag is accepted and the shared
-/// print-and-clear path is used (``PyErr_Print`` semantics). Never a stub — it
-/// drains and reports the same pending-error state.
+unsafe fn publish_sys_last_error(state: &OwnedCError) {
+    let hooks = crate::hooks::hooks_or_stubs();
+    let had_runtime_pending = unsafe { (hooks.exception_pending)() } != 0;
+    let sys_bits = unsafe { (hooks.import_module)(b"sys".as_ptr(), 3) };
+    if sys_bits == 0 {
+        clear_new_runtime_pending_error(had_runtime_pending);
+        replace_current_error(None);
+        return;
+    }
+    for (name, value) in [
+        (b"last_type".as_slice(), state.exc_type),
+        (b"last_value".as_slice(), state.value),
+        (b"last_traceback".as_slice(), state.traceback),
+        (b"last_exc".as_slice(), state.value),
+    ] {
+        let (value_bits, owned) = if value.is_null() {
+            (MoltObject::none().bits(), false)
+        } else {
+            match unsafe { GLOBAL_BRIDGE.molt_value_for_pyobj(value) } {
+                Some(bits) => (bits, true),
+                None => break,
+            }
+        };
+        let status = unsafe {
+            let status = (hooks.module_set_attr)(sys_bits, name.as_ptr(), name.len(), value_bits);
+            if owned {
+                (hooks.dec_ref)(value_bits);
+            }
+            status
+        };
+        if status != 0 {
+            break;
+        }
+    }
+    unsafe { (hooks.dec_ref)(sys_bits) };
+    clear_new_runtime_pending_error(had_runtime_pending);
+    replace_current_error(None);
+}
+
+/// Print and clear the exact pending exception; when requested, publish the
+/// CPython 3.12 `sys.last_exc` and legacy `sys.last_*` views first (the ABI
+/// target is fixed at 3.12).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyErr_PrintEx(_set_sys_last_vars: c_int) {
-    unsafe { PyErr_Print() };
-}
-
-/// Set a ValueError with formatted message.
-pub unsafe extern "C" fn PyErr_Format(
-    exc_type: *mut PyObject,
-    format: *const c_char,
-    // variadic — we capture only the format string for the common case
-) -> *mut PyObject {
-    unsafe { PyErr_SetString(exc_type, format) };
-    ptr::null_mut()
+pub unsafe extern "C" fn PyErr_PrintEx(set_sys_last_vars: c_int) {
+    let Some(state) = take_current_error() else {
+        return;
+    };
+    if set_sys_last_vars != 0 {
+        unsafe { publish_sys_last_error(&state) };
+    }
+    unsafe { print_owned_error(state) };
 }
 
 unsafe extern "C" {
@@ -268,93 +824,153 @@ unsafe extern "C" {
     fn molt_capi_strerror(errnum: c_int) -> *const c_char;
 }
 
-/// CPython `PyErr_SetFromErrno` (Python/errors.c): reads the C `errno` (NOT
-/// GetLastError) and formats CPython's OSError shape
-/// `[Errno N] strerror-text`. Residual (documented): the bridge error state
-/// carries `(type, message)` only, so the instance `.errno`/`.strerror`
-/// attributes CPython also sets are not materialized.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyErr_SetFromErrno(exc_type: *mut PyObject) -> *mut PyObject {
+/// Build CPython's structured OSError constructor tuple. The runtime's class
+/// call remains the one construction authority; this layer only preserves the
+/// `(errno, strerror[, filename[, 0, filename2]])` argument shape.
+unsafe fn set_from_errno_with_filename_objects(
+    exc_type: *mut PyObject,
+    filename: *mut PyObject,
+    filename2: *mut PyObject,
+) -> *mut PyObject {
     let errnum = unsafe { molt_capi_errno() };
     let detail = unsafe { molt_capi_strerror(errnum) };
     let detail = if detail.is_null() {
-        "operating system error".to_string()
+        c"operating system error".as_ptr()
     } else {
-        unsafe { CStr::from_ptr(detail) }
-            .to_string_lossy()
-            .into_owned()
+        detail
     };
-    let message = format!("[Errno {errnum}] {detail}");
-    let c_message = std::ffi::CString::new(message).unwrap_or_else(|_| {
-        std::ffi::CString::new("operating system error").expect("static string has no nul")
-    });
-    unsafe { PyErr_SetString(exc_type, c_message.as_ptr()) };
+    let argc = if filename2.is_null() {
+        if filename.is_null() { 2 } else { 3 }
+    } else {
+        5
+    };
+    let args = unsafe { crate::api::sequences::PyTuple_New(argc) };
+    if args.is_null() {
+        return ptr::null_mut();
+    }
+    let errno_obj = unsafe { crate::api::numbers::PyLong_FromLong(errnum as c_long) };
+    let strerror_obj = unsafe { crate::api::strings::PyUnicode_FromString(detail) };
+    if errno_obj.is_null() || strerror_obj.is_null() {
+        unsafe {
+            crate::api::refcount::Py_XDECREF(errno_obj);
+            crate::api::refcount::Py_XDECREF(strerror_obj);
+            crate::api::refcount::Py_DECREF(args);
+        }
+        return ptr::null_mut();
+    }
+    if unsafe { crate::api::sequences::PyTuple_SetItem(args, 0, errno_obj) } != 0
+        || unsafe { crate::api::sequences::PyTuple_SetItem(args, 1, strerror_obj) } != 0
+    {
+        unsafe { crate::api::refcount::Py_DECREF(args) };
+        return ptr::null_mut();
+    }
+    if !filename.is_null() {
+        unsafe { crate::api::refcount::Py_INCREF(filename) };
+        if unsafe { crate::api::sequences::PyTuple_SetItem(args, 2, filename) } != 0 {
+            unsafe { crate::api::refcount::Py_DECREF(args) };
+            return ptr::null_mut();
+        }
+    }
+    if !filename2.is_null() {
+        let winerror = unsafe { crate::api::numbers::PyLong_FromLong(0) };
+        if winerror.is_null() {
+            unsafe { crate::api::refcount::Py_DECREF(args) };
+            return ptr::null_mut();
+        }
+        if unsafe { crate::api::sequences::PyTuple_SetItem(args, 3, winerror) } != 0 {
+            unsafe { crate::api::refcount::Py_DECREF(args) };
+            return ptr::null_mut();
+        }
+        unsafe { crate::api::refcount::Py_INCREF(filename2) };
+        if unsafe { crate::api::sequences::PyTuple_SetItem(args, 4, filename2) } != 0 {
+            unsafe { crate::api::refcount::Py_DECREF(args) };
+            return ptr::null_mut();
+        }
+    }
+    let exc_type = if exc_type.is_null() {
+        (&raw mut crate::abi_types::PyExc_OSError).cast::<crate::abi_types::PyObject>()
+    } else {
+        exc_type
+    };
+    unsafe {
+        PyErr_SetObject(exc_type, args);
+        crate::api::refcount::Py_DECREF(args);
+    }
     ptr::null_mut()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyErr_SetFromErrno(exc_type: *mut PyObject) -> *mut PyObject {
+    unsafe { set_from_errno_with_filename_objects(exc_type, ptr::null_mut(), ptr::null_mut()) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyErr_SetFromErrnoWithFilenameObject(
+    exc_type: *mut PyObject,
+    filename: *mut PyObject,
+) -> *mut PyObject {
+    unsafe { set_from_errno_with_filename_objects(exc_type, filename, ptr::null_mut()) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyErr_SetFromErrnoWithFilenameObjects(
+    exc_type: *mut PyObject,
+    filename: *mut PyObject,
+    filename2: *mut PyObject,
+) -> *mut PyObject {
+    unsafe { set_from_errno_with_filename_objects(exc_type, filename, filename2) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyErr_SetFromErrnoWithFilename(
+    exc_type: *mut PyObject,
+    filename: *const c_char,
+) -> *mut PyObject {
+    if filename.is_null() {
+        return unsafe { PyErr_SetFromErrno(exc_type) };
+    }
+    let filename_obj = unsafe { crate::api::strings::PyUnicode_FromString(filename) };
+    if filename_obj.is_null() {
+        return ptr::null_mut();
+    }
+    let result = unsafe { PyErr_SetFromErrnoWithFilenameObject(exc_type, filename_obj) };
+    unsafe { crate::api::refcount::Py_DECREF(filename_obj) };
+    result
 }
 
 // ─── Additional error API ─────────────────────────────────────────────────
 
-/// Resolve a PyObject to its `str()` text through the runtime string authority so
-/// an exception's real payload is preserved. Returns `None` when the value cannot
-/// be bridged to a Molt handle (no runtime / not a managed object) so the caller
-/// records the type without inventing a message. Scalars format inline; a str
-/// object is read through the `str_data` hook (the runtime str authority).
-fn value_str_message(value: *mut PyObject) -> Option<String> {
-    if value.is_null() {
-        return None;
-    }
-    let value = GLOBAL_BRIDGE.molt_handle_for_pyobj(value)?;
-    let bits = value.bits();
-    let obj = MoltObject::from_bits(bits);
-    if obj.is_none() {
-        return Some("None".to_string());
-    }
-    if let Some(b) = obj.as_bool() {
-        return Some(if b { "True" } else { "False" }.to_string());
-    }
-    if let Some(i) = obj.as_int() {
-        return Some(i.to_string());
-    }
-    if obj.is_float() {
-        return obj.as_float().map(|f| f.to_string());
-    }
-    let h = crate::hooks::hooks_or_stubs();
-    if unsafe { (h.classify_heap)(value.bits()) } == crate::abi_types::MoltTypeTag::Str as u8 {
-        let mut len: usize = 0;
-        let ptr = unsafe { (h.str_data)(bits, std::ptr::addr_of_mut!(len)) };
-        if !ptr.is_null() {
-            let slice = unsafe { std::slice::from_raw_parts(ptr, len) };
-            return Some(String::from_utf8_lossy(slice).into_owned());
-        }
-    }
-    None
-}
-
 /// `PyErr_SetObject(type, value)` — set the current exception (Python/errors.c).
 ///
-/// CPython stores `value` as the exception's associated value. This bridge's
-/// error state carries `(type, message)`, so the fix propagates the real value by
-/// storing its `str()` text alongside the caller's exception type. When the value
-/// cannot be resolved (unbridgeable / no runtime) we still record the type with an
-/// empty message rather than the previous generic `c"<exception>"` placeholder,
-/// which discarded the payload entirely (a fail-open that misreported the error).
+/// CPython 3.12 constructs or accepts the canonical exception instance
+/// immediately. `value == NULL` is a zero-argument construction; a non-instance
+/// value is the exact single positional argument. A matching instance is kept
+/// by identity, and no payload is converted to text.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_SetObject(exc_type: *mut PyObject, value: *mut PyObject) {
-    match value_str_message(value) {
-        Some(message) => {
-            let cmsg = std::ffi::CString::new(message)
-                .unwrap_or_else(|_| c"<exception value contains NUL>".to_owned());
-            unsafe { PyErr_SetString(exc_type, cmsg.as_ptr()) };
-        }
-        None => unsafe { PyErr_SetString(exc_type, ptr::null()) },
+    if exc_type.is_null() {
+        replace_current_error(None);
+        unsafe { install_normalization_failure() };
+        return;
     }
+    unsafe {
+        crate::api::refcount::Py_XINCREF(exc_type);
+        crate::api::refcount::Py_XINCREF(value);
+    }
+    unsafe {
+        normalize_and_replace(OwnedCError {
+            exc_type,
+            value,
+            traceback: ptr::null_mut(),
+        })
+    };
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_NoMemory() -> *mut PyObject {
     unsafe {
         PyErr_SetString(
-            &raw mut crate::abi_types::PyExc_MemoryError,
+            (&raw mut crate::abi_types::PyExc_MemoryError).cast::<crate::abi_types::PyObject>(),
             c"out of memory".as_ptr(),
         );
     }
@@ -365,7 +981,7 @@ pub unsafe extern "C" fn PyErr_NoMemory() -> *mut PyObject {
 pub unsafe extern "C" fn PyErr_BadArgument() -> c_int {
     unsafe {
         PyErr_SetString(
-            &raw mut crate::abi_types::PyExc_TypeError,
+            (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
             c"bad argument type for built-in operation".as_ptr(),
         );
     }
@@ -379,7 +995,7 @@ pub unsafe extern "C" fn PyErr_BadArgument() -> c_int {
 pub unsafe extern "C" fn PyErr_BadInternalCall() {
     unsafe {
         PyErr_SetString(
-            &raw mut crate::abi_types::PyExc_SystemError,
+            (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
             c"bad argument to internal function".as_ptr(),
         );
     }
@@ -403,7 +1019,7 @@ pub unsafe extern "C" fn _PyErr_BadInternalCall(filename: *const c_char, lineno:
     match std::ffi::CString::new(message) {
         Ok(cmessage) => unsafe {
             PyErr_SetString(
-                &raw mut crate::abi_types::PyExc_SystemError,
+                (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
                 cmessage.as_ptr(),
             );
         },
@@ -411,38 +1027,23 @@ pub unsafe extern "C" fn _PyErr_BadInternalCall(filename: *const c_char, lineno:
     }
 }
 
-/// CPython `PyErr_Fetch` (Python/errors.c): transfers the pending exception's
-/// REAL type plus a value carrying its message into the out-params and clears
-/// the indicator, so a Fetch → Restore round-trip preserves the exception.
-/// The pre-fix body wrote a `Py_None` type sentinel and a NULL value,
-/// destroying both. The value is materialized as the message `str` (the
-/// pre-normalization `(type, str, tb)` triple CPython itself allows); NULL
-/// when the str authority is unavailable.
+/// Transfer the exact owned `(type, value, traceback)` error indicator and
+/// clear it without normalization or payload conversion.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_Fetch(
     p_type: *mut *mut PyObject,
     p_value: *mut *mut PyObject,
     p_tb: *mut *mut PyObject,
 ) {
-    let state = CURRENT_EXC.with(|c| c.borrow_mut().take());
-    let (type_ptr, value_ptr) = match state {
-        Some((type_bits, message)) => {
-            let type_ptr = if type_bits != 0 {
-                let resolved = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(type_bits) };
-                if resolved.is_null() {
-                    &raw mut crate::abi_types::Py_None
-                } else {
-                    resolved
-                }
-            } else {
-                &raw mut crate::abi_types::Py_None
-            };
-            (type_ptr, exception_free_str(&message))
-        }
-        None => (ptr::null_mut(), ptr::null_mut()),
-    };
+    let state = take_current_error().map(std::mem::ManuallyDrop::new);
+    let (type_ptr, value_ptr, traceback_ptr) = state
+        .as_ref()
+        .map(|state| (state.exc_type, state.value, state.traceback))
+        .unwrap_or((ptr::null_mut(), ptr::null_mut(), ptr::null_mut()));
     if !p_type.is_null() {
         unsafe { *p_type = type_ptr };
+    } else if !type_ptr.is_null() {
+        unsafe { crate::api::refcount::Py_DECREF(type_ptr) };
     }
     if !p_value.is_null() {
         unsafe { *p_value = value_ptr };
@@ -450,16 +1051,14 @@ pub unsafe extern "C" fn PyErr_Fetch(
         unsafe { crate::api::refcount::Py_DECREF(value_ptr) };
     }
     if !p_tb.is_null() {
-        unsafe { *p_tb = ptr::null_mut() };
+        unsafe { *p_tb = traceback_ptr };
+    } else if !traceback_ptr.is_null() {
+        unsafe { crate::api::refcount::Py_DECREF(traceback_ptr) };
     }
 }
 
-/// CPython `PyErr_Restore` (Python/errors.c): takes ownership of
-/// `(type, value, tb)` and re-installs them as the pending exception. The
-/// pre-fix THEATER discarded all three and stored a fabricated
-/// `(0, "<restored exception>")`, so a later `ExceptionMatches` against the
-/// intended type always failed. The real type handle and the value's `str()`
-/// text are preserved; the stolen references are released after flattening.
+/// Take ownership of an ingress triple, normalize it to the exact exception
+/// instance, attach/validate its traceback, and install that canonical state.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_Restore(
     exc_type: *mut PyObject,
@@ -467,45 +1066,65 @@ pub unsafe extern "C" fn PyErr_Restore(
     tb: *mut PyObject,
 ) {
     if exc_type.is_null() {
-        unsafe { PyErr_Clear() };
+        drop(OwnedCError {
+            exc_type,
+            value,
+            traceback: tb,
+        });
+        replace_current_error(None);
     } else {
-        let type_bits = GLOBAL_BRIDGE
-            .pyobj_to_handle(exc_type)
-            .map(|identity| identity.as_handle())
-            .unwrap_or(0);
-        let message = value_str_message(value).unwrap_or_default();
-        CURRENT_EXC.with(|c| *c.borrow_mut() = Some((type_bits, message)));
-    }
-    // Restore steals all three references.
-    unsafe {
-        crate::api::refcount::Py_XDECREF(exc_type);
-        crate::api::refcount::Py_XDECREF(value);
-        crate::api::refcount::Py_XDECREF(tb);
+        unsafe {
+            normalize_and_replace(OwnedCError {
+                exc_type,
+                value,
+                traceback: tb,
+            })
+        };
     }
 }
 
-/// CPython `PyErr_NormalizeException` (Python/errors.c): guarantees a caller
-/// reading `*val` after normalization never dereferences NULL. Full
-/// instantiation of exception objects needs the runtime class authority; the
-/// bridge materializes the message-`str` value (matching what `PyErr_Fetch`
-/// produces) when `*val` is NULL, and leaves an already-populated triple
-/// untouched.
+/// Normalize an owned caller triple in place without any text projection.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_NormalizeException(
     exc: *mut *mut PyObject,
     val: *mut *mut PyObject,
-    _tb: *mut *mut PyObject,
+    tb: *mut *mut PyObject,
 ) {
     if exc.is_null() || val.is_null() {
         return;
     }
-    let exc_ptr = unsafe { *exc };
-    if exc_ptr.is_null() || !unsafe { *val }.is_null() {
+    let exc_type = unsafe { *exc };
+    if exc_type.is_null() {
         return;
     }
-    let materialized = exception_free_str("");
-    if !materialized.is_null() {
-        unsafe { *val = materialized };
+    let value = unsafe { std::mem::replace(&mut *val, ptr::null_mut()) };
+    unsafe { *exc = ptr::null_mut() };
+    let traceback = if tb.is_null() {
+        ptr::null_mut()
+    } else {
+        unsafe { std::mem::replace(&mut *tb, ptr::null_mut()) }
+    };
+    let Some(normalized) = (unsafe {
+        normalize_owned_error(OwnedCError {
+            exc_type,
+            value,
+            traceback,
+        })
+    }) else {
+        if current_exc_type_ptr().is_none() {
+            unsafe { install_normalization_failure() };
+        }
+        return;
+    };
+    let normalized = std::mem::ManuallyDrop::new(normalized);
+    unsafe {
+        *exc = normalized.exc_type;
+        *val = normalized.value;
+        if tb.is_null() {
+            crate::api::refcount::Py_XDECREF(normalized.traceback);
+        } else {
+            *tb = normalized.traceback;
+        }
     }
 }
 
@@ -520,7 +1139,7 @@ fn exception_free_str(text: &str) -> *mut PyObject {
     if bits == 0 {
         return ptr::null_mut();
     }
-    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) }
+    unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) }
 }
 
 /// `PyErr_ExceptionMatches(exc)` — does the pending exception match `exc`?
@@ -586,7 +1205,21 @@ pub unsafe extern "C" fn PyErr_GivenExceptionMatches(
     // Exception singletons/types carry no bridge instance state; only a
     // non-singleton object whose ob_type is a registered exception type is an
     // instance here. The singleton fast path covers the dominant case.
-    let given = if crate::abi_types::exc_singleton_name(given).is_some() {
+    let given_handle = GLOBAL_BRIDGE.molt_handle_for_pyobj(given);
+    let given = if let Some(handle) = given_handle
+        && unsafe { (crate::hooks::hooks_or_stubs().classify_heap)(handle.bits()) }
+            == MoltTypeTag::Exception as u8
+    {
+        match unsafe { (crate::hooks::hooks_or_stubs().exception_class_borrowed)(handle.bits()) }
+            .decode()
+        {
+            crate::hooks::DecodedHandleResult::Ok(class_bits) => unsafe {
+                GLOBAL_BRIDGE.handle_to_borrowed_pyobj(class_bits)
+            },
+            crate::hooks::DecodedHandleResult::Missing
+            | crate::hooks::DecodedHandleResult::Error => return 0,
+        }
+    } else if crate::abi_types::exc_singleton_name(given).is_some() {
         given
     } else {
         let ob_type = unsafe { (*given).ob_type };
@@ -596,29 +1229,18 @@ pub unsafe extern "C" fn PyErr_GivenExceptionMatches(
             given
         }
     };
-    // A tuple of candidates: match any member (bridged tuple via the runtime
-    // tuple hooks). Resolve `exc`'s bits and RELEASE the bridge lock before the
-    // per-item `handle_to_pyobj` calls — the bridge Mutex is non-reentrant, so
-    // holding the guard across the loop would self-deadlock.
-    let exc_bits = GLOBAL_BRIDGE.molt_handle_for_pyobj(exc);
-    if let Some(value) = exc_bits
-        && value.decode().is_ptr()
-    {
-        let h = crate::hooks::hooks_or_stubs();
-        if unsafe { (h.classify_heap)(value.bits()) } == MoltTypeTag::Tuple as u8 {
-            let len = unsafe { (h.tuple_len)(value.bits()) };
-            for i in 0..len {
-                let item_bits = unsafe { (h.tuple_item)(value.bits(), i) };
-                if item_bits == 0 {
-                    continue;
-                }
-                let item = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(item_bits) };
-                if !item.is_null() && given_matches_single(given, item) {
-                    return 1;
-                }
+    // The tuple API is the single physical/runtime authority: its accessors
+    // cover ABI-layout and managed tuples without holding a bridge lock across
+    // element conversion.
+    if unsafe { crate::api::sequences::PyTuple_Check(exc) } != 0 {
+        let len = unsafe { crate::api::sequences::PyTuple_GET_SIZE(exc) };
+        for index in 0..len {
+            let item = unsafe { crate::api::sequences::PyTuple_GET_ITEM(exc, index) };
+            if !item.is_null() && given_matches_single(given, item) {
+                return 1;
             }
-            return 0;
         }
+        return 0;
     }
     given_matches_single(given, exc) as c_int
 }
@@ -626,9 +1248,73 @@ pub unsafe extern "C" fn PyErr_GivenExceptionMatches(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyException_SetTraceback(exc: *mut PyObject, tb: *mut PyObject) -> c_int {
     if exc.is_null() {
+        unsafe {
+            PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
+                c"PyException_SetTraceback: NULL exception".as_ptr(),
+            )
+        };
         return -1;
     }
-    let base = exc.cast::<PyBaseExceptionObject>();
+    if let Some(exception) = GLOBAL_BRIDGE.molt_handle_for_pyobj(exc) {
+        let traceback_bits = if tb.is_null() {
+            None
+        } else {
+            unsafe { GLOBAL_BRIDGE.molt_value_for_pyobj(tb) }
+        };
+        if !tb.is_null() && traceback_bits.is_none() {
+            unsafe { set_exception_field_type_error(c"__traceback__ must be a traceback or None") };
+            return -1;
+        }
+        let hooks = crate::hooks::hooks_or_stubs();
+        let status = unsafe {
+            (hooks.exception_set_field)(
+                exception.bits(),
+                crate::hooks::ExceptionField::Traceback as u32,
+                traceback_bits.unwrap_or(0),
+                c_int::from(!tb.is_null()),
+            )
+        };
+        if let Some(bits) = traceback_bits {
+            unsafe { (hooks.dec_ref)(bits) };
+        }
+        if status == 0 {
+            return 0;
+        }
+        if !transfer_runtime_pending_to_current() {
+            unsafe {
+                PyErr_SetString(
+                    (&raw mut crate::abi_types::PyExc_TypeError)
+                        .cast::<crate::abi_types::PyObject>(),
+                    c"__traceback__ must be a traceback or None".as_ptr(),
+                )
+            };
+        }
+        return -1;
+    }
+    let Some(base) = foreign_exception_layout(exc) else {
+        unsafe {
+            PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
+                c"PyException_SetTraceback: expected an exception instance".as_ptr(),
+            )
+        };
+        return -1;
+    };
+    let tb = if std::ptr::eq(tb, &raw mut crate::abi_types::Py_None) {
+        ptr::null_mut()
+    } else {
+        tb
+    };
+    if !tb.is_null()
+        && !std::ptr::eq(
+            unsafe { (*tb).ob_type },
+            &raw mut crate::abi_types::PyTraceBack_Type,
+        )
+    {
+        unsafe { set_exception_field_type_error(c"__traceback__ must be a traceback or None") };
+        return -1;
+    }
     unsafe {
         if !tb.is_null() {
             crate::api::refcount::Py_INCREF(tb);
@@ -647,9 +1333,138 @@ pub unsafe extern "C" fn PyException_GetTraceback(exc: *mut PyObject) -> *mut Py
     if exc.is_null() {
         return ptr::null_mut();
     }
-    let traceback = unsafe { (*exc.cast::<PyBaseExceptionObject>()).traceback };
+    if let Some(exception) = GLOBAL_BRIDGE.molt_handle_for_pyobj(exc) {
+        let result = unsafe {
+            (crate::hooks::hooks_or_stubs().exception_get_field)(
+                exception.bits(),
+                crate::hooks::ExceptionField::Traceback as u32,
+            )
+        };
+        return match result.decode() {
+            crate::hooks::DecodedHandleResult::Missing => ptr::null_mut(),
+            crate::hooks::DecodedHandleResult::Ok(bits) => unsafe {
+                GLOBAL_BRIDGE.owned_handle_to_pyobj(bits)
+            },
+            crate::hooks::DecodedHandleResult::Error => {
+                unsafe {
+                    set_exception_field_type_error(
+                        c"PyException_GetTraceback: expected an exception instance",
+                    )
+                };
+                ptr::null_mut()
+            }
+        };
+    }
+    let Some(base) = foreign_exception_layout(exc) else {
+        unsafe {
+            PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
+                c"PyException_GetTraceback: expected an exception instance".as_ptr(),
+            )
+        };
+        return ptr::null_mut();
+    };
+    let traceback = unsafe { (*base).traceback };
     unsafe { crate::api::refcount::Py_XINCREF(traceback) };
     traceback
+}
+
+fn foreign_exception_layout(exc: *mut PyObject) -> Option<*mut PyBaseExceptionObject> {
+    if exc.is_null() || GLOBAL_BRIDGE.molt_handle_for_pyobj(exc).is_some() {
+        return None;
+    }
+    let exception_type = unsafe { (*exc).ob_type };
+    if exception_type.is_null()
+        || unsafe { (*exception_type).tp_flags } & crate::abi_types::Py_TPFLAGS_BASE_EXC_SUBCLASS
+            == 0
+    {
+        return None;
+    }
+    Some(exc.cast::<PyBaseExceptionObject>())
+}
+
+unsafe fn managed_exception_set_field(
+    exc: *mut PyObject,
+    field: crate::hooks::ExceptionField,
+    value: *mut PyObject,
+) -> Option<c_int> {
+    let exception = GLOBAL_BRIDGE.molt_handle_for_pyobj(exc)?;
+    let c_none = value.is_null()
+        || (!matches!(field, crate::hooks::ExceptionField::Args)
+            && std::ptr::eq(value, &raw mut crate::abi_types::Py_None));
+    let value_bits = if c_none {
+        None
+    } else {
+        unsafe { GLOBAL_BRIDGE.molt_value_for_pyobj(value) }
+    };
+    if !c_none && value_bits.is_none() {
+        return Some(-1);
+    }
+    let hooks = crate::hooks::hooks_or_stubs();
+    let status = unsafe {
+        (hooks.exception_set_field)(
+            exception.bits(),
+            field as u32,
+            value_bits.unwrap_or(0),
+            c_int::from(!c_none),
+        )
+    };
+    if let Some(bits) = value_bits {
+        unsafe { (hooks.dec_ref)(bits) };
+    }
+    if status != 0 {
+        let _ = transfer_runtime_pending_to_current();
+    }
+    Some(status)
+}
+
+unsafe fn managed_exception_get_field(
+    exc: *mut PyObject,
+    field: crate::hooks::ExceptionField,
+) -> Option<Result<*mut PyObject, ()>> {
+    let exception = GLOBAL_BRIDGE.molt_handle_for_pyobj(exc)?;
+    let result = unsafe {
+        (crate::hooks::hooks_or_stubs().exception_get_field)(exception.bits(), field as u32)
+    };
+    Some(match result.decode() {
+        crate::hooks::DecodedHandleResult::Missing => Ok(ptr::null_mut()),
+        crate::hooks::DecodedHandleResult::Ok(bits) => {
+            Ok(unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) })
+        }
+        crate::hooks::DecodedHandleResult::Error => {
+            let _ = transfer_runtime_pending_to_current();
+            Err(())
+        }
+    })
+}
+
+unsafe fn set_exception_field_type_error(message: &'static CStr) {
+    if !transfer_runtime_pending_to_current() {
+        unsafe {
+            PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
+                message.as_ptr(),
+            )
+        };
+    }
+}
+
+unsafe fn exception_instance_pointer(value: *mut PyObject) -> bool {
+    if value.is_null() {
+        return false;
+    }
+    if let Some(result) =
+        unsafe { managed_exception_get_field(value, crate::hooks::ExceptionField::Args) }
+    {
+        return match result {
+            Ok(args) => {
+                unsafe { crate::api::refcount::Py_XDECREF(args) };
+                true
+            }
+            Err(()) => false,
+        };
+    }
+    foreign_exception_layout(value).is_some()
 }
 
 #[unsafe(no_mangle)]
@@ -658,12 +1473,78 @@ pub unsafe extern "C" fn PyException_SetContext(exc: *mut PyObject, context: *mu
         unsafe { crate::api::refcount::Py_XDECREF(context) };
         return;
     }
-    let base = exc.cast::<PyBaseExceptionObject>();
+    if let Some(status) =
+        unsafe { managed_exception_set_field(exc, crate::hooks::ExceptionField::Context, context) }
+    {
+        unsafe { crate::api::refcount::Py_XDECREF(context) };
+        if status != 0 {
+            unsafe {
+                set_exception_field_type_error(c"exception context must be an exception or None")
+            };
+        }
+        return;
+    }
+    let Some(base) = foreign_exception_layout(exc) else {
+        unsafe {
+            crate::api::refcount::Py_XDECREF(context);
+            set_exception_field_type_error(
+                c"PyException_SetContext: expected an exception instance",
+            );
+        }
+        return;
+    };
+    let context = if std::ptr::eq(context, &raw mut crate::abi_types::Py_None) {
+        unsafe { crate::api::refcount::Py_DECREF(context) };
+        ptr::null_mut()
+    } else {
+        context
+    };
+    if !context.is_null() && !unsafe { exception_instance_pointer(context) } {
+        unsafe {
+            crate::api::refcount::Py_DECREF(context);
+            set_exception_field_type_error(c"exception context must be an exception or None");
+        }
+        return;
+    }
     unsafe {
         let old = (*base).context;
-        (*base).context = context;
-        crate::api::refcount::Py_XDECREF(old);
+        if old == context {
+            crate::api::refcount::Py_XDECREF(context);
+        } else {
+            (*base).context = context;
+            crate::api::refcount::Py_XDECREF(old);
+        }
     }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyException_GetContext(exc: *mut PyObject) -> *mut PyObject {
+    if let Some(result) =
+        unsafe { managed_exception_get_field(exc, crate::hooks::ExceptionField::Context) }
+    {
+        return match result {
+            Ok(value) => value,
+            Err(()) => {
+                unsafe {
+                    set_exception_field_type_error(
+                        c"PyException_GetContext: expected an exception instance",
+                    )
+                };
+                ptr::null_mut()
+            }
+        };
+    }
+    let Some(base) = foreign_exception_layout(exc) else {
+        unsafe {
+            set_exception_field_type_error(
+                c"PyException_GetContext: expected an exception instance",
+            )
+        };
+        return ptr::null_mut();
+    };
+    let context = unsafe { (*base).context };
+    unsafe { crate::api::refcount::Py_XINCREF(context) };
+    context
 }
 
 #[unsafe(no_mangle)]
@@ -672,60 +1553,266 @@ pub unsafe extern "C" fn PyException_SetCause(exc: *mut PyObject, cause: *mut Py
         unsafe { crate::api::refcount::Py_XDECREF(cause) };
         return;
     }
-    let base = exc.cast::<PyBaseExceptionObject>();
+    if let Some(status) =
+        unsafe { managed_exception_set_field(exc, crate::hooks::ExceptionField::Cause, cause) }
+    {
+        unsafe { crate::api::refcount::Py_XDECREF(cause) };
+        if status != 0 {
+            unsafe {
+                set_exception_field_type_error(c"exception cause must be an exception or None")
+            };
+        }
+        return;
+    }
+    let Some(base) = foreign_exception_layout(exc) else {
+        unsafe {
+            crate::api::refcount::Py_XDECREF(cause);
+            set_exception_field_type_error(c"PyException_SetCause: expected an exception instance");
+        }
+        return;
+    };
+    let cause = if std::ptr::eq(cause, &raw mut crate::abi_types::Py_None) {
+        unsafe { crate::api::refcount::Py_DECREF(cause) };
+        ptr::null_mut()
+    } else {
+        cause
+    };
+    if !cause.is_null() && !unsafe { exception_instance_pointer(cause) } {
+        unsafe {
+            crate::api::refcount::Py_DECREF(cause);
+            set_exception_field_type_error(c"exception cause must be an exception or None");
+        }
+        return;
+    }
     unsafe {
         let old = (*base).cause;
-        (*base).cause = cause;
+        if old == cause {
+            crate::api::refcount::Py_XDECREF(cause);
+        } else {
+            (*base).cause = cause;
+            crate::api::refcount::Py_XDECREF(old);
+        }
+        (*base).suppress_context = 1;
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyException_GetCause(exc: *mut PyObject) -> *mut PyObject {
+    if let Some(result) =
+        unsafe { managed_exception_get_field(exc, crate::hooks::ExceptionField::Cause) }
+    {
+        return match result {
+            Ok(value) => value,
+            Err(()) => {
+                unsafe {
+                    set_exception_field_type_error(
+                        c"PyException_GetCause: expected an exception instance",
+                    )
+                };
+                ptr::null_mut()
+            }
+        };
+    }
+    let Some(base) = foreign_exception_layout(exc) else {
+        unsafe {
+            set_exception_field_type_error(c"PyException_GetCause: expected an exception instance")
+        };
+        return ptr::null_mut();
+    };
+    let cause = unsafe { (*base).cause };
+    unsafe { crate::api::refcount::Py_XINCREF(cause) };
+    cause
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyException_SetArgs(exc: *mut PyObject, args: *mut PyObject) {
+    if let Some(status) =
+        unsafe { managed_exception_set_field(exc, crate::hooks::ExceptionField::Args, args) }
+    {
+        if status != 0 {
+            unsafe { set_exception_field_type_error(c"exception args must be a tuple") };
+        }
+        return;
+    }
+    let Some(base) = foreign_exception_layout(exc) else {
+        unsafe {
+            set_exception_field_type_error(c"PyException_SetArgs: expected an exception instance")
+        };
+        return;
+    };
+    if args.is_null() || unsafe { crate::api::sequences::PyTuple_Check(args) } == 0 {
+        unsafe { set_exception_field_type_error(c"exception args must be a tuple") };
+        return;
+    }
+    unsafe {
+        crate::api::refcount::Py_INCREF(args);
+        let old = (*base).args;
+        (*base).args = args;
         crate::api::refcount::Py_XDECREF(old);
     }
 }
 
-/// CPython `PyErr_WarnEx` (Python/_warnings.c): runs the warnings machinery,
-/// which by default PRINTS the warning to stderr ("<source>: Category:
-/// message"). The bridge has no warnings-filter state (documented residual: a
-/// filter mapping the category to "error" cannot raise here), but the default
-/// visible-emission path is honored — the pre-fix silent swallow hid every
-/// extension warning. Writing to stderr matches CPython's own default
-/// destination.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyException_GetArgs(exc: *mut PyObject) -> *mut PyObject {
+    if let Some(result) =
+        unsafe { managed_exception_get_field(exc, crate::hooks::ExceptionField::Args) }
+    {
+        return match result {
+            Ok(value) => value,
+            Err(()) => {
+                unsafe {
+                    set_exception_field_type_error(
+                        c"PyException_GetArgs: expected an exception instance",
+                    )
+                };
+                ptr::null_mut()
+            }
+        };
+    }
+    let Some(base) = foreign_exception_layout(exc) else {
+        unsafe {
+            set_exception_field_type_error(c"PyException_GetArgs: expected an exception instance")
+        };
+        return ptr::null_mut();
+    };
+    let args = unsafe { (*base).args };
+    unsafe { crate::api::refcount::Py_XINCREF(args) };
+    args
+}
+
+/// Route warnings through the runtime `warnings.warn` callable so filters,
+/// warning-as-error policy, category validation, and stacklevel share the same
+/// authority as compiled Python.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_WarnEx(
     category: *mut PyObject,
     message: *const c_char,
-    _stack_level: c_int,
+    stack_level: Py_ssize_t,
 ) -> c_int {
-    let text = if message.is_null() {
-        String::new()
-    } else {
-        unsafe { CStr::from_ptr(message) }
-            .to_string_lossy()
-            .into_owned()
+    let warnings = unsafe { crate::api::imports::PyImport_ImportModule(c"warnings".as_ptr()) };
+    if warnings.is_null() {
+        return -1;
+    }
+    let warn = unsafe { crate::api::object::PyObject_GetAttrString(warnings, c"warn".as_ptr()) };
+    unsafe { crate::api::refcount::Py_DECREF(warnings) };
+    if warn.is_null() {
+        return -1;
+    }
+    let message = unsafe {
+        crate::api::strings::PyUnicode_FromString(if message.is_null() {
+            c"".as_ptr()
+        } else {
+            message
+        })
     };
-    let category_name = crate::abi_types::exc_singleton_name(category)
-        .map(|name| name.strip_prefix("PyExc_").unwrap_or(name))
-        .unwrap_or("UserWarning");
-    eprintln!("<molt-cpython-abi>: {category_name}: {text}");
-    0
+    let category = if category.is_null() {
+        unsafe { crate::api::object::Py_NewRef(&raw mut crate::abi_types::Py_None) }
+    } else {
+        unsafe { crate::api::object::Py_NewRef(category) }
+    };
+    let stack_level = unsafe { crate::api::numbers::PyLong_FromLongLong(stack_level as i64) };
+    let args = unsafe { crate::api::sequences::PyTuple_New(3) };
+    if message.is_null() || category.is_null() || stack_level.is_null() || args.is_null() {
+        unsafe {
+            crate::api::refcount::Py_XDECREF(message);
+            crate::api::refcount::Py_XDECREF(category);
+            crate::api::refcount::Py_XDECREF(stack_level);
+            crate::api::refcount::Py_XDECREF(args);
+            crate::api::refcount::Py_DECREF(warn);
+        }
+        return -1;
+    }
+    unsafe {
+        let _ = crate::api::sequences::PyTuple_SetItem(args, 0, message);
+        let _ = crate::api::sequences::PyTuple_SetItem(args, 1, category);
+        let _ = crate::api::sequences::PyTuple_SetItem(args, 2, stack_level);
+    }
+    let result = unsafe { crate::api::object::PyObject_CallObject(warn, args) };
+    unsafe {
+        crate::api::refcount::Py_DECREF(args);
+        crate::api::refcount::Py_DECREF(warn);
+    }
+    if result.is_null() {
+        -1
+    } else {
+        unsafe { crate::api::refcount::Py_DECREF(result) };
+        0
+    }
 }
 
-/// `PyErr_WriteUnraisable(obj)` — report an exception that cannot be propagated
-/// (Python/errors.c). CPython prints `Exception ignored in: <obj>` followed by the
-/// traceback, using `obj` to identify WHERE the exception was swallowed. The stub
-/// dropped `obj` (`let _ = obj;`), erasing that context. We include `obj`'s
-/// string form in the "ignored in" line so the report names its origin.
+/// `PyErr_WriteUnraisable(obj)` consumes the C-API error indicator and forwards
+/// its typed payload plus owned runtime context to the runtime's canonical
+/// unraisable transaction. This surface has CPython's null `err_msg` contract;
+/// version-specific formatted messages are supplied by runtime call sites that
+/// model `PyErr_FormatUnraisable` instead.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_WriteUnraisable(obj: *mut PyObject) {
-    let context = value_str_message(obj);
-    CURRENT_EXC.with(|c| {
-        if let Some((_, ref msg)) = *c.borrow() {
-            match context {
-                Some(ref ctx) => {
-                    eprintln!("[molt-cpython-abi] Exception ignored in: {ctx}: {msg}")
-                }
-                None => eprintln!("[molt-cpython-abi] unraisable exception: {msg}"),
+    unsafe { write_unraisable_impl(obj, None) };
+}
+
+unsafe fn write_unraisable_impl(obj: *mut PyObject, err_msg: Option<&[u8]>) {
+    let Some(state) = take_current_error() else {
+        return;
+    };
+    let owned_bits = |ptr: *mut PyObject| {
+        if ptr.is_null() {
+            (MoltObject::none().bits(), false)
+        } else {
+            match unsafe { GLOBAL_BRIDGE.molt_value_for_pyobj(ptr) } {
+                Some(bits) => (bits, true),
+                None => (MoltObject::none().bits(), false),
             }
         }
-    });
-    unsafe { PyErr_Clear() };
+    };
+    let (type_bits, owns_type) = owned_bits(state.exc_type);
+    let (value_bits, owns_value) = owned_bits(state.value);
+    let (traceback_bits, owns_traceback) = owned_bits(state.traceback);
+    let (context_bits, owns_context) = if obj.is_null() {
+        (MoltObject::none().bits(), false)
+    } else {
+        match unsafe { GLOBAL_BRIDGE.molt_value_for_pyobj(obj) } {
+            Some(bits) => (bits, true),
+            None => (MoltObject::none().bits(), false),
+        }
+    };
+    let hooks = crate::hooks::hooks_or_stubs();
+    unsafe {
+        let (err_ptr, err_len, has_err) = err_msg
+            .map(|text| (text.as_ptr(), text.len(), 1))
+            .unwrap_or((std::ptr::null(), 0, 0));
+        (hooks.report_unraisable)(
+            context_bits,
+            type_bits,
+            value_bits,
+            traceback_bits,
+            std::ptr::null(),
+            0,
+            err_ptr,
+            err_len,
+            has_err,
+        )
+    };
+    for (bits, owned) in [
+        (context_bits, owns_context),
+        (type_bits, owns_type),
+        (value_bits, owns_value),
+        (traceback_bits, owns_traceback),
+    ] {
+        if owned {
+            unsafe { (hooks.dec_ref)(bits) };
+        }
+    }
+}
+
+/// Variadic C shim entry after CPython-style `%R`/`%T` formatting.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_capi_err_format_unraisable(message: *const u8, len: usize) {
+    let formatted = if message.is_null() {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(message, len) }
+    };
+    unsafe { write_unraisable_impl(std::ptr::null_mut(), Some(formatted)) };
 }
 
 /// CPython `PyErr_CheckSignals` runs pending signal handlers so a Ctrl-C can
@@ -768,6 +1855,40 @@ pub unsafe extern "C" fn PyErr_CheckSignals() -> c_int {
 //
 // The C shims call back into `molt_pyarg_parse_tuple_inner` (below) with a
 // flat array of void* output pointers extracted from the va_list.
+
+unsafe extern "C" {
+    /// Variadic formatter authority implemented by `shims/pyarg_variadic.c`.
+    pub fn PyUnicode_FromFormat(format: *const c_char, ...) -> *mut PyObject;
+
+    /// Error formatter backed by the same fallible Unicode formatter.
+    pub fn PyErr_Format(exc_type: *mut PyObject, format: *const c_char, ...) -> *mut PyObject;
+}
+
+/// Formatter-only typed adapter for `%T`/`%N`.
+///
+/// Both static extension types and Molt-managed type views keep their
+/// canonical `module.qualname` spelling in `tp_name`. The C variadic shim
+/// cannot safely redeclare the full `PyTypeObject` layout just to reach that
+/// field, so it crosses this fixed-arity boundary instead.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_capi_type_fully_qualified_name(
+    tp: *mut PyTypeObject,
+) -> *mut PyObject {
+    if tp.is_null() {
+        return ptr::null_mut();
+    }
+    let name = unsafe { (*tp).tp_name };
+    if name.is_null() {
+        return ptr::null_mut();
+    }
+    let bytes = unsafe { CStr::from_ptr(name) }.to_bytes();
+    unsafe {
+        crate::api::strings::PyUnicode_FromStringAndSize(
+            bytes.as_ptr().cast(),
+            bytes.len() as Py_ssize_t,
+        )
+    }
+}
 
 /// Called from the C shim — receives a flat array of output pointers already
 /// extracted from the va_list. Dispatches based on format codes.
@@ -954,7 +2075,7 @@ pub unsafe extern "C" fn molt_pyarg_parse_tuple_inner(
                 write_out!(f32, v);
             }
             'D' => {
-                let py_ptr = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) };
+                let py_ptr = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
                 let value = unsafe { crate::api::numbers::PyComplex_AsCComplex(py_ptr) };
                 if !unsafe { PyErr_Occurred() }.is_null() {
                     return 0;
@@ -996,7 +2117,7 @@ pub unsafe extern "C" fn molt_pyarg_parse_tuple_inner(
                     unsafe { set_parse_format_error() };
                     return 0;
                 }
-                let py_ptr = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) };
+                let py_ptr = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
                 let mut owned_bytes = ptr::null_mut();
                 let source = if accepts_bytes && arg_is_bytes(&obj, bits) {
                     py_ptr
@@ -1004,7 +2125,11 @@ pub unsafe extern "C" fn molt_pyarg_parse_tuple_inner(
                     owned_bytes = unsafe {
                         crate::api::strings::PyUnicode_AsEncodedString(
                             py_ptr,
-                            if encoding.is_null() { c"utf-8".as_ptr() } else { encoding },
+                            if encoding.is_null() {
+                                c"utf-8".as_ptr()
+                            } else {
+                                encoding
+                            },
                             c"strict".as_ptr(),
                         )
                     };
@@ -1029,10 +2154,11 @@ pub unsafe extern "C" fn molt_pyarg_parse_tuple_inner(
                     unsafe { crate::api::refcount::Py_XDECREF(owned_bytes) };
                     return 0;
                 }
-                if !has_len && unsafe {
-                    std::slice::from_raw_parts(source_ptr.cast::<u8>(), source_len as usize)
-                }
-                .contains(&0)
+                if !has_len
+                    && unsafe {
+                        std::slice::from_raw_parts(source_ptr.cast::<u8>(), source_len as usize)
+                    }
+                    .contains(&0)
                 {
                     unsafe { crate::api::refcount::Py_XDECREF(owned_bytes) };
                     unsafe { set_parse_type_error("encoded string without null bytes") };
@@ -1043,7 +2169,10 @@ pub unsafe extern "C" fn molt_pyarg_parse_tuple_inner(
                 let output = if buffer.is_null() {
                     unsafe { crate::api::memory::PyMem_Malloc(required) }.cast::<c_char>()
                 } else {
-                    if !has_len || len_dest.is_null() || unsafe { *len_dest } < required as Py_ssize_t {
+                    if !has_len
+                        || len_dest.is_null()
+                        || unsafe { *len_dest } < required as Py_ssize_t
+                    {
                         unsafe { crate::api::refcount::Py_XDECREF(owned_bytes) };
                         unsafe { set_parse_value_error("encoded string too long") };
                         return 0;
@@ -1102,7 +2231,7 @@ pub unsafe extern "C" fn molt_pyarg_parse_tuple_inner(
                             .unwrap_or(ptr::null_mut())
                             .cast::<Py_buffer>();
                         out_idx += 1;
-                        let py_ptr = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) };
+                        let py_ptr = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
                         if unsafe {
                             crate::api::buffer::PyBuffer_FillInfo(
                                 view,
@@ -1145,10 +2274,9 @@ pub unsafe extern "C" fn molt_pyarg_parse_tuple_inner(
                         .unwrap_or(ptr::null_mut())
                         .cast::<Py_buffer>();
                     out_idx += 1;
-                    let py_ptr = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) };
-                    if unsafe {
-                        crate::api::buffer::PyObject_GetBuffer(py_ptr, view, PyBUF_SIMPLE)
-                    } != 0
+                    let py_ptr = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
+                    if unsafe { crate::api::buffer::PyObject_GetBuffer(py_ptr, view, PyBUF_SIMPLE) }
+                        != 0
                     {
                         return 0;
                     }
@@ -1172,7 +2300,7 @@ pub unsafe extern "C" fn molt_pyarg_parse_tuple_inner(
             'S' => {
                 // Requires PyBytes; stores the borrowed object.
                 if arg_is_bytes(&obj, bits) {
-                    let py_ptr = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) };
+                    let py_ptr = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
                     write_out!(*mut PyObject, py_ptr);
                 } else {
                     unsafe { set_parse_type_error("argument must be bytes") };
@@ -1180,7 +2308,7 @@ pub unsafe extern "C" fn molt_pyarg_parse_tuple_inner(
                 }
             }
             'Y' => {
-                let py_ptr = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) };
+                let py_ptr = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
                 if unsafe { crate::api::strings::PyByteArray_Check(py_ptr) } != 0 {
                     write_out!(*mut PyObject, py_ptr);
                 } else {
@@ -1191,7 +2319,7 @@ pub unsafe extern "C" fn molt_pyarg_parse_tuple_inner(
             'U' => {
                 // Requires PyUnicode; stores the borrowed object.
                 if arg_is_str(&obj, bits) {
-                    let py_ptr = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) };
+                    let py_ptr = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
                     write_out!(*mut PyObject, py_ptr);
                 } else {
                     unsafe { set_parse_type_error("argument must be str") };
@@ -1239,16 +2367,15 @@ pub unsafe extern "C" fn molt_pyarg_parse_tuple_inner(
                     .unwrap_or(ptr::null_mut())
                     .cast::<Py_buffer>();
                 out_idx += 1;
-                let py_ptr = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) };
-                if unsafe {
-                    crate::api::buffer::PyObject_GetBuffer(py_ptr, view, PyBUF_WRITABLE)
-                } != 0
+                let py_ptr = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
+                if unsafe { crate::api::buffer::PyObject_GetBuffer(py_ptr, view, PyBUF_WRITABLE) }
+                    != 0
                 {
                     return 0;
                 }
             }
             'O' => {
-                let py_ptr = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) };
+                let py_ptr = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
                 // Peek for the 'O!' (type-checked) / 'O&' (converter) modifiers.
                 let modifier = if i < fmt.len() && (fmt[i] == b'!' || fmt[i] == b'&') {
                     let m = fmt[i];
@@ -1472,7 +2599,7 @@ unsafe fn set_parse_overflow(message: &str) {
     let cmsg = std::ffi::CString::new(message).unwrap_or_default();
     unsafe {
         PyErr_SetString(
-            &raw mut crate::abi_types::PyExc_OverflowError,
+            (&raw mut crate::abi_types::PyExc_OverflowError).cast::<crate::abi_types::PyObject>(),
             cmsg.as_ptr(),
         );
     }
@@ -1482,7 +2609,10 @@ unsafe fn set_parse_overflow(message: &str) {
 unsafe fn set_parse_value_error(message: &str) {
     let cmsg = std::ffi::CString::new(message).unwrap_or_default();
     unsafe {
-        PyErr_SetString(&raw mut crate::abi_types::PyExc_ValueError, cmsg.as_ptr());
+        PyErr_SetString(
+            (&raw mut crate::abi_types::PyExc_ValueError).cast::<crate::abi_types::PyObject>(),
+            cmsg.as_ptr(),
+        );
     }
 }
 
@@ -1528,7 +2658,10 @@ fn float_like(obj: &MoltObject, bits: u64) -> Option<f64> {
 unsafe fn set_parse_type_error(message: &str) {
     let cmsg = std::ffi::CString::new(message).unwrap_or_default();
     unsafe {
-        PyErr_SetString(&raw mut crate::abi_types::PyExc_TypeError, cmsg.as_ptr());
+        PyErr_SetString(
+            (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
+            cmsg.as_ptr(),
+        );
     }
 }
 
@@ -1537,7 +2670,7 @@ unsafe fn set_parse_type_error(message: &str) {
 unsafe fn set_parse_format_error() {
     unsafe {
         PyErr_SetString(
-            &raw mut crate::abi_types::PyExc_SystemError,
+            (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
             c"bad format string passed to PyArg_ParseTuple".as_ptr(),
         );
     }
@@ -1555,11 +2688,19 @@ fn molt_tuple_items(bits: u64) -> Vec<u64> {
         // Args may arrive as a list in some Molt call paths.
         let llen = unsafe { (h.list_len)(bits) };
         return (0..llen)
-            .map(|i| unsafe { (h.list_item)(bits, i) })
+            .filter_map(|i| match unsafe { (h.list_item)(bits, i) }.decode() {
+                crate::hooks::DecodedHandleResult::Ok(item) => Some(item),
+                crate::hooks::DecodedHandleResult::Missing
+                | crate::hooks::DecodedHandleResult::Error => None,
+            })
             .collect();
     }
     (0..len)
-        .map(|i| unsafe { (h.tuple_item)(bits, i) })
+        .filter_map(|i| match unsafe { (h.tuple_item)(bits, i) }.decode() {
+            crate::hooks::DecodedHandleResult::Ok(item) => Some(item),
+            crate::hooks::DecodedHandleResult::Missing
+            | crate::hooks::DecodedHandleResult::Error => None,
+        })
         .collect()
 }
 
@@ -1580,41 +2721,4 @@ fn molt_str_len(bits: u64) -> usize {
     let mut len: usize = 0;
     unsafe { (h.str_data)(bits, std::ptr::addr_of_mut!(len)) };
     len
-}
-
-#[cfg(test)]
-mod bad_internal_call_tests {
-    use super::*;
-
-    /// `_PyErr_BadInternalCall(file, line)` sets a SystemError whose message
-    /// carries the `file:line` location (the located form numpy links), and a
-    /// NULL filename degrades to the no-location wrapper rather than dropping the
-    /// error. The message is stored in the thread-local exception state, so this
-    /// is exercisable without runtime hooks.
-    #[test]
-    fn located_bad_internal_call_carries_location() {
-        unsafe {
-            PyErr_Clear();
-            _PyErr_BadInternalCall(c"multiarraymodule.c".as_ptr(), 4242);
-        }
-        let msg = take_current_error_message().unwrap_or_default();
-        assert!(
-            msg.contains("multiarraymodule.c:4242"),
-            "located message must carry file:line, got {msg:?}"
-        );
-        assert!(
-            msg.contains("bad argument to internal function"),
-            "got {msg:?}"
-        );
-    }
-
-    #[test]
-    fn null_filename_degrades_to_wrapper() {
-        unsafe {
-            PyErr_Clear();
-            _PyErr_BadInternalCall(std::ptr::null(), 0);
-        }
-        let msg = take_current_error_message().unwrap_or_default();
-        assert_eq!(msg, "bad argument to internal function");
-    }
 }

@@ -148,6 +148,14 @@ pub extern "C" fn molt_class_set_base(class_bits: u64, base_bits: u64) -> u64 {
                 if object_type_id(base_ptr) != TYPE_ID_TYPE {
                     return raise_exception::<_>(_py, "TypeError", "base must be a type object");
                 }
+                if crate::object::class_is_not_base(_py, base_ptr) {
+                    let name = class_name_for_error(*base);
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        &format!("type '{name}' is not an acceptable base type"),
+                    );
+                }
                 if base_ptr == class_ptr {
                     return raise_exception::<_>(
                         _py,

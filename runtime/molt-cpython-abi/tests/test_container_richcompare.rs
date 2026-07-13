@@ -46,7 +46,7 @@ unsafe extern "C" fn fx_alloc_list() -> u64 {
         .insert(bits, Vec::new());
     bits
 }
-unsafe extern "C" fn fx_list_append(list_bits: u64, item_bits: u64) {
+unsafe extern "C" fn fx_list_append(list_bits: u64, item_bits: u64) -> i32 {
     if let Some(v) = LISTS
         .lock()
         .unwrap()
@@ -55,6 +55,7 @@ unsafe extern "C" fn fx_list_append(list_bits: u64, item_bits: u64) {
     {
         v.push(item_bits);
     }
+    0
 }
 unsafe extern "C" fn fx_list_len(bits: u64) -> usize {
     LISTS
@@ -64,14 +65,20 @@ unsafe extern "C" fn fx_list_len(bits: u64) -> usize {
         .get(&bits)
         .map_or(0, |v| v.len())
 }
-unsafe extern "C" fn fx_list_item(bits: u64, i: usize) -> u64 {
-    LISTS
+unsafe extern "C" fn fx_list_item(
+    bits: u64,
+    i: usize,
+) -> molt_cpython_abi::hooks::BorrowedHandleResult {
+    match LISTS
         .lock()
         .unwrap()
         .get_or_insert_default()
         .get(&bits)
         .and_then(|v| v.get(i).copied())
-        .unwrap_or(0)
+    {
+        Some(value) => molt_cpython_abi::hooks::BorrowedHandleResult::ok(value),
+        None => molt_cpython_abi::hooks::BorrowedHandleResult::missing(),
+    }
 }
 
 // ── fake dict runtime (insertion-ordered assoc list; int keys hash by bits) ──
@@ -84,7 +91,7 @@ unsafe extern "C" fn fx_alloc_dict() -> u64 {
         .insert(bits, Vec::new());
     bits
 }
-unsafe extern "C" fn fx_dict_set(d: u64, k: u64, v: u64) {
+unsafe extern "C" fn fx_dict_set(d: u64, k: u64, v: u64) -> i32 {
     if let Some(entries) = DICTS.lock().unwrap().get_or_insert_default().get_mut(&d) {
         if let Some(slot) = entries.iter_mut().find(|(ek, _)| *ek == k) {
             slot.1 = v;
@@ -92,15 +99,19 @@ unsafe extern "C" fn fx_dict_set(d: u64, k: u64, v: u64) {
             entries.push((k, v));
         }
     }
+    0
 }
-unsafe extern "C" fn fx_dict_get(d: u64, k: u64) -> u64 {
-    DICTS
+unsafe extern "C" fn fx_dict_get(d: u64, k: u64) -> molt_cpython_abi::hooks::BorrowedHandleResult {
+    match DICTS
         .lock()
         .unwrap()
         .get_or_insert_default()
         .get(&d)
         .and_then(|e| e.iter().find(|(ek, _)| *ek == k).map(|(_, v)| *v))
-        .unwrap_or(0)
+    {
+        Some(value) => molt_cpython_abi::hooks::BorrowedHandleResult::ok(value),
+        None => molt_cpython_abi::hooks::BorrowedHandleResult::missing(),
+    }
 }
 unsafe extern "C" fn fx_dict_len(bits: u64) -> usize {
     DICTS
@@ -178,7 +189,7 @@ fn install() {
 
 /// Mint a `*mut PyObject` for a runtime handle (ob_type set from classify_heap).
 fn register(bits: u64) -> *mut PyObject {
-    unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_pyobj(bits) }
+    unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) }
 }
 fn int_bits(v: i64) -> u64 {
     MoltObject::from_int(v).bits()

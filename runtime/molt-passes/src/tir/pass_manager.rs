@@ -408,7 +408,7 @@ impl PassManager {
 /// * **Canonicalization** runs twice (instcombine pattern): once pre-type, once
 ///   post-unboxing.
 /// * **Redundancy** (GVN, LICM) runs after canonicalization and type settling.
-/// * **Memory** (escape, refcount, reuse, dead-store) runs after redundancy.
+/// * **Memory** (escape, refcount, dead-store) runs after redundancy.
 /// * **Value** specialization runs late so it sees the final type lattice.
 /// * **Cleanup** (check-exception elim, copy-prop, DCE) runs last. Block-arg
 ///   pruning deliberately runs only in the terminal drop pipeline, after RC
@@ -429,7 +429,7 @@ impl PassManager {
 ///   dead_store_elim, strength_reduction, fast_math, copy_prop,
 ///   tuple_scalarize.
 /// * `ReadOnly` — only marks attrs/metadata, no executable-IR change: bce
-///   (`bce_safe` attr), reuse_analysis, vectorize, polyhedral.
+///   (`bce_safe` attr), vectorize, polyhedral.
 pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
     use Mutates::*;
     // The `am`/`tti`-ignoring adapters wrap legacy passes that consume neither
@@ -472,9 +472,6 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
         }),
         pass("refcount_elim", OpsOnly, |f, am, _tti| {
             passes::refcount_elim::run(f, am)
-        }),
-        pass("reuse_analysis", ReadOnly, |f, am, _tti| {
-            passes::reuse_analysis::run(f, am)
         }),
         pass("dead_store_elim", OpsOnly, |f, am, _tti| {
             passes::dead_store_elim::run(f, am)
@@ -770,7 +767,6 @@ mod tests {
                 "licm",
                 "escape_analysis",
                 "refcount_elim",
-                "reuse_analysis",
                 "dead_store_elim",
                 "mem_gvn",
                 "sroa",

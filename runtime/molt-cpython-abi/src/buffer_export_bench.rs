@@ -332,7 +332,10 @@ fn buffer_export_allocation_budget() {
         "FillInfo allocations/export = {apf} (expected {EXPECTED_ALLOCS_PER_FILLINFO}) — \
          FillInfo is CPython-exact and must stay allocation-free",
     );
-    assert!(bpf.abs() < 1.0, "FillInfo bytes/export = {bpf} (expected 0)");
+    assert!(
+        bpf.abs() < 1.0,
+        "FillInfo bytes/export = {bpf} (expected 0)"
+    );
 }
 
 // ── Wall-clock profiler (ignored; run manually for the attestation) ─────────

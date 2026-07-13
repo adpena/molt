@@ -15,24 +15,34 @@
 //!     reject with -1 (`*stop > length` / `*start >= length`).
 //!
 //! The mock hooks model the unsigned-64 band and a beyond-±2^64 bignum whose
-//! sign resolves through the runtime `>> 128` authority.
+//! sign resolves through the runtime's direct integer-sign authority.
 
 #![allow(non_snake_case)]
+
+mod support;
 
 use molt_cpython_abi::abi_types::{Py_None, PyObject};
 use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
 use molt_lang_obj_model::MoltObject;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 static BIG_U64_BITS: AtomicU64 = AtomicU64::new(0); // u64::MAX - 3 (Big band)
-static HUGE_NEG_BITS: AtomicU64 = AtomicU64::new(0); // < -2^64 (sign via Rshift)
+static HUGE_NEG_BITS: AtomicU64 = AtomicU64::new(0); // < -2^64
 static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+fn test_guard() -> MutexGuard<'static, ()> {
+    TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 const BIG_U64_VALUE: u64 = u64::MAX - 3;
 
 unsafe extern "C" fn mock_classify_heap(bits: u64) -> u8 {
-    if bits == BIG_U64_BITS.load(Ordering::SeqCst) || bits == HUGE_NEG_BITS.load(Ordering::SeqCst) {
+    if support::fake_strings::contains(bits) {
+        molt_cpython_abi::abi_types::MoltTypeTag::Str as u8
+    } else if bits == BIG_U64_BITS.load(Ordering::SeqCst)
+        || bits == HUGE_NEG_BITS.load(Ordering::SeqCst)
+    {
         molt_cpython_abi::abi_types::MoltTypeTag::Int as u8
     } else {
         molt_cpython_abi::abi_types::MoltTypeTag::Other as u8
@@ -52,14 +62,14 @@ unsafe extern "C" fn mock_int_as_u64_checked(bits: u64, out: *mut u64) -> std::o
     }
 }
 
-/// `HUGE_NEG >> 128` is -1 (negative); everything else fails closed.
-unsafe extern "C" fn mock_number_binary_op(op: u32, a: u64, _b: u64) -> u64 {
-    if op == molt_cpython_abi::hooks::NumberBinaryOp::Rshift as u32
-        && a == HUGE_NEG_BITS.load(Ordering::SeqCst)
-    {
-        return MoltObject::from_int(-1).bits();
+unsafe extern "C" fn mock_int_sign(bits: u64) -> i32 {
+    if bits == HUGE_NEG_BITS.load(Ordering::SeqCst) {
+        -1
+    } else if bits == BIG_U64_BITS.load(Ordering::SeqCst) {
+        1
+    } else {
+        2
     }
-    0
 }
 
 fn install_hooks() {
@@ -74,14 +84,15 @@ fn install_hooks() {
     hooks.classify_heap = mock_classify_heap;
     hooks.int_as_i64_checked = mock_int_as_i64_checked;
     hooks.int_as_u64_checked = mock_int_as_u64_checked;
-    hooks.number_binary_op = mock_number_binary_op;
+    hooks.int_sign = mock_int_sign;
+    support::fake_strings::wire(&mut hooks);
     unsafe {
         let _ = molt_cpython_abi::try_set_runtime_hooks(hooks);
     }
 }
 
 fn proxy(bits: u64) -> *mut PyObject {
-    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) }
+    unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) }
 }
 fn int_obj(v: i64) -> *mut PyObject {
     proxy(MoltObject::from_int(v).bits())
@@ -117,7 +128,7 @@ fn unpack(slice: *mut PyObject) -> (i32, isize, isize, isize) {
 
 #[test]
 fn unpack_float_bound_raises_typeerror() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = test_guard();
     install_hooks();
     clear_err();
     // slice(1.5) — CPython: TypeError from _PyEval_SliceIndex.
@@ -129,7 +140,7 @@ fn unpack_float_bound_raises_typeerror() {
          -1 bound and reported success"
     );
     assert!(err_pending(), "the -1 must carry the exception");
-    let msg = molt_cpython_abi::api::errors::take_current_error_message();
+    let msg = support::take_current_error_text();
     assert_eq!(
         msg.as_deref(),
         Some("slice indices must be integers or None or have an __index__ method"),
@@ -141,7 +152,7 @@ fn unpack_float_bound_raises_typeerror() {
 
 #[test]
 fn unpack_float_step_raises_typeerror_not_reverse_direction() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = test_guard();
     install_hooks();
     clear_err();
     // The ledger case: a non-index STEP flipped iteration direction via the
@@ -158,7 +169,7 @@ fn unpack_float_step_raises_typeerror_not_reverse_direction() {
 
 #[test]
 fn unpack_big_positive_stop_clamps_to_ssize_max() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = test_guard();
     install_hooks();
     clear_err();
     // The (i64::MAX, u64::MAX] band: > isize on every host → clamp MAX.
@@ -185,10 +196,10 @@ fn unpack_big_positive_stop_clamps_to_ssize_max() {
 
 #[test]
 fn unpack_huge_negative_start_clamps_to_ssize_min() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = test_guard();
     install_hooks();
     clear_err();
-    // Beyond -2^64: sign resolves through the runtime `>> 128` authority.
+    // Beyond -2^64: sign resolves through the direct runtime authority.
     let s = new_slice(
         proxy(HUGE_NEG_BITS.load(Ordering::SeqCst)),
         int_obj(3),
@@ -211,7 +222,7 @@ fn unpack_huge_negative_start_clamps_to_ssize_min() {
 
 #[test]
 fn unpack_zero_step_still_valueerror_and_defaults_hold() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = test_guard();
     install_hooks();
     clear_err();
     let s = new_slice(none(), none(), int_obj(0));
@@ -233,7 +244,7 @@ fn unpack_zero_step_still_valueerror_and_defaults_hold() {
 
 #[test]
 fn get_indices_ex_propagates_typeerror_for_bad_bound() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = test_guard();
     install_hooks();
     clear_err();
     let s = new_slice(float_obj(0.5), none(), none());
@@ -253,7 +264,7 @@ fn get_indices_ex_propagates_typeerror_for_bad_bound() {
 
 #[test]
 fn legacy_get_indices_rejects_out_of_range_and_non_long() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = test_guard();
     install_hooks();
     clear_err();
 

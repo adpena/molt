@@ -6,8 +6,8 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use std::ffi::{CStr, c_void};
-use std::os::raw::{c_char, c_int};
+use std::ffi::CStr;
+use std::os::raw::c_int;
 use std::ptr;
 
 use molt_cpython_abi::abi_types::{
@@ -16,15 +16,21 @@ use molt_cpython_abi::abi_types::{
     PyCFunctionFastWithKeywords, PyCFunctionWithKeywords, PyModule_Type, PyModuleDef,
     PyModuleDef_Type, PyObject, PyTypeObject,
 };
-use molt_cpython_abi::{MoltBufferView as AbiMoltBufferView, RuntimeHooks};
+use molt_cpython_abi::{
+    BorrowedHandleResult, EXCEPTION_SNAPSHOT_ARGS, EXCEPTION_SNAPSHOT_CAUSE,
+    EXCEPTION_SNAPSHOT_CONTEXT, EXCEPTION_SNAPSHOT_DICT, EXCEPTION_SNAPSHOT_NOTES,
+    EXCEPTION_SNAPSHOT_TRACEBACK, ExceptionSnapshot, MoltBufferView as AbiMoltBufferView,
+    OwnedHandleResult, RuntimeHooks,
+};
 use molt_obj_model::MoltObject;
-use num_bigint::BigInt;
+use num_bigint::{BigInt, Sign};
 use num_traits::ToPrimitive;
 
 use crate::builtins::containers::{dict_len, dict_order, list_len, tuple_len};
 use crate::builtins::numbers::{
-    INT_BYTES_INVALID, bigint_from_bytes, bigint_num_bits, bigint_to_bytes, int_bits_from_bigint,
-    int_bits_from_i64, int_bits_from_i128, to_bigint, to_i64,
+    INT_BYTES_INVALID, bigint_from_bytes, bigint_from_f64_trunc, bigint_num_bits,
+    bigint_ptr_from_bits, bigint_ref, bigint_to_bytes, int_bits_from_bigint, int_bits_from_i64,
+    int_bits_from_i128, to_bigint, to_i64,
 };
 use crate::concurrency::gil::with_gil;
 use crate::concurrency::{GilGuard, GilReleaseGuard, gil_owned_by_current_thread};
@@ -34,18 +40,19 @@ use crate::object::builders::{
 };
 use crate::object::layout::{
     function_set_call_target_ptr, function_set_dict_bits, function_set_trampoline_ptr,
-    module_dict_bits, seq_vec, seq_vec_ref,
+    module_dict_bits, seq_vec, seq_vec_ptr, seq_vec_ref,
 };
 use crate::object::ops::{
     dict_del_in_place, dict_get_in_place, dict_get_str_bytes_borrowed, dict_set_in_place,
 };
 use crate::object::type_ids::{
-    TYPE_ID_BIGINT, TYPE_ID_BYTES, TYPE_ID_DICT, TYPE_ID_LIST, TYPE_ID_LIST_BOOL, TYPE_ID_LIST_INT,
-    TYPE_ID_MODULE, TYPE_ID_SET, TYPE_ID_STRING, TYPE_ID_TUPLE,
+    TYPE_ID_BIGINT, TYPE_ID_BYTES, TYPE_ID_COMPLEX, TYPE_ID_DICT, TYPE_ID_FROZENSET, TYPE_ID_LIST,
+    TYPE_ID_LIST_BOOL, TYPE_ID_LIST_INT, TYPE_ID_MODULE, TYPE_ID_SET, TYPE_ID_STRING,
+    TYPE_ID_TUPLE,
 };
 use crate::object::{
-    HEADER_FLAG_FUNC_VARIADIC_TRAMPOLINE, MoltHeader, bytes_data, bytes_len, dec_ref_bits,
-    header_from_obj_ptr, inc_ref_bits, object_type_id, string_bytes, string_len,
+    HEADER_FLAG_FUNC_VARIADIC_TRAMPOLINE, bytes_data, bytes_len, dec_ref_bits, header_from_obj_ptr,
+    inc_ref_bits, object_type_id, string_bytes, string_len,
 };
 
 // ─── Hook implementations ─────────────────────────────────────────────────
@@ -57,6 +64,24 @@ fn abi_buffer_view_from_runtime(view: crate::MoltBufferView) -> AbiMoltBufferVie
 thread_local! {
     static ABI_GIL_ENSURE_GUARDS: std::cell::RefCell<Vec<GilGuard>> = const { std::cell::RefCell::new(Vec::new()) };
     static ABI_GIL_RELEASE_GUARDS: std::cell::RefCell<Vec<GilReleaseGuard>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[inline]
+fn owned_result_from_pending(bits: u64) -> OwnedHandleResult {
+    if with_gil(|_py| crate::exception_pending(&_py)) {
+        OwnedHandleResult::error()
+    } else if bits == 0 {
+        with_gil(|_py| {
+            let _ = crate::raise_exception::<u64>(
+                &_py,
+                "SystemError",
+                "runtime owned-result hook returned reserved zero without an exception",
+            );
+        });
+        OwnedHandleResult::error()
+    } else {
+        OwnedHandleResult::ok(bits)
+    }
 }
 
 unsafe extern "C" fn hook_gil_ensure() -> c_int {
@@ -219,6 +244,95 @@ unsafe extern "C" fn hook_int_from_bytes(
     with_gil(|_py| int_bits_from_bigint(&_py, value))
 }
 
+unsafe extern "C" fn hook_int_from_digits(
+    digits: *const u8,
+    len: usize,
+    base: u32,
+    negative: c_int,
+) -> u64 {
+    if digits.is_null() && len != 0 || !(2..=36).contains(&base) {
+        return 0;
+    }
+    let digits = if len == 0 {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(digits, len) }
+    };
+    let sign = if negative != 0 {
+        Sign::Minus
+    } else {
+        Sign::Plus
+    };
+    let Some(value) = BigInt::from_radix_be(sign, digits, base) else {
+        return 0;
+    };
+    with_gil(|_py| int_bits_from_bigint(&_py, value))
+}
+
+unsafe extern "C" fn hook_int_from_f64_trunc(value: f64) -> u64 {
+    if !value.is_finite() {
+        return 0;
+    }
+    with_gil(|_py| int_bits_from_bigint(&_py, bigint_from_f64_trunc(value)))
+}
+
+unsafe extern "C" fn hook_int_sign(bits: u64) -> c_int {
+    with_gil(|_py| {
+        let obj = MoltObject::from_bits(bits);
+        if let Some(value) = obj.as_int() {
+            return value.signum() as c_int;
+        }
+        if let Some(value) = obj.as_bool() {
+            return value as c_int;
+        }
+        bigint_ptr_from_bits(bits)
+            .map(|ptr| unsafe { bigint_ref(ptr) }.sign())
+            .map_or(0, |sign| match sign {
+                Sign::Minus => -1,
+                Sign::NoSign => 0,
+                Sign::Plus => 1,
+            })
+    })
+}
+
+unsafe extern "C" fn hook_int_signed_byte_width(bits: u64, out: *mut usize) -> c_int {
+    if out.is_null() {
+        return -1;
+    }
+    with_gil(|_py| {
+        let obj = MoltObject::from_bits(bits);
+        let width = if let Some(value) = obj.as_int() {
+            let significant = if value >= 0 {
+                65 - value.leading_zeros() as usize
+            } else {
+                65 - (!value).leading_zeros() as usize
+            };
+            significant.div_ceil(8)
+        } else if let Some(ptr) = bigint_ptr_from_bits(bits) {
+            let value = unsafe { bigint_ref(ptr) };
+            let bit_len = usize::try_from(value.bits()).unwrap_or(usize::MAX);
+            match value.sign() {
+                Sign::NoSign => 1,
+                Sign::Plus => bit_len.saturating_add(1).div_ceil(8).max(1),
+                Sign::Minus => {
+                    let exact_power = value.magnitude().trailing_zeros()
+                        == Some(value.magnitude().bits().saturating_sub(1));
+                    let base = bit_len.div_ceil(8).max(1);
+                    if bit_len % 8 == 0 && !exact_power {
+                        base.saturating_add(1)
+                    } else {
+                        base
+                    }
+                }
+            }
+        } else {
+            return -1;
+        };
+        unsafe { *out = width };
+        0
+    })
+}
+
 unsafe extern "C" fn hook_int_to_bytes(
     bits: u64,
     data: *mut u8,
@@ -230,13 +344,21 @@ unsafe extern "C" fn hook_int_to_bytes(
         return INT_BYTES_INVALID;
     }
     with_gil(|_py| {
-        let Some(value) = to_bigint(MoltObject::from_bits(bits)) else {
-            return INT_BYTES_INVALID;
-        };
         let out = if len == 0 {
             &mut [][..]
         } else {
             unsafe { std::slice::from_raw_parts_mut(data, len) }
+        };
+        if let Some(ptr) = bigint_ptr_from_bits(bits) {
+            return bigint_to_bytes(
+                unsafe { bigint_ref(ptr) },
+                out,
+                little_endian != 0,
+                signed != 0,
+            );
+        }
+        let Some(value) = to_bigint(MoltObject::from_bits(bits)) else {
+            return INT_BYTES_INVALID;
         };
         bigint_to_bytes(&value, out, little_endian != 0, signed != 0)
     })
@@ -247,10 +369,17 @@ unsafe extern "C" fn hook_int_num_bits(bits: u64, out: *mut usize) -> c_int {
         return -1;
     }
     with_gil(|_py| {
-        let Some(value) = to_bigint(MoltObject::from_bits(bits)) else {
-            return -1;
+        let inline;
+        let value = if let Some(ptr) = bigint_ptr_from_bits(bits) {
+            unsafe { bigint_ref(ptr) }
+        } else {
+            let Some(value) = to_bigint(MoltObject::from_bits(bits)) else {
+                return -1;
+            };
+            inline = value;
+            &inline
         };
-        let Some(num_bits) = bigint_num_bits(&value) else {
+        let Some(num_bits) = bigint_num_bits(value) else {
             return -1;
         };
         unsafe { *out = num_bits };
@@ -295,31 +424,46 @@ unsafe fn list_item_bits(ptr: *mut u8, i: usize) -> Option<u64> {
     }
 }
 
-unsafe fn list_bits_snapshot(ptr: *mut u8) -> Option<Vec<u64>> {
+unsafe fn list_bits_snapshot(_py: &crate::PyToken<'_>, ptr: *mut u8) -> Option<Vec<u64>> {
+    let len = match unsafe { object_type_id(ptr) } {
+        TYPE_ID_LIST => unsafe { seq_vec_ref(ptr) }.len(),
+        TYPE_ID_LIST_INT => unsafe { crate::object::layout::list_int_vec_ref(ptr) }.len(),
+        TYPE_ID_LIST_BOOL => unsafe { crate::object::layout::list_bool_vec_ref(ptr) }.len(),
+        _ => return None,
+    };
+    let mut out = Vec::new();
+    if out.try_reserve_exact(len).is_err() {
+        let _ = crate::raise_exception::<u64>(_py, "MemoryError", "list slice allocation failed");
+        return None;
+    }
     match unsafe { object_type_id(ptr) } {
-        TYPE_ID_LIST => Some(unsafe { seq_vec_ref(ptr) }.clone()),
-        TYPE_ID_LIST_INT => Some(
+        TYPE_ID_LIST => out.extend_from_slice(unsafe { seq_vec_ref(ptr) }),
+        TYPE_ID_LIST_INT => out.extend(
             unsafe { crate::object::layout::list_int_vec_ref(ptr) }
                 .iter()
                 .copied()
-                .map(|value| MoltObject::from_int(value).bits())
-                .collect(),
+                .map(|value| MoltObject::from_int(value).bits()),
         ),
-        TYPE_ID_LIST_BOOL => Some(
+        TYPE_ID_LIST_BOOL => out.extend(
             unsafe { crate::object::layout::list_bool_vec_ref(ptr) }
                 .iter()
                 .copied()
-                .map(|value| MoltObject::from_bool(value != 0).bits())
-                .collect(),
+                .map(|value| MoltObject::from_bool(value != 0).bits()),
         ),
-        _ => None,
+        _ => unreachable!(),
     }
+    Some(out)
 }
 
-unsafe extern "C" fn hook_list_append(list_bits: u64, item_bits: u64) {
+unsafe extern "C" fn hook_list_append(list_bits: u64, item_bits: u64) -> i32 {
     // Keep representation selection, promotion, allocation accounting, and
     // element refcounting in the runtime's single list-append authority.
     let _ = crate::molt_list_append(list_bits, item_bits);
+    if with_gil(|_py| crate::exception_pending(&_py)) {
+        -1
+    } else {
+        0
+    }
 }
 
 unsafe extern "C" fn hook_list_len(bits: u64) -> usize {
@@ -334,44 +478,43 @@ unsafe extern "C" fn hook_list_len(bits: u64) -> usize {
     unsafe { list_len(ptr) }
 }
 
-unsafe extern "C" fn hook_list_item(bits: u64, i: usize) -> u64 {
+unsafe extern "C" fn hook_list_item(bits: u64, i: usize) -> BorrowedHandleResult {
     let obj = MoltObject::from_bits(bits);
     let ptr = match obj.as_ptr() {
         Some(p) => p,
-        None => return 0,
+        None => return BorrowedHandleResult::missing(),
     };
-    unsafe { list_item_bits(ptr, i) }.unwrap_or(0)
+    unsafe { list_item_bits(ptr, i) }
+        .map(BorrowedHandleResult::ok)
+        .unwrap_or_else(BorrowedHandleResult::missing)
 }
 
 /// Indexed list store backing `PyList_SetItem`/`PyList_SET_ITEM`. Writes the
 /// previous occupant's bits into `*out_old` (so the ABI can release the CPython
 /// stolen-ref / `Py_SETREF` old reference) and returns 1 on success, 0 when `i`
 /// is out of range or the object is not a list. O(1), allocation-free.
-unsafe extern "C" fn hook_list_set(
-    list_bits: u64,
-    i: usize,
-    val_bits: u64,
-    out_old: *mut u64,
-) -> i32 {
+unsafe extern "C" fn hook_list_set(list_bits: u64, i: usize, val_bits: u64) -> OwnedHandleResult {
     let obj = MoltObject::from_bits(list_bits);
     let ptr = match obj.as_ptr() {
         Some(p) => p,
-        None => return 0,
+        None => return OwnedHandleResult::error(),
     };
     with_gil(|_py| {
         if !is_list_type_id(unsafe { object_type_id(ptr) }) {
-            return 0;
+            return OwnedHandleResult::error();
         }
         unsafe { crate::object::ops_list::promote_specialized_list_to_list(&_py, ptr) };
+        if unsafe { object_type_id(ptr) } != TYPE_ID_LIST {
+            return OwnedHandleResult::error();
+        }
         let v = unsafe { seq_vec(ptr) };
         if i >= v.len() {
-            return 0;
+            return OwnedHandleResult::error();
         }
-        if !out_old.is_null() {
-            unsafe { *out_old = v[i] };
-        }
+        inc_ref_bits(&_py, val_bits);
+        let old_bits = v[i];
         v[i] = val_bits;
-        1
+        OwnedHandleResult::ok(old_bits)
     })
 }
 
@@ -415,9 +558,20 @@ unsafe extern "C" fn hook_list_set_slice(
         } else {
             match MoltObject::from_bits(itemlist_bits).as_ptr() {
                 Some(ip) if unsafe { object_type_id(ip) } == TYPE_ID_TUPLE => {
-                    unsafe { seq_vec_ref(ip) }.clone()
+                    let source = unsafe { seq_vec_ref(ip) };
+                    let mut out = Vec::new();
+                    if out.try_reserve_exact(source.len()).is_err() {
+                        let _ = crate::raise_exception::<u64>(
+                            &_py,
+                            "MemoryError",
+                            "list slice allocation failed",
+                        );
+                        return -1;
+                    }
+                    out.extend_from_slice(source);
+                    out
                 }
-                Some(ip) => match unsafe { list_bits_snapshot(ip) } {
+                Some(ip) => match unsafe { list_bits_snapshot(&_py, ip) } {
                     Some(bits) => bits,
                     None => return -1,
                 },
@@ -425,11 +579,48 @@ unsafe extern "C" fn hook_list_set_slice(
             }
         };
         unsafe { crate::object::ops_list::promote_specialized_list_to_list(&_py, ptr) };
-        let v = unsafe { seq_vec(ptr) };
+        if unsafe { object_type_id(ptr) } != TYPE_ID_LIST {
+            return -1;
+        }
+        let vec_ptr = unsafe { seq_vec_ptr(ptr) };
+        let v = unsafe { &mut *vec_ptr };
         let n = v.len() as isize;
         let low = ilow.clamp(0, n) as usize;
         let high = ihigh.clamp(low as isize, n) as usize;
-        v.splice(low..high, replacement);
+        let removed_len = high - low;
+        let new_len = v.len() - removed_len + replacement.len();
+        if !unsafe {
+            crate::object::backing::tracked_vec_reserve_or_raise(
+                &_py,
+                vec_ptr,
+                new_len,
+                "list slice allocation failed",
+            )
+        } {
+            return -1;
+        }
+        let mut removed = Vec::new();
+        if removed.try_reserve_exact(removed_len).is_err() {
+            let _ =
+                crate::raise_exception::<u64>(&_py, "MemoryError", "list slice allocation failed");
+            return -1;
+        }
+        for &bits in &replacement {
+            inc_ref_bits(&_py, bits);
+        }
+        removed.extend(v.drain(low..high));
+        v.splice(low..low, replacement.iter().copied());
+        if replacement
+            .iter()
+            .any(|bits| crate::object::refcount_opt::is_heap_ref(*bits))
+        {
+            unsafe {
+                (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
+            }
+        }
+        for bits in removed {
+            dec_ref_bits(&_py, bits);
+        }
         0
     })
 }
@@ -445,30 +636,34 @@ unsafe extern "C" fn hook_alloc_tuple(n: usize) -> u64 {
     })
 }
 
-unsafe extern "C" fn hook_tuple_set(bits: u64, i: usize, val_bits: u64) {
+unsafe extern "C" fn hook_tuple_set(bits: u64, i: usize, val_bits: u64) -> OwnedHandleResult {
     let obj = MoltObject::from_bits(bits);
     let ptr = match obj.as_ptr() {
         Some(p) => p,
-        None => return,
+        None => return OwnedHandleResult::error(),
     };
     if unsafe { object_type_id(ptr) } != TYPE_ID_TUPLE {
-        return;
+        return OwnedHandleResult::error();
     }
-    let v = unsafe { seq_vec(ptr) };
-    if i < v.len() {
+    with_gil(|_py| {
+        let v = unsafe { seq_vec(ptr) };
+        let old_len = v.len();
+        let old_bits = if i < old_len {
+            v[i]
+        } else {
+            let Some(new_len) = i.checked_add(1) else {
+                return OwnedHandleResult::error();
+            };
+            if new_len > v.capacity() {
+                return OwnedHandleResult::error();
+            }
+            v.resize(new_len, MoltObject::none().bits());
+            MoltObject::none().bits()
+        };
+        inc_ref_bits(&_py, val_bits);
         v[i] = val_bits;
-        return;
-    }
-    // PyTuple_SetItem fills a pre-sized tuple. Refuse overflow and any growth
-    // that would reallocate beyond that fixed construction capacity.
-    let Some(new_len) = i.checked_add(1) else {
-        return;
-    };
-    if new_len > v.capacity() {
-        return;
-    }
-    v.resize(new_len, MoltObject::none().bits());
-    v[i] = val_bits;
+        OwnedHandleResult::ok(old_bits)
+    })
 }
 
 unsafe extern "C" fn hook_tuple_len(bits: u64) -> usize {
@@ -483,16 +678,20 @@ unsafe extern "C" fn hook_tuple_len(bits: u64) -> usize {
     unsafe { tuple_len(ptr) }
 }
 
-unsafe extern "C" fn hook_tuple_item(bits: u64, i: usize) -> u64 {
+unsafe extern "C" fn hook_tuple_item(bits: u64, i: usize) -> BorrowedHandleResult {
     let obj = MoltObject::from_bits(bits);
     let ptr = match obj.as_ptr() {
         Some(p) => p,
-        None => return 0,
+        None => return BorrowedHandleResult::missing(),
     };
     if unsafe { object_type_id(ptr) } != TYPE_ID_TUPLE {
-        return 0;
+        return BorrowedHandleResult::missing();
     }
-    unsafe { seq_vec_ref(ptr) }.get(i).copied().unwrap_or(0)
+    unsafe { seq_vec_ref(ptr) }
+        .get(i)
+        .copied()
+        .map(BorrowedHandleResult::ok)
+        .unwrap_or_else(BorrowedHandleResult::missing)
 }
 
 unsafe extern "C" fn hook_alloc_dict() -> u64 {
@@ -506,29 +705,38 @@ unsafe extern "C" fn hook_alloc_dict() -> u64 {
     })
 }
 
-unsafe extern "C" fn hook_dict_set(dict_bits: u64, key_bits: u64, val_bits: u64) {
+unsafe extern "C" fn hook_dict_set(dict_bits: u64, key_bits: u64, val_bits: u64) -> i32 {
     with_gil(|_py| {
         let obj = MoltObject::from_bits(dict_bits);
         let Some(ptr) = obj.as_ptr() else {
-            return;
+            return -1;
         };
         if unsafe { object_type_id(ptr) } != TYPE_ID_DICT {
-            return;
+            return -1;
         }
         unsafe { dict_set_in_place(&_py, ptr, key_bits, val_bits) };
-    });
+        if crate::exception_pending(&_py) {
+            -1
+        } else {
+            0
+        }
+    })
 }
 
-unsafe extern "C" fn hook_dict_get(dict_bits: u64, key_bits: u64) -> u64 {
+unsafe extern "C" fn hook_dict_get(dict_bits: u64, key_bits: u64) -> BorrowedHandleResult {
     with_gil(|_py| {
         let obj = MoltObject::from_bits(dict_bits);
         let Some(ptr) = obj.as_ptr() else {
-            return 0;
+            return BorrowedHandleResult::missing();
         };
         if unsafe { object_type_id(ptr) } != TYPE_ID_DICT {
-            return 0;
+            return BorrowedHandleResult::missing();
         }
-        unsafe { dict_get_in_place(&_py, ptr, key_bits).unwrap_or(0) }
+        match unsafe { dict_get_in_place(&_py, ptr, key_bits) } {
+            Some(bits) => BorrowedHandleResult::ok(bits),
+            None if crate::exception_pending(&_py) => BorrowedHandleResult::error(),
+            None => BorrowedHandleResult::missing(),
+        }
     })
 }
 
@@ -686,8 +894,9 @@ unsafe extern "C" fn hook_buffer_release(view: *mut AbiMoltBufferView) -> i32 {
     rc
 }
 
-unsafe extern "C" fn hook_object_get_attr(obj_bits: u64, name_bits: u64) -> u64 {
-    crate::builtins::attributes::molt_get_attr_name(obj_bits, name_bits)
+unsafe extern "C" fn hook_object_get_attr(obj_bits: u64, name_bits: u64) -> OwnedHandleResult {
+    let bits = crate::builtins::attributes::molt_get_attr_name(obj_bits, name_bits);
+    owned_result_from_pending(bits)
 }
 
 unsafe extern "C" fn hook_object_set_attr(obj_bits: u64, name_bits: u64, value_bits: u64) -> i32 {
@@ -705,13 +914,15 @@ unsafe extern "C" fn hook_object_set_attr(obj_bits: u64, name_bits: u64, value_b
 /// arguments (0 = none); `kwargs_bits` is a Molt dict handle (0 = none).
 /// Returns result handle bits, or 0 with the error left in the runtime
 /// pending-exception state (the ABI wrapper turns 0 into NULL-with-exception).
-unsafe extern "C" fn hook_object_call(callable_bits: u64, args_bits: u64, kwargs_bits: u64) -> u64 {
-    // Collect positional args + kwargs pairs up front. The caller (the C
-    // extension via the ABI wrapper) owns references to the tuple/dict and
-    // every element for the duration of the call, and the callargs builder
-    // takes its own references on push.
-    let mut pos: Vec<u64> = Vec::new();
-    if args_bits != 0 {
+unsafe extern "C" fn hook_object_call(
+    callable_bits: u64,
+    args_bits: u64,
+    kwargs_bits: u64,
+) -> OwnedHandleResult {
+    // The ingress tuple/dict stay borrowed and live for the duration of this
+    // hook. Iterate their storage directly: copying both into temporary Vecs
+    // made every bridge-managed call pay two avoidable hot-path allocations.
+    let (pos_ptr, pos_len) = if args_bits != 0 {
         let obj = MoltObject::from_bits(args_bits);
         let Some(ptr) = obj.as_ptr() else {
             return object_call_type_error("PyObject_Call args must be a tuple");
@@ -719,10 +930,12 @@ unsafe extern "C" fn hook_object_call(callable_bits: u64, args_bits: u64, kwargs
         if unsafe { object_type_id(ptr) } != TYPE_ID_TUPLE {
             return object_call_type_error("PyObject_Call args must be a tuple");
         }
-        pos.extend_from_slice(unsafe { seq_vec_ref(ptr) });
-    }
-    let mut kws: Vec<(u64, u64)> = Vec::new();
-    if kwargs_bits != 0 {
+        let pos = unsafe { seq_vec_ref(ptr) };
+        (pos.as_ptr(), pos.len())
+    } else {
+        (std::ptr::null(), 0)
+    };
+    let (kw_order_ptr, kw_order_len) = if kwargs_bits != 0 {
         let obj = MoltObject::from_bits(kwargs_bits);
         let Some(ptr) = obj.as_ptr() else {
             return object_call_type_error("PyObject_Call kwargs must be a dict");
@@ -730,33 +943,64 @@ unsafe extern "C" fn hook_object_call(callable_bits: u64, args_bits: u64, kwargs
         if unsafe { object_type_id(ptr) } != TYPE_ID_DICT {
             return object_call_type_error("PyObject_Call kwargs must be a dict");
         }
-        for chunk in unsafe { dict_order(ptr) }.chunks(2) {
-            if chunk.len() == 2 {
-                kws.push((chunk[0], chunk[1]));
-            }
+        let order = unsafe { dict_order(ptr) };
+        if order.len() % 2 != 0 {
+            return object_call_type_error("PyObject_Call kwargs dict has malformed order storage");
         }
-    }
-    let builder_bits = crate::molt_callargs_new(pos.len() as u64, kws.len() as u64);
+        (order.as_ptr(), order.len())
+    } else {
+        (std::ptr::null(), 0)
+    };
+    let builder_bits = crate::molt_callargs_new(pos_len as u64, (kw_order_len / 2) as u64);
     if builder_bits == 0 {
-        return 0;
+        return OwnedHandleResult::error();
     }
-    for &arg in &pos {
+    let release_builder = || {
+        with_gil(|_py| crate::dec_ref_bits(&_py, builder_bits));
+    };
+    let pos = if pos_len == 0 {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(pos_ptr, pos_len) }
+    };
+    for &arg in pos {
         let _ = unsafe { crate::molt_callargs_push_pos(builder_bits, arg) };
         if with_gil(|_py| crate::exception_pending(&_py)) {
-            return 0;
+            release_builder();
+            return OwnedHandleResult::error();
         }
     }
-    for &(name, value) in &kws {
-        let _ = unsafe { crate::molt_callargs_push_kw(builder_bits, name, value) };
+    let kw_order = if kw_order_len == 0 {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(kw_order_ptr, kw_order_len) }
+    };
+    for pair in kw_order.chunks_exact(2) {
+        let _ = unsafe { crate::molt_callargs_push_kw(builder_bits, pair[0], pair[1]) };
         if with_gil(|_py| crate::exception_pending(&_py)) {
-            return 0;
+            release_builder();
+            return OwnedHandleResult::error();
         }
     }
+    // `molt_call_bind` takes builder custody immediately via PtrDropGuard and
+    // destroys it on every return. Only failures before this call use the
+    // explicit release closure above.
     let result = crate::molt_call_bind(callable_bits, builder_bits);
     if with_gil(|_py| crate::exception_pending(&_py)) {
-        return 0;
+        with_gil(|_py| crate::dec_ref_bits(&_py, result));
+        return OwnedHandleResult::error();
     }
-    result
+    if result == 0 {
+        with_gil(|_py| {
+            let _ = crate::raise_exception::<u64>(
+                &_py,
+                "SystemError",
+                "runtime call authority returned reserved zero without an exception",
+            );
+        });
+        return OwnedHandleResult::error();
+    }
+    OwnedHandleResult::ok(result)
 }
 
 /// Allocate a `TYPE_ID_FOREIGN` wrapper around a genuine C-extension `PyObject*`
@@ -768,15 +1012,16 @@ unsafe extern "C" fn hook_foreign_new(c_ptr: usize) -> u64 {
 
 /// Raise a `TypeError` for a malformed `hook_object_call` argument shape and
 /// return the hook's error sentinel (0).
-fn object_call_type_error(message: &str) -> u64 {
+fn object_call_type_error(message: &str) -> OwnedHandleResult {
     with_gil(|_py| {
         let _ = crate::raise_exception::<u64>(&_py, "TypeError", message);
     });
-    0
+    OwnedHandleResult::error()
 }
 
-unsafe extern "C" fn hook_object_format(obj_bits: u64, spec_bits: u64) -> u64 {
-    crate::molt_format_builtin(obj_bits, spec_bits)
+unsafe extern "C" fn hook_object_format(obj_bits: u64, spec_bits: u64) -> OwnedHandleResult {
+    let bits = crate::molt_format_builtin(obj_bits, spec_bits);
+    owned_result_from_pending(bits)
 }
 
 /// Route the ABI's `repr(float)` / `str(float)` through the runtime's single
@@ -804,7 +1049,7 @@ fn clear_speculative_sys_lookup_exception(had_pending_exception: bool) {
 /// payload dict), so ABI consumers read the module attribute rather than a
 /// duplicate raw-intrinsic lane. Returns 0 when the compiled program does not
 /// link the `sys` module or the attribute is absent.
-fn sys_module_attr_borrowed(attr: &[u8]) -> u64 {
+fn sys_module_attr_borrowed(attr: &[u8]) -> BorrowedHandleResult {
     let had_pending_exception = with_gil(|_py| crate::exception_pending(&_py));
     // Cache-first: PySys_GetObject is called from extension init code that
     // may already be inside the import machinery; re-entering a full import
@@ -833,7 +1078,7 @@ fn sys_module_attr_borrowed(attr: &[u8]) -> u64 {
     }
     if MoltObject::from_bits(module_bits).as_ptr().is_none() {
         clear_speculative_sys_lookup_exception(had_pending_exception);
-        return 0;
+        return BorrowedHandleResult::missing();
     }
     let out = with_gil(|_py| unsafe {
         let module_obj = MoltObject::from_bits(module_bits);
@@ -884,19 +1129,73 @@ fn sys_module_attr_borrowed(attr: &[u8]) -> u64 {
     if out == 0 {
         clear_speculative_sys_lookup_exception(had_pending_exception);
     }
-    out
+    if out == 0 {
+        BorrowedHandleResult::missing()
+    } else {
+        BorrowedHandleResult::ok(out)
+    }
 }
 
-unsafe extern "C" fn hook_sys_get_object_borrowed(name_data: *const u8, name_len: usize) -> u64 {
+unsafe extern "C" fn hook_sys_get_object_borrowed(
+    name_data: *const u8,
+    name_len: usize,
+) -> BorrowedHandleResult {
     if name_data.is_null() {
-        return 0;
+        return BorrowedHandleResult::missing();
     }
     let name = match std::str::from_utf8(unsafe { std::slice::from_raw_parts(name_data, name_len) })
     {
         Ok(name) => name,
-        Err(_) => return 0,
+        Err(_) => return BorrowedHandleResult::missing(),
     };
     sys_module_attr_borrowed(name.as_bytes())
+}
+
+unsafe extern "C" fn hook_eval_get_builtins_borrowed() -> BorrowedHandleResult {
+    with_gil(|_py| {
+        let as_builtins_dict = |bits: u64| -> Option<u64> {
+            let ptr = crate::obj_from_bits(bits).as_ptr()?;
+            match unsafe { object_type_id(ptr) } {
+                TYPE_ID_DICT => Some(bits),
+                TYPE_ID_MODULE => {
+                    let dict_bits = unsafe { module_dict_bits(ptr) };
+                    crate::obj_from_bits(dict_bits)
+                        .as_ptr()
+                        .is_some_and(|dict_ptr| unsafe { object_type_id(dict_ptr) } == TYPE_ID_DICT)
+                        .then_some(dict_bits)
+                }
+                _ => None,
+            }
+        };
+        let frame_builtins = crate::frame_stack_active_builtins_bits();
+        if frame_builtins != 0 {
+            return as_builtins_dict(frame_builtins).map_or_else(
+                || {
+                    let _ = crate::raise_exception::<u64>(
+                        &_py,
+                        "SystemError",
+                        "active frame has an invalid builtins dictionary",
+                    );
+                    BorrowedHandleResult::error()
+                },
+                BorrowedHandleResult::ok,
+            );
+        }
+        let builtins_bits = {
+            let cache = crate::builtins::exceptions::internals::module_cache(&_py);
+            cache.lock().unwrap().get("builtins").copied()
+        };
+        if let Some(dict_bits) = builtins_bits.and_then(as_builtins_dict) {
+            BorrowedHandleResult::ok(dict_bits)
+        } else {
+            let _ = crate::raise_exception::<u64>(
+                &_py,
+                "SystemError",
+                "interpreter builtins dictionary is unavailable",
+            );
+            BorrowedHandleResult::error()
+        }
+    })
 }
 
 unsafe extern "C" fn hook_classify_heap(bits: u64) -> u8 {
@@ -909,27 +1208,91 @@ unsafe extern "C" fn hook_classify_heap(bits: u64) -> u8 {
         TYPE_ID_STRING => MoltTypeTag::Str as u8,
         TYPE_ID_BYTES => MoltTypeTag::Bytes as u8,
         TYPE_ID_BIGINT => MoltTypeTag::Int as u8,
+        TYPE_ID_COMPLEX => MoltTypeTag::Complex as u8,
         TYPE_ID_LIST | TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL => MoltTypeTag::List as u8,
         TYPE_ID_TUPLE => MoltTypeTag::Tuple as u8,
         TYPE_ID_DICT => MoltTypeTag::Dict as u8,
         TYPE_ID_SET => MoltTypeTag::Set as u8,
+        TYPE_ID_FROZENSET => MoltTypeTag::FrozenSet as u8,
+        crate::TYPE_ID_TYPE => MoltTypeTag::Type as u8,
         TYPE_ID_MODULE => MoltTypeTag::Module as u8,
+        crate::TYPE_ID_EXCEPTION => MoltTypeTag::Exception as u8,
+        crate::TYPE_ID_OBJECT
+            if with_gil(|_py| {
+                (unsafe { crate::object_class_bits(ptr) }) == crate::builtin_classes(&_py).traceback
+            }) =>
+        {
+            MoltTypeTag::Traceback as u8
+        }
         _ => MoltTypeTag::Other as u8,
     }
 }
 
-unsafe extern "C" fn hook_inc_ref(bits: u64) {
-    let obj = MoltObject::from_bits(bits);
-    if let Some(ptr) = obj.as_ptr() {
-        let hdr = ptr as *mut MoltHeader;
-        if !hdr.is_null() {
-            unsafe { (*hdr).ref_count.fetch_add(1, Ordering::Relaxed) };
+unsafe extern "C" fn hook_object_hash(bits: u64) -> i64 {
+    with_gil(|_py| {
+        let hash = crate::object::ops::hash_bits_signed(&_py, bits);
+        if crate::exception_pending(&_py) {
+            -1
+        } else if hash == -1 {
+            -2
+        } else {
+            hash
         }
+    })
+}
+
+unsafe extern "C" fn hook_complex_parts(bits: u64, real: *mut f64, imag: *mut f64) -> c_int {
+    if real.is_null() || imag.is_null() {
+        return -1;
     }
+    let Some(ptr) = crate::builtins::numbers::complex_ptr_from_bits(bits) else {
+        return -1;
+    };
+    let value = unsafe { *crate::builtins::numbers::complex_ref(ptr) };
+    unsafe {
+        *real = value.re;
+        *imag = value.im;
+    }
+    0
+}
+
+unsafe extern "C" fn hook_complex_from_doubles(real: f64, imag: f64) -> OwnedHandleResult {
+    let bits = with_gil(|_py| crate::builtins::numbers::complex_bits(&_py, real, imag));
+    owned_result_from_pending(bits)
+}
+
+unsafe extern "C" fn hook_inc_ref(bits: u64) {
+    with_gil(|_py| inc_ref_bits(&_py, bits));
 }
 
 unsafe extern "C" fn hook_dec_ref(bits: u64) {
     with_gil(|_py| dec_ref_bits(&_py, bits));
+}
+
+unsafe extern "C" fn hook_ref_count(bits: u64) -> usize {
+    MoltObject::from_bits(bits).as_ptr().map_or(0, |ptr| {
+        let header = unsafe { header_from_obj_ptr(ptr) };
+        unsafe { (*header).ref_count.load(Ordering::Acquire) as usize }
+    })
+}
+
+unsafe extern "C" fn hook_try_mark_abi_view(bits: u64, present: c_int) -> c_int {
+    crate::gil_assert();
+    let Some(ptr) = MoltObject::from_bits(bits).as_ptr() else {
+        return 1;
+    };
+    let header = unsafe { header_from_obj_ptr(ptr) };
+    unsafe {
+        if present != 0 {
+            if ((*header).flags & crate::object::HEADER_FLAG_DEALLOCATING) != 0 {
+                return 0;
+            }
+            (*header).flags |= crate::object::HEADER_FLAG_HAS_ABI_VIEW;
+        } else {
+            (*header).flags &= !crate::object::HEADER_FLAG_HAS_ABI_VIEW;
+        }
+    }
+    1
 }
 
 // ─── Module / C-extension support ────────────────────────────────────────
@@ -985,6 +1348,112 @@ unsafe extern "C" fn hook_exception_pending() -> std::os::raw::c_int {
     with_gil(|_py| crate::exception_pending(&_py) as std::os::raw::c_int)
 }
 
+unsafe extern "C" fn hook_report_unraisable(
+    context_bits: u64,
+    type_bits: u64,
+    value_bits: u64,
+    traceback_bits: u64,
+    message: *const u8,
+    message_len: usize,
+    err_msg: *const u8,
+    err_msg_len: usize,
+    has_err_msg: c_int,
+) {
+    let message = if message.is_null() {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(message, message_len) }
+    };
+    let err_msg = if has_err_msg != 0 {
+        if err_msg.is_null() {
+            Some("")
+        } else {
+            std::str::from_utf8(unsafe { std::slice::from_raw_parts(err_msg, err_msg_len) }).ok()
+        }
+    } else {
+        None
+    };
+    let fallback = || {
+        let text = std::str::from_utf8(message).unwrap_or("<non-UTF-8 C API exception>");
+        eprintln!(
+            "Exception ignored in C API callback (type=0x{type_bits:x}, context=0x{context_bits:x}): {text}"
+        );
+    };
+    with_gil(|_py| {
+        let owned_message_bits = if crate::obj_from_bits(value_bits).is_none() {
+            let msg_ptr = crate::alloc_string(&_py, message);
+            if msg_ptr.is_null() {
+                fallback();
+                return;
+            }
+            Some(MoltObject::from_ptr(msg_ptr).bits())
+        } else {
+            None
+        };
+        let payload_bits = owned_message_bits.unwrap_or(value_bits);
+        if let Some(value_ptr) = crate::obj_from_bits(value_bits).as_ptr()
+            && unsafe { crate::object_type_id(value_ptr) } == crate::TYPE_ID_EXCEPTION
+        {
+            if !crate::obj_from_bits(traceback_bits).is_none() {
+                let attached = crate::builtins::exceptions::molt_exception_with_traceback(
+                    value_bits,
+                    traceback_bits,
+                );
+                if !crate::obj_from_bits(attached).is_none() {
+                    crate::dec_ref_bits(&_py, attached);
+                }
+            }
+            crate::builtins::exceptions::report_captured_unraisable(
+                &_py,
+                context_bits,
+                value_bits,
+                err_msg,
+            );
+            return;
+        }
+        let args_ptr = crate::alloc_tuple(&_py, &[payload_bits]);
+        if args_ptr.is_null() {
+            if let Some(bits) = owned_message_bits {
+                crate::dec_ref_bits(&_py, bits);
+            }
+            fallback();
+            return;
+        }
+        let args_bits = MoltObject::from_ptr(args_ptr).bits();
+        let class_bits = if crate::obj_from_bits(type_bits).as_ptr().is_some() {
+            type_bits
+        } else {
+            crate::exception_type_bits_from_name(&_py, "RuntimeError")
+        };
+        let exc_ptr = crate::alloc_exception_from_class_bits(&_py, class_bits, args_bits);
+        crate::dec_ref_bits(&_py, args_bits);
+        if let Some(bits) = owned_message_bits {
+            crate::dec_ref_bits(&_py, bits);
+        }
+        if exc_ptr.is_null() {
+            fallback();
+            return;
+        }
+        let exc_bits = MoltObject::from_ptr(exc_ptr).bits();
+        if !crate::obj_from_bits(traceback_bits).is_none() {
+            let attached = crate::builtins::exceptions::molt_exception_with_traceback(
+                exc_bits,
+                traceback_bits,
+            );
+            if !crate::obj_from_bits(attached).is_none() {
+                crate::dec_ref_bits(&_py, attached);
+            }
+        }
+        crate::builtins::exceptions::report_captured_unraisable(
+            &_py,
+            context_bits,
+            exc_bits,
+            err_msg,
+        );
+        crate::dec_ref_bits(&_py, exc_bits);
+    });
+}
+
 // ── Numeric protocol (PyNumber_*) ─────────────────────────────────────────
 //
 // The single numeric authority is the runtime's `PyNumber_*` compat functions
@@ -994,10 +1463,438 @@ unsafe extern "C" fn hook_exception_pending() -> std::os::raw::c_int {
 // `0` with a pending runtime exception on error. These hooks are a thin routing
 // layer; they perform NO arithmetic themselves.
 
+fn runtime_exception_field(field: u32) -> Option<crate::builtins::exceptions::ExceptionFieldSlot> {
+    use crate::builtins::exceptions::ExceptionFieldSlot;
+    use molt_cpython_abi::ExceptionField;
+    match field {
+        value if value == ExceptionField::Cause as u32 => Some(ExceptionFieldSlot::Cause),
+        value if value == ExceptionField::Context as u32 => Some(ExceptionFieldSlot::Context),
+        value if value == ExceptionField::Traceback as u32 => Some(ExceptionFieldSlot::Traceback),
+        value if value == ExceptionField::Args as u32 => Some(ExceptionFieldSlot::Args),
+        _ => None,
+    }
+}
+
+/// Canonical exception normalization for the C error indicator. The ABI has
+/// already shaped `_PyErr_CreateException`'s args tuple; invoke the requested
+/// managed class through the same call/bind authority as ordinary Python so
+/// custom `__new__`/`__init__` and constructor validation remain authoritative.
+unsafe extern "C" fn hook_normalize_exception(
+    requested_class_bits: u64,
+    args_bits: u64,
+    value_bits: u64,
+    has_value: c_int,
+    traceback_bits: u64,
+    has_traceback: c_int,
+    out_actual_class_bits: *mut u64,
+) -> OwnedHandleResult {
+    if out_actual_class_bits.is_null() {
+        return OwnedHandleResult::error();
+    }
+    let valid_class = with_gil(|_py| {
+        let Some(class_ptr) = crate::obj_from_bits(requested_class_bits).as_ptr() else {
+            return false;
+        };
+        (unsafe { crate::object_type_id(class_ptr) }) == crate::TYPE_ID_TYPE
+            && crate::issubclass_bits(
+                requested_class_bits,
+                crate::builtin_classes(&_py).base_exception,
+            )
+    });
+    if !valid_class {
+        with_gil(|_py| {
+            let _ = crate::raise_exception::<u64>(
+                &_py,
+                "TypeError",
+                "exceptions must derive from BaseException",
+            );
+        });
+        return OwnedHandleResult::error();
+    }
+    let existing_exception_bits = with_gil(|_py| {
+        if has_value == 0 {
+            return None;
+        }
+        let value_ptr = crate::obj_from_bits(value_bits).as_ptr()?;
+        if unsafe { crate::object_type_id(value_ptr) } != crate::TYPE_ID_EXCEPTION {
+            return None;
+        }
+        let actual_class_bits = unsafe { crate::object_class_bits(value_ptr) };
+        crate::issubclass_bits(actual_class_bits, requested_class_bits).then_some(value_bits)
+    });
+    let exception_bits = if let Some(existing_bits) = existing_exception_bits {
+        with_gil(|_py| crate::inc_ref_bits(&_py, existing_bits));
+        existing_bits
+    } else {
+        let result = unsafe { hook_object_call(requested_class_bits, args_bits, 0) };
+        let molt_cpython_abi::hooks::DecodedHandleResult::Ok(bits) = result.decode() else {
+            return OwnedHandleResult::error();
+        };
+        bits
+    };
+    with_gil(|_py| {
+        let Some(exception_ptr) = crate::obj_from_bits(exception_bits).as_ptr() else {
+            return OwnedHandleResult::error();
+        };
+        if unsafe { crate::object_type_id(exception_ptr) } != crate::TYPE_ID_EXCEPTION {
+            crate::dec_ref_bits(&_py, exception_bits);
+            let _ = crate::raise_exception::<u64>(
+                &_py,
+                "TypeError",
+                "calling an exception class did not return a BaseException instance",
+            );
+            return OwnedHandleResult::error();
+        }
+        if has_traceback != 0
+            && crate::builtins::exceptions::exception_replace_field_bits(
+                &_py,
+                exception_bits,
+                crate::builtins::exceptions::ExceptionFieldSlot::Traceback,
+                traceback_bits,
+            )
+            .is_err()
+        {
+            crate::dec_ref_bits(&_py, exception_bits);
+            return OwnedHandleResult::error();
+        }
+        // `_PyErr_SetObject` implicitly chains from the interpreter's active
+        // handled exception, not from a parallel ABI-local guess. Preserve a
+        // context explicitly supplied by a custom constructor and avoid a
+        // self-cycle when an existing matching instance is restored.
+        if crate::obj_from_bits(unsafe { crate::exception_context_bits(exception_ptr) }).is_none()
+            && let Some(context_bits) = crate::builtins::exceptions::exception_context_active_bits()
+            && context_bits != exception_bits
+            && crate::builtins::exceptions::exception_replace_field_bits(
+                &_py,
+                exception_bits,
+                crate::builtins::exceptions::ExceptionFieldSlot::Context,
+                context_bits,
+            )
+            .is_err()
+        {
+            crate::dec_ref_bits(&_py, exception_bits);
+            return OwnedHandleResult::error();
+        }
+        let actual_class_bits = unsafe { crate::object_class_bits(exception_ptr) };
+        if actual_class_bits == 0 {
+            crate::dec_ref_bits(&_py, exception_bits);
+            return OwnedHandleResult::error();
+        }
+        unsafe {
+            *out_actual_class_bits = actual_class_bits;
+        }
+        OwnedHandleResult::ok(exception_bits)
+    })
+}
+
+unsafe extern "C" fn hook_exception_set_field(
+    exception_bits: u64,
+    field: u32,
+    value_bits: u64,
+    has_value: c_int,
+) -> c_int {
+    with_gil(|_py| {
+        let Some(field) = runtime_exception_field(field) else {
+            return -1;
+        };
+        let value_bits = if has_value == 0 {
+            MoltObject::none().bits()
+        } else {
+            value_bits
+        };
+        crate::builtins::exceptions::exception_replace_field_bits(
+            &_py,
+            exception_bits,
+            field,
+            value_bits,
+        )
+        .map_or(-1, |()| 0)
+    })
+}
+
+unsafe extern "C" fn hook_exception_get_field(
+    exception_bits: u64,
+    field: u32,
+) -> OwnedHandleResult {
+    with_gil(|_py| {
+        let Some(field) = runtime_exception_field(field) else {
+            return OwnedHandleResult::error();
+        };
+        let Some(exception_ptr) = crate::obj_from_bits(exception_bits).as_ptr() else {
+            return OwnedHandleResult::error();
+        };
+        if unsafe { crate::object_type_id(exception_ptr) } != crate::TYPE_ID_EXCEPTION {
+            return OwnedHandleResult::error();
+        }
+        let value_bits = match field {
+            crate::builtins::exceptions::ExceptionFieldSlot::Cause => unsafe {
+                crate::exception_cause_bits(exception_ptr)
+            },
+            crate::builtins::exceptions::ExceptionFieldSlot::Context => unsafe {
+                crate::exception_context_bits(exception_ptr)
+            },
+            crate::builtins::exceptions::ExceptionFieldSlot::Traceback => {
+                crate::exception_materialize_traceback_bits(&_py, exception_ptr)
+            }
+            crate::builtins::exceptions::ExceptionFieldSlot::Args => {
+                crate::exception_materialized_args_bits(&_py, exception_ptr)
+            }
+            crate::builtins::exceptions::ExceptionFieldSlot::Dict => unsafe {
+                crate::exception_dict_bits(exception_ptr)
+            },
+            crate::builtins::exceptions::ExceptionFieldSlot::Notes => unsafe {
+                crate::exception_notes_bits(exception_ptr)
+            },
+        };
+        if crate::exception_pending(&_py) {
+            return OwnedHandleResult::error();
+        }
+        if !matches!(field, crate::builtins::exceptions::ExceptionFieldSlot::Args)
+            && crate::obj_from_bits(value_bits).is_none()
+        {
+            return OwnedHandleResult::missing();
+        }
+        if crate::obj_from_bits(value_bits).is_none() {
+            return OwnedHandleResult::error();
+        }
+        crate::inc_ref_bits(&_py, value_bits);
+        OwnedHandleResult::ok(value_bits)
+    })
+}
+
+unsafe extern "C" fn hook_exception_class_borrowed(exception_bits: u64) -> BorrowedHandleResult {
+    with_gil(|_py| {
+        let Some(exception_ptr) = crate::obj_from_bits(exception_bits).as_ptr() else {
+            return BorrowedHandleResult::error();
+        };
+        if unsafe { crate::object_type_id(exception_ptr) } != crate::TYPE_ID_EXCEPTION {
+            return BorrowedHandleResult::error();
+        }
+        let class_bits = unsafe { crate::object_class_bits(exception_ptr) };
+        if class_bits == 0 {
+            BorrowedHandleResult::error()
+        } else {
+            BorrowedHandleResult::ok(class_bits)
+        }
+    })
+}
+
+unsafe extern "C" fn hook_exception_snapshot(
+    exception_bits: u64,
+    out: *mut ExceptionSnapshot,
+) -> c_int {
+    if out.is_null() {
+        return -1;
+    }
+    unsafe { out.write(ExceptionSnapshot::default()) };
+    with_gil(|_py| {
+        let Some(exception_ptr) = crate::obj_from_bits(exception_bits).as_ptr() else {
+            return -1;
+        };
+        if unsafe { crate::object_type_id(exception_ptr) } != crate::TYPE_ID_EXCEPTION {
+            return -1;
+        }
+        let args = crate::exception_materialized_args_bits(&_py, exception_ptr);
+        let traceback = crate::exception_materialize_traceback_bits(&_py, exception_ptr);
+        if crate::exception_pending(&_py) || crate::obj_from_bits(args).is_none() {
+            return -1;
+        }
+        let dict = unsafe { crate::exception_dict_bits(exception_ptr) };
+        let notes = unsafe { crate::exception_notes_bits(exception_ptr) };
+        let context = unsafe { crate::exception_context_bits(exception_ptr) };
+        let cause = unsafe { crate::exception_cause_bits(exception_ptr) };
+        let suppress =
+            crate::obj_from_bits(unsafe { crate::exception_suppress_bits(exception_ptr) })
+                .as_bool()
+                .unwrap_or(false);
+        let mut snapshot = ExceptionSnapshot {
+            present_mask: EXCEPTION_SNAPSHOT_ARGS,
+            suppress_context: u32::from(suppress),
+            args,
+            ..ExceptionSnapshot::default()
+        };
+        for (mask, bits, slot) in [
+            (EXCEPTION_SNAPSHOT_DICT, dict, &raw mut snapshot.dict),
+            (EXCEPTION_SNAPSHOT_NOTES, notes, &raw mut snapshot.notes),
+            (
+                EXCEPTION_SNAPSHOT_TRACEBACK,
+                traceback,
+                &raw mut snapshot.traceback,
+            ),
+            (
+                EXCEPTION_SNAPSHOT_CONTEXT,
+                context,
+                &raw mut snapshot.context,
+            ),
+            (EXCEPTION_SNAPSHOT_CAUSE, cause, &raw mut snapshot.cause),
+        ] {
+            if !crate::obj_from_bits(bits).is_none() {
+                snapshot.present_mask |= mask;
+                unsafe { *slot = bits };
+            }
+        }
+        for bits in [
+            snapshot.dict,
+            snapshot.args,
+            snapshot.notes,
+            snapshot.traceback,
+            snapshot.context,
+            snapshot.cause,
+        ] {
+            if bits != 0 {
+                inc_ref_bits(&_py, bits);
+            }
+        }
+        unsafe { out.write(snapshot) };
+        0
+    })
+}
+
+unsafe extern "C" fn hook_exception_commit_snapshot(
+    exception_bits: u64,
+    snapshot: *const ExceptionSnapshot,
+) -> c_int {
+    if snapshot.is_null() {
+        return -1;
+    }
+    let snapshot = unsafe { *snapshot };
+    let known_mask = EXCEPTION_SNAPSHOT_DICT
+        | EXCEPTION_SNAPSHOT_ARGS
+        | EXCEPTION_SNAPSHOT_NOTES
+        | EXCEPTION_SNAPSHOT_TRACEBACK
+        | EXCEPTION_SNAPSHOT_CONTEXT
+        | EXCEPTION_SNAPSHOT_CAUSE;
+    if snapshot.present_mask & !known_mask != 0
+        || snapshot.present_mask & EXCEPTION_SNAPSHOT_ARGS == 0
+        || snapshot.suppress_context > 1
+    {
+        return -1;
+    }
+    let field = |mask: u32, bits: u64| -> Option<u64> {
+        if snapshot.present_mask & mask == 0 {
+            (bits == 0).then_some(MoltObject::none().bits())
+        } else {
+            (bits != 0 && !crate::obj_from_bits(bits).is_none()).then_some(bits)
+        }
+    };
+    let Some(dict) = field(EXCEPTION_SNAPSHOT_DICT, snapshot.dict) else {
+        return -1;
+    };
+    let Some(args) = field(EXCEPTION_SNAPSHOT_ARGS, snapshot.args) else {
+        return -1;
+    };
+    let Some(notes) = field(EXCEPTION_SNAPSHOT_NOTES, snapshot.notes) else {
+        return -1;
+    };
+    let Some(traceback) = field(EXCEPTION_SNAPSHOT_TRACEBACK, snapshot.traceback) else {
+        return -1;
+    };
+    let Some(context) = field(EXCEPTION_SNAPSHOT_CONTEXT, snapshot.context) else {
+        return -1;
+    };
+    let Some(cause) = field(EXCEPTION_SNAPSHOT_CAUSE, snapshot.cause) else {
+        return -1;
+    };
+    with_gil(|_py| {
+        let Some(exception_ptr) = crate::obj_from_bits(exception_bits).as_ptr() else {
+            return -1;
+        };
+        if unsafe { crate::object_type_id(exception_ptr) } != crate::TYPE_ID_EXCEPTION {
+            return -1;
+        }
+        let valid_args = crate::obj_from_bits(args)
+            .as_ptr()
+            .is_some_and(|ptr| unsafe { crate::object_type_id(ptr) } == TYPE_ID_TUPLE);
+        let valid_dict = crate::obj_from_bits(dict).is_none()
+            || crate::obj_from_bits(dict)
+                .as_ptr()
+                .is_some_and(|ptr| unsafe { crate::object_type_id(ptr) } == TYPE_ID_DICT);
+        let valid_chain = |bits: u64| {
+            crate::obj_from_bits(bits).is_none()
+                || crate::obj_from_bits(bits)
+                    .as_ptr()
+                    .is_some_and(|ptr| unsafe {
+                        crate::object_type_id(ptr) == crate::TYPE_ID_EXCEPTION
+                    })
+        };
+        let valid_traceback = crate::obj_from_bits(traceback).is_none()
+            || (crate::builtin_classes(&_py).traceback != 0
+                && crate::isinstance_bits(&_py, traceback, crate::builtin_classes(&_py).traceback));
+        if !valid_args
+            || !valid_dict
+            || !valid_chain(context)
+            || !valid_chain(cause)
+            || !valid_traceback
+        {
+            return -1;
+        }
+        // Nothing below this point can fail. Pin all new edges, publish every
+        // public field as one GIL-serialized transaction, then release the old
+        // graph. A rejected snapshot leaves the exception byte-for-byte intact.
+        unsafe {
+            crate::builtins::exceptions::exception_commit_snapshot_unchecked(
+                &_py,
+                exception_ptr,
+                [dict, args, notes, traceback, context, cause],
+                snapshot.suppress_context != 0,
+            )
+        };
+        0
+    })
+}
+
+unsafe extern "C" fn hook_type_is_subtype(subclass_bits: u64, class_bits: u64) -> c_int {
+    with_gil(|_py| c_int::from(crate::issubclass_bits(subclass_bits, class_bits)))
+}
+
+unsafe extern "C" fn hook_take_pending_exception(
+    actual_class_bits: *mut u64,
+    traceback_bits: *mut u64,
+) -> OwnedHandleResult {
+    if actual_class_bits.is_null() || traceback_bits.is_null() {
+        return OwnedHandleResult::error();
+    }
+    let exception_bits = crate::builtins::exceptions::molt_exception_last_pending();
+    let Some(exception_ptr) = crate::obj_from_bits(exception_bits).as_ptr() else {
+        return OwnedHandleResult::error();
+    };
+    // Detach the original pending edge while lazily materializing traceback.
+    // Any failure then leaves its new exact exception pending instead of being
+    // mistaken for the original indicator or cleared at the end.
+    let _ = crate::builtins::exceptions::molt_exception_clear();
+    let captured = with_gil(|_py| {
+        if unsafe { crate::object_type_id(exception_ptr) } != crate::TYPE_ID_EXCEPTION {
+            return None;
+        }
+        let class_bits = unsafe { crate::object_class_bits(exception_ptr) };
+        if class_bits == 0 {
+            return None;
+        }
+        let trace_bits = crate::exception_materialize_traceback_bits(&_py, exception_ptr);
+        if crate::exception_pending(&_py) {
+            return None;
+        }
+        Some((class_bits, trace_bits))
+    });
+    let Some((class_bits, trace_bits)) = captured else {
+        with_gil(|_py| crate::dec_ref_bits(&_py, exception_bits));
+        return OwnedHandleResult::error();
+    };
+    unsafe {
+        *actual_class_bits = class_bits;
+        *traceback_bits = if crate::obj_from_bits(trace_bits).is_none() {
+            0
+        } else {
+            trace_bits
+        };
+    }
+    OwnedHandleResult::ok(exception_bits)
+}
+
 /// Binary numeric op. `op` matches [`molt_cpython_abi::NumberBinaryOp`].
-unsafe extern "C" fn hook_number_binary_op(op: u32, a_bits: u64, b_bits: u64) -> u64 {
+unsafe extern "C" fn hook_number_binary_op(op: u32, a_bits: u64, b_bits: u64) -> OwnedHandleResult {
     use molt_cpython_abi::NumberBinaryOp;
-    match op {
+    let bits = match op {
         x if x == NumberBinaryOp::Add as u32 => crate::c_api::PyNumber_Add(a_bits, b_bits),
         x if x == NumberBinaryOp::Subtract as u32 => {
             crate::c_api::PyNumber_Subtract(a_bits, b_bits)
@@ -1032,13 +1929,14 @@ unsafe extern "C" fn hook_number_binary_op(op: u32, a_bits: u64, b_bits: u64) ->
                 "PyNumber binary op: unknown operation discriminant",
             )
         }),
-    }
+    };
+    owned_result_from_pending(bits)
 }
 
 /// Unary numeric op. `op` matches [`molt_cpython_abi::NumberUnaryOp`].
-unsafe extern "C" fn hook_number_unary_op(op: u32, a_bits: u64) -> u64 {
+unsafe extern "C" fn hook_number_unary_op(op: u32, a_bits: u64) -> OwnedHandleResult {
     use molt_cpython_abi::NumberUnaryOp;
-    match op {
+    let bits = match op {
         x if x == NumberUnaryOp::Negative as u32 => crate::c_api::PyNumber_Negative(a_bits),
         x if x == NumberUnaryOp::Positive as u32 => crate::c_api::PyNumber_Positive(a_bits),
         x if x == NumberUnaryOp::Absolute as u32 => crate::c_api::PyNumber_Absolute(a_bits),
@@ -1050,12 +1948,18 @@ unsafe extern "C" fn hook_number_unary_op(op: u32, a_bits: u64) -> u64 {
                 "PyNumber unary op: unknown operation discriminant",
             )
         }),
-    }
+    };
+    owned_result_from_pending(bits)
 }
 
 /// Ternary power `pow(base, exp, modulus)`. `mod_bits == 0` means two-arg pow.
-unsafe extern "C" fn hook_number_power(a_bits: u64, b_bits: u64, mod_bits: u64) -> u64 {
-    crate::c_api::PyNumber_Power(a_bits, b_bits, mod_bits)
+unsafe extern "C" fn hook_number_power(
+    a_bits: u64,
+    b_bits: u64,
+    mod_bits: u64,
+) -> OwnedHandleResult {
+    let bits = crate::c_api::PyNumber_Power(a_bits, b_bits, mod_bits);
+    owned_result_from_pending(bits)
 }
 
 /// Dict copy/keys/values. `op` matches [`molt_cpython_abi::DictOp`]. Routes to
@@ -1085,9 +1989,9 @@ unsafe extern "C" fn hook_dict_op(op: u32, dict_bits: u64) -> u64 {
     }
 }
 
-unsafe extern "C" fn hook_set_op(op: u32, set_bits: u64) -> u64 {
+unsafe extern "C" fn hook_set_op(op: u32, set_bits: u64) -> OwnedHandleResult {
     use molt_cpython_abi::SetOp;
-    match op {
+    let bits = match op {
         x if x == SetOp::FrozenNew as u32 => crate::c_api::PyFrozenSet_New(set_bits),
         x if x == SetOp::Pop as u32 => crate::c_api::PySet_Pop(set_bits),
         x if x == SetOp::Clear as u32 => {
@@ -1105,7 +2009,8 @@ unsafe extern "C" fn hook_set_op(op: u32, set_bits: u64) -> u64 {
                 "PySet op: unknown operation discriminant",
             )
         }),
-    }
+    };
+    owned_result_from_pending(bits)
 }
 
 // ── Set protocol (PySet_*) ────────────────────────────────────────────────
@@ -1158,16 +2063,121 @@ unsafe extern "C" fn hook_object_dir(obj_bits: u64) -> u64 {
     result
 }
 
-unsafe extern "C" fn hook_module_get_dict(module_bits: u64) -> u64 {
+unsafe extern "C" fn hook_module_get_dict_borrowed(module_bits: u64) -> BorrowedHandleResult {
     with_gil(|_py| {
         let module_obj = MoltObject::from_bits(module_bits);
         let Some(module_ptr) = module_obj.as_ptr() else {
-            return 0;
+            let _ = crate::raise_exception::<u64>(&_py, "SystemError", "expected module object");
+            return BorrowedHandleResult::error();
         };
         if unsafe { object_type_id(module_ptr) } != TYPE_ID_MODULE {
-            return 0;
+            let _ = crate::raise_exception::<u64>(&_py, "SystemError", "expected module object");
+            return BorrowedHandleResult::error();
         }
-        unsafe { module_dict_bits(module_ptr) }
+        let dict_bits = unsafe { module_dict_bits(module_ptr) };
+        let valid_dict = crate::obj_from_bits(dict_bits)
+            .as_ptr()
+            .is_some_and(|ptr| unsafe { object_type_id(ptr) } == TYPE_ID_DICT);
+        if valid_dict {
+            BorrowedHandleResult::ok(dict_bits)
+        } else {
+            let _ = crate::raise_exception::<u64>(
+                &_py,
+                "SystemError",
+                "module object has no dictionary",
+            );
+            BorrowedHandleResult::error()
+        }
+    })
+}
+
+unsafe extern "C" fn hook_import_add_module_borrowed(
+    name_data: *const u8,
+    name_len: usize,
+) -> BorrowedHandleResult {
+    if name_data.is_null() {
+        return with_gil(|_py| {
+            let _ = crate::raise_exception::<u64>(
+                &_py,
+                "SystemError",
+                "PyImport_AddModule requires a module name",
+            );
+            BorrowedHandleResult::error()
+        });
+    }
+    let name = unsafe { std::slice::from_raw_parts(name_data, name_len) };
+    with_gil(|_py| {
+        let sys_bits = {
+            let cache = crate::builtins::exceptions::internals::module_cache(&_py);
+            cache.lock().unwrap().get("sys").copied()
+        };
+        let Some(sys_bits) = sys_bits else {
+            let _ =
+                crate::raise_exception::<u64>(&_py, "SystemError", "sys.modules is unavailable");
+            return BorrowedHandleResult::error();
+        };
+        let Some(modules_bits) = crate::builtins::modules::sys_modules_dict_bits(&_py, sys_bits)
+        else {
+            if !crate::exception_pending(&_py) {
+                let _ = crate::raise_exception::<u64>(
+                    &_py,
+                    "SystemError",
+                    "sys.modules is unavailable",
+                );
+            }
+            return BorrowedHandleResult::error();
+        };
+        let Some(modules_ptr) = crate::obj_from_bits(modules_bits).as_ptr() else {
+            crate::dec_ref_bits(&_py, modules_bits);
+            let _ = crate::raise_exception::<u64>(
+                &_py,
+                "SystemError",
+                "sys.modules is not a dictionary",
+            );
+            return BorrowedHandleResult::error();
+        };
+        let name_ptr = alloc_string(&_py, name);
+        if name_ptr.is_null() {
+            crate::dec_ref_bits(&_py, modules_bits);
+            return BorrowedHandleResult::error();
+        }
+        let name_bits = MoltObject::from_ptr(name_ptr).bits();
+        let existing = unsafe { dict_get_in_place(&_py, modules_ptr, name_bits) };
+        if let Some(existing_bits) = existing
+            && crate::obj_from_bits(existing_bits)
+                .as_ptr()
+                .is_some_and(|ptr| unsafe { object_type_id(ptr) } == TYPE_ID_MODULE)
+        {
+            crate::dec_ref_bits(&_py, name_bits);
+            crate::dec_ref_bits(&_py, modules_bits);
+            return BorrowedHandleResult::ok(existing_bits);
+        }
+        let module_ptr = alloc_module_obj(&_py, name_bits);
+        if module_ptr.is_null() {
+            crate::dec_ref_bits(&_py, name_bits);
+            crate::dec_ref_bits(&_py, modules_bits);
+            return BorrowedHandleResult::error();
+        }
+        let module_bits = MoltObject::from_ptr(module_ptr).bits();
+        // `dict_set_in_place` is transactional for the mapping: every
+        // fallible hash/equality/rebuild/reserve step completes before it
+        // changes order/value storage. Once mutation starts, capacity is
+        // reserved and publication is infallible. Therefore a pending error
+        // means the prior non-module value (or absence) is still exact; never
+        // run a second fallible dict operation under that error indicator.
+        unsafe { dict_set_in_place(&_py, modules_ptr, name_bits, module_bits) };
+        if crate::exception_pending(&_py) {
+            crate::dec_ref_bits(&_py, module_bits);
+            crate::dec_ref_bits(&_py, name_bits);
+            crate::dec_ref_bits(&_py, modules_bits);
+            return BorrowedHandleResult::error();
+        }
+        // sys.modules owns the published edge. Drop constructor temporaries and
+        // return the dictionary's borrowed handle.
+        crate::dec_ref_bits(&_py, module_bits);
+        crate::dec_ref_bits(&_py, name_bits);
+        crate::dec_ref_bits(&_py, modules_bits);
+        BorrowedHandleResult::ok(module_bits)
     })
 }
 
@@ -1239,8 +2249,11 @@ unsafe extern "C" fn hook_module_state_add(module_bits: u64, module_def_ptr: usi
     crate::c_api::molt_module_state_add(module_bits, module_def_ptr)
 }
 
-unsafe extern "C" fn hook_module_state_find(module_def_ptr: usize) -> u64 {
-    crate::c_api::molt_module_state_find(module_def_ptr)
+unsafe extern "C" fn hook_module_state_find(module_def_ptr: usize) -> BorrowedHandleResult {
+    match crate::c_api::molt_module_state_find(module_def_ptr) {
+        0 => BorrowedHandleResult::missing(),
+        bits => BorrowedHandleResult::ok(bits),
+    }
 }
 
 unsafe extern "C" fn hook_module_state_remove(module_def_ptr: usize) -> i32 {
@@ -1319,38 +2332,6 @@ struct CExtCallable {
 unsafe impl Send for CExtCallable {}
 unsafe impl Sync for CExtCallable {}
 
-#[repr(C)]
-struct StaticLinkPyMethodDef {
-    ml_name: *const c_char,
-    ml_meth: *mut c_void,
-    ml_flags: i32,
-    ml_doc: *const c_char,
-}
-
-#[repr(C)]
-struct StaticLinkPyModuleDef {
-    m_base: *mut c_void,
-    m_name: *const c_char,
-    m_doc: *const c_char,
-    m_size: Py_ssize_t,
-    m_methods: *mut StaticLinkPyMethodDef,
-    m_slots: *mut StaticLinkPyModuleDefSlot,
-    m_traverse: *mut c_void,
-    m_clear: *mut c_void,
-    m_free: *mut c_void,
-}
-
-#[repr(C)]
-struct StaticLinkPyModuleDefSlot {
-    slot: c_int,
-    value: *mut c_void,
-}
-
-const STATIC_PY_MOD_CREATE: c_int = 1;
-const STATIC_PY_MOD_EXEC: c_int = 2;
-const STATIC_PY_MOD_MULTIPLE_INTERPRETERS: c_int = 3;
-const STATIC_PY_MOD_GIL: c_int = 4;
-
 fn cext_callable_registry() -> &'static Mutex<Vec<CExtCallable>> {
     use std::sync::OnceLock;
     static REGISTRY: OnceLock<Mutex<Vec<CExtCallable>>> = OnceLock::new();
@@ -1386,35 +2367,43 @@ unsafe fn static_module_def_to_bits(def: *mut PyModuleDef) -> Result<Option<u64>
         unsafe { molt_cpython_abi::api::modules::PyModule_FromDefAndSpec2(def, spec_obj, 0) };
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(spec_obj) };
     if module_obj.is_null() {
-        let had_exec_slot = unsafe { py_module_def_has_exec_slot(def) };
-        let reason = match take_static_pyinit_error_detail() {
-            Some(detail) if detail.starts_with("Py_mod_exec slot returned non-zero") => {
-                format!("static-link PyModuleDef {detail}")
-            }
-            Some(detail) if had_exec_slot && !detail.is_empty() => {
-                format!("static-link PyModuleDef Py_mod_exec slot returned non-zero: {detail}")
-            }
-            Some(_) if had_exec_slot => {
-                "static-link PyModuleDef Py_mod_exec slot returned non-zero".to_string()
-            }
-            Some(detail) if !detail.is_empty() => {
-                format!("static-link PyModuleDef init failed: {detail}")
-            }
-            _ => "static-link PyModuleDef init failed".to_string(),
-        };
-        return Err(format!("{module_name}: {reason}"));
+        if transfer_pending_cpython_exception() || with_gil(|_py| crate::exception_pending(&_py)) {
+            return Err(String::new());
+        }
+        return Err(format!(
+            "{module_name}: static-link PyModuleDef creation failed"
+        ));
     }
-    let module_bits = unsafe { molt_cpython_abi::bridge::read_bridge_header_bits(module_obj) };
+    if unsafe { molt_cpython_abi::api::modules::PyModule_ExecDef(module_obj, def) } != 0 {
+        unsafe { molt_cpython_abi::api::refcount::Py_DECREF(module_obj) };
+        let _ = transfer_pending_cpython_exception();
+        return Err(format!(
+            "{module_name}: static-link PyModuleDef Py_mod_exec slot returned non-zero"
+        ));
+    }
+    let Some(module_bits) = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+        .molt_handle_for_pyobj(module_obj)
+        .map(|value| value.bits())
+    else {
+        unsafe { molt_cpython_abi::api::refcount::Py_DECREF(module_obj) };
+        return Err(format!("{module_name}: module view is not runtime-managed"));
+    };
     let Some(module_ptr) = MoltObject::from_bits(module_bits).as_ptr() else {
+        unsafe { molt_cpython_abi::api::refcount::Py_DECREF(module_obj) };
         return Err(format!(
             "{module_name}: static-link PyModuleDef returned an invalid module handle"
         ));
     };
     if unsafe { object_type_id(module_ptr) } != TYPE_ID_MODULE {
+        unsafe { molt_cpython_abi::api::refcount::Py_DECREF(module_obj) };
         return Err(format!(
             "{module_name}: static-link PyModuleDef returned a non-module object"
         ));
     }
+    // Convert the new C reference into the owned runtime edge returned to the
+    // caller. The physical module view is released on every exit.
+    with_gil(|_py| crate::inc_ref_bits(&_py, module_bits));
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(module_obj) };
     Ok(Some(module_bits))
 }
 
@@ -1564,171 +2553,6 @@ unsafe fn cext_add_py_cfunction_to_module(
     Ok(())
 }
 
-unsafe fn static_link_module_add_methods(
-    module_bits: u64,
-    methods: *mut StaticLinkPyMethodDef,
-) -> Result<(), &'static str> {
-    if methods.is_null() {
-        return Ok(());
-    }
-    let mut cursor = methods;
-    unsafe {
-        while !(*cursor).ml_name.is_null() {
-            let entry = &*cursor;
-            if entry.ml_meth.is_null() {
-                return Err("PyMethodDef method pointer must not be NULL");
-            }
-            let name_bytes = CStr::from_ptr(entry.ml_name).to_bytes();
-            let doc_bytes = if entry.ml_doc.is_null() {
-                None
-            } else {
-                Some(CStr::from_ptr(entry.ml_doc).to_bytes())
-            };
-            cext_add_py_cfunction_to_module(
-                module_bits,
-                name_bytes,
-                entry.ml_meth as usize,
-                entry.ml_flags as u32,
-                doc_bytes,
-            )?;
-            cursor = cursor.add(1);
-        }
-    }
-    Ok(())
-}
-
-unsafe fn static_link_module_exec_slots(
-    module_bits: u64,
-    slots: *mut StaticLinkPyModuleDefSlot,
-    module_name: &str,
-) -> Result<(), String> {
-    if slots.is_null() {
-        return Ok(());
-    }
-    let mut cursor = slots;
-    unsafe {
-        while (*cursor).slot != 0 {
-            let slot = &*cursor;
-            match slot.slot {
-                STATIC_PY_MOD_CREATE => {
-                    return Err(format!(
-                        "{module_name}: static-link PyModuleDef Py_mod_create slot requires module creation bridge"
-                    ));
-                }
-                STATIC_PY_MOD_EXEC => {
-                    if slot.value.is_null() {
-                        return Err(format!(
-                            "{module_name}: static-link PyModuleDef Py_mod_exec slot is NULL"
-                        ));
-                    }
-                    type ExecFn = unsafe extern "C" fn(module: *mut PyObject) -> c_int;
-                    let exec: ExecFn = std::mem::transmute(slot.value);
-                    let module_obj = cext_pyobject_from_bits(module_bits);
-                    if module_obj.is_null() {
-                        return Err(format!(
-                            "{module_name}: static-link PyModuleDef Py_mod_exec module bridge failed"
-                        ));
-                    }
-                    let rc = exec(module_obj);
-                    molt_cpython_abi::api::refcount::Py_DECREF(module_obj);
-                    if rc != 0 {
-                        let detail = static_pyinit_import_error_message(
-                            "static-link PyModuleDef Py_mod_exec slot returned non-zero",
-                        );
-                        return Err(format!("{module_name}: {detail}"));
-                    }
-                }
-                STATIC_PY_MOD_MULTIPLE_INTERPRETERS | STATIC_PY_MOD_GIL => {}
-                _ => {
-                    return Err(format!(
-                        "{module_name}: unsupported static-link PyModuleDef slot {}",
-                        slot.slot
-                    ));
-                }
-            }
-            cursor = cursor.add(1);
-        }
-    }
-    Ok(())
-}
-
-unsafe fn static_link_module_def_to_bits(
-    def: *mut StaticLinkPyModuleDef,
-) -> Result<Option<u64>, String> {
-    if def.is_null() {
-        return Ok(None);
-    }
-    if unsafe { !(*def).m_base.is_null() } {
-        return Ok(None);
-    }
-    let name = unsafe { (*def).m_name };
-    if name.is_null() {
-        return Ok(None);
-    }
-    let name_bytes = unsafe { CStr::from_ptr(name).to_bytes() };
-    if name_bytes.is_empty() {
-        return Err("static-link PyModuleDef name must not be empty".to_string());
-    }
-    let module_name = String::from_utf8_lossy(name_bytes).into_owned();
-    let module_bits = unsafe { hook_alloc_module(name_bytes.as_ptr(), name_bytes.len()) };
-    if module_bits == 0 {
-        return Err(format!("{module_name}: module allocation failed"));
-    }
-
-    let doc = unsafe { (*def).m_doc };
-    if !doc.is_null() {
-        let doc_bytes = unsafe { CStr::from_ptr(doc).to_bytes() };
-        let doc_bits = unsafe { hook_alloc_str(doc_bytes.as_ptr(), doc_bytes.len()) };
-        if doc_bits == 0 {
-            unsafe { hook_dec_ref(module_bits) };
-            return Err(format!("{module_name}: doc allocation failed"));
-        }
-        let doc_attr = b"__doc__";
-        let set_result = unsafe {
-            hook_module_set_attr(module_bits, doc_attr.as_ptr(), doc_attr.len(), doc_bits)
-        };
-        unsafe { hook_dec_ref(doc_bits) };
-        if set_result != 0 {
-            unsafe { hook_dec_ref(module_bits) };
-            return Err(format!("{module_name}: doc registration failed"));
-        }
-    }
-
-    let module_state_size = unsafe { (*def).m_size };
-    let module_state_size = if module_state_size > 0 {
-        module_state_size as u64
-    } else {
-        0
-    };
-    let module_def_ptr = def as usize;
-    if crate::c_api::molt_module_capi_register(module_bits, module_def_ptr, module_state_size) != 0
-    {
-        unsafe { hook_dec_ref(module_bits) };
-        return Err(format!("{module_name}: C-API metadata registration failed"));
-    }
-    if crate::c_api::molt_module_state_add(module_bits, module_def_ptr) != 0 {
-        unsafe { hook_dec_ref(module_bits) };
-        return Err(format!("{module_name}: module-state registration failed"));
-    }
-
-    let methods = unsafe { (*def).m_methods };
-    if let Err(message) = unsafe { static_link_module_add_methods(module_bits, methods) } {
-        let _ = crate::c_api::molt_module_state_remove(module_def_ptr);
-        unsafe { hook_dec_ref(module_bits) };
-        return Err(format!("{module_name}: {message}"));
-    }
-
-    let slots = unsafe { (*def).m_slots };
-    if let Err(message) = unsafe { static_link_module_exec_slots(module_bits, slots, &module_name) }
-    {
-        let _ = crate::c_api::molt_module_state_remove(module_def_ptr);
-        unsafe { hook_dec_ref(module_bits) };
-        return Err(message);
-    }
-
-    Ok(Some(module_bits))
-}
-
 /// # Safety
 /// `name_ptr` must point to `name_len` readable bytes; `doc_ptr` must be null or
 /// point to `doc_len` readable bytes. `method_addr` must be the address of a
@@ -1859,26 +2683,6 @@ unsafe fn static_pyinit_is_bridge_module_object(result_pyobj: *mut PyObject) -> 
     unsafe { static_pyinit_type_matches(result_pyobj, &raw mut PyModule_Type, b"module") }
 }
 
-unsafe fn py_module_def_has_exec_slot(def: *mut PyModuleDef) -> bool {
-    if def.is_null() {
-        return false;
-    }
-    let slots = unsafe { (*def).m_slots };
-    if slots.is_null() {
-        return false;
-    }
-    let mut cursor = slots;
-    unsafe {
-        while (*cursor).slot != 0 {
-            if (*cursor).slot == STATIC_PY_MOD_EXEC {
-                return true;
-            }
-            cursor = cursor.add(1);
-        }
-    }
-    false
-}
-
 unsafe fn static_pyinit_has_module_def_shape(result_pyobj: *mut PyObject) -> bool {
     if result_pyobj.is_null() {
         return false;
@@ -1922,7 +2726,7 @@ unsafe fn static_module_spec_for_def_name(name_bytes: &[u8]) -> Option<*mut PyOb
         unsafe { hook_dec_ref(spec_bits) };
         return None;
     }
-    Some(unsafe { cext_pyobject_from_bits(spec_bits) })
+    Some(unsafe { cext_owned_pyobject_from_bits(spec_bits) })
 }
 
 unsafe fn static_module_spec_set_str(spec_bits: u64, attr: &[u8], value: &[u8]) -> bool {
@@ -1939,128 +2743,235 @@ unsafe fn static_module_spec_set_bits(spec_bits: u64, attr: &[u8], value_bits: u
     unsafe { hook_module_set_attr(spec_bits, attr.as_ptr(), attr.len(), value_bits) == 0 }
 }
 
-fn take_runtime_pyinit_error_message() -> Option<String> {
-    with_gil(|_py| {
+fn transfer_pending_cpython_exception() -> bool {
+    let Some(error) = molt_cpython_abi::api::errors::take_current_error() else {
+        return false;
+    };
+    let value_bits = if error.value.is_null() {
+        MoltObject::none().bits()
+    } else {
+        unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.molt_value_for_pyobj(error.value) }
+            .unwrap_or_else(|| MoltObject::none().bits())
+    };
+    let traceback_bits = if error.traceback.is_null() {
+        MoltObject::none().bits()
+    } else {
+        unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.molt_value_for_pyobj(error.traceback) }
+            .unwrap_or_else(|| MoltObject::none().bits())
+    };
+    let transferred = with_gil(|_py| {
+        if let Some(value_ptr) = crate::obj_from_bits(value_bits).as_ptr()
+            && unsafe { crate::object_type_id(value_ptr) } == crate::TYPE_ID_EXCEPTION
+        {
+            if crate::builtins::exceptions::exception_replace_field_bits(
+                &_py,
+                value_bits,
+                crate::builtins::exceptions::ExceptionFieldSlot::Traceback,
+                traceback_bits,
+            )
+            .is_err()
+            {
+                dec_ref_bits(&_py, value_bits);
+                if !crate::obj_from_bits(traceback_bits).is_none() {
+                    dec_ref_bits(&_py, traceback_bits);
+                }
+                let _ = crate::raise_exception::<u64>(
+                    &_py,
+                    "SystemError",
+                    "C extension supplied an invalid traceback for its pending exception",
+                );
+                return false;
+            }
+            // Record through the canonical exception transition so an
+            // already-pending runtime error becomes implicit context instead
+            // of being silently overwritten by the C indicator transfer.
+            crate::record_exception(&_py, value_ptr);
+            dec_ref_bits(&_py, value_bits);
+            if !crate::obj_from_bits(traceback_bits).is_none() {
+                dec_ref_bits(&_py, traceback_bits);
+            }
+            return true;
+        }
+        if !crate::obj_from_bits(value_bits).is_none() {
+            dec_ref_bits(&_py, value_bits);
+        }
+        if !crate::obj_from_bits(traceback_bits).is_none() {
+            dec_ref_bits(&_py, traceback_bits);
+        }
+        let _ = crate::raise_exception::<u64>(
+            &_py,
+            "SystemError",
+            "C error indicator did not contain a normalized runtime exception instance",
+        );
+        false
+    });
+    transferred || with_gil(|_py| crate::exception_pending(&_py))
+}
+
+fn cpython_error_is_pending() -> bool {
+    !unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null()
+        || with_gil(|_py| crate::exception_pending(&_py))
+}
+
+struct NativePendingSnapshot {
+    c_error: Option<molt_cpython_abi::api::errors::OwnedCError>,
+    runtime_error_bits: Option<u64>,
+}
+
+impl NativePendingSnapshot {
+    fn has_error(&self) -> bool {
+        self.c_error.is_some() || self.runtime_error_bits.is_some()
+    }
+}
+
+fn take_native_pending_snapshot() -> NativePendingSnapshot {
+    let c_error = molt_cpython_abi::api::errors::take_current_error();
+    let runtime_error_bits = with_gil(|_py| {
         if !crate::exception_pending(&_py) {
             return None;
         }
-        let exc_bits = crate::builtins::exceptions::molt_exception_last_pending();
-        let message = if let Some(exc_ptr) = MoltObject::from_bits(exc_bits).as_ptr() {
-            let message = crate::format_exception_message(&_py, exc_ptr);
-            dec_ref_bits(&_py, exc_bits);
-            message
-        } else {
-            "pending Molt exception handle was not a heap object".to_string()
-        };
-        let _ = crate::molt_exception_clear();
-        Some(message)
-    })
-}
-
-fn take_static_pyinit_error_detail() -> Option<String> {
-    molt_cpython_abi::api::errors::take_current_error_message()
-        .or_else(take_runtime_pyinit_error_message)
-}
-
-fn propagate_pending_cpython_exception(error_type: *mut PyObject) -> i64 {
-    let Some((class_bits, message)) = molt_cpython_abi::api::errors::take_current_error() else {
-        return 0;
-    };
-    with_gil(|_py| {
-        if let Some(type_name) = molt_cpython_abi::abi_types::exc_singleton_name(error_type) {
-            let type_name = type_name.strip_prefix("PyExc_").unwrap_or(type_name);
-            return crate::raise_exception::<i64>(&_py, type_name, &message);
-        }
-        let message_ptr = alloc_string(&_py, message.as_bytes());
-        if message_ptr.is_null() {
-            return crate::raise_exception::<i64>(
-                &_py,
-                "MemoryError",
-                "failed to materialize C extension exception message",
-            );
-        }
-        let message_bits = MoltObject::from_ptr(message_ptr).bits();
-        let args_ptr = if message.is_empty() {
-            crate::alloc_tuple(&_py, &[])
-        } else {
-            crate::alloc_tuple(&_py, &[message_bits])
-        };
-        if args_ptr.is_null() {
-            dec_ref_bits(&_py, message_bits);
-            return crate::raise_exception::<i64>(
-                &_py,
-                "MemoryError",
-                "failed to materialize C extension exception arguments",
-            );
-        }
-        let args_bits = MoltObject::from_ptr(args_ptr).bits();
-        let exception_ptr = crate::alloc_exception_from_class_bits(&_py, class_bits, args_bits);
-        dec_ref_bits(&_py, message_bits);
-        dec_ref_bits(&_py, args_bits);
-        if exception_ptr.is_null() {
-            return crate::raise_exception::<i64>(
-                &_py,
-                "SystemError",
-                "C extension set an exception with an invalid exception type",
-            );
-        }
-        crate::builtins::exceptions::record_exception_owned(&_py, exception_ptr);
-        0
-    })
-}
-
-fn static_pyinit_import_error_message(prefix: &str) -> String {
-    if let Some(detail) = take_static_pyinit_error_detail() {
-        if detail.is_empty() {
-            prefix.to_string()
-        } else {
-            format!("{prefix}: {detail}")
-        }
-    } else {
-        prefix.to_string()
+        let bits = crate::exception_last_bits_noinc(&_py)?;
+        crate::inc_ref_bits(&_py, bits);
+        crate::clear_exception(&_py);
+        Some(bits)
+    });
+    NativePendingSnapshot {
+        c_error,
+        runtime_error_bits,
     }
+}
+
+fn restore_native_pending_snapshot(snapshot: NativePendingSnapshot) {
+    // Discard any destructor/conversion failure produced while the original
+    // channels were detached, then restore the exact originals in their
+    // respective authorities.
+    drop(molt_cpython_abi::api::errors::take_current_error());
+    with_gil(|_py| {
+        crate::clear_exception(&_py);
+        if let Some(bits) = snapshot.runtime_error_bits {
+            if let Some(ptr) = crate::obj_from_bits(bits).as_ptr() {
+                crate::record_exception(&_py, ptr);
+            }
+            crate::dec_ref_bits(&_py, bits);
+        }
+    });
+    if let Some(error) = snapshot.c_error {
+        molt_cpython_abi::api::errors::restore_current_error_exact(error);
+    }
+}
+
+fn raise_native_result_with_error(message: &str) -> i64 {
+    let _ = transfer_pending_cpython_exception();
+    with_gil(|_py| crate::raise_exception::<i64>(&_py, "SystemError", message))
+}
+
+fn static_pyinit_failure(_py: &crate::PyToken<'_>, message: &str) -> u64 {
+    let _ = transfer_pending_cpython_exception();
+    let prior_bits = crate::builtins::exceptions::molt_exception_last_pending();
+    let Some(prior_ptr) = crate::obj_from_bits(prior_bits).as_ptr() else {
+        return crate::raise_exception::<u64>(_py, "ImportError", message);
+    };
+    let detail = crate::format_exception_message(_py, prior_ptr);
+    let combined = if detail.is_empty() || message.contains(&detail) {
+        message.to_owned()
+    } else {
+        format!("{message}: {detail}")
+    };
+
+    // Static-link import adaptation is an error boundary of its own. Preserve
+    // the extension's exact pending exception as __context__, but publish one
+    // contextual ImportError so the module/phase and the original C-API detail
+    // cannot be split across parallel error channels.
+    crate::clear_exception(_py);
+    let wrapper_ptr = crate::builtins::exceptions::alloc_exception(_py, "ImportError", &combined);
+    if wrapper_ptr.is_null() {
+        crate::dec_ref_bits(_py, prior_bits);
+        return MoltObject::none().bits();
+    }
+    let wrapper_bits = MoltObject::from_ptr(wrapper_ptr).bits();
+    if crate::builtins::exceptions::exception_replace_field_bits(
+        _py,
+        wrapper_bits,
+        crate::builtins::exceptions::ExceptionFieldSlot::Context,
+        prior_bits,
+    )
+    .is_err()
+    {
+        crate::dec_ref_bits(_py, wrapper_bits);
+        crate::dec_ref_bits(_py, prior_bits);
+        return MoltObject::none().bits();
+    }
+    crate::builtins::exceptions::record_exception_owned(_py, wrapper_ptr);
+    crate::dec_ref_bits(_py, prior_bits);
+    MoltObject::none().bits()
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_cpython_abi_pyinit_module_to_bits(result_pyobj: u64) -> u64 {
     with_gil(|_py| {
+        let has_error = cpython_error_is_pending();
         if result_pyobj == 0 {
-            let message =
-                static_pyinit_import_error_message("static extension PyInit returned NULL");
-            return crate::raise_exception::<u64>(&_py, "ImportError", message.as_str());
+            if has_error {
+                return static_pyinit_failure(&_py, "static extension PyInit returned NULL");
+            }
+            return crate::raise_exception::<u64>(
+                &_py,
+                "SystemError",
+                "static extension PyInit returned NULL without setting an exception",
+            );
         }
         let result_ptr = result_pyobj as *mut PyObject;
-        match unsafe { static_pyinit_registered_bridge_module_bits(result_ptr) } {
-            Ok(Some(module_bits)) => return module_bits,
-            Ok(None) => {}
-            Err(message) => {
-                return crate::raise_exception::<u64>(&_py, "ImportError", message);
-            }
-        }
-        match unsafe { static_link_module_def_to_bits(result_pyobj as *mut StaticLinkPyModuleDef) }
-        {
-            Ok(Some(module_bits)) => return module_bits,
-            Ok(None) => {}
-            Err(message) => {
-                return crate::raise_exception::<u64>(&_py, "ImportError", &message);
-            }
-        }
         if unsafe { static_pyinit_is_module_def(result_ptr) } {
+            if has_error {
+                let def = result_ptr.cast::<PyModuleDef>();
+                let name = unsafe { (*def).m_name };
+                let invalid_definition =
+                    name.is_null() || unsafe { CStr::from_ptr(name) }.to_bytes().is_empty();
+                let context = if invalid_definition {
+                    "static extension PyInit returned an invalid module definition"
+                } else {
+                    "static extension PyInit returned a module definition with an exception set"
+                };
+                return static_pyinit_failure(&_py, context);
+            }
             match unsafe { static_module_def_to_bits(result_pyobj as *mut PyModuleDef) } {
                 Ok(Some(module_bits)) => return module_bits,
                 Ok(None) => {}
                 Err(message) => {
-                    return crate::raise_exception::<u64>(&_py, "ImportError", message.as_str());
+                    let message = if message.is_empty() {
+                        "static extension module initialization failed"
+                    } else {
+                        message.as_str()
+                    };
+                    return static_pyinit_failure(&_py, message);
                 }
             }
-            let message = static_pyinit_import_error_message(
+            return static_pyinit_failure(
+                &_py,
                 "static extension PyInit returned an invalid module definition",
             );
-            return crate::raise_exception::<u64>(&_py, "ImportError", message.as_str());
+        }
+        if has_error {
+            let pending = take_native_pending_snapshot();
+            unsafe { molt_cpython_abi::api::refcount::Py_DECREF(result_ptr) };
+            restore_native_pending_snapshot(pending);
+            return static_pyinit_failure(
+                &_py,
+                "static extension PyInit returned a result with an exception set",
+            );
+        }
+        match unsafe { static_pyinit_registered_bridge_module_bits(result_ptr) } {
+            Ok(Some(module_bits)) => return module_bits,
+            Ok(None) => {}
+            Err(message) => {
+                return static_pyinit_failure(&_py, message);
+            }
         }
         if unsafe { static_pyinit_is_bridge_module_object(result_ptr) } {
-            let module_bits =
-                unsafe { molt_cpython_abi::bridge::read_bridge_header_bits(result_ptr) };
+            let module_bits = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                .molt_handle_for_pyobj(result_ptr)
+                .map(|value| value.bits())
+                .unwrap_or(0);
             if let Some(module_ptr) = MoltObject::from_bits(module_bits).as_ptr() {
                 unsafe {
                     if object_type_id(module_ptr) == TYPE_ID_MODULE {
@@ -2072,52 +2983,115 @@ pub extern "C" fn molt_cpython_abi_pyinit_module_to_bits(result_pyobj: u64) -> u
         if !unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null()
             || crate::exception_pending(&_py)
         {
-            let message = static_pyinit_import_error_message(
+            return static_pyinit_failure(
+                &_py,
                 "static extension PyInit returned an invalid module handle",
             );
-            return crate::raise_exception::<u64>(&_py, "ImportError", message.as_str());
         }
         if unsafe { static_pyinit_has_module_def_shape(result_ptr) } {
             match unsafe { static_module_def_to_bits(result_pyobj as *mut PyModuleDef) } {
                 Ok(Some(module_bits)) => return module_bits,
                 Ok(None) => {}
                 Err(message) => {
-                    return crate::raise_exception::<u64>(&_py, "ImportError", message.as_str());
+                    let message = if message.is_empty() {
+                        "static extension module initialization failed"
+                    } else {
+                        message.as_str()
+                    };
+                    return static_pyinit_failure(&_py, message);
                 }
             }
-            let message = static_pyinit_import_error_message(
+            return static_pyinit_failure(
+                &_py,
                 "static extension PyInit returned an invalid module definition",
             );
-            return crate::raise_exception::<u64>(&_py, "ImportError", message.as_str());
         }
-        let message = static_pyinit_import_error_message(
+        static_pyinit_failure(
+            &_py,
             "static extension PyInit returned an invalid module handle",
-        );
-        crate::raise_exception::<u64>(&_py, "ImportError", message.as_str())
+        )
     })
 }
 
-unsafe fn cext_pyobject_from_bits(bits: u64) -> *mut PyObject {
-    if bits == 0 {
-        return ptr::null_mut();
-    }
-    unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_pyobj(bits) }
+unsafe fn cext_owned_pyobject_from_bits(bits: u64) -> *mut PyObject {
+    unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) }
 }
 
-unsafe fn cext_tuple_for_args(args: &[u64]) -> Option<(u64, *mut PyObject)> {
+unsafe fn cext_new_pyobject_from_borrowed_bits(bits: u64) -> *mut PyObject {
+    let ptr = unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_borrowed_pyobj(bits) };
+    if !ptr.is_null() {
+        unsafe { molt_cpython_abi::api::refcount::Py_INCREF(ptr) };
+    }
+    ptr
+}
+
+unsafe fn cext_tuple_for_args(args: &[u64]) -> Option<*mut PyObject> {
     let tuple_bits = unsafe { hook_alloc_tuple(args.len()) };
     if tuple_bits == 0 {
         return None;
     }
     for (index, &arg_bits) in args.iter().enumerate() {
-        unsafe { hook_tuple_set(tuple_bits, index, arg_bits) };
+        match unsafe { hook_tuple_set(tuple_bits, index, arg_bits) }.decode() {
+            molt_cpython_abi::hooks::DecodedHandleResult::Ok(old_bits) => unsafe {
+                hook_dec_ref(old_bits)
+            },
+            molt_cpython_abi::hooks::DecodedHandleResult::Missing
+            | molt_cpython_abi::hooks::DecodedHandleResult::Error => {
+                unsafe { hook_dec_ref(tuple_bits) };
+                return None;
+            }
+        }
     }
-    let tuple_obj = unsafe { cext_pyobject_from_bits(tuple_bits) };
+    let tuple_obj = unsafe { cext_owned_pyobject_from_bits(tuple_bits) };
     if tuple_obj.is_null() {
-        unsafe { hook_dec_ref(tuple_bits) };
         return None;
     }
-    Some((tuple_bits, tuple_obj))
+    Some(tuple_obj)
+}
+
+struct CExtIngress {
+    owned_views: Vec<*mut PyObject>,
+}
+
+impl CExtIngress {
+    fn with_capacity(capacity: usize) -> Option<Self> {
+        let mut owned_views = Vec::new();
+        owned_views.try_reserve_exact(capacity).ok()?;
+        Some(Self { owned_views })
+    }
+
+    unsafe fn push_borrowed_bits(&mut self, bits: u64) -> Option<*mut PyObject> {
+        let view = unsafe { cext_new_pyobject_from_borrowed_bits(bits) };
+        if view.is_null() {
+            return None;
+        }
+        self.owned_views.push(view);
+        Some(view)
+    }
+
+    fn push_owned_view(&mut self, view: *mut PyObject) {
+        debug_assert!(!view.is_null());
+        self.owned_views.push(view);
+    }
+}
+
+impl Drop for CExtIngress {
+    fn drop(&mut self) {
+        let pending = take_native_pending_snapshot();
+        for view in self.owned_views.drain(..) {
+            unsafe { molt_cpython_abi::api::refcount::Py_DECREF(view) };
+        }
+        restore_native_pending_snapshot(pending);
+    }
+}
+
+fn cext_ingress_failure(message: &str) -> i64 {
+    if cpython_error_is_pending() {
+        let _ = transfer_pending_cpython_exception();
+        0
+    } else {
+        with_gil(|_py| crate::raise_exception::<i64>(&_py, "SystemError", message))
+    }
 }
 
 /// Trampoline invoked by Molt's call dispatch for every registered C
@@ -2182,12 +3156,18 @@ fn molt_cpython_abi_cext_call_trampoline_inner(
         unsafe { std::slice::from_raw_parts(args_ptr as *const u64, n) }
     };
 
-    let mut temp_pyobjects: Vec<*mut PyObject> = Vec::new();
-    let mut temp_tuple_bits: Option<u64> = None;
-    let self_obj = unsafe { cext_pyobject_from_bits(entry.self_bits) };
-    if !self_obj.is_null() {
-        temp_pyobjects.push(self_obj);
-    }
+    let Some(mut ingress) = CExtIngress::with_capacity(args.len().saturating_add(2)) else {
+        return with_gil(|_py| {
+            crate::raise_exception::<i64>(
+                &_py,
+                "MemoryError",
+                "failed to reserve C extension ingress views",
+            )
+        });
+    };
+    let Some(self_obj) = (unsafe { ingress.push_borrowed_bits(entry.self_bits) }) else {
+        return cext_ingress_failure("failed to materialize C extension self view");
+    };
 
     let result_pyobj = unsafe {
         match entry.dispatch_kind {
@@ -2214,13 +3194,18 @@ fn molt_cpython_abi_cext_call_trampoline_inner(
                         )
                     });
                 }
-                let arg = cext_pyobject_from_bits(args[0]);
-                temp_pyobjects.push(arg);
+                let Some(arg) = ingress.push_borrowed_bits(args[0]) else {
+                    return cext_ingress_failure("failed to materialize C extension argument view");
+                };
                 let f: PyCFunction = std::mem::transmute(entry.meth_addr as *const ());
                 f(self_obj, arg)
             }
             CExtDispatchKind::VarArgs => {
-                let Some((tuple_bits, tuple_obj)) = cext_tuple_for_args(args) else {
+                let Some(tuple_obj) = cext_tuple_for_args(args) else {
+                    if cpython_error_is_pending() {
+                        let _ = transfer_pending_cpython_exception();
+                        return 0;
+                    }
                     return with_gil(|_py| {
                         crate::raise_exception::<i64>(
                             &_py,
@@ -2229,13 +3214,16 @@ fn molt_cpython_abi_cext_call_trampoline_inner(
                         )
                     });
                 };
-                temp_tuple_bits = Some(tuple_bits);
-                temp_pyobjects.push(tuple_obj);
+                ingress.push_owned_view(tuple_obj);
                 let f: PyCFunction = std::mem::transmute(entry.meth_addr as *const ());
                 f(self_obj, tuple_obj)
             }
             CExtDispatchKind::VarArgsKeywords => {
-                let Some((tuple_bits, tuple_obj)) = cext_tuple_for_args(args) else {
+                let Some(tuple_obj) = cext_tuple_for_args(args) else {
+                    if cpython_error_is_pending() {
+                        let _ = transfer_pending_cpython_exception();
+                        return 0;
+                    }
                     return with_gil(|_py| {
                         crate::raise_exception::<i64>(
                             &_py,
@@ -2244,16 +3232,27 @@ fn molt_cpython_abi_cext_call_trampoline_inner(
                         )
                     });
                 };
-                temp_tuple_bits = Some(tuple_bits);
-                temp_pyobjects.push(tuple_obj);
+                ingress.push_owned_view(tuple_obj);
                 let f: PyCFunctionWithKeywords = std::mem::transmute(entry.meth_addr as *const ());
                 f(self_obj, tuple_obj, ptr::null_mut())
             }
             CExtDispatchKind::FastCall => {
-                let mut fast_args = Vec::with_capacity(args.len());
+                let mut fast_args = Vec::new();
+                if fast_args.try_reserve_exact(args.len()).is_err() {
+                    return with_gil(|_py| {
+                        crate::raise_exception::<i64>(
+                            &_py,
+                            "MemoryError",
+                            "failed to reserve C extension FASTCALL arguments",
+                        )
+                    });
+                }
                 for &arg_bits in args {
-                    let arg = cext_pyobject_from_bits(arg_bits);
-                    temp_pyobjects.push(arg);
+                    let Some(arg) = ingress.push_borrowed_bits(arg_bits) else {
+                        return cext_ingress_failure(
+                            "failed to materialize C extension argument view",
+                        );
+                    };
                     fast_args.push(arg);
                 }
                 let fast_ptr = if fast_args.is_empty() {
@@ -2265,10 +3264,22 @@ fn molt_cpython_abi_cext_call_trampoline_inner(
                 f(self_obj, fast_ptr, fast_args.len() as Py_ssize_t)
             }
             CExtDispatchKind::FastCallKeywords => {
-                let mut fast_args = Vec::with_capacity(args.len());
+                let mut fast_args = Vec::new();
+                if fast_args.try_reserve_exact(args.len()).is_err() {
+                    return with_gil(|_py| {
+                        crate::raise_exception::<i64>(
+                            &_py,
+                            "MemoryError",
+                            "failed to reserve C extension FASTCALL arguments",
+                        )
+                    });
+                }
                 for &arg_bits in args {
-                    let arg = cext_pyobject_from_bits(arg_bits);
-                    temp_pyobjects.push(arg);
+                    let Some(arg) = ingress.push_borrowed_bits(arg_bits) else {
+                        return cext_ingress_failure(
+                            "failed to materialize C extension argument view",
+                        );
+                    };
                     fast_args.push(arg);
                 }
                 let fast_ptr = if fast_args.is_empty() {
@@ -2288,33 +3299,65 @@ fn molt_cpython_abi_cext_call_trampoline_inner(
         }
     };
 
-    let result_bits = if result_pyobj.is_null() {
-        None
-    } else {
-        Some(unsafe { molt_cpython_abi::bridge::read_bridge_header_bits(result_pyobj) })
-    };
-    for temp in temp_pyobjects {
-        unsafe { molt_cpython_abi::api::refcount::Py_XDECREF(temp) };
+    let returned_null = result_pyobj.is_null();
+    let pending = take_native_pending_snapshot();
+    let call_left_error = pending.has_error();
+    if !returned_null && call_left_error {
+        unsafe { molt_cpython_abi::api::refcount::Py_DECREF(result_pyobj) };
     }
-    if let Some(tuple_bits) = temp_tuple_bits {
-        unsafe { hook_dec_ref(tuple_bits) };
-    }
-    match result_bits {
-        Some(bits) => bits as i64,
-        None => {
-            let error_type = unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() };
-            if !error_type.is_null() {
-                propagate_pending_cpython_exception(error_type)
-            } else {
-                with_gil(|_py| {
-                    let msg = format!(
-                        "C extension function returned NULL without setting an exception (convention flags 0x{:x})",
-                        entry.flags
-                    );
-                    crate::raise_exception::<i64>(&_py, "SystemError", &msg)
-                })
-            }
+    drop(ingress);
+    restore_native_pending_snapshot(pending);
+    match (returned_null, call_left_error) {
+        (true, true) => {
+            let _ = transfer_pending_cpython_exception();
+            return 0;
         }
+        (true, false) => {
+            return with_gil(|_py| {
+                let msg = format!(
+                    "C extension function returned NULL without setting an exception (convention flags 0x{:x})",
+                    entry.flags
+                );
+                crate::raise_exception::<i64>(&_py, "SystemError", &msg)
+            });
+        }
+        (false, true) => {
+            let msg = format!(
+                "C extension function returned a result with an exception set (convention flags 0x{:x})",
+                entry.flags
+            );
+            return raise_native_result_with_error(&msg);
+        }
+        (false, false) => {}
+    }
+
+    let result_bits =
+        unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.molt_value_for_pyobj(result_pyobj) };
+    let conversion_pending = take_native_pending_snapshot();
+    let conversion_left_error = conversion_pending.has_error();
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(result_pyobj) };
+    if let Some(bits) = result_bits
+        && conversion_left_error
+    {
+        unsafe { hook_dec_ref(bits) };
+    }
+    restore_native_pending_snapshot(conversion_pending);
+    match (result_bits, conversion_left_error) {
+        (Some(bits), false) => bits as i64,
+        (Some(_bits), true) => raise_native_result_with_error(
+            "C extension result bridge returned a value with an exception set",
+        ),
+        (None, true) => {
+            let _ = transfer_pending_cpython_exception();
+            0
+        }
+        (None, false) => with_gil(|_py| {
+            crate::raise_exception::<i64>(
+                &_py,
+                "SystemError",
+                "C extension returned an object that could not enter the bridge",
+            )
+        }),
     }
 }
 
@@ -2416,7 +3459,143 @@ pub fn register_cpython_hooks() {
     if HOOKS_REGISTERED.swap(true, Ordering::SeqCst) {
         return;
     }
+    with_gil(|_py| {
+        let builtins = crate::builtin_classes(&_py);
+        for (class_bits, type_object) in [
+            (
+                builtins.object,
+                (&raw mut molt_cpython_abi::abi_types::PyBaseObject_Type).cast::<PyObject>(),
+            ),
+            (
+                builtins.type_obj,
+                (&raw mut molt_cpython_abi::abi_types::PyType_Type).cast::<PyObject>(),
+            ),
+            (
+                builtins.none_type,
+                (&raw mut molt_cpython_abi::abi_types::PyNone_Type).cast::<PyObject>(),
+            ),
+            (
+                builtins.int,
+                (&raw mut molt_cpython_abi::abi_types::PyLong_Type).cast::<PyObject>(),
+            ),
+            (
+                builtins.float,
+                (&raw mut molt_cpython_abi::abi_types::PyFloat_Type).cast::<PyObject>(),
+            ),
+            (
+                builtins.complex,
+                (&raw mut molt_cpython_abi::abi_types::PyComplex_Type).cast::<PyObject>(),
+            ),
+            (
+                builtins.bool,
+                (&raw mut molt_cpython_abi::abi_types::PyBool_Type).cast::<PyObject>(),
+            ),
+            (
+                builtins.str,
+                (&raw mut molt_cpython_abi::abi_types::PyUnicode_Type).cast::<PyObject>(),
+            ),
+            (
+                builtins.bytes,
+                (&raw mut molt_cpython_abi::abi_types::PyBytes_Type).cast::<PyObject>(),
+            ),
+            (
+                builtins.bytearray,
+                (&raw mut molt_cpython_abi::abi_types::PyByteArray_Type).cast::<PyObject>(),
+            ),
+            (
+                builtins.list,
+                (&raw mut molt_cpython_abi::abi_types::PyList_Type).cast::<PyObject>(),
+            ),
+            (
+                builtins.tuple,
+                (&raw mut molt_cpython_abi::abi_types::PyTuple_Type).cast::<PyObject>(),
+            ),
+            (
+                builtins.dict,
+                (&raw mut molt_cpython_abi::abi_types::PyDict_Type).cast::<PyObject>(),
+            ),
+            (
+                builtins.set,
+                (&raw mut molt_cpython_abi::abi_types::PySet_Type).cast::<PyObject>(),
+            ),
+            (
+                builtins.frozenset,
+                (&raw mut molt_cpython_abi::abi_types::PyFrozenSet_Type).cast::<PyObject>(),
+            ),
+            (
+                builtins.slice,
+                (&raw mut molt_cpython_abi::abi_types::PySlice_Type).cast::<PyObject>(),
+            ),
+            (
+                builtins.memoryview,
+                (&raw mut molt_cpython_abi::abi_types::PyMemoryView_Type).cast::<PyObject>(),
+            ),
+            (
+                builtins.traceback,
+                (&raw mut molt_cpython_abi::abi_types::PyTraceBack_Type).cast::<PyObject>(),
+            ),
+            (
+                builtins.module,
+                (&raw mut molt_cpython_abi::abi_types::PyModule_Type).cast::<PyObject>(),
+            ),
+            (
+                builtins.generic_alias,
+                (&raw mut molt_cpython_abi::abi_types::Py_GenericAliasType).cast::<PyObject>(),
+            ),
+        ] {
+            let bound = unsafe {
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE.bind_static_pyobj_to_runtime_handle(
+                    type_object,
+                    class_bits,
+                    true,
+                )
+            };
+            assert!(
+                bound,
+                "failed to bind runtime builtin class to canonical ABI type"
+            );
+        }
+        for exception in molt_cpython_abi::abi_types::exc_singleton_ptrs() {
+            let Some(c_name) = molt_cpython_abi::abi_types::exc_singleton_name(exception) else {
+                continue;
+            };
+            let requested_name = c_name.strip_prefix("PyExc_").unwrap_or(c_name);
+            let runtime_name = if requested_name == "IOError" {
+                "OSError"
+            } else {
+                requested_name
+            };
+            let class_bits = crate::exception_type_bits_from_name(&_py, runtime_name);
+            if class_bits == 0 {
+                continue;
+            }
+            let canonical_view = crate::class_name_for_error(class_bits) == requested_name;
+            let bound = unsafe {
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE.bind_static_pyobj_to_runtime_handle(
+                    exception,
+                    class_bits,
+                    canonical_view,
+                )
+            };
+            assert!(
+                bound,
+                "failed to bind {c_name} to its runtime exception class"
+            );
+        }
+        let traceback_class_bits = crate::builtin_classes(&_py).traceback;
+        let traceback_bound = unsafe {
+            molt_cpython_abi::bridge::GLOBAL_BRIDGE.bind_static_pyobj_to_runtime_handle(
+                (&raw mut molt_cpython_abi::abi_types::PyTraceBack_Type).cast::<PyObject>(),
+                traceback_class_bits,
+                true,
+            )
+        };
+        assert!(traceback_bound, "failed to bind PyTraceBack_Type");
+    });
     let hooks = RuntimeHooks {
+        abi_magic: molt_cpython_abi::hooks::RUNTIME_HOOKS_ABI_MAGIC,
+        abi_version: molt_cpython_abi::hooks::RUNTIME_HOOKS_ABI_VERSION,
+        struct_size: std::mem::size_of::<RuntimeHooks>() as u32,
         gil_ensure: hook_gil_ensure,
         gil_leave: hook_gil_leave,
         gil_release: hook_gil_release,
@@ -2430,10 +3609,16 @@ pub fn register_cpython_hooks() {
         int_as_i64_checked: hook_int_as_i64_checked,
         int_as_u64_checked: hook_int_as_u64_checked,
         int_as_u64_mask: hook_int_as_u64_mask,
+        int_from_digits: hook_int_from_digits,
+        int_from_f64_trunc: hook_int_from_f64_trunc,
+        int_sign: hook_int_sign,
+        int_signed_byte_width: hook_int_signed_byte_width,
         int_from_bytes: hook_int_from_bytes,
         int_to_bytes: hook_int_to_bytes,
         int_num_bits: hook_int_num_bits,
         int_max_str_digits: hook_int_max_str_digits,
+        complex_parts: hook_complex_parts,
+        complex_from_doubles: hook_complex_from_doubles,
         alloc_list: hook_alloc_list,
         list_append: hook_list_append,
         list_len: hook_list_len,
@@ -2462,11 +3647,16 @@ pub fn register_cpython_hooks() {
         object_format: hook_object_format,
         float_repr: hook_float_repr,
         sys_get_object_borrowed: hook_sys_get_object_borrowed,
+        eval_get_builtins_borrowed: hook_eval_get_builtins_borrowed,
         classify_heap: hook_classify_heap,
+        object_hash: hook_object_hash,
         inc_ref: hook_inc_ref,
         dec_ref: hook_dec_ref,
+        ref_count: hook_ref_count,
+        try_mark_abi_view: hook_try_mark_abi_view,
         alloc_module: hook_alloc_module,
-        module_get_dict: hook_module_get_dict,
+        module_get_dict_borrowed: hook_module_get_dict_borrowed,
+        import_add_module_borrowed: hook_import_add_module_borrowed,
         module_set_attr: hook_module_set_attr,
         module_capi_register: hook_module_capi_register,
         module_capi_get_state: hook_module_capi_get_state,
@@ -2489,6 +3679,15 @@ pub fn register_cpython_hooks() {
         object_dir: hook_object_dir,
         object_call: hook_object_call,
         foreign_new: hook_foreign_new,
+        report_unraisable: hook_report_unraisable,
+        normalize_exception: hook_normalize_exception,
+        exception_set_field: hook_exception_set_field,
+        exception_get_field: hook_exception_get_field,
+        exception_class_borrowed: hook_exception_class_borrowed,
+        exception_snapshot: hook_exception_snapshot,
+        exception_commit_snapshot: hook_exception_commit_snapshot,
+        type_is_subtype: hook_type_is_subtype,
+        take_pending_exception: hook_take_pending_exception,
     };
     // SAFETY: all fn pointers are valid for the process lifetime.
     unsafe {
@@ -2500,10 +3699,12 @@ pub fn register_cpython_hooks() {
 mod tests {
     use super::*;
     use molt_cpython_abi::abi_types::{
-        PyExc_RuntimeError, PyExc_TypeError, PyModuleDef_Base, PyModuleDef_Slot, PyObject,
+        PyBaseExceptionObject, PyExc_IndexError, PyExc_LookupError, PyExc_RuntimeError,
+        PyExc_TypeError, PyExc_ValueError, PyModuleDef_Base, PyModuleDef_Slot, PyObject,
         PyTypeObject,
     };
     use std::cell::UnsafeCell;
+    use std::ffi::c_void;
     use std::os::raw::c_int;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize as TestAtomicUsize};
@@ -2511,7 +3712,277 @@ mod tests {
     use std::sync::{Mutex as StdMutex, MutexGuard as StdMutexGuard};
     use std::time::{Duration, Instant};
 
-    static STATIC_LINK_EXEC_MODULE_BITS: AtomicU64 = AtomicU64::new(0);
+    static CANONICAL_EXEC_MODULE_BITS: AtomicU64 = AtomicU64::new(0);
+
+    fn borrowed_bits(result: BorrowedHandleResult) -> Option<u64> {
+        match result.decode() {
+            molt_cpython_abi::hooks::DecodedHandleResult::Ok(bits) => Some(bits),
+            molt_cpython_abi::hooks::DecodedHandleResult::Missing
+            | molt_cpython_abi::hooks::DecodedHandleResult::Error => None,
+        }
+    }
+
+    #[test]
+    fn exception_snapshot_commit_rejects_before_mutation_then_publishes_whole_state() {
+        let _guard = cpython_abi_test_guard();
+        crate::with_gil_entry_nopanic!(_py, {
+            let exception_ptr = crate::builtins::exceptions::alloc_exception(
+                _py,
+                "ValueError",
+                "snapshot transaction",
+            );
+            assert!(!exception_ptr.is_null());
+            let exception_bits = MoltObject::from_ptr(exception_ptr).bits();
+            let before = unsafe {
+                [
+                    crate::exception_dict_bits(exception_ptr),
+                    crate::exception_args_bits(exception_ptr),
+                    crate::exception_notes_bits(exception_ptr),
+                    crate::exception_trace_bits(exception_ptr),
+                    crate::exception_context_bits(exception_ptr),
+                    crate::exception_cause_bits(exception_ptr),
+                    crate::exception_args_payload_bits(exception_ptr),
+                    crate::exception_suppress_bits(exception_ptr),
+                ]
+            };
+            let invalid_dict_ptr = alloc_string(_py, b"not a dict");
+            let invalid_dict_bits = MoltObject::from_ptr(invalid_dict_ptr).bits();
+            let invalid = ExceptionSnapshot {
+                present_mask: EXCEPTION_SNAPSHOT_DICT | EXCEPTION_SNAPSHOT_ARGS,
+                dict: invalid_dict_bits,
+                args: before[1],
+                ..ExceptionSnapshot::default()
+            };
+            assert_eq!(
+                unsafe { hook_exception_commit_snapshot(exception_bits, &raw const invalid) },
+                -1
+            );
+            let after_rejection = unsafe {
+                [
+                    crate::exception_dict_bits(exception_ptr),
+                    crate::exception_args_bits(exception_ptr),
+                    crate::exception_notes_bits(exception_ptr),
+                    crate::exception_trace_bits(exception_ptr),
+                    crate::exception_context_bits(exception_ptr),
+                    crate::exception_cause_bits(exception_ptr),
+                    crate::exception_args_payload_bits(exception_ptr),
+                    crate::exception_suppress_bits(exception_ptr),
+                ]
+            };
+            assert_eq!(
+                after_rejection, before,
+                "rejected commit mutated exception state"
+            );
+            dec_ref_bits(_py, invalid_dict_bits);
+
+            let dict_ptr = alloc_dict_with_pairs(_py, &[]);
+            let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
+            let valid = ExceptionSnapshot {
+                present_mask: EXCEPTION_SNAPSHOT_DICT | EXCEPTION_SNAPSHOT_ARGS,
+                suppress_context: 1,
+                dict: dict_bits,
+                args: before[1],
+                ..ExceptionSnapshot::default()
+            };
+            assert_eq!(
+                unsafe { hook_exception_commit_snapshot(exception_bits, &raw const valid) },
+                0
+            );
+            assert_eq!(
+                unsafe { crate::exception_dict_bits(exception_ptr) },
+                dict_bits
+            );
+            assert!(
+                crate::obj_from_bits(unsafe { crate::exception_suppress_bits(exception_ptr) })
+                    .as_bool()
+                    .unwrap_or(false)
+            );
+            dec_ref_bits(_py, dict_bits);
+            dec_ref_bits(_py, exception_bits);
+        });
+    }
+
+    #[test]
+    fn exception_landing_parent_projection_fully_initializes_fresh_child() {
+        let _guard = cpython_abi_test_guard();
+        molt_cpython_abi::bridge::molt_cpython_abi_init();
+        register_cpython_hooks();
+        crate::with_gil_entry_nopanic!(_py, {
+            let child_ptr =
+                crate::builtins::exceptions::alloc_exception(_py, "ValueError", "fresh child");
+            let parent_ptr =
+                crate::builtins::exceptions::alloc_exception(_py, "RuntimeError", "parent");
+            assert!(!child_ptr.is_null() && !parent_ptr.is_null());
+            let child_bits = MoltObject::from_ptr(child_ptr).bits();
+            let parent_bits = MoltObject::from_ptr(parent_ptr).bits();
+            for field in [
+                crate::builtins::exceptions::ExceptionFieldSlot::Context,
+                crate::builtins::exceptions::ExceptionFieldSlot::Cause,
+            ] {
+                crate::builtins::exceptions::exception_replace_field_bits(
+                    _py,
+                    parent_bits,
+                    field,
+                    child_bits,
+                )
+                .expect("install fresh exception child");
+            }
+
+            let parent_view = unsafe {
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_borrowed_pyobj(parent_bits)
+            };
+            assert!(!parent_view.is_null());
+            let parent_view = parent_view.cast::<PyBaseExceptionObject>();
+            let child_view = unsafe { (*parent_view).context };
+            assert!(!child_view.is_null());
+            assert_eq!(unsafe { (*parent_view).cause }, child_view);
+            let child_view = child_view.cast::<PyBaseExceptionObject>();
+            assert!(
+                !unsafe { (*child_view).args }.is_null(),
+                "a nested fresh exception must publish its mandatory args field"
+            );
+            assert_eq!(
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                    .managed_handle_for_pyobj(unsafe { (*child_view).args }),
+                Some(unsafe { crate::exception_args_bits(child_ptr) }),
+                "the child physical args field must project its canonical runtime slot"
+            );
+
+            let none = MoltObject::none().bits();
+            for field in [
+                crate::builtins::exceptions::ExceptionFieldSlot::Context,
+                crate::builtins::exceptions::ExceptionFieldSlot::Cause,
+            ] {
+                crate::builtins::exceptions::exception_replace_field_bits(
+                    _py,
+                    parent_bits,
+                    field,
+                    none,
+                )
+                .expect("clear child edge");
+            }
+            dec_ref_bits(_py, parent_bits);
+            dec_ref_bits(_py, child_bits);
+        });
+    }
+
+    #[test]
+    fn exception_landing_duplicate_physical_fields_release_once_at_parent_dealloc() {
+        let _guard = cpython_abi_test_guard();
+        molt_cpython_abi::bridge::molt_cpython_abi_init();
+        register_cpython_hooks();
+        crate::with_gil_entry_nopanic!(_py, {
+            let child_ptr =
+                crate::builtins::exceptions::alloc_exception(_py, "ValueError", "shared child");
+            let parent_ptr =
+                crate::builtins::exceptions::alloc_exception(_py, "RuntimeError", "parent");
+            assert!(!child_ptr.is_null() && !parent_ptr.is_null());
+            let child_bits = MoltObject::from_ptr(child_ptr).bits();
+            let parent_bits = MoltObject::from_ptr(parent_ptr).bits();
+            let child_baseline = unsafe {
+                (*crate::header_from_obj_ptr(child_ptr))
+                    .ref_count
+                    .load(AtomicOrdering::Acquire)
+            };
+            for field in [
+                crate::builtins::exceptions::ExceptionFieldSlot::Context,
+                crate::builtins::exceptions::ExceptionFieldSlot::Cause,
+            ] {
+                crate::builtins::exceptions::exception_replace_field_bits(
+                    _py,
+                    parent_bits,
+                    field,
+                    child_bits,
+                )
+                .expect("install shared child");
+            }
+            let parent_view = unsafe {
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_borrowed_pyobj(parent_bits)
+            };
+            assert!(!parent_view.is_null());
+            let parent_view = parent_view.cast::<PyBaseExceptionObject>();
+            let child_view = unsafe { (*parent_view).context };
+            assert_eq!(unsafe { (*parent_view).cause }, child_view);
+            assert_eq!(unsafe { (*child_view).ob_refcnt }, 3);
+            assert_eq!(
+                unsafe {
+                    (*crate::header_from_obj_ptr(child_ptr))
+                        .ref_count
+                        .load(AtomicOrdering::Acquire)
+                },
+                child_baseline + 3,
+                "two runtime fields plus one canonical child view hold"
+            );
+
+            dec_ref_bits(_py, parent_bits);
+            assert_eq!(unsafe { (*child_view).ob_refcnt }, 1);
+            assert_eq!(
+                unsafe {
+                    (*crate::header_from_obj_ptr(child_ptr))
+                        .ref_count
+                        .load(AtomicOrdering::Acquire)
+                },
+                child_baseline + 1,
+                "parent dealloc must release both runtime and physical field occurrences"
+            );
+            dec_ref_bits(_py, child_bits);
+        });
+    }
+
+    #[test]
+    fn exception_landing_cyclic_projection_initializes_each_distinct_view_once() {
+        let _guard = cpython_abi_test_guard();
+        molt_cpython_abi::bridge::molt_cpython_abi_init();
+        register_cpython_hooks();
+        crate::with_gil_entry_nopanic!(_py, {
+            let a_ptr = crate::builtins::exceptions::alloc_exception(_py, "ValueError", "a");
+            let b_ptr = crate::builtins::exceptions::alloc_exception(_py, "TypeError", "b");
+            assert!(!a_ptr.is_null() && !b_ptr.is_null());
+            let a_bits = MoltObject::from_ptr(a_ptr).bits();
+            let b_bits = MoltObject::from_ptr(b_ptr).bits();
+            crate::builtins::exceptions::exception_replace_field_bits(
+                _py,
+                a_bits,
+                crate::builtins::exceptions::ExceptionFieldSlot::Context,
+                b_bits,
+            )
+            .expect("a -> b");
+            crate::builtins::exceptions::exception_replace_field_bits(
+                _py,
+                b_bits,
+                crate::builtins::exceptions::ExceptionFieldSlot::Context,
+                a_bits,
+            )
+            .expect("b -> a");
+
+            let a_view =
+                unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_borrowed_pyobj(a_bits) };
+            assert!(!a_view.is_null());
+            let a_view = a_view.cast::<PyBaseExceptionObject>();
+            let b_view = unsafe { (*a_view).context }.cast::<PyBaseExceptionObject>();
+            assert!(!b_view.is_null());
+            assert_eq!(unsafe { (*b_view).context }, a_view.cast::<PyObject>());
+            assert!(!unsafe { (*a_view).args }.is_null());
+            assert!(!unsafe { (*b_view).args }.is_null());
+
+            let none = MoltObject::none().bits();
+            for (owner, field) in [
+                (
+                    a_bits,
+                    crate::builtins::exceptions::ExceptionFieldSlot::Context,
+                ),
+                (
+                    b_bits,
+                    crate::builtins::exceptions::ExceptionFieldSlot::Context,
+                ),
+            ] {
+                crate::builtins::exceptions::exception_replace_field_bits(_py, owner, field, none)
+                    .expect("clear cycle edge");
+            }
+            dec_ref_bits(_py, a_bits);
+            dec_ref_bits(_py, b_bits);
+        });
+    }
 
     struct ForeignProxyMutation(UnsafeCell<usize>);
 
@@ -2521,6 +3992,274 @@ mod tests {
     fn cpython_abi_test_guard() -> StdMutexGuard<'static, ()> {
         static LOCK: StdMutex<()> = StdMutex::new(());
         LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn fetched_exception_args(value: *mut PyObject) -> Vec<u64> {
+        let value_bits = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+            .molt_handle_for_pyobj(value)
+            .expect("normalized C error value must be a managed runtime exception")
+            .bits();
+        with_gil(|_py| {
+            let value_ptr = crate::obj_from_bits(value_bits)
+                .as_ptr()
+                .expect("normalized exception handle must remain live");
+            assert_eq!(
+                unsafe { crate::object_type_id(value_ptr) },
+                crate::TYPE_ID_EXCEPTION
+            );
+            let args_bits = crate::exception_materialized_args_bits(&_py, value_ptr);
+            let args_ptr = crate::obj_from_bits(args_bits)
+                .as_ptr()
+                .expect("exception args must be a tuple");
+            assert_eq!(
+                unsafe { crate::object_type_id(args_ptr) },
+                crate::TYPE_ID_TUPLE
+            );
+            unsafe { crate::seq_vec_ref(args_ptr).clone() }
+        })
+    }
+
+    #[test]
+    fn c_error_normalization_uses_cpython_argument_shapes() {
+        let _test_guard = cpython_abi_test_guard();
+        register_cpython_hooks();
+        unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+        let _ = crate::molt_exception_clear();
+
+        unsafe {
+            molt_cpython_abi::api::errors::PyErr_SetObject(
+                (&raw mut PyExc_TypeError).cast::<PyObject>(),
+                &raw mut molt_cpython_abi::abi_types::Py_None,
+            )
+        };
+        let mut exc_type = ptr::null_mut();
+        let mut exc_value = ptr::null_mut();
+        unsafe {
+            molt_cpython_abi::api::errors::PyErr_Fetch(
+                &mut exc_type,
+                &mut exc_value,
+                ptr::null_mut(),
+            )
+        };
+        assert!(std::ptr::eq(
+            exc_type,
+            (&raw mut PyExc_TypeError).cast::<PyObject>()
+        ));
+        assert!(!exc_value.is_null());
+        assert!(!std::ptr::eq(
+            exc_value,
+            &raw mut molt_cpython_abi::abi_types::Py_None
+        ));
+        assert!(fetched_exception_args(exc_value).is_empty());
+        unsafe {
+            molt_cpython_abi::api::refcount::Py_DECREF(exc_type);
+            molt_cpython_abi::api::refcount::Py_DECREF(exc_value);
+        }
+
+        let tuple_bits = with_gil(|_py| {
+            let tuple_ptr = crate::alloc_tuple(
+                &_py,
+                &[
+                    MoltObject::from_int(11).bits(),
+                    MoltObject::from_int(22).bits(),
+                ],
+            );
+            assert!(!tuple_ptr.is_null());
+            MoltObject::from_ptr(tuple_ptr).bits()
+        });
+        let tuple =
+            unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(tuple_bits) };
+        assert!(!tuple.is_null());
+        unsafe {
+            molt_cpython_abi::api::errors::PyErr_SetObject(
+                (&raw mut PyExc_ValueError).cast::<PyObject>(),
+                tuple,
+            );
+            molt_cpython_abi::api::refcount::Py_DECREF(tuple);
+        }
+        exc_type = ptr::null_mut();
+        exc_value = ptr::null_mut();
+        unsafe {
+            molt_cpython_abi::api::errors::PyErr_Fetch(
+                &mut exc_type,
+                &mut exc_value,
+                ptr::null_mut(),
+            )
+        };
+        assert!(std::ptr::eq(
+            exc_type,
+            (&raw mut PyExc_ValueError).cast::<PyObject>()
+        ));
+        assert_eq!(
+            fetched_exception_args(exc_value),
+            vec![
+                MoltObject::from_int(11).bits(),
+                MoltObject::from_int(22).bits()
+            ]
+        );
+        unsafe {
+            molt_cpython_abi::api::refcount::Py_DECREF(exc_type);
+            molt_cpython_abi::api::refcount::Py_DECREF(exc_value);
+        }
+    }
+
+    #[test]
+    fn c_error_normalization_preserves_subclass_instance_and_actual_type() {
+        let _test_guard = cpython_abi_test_guard();
+        register_cpython_hooks();
+        let index_handle = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+            .molt_handle_for_pyobj((&raw mut PyExc_IndexError).cast::<PyObject>())
+            .expect("IndexError singleton must be bound")
+            .bits();
+        let type_error_handle = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+            .molt_handle_for_pyobj((&raw mut PyExc_TypeError).cast::<PyObject>())
+            .expect("TypeError singleton must be bound")
+            .bits();
+        with_gil(|_py| {
+            assert_eq!(crate::class_name_for_error(index_handle), "IndexError");
+            assert_eq!(crate::class_name_for_error(type_error_handle), "TypeError");
+        });
+        unsafe {
+            molt_cpython_abi::api::errors::PyErr_Clear();
+            molt_cpython_abi::api::errors::PyErr_SetNone(
+                (&raw mut PyExc_IndexError).cast::<PyObject>(),
+            );
+        }
+        let mut original_type = ptr::null_mut();
+        let mut original_value = ptr::null_mut();
+        unsafe {
+            molt_cpython_abi::api::errors::PyErr_Fetch(
+                &mut original_type,
+                &mut original_value,
+                ptr::null_mut(),
+            )
+        };
+        let normalized_detail = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+            .molt_handle_for_pyobj(original_value)
+            .map(|handle| {
+                with_gil(|_py| {
+                    crate::obj_from_bits(handle.bits())
+                        .as_ptr()
+                        .map(|exc_ptr| {
+                            format!(
+                                "{}: {}",
+                                crate::class_name_for_error(unsafe {
+                                    crate::object_class_bits(exc_ptr)
+                                }),
+                                crate::format_exception_message(&_py, exc_ptr)
+                            )
+                        })
+                        .unwrap_or_else(|| "<inline error>".to_owned())
+                })
+            })
+            .unwrap_or_else(|| "<foreign error>".to_owned());
+        assert!(
+            std::ptr::eq(
+                original_type,
+                (&raw mut PyExc_IndexError).cast::<PyObject>()
+            ),
+            "PyErr_SetNone normalized to {} {:p}, expected IndexError {:p}; value={:p}; detail={}",
+            molt_cpython_abi::abi_types::exc_singleton_name(original_type)
+                .unwrap_or("<non-singleton>"),
+            original_type,
+            (&raw mut PyExc_IndexError).cast::<PyObject>(),
+            original_value,
+            normalized_detail,
+        );
+        unsafe {
+            molt_cpython_abi::api::errors::PyErr_SetObject(
+                (&raw mut PyExc_LookupError).cast::<PyObject>(),
+                original_value,
+            );
+            molt_cpython_abi::api::refcount::Py_DECREF(original_type);
+        }
+        let mut normalized_type = ptr::null_mut();
+        let mut normalized_value = ptr::null_mut();
+        unsafe {
+            molt_cpython_abi::api::errors::PyErr_Fetch(
+                &mut normalized_type,
+                &mut normalized_value,
+                ptr::null_mut(),
+            )
+        };
+        assert!(std::ptr::eq(
+            normalized_type,
+            (&raw mut PyExc_IndexError).cast::<PyObject>()
+        ));
+        assert!(std::ptr::eq(normalized_value, original_value));
+        unsafe {
+            molt_cpython_abi::api::refcount::Py_DECREF(original_value);
+            molt_cpython_abi::api::refcount::Py_DECREF(normalized_type);
+            molt_cpython_abi::api::refcount::Py_DECREF(normalized_value);
+        }
+    }
+
+    #[test]
+    fn c_error_restore_and_managed_traceback_get_set_roundtrip_identity() {
+        let _test_guard = cpython_abi_test_guard();
+        register_cpython_hooks();
+        unsafe {
+            molt_cpython_abi::api::errors::PyErr_Clear();
+            molt_cpython_abi::api::errors::PyErr_SetNone(
+                (&raw mut PyExc_TypeError).cast::<PyObject>(),
+            );
+        }
+        let mut exc_type = ptr::null_mut();
+        let mut exc_value = ptr::null_mut();
+        unsafe {
+            molt_cpython_abi::api::errors::PyErr_Fetch(
+                &mut exc_type,
+                &mut exc_value,
+                ptr::null_mut(),
+            )
+        };
+        let traceback_bits = with_gil(|_py| unsafe {
+            let traceback_class = crate::builtin_classes(&_py).traceback;
+            let traceback_class_ptr = crate::obj_from_bits(traceback_class)
+                .as_ptr()
+                .expect("traceback class must be initialized");
+            crate::alloc_instance_for_class_no_pool(&_py, traceback_class_ptr)
+        });
+        assert!(!crate::obj_from_bits(traceback_bits).is_none());
+        let traceback = unsafe {
+            molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(traceback_bits)
+        };
+        assert!(!traceback.is_null());
+        assert_eq!(
+            unsafe {
+                molt_cpython_abi::api::errors::PyException_SetTraceback(exc_value, traceback)
+            },
+            0
+        );
+        let direct = unsafe { molt_cpython_abi::api::errors::PyException_GetTraceback(exc_value) };
+        assert!(std::ptr::eq(direct, traceback));
+        unsafe {
+            molt_cpython_abi::api::refcount::Py_DECREF(direct);
+            molt_cpython_abi::api::refcount::Py_INCREF(traceback);
+            molt_cpython_abi::api::errors::PyErr_Restore(exc_type, exc_value, traceback);
+        }
+        let mut fetched_type = ptr::null_mut();
+        let mut fetched_value = ptr::null_mut();
+        let mut fetched_traceback = ptr::null_mut();
+        unsafe {
+            molt_cpython_abi::api::errors::PyErr_Fetch(
+                &mut fetched_type,
+                &mut fetched_value,
+                &mut fetched_traceback,
+            )
+        };
+        assert!(std::ptr::eq(
+            fetched_type,
+            (&raw mut PyExc_TypeError).cast::<PyObject>()
+        ));
+        assert!(std::ptr::eq(fetched_value, exc_value));
+        assert!(std::ptr::eq(fetched_traceback, traceback));
+        unsafe {
+            molt_cpython_abi::api::refcount::Py_DECREF(fetched_type);
+            molt_cpython_abi::api::refcount::Py_DECREF(fetched_value);
+            molt_cpython_abi::api::refcount::Py_DECREF(fetched_traceback);
+            molt_cpython_abi::api::refcount::Py_DECREF(traceback);
+        }
     }
 
     #[test]
@@ -2716,7 +4455,7 @@ mod tests {
             let type_name = MoltObject::from_bits(exc_bits)
                 .as_ptr()
                 .and_then(|exc_ptr| {
-                    let class_bits = unsafe { crate::exception_class_bits(exc_ptr) };
+                    let class_bits = unsafe { crate::object_class_bits(exc_ptr) };
                     MoltObject::from_bits(class_bits)
                         .as_ptr()
                         .and_then(|class_ptr| {
@@ -2760,7 +4499,7 @@ mod tests {
         };
         let raw_ptr = &raw mut raw_obj;
         unsafe {
-            molt_cpython_abi::bridge::GLOBAL_BRIDGE.register_raw_pyobj(raw_ptr);
+            molt_cpython_abi::bridge::GLOBAL_BRIDGE.register_foreign_pyobj(raw_ptr);
         }
 
         let result = unsafe {
@@ -2805,7 +4544,7 @@ mod tests {
         );
         let raw_type_ptr = (&raw mut raw_type).cast::<PyObject>();
         unsafe {
-            molt_cpython_abi::bridge::GLOBAL_BRIDGE.register_raw_pyobj(raw_type_ptr);
+            molt_cpython_abi::bridge::GLOBAL_BRIDGE.register_foreign_pyobj(raw_type_ptr);
         }
 
         let result = unsafe {
@@ -3005,7 +4744,10 @@ mod tests {
             !flags.is_null(),
             "PySys_GetObject(flags) must resolve through the cached sys module"
         );
-        let flags_bits = unsafe { molt_cpython_abi::bridge::read_bridge_header_bits(flags) };
+        let flags_bits = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+            .molt_handle_for_pyobj(flags)
+            .map(|value| value.bits())
+            .unwrap_or(0);
         assert_eq!(
             flags_bits, expected_flags_bits,
             "PySys_GetObject must prefer sys.flags over the raw flags payload"
@@ -3150,6 +4892,12 @@ mod tests {
             .expect("PyModuleDef pointer must convert to a Molt module");
 
         assert_eq!(unsafe { object_type_id(module_ptr) }, TYPE_ID_MODULE);
+        assert_eq!(
+            unsafe { hook_ref_count(bits) },
+            1,
+            "static PyModuleDef conversion must release its temporary C module view"
+        );
+        with_gil(|_py| dec_ref_bits(&_py, bits));
     }
 
     #[test]
@@ -3185,56 +4933,25 @@ mod tests {
             .expect("split-WASM PyModuleDef type clone must convert to a Molt module");
 
         assert_eq!(unsafe { object_type_id(module_ptr) }, TYPE_ID_MODULE);
+        assert_eq!(unsafe { hook_ref_count(bits) }, 1);
+        with_gil(|_py| dec_ref_bits(&_py, bits));
     }
 
-    #[test]
-    fn pyinit_module_to_bits_accepts_static_link_compact_module_def_without_methods_or_slots() {
-        let _guard = cpython_abi_test_guard();
-        let _ = molt_cpython_abi_prepare_static_extension();
-        let mut def = StaticLinkPyModuleDef {
-            m_base: std::ptr::null_mut(),
-            m_name: c"static_link_compact_module".as_ptr(),
-            m_doc: c"compact static-link module".as_ptr(),
-            m_size: -1,
-            m_methods: std::ptr::null_mut(),
-            m_slots: std::ptr::null_mut(),
-            m_traverse: std::ptr::null_mut(),
-            m_clear: std::ptr::null_mut(),
-            m_free: std::ptr::null_mut(),
-        };
-
-        let bits = molt_cpython_abi_pyinit_module_to_bits(
-            (&mut def as *mut StaticLinkPyModuleDef) as usize as u64,
-        );
-        let module_ptr = MoltObject::from_bits(bits)
-            .as_ptr()
-            .expect("compact static-link PyModuleDef must convert to a Molt module");
-
-        assert_eq!(unsafe { object_type_id(module_ptr) }, TYPE_ID_MODULE);
-        assert_eq!(
-            crate::c_api::molt_module_state_find((&mut def as *mut StaticLinkPyModuleDef) as usize),
-            bits
-        );
-        assert_eq!(
-            crate::c_api::molt_module_state_remove(
-                (&mut def as *mut StaticLinkPyModuleDef) as usize
-            ),
-            0
-        );
-    }
-
-    unsafe extern "C" fn static_link_exec_records_module(module_obj: *mut PyObject) -> c_int {
+    unsafe extern "C" fn canonical_exec_records_module(module_obj: *mut PyObject) -> c_int {
         if module_obj.is_null() {
             return -1;
         }
-        let module_bits = unsafe { molt_cpython_abi::bridge::read_bridge_header_bits(module_obj) };
+        let module_bits = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+            .molt_handle_for_pyobj(module_obj)
+            .map(|value| value.bits())
+            .unwrap_or(0);
         let Some(module_ptr) = MoltObject::from_bits(module_bits).as_ptr() else {
             return -1;
         };
         if unsafe { object_type_id(module_ptr) } != TYPE_ID_MODULE {
             return -1;
         }
-        STATIC_LINK_EXEC_MODULE_BITS.store(module_bits, AtomicOrdering::Relaxed);
+        CANONICAL_EXEC_MODULE_BITS.store(module_bits, AtomicOrdering::Relaxed);
         0
     }
 
@@ -3242,11 +4959,11 @@ mod tests {
     fn pyinit_module_to_bits_accepts_structural_module_def_without_type_marker() {
         let _guard = cpython_abi_test_guard();
         let _ = molt_cpython_abi_prepare_static_extension();
-        STATIC_LINK_EXEC_MODULE_BITS.store(0, AtomicOrdering::Relaxed);
+        CANONICAL_EXEC_MODULE_BITS.store(0, AtomicOrdering::Relaxed);
         let mut slots = [
             PyModuleDef_Slot {
-                slot: STATIC_PY_MOD_EXEC,
-                value: static_link_exec_records_module as *mut c_void,
+                slot: 2,
+                value: canonical_exec_records_module as *mut c_void,
             },
             PyModuleDef_Slot {
                 slot: 0,
@@ -3281,7 +4998,7 @@ mod tests {
 
         assert_eq!(unsafe { object_type_id(module_ptr) }, TYPE_ID_MODULE);
         assert_eq!(
-            STATIC_LINK_EXEC_MODULE_BITS.load(AtomicOrdering::Relaxed),
+            CANONICAL_EXEC_MODULE_BITS.load(AtomicOrdering::Relaxed),
             bits
         );
         let def_ptr = (&mut def as *mut PyModuleDef) as usize;
@@ -3292,146 +5009,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn pyinit_module_to_bits_executes_static_link_py_mod_exec_and_metadata_slots() {
-        let _guard = cpython_abi_test_guard();
-        let _ = molt_cpython_abi_prepare_static_extension();
-        STATIC_LINK_EXEC_MODULE_BITS.store(0, AtomicOrdering::Relaxed);
-        let mut slots = [
-            StaticLinkPyModuleDefSlot {
-                slot: STATIC_PY_MOD_EXEC,
-                value: static_link_exec_records_module as *mut c_void,
-            },
-            StaticLinkPyModuleDefSlot {
-                slot: STATIC_PY_MOD_MULTIPLE_INTERPRETERS,
-                value: 2usize as *mut c_void,
-            },
-            StaticLinkPyModuleDefSlot {
-                slot: STATIC_PY_MOD_GIL,
-                value: std::ptr::dangling_mut::<c_void>(),
-            },
-            StaticLinkPyModuleDefSlot {
-                slot: 0,
-                value: std::ptr::null_mut(),
-            },
-        ];
-        let mut def = StaticLinkPyModuleDef {
-            m_base: std::ptr::null_mut(),
-            m_name: c"static_link_exec_slot_module".as_ptr(),
-            m_doc: std::ptr::null(),
-            m_size: -1,
-            m_methods: std::ptr::null_mut(),
-            m_slots: slots.as_mut_ptr(),
-            m_traverse: std::ptr::null_mut(),
-            m_clear: std::ptr::null_mut(),
-            m_free: std::ptr::null_mut(),
-        };
-
-        let bits = molt_cpython_abi_pyinit_module_to_bits(
-            (&mut def as *mut StaticLinkPyModuleDef) as usize as u64,
-        );
-        let module_ptr = MoltObject::from_bits(bits)
-            .as_ptr()
-            .expect("static-link Py_mod_exec module must convert to a Molt module");
-
-        assert_eq!(unsafe { object_type_id(module_ptr) }, TYPE_ID_MODULE);
-        assert_eq!(
-            STATIC_LINK_EXEC_MODULE_BITS.load(AtomicOrdering::Relaxed),
-            bits
-        );
-        assert_eq!(
-            crate::c_api::molt_module_state_remove(
-                (&mut def as *mut StaticLinkPyModuleDef) as usize
-            ),
-            0
-        );
-    }
-
-    #[test]
-    fn pyinit_module_to_bits_rejects_static_link_py_mod_create_slot() {
-        let _guard = cpython_abi_test_guard();
-        let _ = molt_cpython_abi_prepare_static_extension();
-        let mut slots = [
-            StaticLinkPyModuleDefSlot {
-                slot: STATIC_PY_MOD_CREATE,
-                value: std::ptr::dangling_mut::<c_void>(),
-            },
-            StaticLinkPyModuleDefSlot {
-                slot: 0,
-                value: std::ptr::null_mut(),
-            },
-        ];
-        let mut def = StaticLinkPyModuleDef {
-            m_base: std::ptr::null_mut(),
-            m_name: c"static_link_create_slot_module".as_ptr(),
-            m_doc: std::ptr::null(),
-            m_size: -1,
-            m_methods: std::ptr::null_mut(),
-            m_slots: slots.as_mut_ptr(),
-            m_traverse: std::ptr::null_mut(),
-            m_clear: std::ptr::null_mut(),
-            m_free: std::ptr::null_mut(),
-        };
-
-        let bits = molt_cpython_abi_pyinit_module_to_bits(
-            (&mut def as *mut StaticLinkPyModuleDef) as usize as u64,
-        );
-
-        assert!(MoltObject::from_bits(bits).is_none());
-        let message = pending_exception_message_for_assertion();
-        assert!(message.contains(
-            "static-link PyModuleDef Py_mod_create slot requires module creation bridge"
-        ));
-    }
-
-    unsafe extern "C" fn static_link_exec_sets_runtime_error(_module_obj: *mut PyObject) -> c_int {
-        unsafe {
-            molt_cpython_abi::api::errors::PyErr_SetString(
-                &raw mut PyExc_RuntimeError,
-                c"missing PyArray dtype bootstrap".as_ptr(),
-            );
-        }
-        -1
-    }
-
-    #[test]
-    fn pyinit_module_to_bits_reports_static_link_py_mod_exec_pending_error() {
-        let _guard = cpython_abi_test_guard();
-        let _ = molt_cpython_abi_prepare_static_extension();
-        let mut slots = [
-            StaticLinkPyModuleDefSlot {
-                slot: STATIC_PY_MOD_EXEC,
-                value: static_link_exec_sets_runtime_error as *mut c_void,
-            },
-            StaticLinkPyModuleDefSlot {
-                slot: 0,
-                value: std::ptr::null_mut(),
-            },
-        ];
-        let mut def = StaticLinkPyModuleDef {
-            m_base: std::ptr::null_mut(),
-            m_name: c"static_link_exec_error_module".as_ptr(),
-            m_doc: std::ptr::null(),
-            m_size: -1,
-            m_methods: std::ptr::null_mut(),
-            m_slots: slots.as_mut_ptr(),
-            m_traverse: std::ptr::null_mut(),
-            m_clear: std::ptr::null_mut(),
-            m_free: std::ptr::null_mut(),
-        };
-
-        let bits = molt_cpython_abi_pyinit_module_to_bits(
-            (&mut def as *mut StaticLinkPyModuleDef) as usize as u64,
-        );
-
-        assert!(MoltObject::from_bits(bits).is_none());
-        let message = pending_exception_message_for_assertion();
-        assert!(message.contains("static_link_exec_error_module"));
-        assert!(message.contains("static-link PyModuleDef Py_mod_exec slot returned non-zero"));
-        assert!(message.contains("missing PyArray dtype bootstrap"));
-    }
-
-    unsafe extern "C" fn static_link_exec_sets_runtime_import_error(
+    unsafe extern "C" fn canonical_exec_sets_runtime_import_error(
         _module_obj: *mut PyObject,
     ) -> c_int {
         let import_error =
@@ -3444,50 +5022,13 @@ mod tests {
     }
 
     #[test]
-    fn pyinit_module_to_bits_reports_static_link_py_mod_exec_runtime_error() {
-        let _guard = cpython_abi_test_guard();
-        let _ = molt_cpython_abi_prepare_static_extension();
-        let mut slots = [
-            StaticLinkPyModuleDefSlot {
-                slot: STATIC_PY_MOD_EXEC,
-                value: static_link_exec_sets_runtime_import_error as *mut c_void,
-            },
-            StaticLinkPyModuleDefSlot {
-                slot: 0,
-                value: std::ptr::null_mut(),
-            },
-        ];
-        let mut def = StaticLinkPyModuleDef {
-            m_base: std::ptr::null_mut(),
-            m_name: c"static_link_runtime_error_module".as_ptr(),
-            m_doc: std::ptr::null(),
-            m_size: -1,
-            m_methods: std::ptr::null_mut(),
-            m_slots: slots.as_mut_ptr(),
-            m_traverse: std::ptr::null_mut(),
-            m_clear: std::ptr::null_mut(),
-            m_free: std::ptr::null_mut(),
-        };
-
-        let bits = molt_cpython_abi_pyinit_module_to_bits(
-            (&mut def as *mut StaticLinkPyModuleDef) as usize as u64,
-        );
-
-        assert!(MoltObject::from_bits(bits).is_none());
-        let message = pending_exception_message_for_assertion();
-        assert!(message.contains("static_link_runtime_error_module"));
-        assert!(message.contains("static-link PyModuleDef Py_mod_exec slot returned non-zero"));
-        assert!(message.contains("numpy.core._multiarray_umath._ARRAY_API"));
-    }
-
-    #[test]
     fn r0_static_extension_moduledef_exec_failure_reports_module_and_rolls_back() {
         let _guard = cpython_abi_test_guard();
         let _ = molt_cpython_abi_prepare_static_extension();
         let mut slots = [
             PyModuleDef_Slot {
-                slot: STATIC_PY_MOD_EXEC,
-                value: static_link_exec_sets_runtime_import_error as *mut c_void,
+                slot: 2,
+                value: canonical_exec_sets_runtime_import_error as *mut c_void,
             },
             PyModuleDef_Slot {
                 slot: 0,
@@ -3544,24 +5085,6 @@ mod tests {
         );
     }
 
-    unsafe extern "C" fn pyobject_bridge_tuple_len_method(
-        _self_obj: *mut PyObject,
-        args_obj: *mut PyObject,
-    ) -> *mut PyObject {
-        if args_obj.is_null() {
-            return std::ptr::null_mut();
-        }
-        let args_bits = unsafe { molt_cpython_abi::bridge::read_bridge_header_bits(args_obj) };
-        let Some(args_ptr) = MoltObject::from_bits(args_bits).as_ptr() else {
-            return std::ptr::null_mut();
-        };
-        if unsafe { object_type_id(args_ptr) } != TYPE_ID_TUPLE {
-            return std::ptr::null_mut();
-        }
-        let len = unsafe { tuple_len(args_ptr) };
-        unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(len as std::os::raw::c_long) }
-    }
-
     unsafe extern "C" fn fastcall_null_with_type_error(
         _self_obj: *mut PyObject,
         _args: *mut *mut PyObject,
@@ -3569,7 +5092,7 @@ mod tests {
     ) -> *mut PyObject {
         unsafe {
             molt_cpython_abi::api::errors::PyErr_SetString(
-                &raw mut PyExc_TypeError,
+                (&raw mut PyExc_TypeError).cast::<PyObject>(),
                 c"numpy fastcall detail".as_ptr(),
             );
         }
@@ -3647,104 +5170,12 @@ mod tests {
     }
 
     #[test]
-    fn pyinit_module_to_bits_registers_static_link_methods_through_pyobject_bridge() {
-        let _guard = cpython_abi_test_guard();
-        let _ = molt_cpython_abi_prepare_static_extension();
-        let mut methods = [
-            StaticLinkPyMethodDef {
-                ml_name: c"arg_count".as_ptr(),
-                ml_meth: pyobject_bridge_tuple_len_method as *mut c_void,
-                ml_flags: METH_VARARGS,
-                ml_doc: c"return positional argument count".as_ptr(),
-            },
-            StaticLinkPyMethodDef {
-                ml_name: std::ptr::null(),
-                ml_meth: std::ptr::null_mut(),
-                ml_flags: 0,
-                ml_doc: std::ptr::null(),
-            },
-        ];
-        let mut def = StaticLinkPyModuleDef {
-            m_base: std::ptr::null_mut(),
-            m_name: c"static_link_pyobject_method_module".as_ptr(),
-            m_doc: std::ptr::null(),
-            m_size: -1,
-            m_methods: methods.as_mut_ptr(),
-            m_slots: std::ptr::null_mut(),
-            m_traverse: std::ptr::null_mut(),
-            m_clear: std::ptr::null_mut(),
-            m_free: std::ptr::null_mut(),
-        };
-
-        let bits = molt_cpython_abi_pyinit_module_to_bits(
-            (&mut def as *mut StaticLinkPyModuleDef) as usize as u64,
-        );
-        let module_ptr = MoltObject::from_bits(bits)
-            .as_ptr()
-            .expect("static-link PyMethodDef module must convert to a Molt module");
-
-        assert_eq!(unsafe { object_type_id(module_ptr) }, TYPE_ID_MODULE);
-
-        let method_bits =
-            unsafe { crate::c_api::molt_module_get_object_bytes(bits, b"arg_count".as_ptr(), 9) };
-        assert!(!MoltObject::from_bits(method_bits).is_none());
-        let args_bits = unsafe { hook_alloc_tuple(3) };
-        assert_ne!(args_bits, 0);
-        unsafe {
-            hook_tuple_set(args_bits, 0, MoltObject::from_int(1).bits());
-            hook_tuple_set(args_bits, 1, MoltObject::from_int(2).bits());
-            hook_tuple_set(args_bits, 2, MoltObject::from_int(3).bits());
-        }
-
-        let direct_out_bits = with_gil(|_py| unsafe {
-            crate::call::function::call_function_obj_bound_vec(
-                &_py,
-                method_bits,
-                &[
-                    MoltObject::from_int(1).bits(),
-                    MoltObject::from_int(2).bits(),
-                    MoltObject::from_int(3).bits(),
-                ],
-            )
-        });
-        assert_eq!(
-            to_i64(MoltObject::from_bits(direct_out_bits)),
-            Some(3),
-            "direct static-link PyMethodDef trampoline failed: {}",
-            pending_exception_message_for_assertion()
-        );
-        unsafe { hook_dec_ref(direct_out_bits) };
-
-        let out_bits =
-            crate::c_api::molt_object_call(method_bits, args_bits, MoltObject::none().bits());
-
-        assert_eq!(
-            to_i64(MoltObject::from_bits(out_bits)),
-            Some(3),
-            "public object-call route for static-link PyMethodDef failed: {}",
-            pending_exception_message_for_assertion()
-        );
-
-        unsafe {
-            hook_dec_ref(out_bits);
-            hook_dec_ref(args_bits);
-            hook_dec_ref(method_bits);
-        }
-        assert_eq!(
-            crate::c_api::molt_module_state_remove(
-                (&mut def as *mut StaticLinkPyModuleDef) as usize
-            ),
-            0
-        );
-    }
-
-    #[test]
     fn pyinit_module_to_bits_reports_static_pyinit_error_state() {
         let _guard = cpython_abi_test_guard();
         let _ = molt_cpython_abi_prepare_static_extension();
         unsafe {
             molt_cpython_abi::api::errors::PyErr_SetString(
-                &raw mut PyExc_RuntimeError,
+                (&raw mut PyExc_RuntimeError).cast::<PyObject>(),
                 c"missing PyArray primitive".as_ptr(),
             );
         }
@@ -3753,8 +5184,11 @@ mod tests {
 
         assert!(MoltObject::from_bits(bits).is_none());
         let message = pending_exception_message_for_assertion();
-        assert!(message.contains("static extension PyInit returned NULL"));
-        assert!(message.contains("missing PyArray primitive"));
+        assert!(
+            message.contains("static extension PyInit returned NULL"),
+            "{message}"
+        );
+        assert!(message.contains("missing PyArray primitive"), "{message}");
     }
 
     #[test]
@@ -3782,7 +5216,7 @@ mod tests {
         };
         unsafe {
             molt_cpython_abi::api::errors::PyErr_SetString(
-                &raw mut PyExc_RuntimeError,
+                (&raw mut PyExc_RuntimeError).cast::<PyObject>(),
                 c"module definition missing name".as_ptr(),
             );
         }
@@ -3792,8 +5226,14 @@ mod tests {
 
         assert!(MoltObject::from_bits(bits).is_none());
         let message = pending_exception_message_for_assertion();
-        assert!(message.contains("static extension PyInit returned an invalid module definition"));
-        assert!(message.contains("module definition missing name"));
+        assert!(
+            message.contains("static extension PyInit returned an invalid module definition"),
+            "{message}"
+        );
+        assert!(
+            message.contains("module definition missing name"),
+            "{message}"
+        );
     }
 
     // ── PySet_* CPython ABI hook coverage ────────────────────────────────────
@@ -3811,7 +5251,7 @@ mod tests {
         // SAFETY: handle_to_pyobj materializes a bridge PyObject entry for a
         // live runtime handle; `bits` here always comes from a hook that just
         // allocated the object, so it is valid for the bridge round-trip.
-        unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_pyobj(bits) }
+        unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) }
     }
 
     fn bridge_int_pyobj(value: i64) -> *mut PyObject {
@@ -4079,19 +5519,21 @@ mod tests {
             assert_eq!(object_type_id(int_ptr), TYPE_ID_LIST_INT);
             assert_eq!(hook_list_len(int_bits), 4);
             assert_eq!(
-                MoltObject::from_bits(hook_list_item(int_bits, 3)).as_int(),
+                borrowed_bits(hook_list_item(int_bits, 3))
+                    .and_then(|bits| MoltObject::from_bits(bits).as_int()),
                 Some(99)
             );
 
-            let mut old = 0;
-            assert_eq!(
-                hook_list_set(int_bits, 1, MoltObject::from_int(42).bits(), &mut old),
-                1
-            );
+            let old = match hook_list_set(int_bits, 1, MoltObject::from_int(42).bits()).decode() {
+                molt_cpython_abi::hooks::DecodedHandleResult::Ok(bits) => bits,
+                _ => panic!("specialized list store failed"),
+            };
             assert_eq!(MoltObject::from_bits(old).as_int(), Some(2));
+            dec_ref_bits(&_py, old);
             assert_eq!(object_type_id(int_ptr), TYPE_ID_LIST);
             assert_eq!(
-                MoltObject::from_bits(hook_list_item(int_bits, 1)).as_int(),
+                borrowed_bits(hook_list_item(int_bits, 1))
+                    .and_then(|bits| MoltObject::from_bits(bits).as_int()),
                 Some(42)
             );
 
@@ -4103,23 +5545,26 @@ mod tests {
             assert_eq!(object_type_id(bool_ptr), TYPE_ID_LIST_BOOL);
             assert_eq!(hook_list_len(bool_bits), 3);
             assert_eq!(
-                MoltObject::from_bits(hook_list_item(bool_bits, 2)).as_bool(),
+                borrowed_bits(hook_list_item(bool_bits, 2))
+                    .and_then(|bits| MoltObject::from_bits(bits).as_bool()),
                 Some(true)
             );
 
             assert_eq!(hook_list_set_slice(int_bits, 0, 2, bool_bits), 0);
             assert_eq!(hook_list_len(int_bits), 5);
             assert_eq!(
-                MoltObject::from_bits(hook_list_item(int_bits, 0)).as_bool(),
+                borrowed_bits(hook_list_item(int_bits, 0))
+                    .and_then(|bits| MoltObject::from_bits(bits).as_bool()),
                 Some(true)
             );
             assert_eq!(
-                MoltObject::from_bits(hook_list_item(int_bits, 1)).as_bool(),
+                borrowed_bits(hook_list_item(int_bits, 1))
+                    .and_then(|bits| MoltObject::from_bits(bits).as_bool()),
                 Some(false)
             );
 
             hook_tuple_set(int_bits, 0, MoltObject::from_int(7).bits());
-            assert_eq!(hook_tuple_item(int_bits, 0), 0);
+            assert_eq!(borrowed_bits(hook_tuple_item(int_bits, 0)), None);
             dec_ref_bits(&_py, bool_bits);
             dec_ref_bits(&_py, int_bits);
         });
@@ -4216,9 +5661,13 @@ mod tests {
             assert_eq!(seq_vec_ref(ptr).capacity(), cap);
 
             let val = MoltObject::from_int(42).bits();
-            hook_tuple_set(bits, 2, val);
+            let old = match hook_tuple_set(bits, 2, val).decode() {
+                molt_cpython_abi::hooks::DecodedHandleResult::Ok(old) => old,
+                _ => panic!("tuple store failed"),
+            };
+            dec_ref_bits(&_py, old);
             assert_eq!(seq_vec_ref(ptr).len(), 3);
-            assert_eq!(hook_tuple_item(bits, 2), val);
+            assert_eq!(borrowed_bits(hook_tuple_item(bits, 2)), Some(val));
 
             let list_bits = hook_alloc_list();
             hook_tuple_set(list_bits, 0, val);

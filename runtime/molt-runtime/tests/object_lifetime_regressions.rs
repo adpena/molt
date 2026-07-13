@@ -3,8 +3,6 @@ use molt_runtime::MoltHeader;
 use std::sync::atomic::Ordering;
 use std::sync::{Mutex, MutexGuard, Once};
 
-const HEADER_FLAG_SKIP_CLASS_DECREF: u32 = molt_codegen_abi::HEADER_FLAG_SKIP_CLASS_DECREF;
-
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_isolate_bootstrap() -> u64 {
     MoltObject::none().bits()
@@ -174,10 +172,6 @@ fn alloc_class_balances_heap_class_refcount() {
     let obj_bits = molt_runtime::molt_alloc_class(0, class_bits);
     assert_ne!(obj_bits, none());
     assert_eq!(molt_runtime::molt_type_of_borrowed(obj_bits), class_bits);
-    assert_eq!(
-        header_ref(obj_bits).flags & HEADER_FLAG_SKIP_CLASS_DECREF,
-        0
-    );
     assert_eq!(refcount(class_bits), class_before + 1);
 
     molt_runtime::molt_dec_ref_obj(obj_bits);
@@ -187,7 +181,7 @@ fn alloc_class_balances_heap_class_refcount() {
 }
 
 #[test]
-fn alloc_class_static_marks_skip_class_decref_and_preserves_class_refcount() {
+fn alloc_class_static_owns_and_balances_heap_class_refcount() {
     let _guard = init();
 
     let class_bits = class_from_name(b"HeapClassStatic");
@@ -196,11 +190,7 @@ fn alloc_class_static_marks_skip_class_decref_and_preserves_class_refcount() {
     let obj_bits = molt_runtime::molt_alloc_class_static(0, class_bits);
     assert_ne!(obj_bits, none());
     assert_eq!(molt_runtime::molt_type_of_borrowed(obj_bits), class_bits);
-    assert_ne!(
-        header_ref(obj_bits).flags & HEADER_FLAG_SKIP_CLASS_DECREF,
-        0
-    );
-    assert_eq!(refcount(class_bits), class_before);
+    assert_eq!(refcount(class_bits), class_before + 1);
 
     molt_runtime::molt_dec_ref_obj(obj_bits);
     assert_eq!(refcount(class_bits), class_before);

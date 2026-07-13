@@ -12,7 +12,10 @@ use crate::builtins::attr::{
     object_attr_lookup_raw,
 };
 use crate::builtins::containers::tuple_method_bits;
-use crate::builtins::exceptions::molt_exception_last_pending;
+use crate::builtins::exceptions::{
+    ExceptionFieldSlot, exception_group_exceptions_bits, exception_group_message_bits,
+    exception_replace_field_bits, exception_replace_suppress_context, molt_exception_last_pending,
+};
 use crate::builtins::methods::{
     asyncgen_method_bits, complex_method_bits, coroutine_method_bits, generator_method_bits,
     object_method_bits, property_method_bits, range_method_bits, type_method_bits,
@@ -384,6 +387,19 @@ pub(crate) unsafe fn attr_lookup_ptr(
             let name = string_obj_to_owned(obj_from_bits(attr_bits));
             let attr_name = name.as_deref()?;
             match attr_name {
+                "message" | "exceptions" => {
+                    let class_bits = object_class_bits(obj_ptr);
+                    let base_group_bits = builtin_classes(_py).base_exception_group;
+                    if base_group_bits != 0 && issubclass_bits(class_bits, base_group_bits) {
+                        let bits = if attr_name == "message" {
+                            exception_group_message_bits(_py, obj_ptr)
+                        } else {
+                            exception_group_exceptions_bits(_py, obj_ptr)?
+                        };
+                        inc_ref_bits(_py, bits);
+                        return Some(bits);
+                    }
+                }
                 "name" | "obj" => {
                     let kind_bits = exception_kind_bits(obj_ptr);
                     if let Some(kind_ptr) = obj_from_bits(kind_bits).as_ptr()
@@ -439,19 +455,15 @@ pub(crate) unsafe fn attr_lookup_ptr(
                     inc_ref_bits(_py, bits);
                     return Some(bits);
                 }
-                "__class__" => {
-                    let mut class_bits = exception_class_bits(obj_ptr);
-                    if obj_from_bits(class_bits).is_none() || class_bits == 0 {
-                        let new_bits = exception_type_bits(_py, exception_kind_bits(obj_ptr));
-                        let slot = obj_ptr.add(7 * std::mem::size_of::<u64>()) as *mut u64;
-                        let old_bits = *slot;
-                        if old_bits != new_bits {
-                            dec_ref_bits(_py, old_bits);
-                            inc_ref_bits(_py, new_bits);
-                            *slot = new_bits;
-                        }
-                        class_bits = new_bits;
+                "__notes__" => {
+                    let bits = exception_notes_bits(obj_ptr);
+                    if !obj_from_bits(bits).is_none() {
+                        inc_ref_bits(_py, bits);
+                        return Some(bits);
                     }
+                }
+                "__class__" => {
+                    let class_bits = object_class_bits(obj_ptr);
                     inc_ref_bits(_py, class_bits);
                     return Some(class_bits);
                 }
@@ -463,12 +475,18 @@ pub(crate) unsafe fn attr_lookup_ptr(
                             return None;
                         }
                         let new_bits = MoltObject::from_ptr(dict_ptr).bits();
-                        let slot = obj_ptr.add(9 * std::mem::size_of::<u64>()) as *mut u64;
-                        let old_bits = *slot;
-                        if old_bits != new_bits {
-                            dec_ref_bits(_py, old_bits);
-                            *slot = new_bits;
+                        if exception_replace_field_bits(
+                            _py,
+                            MoltObject::from_ptr(obj_ptr).bits(),
+                            ExceptionFieldSlot::Dict,
+                            new_bits,
+                        )
+                        .is_err()
+                        {
+                            dec_ref_bits(_py, new_bits);
+                            return None;
                         }
+                        dec_ref_bits(_py, new_bits);
                         dict_bits = new_bits;
                     }
                     inc_ref_bits(_py, dict_bits);
@@ -521,10 +539,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
                 inc_ref_bits(_py, bits);
                 return Some(bits);
             }
-            let mut class_bits = exception_class_bits(obj_ptr);
-            if obj_from_bits(class_bits).is_none() || class_bits == 0 {
-                class_bits = exception_type_bits(_py, exception_kind_bits(obj_ptr));
-            }
+            let class_bits = object_class_bits(obj_ptr);
             if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
                 && object_type_id(class_ptr) == TYPE_ID_TYPE
             {
@@ -896,8 +911,9 @@ pub(crate) unsafe fn attr_lookup_ptr(
             let handle = &*handle_ptr;
             match name.as_str() {
                 "__class__" => {
-                    let class_bits = if handle.class_bits != 0 {
-                        handle.class_bits
+                    let class_bits = object_class_bits(obj_ptr);
+                    let class_bits = if class_bits != 0 {
+                        class_bits
                     } else {
                         builtin_classes(_py).file
                     };
@@ -1046,7 +1062,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
                 }
                 "closefd" => {
                     let builtins = builtin_classes(_py);
-                    if handle.class_bits != builtins.file_io {
+                    if object_class_bits(obj_ptr) != builtins.file_io {
                         return None;
                     }
                     if handle.detached {
@@ -1654,7 +1670,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
                 let slots = (*desc_ptr).slots;
                 let allows_dict = (*desc_ptr).allows_dict;
                 let attr_name = string_obj_to_owned(obj_from_bits(attr_bits));
-                let class_bits = (*desc_ptr).class_bits;
+                let class_bits = object_class_bits(obj_ptr);
                 if class_bits != 0
                     && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
                     && object_type_id(class_ptr) == TYPE_ID_TYPE
@@ -2162,8 +2178,8 @@ pub(crate) unsafe fn attr_lookup_ptr(
                 if class_bits != 0
                     && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
                     && object_type_id(class_ptr) == TYPE_ID_TYPE
-                    && let Some(info) = class_slots_info(_py, class_ptr, attr_bits)
-                    && !info.allows_attr
+                    && let Some(info) = class_slots_info(_py, class_ptr)
+                    && !info.allows_weakref
                 {
                     return None;
                 }
@@ -2175,7 +2191,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
                 if class_bits != 0
                     && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
                     && object_type_id(class_ptr) == TYPE_ID_TYPE
-                    && let Some(info) = class_slots_info(_py, class_ptr, attr_bits)
+                    && let Some(info) = class_slots_info(_py, class_ptr)
                     && !info.allows_dict
                 {
                     return None;

@@ -1365,9 +1365,7 @@ pub extern "C" fn molt_gc_collect(generation_bits: u64) -> u64 {
         if generation < 0 {
             return raise_exception::<_>(_py, "ValueError", "generation must be non-negative");
         }
-        let cycle_collected = unsafe { crate::object::gc::collect_cycles(_py).collected } as i64;
-        let weakref_collected = crate::object::weakref::weakref_collect_for_gc(_py) as i64;
-        let collected = cycle_collected + weakref_collected;
+        let collected = unsafe { crate::object::gc::collect_cycles(_py).collected } as i64;
         let mut state = gc_state().lock().unwrap();
         state.count = (0, 0, 0);
         MoltObject::from_int(collected).bits()

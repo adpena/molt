@@ -2050,6 +2050,7 @@ tests/differential/stdlib/typing_typeddict_class_defaults.py
 tests/differential/stdlib/typing_typevar_default_version_gate.py
 tests/differential/stdlib/unicode_normalization.py
 tests/differential/stdlib/unicodedata_basic.py
+tests/differential/stdlib/unraisable_hook_args_authority.py
 tests/differential/stdlib/urllib_cookie_redirect_combo.py
 tests/differential/stdlib/urllib_cookiejar_persistence.py
 tests/differential/stdlib/urllib_error_basic.py

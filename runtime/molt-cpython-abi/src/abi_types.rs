@@ -82,7 +82,11 @@ pub struct PyVarObject {
 #[repr(C)]
 pub struct PyTupleObject {
     pub ob_base: PyVarObject,
-    pub ob_item: *mut *mut PyObject,
+    /// CPython's variable-sized inline item tail.  The allocation is
+    /// `offset_of!(PyTupleObject, ob_item) + ob_size * sizeof(PyObject*)`;
+    /// `[1]` describes the first inline slot, not a separately allocated
+    /// pointer vector.
+    pub ob_item: [*mut PyObject; 1],
 }
 
 unsafe impl Send for PyTupleObject {}
@@ -99,6 +103,15 @@ pub struct PyLongObject {
     pub ob_base: PyObject,
     pub long_value: PyLongValue,
 }
+
+#[repr(C)]
+pub struct PyFloatObject {
+    pub ob_base: PyObject,
+    pub ob_fval: c_double,
+}
+
+unsafe impl Send for PyFloatObject {}
+unsafe impl Sync for PyFloatObject {}
 
 unsafe impl Send for PyLongObject {}
 unsafe impl Sync for PyLongObject {}
@@ -875,6 +888,10 @@ pub enum MoltTypeTag {
     Type = 10,
     Module = 11,
     Capsule = 12,
+    Complex = 13,
+    FrozenSet = 14,
+    Traceback = 15,
+    Exception = 16,
     Other = 255,
 }
 
@@ -904,7 +921,7 @@ pub static mut Py_None: PyObject = PyObject {
 /// [`IMMORTAL_REFCNT`] authority. Reconciled to the same canonical `True` handle
 /// as `_Py_TrueStruct` through `bridge::pyobj_to_handle_static`.
 #[unsafe(no_mangle)]
-pub static mut Py_True: PyLongObject = PyLongObject {
+pub static mut _Py_TrueStruct: PyLongObject = PyLongObject {
     ob_base: PyObject {
         ob_refcnt: IMMORTAL_REFCNT,
         ob_type: &raw mut PyBool_Type,
@@ -920,7 +937,7 @@ pub static mut Py_True: PyLongObject = PyLongObject {
 /// (1-0)|(0<<3) = 1`, `ob_digit[0] = 0`), so `((PyLongObject*)Py_False)->
 /// long_value.ob_digit[0]` reads `0` IN BOUNDS.
 #[unsafe(no_mangle)]
-pub static mut Py_False: PyLongObject = PyLongObject {
+pub static mut _Py_FalseStruct: PyLongObject = PyLongObject {
     ob_base: PyObject {
         ob_refcnt: IMMORTAL_REFCNT,
         ob_type: &raw mut PyBool_Type,
@@ -930,6 +947,11 @@ pub static mut Py_False: PyLongObject = PyLongObject {
         ob_digit: [0],
     },
 };
+
+// Rust-only aliases preserve the internal import surface without exporting
+// duplicate C data symbols or allocating duplicate singleton objects.
+pub use _Py_FalseStruct as Py_False;
+pub use _Py_TrueStruct as Py_True;
 
 /// Sentinel returned by rich comparison when the operation is not supported.
 /// Extensions compare against this pointer to decide whether to try the
@@ -968,6 +990,8 @@ pub static mut PyBytes_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 #[allow(non_upper_case_globals)]
 #[unsafe(no_mangle)]
 pub static mut PyByteArray_Type: PyTypeObject = unsafe { std::mem::zeroed() };
+#[unsafe(no_mangle)]
+pub static mut MoltManaged_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 #[allow(non_upper_case_globals)]
 #[unsafe(no_mangle)]
 pub static mut PyList_Type: PyTypeObject = unsafe { std::mem::zeroed() };
@@ -1025,6 +1049,9 @@ pub static mut PyCapsule_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 pub static mut PySlice_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 #[allow(non_upper_case_globals)]
 #[unsafe(no_mangle)]
+pub static mut PyTraceBack_Type: PyTypeObject = unsafe { std::mem::zeroed() };
+#[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
 pub static mut PyMemoryView_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 #[allow(non_upper_case_globals)]
 #[unsafe(no_mangle)]
@@ -1077,6 +1104,7 @@ pub unsafe fn init_static_types() {
         set_name!(PyUnicode_Type, b"str\0");
         set_name!(PyBytes_Type, b"bytes\0");
         set_name!(PyByteArray_Type, b"bytearray\0");
+        set_name!(MoltManaged_Type, b"molt.managed\0");
         set_name!(PyList_Type, b"list\0");
         set_name!(PyTuple_Type, b"tuple\0");
         set_name!(PyDict_Type, b"dict\0");
@@ -1096,6 +1124,7 @@ pub unsafe fn init_static_types() {
         set_name!(PyWrapperDescr_Type, b"wrapper_descriptor\0");
         set_name!(PyCapsule_Type, b"PyCapsule\0");
         set_name!(PySlice_Type, b"slice\0");
+        set_name!(PyTraceBack_Type, b"traceback\0");
         set_name!(PyMemoryView_Type, b"memoryview\0");
         PyMemoryView_Type.tp_basicsize = std::mem::size_of::<PyMemoryViewObject>() as Py_ssize_t;
         set_name!(PyDateTime_DateType, b"datetime.date\0");
@@ -1159,6 +1188,8 @@ pub unsafe fn init_static_types() {
         PyNone_Type.tp_str = Some(crate::api::typeobj::molt_native_str);
 
         PyByteArray_Type.tp_dealloc = Some(crate::api::strings::molt_bytearray_dealloc);
+        PyLong_Type.tp_dealloc = Some(crate::api::numbers::molt_numeric_scalar_dealloc);
+        PyFloat_Type.tp_dealloc = Some(crate::api::numbers::molt_numeric_scalar_dealloc);
         PyComplex_Type.tp_dealloc = Some(crate::api::numbers::molt_complex_dealloc);
         PyDictProxy_Type.tp_basicsize = std::mem::size_of::<PyDictProxyObject>() as Py_ssize_t;
         PyDictProxy_Type.tp_dealloc = Some(crate::api::mapping::molt_dictproxy_dealloc);
@@ -1303,6 +1334,14 @@ pub unsafe fn init_static_types() {
         PyFloat_Type.tp_basicsize = (std::mem::size_of::<PyObject>()
             + std::mem::size_of::<std::os::raw::c_double>())
             as Py_ssize_t;
+        shell!(MoltManaged_Type, Py_TPFLAGS_DEFAULT, object);
+        MoltManaged_Type.tp_basicsize = std::mem::size_of::<PyObject>() as Py_ssize_t;
+        shell!(
+            PyTraceBack_Type,
+            Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,
+            object
+        );
+        PyTraceBack_Type.tp_basicsize = std::mem::size_of::<PyObject>() as Py_ssize_t;
         // complex — BASETYPE.
         shell!(
             PyComplex_Type,
@@ -1387,6 +1426,7 @@ pub unsafe fn init_static_types() {
             Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC | Py_TPFLAGS_BASETYPE,
             object
         );
+        init_exception_singleton_types();
 
         Py_None.ob_type = &raw mut PyNone_Type;
         // `Py_True`/`Py_False` set `ob_base.ob_type = &PyBool_Type` in their const
@@ -1398,58 +1438,10 @@ pub unsafe fn init_static_types() {
     }
 }
 
-/// Register the runtime's canonical CPython-ABI *sentinel* data objects in the
-/// object bridge so a native extension that resolves them (via the split-runtime
-/// GOT data retarget) and hands them straight back to the runtime — as a
-/// `PyDict_SetItem` value or key — resolves through `pyobj_to_handle` instead of
-/// failing the bridge lookup.
-///
-/// Scope: every canonical CPython-ABI data object the runtime owns and that a
-/// native extension can hand back by *pointer identity* — the exception
-/// singletons, the `Ellipsis` / `NotImplemented` / UTC sentinels, and the static
-/// *type* objects (`PyBool_Type`, `PyLong_Type`, ...). The type statics MUST be
-/// registered up front: numpy references builtin types (`&PyLong_Type`,
-/// `&PyUnicode_Type`, ...) *by address* — as `PyDict_SetItem` keys in its
-/// scalar-type → DType registry — without ever calling `PyType_Ready` on them
-/// (they are already `Py_TPFLAGS_READY` from `init_static_types`), so relying on
-/// the `PyType_Ready` bridge registration alone leaves them unresolved. This is
-/// the full canonical data-symbol object set (see
-/// `wasm_cpython_abi_data_symbol_names()` in `src/molt/_wasm_runtime_exports.py`,
-/// cross-checked by `test_register_static_abi_objects_covers_type_statics`), minus
-/// the integer/flag constants (`Py_EQ`, `Py_OptimizeFlag`, ...) which are not
-/// `PyObject`s. `Py_None` / `Py_True` / `Py_False` are resolved by identity in
-/// `pyobj_to_handle_static` and must NOT be raw-registered (that would shadow their
-/// canonical NaN-boxed handles); note their *type* objects (`PyNone_Type`,
-/// `PyBool_Type`, `PyNotImplemented_Type`) ARE registered here — a type object is
-/// distinct from the singleton instance.
-///
-/// Idempotent (`register_raw_pyobj` no-ops on a re-seen pointer), so it is safe to
-/// call from the `Once`-guarded `molt_cpython_abi_init` and to overlap with the
-/// per-type `PyType_Ready` registration.
-pub fn register_static_abi_objects() {
-    let bridge = &*crate::bridge::GLOBAL_BRIDGE;
-    for ptr in exc_singleton_ptrs() {
-        unsafe { bridge.register_raw_pyobj(ptr) };
-    }
-    let sentinels: [*mut PyObject; 3] = [
-        &raw mut Py_NotImplementedSentinel,
-        &raw mut Py_EllipsisObject,
-        &raw mut PyDateTime_TimeZone_UTC_Object,
-    ];
-    for ptr in sentinels {
-        unsafe { bridge.register_raw_pyobj(ptr) };
-    }
-    for ptr in type_static_ptrs() {
-        unsafe { bridge.register_raw_pyobj(ptr) };
-    }
-}
-
-/// Addresses of every canonical static *type* object the runtime owns, for bridge
-/// registration. These are the `Py*_Type` data symbols a native extension resolves
-/// (via the split-runtime GOT data retarget) and hands back to the runtime as a
-/// `PyDict_SetItem` key/value or `PyModule_AddObject` value. Kept in lock-step with
-/// the `*_Type` entries of `wasm_cpython_abi_data_symbol_names()` — the split-runtime
-/// export authority — by `test_register_static_abi_objects_covers_type_statics`.
+/// Addresses of every canonical static type object for binding and diagnostics.
+/// Runtime builtin classes are explicitly bound by `register_cpython_hooks`;
+/// other genuine C objects acquire foreign custody lazily on first crossing.
+/// Bootstrap never mints synthetic handles.
 pub fn type_static_ptrs() -> Vec<*mut PyObject> {
     vec![
         &raw mut PyBaseObject_Type as *mut PyObject,
@@ -1482,6 +1474,7 @@ pub fn type_static_ptrs() -> Vec<*mut PyObject> {
         &raw mut PyNotImplemented_Type as *mut PyObject,
         &raw mut PySet_Type as *mut PyObject,
         &raw mut PySlice_Type as *mut PyObject,
+        &raw mut PyTraceBack_Type as *mut PyObject,
         &raw mut PyTuple_Type as *mut PyObject,
         &raw mut PyType_Type as *mut PyObject,
         &raw mut PyUnicode_Type as *mut PyObject,
@@ -1506,6 +1499,15 @@ macro_rules! exc_parent_expand {
     };
 }
 
+macro_rules! exc_parent_type_expand {
+    (ROOT) => {
+        &raw mut PyBaseObject_Type
+    };
+    ($parent:ident) => {
+        &raw mut $parent
+    };
+}
+
 // One `pub static mut $name: PyObject` per exception class, plus a single
 // authoritative name lookup ([`exc_singleton_name`]) AND the base-class edge
 // ([`exc_singleton_parent`]) generated from the same list so the three can
@@ -1517,14 +1519,7 @@ macro_rules! exc_singletons {
     ($($name:ident => $parent:tt),* $(,)?) => {
         $(
             #[unsafe(no_mangle)]
-            pub static mut $name: PyObject = PyObject {
-                // Immortal: CPython's PyExc_* are immortal type objects, so a
-                // borrowed-ref over-DECREF must NOT free this static. Routed
-                // through the single [`IMMORTAL_REFCNT`] authority (was `1`,
-                // which molt's own Py_DECREF treated as MORTAL → static-free).
-                ob_refcnt: IMMORTAL_REFCNT,
-                ob_type: std::ptr::null_mut(),
-            };
+            pub static mut $name: PyTypeObject = unsafe { std::mem::zeroed() };
         )*
 
         /// If `ptr` is the address of one of the exception singletons, return
@@ -1532,8 +1527,19 @@ macro_rules! exc_singletons {
         /// dereference — so it is safe for any `*const PyObject`.
         pub fn exc_singleton_name(ptr: *const PyObject) -> Option<&'static str> {
             $(
-                if std::ptr::eq(ptr, &raw const $name) {
+                if std::ptr::eq(ptr, (&raw const $name).cast::<PyObject>()) {
                     return Some(stringify!($name));
+                }
+            )*
+            None
+        }
+
+        /// Resolve a runtime builtin exception class name (without `PyExc_`)
+        /// back to the canonical exported C exception object.
+        pub fn exc_singleton_for_builtin_name(name: &str) -> Option<*mut PyObject> {
+            $(
+                if name == stringify!($name).strip_prefix("PyExc_").unwrap_or(stringify!($name)) {
+                    return Some(&raw mut $name as *mut PyObject);
                 }
             )*
             None
@@ -1546,7 +1552,7 @@ macro_rules! exc_singletons {
         /// pending `IndexError`). Pointer-identity only — no dereference.
         pub fn exc_singleton_parent(ptr: *const PyObject) -> Option<*mut PyObject> {
             $(
-                if std::ptr::eq(ptr, &raw const $name) {
+                if std::ptr::eq(ptr, (&raw const $name).cast::<PyObject>()) {
                     return exc_parent_expand!($parent);
                 }
             )*
@@ -1562,6 +1568,27 @@ macro_rules! exc_singletons {
             vec![
                 $( &raw mut $name as *mut PyObject, )*
             ]
+        }
+
+        pub unsafe fn init_exception_singleton_types() {
+            $(
+                let ty = &raw mut $name;
+                unsafe {
+                    (*ty).ob_base.ob_base.ob_refcnt = IMMORTAL_REFCNT;
+                    (*ty).ob_base.ob_base.ob_type = &raw mut PyType_Type;
+                    (*ty).tp_name = concat!(stringify!($name), "\0").as_ptr().add(6).cast();
+                    (*ty).tp_basicsize = std::mem::size_of::<PyBaseExceptionObject>() as Py_ssize_t;
+                    (*ty).tp_flags = Py_TPFLAGS_DEFAULT
+                        | Py_TPFLAGS_BASETYPE
+                        | Py_TPFLAGS_READY
+                        | Py_TPFLAGS_IMMUTABLETYPE
+                        | Py_TPFLAGS_BASE_EXC_SUBCLASS;
+                    (*ty).tp_base = exc_parent_type_expand!($parent);
+                    (*ty).tp_new = Some(crate::api::errors::molt_native_exception_new);
+                    (*ty).tp_dealloc = Some(crate::api::errors::molt_native_exception_dealloc);
+                    (*ty).tp_str = Some(crate::api::errors::molt_native_exception_str);
+                }
+            )*
         }
     };
 }
@@ -1586,7 +1613,6 @@ exc_singletons!(
     // CPython aliases IOError to the OSError object itself; the ABI keeps a
     // distinct singleton, so subclass-of-OSError is the closest sound edge
     // (an `except OSError` catches a pending IOError, as in CPython).
-    PyExc_IOError => PyExc_OSError,
     PyExc_FileNotFoundError => PyExc_OSError,
     PyExc_PermissionError => PyExc_OSError,
     PyExc_FileExistsError => PyExc_OSError,
@@ -1640,7 +1666,7 @@ mod exc_hierarchy_tests {
         }
         // Spot-pin the load-bearing chains.
         assert_eq!(
-            chain(&raw mut PyExc_IndexError),
+            chain((&raw mut PyExc_IndexError).cast::<crate::abi_types::PyObject>()),
             [
                 "PyExc_IndexError",
                 "PyExc_LookupError",
@@ -1649,7 +1675,7 @@ mod exc_hierarchy_tests {
             ]
         );
         assert_eq!(
-            chain(&raw mut PyExc_OverflowError),
+            chain((&raw mut PyExc_OverflowError).cast::<crate::abi_types::PyObject>()),
             [
                 "PyExc_OverflowError",
                 "PyExc_ArithmeticError",
@@ -1658,7 +1684,7 @@ mod exc_hierarchy_tests {
             ]
         );
         assert_eq!(
-            chain(&raw mut PyExc_UnicodeDecodeError),
+            chain((&raw mut PyExc_UnicodeDecodeError).cast::<crate::abi_types::PyObject>()),
             [
                 "PyExc_UnicodeDecodeError",
                 "PyExc_UnicodeError",
@@ -1668,7 +1694,7 @@ mod exc_hierarchy_tests {
             ]
         );
         assert_eq!(
-            chain(&raw mut PyExc_BrokenPipeError),
+            chain((&raw mut PyExc_BrokenPipeError).cast::<crate::abi_types::PyObject>()),
             [
                 "PyExc_BrokenPipeError",
                 "PyExc_ConnectionError",
@@ -1678,7 +1704,7 @@ mod exc_hierarchy_tests {
             ]
         );
         assert_eq!(
-            chain(&raw mut PyExc_ModuleNotFoundError),
+            chain((&raw mut PyExc_ModuleNotFoundError).cast::<crate::abi_types::PyObject>()),
             [
                 "PyExc_ModuleNotFoundError",
                 "PyExc_ImportError",
@@ -1849,11 +1875,11 @@ mod unresolved_pyobject_tests {
         // unrelated pointer does not. Address-identity only, so this is the
         // authority the silent-failure diagnostic relies on.
         assert_eq!(
-            exc_singleton_name(&raw const PyExc_Exception),
+            exc_singleton_name((&raw const PyExc_Exception).cast::<PyObject>()),
             Some("PyExc_Exception")
         );
         assert_eq!(
-            exc_singleton_name(&raw const PyExc_ValueError),
+            exc_singleton_name((&raw const PyExc_ValueError).cast::<PyObject>()),
             Some("PyExc_ValueError")
         );
         let mut unrelated = PyObject {
@@ -1875,7 +1901,9 @@ mod unresolved_pyobject_tests {
         );
         // A runtime exception singleton is named directly.
         assert_eq!(
-            unsafe { describe_unresolved_pyobject(&raw const PyExc_Exception) },
+            unsafe {
+                describe_unresolved_pyobject((&raw const PyExc_Exception).cast::<PyObject>())
+            },
             "exception-singleton PyExc_Exception"
         );
         // A bare sentinel (ob_type == NULL) that is not an exception singleton —
@@ -1913,10 +1941,10 @@ mod unresolved_pyobject_tests {
 
     #[test]
     fn type_static_ptrs_are_distinct_and_nonnull() {
-        // Exactly the canonical `Py*_Type` data-symbol set (34 statics). Guards
+        // Exactly the canonical `Py*_Type` data-symbol set (35 statics). Guards
         // against an accidental drop/duplicate when the type static list changes.
         let ptrs = type_static_ptrs();
-        assert_eq!(ptrs.len(), 34, "type static count drifted");
+        assert_eq!(ptrs.len(), 35, "type static count drifted");
         for p in &ptrs {
             assert!(!p.is_null());
         }
@@ -1925,42 +1953,8 @@ mod unresolved_pyobject_tests {
         addrs.dedup();
         assert_eq!(
             addrs.len(),
-            34,
+            35,
             "duplicate type static in type_static_ptrs()"
-        );
-    }
-
-    #[test]
-    fn register_static_abi_objects_resolves_type_statics_and_singletons() {
-        // Regression for the numpy `_multiarray_umath` `PyDict_SetItem(unresolved
-        // key)` frontier: a builtin type static (`&PyLong_Type` &c.) handed back by
-        // the extension as a dict key must resolve through `pyobj_to_handle` after
-        // `register_static_abi_objects`, instead of failing the bridge lookup. This
-        // asserts the bridge RESOLVES the canonical objects — it does NOT weaken the
-        // unresolved-object check (an unregistered pointer still returns `None`).
-        register_static_abi_objects();
-        let bridge = &*crate::bridge::GLOBAL_BRIDGE;
-        for ptr in type_static_ptrs() {
-            assert!(
-                bridge.pyobj_to_handle(ptr).is_some(),
-                "type static @ {ptr:p} did not resolve after registration"
-            );
-        }
-        for ptr in exc_singleton_ptrs() {
-            assert!(
-                bridge.pyobj_to_handle(ptr).is_some(),
-                "exception singleton @ {ptr:p} did not resolve after registration"
-            );
-        }
-        // Negative control: a fresh, never-registered pointer still fails to
-        // resolve — the unresolved check is intact, not blanket-weakened.
-        let mut stray = PyObject {
-            ob_refcnt: 1,
-            ob_type: std::ptr::null_mut(),
-        };
-        assert!(
-            bridge.pyobj_to_handle(&raw mut stray).is_none(),
-            "unregistered pointer must remain unresolved"
         );
     }
 }
@@ -2074,7 +2068,7 @@ mod immortal_authority_tests {
                 (*obj).tp_hash.is_some(),
                 "object.tp_hash must be identity (else object() is 'unhashable type: object')"
             );
-            let hni = crate::api::typeobj::PyObject_HashNotImplemented as usize;
+            let hni = crate::api::typeobj::PyObject_HashNotImplemented as *const () as usize;
             for (name, t) in [
                 ("list", &raw const PyList_Type),
                 ("dict", &raw const PyDict_Type),
@@ -2125,15 +2119,11 @@ mod immortal_authority_tests {
     #[test]
     fn exc_singleton_survives_over_decref() {
         crate::bridge::molt_cpython_abi_init();
-        let exc = &raw mut PyExc_ValueError;
+        let exc = (&raw mut PyExc_ValueError).cast::<crate::abi_types::PyObject>();
         let rc_before = unsafe { (*exc).ob_refcnt };
         assert!(
             is_immortal_refcnt(rc_before),
             "PyExc_ValueError must be immortal (pre-fix it was the mortal `1`)"
-        );
-        assert!(
-            crate::bridge::GLOBAL_BRIDGE.pyobj_to_handle(exc).is_some(),
-            "exc singleton must be bridge-registered before the over-DECREF"
         );
         // 8 net-negative DECREFs — for a mortal `1` this reaches 0 and frees.
         for _ in 0..8 {
@@ -2143,10 +2133,6 @@ mod immortal_authority_tests {
             unsafe { (*exc).ob_refcnt },
             rc_before,
             "immortal exception singleton refcount changed under DECREF"
-        );
-        assert!(
-            crate::bridge::GLOBAL_BRIDGE.pyobj_to_handle(exc).is_some(),
-            "exc singleton lost bridge identity after over-DECREF (static-free regression)"
         );
     }
 
@@ -2178,32 +2164,21 @@ mod immortal_authority_tests {
         }
     }
 
-    /// Regression: handing a registered immortal singleton back out through the
-    /// bridge (`handle_to_pyobj`, the `raw_py` path) must NOT touch its refcount.
-    /// Pre-fix the raw `ob_refcnt += 1` crept it up on every call; harmless under
-    /// the old `>= 1<<29` threshold, but under CPython-faithful detection the
-    /// first increment past `IMMORTAL_REFCNT` (bit 31 → clear) silently mortalises
-    /// the static → a later DECREF frees static storage (UAF).
+    /// Direct C ownership operations on an immortal exception type are no-ops.
+    /// Runtime binding is an explicit authority installed by
+    /// `register_cpython_hooks`; bootstrap does not mint a synthetic handle.
     #[test]
-    fn bridge_never_increments_a_registered_immortal_singleton() {
+    fn immortal_exception_type_ignores_direct_incref() {
         crate::bridge::molt_cpython_abi_init();
-        let exc = &raw mut PyExc_TypeError;
-        let bridge = &*crate::bridge::GLOBAL_BRIDGE;
-        let bits = bridge
-            .pyobj_to_handle(exc)
-            .expect("registered exc singleton resolves to a handle");
+        let exc = (&raw mut PyExc_TypeError).cast::<crate::abi_types::PyObject>();
         let rc_before = unsafe { (*exc).ob_refcnt };
         for _ in 0..16 {
-            let p = unsafe { bridge.handle_to_pyobj(bits.as_handle()) };
-            assert!(
-                std::ptr::eq(p, exc),
-                "singleton handle round-trip lost identity"
-            );
+            unsafe { crate::api::refcount::Py_INCREF(exc) };
         }
         assert_eq!(
             unsafe { (*exc).ob_refcnt },
             rc_before,
-            "bridge incremented an immortal singleton (static-free/UAF vector)"
+            "Py_INCREF changed an immortal exception type"
         );
         assert!(
             is_immortal_refcnt(unsafe { (*exc).ob_refcnt }),

@@ -267,11 +267,21 @@ fn test_tuple_new_with_size() {
 }
 
 #[test]
-fn test_tuple_new_negative_size_clamps_to_zero() {
+fn test_tuple_new_negative_size_rejects_with_system_error() {
     init();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let py = unsafe { molt_cpython_abi::api::sequences::PyTuple_New(-5) };
-    assert!(!py.is_null());
-    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(py) };
+    assert!(py.is_null());
+    assert_eq!(
+        unsafe {
+            molt_cpython_abi::api::errors::PyErr_ExceptionMatches(
+                (&raw mut molt_cpython_abi::abi_types::PyExc_SystemError)
+                    .cast::<molt_cpython_abi::abi_types::PyObject>(),
+            )
+        },
+        1
+    );
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 }
 
 // ---------------------------------------------------------------------------

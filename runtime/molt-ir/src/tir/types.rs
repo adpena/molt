@@ -33,9 +33,8 @@ pub enum TirType {
     ///     `class_layout_size` runtime lookup),
     ///   - tighten escape analysis (instances of a class with no
     ///     `__del__` and no weakref support can be stack-allocated
-    ///     without per-instance cold-header allocation — Phase 5
-    ///     step 3 prepared the runtime side; future commits wire
-    ///     codegen).
+    ///     with inline borrowed class metadata and no aux-sidecar
+    ///     allocation).
     ///
     /// Two `UserClass` values meet to themselves when their ids
     /// match, otherwise they fall through to the standard Union /

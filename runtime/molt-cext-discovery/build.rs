@@ -7,8 +7,6 @@
 //!
 //!   PUBLIC singletons (identity-critical: numpy's `Py_None` == molt's None)
 //!     _Py_NoneStruct   ->  Py_None
-//!     _Py_TrueStruct   ->  Py_True
-//!     _Py_FalseStruct  ->  Py_False
 //!
 //!   PY_SSIZE_T_CLEAN variadic variants (numpy defines PY_SSIZE_T_CLEAN, so its
 //!   `PyArg_ParseTuple` calls link `_PyArg_ParseTuple_SizeT` etc. — the SAME
@@ -36,11 +34,7 @@ fn main() {
 
     // (molt C symbol -> canonical CPython C name). The macho `_` prefix is added
     // below for Darwin; the `to` names carry CPython's own leading underscore.
-    let aliases: &[(&str, &str)] = &[
-        ("Py_None", "_Py_NoneStruct"),
-        ("Py_True", "_Py_TrueStruct"),
-        ("Py_False", "_Py_FalseStruct"),
-    ];
+    let aliases: &[(&str, &str)] = &[("Py_None", "_Py_NoneStruct")];
 
     if target_os == "macos" || target_os == "ios" {
         for (from, to) in aliases {

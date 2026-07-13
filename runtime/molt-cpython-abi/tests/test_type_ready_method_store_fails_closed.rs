@@ -24,7 +24,8 @@
 #![allow(non_snake_case)]
 
 use molt_cpython_abi::abi_types::*;
-use molt_cpython_abi::hooks::RuntimeHooks;
+use molt_cpython_abi::hooks::{BorrowedHandleResult, RuntimeHooks};
+use molt_lang_obj_model::MoltObject;
 use std::collections::HashMap;
 use std::os::raw::c_char;
 use std::ptr;
@@ -35,7 +36,8 @@ static NEXT_HANDLE: AtomicU64 = AtomicU64::new(0x6100_0000);
 static DICTS: Mutex<Option<HashMap<u64, HashMap<u64, u64>>>> = Mutex::new(None);
 
 fn fresh_handle() -> u64 {
-    NEXT_HANDLE.fetch_add(0x10, Ordering::Relaxed)
+    let address = NEXT_HANDLE.fetch_add(0x10, Ordering::Relaxed) as usize;
+    MoltObject::from_ptr(ptr::with_exposed_provenance_mut(address)).bits()
 }
 
 fn dicts() -> std::sync::MutexGuard<'static, Option<HashMap<u64, HashMap<u64, u64>>>> {
@@ -52,19 +54,23 @@ unsafe extern "C" fn fake_alloc_dict() -> u64 {
     h
 }
 
-unsafe extern "C" fn fake_dict_set(dict_bits: u64, key_bits: u64, val_bits: u64) {
+unsafe extern "C" fn fake_dict_set(dict_bits: u64, key_bits: u64, val_bits: u64) -> i32 {
     if let Some(m) = dicts().as_mut().unwrap().get_mut(&dict_bits) {
         m.insert(key_bits, val_bits);
     }
+    0
 }
 
-unsafe extern "C" fn fake_dict_get(dict_bits: u64, key_bits: u64) -> u64 {
-    dicts()
+unsafe extern "C" fn fake_dict_get(dict_bits: u64, key_bits: u64) -> BorrowedHandleResult {
+    match dicts()
         .as_ref()
         .unwrap()
         .get(&dict_bits)
         .and_then(|m| m.get(&key_bits).copied())
-        .unwrap_or(0)
+    {
+        Some(bits) => BorrowedHandleResult::ok(bits),
+        None => BorrowedHandleResult::missing(),
+    }
 }
 
 unsafe extern "C" fn fake_alloc_str(data: *const u8, len: usize) -> u64 {
@@ -78,7 +84,10 @@ unsafe extern "C" fn fake_alloc_str(data: *const u8, len: usize) -> u64 {
     if g.is_none() {
         *g = Some(HashMap::new());
     }
-    *g.as_mut().unwrap().entry(bytes).or_insert_with(fresh_handle)
+    *g.as_mut()
+        .unwrap()
+        .entry(bytes)
+        .or_insert_with(fresh_handle)
 }
 
 unsafe extern "C" fn fake_classify_heap(_bits: u64) -> u8 {

@@ -2,6 +2,10 @@
 // fused super dispatch, C-ABI IC entry points, and cache lifecycle.
 
 use super::*;
+use crate::object::{
+    ClassEdgeOwnership, ObjectAuxPreselection, alloc_object_zeroed_with_aux,
+    object_init_class_edge_unpublished,
+};
 
 fn trace_call_bind_ic_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
@@ -691,12 +695,24 @@ pub(super) unsafe fn try_call_bind_ic_fast(
             // entry was populated.
             let inst_bits = if entry.cached_alloc_size > 0 {
                 let total = entry.cached_alloc_size as usize;
-                let obj_ptr = alloc_object_zeroed(_py, total, TYPE_ID_OBJECT);
+                let obj_ptr = alloc_object_zeroed_with_aux(
+                    _py,
+                    total,
+                    TYPE_ID_OBJECT,
+                    ObjectAuxPreselection::ClassInline,
+                );
                 if obj_ptr.is_null() {
                     return Some(MoltObject::none().bits());
                 }
-                object_set_class_bits(_py, obj_ptr, class_bits);
-                inc_ref_bits(_py, class_bits);
+                if !object_init_class_edge_unpublished(
+                    _py,
+                    obj_ptr,
+                    class_bits,
+                    ClassEdgeOwnership::Owned,
+                ) {
+                    dec_ref_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
+                    return Some(MoltObject::none().bits());
+                }
                 MoltObject::from_ptr(obj_ptr).bits()
             } else {
                 let bits = alloc_instance_for_default_object_new(_py, call_ptr);

@@ -1,7 +1,10 @@
 """Purpose: differential coverage for weakref extended behavior."""
 
+import atexit
 import gc
+import types
 import weakref
+from dataclasses import dataclass
 
 
 class Thing:
@@ -49,6 +52,61 @@ class ProxyTarget:
         return self.v
 
 
+class SlotsOnly:
+    __slots__ = ()
+
+
+class SlotsWeak:
+    __slots__ = ("__weakref__",)
+
+
+class InheritedWeak(SlotsWeak):
+    __slots__ = ()
+
+
+class DefaultBase:
+    pass
+
+
+class InheritedDefaultWeak(DefaultBase):
+    __slots__ = ()
+
+
+class SlotsBase:
+    __slots__ = ()
+
+
+class InheritedSlotsOnly(SlotsBase):
+    __slots__ = ()
+
+
+class WeakDict(dict):
+    __slots__ = ("__weakref__",)
+
+
+@dataclass
+class DefaultDataclass:
+    value: int = 1
+
+
+@dataclass(slots=True)
+class SlotsDataclass:
+    value: int = 1
+
+
+@dataclass(slots=True, weakref_slot=True)
+class WeakSlotsDataclass:
+    value: int = 1
+
+
+def supports_weakref(value):
+    try:
+        weakref.ref(value)
+    except TypeError:
+        return False
+    return True
+
+
 print("hash-cached")
 obj = Hashy()
 ref = weakref.ref(obj)
@@ -73,6 +131,54 @@ ref1 = weakref.ref(obj)
 ref2 = weakref.ref(obj)
 print("count", weakref.getweakrefcount(obj))
 print("refs", len(weakref.getweakrefs(obj)))
+
+print(
+    "weakrefability-user",
+    supports_weakref(Thing()),
+    supports_weakref(SlotsOnly()),
+    supports_weakref(SlotsWeak()),
+    supports_weakref(InheritedWeak()),
+    supports_weakref(InheritedDefaultWeak()),
+    supports_weakref(InheritedSlotsOnly()),
+    supports_weakref(WeakDict()),
+    supports_weakref(DefaultDataclass()),
+    supports_weakref(SlotsDataclass()),
+    supports_weakref(WeakSlotsDataclass()),
+)
+bound_owner = Obj()
+generator = (value for value in ())
+print(
+    "weakrefability-builtins-yes",
+    supports_weakref(supports_weakref),
+    supports_weakref(bound_owner.method),
+    supports_weakref(types.ModuleType("weakref_probe")),
+    supports_weakref(Thing),
+    supports_weakref(generator),
+    supports_weakref(set()),
+    supports_weakref(frozenset()),
+    supports_weakref(supports_weakref.__code__),
+)
+print(
+    "weakrefability-builtins-no",
+    supports_weakref("text"),
+    supports_weakref([]),
+    supports_weakref({}),
+    supports_weakref(()),
+    supports_weakref(b"bytes"),
+    supports_weakref(bytearray()),
+    supports_weakref(range(1)),
+    supports_weakref(slice(1)),
+    supports_weakref(Exception()),
+    supports_weakref(enumerate(())),
+    supports_weakref(zip(())),
+    supports_weakref(map(int, ())),
+    supports_weakref(filter(None, ())),
+    supports_weakref([].__str__),
+    supports_weakref(classmethod(lambda cls: None)),
+    supports_weakref(staticmethod(lambda: None)),
+    supports_weakref(property(lambda self: None)),
+    supports_weakref(1 + 2j),
+)
 
 print("weakkey")
 k1 = Key(1)
@@ -119,6 +225,19 @@ gc.collect()
 print("fin-calls", calls)
 print("fin-alive", fin.alive)
 print("fin-peek", fin.peek() is not None)
+
+clear_calls = []
+clear_obj = Thing()
+clear_fin = weakref.finalize(clear_obj, clear_calls.append, "before-clear")
+print("fin-clear-before", atexit._ncallbacks())
+atexit._clear()
+print("fin-clear-after", atexit._ncallbacks())
+post_clear_obj = Thing()
+post_clear_fin = weakref.finalize(post_clear_obj, clear_calls.append, "after-clear")
+print("fin-clear-after-new", atexit._ncallbacks())
+del post_clear_obj
+gc.collect()
+print("fin-clear-object-death", clear_calls, post_clear_fin.alive)
 
 print("proxy")
 obj = ProxyTarget(1)

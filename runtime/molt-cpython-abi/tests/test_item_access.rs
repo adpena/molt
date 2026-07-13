@@ -13,13 +13,13 @@
 
 #![allow(non_snake_case)]
 
+mod support;
+
 use molt_cpython_abi::abi_types::{MoltTypeTag, PyMappingMethods, PyObject, PyTypeObject};
 use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
 use molt_lang_obj_model::MoltObject;
-use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr;
-use std::sync::Mutex;
 use std::sync::atomic::Ordering;
 
 // A hook table whose `classify_heap` reports Dict (so an is_ptr handle takes the
@@ -28,50 +28,20 @@ use std::sync::atomic::Ordering;
 // other hook stays at STUB. classify_heap->Dict only ever fires for a bridged
 // is_ptr `o`; the foreign-mapping test's receiver is unbridged, so it is
 // unaffected.
-static STRINGS: Mutex<Option<HashMap<u64, &'static [u8]>>> = Mutex::new(None);
 
 unsafe extern "C" fn dict_classify(bits: u64) -> u8 {
-    if STRINGS
-        .lock()
-        .unwrap()
-        .as_ref()
-        .is_some_and(|strings| strings.contains_key(&bits))
-    {
+    if support::fake_strings::contains(bits) {
         MoltTypeTag::Str as u8
     } else {
         MoltTypeTag::Dict as u8
     }
 }
 
-unsafe extern "C" fn dict_get_miss(_d: u64, _k: u64) -> u64 {
-    0
-}
-
-unsafe extern "C" fn fake_alloc_str(data: *const u8, len: usize) -> u64 {
-    let bytes = if data.is_null() || len == 0 {
-        &[]
-    } else {
-        unsafe { std::slice::from_raw_parts(data, len) }
-    };
-    let stored = Box::leak(bytes.to_vec().into_boxed_slice());
-    let bits = MoltObject::from_ptr(stored.as_ptr().cast_mut()).bits();
-    STRINGS
-        .lock()
-        .unwrap()
-        .get_or_insert_with(HashMap::new)
-        .insert(bits, stored);
-    bits
-}
-
-unsafe extern "C" fn fake_str_data(bits: u64, out_len: *mut usize) -> *const u8 {
-    let strings = STRINGS.lock().unwrap();
-    let Some(bytes) = strings.as_ref().and_then(|strings| strings.get(&bits)) else {
-        return ptr::null();
-    };
-    if !out_len.is_null() {
-        unsafe { *out_len = bytes.len() };
-    }
-    bytes.as_ptr()
+unsafe extern "C" fn dict_get_miss(
+    _d: u64,
+    _k: u64,
+) -> molt_cpython_abi::hooks::BorrowedHandleResult {
+    molt_cpython_abi::hooks::BorrowedHandleResult::missing()
 }
 
 fn init_hooks() {
@@ -79,8 +49,7 @@ fn init_hooks() {
     let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
     hooks.classify_heap = dict_classify;
     hooks.dict_get = dict_get_miss;
-    hooks.alloc_str = fake_alloc_str;
-    hooks.str_data = fake_str_data;
+    support::fake_strings::wire(&mut hooks);
     // Idempotent: the first test to run installs the shared table; the rest
     // observe it. Both tests need exactly this table.
     unsafe {
@@ -99,9 +68,9 @@ fn get_item_native_dict_miss_raises_keyerror_with_key() {
     let backing: Box<u8> = Box::new(0);
     let dict_ptr = Box::into_raw(backing);
     let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
-    let dict_obj = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(dict_bits) };
+    let dict_obj = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(dict_bits) };
     // A native int key so `PyErr_SetObject(KeyError, key)` can format its value.
-    let key = unsafe { GLOBAL_BRIDGE.handle_to_pyobj(MoltObject::from_int(4242).bits()) };
+    let key = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(MoltObject::from_int(4242).bits()) };
 
     let result = unsafe { molt_cpython_abi::api::object::PyObject_GetItem(dict_obj, key) };
     assert!(
@@ -115,14 +84,14 @@ fn get_item_native_dict_miss_raises_keyerror_with_key() {
     assert_eq!(
         unsafe {
             molt_cpython_abi::api::errors::PyErr_ExceptionMatches(
-                &raw mut molt_cpython_abi::abi_types::PyExc_KeyError,
+                (&raw mut molt_cpython_abi::abi_types::PyExc_KeyError).cast::<PyObject>(),
             )
         },
         1,
         "a dict miss must raise KeyError specifically"
     );
     // KeyError's argument is the key: PyErr_SetObject stores the key's str().
-    let msg = molt_cpython_abi::api::errors::take_current_error_message();
+    let msg = support::take_current_error_text();
     assert_eq!(
         msg.as_deref(),
         Some("4242"),
@@ -148,7 +117,7 @@ unsafe extern "C" fn foreign_map_subscript(_o: *mut PyObject, key: *mut PyObject
         // Model a real mapping's missing-key path: KeyError with the key.
         unsafe {
             molt_cpython_abi::api::errors::PyErr_SetObject(
-                &raw mut molt_cpython_abi::abi_types::PyExc_KeyError,
+                (&raw mut molt_cpython_abi::abi_types::PyExc_KeyError).cast::<PyObject>(),
                 key,
             );
         }
@@ -202,7 +171,7 @@ fn mapping_getitemstring_routes_foreign_mapping_through_getitem() {
     assert_eq!(
         unsafe {
             molt_cpython_abi::api::errors::PyErr_ExceptionMatches(
-                &raw mut molt_cpython_abi::abi_types::PyExc_KeyError,
+                (&raw mut molt_cpython_abi::abi_types::PyExc_KeyError).cast::<PyObject>(),
             )
         },
         1,
@@ -235,7 +204,7 @@ fn object_bytes_non_bytes_without_dunder_raises_typeerror() {
     assert_eq!(
         unsafe {
             molt_cpython_abi::api::errors::PyErr_ExceptionMatches(
-                &raw mut molt_cpython_abi::abi_types::PyExc_TypeError,
+                (&raw mut molt_cpython_abi::abi_types::PyExc_TypeError).cast::<PyObject>(),
             )
         },
         1,

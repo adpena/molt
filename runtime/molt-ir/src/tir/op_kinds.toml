@@ -152,9 +152,9 @@
 #   - [[explicit_release_operand]] - per-OpCode Python lifetime release facts
 #                  for ops that explicitly release one or all operand roots
 #                  (`DecRef` all operands, `DeleteVar` old slot operand 1).
-#   - alias_rc_barrier_opcodes / alias_heap_barrier_opcodes - opcode-only
-#                  alias-analysis barrier facts. They are conservative
-#                  fail-closed barriers consumed by alias_analysis.rs.
+#   - alias_rc_barrier_opcodes - opcode-only refcount barrier facts. They are
+#                  conservative fail-closed barriers consumed by
+#                  alias_analysis.rs.
 #   - alias_memory_inert_opcodes - opcode-only MemRegion scalar-register facts.
 #                  Omitted opcodes conservatively touch heap memory.
 #   - alias_typed_slot_*_opcodes / alias_region_*_opcodes - opcode classes
@@ -629,33 +629,6 @@ alias_rc_barrier_opcodes = [
     "StoreAttr",
     "StoreIndex",
     "TryStart",
-]
-
-alias_heap_barrier_opcodes = [
-    "Call",
-    "CallBuiltin",
-    "CallMethod",
-    "CallMethodIc",
-    "CallSuperMethodIc",
-    "ChanRecvYield",
-    "ChanSendYield",
-    "ClosureStore",
-    "DelAttr",
-    "DelIndex",
-    "Free",
-    "ModuleCacheDel",
-    "ModuleCacheSet",
-    "ModuleDelGlobal",
-    "ModuleDelGlobalIfPresent",
-    "ModuleSetAttr",
-    "Raise",
-    "StateSwitch",
-    "StateTransition",
-    "StateYield",
-    "StoreAttr",
-    "StoreIndex",
-    "Yield",
-    "YieldFrom",
 ]
 
 # escape_alloc_site_opcodes: result-producing allocation roots that
