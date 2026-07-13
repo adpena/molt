@@ -20,6 +20,8 @@
 
 #![allow(non_snake_case)]
 
+mod support;
+
 use molt_cpython_abi::abi_types::{
     MoltTypeTag, Py_False, Py_NotImplementedSentinel, Py_True, PyBool_Type, PyBytes_Type,
     PyComplex_Type, PyFloat_Type, PyLong_Type, PyObject, PyTypeObject, PyUnicode_Type,
@@ -52,6 +54,9 @@ fn fresh_handle() -> u64 {
 
 // ── fake str/bytes runtime ─────────────────────────────────────────────────
 unsafe extern "C" fn fx_classify_heap(bits: u64) -> u8 {
+    if support::fake_complex::contains(bits) {
+        return MoltTypeTag::Complex as u8;
+    }
     if STRS
         .lock()
         .unwrap()
@@ -69,6 +74,40 @@ unsafe extern "C" fn fx_classify_heap(bits: u64) -> u8 {
         return MoltTypeTag::Bytes as u8;
     }
     MoltTypeTag::Other as u8
+}
+
+fn fx_hash_bytes(bytes: &[u8]) -> i64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for &byte in bytes {
+        hash = (hash ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3);
+    }
+    let hash = hash as i64;
+    if hash == -1 { -2 } else { hash }
+}
+
+unsafe extern "C" fn fx_object_hash(bits: u64) -> i64 {
+    if support::fake_complex::contains(bits) {
+        return unsafe { support::fake_complex::hash(bits) };
+    }
+    if let Some(bytes) = STRS
+        .lock()
+        .unwrap()
+        .get_or_insert_default()
+        .get(&bits)
+        .copied()
+    {
+        return fx_hash_bytes(bytes);
+    }
+    if let Some(bytes) = BYTES
+        .lock()
+        .unwrap()
+        .get_or_insert_default()
+        .get(&bits)
+        .copied()
+    {
+        return fx_hash_bytes(bytes);
+    }
+    -1
 }
 unsafe extern "C" fn fx_str_data(bits: u64, out_len: *mut usize) -> *const u8 {
     let data = STRS
@@ -126,6 +165,9 @@ unsafe extern "C" fn fx_bytes_data(bits: u64, out_len: *mut usize) -> *const u8 
 fn install() {
     let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
     hooks.classify_heap = fx_classify_heap;
+    hooks.object_hash = fx_object_hash;
+    hooks.complex_from_doubles = support::fake_complex::from_doubles;
+    hooks.complex_parts = support::fake_complex::parts;
     hooks.str_data = fx_str_data;
     hooks.bytes_data = fx_bytes_data;
     unsafe {
@@ -136,7 +178,7 @@ fn install() {
 
 // ── minting molt-native operands ───────────────────────────────────────────
 fn register(bits: u64) -> *mut PyObject {
-    unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_pyobj(bits) }
+    unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) }
 }
 fn mk_int(v: i64) -> *mut PyObject {
     register(MoltObject::from_int(v).bits())

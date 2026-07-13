@@ -53,9 +53,7 @@
 //!   loop (LCSSA would be needed; refused instead).
 //! * **State machines**: functions containing generator/async ops are skipped.
 
-use crate::tir::dominators::{
-    CfgEdgePolicy, build_pred_map_with, compute_idoms_with,
-};
+use crate::tir::dominators::{CfgEdgePolicy, build_pred_map_with, compute_idoms_with};
 use crate::tir::function::{TirFunction, TirModule};
 use crate::tir::op_kinds_generated::{ModuleSlotAccessRole, opcode_module_slot_access_role_table};
 

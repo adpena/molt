@@ -1,4 +1,6 @@
 use std::alloc::Layout;
+#[cfg(target_arch = "wasm32")]
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
@@ -27,10 +29,10 @@ pub fn bump_type_version() -> u64 {
 }
 
 pub(crate) mod accessors;
+pub(crate) mod aux_header;
 pub(crate) mod backing;
 pub(crate) mod buffer2d;
 pub(crate) mod builders;
-pub(crate) mod cold_header;
 pub mod float_repr;
 pub(crate) mod foreign;
 pub(crate) mod gc;
@@ -65,6 +67,7 @@ pub mod string_intern;
 #[allow(dead_code)]
 pub(crate) mod type_ids;
 pub(crate) mod utf8_cache;
+pub(crate) mod weak_container;
 pub(crate) mod weakref;
 
 use refcount::MoltRefCount;
@@ -72,9 +75,8 @@ use refcount::MoltRefCount;
 #[allow(unused_imports)]
 pub(crate) use type_ids::*;
 
-use cold_header::{
-    MoltColdHeader, SHARED_COLD_IDX_BIT, alloc_cold_header, cold_idx_is_shared, cold_idx_real,
-    free_cold_header, get_cold_header, with_cold_header_mut,
+use aux_header::{
+    MoltAuxSidecar, alloc_aux_sidecar, aux_sidecar_from_word, aux_sidecar_size, free_aux_sidecar,
 };
 
 use crate::async_rt::poll::ws_wait_poll_fn_addr;
@@ -85,29 +87,30 @@ use crate::builtins::{
     types::types_drop_instance,
 };
 use crate::{
-    ALLOC_BYTES_DICT, ALLOC_BYTES_LIST, ALLOC_BYTES_STRING, ALLOC_BYTES_TOTAL, ALLOC_BYTES_TUPLE,
-    ALLOC_CALLARGS_COUNT, ALLOC_COUNT, ALLOC_DICT_COUNT, ALLOC_EXCEPTION_COUNT, ALLOC_OBJECT_COUNT,
-    ALLOC_STRING_COUNT, ALLOC_TUPLE_COUNT, DEALLOC_BIGINT_COUNT, DEALLOC_BYTES_TOTAL,
-    DEALLOC_COUNT, DEALLOC_DICT_COUNT, DEALLOC_OBJECT_COUNT, DEALLOC_STRING_COUNT,
-    DEALLOC_TUPLE_COUNT, GEN_CLOSED_OFFSET, GEN_EXC_DEPTH_OFFSET, GEN_SEND_OFFSET,
-    GEN_THROW_OFFSET, PyToken, TYPE_ID_ASYNC_GENERATOR, TYPE_ID_BIGINT, TYPE_ID_BOUND_METHOD,
-    TYPE_ID_BUFFER2D, TYPE_ID_BYTEARRAY, TYPE_ID_CALL_ITER, TYPE_ID_CALLARGS, TYPE_ID_CLASSMETHOD,
-    TYPE_ID_CODE, TYPE_ID_CONTEXT_MANAGER, TYPE_ID_DATACLASS, TYPE_ID_DICT,
-    TYPE_ID_DICT_ITEMS_VIEW, TYPE_ID_DICT_KEYS_VIEW, TYPE_ID_DICT_VALUES_VIEW, TYPE_ID_ENUMERATE,
-    TYPE_ID_EXCEPTION, TYPE_ID_FILE_HANDLE, TYPE_ID_FILTER, TYPE_ID_FOREIGN, TYPE_ID_FROZENSET,
-    TYPE_ID_FUNCTION, TYPE_ID_GENERATOR, TYPE_ID_GENERIC_ALIAS, TYPE_ID_GLOB_ITER, TYPE_ID_ITER,
-    TYPE_ID_LIST, TYPE_ID_LIST_BUILDER, TYPE_ID_MAP, TYPE_ID_MEMORYVIEW, TYPE_ID_MODULE,
-    TYPE_ID_NATIVE_HANDLE, TYPE_ID_OBJECT, TYPE_ID_PROPERTY, TYPE_ID_REVERSED, TYPE_ID_SET,
-    TYPE_ID_SLICE, TYPE_ID_STATICMETHOD, TYPE_ID_STRING, TYPE_ID_TRACEBACK_PAYLOAD, TYPE_ID_TUPLE,
-    TYPE_ID_UNION, TYPE_ID_ZIP, asyncgen_call_finalizer, asyncgen_gen_bits, asyncgen_pending_bits,
-    asyncgen_registry_remove, asyncgen_running_bits, asyncio_fd_watcher_poll_fn_addr,
-    asyncio_fd_watcher_task_drop, asyncio_gather_poll_fn_addr, asyncio_gather_task_drop,
-    asyncio_ready_runner_poll_fn_addr, asyncio_ready_runner_task_drop,
-    asyncio_server_accept_loop_poll_fn_addr, asyncio_server_accept_loop_task_drop,
-    asyncio_sock_accept_poll_fn_addr, asyncio_sock_accept_task_drop,
-    asyncio_sock_connect_poll_fn_addr, asyncio_sock_connect_task_drop,
-    asyncio_sock_recv_into_poll_fn_addr, asyncio_sock_recv_into_task_drop,
-    asyncio_sock_recv_poll_fn_addr, asyncio_sock_recv_task_drop,
+    ALLOC_BYTES_DICT, ALLOC_BYTES_EXCEPTION, ALLOC_BYTES_LIST, ALLOC_BYTES_STRING,
+    ALLOC_BYTES_TOTAL, ALLOC_BYTES_TUPLE, ALLOC_CALLARGS_COUNT, ALLOC_COUNT, ALLOC_DICT_COUNT,
+    ALLOC_EXCEPTION_COUNT, ALLOC_OBJECT_COUNT, ALLOC_STRING_COUNT, ALLOC_TUPLE_COUNT,
+    AUX_CLASS_INLINE_COUNT, AUX_STATE_INLINE_COUNT, DEALLOC_BIGINT_COUNT, DEALLOC_BYTES_EXCEPTION,
+    DEALLOC_BYTES_TOTAL, DEALLOC_COUNT, DEALLOC_DICT_COUNT, DEALLOC_EXCEPTION_COUNT,
+    DEALLOC_OBJECT_COUNT, DEALLOC_STRING_COUNT, DEALLOC_TUPLE_COUNT, GEN_CLOSED_OFFSET,
+    GEN_EXC_DEPTH_OFFSET, GEN_SEND_OFFSET, GEN_THROW_OFFSET, PyToken, TYPE_ID_ASYNC_GENERATOR,
+    TYPE_ID_BIGINT, TYPE_ID_BOUND_METHOD, TYPE_ID_BUFFER2D, TYPE_ID_BYTEARRAY, TYPE_ID_CALL_ITER,
+    TYPE_ID_CALLARGS, TYPE_ID_CLASSMETHOD, TYPE_ID_CODE, TYPE_ID_CONTEXT_MANAGER,
+    TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_DICT_ITEMS_VIEW, TYPE_ID_DICT_KEYS_VIEW,
+    TYPE_ID_DICT_VALUES_VIEW, TYPE_ID_ENUMERATE, TYPE_ID_EXCEPTION, TYPE_ID_FILE_HANDLE,
+    TYPE_ID_FILTER, TYPE_ID_FOREIGN, TYPE_ID_FROZENSET, TYPE_ID_FUNCTION, TYPE_ID_GENERATOR,
+    TYPE_ID_GENERIC_ALIAS, TYPE_ID_GLOB_ITER, TYPE_ID_ITER, TYPE_ID_LIST, TYPE_ID_LIST_BUILDER,
+    TYPE_ID_MAP, TYPE_ID_MEMORYVIEW, TYPE_ID_MODULE, TYPE_ID_NATIVE_HANDLE, TYPE_ID_OBJECT,
+    TYPE_ID_PROPERTY, TYPE_ID_REVERSED, TYPE_ID_SET, TYPE_ID_SLICE, TYPE_ID_STATICMETHOD,
+    TYPE_ID_STRING, TYPE_ID_TRACEBACK_PAYLOAD, TYPE_ID_TUPLE, TYPE_ID_UNION, TYPE_ID_ZIP,
+    asyncgen_call_finalizer, asyncgen_gen_bits, asyncgen_pending_bits, asyncgen_registry_remove,
+    asyncgen_running_bits, asyncio_fd_watcher_poll_fn_addr, asyncio_fd_watcher_task_drop,
+    asyncio_gather_poll_fn_addr, asyncio_gather_task_drop, asyncio_ready_runner_poll_fn_addr,
+    asyncio_ready_runner_task_drop, asyncio_server_accept_loop_poll_fn_addr,
+    asyncio_server_accept_loop_task_drop, asyncio_sock_accept_poll_fn_addr,
+    asyncio_sock_accept_task_drop, asyncio_sock_connect_poll_fn_addr,
+    asyncio_sock_connect_task_drop, asyncio_sock_recv_into_poll_fn_addr,
+    asyncio_sock_recv_into_task_drop, asyncio_sock_recv_poll_fn_addr, asyncio_sock_recv_task_drop,
     asyncio_sock_recvfrom_into_poll_fn_addr, asyncio_sock_recvfrom_into_task_drop,
     asyncio_sock_recvfrom_poll_fn_addr, asyncio_sock_recvfrom_task_drop,
     asyncio_sock_sendall_poll_fn_addr, asyncio_sock_sendall_task_drop,
@@ -131,10 +134,8 @@ use crate::{
     contextlib_asyncgen_enter_poll_fn_addr, contextlib_asyncgen_enter_task_drop,
     contextlib_asyncgen_exit_poll_fn_addr, contextlib_asyncgen_exit_task_drop, dict_hashes_ptr,
     dict_order_ptr, dict_table_ptr, dict_view_dict_bits, enumerate_cached_inner,
-    enumerate_cached_outer, enumerate_index_bits, enumerate_target_bits, exception_args_bits,
-    exception_args_payload_bits, exception_cause_bits, exception_class_bits,
-    exception_context_bits, exception_dict_bits, exception_kind_bits, exception_msg_bits,
-    exception_suppress_bits, exception_trace_bits, exception_value_bits, filter_func_bits,
+    enumerate_cached_outer, enumerate_index_bits, enumerate_target_bits,
+    exception_detach_owned_edges, exception_release_detached_edges, filter_func_bits,
     filter_iter_bits, function_annotate_bits, function_annotations_bits, function_closure_bits,
     function_code_bits, function_dict_bits, generator_context_stack_drop,
     generator_exception_stack_drop, generic_alias_args_bits, generic_alias_origin_bits,
@@ -319,18 +320,114 @@ pub struct MoltHeader {
     pub ref_count: MoltRefCount, // 4 bytes
     pub flags: u32,              // 4 bytes (semantic bits declared below)
     pub size_class: u16,         // 2 bytes — index into SIZE_CLASS_TABLE
-    pub cold_idx: u32,           // 4 bytes — cold-header slab index (0 = none)
-    pub reserved: u32,           // 4 bytes — keeps payload 8-byte aligned
+    pub aux_kind: u16,           // 2 bytes — interpretation of aux
+    pub aux: MoltAuxWord,        // 8 bytes — inline value or stable sidecar address
 }
-// Total: 24 bytes. poll_fn, state, extended_size live in MoltColdHeader.
+// Total: 24 bytes. The common class/state lanes stay inline; coexistence,
+// polling, and oversized allocations use one stable per-object sidecar.
 
 const _: () = {
     assert!(std::mem::size_of::<MoltHeader>() == molt_codegen_abi::HEADER_SIZE_BYTES as usize);
     assert!(std::mem::align_of::<MoltHeader>() <= molt_codegen_abi::HEADER_ALLOC_ALIGN_BYTES);
+    assert!(std::mem::offset_of!(MoltHeader, aux_kind) == 14);
+    assert!(std::mem::offset_of!(MoltHeader, aux) == 16);
     assert!(
         std::mem::size_of::<MoltHeader>()
             .is_multiple_of(molt_codegen_abi::HEADER_ALLOC_ALIGN_BYTES)
     );
+};
+
+/// Eight-byte auxiliary storage that is atomic on native free-thread-capable
+/// targets and a zero-overhead `Cell` on wasm32's single-threaded runtime.
+#[cfg(not(target_arch = "wasm32"))]
+#[repr(transparent)]
+pub struct MoltAuxWord(AtomicU64);
+
+#[cfg(target_arch = "wasm32")]
+#[repr(transparent)]
+pub struct MoltAuxWord(Cell<u64>);
+
+impl MoltAuxWord {
+    #[inline]
+    pub const fn new(value: u64) -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            Self(AtomicU64::new(value))
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            Self(Cell::new(value))
+        }
+    }
+
+    #[inline]
+    pub fn load(&self, order: AtomicOrdering) -> u64 {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.0.load(order)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = order;
+            self.0.get()
+        }
+    }
+
+    #[inline]
+    pub fn store(&self, value: u64, order: AtomicOrdering) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.0.store(value, order);
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = order;
+            self.0.set(value);
+        }
+    }
+
+    #[inline]
+    pub fn swap(&self, value: u64, order: AtomicOrdering) -> u64 {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.0.swap(value, order)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = order;
+            self.0.replace(value)
+        }
+    }
+
+    #[inline]
+    pub fn compare_exchange(
+        &self,
+        current: u64,
+        new: u64,
+        success: AtomicOrdering,
+        failure: AtomicOrdering,
+    ) -> Result<u64, u64> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.0.compare_exchange(current, new, success, failure)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (success, failure);
+            let observed = self.0.get();
+            if observed == current {
+                self.0.set(new);
+                Ok(observed)
+            } else {
+                Err(observed)
+            }
+        }
+    }
+}
+
+const _: () = {
+    assert!(std::mem::size_of::<MoltAuxWord>() == std::mem::size_of::<u64>());
+    assert!(std::mem::align_of::<MoltAuxWord>() == std::mem::align_of::<u64>());
 };
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -349,7 +446,6 @@ pub(crate) struct DataclassDesc {
     pub(crate) repr: bool,
     pub(crate) slots: bool,
     pub(crate) allows_dict: bool,
-    pub(crate) class_bits: u64,
     pub(crate) field_flags: Vec<u8>,
     pub(crate) hash_mode: u8,
 }
@@ -429,8 +525,6 @@ pub(crate) struct MoltFileHandle {
     pub(crate) write_through: bool,
     #[allow(dead_code)]
     pub(crate) buffer_size: i64,
-    #[allow(dead_code)]
-    pub(crate) class_bits: u64,
     pub(crate) name_bits: u64,
     pub(crate) mode: String,
     pub(crate) encoding: Option<String>,
@@ -457,8 +551,6 @@ pub(crate) const NEWLINE_KIND_CR: u8 = 1 << 1;
 pub(crate) const NEWLINE_KIND_CRLF: u8 = 1 << 2;
 
 pub(crate) const HEADER_FLAG_HAS_PTRS: u32 = molt_codegen_abi::HEADER_FLAG_HAS_PTRS;
-pub(crate) const HEADER_FLAG_SKIP_CLASS_DECREF: u32 =
-    molt_codegen_abi::HEADER_FLAG_SKIP_CLASS_DECREF;
 pub(crate) const HEADER_FLAG_GEN_RUNNING: u32 = 1 << 2;
 pub(crate) const HEADER_FLAG_GEN_STARTED: u32 = 1 << 3;
 pub(crate) const HEADER_FLAG_SPAWN_RETAIN: u32 = 1 << 4;
@@ -480,10 +572,6 @@ pub(crate) const HEADER_FLAG_FINALIZER_RAN: u32 = 1 << 16;
 // String content is an ASCII identifier stored in the global intern pool.
 // Objects with this flag are also immortal (never freed).
 pub(crate) const HEADER_FLAG_INTERNED: u32 = 1 << 17;
-/// `TYPE_ID_OBJECT` instance whose class MRO contains `__del__`. This makes the
-/// non-finalizer rc->0 path an O(1) header test and keeps ordinary attribute
-/// lookup out of finalizer dispatch.
-pub(crate) const HEADER_FLAG_INSTANCE_HAS_FINALIZER: u32 = 1 << 18;
 /// Container (list, tuple, dict, set) has at least one element that is a heap
 /// pointer (TAG_PTR).  When this flag is clear, `dec_ref` cleanup can skip
 /// iterating over elements because they are all primitives (int/float/bool/None).
@@ -513,116 +601,287 @@ pub(crate) const HEADER_FLAG_FUNC_REQUIRES_BINDER: u32 = 1 << 23;
 /// `TYPE_ID_FUNCTION` metadata bit: this function object is a C-extension
 /// trampoline whose C ABI convention owns arity validation.
 pub(crate) const HEADER_FLAG_FUNC_VARIADIC_TRAMPOLINE: u32 = 1 << 26;
+/// Transient stop-the-world cycle collector candidate bit.
+pub(crate) const HEADER_FLAG_GC_COLLECTING: u32 = 1 << 25;
+/// A canonical CPython ABI view exists for this heap object. This is the
+/// lock-free negative membership authority for ordinary runtime RC/GC paths.
+pub(crate) const HEADER_FLAG_HAS_ABI_VIEW: u32 = 1 << 27;
+/// This object is itself a registered weakref and owns its callback edge in
+/// the runtime registry. The Python shim carries no duplicate lifetime state.
+pub(crate) const HEADER_FLAG_IS_WEAKREF: u32 = 1 << 31;
+/// Transient cycle-collector pin for an ABI-rooted candidate.
+pub(crate) const HEADER_FLAG_GC_PINNED: u32 = 1 << 28;
+/// Terminal lifetime state: the object is untracked and every externally
+/// discoverable sidecar is being detached before any child edge is released.
+pub(crate) const HEADER_FLAG_DEALLOCATING: u32 = 1 << 30;
 
-/// Lifetime-boundary bit: this object has had at least one `weakref` registered
-/// against it, so its `dec_ref_ptr` zero-transition must enter the finalize +
-/// weakref-clear revival window (open a revival ref, run any weakref callbacks
-/// while the object is provably live, then re-check resurrection) rather than
-/// freeing immediately. Set once at `molt_weakref_register` and never cleared:
-/// a weakref may later be dropped, but keeping the flag set only means the
-/// (already cheap) `weakref_clear_for_ptr` lock + revival window run on final
-/// death for an object that DID once expose a weakref — strictly narrower than
-/// the previous unconditional per-`dec→0` weakref lock. This is the single
-/// cached fact that lets non-weakref objects skip both the global weakref lock
-/// and the extra revival inc/dec on the hottest free path, and — together with
-/// `HEADER_FLAG_INSTANCE_HAS_FINALIZER` — is what makes the rc=0 weakref-callback
-/// window structurally unreachable (the window is opened BEFORE any callback can
-/// observe the object).
+/// Lifetime-boundary bit: this object has had at least one weakref registered.
+/// It gates the finalizer resurrection window and subsequent weakref detach.
+/// Once `__del__` declines to resurrect, DEALLOCATING is published before the
+/// weakrefs are cleared: callbacks observe a dead referent and cannot reopen
+/// ownership. The sticky bit preserves a zero-lock negative path for objects
+/// that never participated in weakref state.
 pub(crate) const HEADER_FLAG_HAS_WEAKREF: u32 = 1 << 24;
 
-// ---------------------------------------------------------------------------
-// Cold header pool — stores rarely-used per-object metadata (poll_fn, state,
-// extended_size) separately from the hot MoltHeader so that the hot header
-// can be kept small and cache-friendly.
-// ---------------------------------------------------------------------------
+// Keep every persistent and transient lifetime bit in this single registry and
+// fail compilation on any future collision. Cold type policy intentionally
+// lives in the type payload rather than consuming hot RC/GC header capacity.
+const HEADER_FLAG_REGISTRY: [u32; 29] = [
+    HEADER_FLAG_HAS_PTRS,
+    HEADER_FLAG_GEN_RUNNING,
+    HEADER_FLAG_GEN_STARTED,
+    HEADER_FLAG_SPAWN_RETAIN,
+    HEADER_FLAG_CANCEL_PENDING,
+    HEADER_FLAG_BLOCK_ON,
+    HEADER_FLAG_TASK_QUEUED,
+    HEADER_FLAG_TASK_RUNNING,
+    HEADER_FLAG_TASK_WAKE_PENDING,
+    HEADER_FLAG_TASK_DONE,
+    HEADER_FLAG_TRACEBACK_SUPPRESSED,
+    HEADER_FLAG_COROUTINE,
+    HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN,
+    HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED,
+    HEADER_FLAG_IMMORTAL,
+    HEADER_FLAG_FINALIZER_RAN,
+    HEADER_FLAG_INTERNED,
+    HEADER_FLAG_CONTAINS_REFS,
+    HEADER_FLAG_RAW_ALLOC,
+    HEADER_FLAG_ARENA,
+    HEADER_FLAG_CLASS_HAS_FINALIZER,
+    HEADER_FLAG_FUNC_REQUIRES_BINDER,
+    HEADER_FLAG_HAS_WEAKREF,
+    HEADER_FLAG_GC_COLLECTING,
+    HEADER_FLAG_FUNC_VARIADIC_TRAMPOLINE,
+    HEADER_FLAG_HAS_ABI_VIEW,
+    HEADER_FLAG_GC_PINNED,
+    HEADER_FLAG_DEALLOCATING,
+    HEADER_FLAG_IS_WEAKREF,
+];
 
-/// Returns the per-class shared cold-header index for `class_ptr`,
-/// allocating one lazily on first call.  The shared cold header
-/// stores `class_bits` (the boxed class reference) in its `state`
-/// field, so all instances of this class can recover their class
-/// via `object_state()` without needing a private cold header.
-///
-/// The returned value has `SHARED_COLD_IDX_BIT` set, signaling to
-/// readers that no per-instance allocation occurred and to the
-/// dealloc path that this idx must NOT be freed when the owning
-/// instance dies (the class outlives its instances).
-///
-/// **Per-class cache**: the class object's `MoltHeader::reserved`
-/// field — currently unused for typed classes — is repurposed to
-/// cache the shared idx.  Accessed atomically; a losing concurrent
-/// initializer wastes one cold-header slot but never produces an
-/// inconsistent state.
-///
-/// **Why this works**: `MoltHeader::reserved` is `u32` and the
-/// struct is `#[repr(C)]` with 4-byte aligned fields, so an in-place
-/// `AtomicU32` view is sound (alignment + size match).
-///
-/// Safety: `class_ptr` must point to a live class object (TYPE_ID_TYPE).
-pub(crate) unsafe fn ensure_shared_cold_idx(class_ptr: *mut u8) -> u32 {
-    use std::sync::atomic::{AtomicU32, Ordering};
-    unsafe {
-        let header = header_from_obj_ptr(class_ptr);
-        // SAFETY: `reserved` is a u32 with natural 4-byte alignment;
-        // viewing it as AtomicU32 is sound on every supported target.
-        let reserved_ptr = std::ptr::addr_of_mut!((*header).reserved) as *const AtomicU32;
-        let reserved = &*reserved_ptr;
-        let cached = reserved.load(Ordering::Acquire);
-        if cached != 0 {
-            return cached;
+const _: () = {
+    let mut i = 0;
+    while i < HEADER_FLAG_REGISTRY.len() {
+        assert!(HEADER_FLAG_REGISTRY[i].count_ones() == 1);
+        let mut j = i + 1;
+        while j < HEADER_FLAG_REGISTRY.len() {
+            assert!(HEADER_FLAG_REGISTRY[i] & HEADER_FLAG_REGISTRY[j] == 0);
+            j += 1;
         }
-        let class_bits = MoltObject::from_ptr(class_ptr).bits();
-        let new_idx = alloc_cold_header(MoltColdHeader {
-            state: class_bits as i64,
-            ..MoltColdHeader::default()
-        });
-        let tagged = new_idx | SHARED_COLD_IDX_BIT;
-        match reserved.compare_exchange(0, tagged, Ordering::AcqRel, Ordering::Acquire) {
-            Ok(_) => tagged,
-            Err(winner) => {
-                // Lost the race: free our wasted alloc and use the winner's.
-                free_cold_header(new_idx);
-                winner
-            }
-        }
+        i += 1;
     }
-}
+};
 
-/// Release the per-class shared cold header cached in `MoltHeader::reserved`.
-///
-/// Safety: `class_ptr` must point to a class object that is being destroyed.
-unsafe fn free_shared_cold_idx_for_class(class_ptr: *mut u8) {
-    unsafe {
-        let header = header_from_obj_ptr(class_ptr);
-        let raw = (*header).reserved;
-        if cold_idx_is_shared(raw) {
-            (*header).reserved = 0;
-            free_cold_header(cold_idx_real(raw));
-        }
-    }
-}
+const CLASS_POLICY_NOT_BASE: u64 = 1;
+const CLASS_POLICY_IMMUTABLE: u64 = 1 << 1;
+const CLASS_POLICY_WORD_OFFSET: usize = 8 * std::mem::size_of::<u64>();
 
-/// Derive the total allocation size from a header's `size_class`.
-/// For oversized objects (size_class == 0) the exact size is stored in
-/// the cold header's `extended_size`.
 #[inline]
-pub(crate) fn total_size_from_header_fields(size_class: u16, cold_idx: u32) -> usize {
+unsafe fn class_policy_word(class_ptr: *mut u8) -> &'static AtomicU64 {
+    // TYPE_ID_TYPE payloads reserve this naturally aligned word exclusively
+    // for monotonic class policy. Atomic publication keeps this boundary valid
+    // when type reads become GIL-free; policy never pollutes the hot RC/GC word.
+    unsafe { &*(class_ptr.add(CLASS_POLICY_WORD_OFFSET) as *const AtomicU64) }
+}
+
+#[inline]
+unsafe fn class_add_policy(class_ptr: *mut u8, policy: u64) {
+    unsafe {
+        class_policy_word(class_ptr).fetch_or(policy, AtomicOrdering::AcqRel);
+    }
+}
+
+#[inline]
+unsafe fn class_has_policy(class_ptr: *mut u8, policy: u64) -> bool {
+    unsafe { class_policy_word(class_ptr).load(AtomicOrdering::Acquire) & policy != 0 }
+}
+
+pub(crate) unsafe fn class_set_not_base(_py: &PyToken<'_>, class_ptr: *mut u8) -> bool {
+    crate::gil_assert();
+    if class_ptr.is_null() || unsafe { object_type_id(class_ptr) } != TYPE_ID_TYPE {
+        return false;
+    }
+    unsafe {
+        class_add_policy(class_ptr, CLASS_POLICY_NOT_BASE);
+    }
+    true
+}
+
+pub(crate) unsafe fn class_is_not_base(_py: &PyToken<'_>, class_ptr: *mut u8) -> bool {
+    crate::gil_assert();
+    if class_ptr.is_null() || unsafe { object_type_id(class_ptr) } != TYPE_ID_TYPE {
+        return false;
+    }
+    unsafe { class_has_policy(class_ptr, CLASS_POLICY_NOT_BASE) }
+}
+
+pub(crate) unsafe fn class_set_immutable(_py: &PyToken<'_>, class_ptr: *mut u8) -> bool {
+    crate::gil_assert();
+    if class_ptr.is_null() || unsafe { object_type_id(class_ptr) } != TYPE_ID_TYPE {
+        return false;
+    }
+    unsafe {
+        class_add_policy(class_ptr, CLASS_POLICY_IMMUTABLE);
+    }
+    true
+}
+
+pub(crate) unsafe fn class_is_immutable(_py: &PyToken<'_>, class_ptr: *mut u8) -> bool {
+    crate::gil_assert();
+    if class_ptr.is_null() || unsafe { object_type_id(class_ptr) } != TYPE_ID_TYPE {
+        return false;
+    }
+    unsafe { class_has_policy(class_ptr, CLASS_POLICY_IMMUTABLE) }
+}
+
+// ---------------------------------------------------------------------------
+// Header aux authority
+// ---------------------------------------------------------------------------
+
+pub(crate) const HEADER_AUX_KIND_NONE: u16 = molt_codegen_abi::HEADER_AUX_KIND_NONE;
+pub(crate) const HEADER_AUX_KIND_CLASS_INLINE: u16 = molt_codegen_abi::HEADER_AUX_KIND_CLASS_INLINE;
+pub(crate) const HEADER_AUX_KIND_STATE_INLINE: u16 = molt_codegen_abi::HEADER_AUX_KIND_STATE_INLINE;
+pub(crate) const HEADER_AUX_KIND_SIDECAR: u16 = molt_codegen_abi::HEADER_AUX_KIND_SIDECAR;
+pub(crate) const HEADER_CLASS_WORD_BORROWED: u64 = molt_codegen_abi::HEADER_CLASS_WORD_BORROWED;
+pub(crate) const HEADER_CLASS_WORD_TAG_MASK: u64 = molt_codegen_abi::HEADER_CLASS_WORD_TAG_MASK;
+pub(crate) const HEADER_CLASS_WORD_BITS_MASK: u64 = molt_codegen_abi::HEADER_CLASS_WORD_BITS_MASK;
+
+#[derive(Clone, Copy, Debug)]
+struct ObjectAuxSnapshot {
+    kind: u16,
+    word: u64,
+}
+
+/// Representation selected before GC tracking/publication. Constructors use
+/// this when their future class/state/poll needs are known at allocation time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ObjectAuxPreselection {
+    Default,
+    ClassInline,
+    StateInline,
+    Sidecar,
+}
+
+#[inline]
+unsafe fn header_aux_snapshot(header: *const MoltHeader) -> ObjectAuxSnapshot {
+    unsafe {
+        let kind = (*header).aux_kind;
+        debug_assert!(matches!(
+            kind,
+            HEADER_AUX_KIND_NONE
+                | HEADER_AUX_KIND_CLASS_INLINE
+                | HEADER_AUX_KIND_STATE_INLINE
+                | HEADER_AUX_KIND_SIDECAR
+        ));
+        ObjectAuxSnapshot {
+            kind,
+            word: (*header).aux.load(AtomicOrdering::Acquire),
+        }
+    }
+}
+
+#[inline]
+unsafe fn object_aux_snapshot(data_ptr: *mut u8) -> ObjectAuxSnapshot {
+    unsafe { header_aux_snapshot(header_from_obj_ptr(data_ptr)) }
+}
+
+#[inline]
+unsafe fn sidecar_from_snapshot(snapshot: ObjectAuxSnapshot) -> &'static MoltAuxSidecar {
+    debug_assert_eq!(snapshot.kind, HEADER_AUX_KIND_SIDECAR);
+    unsafe { aux_sidecar_from_word(snapshot.word) }
+}
+
+/// Select the initial aux representation before the object becomes visible.
+/// The kind and sidecar address are immutable after publication.
+unsafe fn initialize_header_aux(
+    header: *mut MoltHeader,
+    type_id: u32,
+    size_class: u16,
+    total_size: usize,
+    preselection: ObjectAuxPreselection,
+) -> bool {
+    unsafe {
+        let (kind, word) = if size_class == 0 {
+            let Some(word) = alloc_aux_sidecar(MoltAuxSidecar::new(0, 0, 0, total_size)) else {
+                return false;
+            };
+            (HEADER_AUX_KIND_SIDECAR, word)
+        } else if preselection == ObjectAuxPreselection::Sidecar
+            || (preselection == ObjectAuxPreselection::Default
+                && matches!(type_id, TYPE_ID_GENERATOR | TYPE_ID_ASYNC_GENERATOR))
+        {
+            let Some(word) = alloc_aux_sidecar(MoltAuxSidecar::new(0, 0, 0, 0)) else {
+                return false;
+            };
+            (HEADER_AUX_KIND_SIDECAR, word)
+        } else if preselection == ObjectAuxPreselection::ClassInline {
+            (HEADER_AUX_KIND_CLASS_INLINE, 0)
+        } else if preselection == ObjectAuxPreselection::StateInline
+            || (preselection == ObjectAuxPreselection::Default
+                && matches!(type_id, TYPE_ID_STRING | TYPE_ID_BYTES | TYPE_ID_BYTEARRAY))
+        {
+            (HEADER_AUX_KIND_STATE_INLINE, 0)
+        } else {
+            (HEADER_AUX_KIND_NONE, 0)
+        };
+        std::ptr::write(
+            std::ptr::addr_of_mut!((*header).aux),
+            MoltAuxWord::new(word),
+        );
+        (*header).aux_kind = kind;
+        true
+    }
+}
+
+/// Upgrade an unpublished object to stable sidecar storage while preserving
+/// any inline class or state word. Published callers must never use this: a
+/// kind/address transition after publication would be a torn two-word update.
+///
+/// # Safety
+/// `data_ptr` must refer to a live object that has not been published to any
+/// reader, registry, container, GC traversal, or foreign ABI view.
+#[must_use]
+pub(crate) unsafe fn object_init_sidecar_unpublished(data_ptr: *mut u8) -> bool {
+    unsafe {
+        let header = header_from_obj_ptr(data_ptr);
+        let snapshot = header_aux_snapshot(header);
+        if snapshot.kind == HEADER_AUX_KIND_SIDECAR {
+            return true;
+        }
+        let (class_edge, state) = match snapshot.kind {
+            HEADER_AUX_KIND_CLASS_INLINE => (snapshot.word, 0),
+            HEADER_AUX_KIND_STATE_INLINE => (0, snapshot.word as i64),
+            HEADER_AUX_KIND_NONE => (0, 0),
+            _ => unreachable!("validated aux kind"),
+        };
+        let Some(word) = alloc_aux_sidecar(MoltAuxSidecar::new(class_edge, 0, state, 0)) else {
+            return false;
+        };
+        (*header).aux.store(word, AtomicOrdering::Release);
+        (*header).aux_kind = HEADER_AUX_KIND_SIDECAR;
+        true
+    }
+}
+
+/// Derive the total allocation size from a stable header snapshot. Oversized
+/// objects carry their exact immutable size in their sidecar.
+#[inline]
+fn total_size_from_header_fields(size_class: u16, aux_kind: u16, aux_word: u64) -> usize {
     let sc = size_class as usize;
     if sc != 0 && sc < SIZE_CLASS_TABLE.len() {
         SIZE_CLASS_TABLE[sc]
+    } else if aux_kind == HEADER_AUX_KIND_SIDECAR && aux_word != 0 {
+        unsafe { aux_sidecar_from_word(aux_word) }.extended_size
     } else {
-        // Oversized: look up cold header by slab index.  Strip the
-        // shared bit before lookup — oversized objects don't share
-        // cold headers (per-instance `extended_size` differs), but
-        // the strip is harmless when the bit is clear.
-        get_cold_header(cold_idx_real(cold_idx))
-            .map(|c| c.extended_size)
-            .unwrap_or(0)
+        // Immortal stack objects and arena allocations do not participate in
+        // allocator deallocation and intentionally carry no exact size.
+        0
     }
 }
 
 #[inline]
 pub(crate) fn total_size_from_header(header: &MoltHeader, _data_ptr: *mut u8) -> usize {
-    total_size_from_header_fields(header.size_class, header.cold_idx)
+    let snapshot = unsafe { header_aux_snapshot(header) };
+    total_size_from_header_fields(header.size_class, snapshot.kind, snapshot.word)
 }
 
 #[derive(Clone, Copy)]
@@ -667,114 +926,112 @@ fn release_object_allocation_reservation(plan: ObjectAllocationPlan) {
     let _ = crate::resource::try_with_tracker(|t| t.on_free(plan.alloc_size));
 }
 
-/// Get the poll_fn for an object. Returns 0 if no cold header exists.
-/// Strips the shared bit since the shared cold header carries
-/// `state=class_bits` only — `poll_fn` is generator/coroutine state
-/// and a class instance reading `poll_fn` from a shared cold header
-/// observes the (zero-initialised) shared `poll_fn` field, which is
-/// the correct semantics for "no live coroutine state."
+/// Get the poll function from stable sidecar storage.
 #[inline]
 pub(crate) fn object_poll_fn(data_ptr: *mut u8) -> u64 {
-    let raw_idx = unsafe { (*header_from_obj_ptr(data_ptr)).cold_idx };
-    get_cold_header(cold_idx_real(raw_idx))
-        .map(|c| c.poll_fn)
-        .unwrap_or(0)
+    let snapshot = unsafe { object_aux_snapshot(data_ptr) };
+    if snapshot.kind != HEADER_AUX_KIND_SIDECAR {
+        return 0;
+    }
+    unsafe { sidecar_from_snapshot(snapshot) }.poll_fn()
 }
 
-/// Set the poll_fn for an object, creating a cold header if needed.
-/// Mirrors `object_set_state`'s shared→private promotion: writing
-/// to a shared cold header would corrupt every sibling instance.
-pub(crate) fn object_set_poll_fn(data_ptr: *mut u8, poll_fn: u64) {
+/// Initialize a poll function before publication, selecting sidecar storage if
+/// necessary.
+///
+/// # Safety
+/// `data_ptr` must still satisfy `object_init_sidecar_unpublished`'s unpublished
+/// object contract.
+#[must_use]
+pub(crate) unsafe fn object_init_poll_fn_unpublished(data_ptr: *mut u8, poll_fn: u64) -> bool {
     unsafe {
-        let header = header_from_obj_ptr(data_ptr);
-        let raw_idx = (*header).cold_idx;
-        if cold_idx_is_shared(raw_idx) {
-            // Promote: shared → private.  We don't preserve the
-            // shared state's `state` field here — the only value
-            // stored in shared cold headers is `class_bits`, and
-            // setting `poll_fn` is unrelated; the new private cold
-            // header has state=0, which is semantically "no class
-            // bits stored" (the class_bits will be re-stored via
-            // object_set_class_bits when needed).  In practice
-            // poll_fn is only set on coroutine/generator objects,
-            // not on user-class instances, so this branch is
-            // effectively unreachable for shared cold idx.
-            let new_idx = alloc_cold_header(MoltColdHeader {
-                poll_fn,
-                ..MoltColdHeader::default()
-            });
-            (*header).cold_idx = new_idx;
-            return;
+        if !object_init_sidecar_unpublished(data_ptr) {
+            return false;
         }
-        if raw_idx != 0 {
-            let _ = with_cold_header_mut(raw_idx, |entry| entry.poll_fn = poll_fn);
-        } else {
-            // Lazily allocate a cold header.
-            let new_idx = alloc_cold_header(MoltColdHeader {
-                poll_fn,
-                ..MoltColdHeader::default()
-            });
-            (*header).cold_idx = new_idx;
-        }
+        let sidecar = sidecar_from_snapshot(object_aux_snapshot(data_ptr));
+        sidecar.poll_fn.store(poll_fn, AtomicOrdering::Release);
+        true
     }
 }
 
-/// Get the state for an object. Returns 0 if no cold header exists.
-/// Strips the `SHARED_COLD_IDX_BIT` so shared cold headers
-/// (allocated once per class for typed-class instances) read
-/// transparently — both heap-alloc and stack-alloc instances of the
-/// same class observe the class's stored `class_bits`.
 #[inline]
-pub(crate) fn object_state(data_ptr: *mut u8) -> i64 {
-    let raw_idx = unsafe { (*header_from_obj_ptr(data_ptr)).cold_idx };
-    get_cold_header(cold_idx_real(raw_idx))
-        .map(|c| c.state)
-        .unwrap_or(0)
+fn object_state_raw(data_ptr: *mut u8) -> i64 {
+    let snapshot = unsafe { object_aux_snapshot(data_ptr) };
+    match snapshot.kind {
+        HEADER_AUX_KIND_STATE_INLINE => snapshot.word as i64,
+        HEADER_AUX_KIND_SIDECAR => unsafe { sidecar_from_snapshot(snapshot) }.state(),
+        _ => 0,
+    }
 }
 
-/// Set the state for an object, creating a cold header if needed.
-/// When the current cold_idx is the class's shared cold header, this
-/// must allocate a *private* cold header instead — otherwise we'd
-/// corrupt every sibling instance's state.  The new private cold
-/// header inherits the shared state's value as a starting point so
-/// callers that read-modify-write semantics are preserved (e.g.
-/// generator-state transitions on instances that store class_bits).
-pub(crate) fn object_set_state(data_ptr: *mut u8, state: i64) {
+#[inline]
+/// Read non-class state. Class and state coexist in separate sidecar lanes.
+pub(crate) fn object_state(data_ptr: *mut u8) -> i64 {
+    object_state_raw(data_ptr)
+}
+
+/// Initialize state before publication, selecting inline or sidecar storage
+/// while it is still safe to choose the object's immutable representation.
+///
+/// # Safety
+/// `data_ptr` must not yet be published to any reader.
+#[must_use]
+pub(crate) unsafe fn object_init_state_unpublished(data_ptr: *mut u8, state: i64) -> bool {
     unsafe {
         let header = header_from_obj_ptr(data_ptr);
-        let raw_idx = (*header).cold_idx;
-        if cold_idx_is_shared(raw_idx) {
-            // Promote: shared → private.  The shared cold header
-            // remains alive (still referenced by the class and
-            // siblings); we simply give this instance its own.
-            let new_idx = alloc_cold_header(MoltColdHeader {
-                state,
-                ..MoltColdHeader::default()
-            });
-            (*header).cold_idx = new_idx;
-            return;
+        let snapshot = header_aux_snapshot(header);
+        match snapshot.kind {
+            HEADER_AUX_KIND_NONE => {
+                (*header).aux.store(state as u64, AtomicOrdering::Release);
+                (*header).aux_kind = HEADER_AUX_KIND_STATE_INLINE;
+            }
+            HEADER_AUX_KIND_STATE_INLINE => {
+                (*header).aux.store(state as u64, AtomicOrdering::Release);
+            }
+            HEADER_AUX_KIND_CLASS_INLINE => {
+                if !object_init_sidecar_unpublished(data_ptr) {
+                    return false;
+                }
+                sidecar_from_snapshot(object_aux_snapshot(data_ptr))
+                    .state
+                    .store(state as u64, AtomicOrdering::Release);
+            }
+            HEADER_AUX_KIND_SIDECAR => {
+                sidecar_from_snapshot(snapshot)
+                    .state
+                    .store(state as u64, AtomicOrdering::Release);
+            }
+            _ => unreachable!("validated aux kind"),
         }
-        if raw_idx != 0 {
-            let _ = with_cold_header_mut(raw_idx, |entry| entry.state = state);
-        } else {
-            // Lazily allocate a cold header.
-            let new_idx = alloc_cold_header(MoltColdHeader {
-                state,
-                ..MoltColdHeader::default()
-            });
-            (*header).cold_idx = new_idx;
-        }
+        true
+    }
+}
+
+/// Mutate state without changing the published aux kind/address.
+pub(crate) fn object_set_state(data_ptr: *mut u8, state: i64) {
+    let snapshot = unsafe { object_aux_snapshot(data_ptr) };
+    match snapshot.kind {
+        HEADER_AUX_KIND_STATE_INLINE => unsafe {
+            (*header_from_obj_ptr(data_ptr))
+                .aux
+                .store(state as u64, AtomicOrdering::Release);
+        },
+        HEADER_AUX_KIND_SIDECAR => unsafe {
+            sidecar_from_snapshot(snapshot)
+                .state
+                .store(state as u64, AtomicOrdering::Release);
+        },
+        _ => panic!("published object state requires preselected state or sidecar aux storage"),
     }
 }
 
 // ---------------------------------------------------------------------------
-// C API wrappers for cold-header state access (used by the native JIT backend).
-// State was moved from the inline MoltHeader to MoltColdHeader, so the JIT can
-// no longer do inline loads/stores — it must call through these functions.
+// C API wrappers for aux state access (used by the native JIT backend). The
+// helper preserves one ABI across inline-state and stable-sidecar objects.
 // ---------------------------------------------------------------------------
 
 /// Read the generator/coroutine state for the object at `data_ptr`.
-/// Returns the state value (0 if no cold header exists).
+/// Returns the state value (0 if the selected aux representation has no state lane).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_obj_get_state(data_ptr_bits: u64) -> i64 {
     let data_ptr = data_ptr_bits as usize as *mut u8;
@@ -813,18 +1070,14 @@ pub extern "C" fn molt_obj_set_state(data_ptr_bits: u64, state: i64) {
 ///     - `type_id        = TYPE_ID_OBJECT`
 ///     - `ref_count      = 1` (paired with IMMORTAL — never
 ///       decrements)
-///     - `flags          = HEADER_FLAG_IMMORTAL |
-///       HEADER_FLAG_SKIP_CLASS_DECREF` (so dec_ref_ptr
+///     - `flags          = HEADER_FLAG_IMMORTAL` (so dec_ref_ptr
 ///       short-circuits and the runtime never tries to free a
 ///       stack pointer through the dealloc path; the class is
 ///       borrowed from the module-owned class object)
 ///     - `size_class     = 0`  (size lives nowhere — IMMORTAL
 ///       objects bypass the size lookup paths)
-///     - `cold_idx       = ensure_shared_cold_idx(cls_ptr)`
-///       (per-class shared cold header storing class_bits in
-///       `state`; reads via `object_class_bits()` work
-///       transparently)
-///     - `reserved       = 0`
+///     - `aux_kind       = CLASS_INLINE`
+///     - `aux            = class_bits | BORROWED`
 /// - return the tagged data pointer bits (header_ptr + 24).
 ///
 /// Returns `MoltObject::none().bits()` if `cls_bits` does not point
@@ -868,55 +1121,15 @@ pub extern "C" fn molt_object_init_stack(
             std::ptr::addr_of_mut!((*header).ref_count),
             MoltRefCount::new(1),
         );
-        (*header).flags = HEADER_FLAG_IMMORTAL | HEADER_FLAG_SKIP_CLASS_DECREF;
+        (*header).flags = HEADER_FLAG_IMMORTAL;
         (*header).size_class = 0;
-        (*header).cold_idx = ensure_shared_cold_idx(cls_ptr);
-        (*header).reserved = 0;
+        (*header).aux_kind = HEADER_AUX_KIND_CLASS_INLINE;
+        std::ptr::write(
+            std::ptr::addr_of_mut!((*header).aux),
+            MoltAuxWord::new(cls_bits | HEADER_CLASS_WORD_BORROWED),
+        );
         let data_ptr = header_ptr.add(std::mem::size_of::<MoltHeader>());
         MoltObject::from_ptr(data_ptr).bits()
-    }
-}
-
-/// C-ABI entry point for the Cranelift inline stack-alloc fast
-/// path: decode `cls_bits` to a class pointer, verify it is a
-/// `TYPE_ID_TYPE` object, then delegate to `ensure_shared_cold_idx`
-/// which atomically allocates-or-reuses the per-class shared cold
-/// header.  Returns the raw `u32` index (with `SHARED_COLD_IDX_BIT`
-/// set) so the caller can store it directly into
-/// `MoltHeader::cold_idx` at slot offset 16.
-///
-/// Returns `0` (the "no cold header" sentinel) when `cls_bits` is
-/// not a valid pointer or the object is not a type — the codegen
-/// guarantees neither branch is reachable on the typed-class
-/// fast path (the frontend gates the OBJECT_NEW_BOUND fold on a
-/// known-class identity at compile time), so the fallbacks are
-/// defense-in-depth rather than expected runtime paths.
-///
-/// **Why a separate C-API**: the Cranelift inline stack-alloc
-/// codegen replaces a single C-call to `molt_object_init_stack`
-/// with inline header-stamping stores, but the cold-header
-/// allocation can't be inlined — it does an atomic
-/// compare-exchange against the class's `MoltHeader::reserved`
-/// field plus a slab alloc on the cache-miss path.  Splitting it
-/// into its own entry point lets the codegen issue exactly one
-/// runtime call (for the cold idx) instead of going through the
-/// full init_stack helper.
-///
-/// Safety: the caller (the codegen) guarantees `cls_bits` encodes
-/// a live heap object that remains alive for the duration of the
-/// call — the class is module-owned and never freed during a
-/// function execution.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ensure_shared_cold_idx(cls_bits: u64) -> u32 {
-    let cls_ptr = match obj_from_bits(cls_bits).as_ptr() {
-        Some(p) => p,
-        None => return 0,
-    };
-    unsafe {
-        if object_type_id(cls_ptr) != TYPE_ID_TYPE {
-            return 0;
-        }
-        ensure_shared_cold_idx(cls_ptr)
     }
 }
 
@@ -997,6 +1210,15 @@ pub(crate) fn pending_bits_i64() -> i64 {
 }
 
 pub(crate) fn alloc_object_zeroed(_py: &PyToken<'_>, total_size: usize, type_id: u32) -> *mut u8 {
+    alloc_object_zeroed_with_aux(_py, total_size, type_id, ObjectAuxPreselection::Default)
+}
+
+pub(crate) fn alloc_object_zeroed_with_aux(
+    _py: &PyToken<'_>,
+    total_size: usize,
+    type_id: u32,
+    aux: ObjectAuxPreselection,
+) -> *mut u8 {
     crate::gil_assert();
     let Some(plan) = object_allocation_plan(total_size) else {
         if debug_oom() {
@@ -1022,24 +1244,25 @@ pub(crate) fn alloc_object_zeroed(_py: &PyToken<'_>, total_size: usize, type_id:
             }
             return std::ptr::null_mut();
         }
-        profile_hit(_py, &ALLOC_COUNT);
-        profile_hit_bytes(_py, &ALLOC_BYTES_TOTAL, plan.alloc_size as u64);
-        profile_alloc_type(_py, type_id);
-        profile_alloc_type_bytes(_py, type_id, plan.alloc_size);
         let header = ptr as *mut MoltHeader;
         (*header).type_id = type_id;
         (*header).ref_count.store(1, AtomicOrdering::Relaxed);
         (*header).flags = 0;
         (*header).size_class = plan.size_class;
-        (*header).cold_idx = if plan.size_class == 0 {
-            alloc_cold_header(MoltColdHeader {
-                poll_fn: 0,
-                state: 0,
-                extended_size: total_size,
-            })
-        } else {
-            0
-        };
+        if !initialize_header_aux(header, type_id, plan.size_class, total_size, aux) {
+            std::alloc::dealloc(ptr, plan.layout);
+            release_object_allocation_reservation(plan);
+            return std::ptr::null_mut();
+        }
+        let aux_bytes = (header_aux_snapshot(header).kind == HEADER_AUX_KIND_SIDECAR)
+            .then_some(aux_sidecar_size())
+            .unwrap_or(0);
+        let tracked_bytes = plan.alloc_size.saturating_add(aux_bytes);
+        profile_hit(_py, &ALLOC_COUNT);
+        profile_hit_bytes(_py, &ALLOC_BYTES_TOTAL, tracked_bytes as u64);
+        profile_alloc_aux_kind(_py, header_aux_snapshot(header).kind);
+        profile_alloc_type(_py, type_id);
+        profile_alloc_type_bytes(_py, type_id, tracked_bytes);
         let data_ptr = ptr.add(std::mem::size_of::<MoltHeader>());
         gc::gc_track_if_cyclic(data_ptr, type_id);
         data_ptr
@@ -1047,6 +1270,15 @@ pub(crate) fn alloc_object_zeroed(_py: &PyToken<'_>, total_size: usize, type_id:
 }
 
 pub(crate) fn alloc_object(_py: &PyToken<'_>, total_size: usize, type_id: u32) -> *mut u8 {
+    alloc_object_with_aux(_py, total_size, type_id, ObjectAuxPreselection::Default)
+}
+
+pub(crate) fn alloc_object_with_aux(
+    _py: &PyToken<'_>,
+    total_size: usize,
+    type_id: u32,
+    aux: ObjectAuxPreselection,
+) -> *mut u8 {
     if debug_alloc_object()
         && debug_alloc_object_type()
             .map(|filter| filter == type_id)
@@ -1090,10 +1322,6 @@ pub(crate) fn alloc_object(_py: &PyToken<'_>, total_size: usize, type_id: u32) -
         }
         return std::ptr::null_mut();
     }
-    profile_hit(_py, &ALLOC_COUNT);
-    profile_hit_bytes(_py, &ALLOC_BYTES_TOTAL, plan.alloc_size as u64);
-    profile_alloc_type(_py, type_id);
-    profile_alloc_type_bytes(_py, type_id, plan.alloc_size);
     unsafe {
         // Zero the entire allocation so data fields past the header
         // start as null pointers / zero values.  This prevents the
@@ -1104,15 +1332,22 @@ pub(crate) fn alloc_object(_py: &PyToken<'_>, total_size: usize, type_id: u32) -
         let header = header_ptr as *mut MoltHeader;
         (*header).type_id = type_id;
         (*header).ref_count.store(1, AtomicOrdering::Relaxed);
-        // flags, size_class, cold_idx are already 0 from write_bytes
+        // Flags and size_class are already 0 from write_bytes.
         (*header).size_class = plan.size_class;
-        if plan.size_class == 0 {
-            (*header).cold_idx = alloc_cold_header(MoltColdHeader {
-                poll_fn: 0,
-                state: 0,
-                extended_size: total_size,
-            });
+        if !initialize_header_aux(header, type_id, plan.size_class, total_size, aux) {
+            std::alloc::dealloc(header_ptr, plan.layout);
+            release_object_allocation_reservation(plan);
+            return std::ptr::null_mut();
         }
+        let aux_bytes = (header_aux_snapshot(header).kind == HEADER_AUX_KIND_SIDECAR)
+            .then_some(aux_sidecar_size())
+            .unwrap_or(0);
+        let tracked_bytes = plan.alloc_size.saturating_add(aux_bytes);
+        profile_hit(_py, &ALLOC_COUNT);
+        profile_hit_bytes(_py, &ALLOC_BYTES_TOTAL, tracked_bytes as u64);
+        profile_alloc_aux_kind(_py, header_aux_snapshot(header).kind);
+        profile_alloc_type(_py, type_id);
+        profile_alloc_type_bytes(_py, type_id, tracked_bytes);
         let data_ptr = header_ptr.add(std::mem::size_of::<MoltHeader>());
         gc::gc_track_if_cyclic(data_ptr, type_id);
         data_ptr
@@ -1140,10 +1375,20 @@ fn profile_alloc_type(_py: &PyToken<'_>, type_id: u32) {
 }
 
 #[cfg_attr(target_arch = "wasm32", inline(always))]
+fn profile_alloc_aux_kind(_py: &PyToken<'_>, aux_kind: u16) {
+    match aux_kind {
+        HEADER_AUX_KIND_CLASS_INLINE => profile_hit(_py, &AUX_CLASS_INLINE_COUNT),
+        HEADER_AUX_KIND_STATE_INLINE => profile_hit(_py, &AUX_STATE_INLINE_COUNT),
+        _ => {}
+    }
+}
+
+#[cfg_attr(target_arch = "wasm32", inline(always))]
 fn profile_alloc_type_bytes(_py: &PyToken<'_>, type_id: u32, total_size: usize) {
     let bytes = total_size as u64;
     match type_id {
         TYPE_ID_DICT => profile_hit_bytes(_py, &ALLOC_BYTES_DICT, bytes),
+        TYPE_ID_EXCEPTION => profile_hit_bytes(_py, &ALLOC_BYTES_EXCEPTION, bytes),
         TYPE_ID_TUPLE => profile_hit_bytes(_py, &ALLOC_BYTES_TUPLE, bytes),
         TYPE_ID_STRING => profile_hit_bytes(_py, &ALLOC_BYTES_STRING, bytes),
         TYPE_ID_LIST | TYPE_ID_LIST_BUILDER => profile_hit_bytes(_py, &ALLOC_BYTES_LIST, bytes),
@@ -1156,13 +1401,17 @@ fn profile_alloc_type_bytes(_py: &PyToken<'_>, type_id: u32, total_size: usize) 
 /// so a leak in the `live = alloc - dealloc` gauge can be attributed to a
 /// concrete object family.
 #[cfg_attr(target_arch = "wasm32", inline(always))]
-fn profile_dealloc_type(_py: &PyToken<'_>, type_id: u32) {
+fn profile_dealloc_type(_py: &PyToken<'_>, type_id: u32, total_size: u64) {
     match type_id {
         TYPE_ID_OBJECT => profile_hit(_py, &DEALLOC_OBJECT_COUNT),
         TYPE_ID_BIGINT => profile_hit(_py, &DEALLOC_BIGINT_COUNT),
         TYPE_ID_STRING => profile_hit(_py, &DEALLOC_STRING_COUNT),
         TYPE_ID_DICT => profile_hit(_py, &DEALLOC_DICT_COUNT),
         TYPE_ID_TUPLE => profile_hit(_py, &DEALLOC_TUPLE_COUNT),
+        TYPE_ID_EXCEPTION => {
+            profile_hit(_py, &DEALLOC_EXCEPTION_COUNT);
+            profile_hit_bytes(_py, &DEALLOC_BYTES_EXCEPTION, total_size);
+        }
         _ => {}
     }
 }
@@ -1225,13 +1474,11 @@ pub(crate) unsafe fn instance_set_dict_bits(_py: &PyToken<'_>, ptr: *mut u8, bit
     }
 }
 
-unsafe fn object_class_bits_from_state(state: i64) -> u64 {
-    let bits = state as u64;
+unsafe fn object_class_bits_from_word(word: u64) -> u64 {
+    let bits = word & HEADER_CLASS_WORD_BITS_MASK;
     if bits == 0 {
         return 0;
     }
-    // Some TYPE_ID_OBJECT futures/tasks repurpose `state` for runtime state.
-    // Treat it as a class only when it points to an actual type object.
     let Some(class_ptr) = obj_from_bits(bits).as_ptr() else {
         return 0;
     };
@@ -1241,9 +1488,37 @@ unsafe fn object_class_bits_from_state(state: i64) -> u64 {
     bits
 }
 
+#[inline]
+unsafe fn object_class_word(ptr: *mut u8) -> u64 {
+    let snapshot = unsafe { object_aux_snapshot(ptr) };
+    match snapshot.kind {
+        HEADER_AUX_KIND_CLASS_INLINE => snapshot.word,
+        HEADER_AUX_KIND_SIDECAR => unsafe { sidecar_from_snapshot(snapshot) }.class_edge(),
+        _ => 0,
+    }
+}
+
+#[inline]
+#[cfg(test)]
+pub(crate) unsafe fn object_has_class_edge(ptr: *mut u8) -> bool {
+    unsafe { object_class_word(ptr) & HEADER_CLASS_WORD_BITS_MASK != 0 }
+}
+
+#[inline]
+pub(crate) unsafe fn object_class_edge_is_borrowed(ptr: *mut u8) -> bool {
+    let word = unsafe { object_class_word(ptr) };
+    word & HEADER_CLASS_WORD_BITS_MASK != 0 && word & HEADER_CLASS_WORD_BORROWED != 0
+}
+
+/// Return the object's validated class handle.
+///
+/// # Safety
+/// `ptr` must identify a live object and the caller must hold the GIL. The GIL
+/// is currently the lifetime guard that prevents a published replacement from
+/// retiring the loaded class edge before its type header is validated.
 pub(crate) unsafe fn object_class_bits(ptr: *mut u8) -> u64 {
-    let state = object_state(ptr);
-    unsafe { object_class_bits_from_state(state) }
+    crate::gil_assert();
+    unsafe { object_class_bits_from_word(object_class_word(ptr)) }
 }
 
 #[inline]
@@ -1256,12 +1531,161 @@ pub(crate) unsafe fn object_is_exact_builtin_dict(_py: &PyToken<'_>, ptr: *mut u
         || builtin_classes_if_initialized(_py).is_some_and(|builtins| class_bits == builtins.dict)
 }
 
-pub(crate) unsafe fn object_set_class_bits(_py: &PyToken<'_>, ptr: *mut u8, bits: u64) {
-    crate::gil_assert();
-    object_set_state(ptr, bits as i64);
-    unsafe {
-        apply_instance_finalizer_flag_from_class(ptr, bits);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ClassEdgeOwnership {
+    Owned,
+    Borrowed,
+}
+
+#[inline]
+fn class_word(bits: u64, ownership: ClassEdgeOwnership) -> u64 {
+    debug_assert_eq!(bits & HEADER_CLASS_WORD_TAG_MASK, 0);
+    if bits == 0 {
+        0
+    } else {
+        bits | u64::from(ownership == ClassEdgeOwnership::Borrowed) * HEADER_CLASS_WORD_BORROWED
     }
+}
+
+#[inline]
+unsafe fn validated_class_edge_bits(bits: u64) -> Option<u64> {
+    if bits == 0 || obj_from_bits(bits).is_none() {
+        return Some(0);
+    }
+    let class_ptr = obj_from_bits(bits).as_ptr()?;
+    (unsafe { object_type_id(class_ptr) } == TYPE_ID_TYPE).then_some(bits)
+}
+
+#[inline]
+unsafe fn class_edge_target(
+    ptr: *mut u8,
+    snapshot: ObjectAuxSnapshot,
+) -> Option<&'static MoltAuxWord> {
+    unsafe {
+        match snapshot.kind {
+            HEADER_AUX_KIND_CLASS_INLINE => Some(&(*header_from_obj_ptr(ptr)).aux),
+            HEADER_AUX_KIND_SIDECAR => Some(&sidecar_from_snapshot(snapshot).class_edge),
+            HEADER_AUX_KIND_NONE | HEADER_AUX_KIND_STATE_INLINE => None,
+            _ => unreachable!("validated aux kind"),
+        }
+    }
+}
+
+unsafe fn replace_published_class_edge(
+    _py: &PyToken<'_>,
+    ptr: *mut u8,
+    bits: u64,
+    ownership: ClassEdgeOwnership,
+) -> bool {
+    crate::gil_assert();
+    if (unsafe { (*header_from_obj_ptr(ptr)).flags } & HEADER_FLAG_DEALLOCATING) != 0 {
+        return false;
+    }
+    let Some(new_bits) = (unsafe { validated_class_edge_bits(bits) }) else {
+        return false;
+    };
+    let snapshot = unsafe { object_aux_snapshot(ptr) };
+    let Some(target) = (unsafe { class_edge_target(ptr, snapshot) }) else {
+        return false;
+    };
+
+    let new_owned = new_bits != 0 && ownership == ClassEdgeOwnership::Owned;
+    let new_word = class_word(new_bits, ownership);
+    let mut old_word = target.load(AtomicOrdering::Acquire);
+    loop {
+        if old_word == new_word {
+            return true;
+        }
+        if new_owned {
+            inc_ref_bits(_py, new_bits);
+        }
+        match target.compare_exchange(
+            old_word,
+            new_word,
+            AtomicOrdering::AcqRel,
+            AtomicOrdering::Acquire,
+        ) {
+            Ok(_) => {
+                let old_bits = unsafe { object_class_bits_from_word(old_word) };
+                let old_owned = old_bits != 0 && old_word & HEADER_CLASS_WORD_BORROWED == 0;
+                if old_owned {
+                    dec_ref_bits(_py, old_bits);
+                }
+                return true;
+            }
+            Err(observed) => {
+                if new_owned {
+                    dec_ref_bits(_py, new_bits);
+                }
+                old_word = observed;
+            }
+        }
+    }
+}
+
+/// Establish a class edge in an already-selected CLASS_INLINE or SIDECAR lane
+/// while the object is still unpublished. Constructors must select the lane at
+/// allocation and use this, not the published replacement API.
+///
+/// # Safety
+/// `ptr` must not yet be visible to any reader or external registry.
+#[must_use]
+pub(crate) unsafe fn object_init_class_edge_unpublished(
+    _py: &PyToken<'_>,
+    ptr: *mut u8,
+    bits: u64,
+    ownership: ClassEdgeOwnership,
+) -> bool {
+    crate::gil_assert();
+    let Some(new_bits) = (unsafe { validated_class_edge_bits(bits) }) else {
+        return false;
+    };
+    let snapshot = unsafe { object_aux_snapshot(ptr) };
+    let Some(target) = (unsafe { class_edge_target(ptr, snapshot) }) else {
+        return false;
+    };
+    if target.load(AtomicOrdering::Acquire) != 0 {
+        return false;
+    }
+    if new_bits != 0 && ownership == ClassEdgeOwnership::Owned {
+        inc_ref_bits(_py, new_bits);
+    }
+    // Fresh-object initialization has exclusive ownership. A single release
+    // publication is sufficient and avoids the redundant load/CAS loop paid by
+    // the genuinely concurrent published replacement path.
+    target.store(class_word(new_bits, ownership), AtomicOrdering::Release);
+    true
+}
+
+/// Clear a class edge during exclusive unpublished rollback and discharge its
+/// owned reference exactly once. This is deliberately separate from fresh
+/// initialization so the latter can retain its empty-lane invariant.
+///
+/// # Safety
+/// `ptr` must not be visible to any reader or external registry.
+#[must_use]
+pub(crate) unsafe fn object_clear_class_edge_unpublished(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
+    crate::gil_assert();
+    let snapshot = unsafe { object_aux_snapshot(ptr) };
+    let Some(target) = (unsafe { class_edge_target(ptr, snapshot) }) else {
+        return false;
+    };
+    let old_word = target.swap(0, AtomicOrdering::AcqRel);
+    let old_bits = unsafe { object_class_bits_from_word(old_word) };
+    if old_bits != 0 && old_word & HEADER_CLASS_WORD_BORROWED == 0 {
+        dec_ref_bits(_py, old_bits);
+    }
+    true
+}
+
+/// Replace an existing published class lane without changing aux kind/address.
+pub(crate) unsafe fn object_replace_class_edge(
+    _py: &PyToken<'_>,
+    ptr: *mut u8,
+    bits: u64,
+    ownership: ClassEdgeOwnership,
+) -> bool {
+    unsafe { replace_published_class_edge(_py, ptr, bits, ownership) }
 }
 
 #[inline]
@@ -1272,20 +1696,12 @@ unsafe fn class_header_has_finalizer(class_ptr: *mut u8) -> bool {
     }
 }
 
-unsafe fn apply_instance_finalizer_flag_from_class(ptr: *mut u8, class_bits: u64) {
+pub(crate) unsafe fn object_class_has_finalizer(ptr: *mut u8) -> bool {
     unsafe {
-        let header = header_from_obj_ptr(ptr);
-        if (*header).type_id != TYPE_ID_OBJECT {
-            return;
-        }
-        let has_finalizer = obj_from_bits(class_bits)
-            .as_ptr()
-            .is_some_and(|class_ptr| class_header_has_finalizer(class_ptr));
-        if has_finalizer {
-            (*header).flags |= HEADER_FLAG_INSTANCE_HAS_FINALIZER;
-        } else {
-            (*header).flags &= !HEADER_FLAG_INSTANCE_HAS_FINALIZER;
-        }
+        object_type_id(ptr) != TYPE_ID_TYPE
+            && obj_from_bits(object_class_bits(ptr))
+                .as_ptr()
+                .is_some_and(|class_ptr| class_header_has_finalizer(class_ptr))
     }
 }
 
@@ -1590,6 +2006,31 @@ pub unsafe extern "C" fn molt_dec_ref(ptr: *mut u8) {
 /// # Safety
 /// Dereferences raw pointer to increment ref count.
 #[inline(always)]
+unsafe fn checked_retain_count(header_ptr: *mut MoltHeader, count: u32, label: &str) -> u32 {
+    unsafe {
+        let counter = &(*header_ptr).ref_count;
+        let mut current = counter.load(AtomicOrdering::Acquire);
+        loop {
+            let Some(next) = current.checked_add(count) else {
+                eprintln!(
+                    "molt fatal: refcount overflow in {label} (count={current}, add={count})"
+                );
+                std::process::abort();
+            };
+            match counter.compare_exchange_weak(
+                current,
+                next,
+                AtomicOrdering::AcqRel,
+                AtomicOrdering::Acquire,
+            ) {
+                Ok(_) => return current,
+                Err(observed) => current = observed,
+            }
+        }
+    }
+}
+
+#[inline(always)]
 pub(crate) unsafe fn inc_ref_ptr(_py: &PyToken<'_>, ptr: *mut u8) {
     unsafe {
         crate::gil_assert();
@@ -1617,6 +2058,10 @@ pub(crate) unsafe fn inc_ref_ptr(_py: &PyToken<'_>, ptr: *mut u8) {
         if ((*header_ptr).flags & HEADER_FLAG_IMMORTAL) != 0 {
             return;
         }
+        if ((*header_ptr).flags & HEADER_FLAG_DEALLOCATING) != 0 {
+            eprintln!("molt fatal: owned INCREF attempted after terminal death");
+            std::process::abort();
+        }
         // Debug: trace bigint refcount increments
         if type_id == TYPE_ID_BIGINT && debug_bigint_rc() {
             let old = (*header_ptr).ref_count.load(AtomicOrdering::Relaxed);
@@ -1631,15 +2076,15 @@ pub(crate) unsafe fn inc_ref_ptr(_py: &PyToken<'_>, ptr: *mut u8) {
             let old = (*header_ptr).ref_count.load(AtomicOrdering::Relaxed);
             eprintln!("EXC_RC_INC ptr=0x{:x} {}→{}", ptr as usize, old, old + 1);
         }
-        let new_count = (*header_ptr)
-            .ref_count
-            .fetch_add(1, AtomicOrdering::Relaxed)
-            + 1;
+        let previous = checked_retain_count(header_ptr, 1, "inc_ref_ptr");
+        let new_count = previous + 1;
+        if previous == 1 && ((*header_ptr).flags & HEADER_FLAG_HAS_ABI_VIEW) != 0 {
+            let bits = MoltObject::from_ptr(ptr).bits();
+            molt_cpython_abi::bridge::GLOBAL_BRIDGE.runtime_owner_added_from_view_hold(bits);
+        }
         if debug_rc_object() {
             let header = &*header_ptr;
-            if header.type_id == TYPE_ID_OBJECT
-                && (header.flags & HEADER_FLAG_SKIP_CLASS_DECREF) != 0
-            {
+            if header.type_id == TYPE_ID_OBJECT && object_class_edge_is_borrowed(ptr) {
                 eprintln!("molt rc inc ptr=0x{:x} count={}", ptr as usize, new_count);
             }
         }
@@ -1681,15 +2126,19 @@ pub(crate) unsafe fn inc_ref_n_ptr(_py: &PyToken<'_>, ptr: *mut u8, count: u32) 
         if ((*header_ptr).flags & HEADER_FLAG_IMMORTAL) != 0 {
             return;
         }
-        let new_count = (*header_ptr)
-            .ref_count
-            .fetch_add(count, AtomicOrdering::Relaxed)
-            + count;
+        if ((*header_ptr).flags & HEADER_FLAG_DEALLOCATING) != 0 {
+            eprintln!("molt fatal: owned batched INCREF attempted after terminal death");
+            std::process::abort();
+        }
+        let previous = checked_retain_count(header_ptr, count, "inc_ref_n_ptr");
+        let new_count = previous + count;
+        if previous == 1 && ((*header_ptr).flags & HEADER_FLAG_HAS_ABI_VIEW) != 0 {
+            let bits = MoltObject::from_ptr(ptr).bits();
+            molt_cpython_abi::bridge::GLOBAL_BRIDGE.runtime_owner_added_from_view_hold(bits);
+        }
         if debug_rc_object() {
             let header = &*header_ptr;
-            if header.type_id == TYPE_ID_OBJECT
-                && (header.flags & HEADER_FLAG_SKIP_CLASS_DECREF) != 0
-            {
+            if header.type_id == TYPE_ID_OBJECT && object_class_edge_is_borrowed(ptr) {
                 eprintln!(
                     "molt rc inc_n ptr=0x{:x} count={} by={}",
                     ptr as usize, new_count, count
@@ -1713,23 +2162,13 @@ pub(crate) unsafe fn inc_ref_n_ptr(_py: &PyToken<'_>, ptr: *mut u8, count: u32) 
 /// can resurrect through the SAME window even for a `__del__`-free object.
 unsafe fn run_object_del_in_revival_window(py: &PyToken<'_>, ptr: *mut u8) {
     let header_ptr = unsafe { header_from_obj_ptr(ptr) };
-    if unsafe { (*header_ptr).type_id } != TYPE_ID_OBJECT {
-        return;
-    }
-    if (unsafe { (*header_ptr).flags } & HEADER_FLAG_INSTANCE_HAS_FINALIZER) == 0 {
+    if !unsafe { object_class_has_finalizer(ptr) } {
         return;
     }
     if (unsafe { (*header_ptr).flags } & HEADER_FLAG_FINALIZER_RAN) != 0 {
         return;
     }
-    let cold_idx = unsafe { (*header_ptr).cold_idx };
-    // Strip the shared bit: stack-allocated and shared-cold-header
-    // instances point to the per-class cold header which carries
-    // class_bits in its `state` field — we want that value, not 0.
-    let class_state = get_cold_header(cold_idx_real(cold_idx))
-        .map(|cold| cold.state)
-        .unwrap_or(0);
-    let class_bits = unsafe { object_class_bits_from_state(class_state) };
+    let class_bits = unsafe { object_class_bits(ptr) };
     if class_bits == 0 || obj_from_bits(class_bits).is_none() {
         return;
     }
@@ -1757,6 +2196,9 @@ unsafe fn run_object_del_in_revival_window(py: &PyToken<'_>, ptr: *mut u8) {
     let Some(raw_del_bits) = raw_del_bits else {
         return;
     };
+    // The finalizer may replace/delete its own class attribute. Keep the raw
+    // callable alive through post-failure policy repr/context reporting.
+    inc_ref_bits(py, raw_del_bits);
     unsafe {
         (*header_ptr).flags |= HEADER_FLAG_FINALIZER_RAN;
     }
@@ -1776,13 +2218,6 @@ unsafe fn run_object_del_in_revival_window(py: &PyToken<'_>, ptr: *mut u8) {
     // CPython exactly: capture the in-flight exception, keep it alive across the
     // clear, then CLEAR so the binding + call run clean. It is restored after the
     // finalizer (the unraisable-write + restore block below).
-    let prior_exc_bits = crate::builtins::exceptions::exception_last_bits_noinc(py)
-        .filter(|bits| !obj_from_bits(*bits).is_none());
-    if let Some(bits) = prior_exc_bits {
-        inc_ref_bits(py, bits);
-        crate::clear_exception(py);
-        crate::builtins::exceptions::clear_exception_state(py);
-    }
     // Run `__del__` lookup/binding/call under a SYNTHETIC exception-handler frame
     // so an uncaught raise inside it is recorded VALUE-BASED and swallowed below,
     // instead of killing the process. ROOT CAUSE of #65 (definitively measured):
@@ -1801,23 +2236,43 @@ unsafe fn run_object_del_in_revival_window(py: &PyToken<'_>, ptr: *mut u8) {
     // try-frame (`molt_exception_push`/`molt_exception_pop`); no `catch_unwind`, no
     // backend landing pad, no deferral, and `__del__` still runs INLINE at the
     // rc→0 point so finalization stays CPython-prompt.
-    crate::builtins::exceptions::exception_stack_push();
-    let del_bits = obj_from_bits(class_bits)
-        .as_ptr()
-        .and_then(|class_ptr| unsafe {
-            crate::builtins::attr::descriptor_bind(py, raw_del_bits, class_ptr, Some(ptr))
-        })
-        .unwrap_or(0);
-    if del_bits != 0 && !crate::exception_pending(py) {
-        let result_bits = unsafe { crate::call_callable0(py, del_bits) };
-        if !obj_from_bits(result_bits).is_none() {
-            dec_ref_bits(py, result_bits);
-        }
-    }
-    crate::builtins::exceptions::exception_stack_pop(py);
-    if !obj_from_bits(del_bits).is_none() {
-        dec_ref_bits(py, del_bits);
-    }
+    crate::builtins::exceptions::run_unraisable_with_policy(
+        py,
+        || {
+            if crate::object::ops_sys::runtime_target_minor(py) >= 14 {
+                let rendered =
+                    crate::builtins::exceptions::unraisable_context_repr(py, raw_del_bits);
+                (
+                    MoltObject::none().bits(),
+                    Some(format!(
+                        "Exception ignored while calling deallocator {rendered}"
+                    )),
+                )
+            } else {
+                (raw_del_bits, None)
+            }
+        },
+        || {
+            crate::builtins::exceptions::exception_stack_push();
+            let del_bits = obj_from_bits(class_bits)
+                .as_ptr()
+                .and_then(|class_ptr| unsafe {
+                    crate::builtins::attr::descriptor_bind(py, raw_del_bits, class_ptr, Some(ptr))
+                })
+                .unwrap_or(0);
+            if del_bits != 0 && !crate::exception_pending(py) {
+                let result_bits = unsafe { crate::call_callable0(py, del_bits) };
+                if !obj_from_bits(result_bits).is_none() {
+                    dec_ref_bits(py, result_bits);
+                }
+            }
+            crate::builtins::exceptions::exception_stack_pop(py);
+            if !obj_from_bits(del_bits).is_none() {
+                dec_ref_bits(py, del_bits);
+            }
+        },
+    );
+    dec_ref_bits(py, raw_del_bits);
     // CPython `PyObject_CallFinalizer` tail: an exception raised DURING the
     // finalizer (`__del__` itself, or the `descriptor_bind` above) is ignored —
     // `PyErr_WriteUnraisable` writes it to stderr and clears it — and only THEN is
@@ -1828,26 +2283,6 @@ unsafe fn run_object_del_in_revival_window(py: &PyToken<'_>, ptr: *mut u8) {
     // `__del__` ran under the synthetic handler frame above, so `molt_raise`
     // recorded the raise value-based rather than running the uncaught-exception
     // process-exit terminator (#65) — this branch is reachable.
-    if crate::exception_pending(py) {
-        if let Some(exc_bits) = crate::builtins::exceptions::exception_last_bits_noinc(py)
-            && let Some(exc_ptr) = obj_from_bits(exc_bits).as_ptr()
-        {
-            let formatted =
-                crate::builtins::exceptions::format_exception_with_traceback(py, exc_ptr);
-            eprintln!("Exception ignored while calling deallocator:");
-            if !formatted.is_empty() {
-                eprint!("{formatted}");
-            }
-        }
-        crate::clear_exception(py);
-        crate::builtins::exceptions::clear_exception_state(py);
-    }
-    // Restore the surrounding exception saved before the finalizer ran, so it
-    // continues to unwind the frame exactly as in CPython.
-    if let Some(bits) = prior_exc_bits {
-        crate::builtins::exceptions::exception_set_last_bits_raw(py, bits);
-        dec_ref_bits(py, bits);
-    }
     // The revival ref opened by the caller stays held: `dec_ref_ptr` performs the
     // single closing `dec_ref` + resurrection check AFTER `weakref_clear_for_ptr`
     // runs, so a `__del__`-resurrect and a weakref-callback-resurrect collapse to
@@ -1913,7 +2348,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
         }
         let header_flags = (*header_ptr).flags;
         let header_size_class = (*header_ptr).size_class;
-        let header_cold_idx = (*header_ptr).cold_idx;
+        let header_aux = header_aux_snapshot(header_ptr);
         if (header_flags & HEADER_FLAG_IMMORTAL) != 0 {
             return;
         }
@@ -1964,17 +2399,43 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                 prev.saturating_sub(1)
             );
         }
-        if debug_rc_object()
-            && type_id == TYPE_ID_OBJECT
-            && (header_flags & HEADER_FLAG_SKIP_CLASS_DECREF) != 0
-        {
+        if debug_rc_object() && type_id == TYPE_ID_OBJECT && object_class_edge_is_borrowed(ptr) {
             eprintln!(
                 "molt rc dec ptr=0x{:x} count={}",
                 ptr as usize,
                 prev.saturating_sub(1)
             );
         }
-        if prev == 1 {
+        let view_hold_is_final = if prev == 2
+            && (header_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0
+            && !(type_id == TYPE_ID_EXCEPTION
+                && crate::builtins::exceptions::exception_is_rooted(py, ptr))
+        {
+            let bits = MoltObject::from_ptr(ptr).bits();
+            match molt_cpython_abi::bridge::GLOBAL_BRIDGE.runtime_owner_dropped_to_view_hold(bits) {
+                Some(true) => {
+                    // Keep the stable view hold. A distinct revival pin is
+                    // added only if arbitrary finalizer/weakref code will run.
+                    true
+                }
+                Some(false) => return,
+                None => false,
+            }
+        } else {
+            false
+        };
+        if prev == 1 && (header_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0 {
+            let may_finalize = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                .runtime_last_ref_dropped(MoltObject::from_ptr(ptr).bits());
+            // Restore the stable view hold that this terminal decrement is
+            // attempting to consume. Finalization owns a distinct pin above
+            // it; direct C roots retain the restored hold without entering.
+            (*header_ptr).ref_count.store(1, AtomicOrdering::Release);
+            if !may_finalize {
+                return;
+            }
+        }
+        if prev == 1 || view_hold_is_final {
             if type_id == TYPE_ID_EXCEPTION
                 && crate::builtins::exceptions::exception_is_rooted(py, ptr)
             {
@@ -2001,12 +2462,15 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             // leak"). So the dealloc counters are bumped only AFTER the revival
             // window's single resurrection check passes (see below); the byte
             // total is the one value that must be read from the header BEFORE the
-            // window runs (a `__del__` can mutate/realloc the object, and for
-            // oversized objects `total_size_from_header_fields` reads the cold
-            // header's `extended_size`), so snapshot it here into a local and
-            // commit it after the destruction is confirmed.
-            let dealloc_bytes =
-                total_size_from_header_fields(header_size_class, header_cold_idx) as u64;
+            // window runs. Aux kind/address are immutable after publication and
+            // oversized exact size is immutable inside the sidecar.
+            let object_bytes =
+                total_size_from_header_fields(header_size_class, header_aux.kind, header_aux.word);
+            let dealloc_bytes = object_bytes.saturating_add(
+                (header_aux.kind == HEADER_AUX_KIND_SIDECAR)
+                    .then_some(aux_sidecar_size())
+                    .unwrap_or(0),
+            ) as u64;
             if debug_dec_ref_zero() {
                 eprintln!(
                     "molt dec_ref_zero ptr=0x{:x} type_id={}",
@@ -2090,14 +2554,19 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             // Python code ever runs while the object is at rc=0.
             //
             // The window is opened ONLY when the object actually participates — it
-            // has a `__del__` finalizer (`INSTANCE_HAS_FINALIZER`) or has ever
+            // currently derives a `__del__` finalizer from its class or has ever
             // exposed a weakref (`HAS_WEAKREF`). Objects with neither (the hot
             // path: ints, strings, tuples, plain instances) skip the revival
             // inc/dec AND the global weakref lock entirely and fall straight
             // through to the free tail with zero added cost.
-            let window_flags =
-                header_flags & (HEADER_FLAG_INSTANCE_HAS_FINALIZER | HEADER_FLAG_HAS_WEAKREF);
-            if window_flags != 0 {
+            let needs_revival_window =
+                (header_flags & HEADER_FLAG_HAS_WEAKREF) != 0 || object_class_has_finalizer(ptr);
+            if needs_revival_window {
+                let has_abi_view = (header_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0;
+                let view_bits = MoltObject::from_ptr(ptr).bits();
+                if has_abi_view {
+                    molt_cpython_abi::bridge::GLOBAL_BRIDGE.begin_finalization(view_bits);
+                }
                 // Open the revival window: the object is now live at rc≥1 so no
                 // Python code below can observe (or free) it at rc=0. Use the raw
                 // header increment (not `inc_ref_ptr`, which short-circuits on
@@ -2107,6 +2576,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                 (*header_ptr)
                     .ref_count
                     .fetch_add(1, AtomicOrdering::Relaxed);
+                let window_baseline = if has_abi_view { 2 } else { 1 };
                 // `__del__` runs INLINE at this rc→0 point, exactly as CPython
                 // finalizes at Py_DECREF→0 (prompt timing: `del x; print()` runs
                 // `__del__` before `print`), under a synthetic exception-handler
@@ -2126,26 +2596,45 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                 // `__del__` never re-runs; the weakrefs are cleared on that real
                 // death). The mid-window dec/check runs NO Python code, so the
                 // object is never observable at rc=0.
-                if (*header_ptr).ref_count.load(AtomicOrdering::Acquire) > 1 {
+                if (*header_ptr).ref_count.load(AtomicOrdering::Acquire) > window_baseline {
                     (*header_ptr).ref_count.fetch_sub(1, AtomicOrdering::AcqRel);
+                    if has_abi_view {
+                        molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                            .finish_finalization(view_bits, true);
+                    }
                     return;
                 }
-                // `__del__` did not resurrect. Clear weakrefs and run their
-                // callbacks WHILE the object is still live (rc==1) in the same
-                // window — never at rc=0. A callback that re-strengthens the
-                // referent (or otherwise re-increments its refcount) makes the
-                // close below see rc>1 and abort the free, exactly as for a
-                // `__del__` resurrection. `weakref_clear_for_ptr` is a no-op (early
-                // return after the global-lock probe) when no weakref is currently
-                // registered, so a `__del__`-only object pays just that probe.
-                weakref_clear_for_ptr(py, ptr);
-                // Close the window: drop the revival ref. If the weakref callbacks
-                // resurrected the object (rc still > 1 after this sub), abort the
-                // free — the object is alive again and a later final drop re-enters
-                // (the weakrefs were already cleared exactly once).
-                let prev_window = (*header_ptr).ref_count.fetch_sub(1, AtomicOrdering::AcqRel);
-                if prev_window > 1 {
+                if has_abi_view
+                    && molt_cpython_abi::bridge::GLOBAL_BRIDGE.has_direct_c_refs(view_bits)
+                {
+                    (*header_ptr).ref_count.fetch_sub(1, AtomicOrdering::AcqRel);
+                    molt_cpython_abi::bridge::GLOBAL_BRIDGE.finish_finalization(view_bits, false);
                     return;
+                }
+                // `__del__` did not resurrect: death is now committed. Publish
+                // DEALLOCATING before weakref clearing so callbacks cannot create
+                // fresh weakrefs or synthesize a runtime owner from stale bits.
+                (*header_ptr).flags |= HEADER_FLAG_DEALLOCATING;
+                gc::gc_untrack_on_free(ptr, type_id);
+                // Detach weakrefs and invoke callbacks after the death verdict.
+                // The referent remains allocated only as an internal pin; checked
+                // retain/view publication rejects every attempt to reopen it.
+                weakref_clear_for_ptr(py, ptr);
+                if has_abi_view {
+                    if (*header_ptr).ref_count.load(AtomicOrdering::Acquire) != window_baseline
+                        || molt_cpython_abi::bridge::GLOBAL_BRIDGE.has_direct_c_refs(view_bits)
+                    {
+                        eprintln!("molt fatal: weakref callback reopened committed-dead object");
+                        std::process::abort();
+                    }
+                    (*header_ptr).ref_count.fetch_sub(1, AtomicOrdering::AcqRel);
+                    molt_cpython_abi::bridge::GLOBAL_BRIDGE.finish_finalization(view_bits, false);
+                } else {
+                    let prev_window = (*header_ptr).ref_count.fetch_sub(1, AtomicOrdering::AcqRel);
+                    if prev_window != 1 {
+                        eprintln!("molt fatal: weakref callback reopened committed-dead object");
+                        std::process::abort();
+                    }
                 }
                 // DEFENSE-IN-DEPTH (P2): the revival window above ran arbitrary
                 // Python (`__del__` and/or weakref callbacks) against this object's
@@ -2169,16 +2658,63 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     std::process::abort();
                 }
             }
+            // Arbitrary finalizer/weakref code may have published side state
+            // after the entry snapshot. Reload only after the resurrection
+            // verdict, then close every terminal sidecar from this authority.
+            let terminal_flags = (*header_ptr).flags;
+            if (terminal_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0 {
+                // Consume the stable view hold only after every resurrection
+                // opportunity has closed.
+                (*header_ptr).ref_count.store(0, AtomicOrdering::Release);
+            }
             // Past the resurrection check: the object is now actually being
             // destroyed. Commit the leak-gauge counters so DEALLOC_COUNT means
             // "objects truly freed", keeping `live = alloc - dealloc` exact
             // (resurrected objects are correctly NOT counted as dealloc'd until
             // their real final drop). `type_id` is the cached entry value; the
             // byte total was snapshotted before the window ran.
+            if (terminal_flags & HEADER_FLAG_DEALLOCATING) == 0 {
+                (*header_ptr).flags |= HEADER_FLAG_DEALLOCATING;
+                gc::gc_untrack_on_free(ptr, type_id);
+            }
+            let weakref_registration = if (terminal_flags & HEADER_FLAG_IS_WEAKREF) != 0 {
+                weakref::weakref_object_detach(py, ptr)
+            } else {
+                None
+            };
+            // Exception teardown is a four-stage transaction across the
+            // runtime payload and its physical CPython view. Detach runtime
+            // ownership first, null physical fields while their referents are
+            // still live, then retire the view. The detached edges are released
+            // only in the type arm below, after no bridge reentry can observe a
+            // stale slot.
+            let detached_exception_edges = if type_id == TYPE_ID_EXCEPTION {
+                Some(exception_detach_owned_edges(ptr))
+            } else {
+                None
+            };
+            if type_id == TYPE_ID_EXCEPTION && (terminal_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0 {
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                    .clear_exception_view_fields(MoltObject::from_ptr(ptr).bits());
+            }
+            if (terminal_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0 {
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                    .runtime_object_destroyed(MoltObject::from_ptr(ptr).bits());
+            }
+            weakref::weakref_object_release(py, weakref_registration);
             profile_hit(py, &DEALLOC_COUNT);
             profile_hit_bytes(py, &DEALLOC_BYTES_TOTAL, dealloc_bytes);
-            profile_dealloc_type(py, type_id);
-            gc::gc_untrack_on_free(ptr, type_id);
+            profile_dealloc_type(py, type_id, dealloc_bytes);
+            // Class identity lives in the common aux authority for every heap
+            // kind. Snapshot its one owned edge before type-specific teardown,
+            // then discharge it once afterward. Static/stack objects encode
+            // borrowed ownership directly in the class word.
+            let terminal_class_word = object_class_word(ptr);
+            let terminal_class_bits = if terminal_class_word & HEADER_CLASS_WORD_BORROWED == 0 {
+                object_class_bits_from_word(terminal_class_word)
+            } else {
+                0
+            };
             match type_id {
                 // Hot path: most-frequently-freed types first
                 TYPE_ID_STRING => {
@@ -2204,10 +2740,6 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     let annotations_bits = layout::class_annotations_bits(ptr);
                     let annotate_bits = layout::class_annotate_bits(ptr);
                     let qualname_bits = layout::class_qualname_bits(ptr);
-                    // Metaclass reference stored in the MoltHeader `state` slot
-                    // by `molt_type_new` / `object_set_class_bits`.
-                    let metaclass_bits = object_class_bits(ptr);
-
                     // Dec-ref non-dict slots first so the dict cascade doesn't
                     // see a refcount of zero for objects it also references.
                     // `dec_ref_bits` is a no-op for primitives (None, int, etc.)
@@ -2222,11 +2754,9 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     dec_ref_bits(py, annotations_bits);
                     dec_ref_bits(py, annotate_bits);
                     dec_ref_bits(py, qualname_bits);
-                    dec_ref_bits(py, metaclass_bits);
                     // Dict last: its cascade will free __bases__ and __mro__
                     // after the slot refs above have been released.
                     dec_ref_bits(py, dict_bits);
-                    free_shared_cold_idx_for_class(ptr);
                     // Invalidate all result-level inline caches that may hold a
                     // stale pointer to this now-freed class object.  Without
                     // this bump, caches that were written when type_version==N
@@ -2377,10 +2907,6 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                         dec_ref_bits(py, dict_bits);
                     }
                     if !desc_ptr.is_null() {
-                        let class_bits = (*desc_ptr).class_bits;
-                        if class_bits != 0 && !obj_from_bits(class_bits).is_none() {
-                            dec_ref_bits(py, class_bits);
-                        }
                         drop(Box::from_raw(desc_ptr));
                     }
                 }
@@ -2523,51 +3049,11 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     foreign::foreign_drop(ptr);
                 }
                 TYPE_ID_EXCEPTION => {
-                    let exc_kind_bits = exception_kind_bits(ptr);
-                    if exc_kind_bits != 0 && !obj_from_bits(exc_kind_bits).is_none() {
-                        dec_ref_bits(py, exc_kind_bits);
-                    }
-                    let exc_msg_bits = exception_msg_bits(ptr);
-                    if exc_msg_bits != 0 && !obj_from_bits(exc_msg_bits).is_none() {
-                        dec_ref_bits(py, exc_msg_bits);
-                    }
-                    let exc_type_bits = exception_class_bits(ptr);
-                    if exc_type_bits != 0 && !obj_from_bits(exc_type_bits).is_none() {
-                        dec_ref_bits(py, exc_type_bits);
-                    }
-                    let exc_args_bits = exception_args_bits(ptr);
-                    if exc_args_bits != 0 && !obj_from_bits(exc_args_bits).is_none() {
-                        dec_ref_bits(py, exc_args_bits);
-                    }
-                    let exc_args_payload_bits = exception_args_payload_bits(ptr);
-                    if exc_args_payload_bits != 0 && !obj_from_bits(exc_args_payload_bits).is_none()
-                    {
-                        dec_ref_bits(py, exc_args_payload_bits);
-                    }
-                    let exc_cause_bits = exception_cause_bits(ptr);
-                    if exc_cause_bits != 0 && !obj_from_bits(exc_cause_bits).is_none() {
-                        dec_ref_bits(py, exc_cause_bits);
-                    }
-                    let exc_ctx_bits = exception_context_bits(ptr);
-                    if exc_ctx_bits != 0 && !obj_from_bits(exc_ctx_bits).is_none() {
-                        dec_ref_bits(py, exc_ctx_bits);
-                    }
-                    let exc_trace_bits = exception_trace_bits(ptr);
-                    if exc_trace_bits != 0 && !obj_from_bits(exc_trace_bits).is_none() {
-                        dec_ref_bits(py, exc_trace_bits);
-                    }
-                    let exc_suppress_bits = exception_suppress_bits(ptr);
-                    if exc_suppress_bits != 0 && !obj_from_bits(exc_suppress_bits).is_none() {
-                        dec_ref_bits(py, exc_suppress_bits);
-                    }
-                    let exc_val_bits = exception_value_bits(ptr);
-                    if exc_val_bits != 0 && !obj_from_bits(exc_val_bits).is_none() {
-                        dec_ref_bits(py, exc_val_bits);
-                    }
-                    let exc_dict_bits = exception_dict_bits(ptr);
-                    if exc_dict_bits != 0 && !obj_from_bits(exc_dict_bits).is_none() {
-                        dec_ref_bits(py, exc_dict_bits);
-                    }
+                    exception_release_detached_edges(
+                        py,
+                        detached_exception_edges
+                            .expect("exception edges detached before ABI retirement"),
+                    );
                 }
                 TYPE_ID_CONTEXT_MANAGER => {
                     let payload_bits = context_payload_bits(ptr);
@@ -2637,6 +3123,16 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                 }
                 TYPE_ID_ITER => {
                     let target_bits = iter_target_bits(ptr);
+                    if let Some(target_ptr) = obj_from_bits(target_bits).as_ptr()
+                        && object_type_id(target_ptr) == TYPE_ID_WEAK_CONTAINER_STATE
+                    {
+                        let version = layout::iter_expected_version(ptr);
+                        if version != weak_container::WEAK_ITER_VERSION_UNSTARTED
+                            && version != weak_container::WEAK_ITER_VERSION_FINISHED
+                        {
+                            weak_container::weakcontainer_iter_finish(py, target_ptr);
+                        }
+                    }
                     if target_bits != 0 && !obj_from_bits(target_bits).is_none() {
                         dec_ref_bits(py, target_bits);
                     }
@@ -2644,6 +3140,9 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     if !cached.is_null() {
                         dec_ref_ptr(py, cached);
                     }
+                }
+                TYPE_ID_WEAK_CONTAINER_STATE => {
+                    weak_container::weakcontainer_drop_state(py, ptr);
                 }
                 TYPE_ID_REVERSED => {
                     let target_bits = reversed_target_bits(ptr);
@@ -2856,29 +3355,22 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     if dict_bits != 0 && !obj_from_bits(dict_bits).is_none() {
                         dec_ref_bits(py, dict_bits);
                     }
-                    if (header_flags & HEADER_FLAG_SKIP_CLASS_DECREF) == 0 {
-                        let class_bits = object_class_bits(ptr);
-                        if class_bits != 0 && !obj_from_bits(class_bits).is_none() {
-                            dec_ref_bits(py, class_bits);
-                        }
-                    }
                 }
                 TYPE_ID_BIGINT => {
                     std::ptr::drop_in_place(ptr as *mut BigInt);
                 }
                 _ => {}
             }
+            if terminal_class_bits != 0 && !obj_from_bits(terminal_class_bits).is_none() {
+                dec_ref_bits(py, terminal_class_bits);
+            }
             release_ptr(ptr);
-            let total_size = total_size_from_header_fields(header_size_class, header_cold_idx);
+            let total_size =
+                total_size_from_header_fields(header_size_class, header_aux.kind, header_aux.word);
             // Notify the resource tracker that this object's memory is freed.
             let _ = crate::resource::try_with_tracker(|t| t.on_free(total_size));
-            // Shared cold headers (per-class, see SHARED_COLD_IDX_BIT)
-            // outlive any individual instance — only the class's own
-            // dealloc path frees them.  Skip free for shared idx; the
-            // real-bit case is handled normally (free_cold_header is
-            // already a no-op on idx == 0).
-            if !cold_idx_is_shared(header_cold_idx) {
-                free_cold_header(header_cold_idx);
+            if header_aux.kind == HEADER_AUX_KIND_SIDECAR {
+                free_aux_sidecar(header_aux.word);
             }
             if total_size == 0 {
                 return;
@@ -2897,7 +3389,15 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
 
 #[cfg(test)]
 mod tests {
-    use crate::object::{TYPE_ID_OBJECT, alloc_object, dec_ref_bits};
+    use crate::object::{
+        ClassEdgeOwnership, HEADER_AUX_KIND_CLASS_INLINE, HEADER_AUX_KIND_SIDECAR,
+        HEADER_AUX_KIND_STATE_INLINE, ObjectAuxPreselection, TYPE_ID_GENERATOR, TYPE_ID_OBJECT,
+        TYPE_ID_STRING, alloc_object, alloc_object_with_aux, dec_ref_bits, object_class_bits,
+        object_class_has_finalizer, object_has_class_edge, object_init_class_edge_unpublished,
+        object_init_poll_fn_unpublished, object_init_sidecar_unpublished,
+        object_init_state_unpublished, object_poll_fn, object_replace_class_edge, object_set_state,
+        object_state, total_size_from_header,
+    };
     use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
 
     #[test]
@@ -2943,6 +3443,333 @@ mod tests {
                 "denied allocation must not leave a phantom resource charge"
             );
             dec_ref_bits(_py, crate::MoltObject::from_ptr(allowed).bits());
+        });
+    }
+
+    #[test]
+    fn denied_sidecar_allocation_rolls_back_object_charge() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry_nopanic!(_py, {
+            let total = std::mem::size_of::<super::MoltHeader>();
+            let plan = super::object_allocation_plan(total).expect("valid header-sized object");
+            set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                max_memory: Some(plan.alloc_size),
+                ..Default::default()
+            })));
+            struct TrackerReset;
+            impl Drop for TrackerReset {
+                fn drop(&mut self) {
+                    set_tracker(Box::new(UnlimitedTracker));
+                }
+            }
+            let _reset = TrackerReset;
+
+            let denied = alloc_object(_py, total, TYPE_ID_GENERATOR);
+            assert!(
+                denied.is_null(),
+                "sidecar resource denial must fail the whole object allocation"
+            );
+
+            let allowed = alloc_object(_py, total, TYPE_ID_OBJECT);
+            assert!(
+                !allowed.is_null(),
+                "sidecar denial must roll back the object's resource charge"
+            );
+            dec_ref_bits(_py, crate::MoltObject::from_ptr(allowed).bits());
+        });
+    }
+
+    #[test]
+    fn nonclass_state_never_impersonates_a_class_pointer() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry_nopanic!(_py, {
+            let ptr = crate::alloc_string(_py, b"state-discriminator");
+            assert!(!ptr.is_null());
+            let pointer_shaped_hash = crate::builtin_classes(_py).str;
+            object_set_state(ptr, pointer_shaped_hash as i64);
+            assert!(!unsafe { object_has_class_edge(ptr) });
+            assert_eq!(unsafe { object_class_bits(ptr) }, 0);
+            dec_ref_bits(_py, crate::MoltObject::from_ptr(ptr).bits());
+        });
+    }
+
+    #[test]
+    fn common_class_edge_stays_inline() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry_nopanic!(_py, {
+            let ptr = alloc_object_with_aux(
+                _py,
+                std::mem::size_of::<super::MoltHeader>(),
+                TYPE_ID_OBJECT,
+                ObjectAuxPreselection::ClassInline,
+            );
+            assert!(!ptr.is_null());
+            let class_bits = crate::builtin_classes(_py).object;
+            assert!(unsafe {
+                object_init_class_edge_unpublished(
+                    _py,
+                    ptr,
+                    class_bits,
+                    ClassEdgeOwnership::Borrowed,
+                )
+            });
+            let header = unsafe { &*super::header_from_obj_ptr(ptr) };
+            assert_eq!(header.aux_kind, HEADER_AUX_KIND_CLASS_INLINE);
+            assert_eq!(unsafe { object_class_bits(ptr) }, class_bits);
+            dec_ref_bits(_py, crate::MoltObject::from_ptr(ptr).bits());
+        });
+    }
+
+    #[test]
+    fn fresh_and_published_class_edges_balance_owned_and_borrowed_refs() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry_nopanic!(_py, {
+            let name_ptr = crate::alloc_string(_py, b"AuxOwnershipClass");
+            assert!(!name_ptr.is_null());
+            let name_bits = crate::MoltObject::from_ptr(name_ptr).bits();
+            let class_ptr = crate::alloc_class_obj(_py, name_bits);
+            dec_ref_bits(_py, name_bits);
+            assert!(!class_ptr.is_null());
+            let class_bits = crate::MoltObject::from_ptr(class_ptr).bits();
+            let initial = unsafe {
+                (*super::header_from_obj_ptr(class_ptr))
+                    .ref_count
+                    .load(std::sync::atomic::Ordering::Acquire)
+            };
+
+            let owned_ptr = alloc_object_with_aux(
+                _py,
+                std::mem::size_of::<super::MoltHeader>(),
+                TYPE_ID_OBJECT,
+                ObjectAuxPreselection::ClassInline,
+            );
+            assert!(!owned_ptr.is_null());
+            assert!(unsafe {
+                object_init_class_edge_unpublished(
+                    _py,
+                    owned_ptr,
+                    class_bits,
+                    ClassEdgeOwnership::Owned,
+                )
+            });
+            assert_eq!(
+                unsafe {
+                    (*super::header_from_obj_ptr(class_ptr))
+                        .ref_count
+                        .load(std::sync::atomic::Ordering::Acquire)
+                },
+                initial + 1
+            );
+            assert!(!unsafe {
+                object_init_class_edge_unpublished(
+                    _py,
+                    owned_ptr,
+                    class_bits,
+                    ClassEdgeOwnership::Borrowed,
+                )
+            });
+            assert!(unsafe {
+                object_replace_class_edge(_py, owned_ptr, class_bits, ClassEdgeOwnership::Borrowed)
+            });
+            assert_eq!(
+                unsafe {
+                    (*super::header_from_obj_ptr(class_ptr))
+                        .ref_count
+                        .load(std::sync::atomic::Ordering::Acquire)
+                },
+                initial
+            );
+            assert!(unsafe {
+                object_replace_class_edge(_py, owned_ptr, class_bits, ClassEdgeOwnership::Owned)
+            });
+            assert_eq!(
+                unsafe {
+                    (*super::header_from_obj_ptr(class_ptr))
+                        .ref_count
+                        .load(std::sync::atomic::Ordering::Acquire)
+                },
+                initial + 1
+            );
+            assert!(unsafe {
+                object_replace_class_edge(_py, owned_ptr, 0, ClassEdgeOwnership::Owned)
+            });
+            assert_eq!(
+                unsafe {
+                    (*super::header_from_obj_ptr(class_ptr))
+                        .ref_count
+                        .load(std::sync::atomic::Ordering::Acquire)
+                },
+                initial
+            );
+            dec_ref_bits(_py, crate::MoltObject::from_ptr(owned_ptr).bits());
+
+            let borrowed_ptr = alloc_object_with_aux(
+                _py,
+                std::mem::size_of::<super::MoltHeader>(),
+                TYPE_ID_OBJECT,
+                ObjectAuxPreselection::ClassInline,
+            );
+            assert!(!borrowed_ptr.is_null());
+            assert!(unsafe {
+                object_init_class_edge_unpublished(
+                    _py,
+                    borrowed_ptr,
+                    class_bits,
+                    ClassEdgeOwnership::Borrowed,
+                )
+            });
+            assert_eq!(
+                unsafe {
+                    (*super::header_from_obj_ptr(class_ptr))
+                        .ref_count
+                        .load(std::sync::atomic::Ordering::Acquire)
+                },
+                initial
+            );
+            assert!(unsafe {
+                object_replace_class_edge(_py, borrowed_ptr, 0, ClassEdgeOwnership::Owned)
+            });
+            dec_ref_bits(_py, crate::MoltObject::from_ptr(borrowed_ptr).bits());
+            dec_ref_bits(_py, class_bits);
+        });
+    }
+
+    #[test]
+    fn common_state_stays_inline() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry_nopanic!(_py, {
+            let ptr = crate::alloc_string(_py, b"inline-state");
+            assert!(!ptr.is_null());
+            object_set_state(ptr, 41);
+            let header = unsafe { &*super::header_from_obj_ptr(ptr) };
+            assert_eq!(header.aux_kind, HEADER_AUX_KIND_STATE_INLINE);
+            assert_eq!(object_state(ptr), 41);
+            dec_ref_bits(_py, crate::MoltObject::from_ptr(ptr).bits());
+        });
+    }
+
+    #[test]
+    fn denied_sidecar_upgrade_preserves_inline_state_and_representation() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry_nopanic!(_py, {
+            let ptr = crate::alloc_string(_py, b"preserve-inline-state");
+            assert!(!ptr.is_null());
+            object_set_state(ptr, 73);
+            set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                max_memory: Some(0),
+                ..Default::default()
+            })));
+            let upgraded = unsafe { object_init_sidecar_unpublished(ptr) };
+            set_tracker(Box::new(UnlimitedTracker));
+
+            assert!(!upgraded);
+            let header = unsafe { &*super::header_from_obj_ptr(ptr) };
+            assert_eq!(header.aux_kind, HEADER_AUX_KIND_STATE_INLINE);
+            assert_eq!(object_state(ptr), 73);
+            dec_ref_bits(_py, crate::MoltObject::from_ptr(ptr).bits());
+        });
+    }
+
+    #[test]
+    fn class_state_and_poll_share_one_stable_sidecar() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry_nopanic!(_py, {
+            let ptr = alloc_object_with_aux(
+                _py,
+                std::mem::size_of::<super::MoltHeader>(),
+                TYPE_ID_OBJECT,
+                ObjectAuxPreselection::Sidecar,
+            );
+            assert!(!ptr.is_null());
+            let class_bits = crate::builtin_classes(_py).object;
+            assert!(unsafe {
+                object_init_class_edge_unpublished(
+                    _py,
+                    ptr,
+                    class_bits,
+                    ClassEdgeOwnership::Borrowed,
+                )
+            });
+            assert!(unsafe { object_init_state_unpublished(ptr, 73) });
+            assert!(unsafe { object_init_poll_fn_unpublished(ptr, 0x1234) });
+            let header = unsafe { &*super::header_from_obj_ptr(ptr) };
+            let sidecar_addr = header.aux.load(std::sync::atomic::Ordering::Acquire);
+            assert_eq!(header.aux_kind, HEADER_AUX_KIND_SIDECAR);
+            assert_eq!(unsafe { object_class_bits(ptr) }, class_bits);
+            assert_eq!(object_state(ptr), 73);
+            assert_eq!(object_poll_fn(ptr), 0x1234);
+            assert_eq!(
+                header.aux.load(std::sync::atomic::Ordering::Acquire),
+                sidecar_addr,
+                "published sidecar address must never move"
+            );
+            dec_ref_bits(_py, crate::MoltObject::from_ptr(ptr).bits());
+        });
+    }
+
+    #[test]
+    fn non_object_heap_kind_derives_finalizer_policy_from_common_class_edge() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry_nopanic!(_py, {
+            let class_bits = crate::builtin_classes(_py).object;
+            let class_ptr = crate::obj_from_bits(class_bits)
+                .as_ptr()
+                .expect("builtin object class");
+            let class_header = unsafe { super::header_from_obj_ptr(class_ptr) };
+            let old_flags = unsafe { (*class_header).flags };
+            struct RestoreClassFlags(*mut super::MoltHeader, u32);
+            impl Drop for RestoreClassFlags {
+                fn drop(&mut self) {
+                    unsafe {
+                        (*self.0).flags = self.1;
+                    }
+                }
+            }
+            let _restore = RestoreClassFlags(class_header, old_flags);
+            unsafe {
+                (*class_header).flags |= super::HEADER_FLAG_CLASS_HAS_FINALIZER;
+            }
+
+            let ptr = alloc_object_with_aux(
+                _py,
+                std::mem::size_of::<super::MoltHeader>(),
+                TYPE_ID_STRING,
+                ObjectAuxPreselection::Sidecar,
+            );
+            assert!(!ptr.is_null());
+            assert!(unsafe {
+                object_init_class_edge_unpublished(
+                    _py,
+                    ptr,
+                    class_bits,
+                    ClassEdgeOwnership::Borrowed,
+                )
+            });
+            assert!(unsafe { object_class_has_finalizer(ptr) });
+
+            unsafe {
+                (*class_header).flags = old_flags;
+            }
+            dec_ref_bits(_py, crate::MoltObject::from_ptr(ptr).bits());
+        });
+    }
+
+    #[test]
+    fn oversized_allocation_uses_immutable_sidecar_size() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry_nopanic!(_py, {
+            let total = super::SIZE_CLASS_TABLE
+                .last()
+                .copied()
+                .expect("size classes")
+                + 8;
+            let ptr = alloc_object(_py, total, TYPE_ID_OBJECT);
+            assert!(!ptr.is_null());
+            let header = unsafe { &*super::header_from_obj_ptr(ptr) };
+            assert_eq!(header.size_class, 0);
+            assert_eq!(header.aux_kind, HEADER_AUX_KIND_SIDECAR);
+            assert_eq!(total_size_from_header(header, ptr), total);
+            dec_ref_bits(_py, crate::MoltObject::from_ptr(ptr).bits());
         });
     }
 }

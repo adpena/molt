@@ -4,6 +4,9 @@ use std::sync::atomic::Ordering as AtomicOrdering;
 use molt_obj_model::MoltObject;
 
 use crate::object::ops_sys::runtime_target_minor;
+use crate::object::{
+    ClassEdgeOwnership, object_clear_class_edge_unpublished, object_init_class_edge_unpublished,
+};
 use crate::state::runtime_state::runtime_state_lock;
 use crate::{
     BUILTIN_TAG_BASE_EXCEPTION, BUILTIN_TAG_CLASSMETHOD, BUILTIN_TAG_EXCEPTION, BUILTIN_TAG_OBJECT,
@@ -14,8 +17,8 @@ use crate::{
     TYPE_TAG_SLICE, TYPE_TAG_STR, TYPE_TAG_TUPLE, alloc_class_obj, alloc_dict_with_pairs,
     alloc_string, alloc_tuple, attr_name_bits_from_bytes, class_break_cycles,
     class_bump_layout_version, class_dict_bits, class_name_bits, dec_ref_bits, dict_set_in_place,
-    inc_ref_bits, intern_static_name, molt_class_set_base, obj_from_bits, object_set_class_bits,
-    object_type_id, raise_exception, runtime_state, runtime_state_for_gil, string_obj_to_owned,
+    inc_ref_bits, intern_static_name, molt_class_set_base, obj_from_bits, object_type_id,
+    raise_exception, runtime_state, runtime_state_for_gil, string_obj_to_owned,
 };
 
 pub(crate) struct BuiltinClasses {
@@ -359,7 +362,26 @@ fn union_type_class_name(_py: &PyToken<'_>) -> &'static str {
     }
 }
 
-fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
+fn release_failed_builtin_classes(_py: &PyToken<'_>, classes: &[u64]) {
+    unsafe {
+        // Break every unpublished class edge first, including type's self
+        // edge, so the subsequent external-reference release can terminate.
+        for &bits in classes {
+            if let Some(ptr) = obj_from_bits(bits).as_ptr() {
+                if !object_clear_class_edge_unpublished(_py, ptr) {
+                    panic!("failed to clear an unpublished builtin class edge during rollback");
+                }
+            }
+        }
+    }
+    for &bits in classes {
+        if obj_from_bits(bits).as_ptr().is_some() {
+            dec_ref_bits(_py, bits);
+        }
+    }
+}
+
+fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
     let object = make_builtin_class(_py, "object");
     let type_obj = make_builtin_class(_py, "type");
     let none_type = make_builtin_class(_py, "NoneType");
@@ -438,97 +460,103 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
     let generic_alias = make_builtin_class(_py, "GenericAlias");
     let union_type = make_builtin_class(_py, union_type_class_name(_py));
 
+    let all_classes = [
+        object,
+        type_obj,
+        none_type,
+        not_implemented_type,
+        ellipsis_type,
+        base_exception,
+        exception,
+        base_exception_group,
+        exception_group,
+        int,
+        float,
+        complex,
+        bool,
+        str,
+        bytes,
+        bytearray,
+        list,
+        tuple,
+        dict,
+        dict_keys,
+        dict_items,
+        dict_values,
+        set,
+        frozenset,
+        range,
+        slice,
+        memoryview,
+        io_base,
+        raw_io_base,
+        buffered_io_base,
+        text_io_base,
+        file,
+        file_io,
+        buffered_reader,
+        buffered_writer,
+        buffered_random,
+        text_io_wrapper,
+        bytes_io,
+        string_io,
+        function,
+        coroutine,
+        generator,
+        async_generator,
+        iterator,
+        callable_iterator,
+        bytes_iterator,
+        bytearray_iterator,
+        dict_keyiterator,
+        dict_valueiterator,
+        dict_itemiterator,
+        dict_reversekeyiterator,
+        dict_reversevalueiterator,
+        dict_reverseitemiterator,
+        list_iterator,
+        list_reverseiterator,
+        range_iterator,
+        longrange_iterator,
+        set_iterator,
+        str_iterator,
+        str_ascii_iterator,
+        tuple_iterator,
+        enumerate,
+        reversed,
+        zip,
+        map,
+        filter,
+        builtin_function_or_method,
+        code,
+        frame,
+        traceback,
+        module,
+        super_type,
+        classmethod,
+        staticmethod,
+        property,
+        generic_alias,
+        union_type,
+    ];
+    let valid = all_classes.iter().all(|&bits| {
+        obj_from_bits(bits)
+            .as_ptr()
+            .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_TYPE })
+    });
+    if !valid {
+        release_failed_builtin_classes(_py, &all_classes);
+        return None;
+    }
     unsafe {
-        for bits in [
-            object,
-            none_type,
-            not_implemented_type,
-            ellipsis_type,
-            base_exception,
-            exception,
-            base_exception_group,
-            exception_group,
-            int,
-            float,
-            complex,
-            bool,
-            str,
-            bytes,
-            bytearray,
-            list,
-            tuple,
-            dict,
-            dict_keys,
-            dict_items,
-            dict_values,
-            set,
-            frozenset,
-            range,
-            slice,
-            memoryview,
-            io_base,
-            raw_io_base,
-            buffered_io_base,
-            text_io_base,
-            file,
-            file_io,
-            buffered_reader,
-            buffered_writer,
-            buffered_random,
-            text_io_wrapper,
-            bytes_io,
-            string_io,
-            function,
-            coroutine,
-            generator,
-            async_generator,
-            iterator,
-            callable_iterator,
-            bytes_iterator,
-            bytearray_iterator,
-            dict_keyiterator,
-            dict_valueiterator,
-            dict_itemiterator,
-            dict_reversekeyiterator,
-            dict_reversevalueiterator,
-            dict_reverseitemiterator,
-            list_iterator,
-            list_reverseiterator,
-            range_iterator,
-            longrange_iterator,
-            set_iterator,
-            str_iterator,
-            str_ascii_iterator,
-            tuple_iterator,
-            enumerate,
-            reversed,
-            zip,
-            map,
-            filter,
-            builtin_function_or_method,
-            code,
-            frame,
-            traceback,
-            module,
-            super_type,
-            classmethod,
-            staticmethod,
-            property,
-            generic_alias,
-            union_type,
-        ] {
-            if let Some(ptr) = obj_from_bits(bits).as_ptr()
-                && object_type_id(ptr) == TYPE_ID_TYPE
-            {
-                object_set_class_bits(_py, ptr, type_obj);
-                inc_ref_bits(_py, type_obj);
+        for &bits in &all_classes {
+            let ptr = obj_from_bits(bits)
+                .as_ptr()
+                .expect("validated builtin class pointer");
+            if !object_init_class_edge_unpublished(_py, ptr, type_obj, ClassEdgeOwnership::Owned) {
+                release_failed_builtin_classes(_py, &all_classes);
+                return None;
             }
-        }
-        if let Some(ptr) = obj_from_bits(type_obj).as_ptr()
-            && object_type_id(ptr) == TYPE_ID_TYPE
-        {
-            object_set_class_bits(_py, ptr, type_obj);
-            inc_ref_bits(_py, type_obj);
         }
     }
 
@@ -704,7 +732,7 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
     set_class_attr_string(_py, list, b"__text_signature__", "(iterable=(), /)");
     set_class_attr_string(_py, tuple, b"__text_signature__", "(iterable=(), /)");
 
-    BuiltinClasses {
+    Some(BuiltinClasses {
         object,
         type_obj,
         none_type,
@@ -782,7 +810,7 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
         property,
         generic_alias,
         union_type,
-    }
+    })
 }
 
 pub(crate) fn builtin_classes(_py: &PyToken<'_>) -> &'static BuiltinClasses {
@@ -813,7 +841,8 @@ fn init_builtin_classes() -> &'static BuiltinClasses {
     if !ptr.is_null() {
         return unsafe { &*ptr };
     }
-    let builtins = build_builtin_classes(&py);
+    let builtins = build_builtin_classes(&py)
+        .expect("builtin class bootstrap failed after rolling back fresh class objects");
     let boxed = Box::new(builtins);
     let ptr = Box::into_raw(boxed);
     state.builtin_classes.store(ptr, AtomicOrdering::Release);
@@ -1115,4 +1144,59 @@ pub extern "C" fn molt_builtin_class_lookup(name_bits: u64) -> u64 {
         let msg = format!("builtin class unavailable: {name}");
         raise_exception::<_>(_py, "RuntimeError", &msg)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::release_failed_builtin_classes;
+    use crate::object::{ClassEdgeOwnership, object_init_class_edge_unpublished};
+    use crate::*;
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn builtin_bootstrap_rollback_clears_self_edge_and_releases_each_owner_once() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry_nopanic!(_py, {
+            let name_ptr = alloc_string(_py, b"RollbackSelfType");
+            assert!(!name_ptr.is_null());
+            let name_bits = MoltObject::from_ptr(name_ptr).bits();
+            let class_ptr = alloc_class_obj(_py, name_bits);
+            dec_ref_bits(_py, name_bits);
+            assert!(!class_ptr.is_null());
+            let class_bits = MoltObject::from_ptr(class_ptr).bits();
+
+            // Retain one probe reference that is not part of rollback. The
+            // rollback owns the creator reference plus the class's self edge.
+            inc_ref_bits(_py, class_bits);
+            assert!(unsafe {
+                object_init_class_edge_unpublished(
+                    _py,
+                    class_ptr,
+                    class_bits,
+                    ClassEdgeOwnership::Owned,
+                )
+            });
+            assert_eq!(
+                unsafe {
+                    (*header_from_obj_ptr(class_ptr))
+                        .ref_count
+                        .load(Ordering::Acquire)
+                },
+                3
+            );
+
+            release_failed_builtin_classes(_py, &[class_bits]);
+            assert_eq!(unsafe { object_class_bits(class_ptr) }, 0);
+            assert_eq!(
+                unsafe {
+                    (*header_from_obj_ptr(class_ptr))
+                        .ref_count
+                        .load(Ordering::Acquire)
+                },
+                1,
+                "rollback must release the self edge and its external owner only",
+            );
+            dec_ref_bits(_py, class_bits);
+        });
+    }
 }

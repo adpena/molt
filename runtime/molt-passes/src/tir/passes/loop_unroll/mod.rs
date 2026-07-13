@@ -486,4 +486,3 @@ fn unroll_counted_loop(func: &mut TirFunction, c: &CountedLoop, stats: &mut Pass
 
     stats.ops_removed += header_ops_count + cond_ops_count + body_ops_count;
 }
-

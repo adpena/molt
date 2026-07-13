@@ -151,7 +151,7 @@ unsafe fn is_callable_for_ptr(_py: &crate::PyToken<'_>, ptr: *mut u8) -> bool {
                     }
                 }
                 if !desc_ptr.is_null() {
-                    let class_bits = (*desc_ptr).class_bits;
+                    let class_bits = object_class_bits(ptr);
                     if class_bits != 0
                         && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
                         && object_type_id(class_ptr) == TYPE_ID_TYPE

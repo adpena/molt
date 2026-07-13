@@ -115,8 +115,15 @@ pub extern "C" fn molt_itertools_alloc_class(
         let builtins = builtin_classes(_py);
         unsafe {
             if let Some(ptr) = obj_from_bits(class_bits).as_ptr() {
-                object_set_class_bits(_py, ptr, builtins.type_obj);
-                inc_ref_bits(_py, builtins.type_obj);
+                if !crate::object::object_init_class_edge_unpublished(
+                    _py,
+                    ptr,
+                    builtins.type_obj,
+                    ClassEdgeOwnership::Owned,
+                ) {
+                    dec_ref_bits(_py, class_bits);
+                    return MoltObject::none().bits();
+                }
             }
         }
         let _ = molt_class_set_base(class_bits, builtins.object);
@@ -198,11 +205,15 @@ pub extern "C" fn molt_itertools_alloc_function(fn_ptr: u64, arity: u64) -> u64 
             let builtins = builtin_classes(_py);
             let old_bits = object_class_bits(ptr);
             if old_bits != builtins.builtin_function_or_method {
-                if old_bits != 0 {
-                    dec_ref_bits(_py, old_bits);
+                if !crate::object::object_init_class_edge_unpublished(
+                    _py,
+                    ptr,
+                    builtins.builtin_function_or_method,
+                    ClassEdgeOwnership::Owned,
+                ) {
+                    dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                    return MoltObject::none().bits();
                 }
-                object_set_class_bits(_py, ptr, builtins.builtin_function_or_method);
-                inc_ref_bits(_py, builtins.builtin_function_or_method);
             }
         }
         MoltObject::from_ptr(ptr).bits()
@@ -237,11 +248,15 @@ pub extern "C" fn molt_itertools_alloc_function_with_defaults(
             let builtins = builtin_classes(_py);
             let old_bits = object_class_bits(ptr);
             if old_bits != builtins.builtin_function_or_method {
-                if old_bits != 0 {
-                    dec_ref_bits(_py, old_bits);
+                if !crate::object::object_init_class_edge_unpublished(
+                    _py,
+                    ptr,
+                    builtins.builtin_function_or_method,
+                    ClassEdgeOwnership::Owned,
+                ) {
+                    dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                    return MoltObject::none().bits();
                 }
-                object_set_class_bits(_py, ptr, builtins.builtin_function_or_method);
-                inc_ref_bits(_py, builtins.builtin_function_or_method);
             }
         }
         MoltObject::from_ptr(ptr).bits()

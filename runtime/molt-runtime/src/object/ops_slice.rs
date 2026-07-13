@@ -1,5 +1,9 @@
 //! Slice and dataclass operations.
 
+use crate::object::{
+    ClassEdgeOwnership, ObjectAuxPreselection, object_init_class_edge_unpublished,
+    object_replace_class_edge,
+};
 use crate::*;
 use molt_obj_model::MoltObject;
 use num_bigint::BigInt;
@@ -308,7 +312,6 @@ fn dataclass_new_from_value_slice(
         repr,
         slots,
         allows_dict,
-        class_bits: 0,
         field_flags: Vec::new(),
         hash_mode: 0,
     });
@@ -318,7 +321,12 @@ fn dataclass_new_from_value_slice(
         + std::mem::size_of::<*mut DataclassDesc>()
         + std::mem::size_of::<*mut Vec<u64>>()
         + std::mem::size_of::<u64>();
-    let ptr = alloc_object(_py, total, TYPE_ID_DATACLASS);
+    let ptr = alloc_object_with_aux(
+        _py,
+        total,
+        TYPE_ID_DATACLASS,
+        ObjectAuxPreselection::ClassInline,
+    );
     if ptr.is_null() {
         unsafe { drop(Box::from_raw(desc_ptr)) };
         return MoltObject::none().bits();
@@ -482,47 +490,43 @@ fn raise_frozen_instance_error(_py: &PyToken<'_>, message: &str) -> u64 {
     crate::molt_raise(exc_bits)
 }
 
-pub(crate) unsafe fn dataclass_set_class_raw(
+unsafe fn validate_dataclass_class_target(
     _py: &PyToken<'_>,
     ptr: *mut u8,
     class_bits: u64,
-) -> u64 {
+) -> Result<(), u64> {
     unsafe {
         if object_type_id(ptr) != TYPE_ID_DATACLASS {
-            return raise_exception::<_>(_py, "TypeError", "dataclass expects object");
+            return Err(raise_exception::<_>(
+                _py,
+                "TypeError",
+                "dataclass expects object",
+            ));
         }
         if class_bits != 0 {
             let class_obj = obj_from_bits(class_bits);
             let Some(class_ptr) = class_obj.as_ptr() else {
-                return MoltObject::none().bits();
+                return Err(MoltObject::none().bits());
             };
             if object_type_id(class_ptr) != TYPE_ID_TYPE {
-                return MoltObject::none().bits();
+                return Err(MoltObject::none().bits());
             }
         }
+        Ok(())
+    }
+}
+
+unsafe fn refresh_dataclass_class_metadata(_py: &PyToken<'_>, ptr: *mut u8, class_bits: u64) {
+    unsafe {
         let desc_ptr = dataclass_desc_ptr(ptr);
         if !desc_ptr.is_null() {
-            let old_bits = (*desc_ptr).class_bits;
-            if old_bits != 0 {
-                dec_ref_bits(_py, old_bits);
-            }
-            (*desc_ptr).class_bits = class_bits;
-            if class_bits != 0 {
-                inc_ref_bits(_py, class_bits);
-            }
-            object_set_class_bits(_py, ptr, class_bits);
             if class_bits != 0 {
                 let class_obj = obj_from_bits(class_bits);
                 if let Some(class_ptr) = class_obj.as_ptr()
                     && object_type_id(class_ptr) == TYPE_ID_TYPE
                 {
                     (*desc_ptr).allows_dict = if (*desc_ptr).slots {
-                        let dict_name_bits = intern_static_name(
-                            _py,
-                            &runtime_state(_py).interned.dict_name,
-                            b"__dict__",
-                        );
-                        crate::builtins::attr::class_slots_info(_py, class_ptr, dict_name_bits)
+                        crate::builtins::attr::class_slots_info(_py, class_ptr)
                             .is_some_and(|info| info.allows_dict)
                     } else {
                         true
@@ -578,6 +582,49 @@ pub(crate) unsafe fn dataclass_set_class_raw(
                 }
             }
         }
+    }
+}
+
+/// Establish a dataclass class edge during construction, before the object is
+/// returned across its constructor boundary.
+pub(crate) unsafe fn dataclass_init_class_unpublished(
+    _py: &PyToken<'_>,
+    ptr: *mut u8,
+    class_bits: u64,
+) -> u64 {
+    unsafe {
+        if let Err(bits) = validate_dataclass_class_target(_py, ptr, class_bits) {
+            return bits;
+        }
+        if !object_init_class_edge_unpublished(_py, ptr, class_bits, ClassEdgeOwnership::Owned) {
+            return raise_exception::<_>(
+                _py,
+                "MemoryError",
+                "dataclass class metadata allocation failed",
+            );
+        }
+        refresh_dataclass_class_metadata(_py, ptr, class_bits);
+        MoltObject::none().bits()
+    }
+}
+
+pub(crate) unsafe fn dataclass_set_class_raw(
+    _py: &PyToken<'_>,
+    ptr: *mut u8,
+    class_bits: u64,
+) -> u64 {
+    unsafe {
+        if let Err(bits) = validate_dataclass_class_target(_py, ptr, class_bits) {
+            return bits;
+        }
+        if !object_replace_class_edge(_py, ptr, class_bits, ClassEdgeOwnership::Owned) {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "dataclass class representation is immutable after publication",
+            );
+        }
+        refresh_dataclass_class_metadata(_py, ptr, class_bits);
         MoltObject::none().bits()
     }
 }

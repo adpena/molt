@@ -10,7 +10,7 @@ Builds on [[optimizer_foundation]]; supersedes the narrow generator_fusion frami
 ## Where molt actually is (don't underestimate it)
 Already present and non-trivial: fixpoint type inference w/ IV-seeding + oscillation detection +
 guard propagation (type_refine.rs); a single-source-of-truth `Repr` lattice across native/LLVM/WASM
-(representation_plan.rs, Phase 0/1 landed); Perceus reuse analysis (reuse_analysis.rs); 6-strategy
+(representation_plan.rs, Phase 0/1 landed); 6-strategy
 refcount elimination incl. Deutsch-Bobrow + unique-ownership (refcount_elim.rs); SBBV block
 versioning (block_versioning.rs); the prior dead deoptimization skeleton has been deleted rather
 than left as unsafe dormant ABI; an egg-based
@@ -117,8 +117,9 @@ These six are absent and are prerequisites cited repeatedly across lanes.
   AllocTask GlobalEscape today). = LLVM CoroElide + Codon generator-inlining. Eliminates the heap
   frame + the per-yield (value,done) tuple. → **os.walk-as-CPython-Python-generator** (the original
   thread) fast via fusion; retire the native os.walk + itertools iterators. The proving ground.
-- **D2. Reuse-analysis backend actualization** (analysis exists, reuse_analysis.rs; NO backend emits
-  molt_reuse_token/alloc — dead since line-15 TODO). Wire into native/WASM/LLVM. Real alloc win, low risk.
+- **D2. Reuse/FBIP design and implementation** — no executable reuse pass or runtime-token ABI is
+  kept in-tree. A future implementation must land end-to-end with lowering consumers, ownership and
+  finalizer/weakref proofs, and allocation-count evidence; annotation-only authority is not useful.
 - **D3. Unboxed call ABI** (needs Repr + E1) — proven-RawI64Safe call sites pass raw i64, no box/unbox
   round-trip. repr_by_value is ready; call lowering ignores it.
 - **D4. Deoptimization wired end-to-end** (no implementation skeleton is kept in-tree).

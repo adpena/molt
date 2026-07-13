@@ -228,8 +228,8 @@ pub extern "C" fn molt_arena_alloc_object(arena: *mut ScopeArena, size_bits: u64
             // arena free path bypasses `std::alloc::dealloc` entirely.
             (*header).size_class = 0;
             (*header).flags = HEADER_FLAG_ARENA | HEADER_FLAG_RAW_ALLOC;
-            // cold_idx remains 0; arena objects are short-lived and never
-            // need extended metadata.
+            // The zeroed aux word/kind selects the immutable `None`
+            // representation; raw arena objects never carry aux metadata.
             let obj_ptr = header_ptr.add(size_of::<MoltHeader>());
             MoltObject::from_ptr(obj_ptr).bits()
         }

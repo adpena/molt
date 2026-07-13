@@ -54,7 +54,7 @@ unsafe fn capsule_name_matches(stored: *const c_char, requested: *const c_char) 
 unsafe fn capsule_value_error(message: &'static CStr) {
     unsafe {
         crate::api::errors::PyErr_SetString(
-            &raw mut crate::abi_types::PyExc_ValueError,
+            (&raw mut crate::abi_types::PyExc_ValueError).cast::<crate::abi_types::PyObject>(),
             message.as_ptr(),
         );
     }
@@ -110,9 +110,9 @@ pub unsafe extern "C" fn PyCapsule_New(
     // Register the capsule in the object bridge so a native extension that stores
     // it back in the runtime (numpy's `PyDict_SetItem`/`PyModule_AddObject` of its
     // `_ARRAY_API` / `DATETIMEUNITS` capsules) resolves it via `pyobj_to_handle`
-    // instead of failing the bridge lookup — the same `register_raw_pyobj` bridging
+    // instead of failing the bridge lookup — the same canonical bridge registration
     // the type/descriptor constructors use.
-    unsafe { crate::bridge::GLOBAL_BRIDGE.register_raw_pyobj(ptr) };
+    unsafe { crate::bridge::GLOBAL_BRIDGE.register_foreign_pyobj(ptr) };
     ptr
 }
 
@@ -290,7 +290,8 @@ pub unsafe extern "C" fn PyCapsule_Import(name: *const c_char, _no_block: c_int)
             if let Ok(cmessage) = std::ffi::CString::new(message) {
                 unsafe {
                     crate::api::errors::PyErr_SetString(
-                        &raw mut crate::abi_types::PyExc_AttributeError,
+                        (&raw mut crate::abi_types::PyExc_AttributeError)
+                            .cast::<crate::abi_types::PyObject>(),
                         cmessage.as_ptr(),
                     );
                 }
@@ -304,7 +305,7 @@ pub unsafe extern "C" fn PyCapsule_Import(name: *const c_char, _no_block: c_int)
     if let Ok(cmessage) = std::ffi::CString::new(message) {
         unsafe {
             crate::api::errors::PyErr_SetString(
-                &raw mut crate::abi_types::PyExc_ImportError,
+                (&raw mut crate::abi_types::PyExc_ImportError).cast::<crate::abi_types::PyObject>(),
                 cmessage.as_ptr(),
             );
         }

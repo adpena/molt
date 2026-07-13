@@ -5,10 +5,10 @@ use crate::intrinsics::generated::{INTRINSICS, IntrinsicDefaultValue};
 #[cfg(test)]
 use crate::intrinsics::generated::resolve_symbol;
 use crate::{
-    MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_MODULE, TYPE_ID_STRING, alloc_dict_with_pairs,
-    alloc_string, alloc_tuple, builtin_classes, dec_ref_bits, dict_get_in_place, dict_set_in_place,
-    inc_ref_bits, module_dict_bits, obj_from_bits, object_set_class_bits, object_type_id,
-    raise_exception, runtime_state, string_bytes, string_len,
+    ClassEdgeOwnership, MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_MODULE, TYPE_ID_STRING,
+    alloc_dict_with_pairs, alloc_string, alloc_tuple, builtin_classes, dec_ref_bits,
+    dict_get_in_place, dict_set_in_place, inc_ref_bits, module_dict_bits, obj_from_bits,
+    object_type_id, raise_exception, runtime_state, string_bytes, string_len,
 };
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
 
@@ -532,8 +532,15 @@ fn build_runtime_function(
     }
     unsafe {
         let builtin_bits = builtin_classes(_py).builtin_function_or_method;
-        object_set_class_bits(_py, ptr, builtin_bits);
-        inc_ref_bits(_py, builtin_bits);
+        if !crate::object::object_init_class_edge_unpublished(
+            _py,
+            ptr,
+            builtin_bits,
+            ClassEdgeOwnership::Owned,
+        ) {
+            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+            return None;
+        }
     }
     let fn_bits = MoltObject::from_ptr(ptr).bits();
     if !attach_function_defaults(_py, ptr, defaults) {

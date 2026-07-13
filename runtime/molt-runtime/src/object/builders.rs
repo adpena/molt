@@ -1,6 +1,5 @@
-use std::sync::atomic::Ordering as AtomicOrdering;
-
 use crate::PyToken;
+use crate::object::{ClassEdgeOwnership, object_init_class_edge_unpublished};
 use crate::*;
 
 #[inline]
@@ -30,104 +29,6 @@ pub extern "C" fn molt_alloc(size_bits: u64) -> u64 {
         }
         MoltObject::from_ptr(obj_ptr).bits()
     })
-}
-
-/// Perceus reuse token: probe whether a value being dropped has a unique
-/// reference (refcount == 1). If so, return the raw data pointer as a
-/// reuse token; the caller can reuse the underlying allocation instead of
-/// freeing and reallocating. Returns 0 if the object cannot be reused
-/// (shared reference, inline value, null, immortal, or arena-allocated).
-///
-/// # Safety
-/// Called from compiler-generated code. `bits` must be a valid NaN-boxed
-/// value. The returned token (when non-zero) is a raw `*mut u8` data pointer
-/// whose memory remains valid because the caller has *not* dropped the
-/// refcount yet — the reuse replaces the drop.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_reuse_token(bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj = MoltObject::from_bits(bits);
-        let Some(ptr) = obj.as_ptr() else {
-            // Inline value (int, float, bool, None) — no heap allocation to reuse.
-            return 0;
-        };
-        if ptr.is_null() {
-            return 0;
-        }
-        unsafe {
-            let header = crate::object::header_from_obj_ptr(ptr);
-            // Immortal objects must never be reused.
-            if ((*header).flags & crate::object::HEADER_FLAG_IMMORTAL) != 0 {
-                return 0;
-            }
-            // Arena-allocated objects are bulk-reclaimed; individual reuse is
-            // unsafe because arena free would invalidate the pointer.
-            if ((*header).flags & crate::object::HEADER_FLAG_ARENA) != 0 {
-                return 0;
-            }
-            // Unique reference: refcount == 1 means the caller is the sole owner.
-            // Under the GIL, Relaxed ordering is sufficient (the GIL provides
-            // happens-before).
-            if (*header).ref_count.load(AtomicOrdering::Relaxed) == 1 {
-                // Return the data pointer as a reuse token. The caller will
-                // reinitialize the header in molt_reuse_alloc rather than freeing.
-                return ptr as u64;
-            }
-        }
-        0 // Shared reference — caller must allocate fresh.
-    })
-}
-
-/// Allocate using a Perceus reuse token or fall back to a fresh allocation.
-///
-/// When `token` is non-zero, it is a data pointer from `molt_reuse_token`
-/// whose underlying allocation can be reused. The header is re-initialized
-/// to represent a fresh `TYPE_ID_OBJECT` with refcount 1 so the caller gets
-/// a clean allocation without going through the global allocator.
-///
-/// When `token` is zero, this falls through to `molt_alloc` for a
-/// conventional allocation.
-///
-/// `size_bits` is the requested payload size in bytes (same contract as
-/// `molt_alloc`).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_reuse_alloc(token: u64, size_bits: u64) -> u64 {
-    if token != 0 {
-        crate::with_gil_entry_nopanic!(_py, {
-            let ptr = token as *mut u8;
-            unsafe {
-                let header = crate::object::header_from_obj_ptr(ptr);
-                let existing_total = crate::object::total_size_from_header(&*header, ptr);
-                let requested_payload = usize_from_bits(size_bits);
-                let Some(requested_total) = raw_payload_total_or_null(requested_payload) else {
-                    crate::object::dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-                    return MoltObject::none().bits();
-                };
-                // Only reuse if the existing allocation is large enough for the
-                // requested payload. If the new allocation is larger, we must
-                // fall through to molt_alloc to get a correctly-sized block.
-                if existing_total >= requested_total {
-                    // Reinitialize the header: clear all flags except RAW_ALLOC,
-                    // reset refcount to 1, preserve size_class and cold_idx (the
-                    // allocation size has not changed).
-                    (*header).type_id = TYPE_ID_OBJECT;
-                    (*header).ref_count.store(1, AtomicOrdering::Relaxed);
-                    (*header).flags = crate::object::HEADER_FLAG_RAW_ALLOC;
-                    // Zero the payload region for safety (same guarantee as
-                    // alloc_object_zeroed).
-                    std::ptr::write_bytes(ptr, 0, requested_payload);
-                    return MoltObject::from_ptr(ptr).bits();
-                }
-                // Existing allocation too small — drop the old one and allocate
-                // fresh. Decrement the refcount (it is 1, so this frees).
-                crate::object::dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-            }
-            // Fall through to fresh allocation.
-            molt_alloc(size_bits)
-        })
-    } else {
-        molt_alloc(size_bits)
-    }
 }
 
 pub(crate) unsafe fn alloc_dataclass_for_class_ptr(
@@ -184,8 +85,10 @@ pub(crate) unsafe fn alloc_dataclass_for_class_ptr(
         let Some(inst_ptr) = obj_from_bits(inst_bits).as_ptr() else {
             return Some(inst_bits);
         };
-        let _ = dataclass_set_class_raw(_py, inst_ptr, class_bits);
+        let _ =
+            crate::object::ops_slice::dataclass_init_class_unpublished(_py, inst_ptr, class_bits);
         if exception_pending(_py) {
+            dec_ref_bits(_py, inst_bits);
             return Some(MoltObject::none().bits());
         }
         Some(inst_bits)
@@ -213,14 +116,26 @@ pub extern "C" fn molt_alloc_class(size_bits: u64, class_bits: u64) -> u64 {
         let Some(total_size) = raw_payload_total_or_null(size) else {
             return MoltObject::none().bits();
         };
-        let obj_ptr = alloc_object_zeroed(_py, total_size, TYPE_ID_OBJECT);
+        let aux = if class_bits == 0 {
+            ObjectAuxPreselection::Default
+        } else {
+            ObjectAuxPreselection::ClassInline
+        };
+        let obj_ptr = alloc_object_zeroed_with_aux(_py, total_size, TYPE_ID_OBJECT, aux);
         if obj_ptr.is_null() {
             return MoltObject::none().bits();
         }
         unsafe {
             if class_bits != 0 {
-                object_set_class_bits(_py, obj_ptr, class_bits);
-                inc_ref_bits(_py, class_bits);
+                if !object_init_class_edge_unpublished(
+                    _py,
+                    obj_ptr,
+                    class_bits,
+                    ClassEdgeOwnership::Owned,
+                ) {
+                    dec_ref_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
+                    return MoltObject::none().bits();
+                }
             }
         }
         MoltObject::from_ptr(obj_ptr).bits()
@@ -248,14 +163,26 @@ pub extern "C" fn molt_alloc_class_trusted(size_bits: u64, class_bits: u64) -> u
         let Some(total_size) = raw_payload_total_or_null(size) else {
             return MoltObject::none().bits();
         };
-        let obj_ptr = alloc_object_zeroed(_py, total_size, TYPE_ID_OBJECT);
+        let aux = if class_bits == 0 {
+            ObjectAuxPreselection::Default
+        } else {
+            ObjectAuxPreselection::ClassInline
+        };
+        let obj_ptr = alloc_object_zeroed_with_aux(_py, total_size, TYPE_ID_OBJECT, aux);
         if obj_ptr.is_null() {
             return MoltObject::none().bits();
         }
         unsafe {
             if class_bits != 0 {
-                object_set_class_bits(_py, obj_ptr, class_bits);
-                inc_ref_bits(_py, class_bits);
+                if !object_init_class_edge_unpublished(
+                    _py,
+                    obj_ptr,
+                    class_bits,
+                    ClassEdgeOwnership::Owned,
+                ) {
+                    dec_ref_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
+                    return MoltObject::none().bits();
+                }
             }
         }
         MoltObject::from_ptr(obj_ptr).bits()
@@ -283,16 +210,27 @@ pub extern "C" fn molt_alloc_class_static(size_bits: u64, class_bits: u64) -> u6
         let Some(total_size) = raw_payload_total_or_null(size) else {
             return MoltObject::none().bits();
         };
-        let obj_ptr = alloc_object_zeroed(_py, total_size, TYPE_ID_OBJECT);
+        let aux = if class_bits == 0 {
+            ObjectAuxPreselection::Default
+        } else {
+            ObjectAuxPreselection::ClassInline
+        };
+        let obj_ptr = alloc_object_zeroed_with_aux(_py, total_size, TYPE_ID_OBJECT, aux);
         if obj_ptr.is_null() {
             return MoltObject::none().bits();
         }
         unsafe {
             if class_bits != 0 {
-                object_set_class_bits(_py, obj_ptr, class_bits);
+                if !object_init_class_edge_unpublished(
+                    _py,
+                    obj_ptr,
+                    class_bits,
+                    ClassEdgeOwnership::Owned,
+                ) {
+                    dec_ref_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
+                    return MoltObject::none().bits();
+                }
             }
-            let header = header_from_obj_ptr(obj_ptr);
-            (*header).flags |= HEADER_FLAG_SKIP_CLASS_DECREF;
         }
         MoltObject::from_ptr(obj_ptr).bits()
     })
@@ -853,7 +791,7 @@ pub(crate) fn alloc_list_with_capacity(
         + std::mem::size_of::<*mut DataclassDesc>()
         + std::mem::size_of::<*mut Vec<u64>>()
         + std::mem::size_of::<u64>();
-    let ptr = alloc_object(_py, total, TYPE_ID_LIST);
+    let ptr = alloc_object_with_aux(_py, total, TYPE_ID_LIST, ObjectAuxPreselection::ClassInline);
     if ptr.is_null() {
         return ptr;
     }
@@ -883,7 +821,7 @@ pub(crate) fn alloc_list_with_capacity_owned(
         + std::mem::size_of::<*mut DataclassDesc>()
         + std::mem::size_of::<*mut Vec<u64>>()
         + std::mem::size_of::<u64>();
-    let ptr = alloc_object(_py, total, TYPE_ID_LIST);
+    let ptr = alloc_object_with_aux(_py, total, TYPE_ID_LIST, ObjectAuxPreselection::ClassInline);
     if ptr.is_null() {
         return ptr;
     }
@@ -1133,7 +1071,12 @@ pub(crate) fn alloc_tuple_with_capacity(
     let total = std::mem::size_of::<MoltHeader>()
         + std::mem::size_of::<*mut Vec<u64>>()
         + std::mem::size_of::<u64>();
-    let ptr = alloc_object(_py, total, TYPE_ID_TUPLE);
+    let ptr = alloc_object_with_aux(
+        _py,
+        total,
+        TYPE_ID_TUPLE,
+        ObjectAuxPreselection::ClassInline,
+    );
     if ptr.is_null() {
         return ptr;
     }
@@ -1165,7 +1108,12 @@ pub(crate) fn alloc_tuple_with_capacity_owned(
     let total = std::mem::size_of::<MoltHeader>()
         + std::mem::size_of::<*mut Vec<u64>>()
         + std::mem::size_of::<u64>();
-    let ptr = alloc_object(_py, total, TYPE_ID_TUPLE);
+    let ptr = alloc_object_with_aux(
+        _py,
+        total,
+        TYPE_ID_TUPLE,
+        ObjectAuxPreselection::ClassInline,
+    );
     if ptr.is_null() {
         return ptr;
     }
@@ -1270,7 +1218,12 @@ pub(crate) fn alloc_slice_obj(
 
 pub(crate) fn alloc_generic_alias(_py: &PyToken<'_>, origin_bits: u64, args_bits: u64) -> *mut u8 {
     let total = std::mem::size_of::<MoltHeader>() + 2 * std::mem::size_of::<u64>();
-    let ptr = alloc_object(_py, total, TYPE_ID_GENERIC_ALIAS);
+    let ptr = alloc_object_with_aux(
+        _py,
+        total,
+        TYPE_ID_GENERIC_ALIAS,
+        ObjectAuxPreselection::ClassInline,
+    );
     if ptr.is_null() {
         return ptr;
     }
@@ -1308,7 +1261,12 @@ pub(crate) fn alloc_function_obj(_py: &PyToken<'_>, fn_ptr: u64, arity: u64) -> 
     // user-reachable mutation of defaults attrs, so compile-time defaults stay
     // valid IFF the version is still 0 ("never mutated since creation").
     let total = std::mem::size_of::<MoltHeader>() + 12 * std::mem::size_of::<u64>();
-    let ptr = alloc_object(_py, total, TYPE_ID_FUNCTION);
+    let ptr = alloc_object_with_aux(
+        _py,
+        total,
+        TYPE_ID_FUNCTION,
+        ObjectAuxPreselection::ClassInline,
+    );
     if ptr.is_null() {
         return ptr;
     }
@@ -1401,7 +1359,12 @@ pub(crate) fn alloc_code_obj(
 
 pub(crate) fn alloc_bound_method_obj(_py: &PyToken<'_>, func_bits: u64, self_bits: u64) -> *mut u8 {
     let total = std::mem::size_of::<MoltHeader>() + 2 * std::mem::size_of::<u64>();
-    let ptr = alloc_object(_py, total, TYPE_ID_BOUND_METHOD);
+    let ptr = alloc_object_with_aux(
+        _py,
+        total,
+        TYPE_ID_BOUND_METHOD,
+        ObjectAuxPreselection::ClassInline,
+    );
     if ptr.is_null() {
         return ptr;
     }
@@ -1468,8 +1431,10 @@ pub(crate) fn alloc_class_obj(_py: &PyToken<'_>, name_bits: u64) -> *mut u8 {
     let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
     let bases_bits = MoltObject::none().bits();
     let mro_bits = MoltObject::none().bits();
-    let total = std::mem::size_of::<MoltHeader>() + 8 * std::mem::size_of::<u64>();
-    let ptr = alloc_object(_py, total, TYPE_ID_TYPE);
+    // Eight object-reference/layout slots followed by one atomic cold-policy
+    // word. Keeping policy out of MoltHeader preserves hot RC/GC flag capacity.
+    let total = std::mem::size_of::<MoltHeader>() + 9 * std::mem::size_of::<u64>();
+    let ptr = alloc_object_with_aux(_py, total, TYPE_ID_TYPE, ObjectAuxPreselection::ClassInline);
     if ptr.is_null() {
         dec_ref_bits(_py, dict_bits);
         return ptr;
@@ -1485,6 +1450,7 @@ pub(crate) fn alloc_class_obj(_py: &PyToken<'_>, name_bits: u64) -> *mut u8 {
         let none_bits = MoltObject::none().bits();
         *(ptr.add(6 * std::mem::size_of::<u64>()) as *mut u64) = none_bits;
         *(ptr.add(7 * std::mem::size_of::<u64>()) as *mut u64) = qualname_bits;
+        *(ptr.add(8 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         inc_ref_bits(_py, name_bits);
         inc_ref_bits(_py, bases_bits);
         inc_ref_bits(_py, mro_bits);

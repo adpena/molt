@@ -2841,12 +2841,11 @@ def test_gvn_value_keyed_constant_fact_validation_rejects_drift() -> None:
         raise AssertionError("GVN attr key row without attrs was accepted")
 
 
-def test_alias_barrier_predicates_delegate_to_generated_tables() -> None:
-    """Alias-analysis opcode-only barrier facts belong in the generated registry.
+def test_alias_rc_barrier_predicate_delegates_to_generated_table() -> None:
+    """Alias-analysis RC barrier facts belong in the generated registry.
 
-    The consumer may layer operand/root checks on top, but the RC and arbitrary
-    heap opcode sets must not live as hand-maintained `matches!` lists in
-    alias_analysis.rs.
+    The RC opcode set must not live as a hand-maintained `matches!` list in
+    alias analysis.
     """
     gen = _gen()
     data = gen.load_table()
@@ -2872,67 +2871,29 @@ def test_alias_barrier_predicates_delegate_to_generated_tables() -> None:
         "StoreIndex",
         "TryStart",
     }
-    expected_heap = {
-        "Call",
-        "CallBuiltin",
-        "CallMethod",
-        "CallMethodIc",
-        "CallSuperMethodIc",
-        "ChanRecvYield",
-        "ChanSendYield",
-        "ClosureStore",
-        "DelAttr",
-        "DelIndex",
-        "Free",
-        "ModuleCacheDel",
-        "ModuleCacheSet",
-        "ModuleDelGlobal",
-        "ModuleDelGlobalIfPresent",
-        "ModuleSetAttr",
-        "Raise",
-        "StateSwitch",
-        "StateTransition",
-        "StateYield",
-        "StoreAttr",
-        "StoreIndex",
-        "Yield",
-        "YieldFrom",
-    }
     assert set(data["alias_rc_barrier_opcodes"]) == expected_rc
-    assert set(data["alias_heap_barrier_opcodes"]) == expected_heap
 
     rc_block = rendered.split("fn opcode_is_alias_rc_barrier_table")[1].split(
-        "fn opcode_is_alias_heap_barrier_table"
-    )[0]
-    heap_block = rendered.split("fn opcode_is_alias_heap_barrier_table")[1].split(
         "enum CanonicalizeCommutativeDomain"
     )[0]
     for opcode in expected_rc:
         assert f"OpCode::{opcode} => true," in rc_block
     assert "OpCode::Add => false," in rc_block
-    for opcode in expected_heap:
-        assert f"OpCode::{opcode} => true," in heap_block
-    assert "OpCode::ClosureLoad => false," in heap_block
-
-    for fn_name, table_name in (
-        ("fn opcode_is_rc_barrier(", "opcode_is_alias_rc_barrier_table"),
-        ("fn opcode_is_heap_barrier(", "opcode_is_alias_heap_barrier_table"),
-    ):
-        start = alias.index(fn_name)
-        brace = alias.index("{", start)
-        depth = 0
-        end = brace
-        for i in range(brace, len(alias)):
-            if alias[i] == "{":
-                depth += 1
-            elif alias[i] == "}":
-                depth -= 1
-                if depth == 0:
-                    end = i + 1
-                    break
-        body = alias[start:end]
-        assert table_name in body
-        assert "matches!" not in body
+    start = alias.index("fn opcode_is_rc_barrier(")
+    brace = alias.index("{", start)
+    depth = 0
+    end = brace
+    for i in range(brace, len(alias)):
+        if alias[i] == "{":
+            depth += 1
+        elif alias[i] == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    body = alias[start:end]
+    assert "opcode_is_alias_rc_barrier_table" in body
+    assert "matches!" not in body
 
 
 def test_deforestation_fusion_barriers_delegate_to_generated_table() -> None:
@@ -4253,9 +4214,9 @@ def test_opcode_fact_set_validation_rejects_unknown_opcode() -> None:
     data = gen.load_table()
     opcodes = {row["name"] for row in data["opcode"]}
     mutated = json.loads(json.dumps(data))
-    mutated["alias_heap_barrier_opcodes"].append("StoreIndx")
+    mutated["alias_rc_barrier_opcodes"].append("StoreIndx")
     try:
-        gen._validate_opcode_fact_set(mutated, "alias_heap_barrier_opcodes", opcodes)
+        gen._validate_opcode_fact_set(mutated, "alias_rc_barrier_opcodes", opcodes)
     except gen.OpKindTableError as e:
         assert "StoreIndx" in str(e)
     else:

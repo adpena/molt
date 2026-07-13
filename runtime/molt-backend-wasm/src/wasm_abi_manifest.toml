@@ -4693,15 +4693,129 @@ runtime_name = "molt_time_tzname"
 callable_arity = 0
 
 [[import]]
-name = "weakref_drop"
+name = "weakcontainer_clear"
 type = 2
-runtime_name = "molt_weakref_drop"
+runtime_name = "molt_weakcontainer_clear"
+callable_arity = 1
+
+[[import]]
+name = "weakcontainer_contains"
+type = 5
+runtime_name = "molt_weakcontainer_contains"
+callable_arity = 3
+
+[[import]]
+name = "weakcontainer_dead"
+type = 3
+runtime_name = "molt_weakcontainer_dead"
+callable_arity = 2
+
+[[import]]
+name = "weakcontainer_get"
+type = 5
+runtime_name = "molt_weakcontainer_get"
+callable_arity = 3
+
+[[import]]
+name = "weakcontainer_iter"
+type = 3
+runtime_name = "molt_weakcontainer_iter"
+callable_arity = 2
+
+[[import]]
+name = "weakcontainer_len"
+type = 2
+runtime_name = "molt_weakcontainer_len"
+callable_arity = 1
+
+[[import]]
+name = "weakcontainer_new"
+type = 2
+runtime_name = "molt_weakcontainer_new"
+callable_arity = 1
+
+[[import]]
+name = "weakcontainer_pop"
+type = 2
+runtime_name = "molt_weakcontainer_pop"
+callable_arity = 1
+
+[[import]]
+name = "weakcontainer_refs"
+type = 2
+runtime_name = "molt_weakcontainer_refs"
+callable_arity = 1
+
+[[import]]
+name = "weakcontainer_store_commit"
+type = 12
+runtime_name = "molt_weakcontainer_store_commit"
+callable_arity = 5
+
+[[import]]
+name = "weakcontainer_store_probe"
+type = 7
+runtime_name = "molt_weakcontainer_store_probe"
+callable_arity = 4
+
+[[import]]
+name = "weakcontainer_take"
+type = 7
+runtime_name = "molt_weakcontainer_take"
+callable_arity = 4
+
+[[import]]
+name = "weakref_bind_reference_type"
+type = 2
+runtime_name = "molt_weakref_bind_reference_type"
+callable_arity = 1
+
+[[import]]
+name = "weakref_callback"
+type = 2
+runtime_name = "molt_weakref_callback"
+callable_arity = 1
+
+[[import]]
+name = "weakref_count"
+type = 2
+runtime_name = "molt_weakref_count"
+callable_arity = 1
+
+[[import]]
+name = "weakref_finalize_track"
+type = 2
+runtime_name = "molt_weakref_finalize_track"
+callable_arity = 1
+
+[[import]]
+name = "weakref_finalize_untrack"
+type = 2
+runtime_name = "molt_weakref_finalize_untrack"
+callable_arity = 1
+
+[[import]]
+name = "weakref_find_nocallback"
+type = 2
+runtime_name = "molt_weakref_find_nocallback"
 callable_arity = 1
 
 [[import]]
 name = "weakref_get"
 type = 2
 runtime_name = "molt_weakref_get"
+callable_arity = 1
+
+[[import]]
+name = "weakref_peek"
+type = 2
+runtime_name = "molt_weakref_peek"
+callable_arity = 1
+
+[[import]]
+name = "weakref_refs"
+type = 2
+runtime_name = "molt_weakref_refs"
 callable_arity = 1
 
 [[import]]

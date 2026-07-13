@@ -346,7 +346,6 @@ _PASS_DELTA_FACT_FIELDS = (
 )
 _OPCODE_FACT_SETS = (
     "alias_rc_barrier_opcodes",
-    "alias_heap_barrier_opcodes",
     "alias_memory_inert_opcodes",
     "alias_typed_slot_load_opcodes",
     "alias_typed_slot_store_opcodes",

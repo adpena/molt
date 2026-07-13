@@ -78,7 +78,9 @@ pub unsafe extern "C" fn molt_set_attr_generic(
             }
             if type_id == TYPE_ID_TYPE {
                 let class_bits = MoltObject::from_ptr(obj_ptr).bits();
-                if is_builtin_class_bits(_py, class_bits) {
+                if is_builtin_class_bits(_py, class_bits)
+                    || crate::object::class_is_immutable(_py, obj_ptr)
+                {
                     // CPython: setting an attribute on an immutable builtin type
                     // raises `cannot set '<attr>' attribute of immutable type
                     // '<type>'` (version-stable across 3.12/3.13/3.14).
@@ -199,6 +201,14 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                     return MoltObject::none().bits() as i64;
                 };
                 let name = string_obj_to_owned(obj_from_bits(attr_bits)).unwrap_or_default();
+                if name == "message" || name == "exceptions" {
+                    let class_bits = object_class_bits(obj_ptr);
+                    let base_group_bits = builtin_classes(_py).base_exception_group;
+                    if base_group_bits != 0 && issubclass_bits(class_bits, base_group_bits) {
+                        dec_ref_bits(_py, attr_bits);
+                        return raise_exception::<_>(_py, "AttributeError", "readonly attribute");
+                    }
+                }
                 if name == "name" || name == "obj" {
                     let kind_bits = exception_kind_bits(obj_ptr);
                     let mut is_attrerr = false;
@@ -248,13 +258,11 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                             return MoltObject::none().bits() as i64;
                         }
                         let tuple_bits = MoltObject::from_ptr(tuple_ptr).bits();
-                        let slot = obj_ptr.add(6 * std::mem::size_of::<u64>()) as *mut u64;
-                        let old_bits = *slot;
-                        if old_bits != tuple_bits {
-                            dec_ref_bits(_py, old_bits);
-                            inc_ref_bits(_py, tuple_bits);
-                            *slot = tuple_bits;
-                        }
+                        let _ = crate::builtins::exceptions::exception_replace_value_bits(
+                            _py,
+                            MoltObject::from_ptr(obj_ptr).bits(),
+                            tuple_bits,
+                        );
                         dec_ref_bits(_py, tuple_bits);
                         dec_ref_bits(_py, attr_bits);
                         return MoltObject::none().bits() as i64;
@@ -286,27 +294,17 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                             );
                         }
                     }
-                    let slot = if name == "__cause__" {
-                        obj_ptr.add(2 * std::mem::size_of::<u64>())
+                    let field = if name == "__cause__" {
+                        ExceptionFieldSlot::Cause
                     } else {
-                        obj_ptr.add(3 * std::mem::size_of::<u64>())
-                    } as *mut u64;
-                    let old_bits = *slot;
-                    if old_bits != val_bits {
-                        dec_ref_bits(_py, old_bits);
-                        inc_ref_bits(_py, val_bits);
-                        *slot = val_bits;
-                    }
-                    if name == "__cause__" {
-                        let suppress_bits = MoltObject::from_bool(true).bits();
-                        let suppress_slot = obj_ptr.add(4 * std::mem::size_of::<u64>()) as *mut u64;
-                        let old_bits = *suppress_slot;
-                        if old_bits != suppress_bits {
-                            dec_ref_bits(_py, old_bits);
-                            inc_ref_bits(_py, suppress_bits);
-                            *suppress_slot = suppress_bits;
-                        }
-                    }
+                        ExceptionFieldSlot::Context
+                    };
+                    let _ = exception_replace_field_bits(
+                        _py,
+                        MoltObject::from_ptr(obj_ptr).bits(),
+                        field,
+                        val_bits,
+                    );
                     dec_ref_bits(_py, attr_bits);
                     return MoltObject::none().bits() as i64;
                 }
@@ -316,31 +314,43 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                         dec_ref_bits(_py, attr_bits);
                         return MoltObject::none().bits() as i64;
                     }
-                    let class_bits = exception_class_bits(obj_ptr);
-                    let kind_bits = exception_kind_bits(obj_ptr);
-                    let msg_bits =
-                        crate::exception_message_for_storage(_py, kind_bits, class_bits, args_bits);
+                    let class_bits = object_class_bits(obj_ptr);
+                    let msg_bits = crate::exception_message_for_storage(_py, class_bits, args_bits);
                     if obj_from_bits(msg_bits).is_none() {
                         dec_ref_bits(_py, args_bits);
                         dec_ref_bits(_py, attr_bits);
                         return MoltObject::none().bits() as i64;
                     }
-                    exception_store_args_and_message(_py, obj_ptr, args_bits, msg_bits);
+                    if !exception_store_args_and_message(_py, obj_ptr, args_bits, msg_bits) {
+                        dec_ref_bits(_py, attr_bits);
+                        return MoltObject::none().bits() as i64;
+                    }
                     dec_ref_bits(_py, attr_bits);
                     return MoltObject::none().bits() as i64;
                 }
                 if name == "__suppress_context__" {
                     let suppress = is_truthy(_py, obj_from_bits(val_bits));
-                    let suppress_bits = MoltObject::from_bool(suppress).bits();
-                    let slot = obj_ptr.add(4 * std::mem::size_of::<u64>()) as *mut u64;
-                    let old_bits = *slot;
-                    if old_bits != suppress_bits {
-                        dec_ref_bits(_py, old_bits);
-                        inc_ref_bits(_py, suppress_bits);
-                        *slot = suppress_bits;
-                    }
+                    let _ = exception_replace_suppress_context(
+                        _py,
+                        MoltObject::from_ptr(obj_ptr).bits(),
+                        suppress,
+                    );
                     dec_ref_bits(_py, attr_bits);
                     return MoltObject::none().bits() as i64;
+                }
+                if name == "__notes__" {
+                    let result = exception_replace_field_bits(
+                        _py,
+                        MoltObject::from_ptr(obj_ptr).bits(),
+                        ExceptionFieldSlot::Notes,
+                        val_bits,
+                    );
+                    dec_ref_bits(_py, attr_bits);
+                    return if result.is_ok() {
+                        MoltObject::none().bits() as i64
+                    } else {
+                        MoltObject::none().bits() as i64
+                    };
                 }
                 if name == "__dict__" {
                     let val_obj = obj_from_bits(val_bits);
@@ -360,13 +370,12 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                         dec_ref_bits(_py, attr_bits);
                         return raise_exception::<_>(_py, "TypeError", &msg);
                     }
-                    let slot = obj_ptr.add(9 * std::mem::size_of::<u64>()) as *mut u64;
-                    let old_bits = *slot;
-                    if old_bits != val_bits {
-                        dec_ref_bits(_py, old_bits);
-                        inc_ref_bits(_py, val_bits);
-                        *slot = val_bits;
-                    }
+                    let _ = exception_replace_field_bits(
+                        _py,
+                        MoltObject::from_ptr(obj_ptr).bits(),
+                        ExceptionFieldSlot::Dict,
+                        val_bits,
+                    );
                     dec_ref_bits(_py, attr_bits);
                     return MoltObject::none().bits() as i64;
                 }
@@ -377,13 +386,11 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                         dec_ref_bits(_py, attr_bits);
                         return attr_error(_py, "exception", attr_name);
                     }
-                    let slot = obj_ptr.add(6 * std::mem::size_of::<u64>()) as *mut u64;
-                    let old_bits = *slot;
-                    if old_bits != val_bits {
-                        dec_ref_bits(_py, old_bits);
-                        inc_ref_bits(_py, val_bits);
-                        *slot = val_bits;
-                    }
+                    let _ = crate::builtins::exceptions::exception_replace_value_bits(
+                        _py,
+                        MoltObject::from_ptr(obj_ptr).bits(),
+                        val_bits,
+                    );
                     dec_ref_bits(_py, attr_bits);
                     return MoltObject::none().bits() as i64;
                 }
@@ -392,12 +399,19 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                     let dict_ptr = alloc_dict_with_pairs(_py, &[]);
                     if !dict_ptr.is_null() {
                         dict_bits = MoltObject::from_ptr(dict_ptr).bits();
-                        let slot = obj_ptr.add(9 * std::mem::size_of::<u64>()) as *mut u64;
-                        let old_bits = *slot;
-                        if old_bits != dict_bits {
-                            dec_ref_bits(_py, old_bits);
-                            *slot = dict_bits;
+                        if exception_replace_field_bits(
+                            _py,
+                            MoltObject::from_ptr(obj_ptr).bits(),
+                            ExceptionFieldSlot::Dict,
+                            dict_bits,
+                        )
+                        .is_err()
+                        {
+                            dec_ref_bits(_py, dict_bits);
+                            dec_ref_bits(_py, attr_bits);
+                            return MoltObject::none().bits() as i64;
                         }
+                        dec_ref_bits(_py, dict_bits);
                     }
                 }
                 if !obj_from_bits(dict_bits).is_none()
@@ -539,7 +553,7 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                     return MoltObject::none().bits() as i64;
                 };
                 if !desc_ptr.is_null() {
-                    let class_bits = (*desc_ptr).class_bits;
+                    let class_bits = object_class_bits(obj_ptr);
                     if class_bits != 0
                         && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
                         && object_type_id(class_ptr) == TYPE_ID_TYPE
@@ -703,7 +717,7 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                     && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
                     && object_type_id(class_ptr) == TYPE_ID_TYPE
                 {
-                    slots_info = class_slots_info(_py, class_ptr, attr_bits);
+                    slots_info = class_slots_info(_py, class_ptr);
                     let setattr_bits = intern_static_name(
                         _py,
                         &runtime_state(_py).interned.setattr_name,
@@ -917,7 +931,9 @@ pub(crate) unsafe fn del_attr_ptr(
         }
         if type_id == TYPE_ID_TYPE {
             let class_bits = MoltObject::from_ptr(obj_ptr).bits();
-            if is_builtin_class_bits(_py, class_bits) {
+            if is_builtin_class_bits(_py, class_bits)
+                || crate::object::class_is_immutable(_py, obj_ptr)
+            {
                 // CPython routes `del <builtin_type>.<attr>` through the same
                 // immutable-type guard as set, yielding `cannot set '<attr>'
                 // attribute of immutable type '<type>'` (version-stable).
@@ -991,40 +1007,47 @@ pub(crate) unsafe fn del_attr_ptr(
         }
         if type_id == TYPE_ID_EXCEPTION {
             if attr_name == "__cause__" || attr_name == "__context__" {
-                let slot = if attr_name == "__cause__" {
-                    obj_ptr.add(2 * std::mem::size_of::<u64>())
+                let field = if attr_name == "__cause__" {
+                    ExceptionFieldSlot::Cause
                 } else {
-                    obj_ptr.add(3 * std::mem::size_of::<u64>())
-                } as *mut u64;
-                let old_bits = *slot;
-                if !obj_from_bits(old_bits).is_none() {
-                    dec_ref_bits(_py, old_bits);
-                    let none_bits = MoltObject::none().bits();
-                    inc_ref_bits(_py, none_bits);
-                    *slot = none_bits;
-                }
+                    ExceptionFieldSlot::Context
+                };
+                let _ = exception_replace_field_bits(
+                    _py,
+                    MoltObject::from_ptr(obj_ptr).bits(),
+                    field,
+                    MoltObject::none().bits(),
+                );
                 if attr_name == "__cause__" {
-                    let suppress_bits = MoltObject::from_bool(false).bits();
-                    let suppress_slot = obj_ptr.add(4 * std::mem::size_of::<u64>()) as *mut u64;
-                    let old_bits = *suppress_slot;
-                    if old_bits != suppress_bits {
-                        dec_ref_bits(_py, old_bits);
-                        inc_ref_bits(_py, suppress_bits);
-                        *suppress_slot = suppress_bits;
-                    }
+                    let _ = exception_replace_suppress_context(
+                        _py,
+                        MoltObject::from_ptr(obj_ptr).bits(),
+                        false,
+                    );
                 }
                 return MoltObject::none().bits() as i64;
             }
             if attr_name == "__suppress_context__" {
-                let suppress_bits = MoltObject::from_bool(false).bits();
-                let slot = obj_ptr.add(4 * std::mem::size_of::<u64>()) as *mut u64;
-                let old_bits = *slot;
-                if old_bits != suppress_bits {
-                    dec_ref_bits(_py, old_bits);
-                    inc_ref_bits(_py, suppress_bits);
-                    *slot = suppress_bits;
-                }
+                let _ = exception_replace_suppress_context(
+                    _py,
+                    MoltObject::from_ptr(obj_ptr).bits(),
+                    false,
+                );
                 return MoltObject::none().bits() as i64;
+            }
+            if attr_name == "__notes__" {
+                return if exception_replace_field_bits(
+                    _py,
+                    MoltObject::from_ptr(obj_ptr).bits(),
+                    ExceptionFieldSlot::Notes,
+                    MoltObject::none().bits(),
+                )
+                .is_ok()
+                {
+                    MoltObject::none().bits() as i64
+                } else {
+                    MoltObject::none().bits() as i64
+                };
             }
             let dict_bits = exception_dict_bits(obj_ptr);
             if !obj_from_bits(dict_bits).is_none()
@@ -1068,7 +1091,7 @@ pub(crate) unsafe fn del_attr_ptr(
         if type_id == TYPE_ID_DATACLASS {
             let desc_ptr = dataclass_desc_ptr(obj_ptr);
             if !desc_ptr.is_null() {
-                let class_bits = (*desc_ptr).class_bits;
+                let class_bits = object_class_bits(obj_ptr);
                 if class_bits != 0
                     && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
                     && object_type_id(class_ptr) == TYPE_ID_TYPE
@@ -1349,7 +1372,7 @@ pub(crate) unsafe fn object_setattr_raw(
             && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
             && object_type_id(class_ptr) == TYPE_ID_TYPE
         {
-            slots_info = class_slots_info(_py, class_ptr, attr_bits);
+            slots_info = class_slots_info(_py, class_ptr);
             if let Some(offset) = class_own_slot_field_offset(_py, class_ptr, attr_bits) {
                 return object_field_set_ptr_raw(_py, obj_ptr, offset, val_bits) as i64;
             }
@@ -1471,7 +1494,7 @@ unsafe fn dataclass_setattr_inner(
             );
         }
         if !desc_ptr.is_null() {
-            let class_bits = (*desc_ptr).class_bits;
+            let class_bits = object_class_bits(obj_ptr);
             if class_bits != 0
                 && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
                 && object_type_id(class_ptr) == TYPE_ID_TYPE
@@ -1743,8 +1766,7 @@ pub(crate) unsafe fn object_delattr_raw(
         let slots_only = class_bits != 0
             && obj_from_bits(class_bits).as_ptr().is_some_and(|class_ptr| {
                 object_type_id(class_ptr) == TYPE_ID_TYPE
-                    && class_slots_info(_py, class_ptr, attr_bits)
-                        .is_some_and(|info| !info.allows_dict)
+                    && class_slots_info(_py, class_ptr).is_some_and(|info| !info.allows_dict)
             });
         if slots_only {
             return setattr_no_attr_error_with_obj(
@@ -1768,7 +1790,7 @@ unsafe fn dataclass_delattr_inner(
     unsafe {
         let desc_ptr = dataclass_desc_ptr(obj_ptr);
         if !desc_ptr.is_null() {
-            let class_bits = (*desc_ptr).class_bits;
+            let class_bits = object_class_bits(obj_ptr);
             if class_bits != 0
                 && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
                 && object_type_id(class_ptr) == TYPE_ID_TYPE

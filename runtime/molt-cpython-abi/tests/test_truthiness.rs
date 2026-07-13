@@ -28,8 +28,11 @@ unsafe extern "C" fn list_classify(_bits: u64) -> u8 {
 unsafe extern "C" fn list_len_hook(_bits: u64) -> usize {
     LIST_LEN.load(Ordering::SeqCst)
 }
-unsafe extern "C" fn list_item_hook(_bits: u64, i: usize) -> u64 {
-    MoltObject::from_int(i as i64).bits()
+unsafe extern "C" fn list_item_hook(
+    _bits: u64,
+    i: usize,
+) -> molt_cpython_abi::hooks::BorrowedHandleResult {
+    molt_cpython_abi::hooks::BorrowedHandleResult::ok(MoltObject::from_int(i as i64).bits())
 }
 
 fn init_hooks() {
@@ -47,7 +50,7 @@ fn native_list() -> *mut PyObject {
     // A genuine is_ptr handle -> classify_heap reports List for it.
     let backing: Box<u8> = Box::new(0);
     let bits = MoltObject::from_ptr(Box::into_raw(backing)).bits();
-    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits) }
+    unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) }
 }
 
 #[test]

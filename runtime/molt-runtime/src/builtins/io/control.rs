@@ -23,7 +23,8 @@ pub extern "C" fn molt_file_detach(handle_bits: u64) -> u64 {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             }
             let builtins = builtin_classes(_py);
-            if handle.class_bits == builtins.bytes_io || handle.class_bits == builtins.string_io {
+            let class_bits = object_class_bits(ptr);
+            if class_bits == builtins.bytes_io || class_bits == builtins.string_io {
                 return raise_exception::<_>(
                     _py,
                     "UnsupportedOperation",
@@ -88,7 +89,7 @@ pub extern "C" fn molt_file_detach(handle_bits: u64) -> u64 {
                 handle.line_buffering,
                 handle.write_through,
                 handle.buffer_size,
-                handle.class_bits,
+                class_bits,
                 handle.name_bits,
                 handle.mode.clone(),
                 None,

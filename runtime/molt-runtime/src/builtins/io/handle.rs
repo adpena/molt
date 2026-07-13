@@ -1,4 +1,5 @@
 use super::*;
+use crate::object::{ClassEdgeOwnership, object_init_class_edge_unpublished};
 
 pub(super) type VfsWritebackEntry = (Arc<dyn crate::vfs::VfsBackend>, String);
 
@@ -98,7 +99,12 @@ pub(super) fn alloc_file_handle_with_state(
     mem_bits: u64,
 ) -> *mut u8 {
     let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<*mut MoltFileHandle>();
-    let ptr = alloc_object(_py, total, TYPE_ID_FILE_HANDLE);
+    let aux = if class_bits == 0 {
+        ObjectAuxPreselection::Default
+    } else {
+        ObjectAuxPreselection::ClassInline
+    };
+    let ptr = alloc_object_with_aux(_py, total, TYPE_ID_FILE_HANDLE, aux);
     if ptr.is_null() {
         return ptr;
     }
@@ -106,7 +112,11 @@ pub(super) fn alloc_file_handle_with_state(
         // Ensure `type(handle)` and attribute resolution go through the intended IO wrapper class
         // (TextIOWrapper / Buffered* / FileIO), rather than falling back to `object`.
         unsafe {
-            object_set_class_bits(_py, ptr, class_bits);
+            if !object_init_class_edge_unpublished(_py, ptr, class_bits, ClassEdgeOwnership::Owned)
+            {
+                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                return std::ptr::null_mut();
+            }
         }
     }
     let handle = Box::new(MoltFileHandle {
@@ -121,7 +131,6 @@ pub(super) fn alloc_file_handle_with_state(
         line_buffering,
         write_through,
         buffer_size,
-        class_bits,
         name_bits,
         mode,
         encoding,

@@ -27,6 +27,16 @@ impl Drop for CApiTestGuard {
     fn drop(&mut self) {}
 }
 
+fn bind_test_weakref_type(_py: &PyToken<'_>, class_bits: u64) {
+    crate::object::weakref::weakref_clear_runtime_state(_py, runtime_state(_py));
+    let result = crate::molt_weakref_bind_reference_type(class_bits);
+    assert!(obj_from_bits(result).is_none());
+}
+
+fn clear_test_weakref_type(_py: &PyToken<'_>) {
+    crate::object::weakref::weakref_clear_runtime_state(_py, runtime_state(_py));
+}
+
 fn assert_pending_exception_class(_py: &PyToken<'_>, expected: &str) {
     assert!(exception_pending(_py));
     let exc_bits = molt_err_fetch();
@@ -285,6 +295,13 @@ extern "C" fn c_api_test_bound_identity(self_bits: u64, arg_bits: u64) -> u64 {
 }
 
 static FINALIZER_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
+static FINALIZER_PIN_PROBE_COUNT: AtomicUsize = AtomicUsize::new(0);
+static FINALIZER_PIN_PROBE_STATUS: AtomicU32 = AtomicU32::new(0);
+static FINALIZER_PIN_PROBE_C_BASELINE: AtomicUsize = AtomicUsize::new(0);
+static FINALIZER_PIN_PROBE_RUNTIME_BASELINE: AtomicU32 = AtomicU32::new(0);
+static GC_CLEAR_PROBE_CONTAINER_BITS: AtomicU64 = AtomicU64::new(0);
+static GC_CLEAR_PROBE_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
+static GC_CLEAR_PROBE_OBSERVED_EMPTY: AtomicU32 = AtomicU32::new(0);
 static SET_NAME_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 extern "C" fn c_api_test_finalizer_records(self_bits: u64) -> u64 {
@@ -295,6 +312,256 @@ extern "C" fn c_api_test_finalizer_records(self_bits: u64) -> u64 {
         FINALIZER_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
         none_bits()
     })
+}
+
+extern "C" fn c_api_test_finalizing_pin_probe(self_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        const HAS_VIEW: u32 = 1 << 0;
+        const HAS_FINALIZING_PIN: u32 = 1 << 1;
+        const MATCHED_C_BIAS: u32 = 1 << 2;
+        const BALANCED_C_CUSTODY: u32 = 1 << 3;
+        const BALANCED_RUNTIME_CUSTODY: u32 = 1 << 4;
+        const SURVIVED_GC: u32 = 1 << 5;
+
+        FINALIZER_PIN_PROBE_COUNT.fetch_add(1, Ordering::SeqCst);
+        let Some(self_ptr) = obj_from_bits(self_bits).as_ptr() else {
+            return none_bits();
+        };
+        let mut status = 0u32;
+        let view =
+            unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_borrowed_pyobj(self_bits) };
+        if !view.is_null() {
+            status |= HAS_VIEW;
+        }
+        if molt_cpython_abi::bridge::GLOBAL_BRIDGE.has_finalizing_pin(self_bits) {
+            status |= HAS_FINALIZING_PIN;
+        }
+
+        let c_baseline = if view.is_null() {
+            0
+        } else {
+            unsafe { (*view).ob_refcnt.max(0) as usize }
+        };
+        FINALIZER_PIN_PROBE_C_BASELINE.store(c_baseline, Ordering::SeqCst);
+        if c_baseline == 1 {
+            status |= MATCHED_C_BIAS;
+        }
+        if !view.is_null() {
+            unsafe {
+                molt_cpython_abi::api::refcount::Py_INCREF(view);
+                molt_cpython_abi::api::refcount::Py_DECREF(view);
+            }
+            if unsafe { (*view).ob_refcnt.max(0) as usize } == c_baseline
+                && molt_cpython_abi::bridge::GLOBAL_BRIDGE.has_finalizing_pin(self_bits)
+            {
+                status |= BALANCED_C_CUSTODY;
+            }
+        }
+
+        let runtime_baseline = unsafe {
+            (*crate::object::header_from_obj_ptr(self_ptr))
+                .ref_count
+                .load(Ordering::Acquire)
+        };
+        FINALIZER_PIN_PROBE_RUNTIME_BASELINE.store(runtime_baseline, Ordering::SeqCst);
+        inc_ref_bits(_py, self_bits);
+        dec_ref_bits(_py, self_bits);
+        let runtime_after = unsafe {
+            (*crate::object::header_from_obj_ptr(self_ptr))
+                .ref_count
+                .load(Ordering::Acquire)
+        };
+        if runtime_after == runtime_baseline
+            && molt_cpython_abi::bridge::GLOBAL_BRIDGE.has_finalizing_pin(self_bits)
+        {
+            status |= BALANCED_RUNTIME_CUSTODY;
+        }
+
+        let _ = crate::molt_gc_collect(MoltObject::from_int(2).bits());
+        if !exception_pending(_py)
+            && unsafe { (*crate::object::header_from_obj_ptr(self_ptr)).type_id }
+                == crate::TYPE_ID_OBJECT
+            && molt_cpython_abi::bridge::GLOBAL_BRIDGE.has_finalizing_pin(self_bits)
+            && unsafe {
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_borrowed_pyobj(self_bits)
+            } == view
+        {
+            status |= SURVIVED_GC;
+        }
+        FINALIZER_PIN_PROBE_STATUS.store(status, Ordering::SeqCst);
+        none_bits()
+    })
+}
+
+extern "C" fn c_api_test_gc_clear_observes_published_empty(_self_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        GC_CLEAR_PROBE_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
+        let bits = GC_CLEAR_PROBE_CONTAINER_BITS.load(Ordering::SeqCst);
+        let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+            return none_bits();
+        };
+        let empty = unsafe {
+            match crate::object::object_type_id(ptr) {
+                crate::TYPE_ID_DICT => {
+                    (*crate::builtins::containers::dict_order_ptr(ptr)).is_empty()
+                        && (*crate::builtins::containers::dict_table_ptr(ptr)).is_empty()
+                        && (*crate::builtins::containers::dict_hashes_ptr(ptr)).is_empty()
+                }
+                crate::TYPE_ID_SET | crate::TYPE_ID_FROZENSET => {
+                    (*crate::builtins::containers::set_order_ptr(ptr)).is_empty()
+                        && (*crate::builtins::containers::set_table_ptr(ptr)).is_empty()
+                        && (*crate::builtins::containers::set_hashes_ptr(ptr)).is_empty()
+                }
+                _ => false,
+            }
+        };
+        GC_CLEAR_PROBE_OBSERVED_EMPTY.store(u32::from(empty), Ordering::SeqCst);
+        none_bits()
+    })
+}
+
+fn exercise_finalizing_pin_terminal_entry(c_last: bool) {
+    let _guard = CApiTestGuard::new();
+    molt_cpython_abi::bridge::molt_cpython_abi_init();
+    crate::cpython_abi_hooks::register_cpython_hooks();
+    crate::with_gil_entry_nopanic!(_py, {
+        FINALIZER_PIN_PROBE_COUNT.store(0, Ordering::SeqCst);
+        FINALIZER_PIN_PROBE_STATUS.store(0, Ordering::SeqCst);
+        FINALIZER_PIN_PROBE_C_BASELINE.store(0, Ordering::SeqCst);
+        FINALIZER_PIN_PROBE_RUNTIME_BASELINE.store(0, Ordering::SeqCst);
+
+        let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+            _py,
+            crate::builtins::functions::runtime_fn_addr(
+                "c_api_test_finalizing_pin_probe",
+                c_api_test_finalizing_pin_probe as *const (),
+            ),
+            1,
+        );
+        assert!(!func_ptr.is_null());
+        let func_bits = MoltObject::from_ptr(func_ptr).bits();
+        let (class_bits, attr_storage) = create_guarded_test_class(
+            _py,
+            if c_last {
+                b"FinalizingPinCLast"
+            } else {
+                b"FinalizingPinRuntimeLast"
+            },
+            &[(b"__del__", func_bits)],
+        );
+        let class_ptr = obj_from_bits(class_bits).as_ptr().expect("class ptr");
+        let inst_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
+
+        if c_last {
+            let view =
+                unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(inst_bits) };
+            assert!(!view.is_null());
+            assert_eq!(unsafe { (*view).ob_refcnt }, 1);
+            unsafe { molt_cpython_abi::api::refcount::Py_DECREF(view) };
+        } else {
+            let view = unsafe {
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_borrowed_pyobj(inst_bits)
+            };
+            assert!(!view.is_null());
+            assert_eq!(unsafe { (*view).ob_refcnt }, 1);
+            dec_ref_bits(_py, inst_bits);
+        }
+
+        assert_eq!(FINALIZER_PIN_PROBE_COUNT.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            FINALIZER_PIN_PROBE_STATUS.load(Ordering::SeqCst),
+            (1 << 6) - 1,
+            "finalizer must observe one matched C bias, retain FinalizingPin across balanced C/runtime custody, and survive gc.collect"
+        );
+        assert_eq!(FINALIZER_PIN_PROBE_C_BASELINE.load(Ordering::SeqCst), 1);
+        assert!(FINALIZER_PIN_PROBE_RUNTIME_BASELINE.load(Ordering::SeqCst) >= 2);
+
+        for attr_bits in attr_storage.into_iter().step_by(2) {
+            dec_ref_bits(_py, attr_bits);
+        }
+        dec_ref_bits(_py, class_bits);
+        dec_ref_bits(_py, func_bits);
+    });
+}
+
+#[test]
+fn finalizing_pin_runtime_owner_terminal_entry_is_stable() {
+    exercise_finalizing_pin_terminal_entry(false);
+}
+
+#[test]
+fn finalizing_pin_c_last_terminal_entry_is_stable() {
+    exercise_finalizing_pin_terminal_entry(true);
+}
+
+fn exercise_gc_clear_publish_empty(is_set: bool) {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        GC_CLEAR_PROBE_CONTAINER_BITS.store(0, Ordering::SeqCst);
+        GC_CLEAR_PROBE_CALL_COUNT.store(0, Ordering::SeqCst);
+        GC_CLEAR_PROBE_OBSERVED_EMPTY.store(0, Ordering::SeqCst);
+
+        let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+            _py,
+            crate::builtins::functions::runtime_fn_addr(
+                "c_api_test_gc_clear_observes_published_empty",
+                c_api_test_gc_clear_observes_published_empty as *const (),
+            ),
+            1,
+        );
+        assert!(!func_ptr.is_null());
+        let func_bits = MoltObject::from_ptr(func_ptr).bits();
+        let (class_bits, attr_storage) = create_guarded_test_class(
+            _py,
+            if is_set {
+                b"GcClearSetChild"
+            } else {
+                b"GcClearDictChild"
+            },
+            &[(b"__del__", func_bits)],
+        );
+        let class_ptr = obj_from_bits(class_bits).as_ptr().expect("class ptr");
+        let child_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
+        let container_ptr = if is_set {
+            crate::object::builders::alloc_set_with_entries(_py, &[child_bits])
+        } else {
+            crate::object::builders::alloc_dict_with_pairs(
+                _py,
+                &[MoltObject::from_int(1).bits(), child_bits],
+            )
+        };
+        assert!(!container_ptr.is_null());
+        assert!(!exception_pending(_py));
+        let container_bits = MoltObject::from_ptr(container_ptr).bits();
+        GC_CLEAR_PROBE_CONTAINER_BITS.store(container_bits, Ordering::SeqCst);
+        dec_ref_bits(_py, child_bits);
+
+        unsafe { crate::object::gc::molt_clear(_py, container_ptr) };
+        assert_eq!(GC_CLEAR_PROBE_CALL_COUNT.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            GC_CLEAR_PROBE_OBSERVED_EMPTY.load(Ordering::SeqCst),
+            1,
+            "child finalizer must observe order/table/hash storage already empty"
+        );
+
+        GC_CLEAR_PROBE_CONTAINER_BITS.store(0, Ordering::SeqCst);
+        dec_ref_bits(_py, container_bits);
+        for attr_bits in attr_storage.into_iter().step_by(2) {
+            dec_ref_bits(_py, attr_bits);
+        }
+        dec_ref_bits(_py, class_bits);
+        dec_ref_bits(_py, func_bits);
+    });
+}
+
+#[test]
+fn gc_clear_dict_publishes_empty_before_child_finalizer() {
+    exercise_gc_clear_publish_empty(false);
+}
+
+#[test]
+fn gc_clear_set_publishes_empty_before_child_finalizer() {
+    exercise_gc_clear_publish_empty(true);
 }
 
 // --- Weakref-callback finalization-window probes (council #1 P0) ---------
@@ -309,16 +576,9 @@ extern "C" fn c_api_test_finalizer_records(self_bits: u64) -> u64 {
 static WEAKREF_CB_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
 static WEAKREF_CB_TARGET_BITS: AtomicU64 = AtomicU64::new(0);
 static WEAKREF_CB_TARGET_RC_AT_FIRE: AtomicU32 = AtomicU32::new(0);
-// When set, the callback RESURRECTS the target by taking a strong reference to
-// it (re-incrementing its refcount) and stashing those bits in
-// `WEAKREF_CB_RESURRECT_SINK` — the canonical "weakref callback resurrects the
-// referent" scenario. At rc=0 (the old bug) this strong ref would alias a
-// being-freed object → UAF; inside the window it is a legal resurrection.
-static WEAKREF_CB_RESURRECT: AtomicU32 = AtomicU32::new(0);
-static WEAKREF_CB_RESURRECT_SINK: AtomicU64 = AtomicU64::new(0);
-// P6 regression: a callback that calls `gc.collect()` re-enters the weakref
-// subsystem (`weakref_collect_for_gc` -> `weakref_clear_for_ptr`) from INSIDE the
-// outer target's revival window. The target must stay live (rc >= 1) across that
+// P6 regression: a callback that calls `gc.collect()` re-enters the cycle
+// collector from INSIDE the outer target's revival window. The target must stay
+// live (rc >= 1) across that
 // re-entrant collection — this is the pure-`gc.collect()`-in-callback path.
 static WEAKREF_CB_CALL_GC: AtomicU32 = AtomicU32::new(0);
 // Records the target's `type_id` observed from INSIDE the callback AFTER the
@@ -356,17 +616,10 @@ extern "C" fn c_api_test_weakref_callback_probe(weak_bits: u64) -> u64 {
         let target_bits = WEAKREF_CB_TARGET_BITS.load(Ordering::SeqCst);
         // Record the target's refcount as observed from inside the callback.
         WEAKREF_CB_TARGET_RC_AT_FIRE.store(weakref_target_rc(target_bits), Ordering::SeqCst);
-        if WEAKREF_CB_RESURRECT.load(Ordering::SeqCst) != 0 {
-            // Resurrect: take a strong reference to the target and stash it. The
-            // window holds the target live, so this is a sound re-strengthen.
-            inc_ref_bits(_py, target_bits);
-            WEAKREF_CB_RESURRECT_SINK.store(target_bits, Ordering::SeqCst);
-        }
         if WEAKREF_CB_CALL_GC.load(Ordering::SeqCst) != 0 {
-            // Re-enter the weakref subsystem from inside the outer revival window.
-            // `gc.collect()` -> `weakref_collect_for_gc` walks `by_target` and may
-            // call `weakref_clear_for_ptr` re-entrantly; the outer target must stay
-            // live throughout (rc observed >= 1, asserted by the caller). Record the
+            // Re-enter the cycle collector from inside the outer revival window.
+            // The outer target must stay live throughout (rc observed >= 1,
+            // asserted by the caller). Record the
             // refcount AFTER the collection too, to prove the target was not freed
             // out from under the callback by the re-entrant collect.
             let _collected = crate::molt_gc_collect(MoltObject::from_int(0).bits());
@@ -776,11 +1029,9 @@ fn guarded_class_def_arms_and_runs_instance_finalizer() {
 
         let inst_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
         let inst_ptr = obj_from_bits(inst_bits).as_ptr().expect("instance ptr");
-        let inst_flags = unsafe { (*crate::object::header_from_obj_ptr(inst_ptr)).flags };
-        assert_ne!(
-            inst_flags & crate::object::HEADER_FLAG_INSTANCE_HAS_FINALIZER,
-            0,
-            "instance allocation must stamp the class finalizer fact"
+        assert!(
+            unsafe { crate::object::object_class_has_finalizer(inst_ptr) },
+            "instance finalization must derive from the current class authority"
         );
 
         dec_ref_bits(_py, inst_bits);
@@ -812,20 +1063,17 @@ fn weakref_callback_runs_with_live_target_not_rc0() {
         WEAKREF_CB_CALL_COUNT.store(0, Ordering::SeqCst);
         WEAKREF_CB_TARGET_BITS.store(0, Ordering::SeqCst);
         WEAKREF_CB_TARGET_RC_AT_FIRE.store(0, Ordering::SeqCst);
-        WEAKREF_CB_RESURRECT.store(0, Ordering::SeqCst);
-        WEAKREF_CB_RESURRECT_SINK.store(0, Ordering::SeqCst);
 
         // A plain class: instances have NO __del__, so the revival window here
         // is opened SOLELY by the HAS_WEAKREF lifetime-boundary bit.
         let (class_bits, attr_storage) = create_guarded_test_class(_py, b"WeakTargetA", &[]);
+        bind_test_weakref_type(_py, class_bits);
         let class_ptr = obj_from_bits(class_bits).as_ptr().expect("class ptr");
         let inst_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
         let inst_ptr = obj_from_bits(inst_bits).as_ptr().expect("instance ptr");
-        assert_eq!(
-            unsafe { (*crate::object::header_from_obj_ptr(inst_ptr)).flags }
-                & crate::object::HEADER_FLAG_INSTANCE_HAS_FINALIZER,
-            0,
-            "plain instance must NOT be finalizer-sensitive"
+        assert!(
+            !unsafe { crate::object::object_class_has_finalizer(inst_ptr) },
+            "plain instance must not derive finalizer sensitivity"
         );
 
         // The weakref object is itself a heap instance.
@@ -845,13 +1093,7 @@ fn weakref_callback_runs_with_live_target_not_rc0() {
 
         WEAKREF_CB_TARGET_BITS.store(inst_bits, Ordering::SeqCst);
         let registered = crate::molt_weakref_register(weak_bits, inst_bits, cb_bits);
-        assert!(
-            !obj_from_bits(registered).is_none(),
-            "register returns the weakref"
-        );
-        // `molt_weakref_register` returns a fresh strong ref to the weakref; the
-        // test does not keep it, so drop it back.
-        dec_ref_bits(_py, registered);
+        assert!(is_truthy(_py, obj_from_bits(registered)));
 
         assert_ne!(
             unsafe { (*crate::object::header_from_obj_ptr(inst_ptr)).flags }
@@ -883,32 +1125,63 @@ fn weakref_callback_runs_with_live_target_not_rc0() {
         for attr_bits in attr_storage.into_iter().step_by(2) {
             dec_ref_bits(_py, attr_bits);
         }
+        clear_test_weakref_type(_py);
         dec_ref_bits(_py, class_bits);
     });
 }
 
-// Council #1 P0: a weakref callback that RESURRECTS its target (re-strengthens
-// it) must leave the target alive and intact — exactly the scenario that was a
-// UAF when the callback ran at rc=0. After the resurrecting callback returns,
-// the window's closing dec sees rc>1 and aborts the free; the object stays
-// usable. On the later final drop the object is truly freed, and the weakref is
-// NOT cleared a second time (the callback fired exactly once).
 #[test]
-fn weakref_callback_resurrection_through_window_survives() {
+fn explicit_gc_collect_preserves_strongly_reachable_weakref_target() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        let (class_bits, attr_storage) =
+            create_guarded_test_class(_py, b"WeakTargetStillReachable", &[]);
+        bind_test_weakref_type(_py, class_bits);
+        let class_ptr = obj_from_bits(class_bits).as_ptr().expect("class ptr");
+        let target_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
+        let target_ptr = obj_from_bits(target_bits).as_ptr().expect("target ptr");
+        let weak_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
+
+        let registered = crate::molt_weakref_register(weak_bits, target_bits, none_bits());
+        assert!(is_truthy(_py, obj_from_bits(registered)));
+
+        let collected = crate::molt_gc_collect(MoltObject::from_int(2).bits());
+        assert!(
+            !obj_from_bits(collected).is_none(),
+            "gc.collect must return its integer collection count"
+        );
+
+        let resolved = crate::molt_weakref_get(weak_bits);
+        assert_eq!(
+            obj_from_bits(resolved).as_ptr(),
+            Some(target_ptr),
+            "explicit collection must not clear a weakref whose target still has a strong owner"
+        );
+        dec_ref_bits(_py, resolved);
+
+        dec_ref_bits(_py, target_bits);
+        assert!(obj_from_bits(crate::molt_weakref_get(weak_bits)).is_none());
+        dec_ref_bits(_py, weak_bits);
+        for attr_bits in attr_storage.into_iter().step_by(2) {
+            dec_ref_bits(_py, attr_bits);
+        }
+        clear_test_weakref_type(_py);
+        dec_ref_bits(_py, class_bits);
+    });
+}
+
+#[test]
+fn repeated_weakref_callbacks_transfer_registration_custody_without_leak() {
     let _guard = CApiTestGuard::new();
     crate::with_gil_entry_nopanic!(_py, {
         WEAKREF_CB_CALL_COUNT.store(0, Ordering::SeqCst);
-        WEAKREF_CB_TARGET_BITS.store(0, Ordering::SeqCst);
-        WEAKREF_CB_TARGET_RC_AT_FIRE.store(0, Ordering::SeqCst);
-        WEAKREF_CB_RESURRECT.store(1, Ordering::SeqCst);
-        WEAKREF_CB_RESURRECT_SINK.store(0, Ordering::SeqCst);
+        WEAKREF_CB_CALL_GC.store(0, Ordering::SeqCst);
+        WEAKREF_CB_REREGISTER.store(0, Ordering::SeqCst);
 
-        let (class_bits, attr_storage) = create_guarded_test_class(_py, b"WeakTargetB", &[]);
+        let (class_bits, attr_storage) =
+            create_guarded_test_class(_py, b"WeakCallbackCustody", &[]);
+        bind_test_weakref_type(_py, class_bits);
         let class_ptr = obj_from_bits(class_bits).as_ptr().expect("class ptr");
-        let inst_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
-        let inst_ptr = obj_from_bits(inst_bits).as_ptr().expect("instance ptr");
-        let weak_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
-
         let cb_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
             crate::builtins::functions::runtime_fn_addr(
@@ -919,57 +1192,43 @@ fn weakref_callback_resurrection_through_window_survives() {
         );
         assert!(!cb_ptr.is_null());
         let cb_bits = MoltObject::from_ptr(cb_ptr).bits();
+        let callback_baseline = weakref_target_rc(cb_bits);
+        assert_eq!(callback_baseline, 1);
 
-        WEAKREF_CB_TARGET_BITS.store(inst_bits, Ordering::SeqCst);
-        let registered = crate::molt_weakref_register(weak_bits, inst_bits, cb_bits);
-        dec_ref_bits(_py, registered);
+        for _ in 0..16 {
+            let target_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
+            let weak_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
+            WEAKREF_CB_TARGET_BITS.store(target_bits, Ordering::SeqCst);
+            let registered = crate::molt_weakref_register(weak_bits, target_bits, cb_bits);
+            assert!(is_truthy(_py, obj_from_bits(registered)));
+            assert_eq!(
+                weakref_target_rc(cb_bits),
+                callback_baseline + 1,
+                "registration owns exactly one callback edge"
+            );
 
-        // Drop the sole strong ref: the resurrecting callback fires inside the
-        // window and re-increments the target's refcount. The object must NOT be
-        // freed — it survives into the resurrect sink.
-        dec_ref_bits(_py, inst_bits);
+            dec_ref_bits(_py, target_bits);
+            assert_eq!(
+                weakref_target_rc(cb_bits),
+                callback_baseline,
+                "callback invocation must consume the transferred registration edge"
+            );
+            dec_ref_bits(_py, weak_bits);
+        }
+        assert_eq!(WEAKREF_CB_CALL_COUNT.load(Ordering::SeqCst), 16);
 
-        assert_eq!(WEAKREF_CB_CALL_COUNT.load(Ordering::SeqCst), 1);
-        let sink_bits = WEAKREF_CB_RESURRECT_SINK.load(Ordering::SeqCst);
-        assert_eq!(
-            sink_bits, inst_bits,
-            "callback must have stashed the target"
-        );
-        // The resurrected object is alive and usable (its header is intact): a
-        // freed object would fail this load or carry a poisoned type_id.
-        assert_eq!(
-            unsafe { (*crate::object::header_from_obj_ptr(inst_ptr)).type_id },
-            crate::TYPE_ID_OBJECT,
-            "resurrected target must retain a valid object header (no UAF/free)"
-        );
-        assert!(
-            weakref_target_rc(inst_bits) >= 1,
-            "resurrected target must be live after the window closes"
-        );
-
-        // Final drop of the resurrected strong ref: now the object truly dies.
-        // The weakref was already cleared once (registry entry removed), so this
-        // drop must not re-fire the callback nor double-free.
-        WEAKREF_CB_RESURRECT.store(0, Ordering::SeqCst);
-        dec_ref_bits(_py, inst_bits);
-        assert_eq!(
-            WEAKREF_CB_CALL_COUNT.load(Ordering::SeqCst),
-            1,
-            "weakref callback must fire EXACTLY once across resurrection + final death"
-        );
-
-        dec_ref_bits(_py, weak_bits);
         dec_ref_bits(_py, cb_bits);
         for attr_bits in attr_storage.into_iter().step_by(2) {
             dec_ref_bits(_py, attr_bits);
         }
+        clear_test_weakref_type(_py);
         dec_ref_bits(_py, class_bits);
     });
 }
 
 // P6 (council #1): a weakref callback that calls `gc.collect()` re-enters the
-// weakref subsystem (`weakref_collect_for_gc` -> `weakref_clear_for_ptr`) from
-// INSIDE the dying target's revival window. The window must keep the target live
+// cycle collector from INSIDE the dying target's revival window. The window must
+// keep the target live
 // (rc >= 1) across that re-entrant collection — a freed-out-from-under-the-callback
 // target would be a use-after-free. This is the pure-`gc.collect()`-in-callback
 // path the resurrection P0 fix (0e3b062fd) must hold against.
@@ -980,12 +1239,11 @@ fn weakref_callback_calling_gc_collect_keeps_target_live() {
         WEAKREF_CB_CALL_COUNT.store(0, Ordering::SeqCst);
         WEAKREF_CB_TARGET_BITS.store(0, Ordering::SeqCst);
         WEAKREF_CB_TARGET_RC_AT_FIRE.store(0, Ordering::SeqCst);
-        WEAKREF_CB_RESURRECT.store(0, Ordering::SeqCst);
-        WEAKREF_CB_RESURRECT_SINK.store(0, Ordering::SeqCst);
         WEAKREF_CB_CALL_GC.store(1, Ordering::SeqCst);
         WEAKREF_CB_TYPE_ID_AFTER_GC.store(0, Ordering::SeqCst);
 
         let (class_bits, attr_storage) = create_guarded_test_class(_py, b"WeakTargetGc", &[]);
+        bind_test_weakref_type(_py, class_bits);
         let class_ptr = obj_from_bits(class_bits).as_ptr().expect("class ptr");
         let inst_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
         let weak_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
@@ -1003,7 +1261,7 @@ fn weakref_callback_calling_gc_collect_keeps_target_live() {
 
         WEAKREF_CB_TARGET_BITS.store(inst_bits, Ordering::SeqCst);
         let registered = crate::molt_weakref_register(weak_bits, inst_bits, cb_bits);
-        dec_ref_bits(_py, registered);
+        assert!(is_truthy(_py, obj_from_bits(registered)));
 
         // Drop the sole strong ref: the callback fires inside the window and calls
         // gc.collect(), which re-enters the weakref subsystem. The target must be
@@ -1040,6 +1298,7 @@ fn weakref_callback_calling_gc_collect_keeps_target_live() {
         for attr_bits in attr_storage.into_iter().step_by(2) {
             dec_ref_bits(_py, attr_bits);
         }
+        clear_test_weakref_type(_py);
         dec_ref_bits(_py, class_bits);
     });
 }
@@ -1057,13 +1316,12 @@ fn weakref_callback_reregistering_on_dying_target_leaves_no_orphan() {
         WEAKREF_CB_CALL_COUNT.store(0, Ordering::SeqCst);
         WEAKREF_CB_TARGET_BITS.store(0, Ordering::SeqCst);
         WEAKREF_CB_TARGET_RC_AT_FIRE.store(0, Ordering::SeqCst);
-        WEAKREF_CB_RESURRECT.store(0, Ordering::SeqCst);
-        WEAKREF_CB_RESURRECT_SINK.store(0, Ordering::SeqCst);
         WEAKREF_CB_CALL_GC.store(0, Ordering::SeqCst);
         WEAKREF_CB_REREGISTER.store(1, Ordering::SeqCst);
         WEAKREF_CB_REREGISTER_NEW_WEAK_OUT.store(0, Ordering::SeqCst);
 
         let (class_bits, attr_storage) = create_guarded_test_class(_py, b"WeakTargetReReg", &[]);
+        bind_test_weakref_type(_py, class_bits);
         let class_ptr = obj_from_bits(class_bits).as_ptr().expect("class ptr");
         let inst_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
         let weak_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
@@ -1086,7 +1344,7 @@ fn weakref_callback_reregistering_on_dying_target_leaves_no_orphan() {
 
         WEAKREF_CB_TARGET_BITS.store(inst_bits, Ordering::SeqCst);
         let registered = crate::molt_weakref_register(weak_bits, inst_bits, cb_bits);
-        dec_ref_bits(_py, registered);
+        assert!(is_truthy(_py, obj_from_bits(registered)));
 
         // Drop the sole strong ref: the callback fires and registers `new_weak`
         // against the dying target. Registration does NOT incref the target, so the
@@ -1099,13 +1357,15 @@ fn weakref_callback_reregistering_on_dying_target_leaves_no_orphan() {
             1,
             "original callback must fire exactly once"
         );
-        // The callback's `weakref.ref(dying_target)` returned a strong ref to the
-        // new weakref; the test owns it.
+        // Registration after the committed-death transition is rejected. The
+        // callback error is reported unraisable and the boundary restores a
+        // clean raised state.
         let new_weak_registered = WEAKREF_CB_REREGISTER_NEW_WEAK_OUT.load(Ordering::SeqCst);
         assert!(
-            !obj_from_bits(new_weak_registered).is_none(),
-            "callback's weakref.ref(target) must have returned the new weakref"
+            obj_from_bits(new_weak_registered).is_none(),
+            "callback must not publish a weakref against a committed-dead target"
         );
+        assert!(!crate::exception_pending(_py));
 
         // THE CONTRACT: the orphan must not survive. Resolving the new weakref must
         // return None (its target was nulled by the re-drain), and it must NOT
@@ -1121,8 +1381,7 @@ fn weakref_callback_reregistering_on_dying_target_leaves_no_orphan() {
             dec_ref_bits(_py, resolved);
         }
 
-        // Cleanup: drop the new weakref's strong refs and the weakref object.
-        dec_ref_bits(_py, new_weak_registered);
+        // Cleanup the never-registered weakref object.
         WEAKREF_CB_REREGISTER.store(0, Ordering::SeqCst);
         WEAKREF_CB_REREGISTER_WEAK_BITS.store(0, Ordering::SeqCst);
         dec_ref_bits(_py, new_weak_bits);
@@ -1131,6 +1390,7 @@ fn weakref_callback_reregistering_on_dying_target_leaves_no_orphan() {
         for attr_bits in attr_storage.into_iter().step_by(2) {
             dec_ref_bits(_py, attr_bits);
         }
+        clear_test_weakref_type(_py);
         dec_ref_bits(_py, class_bits);
     });
 }

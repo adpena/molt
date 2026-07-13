@@ -46,6 +46,8 @@ pub enum LoadError {
     InitSymbolMissing { lib_path: String, symbol: String },
     /// `PyInit_<name>()` returned NULL — initialization error.
     InitReturnedNull { name: String },
+    /// `PyInit_<name>()` violated the result/error-indicator contract.
+    InitContractViolation { name: String, detail: String },
     /// `PyInit_<name>()` returned an object that is not known to the bridge.
     InitReturnedUnmappedObject { name: String },
     /// No explicit extension artifact was found for this module.
@@ -61,6 +63,9 @@ impl std::fmt::Display for LoadError {
             }
             Self::InitReturnedNull { name } => {
                 write!(f, "PyInit_{name}() returned NULL (module init error)")
+            }
+            Self::InitContractViolation { name, detail } => {
+                write!(f, "PyInit_{name}() {detail}")
             }
             Self::InitReturnedUnmappedObject { name } => {
                 write!(
@@ -106,10 +111,44 @@ pub unsafe fn load_cpython_extension(path: &Path, name: &str) -> Result<u64, Loa
     // Call the init function. This runs the extension's module setup code,
     // which calls back into our PyModule_Create2, PyType_Ready, etc.
     let raw_init = unsafe { init_fn() };
-    if raw_init.is_null() {
-        return Err(LoadError::InitReturnedNull {
-            name: name.to_owned(),
-        });
+    let has_error = crate::api::errors::transfer_runtime_pending_to_current();
+    match (raw_init.is_null(), has_error) {
+        (false, false) => {}
+        (true, true) => {
+            return Err(LoadError::InitReturnedNull {
+                name: name.to_owned(),
+            });
+        }
+        (true, false) => {
+            unsafe {
+                crate::api::errors::PyErr_SetString(
+                    (&raw mut crate::abi_types::PyExc_SystemError)
+                        .cast::<crate::abi_types::PyObject>(),
+                    c"PyInit returned NULL without setting an exception".as_ptr(),
+                )
+            };
+            return Err(LoadError::InitContractViolation {
+                name: name.to_owned(),
+                detail: "returned NULL without setting an exception".to_owned(),
+            });
+        }
+        (false, true) => {
+            let pending = crate::api::errors::take_current_error();
+            unsafe { crate::api::refcount::Py_DECREF(raw_init) };
+            drop(crate::api::errors::take_current_error());
+            if let Some(pending) = pending {
+                crate::api::errors::restore_current_error_exact(pending);
+            }
+            unsafe {
+                crate::api::errors::replace_current_with_system_error(
+                    "PyInit returned a result with an exception set",
+                )
+            };
+            return Err(LoadError::InitContractViolation {
+                name: name.to_owned(),
+                detail: "returned a result with an exception set".to_owned(),
+            });
+        }
     }
 
     // PEP 489 multi-phase init: `PyInit_<name>()` may return a `PyModuleDef*`
@@ -120,12 +159,8 @@ pub unsafe fn load_cpython_extension(path: &Path, name: &str) -> Result<u64, Loa
 
     // Convert the returned `*mut PyObject` to a Molt handle.
     //
-    // Bridge-minted PyObject blocks carry the original Molt handle bits in a
-    // trailing u64 field immediately after the `PyObject` header, so we can
-    // recover them without sharing any in-memory state across rlib / dylib
-    // copies of the bridge.  We validate the recovered bits by asking the
-    // runtime hook to classify them — only a `MoltTypeTag::Module` is a
-    // legitimate result for a `PyInit_<name>()` return value.
+    // Resolve through the canonical bridge registry (or mint a first-class
+    // foreign wrapper) and validate the result as a module.
     let molt_bits = {
         let bridge = &*GLOBAL_BRIDGE;
         let candidate_bits = match bridge.molt_handle_for_pyobj(module_ptr) {
@@ -189,6 +224,12 @@ unsafe fn drive_multiphase_if_needed(
         unsafe { crate::api::refcount::Py_DECREF(spec) };
     }
     if module.is_null() {
+        return Err(LoadError::InitReturnedNull {
+            name: name.to_owned(),
+        });
+    }
+    if unsafe { crate::api::modules::PyModule_ExecDef(module, def) } != 0 {
+        unsafe { crate::api::refcount::Py_DECREF(module) };
         return Err(LoadError::InitReturnedNull {
             name: name.to_owned(),
         });

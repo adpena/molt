@@ -13,8 +13,11 @@
 #[cfg(kani)]
 mod object_proofs {
     use molt_codegen_abi::{
-        HEADER_ALLOC_ALIGN_BYTES, HEADER_FLAG_HAS_PTRS, HEADER_FLAG_IMMORTAL,
-        HEADER_FLAG_SKIP_CLASS_DECREF, HEADER_SIZE_BYTES, TYPE_ID_FUNCTION, TYPE_ID_OBJECT,
+        HEADER_ALLOC_ALIGN_BYTES, HEADER_AUX_KIND_CLASS_INLINE, HEADER_AUX_KIND_NONE,
+        HEADER_AUX_KIND_OFFSET, HEADER_AUX_KIND_SIDECAR, HEADER_AUX_KIND_STATE_INLINE,
+        HEADER_AUX_OFFSET, HEADER_CLASS_WORD_BITS_MASK, HEADER_CLASS_WORD_BORROWED,
+        HEADER_CLASS_WORD_TAG_MASK, HEADER_FLAG_HAS_PTRS, HEADER_FLAG_IMMORTAL, HEADER_SIZE_BYTES,
+        TYPE_ID_FUNCTION, TYPE_ID_OBJECT,
     };
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -59,8 +62,8 @@ mod object_proofs {
         ref_count: MoltRefCount,
         flags: u32,
         size_class: u16,
-        cold_idx: u32,
-        reserved: u32,
+        aux_kind: u16,
+        aux: u64,
     }
 
     // Header flags — must match the real constants in object/mod.rs.
@@ -182,9 +185,8 @@ mod object_proofs {
     ];
 
     /// All header flags as a static array for bit-independence checks.
-    const ALL_FLAGS: [u32; 17] = [
+    const ALL_FLAGS: [u32; 16] = [
         HEADER_FLAG_HAS_PTRS,
-        HEADER_FLAG_SKIP_CLASS_DECREF,
         HEADER_FLAG_GEN_RUNNING,
         HEADER_FLAG_GEN_STARTED,
         HEADER_FLAG_SPAWN_RETAIN,
@@ -200,6 +202,13 @@ mod object_proofs {
         HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED,
         HEADER_FLAG_IMMORTAL,
         HEADER_FLAG_FINALIZER_RAN,
+    ];
+
+    const ALL_AUX_KINDS: [u16; 4] = [
+        HEADER_AUX_KIND_NONE,
+        HEADER_AUX_KIND_CLASS_INLINE,
+        HEADER_AUX_KIND_STATE_INLINE,
+        HEADER_AUX_KIND_SIDECAR,
     ];
 
     // ---------------------------------------------------------------
@@ -258,8 +267,8 @@ mod object_proofs {
             ref_count: MoltRefCount::new(0),
             flags: 0,
             size_class: 0,
-            cold_idx: 0,
-            reserved: 0,
+            aux_kind: HEADER_AUX_KIND_NONE,
+            aux: 0,
         };
         let base = &header as *const MoltHeader as *const u8;
         let type_id_ptr = &header.type_id as *const u32 as *const u8;
@@ -276,8 +285,8 @@ mod object_proofs {
             ref_count: MoltRefCount::new(0x1234_5678),
             flags: 0,
             size_class: 0,
-            cold_idx: 0,
-            reserved: 0,
+            aux_kind: HEADER_AUX_KIND_NONE,
+            aux: 0,
         };
         let base = &header as *const MoltHeader as *const u8;
         let rc_ptr = &header.ref_count as *const MoltRefCount as *const u8;
@@ -294,13 +303,38 @@ mod object_proofs {
             ref_count: MoltRefCount::new(0),
             flags: 0,
             size_class: 0,
-            cold_idx: 0,
-            reserved: 0,
+            aux_kind: HEADER_AUX_KIND_NONE,
+            aux: 0,
         };
         let base = &header as *const MoltHeader as *const u8;
         let flags_ptr = &header.flags as *const u32 as *const u8;
         let offset = flags_ptr as usize - base as usize;
         assert_eq!(offset, 8);
+    }
+
+    /// The aux discriminator and word occupy the final 10 bytes of MoltHeader.
+    #[kani::proof]
+    #[kani::unwind(1)]
+    fn aux_fields_match_shared_abi_offsets() {
+        let header = MoltHeader {
+            type_id: 0,
+            ref_count: MoltRefCount::new(0),
+            flags: 0,
+            size_class: 0,
+            aux_kind: HEADER_AUX_KIND_CLASS_INLINE,
+            aux: HEADER_CLASS_WORD_BORROWED,
+        };
+        let base = &header as *const MoltHeader as *const u8;
+        let aux_kind_ptr = &header.aux_kind as *const u16 as *const u8;
+        let aux_ptr = &header.aux as *const u64 as *const u8;
+        assert_eq!(
+            aux_kind_ptr as usize - base as usize,
+            (HEADER_SIZE_BYTES + HEADER_AUX_KIND_OFFSET) as usize
+        );
+        assert_eq!(
+            aux_ptr as usize - base as usize,
+            (HEADER_SIZE_BYTES + HEADER_AUX_OFFSET) as usize
+        );
     }
 
     /// header_from_obj_ptr recovers the header when obj_ptr = header_ptr + HEADER_SIZE.
@@ -313,8 +347,8 @@ mod object_proofs {
             ref_count: MoltRefCount::new(1),
             flags: 0,
             size_class: 0,
-            cold_idx: 0,
-            reserved: 0,
+            aux_kind: HEADER_AUX_KIND_NONE,
+            aux: 0,
         };
         let header_ptr = &header as *const MoltHeader as *mut u8;
         let obj_ptr = unsafe { header_ptr.add(std::mem::size_of::<MoltHeader>()) };
@@ -352,9 +386,9 @@ mod object_proofs {
     // 3. HEADER FLAG BIT INDEPENDENCE
     // ===============================================================
 
-    /// All 17 header flags occupy distinct bit positions (no overlap).
+    /// All header flags occupy distinct bit positions (no overlap).
     #[kani::proof]
-    #[kani::unwind(18)]
+    #[kani::unwind(17)]
     fn header_flags_are_independent() {
         let n = ALL_FLAGS.len();
         let mut i = 0;
@@ -368,6 +402,24 @@ mod object_proofs {
             }
             i += 1;
         }
+    }
+
+    /// The aux discriminator values are unique and the borrowed class-word tag
+    /// cannot leak into the aligned class handle recovered by the runtime.
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn aux_kinds_and_class_word_tags_are_disjoint() {
+        let mut i = 0;
+        while i < ALL_AUX_KINDS.len() {
+            let mut j = i + 1;
+            while j < ALL_AUX_KINDS.len() {
+                assert_ne!(ALL_AUX_KINDS[i], ALL_AUX_KINDS[j]);
+                j += 1;
+            }
+            i += 1;
+        }
+        assert_eq!(HEADER_CLASS_WORD_BORROWED & HEADER_CLASS_WORD_TAG_MASK, 1);
+        assert_eq!(HEADER_CLASS_WORD_BITS_MASK & HEADER_CLASS_WORD_TAG_MASK, 0);
     }
 
     /// Setting the IMMORTAL flag does not disturb any other flag bits.
@@ -399,8 +451,8 @@ mod object_proofs {
             ref_count: MoltRefCount::new(init_rc),
             flags: HEADER_FLAG_IMMORTAL,
             size_class: 0,
-            cold_idx: 0,
-            reserved: 0,
+            aux_kind: HEADER_AUX_KIND_NONE,
+            aux: 0,
         };
 
         // Model of inc_ref_ptr:
@@ -420,8 +472,8 @@ mod object_proofs {
             ref_count: MoltRefCount::new(init_rc),
             flags: HEADER_FLAG_IMMORTAL,
             size_class: 0,
-            cold_idx: 0,
-            reserved: 0,
+            aux_kind: HEADER_AUX_KIND_NONE,
+            aux: 0,
         };
 
         // Model of dec_ref_ptr:
@@ -442,8 +494,8 @@ mod object_proofs {
             ref_count: MoltRefCount::new(init_rc),
             flags: 0,
             size_class: 0,
-            cold_idx: 0,
-            reserved: 0,
+            aux_kind: HEADER_AUX_KIND_NONE,
+            aux: 0,
         };
 
         // Model: not immortal, so inc_ref adds 1, dec_ref subtracts 1.
@@ -613,8 +665,8 @@ mod object_proofs {
             ref_count: MoltRefCount::new(init_rc),
             flags: 0,
             size_class: 0,
-            cold_idx: 0,
-            reserved: 0,
+            aux_kind: HEADER_AUX_KIND_NONE,
+            aux: 0,
         };
 
         // Model of dec_ref_ptr: early return when type_id == NOT_IMPLEMENTED.

@@ -142,7 +142,7 @@ posture, not an opt-in lane.
 beyond wall-time:
 - **time:** warm (steady-state engine) + cold (end-to-end), median + CI (§3).
 - **memory:** **peak RSS** + **allocation count/bytes** + live-object high-water (the
-  runtime's `MOLT_PROFILE_JSON` dealloc/alloc counters). Memory is a first-class **gated
+  runtime's versioned `MOLT_PROFILE` feedback dealloc/alloc counters). Memory is a first-class **gated
   dimension** — a regression here is a `DIMENSIONAL` loss reported honestly, never hidden
   behind a warm-time win.
 - **footprint:** binary size, compile time, cold-start tax (doc 61/62 levers).

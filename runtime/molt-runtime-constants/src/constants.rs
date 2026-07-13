@@ -140,6 +140,21 @@ pub static ALLOC_BYTES_STRING: AtomicU64 = AtomicU64::new(0);
 pub static ALLOC_BYTES_DICT: AtomicU64 = AtomicU64::new(0);
 pub static ALLOC_BYTES_TUPLE: AtomicU64 = AtomicU64::new(0);
 pub static ALLOC_BYTES_LIST: AtomicU64 = AtomicU64::new(0);
+pub static ALLOC_BYTES_EXCEPTION: AtomicU64 = AtomicU64::new(0);
+pub static AUX_CLASS_INLINE_COUNT: AtomicU64 = AtomicU64::new(0);
+pub static AUX_STATE_INLINE_COUNT: AtomicU64 = AtomicU64::new(0);
+pub static AUX_SIDECAR_COUNT: AtomicU64 = AtomicU64::new(0);
+pub static AUX_SIDECAR_FREE_COUNT: AtomicU64 = AtomicU64::new(0);
+pub static AUX_SIDECAR_ALLOC_FAILURE_COUNT: AtomicU64 = AtomicU64::new(0);
+pub static AUX_SIDECAR_BYTES: AtomicU64 = AtomicU64::new(0);
+pub static AUX_SIDECAR_FREE_BYTES: AtomicU64 = AtomicU64::new(0);
+pub static GC_TRACK_COUNT: AtomicU64 = AtomicU64::new(0);
+pub static GC_UNTRACK_COUNT: AtomicU64 = AtomicU64::new(0);
+pub static GC_TRACKED_LIVE: AtomicU64 = AtomicU64::new(0);
+pub static GC_REGISTRY_LOCK_CONTENTION_COUNT: AtomicU64 = AtomicU64::new(0);
+pub static GC_REGISTRY_LOCK_WAIT_NS: AtomicU64 = AtomicU64::new(0);
+pub static GC_TRACKED_HIGH_WATER: AtomicU64 = AtomicU64::new(0);
+pub static GC_SNAPSHOT_ALLOC_FAILURE_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static PEAK_RSS_BYTES: AtomicU64 = AtomicU64::new(0);
 
 // Deallocation tracking counters (RC drop-insertion substrate, design 20).
@@ -155,3 +170,5 @@ pub static DEALLOC_BIGINT_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static DEALLOC_STRING_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static DEALLOC_DICT_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static DEALLOC_TUPLE_COUNT: AtomicU64 = AtomicU64::new(0);
+pub static DEALLOC_EXCEPTION_COUNT: AtomicU64 = AtomicU64::new(0);
+pub static DEALLOC_BYTES_EXCEPTION: AtomicU64 = AtomicU64::new(0);

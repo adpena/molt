@@ -1,4 +1,5 @@
 use super::*;
+use crate::object::{ClassEdgeOwnership, object_init_class_edge_unpublished};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_super_new(type_bits: u64, obj_bits: u64) -> u64 {
@@ -193,13 +194,14 @@ pub extern "C" fn molt_generic_alias_type_new(
             return out_bits;
         };
         unsafe {
-            let old_class_bits = object_class_bits(out_ptr);
-            if old_class_bits != cls_bits {
-                if old_class_bits != 0 {
-                    dec_ref_bits(_py, old_class_bits);
-                }
-                object_set_class_bits(_py, out_ptr, cls_bits);
-                inc_ref_bits(_py, cls_bits);
+            if !object_init_class_edge_unpublished(
+                _py,
+                out_ptr,
+                cls_bits,
+                ClassEdgeOwnership::Owned,
+            ) {
+                dec_ref_bits(_py, out_bits);
+                return MoltObject::none().bits();
             }
         }
         out_bits

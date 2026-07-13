@@ -4,6 +4,7 @@ use crate::abi_types::{
     Py_TPFLAGS_HAVE_GC, Py_TPFLAGS_READY, Py_ssize_t, PyMethodDef, PyObject, PyType_Spec,
     PyTypeObject,
 };
+use crate::bridge::GLOBAL_BRIDGE;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -12,6 +13,72 @@ use std::os::raw::{c_char, c_int, c_longlong, c_ulong, c_ulonglong};
 use std::ptr;
 
 static ABI_LOCAL_TYPES: Lazy<Mutex<HashMap<u32, usize>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+
+unsafe fn reject_type_layout(message: &'static std::ffi::CStr) -> c_int {
+    unsafe {
+        crate::api::errors::PyErr_SetString(
+            (&raw mut crate::abi_types::PyExc_TypeError).cast::<PyObject>(),
+            message.as_ptr(),
+        )
+    };
+    -1
+}
+
+unsafe fn validate_base_layout(tp: *mut PyTypeObject, base: *mut PyTypeObject) -> c_int {
+    if tp.is_null() || base.is_null() {
+        return 0;
+    }
+    unsafe {
+        if (*base).tp_flags & crate::abi_types::Py_TPFLAGS_BASETYPE == 0 {
+            return reject_type_layout(c"type is not an acceptable base type");
+        }
+        if (*tp).tp_basicsize != 0 && (*tp).tp_basicsize < (*base).tp_basicsize {
+            return reject_type_layout(c"type basicsize is smaller than its base layout");
+        }
+        if (*tp).tp_itemsize != 0
+            && (*base).tp_itemsize != 0
+            && (*tp).tp_itemsize != (*base).tp_itemsize
+        {
+            return reject_type_layout(c"type itemsize is incompatible with its base layout");
+        }
+    }
+    0
+}
+
+/// Select one truthful physical base.  Incomparable C layouts are rejected;
+/// managed runtime multiple inheritance is answered by the runtime
+/// `type_is_subtype` hook instead of fabricating a single `tp_base` chain.
+unsafe fn acceptable_best_base(bases: *mut PyObject) -> *mut PyTypeObject {
+    if bases.is_null() {
+        return ptr::null_mut();
+    }
+    let count = unsafe { crate::api::sequences::PyTuple_Size(bases) };
+    if count < 0 {
+        return ptr::null_mut();
+    }
+    let mut best: *mut PyTypeObject = ptr::null_mut();
+    for index in 0..count {
+        let candidate = unsafe { crate::api::sequences::PyTuple_GetItem(bases, index) };
+        if candidate.is_null() || unsafe { PyType_Check(candidate) } == 0 {
+            unsafe { reject_type_layout(c"bases must contain only type objects") };
+            return ptr::null_mut();
+        }
+        let candidate = candidate.cast::<PyTypeObject>();
+        if unsafe { (*candidate).tp_flags } & crate::abi_types::Py_TPFLAGS_BASETYPE == 0 {
+            unsafe { reject_type_layout(c"type is not an acceptable base type") };
+            return ptr::null_mut();
+        }
+        if best.is_null() {
+            best = candidate;
+        } else if unsafe { PyType_IsSubtype(candidate, best) } != 0 {
+            best = candidate;
+        } else if unsafe { PyType_IsSubtype(best, candidate) } == 0 {
+            unsafe { reject_type_layout(c"multiple bases have incompatible physical layouts") };
+            return ptr::null_mut();
+        }
+    }
+    best
+}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_cpython_abi_type_canonicalize(
@@ -76,7 +143,7 @@ pub unsafe extern "C" fn PyType_Ready(tp: *mut PyTypeObject) -> c_int {
     // via `pyobj_to_handle` instead of failing the bridge lookup.
     if unsafe { (*tp).tp_flags } & Py_TPFLAGS_READY != 0 {
         unsafe {
-            crate::bridge::GLOBAL_BRIDGE.register_raw_pyobj(tp.cast::<PyObject>());
+            crate::bridge::GLOBAL_BRIDGE.register_foreign_pyobj(tp.cast::<PyObject>());
             install_metatype_getattro(tp);
         }
         return 0;
@@ -91,7 +158,6 @@ pub unsafe extern "C" fn PyType_Ready(tp: *mut PyTypeObject) -> c_int {
         if (*tp).tp_base.is_null() && !ptr::eq(tp, object) {
             (*tp).tp_base = object;
         }
-
         // (2) Inherit unset slots from the base type — exactly as CPython's
         //     inherit_slots does. A static C extension (numpy's scalar type
         //     hierarchy is the canonical case) sets `tp_base` and trusts
@@ -222,11 +288,11 @@ pub unsafe extern "C" fn PyType_Ready(tp: *mut PyTypeObject) -> c_int {
     //     `PyDict_SetItem` whose key/value IS the type object (numpy's
     //     scalar-type -> DType registry) — resolves it via `pyobj_to_handle`
     //     instead of failing the bridge lookup. This is the same
-    //     `register_raw_pyobj` bridging that `PyDescr_NewGetSet`/`PyDescr_NewMember`
+    //     canonical bridge registration that `PyDescr_NewGetSet`/`PyDescr_NewMember`
     //     already apply to the descriptors they mint (idempotent + stable handle),
     //     not a weakening of the unresolved-object checks.
     unsafe {
-        crate::bridge::GLOBAL_BRIDGE.register_raw_pyobj(tp.cast::<PyObject>());
+        crate::bridge::GLOBAL_BRIDGE.register_foreign_pyobj(tp.cast::<PyObject>());
         install_metatype_getattro(tp);
     }
     0
@@ -285,7 +351,8 @@ unsafe fn add_methods_to_dict(tp: *mut PyTypeObject) -> c_int {
                 // caller's `< 0` check never sees a contentless failure.
                 if crate::api::errors::PyErr_Occurred().is_null() {
                     crate::api::errors::PyErr_SetString(
-                        &raw mut crate::abi_types::PyExc_SystemError,
+                        (&raw mut crate::abi_types::PyExc_SystemError)
+                            .cast::<crate::abi_types::PyObject>(),
                         c"PyType_Ready could not store method descriptor in tp_dict".as_ptr(),
                     );
                 }
@@ -683,8 +750,7 @@ unsafe fn new_wrapper_descr(
             d_wrapped: wrapped,
         });
         let ptr = Box::into_raw(descr).cast::<PyObject>();
-        let handle = crate::bridge::GLOBAL_BRIDGE.register_raw_pyobj(ptr);
-        crate::bridge::GLOBAL_BRIDGE.register_pyobj_for_handle(ptr, handle);
+        let _ = crate::bridge::GLOBAL_BRIDGE.register_foreign_pyobj(ptr);
         ptr
     }
 }
@@ -773,7 +839,7 @@ unsafe fn store_descr(dict: *mut PyObject, descr: *mut PyObject) -> c_int {
                 Some("tp_dict is not backed by runtime dict hooks"),
             );
             crate::api::errors::PyErr_SetString(
-                &raw mut crate::abi_types::PyExc_SystemError,
+                (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
                 c"PyType_Ready requires a real tp_dict for descriptors".as_ptr(),
             );
             return -1;
@@ -786,7 +852,7 @@ unsafe fn store_descr(dict: *mut PyObject, descr: *mut PyObject) -> c_int {
                 Some("descriptor has no name"),
             );
             crate::api::errors::PyErr_SetString(
-                &raw mut crate::abi_types::PyExc_SystemError,
+                (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
                 c"descriptor missing name during PyType_Ready".as_ptr(),
             );
             return -1;
@@ -811,7 +877,8 @@ unsafe fn store_descr(dict: *mut PyObject, descr: *mut PyObject) -> c_int {
             );
             if crate::api::errors::PyErr_Occurred().is_null() {
                 crate::api::errors::PyErr_SetString(
-                    &raw mut crate::abi_types::PyExc_SystemError,
+                    (&raw mut crate::abi_types::PyExc_SystemError)
+                        .cast::<crate::abi_types::PyObject>(),
                     c"PyType_Ready could not publish getset/member descriptor".as_ptr(),
                 );
             }
@@ -837,7 +904,8 @@ unsafe fn add_members_to_dict(tp: *mut PyTypeObject) -> c_int {
                 // exception if the alloc layer left none pending.
                 if crate::api::errors::PyErr_Occurred().is_null() {
                     crate::api::errors::PyErr_SetString(
-                        &raw mut crate::abi_types::PyExc_SystemError,
+                        (&raw mut crate::abi_types::PyExc_SystemError)
+                            .cast::<crate::abi_types::PyObject>(),
                         c"PyDescr_NewMember returned NULL during PyType_Ready".as_ptr(),
                     );
                 }
@@ -866,7 +934,8 @@ unsafe fn add_getset_to_dict(tp: *mut PyTypeObject) -> c_int {
             if descr.is_null() {
                 if crate::api::errors::PyErr_Occurred().is_null() {
                     crate::api::errors::PyErr_SetString(
-                        &raw mut crate::abi_types::PyExc_SystemError,
+                        (&raw mut crate::abi_types::PyExc_SystemError)
+                            .cast::<crate::abi_types::PyObject>(),
                         c"PyDescr_NewGetSet returned NULL during PyType_Ready".as_ptr(),
                     );
                 }
@@ -1049,7 +1118,8 @@ pub unsafe extern "C" fn molt_type_call(
             }
             if nargs != 3 {
                 crate::api::errors::PyErr_SetString(
-                    &raw mut crate::abi_types::PyExc_TypeError,
+                    (&raw mut crate::abi_types::PyExc_TypeError)
+                        .cast::<crate::abi_types::PyObject>(),
                     c"type() takes 1 or 3 arguments".as_ptr(),
                 );
                 return ptr::null_mut();
@@ -1067,7 +1137,8 @@ pub unsafe extern "C" fn molt_type_call(
             crate::capi_trace::record_silent_failure("type_call", Some(&name));
             if let Ok(msg) = std::ffi::CString::new(format!("cannot create '{name}' instances")) {
                 crate::api::errors::PyErr_SetString(
-                    &raw mut crate::abi_types::PyExc_TypeError,
+                    (&raw mut crate::abi_types::PyExc_TypeError)
+                        .cast::<crate::abi_types::PyObject>(),
                     msg.as_ptr(),
                 );
             }
@@ -1120,7 +1191,8 @@ pub unsafe extern "C" fn molt_type_call(
         if obj.is_null() {
             if crate::api::errors::PyErr_Occurred().is_null() {
                 crate::api::errors::PyErr_SetString(
-                    &raw mut crate::abi_types::PyExc_SystemError,
+                    (&raw mut crate::abi_types::PyExc_SystemError)
+                        .cast::<crate::abi_types::PyObject>(),
                     c"tp_new returned NULL without setting an exception".as_ptr(),
                 );
             }
@@ -1129,7 +1201,7 @@ pub unsafe extern "C" fn molt_type_call(
         if !crate::api::errors::PyErr_Occurred().is_null() {
             crate::api::refcount::Py_DECREF(obj);
             crate::api::errors::PyErr_SetString(
-                &raw mut crate::abi_types::PyExc_SystemError,
+                (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
                 c"tp_new returned a result with an exception set".as_ptr(),
             );
             return ptr::null_mut();
@@ -1149,7 +1221,8 @@ pub unsafe extern "C" fn molt_type_call(
             if res < 0 {
                 if crate::api::errors::PyErr_Occurred().is_null() {
                     crate::api::errors::PyErr_SetString(
-                        &raw mut crate::abi_types::PyExc_SystemError,
+                        (&raw mut crate::abi_types::PyExc_SystemError)
+                            .cast::<crate::abi_types::PyObject>(),
                         c"tp_init failed without setting an exception".as_ptr(),
                     );
                 }
@@ -1582,7 +1655,8 @@ unsafe fn apply_spec_slots(
                         Some(&format!("unknown PyType_Slot id {other}")),
                     );
                     crate::api::errors::PyErr_SetString(
-                        &raw mut crate::abi_types::PyExc_RuntimeError,
+                        (&raw mut crate::abi_types::PyExc_RuntimeError)
+                            .cast::<crate::abi_types::PyObject>(),
                         c"PyType_FromSpec: invalid slot offset".as_ptr(),
                     );
                     return -1;
@@ -1670,13 +1744,18 @@ unsafe fn type_from_spec_impl(
         //     explicit `bases` tuple (first entry — the single-inheritance case
         //     numpy/scipy use); otherwise PyType_Ready defaults it to `object`.
         if !bases.is_null() {
-            (*tp).tp_bases = bases;
-            if (*tp).tp_base.is_null() && crate::api::sequences::PyTuple_GET_SIZE(bases) >= 1 {
-                let first = crate::api::sequences::PyTuple_GetItem(bases, 0);
-                if !first.is_null() {
-                    (*tp).tp_base = first.cast::<PyTypeObject>();
-                }
+            let best = acceptable_best_base(bases);
+            if best.is_null() && crate::api::sequences::PyTuple_Size(bases) != 0 {
+                return ptr::null_mut();
             }
+            crate::api::refcount::Py_INCREF(bases);
+            (*tp).tp_bases = bases;
+            if !best.is_null() {
+                (*tp).tp_base = best;
+            }
+        }
+        if !(*tp).tp_base.is_null() && validate_base_layout(tp, (*tp).tp_base) < 0 {
+            return ptr::null_mut();
         }
 
         // (3) Instantiation defaults where the spec left them unset.
@@ -1735,7 +1814,7 @@ pub unsafe extern "C" fn PyType_GetModule(ty: *mut PyTypeObject) -> *mut PyObjec
     if unsafe { (*ty).tp_flags } & crate::abi_types::Py_TPFLAGS_HEAPTYPE == 0 {
         unsafe {
             crate::api::errors::PyErr_SetString(
-                &raw mut crate::abi_types::PyExc_TypeError,
+                (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
                 c"PyType_GetModule: Type is not a heap type".as_ptr(),
             );
         }
@@ -1746,7 +1825,7 @@ pub unsafe extern "C" fn PyType_GetModule(ty: *mut PyTypeObject) -> *mut PyObjec
     if m.is_null() {
         unsafe {
             crate::api::errors::PyErr_SetString(
-                &raw mut crate::abi_types::PyExc_TypeError,
+                (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
                 c"PyType_GetModule: This type has no module associated with it".as_ptr(),
             );
         }
@@ -1977,7 +2056,7 @@ pub unsafe extern "C" fn PyDescr_NewGetSet(
             d_getset: getset,
         });
         let ptr = Box::into_raw(descr).cast::<PyObject>();
-        crate::bridge::GLOBAL_BRIDGE.register_raw_pyobj(ptr);
+        crate::bridge::GLOBAL_BRIDGE.register_foreign_pyobj(ptr);
         ptr
     }
 }
@@ -2006,7 +2085,7 @@ pub unsafe extern "C" fn PyDescr_NewMember(
             d_member: member,
         });
         let ptr = Box::into_raw(descr).cast::<PyObject>();
-        crate::bridge::GLOBAL_BRIDGE.register_raw_pyobj(ptr);
+        crate::bridge::GLOBAL_BRIDGE.register_foreign_pyobj(ptr);
         ptr
     }
 }
@@ -2042,7 +2121,8 @@ unsafe extern "C" fn getset_get(
             Some(get) => get(obj, (*getset).closure),
             None => {
                 crate::api::errors::PyErr_SetString(
-                    &raw mut crate::abi_types::PyExc_AttributeError,
+                    (&raw mut crate::abi_types::PyExc_AttributeError)
+                        .cast::<crate::abi_types::PyObject>(),
                     c"unreadable attribute".as_ptr(),
                 );
                 ptr::null_mut()
@@ -2068,7 +2148,8 @@ unsafe extern "C" fn getset_set(
             Some(set) => set(obj, value, (*getset).closure),
             None => {
                 crate::api::errors::PyErr_SetString(
-                    &raw mut crate::abi_types::PyExc_AttributeError,
+                    (&raw mut crate::abi_types::PyExc_AttributeError)
+                        .cast::<crate::abi_types::PyObject>(),
                     c"readonly attribute".as_ptr(),
                 );
                 -1
@@ -2271,7 +2352,8 @@ pub unsafe extern "C" fn PyMember_GetOne(
                 if v.is_null() {
                     if (*member).type_ == PY_T_OBJECT_EX {
                         crate::api::errors::PyErr_SetString(
-                            &raw mut crate::abi_types::PyExc_AttributeError,
+                            (&raw mut crate::abi_types::PyExc_AttributeError)
+                                .cast::<crate::abi_types::PyObject>(),
                             (*member).name,
                         );
                         return ptr::null_mut();
@@ -2291,7 +2373,8 @@ pub unsafe extern "C" fn PyMember_GetOne(
             }
             _ => {
                 crate::api::errors::PyErr_SetString(
-                    &raw mut crate::abi_types::PyExc_SystemError,
+                    (&raw mut crate::abi_types::PyExc_SystemError)
+                        .cast::<crate::abi_types::PyObject>(),
                     c"bad member type in PyMember_GetOne".as_ptr(),
                 );
                 ptr::null_mut()
@@ -2316,7 +2399,8 @@ pub unsafe extern "C" fn PyMember_SetOne(
     unsafe {
         if (*member).flags & PY_READONLY != 0 {
             crate::api::errors::PyErr_SetString(
-                &raw mut crate::abi_types::PyExc_AttributeError,
+                (&raw mut crate::abi_types::PyExc_AttributeError)
+                    .cast::<crate::abi_types::PyObject>(),
                 c"readonly attribute".as_ptr(),
             );
             return -1;
@@ -2330,14 +2414,16 @@ pub unsafe extern "C" fn PyMember_SetOne(
             if ty == PY_T_OBJECT_EX {
                 if (*(field as *const *mut PyObject)).is_null() {
                     crate::api::errors::PyErr_SetString(
-                        &raw mut crate::abi_types::PyExc_AttributeError,
+                        (&raw mut crate::abi_types::PyExc_AttributeError)
+                            .cast::<crate::abi_types::PyObject>(),
                         (*member).name,
                     );
                     return -1;
                 }
             } else if ty != PY_T_OBJECT {
                 crate::api::errors::PyErr_SetString(
-                    &raw mut crate::abi_types::PyExc_TypeError,
+                    (&raw mut crate::abi_types::PyExc_TypeError)
+                        .cast::<crate::abi_types::PyObject>(),
                     c"can't delete numeric/char attribute".as_ptr(),
                 );
                 return -1;
@@ -2360,7 +2446,8 @@ pub unsafe extern "C" fn PyMember_SetOne(
                 );
                 if !is_true && !is_false {
                     crate::api::errors::PyErr_SetString(
-                        &raw mut crate::abi_types::PyExc_TypeError,
+                        (&raw mut crate::abi_types::PyExc_TypeError)
+                            .cast::<crate::abi_types::PyObject>(),
                         c"attribute value type must be bool".as_ptr(),
                     );
                     return -1;
@@ -2507,7 +2594,8 @@ pub unsafe extern "C" fn PyMember_SetOne(
             PY_T_STRING => {
                 // T_STRING / T_STRING_INPLACE are readonly (CPython raises here).
                 crate::api::errors::PyErr_SetString(
-                    &raw mut crate::abi_types::PyExc_TypeError,
+                    (&raw mut crate::abi_types::PyExc_TypeError)
+                        .cast::<crate::abi_types::PyObject>(),
                     c"readonly attribute".as_ptr(),
                 );
                 -1
@@ -2536,7 +2624,8 @@ pub unsafe extern "C" fn PyMember_SetOne(
                 let msg = format!("bad memberdescr type for {name}");
                 if let Ok(c) = std::ffi::CString::new(msg) {
                     crate::api::errors::PyErr_SetString(
-                        &raw mut crate::abi_types::PyExc_SystemError,
+                        (&raw mut crate::abi_types::PyExc_SystemError)
+                            .cast::<crate::abi_types::PyObject>(),
                         c.as_ptr(),
                     );
                 }
@@ -2546,13 +2635,11 @@ pub unsafe extern "C" fn PyMember_SetOne(
     }
 }
 
-/// Py_TYPE(op) — return ob_type pointer.
+/// Source-recompiled `Py_TYPE(op)` authority. Managed views report semantic
+/// builtin identity while their physical carrier remains `MoltManaged_Type`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn _Py_TYPE(op: *mut PyObject) -> *mut PyTypeObject {
-    if op.is_null() {
-        return ptr::null_mut();
-    }
-    unsafe { (*op).ob_type }
+    unsafe { crate::bridge::semantic_type(op) }
 }
 
 #[unsafe(no_mangle)]
@@ -2560,17 +2647,17 @@ pub unsafe extern "C" fn PyObject_Type(op: *mut PyObject) -> *mut PyObject {
     if op.is_null() {
         unsafe {
             crate::api::errors::PyErr_SetString(
-                &raw mut crate::abi_types::PyExc_SystemError,
+                (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
                 c"PyObject_Type called with NULL".as_ptr(),
             );
         }
         return ptr::null_mut();
     }
-    let tp = unsafe { (*op).ob_type };
+    let tp = unsafe { crate::bridge::semantic_type(op) };
     if tp.is_null() {
         unsafe {
             crate::api::errors::PyErr_SetString(
-                &raw mut crate::abi_types::PyExc_SystemError,
+                (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
                 c"object has NULL type".as_ptr(),
             );
         }
@@ -2597,7 +2684,7 @@ pub unsafe extern "C" fn PyObject_TypeCheck(op: *mut PyObject, tp: *mut PyTypeOb
     // exact-only check rejected every genuine descriptor and stranded
     // `use_new_as_default` (dtypemeta.c) with "did not return a dtype instance".
     // Walk the subtype chain exactly as CPython does.
-    let actual = unsafe { (*op).ob_type };
+    let actual = unsafe { crate::bridge::semantic_type(op) };
     if std::ptr::eq(actual, tp) {
         return 1;
     }
@@ -2631,7 +2718,7 @@ pub unsafe extern "C" fn PyCallable_Check(op: *mut PyObject) -> c_int {
     // "callable".  Without tp_call we cannot determine callability from the
     // bridge alone, but checking it is strictly better than always returning 0,
     // which caused extensions to wrongly reject callable objects.
-    let tp = unsafe { (*op).ob_type };
+    let tp = unsafe { crate::bridge::semantic_type(op) };
     if tp.is_null() {
         return 0;
     }
@@ -2645,6 +2732,12 @@ pub unsafe extern "C" fn PyCallable_Check(op: *mut PyObject) -> c_int {
 pub unsafe extern "C" fn PyObject_Hash(op: *mut PyObject) -> isize {
     if op.is_null() {
         return -1;
+    }
+    if std::ptr::eq(
+        unsafe { (*op).ob_type },
+        &raw const crate::abi_types::PyComplex_Type,
+    ) {
+        return unsafe { complex_hash_from_cval(op) };
     }
     // Molt-native (bridge-managed) objects hash through the runtime hash
     // authority over their handle bits (hash(int) == int, etc.), not tp_hash.
@@ -2663,12 +2756,12 @@ pub unsafe extern "C" fn PyObject_Hash(op: *mut PyObject) -> isize {
     // PyObject_HashNotImplemented raises TypeError and returns -1. Never fabricate
     // an identity hash from the pointer (that would make an unhashable object
     // silently hashable and usable as a dict/set key).
-    let name = unsafe { foreign_type_name(op) };
+    let name = unsafe { object_type_name(op) };
     let msg = format!("unhashable type: '{}'", &name[..name.len().min(200)]);
     if let Ok(cmsg) = std::ffi::CString::new(msg) {
         unsafe {
             crate::api::errors::PyErr_SetString(
-                &raw mut crate::abi_types::PyExc_TypeError,
+                (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
                 cmsg.as_ptr(),
             );
         }
@@ -2682,6 +2775,18 @@ pub unsafe extern "C" fn PyObject_Hash(op: *mut PyObject) -> isize {
 pub unsafe extern "C" fn PyType_IsSubtype(a: *mut PyTypeObject, b: *mut PyTypeObject) -> c_int {
     if a.is_null() || b.is_null() {
         return 0;
+    }
+    let a_bits = GLOBAL_BRIDGE.molt_handle_for_pyobj(a.cast::<PyObject>());
+    let b_bits = GLOBAL_BRIDGE.molt_handle_for_pyobj(b.cast::<PyObject>());
+    if let (Some(a_bits), Some(b_bits)) = (a_bits, b_bits) {
+        let hooks = crate::hooks::hooks_or_stubs();
+        if unsafe { (hooks.classify_heap)(a_bits.bits()) }
+            == crate::abi_types::MoltTypeTag::Type as u8
+            && unsafe { (hooks.classify_heap)(b_bits.bits()) }
+                == crate::abi_types::MoltTypeTag::Type as u8
+        {
+            return unsafe { (hooks.type_is_subtype)(a_bits.bits(), b_bits.bits()) };
+        }
     }
     // CPython Objects/typeobject.c: when `a` has a materialized tp_mro, walk the
     // full MRO tuple (this is what makes MULTIPLE inheritance resolve — numpy's
@@ -2894,13 +2999,13 @@ pub unsafe extern "C" fn PyType_HasFeature(
     (unsafe { (*tp).tp_flags } & feature != 0) as c_int
 }
 
-/// Best-effort type name of a live foreign `PyObject*` for diagnostics
+/// Best-effort semantic type name of a live `PyObject*` for diagnostics
 /// (mirrors CPython's `Py_TYPE(v)->tp_name`, defaulting to `object`).
-unsafe fn foreign_type_name(op: *mut PyObject) -> String {
+unsafe fn object_type_name(op: *mut PyObject) -> String {
     if op.is_null() {
         return "object".to_string();
     }
-    let tp = unsafe { (*op).ob_type };
+    let tp = unsafe { crate::bridge::semantic_type(op) };
     if tp.is_null() {
         return "object".to_string();
     }
@@ -2923,14 +3028,15 @@ unsafe fn check_stringifier_result(res: *mut PyObject, dunder: &str) -> *mut PyO
         return ptr::null_mut();
     }
     if unsafe { crate::api::strings::PyUnicode_Check(res) } == 0 {
-        let mut name = unsafe { foreign_type_name(res) };
+        let mut name = unsafe { object_type_name(res) };
         name.truncate(200);
         unsafe { crate::api::refcount::Py_DECREF(res) };
         let msg = format!("{dunder} returned non-string (type {name})");
         if let Ok(cmsg) = std::ffi::CString::new(msg) {
             unsafe {
                 crate::api::errors::PyErr_SetString(
-                    &raw mut crate::abi_types::PyExc_TypeError,
+                    (&raw mut crate::abi_types::PyExc_TypeError)
+                        .cast::<crate::abi_types::PyObject>(),
                     cmsg.as_ptr(),
                 );
             }
@@ -2952,7 +3058,7 @@ unsafe fn native_stringify(bits: u64, want_repr: bool) -> *mut PyObject {
     let Some(bytes) = bytes else {
         unsafe {
             crate::api::errors::PyErr_SetString(
-                &raw mut crate::abi_types::PyExc_TypeError,
+                (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
                 c"object has no native string representation".as_ptr(),
             );
         }
@@ -2970,18 +3076,18 @@ unsafe fn native_stringify(bits: u64, want_repr: bool) -> *mut PyObject {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_native_repr(op: *mut PyObject) -> *mut PyObject {
-    let native = unsafe { crate::bridge::GLOBAL_BRIDGE.molt_value_for_pyobj(op) };
+    let native = crate::bridge::GLOBAL_BRIDGE.molt_handle_for_pyobj(op);
     match native {
-        Some(bits) => unsafe { native_stringify(bits, true) },
+        Some(value) => unsafe { native_stringify(value.bits(), true) },
         None => ptr::null_mut(),
     }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_native_str(op: *mut PyObject) -> *mut PyObject {
-    let native = unsafe { crate::bridge::GLOBAL_BRIDGE.molt_value_for_pyobj(op) };
+    let native = crate::bridge::GLOBAL_BRIDGE.molt_handle_for_pyobj(op);
     match native {
-        Some(bits) => unsafe { native_stringify(bits, false) },
+        Some(value) => unsafe { native_stringify(value.bits(), false) },
         None => ptr::null_mut(),
     }
 }
@@ -2992,7 +3098,7 @@ pub unsafe extern "C" fn PyObject_Repr(op: *mut PyObject) -> *mut PyObject {
     if op.is_null() {
         return unsafe { crate::api::strings::PyUnicode_FromString(c"<NULL>".as_ptr()) };
     }
-    let tp = unsafe { (*op).ob_type };
+    let tp = unsafe { crate::bridge::semantic_type(op) };
     if !tp.is_null()
         && let Some(reprfunc) = unsafe { (*tp).tp_repr }
     {
@@ -3008,7 +3114,7 @@ pub unsafe extern "C" fn PyObject_Repr(op: *mut PyObject) -> *mut PyObject {
         unsafe { crate::api::memory::Py_LeaveRecursiveCall() };
         return unsafe { check_stringifier_result(res, "__repr__") };
     }
-    let name = unsafe { foreign_type_name(op) };
+    let name = unsafe { object_type_name(op) };
     let rendered = format!("<{name} object at {op:p}>");
     match std::ffi::CString::new(rendered) {
         Ok(c) => unsafe { crate::api::strings::PyUnicode_FromString(c.as_ptr()) },
@@ -3023,13 +3129,13 @@ pub unsafe extern "C" fn PyObject_Str(op: *mut PyObject) -> *mut PyObject {
         return unsafe { crate::api::strings::PyUnicode_FromString(c"<NULL>".as_ptr()) };
     }
     // Exact-str fast path: str(s) is s (identity, incref) — CPython
-    // PyUnicode_CheckExact branch. A native bridge str carries
-    // ob_type == &PyUnicode_Type.
-    if unsafe { (*op).ob_type == &raw mut crate::abi_types::PyUnicode_Type } {
+    // PyUnicode_CheckExact branch. Generic managed strings keep an honest
+    // physical carrier, so exactness is resolved through semantic Py_TYPE.
+    let tp = unsafe { crate::bridge::semantic_type(op) };
+    if tp == &raw mut crate::abi_types::PyUnicode_Type {
         unsafe { crate::api::refcount::Py_INCREF(op) };
         return op;
     }
-    let tp = unsafe { (*op).ob_type };
     if !tp.is_null()
         && let Some(strfunc) = unsafe { (*tp).tp_str }
     {
@@ -3094,7 +3200,7 @@ unsafe fn try_slot_richcompare(
     b: *mut PyObject,
     op: c_int,
 ) -> Option<*mut PyObject> {
-    let tp = unsafe { (*a).ob_type };
+    let tp = unsafe { crate::bridge::semantic_type(a) };
     if tp.is_null() {
         return None;
     }
@@ -3414,12 +3520,12 @@ unsafe fn complex_hash_from_cval(op: *mut PyObject) -> isize {
 /// handle and no known-compatible C layout (never fabricate an identity hash).
 #[inline]
 unsafe fn hash_not_implemented(op: *mut PyObject) -> isize {
-    let name = unsafe { foreign_type_name(op) };
+    let name = unsafe { object_type_name(op) };
     let msg = format!("unhashable type: '{}'", &name[..name.len().min(200)]);
     if let Ok(cmsg) = std::ffi::CString::new(msg) {
         unsafe {
             crate::api::errors::PyErr_SetString(
-                &raw mut crate::abi_types::PyExc_TypeError,
+                (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
                 cmsg.as_ptr(),
             );
         }
@@ -3442,6 +3548,12 @@ pub unsafe extern "C" fn PyObject_HashNotImplemented(op: *mut PyObject) -> isize
 pub unsafe extern "C" fn molt_generic_hash(op: *mut PyObject) -> isize {
     if op.is_null() {
         return -1;
+    }
+    if std::ptr::eq(
+        unsafe { (*op).ob_type },
+        &raw const crate::abi_types::PyComplex_Type,
+    ) {
+        return unsafe { complex_hash_from_cval(op) };
     }
     // Molt-native value. Decode-safe converter excludes a raw-registered foreign
     // object's `0xA11C` identity anchor (Class-2 mis-decode), so it is NEVER
@@ -3506,8 +3618,12 @@ unsafe fn do_richcompare(v: *mut PyObject, w: *mut PyObject, op: c_int) -> *mut 
     if let Some(res) = unsafe { native_value_richcompare(v, w, op) } {
         return res;
     }
-    let tv = unsafe { (*v).ob_type };
-    let tw = unsafe { (*w).ob_type };
+    // Slot dispatch follows semantic `Py_TYPE`, not the physical carrier.
+    // Generic managed views deliberately use `MoltManaged_Type` so C code can
+    // never read a list/dict/string layout that is not present. The semantic
+    // resolver preserves the corresponding builtin type identity and slots.
+    let tv = unsafe { crate::bridge::semantic_type(v) };
+    let tw = unsafe { crate::bridge::semantic_type(w) };
     let mut checked_reverse = false;
 
     // Reflected op on w first when Py_TYPE(w) is a PROPER subtype of Py_TYPE(v).
@@ -3562,12 +3678,12 @@ unsafe fn do_richcompare(v: *mut PyObject, w: *mut PyObject, op: c_int) -> *mut 
                 "'{}' not supported between instances of '{}' and '{}'",
                 cmp_opstring(op),
                 {
-                    let mut n = unsafe { foreign_type_name(v) };
+                    let mut n = unsafe { object_type_name(v) };
                     n.truncate(100);
                     n
                 },
                 {
-                    let mut n = unsafe { foreign_type_name(w) };
+                    let mut n = unsafe { object_type_name(w) };
                     n.truncate(100);
                     n
                 },
@@ -3575,7 +3691,8 @@ unsafe fn do_richcompare(v: *mut PyObject, w: *mut PyObject, op: c_int) -> *mut 
             if let Ok(c) = std::ffi::CString::new(msg) {
                 unsafe {
                     crate::api::errors::PyErr_SetString(
-                        &raw mut crate::abi_types::PyExc_TypeError,
+                        (&raw mut crate::abi_types::PyExc_TypeError)
+                            .cast::<crate::abi_types::PyObject>(),
                         c.as_ptr(),
                     );
                 }
@@ -3706,7 +3823,7 @@ mod class2_decode_tests {
         };
         unsafe {
             REPR_RESULT.ob_type = &raw mut crate::abi_types::PyUnicode_Type;
-            crate::bridge::GLOBAL_BRIDGE.register_raw_pyobj(&raw mut obj);
+            crate::bridge::GLOBAL_BRIDGE.register_foreign_pyobj(&raw mut obj);
         }
 
         assert_eq!(unsafe { PyObject_Hash(&raw mut obj) }, 4242);

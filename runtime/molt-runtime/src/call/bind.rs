@@ -5,6 +5,7 @@ use crate::call::type_policy::{
     resolved_new_is_default_object_new,
 };
 use crate::object::layout::ensure_function_code_bits;
+use crate::object::{ClassEdgeOwnership, object_init_class_edge_unpublished};
 use crate::state::recursion::{recursion_guard_enter, recursion_guard_exit};
 use crate::state::tls::FRAME_STACK;
 use crate::{
@@ -16,8 +17,8 @@ use crate::{
     TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS, TYPE_ID_OBJECT, TYPE_ID_SET, TYPE_ID_STRING,
     TYPE_ID_TUPLE, TYPE_ID_TYPE, alloc_class_obj, alloc_dict_with_pairs,
     alloc_exception_from_class_bits, alloc_instance_for_class,
-    alloc_instance_for_default_object_new, alloc_object, alloc_object_zeroed, alloc_string,
-    alloc_tuple, apply_class_slots_layout, attr_lookup_ptr, attr_lookup_ptr_allow_missing,
+    alloc_instance_for_default_object_new, alloc_object, alloc_string, alloc_tuple,
+    apply_class_slots_layout, attr_lookup_ptr, attr_lookup_ptr_allow_missing,
     attr_name_bits_from_bytes,
     audit::{AuditArgs, audit_capability_decision},
     bits_from_ptr, bound_method_func_bits, bound_method_self_bits, builtin_classes, call_callable0,
@@ -26,19 +27,18 @@ use crate::{
     class_name_for_error, code_argcount, code_filename_bits, code_name_bits, dec_ref_bits,
     dict_del_in_place, dict_fromkeys_method, dict_get_in_place, dict_get_method, dict_order,
     dict_setdefault_method, dict_update_apply, dict_update_method, dict_update_set_in_place,
-    dict_update_set_via_store, exception_class_bits, exception_pending,
-    exception_type_bits_from_name, function_arity, function_attr_bits, function_closure_bits,
-    function_fn_ptr, function_name_bits, function_trampoline_ptr, generic_alias_origin_bits,
-    has_capability, header_from_obj_ptr, inc_ref_bits, init_atomic_bits, intern_static_name,
-    is_builtin_class_bits, is_trusted, is_truthy, isinstance_bits, issubclass_bits,
-    lookup_call_attr, maybe_ptr_from_bits, missing_bits, molt_bytearray_count_slice,
-    molt_bytearray_decode, molt_bytearray_endswith_slice, molt_bytearray_find_slice,
-    molt_bytearray_hex, molt_bytearray_index_slice, molt_bytearray_pop, molt_bytearray_rfind_slice,
-    molt_bytearray_rindex_slice, molt_bytearray_rsplit_max, molt_bytearray_split_max,
-    molt_bytearray_splitlines, molt_bytearray_startswith_slice, molt_bytes_count_slice,
-    molt_bytes_decode, molt_bytes_endswith_slice, molt_bytes_find_slice, molt_bytes_hex,
-    molt_bytes_index_slice, molt_bytes_maketrans, molt_bytes_rfind_slice, molt_bytes_rindex_slice,
-    molt_bytes_rsplit_max, molt_bytes_split_max, molt_bytes_splitlines,
+    dict_update_set_via_store, exception_pending, exception_type_bits_from_name, function_arity,
+    function_attr_bits, function_closure_bits, function_fn_ptr, function_name_bits,
+    function_trampoline_ptr, generic_alias_origin_bits, has_capability, header_from_obj_ptr,
+    inc_ref_bits, init_atomic_bits, intern_static_name, is_builtin_class_bits, is_trusted,
+    is_truthy, isinstance_bits, issubclass_bits, lookup_call_attr, maybe_ptr_from_bits,
+    missing_bits, molt_bytearray_count_slice, molt_bytearray_decode, molt_bytearray_endswith_slice,
+    molt_bytearray_find_slice, molt_bytearray_hex, molt_bytearray_index_slice, molt_bytearray_pop,
+    molt_bytearray_rfind_slice, molt_bytearray_rindex_slice, molt_bytearray_rsplit_max,
+    molt_bytearray_split_max, molt_bytearray_splitlines, molt_bytearray_startswith_slice,
+    molt_bytes_count_slice, molt_bytes_decode, molt_bytes_endswith_slice, molt_bytes_find_slice,
+    molt_bytes_hex, molt_bytes_index_slice, molt_bytes_maketrans, molt_bytes_rfind_slice,
+    molt_bytes_rindex_slice, molt_bytes_rsplit_max, molt_bytes_split_max, molt_bytes_splitlines,
     molt_bytes_startswith_slice, molt_class_set_base, molt_dict_from_obj, molt_dict_new,
     molt_dict_pop_method, molt_file_reconfigure, molt_frozenset_copy_method,
     molt_frozenset_difference_multi, molt_frozenset_intersection_multi, molt_frozenset_isdisjoint,
@@ -56,9 +56,9 @@ use crate::{
     molt_string_rfind_slice, molt_string_rindex_slice, molt_string_rsplit_max,
     molt_string_split_max, molt_string_splitlines, molt_string_startswith_slice, molt_super_new,
     molt_tuple_index_range, molt_type_call, molt_type_init, molt_type_new, obj_from_bits,
-    object_class_bits, object_set_class_bits, object_type_id, profile_hit_unchecked, ptr_from_bits,
-    raise_exception, raise_not_callable, raise_not_iterable, runtime_state, runtime_state_for_gil,
-    seq_vec_ref, string_obj_to_owned, type_name, type_of_bits,
+    object_class_bits, object_type_id, profile_hit_unchecked, ptr_from_bits, raise_exception,
+    raise_not_callable, raise_not_iterable, runtime_state, runtime_state_for_gil, seq_vec_ref,
+    string_obj_to_owned, type_name, type_of_bits,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::{MutexGuard, OnceLock};
@@ -863,24 +863,10 @@ unsafe fn call_type_with_builder(
                 // accepts positional args (cls, *args); keyword args must be
                 // forwarded exclusively to __init__.  A user-defined __new__
                 // may accept keyword args, so forward everything in that case.
-                let default_new = if let Some(new_ptr) = obj_from_bits(new_bits).as_ptr() {
-                    let func_ptr = match object_type_id(new_ptr) {
-                        TYPE_ID_FUNCTION => Some(new_ptr),
-                        TYPE_ID_BOUND_METHOD => {
-                            let inner = bound_method_func_bits(new_ptr);
-                            obj_from_bits(inner)
-                                .as_ptr()
-                                .filter(|p| object_type_id(*p) == TYPE_ID_FUNCTION)
-                        }
-                        _ => None,
-                    };
-                    func_ptr.is_some_and(|fp| {
-                        function_fn_ptr(fp)
-                            == fn_addr!(crate::builtins::exceptions::molt_exception_new_bound)
-                    })
-                } else {
-                    false
-                };
+                let default_new = callable_matches_runtime_symbol(
+                    Some(new_bits),
+                    fn_addr!(crate::builtins::exceptions::molt_exception_new_bound),
+                );
                 // When __new__ is the default Exception.__new__, bypass
                 // call_bind dispatch and use alloc_exception_from_class_bits
                 // directly.  The default __new__ expects (cls, args_tuple),
@@ -1280,8 +1266,18 @@ unsafe fn build_class_from_args(
             return MoltObject::none().bits();
         }
         let class_bits = MoltObject::from_ptr(class_ptr).bits();
-        object_set_class_bits(_py, class_ptr, metaclass_bits);
-        inc_ref_bits(_py, metaclass_bits);
+        if !object_init_class_edge_unpublished(
+            _py,
+            class_ptr,
+            metaclass_bits,
+            ClassEdgeOwnership::Owned,
+        ) {
+            dec_ref_bits(_py, class_bits);
+            if bases_owned {
+                dec_ref_bits(_py, bases_tuple_bits);
+            }
+            return MoltObject::none().bits();
+        }
 
         if let Err(err) = strip_internal_namespace_keys(namespace_bits) {
             if bases_owned {

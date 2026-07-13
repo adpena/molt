@@ -54,14 +54,15 @@ unsafe extern "C" fn fx_dict_entry(
 unsafe extern "C" fn fx_classify_heap(_b: u64) -> u8 {
     MoltTypeTag::Dict as u8
 }
-unsafe extern "C" fn fx_dict_set(d: u64, k: u64, v: u64) {
+unsafe extern "C" fn fx_dict_set(d: u64, k: u64, v: u64) -> i32 {
     SETS.lock().unwrap().push((d, k, v));
+    0
 }
-unsafe extern "C" fn fx_dict_get(_d: u64, k: u64) -> u64 {
+unsafe extern "C" fn fx_dict_get(_d: u64, k: u64) -> molt_cpython_abi::hooks::BorrowedHandleResult {
     if PRESENT.lock().unwrap().contains(&k) {
-        k
+        molt_cpython_abi::hooks::BorrowedHandleResult::ok(k)
     } else {
-        0
+        molt_cpython_abi::hooks::BorrowedHandleResult::missing()
     }
 }
 unsafe extern "C" fn fx_dict_len(_b: u64) -> usize {
@@ -98,7 +99,7 @@ fn fake_dict_handle(addr: usize) -> u64 {
 }
 
 fn register(handle: u64) -> *mut PyObject {
-    unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_pyobj(handle) }
+    unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(handle) }
 }
 fn handle_of(p: *mut PyObject) -> u64 {
     molt_cpython_abi::bridge::GLOBAL_BRIDGE

@@ -7,6 +7,7 @@ import json
 import os
 import platform
 import shutil
+import statistics
 import subprocess
 import sys
 import time
@@ -113,7 +114,7 @@ def _run_command(
     env: dict[str, str],
     log_path: Path,
     limits: harness_memory_guard.HarnessMemoryLimits | None = None,
-) -> tuple[int, float]:
+) -> tuple[int, float, int]:
     start = time.perf_counter()
     res = harness_memory_guard.guarded_completed_process(
         command,
@@ -130,13 +131,23 @@ def _run_command(
         if res.stderr:
             log_file.write(res.stderr)
     end = time.perf_counter()
-    return res.returncode, end - start
+    peak_rss_kb = max(
+        (res.peak.rss_kb if res.peak is not None else 0),
+        (res.peak_total.rss_kb if res.peak_total is not None else 0),
+    )
+    return res.returncode, end - start, peak_rss_kb * 1024
 
 
-def _time_binary() -> str:
+def _time_binary_optional() -> str | None:
     for candidate in ("/usr/bin/time", shutil.which("time")):
         if candidate and Path(candidate).exists():
             return candidate
+    return None
+
+
+def _time_binary() -> str:
+    if candidate := _time_binary_optional():
+        return candidate
     raise FileNotFoundError("time binary not found")
 
 
@@ -210,28 +221,6 @@ def _parse_perf_stat(log_text: str) -> dict[str, object]:
     return metrics
 
 
-def _parse_molt_profile(log_text: str) -> dict[str, object] | None:
-    last_line = None
-    for line in log_text.splitlines():
-        if line.startswith("molt_profile "):
-            last_line = line
-    if not last_line:
-        return None
-    payload = last_line[len("molt_profile ") :].strip()
-    if not payload:
-        return None
-    parsed: dict[str, object] = {}
-    for item in payload.split():
-        if "=" not in item:
-            continue
-        key, raw = item.split("=", 1)
-        try:
-            parsed[key] = int(raw)
-        except ValueError:
-            parsed[key] = raw
-    return _normalize_molt_profile(parsed)
-
-
 def _normalize_molt_profile(profile: dict[str, object]) -> dict[str, object] | None:
     aliases = {
         "alloc_string": "string_allocs",
@@ -268,7 +257,7 @@ def _parse_molt_profile_json(log_text: str) -> dict[str, object] | None:
     if not isinstance(parsed, dict):
         return None
     flat: dict[str, object] = {}
-    for section in ("profile", "hot_paths", "deopt_reasons", "memory"):
+    for section in ("profile", "hot_paths", "deopt_reasons", "aux", "gc", "memory"):
         values = parsed.get(section)
         if not isinstance(values, dict):
             continue
@@ -333,7 +322,7 @@ def _merge_profile_metrics(
     if not collect_profile:
         return metrics
     log_text = log_path.read_text(encoding="utf-8", errors="replace")
-    profile = _parse_molt_profile_json(log_text) or _parse_molt_profile(log_text)
+    profile = _parse_molt_profile_json(log_text)
     if profile:
         metrics["molt_profile"] = profile
     cpu_features = _parse_molt_profile_cpu_features(log_text)
@@ -354,33 +343,109 @@ def _collect_profile_summary(
 
     for entry in metadata.get("benchmarks", []):
         bench_name = entry.get("bench", "unknown")
-        profile = None
+        profiles: list[dict[str, object]] = []
+        external_rss_samples: list[int] = []
         sites = None
         for run in entry.get("cpu_runs", []):
             metrics = run.get("metrics") or {}
-            profile = profile or metrics.get("molt_profile")
+            profile = metrics.get("molt_profile")
+            if isinstance(profile, dict):
+                profiles.append(profile)
+            external_rss = metrics.get("peak_rss_bytes_external")
+            if isinstance(external_rss, (int, float)):
+                external_rss_samples.append(int(external_rss))
             sites = sites or metrics.get("molt_profile_string_sites")
-        if not profile:
+        if not profiles:
             missing_profile.append(str(bench_name))
             continue
-        call_dispatch = int(profile.get("call_dispatch", 0) or 0)
-        alloc_count = int(profile.get("alloc_count", 0) or 0)
+
+        def samples(key: str) -> list[int]:
+            return [int(profile.get(key, 0) or 0) for profile in profiles]
+
+        def median_counter(key: str) -> int:
+            return int(statistics.median(samples(key)))
+
+        counter_drift = {
+            key: {"min": min(values), "max": max(values)}
+            for key in sorted(
+                {key for profile in profiles for key in profile}
+                - {"peak_rss_bytes", "current_rss_bytes"}
+            )
+            if (values := samples(key)) and min(values) != max(values)
+        }
+        call_dispatch = median_counter("call_dispatch")
+        alloc_count = median_counter("alloc_count")
         allocs_per_call = (
             float(alloc_count) / float(call_dispatch) if call_dispatch else None
         )
+        gc_track_count = median_counter("gc_track_count")
+        gc_lock_contention = median_counter("gc_registry_lock_contention_count")
+        gc_lock_wait_ns = median_counter("gc_registry_lock_wait_ns")
+        runtime_rss_samples = samples("peak_rss_bytes")
         benches.append(
             {
                 "bench": bench_name,
+                "counter_runs": len(profiles),
+                "counter_drift": counter_drift,
                 "alloc_count": alloc_count,
-                "string_allocs": int(profile.get("string_allocs", 0) or 0),
-                "bytes_allocs": int(profile.get("bytes_allocs", 0) or 0),
-                "bytearray_allocs": int(profile.get("bytearray_allocs", 0) or 0),
-                "tuple_allocs": int(profile.get("tuple_allocs", 0) or 0),
-                "list_allocs": int(profile.get("list_allocs", 0) or 0),
-                "dict_allocs": int(profile.get("dict_allocs", 0) or 0),
-                "iter_allocs": int(profile.get("iter_allocs", 0) or 0),
+                "alloc_bytes_total": median_counter("alloc_bytes_total"),
+                "dealloc_count": median_counter("dealloc_count"),
+                "dealloc_bytes_total": median_counter("dealloc_bytes_total"),
+                "live_objects": median_counter("live_objects"),
+                "live_bytes": median_counter("live_bytes"),
+                "string_allocs": median_counter("string_allocs"),
+                "bytes_allocs": median_counter("bytes_allocs"),
+                "bytearray_allocs": median_counter("bytearray_allocs"),
+                "tuple_allocs": median_counter("tuple_allocs"),
+                "list_allocs": median_counter("list_allocs"),
+                "dict_allocs": median_counter("dict_allocs"),
+                "iter_allocs": median_counter("iter_allocs"),
+                "exception_alloc_count": median_counter("alloc_exception"),
+                "exception_dealloc_count": median_counter("dealloc_exception"),
+                "exception_live_count": median_counter("live_exception"),
+                "exception_alloc_bytes": median_counter("alloc_bytes_exception"),
+                "exception_dealloc_bytes": median_counter("dealloc_bytes_exception"),
+                "exception_live_bytes": median_counter("live_bytes_exception"),
+                "aux_sidecar_alloc_count": median_counter("aux_sidecar_alloc_count"),
+                "aux_sidecar_free_count": median_counter("aux_sidecar_free_count"),
+                "aux_sidecar_live_count": median_counter("aux_sidecar_live_count"),
+                "aux_sidecar_alloc_failure_count": median_counter(
+                    "aux_sidecar_alloc_failure_count"
+                ),
+                "aux_sidecar_alloc_bytes": median_counter("aux_sidecar_alloc_bytes"),
+                "aux_sidecar_free_bytes": median_counter("aux_sidecar_free_bytes"),
+                "aux_sidecar_live_bytes": median_counter("aux_sidecar_live_bytes"),
+                "gc_track_count": gc_track_count,
+                "gc_untrack_count": median_counter("gc_untrack_count"),
+                "gc_tracked_live": median_counter("gc_tracked_live"),
+                "gc_tracked_high_water": median_counter("gc_tracked_high_water"),
+                "gc_snapshot_alloc_failure_count": median_counter(
+                    "gc_snapshot_alloc_failure_count"
+                ),
+                "gc_registry_lock_contention_count": gc_lock_contention,
+                "gc_registry_lock_wait_ns": gc_lock_wait_ns,
+                "gc_contention_per_track": (
+                    float(gc_lock_contention) / float(gc_track_count)
+                    if gc_track_count
+                    else 0.0
+                ),
+                "gc_wait_ns_per_contention": (
+                    float(gc_lock_wait_ns) / float(gc_lock_contention)
+                    if gc_lock_contention
+                    else 0.0
+                ),
+                "runtime_peak_rss_bytes_median": int(
+                    statistics.median(runtime_rss_samples)
+                ),
+                "runtime_peak_rss_bytes_max": max(runtime_rss_samples),
+                "external_peak_rss_bytes_median": (
+                    int(statistics.median(external_rss_samples))
+                    if external_rss_samples
+                    else 0
+                ),
+                "external_peak_rss_bytes_max": max(external_rss_samples, default=0),
                 "allocs_per_call_dispatch": allocs_per_call,
-                "attr_lookup": int(profile.get("attr_lookup", 0) or 0),
+                "attr_lookup": median_counter("attr_lookup"),
                 "call_dispatch": call_dispatch,
             }
         )
@@ -418,6 +483,7 @@ def _collect_profile_summary(
     return {
         "profiled_benches": len(benches),
         "missing_profile": missing_profile,
+        "benchmarks": sorted(benches, key=lambda item: str(item["bench"])),
         "top_alloc_count": _top_by("alloc_count"),
         "top_string_allocs": _top_by("string_allocs"),
         "top_bytes_allocs": _top_by("bytes_allocs"),
@@ -427,6 +493,11 @@ def _collect_profile_summary(
         "top_iter_allocs": _top_by("iter_allocs"),
         "top_allocs_per_call_dispatch": allocs_per_call,
         "top_attr_lookup": _top_by("attr_lookup"),
+        "top_exception_alloc_bytes": _top_by("exception_alloc_bytes"),
+        "top_exception_live_bytes": _top_by("exception_live_bytes"),
+        "top_aux_sidecar_alloc_bytes": _top_by("aux_sidecar_alloc_bytes"),
+        "top_gc_registry_lock_contention": _top_by("gc_registry_lock_contention_count"),
+        "top_external_peak_rss": _top_by("external_peak_rss_bytes_max"),
         "top_string_alloc_sites": site_items[:top_n],
     }
 
@@ -444,11 +515,12 @@ def _run_with_time(
     time_bin = _time_binary()
     log_path = out_dir / f"{name}_{tool}.log"
     command = [time_bin, *_time_flags(), *cmd]
-    returncode, duration = _run_command(
+    returncode, duration, peak_rss_bytes = _run_command(
         command, env=env, log_path=log_path, limits=limits
     )
     log_text = log_path.read_text(encoding="utf-8", errors="replace")
     metrics = _parse_time_metrics(log_text)
+    metrics["peak_rss_bytes_external"] = peak_rss_bytes
     metrics = _merge_profile_metrics(metrics, log_path, collect_profile)
     return ToolRunResult(
         tool=tool,
@@ -458,6 +530,42 @@ def _run_with_time(
         duration_s=duration,
         returncode=returncode,
         metrics=metrics or None,
+    )
+
+
+def _run_with_wall(
+    cmd: list[str],
+    *,
+    env: dict[str, str],
+    out_dir: Path,
+    name: str,
+    collect_profile: bool,
+    limits: harness_memory_guard.HarnessMemoryLimits,
+) -> ToolRunResult:
+    """Run without a platform profiler while retaining durable metrics.
+
+    `_run_command` is the harness's portable monotonic wall-clock authority.
+    The shared guard supplies process-tree peak RSS on every supported host;
+    `MOLT_PROFILE` supplies the runtime-owned allocation totals. Windows hosts
+    therefore do not need GNU time for either evidence class.
+    """
+    log_path = out_dir / f"{name}_wall.log"
+    returncode, duration, peak_rss_bytes = _run_command(
+        cmd, env=env, log_path=log_path, limits=limits
+    )
+    metrics: dict[str, object] = {
+        "wall_time_s": duration,
+        "peak_rss_bytes_external": peak_rss_bytes,
+    }
+    metrics = _merge_profile_metrics(metrics, log_path, collect_profile)
+    return ToolRunResult(
+        tool="wall",
+        command=cmd,
+        log_path=str(log_path),
+        output_files=[],
+        duration_s=duration,
+        returncode=returncode,
+        metrics=metrics,
     )
 
 
@@ -476,10 +584,12 @@ def _run_with_perf(
     perf_out = out_dir / f"{name}.perf.data"
     log_path = out_dir / f"{name}_perf.log"
     command = [perf_bin, "record", "-F", "99", "-g", "-o", str(perf_out), "--", *cmd]
-    returncode, duration = _run_command(
+    returncode, duration, peak_rss_bytes = _run_command(
         command, env=env, log_path=log_path, limits=limits
     )
-    metrics = _merge_profile_metrics({}, log_path, collect_profile)
+    metrics = _merge_profile_metrics(
+        {"peak_rss_bytes_external": peak_rss_bytes}, log_path, collect_profile
+    )
     return ToolRunResult(
         tool="perf",
         command=command,
@@ -515,11 +625,12 @@ def _run_with_perf_stat(
         "--",
         *cmd,
     ]
-    returncode, duration = _run_command(
+    returncode, duration, peak_rss_bytes = _run_command(
         command, env=env, log_path=log_path, limits=limits
     )
     log_text = log_path.read_text(encoding="utf-8", errors="replace")
     metrics = _parse_perf_stat(log_text)
+    metrics["peak_rss_bytes_external"] = peak_rss_bytes
     metrics = _merge_profile_metrics(metrics, log_path, collect_profile)
     return ToolRunResult(
         tool="perf-stat",
@@ -547,10 +658,12 @@ def _run_with_heaptrack(
     heap_out = out_dir / f"{name}.heaptrack"
     log_path = out_dir / f"{name}_heaptrack.log"
     command = [heaptrack_bin, "-o", str(heap_out), "--", *cmd]
-    returncode, duration = _run_command(
+    returncode, duration, peak_rss_bytes = _run_command(
         command, env=env, log_path=log_path, limits=limits
     )
-    metrics = _merge_profile_metrics({}, log_path, collect_profile)
+    metrics = _merge_profile_metrics(
+        {"peak_rss_bytes_external": peak_rss_bytes}, log_path, collect_profile
+    )
     return ToolRunResult(
         tool="heaptrack",
         command=command,
@@ -583,10 +696,12 @@ def _run_with_massif(
         "--",
         *cmd,
     ]
-    returncode, duration = _run_command(
+    returncode, duration, peak_rss_bytes = _run_command(
         command, env=env, log_path=log_path, limits=limits
     )
-    metrics = _merge_profile_metrics({}, log_path, collect_profile)
+    metrics = _merge_profile_metrics(
+        {"peak_rss_bytes_external": peak_rss_bytes}, log_path, collect_profile
+    )
     return ToolRunResult(
         tool="massif",
         command=command,
@@ -647,7 +762,7 @@ def _pick_cpu_tool(requested: str) -> str:
         return requested
     if shutil.which("perf"):
         return "perf"
-    return "time"
+    return "time" if _time_binary_optional() else "wall"
 
 
 def _pick_alloc_tool(requested: str) -> str:
@@ -657,7 +772,7 @@ def _pick_alloc_tool(requested: str) -> str:
         return "heaptrack"
     if shutil.which("valgrind"):
         return "massif"
-    return "time"
+    return "time" if _time_binary_optional() else "wall"
 
 
 def _run_tool(
@@ -673,6 +788,15 @@ def _run_tool(
 ) -> ToolRunResult | None:
     if tool == "none":
         return None
+    if tool == "wall":
+        return _run_with_wall(
+            cmd,
+            env=env,
+            out_dir=out_dir,
+            name=name,
+            collect_profile=collect_profile,
+            limits=limits,
+        )
     if tool == "perf":
         return _run_with_perf(
             cmd,
@@ -838,7 +962,7 @@ def _profile_compiler(
             *extra,
             str(bench),
         ]
-        returncode, duration = _run_command(
+        returncode, duration, peak_rss_bytes = _run_command(
             command, env=env, log_path=log_path, limits=limits
         )
         results.append(
@@ -849,6 +973,7 @@ def _profile_compiler(
                 output_files=[str(pstats_path)],
                 duration_s=duration,
                 returncode=returncode,
+                metrics={"peak_rss_bytes_external": peak_rss_bytes},
             )
         )
     return {
@@ -868,13 +993,13 @@ def main() -> None:
     )
     parser.add_argument(
         "--cpu-tool",
-        choices=("auto", "perf", "perf-stat", "time", "none"),
+        choices=("auto", "perf", "perf-stat", "time", "wall", "none"),
         default="auto",
         help="CPU profiling tool (auto prefers perf, else time).",
     )
     parser.add_argument(
         "--alloc-tool",
-        choices=("auto", "heaptrack", "massif", "time", "none"),
+        choices=("auto", "heaptrack", "massif", "time", "wall", "none"),
         default="auto",
         help="Allocation tool (auto prefers heaptrack/massif, else time).",
     )

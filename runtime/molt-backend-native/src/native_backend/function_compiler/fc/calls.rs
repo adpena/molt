@@ -234,13 +234,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             representation_plan,
             nbc,
         ),
-        "getargv" => handle_getargv_op(
-            op,
-            &mut *module,
-            &mut *import_ids,
-            &mut *builder,
-            vars,
-        ),
+        "getargv" => handle_getargv_op(op, &mut *module, &mut *import_ids, &mut *builder, vars),
         "getframe" => handle_getframe_op(
             op,
             &mut *module,
@@ -252,13 +246,9 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             representation_plan,
             nbc,
         ),
-        "sys_executable" => handle_sys_executable_op(
-            op,
-            &mut *module,
-            &mut *import_ids,
-            &mut *builder,
-            vars,
-        ),
+        "sys_executable" => {
+            handle_sys_executable_op(op, &mut *module, &mut *import_ids, &mut *builder, vars)
+        }
         _ => unreachable!("non-call op routed to handle_call_op"),
     }
 }
@@ -754,15 +744,12 @@ fn handle_call_direct_op(
         tracked_vars.retain(|n: &String| {
             !arg_cleanup_roots.contains(alias_root_name(alias_roots, n.as_str()))
         });
-        tracked_obj_vars_set.retain(|n| {
-            !arg_cleanup_roots.contains(alias_root_name(alias_roots, n.as_str()))
-        });
-        tracked_vars_set.retain(|n| {
-            !arg_cleanup_roots.contains(alias_root_name(alias_roots, n.as_str()))
-        });
-        entry_vars.retain(|name, _| {
-            !arg_cleanup_roots.contains(alias_root_name(alias_roots, name))
-        });
+        tracked_obj_vars_set
+            .retain(|n| !arg_cleanup_roots.contains(alias_root_name(alias_roots, n.as_str())));
+        tracked_vars_set
+            .retain(|n| !arg_cleanup_roots.contains(alias_root_name(alias_roots, n.as_str())));
+        entry_vars
+            .retain(|name, _| !arg_cleanup_roots.contains(alias_root_name(alias_roots, name)));
     }
     let origin_obj_cleanup_roots = cleanup_roots_for_names(
         alias_roots,
@@ -1481,10 +1468,9 @@ fn handle_call_func_op(
         let shift16 = builder.ins().iconst(types::I64, 16);
         let shifted = builder.ins().ishl(raw_ptr, shift16);
         let ptr_val = builder.ins().sshr(shifted, shift16);
-        let type_id =
-            builder
-                .ins()
-                .load(types::I32, MemFlagsData::trusted(), ptr_val, -16i32);
+        let type_id = builder
+            .ins()
+            .load(types::I32, MemFlagsData::trusted(), ptr_val, -16i32);
         let expected_type = builder
             .ins()
             .iconst(types::I32, i64::from(TYPE_ID_FUNCTION));
@@ -1523,10 +1509,9 @@ fn handle_call_func_op(
         // rather than a raw fn_ptr call.
         switch_to_block_materialized(&mut *builder, trampoline_check_block);
         seal_block_once(&mut *builder, &mut *sealed_blocks, trampoline_check_block);
-        let tramp_ptr_v =
-            builder
-                .ins()
-                .load(types::I64, MemFlagsData::trusted(), ptr_val, 40i32);
+        let tramp_ptr_v = builder
+            .ins()
+            .load(types::I64, MemFlagsData::trusted(), ptr_val, 40i32);
         let no_trampoline = builder.ins().icmp(IntCC::Equal, tramp_ptr_v, zero);
         let binder_check_block = builder.create_block();
         let arity_check_block = builder.create_block();
@@ -1588,10 +1573,9 @@ fn handle_call_func_op(
         // Step 7: Load fn_ptr (at ptr+0), recursion guard, call_indirect
         switch_to_block_materialized(&mut *builder, direct_call_block);
         seal_block_once(&mut *builder, &mut *sealed_blocks, direct_call_block);
-        let fn_ptr_v =
-            builder
-                .ins()
-                .load(types::I64, MemFlagsData::trusted(), ptr_val, 0i32);
+        let fn_ptr_v = builder
+            .ins()
+            .load(types::I64, MemFlagsData::trusted(), ptr_val, 0i32);
         let guard_enter = import_func_ref(
             &mut *module,
             &mut *import_ids,
@@ -2093,8 +2077,7 @@ fn handle_call_bind_indirect_op(
     // tracking to prevent double-free. The last_use assertion is
     // omitted: the IR may reference the variable in unreachable
     // branches (different if/else arms), inflating last_use.
-    let consumed_builder_roots =
-        cleanup_roots_for_names(alias_roots, [callargs_name.to_string()]);
+    let consumed_builder_roots = cleanup_roots_for_names(alias_roots, [callargs_name.to_string()]);
     scrub_tracked_roots(
         &consumed_builder_roots,
         alias_roots,

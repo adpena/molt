@@ -9,7 +9,7 @@ gate (`tests/differential/basic/finalizer_scope_exit_ordering.py`), plain
 non-finalizer object guard, object-attribute release smoke, and exit-semantics
 lane are green as of 2026-06-12 after preserving the frontend's `defines_del`
 result fact through native's TIR -> SimpleIR optimization round-trip and adding
-class/instance finalizer-sensitivity bits. The explicit local `del` /
+class-owned finalizer-sensitivity metadata. The explicit local `del` /
 `gc.collect()` resurrection-once gate is also green as of 2026-06-12 after
 promoting `DeleteVar` to carry the old slot occupant as an explicit TIR operand
 and release it after storing the missing sentinel. This does **not** close every
@@ -81,14 +81,15 @@ ignored while calling deallocator:" + traceback) and clears all exception channe
 or — if a surrounding exception was active — preserves/restores it (CPython
 semantics).
 
-2026-06-12 update: finalizer *sensitivity* is now class metadata, not an
-ordinary dying-instance attribute probe. `HEADER_FLAG_CLASS_HAS_FINALIZER` is
-refreshed when a class MRO or class-level `__del__` binding changes, and
-`object_set_class_bits` copies that to `HEADER_FLAG_INSTANCE_HAS_FINALIZER` on
-fresh `TYPE_ID_OBJECT` instances. The rc→0 hot path first checks the instance
-flag; non-finalizer objects never enter `__del__` lookup, so plain objects and
-objects with only an instance attribute named `__del__` cannot emit false
-unraisable AttributeErrors. For finalizer-sensitive instances,
+2026-07-13 update: finalizer *sensitivity* is class metadata, not an ordinary
+dying-instance attribute probe or a duplicated instance flag.
+`HEADER_FLAG_CLASS_HAS_FINALIZER` is refreshed when a class MRO or class-level
+`__del__` binding changes. Each instance stores only its validated class edge in
+`CLASS_INLINE` or `SIDECAR` aux storage; `object_class_has_finalizer` follows
+that edge and reads the class metadata. Non-finalizer objects never enter
+`__del__` lookup, so plain objects and objects with only an instance attribute
+named `__del__` cannot emit false unraisable AttributeErrors. For
+finalizer-sensitive instances,
 `maybe_run_object_finalizer` resolves raw `__del__` through the class MRO and
 uses the shared descriptor binder before `call_callable0`, preserving the single
 synthetic-handler swallow authority while matching CPython's type-special

@@ -1494,7 +1494,7 @@ def test_split_runtime_profile_json_emits_on_wasm(
     run = _run_split_direct(
         out_dir,
         timeout=60,
-        extra_env={"MOLT_PROFILE": "1", "MOLT_PROFILE_JSON": "1"},
+        extra_env={"MOLT_PROFILE": "1"},
     )
     assert run.returncode == 0, (
         f"split direct run failed (rc={run.returncode}).\n"
@@ -1502,7 +1502,23 @@ def test_split_runtime_profile_json_emits_on_wasm(
         f"stderr:\n{run.stderr[-2000:]}"
     )
     assert "ok" in run.stdout
-    assert "molt_profile_json " in run.stderr
+    profile_line = next(
+        line
+        for line in run.stderr.splitlines()
+        if line.startswith("molt_profile_json ")
+    )
+    payload = json.loads(profile_line.removeprefix("molt_profile_json "))
+    assert payload["schema_version"] == 2
+    assert payload["kind"] == "runtime_feedback"
+    assert {"profile", "aux", "gc", "memory"} <= payload.keys()
+    assert {
+        "dealloc_count",
+        "live_objects",
+        "alloc_bytes_exception",
+        "dealloc_bytes_exception",
+    } <= payload["profile"].keys()
+    assert "aux_sidecar_live_bytes" in payload["aux"]
+    assert "gc_registry_lock_contention_count" in payload["gc"]
 
 
 @pytest.mark.slow

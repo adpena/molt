@@ -7,8 +7,7 @@
 //! [`super::AliasAnalysisResult`] consume these via the parent module.
 
 use crate::tir::op_kinds_generated::{
-    AliasTypedSlotRole, opcode_alias_typed_slot_role_table, opcode_is_alias_heap_barrier_table,
-    opcode_is_alias_rc_barrier_table,
+    AliasTypedSlotRole, opcode_alias_typed_slot_role_table, opcode_is_alias_rc_barrier_table,
 };
 use crate::tir::ops::{AttrDict, AttrValue, OpCode, TirOp};
 use crate::tir::values::ValueId;
@@ -270,17 +269,4 @@ pub(super) fn typed_slot_class(op: &TirOp) -> Option<String> {
 /// exceptional path. Verified in `tests::rc_barrier_is_superset_*`.
 pub(super) fn opcode_is_rc_barrier(opcode: OpCode) -> bool {
     opcode_is_alias_rc_barrier_table(opcode)
-}
-
-/// True if `opcode` may observe / mutate / escape *arbitrary* heap memory — the
-/// opcode-only half of the may-alias barrier. Conservative superset of the
-/// opcode portion of `reuse_analysis::is_aliasing_op`.
-///
-/// Superset obligation vs `reuse_analysis::is_aliasing_op`'s opcode list
-/// ({Call, CallMethod, CallBuiltin, StoreAttr, StoreIndex, Raise, Yield,
-/// YieldFrom, StateSwitch, StateTransition, StateYield, ChanSendYield,
-/// ChanRecvYield, ClosureStore, Free}): every one is present here. Verified in
-/// `tests::reuse_barrier_is_superset`.
-pub(super) fn opcode_is_heap_barrier(opcode: OpCode) -> bool {
-    opcode_is_alias_heap_barrier_table(opcode)
 }

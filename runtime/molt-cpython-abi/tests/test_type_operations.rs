@@ -35,7 +35,10 @@ fn test_type_ready_fails_closed_when_tp_dict_alloc_fails() {
     let mut tp: PyTypeObject = unsafe { std::mem::zeroed() };
     tp.tp_flags = 0;
     let result = unsafe { molt_cpython_abi::api::typeobj::PyType_Ready(&mut tp) };
-    assert_eq!(result, -1, "PyType_Ready must fail closed when tp_dict cannot be allocated");
+    assert_eq!(
+        result, -1,
+        "PyType_Ready must fail closed when tp_dict cannot be allocated"
+    );
     assert_eq!(
         tp.tp_flags & Py_TPFLAGS_READY,
         0,

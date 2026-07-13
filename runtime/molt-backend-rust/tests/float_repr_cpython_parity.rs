@@ -93,7 +93,10 @@ fn compile_and_run(program_src: &str, tag: &str) -> Vec<String> {
         .arg(&src_path)
         .status()
         .expect("rustc must be available to compile the emitted formatter");
-    assert!(status.success(), "emitted formatter must compile with rustc");
+    assert!(
+        status.success(),
+        "emitted formatter must compile with rustc"
+    );
 
     let output = Command::new(&bin_path)
         .output()

@@ -4,7 +4,10 @@
 //! etc. is a separate linker symbol so that `wasm-ld --gc-sections` can drop
 //! unused entries.
 
-use crate::object::{dec_ref_ptr, inc_ref_ptr};
+use crate::object::{
+    ObjectAuxPreselection, dec_ref_ptr, inc_ref_ptr, object_init_poll_fn_unpublished,
+    object_init_state_unpublished,
+};
 use crate::*;
 use molt_obj_model::MoltObject;
 use num_bigint::BigInt;
@@ -556,13 +559,25 @@ pub extern "C" fn molt_anext_builtin(iter_bits: u64, default_bits: u64) -> u64 {
         if default_bits == missing {
             return molt_anext(iter_bits);
         }
-        let obj_bits = molt_alloc(3 * std::mem::size_of::<u64>() as u64);
-        let Some(obj_ptr) = resolve_obj_ptr(obj_bits) else {
+        let total = std::mem::size_of::<MoltHeader>() + 3 * std::mem::size_of::<u64>();
+        let obj_ptr = alloc_object_zeroed_with_aux(
+            _py,
+            total,
+            TYPE_ID_OBJECT,
+            ObjectAuxPreselection::Sidecar,
+        );
+        if obj_ptr.is_null() {
             return MoltObject::none().bits();
-        };
+        }
+        let obj_bits = MoltObject::from_ptr(obj_ptr).bits();
         unsafe {
-            super::object_set_poll_fn(obj_ptr, anext_default_poll_fn_addr());
-            super::object_set_state(obj_ptr, 0);
+            (*header_from_obj_ptr(obj_ptr)).flags |= crate::object::HEADER_FLAG_RAW_ALLOC;
+            if !object_init_poll_fn_unpublished(obj_ptr, anext_default_poll_fn_addr())
+                || !object_init_state_unpublished(obj_ptr, 0)
+            {
+                dec_ref_bits(_py, obj_bits);
+                return MoltObject::none().bits();
+            }
             let payload_ptr = obj_ptr as *mut u64;
             *payload_ptr = iter_bits;
             inc_ref_bits(_py, iter_bits);
@@ -999,6 +1014,68 @@ unsafe fn iter_return_cached(
         let slot_ptr =
             iter_ptr.add(std::mem::size_of::<u64>() + std::mem::size_of::<usize>()) as *mut *mut u8;
         cached_pair_return(_py, slot_ptr, val_bits, done_bits, owns_val, false)
+    }
+}
+
+unsafe fn weak_container_iter_advance(
+    _py: &PyToken<'_>,
+    iter_ptr: *mut u8,
+    state_ptr: *mut u8,
+) -> Result<Option<u64>, ()> {
+    let mut version = unsafe { crate::object::layout::iter_expected_version(iter_ptr) };
+    if version == crate::object::weak_container::WEAK_ITER_VERSION_FINISHED {
+        return Ok(None);
+    }
+    if version == crate::object::weak_container::WEAK_ITER_VERSION_UNSTARTED {
+        let started = match crate::object::weak_container::weakcontainer_iter_begin(_py, state_ptr)
+        {
+            Ok(Some(started)) => started,
+            Ok(None) => {
+                unsafe {
+                    crate::object::layout::iter_set_expected_version(
+                        iter_ptr,
+                        crate::object::weak_container::WEAK_ITER_VERSION_FINISHED,
+                    )
+                };
+                return Ok(None);
+            }
+            Err(_) => return Err(()),
+        };
+        version = started;
+        unsafe { crate::object::layout::iter_set_expected_version(iter_ptr, version) };
+    }
+    let cursor = unsafe { iter_index(iter_ptr) };
+    let projection = unsafe { crate::object::layout::iter_projection(iter_ptr) } as u8;
+    match crate::object::weak_container::weakcontainer_iter_next_value(
+        _py, state_ptr, cursor, version, projection,
+    ) {
+        Ok((next, Some(value))) => {
+            unsafe { iter_set_index(iter_ptr, next) };
+            Ok(Some(value))
+        }
+        Ok((_next, None)) => {
+            crate::object::weak_container::weakcontainer_iter_finish(_py, state_ptr);
+            if exception_pending(_py) {
+                return Err(());
+            }
+            unsafe {
+                crate::object::layout::iter_set_expected_version(
+                    iter_ptr,
+                    crate::object::weak_container::WEAK_ITER_VERSION_FINISHED,
+                )
+            };
+            Ok(None)
+        }
+        Err(_) => {
+            crate::object::weak_container::weakcontainer_iter_finish(_py, state_ptr);
+            unsafe {
+                crate::object::layout::iter_set_expected_version(
+                    iter_ptr,
+                    crate::object::weak_container::WEAK_ITER_VERSION_FINISHED,
+                )
+            };
+            Err(())
+        }
     }
 }
 
@@ -1567,6 +1644,15 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                 }
                 if let Some(target_ptr) = target_obj.as_ptr() {
                     let target_type = object_type_id(target_ptr);
+                    if target_type == TYPE_ID_WEAK_CONTAINER_STATE {
+                        return match weak_container_iter_advance(_py, ptr, target_ptr) {
+                            Ok(Some(value)) => iter_return_cached(_py, ptr, value, false, true),
+                            Ok(None) => {
+                                iter_return_cached(_py, ptr, MoltObject::none().bits(), true, false)
+                            }
+                            Err(()) => MoltObject::none().bits(),
+                        };
+                    }
                     if target_type == TYPE_ID_SET || target_type == TYPE_ID_FROZENSET {
                         let table = set_table(target_ptr);
                         let order = set_order(target_ptr);

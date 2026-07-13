@@ -1,17 +1,125 @@
 use crate::object::ops_sys::runtime_target_minor;
-use crate::state::runtime_state::{AtexitCallbackEntry, AtexitCallbackKind};
-use crate::{
-    MoltObject, PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_EXCEPTION, TYPE_ID_FUNCTION, alloc_string,
-    alloc_tuple, attr_name_bits_from_bytes, bound_method_func_bits, bound_method_self_bits,
-    clear_exception, clear_exception_state, dec_ref_bits, exception_class_bits,
-    exception_materialize_traceback_bits, exception_pending, format_exception_with_traceback,
-    function_closure_bits, function_fn_ptr, inc_ref_bits, int_bits_from_i64, is_truthy,
-    molt_call_bind, molt_callargs_expand_kwstar, molt_callargs_expand_star, molt_callargs_new,
-    molt_callargs_push_pos, molt_eq, molt_exception_clear, molt_exception_last, molt_get_attr_name,
-    molt_is_callable, molt_module_import, molt_sys_stderr, obj_from_bits, object_type_id,
-    raise_exception, runtime_state,
+use crate::state::runtime_state::{
+    AtexitCallbackEntry, AtexitCallbackKind, ExitRegistry, WeakFinalizerPrepared,
+    WeakrefRunnerState,
 };
-use std::sync::atomic::Ordering as AtomicOrdering;
+use crate::{
+    MoltObject, PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_FUNCTION, bound_method_func_bits,
+    bound_method_self_bits, clear_exception, clear_exception_state, dec_ref_bits,
+    exception_pending, function_closure_bits, function_fn_ptr, inc_ref_bits, int_bits_from_i64,
+    is_truthy, molt_call_bind, molt_callargs_expand_kwstar, molt_callargs_expand_star,
+    molt_callargs_new, molt_eq, molt_is_callable, obj_from_bits, object_type_id, raise_exception,
+    runtime_state,
+};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ExitRegistryError {
+    OutOfMemory,
+    RegistrationIdExhausted,
+    CapacityExhausted,
+    FinalizerGenerationExhausted,
+    InvalidPreparedCapacity,
+}
+
+const MIN_EXIT_REGISTRY_CAPACITY: usize = 8;
+
+fn geometric_capacity(current: usize, required: usize) -> Result<usize, ExitRegistryError> {
+    if required <= current {
+        return Ok(current);
+    }
+    let mut capacity = current.max(MIN_EXIT_REGISTRY_CAPACITY);
+    while capacity < required {
+        capacity = capacity
+            .checked_mul(2)
+            .ok_or(ExitRegistryError::CapacityExhausted)?;
+    }
+    Ok(capacity)
+}
+
+fn growth_capacity_for_insert(
+    len: usize,
+    capacity: usize,
+) -> Result<Option<usize>, ExitRegistryError> {
+    if len < capacity {
+        return Ok(None);
+    }
+    let required = len
+        .checked_add(1)
+        .ok_or(ExitRegistryError::CapacityExhausted)?;
+    geometric_capacity(capacity, required).map(Some)
+}
+
+fn try_prepare_vec<T>(required_capacity: usize) -> Result<Vec<T>, ExitRegistryError> {
+    let mut prepared = Vec::new();
+    prepared
+        .try_reserve_exact(required_capacity)
+        .map_err(|_| ExitRegistryError::OutOfMemory)?;
+    Ok(prepared)
+}
+
+/// Install an externally allocated backing store while the registry lock is
+/// held. The returned old allocation is empty and must be dropped after the
+/// lock is released.
+fn install_prepared_vec<T>(
+    target: &mut Vec<T>,
+    prepared: &mut Option<Vec<T>>,
+) -> Result<Vec<T>, ExitRegistryError> {
+    let Some(mut replacement) = prepared.take() else {
+        return Err(ExitRegistryError::InvalidPreparedCapacity);
+    };
+    if replacement.capacity() <= target.len() {
+        *prepared = Some(replacement);
+        return Err(ExitRegistryError::InvalidPreparedCapacity);
+    }
+    replacement.append(target);
+    std::mem::swap(target, &mut replacement);
+    Ok(replacement)
+}
+
+fn push_callback(
+    registry: &mut ExitRegistry,
+    callback: &mut Option<AtexitCallbackEntry>,
+) -> Result<(), ExitRegistryError> {
+    let Some(registration_id) = registry.allocate_callback_id() else {
+        return Err(ExitRegistryError::RegistrationIdExhausted);
+    };
+    let Some(mut callback) = callback.take() else {
+        return Err(ExitRegistryError::InvalidPreparedCapacity);
+    };
+    callback.registration_id = registration_id;
+    registry.callbacks.push(callback);
+    Ok(())
+}
+
+fn raise_exit_registry_error(
+    _py: &PyToken<'_>,
+    error: ExitRegistryError,
+    memory_message: &str,
+) -> u64 {
+    match error {
+        ExitRegistryError::OutOfMemory => {
+            raise_exception::<u64>(_py, "MemoryError", memory_message)
+        }
+        ExitRegistryError::RegistrationIdExhausted => raise_exception::<u64>(
+            _py,
+            "OverflowError",
+            "atexit registration id space exhausted",
+        ),
+        ExitRegistryError::CapacityExhausted => {
+            raise_exception::<u64>(_py, "OverflowError", "atexit registry capacity exhausted")
+        }
+        ExitRegistryError::FinalizerGenerationExhausted => raise_exception::<u64>(
+            _py,
+            "OverflowError",
+            "weakref finalizer generation space exhausted",
+        ),
+        ExitRegistryError::InvalidPreparedCapacity => raise_exception::<u64>(
+            _py,
+            "RuntimeError",
+            "invalid prepared atexit registry capacity",
+        ),
+    }
+}
 
 fn atexit_callback_release_refs(_py: &PyToken<'_>, callback: AtexitCallbackEntry) {
     if !obj_from_bits(callback.func_bits).is_none() {
@@ -64,268 +172,28 @@ fn callable_identity_eq(lhs_bits: u64, rhs_bits: u64) -> bool {
     }
 }
 
-fn atexit_clear_pending_exception_state(_py: &PyToken<'_>) {
-    for _ in 0..4 {
-        if exception_pending(_py) {
-            let _ = molt_exception_clear();
-        }
-        clear_exception_state(_py);
-        if !exception_pending(_py) {
-            break;
-        }
-    }
+fn unregister_compacts_for_target(target_minor: i64) -> bool {
+    target_minor >= 14
 }
 
-fn callback_repr(_py: &PyToken<'_>, callback_bits: u64) -> String {
-    if obj_from_bits(callback_bits).is_none() {
-        return "<callback>".to_string();
-    }
-    let repr_bits = crate::molt_repr_from_obj(callback_bits);
-    if exception_pending(_py) {
-        atexit_clear_pending_exception_state(_py);
-        return "<callback>".to_string();
-    }
-    let rendered = crate::object::ops::string_obj_to_owned(obj_from_bits(repr_bits))
-        .unwrap_or_else(|| "<callback>".to_string());
-    if !obj_from_bits(repr_bits).is_none() {
-        dec_ref_bits(_py, repr_bits);
-    }
-    rendered
-}
-
-fn call_with_positional_args(_py: &PyToken<'_>, callable_bits: u64, args: &[u64]) -> u64 {
-    let builder_bits = molt_callargs_new(args.len() as u64, 0);
-    if builder_bits == 0 {
-        return MoltObject::none().bits();
-    }
-    for &arg_bits in args {
-        // Safety: builder_bits is created by `molt_callargs_new` above and remains valid here.
-        let _ = unsafe { molt_callargs_push_pos(builder_bits, arg_bits) };
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-    }
-    molt_call_bind(callable_bits, builder_bits)
-}
-
-fn sys_attr_bits(_py: &PyToken<'_>, name: &[u8]) -> u64 {
-    let sys_name_ptr = alloc_string(_py, b"sys");
-    if sys_name_ptr.is_null() {
-        return MoltObject::none().bits();
-    }
-    let sys_name_bits = MoltObject::from_ptr(sys_name_ptr).bits();
-    let sys_bits = molt_module_import(sys_name_bits);
-    dec_ref_bits(_py, sys_name_bits);
-    if exception_pending(_py) || obj_from_bits(sys_bits).is_none() {
-        atexit_clear_pending_exception_state(_py);
-        if !obj_from_bits(sys_bits).is_none() {
-            dec_ref_bits(_py, sys_bits);
-        }
-        return MoltObject::none().bits();
-    }
-    let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
-        dec_ref_bits(_py, sys_bits);
-        return MoltObject::none().bits();
-    };
-    let value_bits = molt_get_attr_name(sys_bits, name_bits);
-    dec_ref_bits(_py, name_bits);
-    dec_ref_bits(_py, sys_bits);
-    if exception_pending(_py) || obj_from_bits(value_bits).is_none() {
-        atexit_clear_pending_exception_state(_py);
-        if !obj_from_bits(value_bits).is_none() {
-            dec_ref_bits(_py, value_bits);
-        }
-        return MoltObject::none().bits();
-    }
-    value_bits
-}
-
-fn atexit_unraisable_message_and_object(
-    _py: &PyToken<'_>,
-    callback_bits: u64,
-    callback_text: &str,
-) -> (String, u64) {
+fn atexit_unraisable_policy(_py: &PyToken<'_>, callback_bits: u64) -> (u64, Option<String>) {
+    let callback_text = crate::builtins::exceptions::unraisable_context_repr(_py, callback_bits);
     if runtime_target_minor(_py) >= 13 {
-        (
-            format!("Exception ignored in atexit callback {callback_text}"),
-            MoltObject::none().bits(),
-        )
+        let prefix = "Exception ignored in atexit callback ";
+        let message = prefix
+            .len()
+            .checked_add(callback_text.len())
+            .and_then(|capacity| {
+                let mut message = String::new();
+                message.try_reserve_exact(capacity).ok()?;
+                message.push_str(prefix);
+                message.push_str(&callback_text);
+                Some(message)
+            });
+        (MoltObject::none().bits(), message)
     } else {
-        (
-            "Exception ignored in atexit callback".to_string(),
-            callback_bits,
-        )
+        (callback_bits, None)
     }
-}
-
-fn atexit_build_unraisablehook_args(_py: &PyToken<'_>, callback_bits: u64, exc_bits: u64) -> u64 {
-    let hook_args_class_bits = sys_attr_bits(_py, b"UnraisableHookArgs");
-    if obj_from_bits(hook_args_class_bits).is_none() {
-        return MoltObject::none().bits();
-    }
-    let class_callable_bits = molt_is_callable(hook_args_class_bits);
-    let class_is_callable = is_truthy(_py, obj_from_bits(class_callable_bits));
-    if !class_is_callable {
-        dec_ref_bits(_py, hook_args_class_bits);
-        return MoltObject::none().bits();
-    }
-
-    let callback_text = callback_repr(_py, callback_bits);
-    let (err_msg, object_bits) =
-        atexit_unraisable_message_and_object(_py, callback_bits, &callback_text);
-    let msg_ptr = alloc_string(_py, err_msg.as_bytes());
-    if msg_ptr.is_null() {
-        dec_ref_bits(_py, hook_args_class_bits);
-        return MoltObject::none().bits();
-    }
-    let msg_bits = MoltObject::from_ptr(msg_ptr).bits();
-
-    let mut exc_type_bits = MoltObject::none().bits();
-    let mut trace_bits = MoltObject::none().bits();
-    if let Some(exc_ptr) = obj_from_bits(exc_bits).as_ptr()
-        && unsafe { object_type_id(exc_ptr) } == TYPE_ID_EXCEPTION
-    {
-        let class_bits = unsafe { exception_class_bits(exc_ptr) };
-        if !obj_from_bits(class_bits).is_none() {
-            exc_type_bits = class_bits;
-        }
-        let tb_bits = exception_materialize_traceback_bits(_py, exc_ptr);
-        if !obj_from_bits(tb_bits).is_none() {
-            trace_bits = tb_bits;
-        }
-    }
-
-    let out_bits = call_with_positional_args(
-        _py,
-        hook_args_class_bits,
-        &[exc_type_bits, exc_bits, trace_bits, msg_bits, object_bits],
-    );
-    dec_ref_bits(_py, hook_args_class_bits);
-    dec_ref_bits(_py, msg_bits);
-    if exception_pending(_py) {
-        atexit_clear_pending_exception_state(_py);
-        if !obj_from_bits(out_bits).is_none() {
-            dec_ref_bits(_py, out_bits);
-        }
-        return MoltObject::none().bits();
-    }
-    out_bits
-}
-
-fn atexit_try_unraisablehook(_py: &PyToken<'_>, callback_bits: u64, exc_bits: u64) -> bool {
-    let hook_bits = sys_attr_bits(_py, b"unraisablehook");
-    if obj_from_bits(hook_bits).is_none() {
-        return false;
-    }
-    let hook_callable_bits = molt_is_callable(hook_bits);
-    let hook_is_callable = is_truthy(_py, obj_from_bits(hook_callable_bits));
-    if !hook_is_callable {
-        dec_ref_bits(_py, hook_bits);
-        return false;
-    }
-    let hook_args_bits = atexit_build_unraisablehook_args(_py, callback_bits, exc_bits);
-    if obj_from_bits(hook_args_bits).is_none() {
-        dec_ref_bits(_py, hook_bits);
-        return false;
-    }
-
-    let out_bits = call_with_positional_args(_py, hook_bits, &[hook_args_bits]);
-    let hook_ok = !exception_pending(_py);
-    if exception_pending(_py) {
-        atexit_clear_pending_exception_state(_py);
-    }
-    if !obj_from_bits(out_bits).is_none() {
-        dec_ref_bits(_py, out_bits);
-    }
-    dec_ref_bits(_py, hook_args_bits);
-    dec_ref_bits(_py, hook_bits);
-    hook_ok
-}
-
-fn atexit_report_callback_exception(_py: &PyToken<'_>, callback_bits: u64, exc_bits: u64) {
-    if atexit_try_unraisablehook(_py, callback_bits, exc_bits) {
-        return;
-    }
-    let callback_text = callback_repr(_py, callback_bits);
-    let formatted = if let Some(exc_ptr) = obj_from_bits(exc_bits).as_ptr() {
-        format_exception_with_traceback(_py, exc_ptr)
-    } else {
-        String::new()
-    };
-    let (err_msg, object_bits) =
-        atexit_unraisable_message_and_object(_py, callback_bits, &callback_text);
-    let prefix = if obj_from_bits(object_bits).is_none() {
-        format!("{err_msg}:")
-    } else {
-        format!("{err_msg}: {callback_text}")
-    };
-    write_stderr_line(_py, &prefix);
-    if !formatted.is_empty() {
-        write_stderr_line(_py, &formatted);
-    }
-}
-
-fn callback_returned_raised_exception(_py: &PyToken<'_>, out_bits: u64) -> bool {
-    let Some(out_ptr) = obj_from_bits(out_bits).as_ptr() else {
-        return false;
-    };
-    if unsafe { object_type_id(out_ptr) } != TYPE_ID_EXCEPTION {
-        return false;
-    }
-    let Some(tb_name_bits) = attr_name_bits_from_bytes(_py, b"__traceback__") else {
-        return true;
-    };
-    let tb_bits = molt_get_attr_name(out_bits, tb_name_bits);
-    dec_ref_bits(_py, tb_name_bits);
-    if exception_pending(_py) {
-        atexit_clear_pending_exception_state(_py);
-        return true;
-    }
-    let has_tb = !obj_from_bits(tb_bits).is_none();
-    if !obj_from_bits(tb_bits).is_none() {
-        dec_ref_bits(_py, tb_bits);
-    }
-    has_tb
-}
-
-fn write_stderr_line(_py: &PyToken<'_>, text: &str) {
-    let text_ptr = alloc_string(_py, text.as_bytes());
-    if text_ptr.is_null() {
-        return;
-    }
-    let text_bits = MoltObject::from_ptr(text_ptr).bits();
-    let args_ptr = alloc_tuple(_py, &[text_bits]);
-    if args_ptr.is_null() {
-        dec_ref_bits(_py, text_bits);
-        return;
-    }
-    let args_bits = MoltObject::from_ptr(args_ptr).bits();
-    let stderr_bits = current_stderr_target(_py);
-    if obj_from_bits(stderr_bits).is_none() {
-        dec_ref_bits(_py, args_bits);
-        dec_ref_bits(_py, text_bits);
-        return;
-    }
-    let none = MoltObject::none().bits();
-    let flush = MoltObject::from_bool(true).bits();
-    let out_bits = crate::molt_print_builtin(args_bits, none, none, stderr_bits, flush);
-    if !obj_from_bits(out_bits).is_none() {
-        dec_ref_bits(_py, out_bits);
-    }
-    if exception_pending(_py) {
-        atexit_clear_pending_exception_state(_py);
-    }
-    dec_ref_bits(_py, stderr_bits);
-    dec_ref_bits(_py, args_bits);
-    dec_ref_bits(_py, text_bits);
-}
-
-fn current_stderr_target(_py: &PyToken<'_>) -> u64 {
-    let stderr_bits = sys_attr_bits(_py, b"stderr");
-    if obj_from_bits(stderr_bits).is_none() {
-        return molt_sys_stderr();
-    }
-    stderr_bits
 }
 
 fn atexit_call_callback(_py: &PyToken<'_>, callback: &AtexitCallbackEntry) -> u64 {
@@ -336,12 +204,14 @@ fn atexit_call_callback(_py: &PyToken<'_>, callback: &AtexitCallbackEntry) -> u6
     if !obj_from_bits(callback.args_bits).is_none() {
         let _ = unsafe { molt_callargs_expand_star(builder_bits, callback.args_bits) };
         if exception_pending(_py) {
+            dec_ref_bits(_py, builder_bits);
             return MoltObject::none().bits();
         }
     }
     if !obj_from_bits(callback.kwargs_bits).is_none() {
         let _ = unsafe { molt_callargs_expand_kwstar(builder_bits, callback.kwargs_bits) };
         if exception_pending(_py) {
+            dec_ref_bits(_py, builder_bits);
             return MoltObject::none().bits();
         }
     }
@@ -355,6 +225,9 @@ fn atexit_register_impl(
     kwargs_bits: u64,
 ) -> u64 {
     let callable_bits = molt_is_callable(func_bits);
+    if exception_pending(_py) {
+        return MoltObject::none().bits();
+    }
     if !is_truthy(_py, obj_from_bits(callable_bits)) {
         return raise_exception::<u64>(_py, "TypeError", "the first argument must be callable");
     }
@@ -369,154 +242,442 @@ fn atexit_register_impl(
         inc_ref_bits(_py, kwargs_bits);
     }
 
-    runtime_state(_py)
-        .atexit_callbacks
-        .lock()
-        .unwrap()
-        .push(AtexitCallbackEntry {
-            kind: AtexitCallbackKind::Python,
-            func_bits,
-            args_bits,
-            kwargs_bits,
-        });
-    func_bits
-}
-
-pub(crate) fn atexit_register_weakref_runner_once(_py: &PyToken<'_>) {
-    let state = runtime_state(_py);
-    if state
-        .atexit_weakref_runner_registered
-        .swap(true, AtomicOrdering::AcqRel)
-    {
-        return;
+    let mut entry = Some(AtexitCallbackEntry {
+        registration_id: 0,
+        kind: AtexitCallbackKind::Python,
+        func_bits,
+        args_bits,
+        kwargs_bits,
+    });
+    let mut prepared = None;
+    loop {
+        let mut displaced = None;
+        let mut publish_error = None;
+        let required_capacity = {
+            let mut registry = runtime_state(_py).exit_registry.lock().unwrap();
+            let growth =
+                growth_capacity_for_insert(registry.callbacks.len(), registry.callbacks.capacity());
+            if let Err(error) = growth {
+                publish_error = Some(error);
+                None
+            } else if let Some(required) = growth.ok().flatten() {
+                if prepared
+                    .as_ref()
+                    .is_none_or(|buffer: &Vec<AtexitCallbackEntry>| buffer.capacity() < required)
+                {
+                    Some(required)
+                } else {
+                    match install_prepared_vec(&mut registry.callbacks, &mut prepared) {
+                        Ok(buffer) => displaced = Some(buffer),
+                        Err(error) => publish_error = Some(error),
+                    }
+                    if publish_error.is_none() {
+                        publish_error = push_callback(&mut registry, &mut entry).err();
+                    }
+                    None
+                }
+            } else {
+                publish_error = push_callback(&mut registry, &mut entry).err();
+                None
+            }
+        };
+        drop(displaced);
+        if let Some(error) = publish_error {
+            if let Some(entry) = entry.take() {
+                atexit_callback_release_refs(_py, entry);
+            }
+            return raise_exit_registry_error(_py, error, "atexit callback registration failed");
+        }
+        if entry.is_none() {
+            return func_bits;
+        }
+        let Some(required_capacity) = required_capacity else {
+            if let Some(entry) = entry.take() {
+                atexit_callback_release_refs(_py, entry);
+            }
+            return raise_exit_registry_error(
+                _py,
+                ExitRegistryError::InvalidPreparedCapacity,
+                "atexit callback registration failed",
+            );
+        };
+        prepared = match try_prepare_vec(required_capacity) {
+            Ok(prepared) => Some(prepared),
+            Err(error) => {
+                if let Some(entry) = entry.take() {
+                    atexit_callback_release_refs(_py, entry);
+                }
+                return raise_exit_registry_error(
+                    _py,
+                    error,
+                    "atexit callback registration failed",
+                );
+            }
+        };
     }
-    state
-        .atexit_callbacks
-        .lock()
-        .unwrap()
-        .push(AtexitCallbackEntry {
-            kind: AtexitCallbackKind::WeakrefFinalizerRunner,
-            func_bits: MoltObject::none().bits(),
-            args_bits: MoltObject::none().bits(),
-            kwargs_bits: MoltObject::none().bits(),
-        });
 }
 
-fn atexit_register_weakref_runner_if_pending(_py: &PyToken<'_>) {
-    let pending = {
-        let guard = runtime_state(_py).weakref_finalizers.lock().unwrap();
-        !guard.is_empty()
+fn weakref_runner_entry() -> AtexitCallbackEntry {
+    AtexitCallbackEntry {
+        registration_id: 0,
+        kind: AtexitCallbackKind::WeakrefFinalizerRunner,
+        func_bits: MoltObject::none().bits(),
+        args_bits: MoltObject::none().bits(),
+        kwargs_bits: MoltObject::none().bits(),
+    }
+}
+
+/// Atomically retain a finalizer and publish its one-time atexit runner. Both
+/// backing stores are prepared outside the registry lock, so publication uses
+/// only infallible pushes and no rollback can expose half a registration.
+pub(crate) fn weakref_finalizer_track(
+    _py: &PyToken<'_>,
+    finalizer_bits: u64,
+) -> Result<bool, ExitRegistryError> {
+    inc_ref_bits(_py, finalizer_bits);
+    let mut prepared_callbacks = None;
+    let mut prepared_finalizers = None;
+    loop {
+        let mut displaced_callbacks = None;
+        let mut displaced_finalizers = None;
+        let mut publish_error = None;
+        let (duplicate, committed, callback_capacity, finalizer_capacity) = {
+            let mut registry = runtime_state(_py).exit_registry.lock().unwrap();
+            if registry.weakref_finalizers.contains(finalizer_bits) {
+                (true, false, None, None)
+            } else if !registry.weakref_finalizers.generation_available() {
+                publish_error = Some(ExitRegistryError::FinalizerGenerationExhausted);
+                (false, false, None, None)
+            } else {
+                let publish_runner = registry.weakref_runner_state == WeakrefRunnerState::Available;
+                let callback_capacity = if publish_runner {
+                    match growth_capacity_for_insert(
+                        registry.callbacks.len(),
+                        registry.callbacks.capacity(),
+                    ) {
+                        Ok(capacity) => capacity,
+                        Err(error) => {
+                            publish_error = Some(error);
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+                let finalizer_capacity = if registry.weakref_finalizers.can_insert() {
+                    None
+                } else {
+                    let required = registry.weakref_finalizers.len().checked_add(1);
+                    match required.and_then(|required| {
+                        geometric_capacity(registry.weakref_finalizers.capacity(), required).ok()
+                    }) {
+                        Some(capacity) => Some(capacity),
+                        None => {
+                            publish_error = Some(ExitRegistryError::CapacityExhausted);
+                            None
+                        }
+                    }
+                };
+                let callback_ready =
+                    callback_capacity.is_none_or(|required| {
+                        prepared_callbacks.as_ref().is_some_and(
+                            |buffer: &Vec<AtexitCallbackEntry>| buffer.capacity() >= required,
+                        )
+                    });
+                let finalizer_ready = finalizer_capacity.is_none_or(|required| {
+                    prepared_finalizers
+                        .as_ref()
+                        .is_some_and(|buffer: &WeakFinalizerPrepared| {
+                            // Prepared capacity is validated again while installing.
+                            let _ = required;
+                            buffer.capacity() >= required
+                        })
+                });
+                if publish_error.is_some() {
+                    (false, false, None, None)
+                } else if !callback_ready || !finalizer_ready {
+                    (false, false, callback_capacity, finalizer_capacity)
+                } else {
+                    if callback_capacity.is_some() {
+                        match install_prepared_vec(&mut registry.callbacks, &mut prepared_callbacks)
+                        {
+                            Ok(buffer) => displaced_callbacks = Some(buffer),
+                            Err(error) => publish_error = Some(error),
+                        }
+                    }
+                    if publish_error.is_none() && finalizer_capacity.is_some() {
+                        if let Some(prepared) = prepared_finalizers.take() {
+                            match registry.weakref_finalizers.install_prepared(prepared) {
+                                Ok(buffer) => displaced_finalizers = Some(buffer),
+                                Err(buffer) => {
+                                    prepared_finalizers = Some(buffer);
+                                    publish_error =
+                                        Some(ExitRegistryError::InvalidPreparedCapacity);
+                                }
+                            }
+                        } else {
+                            publish_error = Some(ExitRegistryError::InvalidPreparedCapacity);
+                        }
+                    }
+                    if publish_error.is_none() && publish_runner {
+                        let mut runner = Some(weakref_runner_entry());
+                        publish_error = push_callback(&mut registry, &mut runner).err();
+                        if publish_error.is_none() {
+                            registry.weakref_runner_state = WeakrefRunnerState::Registered;
+                        }
+                    }
+                    if publish_error.is_none() {
+                        match registry.weakref_finalizers.insert_prepared(finalizer_bits) {
+                            Ok(true) => (false, true, None, None),
+                            Ok(false) => (true, false, None, None),
+                            Err(()) => {
+                                if publish_runner {
+                                    let runner = registry.callbacks.pop();
+                                    if runner.as_ref().is_some_and(|callback| {
+                                        callback.kind == AtexitCallbackKind::WeakrefFinalizerRunner
+                                    }) {
+                                        registry.weakref_runner_state =
+                                            WeakrefRunnerState::Available;
+                                    } else if let Some(runner) = runner {
+                                        registry.callbacks.push(runner);
+                                    }
+                                }
+                                publish_error = Some(ExitRegistryError::InvalidPreparedCapacity);
+                                (false, false, None, None)
+                            }
+                        }
+                    } else {
+                        (false, false, None, None)
+                    }
+                }
+            }
+        };
+        drop(displaced_callbacks);
+        drop(displaced_finalizers);
+        if let Some(error) = publish_error {
+            dec_ref_bits(_py, finalizer_bits);
+            return Err(error);
+        }
+        if duplicate {
+            dec_ref_bits(_py, finalizer_bits);
+            return Ok(false);
+        }
+        if committed {
+            return Ok(true);
+        }
+        if let Some(required) = callback_capacity
+            && prepared_callbacks
+                .as_ref()
+                .is_none_or(|buffer| buffer.capacity() < required)
+        {
+            prepared_callbacks = match try_prepare_vec(required) {
+                Ok(buffer) => Some(buffer),
+                Err(error) => {
+                    dec_ref_bits(_py, finalizer_bits);
+                    return Err(error);
+                }
+            };
+        }
+        if let Some(required) = finalizer_capacity
+            && prepared_finalizers
+                .as_ref()
+                .is_none_or(|buffer| buffer.capacity() < required)
+        {
+            prepared_finalizers = match WeakFinalizerPrepared::try_with_capacity(required) {
+                Ok(buffer) => Some(buffer),
+                Err(()) => {
+                    dec_ref_bits(_py, finalizer_bits);
+                    return Err(ExitRegistryError::OutOfMemory);
+                }
+            };
+        }
+    }
+}
+
+pub(crate) fn weakref_finalizer_untrack(_py: &PyToken<'_>, finalizer_bits: u64) {
+    let removed = {
+        let mut registry = runtime_state(_py).exit_registry.lock().unwrap();
+        registry.weakref_finalizers.remove(finalizer_bits)
     };
-    if pending {
-        atexit_register_weakref_runner_once(_py);
+    if let Some(bits) = removed {
+        dec_ref_bits(_py, bits);
     }
+}
+
+pub(crate) fn pop_weakref_finalizer(_py: &PyToken<'_>) -> Option<u64> {
+    let mut registry = runtime_state(_py).exit_registry.lock().unwrap();
+    registry.weakref_finalizers.pop_lifo()
 }
 
 fn atexit_unregister_impl(_py: &PyToken<'_>, func_bits: u64) -> u64 {
-    atexit_clear_pending_exception_state(_py);
-    let removed = {
-        let mut guard = runtime_state(_py).atexit_callbacks.lock().unwrap();
-        let mut removed = Vec::new();
-        for callback in guard.iter_mut() {
-            if callback.kind != AtexitCallbackKind::Python {
-                continue;
+    let compact_matches = unregister_compacts_for_target(runtime_target_minor(_py));
+    let mut candidates: Vec<(u64, u64, bool)> = loop {
+        let capacity = runtime_state(_py)
+            .exit_registry
+            .lock()
+            .unwrap()
+            .callbacks
+            .len();
+        let mut candidates = Vec::new();
+        if candidates.try_reserve_exact(capacity).is_err() {
+            return raise_exception::<u64>(
+                _py,
+                "MemoryError",
+                "atexit unregister snapshot allocation failed",
+            );
+        }
+        let complete = {
+            let registry = runtime_state(_py).exit_registry.lock().unwrap();
+            if registry.callbacks.len() > capacity {
+                false
+            } else {
+                for callback in &registry.callbacks {
+                    if callback.kind == AtexitCallbackKind::Python
+                        && !obj_from_bits(callback.func_bits).is_none()
+                    {
+                        inc_ref_bits(_py, callback.func_bits);
+                        candidates.push((callback.registration_id, callback.func_bits, false));
+                    }
+                }
+                true
             }
-            if obj_from_bits(callback.func_bits).is_none() {
-                continue;
+        };
+        if complete {
+            break candidates;
+        }
+    };
+
+    let mut comparison_failed = false;
+    for candidate in &mut candidates {
+        match py_eq_checked(_py, func_bits, candidate.1) {
+            Ok(equal) => {
+                candidate.2 = equal || callable_identity_eq(func_bits, candidate.1);
             }
-            match py_eq_checked(_py, func_bits, callback.func_bits) {
-                Ok(true) => {
+            Err(_) => {
+                comparison_failed = true;
+                break;
+            }
+        }
+    }
+    if comparison_failed {
+        for (_, callback_bits, _) in candidates {
+            dec_ref_bits(_py, callback_bits);
+        }
+        return MoltObject::none().bits();
+    }
+
+    let matched = candidates.iter().filter(|candidate| candidate.2).count();
+    let mut removed = Vec::new();
+    if removed.try_reserve_exact(matched).is_err() {
+        for (_, callback_bits, _) in candidates {
+            dec_ref_bits(_py, callback_bits);
+        }
+        return raise_exception::<u64>(
+            _py,
+            "MemoryError",
+            "atexit unregister removal allocation failed",
+        );
+    }
+
+    {
+        let mut registry = runtime_state(_py).exit_registry.lock().unwrap();
+        let mut candidate_index = 0;
+        if compact_matches {
+            registry.callbacks.retain(|callback| {
+                while candidate_index < candidates.len()
+                    && candidates[candidate_index].0 < callback.registration_id
+                {
+                    candidate_index += 1;
+                }
+                let matched = candidates.get(candidate_index).is_some_and(|candidate| {
+                    candidate.0 == callback.registration_id && candidate.2
+                });
+                if matched {
+                    removed.push(callback.clone());
+                }
+                !matched
+            });
+        } else {
+            for callback in &mut registry.callbacks {
+                while candidate_index < candidates.len()
+                    && candidates[candidate_index].0 < callback.registration_id
+                {
+                    candidate_index += 1;
+                }
+                if candidate_index == candidates.len() {
+                    break;
+                }
+                let candidate = candidates[candidate_index];
+                if candidate.0 == callback.registration_id && candidate.2 {
                     removed.push(callback.clone());
                     callback.func_bits = MoltObject::none().bits();
                     callback.args_bits = MoltObject::none().bits();
                     callback.kwargs_bits = MoltObject::none().bits();
                 }
-                Ok(false) => {
-                    if callable_identity_eq(func_bits, callback.func_bits) {
-                        removed.push(callback.clone());
-                        callback.func_bits = MoltObject::none().bits();
-                        callback.args_bits = MoltObject::none().bits();
-                        callback.kwargs_bits = MoltObject::none().bits();
-                    }
-                }
-                Err(_) => break,
             }
         }
-        removed
-    };
+    }
+    for (_, callback_bits, _) in candidates {
+        dec_ref_bits(_py, callback_bits);
+    }
     for callback in removed {
         atexit_callback_release_refs(_py, callback);
-    }
-    if exception_pending(_py) {
-        return MoltObject::none().bits();
     }
     MoltObject::none().bits()
 }
 
 fn atexit_clear_impl(_py: &PyToken<'_>) -> u64 {
-    let state = runtime_state(_py);
     let callbacks = {
-        let mut guard = state.atexit_callbacks.lock().unwrap();
-        std::mem::take(&mut *guard)
+        let mut registry = runtime_state(_py).exit_registry.lock().unwrap();
+        let callbacks = std::mem::take(&mut registry.callbacks);
+        // Clearing an already-published finalize runner is a persistent opt-out.
+        // A clear before the first finalizer does not prevent its lazy publish.
+        if registry.weakref_runner_state == WeakrefRunnerState::Registered {
+            registry.weakref_runner_state = WeakrefRunnerState::Cleared;
+        }
+        callbacks
     };
-    state
-        .atexit_weakref_runner_registered
-        .store(false, AtomicOrdering::Release);
     for callback in callbacks {
         atexit_callback_release_refs(_py, callback);
     }
-    // Preserve CPython ordering when finalizers were already tracked before `_clear()`.
-    atexit_register_weakref_runner_if_pending(_py);
     MoltObject::none().bits()
 }
 
 fn atexit_run_exitfuncs_impl(_py: &PyToken<'_>) -> u64 {
     loop {
         let callback = {
-            let mut guard = runtime_state(_py).atexit_callbacks.lock().unwrap();
-            guard.pop()
+            let mut registry = runtime_state(_py).exit_registry.lock().unwrap();
+            let callback = registry.callbacks.pop();
+            if let Some(callback) = callback.as_ref() {
+                if callback.kind == AtexitCallbackKind::WeakrefFinalizerRunner {
+                    registry.weakref_runner_state = WeakrefRunnerState::Cleared;
+                }
+            }
+            callback
         };
         let Some(callback) = callback else {
             break;
         };
         if callback.kind == AtexitCallbackKind::WeakrefFinalizerRunner {
-            runtime_state(_py)
-                .atexit_weakref_runner_registered
-                .store(false, AtomicOrdering::Release);
-            crate::object::weakref::weakref_run_atexit_finalizers(_py);
-            if exception_pending(_py) {
-                let exc_bits = molt_exception_last();
-                atexit_clear_pending_exception_state(_py);
-                atexit_report_callback_exception(_py, MoltObject::none().bits(), exc_bits);
-                if !obj_from_bits(exc_bits).is_none() {
-                    dec_ref_bits(_py, exc_bits);
-                }
-            }
+            crate::builtins::exceptions::run_unraisable(
+                _py,
+                MoltObject::none().bits(),
+                Some("Exception ignored while running weakref finalizers at exit"),
+                || crate::object::weakref::weakref_run_atexit_finalizers(_py),
+            );
             continue;
         }
         if obj_from_bits(callback.func_bits).is_none() {
             atexit_callback_release_refs(_py, callback);
             continue;
         }
-        atexit_clear_pending_exception_state(_py);
-        let out_bits = atexit_call_callback(_py, &callback);
-        let pending = exception_pending(_py);
-        let mut exc_bits = MoltObject::none().bits();
-        if pending {
-            exc_bits = molt_exception_last();
-        }
-        if obj_from_bits(exc_bits).is_none() && callback_returned_raised_exception(_py, out_bits) {
-            inc_ref_bits(_py, out_bits);
-            exc_bits = out_bits;
-        }
-        let callback_raised = pending || !obj_from_bits(exc_bits).is_none();
-        if callback_raised {
-            atexit_clear_pending_exception_state(_py);
-            atexit_report_callback_exception(_py, callback.func_bits, exc_bits);
-        }
-        if !obj_from_bits(exc_bits).is_none() {
-            dec_ref_bits(_py, exc_bits);
-        }
+        let (context_bits, message) = atexit_unraisable_policy(_py, callback.func_bits);
+        let out_bits = crate::builtins::exceptions::run_unraisable(
+            _py,
+            context_bits,
+            message.as_deref(),
+            || atexit_call_callback(_py, &callback),
+        );
         if !obj_from_bits(out_bits).is_none() {
             dec_ref_bits(_py, out_bits);
         }
@@ -526,18 +687,26 @@ fn atexit_run_exitfuncs_impl(_py: &PyToken<'_>) -> u64 {
 }
 
 fn atexit_ncallbacks_impl(_py: &PyToken<'_>) -> u64 {
-    let count = runtime_state(_py).atexit_callbacks.lock().unwrap().len();
+    let count = runtime_state(_py)
+        .exit_registry
+        .lock()
+        .unwrap()
+        .callbacks
+        .len();
     let count = i64::try_from(count).unwrap_or(i64::MAX);
     int_bits_from_i64(_py, count)
 }
 
 pub(crate) fn atexit_run_exitfuncs_teardown(_py: &PyToken<'_>) {
     let _ = atexit_run_exitfuncs_impl(_py);
-    if exception_pending(_py) {
-        atexit_clear_pending_exception_state(_py);
+    // `_clear()` intentionally disables exit execution, but the registry's
+    // retained references still belong to this runtime and must be released.
+    while let Some(finalizer_bits) = pop_weakref_finalizer(_py) {
+        dec_ref_bits(_py, finalizer_bits);
     }
     if exception_pending(_py) {
         clear_exception(_py);
+        clear_exception_state(_py);
     }
 }
 
@@ -566,4 +735,40 @@ pub extern "C" fn molt_atexit_run_exitfuncs() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_atexit_ncallbacks() -> u64 {
     crate::with_gil_entry_nopanic!(_py, { atexit_ncallbacks_impl(_py) })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn callback_capacity_growth_is_geometric_and_checked() {
+        let mut capacity = 0;
+        let mut growths = 0;
+        for len in 0..10_000 {
+            if let Some(next) = growth_capacity_for_insert(len, capacity).expect("growth") {
+                assert!(next >= len + 1);
+                assert!(next >= MIN_EXIT_REGISTRY_CAPACITY);
+                capacity = next;
+                growths += 1;
+            }
+        }
+        assert!(growths <= 12);
+        assert!(capacity >= 10_000);
+        assert_eq!(
+            geometric_capacity(usize::MAX / 2 + 1, usize::MAX),
+            Err(ExitRegistryError::CapacityExhausted)
+        );
+        assert_eq!(
+            growth_capacity_for_insert(usize::MAX, usize::MAX),
+            Err(ExitRegistryError::CapacityExhausted)
+        );
+    }
+
+    #[test]
+    fn unregister_count_semantics_are_target_versioned() {
+        assert!(!unregister_compacts_for_target(12));
+        assert!(!unregister_compacts_for_target(13));
+        assert!(unregister_compacts_for_target(14));
+    }
 }

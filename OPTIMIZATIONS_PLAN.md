@@ -134,9 +134,9 @@ Execution style: correctness-first, measurable, rollback-safe, no benchmark-only
     - `dict[str] += int` prehash lane (`hit`, `miss`, `deopt`),
     - TAQ ingest path (`taq_ingest_calls`, `taq_ingest_skip_marker`),
     - ASCII `int` parse failures.
-  - Extended `molt_profile_dump` to emit both:
-    - existing human-readable `molt_profile ...` line, and
-    - `molt_profile_json { ... }` payload when `MOLT_PROFILE_JSON=1`.
+  - Extended `molt_profile_dump`; the current authority is the single versioned
+    `molt_profile_json { ... }` payload emitted by `MOLT_PROFILE=1`. Schema v2
+    includes allocation/deallocation/live, aux, GC, and memory sections.
   - Captured reproducible profile artifacts for Codon subset:
     - `bench/results/optimization_progress/2026-02-11_week1_observability/sum_profile.log`
     - `bench/results/optimization_progress/2026-02-11_week1_observability/word_count_profile.log`

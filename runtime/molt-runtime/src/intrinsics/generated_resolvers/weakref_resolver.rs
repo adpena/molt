@@ -3,6 +3,10 @@
 #[cold]
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
     match symbol {
+        "molt_weakref_bind_reference_type" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_weakref_bind_reference_type",
+            crate::molt_weakref_bind_reference_type as *const (),
+        )),
         "molt_weakref_register" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_weakref_register",
             crate::molt_weakref_register as *const (),
@@ -18,14 +22,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_weakref_peek" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_weakref_peek",
             crate::molt_weakref_peek as *const (),
-        )),
-        "molt_weakref_drop" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_weakref_drop",
-            crate::molt_weakref_drop as *const (),
-        )),
-        "molt_weakref_collect" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_weakref_collect",
-            crate::molt_weakref_collect as *const (),
         )),
         "molt_weakref_find_nocallback" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_weakref_find_nocallback",
@@ -47,109 +43,53 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_weakref_finalize_untrack",
             crate::molt_weakref_finalize_untrack as *const (),
         )),
-        "molt_weakkeydict_set" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_weakkeydict_set",
-            crate::molt_weakkeydict_set as *const (),
+        "molt_weakcontainer_new" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_weakcontainer_new",
+            crate::molt_weakcontainer_new as *const (),
         )),
-        "molt_weakkeydict_get" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_weakkeydict_get",
-            crate::molt_weakkeydict_get as *const (),
+        "molt_weakcontainer_store_probe" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_weakcontainer_store_probe",
+            crate::molt_weakcontainer_store_probe as *const (),
         )),
-        "molt_weakkeydict_del" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_weakkeydict_del",
-            crate::molt_weakkeydict_del as *const (),
+        "molt_weakcontainer_store_commit" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_weakcontainer_store_commit",
+            crate::molt_weakcontainer_store_commit as *const (),
         )),
-        "molt_weakkeydict_contains" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_weakkeydict_contains",
-            crate::molt_weakkeydict_contains as *const (),
+        "molt_weakcontainer_get" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_weakcontainer_get",
+            crate::molt_weakcontainer_get as *const (),
         )),
-        "molt_weakkeydict_len" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_weakkeydict_len",
-            crate::molt_weakkeydict_len as *const (),
+        "molt_weakcontainer_take" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_weakcontainer_take",
+            crate::molt_weakcontainer_take as *const (),
         )),
-        "molt_weakkeydict_items" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_weakkeydict_items",
-            crate::molt_weakkeydict_items as *const (),
+        "molt_weakcontainer_contains" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_weakcontainer_contains",
+            crate::molt_weakcontainer_contains as *const (),
         )),
-        "molt_weakkeydict_keyrefs" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_weakkeydict_keyrefs",
-            crate::molt_weakkeydict_keyrefs as *const (),
+        "molt_weakcontainer_len" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_weakcontainer_len",
+            crate::molt_weakcontainer_len as *const (),
         )),
-        "molt_weakkeydict_popitem" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_weakkeydict_popitem",
-            crate::molt_weakkeydict_popitem as *const (),
+        "molt_weakcontainer_iter" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_weakcontainer_iter",
+            crate::molt_weakcontainer_iter as *const (),
         )),
-        "molt_weakkeydict_clear" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_weakkeydict_clear",
-            crate::molt_weakkeydict_clear as *const (),
+        "molt_weakcontainer_refs" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_weakcontainer_refs",
+            crate::molt_weakcontainer_refs as *const (),
         )),
-        "molt_weakvaluedict_set" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_weakvaluedict_set",
-            crate::molt_weakvaluedict_set as *const (),
+        "molt_weakcontainer_pop" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_weakcontainer_pop",
+            crate::molt_weakcontainer_pop as *const (),
         )),
-        "molt_weakvaluedict_get" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_weakvaluedict_get",
-            crate::molt_weakvaluedict_get as *const (),
+        "molt_weakcontainer_clear" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_weakcontainer_clear",
+            crate::molt_weakcontainer_clear as *const (),
         )),
-        "molt_weakvaluedict_del" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_weakvaluedict_del",
-            crate::molt_weakvaluedict_del as *const (),
-        )),
-        "molt_weakvaluedict_contains" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_weakvaluedict_contains",
-            crate::molt_weakvaluedict_contains as *const (),
-        )),
-        "molt_weakvaluedict_len" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_weakvaluedict_len",
-            crate::molt_weakvaluedict_len as *const (),
-        )),
-        "molt_weakvaluedict_items" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_weakvaluedict_items",
-            crate::molt_weakvaluedict_items as *const (),
-        )),
-        "molt_weakvaluedict_valuerefs" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_weakvaluedict_valuerefs",
-            crate::molt_weakvaluedict_valuerefs as *const (),
-        )),
-        "molt_weakvaluedict_popitem" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_weakvaluedict_popitem",
-            crate::molt_weakvaluedict_popitem as *const (),
-        )),
-        "molt_weakvaluedict_clear" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_weakvaluedict_clear",
-            crate::molt_weakvaluedict_clear as *const (),
-        )),
-        "molt_weakset_add" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_weakset_add",
-            crate::molt_weakset_add as *const (),
-        )),
-        "molt_weakset_discard" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_weakset_discard",
-            crate::molt_weakset_discard as *const (),
-        )),
-        "molt_weakset_remove" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_weakset_remove",
-            crate::molt_weakset_remove as *const (),
-        )),
-        "molt_weakset_pop" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_weakset_pop",
-            crate::molt_weakset_pop as *const (),
-        )),
-        "molt_weakset_contains" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_weakset_contains",
-            crate::molt_weakset_contains as *const (),
-        )),
-        "molt_weakset_len" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_weakset_len",
-            crate::molt_weakset_len as *const (),
-        )),
-        "molt_weakset_items" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_weakset_items",
-            crate::molt_weakset_items as *const (),
-        )),
-        "molt_weakset_clear" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_weakset_clear",
-            crate::molt_weakset_clear as *const (),
+        "molt_weakcontainer_dead" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_weakcontainer_dead",
+            crate::molt_weakcontainer_dead as *const (),
         )),
         _ => None,
     }

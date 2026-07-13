@@ -170,7 +170,7 @@ Current pipeline order (`passes/mod.rs:132-160`):
 ```
 range_devirt → iter_devirt → tuple_scalarize → loop_unroll → canonicalize →
 unboxing → block_versioning → canonicalize_post → gvn → licm → escape_analysis →
-refcount_elim → reuse_analysis → dead_store_elim → type_guard_hoist → sccp →
+refcount_elim → dead_store_elim → type_guard_hoist → sccp →
 strength_reduction → fast_math → branchless_count → bce → vectorize → polyhedral →
 check_exception_elim → copy_prop → dce
 ```

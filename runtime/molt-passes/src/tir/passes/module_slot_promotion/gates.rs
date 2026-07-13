@@ -72,7 +72,10 @@ pub(super) fn is_marker_passthrough(op: &TirOp) -> bool {
 /// function) when there are no module ops, multiple roots, or a root that is
 /// not function-entry-stable (we require it to be an entry-block argument so
 /// the object identity provably never changes mid-function).
-pub(super) fn single_module_root(func: &TirFunction, alias: &AliasAnalysisResult) -> Option<ValueId> {
+pub(super) fn single_module_root(
+    func: &TirFunction,
+    alias: &AliasAnalysisResult,
+) -> Option<ValueId> {
     let mut root: Option<ValueId> = None;
     for block in func.blocks.values() {
         for op in &block.ops {

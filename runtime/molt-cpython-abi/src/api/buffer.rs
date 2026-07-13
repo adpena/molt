@@ -29,13 +29,19 @@ const PYBUF_ANY_CONTIGUOUS_BIT: c_int = PyBUF_ANY_CONTIGUOUS & !PyBUF_STRIDES;
 
 unsafe fn set_buffer_error(message: &'static [u8]) {
     unsafe {
-        crate::api::errors::PyErr_SetString(&raw mut PyExc_BufferError, message.as_ptr().cast());
+        crate::api::errors::PyErr_SetString(
+            (&raw mut PyExc_BufferError).cast::<crate::abi_types::PyObject>(),
+            message.as_ptr().cast(),
+        );
     }
 }
 
 unsafe fn set_type_error(message: &'static [u8]) {
     unsafe {
-        crate::api::errors::PyErr_SetString(&raw mut PyExc_TypeError, message.as_ptr().cast());
+        crate::api::errors::PyErr_SetString(
+            (&raw mut PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
+            message.as_ptr().cast(),
+        );
     }
 }
 
@@ -427,7 +433,12 @@ unsafe fn raise_bytes_like_type_error(obj: *mut PyObject) {
     };
     let msg = format!("a bytes-like object is required, not '{:.100}'", name);
     if let Ok(c) = std::ffi::CString::new(msg) {
-        unsafe { crate::api::errors::PyErr_SetString(&raw mut PyExc_TypeError, c.as_ptr()) };
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                (&raw mut PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
+                c.as_ptr(),
+            )
+        };
     }
 }
 

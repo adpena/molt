@@ -134,7 +134,7 @@ def _rust_field_category(ty: str) -> str:
     if ty in {"c_double", "f64"}:
         return F64
     # Fixed array: [u8; 10], [c_char; 1], [u32; 1]
-    m = re.match(r"\[\s*([A-Za-z0-9_]+)\s*;\s*(\d+)\s*\]", ty)
+    m = re.match(r"\[\s*(.+?)\s*;\s*(\d+)\s*\]", ty)
     if m:
         inner = _rust_field_category(m.group(1))
         return f"arr:{m.group(2)}x{inner}"

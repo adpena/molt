@@ -2,12 +2,30 @@
 
 #![allow(non_snake_case)]
 
-use molt_cpython_abi::abi_types::{Py_False, Py_True};
+mod support;
+
+use molt_cpython_abi::abi_types::{MoltTypeTag, Py_False, Py_True};
 use std::ffi::c_void;
 use std::ptr;
 
+unsafe extern "C" fn classify_heap(bits: u64) -> u8 {
+    if support::fake_complex::contains(bits) {
+        MoltTypeTag::Complex as u8
+    } else {
+        MoltTypeTag::Other as u8
+    }
+}
+
 fn init() {
     molt_cpython_abi::bridge::molt_cpython_abi_init();
+    let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
+    hooks.classify_heap = classify_heap;
+    hooks.object_hash = support::fake_complex::hash;
+    hooks.complex_from_doubles = support::fake_complex::from_doubles;
+    hooks.complex_parts = support::fake_complex::parts;
+    unsafe {
+        let _ = molt_cpython_abi::try_set_runtime_hooks(hooks);
+    }
 }
 
 // ---------------------------------------------------------------------------

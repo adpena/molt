@@ -1,9 +1,3 @@
-macro_rules! fn_addr {
-    ($func:path) => {
-        $func as *const () as usize as u64
-    };
-}
-
 use crate::{
     BIND_KIND_PACKED_BUILTIN, HashContext, MoltObject, PyToken, TYPE_ID_DICT,
     TYPE_ID_DICT_ITEMS_VIEW, TYPE_ID_DICT_KEYS_VIEW, TYPE_ID_FROZENSET, TYPE_ID_LIST_BOOL,

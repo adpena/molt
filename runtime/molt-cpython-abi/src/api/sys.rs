@@ -13,13 +13,10 @@ pub unsafe extern "C" fn PySys_GetObject(name: *const c_char) -> *mut PyObject {
         return ptr::null_mut();
     }
     let name_bytes = unsafe { CStr::from_ptr(name) }.to_bytes();
-    let bits = unsafe {
+    let result = unsafe {
         (hooks_or_stubs().sys_get_object_borrowed)(name_bytes.as_ptr(), name_bytes.len())
     };
-    if bits == 0 {
-        return ptr::null_mut();
-    }
-    unsafe { GLOBAL_BRIDGE.handle_to_borrowed_pyobj(bits) }
+    unsafe { GLOBAL_BRIDGE.borrowed_result_to_borrowed_pyobj(result) }
 }
 
 #[unsafe(no_mangle)]

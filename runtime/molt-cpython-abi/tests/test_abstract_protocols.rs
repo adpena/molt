@@ -43,7 +43,7 @@ unsafe extern "C" fn fx_alloc_list() -> u64 {
         .insert(bits, Vec::new());
     bits
 }
-unsafe extern "C" fn fx_list_append(list_bits: u64, item_bits: u64) {
+unsafe extern "C" fn fx_list_append(list_bits: u64, item_bits: u64) -> i32 {
     if let Some(v) = LISTS
         .lock()
         .unwrap()
@@ -52,6 +52,7 @@ unsafe extern "C" fn fx_list_append(list_bits: u64, item_bits: u64) {
     {
         v.push(item_bits);
     }
+    0
 }
 unsafe extern "C" fn fx_list_len(bits: u64) -> usize {
     LISTS
@@ -61,14 +62,20 @@ unsafe extern "C" fn fx_list_len(bits: u64) -> usize {
         .get(&bits)
         .map_or(0, |v| v.len())
 }
-unsafe extern "C" fn fx_list_item(bits: u64, i: usize) -> u64 {
-    LISTS
+unsafe extern "C" fn fx_list_item(
+    bits: u64,
+    i: usize,
+) -> molt_cpython_abi::hooks::BorrowedHandleResult {
+    match LISTS
         .lock()
         .unwrap()
         .get_or_insert_default()
         .get(&bits)
         .and_then(|v| v.get(i).copied())
-        .unwrap_or(0)
+    {
+        Some(value) => molt_cpython_abi::hooks::BorrowedHandleResult::ok(value),
+        None => molt_cpython_abi::hooks::BorrowedHandleResult::missing(),
+    }
 }
 unsafe extern "C" fn fx_alloc_tuple(n: usize) -> u64 {
     let bits = fresh_handle();
@@ -79,7 +86,11 @@ unsafe extern "C" fn fx_alloc_tuple(n: usize) -> u64 {
         .insert(bits, vec![MoltObject::none().bits(); n]);
     bits
 }
-unsafe extern "C" fn fx_tuple_set(bits: u64, i: usize, val: u64) {
+unsafe extern "C" fn fx_tuple_set(
+    bits: u64,
+    i: usize,
+    val: u64,
+) -> molt_cpython_abi::hooks::OwnedHandleResult {
     if let Some(v) = TUPLES
         .lock()
         .unwrap()
@@ -87,8 +98,10 @@ unsafe extern "C" fn fx_tuple_set(bits: u64, i: usize, val: u64) {
         .get_mut(&bits)
         && i < v.len()
     {
-        v[i] = val;
+        let old = std::mem::replace(&mut v[i], val);
+        return molt_cpython_abi::hooks::OwnedHandleResult::ok(old);
     }
+    molt_cpython_abi::hooks::OwnedHandleResult::error()
 }
 unsafe extern "C" fn fx_tuple_len(bits: u64) -> usize {
     TUPLES
@@ -98,14 +111,20 @@ unsafe extern "C" fn fx_tuple_len(bits: u64) -> usize {
         .get(&bits)
         .map_or(0, |v| v.len())
 }
-unsafe extern "C" fn fx_tuple_item(bits: u64, i: usize) -> u64 {
-    TUPLES
+unsafe extern "C" fn fx_tuple_item(
+    bits: u64,
+    i: usize,
+) -> molt_cpython_abi::hooks::BorrowedHandleResult {
+    match TUPLES
         .lock()
         .unwrap()
         .get_or_insert_default()
         .get(&bits)
         .and_then(|v| v.get(i).copied())
-        .unwrap_or(0)
+    {
+        Some(value) => molt_cpython_abi::hooks::BorrowedHandleResult::ok(value),
+        None => molt_cpython_abi::hooks::BorrowedHandleResult::missing(),
+    }
 }
 unsafe extern "C" fn fx_alloc_str(data: *const u8, len: usize) -> u64 {
     let bytes: &'static [u8] = Box::leak(
@@ -202,7 +221,7 @@ fn install() {
 }
 
 fn register(bits: u64) -> *mut PyObject {
-    unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_pyobj(bits) }
+    unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) }
 }
 fn make_str(text: &str) -> u64 {
     unsafe { fx_alloc_str(text.as_ptr(), text.len()) }
@@ -339,9 +358,12 @@ fn sequence_setitem_on_tuple_raises_typeerror() {
     );
     unsafe { errors::PyErr_Clear() };
     // And the tuple's slot must be untouched (still the None placeholder).
-    assert_eq!(
-        unsafe { fx_tuple_item(tuple_bits, 0) },
-        MoltObject::none().bits(),
+    assert!(
+        matches!(
+            unsafe { fx_tuple_item(tuple_bits, 0) }.decode(),
+            molt_cpython_abi::hooks::DecodedHandleResult::Ok(bits)
+                if bits == MoltObject::none().bits()
+        ),
         "the pre-fix silent tuple mutation must be locked out"
     );
 }

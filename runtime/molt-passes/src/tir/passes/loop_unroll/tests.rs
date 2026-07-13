@@ -1167,8 +1167,8 @@ fn unrolled_inplace_add_shared_exit_round_trips_to_simple_ir() {
     func.loop_cond_blocks.insert(header, cond);
 
     // Recognized and unrolled (trip 8).
-    let info = counted_loop::recognize_counted_loop(&func, header)
-        .expect("repro loop must be recognized");
+    let info =
+        counted_loop::recognize_counted_loop(&func, header).expect("repro loop must be recognized");
     assert_eq!(info.trip_count, 8);
     let stats = run(&mut func, &TargetInfo::native_release_fast());
     assert!(stats.ops_added > 0, "repro must unroll");
@@ -1178,8 +1178,7 @@ fn unrolled_inplace_add_shared_exit_round_trips_to_simple_ir() {
         "no orphaned LoopEnd may remain"
     );
 
-    crate::tir::verify::verify_function(&func)
-        .expect("unrolled repro must pass TIR verification");
+    crate::tir::verify::verify_function(&func).expect("unrolled repro must pass TIR verification");
 
     // The back-conversion must terminate without panicking on the unrolled,
     // shared-exit, store-slot-bearing IR, and leave NO loop markers (a stray

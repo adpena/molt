@@ -66,9 +66,10 @@ pub(in crate::native_backend::function_compiler) fn emit_raw_int_div_intmin_debu
         let lhs_is_min = builder.ins().icmp_imm(IntCC::Equal, lhs_raw, i64::MIN);
         let rhs_is_neg_one = builder.ins().icmp_imm(IntCC::Equal, rhs_raw, -1);
         let is_overflow = builder.ins().band(lhs_is_min, rhs_is_neg_one);
-        builder
-            .ins()
-            .trapnz(is_overflow, cranelift_codegen::ir::TrapCode::user(2).unwrap());
+        builder.ins().trapnz(
+            is_overflow,
+            cranelift_codegen::ir::TrapCode::user(2).unwrap(),
+        );
     }
     #[cfg(not(debug_assertions))]
     {

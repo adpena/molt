@@ -1,20 +1,29 @@
 #![allow(non_snake_case)]
 
-use molt_cpython_abi::abi_types::{PyLong_Type, PyLongObject, PyLongValue, PyObject};
+mod support;
+
+use molt_cpython_abi::abi_types::{
+    _Py_FalseStruct, _Py_TrueStruct, Py_False, Py_True, Py_complex, PyLong_Type, PyLongObject,
+    PyLongValue, PyObject,
+};
 use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
 use molt_cpython_abi::hooks::{
-    INT_BYTES_INVALID, INT_BYTES_NEGATIVE_UNSIGNED, INT_BYTES_OK, INT_BYTES_OVERFLOW,
-    NumberBinaryOp, NumberUnaryOp, STUB_HOOKS,
+    BorrowedHandleResult, INT_BYTES_INVALID, INT_BYTES_NEGATIVE_UNSIGNED, INT_BYTES_OK,
+    INT_BYTES_OVERFLOW, NumberBinaryOp, NumberUnaryOp, OwnedHandleResult, STUB_HOOKS,
 };
 use molt_lang_obj_model::MoltObject;
 use std::collections::HashMap;
 use std::ffi::{c_char, c_void};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 static VALUES: OnceLock<Mutex<HashMap<u64, i128>>> = OnceLock::new();
 static STRINGS: OnceLock<Mutex<HashMap<u64, Box<[u8]>>>> = OnceLock::new();
 static BYTES: OnceLock<Mutex<HashMap<u64, Box<[u8]>>>> = OnceLock::new();
+static TUPLES: OnceLock<Mutex<HashMap<u64, Vec<u64>>>> = OnceLock::new();
 static TEST_LOCK: Mutex<()> = Mutex::new(());
+static BINARY_CALLS: AtomicUsize = AtomicUsize::new(0);
+static SYS_GET_CALLS: AtomicUsize = AtomicUsize::new(0);
 
 fn values() -> &'static Mutex<HashMap<u64, i128>> {
     VALUES.get_or_init(|| Mutex::new(HashMap::new()))
@@ -26,6 +35,17 @@ fn strings() -> &'static Mutex<HashMap<u64, Box<[u8]>>> {
 
 fn byte_values() -> &'static Mutex<HashMap<u64, Box<[u8]>>> {
     BYTES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn tuples() -> &'static Mutex<HashMap<u64, Vec<u64>>> {
+    TUPLES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(feature = "l7-test-probe")]
+fn bits_for_tuple(items: Vec<u64>) -> u64 {
+    let bits = MoltObject::from_ptr(Box::into_raw(Box::new(0u8))).bits();
+    tuples().lock().unwrap().insert(bits, items);
+    bits
 }
 
 unsafe extern "C" fn alloc_text(data: *const u8, len: usize) -> u64 {
@@ -72,6 +92,16 @@ unsafe extern "C" fn bytes_data(bits: u64, out_len: *mut usize) -> *const u8 {
     value.as_ptr()
 }
 
+unsafe extern "C" fn sys_get_object(data: *const u8, len: usize) -> BorrowedHandleResult {
+    let name = unsafe { std::slice::from_raw_parts(data, len) };
+    if name == b"float_info" {
+        SYS_GET_CALLS.fetch_add(1, Ordering::Relaxed);
+        BorrowedHandleResult::ok(bits_for_value(42))
+    } else {
+        BorrowedHandleResult::missing()
+    }
+}
+
 fn value_for_bits(bits: u64) -> Option<i128> {
     MoltObject::from_bits(bits)
         .as_int()
@@ -106,9 +136,35 @@ unsafe extern "C" fn classify(bits: u64) -> u8 {
         molt_cpython_abi::abi_types::MoltTypeTag::Str as u8
     } else if byte_values().lock().unwrap().contains_key(&bits) {
         molt_cpython_abi::abi_types::MoltTypeTag::Bytes as u8
+    } else if support::fake_complex::contains(bits) {
+        molt_cpython_abi::abi_types::MoltTypeTag::Complex as u8
+    } else if tuples().lock().unwrap().contains_key(&bits) {
+        molt_cpython_abi::abi_types::MoltTypeTag::Tuple as u8
     } else {
         molt_cpython_abi::abi_types::MoltTypeTag::Other as u8
     }
+}
+
+unsafe extern "C" fn tuple_len(bits: u64) -> usize {
+    tuples().lock().unwrap().get(&bits).map_or(0, Vec::len)
+}
+
+unsafe extern "C" fn tuple_item(bits: u64, index: usize) -> BorrowedHandleResult {
+    tuples()
+        .lock()
+        .unwrap()
+        .get(&bits)
+        .and_then(|items| items.get(index).copied())
+        .map_or_else(BorrowedHandleResult::error, BorrowedHandleResult::ok)
+}
+
+unsafe extern "C" fn tuple_set(bits: u64, index: usize, value: u64) -> OwnedHandleResult {
+    let mut tuples = tuples().lock().unwrap();
+    let Some(slot) = tuples.get_mut(&bits).and_then(|items| items.get_mut(index)) else {
+        return OwnedHandleResult::error();
+    };
+    let old = std::mem::replace(slot, value);
+    OwnedHandleResult::ok(old)
 }
 
 unsafe extern "C" fn as_i64(bits: u64, out: *mut i64) -> i32 {
@@ -140,9 +196,10 @@ unsafe extern "C" fn as_u64_mask(bits: u64, width: u32, out: *mut u64) -> i32 {
     0
 }
 
-unsafe extern "C" fn binary(op: u32, a: u64, b: u64) -> u64 {
+unsafe extern "C" fn binary(op: u32, a: u64, b: u64) -> OwnedHandleResult {
+    BINARY_CALLS.fetch_add(1, Ordering::Relaxed);
     let (Some(a), Some(b)) = (value_for_bits(a), value_for_bits(b)) else {
-        return 0;
+        return OwnedHandleResult::error();
     };
     let value = match op {
         x if x == NumberBinaryOp::Add as u32 => a.checked_add(b),
@@ -156,17 +213,19 @@ unsafe extern "C" fn binary(op: u32, a: u64, b: u64) -> u64 {
         }),
         _ => None,
     };
-    value.map(bits_for_value).unwrap_or(0)
+    value
+        .map(bits_for_value)
+        .map_or_else(OwnedHandleResult::error, OwnedHandleResult::ok)
 }
 
-unsafe extern "C" fn unary(op: u32, value: u64) -> u64 {
+unsafe extern "C" fn unary(op: u32, value: u64) -> OwnedHandleResult {
     if op != NumberUnaryOp::Negative as u32 {
-        return 0;
+        return OwnedHandleResult::error();
     }
     value_for_bits(value)
         .and_then(i128::checked_neg)
         .map(bits_for_value)
-        .unwrap_or(0)
+        .map_or_else(OwnedHandleResult::error, OwnedHandleResult::ok)
 }
 
 unsafe extern "C" fn from_bytes(data: *const u8, len: usize, little: i32, signed: i32) -> u64 {
@@ -198,6 +257,42 @@ unsafe extern "C" fn from_bytes(data: *const u8, len: usize, little: i32, signed
         }
     }
     bits_for_value(i128::from_le_bytes(raw))
+}
+
+unsafe extern "C" fn from_digits(digits: *const u8, len: usize, base: u32, negative: i32) -> u64 {
+    let digits = unsafe { std::slice::from_raw_parts(digits, len) };
+    let mut value = 0i128;
+    for &digit in digits {
+        value = value
+            .checked_mul(i128::from(base))
+            .and_then(|value| value.checked_add(i128::from(digit)))
+            .unwrap_or(0);
+    }
+    if negative != 0 {
+        value = -value;
+    }
+    bits_for_value(value)
+}
+
+unsafe extern "C" fn from_f64_trunc(value: f64) -> u64 {
+    bits_for_value(value.trunc() as i128)
+}
+
+unsafe extern "C" fn int_sign(bits: u64) -> i32 {
+    value_for_bits(bits).map_or(0, |value| value.signum() as i32)
+}
+
+unsafe extern "C" fn int_signed_byte_width(bits: u64, out: *mut usize) -> i32 {
+    let Some(value) = value_for_bits(bits) else {
+        return -1;
+    };
+    let significant = if value >= 0 {
+        129 - value.leading_zeros() as usize
+    } else {
+        129 - (!value).leading_zeros() as usize
+    };
+    unsafe { *out = significant.div_ceil(8) };
+    0
 }
 
 unsafe extern "C" fn to_bytes(
@@ -261,6 +356,10 @@ fn init() {
     hooks.int_as_u64_checked = as_u64;
     hooks.int_as_u64_mask = as_u64_mask;
     hooks.int_from_bytes = from_bytes;
+    hooks.int_from_digits = from_digits;
+    hooks.int_from_f64_trunc = from_f64_trunc;
+    hooks.int_sign = int_sign;
+    hooks.int_signed_byte_width = int_signed_byte_width;
     hooks.int_to_bytes = to_bytes;
     hooks.int_num_bits = num_bits;
     hooks.number_binary_op = binary;
@@ -270,13 +369,20 @@ fn init() {
     hooks.alloc_bytes = alloc_byte_value;
     hooks.str_data = str_data;
     hooks.bytes_data = bytes_data;
+    hooks.sys_get_object_borrowed = sys_get_object;
+    hooks.complex_parts = support::fake_complex::parts;
+    hooks.complex_from_doubles = support::fake_complex::from_doubles;
+    hooks.object_hash = support::fake_complex::hash;
+    hooks.tuple_len = tuple_len;
+    hooks.tuple_item = tuple_item;
+    hooks.tuple_set = tuple_set;
     unsafe {
         let _ = molt_cpython_abi::try_set_runtime_hooks(hooks);
     }
 }
 
 fn proxy(value: i128) -> *mut PyObject {
-    unsafe { GLOBAL_BRIDGE.handle_to_pyobj(bits_for_value(value)) }
+    unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits_for_value(value)) }
 }
 
 fn clear_error() {
@@ -323,10 +429,16 @@ fn from_string_has_shared_prefix_underscore_base_zero_and_pend_semantics() {
     }
 
     let huge = c"1208925819614629174706176"; // 2**80
+    BINARY_CALLS.store(0, Ordering::Relaxed);
     let value = unsafe {
         molt_cpython_abi::api::numbers::PyLong_FromString(huge.as_ptr(), &raw mut end, 10)
     };
     assert!(!value.is_null());
+    assert_eq!(
+        BINARY_CALLS.load(Ordering::Relaxed),
+        0,
+        "literal construction must allocate once through int_from_digits, not leak Horner temporaries"
+    );
     assert_eq!(
         unsafe { molt_cpython_abi::api::numbers::_PyLong_NumBits(value) },
         81
@@ -601,4 +713,312 @@ fn size_t_and_all_unsigned_converters_preserve_outputs_on_error() {
         },
         1
     );
+}
+
+unsafe extern "C" {
+    fn molt_capi_errno() -> i32;
+    fn molt_capi_set_errno(value: i32);
+}
+
+#[cfg(feature = "l7-test-probe")]
+unsafe extern "C" {
+    fn molt_l7_overlay_numeric_probe() -> i32;
+    fn molt_l7_overlay_tuple_set_get_probe(tuple: *mut PyObject, value: *mut PyObject) -> i32;
+    fn molt_l7_overlay_long_probe(value: *mut PyObject) -> std::os::raw::c_long;
+    fn molt_l7_overlay_float_from_string_probe(value: *mut PyObject) -> f64;
+    fn molt_l7_overlay_complex_real_probe(value: *mut PyObject) -> f64;
+}
+
+#[test]
+fn float_pack_unpack_covers_ieee_edges_endian_and_info_authority() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    init();
+    let mut bytes = [0u8; 8];
+    assert_eq!(
+        unsafe {
+            molt_cpython_abi::api::numbers::PyFloat_Pack2(
+                1.0 + 2f64.powi(-11),
+                bytes.as_mut_ptr().cast(),
+                0,
+            )
+        },
+        0
+    );
+    assert_eq!(&bytes[..2], &[0x3c, 0x00]);
+    assert_eq!(
+        unsafe {
+            molt_cpython_abi::api::numbers::PyFloat_Pack2(
+                1.0 + 3.0 * 2f64.powi(-11),
+                bytes.as_mut_ptr().cast(),
+                1,
+            )
+        },
+        0
+    );
+    assert_eq!(&bytes[..2], &[0x02, 0x3c]);
+    for (value, expected) in [
+        (0.0, 0x0000u16),
+        (-0.0, 0x8000),
+        (2f64.powi(-24), 0x0001),
+        (f64::INFINITY, 0x7c00),
+        (f64::NEG_INFINITY, 0xfc00),
+    ] {
+        assert_eq!(
+            unsafe {
+                molt_cpython_abi::api::numbers::PyFloat_Pack2(value, bytes.as_mut_ptr().cast(), 0)
+            },
+            0
+        );
+        assert_eq!(u16::from_be_bytes([bytes[0], bytes[1]]), expected);
+    }
+    assert_eq!(
+        unsafe {
+            molt_cpython_abi::api::numbers::PyFloat_Pack2(-f64::NAN, bytes.as_mut_ptr().cast(), 0)
+        },
+        0
+    );
+    assert_eq!(u16::from_be_bytes([bytes[0], bytes[1]]), 0xfe00);
+    assert!(
+        unsafe {
+            molt_cpython_abi::api::numbers::PyFloat_Unpack2([0x00u8, 0x01].as_ptr().cast(), 0)
+        } == 2f64.powi(-24)
+    );
+    let negative_zero = unsafe {
+        molt_cpython_abi::api::numbers::PyFloat_Unpack2([0x00u8, 0x80].as_ptr().cast(), 1)
+    };
+    assert_eq!(negative_zero.to_bits(), (-0.0f64).to_bits());
+    assert_eq!(
+        unsafe {
+            molt_cpython_abi::api::numbers::PyFloat_Pack2(65_520.0, bytes.as_mut_ptr().cast(), 0)
+        },
+        -1
+    );
+    clear_error();
+    assert_eq!(
+        unsafe {
+            molt_cpython_abi::api::numbers::PyFloat_Pack4(f64::MAX, bytes.as_mut_ptr().cast(), 0)
+        },
+        -1
+    );
+    clear_error();
+    assert_eq!(
+        unsafe {
+            molt_cpython_abi::api::numbers::PyFloat_Pack8(-0.0, bytes.as_mut_ptr().cast(), 1)
+        },
+        0
+    );
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::numbers::PyFloat_Unpack8(bytes.as_ptr().cast(), 1) }
+            .to_bits(),
+        (-0.0f64).to_bits()
+    );
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::numbers::PyFloat_GetMax() },
+        f64::MAX
+    );
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::numbers::PyFloat_GetMin() },
+        f64::MIN_POSITIVE
+    );
+    SYS_GET_CALLS.store(0, Ordering::Relaxed);
+    assert!(!unsafe { molt_cpython_abi::api::numbers::PyFloat_GetInfo() }.is_null());
+    assert_eq!(SYS_GET_CALLS.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn complex_primitives_use_scaled_math_and_real_c_errno() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    init();
+    let a = Py_complex {
+        real: 3.0,
+        imag: 4.0,
+    };
+    let b = Py_complex {
+        real: 1.0,
+        imag: -2.0,
+    };
+    let runtime_complex =
+        unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(support::fake_complex::allocate(6.0, -7.0)) };
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::numbers::PyComplex_Check(runtime_complex) },
+        1
+    );
+    let extracted =
+        unsafe { molt_cpython_abi::api::numbers::PyComplex_AsCComplex(runtime_complex) };
+    assert_eq!((extracted.real, extracted.imag), (6.0, -7.0));
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::numbers::_Py_c_sum(a, b) }.real,
+        4.0
+    );
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::numbers::_Py_c_diff(a, b) }.imag,
+        6.0
+    );
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::numbers::_Py_c_neg(a) }.real,
+        -3.0
+    );
+    let product = unsafe { molt_cpython_abi::api::numbers::_Py_c_prod(a, b) };
+    assert_eq!((product.real, product.imag), (11.0, -2.0));
+
+    unsafe { molt_capi_set_errno(77) };
+    let quotient = unsafe { molt_cpython_abi::api::numbers::_Py_c_quot(a, b) };
+    assert!((quotient.real + 1.0).abs() < 1e-12);
+    assert!((quotient.imag - 2.0).abs() < 1e-12);
+    assert_eq!(unsafe { molt_capi_errno() }, 77);
+    let zero = Py_complex {
+        real: 0.0,
+        imag: 0.0,
+    };
+    let _ = unsafe { molt_cpython_abi::api::numbers::_Py_c_quot(a, zero) };
+    assert_eq!(unsafe { molt_capi_errno() }, libc::EDOM);
+
+    unsafe { molt_capi_set_errno(77) };
+    let one = unsafe { molt_cpython_abi::api::numbers::_Py_c_pow(zero, zero) };
+    assert_eq!((one.real, one.imag), (1.0, 0.0));
+    assert_eq!(unsafe { molt_capi_errno() }, 77);
+    let _ = unsafe {
+        molt_cpython_abi::api::numbers::_Py_c_pow(
+            zero,
+            Py_complex {
+                real: -1.0,
+                imag: 0.0,
+            },
+        )
+    };
+    assert_eq!(unsafe { molt_capi_errno() }, libc::EDOM);
+    unsafe { molt_capi_set_errno(0) };
+    let overflow = unsafe {
+        molt_cpython_abi::api::numbers::_Py_c_pow(
+            Py_complex {
+                real: 1e308,
+                imag: 0.0,
+            },
+            Py_complex {
+                real: 2.0,
+                imag: 0.0,
+            },
+        )
+    };
+    assert!(!overflow.real.is_finite() || !overflow.imag.is_finite());
+    assert_eq!(unsafe { molt_capi_errno() }, libc::ERANGE);
+
+    unsafe { molt_capi_set_errno(77) };
+    assert_eq!(
+        unsafe {
+            molt_cpython_abi::api::numbers::_Py_c_abs(Py_complex {
+                real: f64::INFINITY,
+                imag: f64::NAN,
+            })
+        },
+        f64::INFINITY
+    );
+    assert_eq!(unsafe { molt_capi_errno() }, 0);
+    let _ = unsafe {
+        molt_cpython_abi::api::numbers::_Py_c_abs(Py_complex {
+            real: f64::MAX,
+            imag: f64::MAX,
+        })
+    };
+    assert_eq!(unsafe { molt_capi_errno() }, libc::ERANGE);
+}
+
+#[test]
+fn bool_public_names_are_pointer_aliases_of_sole_canonical_storage() {
+    assert_eq!(&raw const Py_True, &raw const _Py_TrueStruct);
+    assert_eq!(&raw const Py_False, &raw const _Py_FalseStruct);
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::numbers::PyBool_FromLong(1) },
+        (&raw mut _Py_TrueStruct).cast::<PyObject>()
+    );
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::numbers::PyBool_FromLong(0) },
+        (&raw mut _Py_FalseStruct).cast::<PyObject>()
+    );
+}
+
+#[test]
+fn number_conversions_preserve_exact_carriers_and_normalize_bool() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    init();
+    let integer = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(7) };
+    let before = unsafe { (*integer).ob_refcnt };
+    let same_integer = unsafe { molt_cpython_abi::api::abstract_number::PyNumber_Long(integer) };
+    assert_eq!(same_integer, integer);
+    assert_eq!(unsafe { (*integer).ob_refcnt }, before + 1);
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(same_integer) };
+
+    let float = unsafe { molt_cpython_abi::api::numbers::PyFloat_FromDouble(1.5) };
+    let before = unsafe { (*float).ob_refcnt };
+    let same_float = unsafe { molt_cpython_abi::api::abstract_number::PyNumber_Float(float) };
+    assert_eq!(same_float, float);
+    assert_eq!(unsafe { (*float).ob_refcnt }, before + 1);
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(same_float) };
+
+    for convert in [
+        molt_cpython_abi::api::abstract_number::PyNumber_Long
+            as unsafe extern "C" fn(*mut PyObject) -> *mut PyObject,
+        molt_cpython_abi::api::abstract_number::PyNumber_Index,
+    ] {
+        let normalized = unsafe { convert((&raw mut _Py_TrueStruct).cast()) };
+        assert_ne!(normalized, (&raw mut _Py_TrueStruct).cast());
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::numbers::PyLong_CheckExact(normalized) },
+            1
+        );
+        assert_eq!(unsafe { (*normalized).ob_type }, &raw mut PyLong_Type);
+        unsafe { molt_cpython_abi::api::refcount::Py_DECREF(normalized) };
+    }
+    unsafe {
+        molt_cpython_abi::api::refcount::Py_DECREF(float);
+        molt_cpython_abi::api::refcount::Py_DECREF(integer);
+    }
+}
+
+#[test]
+#[cfg(feature = "l7-test-probe")]
+fn overlay_compiled_numeric_roundtrip_uses_the_abi_bridge_representation() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    init();
+    assert_eq!(unsafe { molt_l7_overlay_numeric_probe() }, 0);
+    let integer = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(73) };
+    let text =
+        unsafe { molt_cpython_abi::api::strings::PyUnicode_FromStringAndSize(c"1.25".as_ptr(), 4) };
+    let complex = unsafe { molt_cpython_abi::api::numbers::PyComplex_FromDoubles(6.0, -7.0) };
+    assert!(!integer.is_null() && !text.is_null() && !complex.is_null());
+    assert_eq!(unsafe { molt_l7_overlay_long_probe(integer) }, 73);
+    assert_eq!(
+        unsafe { molt_l7_overlay_float_from_string_probe(text) },
+        1.25
+    );
+    assert_eq!(unsafe { molt_l7_overlay_complex_real_probe(complex) }, 6.0);
+    unsafe {
+        molt_cpython_abi::api::refcount::Py_DECREF(complex);
+        molt_cpython_abi::api::refcount::Py_DECREF(text);
+        molt_cpython_abi::api::refcount::Py_DECREF(integer);
+    }
+}
+
+#[test]
+#[cfg(feature = "l7-test-probe")]
+fn overlay_compiled_tuple_set_and_direct_get_share_the_canonical_sidecar() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    init();
+    let tuple_bits = bits_for_tuple(vec![bits_for_value(1)]);
+    let tuple = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(tuple_bits) };
+    let value = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(42) };
+    assert!(!tuple.is_null() && !value.is_null());
+    assert_eq!(
+        unsafe { molt_l7_overlay_tuple_set_get_probe(tuple, value) },
+        0
+    );
+    // The caller's reference may disappear immediately after SetItem steals
+    // its input; the concrete-layout sidecar must keep the carrier alive until
+    // the tuple view itself is retired.
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(value) };
+    assert_eq!(
+        value_for_bits(tuples().lock().unwrap().get(&tuple_bits).unwrap()[0]),
+        Some(42)
+    );
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(tuple) };
 }

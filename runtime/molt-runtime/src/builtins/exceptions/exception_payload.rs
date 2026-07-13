@@ -428,7 +428,6 @@ pub(crate) fn alloc_exception_from_class_bits(
         }
         let mut class_bits = class_bits;
         let mut class_ptr = class_ptr;
-        let mut kind_bits = class_name_bits(class_ptr);
         let args_bits = exception_normalize_args(_py, args_bits);
         if obj_from_bits(args_bits).is_none() {
             return std::ptr::null_mut();
@@ -441,7 +440,8 @@ pub(crate) fn alloc_exception_from_class_bits(
         let oserror_bits = exception_type_bits_from_name(_py, "OSError");
         let mut dict_bits = MoltObject::none().bits();
         if issubclass_bits(class_bits, oserror_bits) {
-            let name = string_obj_to_owned(obj_from_bits(kind_bits)).unwrap_or_default();
+            let name = string_obj_to_owned(obj_from_bits(class_name_bits(class_ptr)))
+                .expect("exception class must have a string name");
             if oserror_root_name(&name)
                 && let Some(errno_val) = errno_val
                 && let Some(subclass) = oserror_subclass_for_errno(errno_val)
@@ -452,7 +452,6 @@ pub(crate) fn alloc_exception_from_class_bits(
                 {
                     class_bits = mapped_bits;
                     class_ptr = mapped_ptr;
-                    kind_bits = class_name_bits(class_ptr);
                 }
             }
             dict_bits = oserror_attr_dict(_py, errno_val, strerror_bits, filename_bits);
@@ -484,7 +483,7 @@ pub(crate) fn alloc_exception_from_class_bits(
                 }
             }
         }
-        if let Some(name) = string_obj_to_owned(obj_from_bits(kind_bits))
+        if let Some(name) = string_obj_to_owned(obj_from_bits(class_name_bits(class_ptr)))
             && let Some(kind) = unicode_error_kind(&name)
         {
             let fields = match unicode_error_fields_from_args(_py, kind, args_bits) {
@@ -496,13 +495,13 @@ pub(crate) fn alloc_exception_from_class_bits(
             };
             dict_bits = unicode_error_attr_dict(_py, fields);
         }
-        let msg_bits = exception_message_for_storage(_py, kind_bits, class_bits, args_bits);
+        let msg_bits = exception_message_for_storage(_py, class_bits, args_bits);
         if obj_from_bits(msg_bits).is_none() {
             dec_ref_bits(_py, args_bits);
             return std::ptr::null_mut();
         }
         let none_bits = MoltObject::none().bits();
-        let ptr = alloc_exception_obj(_py, kind_bits, msg_bits, class_bits, args_bits, dict_bits);
+        let ptr = alloc_exception_obj(_py, class_bits, msg_bits, args_bits, dict_bits);
         if !ptr.is_null() {
             exception_set_stop_iteration_value(_py, ptr, args_bits);
             exception_set_system_exit_code(_py, ptr, args_bits);
@@ -539,17 +538,11 @@ fn exception_args_vec(ptr: *mut u8) -> Vec<u64> {
 
 fn exception_class_name(ptr: *mut u8) -> String {
     unsafe {
-        let class_bits = exception_class_bits(ptr);
-        if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
-            && object_type_id(class_ptr) == TYPE_ID_TYPE
-        {
-            let name_bits = class_name_bits(class_ptr);
-            if let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) {
-                return name;
-            }
-        }
-        string_obj_to_owned(obj_from_bits(exception_kind_bits(ptr)))
-            .unwrap_or_else(|| "Exception".to_string())
+        let class_ptr = obj_from_bits(object_class_bits(ptr))
+            .as_ptr()
+            .expect("exception object must have a class edge");
+        string_obj_to_owned(obj_from_bits(class_name_bits(class_ptr)))
+            .expect("exception class must have a string name")
     }
 }
 
@@ -640,10 +633,7 @@ fn format_single_exception(_py: &PyToken<'_>, ptr: *mut u8) -> String {
 }
 
 pub(crate) fn format_exception_message(_py: &PyToken<'_>, ptr: *mut u8) -> String {
-    let mut class_bits = unsafe { exception_class_bits(ptr) };
-    if obj_from_bits(class_bits).is_none() || class_bits == 0 {
-        class_bits = unsafe { exception_type_bits(_py, exception_kind_bits(ptr)) };
-    }
+    let class_bits = unsafe { object_class_bits(ptr) };
     let kind = exception_class_name(ptr);
     if kind == "UnicodeDecodeError"
         && let Some(msg) = format_unicode_decode_error(_py, ptr)

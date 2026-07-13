@@ -52,7 +52,7 @@ def load_profile(path: Path) -> dict[str, Any] | None:
 
 def flatten_counters(profile: dict[str, Any]) -> dict[str, int]:
     flat: dict[str, int] = {}
-    for section in ("profile", "hot_paths", "deopt_reasons"):
+    for section in ("profile", "hot_paths", "deopt_reasons", "aux", "gc", "memory"):
         sub = profile.get(section, {})
         if isinstance(sub, dict):
             for key, value in sub.items():

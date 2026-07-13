@@ -445,10 +445,7 @@ def test_canonical_harness_env_installs_repo_local_defaults(tmp_path: Path) -> N
 
     assert env["MOLT_EXT_ROOT"] == str(tmp_path.resolve())
     assert env["CARGO_TARGET_DIR"] == str(
-        molt_dx.cargo_target_dir_for_artifact_root(
-            tmp_path,
-            env["MOLT_SESSION_ID"],
-        )
+        molt_dx.cargo_target_dir_for_artifact_root(tmp_path, None)
     )
     assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == env["CARGO_TARGET_DIR"]
     assert env["MOLT_CACHE"] == str(tmp_path / ".molt_cache")
@@ -480,10 +477,7 @@ def test_canonical_harness_env_honors_dx_external_artifact_policy(
 
     assert env["MOLT_EXT_ROOT"] == str(external_root.resolve())
     assert env["CARGO_TARGET_DIR"] == str(
-        molt_dx.cargo_target_dir_for_artifact_root(
-            external_root.resolve(),
-            env["MOLT_SESSION_ID"],
-        )
+        molt_dx.cargo_target_dir_for_artifact_root(external_root.resolve(), None)
     )
 
 
@@ -494,6 +488,9 @@ def test_canonical_harness_env_preserves_caller_session(tmp_path: Path) -> None:
     )
 
     assert env["MOLT_SESSION_ID"] == "caller-session"
+    assert env["CARGO_TARGET_DIR"] == str(
+        molt_dx.cargo_target_dir_for_artifact_root(tmp_path, "caller-session")
+    )
 
 
 def test_execution_context_owns_env_limits_and_batch_kwargs(
@@ -657,6 +654,8 @@ def test_guarded_completed_process_writes_command_profile(
     )
 
     assert result.returncode == 0
+    assert result.peak is not None and result.peak.rss_kb == 64 * 1024
+    assert result.peak_total is not None and result.peak_total.rss_kb == 96 * 1024
     payload = [
         json.loads(line)
         for line in profile_log.read_text(encoding="utf-8").splitlines()
