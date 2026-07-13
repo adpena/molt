@@ -18,7 +18,7 @@
     "comparison"
   ],
   "properties": {
-    "schema_version": { "const": 3 },
+    "schema_version": { "const": 4 },
     "kind": { "const": "l7_numeric_performance_attestation_bundle" },
     "generated_at_utc": { "type": "string", "minLength": 1 },
     "runner": { "$ref": "#/$defs/runner" },
@@ -62,11 +62,12 @@
     "summary": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["median", "mean", "cv", "min", "max", "samples"],
+      "required": ["median", "mean", "cv", "robust_cv", "min", "max", "samples"],
       "properties": {
         "median": { "type": "number", "minimum": 0 },
         "mean": { "type": "number", "minimum": 0 },
         "cv": { "type": "number", "minimum": 0 },
+        "robust_cv": { "type": "number", "minimum": 0 },
         "min": { "type": "number", "minimum": 0 },
         "max": { "type": "number", "minimum": 0 },
         "samples": {
@@ -79,10 +80,11 @@
     "reportedSummary": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["median", "cv"],
+      "required": ["median", "cv", "robust_cv"],
       "properties": {
         "median": { "type": "number", "minimum": 0 },
-        "cv": { "type": "number", "minimum": 0 }
+        "cv": { "type": "number", "minimum": 0 },
+        "robust_cv": { "type": "number", "minimum": 0 }
       }
     },
     "sourceSnapshot": {
@@ -131,7 +133,8 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "max_cv",
+        "max_robust_cv",
+        "max_raw_cv",
         "max_time_regression",
         "max_allocation_regression",
         "max_allocated_bytes_regression",
@@ -140,7 +143,8 @@
         "max_measured_rss_bytes"
       ],
       "properties": {
-        "max_cv": { "type": "number", "minimum": 0, "maximum": 1 },
+        "max_robust_cv": { "type": "number", "minimum": 0, "maximum": 1 },
+        "max_raw_cv": { "type": "number", "minimum": 0, "maximum": 1 },
         "max_time_regression": { "type": "number", "minimum": 0, "maximum": 1 },
         "max_allocation_regression": { "type": "number", "minimum": 0, "maximum": 1 },
         "max_allocated_bytes_regression": {
@@ -489,7 +493,7 @@
         "cases"
       ],
       "properties": {
-        "schema_version": { "const": 2 },
+        "schema_version": { "const": 3 },
         "kind": {
           "enum": [
             "l7_numeric_performance_attestation",
@@ -549,10 +553,11 @@
     "validation": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["valid", "max_cv", "errors"],
+      "required": ["valid", "max_robust_cv", "max_raw_cv", "errors"],
       "properties": {
         "valid": { "type": "boolean" },
-        "max_cv": { "type": "number", "minimum": 0, "maximum": 1 },
+        "max_robust_cv": { "type": "number", "minimum": 0, "maximum": 1 },
+        "max_raw_cv": { "type": "number", "minimum": 0, "maximum": 1 },
         "errors": {
           "type": "array",
           "items": { "type": "string", "minLength": 1 }

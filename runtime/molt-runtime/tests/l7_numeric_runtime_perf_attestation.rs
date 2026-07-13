@@ -17,7 +17,7 @@ use molt_cpython_abi::api::numbers::{
 use molt_cpython_abi::api::refcount::Py_DECREF;
 use molt_cpython_abi::l7_attestation::{
     CALIBRATION_TARGET_NS, MINIMUM_SAMPLE_NS, SAMPLE_COUNT, calibrate_timed_iterations,
-    enforce_current_thread_affinity, normalized_affinity_mask,
+    enforce_current_thread_affinity, normalized_affinity_mask, summarize_samples,
 };
 use molt_obj_model::MoltObject;
 use molt_runtime::attestation_probe;
@@ -157,17 +157,12 @@ fn measure(
 }
 
 fn summary(samples: &[Sample], field: impl Fn(&Sample) -> f64) -> Value {
-    let mut values: Vec<f64> = samples.iter().map(field).collect();
-    let mean = values.iter().sum::<f64>() / values.len() as f64;
-    let variance = values
-        .iter()
-        .map(|value| (value - mean).powi(2))
-        .sum::<f64>()
-        / (values.len() - 1) as f64;
-    values.sort_by(f64::total_cmp);
+    let values: Vec<f64> = samples.iter().map(field).collect();
+    let summary = summarize_samples(&values);
     json!({
-        "median": values[values.len() / 2],
-        "cv": if mean == 0.0 { 0.0 } else { variance.sqrt() / mean },
+        "median": summary.median,
+        "cv": summary.cv,
+        "robust_cv": summary.robust_cv,
     })
 }
 
@@ -318,7 +313,7 @@ fn l7_numeric_runtime_performance_attestation() {
         cases.push(byte_case(width));
     }
     let payload = json!({
-        "schema_version": 2,
+        "schema_version": 3,
         "kind": "l7_numeric_runtime_performance_attestation",
         "profile": "release",
         "allocator_scope": "test_feature_counting_wrapper_over_production_mimalloc",

@@ -10,6 +10,63 @@ pub const SAMPLE_COUNT: usize = 9;
 pub const MINIMUM_SAMPLE_NS: u128 = 20_000_000;
 pub const CALIBRATION_TARGET_NS: u128 = 200_000_000;
 pub const MAX_TIMED_ITERATIONS: usize = 1 << 28;
+const MAD_NORMAL_SCALE: f64 = 1.4826;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SampleSummary {
+    pub median: f64,
+    pub cv: f64,
+    pub robust_cv: f64,
+}
+
+/// Summarize a nonempty sample set without discarding scheduler outliers.
+///
+/// `cv` is the ordinary sample-standard-deviation coefficient. `robust_cv`
+/// scales median absolute deviation to the normal-distribution equivalent.
+/// Both remain in the attestation; validation applies separate ceilings.
+pub fn summarize_samples(values: &[f64]) -> SampleSummary {
+    assert!(!values.is_empty(), "sample summary requires values");
+    assert!(
+        values
+            .iter()
+            .all(|value| value.is_finite() && *value >= 0.0),
+        "sample summary requires finite nonnegative values"
+    );
+    let mut ordered = values.to_vec();
+    ordered.sort_by(f64::total_cmp);
+    let median = ordered[ordered.len() / 2];
+    let mean = values.iter().sum::<f64>() / values.len() as f64;
+    let variance = if values.len() > 1 {
+        values
+            .iter()
+            .map(|value| (value - mean).powi(2))
+            .sum::<f64>()
+            / (values.len() - 1) as f64
+    } else {
+        0.0
+    };
+    let cv = if mean == 0.0 {
+        0.0
+    } else {
+        variance.sqrt() / mean
+    };
+    let mut deviations = values
+        .iter()
+        .map(|value| (value - median).abs())
+        .collect::<Vec<_>>();
+    deviations.sort_by(f64::total_cmp);
+    let mad = deviations[deviations.len() / 2];
+    let robust_cv = if median == 0.0 {
+        cv
+    } else {
+        MAD_NORMAL_SCALE * mad / median
+    };
+    SampleSummary {
+        median,
+        cv,
+        robust_cv,
+    }
+}
 
 /// Calibrate a sample to a target with 10x headroom over the fail-closed floor.
 ///
@@ -117,5 +174,13 @@ mod tests {
     #[should_panic(expected = "exactly one logical CPU")]
     fn affinity_rejects_multi_cpu_masks_before_platform_call() {
         enforce_current_thread_affinity("0x3");
+    }
+
+    #[test]
+    fn robust_cv_preserves_but_does_not_overweight_one_interruption() {
+        let summary = summarize_samples(&[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0]);
+        assert!(summary.cv > 0.25);
+        assert_eq!(summary.robust_cv, 0.0);
+        assert_eq!(summary.median, 1.0);
     }
 }

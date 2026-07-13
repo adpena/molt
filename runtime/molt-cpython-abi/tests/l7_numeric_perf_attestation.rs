@@ -20,7 +20,7 @@ use molt_cpython_abi::bridge::{GLOBAL_BRIDGE, molt_capi_pyobj_to_handle};
 use molt_cpython_abi::hooks::{INT_BYTES_OK, OwnedHandleResult, STUB_HOOKS};
 use molt_cpython_abi::l7_attestation::{
     CALIBRATION_TARGET_NS, MINIMUM_SAMPLE_NS, SAMPLE_COUNT, calibrate_timed_iterations,
-    enforce_current_thread_affinity, normalized_affinity_mask,
+    enforce_current_thread_affinity, normalized_affinity_mask, summarize_samples,
 };
 use molt_lang_obj_model::MoltObject;
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -37,7 +37,7 @@ unsafe extern "C" {
     fn molt_l7_prebuilt_direct_decref(value: *mut PyObject) -> isize;
 }
 
-const SCHEMA_VERSION: u32 = 2;
+const SCHEMA_VERSION: u32 = 3;
 
 static ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
 static ALLOCATED_BYTES: AtomicU64 = AtomicU64::new(0);
@@ -774,30 +774,12 @@ fn json_string(value: &str) -> String {
     out
 }
 
-fn median(mut values: Vec<f64>) -> f64 {
-    values.sort_by(f64::total_cmp);
-    values[values.len() / 2]
-}
-
-fn cv(values: &[f64]) -> f64 {
-    let mean = values.iter().sum::<f64>() / values.len() as f64;
-    if mean == 0.0 {
-        return 0.0;
-    }
-    let variance = values
-        .iter()
-        .map(|value| (value - mean).powi(2))
-        .sum::<f64>()
-        / (values.len() - 1) as f64;
-    variance.sqrt() / mean
-}
-
 fn metric_summary(samples: &[Sample], field: impl Fn(&Sample) -> f64) -> String {
     let values: Vec<f64> = samples.iter().map(field).collect();
+    let summary = summarize_samples(&values);
     format!(
-        r#"{{"median":{:.6},"cv":{:.6}}}"#,
-        median(values.clone()),
-        cv(&values)
+        r#"{{"median":{:.6},"cv":{:.6},"robust_cv":{:.6}}}"#,
+        summary.median, summary.cv, summary.robust_cv
     )
 }
 
