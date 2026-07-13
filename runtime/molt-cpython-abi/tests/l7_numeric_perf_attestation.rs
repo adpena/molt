@@ -592,28 +592,31 @@ fn bridge_cases() -> Vec<CaseResult> {
     let scalar = unsafe { PyLong_FromLong(42) };
     assert!(!scalar.is_null());
     let singleton = &raw mut Py_True as *mut _ as *mut PyObject;
-    let backing: Vec<Box<u64>> = (0..4096).map(|index| Box::new(index as u64)).collect();
-    let heap_bits: Vec<u64> = backing
+    let backing: Vec<Box<u64>> = (0..4099).map(|index| Box::new(index as u64)).collect();
+    let mut heap_bits: Vec<u64> = backing
         .iter()
         .map(|value| MoltObject::from_ptr((&**value as *const u64).cast_mut().cast::<u8>()).bits())
         .collect();
-    let managed = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(heap_bits[0]) };
+    let lifetime_bits = heap_bits.pop().expect("dedicated lifetime witness handle");
+    let managed_bits = heap_bits.pop().expect("dedicated managed lookup handle");
+    let cold_preflight_bits = heap_bits.pop().expect("dedicated cold preflight handle");
+    assert_eq!(heap_bits.len(), 4096);
+    let managed = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(managed_bits) };
 
     /* A compiled prebuilt-style consumer retains the exact borrowed view after
      * the runtime owner drains.  This deliberately uses the generic protocol
      * view: only objects with a proven full carrier may be stamped as builtin
      * list/numeric layouts. */
-    let lifetime_bits = *heap_bits.last().expect("lifetime witness handle");
     prebuilt_direct_refcount_lifetime_witness(lifetime_bits);
 
     assert_eq!(unsafe { molt_l7_overlay_long_probe(scalar) }, 42);
-    assert_eq!(unsafe { molt_capi_pyobj_to_handle(managed) }, heap_bits[0]);
+    assert_eq!(unsafe { molt_capi_pyobj_to_handle(managed) }, managed_bits);
     let singleton_bits = MoltObject::from_bool(true).bits();
     assert_eq!(
         unsafe { molt_capi_pyobj_to_handle(singleton) },
         singleton_bits
     );
-    let cold_preflight = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(heap_bits[1]) };
+    let cold_preflight = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(cold_preflight_bits) };
     assert!(!cold_preflight.is_null());
     assert!(GLOBAL_BRIDGE.release_pyobj(cold_preflight));
 
@@ -632,7 +635,7 @@ fn bridge_cases() -> Vec<CaseResult> {
         r#"{"representation":"managed_non_scalar","operation":"pyobj_to_handle","expected_proxy_churn":0}"#.to_owned(),
         65_536,
         |_| unsafe {
-            u64::from(black_box(molt_capi_pyobj_to_handle(managed)) == heap_bits[0])
+            u64::from(black_box(molt_capi_pyobj_to_handle(managed)) == managed_bits)
         },
     );
     let singleton_lookup = measure_case(
