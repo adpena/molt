@@ -8,10 +8,10 @@ use std::ffi::c_void;
 
 pub const SAMPLE_COUNT: usize = 9;
 pub const MINIMUM_SAMPLE_NS: u128 = 20_000_000;
-pub const CALIBRATION_TARGET_NS: u128 = 100_000_000;
+pub const CALIBRATION_TARGET_NS: u128 = 200_000_000;
 pub const MAX_TIMED_ITERATIONS: usize = 1 << 28;
 
-/// Calibrate a sample to a target with 5x headroom over the fail-closed floor.
+/// Calibrate a sample to a target with 10x headroom over the fail-closed floor.
 ///
 /// `measure` must execute and semantically validate exactly the requested
 /// number of operations and return their loop-inclusive elapsed nanoseconds.
@@ -109,8 +109,8 @@ mod tests {
     #[test]
     fn calibration_uses_shared_target_and_growth_policy() {
         let iterations = calibrate_timed_iterations(4, |count| count as u128 * 1_000_000);
-        assert_eq!(iterations, 100);
-        assert!(CALIBRATION_TARGET_NS >= MINIMUM_SAMPLE_NS * 5);
+        assert_eq!(iterations, 200);
+        assert!(CALIBRATION_TARGET_NS >= MINIMUM_SAMPLE_NS * 10);
     }
 
     #[test]

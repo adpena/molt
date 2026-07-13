@@ -457,7 +457,7 @@
         "input": { "type": "object" },
         "iterations_per_sample": { "type": "integer", "minimum": 1 },
         "observer_iterations_per_sample": { "type": "integer", "minimum": 1 },
-        "calibration_target_ns": { "const": 100000000 },
+        "calibration_target_ns": { "const": 200000000 },
         "minimum_sample_ns": { "const": 20000000 },
         "timing_scope": {
           "const": "loop_inclusive; allocation and hook observers are untimed"
