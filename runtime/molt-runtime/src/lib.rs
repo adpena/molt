@@ -21,9 +21,28 @@ macro_rules! fn_addr {
     };
 }
 
-#[cfg(all(not(target_arch = "wasm32"), not(miri)))]
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(miri),
+    not(feature = "l7-attestation-probe")
+))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(miri),
+    feature = "l7-attestation-probe"
+))]
+pub mod attestation_probe;
+
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(miri),
+    feature = "l7-attestation-probe"
+))]
+#[global_allocator]
+static GLOBAL: attestation_probe::CountingMiMalloc = attestation_probe::CountingMiMalloc::new();
 
 #[cfg(test)]
 pub(crate) static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
