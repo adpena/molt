@@ -40,6 +40,14 @@ from typing import Any, Mapping, Sequence
 _CYTHON_SOURCE_SUFFIX = ".pyx"
 _CYTHON_GENERATED_SUFFIXES = {".c", ".cpp", ".cxx", ".cc"}
 
+# Canonical compiler policy for C regenerated from Cython source. Cython's
+# generated preamble selects its stable/limited-API branches only when this
+# exact define is present. Keep it separate from Cython-generation argv: this
+# belongs only on the compiler command for a successful regeneration record.
+CYTHON_REGENERATED_C_COMPILE_ARGS: tuple[str, ...] = (
+    "-DPy_LIMITED_API=0x030C0000",
+)
+
 # ``build-system.requires`` entries look like ``Cython>=3.0.6`` /
 # ``cython==3.1.*``; the requirement string is the version authority.
 _CYTHON_REQUIREMENT_RE = re.compile(
@@ -92,12 +100,20 @@ class CythonRegeneration:
             "standalone": True,
             "cython_version": self.cython_version,
             "cython_argv": list(self.cython_argv),
+            "compile_args": list(CYTHON_REGENERATED_C_COMPILE_ARGS),
             "cimport_packages": list(self.cimport_packages),
             "cimport_pxd_roots": [str(path) for path in self.cimport_pxd_roots],
             "cimport_header_include_dirs": [
                 str(path) for path in self.cimport_header_include_dirs
             ],
         }
+
+
+def compile_args_for_regeneration(
+    regeneration: CythonRegeneration | None,
+) -> tuple[str, ...]:
+    """Return canonical compiler args only for regenerated Cython C."""
+    return CYTHON_REGENERATED_C_COMPILE_ARGS if regeneration is not None else ()
 
 
 def _leading_int(version: str) -> int | None:

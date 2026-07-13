@@ -1891,6 +1891,7 @@ def test_extension_build_threads_source_plan_roots_to_cython_regeneration(
                         "cc",
                         "-c",
                         "pkg/_cyext.c",
+                        "-DPLAN_UNIT=1",
                         "-o",
                         "build/_cyext.o",
                     ],
@@ -2008,11 +2009,21 @@ def test_extension_build_threads_source_plan_roots_to_cython_regeneration(
     assert observed_package_roots == [
         (project_root.resolve(), build_root.resolve())
     ]
-    assert any(
-        "-c" in cmd
-        and any("molt_cython_standalone" in part and "_cyext.c" in part for part in cmd)
+    regenerated_compile_command = next(
+        cmd
         for cmd in commands
+        if "-c" in cmd
+        and any("molt_cython_standalone" in part and "_cyext.c" in part for part in cmd)
     )
+    limited_api_arg = (
+        cli_commands._source_extension_cython.CYTHON_REGENERATED_C_COMPILE_ARGS[0]
+    )
+    assert limited_api_arg == "-DPy_LIMITED_API=0x030C0000"
+    assert limited_api_arg in regenerated_compile_command
+    assert regenerated_compile_command.index(limited_api_arg) < (
+        regenerated_compile_command.index("-DPLAN_UNIT=1")
+    )
+    assert sum(limited_api_arg in cmd for cmd in commands) == 1
     manifest = json.loads((out_dir / "extension_manifest.json").read_text())
     assert manifest["cython_standalone"][0]["cimport_pxd_roots"] == [
         str(project_root.resolve())
@@ -2020,6 +2031,7 @@ def test_extension_build_threads_source_plan_roots_to_cython_regeneration(
     assert manifest["cython_standalone"][0]["cimport_header_include_dirs"] == [
         str((project_root / "pkg").resolve())
     ]
+    assert manifest["cython_standalone"][0]["compile_args"] == [limited_api_arg]
 
 
 def test_extension_build_derives_module_attr_support_source_closure(
