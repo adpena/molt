@@ -232,6 +232,12 @@ unsafe extern "C" fn hook_int_from_bytes(
     little_endian: c_int,
     signed: c_int,
 ) -> u64 {
+    #[cfg(all(
+        feature = "l7-attestation-probe",
+        not(target_arch = "wasm32"),
+        not(miri)
+    ))]
+    crate::attestation_probe::record_numeric_hook();
     if data.is_null() && len != 0 {
         return 0;
     }
@@ -250,6 +256,12 @@ unsafe extern "C" fn hook_int_from_digits(
     base: u32,
     negative: c_int,
 ) -> u64 {
+    #[cfg(all(
+        feature = "l7-attestation-probe",
+        not(target_arch = "wasm32"),
+        not(miri)
+    ))]
+    crate::attestation_probe::record_numeric_hook();
     if digits.is_null() && len != 0 || !(2..=36).contains(&base) {
         return 0;
     }
@@ -340,6 +352,12 @@ unsafe extern "C" fn hook_int_to_bytes(
     little_endian: c_int,
     signed: c_int,
 ) -> c_int {
+    #[cfg(all(
+        feature = "l7-attestation-probe",
+        not(target_arch = "wasm32"),
+        not(miri)
+    ))]
+    crate::attestation_probe::record_numeric_hook();
     if data.is_null() && len != 0 {
         return INT_BYTES_INVALID;
     }
@@ -365,6 +383,12 @@ unsafe extern "C" fn hook_int_to_bytes(
 }
 
 unsafe extern "C" fn hook_int_num_bits(bits: u64, out: *mut usize) -> c_int {
+    #[cfg(all(
+        feature = "l7-attestation-probe",
+        not(target_arch = "wasm32"),
+        not(miri)
+    ))]
+    crate::attestation_probe::record_numeric_hook();
     if out.is_null() {
         return -1;
     }

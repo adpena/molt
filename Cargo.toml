@@ -38,6 +38,7 @@ members = [
 ]
 exclude = [
     "deploy/browser/simd-ops-rs",
+    "runtime/molt-cpython-abi-test-support",
     # molt-backend-mlir requires system LLVM 22 (mlir-sys). Excluded from
     # default workspace to prevent cargo check --all failures on machines
     # without LLVM installed. Build explicitly with:

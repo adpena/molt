@@ -17,6 +17,8 @@ default = []
 simd = []
 # Enable dlopen-based loading of pre-built CPython .so extensions
 extension-loader = ["dep:libloading"]
+# Link the isolated C overlay witness only for explicit L7 verification.
+l7-test-probe = ["dep:molt-cpython-abi-test-support"]
 
 [dependencies]
 molt-lang-obj-model = { path = "../molt-obj-model" }
@@ -30,6 +32,7 @@ unicode-properties  = { version = "0.1", default-features = false, features = ["
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 libloading = { version = "0.9", optional = true }
+molt-cpython-abi-test-support = { path = "../molt-cpython-abi-test-support", optional = true }
 
 [dev-dependencies]
 # Integration tests mint NaN-boxed pointer handles (so the bridge's classify
@@ -38,3 +41,8 @@ molt-lang-obj-model = { path = "../molt-obj-model" }
 
 [build-dependencies]
 cc = "1"
+
+[[test]]
+name = "l7_numeric_perf_attestation"
+path = "tests/l7_numeric_perf_attestation.rs"
+required-features = ["l7-test-probe"]

@@ -63,11 +63,20 @@ if sys.platform == "win32":
             ("PeakPagefileUsage", ctypes.c_size_t),
         ]
 
+    class _FILETIME(ctypes.Structure):
+        _fields_ = [("low", wintypes.DWORD), ("high", wintypes.DWORD)]
+
     _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     _kernel32.OpenProcess.restype = wintypes.HANDLE
     _kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     _kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    _kernel32.GetSystemTimes.argtypes = [
+        ctypes.POINTER(_FILETIME),
+        ctypes.POINTER(_FILETIME),
+        ctypes.POINTER(_FILETIME),
+    ]
+    _kernel32.GetSystemTimes.restype = wintypes.BOOL
     # GetProcessMemoryInfo lives in psapi.dll; modern Windows also exports the
     # K32-prefixed alias from kernel32.
     try:
@@ -350,7 +359,44 @@ def run_and_measure(
 # ---------------------------------------------------------------------------
 # Quiescence (C2) -- best-effort cross-platform; NEVER fail-closed.
 # ---------------------------------------------------------------------------
-_COMPETING = ("cargo", "rustc", "molt-backend", "wasmtime", "node")
+_COMPETING = ("cargo", "rustc", "molt-backend", "wasmtime")
+
+
+def _filetime_ticks(value: object) -> int:
+    return (int(value.high) << 32) | int(value.low)
+
+
+def _windows_cpu_load(sample_seconds: float = 0.25) -> Optional[float]:
+    """Return whole-host CPU utilization as a fraction using GetSystemTimes."""
+    if sys.platform != "win32":
+        return None
+
+    def snapshot() -> tuple[int, int, int] | None:
+        idle = _FILETIME()
+        kernel = _FILETIME()
+        user = _FILETIME()
+        if not _kernel32.GetSystemTimes(
+            ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user)
+        ):
+            return None
+        return (
+            _filetime_ticks(idle),
+            _filetime_ticks(kernel),
+            _filetime_ticks(user),
+        )
+
+    before = snapshot()
+    if before is None:
+        return None
+    time.sleep(sample_seconds)
+    after = snapshot()
+    if after is None:
+        return None
+    idle_delta = after[0] - before[0]
+    total_delta = (after[1] - before[1]) + (after[2] - before[2])
+    if total_delta <= 0 or idle_delta < 0:
+        return None
+    return min(1.0, max(0.0, (total_delta - idle_delta) / total_delta))
 
 
 def _competing_build_count() -> int:
@@ -382,25 +428,33 @@ class Quiescence:
 
 
 def measure_quiescence(max_load_per_core: float = 0.35) -> Quiescence:
-    """Certified iff we can MEASURE quiescence and it is quiet. On a host with no
-    load probe (e.g. Windows) certified is False (we honestly cannot certify) -- the
-    caller must treat 'uncertified' as: do not PROMOTE a red, but a WIN still stands."""
-    try:
-        load1 = os.getloadavg()[0]
-    except (OSError, AttributeError):
-        load1 = None
+    """Certified iff whole-host load is measured and below the policy ceiling."""
+    windows_cpu = _windows_cpu_load() if sys.platform == "win32" else None
+    if windows_cpu is not None:
+        cores = os.cpu_count() or 1
+        load1 = windows_cpu * cores
+        probe = "GetSystemTimes"
+    else:
+        try:
+            load1 = os.getloadavg()[0]
+        except (OSError, AttributeError):
+            load1 = None
+        cores = os.cpu_count() or 1
+        probe = "getloadavg"
     competing = _competing_build_count()
-    cores = os.cpu_count() or 1
     per_core = (load1 / cores) if load1 is not None else None
     if load1 is None:
         certified = False
-        detail = "load unavailable (no os.getloadavg on this OS); uncertified"
+        detail = "whole-host load unavailable; uncertified"
     elif per_core is not None and per_core > max_load_per_core:
         certified = False
-        detail = f"load1={load1:.2f} per_core={per_core:.2f}>{max_load_per_core}"
+        detail = (
+            f"{probe} active_cores={load1:.2f} "
+            f"per_core={per_core:.2f}>{max_load_per_core}"
+        )
     else:
         certified = True
-        detail = f"load1={load1:.2f} per_core={per_core:.2f}"
+        detail = f"{probe} active_cores={load1:.2f} per_core={per_core:.2f}"
     if competing > 0:
         detail += f"; competing~{competing}"
     return Quiescence(certified, load1, per_core, max(competing, 0), detail)
