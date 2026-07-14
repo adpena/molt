@@ -18,6 +18,11 @@ name = "l7_numeric_runtime_perf_attestation"
 path = "tests/l7_numeric_runtime_perf_attestation.rs"
 required-features = ["l7-attestation-probe"]
 
+[[test]]
+name = "list_delta_perf_attestation"
+path = "tests/list_delta_perf_attestation.rs"
+required-features = ["l7-attestation-probe"]
+
 [features]
 default = ["stdlib_full", "wasi_host"]
 l7-attestation-probe = ["molt-cpython-abi/l7-attestation-core"]

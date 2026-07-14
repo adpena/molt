@@ -283,17 +283,71 @@ unsafe fn compare_sequence(
     rhs_ptr: *mut u8,
 ) -> CompareOutcome {
     unsafe {
-        let lhs = seq_vec_ref(lhs_ptr);
-        let rhs = seq_vec_ref(rhs_ptr);
-        let common = lhs.len().min(rhs.len());
-        // SIMD fast path: bulk-compare NaN-boxed u64 arrays to skip past
-        // identity-equal prefix without per-element branch overhead.
-        let first_diff = simd_find_first_mismatch(lhs, rhs);
-        for idx in first_diff..common {
-            let l_bits = lhs[idx];
-            let r_bits = rhs[idx];
+        if object_type_id(lhs_ptr) == TYPE_ID_TUPLE {
+            // Tuples are immutable after publication. Lexical backing borrows
+            // keep this SIMD fast path allocation-free across element callbacks.
+            return crate::object::seq_access::with_immutable_tuple_slice(lhs_ptr, |lhs| {
+                crate::object::seq_access::with_immutable_tuple_slice(rhs_ptr, |rhs| {
+                    let common = lhs.len().min(rhs.len());
+                    // SIMD fast path: bulk-compare NaN-boxed u64 arrays to skip past
+                    // identity-equal prefix without per-element branch overhead.
+                    let first_diff = simd_find_first_mismatch(lhs, rhs);
+                    for idx in first_diff..common {
+                        let l_bits = lhs[idx];
+                        let r_bits = rhs[idx];
+                        match compare_object_eq_bool(
+                            _py,
+                            obj_from_bits(l_bits),
+                            obj_from_bits(r_bits),
+                        ) {
+                            CompareBoolOutcome::True => continue,
+                            CompareBoolOutcome::False | CompareBoolOutcome::NotComparable => {}
+                            CompareBoolOutcome::Error => return CompareOutcome::Error,
+                        }
+                        return match compare_objects(
+                            _py,
+                            obj_from_bits(l_bits),
+                            obj_from_bits(r_bits),
+                        ) {
+                            CompareOutcome::NotComparable => {
+                                compare_type_error(
+                                    _py,
+                                    obj_from_bits(l_bits),
+                                    obj_from_bits(r_bits),
+                                    "<",
+                                );
+                                CompareOutcome::Error
+                            }
+                            outcome => outcome,
+                        };
+                    }
+                    CompareOutcome::Ordered(lhs.len().cmp(&rhs.len()))
+                })
+                .unwrap_or(CompareOutcome::Error)
+            })
+            .unwrap_or(CompareOutcome::Error);
+        }
+
+        let mut idx = 0;
+        loop {
+            let lhs_len = crate::object::seq_access::locked_len(lhs_ptr);
+            let rhs_len = crate::object::seq_access::locked_len(rhs_ptr);
+            if idx >= lhs_len.min(rhs_len) {
+                return CompareOutcome::Ordered(lhs_len.cmp(&rhs_len));
+            }
+            let Some(lhs) = crate::object::seq_access::pin_item(_py, lhs_ptr, idx) else {
+                continue;
+            };
+            let Some(rhs) = crate::object::seq_access::pin_item(_py, rhs_ptr, idx) else {
+                continue;
+            };
+            let l_bits = lhs.bits();
+            let r_bits = rhs.bits();
             match compare_object_eq_bool(_py, obj_from_bits(l_bits), obj_from_bits(r_bits)) {
-                CompareBoolOutcome::True => continue,
+                CompareBoolOutcome::True => {
+                    idx += 1;
+                    continue;
+                }
                 CompareBoolOutcome::False | CompareBoolOutcome::NotComparable => {}
                 CompareBoolOutcome::Error => return CompareOutcome::Error,
             }
@@ -305,7 +359,6 @@ unsafe fn compare_sequence(
                 outcome => outcome,
             };
         }
-        CompareOutcome::Ordered(lhs.len().cmp(&rhs.len()))
     }
 }
 
@@ -323,33 +376,85 @@ unsafe fn compare_sequence_eq_bool(
             );
             return CompareBoolOutcome::Error;
         }
-        let lhs = seq_vec_ref(lhs_ptr);
-        let rhs = seq_vec_ref(rhs_ptr);
-        if lhs.len() != rhs.len() {
+        if object_type_id(lhs_ptr) == TYPE_ID_TUPLE {
+            return crate::object::seq_access::with_immutable_tuple_slice(lhs_ptr, |lhs| {
+                crate::object::seq_access::with_immutable_tuple_slice(rhs_ptr, |rhs| {
+                    if lhs.len() != rhs.len() {
+                        crate::state::recursion::recursion_guard_exit_fast();
+                        return CompareBoolOutcome::False;
+                    }
+                    let first_diff = simd_find_first_mismatch(lhs, rhs);
+                    for idx in first_diff..lhs.len() {
+                        let l_bits = lhs[idx];
+                        let r_bits = rhs[idx];
+                        if l_bits == r_bits {
+                            continue;
+                        }
+                        match compare_object_eq_bool(
+                            _py,
+                            obj_from_bits(l_bits),
+                            obj_from_bits(r_bits),
+                        ) {
+                            CompareBoolOutcome::True => {}
+                            CompareBoolOutcome::False | CompareBoolOutcome::NotComparable => {
+                                crate::state::recursion::recursion_guard_exit_fast();
+                                return CompareBoolOutcome::False;
+                            }
+                            CompareBoolOutcome::Error => {
+                                crate::state::recursion::recursion_guard_exit_fast();
+                                return CompareBoolOutcome::Error;
+                            }
+                        }
+                    }
+                    crate::state::recursion::recursion_guard_exit_fast();
+                    CompareBoolOutcome::True
+                })
+                .unwrap_or(CompareBoolOutcome::Error)
+            })
+            .unwrap_or(CompareBoolOutcome::Error);
+        }
+
+        if crate::object::seq_access::locked_len(lhs_ptr)
+            != crate::object::seq_access::locked_len(rhs_ptr)
+        {
             crate::state::recursion::recursion_guard_exit_fast();
             return CompareBoolOutcome::False;
         }
-        let first_diff = simd_find_first_mismatch(lhs, rhs);
-        for idx in first_diff..lhs.len() {
-            let l_bits = lhs[idx];
-            let r_bits = rhs[idx];
-            if l_bits == r_bits {
+        let mut idx = 0;
+        loop {
+            let lhs_len = crate::object::seq_access::locked_len(lhs_ptr);
+            let rhs_len = crate::object::seq_access::locked_len(rhs_ptr);
+            if idx >= lhs_len.min(rhs_len) {
+                crate::state::recursion::recursion_guard_exit_fast();
+                return if lhs_len == rhs_len {
+                    CompareBoolOutcome::True
+                } else {
+                    CompareBoolOutcome::False
+                };
+            }
+            let Some(lhs) = crate::object::seq_access::pin_item(_py, lhs_ptr, idx) else {
                 continue;
-            }
-            match compare_object_eq_bool(_py, obj_from_bits(l_bits), obj_from_bits(r_bits)) {
-                CompareBoolOutcome::True => {}
-                CompareBoolOutcome::False | CompareBoolOutcome::NotComparable => {
-                    crate::state::recursion::recursion_guard_exit_fast();
-                    return CompareBoolOutcome::False;
+            };
+            let Some(rhs) = crate::object::seq_access::pin_item(_py, rhs_ptr, idx) else {
+                continue;
+            };
+            let l_bits = lhs.bits();
+            let r_bits = rhs.bits();
+            if l_bits != r_bits {
+                match compare_object_eq_bool(_py, obj_from_bits(l_bits), obj_from_bits(r_bits)) {
+                    CompareBoolOutcome::True => {}
+                    CompareBoolOutcome::False | CompareBoolOutcome::NotComparable => {
+                        crate::state::recursion::recursion_guard_exit_fast();
+                        return CompareBoolOutcome::False;
+                    }
+                    CompareBoolOutcome::Error => {
+                        crate::state::recursion::recursion_guard_exit_fast();
+                        return CompareBoolOutcome::Error;
+                    }
                 }
-                CompareBoolOutcome::Error => {
-                    crate::state::recursion::recursion_guard_exit_fast();
-                    return CompareBoolOutcome::Error;
-                }
             }
+            idx += 1;
         }
-        crate::state::recursion::recursion_guard_exit_fast();
-        CompareBoolOutcome::True
     }
 }
 
@@ -546,15 +651,65 @@ unsafe fn compare_sequence_bool(
     op: CompareOp,
 ) -> CompareBoolOutcome {
     unsafe {
-        let lhs = seq_vec_ref(lhs_ptr);
-        let rhs = seq_vec_ref(rhs_ptr);
-        let common = lhs.len().min(rhs.len());
-        let first_diff = simd_find_first_mismatch(lhs, rhs);
-        for idx in first_diff..common {
-            let l_bits = lhs[idx];
-            let r_bits = rhs[idx];
+        if object_type_id(lhs_ptr) == TYPE_ID_TUPLE {
+            return crate::object::seq_access::with_immutable_tuple_slice(lhs_ptr, |lhs| {
+                crate::object::seq_access::with_immutable_tuple_slice(rhs_ptr, |rhs| {
+                    let common = lhs.len().min(rhs.len());
+                    let first_diff = simd_find_first_mismatch(lhs, rhs);
+                    for idx in first_diff..common {
+                        let l_bits = lhs[idx];
+                        let r_bits = rhs[idx];
+                        match compare_object_eq_bool(
+                            _py,
+                            obj_from_bits(l_bits),
+                            obj_from_bits(r_bits),
+                        ) {
+                            CompareBoolOutcome::True => continue,
+                            CompareBoolOutcome::False | CompareBoolOutcome::NotComparable => {}
+                            CompareBoolOutcome::Error => return CompareBoolOutcome::Error,
+                        }
+                        return compare_object_bool_for_op(
+                            _py,
+                            obj_from_bits(l_bits),
+                            obj_from_bits(r_bits),
+                            op,
+                        );
+                    }
+                    if ordering_matches(lhs.len().cmp(&rhs.len()), op) {
+                        CompareBoolOutcome::True
+                    } else {
+                        CompareBoolOutcome::False
+                    }
+                })
+                .unwrap_or(CompareBoolOutcome::Error)
+            })
+            .unwrap_or(CompareBoolOutcome::Error);
+        }
+
+        let mut idx = 0;
+        loop {
+            let lhs_len = crate::object::seq_access::locked_len(lhs_ptr);
+            let rhs_len = crate::object::seq_access::locked_len(rhs_ptr);
+            if idx >= lhs_len.min(rhs_len) {
+                return if ordering_matches(lhs_len.cmp(&rhs_len), op) {
+                    CompareBoolOutcome::True
+                } else {
+                    CompareBoolOutcome::False
+                };
+            }
+            let Some(lhs) = crate::object::seq_access::pin_item(_py, lhs_ptr, idx) else {
+                continue;
+            };
+            let Some(rhs) = crate::object::seq_access::pin_item(_py, rhs_ptr, idx) else {
+                continue;
+            };
+            let l_bits = lhs.bits();
+            let r_bits = rhs.bits();
             match compare_object_eq_bool(_py, obj_from_bits(l_bits), obj_from_bits(r_bits)) {
-                CompareBoolOutcome::True => continue,
+                CompareBoolOutcome::True => {
+                    idx += 1;
+                    continue;
+                }
                 CompareBoolOutcome::False | CompareBoolOutcome::NotComparable => {}
                 CompareBoolOutcome::Error => return CompareBoolOutcome::Error,
             }
@@ -564,11 +719,6 @@ unsafe fn compare_sequence_bool(
                 obj_from_bits(r_bits),
                 op,
             );
-        }
-        if ordering_matches(lhs.len().cmp(&rhs.len()), op) {
-            CompareBoolOutcome::True
-        } else {
-            CompareBoolOutcome::False
         }
     }
 }

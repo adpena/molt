@@ -801,7 +801,8 @@ unsafe fn bits_to_sigset(_py: &PyToken<'_>, list_ptr: *mut u8) -> Result<libc::s
         libc::sigemptyset(&mut set);
         let len = crate::builtins::containers::list_len(list_ptr);
         for i in 0..len {
-            let elem_bits = seq_vec_ref(list_ptr).get(i).copied().unwrap_or(0);
+            let mut elem_bits = 0;
+            let _ = crate::object::seq_access::read_item_gil_borrowed(list_ptr, i, &mut elem_bits);
             let elem_obj = obj_from_bits(elem_bits);
             match to_i64(elem_obj) {
                 Some(v) if v > 0 && v < nsig => {

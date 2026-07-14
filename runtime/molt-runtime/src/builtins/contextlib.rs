@@ -2,7 +2,7 @@ use crate::audit::{AuditArgs, audit_capability_decision};
 use crate::builtins::exceptions::molt_exception_last_pending;
 use crate::{
     MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_EXCEPTION, TYPE_ID_TYPE, attr_name_bits_from_bytes,
-    call_callable0, call_callable1, call_callable3, class_dict_bits, class_mro_ref,
+    call_callable0, call_callable1, call_callable3, class_dict_bits, class_mro_pinned,
     clear_exception, clear_exception_state, contextlib_async_exitstack_enter_context_poll_fn_addr,
     contextlib_async_exitstack_exit_poll_fn_addr, contextlib_asyncgen_enter_poll_fn_addr,
     contextlib_asyncgen_exit_poll_fn_addr, dec_ref_bits, dict_get_in_place,
@@ -185,7 +185,7 @@ fn contextlib_check_methods(
             "object has no attribute '__mro__'",
         ));
     }
-    let Some(mro) = (unsafe { class_mro_ref(candidate_ptr) }) else {
+    let Some(mro) = (unsafe { class_mro_pinned(_py, candidate_ptr) }) else {
         return Err(raise_exception::<u64>(
             _py,
             "AttributeError",

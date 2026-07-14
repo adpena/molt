@@ -44,6 +44,49 @@ pub unsafe fn export_u64_box(
     export_box(values, out_ptr, out_len)
 }
 
+/// Copy a borrowed u64 slice into an exported bridge buffer, charging the
+/// resource tracker before attempting the allocation.
+///
+/// This is the required path when the source allocation is runtime-owned: it
+/// prevents an untracked transient copy from defeating a memory limit before
+/// [`export_u64_box`] gets a chance to account for the result.
+///
+/// # Safety
+/// `out_ptr` and `out_len` must be valid, writable pointers when non-null.
+pub unsafe fn export_u64_slice(
+    values: &[u64],
+    out_ptr: *mut *const u64,
+    out_len: *mut usize,
+) -> i32 {
+    if out_ptr.is_null() || out_len.is_null() {
+        return 0;
+    }
+    unsafe {
+        *out_ptr = std::ptr::null();
+        *out_len = 0;
+    }
+    let len = values.len();
+    if len == 0 {
+        return 1;
+    }
+    if !charge_bridge_buffer::<u64>(len) {
+        return 0;
+    }
+    let mut copied = Vec::new();
+    if copied.try_reserve_exact(len).is_err() {
+        release_bridge_buffer::<u64>(len);
+        return 0;
+    }
+    copied.extend_from_slice(values);
+    debug_assert_eq!(copied.len(), copied.capacity());
+    let ptr = Box::into_raw(copied.into_boxed_slice()) as *const u64;
+    unsafe {
+        *out_ptr = ptr;
+        *out_len = len;
+    }
+    1
+}
+
 /// Export a boxed byte buffer to a raw pointer plus length out-pointer.
 ///
 /// # Safety
@@ -163,5 +206,43 @@ mod tests {
         assert!(out_ptr.is_null());
         assert_eq!(out_len, 0);
         assert!(with_tracker(|tracker| tracker.on_allocate(4)).is_ok());
+    }
+
+    #[test]
+    fn bridge_buffer_slice_copy_is_charged_before_export() {
+        set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+            max_memory: Some(8),
+            ..Default::default()
+        })));
+        let _reset = TrackerReset;
+        let mut out_ptr: *const u64 = 1usize as *const u64;
+        let mut out_len = usize::MAX;
+        assert_eq!(
+            unsafe { export_u64_slice(&[7u64], &mut out_ptr, &mut out_len) },
+            1
+        );
+        assert_eq!(out_len, 1);
+        assert_eq!(unsafe { *out_ptr }, 7);
+        assert!(with_tracker(|tracker| tracker.on_allocate(1)).is_err());
+        unsafe { __molt_bridge_free_u64(out_ptr as *mut u64, out_len) };
+        assert!(with_tracker(|tracker| tracker.on_allocate(8)).is_ok());
+    }
+
+    #[test]
+    fn bridge_buffer_slice_copy_rejects_before_allocating() {
+        set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+            max_memory: Some(7),
+            ..Default::default()
+        })));
+        let _reset = TrackerReset;
+        let mut out_ptr: *const u64 = 1usize as *const u64;
+        let mut out_len = usize::MAX;
+        assert_eq!(
+            unsafe { export_u64_slice(&[7u64], &mut out_ptr, &mut out_len) },
+            0
+        );
+        assert!(out_ptr.is_null());
+        assert_eq!(out_len, 0);
+        assert!(with_tracker(|tracker| tracker.on_allocate(7)).is_ok());
     }
 }

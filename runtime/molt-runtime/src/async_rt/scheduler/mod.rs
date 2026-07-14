@@ -489,7 +489,7 @@ impl MoltScheduler {
                             *stack.borrow_mut() = caller_handlers;
                         });
                         exception_stack_set_depth(_py, caller_depth);
-                        exception_context_fallback_pop();
+                        exception_context_fallback_pop(_py);
                         clear_task_token(_py, task_ptr);
                         task_mark_done(_py, task_ptr);
                         runtime_state(_py).sleep_queue().cancel_task(_py, task_ptr);
@@ -618,7 +618,7 @@ impl MoltScheduler {
                         *stack.borrow_mut() = caller_handlers;
                     });
                     exception_stack_set_depth(_py, caller_depth);
-                    exception_context_fallback_pop();
+                    exception_context_fallback_pop(_py);
                     if pending {
                         let waiting_on_event = task_waiting_on_event(_py, task_ptr);
                         let scheduled =
@@ -1337,7 +1337,7 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
             trace_step("restore_exception_stack");
             exception_stack_set_depth(_py, caller_depth);
             trace_step("exception_stack_set_depth");
-            exception_context_fallback_pop();
+            exception_context_fallback_pop(_py);
             trace_step("exception_context_fallback_pop");
             // Move any pending exception off the block_on task and onto the caller/global slot.
             let task_exc_slot = {

@@ -14,8 +14,8 @@ use crate::{
     dict_update_apply, dict_update_set_in_place, exception_pending, inc_ref_bits, init_atomic_bits,
     intern_static_name, is_truthy, issubclass_runtime, molt_class_set_base, molt_getattr_builtin,
     molt_is_callable, molt_iter, molt_object_setattr, molt_repr_from_obj, obj_from_bits,
-    object_class_bits, object_type_id, raise_exception, raise_not_iterable, seq_vec_ref,
-    string_obj_to_owned, to_i64, type_of_bits,
+    object_class_bits, object_type_id, raise_exception, raise_not_iterable, string_obj_to_owned,
+    to_i64, type_of_bits,
 };
 
 const FUNCTOOLS_OBJECT_SLOT_COUNT: usize = 23;
@@ -687,7 +687,9 @@ fn extend_positional_from_call_arg(arg_bits: u64, out: &mut Vec<u64>) {
     };
     unsafe {
         if object_type_id(arg_ptr) == TYPE_ID_TUPLE {
-            out.extend_from_slice(seq_vec_ref(arg_ptr));
+            let _ = crate::object::seq_access::with_immutable_tuple_slice(arg_ptr, |items| {
+                out.extend_from_slice(items);
+            });
             return;
         }
     }
@@ -705,9 +707,11 @@ fn extend_owned_lru_key_parts_from_call_arg(_py: &PyToken<'_>, arg_bits: u64, ou
     };
     unsafe {
         if object_type_id(arg_ptr) == TYPE_ID_TUPLE {
-            for bits in seq_vec_ref(arg_ptr).iter().copied() {
-                push_owned_lru_key_part(_py, out, bits);
-            }
+            let _ = crate::object::seq_access::with_immutable_tuple_slice(arg_ptr, |items| {
+                for bits in items.iter().copied() {
+                    push_owned_lru_key_part(_py, out, bits);
+                }
+            });
             return;
         }
     }
@@ -1040,11 +1044,28 @@ pub extern "C" fn molt_functools_wraps_call(closure_bits: u64, wrapper_bits: u64
             if object_type_id(closure_ptr) != TYPE_ID_TUPLE {
                 return MoltObject::none().bits();
             }
-            let elems = seq_vec_ref(closure_ptr);
-            if elems.len() < 3 {
+            if crate::object::seq_access::len(closure_ptr) < 3 {
                 return MoltObject::none().bits();
             }
-            molt_functools_update_wrapper(wrapper_bits, elems[0], elems[1], elems[2])
+            let mut wrapped_bits = 0;
+            let mut assigned_bits = 0;
+            let mut updated_bits = 0;
+            if crate::object::seq_access::read_item_gil_borrowed(closure_ptr, 0, &mut wrapped_bits)
+                == 0
+                || crate::object::seq_access::read_item_gil_borrowed(
+                    closure_ptr,
+                    1,
+                    &mut assigned_bits,
+                ) == 0
+                || crate::object::seq_access::read_item_gil_borrowed(
+                    closure_ptr,
+                    2,
+                    &mut updated_bits,
+                ) == 0
+            {
+                return MoltObject::none().bits();
+            }
+            molt_functools_update_wrapper(wrapper_bits, wrapped_bits, assigned_bits, updated_bits)
         }
     })
 }
@@ -1084,12 +1105,20 @@ pub extern "C" fn molt_functools_cmp_key_func(closure_bits: u64, obj_bits: u64) 
             if object_type_id(closure_ptr) != TYPE_ID_TUPLE {
                 return MoltObject::none().bits();
             }
-            let elems = seq_vec_ref(closure_ptr);
-            if elems.len() < 2 {
+            if crate::object::seq_access::len(closure_ptr) < 2 {
                 return MoltObject::none().bits();
             }
-            let cmp_bits = elems[0];
-            let class_bits = elems[1];
+            let mut cmp_bits = 0;
+            let mut class_bits = 0;
+            if crate::object::seq_access::read_item_gil_borrowed(closure_ptr, 0, &mut cmp_bits) == 0
+                || crate::object::seq_access::read_item_gil_borrowed(
+                    closure_ptr,
+                    1,
+                    &mut class_bits,
+                ) == 0
+            {
+                return MoltObject::none().bits();
+            }
             let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
                 return MoltObject::none().bits();
             };
@@ -1352,13 +1381,26 @@ pub extern "C" fn molt_functools_total_ordering_op(
             if object_type_id(closure_ptr) != TYPE_ID_TUPLE {
                 return MoltObject::none().bits();
             }
-            let elems = seq_vec_ref(closure_ptr);
-            if elems.len() < 3 {
+            if crate::object::seq_access::len(closure_ptr) < 3 {
                 return MoltObject::none().bits();
             }
-            let op_code = to_i64(obj_from_bits(elems[0])).unwrap_or(0);
-            let swap = to_i64(obj_from_bits(elems[1])).unwrap_or(0) != 0;
-            let negate = to_i64(obj_from_bits(elems[2])).unwrap_or(0) != 0;
+            let mut op_bits = 0;
+            let mut swap_bits = 0;
+            let mut negate_bits = 0;
+            if crate::object::seq_access::read_item_gil_borrowed(closure_ptr, 0, &mut op_bits) == 0
+                || crate::object::seq_access::read_item_gil_borrowed(closure_ptr, 1, &mut swap_bits)
+                    == 0
+                || crate::object::seq_access::read_item_gil_borrowed(
+                    closure_ptr,
+                    2,
+                    &mut negate_bits,
+                ) == 0
+            {
+                return MoltObject::none().bits();
+            }
+            let op_code = to_i64(obj_from_bits(op_bits)).unwrap_or(0);
+            let swap = to_i64(obj_from_bits(swap_bits)).unwrap_or(0) != 0;
+            let negate = to_i64(obj_from_bits(negate_bits)).unwrap_or(0) != 0;
             let (lhs, rhs) = if swap {
                 (other_bits, self_bits)
             } else {
@@ -1389,13 +1431,17 @@ fn iter_next_pair(_py: &PyToken<'_>, iter_bits: u64) -> Option<(u64, bool)> {
             let _ = raise_exception::<u64>(_py, "TypeError", "object is not an iterator");
             return None;
         }
-        let elems = seq_vec_ref(pair_ptr);
-        if elems.len() < 2 {
+        if crate::object::seq_access::len(pair_ptr) < 2 {
             let _ = raise_exception::<u64>(_py, "TypeError", "object is not an iterator");
             return None;
         }
-        let val_bits = elems[0];
-        let done_bits = elems[1];
+        let mut val_bits = 0;
+        let mut done_bits = 0;
+        if crate::object::seq_access::read_item_gil_borrowed(pair_ptr, 0, &mut val_bits) == 0
+            || crate::object::seq_access::read_item_gil_borrowed(pair_ptr, 1, &mut done_bits) == 0
+        {
+            return None;
+        }
         let done = is_truthy(_py, obj_from_bits(done_bits));
         Some((val_bits, done))
     }
@@ -1583,7 +1629,7 @@ fn make_lru_key(_py: &PyToken<'_>, args_bits: u64, kwargs_bits: u64, typed: bool
     let tuple_ptr = if parts.is_empty() {
         alloc_tuple(_py, &[])
     } else {
-        crate::object::builders::alloc_tuple_with_capacity_owned(_py, parts.as_slice(), parts.len())
+        crate::object::builders::alloc_tuple_owned(_py, parts.as_slice())
     };
     if tuple_ptr.is_null() {
         release_owned_lru_key_parts(_py, &parts);
@@ -2181,15 +2227,23 @@ pub extern "C" fn molt_functools_singledispatch_call(
         let first_arg_bits = if let Some(args_ptr) = obj_from_bits(args_bits).as_ptr() {
             unsafe {
                 if object_type_id(args_ptr) == TYPE_ID_TUPLE {
-                    let elems = seq_vec_ref(args_ptr);
-                    if elems.is_empty() {
+                    if crate::object::seq_access::len(args_ptr) == 0 {
                         return raise_exception::<_>(
                             _py,
                             "TypeError",
                             "singledispatch requires at least one positional argument",
                         );
                     }
-                    elems[0]
+                    let mut first_bits = 0;
+                    if crate::object::seq_access::read_item_gil_borrowed(
+                        args_ptr,
+                        0,
+                        &mut first_bits,
+                    ) == 0
+                    {
+                        return MoltObject::none().bits();
+                    }
+                    first_bits
                 } else {
                     args_bits
                 }

@@ -345,6 +345,28 @@ fn test_tuple_setitem_negative_index_returns_error() {
     }
 }
 
+#[test]
+fn test_tuple_setitem_rejects_shared_tuple() {
+    init();
+    let tup = unsafe { molt_cpython_abi::api::sequences::PyTuple_New(1) };
+    assert!(!tup.is_null());
+    unsafe { molt_cpython_abi::api::refcount::Py_INCREF(tup) };
+    let val = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(7) };
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::sequences::PyTuple_SetItem(tup, 0, val) },
+        -1,
+        "published tuple mutation must fail once the tuple is shared"
+    );
+    assert!(!unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
+    assert!(unsafe { molt_cpython_abi::api::sequences::PyTuple_GET_ITEM(tup, 0) }.is_null());
+    unsafe {
+        molt_cpython_abi::api::errors::PyErr_Clear();
+        molt_cpython_abi::api::refcount::Py_DECREF(tup);
+        molt_cpython_abi::api::refcount::Py_DECREF(tup);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // PyTuple_Size / PyTuple_GET_SIZE — null safety
 // ---------------------------------------------------------------------------

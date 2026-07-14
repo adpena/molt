@@ -67,6 +67,8 @@ def sample(artifact: Path, mode: str) -> dict[str, int | float | bool | None]:
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         cwd=ROOT,
     )
     return json.loads(completed.stdout)
@@ -123,6 +125,8 @@ def main() -> int:
             check=True,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             cwd=ROOT,
         ).stdout.strip(),
         "samples": args.samples,

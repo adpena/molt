@@ -7,8 +7,8 @@ use crate::const_data_cache::{
 };
 use crate::{
     MAX_SMALL_LIST, TYPE_ID_STRING, alloc_bytes, alloc_list_with_capacity, alloc_string,
-    dec_ref_bits, inc_ref_bits, obj_from_bits, object_type_id, seq_vec, string_bytes,
-    usize_from_bits, utf8_codepoint_count_cached,
+    dec_ref_bits, inc_ref_bits, obj_from_bits, object_type_id, string_bytes, usize_from_bits,
+    utf8_codepoint_count_cached,
 };
 
 pub(crate) fn bytes_find_impl(hay_bytes: &[u8], needle_bytes: &[u8]) -> i64 {
@@ -513,10 +513,7 @@ pub(crate) fn replace_string_impl(
 }
 
 unsafe fn list_push_owned(list_ptr: *mut u8, val_bits: u64) {
-    unsafe {
-        let elems = seq_vec(list_ptr);
-        elems.push(val_bits);
-    }
+    unsafe { crate::object::list_mutation::append_owned_unpublished(list_ptr, val_bits) }
 }
 
 fn alloc_list_empty_with_capacity(_py: &PyToken<'_>, capacity: usize) -> *mut u8 {

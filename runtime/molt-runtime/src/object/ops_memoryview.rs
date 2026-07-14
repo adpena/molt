@@ -180,7 +180,13 @@ pub extern "C" fn molt_memoryview_cast(
                         "shape must be a list or a tuple",
                     );
                 }
-                let elems = seq_vec_ref(shape_ptr);
+                let Some(elems) = crate::object::seq_access::snapshot(
+                    _py,
+                    shape_ptr,
+                    "memoryview shape snapshot allocation failed",
+                ) else {
+                    return MoltObject::none().bits();
+                };
                 let mut shape = Vec::with_capacity(elems.len());
                 for &elem_bits in elems.iter() {
                     let elem_obj = obj_from_bits(elem_bits);

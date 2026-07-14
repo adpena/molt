@@ -1527,7 +1527,10 @@ unsafe fn int_from_default_exception_single_inline_int_str(
         if object_type_id(args_ptr) != TYPE_ID_TUPLE || tuple_len(args_ptr) != 1 {
             return None;
         }
-        let arg_bits = seq_vec_ref(args_ptr)[0];
+        let arg_bits = crate::object::seq_access::with_immutable_tuple_slice(args_ptr, |items| {
+            items.first().copied()
+        })
+        .flatten()?;
         let arg = obj_from_bits(arg_bits);
         arg.as_int().map(|value| MoltObject::from_int(value).bits())
     }

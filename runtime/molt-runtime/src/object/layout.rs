@@ -9,18 +9,47 @@ pub(crate) unsafe fn seq_vec_ptr(ptr: *mut u8) -> *mut Vec<u64> {
     unsafe { *(ptr as *mut *mut Vec<u64>) }
 }
 
-pub(crate) unsafe fn seq_vec(ptr: *mut u8) -> &'static mut Vec<u64> {
-    unsafe {
-        let vec_ptr = seq_vec_ptr(ptr);
-        &mut *vec_ptr
+/// Exact inline storage for `TYPE_ID_TUPLE` objects.
+///
+/// The storage begins at the runtime object's data pointer. `items` is a
+/// variable-length trailing array whose exact length is recorded in `len`; it
+/// has no capacity field and no separately allocated owner or element buffer.
+/// The complete allocation is therefore `[MoltHeader, len, items..]`.
+#[repr(C)]
+pub(crate) struct TupleStorage {
+    len: usize,
+    items: [u64; 0],
+}
+
+impl TupleStorage {
+    #[inline]
+    pub(crate) fn object_size(len: usize) -> Option<usize> {
+        std::mem::size_of::<crate::MoltHeader>()
+            .checked_add(std::mem::size_of::<Self>())?
+            .checked_add(len.checked_mul(std::mem::size_of::<u64>())?)
     }
 }
 
-pub(crate) unsafe fn seq_vec_ref(ptr: *mut u8) -> &'static Vec<u64> {
+#[inline]
+pub(crate) unsafe fn tuple_storage_len(ptr: *mut u8) -> usize {
+    unsafe { (*(ptr.cast::<TupleStorage>())).len }
+}
+
+#[inline]
+pub(crate) unsafe fn tuple_storage_set_len_unpublished(ptr: *mut u8, len: usize) {
     unsafe {
-        let vec_ptr = seq_vec_ptr(ptr);
-        &*vec_ptr
+        (*(ptr.cast::<TupleStorage>())).len = len;
     }
+}
+
+#[inline]
+pub(crate) unsafe fn tuple_storage_items(ptr: *mut u8) -> *const u64 {
+    unsafe { ptr.add(std::mem::size_of::<TupleStorage>()).cast::<u64>() }
+}
+
+#[inline]
+pub(crate) unsafe fn tuple_storage_items_mut(ptr: *mut u8) -> *mut u64 {
+    unsafe { ptr.add(std::mem::size_of::<TupleStorage>()).cast::<u64>() }
 }
 
 /// Layout-stable storage for `TYPE_ID_LIST_INT` objects.

@@ -1,8 +1,8 @@
 use crate::{
     HashContext, PyToken, TYPE_ID_FROZENSET, TYPE_ID_SET, TYPE_ID_TUPLE, dec_ref_bits,
     exception_pending, is_truthy, molt_frozenset_new, molt_iter, molt_iter_next, molt_set_new,
-    obj_from_bits, object_type_id, raise_not_iterable, seq_vec_ref, set_add_in_place,
-    set_find_entry, set_hashes, set_order, set_table,
+    obj_from_bits, object_type_id, raise_not_iterable, set_add_in_place, set_find_entry,
+    set_hashes, set_order, set_table,
 };
 use molt_obj_model::MoltObject;
 
@@ -247,15 +247,17 @@ pub(in crate::object) unsafe fn set_from_iter_bits(
             if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
                 return None;
             }
-            let pair_elems = seq_vec_ref(pair_ptr);
-            if pair_elems.len() < 2 {
+            let Some((val_bits, done_bits)) =
+                crate::object::seq_access::with_immutable_tuple_slice(pair_ptr, |items| {
+                    items.first().copied().zip(items.get(1).copied())
+                })
+                .flatten()
+            else {
                 return None;
-            }
-            let done_bits = pair_elems[1];
+            };
             if is_truthy(_py, obj_from_bits(done_bits)) {
                 break;
             }
-            let val_bits = pair_elems[0];
             set_add_in_place(_py, set_ptr, val_bits, ctx);
             if exception_pending(_py) {
                 dec_ref_bits(_py, set_bits);

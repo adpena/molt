@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from molt.c_api_symbols import is_c_api_external_requirement
+from molt.cli import source_extension_cython as _source_extension_cython
 from molt.cli.extension_scan_surface import _extract_c_api_tokens
 from molt.cli.extension_scan_surface import _extract_file_local_c_api_symbols
 from molt.cli.extension_scan_surface import _extract_preprocessor_defined_symbols
@@ -223,6 +224,7 @@ class _SourceExtensionBuildPlan:
     compile_commands_sha256: str | None
     target_id: str
     target_name: str
+    target_selector: str
     target_type: str
     source_root: Path
     build_root: Path
@@ -249,6 +251,7 @@ class _SourceExtensionBuildPlan:
             "compile_commands_sha256": self.compile_commands_sha256,
             "target_id": self.target_id,
             "target_name": self.target_name,
+            "target_selector": self.target_selector,
             "target_type": self.target_type,
             "source_root": str(self.source_root),
             "build_root": str(self.build_root),
@@ -377,6 +380,7 @@ def _source_extension_build_plan_digest(plan: _SourceExtensionBuildPlan) -> str:
         "compile_commands_sha256": plan.compile_commands_sha256,
         "target_id": plan.target_id,
         "target_name": plan.target_name,
+        "target_selector": plan.target_selector,
         "target_type": plan.target_type,
         "source_root": str(plan.source_root),
         "build_root": str(plan.build_root),
@@ -1038,6 +1042,8 @@ def _load_meson_intro_targets_source_extension_plan(
     for entry in payload:
         if not isinstance(entry, Mapping):
             continue
+        if str(entry.get("type", "")).strip() not in _MESON_EXTENSION_TARGET_TYPES:
+            continue
         names = {
             str(entry.get("id", "")),
             str(entry.get("name", "")),
@@ -1310,10 +1316,60 @@ def _load_meson_intro_targets_source_extension_plan(
             f"Meson target {target_name or target_id!r} does not expose any "
             "compiled C/C++/Objective-C source units"
         )
+    deduped_non_compiled_inputs = _dedupe_paths(non_compiled_inputs)
+    existing_pyx_inputs = tuple(
+        source_path
+        for source_path in deduped_non_compiled_inputs
+        if source_path.suffix.lower() == ".pyx" and source_path.is_file()
+    )
+    ninja_proven_pyx_inputs: list[Path] = []
+    regenerable_generated_sources: set[Path] = set()
+    for source_path in deduped_generated_sources:
+        if source_path.is_file():
+            continue
+        pyx_matches = _source_extension_cython.generated_c_pyx_matches(
+            generated_c=source_path,
+            pyx_candidates=existing_pyx_inputs,
+        )
+        if not pyx_matches:
+            ninja_pyx, ninja_error = (
+                _source_extension_cython.generated_c_pyx_from_ninja(
+                    generated_c=source_path,
+                    build_root=resolved_build_root,
+                )
+            )
+            if ninja_error is not None:
+                errors.append(ninja_error)
+                continue
+            if ninja_pyx is not None:
+                pyx_matches = (ninja_pyx,)
+                ninja_proven_pyx_inputs.append(ninja_pyx)
+        if len(pyx_matches) == 1:
+            # Keep the real compile_commands row for the absent output. The
+            # extension-build consumer replaces this unit's source path with
+            # standalone Cython output before invoking the compiler; no fake
+            # or placeholder C file is materialized by plan loading.
+            regenerable_generated_sources.add(source_path.resolve())
+            continue
+        if len(pyx_matches) > 1:
+            errors.append(
+                "Meson target generated source has ambiguous same-stem Cython "
+                f"inputs: {source_path} -> "
+                + ", ".join(str(path) for path in pyx_matches)
+            )
+            continue
+        errors.append(
+            "Meson target generated source does not exist and has no unique "
+            f"target-local or Ninja-proven .pyx input: {source_path}"
+        )
+    deduped_non_compiled_inputs = _dedupe_paths(
+        (*deduped_non_compiled_inputs, *ninja_proven_pyx_inputs)
+    )
     for source_path in all_sources:
+        if source_path.resolve() in regenerable_generated_sources:
+            continue
         if not source_path.exists() or not source_path.is_file():
             errors.append(f"Meson target source does not exist: {source_path}")
-    deduped_non_compiled_inputs = _dedupe_paths(non_compiled_inputs)
     for source_path in deduped_non_compiled_inputs:
         if not source_path.exists() or not source_path.is_file():
             errors.append(f"Meson target input does not exist: {source_path}")
@@ -1334,6 +1390,7 @@ def _load_meson_intro_targets_source_extension_plan(
         compile_commands_sha256=_sha256_file(compile_commands_path),
         target_id=target_id,
         target_name=target_name,
+        target_selector=selected,
         target_type=target_type,
         source_root=resolved_source_root,
         build_root=resolved_build_root,
@@ -1356,6 +1413,7 @@ def _load_meson_intro_targets_source_extension_plan(
             compile_commands_sha256=plan.compile_commands_sha256,
             target_id=plan.target_id,
             target_name=plan.target_name,
+            target_selector=plan.target_selector,
             target_type=plan.target_type,
             source_root=plan.source_root,
             build_root=plan.build_root,

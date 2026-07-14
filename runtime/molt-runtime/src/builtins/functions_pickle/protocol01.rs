@@ -21,18 +21,23 @@ pub extern "C" fn molt_pickle_encode_protocol0(parts_bits: u64) -> u64 {
                 "pickle opcode chunks must be a sequence",
             );
         }
-        let elems = unsafe { seq_vec_ref(parts_ptr) };
-        let mut joined = String::new();
-        for &elem_bits in elems.iter() {
-            let Some(chunk) = string_obj_to_owned(obj_from_bits(elem_bits)) else {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "pickle opcode chunks must contain str values",
-                );
-            };
-            joined.push_str(&chunk);
-        }
+        let joined = unsafe {
+            crate::object::seq_access::with_borrowed(parts_ptr, |elems| {
+                let mut joined = String::new();
+                for &elem_bits in elems {
+                    let chunk = string_obj_to_owned(obj_from_bits(elem_bits))?;
+                    joined.push_str(&chunk);
+                }
+                Some(joined)
+            })
+        };
+        let Some(joined) = joined else {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "pickle opcode chunks must contain str values",
+            );
+        };
         let bytes_ptr = crate::alloc_bytes(_py, joined.as_bytes());
         if bytes_ptr.is_null() {
             MoltObject::none().bits()
@@ -174,15 +179,24 @@ fn pickle_dump_obj(
     }
     if type_id == TYPE_ID_TUPLE {
         out.push('(');
-        for &item_bits in unsafe { seq_vec_ref(ptr) }.iter() {
+        let Some(values) = (unsafe {
+            crate::object::seq_access::snapshot(_py, ptr, "sequence snapshot allocation failed")
+        }) else {
+            return Err(MoltObject::none().bits());
+        };
+        for &item_bits in values.iter() {
             pickle_dump_obj(_py, item_bits, protocol, out)?;
         }
         out.push('t');
         return Ok(());
     }
     if type_id == TYPE_ID_LIST {
-        let values = unsafe { seq_vec_ref(ptr).clone() };
-        pickle_dump_list_payload(_py, values.as_slice(), protocol, out)?;
+        let Some(values) = (unsafe {
+            crate::object::seq_access::snapshot(_py, ptr, "sequence snapshot allocation failed")
+        }) else {
+            return Err(MoltObject::none().bits());
+        };
+        pickle_dump_list_payload(_py, &values, protocol, out)?;
         return Ok(());
     }
     if type_id == TYPE_ID_DICT {
@@ -318,7 +332,11 @@ fn pickle_apply_reduce(
     if unsafe { object_type_id(args_ptr) } != TYPE_ID_TUPLE {
         return Err(pickle_raise(_py, "pickle.loads: reduce args must be tuple"));
     }
-    let args: Vec<u64> = unsafe { seq_vec_ref(args_ptr).to_vec() };
+    let Some(args) = (unsafe {
+        crate::object::seq_access::snapshot(_py, args_ptr, "sequence snapshot allocation failed")
+    }) else {
+        return Err(MoltObject::none().bits());
+    };
     match func_item {
         PickleStackItem::Mark => Err(pickle_raise(_py, "pickle.loads: mark cannot be called")),
         PickleStackItem::Global(PickleGlobal::CodecsEncode) => {
@@ -351,7 +369,7 @@ fn pickle_apply_reduce(
         }
         PickleStackItem::Global(global) => {
             let callable_bits = pickle_global_callable_bits(_py, global)?;
-            let out_bits = pickle_call_with_args(_py, callable_bits, args.as_slice());
+            let out_bits = pickle_call_with_args(_py, callable_bits, &args);
             if exception_pending(_py) {
                 Err(MoltObject::none().bits())
             } else {
@@ -359,7 +377,7 @@ fn pickle_apply_reduce(
             }
         }
         PickleStackItem::Value(callable_bits) => {
-            let out_bits = pickle_call_with_args(_py, callable_bits, args.as_slice());
+            let out_bits = pickle_call_with_args(_py, callable_bits, &args);
             if exception_pending(_py) {
                 Err(MoltObject::none().bits())
             } else {

@@ -698,48 +698,52 @@ fn hash_complex(re: f64, im: f64) -> i64 {
 }
 
 fn hash_tuple(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
-    let elems = unsafe { seq_vec_ref(ptr) };
-    #[cfg(target_pointer_width = "64")]
-    {
-        const XXPRIME_1: u64 = 11400714785074694791;
-        const XXPRIME_2: u64 = 14029467366897019727;
-        const XXPRIME_5: u64 = 2870177450012600261;
-        let mut acc = XXPRIME_5;
-        for &elem in elems.iter() {
-            let lane = hash_bits_signed(_py, elem);
-            if exception_pending(_py) {
-                return 0;
+    unsafe {
+        crate::object::seq_access::with_immutable_tuple_slice(ptr, |elems| {
+            #[cfg(target_pointer_width = "64")]
+            {
+                const XXPRIME_1: u64 = 11400714785074694791;
+                const XXPRIME_2: u64 = 14029467366897019727;
+                const XXPRIME_5: u64 = 2870177450012600261;
+                let mut acc = XXPRIME_5;
+                for &elem in elems.iter() {
+                    let lane = hash_bits_signed(_py, elem);
+                    if exception_pending(_py) {
+                        return 0;
+                    }
+                    acc = acc.wrapping_add((lane as u64).wrapping_mul(XXPRIME_2));
+                    acc = acc.rotate_left(31);
+                    acc = acc.wrapping_mul(XXPRIME_1);
+                }
+                acc = acc.wrapping_add((elems.len() as u64) ^ (XXPRIME_5 ^ 3527539));
+                if acc == u64::MAX {
+                    return 1546275796;
+                }
+                acc as i64
             }
-            acc = acc.wrapping_add((lane as u64).wrapping_mul(XXPRIME_2));
-            acc = acc.rotate_left(31);
-            acc = acc.wrapping_mul(XXPRIME_1);
-        }
-        acc = acc.wrapping_add((elems.len() as u64) ^ (XXPRIME_5 ^ 3527539));
-        if acc == u64::MAX {
-            return 1546275796;
-        }
-        acc as i64
-    }
-    #[cfg(target_pointer_width = "32")]
-    {
-        const XXPRIME_1: u32 = 2654435761;
-        const XXPRIME_2: u32 = 2246822519;
-        const XXPRIME_5: u32 = 374761393;
-        let mut acc = XXPRIME_5;
-        for &elem in elems.iter() {
-            let lane = hash_bits_signed(_py, elem);
-            if exception_pending(_py) {
-                return 0;
+            #[cfg(target_pointer_width = "32")]
+            {
+                const XXPRIME_1: u32 = 2654435761;
+                const XXPRIME_2: u32 = 2246822519;
+                const XXPRIME_5: u32 = 374761393;
+                let mut acc = XXPRIME_5;
+                for &elem in elems.iter() {
+                    let lane = hash_bits_signed(_py, elem);
+                    if exception_pending(_py) {
+                        return 0;
+                    }
+                    acc = acc.wrapping_add((lane as u32).wrapping_mul(XXPRIME_2));
+                    acc = acc.rotate_left(13);
+                    acc = acc.wrapping_mul(XXPRIME_1);
+                }
+                acc = acc.wrapping_add((elems.len() as u32) ^ (XXPRIME_5 ^ 3527539));
+                if acc == u32::MAX {
+                    return 1546275796;
+                }
+                (acc as i32) as i64
             }
-            acc = acc.wrapping_add((lane as u32).wrapping_mul(XXPRIME_2));
-            acc = acc.rotate_left(13);
-            acc = acc.wrapping_mul(XXPRIME_1);
-        }
-        acc = acc.wrapping_add((elems.len() as u32) ^ (XXPRIME_5 ^ 3527539));
-        if acc == u32::MAX {
-            return 1546275796;
-        }
-        (acc as i32) as i64
+        })
+        .unwrap_or(0)
     }
 }
 

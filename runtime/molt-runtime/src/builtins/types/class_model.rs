@@ -1,6 +1,7 @@
 use std::sync::OnceLock;
 
 use super::*;
+use crate::object::seq_access::{snapshot, with_immutable_tuple_slice};
 use crate::object::{
     ClassEdgeOwnership, object_init_class_edge_unpublished, object_replace_class_edge,
 };
@@ -169,7 +170,12 @@ pub extern "C" fn molt_type_new(
             unsafe {
                 match object_type_id(bases_ptr) {
                     TYPE_ID_TUPLE => {
-                        bases_vec = seq_vec_ref(bases_ptr).clone();
+                        let Some(copied) =
+                            with_immutable_tuple_slice(bases_ptr, |bases| bases.to_vec())
+                        else {
+                            return MoltObject::none().bits();
+                        };
+                        bases_vec = copied;
                     }
                     TYPE_ID_TYPE => {
                         let tuple_ptr = alloc_tuple(_py, &[bases_bits]);
@@ -629,7 +635,12 @@ pub extern "C" fn molt_tuple_new_bound(cls_bits: u64, iterable_bits: u64) -> u64
             let Some(tuple_ptr) = obj_from_bits(tuple_bits).as_ptr() else {
                 return MoltObject::none().bits();
             };
-            let elems = unsafe { seq_vec_ref(tuple_ptr) }.clone();
+            let Some(elems) =
+                (unsafe { snapshot(_py, tuple_ptr, "tuple subclass allocation failed") })
+            else {
+                dec_ref_bits(_py, tuple_bits);
+                return MoltObject::none().bits();
+            };
             let new_ptr = alloc_tuple(_py, &elems);
             dec_ref_bits(_py, tuple_bits);
             if new_ptr.is_null() {

@@ -30,9 +30,8 @@ use crate::{
     maybe_ptr_from_bits, missing_bits, molt_exception_clear, molt_exception_last,
     molt_exception_set_last, molt_is_callable, molt_raise, molt_str_from_obj, obj_from_bits,
     object_class_bits, object_mark_has_ptrs, object_type_id, pending_bits_i64, ptr_from_bits,
-    raise_exception, register_task_token, resolve_task_ptr, runtime_state, seq_vec_ref,
-    set_generator_raise, string_obj_to_owned, task_mark_done, task_waiting_on, to_i64,
-    token_id_from_bits, type_name,
+    raise_exception, register_task_token, resolve_task_ptr, runtime_state, set_generator_raise,
+    string_obj_to_owned, task_mark_done, task_waiting_on, to_i64, token_id_from_bits, type_name,
 };
 
 use crate::state::runtime_state::{AsyncGenLocalsEntry, GenLocalsEntry};
@@ -231,7 +230,11 @@ fn generator_unpack_pair(_py: &PyToken<'_>, bits: u64) -> Option<(u64, bool)> {
         if object_type_id(ptr) != TYPE_ID_TUPLE {
             return None;
         }
-        let elems = crate::seq_vec_ref(ptr);
+        let elems = crate::object::seq_access::snapshot(
+            _py,
+            ptr,
+            "generator result snapshot allocation failed",
+        )?;
         if elems.len() < 2 {
             return None;
         }
@@ -491,7 +494,7 @@ pub extern "C" fn molt_generator_send(gen_bits: u64, send_bits: u64) -> u64 {
             });
             context_stack_store(caller_context_stack);
             exception_stack_set_depth(_py, caller_depth);
-            exception_context_fallback_pop();
+            exception_context_fallback_pop(_py);
             if pending {
                 return generator_raise_from_pending(_py, ptr, exc_bits);
             }
@@ -586,7 +589,7 @@ pub extern "C" fn molt_generator_throw(gen_bits: u64, exc_bits: u64) -> u64 {
             });
             context_stack_store(caller_context_stack);
             exception_stack_set_depth(_py, caller_depth);
-            exception_context_fallback_pop();
+            exception_context_fallback_pop(_py);
             if pending {
                 return generator_raise_from_pending(_py, ptr, exc_bits);
             }
@@ -670,7 +673,7 @@ unsafe fn generator_resume_bits(_py: &PyToken<'_>, gen_bits: u64) -> u64 {
         });
         context_stack_store(caller_context_stack);
         exception_stack_set_depth(_py, caller_depth);
-        exception_context_fallback_pop();
+        exception_context_fallback_pop(_py);
         if exc_pending {
             return generator_raise_from_pending(_py, ptr, exc_bits);
         }
@@ -832,7 +835,7 @@ pub extern "C" fn molt_generator_close(gen_bits: u64) -> u64 {
             });
             context_stack_store(caller_context_stack);
             exception_stack_set_depth(_py, caller_depth);
-            exception_context_fallback_pop();
+            exception_context_fallback_pop(_py);
             if pending {
                 let exc_obj = obj_from_bits(exc_bits);
                 let is_exit = exc_obj.as_ptr().is_some_and(|exc_ptr| {
@@ -932,7 +935,13 @@ unsafe fn throw_arg_is_generator_exit(_py: &PyToken<'_>, exc_bits: u64) -> bool 
                 class_bits == gen_exit_bits || issubclass_bits(class_bits, gen_exit_bits)
             }
             TYPE_ID_TUPLE => {
-                let items = seq_vec_ref(exc_ptr);
+                let Some(items) = crate::object::seq_access::snapshot(
+                    _py,
+                    exc_ptr,
+                    "generator throw snapshot allocation failed",
+                ) else {
+                    return false;
+                };
                 if items.is_empty() {
                     false
                 } else {
@@ -1410,9 +1419,25 @@ pub extern "C" fn molt_asyncgen_locals_register(
                 );
             }
         }
-        let names_vec = unsafe { seq_vec_ref(names_ptr) }.clone();
-        let offsets_vec = unsafe { seq_vec_ref(offsets_ptr) };
-        if names_vec.len() != offsets_vec.len() {
+        let Some(names_snapshot) = (unsafe {
+            crate::object::seq_access::snapshot(
+                _py,
+                names_ptr,
+                "asyncgen local-name snapshot allocation failed",
+            )
+        }) else {
+            return MoltObject::none().bits();
+        };
+        let Some(offsets_vec) = (unsafe {
+            crate::object::seq_access::snapshot(
+                _py,
+                offsets_ptr,
+                "asyncgen local-offset snapshot allocation failed",
+            )
+        }) else {
+            return MoltObject::none().bits();
+        };
+        if names_snapshot.len() != offsets_vec.len() {
             return raise_exception::<_>(
                 _py,
                 "TypeError",
@@ -1437,7 +1462,7 @@ pub extern "C" fn molt_asyncgen_locals_register(
             }
             offsets.push(val as usize);
         }
-        for &bits in names_vec.iter() {
+        for &bits in names_snapshot.iter() {
             let Some(ptr) = obj_from_bits(bits).as_ptr() else {
                 return raise_exception::<_>(_py, "TypeError", "asyncgen locals names must be str");
             };
@@ -1452,7 +1477,7 @@ pub extern "C" fn molt_asyncgen_locals_register(
             }
         }
         let entry = AsyncGenLocalsEntry {
-            names: names_vec,
+            names: names_snapshot.to_vec(),
             offsets,
         };
         let mut guard = runtime_state(_py).asyncgen_locals.lock().unwrap();
@@ -1578,9 +1603,25 @@ pub extern "C" fn molt_gen_locals_register(fn_ptr: u64, names_bits: u64, offsets
                 );
             }
         }
-        let names_vec = unsafe { seq_vec_ref(names_ptr) }.clone();
-        let offsets_vec = unsafe { seq_vec_ref(offsets_ptr) };
-        if names_vec.len() != offsets_vec.len() {
+        let Some(names_snapshot) = (unsafe {
+            crate::object::seq_access::snapshot(
+                _py,
+                names_ptr,
+                "generator local-name snapshot allocation failed",
+            )
+        }) else {
+            return MoltObject::none().bits();
+        };
+        let Some(offsets_vec) = (unsafe {
+            crate::object::seq_access::snapshot(
+                _py,
+                offsets_ptr,
+                "generator local-offset snapshot allocation failed",
+            )
+        }) else {
+            return MoltObject::none().bits();
+        };
+        if names_snapshot.len() != offsets_vec.len() {
             return raise_exception::<_>(
                 _py,
                 "TypeError",
@@ -1605,7 +1646,7 @@ pub extern "C" fn molt_gen_locals_register(fn_ptr: u64, names_bits: u64, offsets
             }
             offsets.push(val as usize);
         }
-        for &bits in names_vec.iter() {
+        for &bits in names_snapshot.iter() {
             let Some(ptr) = obj_from_bits(bits).as_ptr() else {
                 return raise_exception::<_>(
                     _py,
@@ -1624,7 +1665,7 @@ pub extern "C" fn molt_gen_locals_register(fn_ptr: u64, names_bits: u64, offsets
             }
         }
         let entry = GenLocalsEntry {
-            names: names_vec,
+            names: names_snapshot.to_vec(),
             offsets,
         };
         let mut guard = runtime_state(_py).gen_locals.lock().unwrap();

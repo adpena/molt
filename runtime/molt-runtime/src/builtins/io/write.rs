@@ -225,15 +225,13 @@ pub extern "C" fn molt_file_writelines(handle_bits: u64, lines_bits: u64) -> u64
                 if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
                     return MoltObject::none().bits();
                 }
-                let elems = seq_vec_ref(pair_ptr);
-                if elems.len() < 2 {
+                let Some((line_bits, done_bits)) = crate::object::seq_access::tuple_pair(pair_ptr)
+                else {
                     return MoltObject::none().bits();
-                }
-                let done_bits = elems[1];
+                };
                 if is_truthy(_py, obj_from_bits(done_bits)) {
                     break;
                 }
-                let line_bits = elems[0];
                 let _ = molt_file_write(handle_bits, line_bits);
                 if exception_pending(_py) {
                     return MoltObject::none().bits();

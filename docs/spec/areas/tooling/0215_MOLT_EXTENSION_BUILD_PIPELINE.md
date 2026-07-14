@@ -62,6 +62,33 @@ Flags (implemented):
 - `--require-callable-export <dotted-name>` (repeatable)
 - `--json` / `--verbose`
 
+### 2.3 `molt extension produce-set`
+Purpose: reproduce a configured, package-owned extension set from one upstream
+Meson graph and atomically publish its complete sealed package root.
+
+Status: Implemented for verified scientific-stack sets.
+
+Flags:
+- `--package <name>` and `--module-set <name>` select a typed set from
+  `config/scientific_stack_versions.toml`.
+- `--source <path>` must be the exact configured upstream commit; recursive
+  submodules are initialized at their pinned commits and then verified.
+- `--build-root <path>` must be absent or empty, preventing metadata from a
+  prior Meson configuration from entering the transaction.
+- `--target wasm` and `--abi-tier cpython-abi` select the verified cross-build
+  contract.
+- `--json` emits the machine-readable publication result.
+
+One invocation performs one real Meson setup, consumes the unchanged
+`intro-targets.json`, `compile_commands.json`, `intro-installed.json`, and Ninja
+generator commands, builds every configured module deterministically through
+`molt extension build`, audits its ABI/artifact/object/export custody, stages
+Meson's real installed Python files, and publishes only after the exact set is
+complete. The destination is version-keyed under
+`$MOLT_EXT_ROOT/package-seals/<package>/<version>/<seal-name>`. Publication is a
+same-volume directory replacement with rollback of the prior complete root;
+partial sets are never visible.
+
 ---
 
 ## 3. ABI Tags (Proposed)
@@ -92,6 +119,14 @@ Optional:
 ---
 
 ## 5. Build Flow
+For a configured multi-extension package set, `molt extension produce-set` owns
+steps 1-6 as one transaction and retains the upstream Meson graph as the sole
+source/target/generator authority. Configuration names modules, Meson targets,
+export ownership, and each module's explicit capability contract only; it does
+not mirror source lists, include paths, generated headers, or Cython flags. An
+empty capability array is an explicit least-authority contract, not missing
+metadata.
+
 1. Resolve `libmolt` headers and link flags.
 2. Compile C/C++ sources with pinned flags for reproducibility.
 3. For native targets, link a host shared library against `libmolt`.
@@ -114,6 +149,11 @@ Optional:
 
 ## 6. Determinism + Security
 - Build pipeline is reproducible when `--deterministic` is enabled.
+- Configured set production requires deterministic artifacts, exact current
+  ABI/tag/target/linkage, exact configured exports, checksummed nonempty object
+  closures, real Meson-installed package roots, and a transaction manifest
+  whose module/checksum inventory matches every published sidecar. Admission
+  rejects missing, extra, stale, or legacy sibling artifacts.
 - Extensions must declare capabilities and are blocked without explicit approval.
 - `molt verify` checks wheel metadata and capability policies before load.
 - Runtime import/load boundaries enforce extension metadata presence and
@@ -245,6 +285,9 @@ Optional:
 ---
 
 ## 7. Integration Points
+- Pact witness root selection resolves the versioned scientific-stack
+  authorities and accepts exactly the canonical NumPy and SciPy seals. It does
+  not scan worktrees or union historical SciPy per-module roots.
 - `molt deps` should classify extensions as Tier B when `libmolt`-compiled.
 - `molt build` rejects source-recompiled external package admission with no
   native/static artifact candidates before module graph discovery, rejects

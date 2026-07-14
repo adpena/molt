@@ -663,9 +663,9 @@ are small (instance `__dict__`, `**kwargs`).
 
 ### 8.4 Prefetch Hints for Sequential Collection Traversal
 
-**Current implementation**: List/tuple iteration (`iter_target_bits` + `iter_index` +
-`seq_vec_ref`) loads elements sequentially from the backing `Vec<u64>`. The hardware
-prefetcher handles this well for contiguous access.
+**Current implementation**: List/tuple iteration (`iter_target_bits` + `iter_index`)
+uses scoped backing reads or pinned live items. Sequential callback-free reads remain
+contiguous, so the hardware prefetcher handles them well without exporting storage.
 
 **Proposed optimization**:
 - For dict iteration (which accesses `order[i*2]` and `order[i*2+1]` sequentially),

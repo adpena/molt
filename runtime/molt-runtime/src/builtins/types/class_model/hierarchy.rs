@@ -1,4 +1,5 @@
 use super::*;
+use crate::object::seq_access::snapshot;
 
 fn c3_merge(seqs: Vec<Vec<u64>>) -> Option<Vec<u64>> {
     let mut result = Vec::new();
@@ -107,9 +108,12 @@ pub extern "C" fn molt_class_set_base(class_bits: u64, base_bits: u64) -> u64 {
                         MoltObject::from_ptr(tuple_ptr).bits()
                     }
                     TYPE_ID_TUPLE => {
-                        for item in seq_vec_ref(base_ptr).iter() {
-                            bases_vec.push(*item);
-                        }
+                        let Some(bases) =
+                            snapshot(_py, base_ptr, "class base tuple allocation failed")
+                        else {
+                            return MoltObject::none().bits();
+                        };
+                        bases_vec.extend_from_slice(&bases);
                         let tuple_ptr = alloc_tuple(_py, &bases_vec);
                         if tuple_ptr.is_null() {
                             return MoltObject::none().bits();

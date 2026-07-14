@@ -51,9 +51,11 @@ unsafe fn asyncio_ready_batch_run_tuple(_py: &PyToken<'_>, handle_tuple_bits: u6
             );
             return None;
         };
-        let handles = seq_vec_ref(handle_tuple_ptr);
+        let handle_count = crate::object::seq_access::len(handle_tuple_ptr);
         let mut ran_count = 0i64;
-        for &handle_bits in handles {
+        for idx in 0..handle_count {
+            let handle = crate::object::seq_access::pin_item(_py, handle_tuple_ptr, idx)?;
+            let handle_bits = handle.bits();
             let cancelled = asyncio_method_truthy(_py, handle_bits, b"cancelled")?;
             if cancelled {
                 continue;
@@ -521,9 +523,15 @@ pub unsafe extern "C" fn molt_asyncio_barrier_release(waiters_bits: u64) -> u64 
                     "barrier waiter collection must be iterable",
                 );
             };
-            let waiters = seq_vec_ref(waiter_tuple_ptr);
+            let waiter_count = crate::object::seq_access::len(waiter_tuple_ptr);
             let mut released_count = 0i64;
-            for (idx, &waiter_bits) in waiters.iter().enumerate() {
+            for idx in 0..waiter_count {
+                let Some(waiter) = crate::object::seq_access::pin_item(_py, waiter_tuple_ptr, idx)
+                else {
+                    dec_ref_bits(_py, waiter_tuple_bits);
+                    return raise_exception::<u64>(_py, "RuntimeError", "invalid waiter state");
+                };
+                let waiter_bits = waiter.bits();
                 let Some(done) = asyncio_method_truthy(_py, waiter_bits, b"done") else {
                     dec_ref_bits(_py, waiter_tuple_bits);
                     return MoltObject::none().bits();
@@ -660,9 +668,15 @@ pub unsafe extern "C" fn molt_asyncio_event_waiters_cleanup(waiters_bits: u64) -
                 dec_ref_bits(_py, waiter_tuple_bits);
                 return raise_exception::<u64>(_py, "TypeError", "event waiters must be iterable");
             };
-            let waiters = seq_vec_ref(waiter_tuple_ptr);
+            let waiter_count = crate::object::seq_access::len(waiter_tuple_ptr);
             let mut cleaned = 0i64;
-            for &waiter_bits in waiters {
+            for idx in 0..waiter_count {
+                let Some(waiter) = crate::object::seq_access::pin_item(_py, waiter_tuple_ptr, idx)
+                else {
+                    dec_ref_bits(_py, waiter_tuple_bits);
+                    return raise_exception::<u64>(_py, "RuntimeError", "invalid waiter state");
+                };
+                let waiter_bits = waiter.bits();
                 let Some(owner_bits) =
                     asyncio_attr_lookup_allow_missing(_py, waiter_bits, b"_molt_event_owner")
                 else {
@@ -749,8 +763,15 @@ pub unsafe extern "C" fn molt_asyncio_taskgroup_on_task_done(
                 dec_ref_bits(_py, task_tuple_bits);
                 return raise_exception::<u64>(_py, "TypeError", "task group must be iterable");
             };
-            let tasks = seq_vec_ref(task_tuple_ptr);
-            for &other_task_bits in tasks {
+            let task_count = crate::object::seq_access::len(task_tuple_ptr);
+            for idx in 0..task_count {
+                let Some(other_task) =
+                    crate::object::seq_access::pin_item(_py, task_tuple_ptr, idx)
+                else {
+                    dec_ref_bits(_py, task_tuple_bits);
+                    return raise_exception::<u64>(_py, "RuntimeError", "invalid task group state");
+                };
+                let other_task_bits = other_task.bits();
                 let Some(done) = asyncio_method_truthy(_py, other_task_bits, b"done") else {
                     dec_ref_bits(_py, task_tuple_bits);
                     return MoltObject::none().bits();
@@ -838,9 +859,15 @@ pub unsafe extern "C" fn molt_asyncio_tasks_add_done_callback(
                 dec_ref_bits(_py, task_tuple_bits);
                 return raise_exception::<u64>(_py, "TypeError", "tasks must be iterable");
             };
-            let tasks = seq_vec_ref(task_tuple_ptr);
+            let task_count = crate::object::seq_access::len(task_tuple_ptr);
             let mut attached = 0i64;
-            for &task_bits in tasks {
+            for idx in 0..task_count {
+                let Some(task) = crate::object::seq_access::pin_item(_py, task_tuple_ptr, idx)
+                else {
+                    dec_ref_bits(_py, task_tuple_bits);
+                    return raise_exception::<u64>(_py, "RuntimeError", "invalid task state");
+                };
+                let task_bits = task.bits();
                 let out_bits =
                     asyncio_call_method1(_py, task_bits, b"add_done_callback", callback_bits);
                 if exception_pending(_py) {
@@ -899,18 +926,23 @@ pub unsafe extern "C" fn molt_asyncio_future_invoke_callbacks(
                     "future callbacks must be iterable",
                 );
             };
-            let callbacks = seq_vec_ref(callback_tuple_ptr);
+            let callback_count = crate::object::seq_access::len(callback_tuple_ptr);
             if trace {
                 eprintln!(
                     "molt asyncio callbacks future=0x{:x} count={}",
-                    future_bits,
-                    callbacks.len()
+                    future_bits, callback_count
                 );
             }
             let idx0 = MoltObject::from_int(0).bits();
             let idx1 = MoltObject::from_int(1).bits();
             let mut called = 0i64;
-            for &entry_bits in callbacks {
+            for idx in 0..callback_count {
+                let Some(entry) = crate::object::seq_access::pin_item(_py, callback_tuple_ptr, idx)
+                else {
+                    dec_ref_bits(_py, callback_tuple_bits);
+                    return raise_exception::<u64>(_py, "RuntimeError", "invalid callback state");
+                };
+                let entry_bits = entry.bits();
                 let fn_bits = molt_getitem_method(entry_bits, idx0);
                 if exception_pending(_py) {
                     dec_ref_bits(_py, callback_tuple_bits);
@@ -970,9 +1002,15 @@ pub unsafe extern "C" fn molt_asyncio_event_set_waiters(
                 dec_ref_bits(_py, waiter_tuple_bits);
                 return raise_exception::<u64>(_py, "TypeError", "event waiters must be iterable");
             };
-            let waiters = seq_vec_ref(waiter_tuple_ptr);
+            let waiter_count = crate::object::seq_access::len(waiter_tuple_ptr);
             let mut woke = 0i64;
-            for &waiter_bits in waiters {
+            for idx in 0..waiter_count {
+                let Some(waiter) = crate::object::seq_access::pin_item(_py, waiter_tuple_ptr, idx)
+                else {
+                    dec_ref_bits(_py, waiter_tuple_bits);
+                    return raise_exception::<u64>(_py, "RuntimeError", "invalid waiter state");
+                };
+                let waiter_bits = waiter.bits();
                 if let Some(token_bits) =
                     asyncio_attr_lookup_allow_missing(_py, waiter_bits, b"_molt_event_token_id")
                 {

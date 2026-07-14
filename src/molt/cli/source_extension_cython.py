@@ -28,6 +28,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -40,12 +42,25 @@ from typing import Any, Mapping, Sequence
 _CYTHON_SOURCE_SUFFIX = ".pyx"
 _CYTHON_GENERATED_SUFFIXES = {".c", ".cpp", ".cxx", ".cc"}
 
-# Canonical compiler policy for C regenerated from Cython source. Cython's
-# generated preamble selects its stable/limited-API branches only when this
-# exact define is present. Keep it separate from Cython-generation argv: this
-# belongs only on the compiler command for a successful regeneration record.
-CYTHON_REGENERATED_C_COMPILE_ARGS: tuple[str, ...] = (
-    "-DPy_LIMITED_API=0x030C0000",
+# Canonical Cython profile for Molt's concrete CPython-ABI tier. It deliberately
+# selects Cython's full-CPython call surface while disabling direct access to
+# thread state and builtin layouts whose publication/ownership is not part of
+# Molt's ABI contract. Py_GIL_DISABLED remains undefined: normal CPython 3.12
+# behavior is the deterministic default, while these selectors are safe for a
+# future free-threaded runtime because generated code uses public error and
+# owned-reference APIs rather than process-global thread-state fields.
+CYTHON_CPYTHON_ABI_PROFILE = "molt-cpython-abi-safe-v1"
+CYTHON_CPYTHON_ABI_COMPILE_ARGS: tuple[str, ...] = (
+    "-DCYTHON_FAST_THREAD_STATE=0",
+    "-DCYTHON_USE_UNICODE_INTERNALS=0",
+    "-DCYTHON_USE_PYLIST_INTERNALS=0",
+    "-DCYTHON_USE_PYLONG_INTERNALS=0",
+    "-DCYTHON_USE_PYTYPE_LOOKUP=0",
+    "-DCYTHON_ASSUME_SAFE_MACROS=0",
+    "-DCYTHON_ASSUME_SAFE_SIZE=0",
+    "-DCYTHON_UNPACK_METHODS=0",
+    "-DCYTHON_AVOID_BORROWED_REFS=1",
+    "-DCYTHON_AVOID_THREAD_UNSAFE_BORROWED_REFS=1",
 )
 
 # ``build-system.requires`` entries look like ``Cython>=3.0.6`` /
@@ -100,22 +115,14 @@ class CythonRegeneration:
             "standalone": True,
             "cython_version": self.cython_version,
             "cython_argv": list(self.cython_argv),
-            "compile_args": list(CYTHON_REGENERATED_C_COMPILE_ARGS),
+            "compile_profile": CYTHON_CPYTHON_ABI_PROFILE,
+            "compile_args": list(CYTHON_CPYTHON_ABI_COMPILE_ARGS),
             "cimport_packages": list(self.cimport_packages),
             "cimport_pxd_roots": [str(path) for path in self.cimport_pxd_roots],
             "cimport_header_include_dirs": [
                 str(path) for path in self.cimport_header_include_dirs
             ],
         }
-
-
-def compile_args_for_regeneration(
-    regeneration: CythonRegeneration | None,
-) -> tuple[str, ...]:
-    """Return canonical compiler args only for regenerated Cython C."""
-    return CYTHON_REGENERATED_C_COMPILE_ARGS if regeneration is not None else ()
-
-
 def _leading_int(version: str) -> int | None:
     match = re.match(r"(\d+)", version)
     return int(match.group(1)) if match else None
@@ -676,6 +683,277 @@ def _cython_include_dirs(
     return tuple(dirs)
 
 
+def _path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _split_generator_command(command: str) -> list[str] | None:
+    if os.name == "nt":
+        # Reuse the compile-commands authority rather than growing a second
+        # Windows quoting parser. This import is lazy because source_extensions
+        # imports the Cython authority during module initialization.
+        from molt.cli.source_extensions import _split_windows_command_line
+
+        return _split_windows_command_line(command)
+    try:
+        return shlex.split(command, posix=True)
+    except ValueError:
+        return None
+
+
+def _resolve_generator_path(raw_path: str, *, build_root: Path) -> Path:
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        path = build_root / path
+    return path.resolve()
+
+
+def _token_resolves_to_path(
+    token: str,
+    *,
+    build_root: Path,
+    expected: Path,
+) -> bool:
+    if token.startswith("-") or "$" in token:
+        return False
+    try:
+        return _resolve_generator_path(token, build_root=build_root) == expected.resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _cython_command_argument_start(tokens: Sequence[str]) -> int | None:
+    for idx, token in enumerate(tokens):
+        basename = Path(token).name.lower()
+        if re.fullmatch(r"cython(?:-script)?(?:\.py|\.exe)?", basename):
+            return idx + 1
+    return None
+
+
+def _standalone_cython_generator_args(
+    tokens: Sequence[str],
+    *,
+    build_root: Path,
+    pyx_path: Path,
+) -> tuple[tuple[str, ...] | None, str | None]:
+    argument_start = _cython_command_argument_start(tokens)
+    if argument_start is None:
+        return None, "matched Ninja generator command does not invoke Cython"
+    args = tuple(tokens[argument_start:])
+    retained: list[str] = []
+    removed_input = False
+    idx = 0
+    while idx < len(args):
+        arg = args[idx]
+        if arg in {"--shared", "-o", "--output-file", "-I", "--include-dir"}:
+            idx += 2
+            continue
+        if (
+            arg.startswith("--shared=")
+            or arg.startswith("--output-file=")
+            or arg.startswith("--include-dir=")
+            or (arg.startswith("-I") and len(arg) > 2)
+            or (arg.startswith("-o") and len(arg) > 2)
+        ):
+            idx += 1
+            continue
+        if _token_resolves_to_path(
+            arg,
+            build_root=build_root,
+            expected=pyx_path,
+        ):
+            removed_input = True
+            idx += 1
+            continue
+        retained.append(arg)
+        idx += 1
+    if not removed_input:
+        return None, "matched Ninja Cython command does not contain its .pyx input"
+    return tuple(retained), None
+
+
+def generated_c_pyx_from_ninja(
+    *,
+    generated_c: Path,
+    build_root: Path,
+) -> tuple[Path | None, str | None]:
+    """Resolve the unique real ``.pyx`` input for a Ninja-generated C unit."""
+    root = build_root.resolve()
+    ninja_path = root / "build.ninja"
+    if not ninja_path.is_file():
+        return None, None
+    try:
+        relative_output = generated_c.resolve().relative_to(root)
+    except ValueError:
+        return None, f"generated Cython output is outside its Ninja root: {generated_c}"
+    ninja = shutil.which("ninja")
+    if ninja is None:
+        return None, (
+            f"Meson build graph {ninja_path} owns {generated_c}, but Ninja is "
+            "unavailable for the read-only generator-command query"
+        )
+    try:
+        query = subprocess.run(
+            [
+                ninja,
+                "-C",
+                str(root),
+                "-t",
+                "commands",
+                relative_output.as_posix(),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f"failed to query Cython generator metadata {ninja_path}: {exc}"
+    if query.returncode != 0:
+        detail = (query.stderr or query.stdout or "").strip()
+        return None, (
+            f"Ninja could not expand the generator command for {generated_c}: "
+            f"{detail or f'exit code {query.returncode}'}"
+        )
+    commands: list[tuple[Path, ...]] = []
+    for command in query.stdout.splitlines():
+        tokens = _split_generator_command(command)
+        if tokens is None:
+            continue
+        argument_start = _cython_command_argument_start(tokens)
+        if argument_start is None:
+            continue
+        inputs: list[Path] = []
+        for token in tokens[argument_start:]:
+            if token.startswith("-") or Path(token).suffix.lower() != ".pyx":
+                continue
+            candidate = _resolve_generator_path(token, build_root=root)
+            if candidate.is_file() and candidate not in inputs:
+                inputs.append(candidate)
+        if inputs:
+            commands.append(tuple(inputs))
+    if len(commands) != 1:
+        return None, (
+            f"Ninja graph for {generated_c} exposes {len(commands)} Cython "
+            "generator commands with existing .pyx inputs"
+        )
+    if len(commands[0]) != 1:
+        return None, (
+            f"Ninja Cython generator for {generated_c} has "
+            f"{len(commands[0])} existing .pyx inputs"
+        )
+    return commands[0][0], None
+
+
+def _cython_generator_args_from_ninja(
+    *,
+    pyx_path: Path,
+    original_c: Path,
+    package_roots: Sequence[Path],
+) -> tuple[tuple[str, ...] | None, str | None]:
+    """Recover exact upstream directives from Ninja's expanded command query.
+
+    ``None`` means no package root contains a real Meson ``build.ninja``. Once
+    that authority exists, absence or ambiguity of the matching command fails
+    closed rather than silently reverting to Molt's historical ``-3`` default.
+    """
+    original = original_c.resolve()
+    owners: list[tuple[Path, Path]] = []
+    seen: set[Path] = set()
+    for raw_root in package_roots:
+        root = Path(raw_root).resolve()
+        ninja_path = (root / "build.ninja").resolve()
+        if (
+            ninja_path in seen
+            or not ninja_path.is_file()
+            or not _path_is_within(original, root)
+        ):
+            continue
+        seen.add(ninja_path)
+        owners.append((root, ninja_path))
+    if not owners:
+        return None, None
+    if len(owners) > 1:
+        return None, (
+            f"multiple Meson build roots own Cython output {original}: "
+            + ", ".join(str(path) for _root, path in owners)
+        )
+    build_root, ninja_path = owners[0]
+    ninja = shutil.which("ninja")
+    if ninja is None:
+        return None, (
+            f"Meson build graph {ninja_path} owns {original}, but Ninja is "
+            "unavailable for the read-only generator-command query"
+        )
+    relative_output = original.relative_to(build_root)
+    try:
+        query = subprocess.run(
+            [
+                ninja,
+                "-C",
+                str(build_root),
+                "-t",
+                "commands",
+                relative_output.as_posix(),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f"failed to query Cython generator metadata {ninja_path}: {exc}"
+    if query.returncode != 0:
+        detail = (query.stderr or query.stdout or "").strip()
+        return None, (
+            f"Ninja could not expand the generator command for {original}: "
+            f"{detail or f'exit code {query.returncode}'}"
+        )
+    matching_commands: list[list[str]] = []
+    for command in query.stdout.splitlines():
+        tokens = _split_generator_command(command)
+        if tokens is None or _cython_command_argument_start(tokens) is None:
+            continue
+        if any(
+            _token_resolves_to_path(
+                token,
+                build_root=build_root,
+                expected=pyx_path,
+            )
+            for token in tokens
+        ):
+            matching_commands.append(tokens)
+    if not matching_commands:
+        return None, (
+            f"Ninja command graph for {original} has no Cython command containing "
+            f"the paired input {pyx_path.resolve()}"
+        )
+    if len(matching_commands) > 1:
+        return None, (
+            f"Ninja command graph for {original} ambiguously contains "
+            f"{len(matching_commands)} Cython commands for {pyx_path.resolve()}"
+        )
+    directives, directive_error = _standalone_cython_generator_args(
+        matching_commands[0],
+        build_root=build_root,
+        pyx_path=pyx_path,
+    )
+    if directive_error is not None:
+        return None, (
+            f"invalid Meson Cython generator metadata for {original}: "
+            f"{directive_error}"
+        )
+    return directives, None
+
+
 def regenerate_cython_c_standalone(
     *,
     pyx_path: Path,
@@ -718,9 +996,26 @@ def regenerate_cython_c_standalone(
         plan_include_dirs=include_dirs,
         cimport_pxd_roots=cimport_pxd_roots,
     )
-    argv: list[str] = [interpreter, "-m", "cython", "-3"]
-    if is_cpp:
-        argv.append("--cplus")
+    generator_args, generator_error = _cython_generator_args_from_ninja(
+        pyx_path=pyx_path,
+        original_c=original_c,
+        package_roots=package_roots,
+    )
+    if generator_error is not None:
+        return None, (
+            f"Molt could not recover the upstream Cython generator contract for "
+            f"{pyx_path.name}: {generator_error}"
+        )
+    argv: list[str] = [interpreter, "-m", "cython"]
+    if generator_args is None:
+        # Direct callers without a Meson graph retain the standalone default.
+        # Producer builds pass their unchanged build_root, whose Ninja command
+        # is authoritative for every package-selected Cython directive.
+        argv.append("-3")
+        if is_cpp:
+            argv.append("--cplus")
+    else:
+        argv.extend(generator_args)
     for include_dir in resolved_includes:
         argv.extend(["-I", str(include_dir)])
     argv.extend([str(pyx_path), "-o", str(regenerated_c)])
@@ -772,11 +1067,27 @@ def pair_generated_c_with_pyx(
     generated_c: Path,
     pyx_candidates: Sequence[Path],
 ) -> Path | None:
-    """Return the ``.pyx`` that produced ``generated_c`` (matched by stem)."""
+    """Return the unique ``.pyx`` that produced ``generated_c`` by stem."""
+    matches = generated_c_pyx_matches(
+        generated_c=generated_c,
+        pyx_candidates=pyx_candidates,
+    )
+    return matches[0] if len(matches) == 1 else None
+
+
+def generated_c_pyx_matches(
+    *,
+    generated_c: Path,
+    pyx_candidates: Sequence[Path],
+) -> tuple[Path, ...]:
+    """Return all distinct same-stem Cython inputs for generated C/C++."""
     if generated_c.suffix.lower() not in _CYTHON_GENERATED_SUFFIXES:
-        return None
+        return ()
     stem = generated_c.stem
+    matches: list[Path] = []
     for candidate in pyx_candidates:
         if candidate.suffix.lower() == _CYTHON_SOURCE_SUFFIX and candidate.stem == stem:
-            return candidate.resolve()
-    return None
+            resolved = candidate.resolve()
+            if resolved not in matches:
+                matches.append(resolved)
+    return tuple(matches)

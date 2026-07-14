@@ -57,7 +57,7 @@ use crate::{
     molt_string_split_max, molt_string_splitlines, molt_string_startswith_slice, molt_super_new,
     molt_tuple_index_range, molt_type_call, molt_type_init, molt_type_new, obj_from_bits,
     object_class_bits, object_type_id, profile_hit_unchecked, ptr_from_bits, raise_exception,
-    raise_not_callable, raise_not_iterable, runtime_state, runtime_state_for_gil, seq_vec_ref,
+    raise_not_callable, raise_not_iterable, runtime_state, runtime_state_for_gil,
     string_obj_to_owned, type_name, type_of_bits,
 };
 use std::collections::{HashMap, HashSet};
@@ -1172,7 +1172,8 @@ unsafe fn build_class_from_args(
         } else if let Some(bases_ptr) = obj_from_bits(bases_bits).as_ptr() {
             match object_type_id(bases_ptr) {
                 TYPE_ID_TUPLE => {
-                    bases_vec = seq_vec_ref(bases_ptr).clone();
+                    bases_vec =
+                        crate::object::seq_access::with_borrowed(bases_ptr, |bases| bases.to_vec());
                 }
                 TYPE_ID_TYPE => {
                     let tuple_ptr = alloc_tuple(_py, &[bases_bits]);
@@ -1759,15 +1760,15 @@ pub unsafe extern "C" fn molt_callargs_expand_star(builder_bits: u64, iterable_b
                 if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
                     return MoltObject::none().bits();
                 }
-                let elems = seq_vec_ref(pair_ptr);
-                if elems.len() < 2 {
+                // Iterator result tuples are immutable and owned by pair_bits;
+                // copy their two borrowed handles without exporting backing.
+                let Some((val_bits, done_bits)) = crate::object::seq_access::tuple_pair(pair_ptr)
+                else {
                     return MoltObject::none().bits();
-                }
-                let done_bits = elems[1];
+                };
                 if is_truthy(_py, obj_from_bits(done_bits)) {
                     break;
                 }
-                let val_bits = elems[0];
                 if trace_callargs_enabled() {
                     eprintln!(
                         "[molt callargs] expand_star_item builder_bits=0x{:x} val_type={} val_bits=0x{:x}",
@@ -1873,15 +1874,13 @@ pub unsafe extern "C" fn molt_callargs_expand_kwstar(builder_bits: u64, mapping_
                 if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
                     return MoltObject::none().bits();
                 }
-                let elems = seq_vec_ref(pair_ptr);
-                if elems.len() < 2 {
+                let Some((key_bits, done_bits)) = crate::object::seq_access::tuple_pair(pair_ptr)
+                else {
                     return MoltObject::none().bits();
-                }
-                let done_bits = elems[1];
+                };
                 if is_truthy(_py, obj_from_bits(done_bits)) {
                     break;
                 }
-                let key_bits = elems[0];
                 let key_obj = obj_from_bits(key_bits);
                 let Some(key_ptr) = key_obj.as_ptr() else {
                     return raise_exception::<_>(_py, "TypeError", "keywords must be strings");
@@ -1938,7 +1937,7 @@ unsafe fn function_requires_full_binding(_py: &PyToken<'_>, func_ptr: *mut u8) -
             return true;
         };
         if unsafe { object_type_id(ptr) } != TYPE_ID_TUPLE
-            || !unsafe { seq_vec_ref(ptr) }.is_empty()
+            || unsafe { crate::object::seq_access::len(ptr) } != 0
         {
             return true;
         }
@@ -1950,7 +1949,7 @@ unsafe fn function_requires_full_binding(_py: &PyToken<'_>, func_ptr: *mut u8) -
             return true;
         };
         if unsafe { object_type_id(ptr) } != TYPE_ID_TUPLE
-            || !unsafe { seq_vec_ref(ptr) }.is_empty()
+            || unsafe { crate::object::seq_access::len(ptr) } != 0
         {
             return true;
         }
@@ -2032,7 +2031,7 @@ pub(crate) unsafe fn function_needs_full_binder(_py: &PyToken<'_>, func_ptr: *mu
             let Some(ptr) = obj_from_bits(kwonly_bits).as_ptr() else {
                 return true;
             };
-            if object_type_id(ptr) != TYPE_ID_TUPLE || !seq_vec_ref(ptr).is_empty() {
+            if object_type_id(ptr) != TYPE_ID_TUPLE || crate::object::seq_access::len(ptr) != 0 {
                 return true;
             }
         }
@@ -2074,7 +2073,9 @@ unsafe fn function_positional_default_count(_py: &PyToken<'_>, func_ptr: *mut u8
             return 0;
         }
         match obj_from_bits(defaults_bits).as_ptr() {
-            Some(ptr) if object_type_id(ptr) == TYPE_ID_TUPLE => seq_vec_ref(ptr).len(),
+            Some(ptr) if object_type_id(ptr) == TYPE_ID_TUPLE => {
+                crate::object::seq_access::len(ptr)
+            }
             _ => 0,
         }
     }
@@ -2179,7 +2180,7 @@ unsafe fn call_foreign_with_builder(
             Err(err) => return err,
         };
         let pos = unsafe { (*args_ptr).pos.clone() };
-        let tuple_ptr = crate::object::builders::alloc_tuple_with_capacity(_py, &pos, pos.len());
+        let tuple_ptr = crate::alloc_tuple(_py, &pos);
         if tuple_ptr.is_null() {
             return MoltObject::none().bits();
         }
@@ -2507,7 +2508,11 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                 if object_type_id(arg_names_ptr) != TYPE_ID_TUPLE {
                     return raise_exception::<_>(_py, "TypeError", "call expects function object");
                 }
-                seq_vec_ref(arg_names_ptr).clone()
+                // Pin immutable metadata without allocating. The guard keeps
+                // this exact tuple alive if another thread replaces the
+                // function attribute while a future gilless binder is active.
+                crate::object::seq_access::pin_tuple(_py, arg_names_ptr)
+                    .expect("type-checked argument-name tuple must be pinnable")
             } else {
                 if let Some(bound_args) =
                     builtin_args::bind_builtin_call(_py, func_bits, func_ptr, args)
@@ -2548,16 +2553,21 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                 ),
             )
             .unwrap_or_else(|| MoltObject::none().bits());
-            let mut kwonly_names: Vec<u64> = Vec::new();
-            if !obj_from_bits(kwonly_bits).is_none() {
+            let kwonly_names_pin = if obj_from_bits(kwonly_bits).is_none() {
+                None
+            } else {
                 let Some(kw_ptr) = obj_from_bits(kwonly_bits).as_ptr() else {
                     return raise_exception::<_>(_py, "TypeError", "call expects function object");
                 };
                 if object_type_id(kw_ptr) != TYPE_ID_TUPLE {
                     return raise_exception::<_>(_py, "TypeError", "call expects function object");
                 }
-                kwonly_names = seq_vec_ref(kw_ptr).clone();
-            }
+                Some(
+                    crate::object::seq_access::pin_tuple(_py, kw_ptr)
+                        .expect("type-checked keyword-only tuple must be pinnable"),
+                )
+            };
+            let kwonly_names: &[u64] = kwonly_names_pin.as_deref().unwrap_or(&[]);
 
             let vararg_bits = function_attr_bits(
                 _py,
@@ -2592,16 +2602,21 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                 ),
             )
             .unwrap_or_else(|| MoltObject::none().bits());
-            let mut defaults: Vec<u64> = Vec::new();
-            if !obj_from_bits(defaults_bits).is_none() {
+            let defaults_pin = if obj_from_bits(defaults_bits).is_none() {
+                None
+            } else {
                 let Some(def_ptr) = obj_from_bits(defaults_bits).as_ptr() else {
                     return raise_exception::<_>(_py, "TypeError", "call expects function object");
                 };
                 if object_type_id(def_ptr) != TYPE_ID_TUPLE {
                     return raise_exception::<_>(_py, "TypeError", "call expects function object");
                 }
-                defaults = seq_vec_ref(def_ptr).clone();
-            }
+                Some(
+                    crate::object::seq_access::pin_tuple(_py, def_ptr)
+                        .expect("type-checked defaults tuple must be pinnable"),
+                )
+            };
+            let defaults: &[u64] = defaults_pin.as_deref().unwrap_or(&[]);
 
             let kwdefaults_bits = function_attr_bits(
                 _py,

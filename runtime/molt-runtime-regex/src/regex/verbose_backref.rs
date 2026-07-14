@@ -213,7 +213,7 @@ pub(super) fn decode_group_names(
                 "dict iterator item must be a pair",
             ));
         }
-        let elems = unsafe { seq_vec_ref(item_ptr) };
+        let elems = unsafe { seq_snapshot(item_ptr) };
         if elems.len() < 2 {
             dec_ref_bits(_py, item_bits);
             return Err(raise_exception::<u64>(
@@ -239,7 +239,7 @@ pub(super) fn decode_group_names(
         if pair_ty != TYPE_ID_TUPLE && pair_ty != TYPE_ID_LIST {
             continue;
         }
-        let pair = unsafe { seq_vec_ref(pair_ptr) };
+        let pair = unsafe { seq_snapshot(pair_ptr) };
         if pair.len() < 2 {
             continue;
         }
@@ -278,7 +278,7 @@ pub(super) fn decode_group_spans(
         ));
     }
     let mut out: Vec<Option<(i64, i64)>> = Vec::new();
-    let elems = unsafe { seq_vec_ref(groups_ptr) };
+    let elems = unsafe { seq_snapshot(groups_ptr) };
     for &elem_bits in elems.iter() {
         let elem_obj = obj_from_bits(elem_bits);
         if elem_obj.is_none() {
@@ -300,7 +300,7 @@ pub(super) fn decode_group_spans(
                 "group span must be (int, int) or None",
             ));
         }
-        let span = unsafe { seq_vec_ref(elem_ptr) };
+        let span = unsafe { seq_snapshot(elem_ptr) };
         if span.len() < 2 {
             return Err(raise_exception::<u64>(
                 _py,

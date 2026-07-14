@@ -39,6 +39,7 @@ pub(crate) mod gc;
 #[allow(dead_code)]
 pub mod inline_cache;
 pub(crate) mod layout;
+pub(crate) mod list_mutation;
 pub(crate) mod memoryview;
 pub(crate) mod native_handle;
 pub(crate) mod ops;
@@ -62,6 +63,7 @@ pub(crate) mod ops_sys;
 pub(crate) mod ops_vec;
 pub(crate) mod refcount;
 pub(crate) mod refcount_opt;
+pub(crate) mod seq_access;
 #[allow(dead_code)]
 pub mod string_intern;
 #[allow(dead_code)]
@@ -1728,7 +1730,8 @@ unsafe fn class_lookup_raw_mro_dict_attr(
         if let Some(mro_ptr) = obj_from_bits(mro_bits).as_ptr()
             && object_type_id(mro_ptr) == TYPE_ID_TUPLE
         {
-            for class_bits in (*seq_vec_ptr(mro_ptr)).iter().copied() {
+            let mro = crate::object::seq_access::pin_tuple(_py, mro_ptr)?;
+            for class_bits in mro.iter().copied() {
                 if let Some(bits) = visit(class_bits) {
                     return Some(bits);
                 }
@@ -2011,6 +2014,10 @@ unsafe fn checked_retain_count(header_ptr: *mut MoltHeader, count: u32, label: &
         let counter = &(*header_ptr).ref_count;
         let mut current = counter.load(AtomicOrdering::Acquire);
         loop {
+            if current == 0 {
+                eprintln!("molt fatal: owned retain attempted after terminal refcount in {label}");
+                std::process::abort();
+            }
             let Some(next) = current.checked_add(count) else {
                 eprintln!(
                     "molt fatal: refcount overflow in {label} (count={current}, add={count})"
@@ -2344,6 +2351,12 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                  (use-after-free or corrupted header)",
                 ptr as usize, type_id
             );
+            if std::env::var("MOLT_TRACE_INVALID_DECREF").as_deref() == Ok("1") {
+                eprintln!(
+                    "molt invalid dec_ref backtrace:\n{}",
+                    std::backtrace::Backtrace::force_capture()
+                );
+            }
             std::process::abort();
         }
         let header_flags = (*header_ptr).flags;
@@ -2498,7 +2511,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                         name, filename, varnames_ptr, names_ptr
                     );
                 } else if type_id == TYPE_ID_TUPLE {
-                    let vec_ptr = seq_vec_ptr(ptr) as usize;
+                    let vec_ptr = crate::object::seq_access::backing_identity(ptr);
                     eprintln!(
                         "molt dec_ref_zero tuple ptr=0x{:x} vec=0x{:x}",
                         ptr as usize, vec_ptr
@@ -2693,11 +2706,34 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             } else {
                 None
             };
+            // Remove tuple identity before child retirement, but keep its
+            // packed projection and projection-owned C references alive until
+            // every inline runtime item edge has been released in the tuple
+            // type arm. This is the tuple analogue of exception field detach:
+            // no reentrant lookup sees a terminal tuple and no child view loses
+            // both ownership domains out of order.
+            let mut retired_tuple_view = if type_id == TYPE_ID_TUPLE
+                && (terminal_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0
+            {
+                Some(
+                    molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                        .retire_tuple_view_deferred(MoltObject::from_ptr(ptr).bits())
+                        .unwrap_or_else(|| std::process::abort()),
+                )
+            } else {
+                None
+            };
             if type_id == TYPE_ID_EXCEPTION && (terminal_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0 {
                 molt_cpython_abi::bridge::GLOBAL_BRIDGE
                     .clear_exception_view_fields(MoltObject::from_ptr(ptr).bits());
             }
-            if (terminal_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0 {
+            if matches!(type_id, TYPE_ID_LIST | TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL)
+                && (terminal_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0
+            {
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                    .clear_list_view(MoltObject::from_ptr(ptr).bits());
+            }
+            if (terminal_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0 && type_id != TYPE_ID_TUPLE {
                 molt_cpython_abi::bridge::GLOBAL_BRIDGE
                     .runtime_object_destroyed(MoltObject::from_ptr(ptr).bits());
             }
@@ -2786,8 +2822,12 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                         drop(storage.into_vec());
                     }
                 }
-                TYPE_ID_LIST | TYPE_ID_TUPLE => {
+                TYPE_ID_LIST => {
                     release_dealloc_tracked_bits_vec(py, seq_vec_ptr(ptr), header_flags);
+                }
+                TYPE_ID_TUPLE => {
+                    crate::object::seq_access::release_tuple_edges(py, ptr, header_flags);
+                    drop(retired_tuple_view.take());
                 }
                 TYPE_ID_DICT => {
                     let order_ptr = dict_order_ptr(ptr);

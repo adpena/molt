@@ -153,13 +153,6 @@ pub fn to_f64(obj: MoltObject) -> Option<f64> {
 // Container helpers
 // ---------------------------------------------------------------------------
 
-/// # Safety
-///
-/// `ptr` must refer to a live Molt sequence object backed by `Vec<u64>`.
-pub unsafe fn seq_vec_ref(ptr: *mut u8) -> &'static Vec<u64> {
-    unsafe { crate::seq_vec_ref(ptr) }
-}
-
 pub unsafe fn dict_get_in_place(_py: &CoreGilToken, ptr: *mut u8, key_bits: u64) -> Option<u64> {
     crate::with_gil_entry_nopanic!(py, {
         unsafe { crate::dict_get_in_place(py, ptr, key_bits) }

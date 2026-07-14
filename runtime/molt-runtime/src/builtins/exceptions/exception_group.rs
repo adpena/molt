@@ -83,7 +83,13 @@ fn exception_group_collect_exceptions(
         unsafe {
             let type_id = object_type_id(ptr);
             if type_id == TYPE_ID_TUPLE || type_id == TYPE_ID_LIST {
-                let elems = seq_vec_ref(ptr);
+                let Some(elems) = crate::object::seq_access::snapshot(
+                    _py,
+                    ptr,
+                    "sequence snapshot allocation failed",
+                ) else {
+                    return None;
+                };
                 if elems.is_empty() {
                     let _ = raise_exception::<u64>(
                         _py,
@@ -292,8 +298,14 @@ unsafe fn exception_group_copy_metadata(
             if let Some(src_notes_ptr) = obj_from_bits(src_notes_bits).as_ptr()
                 && object_type_id(src_notes_ptr) == TYPE_ID_LIST
             {
-                let notes_elems = seq_vec_ref(src_notes_ptr);
-                let new_list_ptr = alloc_list(_py, notes_elems);
+                let Some(notes_elems) = crate::object::seq_access::snapshot(
+                    _py,
+                    src_notes_ptr,
+                    "sequence snapshot allocation failed",
+                ) else {
+                    return;
+                };
+                let new_list_ptr = alloc_list(_py, &notes_elems);
                 if !new_list_ptr.is_null() {
                     let new_list_bits = MoltObject::from_ptr(new_list_ptr).bits();
                     exception_group_set_slot_bits(
@@ -342,7 +354,8 @@ fn exception_group_parse_matcher(
                 return Some(ExceptionGroupMatcher::Type(matcher_bits));
             }
             TYPE_ID_TUPLE => {
-                let elems = seq_vec_ref(ptr);
+                let elems = crate::object::seq_access::pin_tuple(_py, ptr)
+                    .expect("type-checked matcher tuple must remain live");
                 if elems.is_empty() {
                     let _ = raise_exception::<u64>(
                         _py,
@@ -421,7 +434,8 @@ fn exception_group_parse_except_star_matcher(_py: &PyToken<'_>, matcher_bits: u6
             return Some(matcher_bits);
         }
         if type_id == TYPE_ID_TUPLE {
-            let elems = seq_vec_ref(ptr);
+            let elems = crate::object::seq_access::pin_tuple(_py, ptr)
+                .expect("type-checked matcher tuple must remain live");
             if elems.is_empty() {
                 let _ = raise_exception::<u64>(
                     _py,
@@ -563,7 +577,11 @@ fn exception_group_split_node(
                 }),
             ));
         }
-        let elems = seq_vec_ref(ex_ptr);
+        let Some(elems) =
+            crate::object::seq_access::snapshot(_py, ex_ptr, "sequence snapshot allocation failed")
+        else {
+            return None;
+        };
         let mut match_items: Vec<ExceptionGroupItem> = Vec::new();
         let mut rest_items: Vec<ExceptionGroupItem> = Vec::new();
         for &item_bits in elems.iter() {
@@ -683,7 +701,14 @@ pub(crate) fn alloc_exception_group_from_class_bits(
             dec_ref_bits(_py, args_bits);
             return std::ptr::null_mut();
         }
-        let args_elems = seq_vec_ref(args_ptr);
+        let Some(args_elems) = crate::object::seq_access::snapshot(
+            _py,
+            args_ptr,
+            "sequence snapshot allocation failed",
+        ) else {
+            dec_ref_bits(_py, args_bits);
+            return std::ptr::null_mut();
+        };
         let argc = args_elems.len();
         if argc != 2 {
             let msg = format!(
@@ -1015,7 +1040,13 @@ pub extern "C" fn molt_exceptiongroup_combine(list_bits: u64) -> u64 {
                     "second argument (exceptions) must be a sequence",
                 );
             }
-            let elems = seq_vec_ref(list_ptr);
+            let Some(elems) = crate::object::seq_access::snapshot(
+                _py,
+                list_ptr,
+                "sequence snapshot allocation failed",
+            ) else {
+                return MoltObject::none().bits();
+            };
             if elems.is_empty() {
                 return raise_exception::<u64>(
                     _py,
@@ -1046,7 +1077,7 @@ pub extern "C" fn molt_exceptiongroup_combine(list_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             }
             let msg_bits = MoltObject::from_ptr(msg_ptr).bits();
-            let out = exception_group_alloc(_py, group_class, msg_bits, list_bits, elems, None)
+            let out = exception_group_alloc(_py, group_class, msg_bits, list_bits, &elems, None)
                 .unwrap_or_else(|| MoltObject::none().bits());
             dec_ref_bits(_py, msg_bits);
             out
@@ -1071,14 +1102,13 @@ mod tests {
             let Some(items_ptr) = obj_from_bits(items_bits).as_ptr() else {
                 return raise_exception::<u64>(_py, "RuntimeError", "test sequence unavailable");
             };
-            let items = unsafe { seq_vec_ref(items_ptr) };
             let Ok(index) = usize::try_from(index) else {
                 return raise_exception::<u64>(_py, "IndexError", "test sequence exhausted");
             };
-            let Some(&bits) = items.get(index) else {
+            let mut bits = 0;
+            if crate::object::seq_access::read_item_owned(items_ptr, index, &mut bits) == 0 {
                 return raise_exception::<u64>(_py, "IndexError", "test sequence exhausted");
-            };
-            inc_ref_bits(_py, bits);
+            }
             bits
         })
     }
@@ -1166,8 +1196,12 @@ mod tests {
                 .expect("canonical exceptions tuple");
             let exceptions_ptr = obj_from_bits(exceptions_bits).as_ptr().unwrap();
             assert_eq!(
-                unsafe { seq_vec_ref(exceptions_ptr) },
-                &[first_bits, second_bits]
+                unsafe {
+                    crate::object::seq_access::with_immutable_tuple_slice(exceptions_ptr, |items| {
+                        items == [first_bits, second_bits]
+                    })
+                },
+                Some(true)
             );
             assert_eq!(heap_refcount(first_bits), first_baseline + 1);
             assert_eq!(heap_refcount(second_bits), second_baseline + 1);

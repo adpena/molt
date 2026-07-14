@@ -257,9 +257,13 @@ pub(crate) fn path_sequence_from_bits(
         let msg = format!("{label} must be tuple or list, not {type_name}");
         return Err(raise_exception::<_>(_py, "TypeError", &msg));
     }
-    let elems = unsafe { seq_vec_ref(ptr) };
+    let Some(elems) = (unsafe {
+        crate::object::seq_access::snapshot(_py, ptr, "sequence snapshot allocation failed")
+    }) else {
+        return Err(MoltObject::none().bits());
+    };
     let mut out = Vec::with_capacity(elems.len());
-    for item_bits in elems {
+    for item_bits in elems.iter() {
         let value = path_string_from_bits(_py, *item_bits)?;
         out.push(value);
     }
@@ -294,21 +298,19 @@ pub(crate) fn bytes_sequence_from_bits(
         let msg = format!("{label} must be tuple or list, not {type_name}");
         return Err(raise_exception::<_>(_py, "TypeError", &msg));
     }
-    let elems = unsafe { seq_vec_ref(ptr) };
-    let mut out = Vec::with_capacity(elems.len());
-    for item_bits in elems {
-        match bytes_slice_from_bits(*item_bits) {
-            Some(raw) => out.push(raw),
-            None => {
-                return Err(raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "join: expected bytes for path component",
-                ));
+    let out = unsafe {
+        crate::object::seq_access::with_borrowed(ptr, |elems| {
+            let mut out = Vec::with_capacity(elems.len());
+            for &item_bits in elems {
+                let raw = bytes_slice_from_bits(item_bits)?;
+                out.push(raw);
             }
-        }
-    }
-    Ok(out)
+            Some(out)
+        })
+    };
+    out.ok_or_else(|| {
+        raise_exception::<_>(_py, "TypeError", "join: expected bytes for path component")
+    })
 }
 
 pub(crate) fn alloc_string_list_bits(_py: &PyToken<'_>, values: &[String]) -> u64 {

@@ -181,22 +181,48 @@ pub(crate) fn collect_iterable_values(
     loop {
         let pair_bits = molt_iter_next(iter_bits);
         if exception_pending(_py) {
+            for item in out.drain(..) {
+                dec_ref_bits(_py, item);
+            }
             return None;
         }
-        let pair_ptr = obj_from_bits(pair_bits).as_ptr()?;
+        let Some(pair_ptr) = obj_from_bits(pair_bits).as_ptr() else {
+            for item in out.drain(..) {
+                dec_ref_bits(_py, item);
+            }
+            return None;
+        };
         unsafe {
             if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                for item in out.drain(..) {
+                    dec_ref_bits(_py, item);
+                }
                 return None;
             }
-            let elems = seq_vec_ref(pair_ptr);
-            if elems.len() < 2 {
+            let Some((item, done_bits)) = crate::object::seq_access::tuple_pair(pair_ptr) else {
+                for item in out.drain(..) {
+                    dec_ref_bits(_py, item);
+                }
+                return None;
+            };
+            let done = is_truthy(_py, obj_from_bits(done_bits));
+            if exception_pending(_py) {
+                for item in out.drain(..) {
+                    dec_ref_bits(_py, item);
+                }
                 return None;
             }
-            let done_bits = elems[1];
-            if is_truthy(_py, obj_from_bits(done_bits)) {
+            if done {
                 break;
             }
-            out.push(elems[0]);
+            if out.len() == out.capacity() && out.try_reserve(1).is_err() {
+                for item in out.drain(..) {
+                    dec_ref_bits(_py, item);
+                }
+                return raise_exception::<_>(_py, "MemoryError", "iterable allocation failed");
+            }
+            inc_ref_bits(_py, item);
+            out.push(item);
         }
     }
     Some(out)

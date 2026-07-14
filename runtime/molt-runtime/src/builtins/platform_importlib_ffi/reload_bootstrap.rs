@@ -1024,7 +1024,7 @@ pub extern "C" fn molt_importlib_ensure_default_meta_path(machinery_bits: u64) -
             }
             return mark_bootstrapped();
         }
-        if unsafe { !seq_vec_ref(meta_path_ptr).is_empty() } {
+        if unsafe { crate::object::seq_access::locked_len(meta_path_ptr) != 0 } {
             if !obj_from_bits(meta_path_bits).is_none() {
                 dec_ref_bits(_py, meta_path_bits);
             }

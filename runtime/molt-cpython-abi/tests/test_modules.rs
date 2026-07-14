@@ -177,7 +177,14 @@ unsafe extern "C" fn fake_complex_parts(_bits: u64, _real: *mut f64, _imag: *mut
 unsafe extern "C" fn fake_alloc_list() -> u64 {
     next_fake_handle()
 }
-unsafe extern "C" fn fake_list_append(_list_bits: u64, _item_bits: u64) -> i32 {
+unsafe extern "C" fn fake_alloc_list_presized(_len: usize) -> u64 {
+    next_fake_handle()
+}
+unsafe extern "C" fn fake_list_append(
+    _list_bits: u64,
+    _item_bits: u64,
+    _item_ptr: *mut molt_cpython_abi::abi_types::PyObject,
+) -> i32 {
     0
 }
 unsafe extern "C" fn fake_list_len(_bits: u64) -> usize {
@@ -197,6 +204,7 @@ unsafe extern "C" fn fake_list_insert(
     _list_bits: u64,
     _where_: isize,
     _item_bits: u64,
+    _item_ptr: *mut molt_cpython_abi::abi_types::PyObject,
 ) -> std::os::raw::c_int {
     -1
 }
@@ -211,13 +219,20 @@ unsafe extern "C" fn fake_list_set_slice(
     _ilow: isize,
     _ihigh: isize,
     _itemlist_bits: u64,
+    _future_pointers: *const *mut molt_cpython_abi::abi_types::PyObject,
+    _future_len: usize,
 ) -> std::os::raw::c_int {
     -1
 }
 unsafe extern "C" fn fake_alloc_tuple(_arity: usize) -> u64 {
     next_fake_handle()
 }
-unsafe extern "C" fn fake_tuple_set(_bits: u64, _i: usize, _value: u64) -> OwnedHandleResult {
+unsafe extern "C" fn fake_tuple_set(
+    _bits: u64,
+    _i: usize,
+    _value: u64,
+    _exact_pointer: *mut PyObject,
+) -> OwnedHandleResult {
     OwnedHandleResult::ok(MoltObject::none().bits())
 }
 unsafe extern "C" fn fake_tuple_len(_bits: u64) -> usize {
@@ -574,6 +589,7 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     int_max_str_digits: fake_int_max_str_digits,
     complex_parts: fake_complex_parts,
     alloc_list: fake_alloc_list,
+    alloc_list_presized: fake_alloc_list_presized,
     list_append: fake_list_append,
     list_len: fake_list_len,
     list_item: fake_list_item,

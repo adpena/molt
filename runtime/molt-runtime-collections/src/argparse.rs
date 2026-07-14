@@ -15,7 +15,7 @@ use molt_runtime_core::prelude::*;
 
 use crate::bridge::{
     ExceptionSentinel, alloc_dict_with_pairs, alloc_list, alloc_string, alloc_tuple, dec_ref_bits,
-    is_truthy, raise_exception, seq_vec_ref, string_obj_to_owned, to_i64, type_name,
+    is_truthy, raise_exception, seq_snapshot, string_obj_to_owned, to_i64, type_name,
 };
 use std::collections::HashMap;
 use std::fmt::Write as FmtWrite;
@@ -769,9 +769,9 @@ fn list_to_string_vec(_py: &CoreGilToken, bits: u64) -> Result<Vec<String>, u64>
             "expected list of str",
         ));
     };
-    let items: Vec<u64> = unsafe { seq_vec_ref(ptr).to_vec() };
+    let items = unsafe { seq_snapshot(ptr) };
     let mut out = Vec::with_capacity(items.len());
-    for item_bits in items {
+    for item_bits in items.iter().copied() {
         match string_obj_to_owned(obj_from_bits(item_bits)) {
             Some(s) => out.push(s),
             None => {

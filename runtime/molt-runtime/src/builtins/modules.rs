@@ -30,8 +30,8 @@ use crate::{
     molt_callargs_expand_kwstar, molt_callargs_expand_star, molt_callargs_new,
     molt_callargs_push_pos, molt_exception_kind, molt_exception_last, molt_getattr_builtin,
     molt_int_from_obj, molt_is_callable, molt_iter, molt_iter_next, obj_eq, obj_from_bits,
-    object_type_id, raise_exception, runtime_state, seq_vec, seq_vec_ref, set_add_in_place,
-    string_bytes, string_len, string_obj_to_owned, to_i64, type_name, type_of_bits,
+    object_type_id, raise_exception, runtime_state, set_add_in_place, string_bytes, string_len,
+    string_obj_to_owned, to_i64, type_name, type_of_bits,
 };
 use unicode_ident::{is_xid_continue, is_xid_start};
 
@@ -3042,15 +3042,14 @@ pub extern "C" fn molt_module_import_star(src_bits: u64, dst_bits: u64) -> u64 {
                     if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
                         return MoltObject::none().bits();
                     }
-                    let elems = seq_vec_ref(pair_ptr);
-                    if elems.len() < 2 {
+                    let Some((name_bits, done_bits)) =
+                        crate::object::seq_access::tuple_pair(pair_ptr)
+                    else {
                         return MoltObject::none().bits();
-                    }
-                    let done_bits = elems[1];
+                    };
                     if is_truthy(_py, obj_from_bits(done_bits)) {
                         break;
                     }
-                    let name_bits = elems[0];
                     let name_obj = obj_from_bits(name_bits);
                     if let Some(name_ptr) = name_obj.as_ptr() {
                         if object_type_id(name_ptr) != TYPE_ID_STRING {
@@ -3322,10 +3321,15 @@ mod tests {
                 .as_ptr()
                 .expect("arg names must be a tuple");
             assert_eq!(unsafe { object_type_id(arg_names_ptr) }, TYPE_ID_TUPLE);
-            let arg_names = unsafe { seq_vec_ref(arg_names_ptr) };
-            assert_eq!(arg_names.len(), 1);
+            let arg_name = unsafe {
+                crate::object::seq_access::with_immutable_tuple_slice(arg_names_ptr, |arg_names| {
+                    assert_eq!(arg_names.len(), 1);
+                    arg_names[0]
+                })
+            }
+            .expect("arg names tuple payload");
             assert_eq!(
-                string_obj_to_owned(obj_from_bits(arg_names[0])).as_deref(),
+                string_obj_to_owned(obj_from_bits(arg_name)).as_deref(),
                 Some("obj")
             );
             dec_ref_bits(_py, name_attr_bits);

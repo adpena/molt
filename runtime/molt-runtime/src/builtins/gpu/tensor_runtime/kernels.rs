@@ -20,25 +20,33 @@ pub(super) fn parse_shape(
             &format!("{role} must be a tuple or list of ints"),
         ));
     }
-    let mut out = Vec::new();
-    for dim_bits in unsafe { seq_vec_ref(ptr) }.iter().copied() {
-        let Some(dim) = to_i64(obj_from_bits(dim_bits)) else {
-            return Err(raise_exception::<_>(
-                _py,
-                "TypeError",
-                &format!("{role} must contain integers"),
-            ));
-        };
-        let dim = usize::try_from(dim).map_err(|_| {
-            raise_exception::<u64>(
-                _py,
-                "ValueError",
-                &format!("{role} dimensions must be non-negative"),
-            )
-        })?;
-        out.push(dim);
+    enum ShapeDecodeError {
+        NonInteger,
+        Negative,
     }
-    Ok(out)
+    let decoded = unsafe {
+        crate::object::seq_access::with_borrowed(ptr, |dims| {
+            let mut out = Vec::with_capacity(dims.len());
+            for &dim_bits in dims {
+                let Some(dim) = to_i64(obj_from_bits(dim_bits)) else {
+                    return Err(ShapeDecodeError::NonInteger);
+                };
+                let dim = usize::try_from(dim).map_err(|_| ShapeDecodeError::Negative)?;
+                out.push(dim);
+            }
+            Ok(out)
+        })
+    };
+    decoded.map_err(|error| match error {
+        ShapeDecodeError::NonInteger => {
+            raise_exception::<_>(_py, "TypeError", &format!("{role} must contain integers"))
+        }
+        ShapeDecodeError::Negative => raise_exception::<_>(
+            _py,
+            "ValueError",
+            &format!("{role} dimensions must be non-negative"),
+        ),
+    })
 }
 
 pub(super) fn product(shape: &[usize]) -> usize {

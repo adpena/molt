@@ -1,5 +1,7 @@
 use crate::PyToken;
-use crate::object::{ClassEdgeOwnership, object_init_class_edge_unpublished};
+use crate::object::{
+    ClassEdgeOwnership, object_init_class_edge_unpublished, release_shutdown_owned_bits,
+};
 use crate::*;
 
 #[inline]
@@ -550,8 +552,7 @@ pub unsafe extern "C" fn molt_tuple_builder_finish(builder_bits: u64) -> u64 {
 
             let vec = crate::object::backing::tracked_vec_box_from_raw(vec_ptr);
             let slice = vec.as_slice();
-            let capacity = vec.capacity().max(MAX_SMALL_LIST);
-            let tuple_ptr = alloc_tuple_with_capacity(_py, slice, capacity);
+            let tuple_ptr = alloc_tuple(_py, slice);
 
             if tuple_ptr.is_null() {
                 MoltObject::none().bits()
@@ -610,10 +611,12 @@ pub unsafe extern "C" fn molt_tuple_builder_finish_owned(builder_bits: u64) -> u
 
             let vec = crate::object::backing::tracked_vec_box_from_raw(vec_ptr);
             let slice = vec.as_slice();
-            let capacity = vec.capacity().max(MAX_SMALL_LIST);
-            let tuple_ptr = alloc_tuple_with_capacity_owned(_py, slice, capacity);
+            let tuple_ptr = alloc_tuple_owned(_py, slice);
 
             if tuple_ptr.is_null() {
+                for &elem in slice {
+                    dec_ref_bits(_py, elem);
+                }
                 MoltObject::none().bits()
             } else {
                 MoltObject::from_ptr(tuple_ptr).bits()
@@ -803,8 +806,47 @@ pub(crate) fn alloc_list_with_capacity(
         for &elem in elems {
             inc_ref_bits(_py, elem);
         }
+        crate::object::backing::tracked_vec_set_heap_edge_count(
+            vec_ptr,
+            crate::object::refcount_opt::slice_heap_ref_count(elems),
+        );
         *(ptr as *mut *mut Vec<u64>) = vec_ptr;
         if crate::object::refcount_opt::slice_contains_heap_refs(elems) {
+            (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
+        }
+    }
+    ptr
+}
+
+/// Allocate a list whose logical length is established in the same allocation
+/// as its backing store. The CPython ABI uses this for `PyList_New(size)`:
+/// callers must observe `size` immediately, while the bridge separately tracks
+/// that the physical slots are not yet safe to read until populated.
+pub(crate) fn alloc_list_filled(_py: &PyToken<'_>, len: usize, value: MoltObject) -> *mut u8 {
+    let total = std::mem::size_of::<MoltHeader>()
+        + std::mem::size_of::<*mut DataclassDesc>()
+        + std::mem::size_of::<*mut Vec<u64>>()
+        + std::mem::size_of::<u64>();
+    let ptr = alloc_object_with_aux(_py, total, TYPE_ID_LIST, ObjectAuxPreselection::ClassInline);
+    if ptr.is_null() {
+        return ptr;
+    }
+    unsafe {
+        let Some(vec_ptr) = crate::object::backing::tracked_vec_box_with_capacity::<u64>(len)
+        else {
+            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+            return std::ptr::null_mut();
+        };
+        (*vec_ptr).resize(len, value.bits());
+        for _ in 0..len {
+            inc_ref_bits(_py, value.bits());
+        }
+        crate::object::backing::tracked_vec_set_heap_edge_count(
+            vec_ptr,
+            usize::from(value.is_ptr()).saturating_mul(len),
+        );
+        *(ptr as *mut *mut Vec<u64>) = vec_ptr;
+        if len != 0 && value.is_ptr() {
             (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
         }
     }
@@ -830,6 +872,10 @@ pub(crate) fn alloc_list_with_capacity_owned(
             dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
             return std::ptr::null_mut();
         };
+        crate::object::backing::tracked_vec_set_heap_edge_count(
+            vec_ptr,
+            crate::object::refcount_opt::slice_heap_ref_count(elems),
+        );
         *(ptr as *mut *mut Vec<u64>) = vec_ptr;
         if crate::object::refcount_opt::slice_contains_heap_refs(elems) {
             (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
@@ -1062,15 +1108,14 @@ pub(crate) fn alloc_list(_py: &PyToken<'_>, elems: &[u64]) -> *mut u8 {
     alloc_list_with_capacity(_py, elems, cap)
 }
 
-pub(crate) fn alloc_tuple_with_capacity(
+fn alloc_tuple_exact(
     _py: &PyToken<'_>,
     elems: &[u64],
-    capacity: usize,
+    owned: bool,
 ) -> *mut u8 {
-    let cap = capacity.max(elems.len());
-    let total = std::mem::size_of::<MoltHeader>()
-        + std::mem::size_of::<*mut Vec<u64>>()
-        + std::mem::size_of::<u64>();
+    let Some(total) = crate::object::layout::TupleStorage::object_size(elems.len()) else {
+        return std::ptr::null_mut();
+    };
     let ptr = alloc_object_with_aux(
         _py,
         total,
@@ -1081,14 +1126,14 @@ pub(crate) fn alloc_tuple_with_capacity(
         return ptr;
     }
     unsafe {
-        let Some(vec_ptr) = crate::object::backing::tracked_vec_box_from_slice(elems, cap) else {
-            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-            return std::ptr::null_mut();
-        };
-        for &elem in elems {
-            inc_ref_bits(_py, elem);
+        crate::object::layout::tuple_storage_set_len_unpublished(ptr, elems.len());
+        let items = crate::object::layout::tuple_storage_items_mut(ptr);
+        std::ptr::copy_nonoverlapping(elems.as_ptr(), items, elems.len());
+        if !owned {
+            for &elem in elems {
+                inc_ref_bits(_py, elem);
+            }
         }
-        *(ptr as *mut *mut Vec<u64>) = vec_ptr;
         if crate::object::refcount_opt::slice_contains_heap_refs(elems) {
             (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
         }
@@ -1096,18 +1141,19 @@ pub(crate) fn alloc_tuple_with_capacity(
     ptr
 }
 
-/// Like `alloc_tuple_with_capacity` but assumes the caller already owns
-/// a reference to each element (no inc_ref). Used when the compiler
-/// has already emitted inc_ref for each element before builder_append.
-pub(crate) fn alloc_tuple_with_capacity_owned(
+/// Allocate a fixed-length tuple whose slots begin as the invalid zero
+/// construction sentinel. This is the
+/// construction-only authority for `PyTuple_New`; later writes cannot grow it.
+pub(crate) fn alloc_tuple_uninitialized(
     _py: &PyToken<'_>,
-    elems: &[u64],
-    capacity: usize,
+    len: usize,
 ) -> *mut u8 {
-    let cap = capacity.max(elems.len());
-    let total = std::mem::size_of::<MoltHeader>()
-        + std::mem::size_of::<*mut Vec<u64>>()
-        + std::mem::size_of::<u64>();
+    if len == 0 {
+        return alloc_tuple(_py, &[]);
+    }
+    let Some(total) = crate::object::layout::TupleStorage::object_size(len) else {
+        return std::ptr::null_mut();
+    };
     let ptr = alloc_object_with_aux(
         _py,
         total,
@@ -1118,17 +1164,22 @@ pub(crate) fn alloc_tuple_with_capacity_owned(
         return ptr;
     }
     unsafe {
-        let Some(vec_ptr) = crate::object::backing::tracked_vec_box_from_slice(elems, cap) else {
-            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-            return std::ptr::null_mut();
-        };
-        // No inc_ref — ownership transferred from caller.
-        *(ptr as *mut *mut Vec<u64>) = vec_ptr;
-        if crate::object::refcount_opt::slice_contains_heap_refs(elems) {
-            (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
+        crate::object::layout::tuple_storage_set_len_unpublished(ptr, len);
+        let items = crate::object::layout::tuple_storage_items_mut(ptr);
+        for index in 0..len {
+            items.add(index).write(0);
         }
     }
     ptr
+}
+
+/// Allocate an exact tuple by transferring the caller's existing element
+/// references. Ownership transfers only on success.
+pub(crate) fn alloc_tuple_owned(_py: &PyToken<'_>, elems: &[u64]) -> *mut u8 {
+    if elems.is_empty() {
+        return alloc_tuple(_py, elems);
+    }
+    alloc_tuple_exact(_py, elems, true)
 }
 
 /// Cached empty tuple singleton. Allocated once, immortal (never freed).
@@ -1138,38 +1189,37 @@ static EMPTY_TUPLE_PTR: std::sync::atomic::AtomicPtr<u8> =
 pub(crate) fn alloc_tuple(_py: &PyToken<'_>, elems: &[u64]) -> *mut u8 {
     // Fast path: return the immortal empty tuple singleton.
     if elems.is_empty() {
-        let cached = EMPTY_TUPLE_PTR.load(std::sync::atomic::Ordering::Relaxed);
-        let ptr = if !cached.is_null() {
-            cached
-        } else {
-            let ptr = alloc_tuple_with_capacity(_py, &[], 0);
-            if !ptr.is_null() {
-                unsafe {
-                    let header = header_from_obj_ptr(ptr);
-                    (*header).flags |=
-                        crate::object::HEADER_FLAG_IMMORTAL | crate::object::HEADER_FLAG_INTERNED;
-                    (*header)
-                        .ref_count
-                        .store(u32::MAX, std::sync::atomic::Ordering::Relaxed);
-                }
-                // CAS: if another thread beat us, use theirs (single-threaded on WASM, but safe)
-                let _ = EMPTY_TUPLE_PTR.compare_exchange(
-                    std::ptr::null_mut(),
-                    ptr,
-                    std::sync::atomic::Ordering::Relaxed,
-                    std::sync::atomic::Ordering::Relaxed,
-                );
+        let cached = EMPTY_TUPLE_PTR.load(std::sync::atomic::Ordering::Acquire);
+        if !cached.is_null() {
+            return cached;
+        }
+        let candidate = alloc_tuple_exact(_py, &[], false);
+        if candidate.is_null() {
+            return EMPTY_TUPLE_PTR.load(std::sync::atomic::Ordering::Acquire);
+        }
+        unsafe {
+            crate::object::gc::gc_untrack_on_free(candidate, TYPE_ID_TUPLE);
+            let header = header_from_obj_ptr(candidate);
+            (*header).flags |=
+                crate::object::HEADER_FLAG_IMMORTAL | crate::object::HEADER_FLAG_INTERNED;
+            (*header)
+                .ref_count
+                .store(u32::MAX, std::sync::atomic::Ordering::Release);
+        }
+        return match EMPTY_TUPLE_PTR.compare_exchange(
+            std::ptr::null_mut(),
+            candidate,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        ) {
+            Ok(_) => candidate,
+            Err(winner) => {
+                release_shutdown_owned_bits(_py, MoltObject::from_ptr(candidate).bits());
+                winner
             }
-            EMPTY_TUPLE_PTR.load(std::sync::atomic::Ordering::Relaxed)
         };
-        return ptr;
     }
-    let cap = if elems.len() <= MAX_SMALL_LIST {
-        MAX_SMALL_LIST
-    } else {
-        elems.len()
-    };
-    alloc_tuple_with_capacity(_py, elems, cap)
+    alloc_tuple_exact(_py, elems, false)
 }
 
 pub(crate) fn alloc_range(

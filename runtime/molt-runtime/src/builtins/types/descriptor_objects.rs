@@ -1,4 +1,5 @@
 use super::*;
+use crate::object::seq_access::snapshot;
 use crate::object::{ClassEdgeOwnership, object_init_class_edge_unpublished};
 
 #[unsafe(no_mangle)]
@@ -97,8 +98,14 @@ pub extern "C" fn molt_generic_alias_new(origin_bits: u64, args_bits: u64) -> u6
         let args_tuple_bits = if let Some(args_ptr) = args_obj.as_ptr() {
             unsafe {
                 if object_type_id(args_ptr) == TYPE_ID_TUPLE {
-                    let elems = seq_vec_ref(args_ptr);
-                    let new_ptr = alloc_tuple(_py, elems);
+                    let Some(elems) = snapshot(
+                        _py,
+                        args_ptr,
+                        "GenericAlias argument tuple allocation failed",
+                    ) else {
+                        return MoltObject::none().bits();
+                    };
+                    let new_ptr = alloc_tuple(_py, &elems);
                     if new_ptr.is_null() {
                         return MoltObject::none().bits();
                     }

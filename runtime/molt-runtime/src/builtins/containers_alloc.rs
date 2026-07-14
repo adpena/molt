@@ -2,8 +2,8 @@ use crate::{
     MoltHeader, MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_FROZENSET, TYPE_ID_LIST, TYPE_ID_SET,
     TYPE_ID_TUPLE, alloc_object, dec_ref_bits, dict_len, dict_table_capacity, dict_update_apply,
     dict_update_set_in_place, exception_pending, is_truthy, maybe_ptr_from_bits, molt_iter,
-    molt_iter_next, obj_from_bits, object_type_id, raise_exception, seq_vec_ref,
-    set_table_capacity, usize_from_bits,
+    molt_iter_next, obj_from_bits, object_type_id, raise_exception, set_table_capacity,
+    usize_from_bits,
 };
 
 #[unsafe(no_mangle)]
@@ -74,11 +74,23 @@ pub(crate) fn dict_pair_from_item(
         unsafe {
             let type_id = object_type_id(item_ptr);
             if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
-                let elems = seq_vec_ref(item_ptr);
-                if elems.len() != 2 {
-                    return Err(DictSeqError::BadLen(elems.len()));
+                let len = crate::object::seq_access::len(item_ptr);
+                if len != 2 {
+                    return Err(DictSeqError::BadLen(len));
                 }
-                return Ok((elems[0], elems[1]));
+                let mut key_bits = 0;
+                let mut value_bits = 0;
+                if crate::object::seq_access::read_item_gil_borrowed(item_ptr, 0, &mut key_bits)
+                    == 0
+                    || crate::object::seq_access::read_item_gil_borrowed(
+                        item_ptr,
+                        1,
+                        &mut value_bits,
+                    ) == 0
+                {
+                    return Err(DictSeqError::Exception);
+                }
+                return Ok((key_bits, value_bits));
             }
         }
     }
@@ -100,15 +112,21 @@ pub(crate) fn dict_pair_from_item(
             if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
                 return Err(DictSeqError::Exception);
             }
-            let pair_elems = seq_vec_ref(pair_ptr);
-            if pair_elems.len() < 2 {
+            if crate::object::seq_access::len(pair_ptr) < 2 {
                 return Err(DictSeqError::Exception);
             }
-            let done_bits = pair_elems[1];
+            let mut value_bits = 0;
+            let mut done_bits = 0;
+            if crate::object::seq_access::read_item_gil_borrowed(pair_ptr, 0, &mut value_bits) == 0
+                || crate::object::seq_access::read_item_gil_borrowed(pair_ptr, 1, &mut done_bits)
+                    == 0
+            {
+                return Err(DictSeqError::Exception);
+            }
             if is_truthy(_py, obj_from_bits(done_bits)) {
                 break;
             }
-            elems.push(pair_elems[0]);
+            elems.push(value_bits);
         }
     }
     if elems.len() != 2 {

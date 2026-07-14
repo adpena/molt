@@ -68,7 +68,7 @@ pub extern "C" fn molt_urllib_request_add_handler(opener_bits: u64, handler_bits
         let Some(list_ptr) = obj_from_bits(list_bits).as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "opener handler registry is invalid");
         };
-        let existing: Vec<u64> = unsafe { seq_vec_ref(list_ptr).to_vec() };
+        let existing = unsafe { seq_snapshot(list_ptr) };
         let mut insert_at = existing.len();
         for (idx, existing_bits) in existing.iter().copied().enumerate() {
             let existing_order = match urllib_request_handler_order(_py, existing_bits) {
@@ -132,7 +132,7 @@ pub extern "C" fn molt_urllib_request_open(opener_bits: u64, request_bits: u64) 
                     "opener handler registry is invalid",
                 );
             };
-            let handlers: Vec<u64> = unsafe { seq_vec_ref(list_ptr).to_vec() };
+            let handlers = unsafe { seq_snapshot(list_ptr) };
             let start_idx = (previous_cursor as usize).min(handlers.len());
 
             let request_method_name = format!("{}_request", scheme);
@@ -294,11 +294,11 @@ pub extern "C" fn molt_urllib_request_open(opener_bits: u64, request_bits: u64) 
                 let mut proxy_auth_attempted = false;
                 let mut current_url = full_url.clone();
                 let mut redirects = 0usize;
-                let cookiejar_handles = match urllib_cookiejar_handles_from_handlers(_py, &handlers)
-                {
-                    Ok(value) => value,
-                    Err(bits) => return bits,
-                };
+                let cookiejar_handles =
+                    match urllib_cookiejar_handles_from_handlers(_py, handlers.as_ref()) {
+                        Ok(value) => value,
+                        Err(bits) => return bits,
+                    };
                 loop {
                     let parts = urllib_urlsplit_impl(&current_url, "", true);
                     let netloc_now = parts[1].clone();
@@ -426,7 +426,7 @@ pub extern "C" fn molt_urllib_request_open(opener_bits: u64, request_bits: u64) 
                         let realm = urllib_http_parse_basic_realm(challenge);
                         let creds = match urllib_proxy_find_basic_credentials(
                             _py,
-                            &handlers,
+                            handlers.as_ref(),
                             proxy_url,
                             realm.as_deref(),
                         ) {
@@ -480,7 +480,7 @@ pub extern "C" fn molt_urllib_request_open(opener_bits: u64, request_bits: u64) 
             };
 
             let response_method_name = format!("{}_response", scheme);
-            for handler_bits in handlers {
+            for handler_bits in handlers.iter().copied() {
                 let Some(method_bits) =
                     (match attr_optional(_py, handler_bits, response_method_name.as_bytes()) {
                         Ok(bits) => bits,

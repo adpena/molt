@@ -43,7 +43,7 @@ Three load-bearing facts:
    float compare/value helpers that multiple `fc::*` handlers consume. The
    list-index support module is the private authority for loop-index prelude
    classification, list pointer hoist eligibility, fallback import policy,
-   regular-list store absorption, integer sum-reduction detection, and the
+   read-only generic-list integer lanes, integer sum-reduction detection, and the
    `ListIndexFastPathState` cache/shadow maps consumed by `indexing`, `loops`,
    `list_ops`, `control_flow`, and `ret_jump`. The loop lifecycle module owns
    structured loop CFG lowering, metadata-only structured loop classification,
@@ -117,7 +117,7 @@ No planned M1 opcode-family cluster remains inline. Constant/literal materializa
 
 ### 1.4 Shared helper + shared-state sets
 - **Private shared helper module** (`scalar_carriers.rs`, reached via `super::*`): `name_is_int_like`, `int_raw_value`, `def_inline_int_value`, `bool_raw_value`, `ensure_boxed_*`, `box_raw_*`, `var_get_boxed_overflow_safe_base`, `def_var_from_*`, `emit_protect_borrowed_args_aliased_return`, `merge_rebind_*`, live-through param rebinding, guarded boxed bitwise, `float_value_for*`, dead-scrub value selection, and float compare emission. This is the extracted representation transport authority used by multiple `fc::*` handlers.
-- **Private list/index support module** (`fc/list_index_fast_path.rs`): `ListIndexFastPathState`, cache invalidation, loop-index prelude classification, loop-hoistable list detection, pre-loop definition collection, generic-list integer-lane eligibility, fallback import policy, regular-list store absorption, and integer sum-reduction detection. This is the extracted fast-path support authority shared by `indexing`, `loops`, `list_ops`, `control_flow`, and `ret_jump`.
+- **Private list/index support module** (`fc/list_index_fast_path.rs`): `ListIndexFastPathState`, cache invalidation, loop-index prelude classification, loop-hoistable list detection, pre-loop definition collection, read-only generic-list integer-lane eligibility, runtime-backed store fallback policy, and integer sum-reduction detection. This is the extracted fast-path support authority shared by `indexing`, `loops`, `list_ops`, `control_flow`, and `ret_jump`.
 - **Private loop lifecycle module** (`fc/loops.rs`): structured loop CFG lowering, metadata-only structured loop control classification, loop-carried reassignment old-value capture/drop, loop frame state, hoisted list cache threading, reduction skips, and cleanup-on-break bookkeeping.
 - **Shell-owned free helpers** (1-1473, reached via `super::*`): `def_var_named`, `import_func_ref`, cleanup-root helpers, data-segment/module helpers, preanalysis, and other orchestration that remains coupled to `compile_func_inner`. Plus assoc fns `SimpleBackend::import_func_id_split`, `SimpleBackend::intern_data_segment`; shared `fc` helpers own `op_prefers_int_lane` for extracted arithmetic/unary/control-flow handlers.
 - **lib.rs `pub(crate)` surface** (via `crate::`): `NanBoxConsts`, `VarValue`, `DeferredDefine`, `block_has_terminator`, `switch_to_block_tracking`, `extend_unique_tracked`, `unbox_int`, `box_int`. **Already pub(crate) — no widening.**
@@ -203,7 +203,7 @@ op-local closures reconstructed with identical captures (template: `list_ops.rs:
   by the shell and extracted `fc::*` handlers.
 - **M1.19 `fc::list_index_fast_path` shared support authority** - landed for
   `ListIndexFastPathState`, loop/list hoist scans, fallback import policy,
-  regular-list store absorption, and integer sum-reduction detection shared by
+  read-only generic-list integer lanes, runtime-backed store routing, and integer sum-reduction detection shared by
   list, indexing, loop, control-flow, and branch/return handlers.
 Stop-anywhere: M1.1-M1.19 removed the largest arithmetic/compare/unary/function-object,
 coroutine, call, memory, ret/jump, structured control-flow, loop, subscript, and

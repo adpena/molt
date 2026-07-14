@@ -220,7 +220,15 @@ pub(crate) fn iter_values_from_bits(
                 ));
             }
         }
-        let pair = unsafe { seq_vec_ref(pair_ptr) };
+        let Some(pair) = (unsafe {
+            crate::object::seq_access::snapshot(
+                _py,
+                pair_ptr,
+                "iterator pair snapshot allocation failed",
+            )
+        }) else {
+            return Err(MoltObject::none().bits());
+        };
         if pair.len() < 2 {
             return Err(raise_exception::<u64>(
                 _py,
@@ -313,7 +321,15 @@ pub(crate) fn argv_from_bits(_py: &PyToken<'_>, args_bits: u64) -> Result<Vec<Os
     if let Some(ptr) = obj.as_ptr() {
         let type_id = unsafe { object_type_id(ptr) };
         if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
-            let elems = unsafe { seq_vec_ref(ptr) };
+            let Some(elems) = (unsafe {
+                crate::object::seq_access::snapshot(
+                    _py,
+                    ptr,
+                    "socket argument snapshot allocation failed",
+                )
+            }) else {
+                return Err("socket argument snapshot allocation failed".to_string());
+            };
             let mut args = Vec::with_capacity(elems.len());
             for &elem in elems.iter() {
                 args.push(os_string_from_bits(_py, elem)?);

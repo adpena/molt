@@ -8,9 +8,9 @@
 //! exception (the pre-sweep code returned bare `-1`/NULL sentinels and
 //! fabricated empty results; see the divergence ledger rows for this file).
 
-use crate::abi_types::{Py_ssize_t, PyObject, PySequenceMethods, PyTupleObject};
+use crate::abi_types::{Py_ssize_t, PyListObject, PyObject, PySequenceMethods, PyTupleObject};
 use crate::bridge::GLOBAL_BRIDGE;
-use crate::hooks::{DecodedHandleResult, OwnedHandleResult, RuntimeHooks, hooks_or_stubs};
+use crate::hooks::hooks_or_stubs;
 use molt_lang_obj_model::MoltObject;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_void};
@@ -26,14 +26,6 @@ type BinaryFunc = unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> *mut PyO
 type SsizeObjArgProc = unsafe extern "C" fn(*mut PyObject, Py_ssize_t, *mut PyObject) -> c_int;
 type ObjObjProc = unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> c_int;
 
-unsafe fn finish_tuple_store(hooks: &RuntimeHooks, result: OwnedHandleResult) -> bool {
-    let DecodedHandleResult::Ok(old_bits) = result.decode() else {
-        return false;
-    };
-    unsafe { (hooks.dec_ref)(old_bits) };
-    true
-}
-
 /// Helper: resolve a PyObject to its Molt bits.
 fn resolve_bits(op: *mut PyObject) -> Option<u64> {
     if op.is_null() {
@@ -41,6 +33,16 @@ fn resolve_bits(op: *mut PyObject) -> Option<u64> {
     }
     GLOBAL_BRIDGE
         .molt_handle_for_pyobj(op)
+        .map(|value| value.bits())
+}
+
+/// Resolve a value that is about to be semantically observed by the runtime.
+fn observed_bits(op: *mut PyObject) -> Option<u64> {
+    if op.is_null() {
+        return None;
+    }
+    GLOBAL_BRIDGE
+        .observed_handle_for_pyobj(op)
         .map(|value| value.bits())
 }
 
@@ -52,24 +54,6 @@ fn classify(bits: u64) -> u8 {
     }
     let h = hooks_or_stubs();
     unsafe { (h.classify_heap)(bits) }
-}
-
-unsafe fn required_borrowed_bits(result: crate::hooks::BorrowedHandleResult) -> Option<u64> {
-    match result.decode() {
-        crate::hooks::DecodedHandleResult::Ok(bits) => Some(bits),
-        crate::hooks::DecodedHandleResult::Missing | crate::hooks::DecodedHandleResult::Error => {
-            if !crate::api::errors::transfer_runtime_pending_to_current() {
-                unsafe {
-                    crate::api::errors::PyErr_SetString(
-                        (&raw mut crate::abi_types::PyExc_SystemError)
-                            .cast::<crate::abi_types::PyObject>(),
-                        c"runtime sequence hook returned no item for an in-range index".as_ptr(),
-                    );
-                }
-            }
-            None
-        }
-    }
 }
 
 #[inline]
@@ -187,110 +171,129 @@ unsafe fn bytes_slice(bits: u64) -> Option<&'static [u8]> {
     }
 }
 
-/// Value equality between two Molt handles, replacing the raw bits-identity
-/// compare the ledger flagged for Contains/Count/Index (equal-but-distinct heap
-/// strings / big ints / floats were missed).
-///
-/// Tiers: bits identity (identity implies equality, as CPython's
-/// `PyObject_RichCompareBool` shortcut — also makes NaN-is-item work) → exact
-/// int/int → mixed int/float numeric → str bytes → bytes bytes. Residual:
-/// equal-but-distinct heap containers (tuple vs tuple) still miss — CPython
-/// recurses via rich comparison; the runtime exposes no deep-equality hook yet.
-unsafe fn bits_value_eq(a: u64, b: u64) -> bool {
-    if a == b {
-        return true;
-    }
-    let oa = MoltObject::from_bits(a);
-    let ob = MoltObject::from_bits(b);
-    let h = hooks_or_stubs();
-    // Integer value (immediate int/bool, or heap big-int via the checked hook).
-    let as_i64 = |bits: u64, o: &MoltObject| -> Option<i64> {
-        if let Some(v) = o.as_int() {
-            return Some(v);
-        }
-        if let Some(v) = o.as_bool() {
-            return Some(v as i64);
-        }
-        if o.is_ptr() && classify(bits) == crate::abi_types::MoltTypeTag::Int as u8 {
-            let mut out: i64 = 0;
-            if unsafe { (h.int_as_i64_checked)(bits, &raw mut out) } == 0 {
-                return Some(out);
-            }
-        }
-        None
-    };
-    let ia = as_i64(a, &oa);
-    let ib = as_i64(b, &ob);
-    if let (Some(x), Some(y)) = (ia, ib) {
-        return x == y;
-    }
-    // Mixed numeric (int vs float, or float bit-patterns like 0.0 vs -0.0).
-    let as_f64 = |i: Option<i64>, o: &MoltObject| -> Option<f64> {
-        if let Some(v) = i {
-            return Some(v as f64);
-        }
-        o.as_float()
-    };
-    if let (Some(x), Some(y)) = (as_f64(ia, &oa), as_f64(ib, &ob)) {
-        return x == y;
-    }
-    if oa.is_ptr() && ob.is_ptr() {
-        let (ta, tb) = (classify(a), classify(b));
-        if ta == tag_str() && tb == tag_str() {
-            return unsafe { str_slice(a) } == unsafe { str_slice(b) };
-        }
-        if ta == tag_bytes() && tb == tag_bytes() {
-            return unsafe { bytes_slice(a) } == unsafe { bytes_slice(b) };
-        }
-    }
-    false
+/// An identity-preserving physical snapshot. Every pointer is a new reference,
+/// so self-extension, allocation, and iterator callbacks cannot invalidate an
+/// element between observation and container publication.
+pub(crate) struct MaterializedPointers {
+    pointers: Vec<*mut PyObject>,
 }
 
-unsafe fn is_abi_tuple_object(o: *mut PyObject) -> bool {
-    !o.is_null()
-        && unsafe { crate::api::sequences::PyTuple_Check(o) } != 0
-        && resolve_bits(o).is_none()
+impl MaterializedPointers {
+    fn with_capacity(capacity: usize) -> Option<Self> {
+        let mut pointers = Vec::new();
+        if pointers.try_reserve_exact(capacity).is_err() {
+            unsafe { crate::api::errors::PyErr_NoMemory() };
+            return None;
+        }
+        Some(Self { pointers })
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.pointers.len()
+    }
+
+    fn take(&mut self, index: usize) -> *mut PyObject {
+        std::mem::replace(&mut self.pointers[index], ptr::null_mut())
+    }
+
+    pub(crate) fn as_slice(&self) -> &[*mut PyObject] {
+        &self.pointers
+    }
+}
+
+impl Drop for MaterializedPointers {
+    fn drop(&mut self) {
+        for pointer in self.pointers.drain(..).filter(|pointer| !pointer.is_null()) {
+            unsafe { crate::api::refcount::Py_DECREF(pointer) };
+        }
+    }
+}
+
+fn checked_py_ssize(length: usize) -> Option<Py_ssize_t> {
+    if length > Py_ssize_t::MAX as usize {
+        unsafe { crate::api::errors::PyErr_NoMemory() };
+        None
+    } else {
+        Some(length as Py_ssize_t)
+    }
+}
+
+/// The one C-visible iterable construction authority. Native list/tuple inputs
+/// take the indexed fast path; all others use their actual iterator. Carrying
+/// exact pointers deletes value-bit rematerialization and preserves `is`.
+pub(crate) unsafe fn materialize_iterable_pointers(
+    o: *mut PyObject,
+    fast_error_message: Option<*const c_char>,
+) -> Option<MaterializedPointers> {
+    if let Some(bits) = resolve_bits(o) {
+        let tag = classify(bits);
+        if tag == tag_list() || tag == tag_tuple() {
+            let h = hooks_or_stubs();
+            let len = if tag == tag_list() {
+                unsafe { (h.list_len)(bits) }
+            } else {
+                unsafe { (h.tuple_len)(bits) }
+            };
+            let mut out = MaterializedPointers::with_capacity(len)?;
+            for index in 0..len {
+                let pointer = if tag == tag_list() {
+                    unsafe { crate::api::sequences::PyList_GetItem(o, index as Py_ssize_t) }
+                } else {
+                    unsafe { crate::api::sequences::PyTuple_GetItem(o, index as Py_ssize_t) }
+                };
+                if pointer.is_null() {
+                    return None;
+                }
+                unsafe { crate::api::refcount::Py_INCREF(pointer) };
+                out.pointers.push(pointer);
+            }
+            return Some(out);
+        }
+    }
+
+    let iter = unsafe { crate::api::object::PyObject_GetIter(o) };
+    if iter.is_null() {
+        if let Some(message) = fast_error_message
+            && unsafe {
+                crate::api::errors::PyErr_ExceptionMatches(
+                    (&raw mut crate::abi_types::PyExc_TypeError).cast::<PyObject>(),
+                )
+            } != 0
+        {
+            unsafe {
+                crate::api::errors::PyErr_Clear();
+                set_sequence_fast_type_error(message);
+            }
+        } else if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+            unsafe { set_type_error(format!("'{}' object is not iterable", type_name(o))) };
+        }
+        return None;
+    }
+    let mut out = MaterializedPointers::with_capacity(0)?;
+    loop {
+        let item = unsafe { crate::api::object::PyIter_Next(iter) };
+        if item.is_null() {
+            break;
+        }
+        if out.pointers.try_reserve(1).is_err() {
+            unsafe {
+                crate::api::refcount::Py_DECREF(item);
+                crate::api::refcount::Py_DECREF(iter);
+                crate::api::errors::PyErr_NoMemory();
+            }
+            return None;
+        }
+        out.pointers.push(item);
+    }
+    unsafe { crate::api::refcount::Py_DECREF(iter) };
+    if !unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+        return None;
+    }
+    Some(out)
 }
 
 /// Append the code points of a native str handle to `out` as fresh 1-char str
 /// handles (CPython `str` iteration yields 1-char strings).
-unsafe fn push_str_chars(bits: u64, out: &mut Vec<u64>) -> bool {
-    let Some(bytes) = (unsafe { str_slice(bits) }) else {
-        return false;
-    };
-    let Ok(text) = std::str::from_utf8(bytes) else {
-        return false;
-    };
-    let h = hooks_or_stubs();
-    let mut buf = [0u8; 4];
-    for ch in text.chars() {
-        let s = ch.encode_utf8(&mut buf);
-        let cb = unsafe { (h.alloc_str)(s.as_ptr(), s.len()) };
-        if cb == 0 {
-            return false;
-        }
-        out.push(cb);
-    }
-    true
-}
-
-/// Append the elements of a native bytes handle to `out` as int handles
-/// (CPython `bytes` iteration yields ints).
-unsafe fn push_bytes_ints(bits: u64, out: &mut Vec<u64>) -> bool {
-    let Some(bytes) = (unsafe { bytes_slice(bits) }) else {
-        return false;
-    };
-    let h = hooks_or_stubs();
-    for &b in bytes {
-        let ib = unsafe { (h.int_from_i64)(b as i64) };
-        if ib == 0 {
-            return false;
-        }
-        out.push(ib);
-    }
-    true
-}
-
 /// Materialize any iterable into a vector of owned Molt handle bits, or None
 /// with the CPython-shaped exception set.
 ///
@@ -298,94 +301,6 @@ unsafe fn push_bytes_ints(bits: u64, out: &mut Vec<u64>) -> bool {
 /// semantics per CPython) → native dict (keys, via the `dict_entry` cursor) →
 /// the object's own iterator protocol (`PyObject_GetIter` + `PyIter_Next`, the
 /// CPython fallback for every other iterable) → TypeError.
-unsafe fn materialize_iterable(o: *mut PyObject) -> Option<Vec<u64>> {
-    let h = hooks_or_stubs();
-    if let Some(bits) = resolve_bits(o) {
-        let tag = classify(bits);
-        if tag == tag_list() {
-            let len = unsafe { (h.list_len)(bits) };
-            let mut out = Vec::with_capacity(len);
-            for i in 0..len {
-                let item = unsafe { required_borrowed_bits((h.list_item)(bits, i)) }?;
-                out.push(item);
-            }
-            return Some(out);
-        }
-        if tag == tag_tuple() {
-            let len = unsafe { (h.tuple_len)(bits) };
-            let mut out = Vec::with_capacity(len);
-            for i in 0..len {
-                let item = unsafe { required_borrowed_bits((h.tuple_item)(bits, i)) }?;
-                out.push(item);
-            }
-            return Some(out);
-        }
-        if tag == tag_str() {
-            let mut out = Vec::new();
-            if unsafe { push_str_chars(bits, &mut out) } {
-                return Some(out);
-            }
-        }
-        if tag == tag_bytes() {
-            let mut out = Vec::new();
-            if unsafe { push_bytes_ints(bits, &mut out) } {
-                return Some(out);
-            }
-        }
-        if tag == tag_dict() {
-            // Iterating a dict yields its KEYS (CPython dict iteration order).
-            let mut out = Vec::new();
-            let mut idx: usize = 0;
-            loop {
-                let mut key: u64 = 0;
-                let found = unsafe { (h.dict_entry)(bits, idx, &raw mut key, ptr::null_mut()) };
-                if found != 1 {
-                    break;
-                }
-                out.push(key);
-                idx += 1;
-            }
-            return Some(out);
-        }
-    }
-    // Iterator-protocol fallback (foreign objects and slot-bearing types).
-    let iter = unsafe { crate::api::object::PyObject_GetIter(o) };
-    if iter.is_null() {
-        unsafe { set_type_error(format!("'{}' object is not iterable", type_name(o))) };
-        return None;
-    }
-    let mut out = Vec::new();
-    loop {
-        let item = unsafe { crate::api::object::PyIter_Next(iter) };
-        if item.is_null() {
-            break;
-        }
-        let bridge = &*GLOBAL_BRIDGE;
-        let item_bits = match unsafe { bridge.molt_value_for_pyobj(item) } {
-            Some(b) => b,
-            None => {
-                unsafe {
-                    crate::api::refcount::Py_DECREF(item);
-                    crate::api::refcount::Py_DECREF(iter);
-                    set_type_error(
-                        "iterator produced an object that cannot enter the Molt runtime"
-                            .to_string(),
-                    );
-                }
-                return None;
-            }
-        };
-        out.push(item_bits);
-        unsafe { crate::api::refcount::Py_DECREF(item) };
-    }
-    unsafe { crate::api::refcount::Py_DECREF(iter) };
-    // A pending exception here is a real iteration error, not exhaustion.
-    if !unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
-        return None;
-    }
-    Some(out)
-}
-
 unsafe fn set_sequence_fast_type_error(message: *const c_char) {
     let msg = if message.is_null() {
         c"object is not a sequence".as_ptr()
@@ -466,7 +381,7 @@ pub unsafe extern "C" fn PySequence_GetItem(o: *mut PyObject, i: Py_ssize_t) -> 
         unsafe { set_null_error() };
         return ptr::null_mut();
     }
-    if let Some(bits) = resolve_bits(o) {
+    if let Some(bits) = observed_bits(o) {
         let h = hooks_or_stubs();
         let tag = classify(bits);
 
@@ -483,9 +398,13 @@ pub unsafe extern "C" fn PySequence_GetItem(o: *mut PyObject, i: Py_ssize_t) -> 
                 }
                 return ptr::null_mut();
             }
-            return unsafe {
-                GLOBAL_BRIDGE.borrowed_result_to_new_pyobj((h.list_item)(bits, actual_i as usize))
+            let Some(pointer) = GLOBAL_BRIDGE.list_view_item_pointer(bits, actual_i as usize)
+            else {
+                unsafe { set_null_error() };
+                return ptr::null_mut();
             };
+            unsafe { crate::api::refcount::Py_INCREF(pointer) };
+            return pointer;
         }
         if tag == tag_tuple() {
             let len = unsafe { (h.tuple_len)(bits) };
@@ -500,9 +419,20 @@ pub unsafe extern "C" fn PySequence_GetItem(o: *mut PyObject, i: Py_ssize_t) -> 
                 }
                 return ptr::null_mut();
             }
-            return unsafe {
-                GLOBAL_BRIDGE.borrowed_result_to_new_pyobj((h.tuple_item)(bits, actual_i as usize))
+            // An exact tuple's packed C projection is the C-visible identity
+            // authority. Reading the runtime value bits here and materializing
+            // another carrier loses `is`, creates avoidable allocation/refcount
+            // traffic, and gives the iterator path a second ownership model.
+            // PyTuple_GetItem reads the physical slot; PySequence_GetItem owns
+            // the one required new reference.
+            let pointer = unsafe {
+                crate::api::sequences::PyTuple_GetItem(o, actual_i as Py_ssize_t)
             };
+            if pointer.is_null() {
+                return ptr::null_mut();
+            }
+            unsafe { crate::api::refcount::Py_INCREF(pointer) };
+            return pointer;
         }
         if tag == tag_str() {
             // str sq_item yields a 1-code-point str (code-point indexing).
@@ -658,10 +588,10 @@ pub unsafe extern "C" fn PySequence_DelItem(o: *mut PyObject, i: Py_ssize_t) -> 
         unsafe { set_null_error() };
         return -1;
     }
-    if let Some(bits) = resolve_bits(o) {
+    if let Some(bits) = observed_bits(o) {
+        let h = hooks_or_stubs();
         let tag = classify(bits);
         if tag == tag_list() {
-            let h = hooks_or_stubs();
             let len = unsafe { (h.list_len)(bits) } as Py_ssize_t;
             let actual_i = if i < 0 { len + i } else { i };
             if actual_i < 0 || actual_i >= len {
@@ -674,7 +604,9 @@ pub unsafe extern "C" fn PySequence_DelItem(o: *mut PyObject, i: Py_ssize_t) -> 
                 }
                 return -1;
             }
-            let rc = unsafe { (h.list_set_slice)(bits, actual_i, actual_i + 1, 0) };
+            let rc = unsafe {
+                crate::api::sequences::PyList_SetSlice(o, actual_i, actual_i + 1, ptr::null_mut())
+            };
             if rc != 0 {
                 unsafe { crate::api::errors::PyErr_BadInternalCall() };
                 return -1;
@@ -718,37 +650,13 @@ pub unsafe extern "C" fn PySequence_Contains(o: *mut PyObject, value: *mut PyObj
         unsafe { set_null_error() };
         return -1;
     }
-    if let Some(bits) = resolve_bits(o) {
+    if let Some(result) = unsafe { exact_sequence_search(o, value, IterSearch::Contains) } {
+        return result as c_int;
+    }
+    if let Some(bits) = observed_bits(o) {
         let h = hooks_or_stubs();
         let tag = classify(bits);
-        let val_bits = resolve_bits(value);
-
-        if tag == tag_list() || tag == tag_tuple() {
-            if let Some(val_bits) = val_bits {
-                let len = if tag == tag_list() {
-                    unsafe { (h.list_len)(bits) }
-                } else {
-                    unsafe { (h.tuple_len)(bits) }
-                };
-                for idx in 0..len {
-                    let result = if tag == tag_list() {
-                        unsafe { (h.list_item)(bits, idx) }
-                    } else {
-                        unsafe { (h.tuple_item)(bits, idx) }
-                    };
-                    let Some(item) = (unsafe { required_borrowed_bits(result) }) else {
-                        return -1;
-                    };
-                    if unsafe { bits_value_eq(item, val_bits) } {
-                        return 1;
-                    }
-                }
-                return 0;
-            }
-            // A foreign needle can only match by identity in a Molt container;
-            // its wrapper (if any) was checked above. Not present.
-            return 0;
-        }
+        let val_bits = observed_bits(value);
         if tag == tag_str() {
             // 'in <string>' is SUBSTRING containment and requires a str operand.
             if let Some(vb) = val_bits
@@ -856,6 +764,67 @@ enum IterSearch {
     Index,
 }
 
+/// Allocation-free exact list/tuple search through the canonical physical
+/// pointer arrays. RichCompareBool supplies the identity fast path and complete
+/// recursive Python equality; no handwritten bits classifier may substitute.
+unsafe fn exact_sequence_search(
+    o: *mut PyObject,
+    value: *mut PyObject,
+    mode: IterSearch,
+) -> Option<Py_ssize_t> {
+    let is_list = unsafe { crate::api::sequences::PyList_CheckExact(o) } != 0;
+    let is_tuple = unsafe { crate::api::sequences::PyTuple_CheckExact(o) } != 0;
+    if !is_list && !is_tuple {
+        return None;
+    }
+    let len = if is_list {
+        unsafe { crate::api::sequences::PyList_Size(o) }
+    } else {
+        unsafe { crate::api::sequences::PyTuple_Size(o) }
+    };
+    if len < 0 {
+        return Some(-1);
+    }
+    let mut count = 0;
+    for index in 0..len {
+        let item = if is_list {
+            unsafe { crate::api::sequences::PyList_GetItem(o, index) }
+        } else {
+            unsafe { crate::api::sequences::PyTuple_GetItem(o, index) }
+        };
+        if item.is_null() {
+            return Some(-1);
+        }
+        let equal = unsafe {
+            crate::api::typeobj::PyObject_RichCompareBool(item, value, PY_EQ)
+        };
+        if equal < 0 {
+            return Some(-1);
+        }
+        if equal != 0 {
+            match mode {
+                IterSearch::Contains => return Some(1),
+                IterSearch::Count => count += 1,
+                IterSearch::Index => return Some(index),
+            }
+        }
+    }
+    Some(match mode {
+        IterSearch::Contains => 0,
+        IterSearch::Count => count,
+        IterSearch::Index => {
+            unsafe {
+                crate::api::errors::PyErr_SetString(
+                    (&raw mut crate::abi_types::PyExc_ValueError)
+                        .cast::<crate::abi_types::PyObject>(),
+                    c"sequence.index(x): x not in sequence".as_ptr(),
+                );
+            }
+            -1
+        }
+    })
+}
+
 /// Iterator-protocol search: drains `PyObject_GetIter(o)` comparing each item
 /// to `value` with `PyObject_RichCompareBool(..., Py_EQ)`. Returns the CPython
 /// result contract for each mode (-1 with an exception on error).
@@ -928,8 +897,8 @@ pub unsafe extern "C" fn PySequence_Concat(s1: *mut PyObject, s2: *mut PyObject)
         unsafe { set_null_error() };
         return ptr::null_mut();
     }
-    let bits1 = resolve_bits(s1);
-    let bits2 = resolve_bits(s2);
+    let bits1 = observed_bits(s1);
+    let bits2 = observed_bits(s2);
     if let Some(bits1) = bits1 {
         let h = hooks_or_stubs();
         let tag1 = classify(bits1);
@@ -947,30 +916,31 @@ pub unsafe extern "C" fn PySequence_Concat(s1: *mut PyObject, s2: *mut PyObject)
                 return ptr::null_mut();
             }
             let bits2 = bits2.unwrap();
-            let new_list = unsafe { (h.alloc_list)() };
-            if new_list == 0 {
-                unsafe { crate::api::errors::PyErr_BadInternalCall() };
+            let new_list = unsafe { crate::api::sequences::PyList_New(0) };
+            if new_list.is_null() {
                 return ptr::null_mut();
             }
             let len1 = unsafe { (h.list_len)(bits1) };
             for i in 0..len1 {
-                let Some(item) = (unsafe { required_borrowed_bits((h.list_item)(bits1, i)) })
-                else {
-                    unsafe { (h.dec_ref)(new_list) };
+                let item = unsafe { crate::api::sequences::PyList_GetItem(s1, i as Py_ssize_t) };
+                if item.is_null()
+                    || unsafe { crate::api::sequences::PyList_Append(new_list, item) } != 0
+                {
+                    unsafe { crate::api::refcount::Py_DECREF(new_list) };
                     return ptr::null_mut();
-                };
-                unsafe { (h.list_append)(new_list, item) };
+                }
             }
             let len2 = unsafe { (h.list_len)(bits2) };
             for i in 0..len2 {
-                let Some(item) = (unsafe { required_borrowed_bits((h.list_item)(bits2, i)) })
-                else {
-                    unsafe { (h.dec_ref)(new_list) };
+                let item = unsafe { crate::api::sequences::PyList_GetItem(s2, i as Py_ssize_t) };
+                if item.is_null()
+                    || unsafe { crate::api::sequences::PyList_Append(new_list, item) } != 0
+                {
+                    unsafe { crate::api::refcount::Py_DECREF(new_list) };
                     return ptr::null_mut();
-                };
-                unsafe { (h.list_append)(new_list, item) };
+                }
             }
-            return unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(new_list) };
+            return new_list;
         }
         if tag1 == tag_tuple() {
             // CPython tuple_concat: the right operand must be a tuple.
@@ -986,28 +956,64 @@ pub unsafe extern "C" fn PySequence_Concat(s1: *mut PyObject, s2: *mut PyObject)
             let bits2 = bits2.unwrap();
             let len1 = unsafe { (h.tuple_len)(bits1) };
             let len2 = unsafe { (h.tuple_len)(bits2) };
-            let new_tuple = unsafe { (h.alloc_tuple)(len1 + len2) };
-            if new_tuple == 0 {
-                unsafe { crate::api::errors::PyErr_BadInternalCall() };
+            if len1 == 0
+                && unsafe { crate::api::sequences::PyTuple_CheckExact(s2) } != 0
+            {
+                unsafe { crate::api::refcount::Py_INCREF(s2) };
+                return s2;
+            }
+            if len2 == 0
+                && unsafe { crate::api::sequences::PyTuple_CheckExact(s1) } != 0
+            {
+                unsafe { crate::api::refcount::Py_INCREF(s1) };
+                return s1;
+            }
+            let Some(total) = len1.checked_add(len2) else {
+                unsafe { crate::api::errors::PyErr_NoMemory() };
+                return ptr::null_mut();
+            };
+            let Some(total) = checked_py_ssize(total) else {
+                return ptr::null_mut();
+            };
+            let new_tuple = unsafe { crate::api::sequences::PyTuple_New(total) };
+            if new_tuple.is_null() {
                 return ptr::null_mut();
             }
             for i in 0..len1 {
-                let Some(item) = (unsafe { required_borrowed_bits((h.tuple_item)(bits1, i)) })
-                else {
-                    unsafe { (h.dec_ref)(new_tuple) };
+                let item = unsafe { crate::api::sequences::PyTuple_GetItem(s1, i as Py_ssize_t) };
+                if item.is_null() {
+                    unsafe { crate::api::refcount::Py_DECREF(new_tuple) };
                     return ptr::null_mut();
-                };
-                let _ = unsafe { finish_tuple_store(h, (h.tuple_set)(new_tuple, i, item)) };
+                }
+                unsafe { crate::api::refcount::Py_INCREF(item) };
+                if unsafe {
+                    crate::api::sequences::PyTuple_SetItem(new_tuple, i as Py_ssize_t, item)
+                } != 0
+                {
+                    unsafe { crate::api::refcount::Py_DECREF(new_tuple) };
+                    return ptr::null_mut();
+                }
             }
             for i in 0..len2 {
-                let Some(item) = (unsafe { required_borrowed_bits((h.tuple_item)(bits2, i)) })
-                else {
-                    unsafe { (h.dec_ref)(new_tuple) };
+                let item = unsafe { crate::api::sequences::PyTuple_GetItem(s2, i as Py_ssize_t) };
+                if item.is_null() {
+                    unsafe { crate::api::refcount::Py_DECREF(new_tuple) };
                     return ptr::null_mut();
-                };
-                let _ = unsafe { finish_tuple_store(h, (h.tuple_set)(new_tuple, len1 + i, item)) };
+                }
+                unsafe { crate::api::refcount::Py_INCREF(item) };
+                if unsafe {
+                    crate::api::sequences::PyTuple_SetItem(
+                        new_tuple,
+                        (len1 + i) as Py_ssize_t,
+                        item,
+                    )
+                } != 0
+                {
+                    unsafe { crate::api::refcount::Py_DECREF(new_tuple) };
+                    return ptr::null_mut();
+                }
             }
-            return unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(new_tuple) };
+            return new_tuple;
         }
         if tag1 == tag_str() {
             if tag2 == Some(tag_str())
@@ -1075,49 +1081,70 @@ pub unsafe extern "C" fn PySequence_Repeat(o: *mut PyObject, count: Py_ssize_t) 
         return ptr::null_mut();
     }
     let reps = count.max(0) as usize; // CPython clamps negative counts to 0
-    if let Some(bits) = resolve_bits(o) {
+    if let Some(bits) = observed_bits(o) {
         let h = hooks_or_stubs();
         let tag = classify(bits);
 
         if tag == tag_list() {
             let len = unsafe { (h.list_len)(bits) };
-            let new_list = unsafe { (h.alloc_list)() };
-            if new_list == 0 {
-                unsafe { crate::api::errors::PyErr_BadInternalCall() };
+            let new_list = unsafe { crate::api::sequences::PyList_New(0) };
+            if new_list.is_null() {
                 return ptr::null_mut();
             }
             for _ in 0..reps {
                 for i in 0..len {
-                    let Some(item) = (unsafe { required_borrowed_bits((h.list_item)(bits, i)) })
-                    else {
-                        unsafe { (h.dec_ref)(new_list) };
+                    let item = unsafe { crate::api::sequences::PyList_GetItem(o, i as Py_ssize_t) };
+                    if item.is_null()
+                        || unsafe { crate::api::sequences::PyList_Append(new_list, item) } != 0
+                    {
+                        unsafe { crate::api::refcount::Py_DECREF(new_list) };
                         return ptr::null_mut();
-                    };
-                    unsafe { (h.list_append)(new_list, item) };
+                    }
                 }
             }
-            return unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(new_list) };
+            return new_list;
         }
         if tag == tag_tuple() {
             let len = unsafe { (h.tuple_len)(bits) };
-            let new_tuple = unsafe { (h.alloc_tuple)(len * reps) };
-            if new_tuple == 0 {
-                unsafe { crate::api::errors::PyErr_BadInternalCall() };
+            if reps == 1 && unsafe { crate::api::sequences::PyTuple_CheckExact(o) } != 0 {
+                unsafe { crate::api::refcount::Py_INCREF(o) };
+                return o;
+            }
+            if reps == 0 || len == 0 {
+                return unsafe { crate::api::sequences::PyTuple_New(0) };
+            }
+            let Some(total) = len.checked_mul(reps) else {
+                unsafe { crate::api::errors::PyErr_NoMemory() };
+                return ptr::null_mut();
+            };
+            let Some(total) = checked_py_ssize(total) else {
+                return ptr::null_mut();
+            };
+            let new_tuple = unsafe { crate::api::sequences::PyTuple_New(total) };
+            if new_tuple.is_null() {
                 return ptr::null_mut();
             }
             let mut dst = 0;
             for _ in 0..reps {
                 for i in 0..len {
-                    let Some(item) = (unsafe { required_borrowed_bits((h.tuple_item)(bits, i)) })
-                    else {
-                        unsafe { (h.dec_ref)(new_tuple) };
+                    let item =
+                        unsafe { crate::api::sequences::PyTuple_GetItem(o, i as Py_ssize_t) };
+                    if item.is_null() {
+                        unsafe { crate::api::refcount::Py_DECREF(new_tuple) };
                         return ptr::null_mut();
-                    };
-                    let _ = unsafe { finish_tuple_store(h, (h.tuple_set)(new_tuple, dst, item)) };
+                    }
+                    unsafe { crate::api::refcount::Py_INCREF(item) };
+                    if unsafe {
+                        crate::api::sequences::PyTuple_SetItem(new_tuple, dst as Py_ssize_t, item)
+                    } != 0
+                    {
+                        unsafe { crate::api::refcount::Py_DECREF(new_tuple) };
+                        return ptr::null_mut();
+                    }
                     dst += 1;
                 }
             }
-            return unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(new_tuple) };
+            return new_tuple;
         }
         if tag == tag_str()
             && let Some(a) = unsafe { str_slice(bits) }
@@ -1163,19 +1190,24 @@ pub unsafe extern "C" fn PySequence_List(o: *mut PyObject) -> *mut PyObject {
         unsafe { set_null_error() };
         return ptr::null_mut();
     }
-    let Some(items) = (unsafe { materialize_iterable(o) }) else {
+    let Some(mut items) = (unsafe { materialize_iterable_pointers(o, None) }) else {
         return ptr::null_mut();
     };
-    let h = hooks_or_stubs();
-    let new_list = unsafe { (h.alloc_list)() };
-    if new_list == 0 {
-        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+    let Some(list_len) = checked_py_ssize(items.len()) else {
+        return ptr::null_mut();
+    };
+    let list = unsafe { crate::api::sequences::PyList_New(list_len) };
+    if list.is_null() {
         return ptr::null_mut();
     }
-    for item in items {
-        unsafe { (h.list_append)(new_list, item) };
+    for index in 0..items.len() {
+        let item = items.take(index);
+        if unsafe { crate::api::sequences::PyList_SetItem(list, index as Py_ssize_t, item) } != 0 {
+            unsafe { crate::api::refcount::Py_DECREF(list) };
+            return ptr::null_mut();
+        }
     }
-    unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(new_list) }
+    list
 }
 
 #[unsafe(no_mangle)]
@@ -1187,17 +1219,59 @@ pub unsafe extern "C" fn _PyList_Extend(
         unsafe { set_null_error() };
         return ptr::null_mut();
     }
-    let Some(items) = (unsafe { materialize_iterable(iterable) }) else {
-        return ptr::null_mut();
-    };
     let list_bits = GLOBAL_BRIDGE.molt_handle_for_pyobj(list);
     let Some(list_bits) = list_bits else {
         unsafe { set_type_error("_PyList_Extend requires a list".to_string()) };
         return ptr::null_mut();
     };
-    let h = hooks_or_stubs();
-    for item in items {
-        unsafe { (h.list_append)(list_bits.bits(), item) };
+    if !GLOBAL_BRIDGE.commit_list_view(list_bits.bits()) {
+        return ptr::null_mut();
+    }
+    if let Some(iterable_bits) = GLOBAL_BRIDGE.molt_handle_for_pyobj(iterable)
+        && unsafe { (hooks_or_stubs().classify_heap)(iterable_bits.bits()) }
+            == crate::abi_types::MoltTypeTag::List as u8
+        && !GLOBAL_BRIDGE.commit_list_view(iterable_bits.bits())
+    {
+        return ptr::null_mut();
+    }
+    if unsafe { crate::api::sequences::PyList_CheckExact(iterable) } != 0
+        || unsafe { crate::api::sequences::PyTuple_CheckExact(iterable) } != 0
+    {
+        // Snapshot exact list/tuple sources, including self-extension, before
+        // mutating the destination.
+        let Some(items) = (unsafe { materialize_iterable_pointers(iterable, None) }) else {
+            return ptr::null_mut();
+        };
+        for &item in &items.pointers {
+            if unsafe { crate::api::sequences::PyList_Append(list, item) } != 0 {
+                return ptr::null_mut();
+            }
+        }
+    } else {
+        // General iterators are consumed incrementally. If iteration or append
+        // fails, the already-appended prefix remains visible exactly as in
+        // CPython; eager draining changes generator observation and failures.
+        let iter = unsafe { crate::api::object::PyObject_GetIter(iterable) };
+        if iter.is_null() {
+            return ptr::null_mut();
+        }
+        loop {
+            let item = unsafe { crate::api::object::PyIter_Next(iter) };
+            if item.is_null() {
+                let failed = !unsafe { crate::api::errors::PyErr_Occurred() }.is_null();
+                unsafe { crate::api::refcount::Py_DECREF(iter) };
+                if failed {
+                    return ptr::null_mut();
+                }
+                break;
+            }
+            let rc = unsafe { crate::api::sequences::PyList_Append(list, item) };
+            unsafe { crate::api::refcount::Py_DECREF(item) };
+            if rc != 0 {
+                unsafe { crate::api::refcount::Py_DECREF(iter) };
+                return ptr::null_mut();
+            }
+        }
     }
     unsafe { crate::api::object::Py_NewRef(&raw mut crate::abi_types::Py_None) }
 }
@@ -1211,19 +1285,32 @@ pub unsafe extern "C" fn PySequence_Tuple(o: *mut PyObject) -> *mut PyObject {
         unsafe { set_null_error() };
         return ptr::null_mut();
     }
-    let Some(items) = (unsafe { materialize_iterable(o) }) else {
+    if unsafe { crate::api::sequences::PyTuple_CheckExact(o) } != 0 {
+        unsafe { crate::api::refcount::Py_INCREF(o) };
+        return o;
+    }
+    if unsafe { crate::api::sequences::PyList_CheckExact(o) } != 0 {
+        return unsafe { crate::api::sequences::PyList_AsTuple(o) };
+    }
+    let Some(mut items) = (unsafe { materialize_iterable_pointers(o, None) }) else {
         return ptr::null_mut();
     };
-    let h = hooks_or_stubs();
-    let new_tuple = unsafe { (h.alloc_tuple)(items.len()) };
-    if new_tuple == 0 {
-        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+    let Some(tuple_len) = checked_py_ssize(items.len()) else {
+        return ptr::null_mut();
+    };
+    let tuple = unsafe { crate::api::sequences::PyTuple_New(tuple_len) };
+    if tuple.is_null() {
         return ptr::null_mut();
     }
-    for (i, item) in items.iter().enumerate() {
-        let _ = unsafe { finish_tuple_store(h, (h.tuple_set)(new_tuple, i, *item)) };
+    for index in 0..items.len() {
+        let item = items.take(index);
+        if unsafe { crate::api::sequences::PyTuple_SetItem(tuple, index as Py_ssize_t, item) } != 0
+        {
+            unsafe { crate::api::refcount::Py_DECREF(tuple) };
+            return ptr::null_mut();
+        }
     }
-    unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(new_tuple) }
+    tuple
 }
 
 #[unsafe(no_mangle)]
@@ -1232,35 +1319,8 @@ pub unsafe extern "C" fn PySequence_Count(o: *mut PyObject, value: *mut PyObject
         unsafe { set_null_error() };
         return -1;
     }
-    if let Some(bits) = resolve_bits(o) {
-        let h = hooks_or_stubs();
-        let tag = classify(bits);
-        if tag == tag_list() || tag == tag_tuple() {
-            let val_bits = resolve_bits(value);
-            let len = if tag == tag_list() {
-                unsafe { (h.list_len)(bits) }
-            } else {
-                unsafe { (h.tuple_len)(bits) }
-            };
-            let mut count: Py_ssize_t = 0;
-            if let Some(val_bits) = val_bits {
-                for i in 0..len {
-                    let result = if tag == tag_list() {
-                        unsafe { (h.list_item)(bits, i) }
-                    } else {
-                        unsafe { (h.tuple_item)(bits, i) }
-                    };
-                    let Some(item) = (unsafe { required_borrowed_bits(result) }) else {
-                        return -1;
-                    };
-                    // VALUE equality, not the pre-fix raw bits identity.
-                    if unsafe { bits_value_eq(item, val_bits) } {
-                        count += 1;
-                    }
-                }
-            }
-            return count;
-        }
+    if let Some(result) = unsafe { exact_sequence_search(o, value, IterSearch::Count) } {
+        return result;
     }
     // CPython: _PySequence_IterSearch(COUNT) over any iterable.
     unsafe { iter_search(o, value, IterSearch::Count) }
@@ -1272,42 +1332,8 @@ pub unsafe extern "C" fn PySequence_Index(o: *mut PyObject, value: *mut PyObject
         unsafe { set_null_error() };
         return -1;
     }
-    if let Some(bits) = resolve_bits(o) {
-        let h = hooks_or_stubs();
-        let tag = classify(bits);
-        if tag == tag_list() || tag == tag_tuple() {
-            let val_bits = resolve_bits(value);
-            let len = if tag == tag_list() {
-                unsafe { (h.list_len)(bits) }
-            } else {
-                unsafe { (h.tuple_len)(bits) }
-            };
-            if let Some(val_bits) = val_bits {
-                for i in 0..len {
-                    let result = if tag == tag_list() {
-                        unsafe { (h.list_item)(bits, i) }
-                    } else {
-                        unsafe { (h.tuple_item)(bits, i) }
-                    };
-                    let Some(item) = (unsafe { required_borrowed_bits(result) }) else {
-                        return -1;
-                    };
-                    if unsafe { bits_value_eq(item, val_bits) } {
-                        return i as Py_ssize_t;
-                    }
-                }
-            }
-            // CPython raises ValueError when absent — never a bare -1 (the
-            // pre-fix silent sentinel was indistinguishable from an error).
-            unsafe {
-                crate::api::errors::PyErr_SetString(
-                    (&raw mut crate::abi_types::PyExc_ValueError)
-                        .cast::<crate::abi_types::PyObject>(),
-                    c"sequence.index(x): x not in sequence".as_ptr(),
-                );
-            }
-            return -1;
-        }
+    if let Some(result) = unsafe { exact_sequence_search(o, value, IterSearch::Index) } {
+        return result;
     }
     unsafe { iter_search(o, value, IterSearch::Index) }
 }
@@ -1345,40 +1371,37 @@ pub unsafe extern "C" fn PySequence_Fast(
     msg: *const std::os::raw::c_char,
 ) -> *mut PyObject {
     // CPython accepts ANY iterable (list/tuple fast path, else the iterator
-    // protocol). The ABI materializes into an ABI-layout tuple so that
-    // PySequence_Fast_ITEMS has a real C array to expose.
+    // protocol). CPython materializes a general iterable into an exact list;
+    // both exact lists and tuples already expose stable physical pointer arrays.
     if o.is_null() {
         unsafe { set_null_error() };
         return ptr::null_mut();
     }
-    if unsafe { is_abi_tuple_object(o) } {
+    if unsafe { crate::api::sequences::PyList_CheckExact(o) } != 0
+        || unsafe { crate::api::sequences::PyTuple_CheckExact(o) } != 0
+    {
         unsafe { crate::api::refcount::Py_INCREF(o) };
         return o;
     }
-    let Some(items) = (unsafe { materialize_iterable(o) }) else {
-        // materialize_iterable set a TypeError; override with the caller's
-        // message (CPython substitutes `m` for the not-iterable TypeError).
-        unsafe {
-            crate::api::errors::PyErr_Clear();
-            set_sequence_fast_type_error(msg);
-        }
+    let Some(mut items) = (unsafe { materialize_iterable_pointers(o, Some(msg)) }) else {
         return ptr::null_mut();
     };
-    let tuple = unsafe { crate::api::sequences::PyTuple_New(items.len() as Py_ssize_t) };
-    if tuple.is_null() {
+    let Some(list_len) = checked_py_ssize(items.len()) else {
+        return ptr::null_mut();
+    };
+    let list = unsafe { crate::api::sequences::PyList_New(list_len) };
+    if list.is_null() {
         return ptr::null_mut();
     }
-    for (index, item_bits) in items.iter().enumerate() {
-        let item = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(*item_bits) };
-        if item.is_null()
-            || unsafe { crate::api::sequences::PyTuple_SetItem(tuple, index as Py_ssize_t, item) }
-                != 0
+    for index in 0..items.len() {
+        let item = items.take(index);
+        if unsafe { crate::api::sequences::PyList_SetItem(list, index as Py_ssize_t, item) } != 0
         {
-            unsafe { crate::api::refcount::Py_DECREF(tuple) };
+            unsafe { crate::api::refcount::Py_DECREF(list) };
             return ptr::null_mut();
         }
     }
-    tuple
+    list
 }
 
 #[unsafe(no_mangle)]
@@ -1395,18 +1418,26 @@ pub unsafe extern "C" fn PySequence_Fast_GET_ITEM(
     i: Py_ssize_t,
 ) -> *mut PyObject {
     if unsafe { crate::api::sequences::PyTuple_Check(o) } != 0 {
-        return unsafe { crate::api::sequences::PyTuple_GetItem(o, i) };
+        return unsafe { crate::api::sequences::PyTuple_GET_ITEM(o, i) };
     }
-    unsafe { PySequence_GetItem(o, i) }
+    unsafe { crate::api::sequences::PyList_GET_ITEM(o, i) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PySequence_Fast_ITEMS(o: *mut PyObject) -> *mut *mut PyObject {
-    if !unsafe { is_abi_tuple_object(o) } {
-        return ptr::null_mut();
+    if unsafe { crate::api::sequences::PyList_CheckExact(o) } != 0 {
+        if let Some(bits) = resolve_bits(o)
+            && !GLOBAL_BRIDGE.commit_list_view(bits)
+        {
+            return ptr::null_mut();
+        }
+        return unsafe { (*o.cast::<PyListObject>()).ob_item };
     }
-    let tuple = o.cast::<PyTupleObject>();
-    unsafe { crate::api::sequences::tuple_items_ptr(tuple) }
+    if unsafe { crate::api::sequences::PyTuple_CheckExact(o) } != 0 {
+        let tuple = o.cast::<PyTupleObject>();
+        return unsafe { crate::api::sequences::tuple_items_ptr(tuple) };
+    }
+    ptr::null_mut()
 }
 
 // ─── PySequence_InPlaceConcat / InPlaceRepeat ────────────────────────────
@@ -1425,46 +1456,16 @@ pub unsafe extern "C" fn PySequence_InPlaceConcat(
     }
     if let Some(bits1) = resolve_bits(o1)
         && classify(bits1) == tag_list()
-        && let Some(bits2) = resolve_bits(o2)
     {
-        let tag2 = classify(bits2);
-        if tag2 == tag_list() || tag2 == tag_tuple() {
-            let h = hooks_or_stubs();
-            let len2 = if tag2 == tag_list() {
-                unsafe { (h.list_len)(bits2) }
-            } else {
-                unsafe { (h.tuple_len)(bits2) }
-            };
-            // Snapshot first: `lst += lst` must append the ORIGINAL elements.
-            let mut incoming = Vec::with_capacity(len2);
-            for i in 0..len2 {
-                let result = if tag2 == tag_list() {
-                    unsafe { (h.list_item)(bits2, i) }
-                } else {
-                    unsafe { (h.tuple_item)(bits2, i) }
-                };
-                let Some(item) = (unsafe { required_borrowed_bits(result) }) else {
-                    return ptr::null_mut();
-                };
-                incoming.push(item);
-            }
-            {
-                // The receiving list takes its own reference per element
-                // (CPython list_inplace_concat → list_extend INCREFs).
-                let bridge = &*GLOBAL_BRIDGE;
-                for &item in &incoming {
-                    if MoltObject::from_bits(item).is_ptr() {
-                        let proxy = unsafe { bridge.handle_to_borrowed_pyobj(item) };
-                        unsafe { crate::api::refcount::Py_INCREF(proxy) };
-                    }
-                }
-            }
-            for item in incoming {
-                unsafe { (h.list_append)(bits1, item) };
-            }
-            unsafe { crate::api::refcount::Py_INCREF(o1) };
-            return o1;
+        let result = unsafe { _PyList_Extend(o1, o2) };
+        if result.is_null() {
+            return ptr::null_mut();
         }
+        unsafe {
+            crate::api::refcount::Py_DECREF(result);
+            crate::api::refcount::Py_INCREF(o1);
+        }
+        return o1;
     }
     // Foreign tier: sq_inplace_concat, then sq_concat.
     if let Some(m) = unsafe { seq_methods(o1) } {
@@ -1495,34 +1496,22 @@ pub unsafe extern "C" fn PySequence_InPlaceRepeat(
         let len = unsafe { (h.list_len)(bits) };
         if count <= 0 {
             // `lst *= 0` empties in place.
-            let rc = unsafe { (h.list_set_slice)(bits, 0, len as Py_ssize_t, 0) };
+            let rc = unsafe {
+                crate::api::sequences::PyList_SetSlice(o, 0, len as Py_ssize_t, ptr::null_mut())
+            };
             if rc != 0 {
                 unsafe { crate::api::errors::PyErr_BadInternalCall() };
                 return ptr::null_mut();
             }
         } else if count > 1 {
-            let mut snapshot = Vec::with_capacity(len);
-            for i in 0..len {
-                let Some(item) = (unsafe { required_borrowed_bits((h.list_item)(bits, i)) }) else {
-                    return ptr::null_mut();
-                };
-                snapshot.push(item);
-            }
-            {
-                let bridge = &*GLOBAL_BRIDGE;
-                for &item in &snapshot {
-                    if MoltObject::from_bits(item).is_ptr() {
-                        let proxy = unsafe { bridge.handle_to_borrowed_pyobj(item) };
-                        // (count-1) extra copies each take a reference.
-                        for _ in 1..count {
-                            unsafe { crate::api::refcount::Py_INCREF(proxy) };
-                        }
-                    }
-                }
-            }
+            let Some(snapshot) = (unsafe { materialize_iterable_pointers(o, None) }) else {
+                return ptr::null_mut();
+            };
             for _ in 1..count {
-                for &item in &snapshot {
-                    unsafe { (h.list_append)(bits, item) };
+                for &item in &snapshot.pointers {
+                    if unsafe { crate::api::sequences::PyList_Append(o, item) } != 0 {
+                        return ptr::null_mut();
+                    }
                 }
             }
         }

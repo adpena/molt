@@ -9,7 +9,7 @@ use crate::{
     ExceptionSentinel, HEADER_FLAG_BLOCK_ON, HEADER_FLAG_CANCEL_PENDING, HEADER_FLAG_SPAWN_RETAIN,
     MoltHeader, MoltObject, PtrSlot, TYPE_ID_TUPLE, alloc_exception_from_class_bits, alloc_tuple,
     dec_ref_bits, exception_type_bits_from_name, header_from_obj_ptr, obj_from_bits,
-    raise_exception, record_exception, runtime_state, seq_vec_ref, string_obj_to_owned,
+    raise_exception, record_exception, runtime_state, string_obj_to_owned,
     task_exception_baseline_drop, task_exception_depth_drop, task_exception_handler_stack_drop,
     task_exception_stack_drop, task_last_exception_drop, type_name,
 };
@@ -290,10 +290,8 @@ pub(crate) fn raise_cancelled_with_message<T: ExceptionSentinel>(
             let msg_desc = obj_from_bits(args_bits)
                 .as_ptr()
                 .filter(|ptr| unsafe { crate::object_type_id(*ptr) == TYPE_ID_TUPLE })
-                .and_then(|ptr| {
-                    let elems = unsafe { seq_vec_ref(ptr) };
-                    elems.first().map(|bits| obj_from_bits(*bits))
-                })
+                .and_then(|ptr| unsafe { crate::object::seq_access::item(ptr, 0) })
+                .map(obj_from_bits)
                 .map(|obj| {
                     string_obj_to_owned(obj).unwrap_or_else(|| type_name(_py, obj).to_string())
                 })

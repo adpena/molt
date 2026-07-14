@@ -5,7 +5,7 @@
 
 use crate::bridge::{
     alloc_set_with_entries, alloc_string, int_bits_from_i64, object_type_id, raise_exception,
-    seq_vec_ref, string_obj_to_owned, to_i64,
+    seq_snapshot, string_obj_to_owned, to_i64,
 };
 use molt_obj_model::MoltObject;
 use molt_runtime_core::prelude::*;
@@ -401,7 +401,7 @@ fn extract_dt_components(_py: &CoreGilToken, bits: u64) -> Option<Vec<i64>> {
         if type_id != TYPE_ID_TUPLE && type_id != TYPE_ID_LIST {
             return None;
         }
-        let elems = seq_vec_ref(ptr);
+        let elems = seq_snapshot(ptr);
         let result: Vec<i64> = elems
             .iter()
             .filter_map(|&b| to_i64(obj_from_bits(b)))

@@ -35,12 +35,12 @@ use crate::builtins::numbers::{
 use crate::concurrency::gil::with_gil;
 use crate::concurrency::{GilGuard, GilReleaseGuard, gil_owned_by_current_thread};
 use crate::object::builders::{
-    alloc_bytes, alloc_dict_with_pairs, alloc_function_obj, alloc_list_with_capacity,
-    alloc_module_obj, alloc_string, alloc_tuple_with_capacity,
+    alloc_bytes, alloc_dict_with_pairs, alloc_function_obj, alloc_list_filled,
+    alloc_list_with_capacity, alloc_module_obj, alloc_string, alloc_tuple_uninitialized,
 };
 use crate::object::layout::{
     function_set_call_target_ptr, function_set_dict_bits, function_set_trampoline_ptr,
-    module_dict_bits, seq_vec, seq_vec_ptr, seq_vec_ref,
+    module_dict_bits,
 };
 use crate::object::ops::{
     dict_del_in_place, dict_get_in_place, dict_get_str_bytes_borrowed, dict_set_in_place,
@@ -426,6 +426,17 @@ unsafe extern "C" fn hook_alloc_list() -> u64 {
     })
 }
 
+unsafe extern "C" fn hook_alloc_list_presized(len: usize) -> u64 {
+    with_gil(|_py| {
+        let ptr = alloc_list_filled(&_py, len, MoltObject::none());
+        if ptr.is_null() {
+            0
+        } else {
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
 #[inline]
 fn is_list_type_id(type_id: u32) -> bool {
     matches!(type_id, TYPE_ID_LIST | TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL)
@@ -433,7 +444,7 @@ fn is_list_type_id(type_id: u32) -> bool {
 
 unsafe fn list_item_bits(ptr: *mut u8, i: usize) -> Option<u64> {
     match unsafe { object_type_id(ptr) } {
-        TYPE_ID_LIST => unsafe { seq_vec_ref(ptr) }.get(i).copied(),
+        TYPE_ID_LIST => unsafe { crate::object::seq_access::item(ptr, i) },
         TYPE_ID_LIST_INT => unsafe { crate::object::layout::list_int_vec_ref(ptr) }
             .as_slice()
             .get(i)
@@ -449,8 +460,25 @@ unsafe fn list_item_bits(ptr: *mut u8, i: usize) -> Option<u64> {
 }
 
 unsafe fn list_bits_snapshot(_py: &crate::PyToken<'_>, ptr: *mut u8) -> Option<Vec<u64>> {
-    let len = match unsafe { object_type_id(ptr) } {
-        TYPE_ID_LIST => unsafe { seq_vec_ref(ptr) }.len(),
+    let type_id = unsafe { object_type_id(ptr) };
+    if type_id == TYPE_ID_LIST {
+        let copied = unsafe {
+            crate::object::seq_access::with_borrowed(ptr, |source| {
+                let mut out = Vec::new();
+                if out.try_reserve_exact(source.len()).is_err() {
+                    return None;
+                }
+                out.extend_from_slice(source);
+                Some(out)
+            })
+        };
+        if copied.is_none() {
+            let _ =
+                crate::raise_exception::<u64>(_py, "MemoryError", "list slice allocation failed");
+        }
+        return copied;
+    }
+    let len = match type_id {
         TYPE_ID_LIST_INT => unsafe { crate::object::layout::list_int_vec_ref(ptr) }.len(),
         TYPE_ID_LIST_BOOL => unsafe { crate::object::layout::list_bool_vec_ref(ptr) }.len(),
         _ => return None,
@@ -461,7 +489,6 @@ unsafe fn list_bits_snapshot(_py: &crate::PyToken<'_>, ptr: *mut u8) -> Option<V
         return None;
     }
     match unsafe { object_type_id(ptr) } {
-        TYPE_ID_LIST => out.extend_from_slice(unsafe { seq_vec_ref(ptr) }),
         TYPE_ID_LIST_INT => out.extend(
             unsafe { crate::object::layout::list_int_vec_ref(ptr) }
                 .iter()
@@ -479,14 +506,17 @@ unsafe fn list_bits_snapshot(_py: &crate::PyToken<'_>, ptr: *mut u8) -> Option<V
     Some(out)
 }
 
-unsafe extern "C" fn hook_list_append(list_bits: u64, item_bits: u64) -> i32 {
+unsafe extern "C" fn hook_list_append(
+    list_bits: u64,
+    item_bits: u64,
+    item_ptr: *mut molt_cpython_abi::abi_types::PyObject,
+) -> i32 {
     // Keep representation selection, promotion, allocation accounting, and
     // element refcounting in the runtime's single list-append authority.
-    let _ = crate::molt_list_append(list_bits, item_bits);
-    if with_gil(|_py| crate::exception_pending(&_py)) {
-        -1
-    } else {
+    if crate::object::ops_list::molt_list_append_with_projection(list_bits, item_bits, item_ptr) {
         0
+    } else {
+        -1
     }
 }
 
@@ -531,21 +561,42 @@ unsafe extern "C" fn hook_list_set(list_bits: u64, i: usize, val_bits: u64) -> O
         if unsafe { object_type_id(ptr) } != TYPE_ID_LIST {
             return OwnedHandleResult::error();
         }
-        let v = unsafe { seq_vec(ptr) };
-        if i >= v.len() {
-            return OwnedHandleResult::error();
-        }
-        inc_ref_bits(&_py, val_bits);
-        let old_bits = v[i];
-        v[i] = val_bits;
-        OwnedHandleResult::ok(old_bits)
+        unsafe { crate::object::list_mutation::replace_one_runtime_only(&_py, ptr, i, val_bits) }
+            .map(OwnedHandleResult::ok)
+            .unwrap_or_else(OwnedHandleResult::error)
     })
 }
 
 /// Insert before (clamped) index `where_` — routes to the runtime `PyList_Insert`
 /// (`ins1`) authority so the shift semantics are the single source of truth.
-unsafe extern "C" fn hook_list_insert(list_bits: u64, where_: isize, item_bits: u64) -> i32 {
-    crate::c_api::PyList_Insert(list_bits, where_, item_bits)
+unsafe extern "C" fn hook_list_insert(
+    list_bits: u64,
+    where_: isize,
+    item_bits: u64,
+    item_ptr: *mut molt_cpython_abi::abi_types::PyObject,
+) -> i32 {
+    let Some(ptr) = MoltObject::from_bits(list_bits).as_ptr() else {
+        return -1;
+    };
+    with_gil(|py| {
+        if !is_list_type_id(unsafe { object_type_id(ptr) }) {
+            return -1;
+        }
+        unsafe { crate::object::ops_list::promote_specialized_list_to_list(&py, ptr) };
+        if unsafe {
+            crate::object::ops_list::insert_at_native_index_with_projection(
+                &py,
+                ptr,
+                where_ as i64,
+                item_bits,
+                item_ptr,
+            )
+        } {
+            0
+        } else {
+            -1
+        }
+    })
 }
 
 /// Sort in place — routes to the runtime `PyList_Sort` (comparison authority).
@@ -568,6 +619,8 @@ unsafe extern "C" fn hook_list_set_slice(
     ilow: isize,
     ihigh: isize,
     itemlist_bits: u64,
+    future_pointers: *const *mut molt_cpython_abi::abi_types::PyObject,
+    future_len: usize,
 ) -> i32 {
     let ptr = match MoltObject::from_bits(list_bits).as_ptr() {
         Some(p) => p,
@@ -582,17 +635,25 @@ unsafe extern "C" fn hook_list_set_slice(
         } else {
             match MoltObject::from_bits(itemlist_bits).as_ptr() {
                 Some(ip) if unsafe { object_type_id(ip) } == TYPE_ID_TUPLE => {
-                    let source = unsafe { seq_vec_ref(ip) };
-                    let mut out = Vec::new();
-                    if out.try_reserve_exact(source.len()).is_err() {
+                    let out = unsafe {
+                        crate::object::seq_access::with_immutable_tuple_slice(ip, |source| {
+                            let mut out = Vec::new();
+                            if out.try_reserve_exact(source.len()).is_err() {
+                                return None;
+                            }
+                            out.extend_from_slice(source);
+                            Some(out)
+                        })
+                    }
+                    .flatten();
+                    let Some(out) = out else {
                         let _ = crate::raise_exception::<u64>(
                             &_py,
                             "MemoryError",
                             "list slice allocation failed",
                         );
                         return -1;
-                    }
-                    out.extend_from_slice(source);
+                    };
                     out
                 }
                 Some(ip) => match unsafe { list_bits_snapshot(&_py, ip) } {
@@ -606,52 +667,30 @@ unsafe extern "C" fn hook_list_set_slice(
         if unsafe { object_type_id(ptr) } != TYPE_ID_LIST {
             return -1;
         }
-        let vec_ptr = unsafe { seq_vec_ptr(ptr) };
-        let v = unsafe { &mut *vec_ptr };
-        let n = v.len() as isize;
+        let n = unsafe { list_len(ptr) } as isize;
         let low = ilow.clamp(0, n) as usize;
         let high = ihigh.clamp(low as isize, n) as usize;
-        let removed_len = high - low;
-        let new_len = v.len() - removed_len + replacement.len();
-        if !unsafe {
-            crate::object::backing::tracked_vec_reserve_or_raise(
+        let exact_projection = if future_pointers.is_null() {
+            None
+        } else {
+            Some(unsafe { std::slice::from_raw_parts(future_pointers, future_len) })
+        };
+        c_int::from(!unsafe {
+            crate::object::list_mutation::replace_range_with_projection(
                 &_py,
-                vec_ptr,
-                new_len,
-                "list slice allocation failed",
+                ptr,
+                low,
+                high,
+                &replacement,
+                exact_projection,
             )
-        } {
-            return -1;
-        }
-        let mut removed = Vec::new();
-        if removed.try_reserve_exact(removed_len).is_err() {
-            let _ =
-                crate::raise_exception::<u64>(&_py, "MemoryError", "list slice allocation failed");
-            return -1;
-        }
-        for &bits in &replacement {
-            inc_ref_bits(&_py, bits);
-        }
-        removed.extend(v.drain(low..high));
-        v.splice(low..low, replacement.iter().copied());
-        if replacement
-            .iter()
-            .any(|bits| crate::object::refcount_opt::is_heap_ref(*bits))
-        {
-            unsafe {
-                (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
-            }
-        }
-        for bits in removed {
-            dec_ref_bits(&_py, bits);
-        }
-        0
+        })
     })
 }
 
 unsafe extern "C" fn hook_alloc_tuple(n: usize) -> u64 {
     with_gil(|_py| {
-        let ptr = alloc_tuple_with_capacity(&_py, &[], n);
+        let ptr = alloc_tuple_uninitialized(&_py, n);
         if ptr.is_null() {
             0
         } else {
@@ -660,7 +699,12 @@ unsafe extern "C" fn hook_alloc_tuple(n: usize) -> u64 {
     })
 }
 
-unsafe extern "C" fn hook_tuple_set(bits: u64, i: usize, val_bits: u64) -> OwnedHandleResult {
+unsafe extern "C" fn hook_tuple_set(
+    bits: u64,
+    i: usize,
+    val_bits: u64,
+    _exact_pointer: *mut PyObject,
+) -> OwnedHandleResult {
     let obj = MoltObject::from_bits(bits);
     let ptr = match obj.as_ptr() {
         Some(p) => p,
@@ -670,23 +714,11 @@ unsafe extern "C" fn hook_tuple_set(bits: u64, i: usize, val_bits: u64) -> Owned
         return OwnedHandleResult::error();
     }
     with_gil(|_py| {
-        let v = unsafe { seq_vec(ptr) };
-        let old_len = v.len();
-        let old_bits = if i < old_len {
-            v[i]
-        } else {
-            let Some(new_len) = i.checked_add(1) else {
-                return OwnedHandleResult::error();
-            };
-            if new_len > v.capacity() {
-                return OwnedHandleResult::error();
-            }
-            v.resize(new_len, MoltObject::none().bits());
-            MoltObject::none().bits()
-        };
-        inc_ref_bits(&_py, val_bits);
-        v[i] = val_bits;
-        OwnedHandleResult::ok(old_bits)
+        match unsafe { crate::object::seq_access::replace_unique_item(&_py, ptr, i, val_bits) } {
+            Some(0) => OwnedHandleResult::missing(),
+            Some(old_bits) => OwnedHandleResult::ok(old_bits),
+            None => OwnedHandleResult::error(),
+        }
     })
 }
 
@@ -711,11 +743,13 @@ unsafe extern "C" fn hook_tuple_item(bits: u64, i: usize) -> BorrowedHandleResul
     if unsafe { object_type_id(ptr) } != TYPE_ID_TUPLE {
         return BorrowedHandleResult::missing();
     }
-    unsafe { seq_vec_ref(ptr) }
-        .get(i)
-        .copied()
-        .map(BorrowedHandleResult::ok)
-        .unwrap_or_else(BorrowedHandleResult::missing)
+    unsafe {
+        crate::object::seq_access::with_immutable_tuple_slice(ptr, |items| items.get(i).copied())
+    }
+    .flatten()
+    .filter(|item_bits| *item_bits != 0)
+    .map(BorrowedHandleResult::ok)
+    .unwrap_or_else(BorrowedHandleResult::missing)
 }
 
 unsafe extern "C" fn hook_alloc_dict() -> u64 {
@@ -943,22 +977,34 @@ unsafe extern "C" fn hook_object_call(
     args_bits: u64,
     kwargs_bits: u64,
 ) -> OwnedHandleResult {
-    // The ingress tuple/dict stay borrowed and live for the duration of this
-    // hook. Iterate their storage directly: copying both into temporary Vecs
-    // made every bridge-managed call pay two avoidable hot-path allocations.
-    let (pos_ptr, pos_len) = if args_bits != 0 {
-        let obj = MoltObject::from_bits(args_bits);
-        let Some(ptr) = obj.as_ptr() else {
-            return object_call_type_error("PyObject_Call args must be a tuple");
-        };
-        if unsafe { object_type_id(ptr) } != TYPE_ID_TUPLE {
-            return object_call_type_error("PyObject_Call args must be a tuple");
-        }
-        let pos = unsafe { seq_vec_ref(ptr) };
-        (pos.as_ptr(), pos.len())
-    } else {
-        (std::ptr::null(), 0)
+    if args_bits == 0 {
+        return unsafe { hook_object_call_with_pos(callable_bits, &[], kwargs_bits) };
+    }
+    let obj = MoltObject::from_bits(args_bits);
+    let Some(ptr) = obj.as_ptr() else {
+        return object_call_type_error("PyObject_Call args must be a tuple");
     };
+    if unsafe { object_type_id(ptr) } != TYPE_ID_TUPLE {
+        return object_call_type_error("PyObject_Call args must be a tuple");
+    }
+    // The immutable tuple keeps every borrowed positional handle alive while
+    // the scoped reader transfers it into call-argument custody. The slice
+    // cannot escape even though binding may invoke Python.
+    unsafe {
+        crate::object::seq_access::with_immutable_tuple_slice(ptr, |pos| {
+            hook_object_call_with_pos(callable_bits, pos, kwargs_bits)
+        })
+    }
+    .unwrap_or_else(|| object_call_type_error("PyObject_Call args must be a tuple"))
+}
+
+unsafe fn hook_object_call_with_pos(
+    callable_bits: u64,
+    pos: &[u64],
+    kwargs_bits: u64,
+) -> OwnedHandleResult {
+    // The ingress tuple/dict stay borrowed and live for the duration of this
+    // hook. Scoped tuple access avoids the two temporary hot-path allocations.
     let (kw_order_ptr, kw_order_len) = if kwargs_bits != 0 {
         let obj = MoltObject::from_bits(kwargs_bits);
         let Some(ptr) = obj.as_ptr() else {
@@ -975,17 +1021,12 @@ unsafe extern "C" fn hook_object_call(
     } else {
         (std::ptr::null(), 0)
     };
-    let builder_bits = crate::molt_callargs_new(pos_len as u64, (kw_order_len / 2) as u64);
+    let builder_bits = crate::molt_callargs_new(pos.len() as u64, (kw_order_len / 2) as u64);
     if builder_bits == 0 {
         return OwnedHandleResult::error();
     }
     let release_builder = || {
         with_gil(|_py| crate::dec_ref_bits(&_py, builder_bits));
-    };
-    let pos = if pos_len == 0 {
-        &[][..]
-    } else {
-        unsafe { std::slice::from_raw_parts(pos_ptr, pos_len) }
     };
     for &arg in pos {
         let _ = unsafe { crate::molt_callargs_push_pos(builder_bits, arg) };
@@ -1305,6 +1346,25 @@ unsafe extern "C" fn hook_try_mark_abi_view(bits: u64, present: c_int) -> c_int 
     let Some(ptr) = MoltObject::from_bits(bits).as_ptr() else {
         return 1;
     };
+    let type_id = unsafe { object_type_id(ptr) };
+    if present != 0
+        && matches!(
+            type_id,
+            TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL
+        )
+    {
+        // A published PyListObject requires one stable generic storage
+        // authority. Compact int/bool representations cannot retain an ABI
+        // view because later promotion would otherwise replace their backing
+        // allocation behind C's ob_item pointer.
+        with_gil(|_py| unsafe {
+            crate::object::ops_list::promote_specialized_list_to_list(&_py, ptr)
+        });
+        if unsafe { object_type_id(ptr) } != TYPE_ID_LIST {
+            return 0;
+        }
+        unsafe { crate::object::gc::gc_track_if_cyclic(ptr, TYPE_ID_LIST) };
+    }
     let header = unsafe { header_from_obj_ptr(ptr) };
     unsafe {
         if present != 0 {
@@ -1913,6 +1973,31 @@ unsafe extern "C" fn hook_take_pending_exception(
         };
     }
     OwnedHandleResult::ok(exception_bits)
+}
+
+unsafe extern "C" fn hook_handled_exception_get() -> OwnedHandleResult {
+    with_gil(|_py| {
+        let Some(bits) = crate::builtins::exceptions::exception_context_active_bits() else {
+            return OwnedHandleResult::missing();
+        };
+        crate::inc_ref_bits(&_py, bits);
+        OwnedHandleResult::ok(bits)
+    })
+}
+
+unsafe extern "C" fn hook_handled_exception_set(owned_exception_bits: u64) -> c_int {
+    with_gil(|_py| {
+        if owned_exception_bits == 0 {
+            crate::builtins::exceptions::exception_context_set_abi(&_py, MoltObject::none().bits());
+            return 0;
+        }
+        // CPython deliberately accepts any PyObject here: this API directly
+        // replaces the thread state's handled-value slot without validating
+        // that the value is a BaseException instance.
+        crate::builtins::exceptions::exception_context_set_abi(&_py, owned_exception_bits);
+        crate::dec_ref_bits(&_py, owned_exception_bits);
+        0
+    })
 }
 
 /// Binary numeric op. `op` matches [`molt_cpython_abi::NumberBinaryOp`].
@@ -3055,12 +3140,12 @@ unsafe fn cext_tuple_for_args(args: &[u64]) -> Option<*mut PyObject> {
         return None;
     }
     for (index, &arg_bits) in args.iter().enumerate() {
-        match unsafe { hook_tuple_set(tuple_bits, index, arg_bits) }.decode() {
+        match unsafe { hook_tuple_set(tuple_bits, index, arg_bits, ptr::null_mut()) }.decode() {
             molt_cpython_abi::hooks::DecodedHandleResult::Ok(old_bits) => unsafe {
                 hook_dec_ref(old_bits)
             },
-            molt_cpython_abi::hooks::DecodedHandleResult::Missing
-            | molt_cpython_abi::hooks::DecodedHandleResult::Error => {
+            molt_cpython_abi::hooks::DecodedHandleResult::Missing => {}
+            molt_cpython_abi::hooks::DecodedHandleResult::Error => {
                 unsafe { hook_dec_ref(tuple_bits) };
                 return None;
             }
@@ -3644,6 +3729,7 @@ pub fn register_cpython_hooks() {
         complex_parts: hook_complex_parts,
         complex_from_doubles: hook_complex_from_doubles,
         alloc_list: hook_alloc_list,
+        alloc_list_presized: hook_alloc_list_presized,
         list_append: hook_list_append,
         list_len: hook_list_len,
         list_item: hook_list_item,
@@ -3712,6 +3798,8 @@ pub fn register_cpython_hooks() {
         exception_commit_snapshot: hook_exception_commit_snapshot,
         type_is_subtype: hook_type_is_subtype,
         take_pending_exception: hook_take_pending_exception,
+        handled_exception_get: hook_handled_exception_get,
+        handled_exception_set: hook_handled_exception_set,
     };
     // SAFETY: all fn pointers are valid for the process lifetime.
     unsafe {
@@ -3724,8 +3812,8 @@ mod tests {
     use super::*;
     use molt_cpython_abi::abi_types::{
         PyBaseExceptionObject, PyExc_IndexError, PyExc_LookupError, PyExc_RuntimeError,
-        PyExc_TypeError, PyExc_ValueError, PyModuleDef_Base, PyModuleDef_Slot, PyObject,
-        PyTypeObject,
+        PyExc_TypeError, PyExc_ValueError, PyListObject, PyModuleDef_Base, PyModuleDef_Slot,
+        PyObject, PyTypeObject,
     };
     use std::cell::UnsafeCell;
     use std::ffi::c_void;
@@ -4039,7 +4127,12 @@ mod tests {
                 unsafe { crate::object_type_id(args_ptr) },
                 crate::TYPE_ID_TUPLE
             );
-            unsafe { crate::seq_vec_ref(args_ptr).clone() }
+            unsafe {
+                crate::object::seq_access::with_immutable_tuple_slice(args_ptr, |args| {
+                    args.to_vec()
+                })
+            }
+            .expect("type-checked exception args tuple must remain live")
         })
     }
 
@@ -4731,7 +4824,7 @@ mod tests {
             assert!(!module_ptr.is_null());
             let module_bits = MoltObject::from_ptr(module_ptr).bits();
 
-            let flags_ptr = alloc_tuple_with_capacity(&_py, &[MoltObject::from_int(7).bits()], 1);
+            let flags_ptr = crate::alloc_tuple(&_py, &[MoltObject::from_int(7).bits()]);
             assert!(!flags_ptr.is_null());
             let flags_bits = MoltObject::from_ptr(flags_ptr).bits();
 
@@ -5405,9 +5498,9 @@ mod tests {
         let three = unsafe { hook_int_from_i64(3) };
         let five = unsafe { hook_int_from_i64(5) };
         unsafe {
-            hook_list_append(list_bits, three);
-            hook_list_append(list_bits, three);
-            hook_list_append(list_bits, five);
+            hook_list_append(list_bits, three, std::ptr::null_mut());
+            hook_list_append(list_bits, three, std::ptr::null_mut());
+            hook_list_append(list_bits, five, std::ptr::null_mut());
         }
         let list = bridge_pyobj_from_bits(list_bits);
 
@@ -5539,7 +5632,11 @@ mod tests {
                 .expect("specialized int-list allocation");
             let int_bits = MoltObject::from_ptr(int_ptr).bits();
             assert_eq!(hook_classify_heap(int_bits), MoltTypeTag::List as u8);
-            hook_list_append(int_bits, MoltObject::from_int(99).bits());
+            hook_list_append(
+                int_bits,
+                MoltObject::from_int(99).bits(),
+                std::ptr::null_mut(),
+            );
             assert_eq!(object_type_id(int_ptr), TYPE_ID_LIST_INT);
             assert_eq!(hook_list_len(int_bits), 4);
             assert_eq!(
@@ -5565,7 +5662,11 @@ mod tests {
                 .expect("specialized bool-list allocation");
             let bool_bits = MoltObject::from_ptr(bool_ptr).bits();
             assert_eq!(hook_classify_heap(bool_bits), MoltTypeTag::List as u8);
-            hook_list_append(bool_bits, MoltObject::from_bool(true).bits());
+            hook_list_append(
+                bool_bits,
+                MoltObject::from_bool(true).bits(),
+                std::ptr::null_mut(),
+            );
             assert_eq!(object_type_id(bool_ptr), TYPE_ID_LIST_BOOL);
             assert_eq!(hook_list_len(bool_bits), 3);
             assert_eq!(
@@ -5574,7 +5675,10 @@ mod tests {
                 Some(true)
             );
 
-            assert_eq!(hook_list_set_slice(int_bits, 0, 2, bool_bits), 0);
+            assert_eq!(
+                hook_list_set_slice(int_bits, 0, 2, bool_bits, std::ptr::null(), 0),
+                0
+            );
             assert_eq!(hook_list_len(int_bits), 5);
             assert_eq!(
                 borrowed_bits(hook_list_item(int_bits, 0))
@@ -5587,11 +5691,369 @@ mod tests {
                 Some(false)
             );
 
-            hook_tuple_set(int_bits, 0, MoltObject::from_int(7).bits());
+            hook_tuple_set(
+                int_bits,
+                0,
+                MoltObject::from_int(7).bits(),
+                ptr::null_mut(),
+            );
             assert_eq!(borrowed_bits(hook_tuple_item(int_bits, 0)), None);
             dec_ref_bits(&_py, bool_bits);
             dec_ref_bits(&_py, int_bits);
         });
+    }
+
+    #[test]
+    fn published_list_scalar_mutations_update_runtime_and_physical_views() {
+        let _guard = cpython_abi_test_guard();
+        register_cpython_hooks();
+        let _ = crate::molt_exception_clear();
+
+        let list_bits = unsafe { hook_alloc_list() };
+        assert_ne!(list_bits, 0);
+        assert_eq!(
+            unsafe {
+                hook_list_append(
+                    list_bits,
+                    MoltObject::from_int(1).bits(),
+                    std::ptr::null_mut(),
+                )
+            },
+            0
+        );
+        assert_eq!(
+            unsafe {
+                hook_list_append(
+                    list_bits,
+                    MoltObject::from_int(2).bits(),
+                    std::ptr::null_mut(),
+                )
+            },
+            0
+        );
+        let list = bridge_pyobj_from_bits(list_bits);
+        let physical = list.cast::<PyListObject>();
+
+        let physical_values = |expected_len: usize| {
+            assert_eq!(
+                unsafe { (*physical).ob_base.ob_size },
+                expected_len as isize
+            );
+            (0..expected_len)
+                .map(|index| {
+                    let item = unsafe {
+                        molt_cpython_abi::api::sequences::PyList_GetItem(list, index as isize)
+                    };
+                    assert!(!item.is_null());
+                    unsafe { molt_cpython_abi::api::numbers::PyLong_AsLong(item) }
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(physical_values(2), [1, 2]);
+
+        crate::molt_list_append(list_bits, MoltObject::from_int(3).bits());
+        assert_eq!(physical_values(3), [1, 2, 3]);
+
+        crate::molt_list_insert(
+            list_bits,
+            MoltObject::from_int(1).bits(),
+            MoltObject::from_int(9).bits(),
+        );
+        assert_eq!(physical_values(4), [1, 9, 2, 3]);
+
+        crate::molt_store_index(
+            list_bits,
+            MoltObject::from_int(2).bits(),
+            MoltObject::from_int(8).bits(),
+        );
+        assert_eq!(physical_values(4), [1, 9, 8, 3]);
+
+        crate::molt_list_reverse(list_bits);
+        assert_eq!(physical_values(4), [3, 8, 9, 1]);
+
+        let popped = crate::molt_list_pop(list_bits, MoltObject::none().bits());
+        assert_eq!(MoltObject::from_bits(popped).as_int(), Some(1));
+        with_gil(|_py| dec_ref_bits(&_py, popped));
+        assert_eq!(physical_values(3), [3, 8, 9]);
+
+        crate::molt_list_clear(list_bits);
+        assert!(physical_values(0).is_empty());
+        assert!(unsafe { (*physical).ob_item.is_null() });
+
+        let heap_bits = with_gil(|_py| {
+            let ptr = alloc_string(&_py, b"heap edge");
+            assert!(!ptr.is_null());
+            MoltObject::from_ptr(ptr).bits()
+        });
+        crate::molt_list_append(list_bits, heap_bits);
+        with_gil(|_py| dec_ref_bits(&_py, heap_bits));
+        let list_ptr = MoltObject::from_bits(list_bits).as_ptr().unwrap();
+        assert_eq!(
+            unsafe { crate::object::seq_access::tracked_heap_edge_count(list_ptr) },
+            Some(1)
+        );
+        assert_ne!(
+            unsafe { (*header_from_obj_ptr(list_ptr)).flags }
+                & crate::object::HEADER_FLAG_CONTAINS_REFS,
+            0
+        );
+        crate::molt_store_index(
+            list_bits,
+            MoltObject::from_int(0).bits(),
+            MoltObject::from_int(42).bits(),
+        );
+        assert_eq!(
+            unsafe { crate::object::seq_access::tracked_heap_edge_count(list_ptr) },
+            Some(0)
+        );
+        assert_eq!(
+            unsafe { (*header_from_obj_ptr(list_ptr)).flags }
+                & crate::object::HEADER_FLAG_CONTAINS_REFS,
+            0
+        );
+        assert_eq!(physical_values(1), [42]);
+        crate::molt_list_clear(list_bits);
+
+        release_bridge_pyobj(list);
+        let _ = crate::molt_exception_clear();
+    }
+
+    #[test]
+    fn pylist_append_preserves_exact_c_origin_identity() {
+        let _guard = cpython_abi_test_guard();
+        register_cpython_hooks();
+        let _ = crate::molt_exception_clear();
+
+        let list_bits = unsafe { hook_alloc_list() };
+        assert_ne!(list_bits, 0);
+        let list = bridge_pyobj_from_bits(list_bits);
+        let item = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1000) };
+        assert!(!item.is_null());
+
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PyList_Append(list, item) },
+            0
+        );
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PyList_GetItem(list, 0) },
+            item,
+            "PyList_Append must retain the originating object, not rematerialize an equal scalar"
+        );
+
+        unsafe { molt_cpython_abi::api::refcount::Py_DECREF(item) };
+        crate::molt_list_clear(list_bits);
+        release_bridge_pyobj(list);
+        let _ = crate::molt_exception_clear();
+    }
+
+    #[test]
+    fn projected_sequence_family_preserves_non_small_c_identity() {
+        let _guard = cpython_abi_test_guard();
+        register_cpython_hooks();
+        let _ = crate::molt_exception_clear();
+
+        use molt_cpython_abi::api::abstract_sequence::{
+            _PyList_Extend, PySequence_Concat, PySequence_Contains, PySequence_Count,
+            PySequence_Fast, PySequence_Fast_ITEMS, PySequence_InPlaceConcat,
+            PySequence_InPlaceRepeat, PySequence_Index, PySequence_List, PySequence_Repeat,
+            PySequence_Tuple,
+        };
+        use molt_cpython_abi::api::sequences::{
+            PyList_Append, PyList_AsTuple, PyList_GetItem, PyList_GetSlice, PyList_Insert,
+            PyList_New, PyList_Reverse, PyList_SetSlice, PyList_Size, PyList_Sort, PyTuple_GetItem,
+            PyTuple_GetSlice, PyTuple_New, PyTuple_SetItem,
+        };
+
+        let first = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1000) };
+        let second = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(2000) };
+        assert!(!first.is_null() && !second.is_null());
+
+        let assert_list = |list: *mut PyObject, expected: &[*mut PyObject]| {
+            assert_eq!(unsafe { PyList_Size(list) }, expected.len() as isize);
+            for (index, &pointer) in expected.iter().enumerate() {
+                assert_eq!(
+                    unsafe { PyList_GetItem(list, index as isize) },
+                    pointer,
+                    "physical identity drifted at list index {index}"
+                );
+            }
+        };
+
+        let list = unsafe { PyList_New(0) };
+        assert!(!list.is_null());
+        assert_eq!(unsafe { PyList_Append(list, first) }, 0);
+        assert_eq!(unsafe { PyList_Insert(list, 0, second) }, 0);
+        assert_list(list, &[second, first]);
+        assert_eq!(unsafe { PyList_Reverse(list) }, 0);
+        assert_list(list, &[first, second]);
+        assert_eq!(unsafe { PyList_Sort(list) }, 0);
+        assert_list(list, &[first, second]);
+
+        let slice = unsafe { PyList_GetSlice(list, 0, 2) };
+        assert!(!slice.is_null());
+        assert_list(slice, &[first, second]);
+
+        let concat = unsafe { PySequence_Concat(list, slice) };
+        assert!(!concat.is_null());
+        assert_list(concat, &[first, second, first, second]);
+        let repeated = unsafe { PySequence_Repeat(list, 2) };
+        assert!(!repeated.is_null());
+        assert_list(repeated, &[first, second, first, second]);
+        let copied = unsafe { PySequence_List(list) };
+        assert!(!copied.is_null());
+        assert_list(copied, &[first, second]);
+
+        let tuple = unsafe { PyList_AsTuple(list) };
+        assert!(!tuple.is_null());
+        assert_eq!(unsafe { PyTuple_GetItem(tuple, 0) }, first);
+        assert_eq!(unsafe { PyTuple_GetItem(tuple, 1) }, second);
+        let sequence_tuple = unsafe { PySequence_Tuple(list) };
+        assert!(!sequence_tuple.is_null());
+        assert_eq!(unsafe { PyTuple_GetItem(sequence_tuple, 0) }, first);
+        assert_eq!(unsafe { PyTuple_GetItem(sequence_tuple, 1) }, second);
+
+        let empty_tuple = unsafe { PyTuple_New(0) };
+        let empty_tuple_again = unsafe { PyTuple_New(0) };
+        assert_eq!(empty_tuple, empty_tuple_again);
+        assert!(molt_cpython_abi::abi_types::is_immortal_refcnt(unsafe {
+            (*empty_tuple).ob_refcnt
+        }));
+        let empty_bits = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+            .molt_handle_for_pyobj(empty_tuple)
+            .expect("empty tuple is runtime-backed from birth")
+            .bits();
+        assert_eq!(
+            unsafe { (molt_cpython_abi::hooks::hooks_or_stubs().classify_heap)(empty_bits) },
+            molt_cpython_abi::abi_types::MoltTypeTag::Tuple as u8
+        );
+
+        let c_tuple = unsafe { PyTuple_New(2) };
+        assert!(!c_tuple.is_null());
+        let c_tuple_bits = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+            .molt_handle_for_pyobj(c_tuple)
+            .expect("C-created exact tuple has canonical runtime identity")
+            .bits();
+        assert_eq!(
+            unsafe { (molt_cpython_abi::hooks::hooks_or_stubs().tuple_len)(c_tuple_bits) },
+            2
+        );
+        unsafe {
+            molt_cpython_abi::api::refcount::Py_INCREF(first);
+            assert_eq!(PyTuple_SetItem(c_tuple, 0, first), 0);
+            molt_cpython_abi::api::refcount::Py_INCREF(second);
+            assert_eq!(PyTuple_SetItem(c_tuple, 1, second), 0);
+        }
+        assert_eq!(unsafe { PyTuple_GetItem(c_tuple, 0) }, first);
+        assert_eq!(unsafe { PyTuple_GetItem(c_tuple, 1) }, second);
+
+        let full_slice = unsafe { PyTuple_GetSlice(c_tuple, 0, 2) };
+        assert_eq!(full_slice, c_tuple);
+        unsafe { molt_cpython_abi::api::refcount::Py_DECREF(full_slice) };
+        let repeated_once = unsafe { PySequence_Repeat(c_tuple, 1) };
+        assert_eq!(repeated_once, c_tuple);
+        unsafe { molt_cpython_abi::api::refcount::Py_DECREF(repeated_once) };
+        let repeated_zero = unsafe { PySequence_Repeat(c_tuple, 0) };
+        assert_eq!(repeated_zero, empty_tuple);
+        unsafe { molt_cpython_abi::api::refcount::Py_DECREF(repeated_zero) };
+        let concat_empty = unsafe { PySequence_Concat(empty_tuple, c_tuple) };
+        assert_eq!(concat_empty, c_tuple);
+        unsafe { molt_cpython_abi::api::refcount::Py_DECREF(concat_empty) };
+
+        let fast_tuple = unsafe { PySequence_Fast(c_tuple, c"expected iterable".as_ptr()) };
+        assert_eq!(fast_tuple, c_tuple);
+        let fast_tuple_items = unsafe { PySequence_Fast_ITEMS(fast_tuple) };
+        assert_eq!(unsafe { *fast_tuple_items }, first);
+        assert_eq!(unsafe { *fast_tuple_items.add(1) }, second);
+        unsafe { molt_cpython_abi::api::refcount::Py_DECREF(fast_tuple) };
+
+        let tuple_iterator = unsafe { molt_cpython_abi::api::object::PySeqIter_New(c_tuple) };
+        assert!(!tuple_iterator.is_null());
+        let fast_from_iterator =
+            unsafe { PySequence_Fast(tuple_iterator, c"expected iterable".as_ptr()) };
+        unsafe { molt_cpython_abi::api::refcount::Py_DECREF(tuple_iterator) };
+        assert_ne!(
+            unsafe { molt_cpython_abi::api::sequences::PyList_CheckExact(fast_from_iterator) },
+            0
+        );
+        assert_list(fast_from_iterator, &[first, second]);
+
+        let equal_first = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1000) };
+        assert!(!equal_first.is_null());
+        assert_ne!(equal_first, first);
+        let nested_left = unsafe { PyTuple_New(1) };
+        let nested_right = unsafe { PyTuple_New(1) };
+        let nested_list = unsafe { PyList_New(0) };
+        assert!(!nested_left.is_null() && !nested_right.is_null() && !nested_list.is_null());
+        unsafe {
+            molt_cpython_abi::api::refcount::Py_INCREF(first);
+            assert_eq!(PyTuple_SetItem(nested_left, 0, first), 0);
+            molt_cpython_abi::api::refcount::Py_INCREF(equal_first);
+            assert_eq!(PyTuple_SetItem(nested_right, 0, equal_first), 0);
+        }
+        assert_eq!(unsafe { PyList_Append(nested_list, nested_left) }, 0);
+        assert_eq!(unsafe { PySequence_Contains(nested_list, nested_right) }, 1);
+        assert_eq!(unsafe { PySequence_Count(nested_list, nested_right) }, 1);
+        assert_eq!(unsafe { PySequence_Index(nested_list, nested_right) }, 0);
+
+        let fast = unsafe { PySequence_Fast(list, c"expected iterable".as_ptr()) };
+        assert_eq!(
+            fast, list,
+            "exact list must take PySequence_Fast's NewRef path"
+        );
+        let fast_items = unsafe { PySequence_Fast_ITEMS(fast) };
+        assert!(!fast_items.is_null());
+        assert_eq!(unsafe { *fast_items }, first);
+        assert_eq!(unsafe { *fast_items.add(1) }, second);
+        unsafe { molt_cpython_abi::api::refcount::Py_DECREF(fast) };
+
+        let extended = unsafe { PyList_New(0) };
+        assert!(!extended.is_null());
+        let none = unsafe { _PyList_Extend(extended, list) };
+        assert!(!none.is_null());
+        unsafe { molt_cpython_abi::api::refcount::Py_DECREF(none) };
+        assert_list(extended, &[first, second]);
+        assert_eq!(unsafe { PyList_SetSlice(extended, 0, 1, slice) }, 0);
+        assert_list(extended, &[first, second, second]);
+
+        let inplace = unsafe { PySequence_InPlaceConcat(extended, list) };
+        assert_eq!(inplace, extended);
+        unsafe { molt_cpython_abi::api::refcount::Py_DECREF(inplace) };
+        assert_list(extended, &[first, second, second, first, second]);
+        let inplace = unsafe { PySequence_InPlaceRepeat(extended, 2) };
+        assert_eq!(inplace, extended);
+        unsafe { molt_cpython_abi::api::refcount::Py_DECREF(inplace) };
+        assert_list(
+            extended,
+            &[
+                first, second, second, first, second, first, second, second, first, second,
+            ],
+        );
+
+        unsafe {
+            for pointer in [
+                extended,
+                nested_list,
+                nested_right,
+                nested_left,
+                equal_first,
+                fast_from_iterator,
+                c_tuple,
+                empty_tuple_again,
+                empty_tuple,
+                sequence_tuple,
+                tuple,
+                copied,
+                repeated,
+                concat,
+                slice,
+                list,
+                first,
+                second,
+            ] {
+                molt_cpython_abi::api::refcount::Py_DECREF(pointer);
+            }
+        }
+        let _ = crate::molt_exception_clear();
     }
 
     #[test]
@@ -5671,30 +6133,77 @@ mod tests {
         let _guard = cpython_abi_test_guard();
         register_cpython_hooks();
         with_gil(|_py| unsafe {
-            let ptr = alloc_tuple_with_capacity(&_py, &[], 4);
+            let ptr = alloc_tuple_uninitialized(&_py, 4);
             assert!(!ptr.is_null());
             assert_eq!(object_type_id(ptr), TYPE_ID_TUPLE);
             let bits = MoltObject::from_ptr(ptr).bits();
-            let cap = seq_vec_ref(ptr).capacity();
 
-            hook_tuple_set(bits, usize::MAX, MoltObject::from_int(7).bits());
-            assert_eq!(seq_vec_ref(ptr).len(), 0);
+            hook_tuple_set(
+                bits,
+                usize::MAX,
+                MoltObject::from_int(7).bits(),
+                ptr::null_mut(),
+            );
+            assert_eq!(
+                crate::object::seq_access::with_immutable_tuple_slice(ptr, |items| items.len()),
+                Some(4)
+            );
 
-            hook_tuple_set(bits, cap + 1_000_000, MoltObject::from_int(7).bits());
-            assert_eq!(seq_vec_ref(ptr).len(), 0);
-            assert_eq!(seq_vec_ref(ptr).capacity(), cap);
+            hook_tuple_set(
+                bits,
+                1_000_004,
+                MoltObject::from_int(7).bits(),
+                ptr::null_mut(),
+            );
+            assert_eq!(
+                crate::object::seq_access::with_immutable_tuple_slice(ptr, |items| items.len()),
+                Some(4)
+            );
 
             let val = MoltObject::from_int(42).bits();
-            let old = match hook_tuple_set(bits, 2, val).decode() {
-                molt_cpython_abi::hooks::DecodedHandleResult::Ok(old) => old,
+            match hook_tuple_set(bits, 2, val, ptr::null_mut()).decode() {
+                molt_cpython_abi::hooks::DecodedHandleResult::Missing => {}
                 _ => panic!("tuple store failed"),
-            };
-            dec_ref_bits(&_py, old);
-            assert_eq!(seq_vec_ref(ptr).len(), 3);
+            }
+            assert_eq!(
+                crate::object::seq_access::with_immutable_tuple_slice(ptr, |items| items.len()),
+                Some(4)
+            );
             assert_eq!(borrowed_bits(hook_tuple_item(bits, 2)), Some(val));
 
+            let heap_ptr = alloc_string(&_py, b"owned");
+            assert!(!heap_ptr.is_null());
+            let heap_bits = MoltObject::from_ptr(heap_ptr).bits();
+            let old = match hook_tuple_set(bits, 2, heap_bits, ptr::null_mut()).decode() {
+                molt_cpython_abi::hooks::DecodedHandleResult::Ok(old) => old,
+                _ => panic!("tuple heap store failed"),
+            };
+            dec_ref_bits(&_py, old);
+            assert_eq!(
+                crate::object::seq_access::tracked_heap_edge_count(ptr),
+                Some(1)
+            );
+            assert_ne!(
+                (*header_from_obj_ptr(ptr)).flags & crate::object::HEADER_FLAG_CONTAINS_REFS,
+                0
+            );
+            let old = match hook_tuple_set(bits, 2, val, ptr::null_mut()).decode() {
+                molt_cpython_abi::hooks::DecodedHandleResult::Ok(old) => old,
+                _ => panic!("tuple primitive replacement failed"),
+            };
+            dec_ref_bits(&_py, old);
+            assert_eq!(
+                crate::object::seq_access::tracked_heap_edge_count(ptr),
+                Some(0)
+            );
+            assert_eq!(
+                (*header_from_obj_ptr(ptr)).flags & crate::object::HEADER_FLAG_CONTAINS_REFS,
+                0
+            );
+            dec_ref_bits(&_py, heap_bits);
+
             let list_bits = hook_alloc_list();
-            hook_tuple_set(list_bits, 0, val);
+            hook_tuple_set(list_bits, 0, val, ptr::null_mut());
             dec_ref_bits(&_py, list_bits);
             dec_ref_bits(&_py, bits);
         });

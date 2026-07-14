@@ -1,4 +1,5 @@
 use super::*;
+use crate::object::seq_access::{locked_len, snapshot};
 
 mod field_runtime;
 mod projection;
@@ -235,6 +236,7 @@ pub extern "C" fn molt_dataclasses_make_dataclass(
                 let mut field_type_bits = default_field_type_bits;
                 let mut default_value_bits = 0u64;
                 let mut has_default_value = false;
+                let mut _field_parts = None;
                 let invalid_spec_msg = "Invalid field specification: must be name, (name, type), or (name, type, Field)";
 
                 let Some(field_spec_ptr) = obj_from_bits(field_spec_bits).as_ptr() else {
@@ -246,7 +248,14 @@ pub extern "C" fn molt_dataclasses_make_dataclass(
                     match object_type_id(field_spec_ptr) {
                         TYPE_ID_STRING => {}
                         TYPE_ID_TUPLE | TYPE_ID_LIST => {
-                            let parts = seq_vec_ref(field_spec_ptr).clone();
+                            let Some(parts) = snapshot(
+                                _py,
+                                field_spec_ptr,
+                                "dataclass field specification allocation failed",
+                            ) else {
+                                result_bits = MoltObject::none().bits();
+                                break 'compute;
+                            };
                             if parts.len() == 2 {
                                 raw_name_bits = parts[0];
                                 field_type_bits = parts[1];
@@ -260,6 +269,7 @@ pub extern "C" fn molt_dataclasses_make_dataclass(
                                     raise_exception::<_>(_py, "TypeError", invalid_spec_msg);
                                 break 'compute;
                             }
+                            _field_parts = Some(parts);
                         }
                         _ => {
                             result_bits = raise_exception::<_>(_py, "TypeError", invalid_spec_msg);
@@ -437,17 +447,24 @@ pub extern "C" fn molt_dataclasses_post_init(instance_bits: u64, initvar_values_
 
         // Call __post_init__ with the InitVar values.
         // initvar_values_bits may be a tuple (possibly empty) or None.
-        let has_args = obj_from_bits(initvar_values_bits)
+        let args_ptr = obj_from_bits(initvar_values_bits)
             .as_ptr()
-            .is_some_and(|ptr| unsafe {
-                let ty = object_type_id(ptr);
-                (ty == TYPE_ID_TUPLE || ty == TYPE_ID_LIST) && !seq_vec_ref(ptr).is_empty()
+            .filter(|ptr| unsafe {
+                let ty = object_type_id(*ptr);
+                ty == TYPE_ID_TUPLE || ty == TYPE_ID_LIST
             });
+        let has_args = args_ptr.is_some_and(|ptr| unsafe { locked_len(ptr) != 0 });
 
         let result_bits = if has_args {
-            // Build a call with positional args from the tuple.
-            let args_ptr = obj_from_bits(initvar_values_bits).as_ptr().unwrap();
-            let args = unsafe { seq_vec_ref(args_ptr) };
+            // Materialize the call vector atomically, pinning every argument
+            // through the reentrant __post_init__ call.
+            let args_ptr = args_ptr.expect("non-empty InitVar sequence");
+            let Some(args) =
+                (unsafe { snapshot(_py, args_ptr, "InitVar argument allocation failed") })
+            else {
+                dec_ref_bits(_py, method_bits);
+                return MoltObject::none().bits();
+            };
             // Use the CallArgs builder to push positional args.
             let builder_bits = crate::molt_callargs_new(args.len() as u64, 0);
             for &arg_bits in args.iter() {

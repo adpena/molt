@@ -233,8 +233,18 @@ pub struct RuntimeHooks {
     pub int_max_str_digits: unsafe extern "C" fn() -> usize,
     /// Allocate an empty list. Returns handle bits.
     pub alloc_list: unsafe extern "C" fn() -> u64,
-    /// Append `item_bits` to the list at `list_bits`.
-    pub list_append: unsafe extern "C" fn(list_bits: u64, item_bits: u64) -> std::os::raw::c_int,
+    /// Allocate a list with its logical length established in one backing-store
+    /// allocation. The ABI bridge owns the uninitialized-slot contract.
+    pub alloc_list_presized: unsafe extern "C" fn(len: usize) -> u64,
+    /// Append `item_bits` to the list at `list_bits`. `item_ptr` is the exact
+    /// originating C object when the append crossed from CPython, or NULL for
+    /// runtime-only appends. Preserving this origin makes `lst[-1] is item`
+    /// exact and avoids rematerializing scalar carriers.
+    pub list_append: unsafe extern "C" fn(
+        list_bits: u64,
+        item_bits: u64,
+        item_ptr: *mut crate::abi_types::PyObject,
+    ) -> std::os::raw::c_int,
     /// Return the number of items in a list.
     pub list_len: unsafe extern "C" fn(bits: u64) -> usize,
     /// Return the bits of item `i` in the list, or 0 if out of range.
@@ -247,10 +257,15 @@ pub struct RuntimeHooks {
     pub list_set:
         unsafe extern "C" fn(list_bits: u64, i: usize, val_bits: u64) -> OwnedHandleResult,
     /// Insert `item_bits` before (clamped) index `where_` in the list, shifting
-    /// subsequent elements right. Returns 0 on success, -1 on a non-list.
-    /// Routes to the runtime `PyList_Insert` authority (`ins1` semantics).
-    pub list_insert:
-        unsafe extern "C" fn(list_bits: u64, where_: isize, item_bits: u64) -> std::os::raw::c_int,
+    /// subsequent elements right. `item_ptr` preserves the exact originating C
+    /// object just like append. Returns 0 on success, -1 on any failed runtime
+    /// or physical publication.
+    pub list_insert: unsafe extern "C" fn(
+        list_bits: u64,
+        where_: isize,
+        item_bits: u64,
+        item_ptr: *mut crate::abi_types::PyObject,
+    ) -> std::os::raw::c_int,
     /// Sort the list in place via the runtime comparison authority. Returns 0 on
     /// success, -1 with a pending exception on error (uncomparable elements).
     pub list_sort: unsafe extern "C" fn(list_bits: u64) -> std::os::raw::c_int,
@@ -265,11 +280,23 @@ pub struct RuntimeHooks {
         ilow: isize,
         ihigh: isize,
         itemlist_bits: u64,
+        future_pointers: *const *mut crate::abi_types::PyObject,
+        future_len: usize,
     ) -> std::os::raw::c_int,
-    /// Allocate a tuple of exactly `n` slots. Slots are uninitialized (None).
+    /// Allocate a tuple of exactly `n` uninitialized slots. A zero handle is
+    /// the only uninitialized sentinel; finalized tuples never contain it.
     pub alloc_tuple: unsafe extern "C" fn(n: usize) -> u64,
-    /// Set slot `i` of tuple `bits` to `val_bits`.
-    pub tuple_set: unsafe extern "C" fn(bits: u64, i: usize, val_bits: u64) -> OwnedHandleResult,
+    /// Set the fixed slot `i` of an open, uniquely-owned tuple. `exact_pointer`
+    /// is the physical object whose reference was stolen by PyTuple_SetItem.
+    /// The hook never grows the tuple. `Missing` is the successful transition
+    /// from an uninitialized zero slot; `Ok(bits)` replaces an initialized
+    /// slot and transfers its old runtime edge; `Error` is failure.
+    pub tuple_set: unsafe extern "C" fn(
+        bits: u64,
+        i: usize,
+        val_bits: u64,
+        exact_pointer: *mut crate::abi_types::PyObject,
+    ) -> OwnedHandleResult,
     /// Return the number of items in a tuple.
     pub tuple_len: unsafe extern "C" fn(bits: u64) -> usize,
     /// Return the bits of item `i` in the tuple, or 0 if out of range.
@@ -590,10 +617,17 @@ pub struct RuntimeHooks {
         actual_class_bits: *mut u64,
         traceback_bits: *mut u64,
     ) -> OwnedHandleResult,
+    /// Return the runtime's active handled exception (`sys.exception()`) as an
+    /// owned handle. `Missing` means no exception is being handled.
+    pub handled_exception_get: unsafe extern "C" fn() -> OwnedHandleResult,
+    /// Replace the runtime's active handled exception. Zero clears it; a
+    /// non-zero handle is owned by and always consumed by this call.
+    pub handled_exception_set:
+        unsafe extern "C" fn(owned_exception_bits: u64) -> std::os::raw::c_int,
 }
 
 pub const RUNTIME_HOOKS_ABI_MAGIC: u64 = 0x4d4f_4c54_484f_4f4b;
-pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 9;
+pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 15;
 
 /// Discriminants for [`RuntimeHooks::dict_op`]. Kept in sync with the match in
 /// the runtime hook implementation (`hook_dict_op`).
@@ -800,7 +834,14 @@ unsafe extern "C" fn stub_complex_from_doubles(_real: f64, _imag: f64) -> OwnedH
 unsafe extern "C" fn stub_alloc_list() -> u64 {
     0
 }
-unsafe extern "C" fn stub_list_append(_list_bits: u64, _item_bits: u64) -> std::os::raw::c_int {
+unsafe extern "C" fn stub_alloc_list_presized(_len: usize) -> u64 {
+    0
+}
+unsafe extern "C" fn stub_list_append(
+    _list_bits: u64,
+    _item_bits: u64,
+    _item_ptr: *mut crate::abi_types::PyObject,
+) -> std::os::raw::c_int {
     -1
 }
 unsafe extern "C" fn stub_list_len(_bits: u64) -> usize {
@@ -820,6 +861,7 @@ unsafe extern "C" fn stub_list_insert(
     _list_bits: u64,
     _where_: isize,
     _item_bits: u64,
+    _item_ptr: *mut crate::abi_types::PyObject,
 ) -> std::os::raw::c_int {
     -1
 }
@@ -834,13 +876,20 @@ unsafe extern "C" fn stub_list_set_slice(
     _ilow: isize,
     _ihigh: isize,
     _itemlist_bits: u64,
+    _future_pointers: *const *mut crate::abi_types::PyObject,
+    _future_len: usize,
 ) -> std::os::raw::c_int {
     -1
 }
 unsafe extern "C" fn stub_alloc_tuple(_n: usize) -> u64 {
     0
 }
-unsafe extern "C" fn stub_tuple_set(_bits: u64, _i: usize, _val: u64) -> OwnedHandleResult {
+unsafe extern "C" fn stub_tuple_set(
+    _bits: u64,
+    _i: usize,
+    _val: u64,
+    _exact_pointer: *mut crate::abi_types::PyObject,
+) -> OwnedHandleResult {
     OwnedHandleResult::error()
 }
 unsafe extern "C" fn stub_tuple_len(_bits: u64) -> usize {
@@ -1134,6 +1183,12 @@ unsafe extern "C" fn stub_take_pending_exception(
 ) -> OwnedHandleResult {
     OwnedHandleResult::error()
 }
+unsafe extern "C" fn stub_handled_exception_get() -> OwnedHandleResult {
+    OwnedHandleResult::missing()
+}
+unsafe extern "C" fn stub_handled_exception_set(_owned_exception_bits: u64) -> std::os::raw::c_int {
+    -1
+}
 
 /// A no-op hooks table used when the runtime hasn't registered yet.
 pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
@@ -1164,6 +1219,7 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     complex_parts: stub_complex_parts,
     complex_from_doubles: stub_complex_from_doubles,
     alloc_list: stub_alloc_list,
+    alloc_list_presized: stub_alloc_list_presized,
     list_append: stub_list_append,
     list_len: stub_list_len,
     list_item: stub_list_item,
@@ -1232,6 +1288,8 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     exception_commit_snapshot: stub_exception_commit_snapshot,
     type_is_subtype: stub_type_is_subtype,
     take_pending_exception: stub_take_pending_exception,
+    handled_exception_get: stub_handled_exception_get,
+    handled_exception_set: stub_handled_exception_set,
 };
 
 /// Return the registered hooks or the typed fail-closed bootstrap table.

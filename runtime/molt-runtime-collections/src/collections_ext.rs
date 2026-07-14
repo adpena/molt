@@ -22,7 +22,7 @@ use crate::bridge::{
     dict_del_in_place, dict_get_in_place, dict_like_bits_from_ptr, dict_order_clone,
     dict_set_in_place, ensure_key_hashable, exception_pending, inc_ref_bits,
     index_i64_with_overflow, is_truthy, obj_eq, object_type_id, raise_exception,
-    raise_key_error_with_key, seq_vec_ref, string_data, string_obj_to_owned, to_i64, type_name,
+    raise_key_error_with_key, seq_snapshot, string_data, string_obj_to_owned, to_i64, type_name,
 };
 
 use std::collections::{HashMap, VecDeque};
@@ -208,7 +208,7 @@ pub extern "C" fn molt_ordereddict_from_pairs(pairs_bits: u64) -> u64 {
         if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
             return raise_exception::<_>(_py, "TypeError", "expected a list of pairs");
         }
-        let elems = unsafe { seq_vec_ref(ptr) };
+        let elems = unsafe { seq_snapshot(ptr) };
         let mut state = OrderedDictState::new();
         for &elem_bits in elems.iter() {
             let elem_obj = obj_from_bits(elem_bits);
@@ -219,7 +219,7 @@ pub extern "C" fn molt_ordereddict_from_pairs(pairs_bits: u64) -> u64 {
             if elem_type != TYPE_ID_TUPLE && elem_type != TYPE_ID_LIST {
                 return raise_exception::<_>(_py, "TypeError", "each pair must be a tuple");
             }
-            let pair = unsafe { seq_vec_ref(elem_ptr) };
+            let pair = unsafe { seq_snapshot(elem_ptr) };
             if pair.len() < 2 {
                 return raise_exception::<_>(_py, "ValueError", "each pair must have 2 elements");
             }
@@ -649,7 +649,7 @@ pub extern "C" fn molt_chainmap_new(maps_bits: u64) -> u64 {
         if let Some(ptr) = obj.as_ptr() {
             let type_id = unsafe { object_type_id(ptr) };
             if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
-                let elems = unsafe { seq_vec_ref(ptr) };
+                let elems = unsafe { seq_snapshot(ptr) };
                 for &elem_bits in elems.iter() {
                     let ep = obj_from_bits(elem_bits);
                     if ep
@@ -1156,7 +1156,10 @@ fn parse_maxlen(_py: &CoreGilToken, maxlen_bits: u64) -> Result<Option<usize>, (
 
 /// Extract elements from a list or tuple pointer. Returns None and raises
 /// TypeError if the bits are not a list or tuple.
-fn extract_iterable_elements(_py: &CoreGilToken, iterable_bits: u64) -> Option<&'static Vec<u64>> {
+fn extract_iterable_elements(
+    _py: &CoreGilToken,
+    iterable_bits: u64,
+) -> Option<OwnedBridgeHandleSnapshot> {
     let obj = obj_from_bits(iterable_bits);
     let Some(ptr) = obj.as_ptr() else {
         let _ = raise_exception::<u64>(_py, "TypeError", "argument must be an iterable");
@@ -1167,7 +1170,7 @@ fn extract_iterable_elements(_py: &CoreGilToken, iterable_bits: u64) -> Option<&
         let _ = raise_exception::<u64>(_py, "TypeError", "argument must be an iterable");
         return None;
     }
-    Some(unsafe { seq_vec_ref(ptr) })
+    Some(unsafe { seq_snapshot(ptr) })
 }
 
 /// Resolve a potentially negative index against a given length.
@@ -1214,7 +1217,7 @@ pub extern "C" fn molt_deque_from_iterable(iterable_bits: u64, maxlen_bits: u64)
         let Some(elems) = extract_iterable_elements(_py, iterable_bits) else {
             return MoltObject::none().bits();
         };
-        let state = DequeState::from_iterable_elements(_py, elems, maxlen);
+        let state = DequeState::from_iterable_elements(_py, elems.as_ref(), maxlen);
         let id = next_deque_handle();
         collections_state()
             .deque_registry
@@ -1356,13 +1359,12 @@ pub extern "C" fn molt_deque_extend(handle_bits: u64, iterable_bits: u64) -> u64
         let Some(elems) = extract_iterable_elements(_py, iterable_bits) else {
             return MoltObject::none().bits();
         };
-        let elems_owned: Vec<u64> = elems.clone();
         let mut evicted = Vec::new();
         {
             let mut map = collections_state().deque_registry.lock().unwrap();
             if let Some(state) = map.get_mut(&id) {
                 let mut mutated = false;
-                for &item in &elems_owned {
+                for &item in elems.iter() {
                     if let Some(ml) = state.maxlen {
                         if ml == 0 {
                             continue;
@@ -1402,14 +1404,13 @@ pub extern "C" fn molt_deque_extendleft(handle_bits: u64, iterable_bits: u64) ->
         let Some(elems) = extract_iterable_elements(_py, iterable_bits) else {
             return MoltObject::none().bits();
         };
-        let elems_owned: Vec<u64> = elems.clone();
         let mut evicted = Vec::new();
         {
             let mut map = collections_state().deque_registry.lock().unwrap();
             if let Some(state) = map.get_mut(&id) {
                 let mut mutated = false;
                 // Each element is prepended in order, which reverses the iterable.
-                for &item in &elems_owned {
+                for &item in elems.iter() {
                     if let Some(ml) = state.maxlen {
                         if ml == 0 {
                             continue;
@@ -2318,7 +2319,7 @@ pub extern "C" fn molt_counter_from_iterable(iterable_bits: u64) -> u64 {
         if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
             return raise_exception::<_>(_py, "TypeError", "expected a list or tuple");
         }
-        let elems = unsafe { seq_vec_ref(ptr) };
+        let elems = unsafe { seq_snapshot(ptr) };
         let mut state = CounterState::new();
         for &elem_bits in elems.iter() {
             // CPython hashes each element as a dict key; an unhashable element
@@ -2350,7 +2351,7 @@ pub extern "C" fn molt_counter_from_mapping(mapping_bits: u64) -> u64 {
         if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
             return raise_exception::<_>(_py, "TypeError", "expected a list of (key, count) pairs");
         }
-        let elems = unsafe { seq_vec_ref(ptr) };
+        let elems = unsafe { seq_snapshot(ptr) };
         let mut state = CounterState::new();
         for &elem_bits in elems.iter() {
             let elem_obj = obj_from_bits(elem_bits);
@@ -2361,7 +2362,7 @@ pub extern "C" fn molt_counter_from_mapping(mapping_bits: u64) -> u64 {
             if elem_type != TYPE_ID_TUPLE && elem_type != TYPE_ID_LIST {
                 return raise_exception::<_>(_py, "TypeError", "each pair must be a tuple");
             }
-            let pair = unsafe { seq_vec_ref(elem_ptr) };
+            let pair = unsafe { seq_snapshot(elem_ptr) };
             if pair.len() < 2 {
                 return raise_exception::<_>(_py, "ValueError", "each pair must have 2 elements");
             }
@@ -2592,7 +2593,7 @@ pub extern "C" fn molt_counter_update(handle_bits: u64, source_bits: u64) -> u64
         if src_type != TYPE_ID_LIST && src_type != TYPE_ID_TUPLE {
             return raise_exception::<_>(_py, "TypeError", "update source must be a list or tuple");
         }
-        let elems = unsafe { seq_vec_ref(src_ptr) }.clone();
+        let elems = unsafe { seq_snapshot(src_ptr) };
         if elems.is_empty() {
             return MoltObject::none().bits();
         }
@@ -2605,7 +2606,7 @@ pub extern "C" fn molt_counter_update(handle_bits: u64, source_bits: u64) -> u64
 
         if is_mapping {
             let mut deltas: Vec<(u64, i64)> = Vec::with_capacity(elems.len());
-            for &elem_bits in &elems {
+            for &elem_bits in elems.iter() {
                 let elem_obj = obj_from_bits(elem_bits);
                 let Some(elem_ptr) = elem_obj.as_ptr() else {
                     return raise_exception::<_>(_py, "TypeError", "each pair must be a tuple");
@@ -2614,7 +2615,7 @@ pub extern "C" fn molt_counter_update(handle_bits: u64, source_bits: u64) -> u64
                 if elem_type != TYPE_ID_TUPLE && elem_type != TYPE_ID_LIST {
                     return raise_exception::<_>(_py, "TypeError", "each pair must be a tuple");
                 }
-                let pair = unsafe { seq_vec_ref(elem_ptr) };
+                let pair = unsafe { seq_snapshot(elem_ptr) };
                 if pair.len() < 2 {
                     return raise_exception::<_>(
                         _py,
@@ -2641,7 +2642,7 @@ pub extern "C" fn molt_counter_update(handle_bits: u64, source_bits: u64) -> u64
                 }
             }
         } else {
-            for &elem_bits in &elems {
+            for &elem_bits in elems.iter() {
                 if !ensure_key_hashable(_py, elem_bits, 0) {
                     return MoltObject::none().bits();
                 }
@@ -2649,7 +2650,7 @@ pub extern "C" fn molt_counter_update(handle_bits: u64, source_bits: u64) -> u64
             {
                 let mut map = collections_state().counter_registry.lock().unwrap();
                 if let Some(state) = map.get_mut(&id) {
-                    for &elem_bits in &elems {
+                    for &elem_bits in elems.iter() {
                         state.add_count(_py, elem_bits, 1);
                     }
                 }
@@ -2682,7 +2683,7 @@ pub extern "C" fn molt_counter_subtract(handle_bits: u64, source_bits: u64) -> u
                 "subtract source must be a list or tuple",
             );
         }
-        let elems = unsafe { seq_vec_ref(src_ptr) }.clone();
+        let elems = unsafe { seq_snapshot(src_ptr) };
         if elems.is_empty() {
             return MoltObject::none().bits();
         }
@@ -2695,7 +2696,7 @@ pub extern "C" fn molt_counter_subtract(handle_bits: u64, source_bits: u64) -> u
 
         if is_mapping {
             let mut deltas: Vec<(u64, i64)> = Vec::with_capacity(elems.len());
-            for &elem_bits in &elems {
+            for &elem_bits in elems.iter() {
                 let elem_obj = obj_from_bits(elem_bits);
                 let Some(elem_ptr) = elem_obj.as_ptr() else {
                     return raise_exception::<_>(_py, "TypeError", "each pair must be a tuple");
@@ -2704,7 +2705,7 @@ pub extern "C" fn molt_counter_subtract(handle_bits: u64, source_bits: u64) -> u
                 if elem_type != TYPE_ID_TUPLE && elem_type != TYPE_ID_LIST {
                     return raise_exception::<_>(_py, "TypeError", "each pair must be a tuple");
                 }
-                let pair = unsafe { seq_vec_ref(elem_ptr) };
+                let pair = unsafe { seq_snapshot(elem_ptr) };
                 if pair.len() < 2 {
                     return raise_exception::<_>(
                         _py,
@@ -2730,7 +2731,7 @@ pub extern "C" fn molt_counter_subtract(handle_bits: u64, source_bits: u64) -> u
                 }
             }
         } else {
-            for &elem_bits in &elems {
+            for &elem_bits in elems.iter() {
                 if !ensure_key_hashable(_py, elem_bits, 0) {
                     return MoltObject::none().bits();
                 }
@@ -2738,7 +2739,7 @@ pub extern "C" fn molt_counter_subtract(handle_bits: u64, source_bits: u64) -> u
             {
                 let mut map = collections_state().counter_registry.lock().unwrap();
                 if let Some(state) = map.get_mut(&id) {
-                    for &elem_bits in &elems {
+                    for &elem_bits in elems.iter() {
                         state.add_count(_py, elem_bits, -1);
                     }
                 }
@@ -3311,7 +3312,7 @@ pub extern "C" fn molt_namedtuple_validate_fields(
         if field_type != TYPE_ID_LIST && field_type != TYPE_ID_TUPLE {
             return raise_exception::<_>(_py, "TypeError", "field_names must be a sequence");
         }
-        let elems = unsafe { seq_vec_ref(fields_ptr) };
+        let elems = unsafe { seq_snapshot(fields_ptr) };
 
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut normalized: Vec<u64> = Vec::new();

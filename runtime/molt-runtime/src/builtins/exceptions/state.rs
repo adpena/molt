@@ -9,11 +9,17 @@ pub(super) fn debug_oom() -> bool {
     *ENABLED.get_or_init(|| matches!(std::env::var("MOLT_DEBUG_OOM").ok().as_deref(), Some("1")))
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct ExceptionContextFallback {
+    pub(crate) bits: u64,
+    pub(crate) owned: bool,
+}
+
 thread_local! {
     pub(crate) static EXCEPTION_STACK: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
     pub(crate) static EXCEPTION_STACK_BASELINE: Cell<usize> = const { Cell::new(0) };
     pub(crate) static ACTIVE_EXCEPTION_STACK: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
-    pub(crate) static ACTIVE_EXCEPTION_FALLBACK: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+    pub(crate) static ACTIVE_EXCEPTION_FALLBACK: RefCell<Vec<ExceptionContextFallback>> = const { RefCell::new(Vec::new()) };
     pub(crate) static GENERATOR_EXCEPTION_STACKS: RefCell<HashMap<usize, Vec<u64>>> =
         RefCell::new(HashMap::new());
     pub(crate) static GENERATOR_RAISE: Cell<bool> = const { Cell::new(false) };

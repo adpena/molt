@@ -123,68 +123,86 @@ pub(super) fn alloc_tuple_bits_from_usize(
     }
 }
 
-pub(super) fn normalize_sequence_arg_bits(
-    _py: &crate::PyToken<'_>,
-    bits: u64,
-    role: &str,
-    allow_scalar_int: bool,
-) -> Result<Vec<u64>, u64> {
-    let obj = obj_from_bits(bits);
-    let mut elems = if let Some(ptr) = obj.as_ptr() {
-        match unsafe { object_type_id(ptr) } {
-            TYPE_ID_TUPLE | TYPE_ID_LIST => unsafe { seq_vec_ref(ptr) }.to_vec(),
-            _ => {
-                if allow_scalar_int && to_i64(obj).is_some() {
-                    vec![bits]
-                } else {
-                    return Err(raise_exception::<_>(
-                        _py,
-                        "TypeError",
-                        &format!("{role} must be a tuple or list of ints"),
-                    ));
-                }
-            }
-        }
-    } else if allow_scalar_int && to_i64(obj).is_some() {
-        vec![bits]
-    } else {
-        return Err(raise_exception::<_>(
-            _py,
-            "TypeError",
-            &format!("{role} must be a tuple or list of ints"),
-        ));
-    };
-    if elems.len() == 1 {
-        let inner = obj_from_bits(elems[0]);
-        if let Some(inner_ptr) = inner.as_ptr() {
-            let ty = unsafe { object_type_id(inner_ptr) };
-            if ty == TYPE_ID_TUPLE || ty == TYPE_ID_LIST {
-                elems = unsafe { seq_vec_ref(inner_ptr) }.to_vec();
-            }
-        }
-    }
-    Ok(elems)
-}
-
 pub(super) fn parse_i64_sequence_arg(
     _py: &crate::PyToken<'_>,
     bits: u64,
     role: &str,
     allow_scalar_int: bool,
 ) -> Result<Vec<i64>, u64> {
-    let elems = normalize_sequence_arg_bits(_py, bits, role, allow_scalar_int)?;
-    let mut out = Vec::with_capacity(elems.len());
-    for elem_bits in elems {
-        let Some(value) = to_i64(obj_from_bits(elem_bits)) else {
-            return Err(raise_exception::<_>(
+    let obj = obj_from_bits(bits);
+    let Some(ptr) = obj.as_ptr() else {
+        return if allow_scalar_int {
+            to_i64(obj).map(|value| vec![value]).ok_or_else(|| {
+                raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    &format!("{role} must be a tuple or list of ints"),
+                )
+            })
+        } else {
+            Err(raise_exception::<_>(
                 _py,
                 "TypeError",
-                &format!("{role} must contain integers"),
-            ));
+                &format!("{role} must be a tuple or list of ints"),
+            ))
         };
-        out.push(value);
+    };
+    let ty = unsafe { object_type_id(ptr) };
+    if ty != TYPE_ID_TUPLE && ty != TYPE_ID_LIST {
+        return if allow_scalar_int {
+            to_i64(obj).map(|value| vec![value]).ok_or_else(|| {
+                raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    &format!("{role} must be a tuple or list of ints"),
+                )
+            })
+        } else {
+            Err(raise_exception::<_>(
+                _py,
+                "TypeError",
+                &format!("{role} must be a tuple or list of ints"),
+            ))
+        };
     }
-    Ok(out)
+
+    let decode = |elems: &[u64]| {
+        let mut out = Vec::with_capacity(elems.len());
+        for &elem_bits in elems {
+            let Some(value) = to_i64(obj_from_bits(elem_bits)) else {
+                return None;
+            };
+            out.push(value);
+        }
+        Some(out)
+    };
+
+    // Preserve the accepted ``((dims...),)`` call shape without exporting a
+    // borrowed edge from a mutable outer list. The pin keeps the sole item
+    // alive while the inner sequence is inspected and decoded.
+    let nested_item = if unsafe { crate::object::seq_access::len(ptr) } == 1 {
+        unsafe { crate::object::seq_access::pin_item(_py, ptr, 0) }
+    } else {
+        None
+    };
+    let decoded = if let Some(item) = nested_item.as_ref() {
+        let inner = obj_from_bits(item.bits());
+        if let Some(inner_ptr) = inner.as_ptr() {
+            let inner_ty = unsafe { object_type_id(inner_ptr) };
+            if inner_ty == TYPE_ID_TUPLE || inner_ty == TYPE_ID_LIST {
+                unsafe { crate::object::seq_access::with_borrowed(inner_ptr, decode) }
+            } else {
+                unsafe { crate::object::seq_access::with_borrowed(ptr, decode) }
+            }
+        } else {
+            unsafe { crate::object::seq_access::with_borrowed(ptr, decode) }
+        }
+    } else {
+        unsafe { crate::object::seq_access::with_borrowed(ptr, decode) }
+    };
+    decoded.ok_or_else(|| {
+        raise_exception::<_>(_py, "TypeError", &format!("{role} must contain integers"))
+    })
 }
 
 pub(super) fn normalize_permute_dims(

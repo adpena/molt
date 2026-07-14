@@ -16,7 +16,7 @@
 
 #![allow(non_snake_case)]
 
-use molt_cpython_abi::abi_types::{MoltTypeTag, PyObject};
+use molt_cpython_abi::abi_types::{MoltTypeTag, PyList_Type, PyListObject, PyObject};
 use molt_lang_obj_model::MoltObject;
 use std::collections::HashMap;
 use std::ptr;
@@ -40,7 +40,19 @@ unsafe extern "C" fn fx_alloc_list() -> u64 {
         .insert(bits, Vec::new());
     bits
 }
-unsafe extern "C" fn fx_list_append(list_bits: u64, item_bits: u64) -> i32 {
+unsafe extern "C" fn fx_alloc_list_presized(len: usize) -> u64 {
+    let mut next = NEXT_LIST.lock().unwrap();
+    let addr = *next as usize;
+    *next += 0x100;
+    let bits = MoltObject::from_ptr(addr as *mut u8).bits();
+    LISTS
+        .lock()
+        .unwrap()
+        .get_or_insert_default()
+        .insert(bits, vec![MoltObject::none().bits(); len]);
+    bits
+}
+unsafe extern "C" fn fx_list_append(list_bits: u64, item_bits: u64, _item: *mut PyObject) -> i32 {
     if let Some(v) = LISTS
         .lock()
         .unwrap()
@@ -113,6 +125,7 @@ unsafe extern "C" fn fx_foreign_new(_c_ptr: usize) -> u64 {
 fn install() {
     let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
     hooks.alloc_list = fx_alloc_list;
+    hooks.alloc_list_presized = fx_alloc_list_presized;
     hooks.list_append = fx_list_append;
     hooks.list_len = fx_list_len;
     hooks.list_item = fx_list_item;
@@ -127,6 +140,91 @@ fn install() {
 }
 
 use molt_cpython_abi::api::{errors, numbers, sequences};
+
+#[test]
+fn cython_direct_ob_item_construction_commits_one_truthful_list() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    install();
+    unsafe { errors::PyErr_Clear() };
+
+    let list = unsafe { sequences::PyList_New(3) };
+    assert!(!list.is_null());
+    let physical = list.cast::<PyListObject>();
+    unsafe {
+        assert_eq!((*list).ob_type, &raw mut PyList_Type);
+        assert_eq!((*physical).ob_base.ob_size, 3);
+        assert!((*physical).allocated >= 3);
+        assert!(!(*physical).ob_item.is_null());
+        for index in 0..3 {
+            assert!(
+                (*(*physical).ob_item.add(index)).is_null(),
+                "PyList_New must publish NULL construction slots"
+            );
+        }
+    }
+
+    let source = unsafe {
+        [
+            numbers::PyLong_FromLong(101),
+            numbers::PyLong_FromLong(202),
+            numbers::PyLong_FromLong(303),
+        ]
+    };
+    let source_bits = source.map(|pointer| {
+        molt_cpython_abi::bridge::GLOBAL_BRIDGE
+            .molt_handle_for_pyobj(pointer)
+            .expect("numeric carrier must retain its runtime identity")
+            .bits()
+    });
+
+    // This is the unavoidable Cython `__Pyx_copy_object_array` operation:
+    // each source element is first INCREF'd and then copied directly into the
+    // `PyListObject.ob_item` array, bypassing every public list setter.
+    unsafe {
+        for (index, pointer) in source.into_iter().enumerate() {
+            molt_cpython_abi::api::refcount::Py_INCREF(pointer);
+            *(*physical).ob_item.add(index) = pointer;
+        }
+    }
+
+    // The first checked C observation commits the complete pointer snapshot
+    // into the runtime list, consumes the three stolen construction refs, and
+    // republishes one owned projection of that canonical runtime state.
+    for (index, expected_bits) in source_bits.into_iter().enumerate() {
+        let item = unsafe { sequences::PyList_GetItem(list, index as isize) };
+        assert!(
+            !item.is_null(),
+            "direct slot {index} must become observable"
+        );
+        let actual_bits = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+            .molt_handle_for_pyobj(item)
+            .expect("committed item must retain runtime identity")
+            .bits();
+        assert_eq!(actual_bits, expected_bits, "direct slot {index}");
+    }
+    assert!(unsafe { errors::PyErr_Occurred() }.is_null());
+
+    // A completed list remains physically writable through the non-limited
+    // PyListObject ABI. `sealed` describes completeness, not cleanliness: the
+    // next semantic observation must detect and commit this direct replacement.
+    let replacement = unsafe { numbers::PyLong_FromLong(909) };
+    let replacement_bits = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+        .molt_handle_for_pyobj(replacement)
+        .expect("replacement must retain runtime identity")
+        .bits();
+    unsafe {
+        molt_cpython_abi::api::refcount::Py_INCREF(replacement);
+        *(*physical).ob_item.add(1) = replacement;
+    }
+    let observed = unsafe { sequences::PyList_GetItem(list, 1) };
+    assert_eq!(
+        molt_cpython_abi::bridge::GLOBAL_BRIDGE
+            .molt_handle_for_pyobj(observed)
+            .expect("direct replacement must commit")
+            .bits(),
+        replacement_bits
+    );
+}
 
 #[test]
 fn setitem_places_items_at_index_out_of_order() {
@@ -187,6 +285,21 @@ fn setitem_places_items_at_index_out_of_order() {
         unsafe { errors::PyErr_Occurred() }.is_null(),
         "successful fills must not leave an exception"
     );
+}
+
+#[test]
+fn setitem_accepts_a_self_cycle_during_presized_construction() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    install();
+    unsafe { errors::PyErr_Clear() };
+
+    let list = unsafe { sequences::PyList_New(1) };
+    assert!(!list.is_null());
+    // Preserve the caller's reference because PyList_SetItem steals one.
+    unsafe { molt_cpython_abi::api::refcount::Py_INCREF(list) };
+    assert_eq!(unsafe { sequences::PyList_SetItem(list, 0, list) }, 0);
+    assert_eq!(unsafe { sequences::PyList_GetItem(list, 0) }, list);
+    assert!(unsafe { errors::PyErr_Occurred() }.is_null());
 }
 
 #[test]
@@ -251,8 +364,8 @@ fn setitem_foreign_item_gets_custody_and_is_retrievable() {
     // now owned by the wrapper.
     assert_eq!(
         unsafe { (*fp).ob_refcnt },
-        1,
-        "foreign custody must be wrapper-held: +1 wrapper ref, -1 stolen ref"
+        2,
+        "foreign custody must represent runtime and physical projection edges"
     );
     assert!(
         unsafe { errors::PyErr_Occurred() }.is_null(),

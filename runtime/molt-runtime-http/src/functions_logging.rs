@@ -8,8 +8,8 @@ use crate::bridge::{
     alloc_string, alloc_string_bits, attr_name_bits_from_bytes, attr_optional, builtin_classes,
     call_callable0, call_callable1, call_class_init_with_args, clear_exception, dec_ref_bits,
     dict_get_in_place, exception_pending, inc_ref_bits, missing_bits, molt_getattr_builtin,
-    object_type_id, raise_exception, resolve_global_bits, seq_vec_ref, string_obj_to_owned, to_f64,
-    to_i64,
+    object_type_id, raise_exception, resolve_global_bits, seq_snapshot, string_obj_to_owned,
+    to_f64, to_i64,
 };
 
 fn logging_percent_lookup_mapping_value(
@@ -172,9 +172,9 @@ fn logging_config_dict_items(
             "logging config items() iterable materialization failed",
         ));
     }
-    let entries: Vec<u64> = unsafe { seq_vec_ref(list_ptr).to_vec() };
+    let entries = unsafe { seq_snapshot(list_ptr) };
     let mut pairs: Vec<(u64, u64)> = Vec::new();
-    for item_bits in entries {
+    for item_bits in entries.iter().copied() {
         let Some(item_ptr) = obj_from_bits(item_bits).as_ptr() else {
             dec_ref_bits(_py, list_bits);
             for (key_bits, value_bits) in pairs {
@@ -199,7 +199,7 @@ fn logging_config_dict_items(
                 "logging config items must be pairs",
             ));
         }
-        let fields = unsafe { seq_vec_ref(item_ptr) };
+        let fields = unsafe { seq_snapshot(item_ptr) };
         if fields.len() != 2 {
             dec_ref_bits(_py, list_bits);
             for (key_bits, value_bits) in pairs {
@@ -246,9 +246,9 @@ fn logging_config_name_list(
             "logging config handler list materialization failed",
         ));
     }
-    let entries: Vec<u64> = unsafe { seq_vec_ref(list_ptr).to_vec() };
+    let entries = unsafe { seq_snapshot(list_ptr) };
     let mut names: Vec<String> = Vec::new();
-    for item_bits in entries {
+    for item_bits in entries.iter().copied() {
         let Some(name) = string_obj_to_owned(obj_from_bits(item_bits)) else {
             dec_ref_bits(_py, list_bits);
             return Err(raise_exception::<u64>(
@@ -296,15 +296,14 @@ fn logging_config_clear_logger_handlers(
         return Ok(());
     };
     let ty = unsafe { object_type_id(handlers_ptr) };
-    let snapshot: Vec<u64> =
-        if ty == crate::bridge::type_id_list() || ty == crate::bridge::type_id_tuple() {
-            unsafe { seq_vec_ref(handlers_ptr).to_vec() }
-        } else {
-            dec_ref_bits(_py, handlers_bits);
-            return Ok(());
-        };
+    let snapshot = if ty == crate::bridge::type_id_list() || ty == crate::bridge::type_id_tuple() {
+        unsafe { seq_snapshot(handlers_ptr) }
+    } else {
+        dec_ref_bits(_py, handlers_bits);
+        return Ok(());
+    };
     dec_ref_bits(_py, handlers_bits);
-    for handler_bits in snapshot {
+    for handler_bits in snapshot.iter().copied() {
         let out_bits =
             logging_config_call_method1(_py, logger_bits, b"removeHandler", handler_bits)?;
         if !obj_from_bits(out_bits).is_none() {

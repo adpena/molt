@@ -21,14 +21,19 @@ pub(super) fn importlib_reader_collect_unique_strings(
                 return Err(MoltObject::none().bits());
             }
         }
-        let pair = unsafe { seq_vec_ref(pair_ptr) };
-        if pair.len() < 2 {
+        if unsafe { crate::object::seq_access::locked_len(pair_ptr) } < 2 {
             return Err(MoltObject::none().bits());
         }
-        if is_truthy(_py, obj_from_bits(pair[1])) {
+        let Some(done) = (unsafe { crate::object::seq_access::pin_item(_py, pair_ptr, 1) }) else {
+            return Err(MoltObject::none().bits());
+        };
+        if is_truthy(_py, obj_from_bits(done.bits())) {
             break;
         }
-        let Some(entry) = string_obj_to_owned(obj_from_bits(pair[0])) else {
+        let Some(value) = (unsafe { crate::object::seq_access::pin_item(_py, pair_ptr, 0) }) else {
+            return Err(MoltObject::none().bits());
+        };
+        let Some(entry) = string_obj_to_owned(obj_from_bits(value.bits())) else {
             // CPython ResourceReader handling is tolerant of non-string entries in
             // iterator-style views; skip malformed entries instead of aborting.
             continue;
@@ -63,14 +68,19 @@ pub(super) fn importlib_reader_collect_unique_paths(
                 return Err(MoltObject::none().bits());
             }
         }
-        let pair = unsafe { seq_vec_ref(pair_ptr) };
-        if pair.len() < 2 {
+        if unsafe { crate::object::seq_access::locked_len(pair_ptr) } < 2 {
             return Err(MoltObject::none().bits());
         }
-        if is_truthy(_py, obj_from_bits(pair[1])) {
+        let Some(done) = (unsafe { crate::object::seq_access::pin_item(_py, pair_ptr, 1) }) else {
+            return Err(MoltObject::none().bits());
+        };
+        if is_truthy(_py, obj_from_bits(done.bits())) {
             break;
         }
-        let path = match path_from_bits(_py, pair[0]) {
+        let Some(value) = (unsafe { crate::object::seq_access::pin_item(_py, pair_ptr, 0) }) else {
+            return Err(MoltObject::none().bits());
+        };
+        let path = match path_from_bits(_py, value.bits()) {
             Ok(path_buf) => path_buf.to_string_lossy().into_owned(),
             Err(_) => {
                 if exception_pending(_py) {
@@ -201,14 +211,19 @@ pub(super) fn importlib_traversable_iterdir_names(
                 return Err(MoltObject::none().bits());
             }
         }
-        let pair = unsafe { seq_vec_ref(pair_ptr) };
-        if pair.len() < 2 {
+        if unsafe { crate::object::seq_access::locked_len(pair_ptr) } < 2 {
             return Err(MoltObject::none().bits());
         }
-        if is_truthy(_py, obj_from_bits(pair[1])) {
+        let Some(done) = (unsafe { crate::object::seq_access::pin_item(_py, pair_ptr, 1) }) else {
+            return Err(MoltObject::none().bits());
+        };
+        if is_truthy(_py, obj_from_bits(done.bits())) {
             break;
         }
-        let entry_bits = pair[0];
+        let Some(entry) = (unsafe { crate::object::seq_access::pin_item(_py, pair_ptr, 0) }) else {
+            return Err(MoltObject::none().bits());
+        };
+        let entry_bits = entry.bits();
         let missing = missing_bits(_py);
         let name_bits = molt_getattr_builtin(entry_bits, name_attr, missing);
         if exception_pending(_py) {

@@ -1260,7 +1260,6 @@ impl SimpleBackend {
                         &mut sealed_blocks,
                         &vars,
                         representation_plan,
-                        scalar_fast_paths_enabled,
                         &nbc,
                     );
                     match __flow {
@@ -1322,9 +1321,6 @@ impl SimpleBackend {
                         &vars,
                         representation_plan,
                         &mut list_index_fast_paths,
-                        scalar_fast_paths_enabled,
-                        local_inc_ref_obj,
-                        local_dec_ref_obj,
                         &nbc,
                     );
                 }

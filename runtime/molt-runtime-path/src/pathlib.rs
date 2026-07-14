@@ -191,8 +191,8 @@ pub extern "C" fn molt_pathlib_join(base_bits: u64, args_bits: u64) -> u64 {
         if let Some(ptr) = obj_from_bits(args_bits).as_ptr() {
             let type_id = unsafe { object_type_id(ptr) };
             if type_id == TYPE_ID_TUPLE || type_id == TYPE_ID_LIST {
-                let elems = unsafe { seq_vec_ref(ptr) };
-                for &elem_bits in elems {
+                let elems = unsafe { seq_snapshot(ptr) };
+                for &elem_bits in elems.iter() {
                     if let Some(s) = string_obj_to_owned(obj_from_bits(elem_bits)) {
                         let p = Path::new(&s);
                         if p.is_absolute() {

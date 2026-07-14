@@ -883,7 +883,11 @@ pub(crate) fn traceback_payload_from_entry(
         unsafe {
             let type_id = object_type_id(entry_ptr);
             if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
-                let elems = seq_vec_ref(entry_ptr);
+                let elems = crate::object::seq_access::snapshot(
+                    _py,
+                    entry_ptr,
+                    "traceback entry snapshot allocation failed",
+                )?;
                 if elems.is_empty() {
                     return None;
                 }
@@ -1085,9 +1089,17 @@ pub(crate) fn traceback_payload_from_entries(
     if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
         return Vec::new();
     }
-    let elems: Vec<u64> = unsafe { seq_vec_ref(source_ptr).to_vec() };
+    let Some(elems) = (unsafe {
+        crate::object::seq_access::snapshot(
+            _py,
+            source_ptr,
+            "traceback source snapshot allocation failed",
+        )
+    }) else {
+        return Vec::new();
+    };
     let mut out: Vec<TracebackPayloadFrame> = Vec::new();
-    for bits in elems {
+    for bits in elems.iter().copied() {
         if let Some(frame) = traceback_payload_from_entry(_py, bits) {
             out.push(frame);
             if let Some(max) = limit

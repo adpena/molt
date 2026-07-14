@@ -188,7 +188,11 @@ pub fn to_i64(obj: MoltObject) -> Option<i64> {
 unsafe extern "C" {
     fn __molt_regex_dict_get_in_place(dict_ptr: *mut u8, key_bits: u64, out: *mut u64) -> i32;
     fn __molt_regex_dict_set_in_place(dict_ptr: *mut u8, key_bits: u64, val_bits: u64) -> i32;
-    fn __molt_regex_seq_vec_ptr(ptr: *mut u8) -> *mut Vec<u64>;
+    fn __molt_regex_seq_snapshot(
+        ptr: *mut u8,
+        out_ptr: *mut *const u64,
+        out_len: *mut usize,
+    ) -> i32;
     fn __molt_regex_dict_order_clone(
         ptr: *mut u8,
         out_ptr: *mut *const u64,
@@ -225,9 +229,16 @@ pub unsafe fn dict_set_in_place(
 
 /// # Safety
 ///
-/// `ptr` must refer to a live Molt sequence object backed by `Vec<u64>`.
-pub unsafe fn seq_vec_ref(ptr: *mut u8) -> &'static Vec<u64> {
-    unsafe { &*__molt_regex_seq_vec_ptr(ptr) }
+/// `ptr` must refer to a live Molt list or tuple for the duration of this call.
+pub unsafe fn seq_snapshot(ptr: *mut u8) -> OwnedBridgeHandleSnapshot {
+    let mut out_ptr: *const u64 = std::ptr::null();
+    let mut out_len = 0usize;
+    let ok = unsafe { __molt_regex_seq_snapshot(ptr, &mut out_ptr, &mut out_len) };
+    if ok == 0 {
+        out_ptr = std::ptr::null();
+        out_len = 0;
+    }
+    unsafe { bridge_owned_handle_snapshot(out_ptr, out_len) }
 }
 
 /// Returns a cloned copy of the dict's insertion order as a Vec of [k0, v0, k1, v1, ...].

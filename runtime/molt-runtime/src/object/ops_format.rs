@@ -168,13 +168,14 @@ fn format_generic_alias(_py: &PyToken<'_>, ptr: *mut u8) -> String {
         let args_obj = obj_from_bits(args_bits);
         if let Some(args_ptr) = args_obj.as_ptr() {
             if object_type_id(args_ptr) == TYPE_ID_TUPLE {
-                let elems = seq_vec_ref(args_ptr);
-                for (idx, elem_bits) in elems.iter().enumerate() {
-                    if idx > 0 {
-                        out.push_str(", ");
+                let _ = crate::object::seq_access::with_immutable_tuple_slice(args_ptr, |elems| {
+                    for (idx, elem_bits) in elems.iter().enumerate() {
+                        if idx > 0 {
+                            out.push_str(", ");
+                        }
+                        out.push_str(&render_arg(*elem_bits));
                     }
-                    out.push_str(&render_arg(*elem_bits));
-                }
+                });
             } else {
                 out.push_str(&render_arg(args_bits));
             }
@@ -204,13 +205,14 @@ fn format_union_type(_py: &PyToken<'_>, ptr: *mut u8) -> String {
         if let Some(args_ptr) = args_obj.as_ptr()
             && object_type_id(args_ptr) == TYPE_ID_TUPLE
         {
-            let elems = seq_vec_ref(args_ptr);
-            for (idx, elem_bits) in elems.iter().enumerate() {
-                if idx > 0 {
-                    out.push_str(" | ");
+            let _ = crate::object::seq_access::with_immutable_tuple_slice(args_ptr, |elems| {
+                for (idx, elem_bits) in elems.iter().enumerate() {
+                    if idx > 0 {
+                        out.push_str(" | ");
+                    }
+                    out.push_str(&render_arg(*elem_bits));
                 }
-                out.push_str(&render_arg(*elem_bits));
-            }
+            });
             return out;
         }
         out.push_str(&render_arg(args_bits));
@@ -237,14 +239,15 @@ pub(crate) fn decode_string_list(obj: MoltObject) -> Option<Vec<String>> {
         if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
             return None;
         }
-        let elems = seq_vec_ref(ptr);
-        let mut out = Vec::with_capacity(elems.len());
-        for &elem_bits in elems.iter() {
-            let elem_obj = obj_from_bits(elem_bits);
-            let s = string_obj_to_owned(elem_obj)?;
-            out.push(s);
-        }
-        Some(out)
+        crate::object::seq_access::with_borrowed(ptr, |elems| {
+            let mut out = Vec::with_capacity(elems.len());
+            for &elem_bits in elems {
+                let elem_obj = obj_from_bits(elem_bits);
+                let s = string_obj_to_owned(elem_obj)?;
+                out.push(s);
+            }
+            Some(out)
+        })
     }
 }
 
@@ -255,8 +258,10 @@ pub(crate) fn decode_value_list(obj: MoltObject) -> Option<Vec<u64>> {
         if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
             return None;
         }
-        let elems = seq_vec_ref(ptr);
-        Some(elems.to_vec())
+        Some(crate::object::seq_access::with_borrowed(
+            ptr,
+            <[u64]>::to_vec,
+        ))
     }
 }
 
@@ -999,13 +1004,20 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
                 if !guard.active() {
                     return "[...]".to_string();
                 }
-                let elems = seq_vec_ref(ptr);
                 let mut out = String::from("[");
-                for (idx, elem) in elems.iter().enumerate() {
+                let mut idx = 0;
+                loop {
+                    if idx >= crate::object::seq_access::locked_len(ptr) {
+                        break;
+                    }
+                    let Some(elem) = crate::object::seq_access::pin_item(_py, ptr, idx) else {
+                        continue;
+                    };
                     if idx > 0 {
                         out.push_str(", ");
                     }
-                    out.push_str(&format_obj(_py, obj_from_bits(*elem)));
+                    out.push_str(&format_obj(_py, obj_from_bits(elem.bits())));
+                    idx += 1;
                 }
                 out.push(']');
                 return out;
@@ -1064,15 +1076,19 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
                 if !guard.active() {
                     return "(...)".to_string();
                 }
-                let elems = seq_vec_ref(ptr);
                 let mut out = String::from("(");
-                for (idx, elem) in elems.iter().enumerate() {
-                    if idx > 0 {
-                        out.push_str(", ");
-                    }
-                    out.push_str(&format_obj(_py, obj_from_bits(*elem)));
-                }
-                if elems.len() == 1 {
+                let tuple_len =
+                    crate::object::seq_access::with_immutable_tuple_slice(ptr, |elems| {
+                        for (idx, elem) in elems.iter().enumerate() {
+                            if idx > 0 {
+                                out.push_str(", ");
+                            }
+                            out.push_str(&format_obj(_py, obj_from_bits(*elem)));
+                        }
+                        elems.len()
+                    })
+                    .unwrap_or(0);
+                if tuple_len == 1 {
                     out.push(',');
                 }
                 out.push(')');
