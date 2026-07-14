@@ -436,9 +436,8 @@ def _ensure_runtime_lib(
             fingerprint_path,
             require_artifact_digest=True,
         ):
-            if _runtime_fingerprint_metadata_needs_refresh(
-                stored_fingerprint,
-                fingerprint,
+            if fingerprint is not None and _runtime_fingerprint_metadata_needs_refresh(
+                stored_fingerprint, fingerprint
             ):
                 with contextlib.suppress(OSError):
                     _refresh_runtime_fingerprint_metadata(
@@ -1249,7 +1248,7 @@ def _current_runtime_target_artifact(
     build_state_root: Path,
     cargo_profile: str,
     target_label: str,
-    fingerprint: dict[str, Any] | None,
+    fingerprint: dict[str, Any],
 ) -> tuple[Path, Path] | None:
     for candidate in candidates:
         fingerprint_path = _runtime_target_fingerprint_path(

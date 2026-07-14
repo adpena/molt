@@ -230,7 +230,7 @@ def _read_native_object_symbol_facts(
         return None
     if not all(isinstance(symbol, str) for symbol in undefined):
         return None
-    return set(defined), set(undefined)
+    return set(cast(list[str], defined)), set(cast(list[str], undefined))
 
 
 def _write_native_object_symbol_facts(
