@@ -2000,6 +2000,7 @@ def test_extension_build_threads_source_plan_roots_to_cython_regeneration(
     rc = cli_commands.extension_build(
         project=str(project_root),
         out_dir=str(out_dir),
+        abi_tier="cpython-abi",
         deterministic=False,
         json_output=False,
         verbose=False,
@@ -2015,15 +2016,14 @@ def test_extension_build_threads_source_plan_roots_to_cython_regeneration(
         if "-c" in cmd
         and any("molt_cython_standalone" in part and "_cyext.c" in part for part in cmd)
     )
-    limited_api_arg = (
-        cli_commands._source_extension_cython.CYTHON_REGENERATED_C_COMPILE_ARGS[0]
+    profile_args = (
+        cli_commands._source_extension_cython.CYTHON_CPYTHON_ABI_COMPILE_ARGS
     )
-    assert limited_api_arg == "-DPy_LIMITED_API=0x030C0000"
-    assert limited_api_arg in regenerated_compile_command
-    assert regenerated_compile_command.index(limited_api_arg) < (
+    assert all(arg in regenerated_compile_command for arg in profile_args)
+    assert regenerated_compile_command.index(profile_args[0]) < (
         regenerated_compile_command.index("-DPLAN_UNIT=1")
     )
-    assert sum(limited_api_arg in cmd for cmd in commands) == 1
+    assert all(sum(arg in cmd for cmd in commands) == 1 for arg in profile_args)
     manifest = json.loads((out_dir / "extension_manifest.json").read_text())
     assert manifest["cython_standalone"][0]["cimport_pxd_roots"] == [
         str(project_root.resolve())
@@ -2031,7 +2031,10 @@ def test_extension_build_threads_source_plan_roots_to_cython_regeneration(
     assert manifest["cython_standalone"][0]["cimport_header_include_dirs"] == [
         str((project_root / "pkg").resolve())
     ]
-    assert manifest["cython_standalone"][0]["compile_args"] == [limited_api_arg]
+    assert manifest["cython_standalone"][0]["compile_profile"] == (
+        "molt-cpython-abi-safe-v1"
+    )
+    assert manifest["cython_standalone"][0]["compile_args"] == list(profile_args)
 
 
 def test_extension_build_derives_module_attr_support_source_closure(

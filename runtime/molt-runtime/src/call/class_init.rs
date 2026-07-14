@@ -9,7 +9,6 @@ use crate::call::type_policy::{
 use crate::object::ops_encoding::DecodeFailure;
 use crate::object::{ClassEdgeOwnership, object_init_class_edge_unpublished};
 use crate::*;
-use std::borrow::Cow;
 
 fn str_codec_arg(_py: &PyToken<'_>, bits: u64, arg_name: &str) -> Option<String> {
     let obj = obj_from_bits(bits);
@@ -51,12 +50,7 @@ unsafe fn max_slot_end_from_mro_offsets(
     fields_name_bits: u64,
 ) -> usize {
     unsafe {
-        let class_bits = MoltObject::from_ptr(class_ptr).bits();
-        let mro: Cow<'_, [u64]> = if let Some(mro) = class_mro_ref(class_ptr) {
-            Cow::Borrowed(mro.as_slice())
-        } else {
-            Cow::Owned(class_mro_vec(class_bits))
-        };
+        let mro = class_mro_view(_py, class_ptr);
         let mut max_end = 0usize;
         for mro_class_bits in mro.iter().copied() {
             let Some(mro_class_ptr) = obj_from_bits(mro_class_bits).as_ptr() else {
@@ -595,7 +589,15 @@ pub(crate) unsafe fn call_class_init_with_args(
                         return bits;
                     }
                     let out = if let Some(ptr) = obj_from_bits(bits).as_ptr() {
-                        alloc_tuple_subclass_from_items(_py, class_bits, seq_vec_ref(ptr))
+                        let Some(items) = crate::object::seq_access::snapshot(
+                            _py,
+                            ptr,
+                            "tuple subclass snapshot allocation failed",
+                        ) else {
+                            dec_ref_bits(_py, bits);
+                            return MoltObject::none().bits();
+                        };
+                        alloc_tuple_subclass_from_items(_py, class_bits, &items)
                     } else {
                         MoltObject::none().bits()
                     };
@@ -1295,11 +1297,17 @@ mod tests {
             assert_eq!(unsafe { object_class_bits(result_ptr) }, class_bits);
             assert_eq!(unsafe { object_class_bits(source_ptr) }, 0);
             assert_eq!(
-                unsafe { seq_vec_ref(result_ptr).as_slice() },
+                unsafe {
+                    crate::object::seq_access::with_borrowed(result_ptr, |items| items.to_vec())
+                }
+                .as_slice(),
                 items.as_slice()
             );
             assert_eq!(
-                unsafe { seq_vec_ref(source_ptr).as_slice() },
+                unsafe {
+                    crate::object::seq_access::with_borrowed(source_ptr, |items| items.to_vec())
+                }
+                .as_slice(),
                 items.as_slice()
             );
 

@@ -544,6 +544,15 @@ pub struct PyCompactUnicodeObject {
     pub wstr_length: Py_ssize_t,
 }
 
+/// Exact CPython 3.12 public list prefix. Unlike tuples, list elements live in
+/// a separately allocated pointer array and `allocated` records its capacity.
+#[repr(C)]
+pub struct PyListObject {
+    pub ob_base: PyVarObject,
+    pub ob_item: *mut *mut PyObject,
+    pub allocated: Py_ssize_t,
+}
+
 #[repr(C)]
 pub struct PyMethodObject {
     pub ob_base: PyObject,
@@ -998,6 +1007,14 @@ pub static mut PyList_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 #[allow(non_upper_case_globals)]
 #[unsafe(no_mangle)]
 pub static mut PyTuple_Type: PyTypeObject = unsafe { std::mem::zeroed() };
+
+// CPython's builtin tuple owns one immutable sequence table and one immutable
+// mapping table.  Keep the storage static, like `PyTuple_Type` itself: source
+// extensions cache these addresses and `PyType_Ready` copies/inherits their
+// fields.  The function pointers are installed during single-threaded ABI init
+// below so the tables never become a second numeric slot-id authority.
+static mut MOLT_TUPLE_AS_SEQUENCE: PySequenceMethods = unsafe { std::mem::zeroed() };
+static mut MOLT_TUPLE_AS_MAPPING: PyMappingMethods = unsafe { std::mem::zeroed() };
 #[allow(non_upper_case_globals)]
 #[unsafe(no_mangle)]
 pub static mut PyDict_Type: PyTypeObject = unsafe { std::mem::zeroed() };
@@ -1076,6 +1093,377 @@ pub static mut PyDateTime_TimeZone_UTC_Object: PyObject = PyObject {
     ob_type: std::ptr::null_mut(),
 };
 
+// ── CPython 3.12 builtin tuple slot adapters ────────────────────────────────
+//
+// These are deliberately thin adapters over the exported tuple/sequence C-API
+// authority.  They exist because the protocol slots have different ownership
+// signatures from the public borrowed-reference functions (`sq_item`, for
+// example, must return a new reference), and because routing a physical tuple
+// back through generic `PySequence_*` dispatch would recurse into this table.
+
+#[inline]
+unsafe fn tuple_slot_error(message: String) -> *mut PyObject {
+    if let Ok(message) = std::ffi::CString::new(message) {
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                (&raw mut PyExc_TypeError).cast::<PyObject>(),
+                message.as_ptr(),
+            )
+        };
+    }
+    std::ptr::null_mut()
+}
+
+#[inline]
+unsafe extern "C" fn tuple_slot_length(op: *mut PyObject) -> Py_ssize_t {
+    unsafe { crate::api::sequences::PyTuple_Size(op) }
+}
+
+#[inline]
+unsafe extern "C" fn tuple_slot_item(op: *mut PyObject, index: Py_ssize_t) -> *mut PyObject {
+    let item = unsafe { crate::api::sequences::PyTuple_GetItem(op, index) };
+    if item.is_null() {
+        return std::ptr::null_mut();
+    }
+    unsafe { crate::api::object::Py_NewRef(item) }
+}
+
+/// Copy `count` borrowed tuple items into an uninitialized destination tuple.
+/// `PyTuple_SetItem` steals the new reference on both success and failure.
+unsafe fn tuple_slot_copy(
+    destination: *mut PyObject,
+    destination_start: Py_ssize_t,
+    source: *mut PyObject,
+    source_start: Py_ssize_t,
+    source_step: Py_ssize_t,
+    count: Py_ssize_t,
+) -> bool {
+    let mut source_index = source_start;
+    for offset in 0..count {
+        let borrowed = unsafe { crate::api::sequences::PyTuple_GetItem(source, source_index) };
+        if borrowed.is_null() {
+            if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+                unsafe { crate::api::errors::PyErr_BadInternalCall() };
+            }
+            return false;
+        }
+        let owned = unsafe { crate::api::object::Py_NewRef(borrowed) };
+        if owned.is_null()
+            || unsafe {
+                crate::api::sequences::PyTuple_SetItem(
+                    destination,
+                    destination_start + offset,
+                    owned,
+                )
+            } != 0
+        {
+            return false;
+        }
+        if offset + 1 < count {
+            let Some(next) = source_index.checked_add(source_step) else {
+                unsafe { crate::api::errors::PyErr_BadInternalCall() };
+                return false;
+            };
+            source_index = next;
+        }
+    }
+    true
+}
+
+unsafe extern "C" fn tuple_slot_concat(left: *mut PyObject, right: *mut PyObject) -> *mut PyObject {
+    if unsafe { crate::api::sequences::PyTuple_Check(right) } == 0 {
+        let name = unsafe { crate::api::object::type_name_lossy(right) };
+        return unsafe {
+            tuple_slot_error(format!(
+                "can only concatenate tuple (not \"{}\") to tuple",
+                name
+            ))
+        };
+    }
+    let left_len = unsafe { crate::api::sequences::PyTuple_Size(left) };
+    let right_len = unsafe { crate::api::sequences::PyTuple_Size(right) };
+    if left_len < 0 || right_len < 0 {
+        return std::ptr::null_mut();
+    }
+    if left_len == 0 && unsafe { crate::api::sequences::PyTuple_CheckExact(right) } != 0 {
+        return unsafe { crate::api::object::Py_NewRef(right) };
+    }
+    if right_len == 0 && unsafe { crate::api::sequences::PyTuple_CheckExact(left) } != 0 {
+        return unsafe { crate::api::object::Py_NewRef(left) };
+    }
+    let Some(total) = left_len.checked_add(right_len) else {
+        return unsafe { crate::api::errors::PyErr_NoMemory() };
+    };
+    let result = unsafe { crate::api::sequences::PyTuple_New(total) };
+    if result.is_null() {
+        return std::ptr::null_mut();
+    }
+    if !unsafe { tuple_slot_copy(result, 0, left, 0, 1, left_len) }
+        || !unsafe { tuple_slot_copy(result, left_len, right, 0, 1, right_len) }
+    {
+        unsafe { crate::api::refcount::Py_DECREF(result) };
+        return std::ptr::null_mut();
+    }
+    result
+}
+
+unsafe extern "C" fn tuple_slot_repeat(
+    tuple: *mut PyObject,
+    repetitions: Py_ssize_t,
+) -> *mut PyObject {
+    let input_len = unsafe { crate::api::sequences::PyTuple_Size(tuple) };
+    if input_len < 0 {
+        return std::ptr::null_mut();
+    }
+    if (input_len == 0 || repetitions == 1)
+        && unsafe { crate::api::sequences::PyTuple_CheckExact(tuple) } != 0
+    {
+        return unsafe { crate::api::object::Py_NewRef(tuple) };
+    }
+    if input_len == 0 || repetitions <= 0 {
+        return unsafe { crate::api::sequences::PyTuple_New(0) };
+    }
+    let Some(output_len) = input_len.checked_mul(repetitions) else {
+        return unsafe { crate::api::errors::PyErr_NoMemory() };
+    };
+    let result = unsafe { crate::api::sequences::PyTuple_New(output_len) };
+    if result.is_null() {
+        return std::ptr::null_mut();
+    }
+    for repetition in 0..repetitions {
+        if !unsafe { tuple_slot_copy(result, repetition * input_len, tuple, 0, 1, input_len) } {
+            unsafe { crate::api::refcount::Py_DECREF(result) };
+            return std::ptr::null_mut();
+        }
+    }
+    result
+}
+
+unsafe extern "C" fn tuple_slot_contains(tuple: *mut PyObject, needle: *mut PyObject) -> c_int {
+    let len = unsafe { crate::api::sequences::PyTuple_Size(tuple) };
+    if len < 0 {
+        return -1;
+    }
+    for index in 0..len {
+        let item = unsafe { crate::api::sequences::PyTuple_GetItem(tuple, index) };
+        if item.is_null() {
+            if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+                unsafe { crate::api::errors::PyErr_BadInternalCall() };
+            }
+            return -1;
+        }
+        let equal = unsafe { crate::api::typeobj::PyObject_RichCompareBool(item, needle, 2) };
+        if equal != 0 {
+            return equal;
+        }
+    }
+    0
+}
+
+unsafe extern "C" fn tuple_slot_subscript(
+    tuple: *mut PyObject,
+    key: *mut PyObject,
+) -> *mut PyObject {
+    if unsafe { crate::api::abstract_number::PyIndex_Check(key) } != 0 {
+        let mut index = unsafe {
+            crate::api::abstract_number::PyNumber_AsSsize_t(
+                key,
+                (&raw mut PyExc_IndexError).cast::<PyObject>(),
+            )
+        };
+        if index == -1 && !unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+            return std::ptr::null_mut();
+        }
+        let len = unsafe { crate::api::sequences::PyTuple_Size(tuple) };
+        if len < 0 {
+            return std::ptr::null_mut();
+        }
+        if index < 0 {
+            index = index.checked_add(len).unwrap_or(index);
+        }
+        return unsafe { tuple_slot_item(tuple, index) };
+    }
+    if unsafe { crate::api::slice::PySlice_Check(key) } != 0 {
+        let mut start = 0;
+        let mut stop = 0;
+        let mut step = 0;
+        if unsafe { crate::api::slice::PySlice_Unpack(key, &mut start, &mut stop, &mut step) } < 0 {
+            return std::ptr::null_mut();
+        }
+        let tuple_len = unsafe { crate::api::sequences::PyTuple_Size(tuple) };
+        if tuple_len < 0 {
+            return std::ptr::null_mut();
+        }
+        let slice_len = unsafe {
+            crate::api::slice::PySlice_AdjustIndices(tuple_len, &mut start, &mut stop, step)
+        };
+        if slice_len <= 0 {
+            return unsafe { crate::api::sequences::PyTuple_New(0) };
+        }
+        if start == 0
+            && step == 1
+            && slice_len == tuple_len
+            && unsafe { crate::api::sequences::PyTuple_CheckExact(tuple) } != 0
+        {
+            return unsafe { crate::api::object::Py_NewRef(tuple) };
+        }
+        let result = unsafe { crate::api::sequences::PyTuple_New(slice_len) };
+        if result.is_null() {
+            return std::ptr::null_mut();
+        }
+        if !unsafe { tuple_slot_copy(result, 0, tuple, start, step, slice_len) } {
+            unsafe { crate::api::refcount::Py_DECREF(result) };
+            return std::ptr::null_mut();
+        }
+        return result;
+    }
+    let name = unsafe { crate::api::object::type_name_lossy(key) };
+    unsafe {
+        tuple_slot_error(format!(
+            "tuple indices must be integers or slices, not {}",
+            name
+        ))
+    }
+}
+
+/// CPython 3.12 `tuplehash`: one-lane xxHash permutation, intentionally not
+/// cached.  Element hashes continue to come from the single `PyObject_Hash`
+/// authority, preserving cross-type equality/hash invariants.
+unsafe extern "C" fn tuple_slot_hash(tuple: *mut PyObject) -> Py_hash_t {
+    #[cfg(target_pointer_width = "64")]
+    const PRIME_1: Py_uhash_t = 11_400_714_785_074_694_791;
+    #[cfg(target_pointer_width = "64")]
+    const PRIME_2: Py_uhash_t = 14_029_467_366_897_027_727;
+    #[cfg(target_pointer_width = "64")]
+    const PRIME_5: Py_uhash_t = 2_870_177_450_012_600_261;
+    #[cfg(target_pointer_width = "32")]
+    const PRIME_1: Py_uhash_t = 2_654_435_761;
+    #[cfg(target_pointer_width = "32")]
+    const PRIME_2: Py_uhash_t = 2_246_822_519;
+    #[cfg(target_pointer_width = "32")]
+    const PRIME_5: Py_uhash_t = 3_747_613_939;
+
+    let len = unsafe { crate::api::sequences::PyTuple_Size(tuple) };
+    if len < 0 {
+        return -1;
+    }
+    let mut accumulator = PRIME_5;
+    for index in 0..len {
+        let item = unsafe { crate::api::sequences::PyTuple_GetItem(tuple, index) };
+        if item.is_null() {
+            if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+                unsafe { crate::api::errors::PyErr_BadInternalCall() };
+            }
+            return -1;
+        }
+        let lane = unsafe { crate::api::typeobj::PyObject_Hash(item) };
+        if lane == -1 {
+            return -1;
+        }
+        accumulator = accumulator.wrapping_add((lane as Py_uhash_t).wrapping_mul(PRIME_2));
+        #[cfg(target_pointer_width = "64")]
+        {
+            accumulator = accumulator.rotate_left(31);
+        }
+        #[cfg(target_pointer_width = "32")]
+        {
+            accumulator = accumulator.rotate_left(13);
+        }
+        accumulator = accumulator.wrapping_mul(PRIME_1);
+    }
+    accumulator =
+        accumulator.wrapping_add((len as Py_uhash_t) ^ (PRIME_5 ^ (3_527_539 as Py_uhash_t)));
+    if accumulator == Py_uhash_t::MAX {
+        1_546_275_796
+    } else {
+        accumulator as Py_hash_t
+    }
+}
+
+unsafe extern "C" fn tuple_slot_traverse(
+    tuple: *mut PyObject,
+    visit: *mut c_void,
+    argument: *mut c_void,
+) -> c_int {
+    if visit.is_null() {
+        return 0;
+    }
+    type VisitProc = unsafe extern "C" fn(*mut PyObject, *mut c_void) -> c_int;
+    let visit: VisitProc = unsafe { std::mem::transmute(visit) };
+    let len = unsafe { crate::api::sequences::PyTuple_GET_SIZE(tuple) };
+    for index in (0..len.max(0)).rev() {
+        let item = unsafe { crate::api::sequences::PyTuple_GET_ITEM(tuple, index) };
+        if !item.is_null() {
+            let result = unsafe { visit(item, argument) };
+            if result != 0 {
+                return result;
+            }
+        }
+    }
+    0
+}
+
+unsafe extern "C" fn tuple_slot_new(
+    ty: *mut PyTypeObject,
+    args: *mut PyObject,
+    kwargs: *mut PyObject,
+) -> *mut PyObject {
+    if ty.is_null() || args.is_null() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return std::ptr::null_mut();
+    }
+    if !kwargs.is_null() {
+        let keyword_count = unsafe { crate::api::mapping::PyDict_Size(kwargs) };
+        if keyword_count < 0 {
+            return std::ptr::null_mut();
+        }
+        if keyword_count != 0 {
+            return unsafe { tuple_slot_error("tuple() takes no keyword arguments".to_owned()) };
+        }
+    }
+    let argument_count = unsafe { crate::api::sequences::PyTuple_Size(args) };
+    if argument_count < 0 {
+        return std::ptr::null_mut();
+    }
+    if argument_count > 1 {
+        return unsafe {
+            tuple_slot_error(format!(
+                "tuple expected at most 1 argument, got {}",
+                argument_count
+            ))
+        };
+    }
+    let exact = if argument_count == 0 {
+        unsafe { crate::api::sequences::PyTuple_New(0) }
+    } else {
+        let iterable = unsafe { crate::api::sequences::PyTuple_GetItem(args, 0) };
+        if iterable.is_null() {
+            return std::ptr::null_mut();
+        }
+        unsafe { crate::api::abstract_sequence::PySequence_Tuple(iterable) }
+    };
+    if exact.is_null() || std::ptr::eq(ty, &raw mut PyTuple_Type) {
+        return exact;
+    }
+
+    // CPython's `tuple_subtype_new`: build the exact immutable value first,
+    // then copy it into storage owned by the subtype's allocator.  Exact tuples
+    // stay on the runtime-backed packed-projection path; only genuine subtypes
+    // reach generic variable-size allocation and `molt_tuple_subtype_dealloc`.
+    let len = unsafe { crate::api::sequences::PyTuple_Size(exact) };
+    let allocate = unsafe { (*ty).tp_alloc }.unwrap_or(crate::api::typeobj::PyType_GenericAlloc);
+    let subtype = unsafe { allocate(ty, len) };
+    if subtype.is_null() || !unsafe { tuple_slot_copy(subtype, 0, exact, 0, 1, len) } {
+        unsafe {
+            crate::api::refcount::Py_XDECREF(subtype);
+            crate::api::refcount::Py_DECREF(exact);
+        }
+        return std::ptr::null_mut();
+    }
+    unsafe { crate::api::refcount::Py_DECREF(exact) };
+    subtype
+}
+
 /// Called once at runtime init to patch static type objects.
 ///
 /// # Safety
@@ -1133,7 +1521,25 @@ pub unsafe fn init_static_types() {
         set_name!(PyDateTime_DeltaType, b"datetime.timedelta\0");
         set_name!(PyDateTime_TZInfoType, b"datetime.tzinfo\0");
 
-        PyTuple_Type.tp_dealloc = Some(crate::api::sequences::molt_tuple_dealloc);
+        MOLT_TUPLE_AS_SEQUENCE.sq_length = tuple_slot_length as *mut c_void;
+        MOLT_TUPLE_AS_SEQUENCE.sq_concat = tuple_slot_concat as *mut c_void;
+        MOLT_TUPLE_AS_SEQUENCE.sq_repeat = tuple_slot_repeat as *mut c_void;
+        MOLT_TUPLE_AS_SEQUENCE.sq_item = tuple_slot_item as *mut c_void;
+        MOLT_TUPLE_AS_SEQUENCE.sq_contains = tuple_slot_contains as *mut c_void;
+        MOLT_TUPLE_AS_MAPPING.mp_length = tuple_slot_length as *mut c_void;
+        MOLT_TUPLE_AS_MAPPING.mp_subscript = tuple_slot_subscript as *mut c_void;
+        PyTuple_Type.tp_as_sequence = (&raw mut MOLT_TUPLE_AS_SEQUENCE).cast::<c_void>();
+        PyTuple_Type.tp_as_mapping = (&raw mut MOLT_TUPLE_AS_MAPPING).cast::<c_void>();
+        PyTuple_Type.tp_dealloc = Some(crate::api::sequences::molt_tuple_subtype_dealloc);
+        PyTuple_Type.tp_hash = Some(tuple_slot_hash);
+        PyTuple_Type.tp_traverse = Some(tuple_slot_traverse);
+        // Tuple immutability deliberately excludes tp_clear: clearing reachable
+        // items would violate the publication invariant.
+        PyTuple_Type.tp_clear = None;
+        PyTuple_Type.tp_iter = Some(crate::api::object::PySeqIter_New);
+        PyTuple_Type.tp_alloc = Some(crate::api::typeobj::PyType_GenericAlloc);
+        PyTuple_Type.tp_new = Some(tuple_slot_new);
+        PyTuple_Type.tp_free = Some(crate::api::memory::PyObject_GC_Del);
         // Structural (element-wise) comparison. Without this slot two distinct
         // tuple objects with equal contents compare unequal by object identity,
         // which breaks numpy ufunc dispatch (get_info_no_cast) — see
@@ -1387,6 +1793,7 @@ pub unsafe fn init_static_types() {
                 | Py_TPFLAGS_SEQUENCE,
             object
         );
+        PyList_Type.tp_basicsize = std::mem::size_of::<PyListObject>() as Py_ssize_t;
         // tuple — HAVE_GC|BASETYPE|TUPLE_SUBCLASS|MATCH_SELF|SEQUENCE.
         shell!(
             PyTuple_Type,
@@ -1398,6 +1805,8 @@ pub unsafe fn init_static_types() {
                 | Py_TPFLAGS_SEQUENCE,
             object
         );
+        PyTuple_Type.tp_basicsize = core::mem::offset_of!(PyTupleObject, ob_item) as Py_ssize_t;
+        PyTuple_Type.tp_itemsize = std::mem::size_of::<*mut PyObject>() as Py_ssize_t;
         // dict — HAVE_GC|BASETYPE|DICT_SUBCLASS|MATCH_SELF|MAPPING.
         shell!(
             PyDict_Type,
@@ -2518,5 +2927,58 @@ mod immortal_authority_tests {
             size_of::<PyHeapTypeObject>() > size_of::<PyTypeObject>(),
             "heap type must be larger than a bare PyTypeObject"
         );
+    }
+}
+
+#[cfg(test)]
+mod tuple_type_shell_tests {
+    use super::*;
+
+    #[test]
+    fn tuple_type_shell_matches_cpython_312_protocol_shape() {
+        crate::bridge::molt_cpython_abi_init();
+        let ty = &raw const PyTuple_Type;
+        unsafe {
+            assert_eq!(
+                (*ty).tp_basicsize,
+                core::mem::offset_of!(PyTupleObject, ob_item) as Py_ssize_t
+            );
+            assert_eq!(
+                (*ty).tp_itemsize,
+                core::mem::size_of::<*mut PyObject>() as Py_ssize_t
+            );
+            assert_eq!(
+                (*ty).tp_dealloc.map(|slot| slot as usize),
+                Some(crate::api::sequences::molt_tuple_subtype_dealloc as usize)
+            );
+            assert!((*ty).tp_hash.is_some());
+            assert!((*ty).tp_traverse.is_some());
+            assert!(
+                (*ty).tp_clear.is_none(),
+                "immutable tuple must not define tp_clear"
+            );
+            assert!((*ty).tp_iter.is_some());
+            assert!((*ty).tp_alloc.is_some());
+            assert!((*ty).tp_new.is_some());
+            assert!((*ty).tp_free.is_some());
+            assert!((*ty).tp_richcompare.is_some());
+
+            let sequence = (*ty).tp_as_sequence.cast::<PySequenceMethods>();
+            assert!(!sequence.is_null());
+            assert!(!(*sequence).sq_length.is_null());
+            assert!(!(*sequence).sq_concat.is_null());
+            assert!(!(*sequence).sq_repeat.is_null());
+            assert!(!(*sequence).sq_item.is_null());
+            assert!((*sequence).sq_ass_item.is_null());
+            assert!(!(*sequence).sq_contains.is_null());
+            assert!((*sequence).sq_inplace_concat.is_null());
+            assert!((*sequence).sq_inplace_repeat.is_null());
+
+            let mapping = (*ty).tp_as_mapping.cast::<PyMappingMethods>();
+            assert!(!mapping.is_null());
+            assert!(!(*mapping).mp_length.is_null());
+            assert!(!(*mapping).mp_subscript.is_null());
+            assert!((*mapping).mp_ass_subscript.is_null());
+        }
     }
 }

@@ -94,11 +94,9 @@ pub use fast_compare::{molt_compare_int_fast, molt_string_eq_fast};
 pub use specialized_list::{
     molt_list_bool_getitem, molt_list_bool_setitem, molt_list_fill_new, molt_list_getitem_int_fast,
     molt_list_getitem_raw_idx, molt_list_getitem_unchecked, molt_list_int_data,
-    molt_list_int_getitem, molt_list_int_getitem_nogil, molt_list_int_getitem_raw,
-    molt_list_int_getitem_raw_checked, molt_list_int_getitem_truthy,
-    molt_list_int_getitem_unchecked, molt_list_int_len, molt_list_int_len_raw, molt_list_int_new,
-    molt_list_int_setitem, molt_list_int_setitem_nogil, molt_list_int_setitem_unchecked,
-    molt_list_setitem_int_fast, molt_list_setitem_raw_idx,
+    molt_list_int_getitem, molt_list_int_getitem_raw, molt_list_int_getitem_raw_checked,
+    molt_list_int_getitem_truthy, molt_list_int_len, molt_list_int_len_raw, molt_list_int_new,
+    molt_list_int_setitem,
 };
 pub(crate) use subscript::value_supports_mp_subscript;
 pub use subscript::{
@@ -1722,7 +1720,13 @@ pub unsafe extern "C" fn molt_unpack_sequence(
                     out_slice[i] = MoltObject::from_bool(raw != 0).bits();
                 }
             } else if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
-                let elems: &[u64] = seq_vec_ref(ptr);
+                let Some(elems) = crate::object::seq_access::snapshot(
+                    _py,
+                    ptr,
+                    "sequence unpack snapshot allocation failed",
+                ) else {
+                    return MoltObject::none().bits();
+                };
                 let actual = elems.len();
                 if actual < expected {
                     let msg = format!(
@@ -1764,15 +1768,18 @@ pub unsafe extern "C" fn molt_unpack_sequence(
                     if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
                         break;
                     }
-                    let pair_elems = seq_vec_ref(pair_ptr);
-                    if pair_elems.len() < 2 {
+                    let Some((val_bits, done_bits)) =
+                        crate::object::seq_access::with_immutable_tuple_slice(pair_ptr, |items| {
+                            items.first().copied().zip(items.get(1).copied())
+                        })
+                        .flatten()
+                    else {
                         break;
-                    }
-                    let done = is_truthy(_py, obj_from_bits(pair_elems[1]));
+                    };
+                    let done = is_truthy(_py, obj_from_bits(done_bits));
                     if done {
                         break;
                     }
-                    let val_bits = pair_elems[0];
                     if count < expected {
                         inc_ref_bits(_py, val_bits);
                         out_slice[count] = val_bits;
@@ -2571,9 +2578,9 @@ pub extern "C" fn molt_list_getitem_borrowed(list_bits: u64, index_bits: u64) ->
             if i < 0 || i >= len {
                 return 0;
             }
-            let elems = seq_vec_ref(ptr);
-            // Borrowed: do NOT inc_ref
-            elems[i as usize]
+            // Borrowed: do NOT inc_ref. The runtime GIL keeps the list and
+            // element alive after the scoped backing read returns.
+            crate::object::seq_access::item(ptr, i as usize).unwrap_or(0)
         }
     })
 }
@@ -2603,9 +2610,11 @@ pub extern "C" fn molt_tuple_getitem_borrowed(tuple_bits: u64, index_bits: u64) 
             if i < 0 || i >= len {
                 return 0;
             }
-            let elems = seq_vec_ref(ptr);
-            // Borrowed: do NOT inc_ref
-            elems[i as usize]
+            // Borrowed: do NOT inc_ref.
+            crate::object::seq_access::with_immutable_tuple_slice(ptr, |items| {
+                items.get(i as usize).copied().unwrap_or(0)
+            })
+            .unwrap_or(0)
         }
     })
 }

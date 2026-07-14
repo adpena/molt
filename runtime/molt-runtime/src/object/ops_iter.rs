@@ -258,8 +258,8 @@ pub extern "C" fn molt_next_builtin(iter_bits: u64, default_bits: u64) -> u64 {
                 );
                 return raise_exception::<_>(_py, "TypeError", &msg);
             }
-            let elems = seq_vec_ref(pair_ptr);
-            if elems.len() < 2 {
+            let Some((val_bits, done_bits)) = crate::object::seq_access::tuple_pair(pair_ptr)
+            else {
                 if exception_pending(_py) {
                     return MoltObject::none().bits();
                 }
@@ -268,9 +268,7 @@ pub extern "C" fn molt_next_builtin(iter_bits: u64, default_bits: u64) -> u64 {
                     type_name(_py, obj_from_bits(iter_bits))
                 );
                 return raise_exception::<_>(_py, "TypeError", &msg);
-            }
-            let val_bits = elems[0];
-            let done_bits = elems[1];
+            };
             if is_truthy(_py, obj_from_bits(done_bits)) {
                 if default_bits != missing {
                     inc_ref_bits(_py, default_bits);
@@ -344,8 +342,14 @@ pub extern "C" fn molt_map_builtin(func_bits: u64, iterables_bits: u64) -> u64 {
         };
         unsafe {
             if object_type_id(iterables_ptr) == TYPE_ID_TUPLE {
-                let iterables = seq_vec_ref(iterables_ptr);
-                return map_new_impl(_py, func_bits, iterables.as_slice());
+                let Some(iterables) = crate::object::seq_access::snapshot(
+                    _py,
+                    iterables_ptr,
+                    "map iterable snapshot allocation failed",
+                ) else {
+                    return MoltObject::none().bits();
+                };
+                return map_new_impl(_py, func_bits, &iterables);
             }
             let single = [iterables_bits];
             map_new_impl(_py, func_bits, &single)
@@ -437,8 +441,14 @@ pub extern "C" fn molt_zip_builtin(iterables_bits: u64, strict_bits: u64) -> u64
                     "zip expects an iterable of iterables",
                 );
             }
-            let iterables = seq_vec_ref(iterables_ptr);
-            zip_new_impl(_py, iterables.as_slice(), strict)
+            let Some(iterables) = crate::object::seq_access::snapshot(
+                _py,
+                iterables_ptr,
+                "zip iterable snapshot allocation failed",
+            ) else {
+                return MoltObject::none().bits();
+            };
+            zip_new_impl(_py, &iterables, strict)
         }
     })
 }
@@ -928,25 +938,10 @@ unsafe fn cached_pair_return(
         let cached = *slot_ptr;
 
         if !cached.is_null() {
-            let header_ptr = cached.sub(std::mem::size_of::<MoltHeader>()) as *const MoltHeader;
-            let rc = (*header_ptr)
-                .ref_count
-                .load(std::sync::atomic::Ordering::Relaxed);
-            if rc == 1 {
+            if let Some((old0, old1)) =
+                crate::object::seq_access::replace_unique_pair(_py, cached, elem0, elem1)
+            {
                 // Exclusively owned — reuse by mutating elements in place.
-                let header = header_ptr as *mut MoltHeader;
-                let vec = seq_vec(cached);
-                let old0 = vec[0];
-                let old1 = vec[1];
-                vec[0] = elem0;
-                vec[1] = elem1;
-                if crate::object::refcount_opt::slice_contains_heap_refs(&[elem0, elem1]) {
-                    (*header).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
-                } else {
-                    (*header).flags &= !crate::object::HEADER_FLAG_CONTAINS_REFS;
-                }
-                inc_ref_bits(_py, elem0);
-                inc_ref_bits(_py, elem1);
                 dec_ref_bits(_py, old0);
                 dec_ref_bits(_py, old1);
                 if owns_elem0 {
@@ -1093,9 +1088,9 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                     if let Some(res_ptr) = res_obj.as_ptr()
                         && object_type_id(res_ptr) == TYPE_ID_TUPLE
                     {
-                        let elems = seq_vec_ref(res_ptr);
-                        if elems.len() >= 2 {
-                            let done = is_truthy(_py, obj_from_bits(elems[1]));
+                        if let Some((_, done_bits)) = crate::object::seq_access::tuple_pair(res_ptr)
+                        {
+                            let done = is_truthy(_py, obj_from_bits(done_bits));
                             if done {
                                 let closed_bits = MoltObject::from_bool(true).bits();
                                 *(ptr.add(GEN_CLOSED_OFFSET) as *mut u64) = closed_bits;
@@ -1134,12 +1129,11 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                     if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
                         return MoltObject::none().bits();
                     }
-                    let elems = seq_vec_ref(pair_ptr);
-                    if elems.len() < 2 {
+                    let Some((val_bits, done_bits)) =
+                        crate::object::seq_access::tuple_pair(pair_ptr)
+                    else {
                         return MoltObject::none().bits();
-                    }
-                    let val_bits = elems[0];
-                    let done_bits = elems[1];
+                    };
                     if is_truthy(_py, obj_from_bits(done_bits)) {
                         return pair_bits;
                     }
@@ -1217,16 +1211,15 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                                 "object is not an iterator",
                             );
                         }
-                        let elems = seq_vec_ref(pair_ptr);
-                        if elems.len() < 2 {
+                        let Some((val_bits, done_bits)) =
+                            crate::object::seq_access::tuple_pair(pair_ptr)
+                        else {
                             return raise_exception::<_>(
                                 _py,
                                 "TypeError",
                                 "object is not an iterator",
                             );
-                        }
-                        let val_bits = elems[0];
-                        let done_bits = elems[1];
+                        };
                         if is_truthy(_py, obj_from_bits(done_bits)) {
                             return generator_done_tuple(_py, MoltObject::none().bits());
                         }
@@ -1270,16 +1263,15 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                                 "object is not an iterator",
                             );
                         }
-                        let elems = seq_vec_ref(pair_ptr);
-                        if elems.len() < 2 {
+                        let Some((val_bits, done_bits)) =
+                            crate::object::seq_access::tuple_pair(pair_ptr)
+                        else {
                             return raise_exception::<_>(
                                 _py,
                                 "TypeError",
                                 "object is not an iterator",
                             );
-                        }
-                        let val_bits = elems[0];
-                        let done_bits = elems[1];
+                        };
                         if is_truthy(_py, obj_from_bits(done_bits)) {
                             return generator_done_tuple(_py, MoltObject::none().bits());
                         }
@@ -1334,16 +1326,15 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                                     "object is not an iterator",
                                 );
                             }
-                            let elems = seq_vec_ref(pair_ptr);
-                            if elems.len() < 2 {
+                            let Some((val_bits, done_bits)) =
+                                crate::object::seq_access::tuple_pair(pair_ptr)
+                            else {
                                 return raise_exception::<_>(
                                     _py,
                                     "TypeError",
                                     "object is not an iterator",
                                 );
-                            }
-                            let val_bits = elems[0];
-                            let done_bits = elems[1];
+                            };
                             let done = is_truthy(_py, obj_from_bits(done_bits));
                             if exception_pending(_py) {
                                 return MoltObject::none().bits();
@@ -1398,16 +1389,15 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                                     "object is not an iterator",
                                 );
                             }
-                            let elems = seq_vec_ref(pair_ptr);
-                            if elems.len() < 2 {
+                            let Some((val_bits, done_bits)) =
+                                crate::object::seq_access::tuple_pair(pair_ptr)
+                            else {
                                 return raise_exception::<_>(
                                     _py,
                                     "TypeError",
                                     "object is not an iterator",
                                 );
-                            }
-                            let val_bits = elems[0];
-                            let done_bits = elems[1];
+                            };
                             if is_truthy(_py, obj_from_bits(done_bits)) {
                                 return generator_done_tuple(_py, MoltObject::none().bits());
                             }
@@ -1437,13 +1427,22 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                     {
                         let target_type = object_type_id(target_ptr);
                         if target_type == TYPE_ID_LIST || target_type == TYPE_ID_TUPLE {
-                            let elems = seq_vec_ref(target_ptr);
-                            let len = elems.len();
+                            let len = crate::object::seq_access::len(target_ptr);
                             let idx = idx.min(len);
                             if idx == 0 {
                                 (0, None, false)
                             } else {
-                                (idx - 1, Some(elems[idx - 1]), false)
+                                let mut value = 0;
+                                if crate::object::seq_access::read_item_owned(
+                                    target_ptr,
+                                    idx - 1,
+                                    &mut value,
+                                ) == 0
+                                {
+                                    (0, None, false)
+                                } else {
+                                    (idx - 1, Some(value), true)
+                                }
                             }
                         } else if target_type == TYPE_ID_LIST_INT {
                             let elems = crate::object::layout::list_int_vec_ref(target_ptr);
@@ -1736,8 +1735,8 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                         return iter_return_cached(_py, ptr, val_bits, false, false);
                     }
                     if target_type == TYPE_ID_LIST {
-                        let elems = seq_vec_ref(target_ptr);
-                        if idx == ITER_EXHAUSTED || idx >= elems.len() {
+                        let len = crate::object::seq_access::len(target_ptr);
+                        if idx == ITER_EXHAUSTED || idx >= len {
                             iter_set_index(ptr, ITER_EXHAUSTED);
                             return iter_return_cached(
                                 _py,
@@ -1747,9 +1746,22 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                                 false,
                             );
                         }
-                        let val_bits = elems[idx];
+                        let Some(val) = crate::object::seq_access::pin_item(_py, target_ptr, idx)
+                        else {
+                            iter_set_index(ptr, ITER_EXHAUSTED);
+                            return iter_return_cached(
+                                _py,
+                                ptr,
+                                MoltObject::none().bits(),
+                                true,
+                                false,
+                            );
+                        };
+                        let val_bits = val.bits();
+                        inc_ref_bits(_py, val_bits);
+                        drop(val);
                         iter_set_index(ptr, idx + 1);
-                        return iter_return_cached(_py, ptr, val_bits, false, false);
+                        return iter_return_cached(_py, ptr, val_bits, false, true);
                     }
                     if target_type == TYPE_ID_LIST_INT {
                         let elems = crate::object::layout::list_int_vec_ref(target_ptr);
@@ -1904,11 +1916,11 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                 let (len, next_val, needs_drop) = if let Some(target_ptr) = target_obj.as_ptr() {
                     let target_type = object_type_id(target_ptr);
                     if target_type == TYPE_ID_TUPLE {
-                        let elems = seq_vec_ref(target_ptr);
-                        if idx >= elems.len() {
-                            (elems.len(), None, false)
+                        let len = crate::object::seq_access::len(target_ptr);
+                        if idx >= len {
+                            (len, None, false)
                         } else {
-                            (elems.len(), Some(elems[idx]), false)
+                            (len, crate::object::seq_access::item(target_ptr, idx), false)
                         }
                     } else if target_type == TYPE_ID_RANGE {
                         (0, None, false)
@@ -1998,21 +2010,25 @@ pub unsafe extern "C" fn molt_iter_next_unboxed(iter_bits: u64, value_out_bits: 
                     let target_type = object_type_id(target_ptr);
 
                     // ── LIST fast path (zero alloc) ──────────────
-                    // NOTE: If the list is mutated during iteration (e.g. list.append()
-                    // inside a for-loop), the backing Vec may reallocate, making
-                    // `seq_vec_ref`'s pointer stale.  This matches CPython's behaviour:
-                    // mutating a list while iterating is undefined / raises
-                    // RuntimeError only in some cases.  A proper fix would add a
-                    // version counter to the list layout (cf. CPython 3.12
-                    // ma_version_tag) and check it on each iter_next call.
+                    // Read the current backing only for this scalar step. A list
+                    // mutation between iterator calls may resize it, so no backing
+                    // reference survives the call boundary.
                     if target_type == TYPE_ID_LIST {
-                        let elems = seq_vec_ref(target_ptr);
-                        if idx == ITER_EXHAUSTED || idx >= elems.len() {
+                        let len = crate::object::seq_access::len(target_ptr);
+                        if idx == ITER_EXHAUSTED || idx >= len {
                             iter_set_index(ptr, ITER_EXHAUSTED);
                             return done_true;
                         }
-                        let val_bits = elems[idx];
-                        inc_ref_bits(_py, val_bits);
+                        let mut val_bits = 0;
+                        if crate::object::seq_access::read_item_owned(
+                            target_ptr,
+                            idx,
+                            &mut val_bits,
+                        ) == 0
+                        {
+                            iter_set_index(ptr, ITER_EXHAUSTED);
+                            return done_true;
+                        }
                         *value_out = val_bits;
                         iter_set_index(ptr, idx + 1);
                         return done_false;
@@ -2048,12 +2064,16 @@ pub unsafe extern "C" fn molt_iter_next_unboxed(iter_bits: u64, value_out_bits: 
 
                     // ── TUPLE fast path (zero alloc) ─────────────
                     if target_type == TYPE_ID_TUPLE {
-                        let elems = seq_vec_ref(target_ptr);
-                        if idx == ITER_EXHAUSTED || idx >= elems.len() {
+                        let len = crate::object::seq_access::len(target_ptr);
+                        if idx == ITER_EXHAUSTED || idx >= len {
                             iter_set_index(ptr, ITER_EXHAUSTED);
                             return done_true;
                         }
-                        let val_bits = elems[idx];
+                        let Some(val_bits) = crate::object::seq_access::item(target_ptr, idx)
+                        else {
+                            iter_set_index(ptr, ITER_EXHAUSTED);
+                            return done_true;
+                        };
                         inc_ref_bits(_py, val_bits);
                         *value_out = val_bits;
                         iter_set_index(ptr, idx + 1);
@@ -2158,13 +2178,11 @@ pub unsafe extern "C" fn molt_iter_next_unboxed(iter_bits: u64, value_out_bits: 
                 dec_ref_bits(_py, pair_bits);
                 return done_true;
             }
-            let elems = seq_vec_ref(pair_ptr);
-            if elems.len() < 2 {
+            let Some((val_bits, exhausted_bits)) = crate::object::seq_access::tuple_pair(pair_ptr)
+            else {
                 dec_ref_bits(_py, pair_bits);
                 return done_true;
-            }
-            let val_bits = elems[0];
-            let exhausted_bits = elems[1];
+            };
             if is_truthy(_py, obj_from_bits(exhausted_bits)) {
                 dec_ref_bits(_py, pair_bits);
                 return done_true;
@@ -2258,10 +2276,7 @@ pub unsafe extern "C" fn molt_iter_next_dict_items(
             if let Some(pair_ptr) = pair_obj.as_ptr()
                 && object_type_id(pair_ptr) == TYPE_ID_TUPLE
             {
-                let elems = seq_vec_ref(pair_ptr);
-                if elems.len() >= 2 {
-                    let kb = elems[0];
-                    let vb = elems[1];
+                if let Some((kb, vb)) = crate::object::seq_access::tuple_pair(pair_ptr) {
                     if crate::object::refcount_opt::is_heap_ref(kb) {
                         inc_ref_bits(_py, kb);
                     }
@@ -2310,7 +2325,7 @@ pub extern "C" fn molt_anext(obj_bits: u64) -> u64 {
 mod tests {
     use super::cached_pair_return;
     use crate::object::HEADER_FLAG_CONTAINS_REFS;
-    use crate::{MoltObject, alloc_string, dec_ref_bits, header_from_obj_ptr, seq_vec_ref};
+    use crate::{MoltObject, alloc_string, dec_ref_bits, header_from_obj_ptr};
 
     #[test]
     fn cached_pair_reuse_updates_contains_refs_flag() {
@@ -2359,7 +2374,10 @@ mod tests {
                     0,
                     "cached pair mutated to hold heap refs must mark the tuple for element decref",
                 );
-                assert_eq!(seq_vec_ref(second_ptr)[0], text_bits);
+                assert_eq!(
+                    crate::object::seq_access::item(second_ptr, 0),
+                    Some(text_bits)
+                );
                 dec_ref_bits(_py, second);
                 dec_ref_bits(_py, MoltObject::from_ptr(cached).bits());
                 dec_ref_bits(_py, text_bits);

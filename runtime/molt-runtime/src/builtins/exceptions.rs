@@ -29,10 +29,10 @@ use crate::{
     intern_static_name, is_truthy, isinstance_bits, issubclass_bits, maybe_ptr_from_bits,
     module_dict_bits, molt_class_set_base, molt_dec_ref, molt_index, molt_is_callable,
     molt_iter_checked, molt_iter_next, molt_repr_from_obj, molt_str_from_obj, obj_from_bits,
-    object_class_bits, object_type_id, profile_enabled, runtime_state, seq_vec, seq_vec_ref,
-    string_bytes, string_len, string_obj_to_owned, task_exception_depths,
-    task_exception_handler_stacks, task_exception_stacks, task_last_exceptions, to_i64,
-    token_is_cancelled, traceback_suppressed, type_name, type_of_bits,
+    object_class_bits, object_type_id, profile_enabled, runtime_state, string_bytes, string_len,
+    string_obj_to_owned, task_exception_depths, task_exception_handler_stacks,
+    task_exception_stacks, task_last_exceptions, to_i64, token_is_cancelled, traceback_suppressed,
+    type_name, type_of_bits,
 };
 use molt_obj_model::MoltObject;
 use std::backtrace::Backtrace;
@@ -151,8 +151,8 @@ mod state;
 use internals::{exception_type_cache, module_cache};
 pub(crate) use state::{
     ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, EXCEPTION_STACK, EXCEPTION_STACK_BASELINE,
-    ExceptionsRuntimeState, GENERATOR_EXCEPTION_STACKS, GENERATOR_RAISE, TASK_RAISE_ACTIVE,
-    exception_clear_reason_set, internals,
+    ExceptionContextFallback, ExceptionsRuntimeState, GENERATOR_EXCEPTION_STACKS, GENERATOR_RAISE,
+    TASK_RAISE_ACTIVE, exception_clear_reason_set, internals,
 };
 use state::{
     LAST_EXCEPTION_COL, STOPASYNC_BT_PRINTED, debug_exception_clear, debug_exception_flow,
@@ -414,14 +414,16 @@ pub(crate) fn handle_system_exit(_py: &PyToken<'_>, ptr: *mut u8) -> ! {
     let code_bits = if let Some(args_ptr) = args_obj.as_ptr() {
         unsafe {
             if object_type_id(args_ptr) == TYPE_ID_TUPLE {
-                let args = seq_vec_ref(args_ptr);
-                if args.is_empty() {
-                    MoltObject::none().bits()
-                } else if args.len() == 1 {
-                    args[0]
-                } else {
-                    args_bits
-                }
+                crate::object::seq_access::with_immutable_tuple_slice(args_ptr, |args| {
+                    if args.is_empty() {
+                        MoltObject::none().bits()
+                    } else if args.len() == 1 {
+                        args[0]
+                    } else {
+                        args_bits
+                    }
+                })
+                .unwrap_or_else(|| MoltObject::none().bits())
             } else {
                 MoltObject::none().bits()
             }
@@ -1286,8 +1288,7 @@ pub(crate) fn exception_is_rooted(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
             };
             stack
                 .iter()
-                .copied()
-                .filter_map(|bits| obj_from_bits(bits).as_ptr())
+                .filter_map(|bits| obj_from_bits(*bits).as_ptr())
                 .any(|p| p == ptr)
         })
         .unwrap_or(true)
@@ -1301,8 +1302,7 @@ pub(crate) fn exception_is_rooted(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
             };
             stack
                 .iter()
-                .copied()
-                .filter_map(|bits| obj_from_bits(bits).as_ptr())
+                .filter_map(|entry| obj_from_bits(entry.bits).as_ptr())
                 .any(|p| p == ptr)
         })
         .unwrap_or(true)
@@ -1390,11 +1390,11 @@ pub(crate) fn exception_context_active_bits() -> Option<u64> {
     }
     ACTIVE_EXCEPTION_FALLBACK.with(|stack| {
         let stack = stack.borrow();
-        stack.iter().rev().find_map(|bits| {
-            if obj_from_bits(*bits).is_none() {
+        stack.iter().rev().find_map(|entry| {
+            if obj_from_bits(entry.bits).is_none() {
                 None
             } else {
-                Some(*bits)
+                Some(entry.bits)
             }
         })
     })
@@ -1441,6 +1441,51 @@ pub(crate) fn exception_context_set(_py: &PyToken<'_>, bits: u64) {
     }
 }
 
+/// Replace the active handled exception for the CPython ABI. Interpreter
+/// handlers use `ACTIVE_EXCEPTION_STACK`; calls made outside one retain a
+/// single fallback root, matching CPython's per-thread base exception-stack
+/// item instead of creating a parallel ABI-local `sys.exc_info()` state.
+pub(crate) fn exception_context_set_abi(_py: &PyToken<'_>, bits: u64) {
+    crate::gil_assert();
+    if ACTIVE_EXCEPTION_STACK.with(|stack| !stack.borrow().is_empty()) {
+        exception_context_set(_py, bits);
+        return;
+    }
+    let mut old_bits = None;
+    let mut retain_new = false;
+    ACTIVE_EXCEPTION_FALLBACK.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        let replacement = if obj_from_bits(bits).is_none() {
+            MoltObject::none().bits()
+        } else {
+            bits
+        };
+        if let Some(slot) = stack.last_mut() {
+            if slot.bits == replacement {
+                return;
+            }
+            if slot.owned && !obj_from_bits(slot.bits).is_none() {
+                old_bits = Some(slot.bits);
+            }
+            retain_new = !obj_from_bits(replacement).is_none();
+            slot.bits = replacement;
+            slot.owned = retain_new;
+        } else if !obj_from_bits(replacement).is_none() {
+            retain_new = true;
+            stack.push(ExceptionContextFallback {
+                bits: replacement,
+                owned: true,
+            });
+        }
+    });
+    if retain_new {
+        inc_ref_bits(_py, bits);
+    }
+    if let Some(old_bits) = old_bits {
+        dec_ref_bits(_py, old_bits);
+    }
+}
+
 pub(crate) fn exception_context_align_depth(_py: &PyToken<'_>, target: usize) {
     crate::gil_assert();
     let detached = ACTIVE_EXCEPTION_STACK.with(|stack| {
@@ -1461,14 +1506,20 @@ pub(crate) fn exception_context_align_depth(_py: &PyToken<'_>, target: usize) {
 
 pub(crate) fn exception_context_fallback_push(bits: u64) {
     ACTIVE_EXCEPTION_FALLBACK.with(|stack| {
-        stack.borrow_mut().push(bits);
+        stack
+            .borrow_mut()
+            .push(ExceptionContextFallback { bits, owned: false });
     });
 }
 
-pub(crate) fn exception_context_fallback_pop() {
-    ACTIVE_EXCEPTION_FALLBACK.with(|stack| {
-        let _ = stack.borrow_mut().pop();
-    });
+pub(crate) fn exception_context_fallback_pop(_py: &PyToken<'_>) {
+    let detached = ACTIVE_EXCEPTION_FALLBACK.with(|stack| stack.borrow_mut().pop());
+    if let Some(entry) = detached
+        && entry.owned
+        && !obj_from_bits(entry.bits).is_none()
+    {
+        dec_ref_bits(_py, entry.bits);
+    }
 }
 
 pub(crate) fn exception_stack_push() {
@@ -1971,8 +2022,12 @@ fn record_exception_with_caller_frame(_py: &PyToken<'_>, ptr: *mut u8, include_c
             if let Some(args_ptr) = args_obj.as_ptr() {
                 unsafe {
                     if object_type_id(args_ptr) == TYPE_ID_TUPLE {
-                        let elems = seq_vec_ref(args_ptr);
-                        if let Some(&first) = elems.first() {
+                        if let Some(first) = crate::object::seq_access::with_immutable_tuple_slice(
+                            args_ptr,
+                            |elems| elems.first().copied(),
+                        )
+                        .flatten()
+                        {
                             out = format_obj_str(_py, obj_from_bits(first));
                         }
                     }
@@ -2535,8 +2590,8 @@ pub(crate) fn exception_normalize_args(_py: &PyToken<'_>, args_bits: u64) -> u64
                 return args_bits;
             }
             if type_id == TYPE_ID_LIST {
-                let elems = seq_vec_ref(ptr);
-                let out_ptr = alloc_tuple(_py, elems);
+                let out_ptr =
+                    crate::object::seq_access::with_borrowed(ptr, |elems| alloc_tuple(_py, elems));
                 if out_ptr.is_null() {
                     return MoltObject::none().bits();
                 }
@@ -2558,8 +2613,12 @@ pub(crate) fn exception_message_from_args(_py: &PyToken<'_>, args_bits: u64) -> 
         unsafe {
             let type_id = object_type_id(ptr);
             if type_id == TYPE_ID_TUPLE || type_id == TYPE_ID_LIST {
-                let elems = seq_vec_ref(ptr);
-                match elems.len() {
+                let len = if type_id == TYPE_ID_TUPLE {
+                    crate::object::seq_access::len(ptr)
+                } else {
+                    crate::object::seq_access::locked_len(ptr)
+                };
+                match len {
                     0 => {
                         let ptr = alloc_string(_py, b"");
                         if ptr.is_null() {
@@ -2567,7 +2626,20 @@ pub(crate) fn exception_message_from_args(_py: &PyToken<'_>, args_bits: u64) -> 
                         }
                         return MoltObject::from_ptr(ptr).bits();
                     }
-                    1 => return molt_str_from_obj(elems[0]),
+                    1 if type_id == TYPE_ID_TUPLE => {
+                        let first =
+                            crate::object::seq_access::with_immutable_tuple_slice(ptr, |items| {
+                                items[0]
+                            })
+                            .unwrap_or_else(|| MoltObject::none().bits());
+                        return molt_str_from_obj(first);
+                    }
+                    1 => {
+                        let Some(item) = crate::object::seq_access::pin_item(_py, ptr, 0) else {
+                            return MoltObject::none().bits();
+                        };
+                        return molt_str_from_obj(item.bits());
+                    }
                     _ => return molt_str_from_obj(args_bits),
                 }
             }
@@ -2599,8 +2671,8 @@ pub(crate) fn exception_args_from_iterable(_py: &PyToken<'_>, bits: u64) -> u64 
                 return bits;
             }
             if type_id == TYPE_ID_LIST {
-                let elems = seq_vec_ref(ptr);
-                let out_ptr = alloc_tuple(_py, elems);
+                let out_ptr =
+                    crate::object::seq_access::with_borrowed(ptr, |elems| alloc_tuple(_py, elems));
                 if out_ptr.is_null() {
                     return MoltObject::none().bits();
                 }
@@ -2623,14 +2695,14 @@ pub(crate) fn exception_args_from_iterable(_py: &PyToken<'_>, bits: u64) -> u64 
             if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
                 return MoltObject::none().bits();
             }
-            let pair = seq_vec_ref(pair_ptr);
-            if pair.len() < 2 {
+            let Some((item_bits, done_bits)) = crate::object::seq_access::tuple_pair(pair_ptr)
+            else {
                 return MoltObject::none().bits();
-            }
-            if is_truthy(_py, obj_from_bits(pair[1])) {
+            };
+            if is_truthy(_py, obj_from_bits(done_bits)) {
                 break;
             }
-            elems.push(pair[0]);
+            elems.push(item_bits);
         }
     }
     let out_ptr = alloc_tuple(_py, &elems);
@@ -2725,10 +2797,17 @@ pub(crate) unsafe fn exception_set_stop_iteration_value(
             let args_obj = obj_from_bits(args_bits);
             if let Some(args_ptr) = args_obj.as_ptr() {
                 let type_id = object_type_id(args_ptr);
-                if type_id == TYPE_ID_TUPLE || type_id == TYPE_ID_LIST {
-                    let elems = seq_vec_ref(args_ptr);
-                    if let Some(first) = elems.first() {
-                        value_bits = *first;
+                if type_id == TYPE_ID_TUPLE {
+                    value_bits =
+                        crate::object::seq_access::with_immutable_tuple_slice(args_ptr, |items| {
+                            items.first().copied()
+                        })
+                        .flatten()
+                        .unwrap_or(value_bits);
+                } else if type_id == TYPE_ID_LIST {
+                    if let Some(first) = crate::object::seq_access::pin_item(_py, args_ptr, 0) {
+                        exception_set_value_slot(_py, ptr, first.bits());
+                        return;
                     }
                 } else if !args_obj.is_none() {
                     value_bits = args_bits;
@@ -2756,11 +2835,24 @@ pub(crate) unsafe fn exception_set_system_exit_code(
         let args_obj = obj_from_bits(args_bits);
         if let Some(args_ptr) = args_obj.as_ptr() {
             let type_id = object_type_id(args_ptr);
-            if type_id == TYPE_ID_TUPLE || type_id == TYPE_ID_LIST {
-                let elems = seq_vec_ref(args_ptr);
-                if elems.len() == 1 {
-                    code_bits = elems[0];
-                } else if elems.len() > 1 {
+            if type_id == TYPE_ID_TUPLE {
+                code_bits =
+                    crate::object::seq_access::with_immutable_tuple_slice(args_ptr, |elems| {
+                        match elems.len() {
+                            1 => elems[0],
+                            2.. => args_bits,
+                            _ => MoltObject::none().bits(),
+                        }
+                    })
+                    .unwrap_or_else(|| MoltObject::none().bits());
+            } else if type_id == TYPE_ID_LIST {
+                let len = crate::object::seq_access::locked_len(args_ptr);
+                if len == 1 {
+                    if let Some(first) = crate::object::seq_access::pin_item(_py, args_ptr, 0) {
+                        exception_set_value_slot(_py, ptr, first.bits());
+                        return;
+                    }
+                } else if len > 1 {
                     code_bits = args_bits;
                 }
             }
@@ -2988,7 +3080,11 @@ pub extern "C" fn molt_exception_init(self_bits: u64, args_bits: u64) -> u64 {
             unsafe {
                 let type_id = object_type_id(ptr);
                 if type_id == TYPE_ID_TUPLE || type_id == TYPE_ID_LIST {
-                    seq_vec_ref(ptr).len()
+                    if type_id == TYPE_ID_TUPLE {
+                        crate::object::seq_access::len(ptr)
+                    } else {
+                        crate::object::seq_access::locked_len(ptr)
+                    }
                 } else {
                     0
                 }
@@ -2999,7 +3095,7 @@ pub extern "C" fn molt_exception_init(self_bits: u64, args_bits: u64) -> u64 {
         let new_len = if let Some(ptr) = obj_from_bits(norm_bits).as_ptr() {
             unsafe {
                 if object_type_id(ptr) == TYPE_ID_TUPLE {
-                    seq_vec_ref(ptr).len()
+                    crate::object::seq_access::len(ptr)
                 } else {
                     0
                 }
@@ -3204,10 +3300,14 @@ pub extern "C" fn molt_exception_add_note(self_bits: u64, note_bits: u64) -> u64
                         "Cannot add note: __notes__ is not a list",
                     );
                 }
-                let elems = seq_vec(list_ptr);
-                elems.push(note_bits);
+                if !crate::object::list_mutation::extend_from_slice(
+                    _py,
+                    list_ptr,
+                    std::slice::from_ref(&note_bits),
+                ) {
+                    return MoltObject::none().bits();
+                }
             }
-            inc_ref_bits(_py, note_bits);
             return MoltObject::none().bits();
         }
         let list_ptr = alloc_list(_py, &[note_bits]);
@@ -3420,7 +3520,7 @@ mod tests {
     use crate::builtins::containers::tuple_len;
     use crate::{
         dec_ref_bits, header_from_obj_ptr, intern_static_name, obj_from_bits, runtime_state,
-        seq_vec_ref, string_obj_to_owned,
+        string_obj_to_owned,
     };
     use molt_obj_model::MoltObject;
     use std::sync::atomic::Ordering;
@@ -3798,7 +3898,11 @@ mod tests {
                 .expect("materialized args tuple");
             unsafe {
                 assert_eq!(tuple_len(args_ptr), 1);
-                assert_eq!(seq_vec_ref(args_ptr)[0], MoltObject::from_int(42).bits());
+                assert_eq!(
+                    crate::object::seq_access::item(args_ptr, 0)
+                        .expect("exception args tuple must contain its message"),
+                    MoltObject::from_int(42).bits()
+                );
                 assert!(!super::exception_args_is_lazy_single(
                     super::exception_args_bits(exc_ptr)
                 ));

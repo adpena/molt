@@ -12,7 +12,7 @@ use crate::{
     molt_inplace_floordiv, molt_inplace_lshift, molt_inplace_matmul, molt_inplace_mod,
     molt_inplace_mul, molt_inplace_pow, molt_inplace_rshift, molt_inplace_sub, molt_iter_checked,
     molt_iter_next, molt_len, molt_setitem_method, obj_from_bits, object_type_id, raise_exception,
-    seq_vec_ref, to_i64, type_name, type_of_bits,
+    to_i64, type_name, type_of_bits,
 };
 
 #[unsafe(no_mangle)]
@@ -55,12 +55,21 @@ pub extern "C" fn molt_operator_countof(container_bits: u64, value_bits: u64) ->
                 if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
                     return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
                 }
-                let elems = seq_vec_ref(pair_ptr);
-                if elems.len() < 2 {
+                if crate::object::seq_access::len(pair_ptr) < 2 {
                     return MoltObject::none().bits();
                 }
-                let val_bits = elems[0];
-                let done_bits = elems[1];
+                let mut val_bits = 0;
+                let mut done_bits = 0;
+                if crate::object::seq_access::read_item_gil_borrowed(pair_ptr, 0, &mut val_bits)
+                    == 0
+                    || crate::object::seq_access::read_item_gil_borrowed(
+                        pair_ptr,
+                        1,
+                        &mut done_bits,
+                    ) == 0
+                {
+                    return MoltObject::none().bits();
+                }
                 if is_truthy(_py, obj_from_bits(done_bits)) {
                     break;
                 }

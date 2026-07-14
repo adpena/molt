@@ -43,7 +43,7 @@ unsafe extern "C" fn fx_alloc_list() -> u64 {
         .insert(bits, Vec::new());
     bits
 }
-unsafe extern "C" fn fx_list_append(list_bits: u64, item_bits: u64) -> i32 {
+unsafe extern "C" fn fx_list_append(list_bits: u64, item_bits: u64, _item: *mut PyObject) -> i32 {
     if let Some(v) = LISTS
         .lock()
         .unwrap()
@@ -90,6 +90,7 @@ unsafe extern "C" fn fx_tuple_set(
     bits: u64,
     i: usize,
     val: u64,
+    _exact_pointer: *mut molt_cpython_abi::abi_types::PyObject,
 ) -> molt_cpython_abi::hooks::OwnedHandleResult {
     if let Some(v) = TUPLES
         .lock()
@@ -245,7 +246,7 @@ fn contains_and_index_use_value_equality_for_heap_strings() {
     );
 
     let list_bits = unsafe { fx_alloc_list() };
-    unsafe { fx_list_append(list_bits, s_in_list) };
+    unsafe { fx_list_append(list_bits, s_in_list, std::ptr::null_mut()) };
     let list = register(list_bits);
     let probe = register(s_probe);
 
@@ -273,7 +274,7 @@ fn index_absent_raises_valueerror() {
     unsafe { errors::PyErr_Clear() };
 
     let list_bits = unsafe { fx_alloc_list() };
-    unsafe { fx_list_append(list_bits, make_str("present")) };
+    unsafe { fx_list_append(list_bits, make_str("present"), std::ptr::null_mut()) };
     let list = register(list_bits);
     let probe = register(make_str("absent"));
 

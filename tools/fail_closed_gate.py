@@ -442,18 +442,13 @@ _BUILD_CRUTCH_ALLOWLIST = frozenset(
         # consuming upstream Meson/compile_commands metadata for any package.
         "src/molt/cli/source_extensions.py",
         "src/molt/cli/source_extension_cython.py",
+        "src/molt/cli/source_extension_producer.py",
         "src/molt/cli/source_extension_toolchain.py",
-        # Pact-witness pure-Python closure stagers + build-generated-module
-        # materializers. These are seal verifiers/adapters (per the docstring
-        # rationale below): they mirror the package's OWN upstream pure-Python
-        # subtree into the sealed witness roots and materialize version.py/
-        # __config__.py from the package's OWN authorities (gitversion, the real
-        # meson build output). They author no Molt-owned source-plan/config/
-        # header overlay -- their docstrings merely describe the architecture --
-        # so they are not the ecosystem_build_crutch poison shape.
+        # The remaining NumPy witness closure adapter mirrors the package's OWN
+        # upstream pure-Python subtree and generated modules into its legacy
+        # seal. It authors no Molt-owned source-plan/config/header overlay.
+        # SciPy uses the generic atomic source-extension producer above.
         "tools/pact_witness_numpy_python_closure.py",
-        "tools/pact_witness_scipy_python_closure.py",
-        "tools/pact_witness_scipy_generated_modules.py",
         # Pact-witness numpy _umath_linalg (linalg) WASM producer. It consumes
         # numpy's OWN upstream Meson intro-targets/compile_commands (produced by
         # regen_numpy_multiarray_meson_wasm.py) and invokes the GENERIC
@@ -463,16 +458,6 @@ _BUILD_CRUTCH_ALLOWLIST = frozenset(
         # --source-plan-exclude-linked-static-library` feature (source_extensions
         # .py, itself allowlisted above), not a package-specific crutch.
         "tools/build_numpy_umath_linalg_wasm.py",
-        # Pact-witness scipy _ccallback_c WASM producer. It regenerates the C
-        # from scipy's OWN _ccallback_c.pyx via the GENERIC standalone-Cython
-        # authority (source_extension_cython.py, allowlisted above), materializes
-        # scipy_config.h from scipy's OWN scipy_config.h.in via meson's
-        # configure_file rule (package custody, not a Molt-authored overlay --
-        # identical to a real scipy meson wasm-cross configure_file output), and
-        # invokes the GENERIC `molt extension build` CLI. It authors no Molt-owned
-        # source-plan/config/header overlay; the synthesized intro-targets/
-        # compile_commands are the generic source-plan shape the CLI consumes.
-        "tools/build_scipy_ccallback_c_wasm.py",
     }
 )
 

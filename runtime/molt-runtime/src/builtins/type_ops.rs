@@ -81,7 +81,13 @@ pub(crate) fn collect_runtime_classinfo(
         match object_type_id(ptr) {
             TYPE_ID_TYPE => out.push(RuntimeClassInfo::Type(class_bits)),
             TYPE_ID_TUPLE => {
-                let items = seq_vec_ref(ptr);
+                let Some(items) = crate::object::seq_access::snapshot(
+                    _py,
+                    ptr,
+                    "sequence snapshot allocation failed",
+                ) else {
+                    return;
+                };
                 for item in items.iter() {
                     collect_runtime_classinfo(_py, *item, protocol, out);
                     if exception_pending(_py) {
@@ -105,7 +111,13 @@ pub(crate) fn collect_runtime_classinfo(
                         classinfo_type_error_message(protocol),
                     );
                 }
-                let items = seq_vec_ref(args_ptr);
+                let Some(items) = crate::object::seq_access::snapshot(
+                    _py,
+                    args_ptr,
+                    "sequence snapshot allocation failed",
+                ) else {
+                    return;
+                };
                 for item in items.iter() {
                     collect_runtime_classinfo(_py, *item, protocol, out);
                     if exception_pending(_py) {
@@ -160,7 +172,10 @@ pub(crate) fn runtime_classinfo_protocol_match(
     }
 }
 
-pub(crate) unsafe fn class_mro_ref(class_ptr: *mut u8) -> Option<&'static Vec<u64>> {
+pub(crate) unsafe fn class_mro_pinned<'a, 'py>(
+    _py: &'a PyToken<'py>,
+    class_ptr: *mut u8,
+) -> Option<crate::object::seq_access::PinnedTuple<'a, 'py>> {
     unsafe {
         let mro_bits = class_mro_bits(class_ptr);
         let mro_obj = obj_from_bits(mro_bits);
@@ -168,7 +183,34 @@ pub(crate) unsafe fn class_mro_ref(class_ptr: *mut u8) -> Option<&'static Vec<u6
         if object_type_id(mro_ptr) != TYPE_ID_TUPLE {
             return None;
         }
-        Some(seq_vec_ref(mro_ptr))
+        crate::object::seq_access::pin_tuple(_py, mro_ptr)
+    }
+}
+
+pub(crate) enum ClassMroView<'a, 'py> {
+    Pinned(crate::object::seq_access::PinnedTuple<'a, 'py>),
+    Owned(Vec<u64>),
+}
+
+impl std::ops::Deref for ClassMroView<'_, '_> {
+    type Target = [u64];
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Pinned(mro) => mro,
+            Self::Owned(mro) => mro,
+        }
+    }
+}
+
+pub(crate) unsafe fn class_mro_view<'a, 'py>(
+    _py: &'a PyToken<'py>,
+    class_ptr: *mut u8,
+) -> ClassMroView<'a, 'py> {
+    if let Some(mro) = unsafe { class_mro_pinned(_py, class_ptr) } {
+        ClassMroView::Pinned(mro)
+    } else {
+        ClassMroView::Owned(class_mro_vec(MoltObject::from_ptr(class_ptr).bits()))
     }
 }
 
@@ -181,8 +223,14 @@ pub(crate) fn class_mro_vec(class_bits: u64) -> Vec<u64> {
         if object_type_id(ptr) != TYPE_ID_TYPE {
             return vec![class_bits];
         }
-        if let Some(mro) = class_mro_ref(ptr) {
-            return mro.clone();
+        let mro_bits = class_mro_bits(ptr);
+        if let Some(mro_ptr) = obj_from_bits(mro_bits).as_ptr()
+            && object_type_id(mro_ptr) == TYPE_ID_TUPLE
+        {
+            return crate::object::seq_access::with_immutable_tuple_slice(mro_ptr, |mro| {
+                mro.to_vec()
+            })
+            .unwrap_or_default();
         }
         let mut out = vec![class_bits];
         let bases_bits = class_bases_bits(ptr);
@@ -203,7 +251,12 @@ pub(crate) fn class_bases_vec(bits: u64) -> Vec<u64> {
         unsafe {
             match object_type_id(ptr) {
                 TYPE_ID_TYPE => return vec![bits],
-                TYPE_ID_TUPLE => return seq_vec_ref(ptr).clone(),
+                TYPE_ID_TUPLE => {
+                    return crate::object::seq_access::with_immutable_tuple_slice(ptr, |items| {
+                        items.to_vec()
+                    })
+                    .unwrap_or_default();
+                }
                 _ => {}
             }
         }
@@ -428,7 +481,13 @@ fn collect_classinfo_isinstance(_py: &PyToken<'_>, class_bits: u64, out: &mut Ve
         match object_type_id(ptr) {
             TYPE_ID_TYPE => out.push(class_bits),
             TYPE_ID_TUPLE => {
-                let items = seq_vec_ref(ptr);
+                let Some(items) = crate::object::seq_access::snapshot(
+                    _py,
+                    ptr,
+                    "sequence snapshot allocation failed",
+                ) else {
+                    return;
+                };
                 for item in items.iter() {
                     collect_classinfo_isinstance(_py, *item, out);
                 }
@@ -449,7 +508,13 @@ fn collect_classinfo_isinstance(_py: &PyToken<'_>, class_bits: u64, out: &mut Ve
                         "isinstance() arg 2 must be a type or tuple of types",
                     );
                 }
-                let items = seq_vec_ref(args_ptr);
+                let Some(items) = crate::object::seq_access::snapshot(
+                    _py,
+                    args_ptr,
+                    "sequence snapshot allocation failed",
+                ) else {
+                    return;
+                };
                 for item in items.iter() {
                     collect_classinfo_isinstance(_py, *item, out);
                 }
@@ -475,8 +540,15 @@ pub(crate) fn issubclass_bits(sub_bits: u64, class_bits: u64) -> bool {
         if object_type_id(ptr) != TYPE_ID_TYPE {
             return false;
         }
-        if let Some(mro) = class_mro_ref(ptr) {
-            if mro.contains(&class_bits) {
+        let mro_bits = class_mro_bits(ptr);
+        if let Some(mro_ptr) = obj_from_bits(mro_bits).as_ptr()
+            && object_type_id(mro_ptr) == TYPE_ID_TUPLE
+        {
+            if crate::object::seq_access::with_immutable_tuple_slice(mro_ptr, |mro| {
+                mro.contains(&class_bits)
+            })
+            .unwrap_or(false)
+            {
                 return true;
             }
             // The stored MRO tuple may be stale or incomplete (e.g. when a
@@ -592,7 +664,8 @@ pub(crate) fn isinstance_runtime(_py: &PyToken<'_>, val_bits: u64, class_bits: u
             // isinstance(exc, (TypeError, ValueError)) — check if all
             // tuple elements are exception types; if so, use the fast
             // path for each.
-            let items = unsafe { seq_vec_ref(cls_ptr) };
+            let items = unsafe { crate::object::seq_access::pin_tuple(_py, cls_ptr) }
+                .expect("type-checked exception class tuple must remain live");
             let builtins = builtin_classes(_py);
             let all_exc = items.iter().all(|&item_bits| {
                 if let Some(item_ptr) = obj_from_bits(item_bits).as_ptr() {
@@ -638,7 +711,8 @@ pub(crate) fn isinstance_runtime(_py: &PyToken<'_>, val_bits: u64, class_bits: u
                 }
                 // Custom metaclass — fall through to the generic path.
             } else if class_tid == TYPE_ID_TUPLE {
-                let items = unsafe { seq_vec_ref(class_ptr) };
+                let items = unsafe { crate::object::seq_access::pin_tuple(_py, class_ptr) }
+                    .expect("type-checked class tuple must remain live");
                 let val_type = type_of_bits(_py, val_bits);
                 let all_types = items.iter().all(|&item_bits| {
                     if let Some(item_ptr) = obj_from_bits(item_bits).as_ptr() {

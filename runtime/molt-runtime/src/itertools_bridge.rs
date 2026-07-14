@@ -292,11 +292,16 @@ pub extern "C" fn molt_object_type_id(ptr: *mut u8) -> u32 {
     unsafe { object_type_id(ptr) }
 }
 
-/// Seq vec pointer — exposed for the itertools crate.
-#[allow(improper_ctypes_definitions)]
+/// Reference-pinned sequence snapshot exposed for the itertools crate.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_seq_vec_ptr(ptr: *mut u8) -> *mut Vec<u64> {
-    unsafe { seq_vec_ptr(ptr) }
+pub extern "C" fn molt_seq_snapshot(
+    ptr: *mut u8,
+    out_ptr: *mut *const u64,
+    out_len: *mut usize,
+) -> i32 {
+    crate::with_gil_entry_nopanic!(_py, {
+        unsafe { crate::seq_snapshot_bridge::export(_py, ptr, out_ptr, out_len) }
+    })
 }
 
 /// index_i64_from_obj — exposed for the itertools crate.

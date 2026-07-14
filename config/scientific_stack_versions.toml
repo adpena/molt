@@ -1,4 +1,4 @@
-schema_version = 1
+schema_version = 3
 
 [selection]
 numpy = "2.5.1"
@@ -16,15 +16,38 @@ numpy_seal_root_candidates = [
   "tmp/pact_numpy_multiarray_sealed_axiserror",
   "tmp/worktrees/pact-collab/tmp/pact_numpy_multiarray_molt_ext_wasm_cpython_abi",
 ]
-scipy_primary_seal_root_candidates = [
-  "tmp/pact_scipy_ndimage_sealed_for_witness_next",
-  "tmp/pact_scipy_ndimage_sealed_for_witness",
-  "tmp/pact_scipy_ndimage_provider_sealed_support_closure",
-  "tmp/pact_scipy_ndimage_provider_sealed_helpers",
-  "tmp/pact_scipy_ndimage_provider_sealed",
+
+[[verified.extension_sets]]
+package = "scipy"
+name = "pact-witness"
+seal_name = "pact_scipy_witness"
+meson_setup_args = [
+  "-Dblas=none",
+  "-Dlapack=none",
+  "-D_without-fortran=true",
+  "-Duse-pythran=true",
 ]
-scipy_additional_seal_roots = [
-  "tmp/pact_scipy_ni_label_molt_ext_wasm_cpython_abi",
-  "tmp/pact_scipy_rank_filter_1d_molt_ext_wasm_cpython_abi",
-  "tmp/pact_scipy_ccallback_c_molt_ext_wasm_cpython_abi",
-]
+
+[[verified.extension_sets.extensions]]
+module = "scipy.ndimage._nd_image"
+target = "_nd_image"
+python_exports = ["scipy"]
+capabilities = []
+
+[[verified.extension_sets.extensions]]
+module = "scipy.ndimage._ni_label"
+target = "_ni_label"
+python_exports = ["scipy.ndimage._ni_label"]
+capabilities = []
+
+[[verified.extension_sets.extensions]]
+module = "scipy.ndimage._rank_filter_1d"
+target = "_rank_filter_1d"
+python_exports = ["scipy.ndimage._rank_filter_1d"]
+capabilities = []
+
+[[verified.extension_sets.extensions]]
+module = "scipy._lib._ccallback_c"
+target = "_ccallback_c"
+python_exports = ["scipy._lib._ccallback_c"]
+capabilities = []

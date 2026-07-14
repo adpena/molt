@@ -542,20 +542,23 @@ unsafe fn refresh_dataclass_class_metadata(_py: &PyToken<'_>, ptr: *mut u8, clas
                             if let Some(flags_ptr) = flags_ptr {
                                 let type_id = object_type_id(flags_ptr);
                                 if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
-                                    let elems = seq_vec_ref(flags_ptr);
-                                    let mut out = Vec::with_capacity(elems.len());
-                                    for &elem_bits in elems.iter() {
-                                        let elem_obj = obj_from_bits(elem_bits);
-                                        let Some(val) = to_i64(elem_obj) else {
-                                            out.clear();
-                                            break;
-                                        };
-                                        if val < 0 || val > u8::MAX as i64 {
-                                            out.clear();
-                                            break;
-                                        }
-                                        out.push(val as u8);
-                                    }
+                                    let out = crate::object::seq_access::with_borrowed(
+                                        flags_ptr,
+                                        |elems| {
+                                            let mut out = Vec::with_capacity(elems.len());
+                                            for &elem_bits in elems {
+                                                let elem_obj = obj_from_bits(elem_bits);
+                                                let Some(val) = to_i64(elem_obj) else {
+                                                    return Vec::new();
+                                                };
+                                                if val < 0 || val > u8::MAX as i64 {
+                                                    return Vec::new();
+                                                }
+                                                out.push(val as u8);
+                                            }
+                                            out
+                                        },
+                                    );
                                     if !out.is_empty() {
                                         (*desc_ptr).field_flags = out;
                                     }

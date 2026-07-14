@@ -117,12 +117,14 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                 if tid == TYPE_ID_TUPLE {
                     let key = obj_from_bits(key_bits);
                     if key.is_int() {
-                        let elems = seq_vec_ref(obj_ptr);
-                        let len = elems.len() as i64;
+                        let len = crate::object::seq_access::len(obj_ptr) as i64;
                         let raw = key.as_int_unchecked();
                         let idx = if raw < 0 { raw + len } else { raw };
                         if idx >= 0 && idx < len {
-                            let val = elems[idx as usize];
+                            let Some(val) = crate::object::seq_access::item(obj_ptr, idx as usize)
+                            else {
+                                return MoltObject::none().bits();
+                            };
                             // inc_ref only for heap-pointer elements; inline
                             // int/float/bool/None elements carry no refcount.
                             if obj_from_bits(val).as_ptr().is_some() {
@@ -161,8 +163,12 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                         if let Some(tup_ptr) = key.as_ptr()
                             && object_type_id(tup_ptr) == TYPE_ID_TUPLE
                         {
-                            let elems = seq_vec_ref(tup_ptr);
-                            if elems.is_empty() {
+                            if crate::object::seq_access::with_immutable_tuple_slice(
+                                tup_ptr,
+                                |elems| elems.is_empty(),
+                            )
+                            .unwrap_or(false)
+                            {
                                 let val = memoryview_read_scalar_at(_py, data.cast_const(), 0, fmt);
                                 return val.unwrap_or_else(|| MoltObject::none().bits());
                             }
@@ -176,7 +182,13 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                     if let Some(tup_ptr) = key.as_ptr()
                         && object_type_id(tup_ptr) == TYPE_ID_TUPLE
                     {
-                        let elems = seq_vec_ref(tup_ptr);
+                        let Some(elems) = crate::object::seq_access::snapshot(
+                            _py,
+                            tup_ptr,
+                            "memoryview index tuple snapshot allocation failed",
+                        ) else {
+                            return MoltObject::none().bits();
+                        };
                         let mut has_slice = false;
                         let mut all_slice = true;
                         for &elem_bits in elems.iter() {
@@ -498,7 +510,13 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                     if let Some(slice_ptr) = key.as_ptr()
                         && object_type_id(slice_ptr) == TYPE_ID_SLICE
                     {
-                        let elems = seq_vec_ref(ptr);
+                        let Some(elems) = crate::object::seq_access::snapshot(
+                            _py,
+                            ptr,
+                            "list slice snapshot allocation failed",
+                        ) else {
+                            return MoltObject::none().bits();
+                        };
                         let len = elems.len() as isize;
                         let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
                         let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
@@ -557,8 +575,11 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                         }
                         return raise_exception::<_>(_py, "IndexError", "list index out of range");
                     }
-                    let elems = seq_vec_ref(ptr);
-                    let val = elems[i as usize];
+                    let Some(val_item) = crate::object::seq_access::pin_item(_py, ptr, i as usize)
+                    else {
+                        return raise_exception::<_>(_py, "IndexError", "list index out of range");
+                    };
+                    let val = val_item.bits();
                     if debug_index_list_enabled() {
                         let val_obj = obj_from_bits(val);
                         eprintln!(
@@ -570,13 +591,20 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                         );
                     }
                     inc_ref_bits(_py, val);
+                    drop(val_item);
                     return val;
                 }
                 if type_id == TYPE_ID_TUPLE {
                     if let Some(slice_ptr) = key.as_ptr()
                         && object_type_id(slice_ptr) == TYPE_ID_SLICE
                     {
-                        let elems = seq_vec_ref(ptr);
+                        let Some(elems) = crate::object::seq_access::snapshot(
+                            _py,
+                            ptr,
+                            "tuple slice snapshot allocation failed",
+                        ) else {
+                            return MoltObject::none().bits();
+                        };
                         let len = elems.len() as isize;
                         let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
                         let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
@@ -630,8 +658,9 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                         }
                         return raise_exception::<_>(_py, "IndexError", "tuple index out of range");
                     }
-                    let elems = seq_vec_ref(ptr);
-                    let val = elems[i as usize];
+                    let Some(val) = crate::object::seq_access::item(ptr, i as usize) else {
+                        return raise_exception::<_>(_py, "IndexError", "tuple index out of range");
+                    };
                     inc_ref_bits(_py, val);
                     return val;
                 }
@@ -1013,70 +1042,47 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                             Some(items) => items,
                             None => return MoltObject::none().bits(),
                         };
-                        let elems = seq_vec(ptr);
                         if step == 1 {
                             let s = start as usize;
                             let mut e = stop as usize;
                             if s > e {
                                 e = s;
                             }
-                            let new_items_have_refs = new_items
-                                .iter()
-                                .any(|&item| crate::object::refcount_opt::is_heap_ref(item));
-                            for &item in new_items.iter() {
-                                if crate::object::refcount_opt::is_heap_ref(item) {
-                                    inc_ref_bits(_py, item);
-                                }
+                            let changed = crate::object::list_mutation::replace_range(
+                                _py, ptr, s, e, &new_items,
+                            );
+                            for item in new_items {
+                                dec_ref_bits(_py, item);
                             }
-                            let removed: Vec<u64> =
-                                elems.splice(s..e, new_items.iter().copied()).collect();
-                            if new_items_have_refs {
-                                (*header_from_obj_ptr(ptr)).flags |=
-                                    crate::object::HEADER_FLAG_CONTAINS_REFS;
-                            }
-                            for old_bits in removed {
-                                if crate::object::refcount_opt::is_heap_ref(old_bits) {
-                                    dec_ref_bits(_py, old_bits);
-                                }
+                            if !changed {
+                                return MoltObject::none().bits();
                             }
                             return obj_bits;
                         }
                         let indices = collect_slice_indices(start, stop, step);
                         if indices.len() != new_items.len() {
+                            let new_len = new_items.len();
+                            for item in new_items {
+                                dec_ref_bits(_py, item);
+                            }
                             return raise_exception::<_>(
                                 _py,
                                 "ValueError",
                                 &format!(
                                     "attempt to assign sequence of size {} to extended slice of size {}",
-                                    new_items.len(),
+                                    new_len,
                                     indices.len()
                                 ),
                             );
                         }
-                        let new_items_have_refs = new_items
-                            .iter()
-                            .any(|&item| crate::object::refcount_opt::is_heap_ref(item));
-                        for &item in new_items.iter() {
-                            if crate::object::refcount_opt::is_heap_ref(item) {
-                                inc_ref_bits(_py, item);
-                            }
+                        let changed = crate::object::list_mutation::replace_indices(
+                            _py, ptr, &indices, &new_items,
+                        );
+                        for item in new_items {
+                            dec_ref_bits(_py, item);
                         }
-                        let mut removed = Vec::new();
-                        for (idx, &item) in indices.iter().zip(new_items.iter()) {
-                            let old_bits = elems[*idx];
-                            if old_bits != item {
-                                elems[*idx] = item;
-                                removed.push(old_bits);
-                            }
-                        }
-                        if new_items_have_refs {
-                            (*header_from_obj_ptr(ptr)).flags |=
-                                crate::object::HEADER_FLAG_CONTAINS_REFS;
-                        }
-                        for old_bits in removed {
-                            if crate::object::refcount_opt::is_heap_ref(old_bits) {
-                                dec_ref_bits(_py, old_bits);
-                            }
+                        if !changed {
+                            return MoltObject::none().bits();
                         }
                         return obj_bits;
                     }
@@ -1107,18 +1113,14 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                             "list assignment index out of range",
                         );
                     }
-                    let elems = seq_vec(ptr);
-                    let old_bits = elems[i as usize];
-                    if old_bits != val_bits {
-                        if crate::object::refcount_opt::is_heap_ref(val_bits) {
-                            inc_ref_bits(_py, val_bits);
-                            (*header_from_obj_ptr(ptr)).flags |=
-                                crate::object::HEADER_FLAG_CONTAINS_REFS;
-                        }
-                        elems[i as usize] = val_bits;
-                        if crate::object::refcount_opt::is_heap_ref(old_bits) {
-                            dec_ref_bits(_py, old_bits);
-                        }
+                    let index = i as usize;
+                    if !crate::object::list_mutation::replace_indices(
+                        _py,
+                        ptr,
+                        std::slice::from_ref(&index),
+                        std::slice::from_ref(&val_bits),
+                    ) {
+                        return MoltObject::none().bits();
                     }
                     return obj_bits;
                 }
@@ -1259,8 +1261,12 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                         if let Some(tup_ptr) = key.as_ptr()
                             && object_type_id(tup_ptr) == TYPE_ID_TUPLE
                         {
-                            let elems = seq_vec_ref(tup_ptr);
-                            if elems.is_empty() {
+                            if crate::object::seq_access::with_immutable_tuple_slice(
+                                tup_ptr,
+                                |elems| elems.is_empty(),
+                            )
+                            .unwrap_or(false)
+                            {
                                 let ok = memoryview_write_scalar_at(_py, data, 0, fmt, val_bits);
                                 if ok.is_none() {
                                     return MoltObject::none().bits();
@@ -1277,7 +1283,13 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                     if let Some(tup_ptr) = key.as_ptr()
                         && object_type_id(tup_ptr) == TYPE_ID_TUPLE
                     {
-                        let elems = seq_vec_ref(tup_ptr);
+                        let Some(elems) = crate::object::seq_access::snapshot(
+                            _py,
+                            tup_ptr,
+                            "memoryview assignment index tuple snapshot allocation failed",
+                        ) else {
+                            return MoltObject::none().bits();
+                        };
                         let mut has_slice = false;
                         let mut all_slice = true;
                         for &elem_bits in elems.iter() {
@@ -1618,34 +1630,23 @@ pub extern "C" fn molt_del_index(obj_bits: u64, key_bits: u64) -> u64 {
                             Ok(vals) => vals,
                             Err(err) => return slice_error(_py, err),
                         };
-                        let elems = seq_vec(ptr);
                         if step == 1 {
                             let s = start as usize;
                             let mut e = stop as usize;
                             if s > e {
                                 e = s;
                             }
-                            let removed: Vec<u64> = elems.drain(s..e).collect();
-                            for old_bits in removed {
-                                dec_ref_bits(_py, old_bits);
+                            if !crate::object::list_mutation::replace_range(_py, ptr, s, e, &[]) {
+                                return MoltObject::none().bits();
                             }
                             return obj_bits;
                         }
-                        let indices = collect_slice_indices(start, stop, step);
-                        let mut removed = Vec::with_capacity(indices.len());
+                        let mut indices = collect_slice_indices(start, stop, step);
                         if step > 0 {
-                            for &idx in indices.iter().rev() {
-                                let old_bits = elems.remove(idx);
-                                removed.push(old_bits);
-                            }
-                        } else {
-                            for &idx in indices.iter() {
-                                let old_bits = elems.remove(idx);
-                                removed.push(old_bits);
-                            }
+                            indices.reverse();
                         }
-                        for old_bits in removed {
-                            dec_ref_bits(_py, old_bits);
+                        if !crate::object::list_mutation::remove_indices(_py, ptr, &indices) {
+                            return MoltObject::none().bits();
                         }
                         return obj_bits;
                     }
@@ -1666,9 +1667,11 @@ pub extern "C" fn molt_del_index(obj_bits: u64, key_bits: u64) -> u64 {
                             "list assignment index out of range",
                         );
                     }
-                    let elems = seq_vec(ptr);
-                    let old_bits = elems.remove(i as usize);
-                    dec_ref_bits(_py, old_bits);
+                    let index = i as usize;
+                    if !crate::object::list_mutation::replace_range(_py, ptr, index, index + 1, &[])
+                    {
+                        return MoltObject::none().bits();
+                    }
                     return obj_bits;
                 }
                 if type_id == TYPE_ID_BYTEARRAY {
@@ -1856,15 +1859,17 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                         // slice first to avoid per-element inc_ref/eq/dec_ref.
                         // This is the hot path for `x in [1, 2, 3]` style range checks.
                         if item.as_int().is_some() || item.is_bool() || item.is_none() {
-                            let elems = seq_vec_ref(ptr);
-                            if simd_contains_u64(elems, item_bits) {
+                            let found = crate::object::seq_access::with_borrowed(ptr, |elems| {
+                                simd_contains_u64(elems, item_bits)
+                            });
+                            if found {
                                 return MoltObject::from_bool(true).bits();
                             }
                             return MoltObject::from_bool(false).bits();
                         }
                         let mut idx = 0usize;
-                        while let Some(val) = list_elem_at(ptr, idx) {
-                            let elem_bits = val;
+                        while let Some(elem) = crate::object::seq_access::pin_item(_py, ptr, idx) {
+                            let elem_bits = elem.bits();
                             // Identity check: bit-equality implies identity.
                             // Non-NaN floats are stored inline with unique bit
                             // patterns; NaN floats are heap-allocated with unique
@@ -1873,15 +1878,10 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                             if elem_bits == item_bits {
                                 return MoltObject::from_bool(true).bits();
                             }
-                            inc_ref_bits(_py, elem_bits);
                             let eq = match eq_bool_from_bits(_py, elem_bits, item_bits) {
                                 Some(val) => val,
-                                None => {
-                                    dec_ref_bits(_py, elem_bits);
-                                    return MoltObject::none().bits();
-                                }
+                                None => return MoltObject::none().bits(),
                             };
-                            dec_ref_bits(_py, elem_bits);
                             if eq {
                                 return MoltObject::from_bool(true).bits();
                             }
@@ -1941,27 +1941,30 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                         return MoltObject::from_bool(false).bits();
                     }
                     TYPE_ID_TUPLE => {
-                        let elems = seq_vec_ref(ptr);
-                        // Same identity fast path for tuples with inline-int/bool/None needle.
-                        if item.as_int().is_some() || item.is_bool() || item.is_none() {
-                            if simd_contains_u64(elems, item_bits) {
-                                return MoltObject::from_bool(true).bits();
-                            }
-                            return MoltObject::from_bool(false).bits();
-                        }
-                        for &elem_bits in elems.iter() {
-                            if elem_bits == item_bits {
-                                return MoltObject::from_bool(true).bits();
-                            }
-                            let eq = match eq_bool_from_bits(_py, elem_bits, item_bits) {
-                                Some(val) => val,
-                                None => return MoltObject::none().bits(),
-                            };
-                            if eq {
-                                return MoltObject::from_bool(true).bits();
-                            }
-                        }
-                        return MoltObject::from_bool(false).bits();
+                        let result =
+                            crate::object::seq_access::with_immutable_tuple_slice(ptr, |elems| {
+                                // Same identity fast path for tuples with inline-int/bool/None needle.
+                                if item.as_int().is_some() || item.is_bool() || item.is_none() {
+                                    return MoltObject::from_bool(simd_contains_u64(
+                                        elems, item_bits,
+                                    ))
+                                    .bits();
+                                }
+                                for &elem_bits in elems.iter() {
+                                    if elem_bits == item_bits {
+                                        return MoltObject::from_bool(true).bits();
+                                    }
+                                    let eq = match eq_bool_from_bits(_py, elem_bits, item_bits) {
+                                        Some(val) => val,
+                                        None => return MoltObject::none().bits(),
+                                    };
+                                    if eq {
+                                        return MoltObject::from_bool(true).bits();
+                                    }
+                                }
+                                MoltObject::from_bool(false).bits()
+                            });
+                        return result.unwrap_or_else(|| MoltObject::none().bits());
                     }
                     TYPE_ID_SET | TYPE_ID_FROZENSET => {
                         if !ensure_hashable(_py, item_bits, HashContext::SetElement) {
@@ -2233,16 +2236,18 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                                 "object is not an iterator",
                             );
                         }
-                        let elems = seq_vec_ref(pair_ptr);
-                        if elems.len() < 2 {
+                        let pair = crate::object::seq_access::with_immutable_tuple_slice(
+                            pair_ptr,
+                            |elems| (elems.len() >= 2).then(|| (elems[0], elems[1])),
+                        )
+                        .flatten();
+                        let Some((val_bits, done_bits)) = pair else {
                             return raise_exception::<_>(
                                 _py,
                                 "TypeError",
                                 "object is not an iterator",
                             );
-                        }
-                        let val_bits = elems[0];
-                        let done_bits = elems[1];
+                        };
                         if is_truthy(_py, obj_from_bits(done_bits)) {
                             return MoltObject::from_bool(false).bits();
                         }
@@ -2323,20 +2328,15 @@ pub extern "C" fn molt_list_contains(container_bits: u64, item_bits: u64) -> u64
         if let Some(ptr) = container.as_ptr() {
             unsafe {
                 let mut idx = 0usize;
-                while let Some(val) = list_elem_at(ptr, idx) {
-                    let elem_bits = val;
+                while let Some(elem) = crate::object::seq_access::pin_item(_py, ptr, idx) {
+                    let elem_bits = elem.bits();
                     if elem_bits == item_bits {
                         return MoltObject::from_bool(true).bits();
                     }
-                    inc_ref_bits(_py, elem_bits);
                     let eq = match eq_bool_from_bits(_py, elem_bits, item_bits) {
                         Some(val) => val,
-                        None => {
-                            dec_ref_bits(_py, elem_bits);
-                            return MoltObject::none().bits();
-                        }
+                        None => return MoltObject::none().bits(),
                     };
-                    dec_ref_bits(_py, elem_bits);
                     if eq {
                         return MoltObject::from_bool(true).bits();
                     }

@@ -28,7 +28,13 @@ fi
 export MOLT_MEMORY_GUARD_POLL_SEC="${MOLT_MEMORY_GUARD_POLL_SEC:-2.0}"
 export MOLT_STDLIB_PROFILE=full
 export MOLT_EXTERNAL_STATIC_PACKAGES="numpy scipy"
-export MOLT_MODULE_ROOTS="$ROOT/tmp/pact_numpy_multiarray_sealed_for_witness;$ROOT/tmp/pact_scipy_ndimage_sealed_for_witness_next;$ROOT/tmp/pact_scipy_ni_label_molt_ext_wasm_cpython_abi;$ROOT/bench/friends/repos/numpy_off_the_shelf;$ROOT/bench/friends/repos/scipy_off_the_shelf"
+SCIPY_WITNESS_ROOT="$(PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON" -c 'from molt.scientific_stack_versions import scipy_witness_seal_root; print(scipy_witness_seal_root())')"
+if [ ! -d "$(molt_shell_path "$SCIPY_WITNESS_ROOT")" ]; then
+  echo "canonical SciPy witness seal is missing: $SCIPY_WITNESS_ROOT" >&2
+  echo "produce it with: molt extension produce-set --package scipy --module-set pact-witness --source <verified-scipy-checkout> --build-root <fresh-build-root>" >&2
+  exit 2
+fi
+export MOLT_MODULE_ROOTS="$ROOT/tmp/pact_numpy_multiarray_sealed_for_witness;$SCIPY_WITNESS_ROOT;$ROOT/bench/friends/repos/numpy_off_the_shelf;$ROOT/bench/friends/repos/scipy_off_the_shelf"
 
 for _toolchain_root in "${MOLT_TARGET_ROOT:-}" "${MOLT_EXT_ROOT:-}"; do
   [ -n "$_toolchain_root" ] || continue

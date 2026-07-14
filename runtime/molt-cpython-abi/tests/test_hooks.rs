@@ -56,7 +56,7 @@ fn test_stub_list_operations() {
     let item = unsafe { (h.list_item)(0, 0) };
     assert!(matches!(item.decode(), DecodedHandleResult::Error));
 
-    assert_eq!(unsafe { (h.list_append)(0, 0) }, -1);
+    assert_eq!(unsafe { (h.list_append)(0, 0, std::ptr::null_mut()) }, -1);
 }
 
 #[test]
@@ -71,7 +71,7 @@ fn test_stub_tuple_operations() {
     assert!(matches!(item.decode(), DecodedHandleResult::Error));
 
     assert!(matches!(
-        unsafe { (h.tuple_set)(0, 0, 0) }.decode(),
+        unsafe { (h.tuple_set)(0, 0, 0, std::ptr::null_mut()) }.decode(),
         DecodedHandleResult::Error
     ));
 }

@@ -376,23 +376,40 @@ enum SlotWrapper {
 
 #[derive(Clone, Copy)]
 enum DirectSlot {
+    Alloc,
+    Base,
+    Bases,
     Repr,
     Hash,
     Call,
+    Clear,
+    Dealloc,
+    Del,
     Str,
+    Doc,
+    LegacyGetAttr,
     GetAttr,
+    LegacySetAttr,
     SetAttr,
     RichCompare,
+    IsGc,
     Iter,
     IterNext,
+    Methods,
+    New,
     DescrGet,
     DescrSet,
     Init,
+    Traverse,
+    Members,
+    GetSet,
+    Free,
     Finalize,
 }
 
 #[derive(Clone, Copy)]
 enum NumberSlot {
+    Divmod,
     Add,
     Subtract,
     Multiply,
@@ -453,6 +470,7 @@ enum AsyncSlot {
     Await,
     Iter,
     Next,
+    Send,
 }
 
 #[derive(Clone, Copy)]
@@ -603,135 +621,326 @@ static SLOT_WRAPPER_DEFS: &[SlotWrapperDef] = &[
     sequence!("__imul__", InPlaceRepeat),
 ];
 
-unsafe fn direct_slot_ptr(tp: *mut PyTypeObject, slot: DirectSlot) -> *mut c_void {
-    macro_rules! fn_ptr {
+/// Return the raw pointer-sized storage that owns one direct type slot. Rust's
+/// FFI `Option<extern "C" fn>` fields use the nullable-pointer representation;
+/// the compile-time size/alignment assertions below make that assumption
+/// explicit. Both FromSpec writes and GetSlot reads go through this address, so
+/// the stable slot map cannot drift into independent setter/getter authorities.
+unsafe fn direct_slot_storage(tp: *mut PyTypeObject, slot: DirectSlot) -> *mut *mut c_void {
+    const _: () = assert!(
+        std::mem::size_of::<Option<unsafe extern "C" fn(*mut PyObject)>>()
+            == std::mem::size_of::<*mut c_void>()
+    );
+    const _: () = assert!(
+        std::mem::align_of::<Option<unsafe extern "C" fn(*mut PyObject)>>()
+            == std::mem::align_of::<*mut c_void>()
+    );
+    macro_rules! storage {
         ($field:ident) => {
-            (*tp)
-                .$field
-                .map_or(ptr::null_mut(), |f| f as *const () as *mut c_void)
+            std::ptr::addr_of_mut!((*tp).$field).cast::<*mut c_void>()
         };
     }
     unsafe {
         match slot {
-            DirectSlot::Repr => fn_ptr!(tp_repr),
-            DirectSlot::Hash => fn_ptr!(tp_hash),
-            DirectSlot::Call => fn_ptr!(tp_call),
-            DirectSlot::Str => fn_ptr!(tp_str),
-            DirectSlot::GetAttr => fn_ptr!(tp_getattro),
-            DirectSlot::SetAttr => fn_ptr!(tp_setattro),
-            DirectSlot::RichCompare => fn_ptr!(tp_richcompare),
-            DirectSlot::Iter => fn_ptr!(tp_iter),
-            DirectSlot::IterNext => fn_ptr!(tp_iternext),
-            DirectSlot::DescrGet => fn_ptr!(tp_descr_get),
-            DirectSlot::DescrSet => fn_ptr!(tp_descr_set),
-            DirectSlot::Init => fn_ptr!(tp_init),
-            DirectSlot::Finalize => fn_ptr!(tp_finalize),
+            DirectSlot::Alloc => storage!(tp_alloc),
+            DirectSlot::Base => storage!(tp_base),
+            DirectSlot::Bases => storage!(tp_bases),
+            DirectSlot::Repr => storage!(tp_repr),
+            DirectSlot::Hash => storage!(tp_hash),
+            DirectSlot::Call => storage!(tp_call),
+            DirectSlot::Clear => storage!(tp_clear),
+            DirectSlot::Dealloc => storage!(tp_dealloc),
+            DirectSlot::Del => storage!(tp_del),
+            DirectSlot::Str => storage!(tp_str),
+            DirectSlot::Doc => storage!(tp_doc),
+            DirectSlot::LegacyGetAttr => storage!(tp_getattr),
+            DirectSlot::GetAttr => storage!(tp_getattro),
+            DirectSlot::LegacySetAttr => storage!(tp_setattr),
+            DirectSlot::SetAttr => storage!(tp_setattro),
+            DirectSlot::RichCompare => storage!(tp_richcompare),
+            DirectSlot::IsGc => storage!(tp_is_gc),
+            DirectSlot::Iter => storage!(tp_iter),
+            DirectSlot::IterNext => storage!(tp_iternext),
+            DirectSlot::Methods => storage!(tp_methods),
+            DirectSlot::New => storage!(tp_new),
+            DirectSlot::DescrGet => storage!(tp_descr_get),
+            DirectSlot::DescrSet => storage!(tp_descr_set),
+            DirectSlot::Init => storage!(tp_init),
+            DirectSlot::Traverse => storage!(tp_traverse),
+            DirectSlot::Members => storage!(tp_members),
+            DirectSlot::GetSet => storage!(tp_getset),
+            DirectSlot::Free => storage!(tp_free),
+            DirectSlot::Finalize => storage!(tp_finalize),
+        }
+    }
+}
+
+/// Return the one pointer-sized storage cell for a public Stable-ABI slot.
+/// Protocol tables are created only for FromSpec writes; GetSlot reads a missing
+/// parent as a valid NULL slot without allocating or setting an exception.
+unsafe fn slot_wrapper_storage(
+    tp: *mut PyTypeObject,
+    slot: SlotWrapper,
+    create: bool,
+) -> *mut *mut c_void {
+    macro_rules! field_storage {
+        ($table:expr, $field:ident) => {
+            std::ptr::addr_of_mut!((*$table).$field)
+        };
+    }
+    unsafe {
+        match slot {
+            SlotWrapper::Direct(slot) => direct_slot_storage(tp, slot),
+            SlotWrapper::Number(slot) => {
+                let table = if create {
+                    ensure_number(tp)
+                } else {
+                    (*tp)
+                        .tp_as_number
+                        .cast::<crate::abi_types::PyNumberMethods>()
+                };
+                if table.is_null() {
+                    return ptr::null_mut();
+                }
+                match slot {
+                    NumberSlot::Divmod => field_storage!(table, nb_divmod),
+                    NumberSlot::Add => field_storage!(table, nb_add),
+                    NumberSlot::Subtract => field_storage!(table, nb_subtract),
+                    NumberSlot::Multiply => field_storage!(table, nb_multiply),
+                    NumberSlot::Remainder => field_storage!(table, nb_remainder),
+                    NumberSlot::Power => field_storage!(table, nb_power),
+                    NumberSlot::Negative => field_storage!(table, nb_negative),
+                    NumberSlot::Positive => field_storage!(table, nb_positive),
+                    NumberSlot::Absolute => field_storage!(table, nb_absolute),
+                    NumberSlot::Bool => field_storage!(table, nb_bool),
+                    NumberSlot::Invert => field_storage!(table, nb_invert),
+                    NumberSlot::LShift => field_storage!(table, nb_lshift),
+                    NumberSlot::RShift => field_storage!(table, nb_rshift),
+                    NumberSlot::And => field_storage!(table, nb_and),
+                    NumberSlot::Xor => field_storage!(table, nb_xor),
+                    NumberSlot::Or => field_storage!(table, nb_or),
+                    NumberSlot::Int => field_storage!(table, nb_int),
+                    NumberSlot::Float => field_storage!(table, nb_float),
+                    NumberSlot::InPlaceAdd => field_storage!(table, nb_inplace_add),
+                    NumberSlot::InPlaceSubtract => {
+                        field_storage!(table, nb_inplace_subtract)
+                    }
+                    NumberSlot::InPlaceMultiply => {
+                        field_storage!(table, nb_inplace_multiply)
+                    }
+                    NumberSlot::InPlaceRemainder => {
+                        field_storage!(table, nb_inplace_remainder)
+                    }
+                    NumberSlot::InPlacePower => field_storage!(table, nb_inplace_power),
+                    NumberSlot::InPlaceLShift => field_storage!(table, nb_inplace_lshift),
+                    NumberSlot::InPlaceRShift => field_storage!(table, nb_inplace_rshift),
+                    NumberSlot::InPlaceAnd => field_storage!(table, nb_inplace_and),
+                    NumberSlot::InPlaceXor => field_storage!(table, nb_inplace_xor),
+                    NumberSlot::InPlaceOr => field_storage!(table, nb_inplace_or),
+                    NumberSlot::FloorDivide => field_storage!(table, nb_floor_divide),
+                    NumberSlot::TrueDivide => field_storage!(table, nb_true_divide),
+                    NumberSlot::InPlaceFloorDivide => {
+                        field_storage!(table, nb_inplace_floor_divide)
+                    }
+                    NumberSlot::InPlaceTrueDivide => {
+                        field_storage!(table, nb_inplace_true_divide)
+                    }
+                    NumberSlot::Index => field_storage!(table, nb_index),
+                    NumberSlot::MatrixMultiply => field_storage!(table, nb_matrix_multiply),
+                    NumberSlot::InPlaceMatrixMultiply => {
+                        field_storage!(table, nb_inplace_matrix_multiply)
+                    }
+                }
+            }
+            SlotWrapper::Sequence(slot) => {
+                let table = if create {
+                    ensure_sequence(tp)
+                } else {
+                    (*tp)
+                        .tp_as_sequence
+                        .cast::<crate::abi_types::PySequenceMethods>()
+                };
+                if table.is_null() {
+                    return ptr::null_mut();
+                }
+                match slot {
+                    SequenceSlot::Length => field_storage!(table, sq_length),
+                    SequenceSlot::Concat => field_storage!(table, sq_concat),
+                    SequenceSlot::Repeat => field_storage!(table, sq_repeat),
+                    SequenceSlot::Item => field_storage!(table, sq_item),
+                    SequenceSlot::AssItem => field_storage!(table, sq_ass_item),
+                    SequenceSlot::Contains => field_storage!(table, sq_contains),
+                    SequenceSlot::InPlaceConcat => field_storage!(table, sq_inplace_concat),
+                    SequenceSlot::InPlaceRepeat => field_storage!(table, sq_inplace_repeat),
+                }
+            }
+            SlotWrapper::Mapping(slot) => {
+                let table = if create {
+                    ensure_mapping(tp)
+                } else {
+                    (*tp)
+                        .tp_as_mapping
+                        .cast::<crate::abi_types::PyMappingMethods>()
+                };
+                if table.is_null() {
+                    return ptr::null_mut();
+                }
+                match slot {
+                    MappingSlot::Length => field_storage!(table, mp_length),
+                    MappingSlot::Subscript => field_storage!(table, mp_subscript),
+                    MappingSlot::AssSubscript => field_storage!(table, mp_ass_subscript),
+                }
+            }
+            SlotWrapper::Async(slot) => {
+                let table = if create {
+                    ensure_async(tp)
+                } else {
+                    (*tp).tp_as_async.cast::<crate::abi_types::PyAsyncMethods>()
+                };
+                if table.is_null() {
+                    return ptr::null_mut();
+                }
+                match slot {
+                    AsyncSlot::Await => field_storage!(table, am_await),
+                    AsyncSlot::Iter => field_storage!(table, am_aiter),
+                    AsyncSlot::Next => field_storage!(table, am_anext),
+                    AsyncSlot::Send => field_storage!(table, am_send),
+                }
+            }
+            SlotWrapper::Buffer(slot) => {
+                let table = if create {
+                    ensure_buffer(tp)
+                } else {
+                    (*tp).tp_as_buffer.cast::<crate::abi_types::PyBufferProcs>()
+                };
+                if table.is_null() {
+                    return ptr::null_mut();
+                }
+                match slot {
+                    BufferSlot::Get => field_storage!(table, bf_getbuffer),
+                    BufferSlot::Release => field_storage!(table, bf_releasebuffer),
+                }
+            }
         }
     }
 }
 
 unsafe fn slot_wrapper_ptr(tp: *mut PyTypeObject, slot: SlotWrapper) -> *mut c_void {
-    unsafe {
-        match slot {
-            SlotWrapper::Direct(slot) => direct_slot_ptr(tp, slot),
-            SlotWrapper::Number(slot) => {
-                let table = (*tp)
-                    .tp_as_number
-                    .cast::<crate::abi_types::PyNumberMethods>();
-                if table.is_null() {
-                    return ptr::null_mut();
-                }
-                match slot {
-                    NumberSlot::Add => (*table).nb_add,
-                    NumberSlot::Subtract => (*table).nb_subtract,
-                    NumberSlot::Multiply => (*table).nb_multiply,
-                    NumberSlot::Remainder => (*table).nb_remainder,
-                    NumberSlot::Power => (*table).nb_power,
-                    NumberSlot::Negative => (*table).nb_negative,
-                    NumberSlot::Positive => (*table).nb_positive,
-                    NumberSlot::Absolute => (*table).nb_absolute,
-                    NumberSlot::Bool => (*table).nb_bool,
-                    NumberSlot::Invert => (*table).nb_invert,
-                    NumberSlot::LShift => (*table).nb_lshift,
-                    NumberSlot::RShift => (*table).nb_rshift,
-                    NumberSlot::And => (*table).nb_and,
-                    NumberSlot::Xor => (*table).nb_xor,
-                    NumberSlot::Or => (*table).nb_or,
-                    NumberSlot::Int => (*table).nb_int,
-                    NumberSlot::Float => (*table).nb_float,
-                    NumberSlot::InPlaceAdd => (*table).nb_inplace_add,
-                    NumberSlot::InPlaceSubtract => (*table).nb_inplace_subtract,
-                    NumberSlot::InPlaceMultiply => (*table).nb_inplace_multiply,
-                    NumberSlot::InPlaceRemainder => (*table).nb_inplace_remainder,
-                    NumberSlot::InPlacePower => (*table).nb_inplace_power,
-                    NumberSlot::InPlaceLShift => (*table).nb_inplace_lshift,
-                    NumberSlot::InPlaceRShift => (*table).nb_inplace_rshift,
-                    NumberSlot::InPlaceAnd => (*table).nb_inplace_and,
-                    NumberSlot::InPlaceXor => (*table).nb_inplace_xor,
-                    NumberSlot::InPlaceOr => (*table).nb_inplace_or,
-                    NumberSlot::FloorDivide => (*table).nb_floor_divide,
-                    NumberSlot::TrueDivide => (*table).nb_true_divide,
-                    NumberSlot::InPlaceFloorDivide => (*table).nb_inplace_floor_divide,
-                    NumberSlot::InPlaceTrueDivide => (*table).nb_inplace_true_divide,
-                    NumberSlot::Index => (*table).nb_index,
-                    NumberSlot::MatrixMultiply => (*table).nb_matrix_multiply,
-                    NumberSlot::InPlaceMatrixMultiply => (*table).nb_inplace_matrix_multiply,
-                }
-            }
-            SlotWrapper::Sequence(slot) => {
-                let table = (*tp)
-                    .tp_as_sequence
-                    .cast::<crate::abi_types::PySequenceMethods>();
-                if table.is_null() {
-                    return ptr::null_mut();
-                }
-                match slot {
-                    SequenceSlot::Length => (*table).sq_length,
-                    SequenceSlot::Concat => (*table).sq_concat,
-                    SequenceSlot::Repeat => (*table).sq_repeat,
-                    SequenceSlot::Item => (*table).sq_item,
-                    SequenceSlot::AssItem => (*table).sq_ass_item,
-                    SequenceSlot::Contains => (*table).sq_contains,
-                    SequenceSlot::InPlaceConcat => (*table).sq_inplace_concat,
-                    SequenceSlot::InPlaceRepeat => (*table).sq_inplace_repeat,
-                }
-            }
-            SlotWrapper::Mapping(slot) => {
-                let table = (*tp)
-                    .tp_as_mapping
-                    .cast::<crate::abi_types::PyMappingMethods>();
-                if table.is_null() {
-                    return ptr::null_mut();
-                }
-                match slot {
-                    MappingSlot::Length => (*table).mp_length,
-                    MappingSlot::Subscript => (*table).mp_subscript,
-                    MappingSlot::AssSubscript => (*table).mp_ass_subscript,
-                }
-            }
-            SlotWrapper::Async(slot) => {
-                let table = (*tp).tp_as_async.cast::<crate::abi_types::PyAsyncMethods>();
-                if table.is_null() {
-                    return ptr::null_mut();
-                }
-                match slot {
-                    AsyncSlot::Await => (*table).am_await,
-                    AsyncSlot::Iter => (*table).am_aiter,
-                    AsyncSlot::Next => (*table).am_anext,
-                }
-            }
-            SlotWrapper::Buffer(slot) => {
-                let table = (*tp).tp_as_buffer.cast::<crate::abi_types::PyBufferProcs>();
-                if table.is_null() {
-                    return ptr::null_mut();
-                }
-                match slot {
-                    BufferSlot::Get => (*table).bf_getbuffer,
-                    BufferSlot::Release => (*table).bf_releasebuffer,
-                }
-            }
-        }
+    let storage = unsafe { slot_wrapper_storage(tp, slot, false) };
+    if storage.is_null() {
+        ptr::null_mut()
+    } else {
+        unsafe { storage.read() }
     }
+}
+
+fn stable_slot_wrapper(slot: c_int) -> Option<SlotWrapper> {
+    use AsyncSlot as A;
+    use BufferSlot as B;
+    use DirectSlot as D;
+    use MappingSlot as M;
+    use NumberSlot as N;
+    use SequenceSlot as S;
+    Some(match slot {
+        ts::Py_bf_getbuffer => SlotWrapper::Buffer(B::Get),
+        ts::Py_bf_releasebuffer => SlotWrapper::Buffer(B::Release),
+        ts::Py_mp_ass_subscript => SlotWrapper::Mapping(M::AssSubscript),
+        ts::Py_mp_length => SlotWrapper::Mapping(M::Length),
+        ts::Py_mp_subscript => SlotWrapper::Mapping(M::Subscript),
+        ts::Py_nb_absolute => SlotWrapper::Number(N::Absolute),
+        ts::Py_nb_add => SlotWrapper::Number(N::Add),
+        ts::Py_nb_and => SlotWrapper::Number(N::And),
+        ts::Py_nb_bool => SlotWrapper::Number(N::Bool),
+        ts::Py_nb_divmod => SlotWrapper::Number(N::Divmod),
+        ts::Py_nb_float => SlotWrapper::Number(N::Float),
+        ts::Py_nb_floor_divide => SlotWrapper::Number(N::FloorDivide),
+        ts::Py_nb_index => SlotWrapper::Number(N::Index),
+        ts::Py_nb_inplace_add => SlotWrapper::Number(N::InPlaceAdd),
+        ts::Py_nb_inplace_and => SlotWrapper::Number(N::InPlaceAnd),
+        ts::Py_nb_inplace_floor_divide => SlotWrapper::Number(N::InPlaceFloorDivide),
+        ts::Py_nb_inplace_lshift => SlotWrapper::Number(N::InPlaceLShift),
+        ts::Py_nb_inplace_multiply => SlotWrapper::Number(N::InPlaceMultiply),
+        ts::Py_nb_inplace_or => SlotWrapper::Number(N::InPlaceOr),
+        ts::Py_nb_inplace_power => SlotWrapper::Number(N::InPlacePower),
+        ts::Py_nb_inplace_remainder => SlotWrapper::Number(N::InPlaceRemainder),
+        ts::Py_nb_inplace_rshift => SlotWrapper::Number(N::InPlaceRShift),
+        ts::Py_nb_inplace_subtract => SlotWrapper::Number(N::InPlaceSubtract),
+        ts::Py_nb_inplace_true_divide => SlotWrapper::Number(N::InPlaceTrueDivide),
+        ts::Py_nb_inplace_xor => SlotWrapper::Number(N::InPlaceXor),
+        ts::Py_nb_int => SlotWrapper::Number(N::Int),
+        ts::Py_nb_invert => SlotWrapper::Number(N::Invert),
+        ts::Py_nb_lshift => SlotWrapper::Number(N::LShift),
+        ts::Py_nb_multiply => SlotWrapper::Number(N::Multiply),
+        ts::Py_nb_negative => SlotWrapper::Number(N::Negative),
+        ts::Py_nb_or => SlotWrapper::Number(N::Or),
+        ts::Py_nb_positive => SlotWrapper::Number(N::Positive),
+        ts::Py_nb_power => SlotWrapper::Number(N::Power),
+        ts::Py_nb_remainder => SlotWrapper::Number(N::Remainder),
+        ts::Py_nb_rshift => SlotWrapper::Number(N::RShift),
+        ts::Py_nb_subtract => SlotWrapper::Number(N::Subtract),
+        ts::Py_nb_true_divide => SlotWrapper::Number(N::TrueDivide),
+        ts::Py_nb_xor => SlotWrapper::Number(N::Xor),
+        ts::Py_sq_ass_item => SlotWrapper::Sequence(S::AssItem),
+        ts::Py_sq_concat => SlotWrapper::Sequence(S::Concat),
+        ts::Py_sq_contains => SlotWrapper::Sequence(S::Contains),
+        ts::Py_sq_inplace_concat => SlotWrapper::Sequence(S::InPlaceConcat),
+        ts::Py_sq_inplace_repeat => SlotWrapper::Sequence(S::InPlaceRepeat),
+        ts::Py_sq_item => SlotWrapper::Sequence(S::Item),
+        ts::Py_sq_length => SlotWrapper::Sequence(S::Length),
+        ts::Py_sq_repeat => SlotWrapper::Sequence(S::Repeat),
+        ts::Py_tp_alloc => SlotWrapper::Direct(D::Alloc),
+        ts::Py_tp_base => SlotWrapper::Direct(D::Base),
+        ts::Py_tp_bases => SlotWrapper::Direct(D::Bases),
+        ts::Py_tp_call => SlotWrapper::Direct(D::Call),
+        ts::Py_tp_clear => SlotWrapper::Direct(D::Clear),
+        ts::Py_tp_dealloc => SlotWrapper::Direct(D::Dealloc),
+        ts::Py_tp_del => SlotWrapper::Direct(D::Del),
+        ts::Py_tp_descr_get => SlotWrapper::Direct(D::DescrGet),
+        ts::Py_tp_descr_set => SlotWrapper::Direct(D::DescrSet),
+        ts::Py_tp_doc => SlotWrapper::Direct(D::Doc),
+        ts::Py_tp_getattr => SlotWrapper::Direct(D::LegacyGetAttr),
+        ts::Py_tp_getattro => SlotWrapper::Direct(D::GetAttr),
+        ts::Py_tp_hash => SlotWrapper::Direct(D::Hash),
+        ts::Py_tp_init => SlotWrapper::Direct(D::Init),
+        ts::Py_tp_is_gc => SlotWrapper::Direct(D::IsGc),
+        ts::Py_tp_iter => SlotWrapper::Direct(D::Iter),
+        ts::Py_tp_iternext => SlotWrapper::Direct(D::IterNext),
+        ts::Py_tp_methods => SlotWrapper::Direct(D::Methods),
+        ts::Py_tp_new => SlotWrapper::Direct(D::New),
+        ts::Py_tp_repr => SlotWrapper::Direct(D::Repr),
+        ts::Py_tp_richcompare => SlotWrapper::Direct(D::RichCompare),
+        ts::Py_tp_setattr => SlotWrapper::Direct(D::LegacySetAttr),
+        ts::Py_tp_setattro => SlotWrapper::Direct(D::SetAttr),
+        ts::Py_tp_str => SlotWrapper::Direct(D::Str),
+        ts::Py_tp_traverse => SlotWrapper::Direct(D::Traverse),
+        ts::Py_tp_members => SlotWrapper::Direct(D::Members),
+        ts::Py_tp_getset => SlotWrapper::Direct(D::GetSet),
+        ts::Py_tp_free => SlotWrapper::Direct(D::Free),
+        ts::Py_nb_matrix_multiply => SlotWrapper::Number(N::MatrixMultiply),
+        ts::Py_nb_inplace_matrix_multiply => SlotWrapper::Number(N::InPlaceMatrixMultiply),
+        ts::Py_am_await => SlotWrapper::Async(A::Await),
+        ts::Py_am_aiter => SlotWrapper::Async(A::Iter),
+        ts::Py_am_anext => SlotWrapper::Async(A::Next),
+        ts::Py_tp_finalize => SlotWrapper::Direct(D::Finalize),
+        ts::Py_am_send => SlotWrapper::Async(A::Send),
+        _ => return None,
+    })
+}
+
+/// Return one CPython Stable-ABI type-slot value for every public id 1..=81.
+/// The numeric ids come from the single generated authority; the lookup reads
+/// the same concrete fields that `PyType_FromSpec*` populates.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyType_GetSlot(tp: *mut PyTypeObject, slot: c_int) -> *mut c_void {
+    if tp.is_null() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return ptr::null_mut();
+    }
+    let Some(wrapper) = stable_slot_wrapper(slot) else {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return ptr::null_mut();
+    };
+    unsafe { slot_wrapper_ptr(tp, wrapper) }
 }
 
 unsafe fn new_wrapper_descr(
@@ -1262,103 +1471,7 @@ pub unsafe extern "C" fn PyType_GenericNew(
     unsafe { PyType_GenericAlloc(tp, 0) }
 }
 
-/// CPython 3.12 `Include/typeslots.h` slot ids. Verified against the primary
-/// source (python/cpython @ 3.12). Each id maps a `PyType_Slot.slot` value to a
-/// destination field so `PyType_FromSpecWithBases` can install every slot a
-/// static/heap C extension (numpy/scipy) declares. Qualified-path patterns
-/// (`ts::Py_tp_new`) are matched as constants, never bindings.
-#[allow(non_upper_case_globals)]
-mod ts {
-    use std::os::raw::c_int;
-    // Buffer protocol.
-    pub const Py_bf_getbuffer: c_int = 1;
-    pub const Py_bf_releasebuffer: c_int = 2;
-    // Mapping protocol.
-    pub const Py_mp_ass_subscript: c_int = 3;
-    pub const Py_mp_length: c_int = 4;
-    pub const Py_mp_subscript: c_int = 5;
-    // Number protocol.
-    pub const Py_nb_absolute: c_int = 6;
-    pub const Py_nb_add: c_int = 7;
-    pub const Py_nb_and: c_int = 8;
-    pub const Py_nb_bool: c_int = 9;
-    pub const Py_nb_divmod: c_int = 10;
-    pub const Py_nb_float: c_int = 11;
-    pub const Py_nb_floor_divide: c_int = 12;
-    pub const Py_nb_index: c_int = 13;
-    pub const Py_nb_inplace_add: c_int = 14;
-    pub const Py_nb_inplace_and: c_int = 15;
-    pub const Py_nb_inplace_floor_divide: c_int = 16;
-    pub const Py_nb_inplace_lshift: c_int = 17;
-    pub const Py_nb_inplace_multiply: c_int = 18;
-    pub const Py_nb_inplace_or: c_int = 19;
-    pub const Py_nb_inplace_power: c_int = 20;
-    pub const Py_nb_inplace_remainder: c_int = 21;
-    pub const Py_nb_inplace_rshift: c_int = 22;
-    pub const Py_nb_inplace_subtract: c_int = 23;
-    pub const Py_nb_inplace_true_divide: c_int = 24;
-    pub const Py_nb_inplace_xor: c_int = 25;
-    pub const Py_nb_int: c_int = 26;
-    pub const Py_nb_invert: c_int = 27;
-    pub const Py_nb_lshift: c_int = 28;
-    pub const Py_nb_multiply: c_int = 29;
-    pub const Py_nb_negative: c_int = 30;
-    pub const Py_nb_or: c_int = 31;
-    pub const Py_nb_positive: c_int = 32;
-    pub const Py_nb_power: c_int = 33;
-    pub const Py_nb_remainder: c_int = 34;
-    pub const Py_nb_rshift: c_int = 35;
-    pub const Py_nb_subtract: c_int = 36;
-    pub const Py_nb_true_divide: c_int = 37;
-    pub const Py_nb_xor: c_int = 38;
-    // Sequence protocol.
-    pub const Py_sq_ass_item: c_int = 39;
-    pub const Py_sq_concat: c_int = 40;
-    pub const Py_sq_contains: c_int = 41;
-    pub const Py_sq_inplace_concat: c_int = 42;
-    pub const Py_sq_inplace_repeat: c_int = 43;
-    pub const Py_sq_item: c_int = 44;
-    pub const Py_sq_length: c_int = 45;
-    pub const Py_sq_repeat: c_int = 46;
-    // Type slots.
-    pub const Py_tp_alloc: c_int = 47;
-    pub const Py_tp_base: c_int = 48;
-    pub const Py_tp_bases: c_int = 49;
-    pub const Py_tp_call: c_int = 50;
-    pub const Py_tp_clear: c_int = 51;
-    pub const Py_tp_dealloc: c_int = 52;
-    pub const Py_tp_del: c_int = 53;
-    pub const Py_tp_descr_get: c_int = 54;
-    pub const Py_tp_descr_set: c_int = 55;
-    pub const Py_tp_doc: c_int = 56;
-    pub const Py_tp_getattr: c_int = 57;
-    pub const Py_tp_getattro: c_int = 58;
-    pub const Py_tp_hash: c_int = 59;
-    pub const Py_tp_init: c_int = 60;
-    pub const Py_tp_is_gc: c_int = 61;
-    pub const Py_tp_iter: c_int = 62;
-    pub const Py_tp_iternext: c_int = 63;
-    pub const Py_tp_methods: c_int = 64;
-    pub const Py_tp_new: c_int = 65;
-    pub const Py_tp_repr: c_int = 66;
-    pub const Py_tp_richcompare: c_int = 67;
-    pub const Py_tp_setattr: c_int = 68;
-    pub const Py_tp_setattro: c_int = 69;
-    pub const Py_tp_str: c_int = 70;
-    pub const Py_tp_traverse: c_int = 71;
-    pub const Py_tp_members: c_int = 72;
-    pub const Py_tp_getset: c_int = 73;
-    pub const Py_tp_free: c_int = 74;
-    // Number protocol (matrix multiply, added later in the id space).
-    pub const Py_nb_matrix_multiply: c_int = 75;
-    pub const Py_nb_inplace_matrix_multiply: c_int = 76;
-    // Async protocol.
-    pub const Py_am_await: c_int = 77;
-    pub const Py_am_aiter: c_int = 78;
-    pub const Py_am_anext: c_int = 79;
-    pub const Py_tp_finalize: c_int = 80;
-    pub const Py_am_send: c_int = 81;
-}
+use crate::type_slots as ts;
 
 /// Get-or-allocate the `tp_as_number` sub-table, zero-initialised.
 unsafe fn ensure_number(ty: *mut PyTypeObject) -> *mut crate::abi_types::PyNumberMethods {
@@ -1442,226 +1555,51 @@ unsafe fn apply_spec_slots(
         while (*slot).slot != 0 {
             let id = (*slot).slot;
             let pfunc = (*slot).pfunc;
-            // tp_* function-pointer fields are `Option<extern "C" fn(...)>`, which
-            // is pointer-sized and null-niche-optimised, so a transmute from the
-            // raw `pfunc` yields `None` for a null pointer and `Some(fn)` otherwise.
-            // The destination type is spelled out explicitly per call site (rather
-            // than left for inference) to satisfy clippy's
-            // `missing_transmute_annotations`: each `$dest` below is copied
-            // verbatim from the corresponding `PyTypeObject` field type in
-            // `abi_types.rs`, so a drift between the two would be a visible diff
-            // here, not a silent inferred cast.
-            macro_rules! set_fn {
-                ($field:ident, $dest:ty) => {{
-                    (*ty).$field = ::std::mem::transmute::<*mut c_void, $dest>(pfunc);
-                }};
-            }
-            match id {
-                // ── tp_* slots ────────────────────────────────────────────────
-                ts::Py_tp_alloc => set_fn!(
-                    tp_alloc,
-                    Option<unsafe extern "C" fn(*mut PyTypeObject, Py_ssize_t) -> *mut PyObject>
-                ),
-                ts::Py_tp_base => (*ty).tp_base = pfunc.cast::<PyTypeObject>(),
-                ts::Py_tp_bases => (*ty).tp_bases = pfunc.cast::<PyObject>(),
-                ts::Py_tp_call => set_fn!(
-                    tp_call,
-                    Option<
-                        unsafe extern "C" fn(
-                            *mut PyObject,
-                            *mut PyObject,
-                            *mut PyObject,
-                        ) -> *mut PyObject,
-                    >
-                ),
-                ts::Py_tp_clear => set_fn!(
-                    tp_clear,
-                    Option<unsafe extern "C" fn(*mut PyObject) -> c_int>
-                ),
-                ts::Py_tp_dealloc => {
-                    set_fn!(tp_dealloc, Option<unsafe extern "C" fn(*mut PyObject)>)
-                }
-                ts::Py_tp_del => set_fn!(tp_del, Option<unsafe extern "C" fn(*mut PyObject)>),
-                ts::Py_tp_descr_get => {
-                    set_fn!(tp_descr_get, Option<crate::abi_types::PyDescrGetFunc>)
-                }
-                ts::Py_tp_descr_set => {
-                    set_fn!(tp_descr_set, Option<crate::abi_types::PyDescrSetFunc>)
-                }
-                ts::Py_tp_doc => {
-                    // CPython copies the doc string into fresh storage owned by the
-                    // type (the caller's static string need not outlive the spec).
-                    if !pfunc.is_null() {
-                        let src = pfunc.cast::<c_char>();
-                        let bytes = std::ffi::CStr::from_ptr(src).to_bytes_with_nul();
-                        let buf = crate::api::memory::PyMem_Malloc(bytes.len()).cast::<c_char>();
-                        if buf.is_null() {
-                            crate::capi_trace::record_silent_failure(
-                                "PyType_FromSpec",
-                                Some("tp_doc allocation failed"),
-                            );
-                            crate::api::errors::PyErr_NoMemory();
-                            return -1;
-                        }
-                        ptr::copy_nonoverlapping(bytes.as_ptr(), buf.cast::<u8>(), bytes.len());
-                        (*ty).tp_doc = buf;
-                    }
-                }
-                ts::Py_tp_getattr => set_fn!(
-                    tp_getattr,
-                    Option<unsafe extern "C" fn(*mut PyObject, *const c_char) -> *mut PyObject>
-                ),
-                ts::Py_tp_getattro => set_fn!(
-                    tp_getattro,
-                    Option<unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> *mut PyObject>
-                ),
-                ts::Py_tp_hash => set_fn!(
-                    tp_hash,
-                    Option<unsafe extern "C" fn(*mut PyObject) -> crate::abi_types::Py_hash_t>
-                ),
-                ts::Py_tp_init => set_fn!(
-                    tp_init,
-                    Option<
-                        unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut PyObject) -> c_int,
-                    >
-                ),
-                ts::Py_tp_is_gc => set_fn!(
-                    tp_is_gc,
-                    Option<unsafe extern "C" fn(*mut PyObject) -> c_int>
-                ),
-                ts::Py_tp_iter => set_fn!(
-                    tp_iter,
-                    Option<unsafe extern "C" fn(*mut PyObject) -> *mut PyObject>
-                ),
-                ts::Py_tp_iternext => set_fn!(
-                    tp_iternext,
-                    Option<unsafe extern "C" fn(*mut PyObject) -> *mut PyObject>
-                ),
-                ts::Py_tp_methods => (*ty).tp_methods = pfunc.cast::<PyMethodDef>(),
-                ts::Py_tp_new => set_fn!(
-                    tp_new,
-                    Option<
-                        unsafe extern "C" fn(
-                            *mut PyTypeObject,
-                            *mut PyObject,
-                            *mut PyObject,
-                        ) -> *mut PyObject,
-                    >
-                ),
-                ts::Py_tp_repr => set_fn!(
-                    tp_repr,
-                    Option<unsafe extern "C" fn(*mut PyObject) -> *mut PyObject>
-                ),
-                ts::Py_tp_richcompare => set_fn!(
-                    tp_richcompare,
-                    Option<
-                        unsafe extern "C" fn(*mut PyObject, *mut PyObject, c_int) -> *mut PyObject,
-                    >
-                ),
-                ts::Py_tp_setattr => set_fn!(
-                    tp_setattr,
-                    Option<
-                        unsafe extern "C" fn(*mut PyObject, *const c_char, *mut PyObject) -> c_int,
-                    >
-                ),
-                ts::Py_tp_setattro => set_fn!(
-                    tp_setattro,
-                    Option<
-                        unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut PyObject) -> c_int,
-                    >
-                ),
-                ts::Py_tp_str => set_fn!(
-                    tp_str,
-                    Option<unsafe extern "C" fn(*mut PyObject) -> *mut PyObject>
-                ),
-                ts::Py_tp_traverse => set_fn!(
-                    tp_traverse,
-                    Option<unsafe extern "C" fn(*mut PyObject, *mut c_void, *mut c_void) -> c_int>
-                ),
-                ts::Py_tp_members => (*ty).tp_members = pfunc,
-                ts::Py_tp_getset => (*ty).tp_getset = pfunc,
-                ts::Py_tp_free => set_fn!(tp_free, Option<unsafe extern "C" fn(*mut c_void)>),
-                ts::Py_tp_finalize => {
-                    set_fn!(tp_finalize, Option<unsafe extern "C" fn(*mut PyObject)>)
-                }
-                // ── nb_* (number) slots ───────────────────────────────────────
-                ts::Py_nb_absolute => (*ensure_number(ty)).nb_absolute = pfunc,
-                ts::Py_nb_add => (*ensure_number(ty)).nb_add = pfunc,
-                ts::Py_nb_and => (*ensure_number(ty)).nb_and = pfunc,
-                ts::Py_nb_bool => (*ensure_number(ty)).nb_bool = pfunc,
-                ts::Py_nb_divmod => (*ensure_number(ty)).nb_divmod = pfunc,
-                ts::Py_nb_float => (*ensure_number(ty)).nb_float = pfunc,
-                ts::Py_nb_floor_divide => (*ensure_number(ty)).nb_floor_divide = pfunc,
-                ts::Py_nb_index => (*ensure_number(ty)).nb_index = pfunc,
-                ts::Py_nb_inplace_add => (*ensure_number(ty)).nb_inplace_add = pfunc,
-                ts::Py_nb_inplace_and => (*ensure_number(ty)).nb_inplace_and = pfunc,
-                ts::Py_nb_inplace_floor_divide => {
-                    (*ensure_number(ty)).nb_inplace_floor_divide = pfunc
-                }
-                ts::Py_nb_inplace_lshift => (*ensure_number(ty)).nb_inplace_lshift = pfunc,
-                ts::Py_nb_inplace_multiply => (*ensure_number(ty)).nb_inplace_multiply = pfunc,
-                ts::Py_nb_inplace_or => (*ensure_number(ty)).nb_inplace_or = pfunc,
-                ts::Py_nb_inplace_power => (*ensure_number(ty)).nb_inplace_power = pfunc,
-                ts::Py_nb_inplace_remainder => (*ensure_number(ty)).nb_inplace_remainder = pfunc,
-                ts::Py_nb_inplace_rshift => (*ensure_number(ty)).nb_inplace_rshift = pfunc,
-                ts::Py_nb_inplace_subtract => (*ensure_number(ty)).nb_inplace_subtract = pfunc,
-                ts::Py_nb_inplace_true_divide => {
-                    (*ensure_number(ty)).nb_inplace_true_divide = pfunc
-                }
-                ts::Py_nb_inplace_xor => (*ensure_number(ty)).nb_inplace_xor = pfunc,
-                ts::Py_nb_int => (*ensure_number(ty)).nb_int = pfunc,
-                ts::Py_nb_invert => (*ensure_number(ty)).nb_invert = pfunc,
-                ts::Py_nb_lshift => (*ensure_number(ty)).nb_lshift = pfunc,
-                ts::Py_nb_multiply => (*ensure_number(ty)).nb_multiply = pfunc,
-                ts::Py_nb_negative => (*ensure_number(ty)).nb_negative = pfunc,
-                ts::Py_nb_or => (*ensure_number(ty)).nb_or = pfunc,
-                ts::Py_nb_positive => (*ensure_number(ty)).nb_positive = pfunc,
-                ts::Py_nb_power => (*ensure_number(ty)).nb_power = pfunc,
-                ts::Py_nb_remainder => (*ensure_number(ty)).nb_remainder = pfunc,
-                ts::Py_nb_rshift => (*ensure_number(ty)).nb_rshift = pfunc,
-                ts::Py_nb_subtract => (*ensure_number(ty)).nb_subtract = pfunc,
-                ts::Py_nb_true_divide => (*ensure_number(ty)).nb_true_divide = pfunc,
-                ts::Py_nb_xor => (*ensure_number(ty)).nb_xor = pfunc,
-                ts::Py_nb_matrix_multiply => (*ensure_number(ty)).nb_matrix_multiply = pfunc,
-                ts::Py_nb_inplace_matrix_multiply => {
-                    (*ensure_number(ty)).nb_inplace_matrix_multiply = pfunc
-                }
-                // ── sq_* (sequence) slots ─────────────────────────────────────
-                ts::Py_sq_length => (*ensure_sequence(ty)).sq_length = pfunc,
-                ts::Py_sq_concat => (*ensure_sequence(ty)).sq_concat = pfunc,
-                ts::Py_sq_repeat => (*ensure_sequence(ty)).sq_repeat = pfunc,
-                ts::Py_sq_item => (*ensure_sequence(ty)).sq_item = pfunc,
-                ts::Py_sq_ass_item => (*ensure_sequence(ty)).sq_ass_item = pfunc,
-                ts::Py_sq_contains => (*ensure_sequence(ty)).sq_contains = pfunc,
-                ts::Py_sq_inplace_concat => (*ensure_sequence(ty)).sq_inplace_concat = pfunc,
-                ts::Py_sq_inplace_repeat => (*ensure_sequence(ty)).sq_inplace_repeat = pfunc,
-                // ── mp_* (mapping) slots ──────────────────────────────────────
-                ts::Py_mp_length => (*ensure_mapping(ty)).mp_length = pfunc,
-                ts::Py_mp_subscript => (*ensure_mapping(ty)).mp_subscript = pfunc,
-                ts::Py_mp_ass_subscript => (*ensure_mapping(ty)).mp_ass_subscript = pfunc,
-                // ── am_* (async) slots ────────────────────────────────────────
-                ts::Py_am_await => (*ensure_async(ty)).am_await = pfunc,
-                ts::Py_am_aiter => (*ensure_async(ty)).am_aiter = pfunc,
-                ts::Py_am_anext => (*ensure_async(ty)).am_anext = pfunc,
-                ts::Py_am_send => (*ensure_async(ty)).am_send = pfunc,
-                // ── bf_* (buffer) slots ───────────────────────────────────────
-                ts::Py_bf_getbuffer => (*ensure_buffer(ty)).bf_getbuffer = pfunc,
-                ts::Py_bf_releasebuffer => (*ensure_buffer(ty)).bf_releasebuffer = pfunc,
-                // Unrecognised slot id — fail closed (poison contract): a silently
-                // dropped slot is a new miscompile. CPython raises RuntimeError.
-                other => {
+            let Some(wrapper) = stable_slot_wrapper(id) else {
+                crate::capi_trace::record_silent_failure(
+                    "PyType_FromSpec",
+                    Some(&format!("unknown PyType_Slot id {id}")),
+                );
+                crate::api::errors::PyErr_SetString(
+                    (&raw mut crate::abi_types::PyExc_RuntimeError)
+                        .cast::<crate::abi_types::PyObject>(),
+                    c"PyType_FromSpec: invalid slot offset".as_ptr(),
+                );
+                return -1;
+            };
+            // CPython owns a private copy of tp_doc. Every other stable slot is
+            // a pointer-sized value written through the shared slot-storage map.
+            let stored = if id == ts::Py_tp_doc && !pfunc.is_null() {
+                let src = pfunc.cast::<c_char>();
+                let bytes = std::ffi::CStr::from_ptr(src).to_bytes_with_nul();
+                let buf = crate::api::memory::PyMem_Malloc(bytes.len()).cast::<c_char>();
+                if buf.is_null() {
                     crate::capi_trace::record_silent_failure(
                         "PyType_FromSpec",
-                        Some(&format!("unknown PyType_Slot id {other}")),
+                        Some("tp_doc allocation failed"),
                     );
-                    crate::api::errors::PyErr_SetString(
-                        (&raw mut crate::abi_types::PyExc_RuntimeError)
-                            .cast::<crate::abi_types::PyObject>(),
-                        c"PyType_FromSpec: invalid slot offset".as_ptr(),
-                    );
+                    crate::api::errors::PyErr_NoMemory();
                     return -1;
                 }
+                ptr::copy_nonoverlapping(bytes.as_ptr(), buf.cast::<u8>(), bytes.len());
+                buf.cast::<c_void>()
+            } else {
+                pfunc
+            };
+            let storage = slot_wrapper_storage(ty, wrapper, true);
+            if storage.is_null() {
+                crate::capi_trace::record_silent_failure(
+                    "PyType_FromSpec",
+                    Some("stable type-slot storage unavailable"),
+                );
+                crate::api::errors::PyErr_SetString(
+                    (&raw mut crate::abi_types::PyExc_SystemError)
+                        .cast::<crate::abi_types::PyObject>(),
+                    c"PyType_FromSpec: stable slot storage unavailable".as_ptr(),
+                );
+                return -1;
             }
+            storage.write(stored);
             slot = slot.add(1);
         }
         0
@@ -2741,7 +2679,7 @@ pub unsafe extern "C" fn PyObject_Hash(op: *mut PyObject) -> isize {
     }
     // Molt-native (bridge-managed) objects hash through the runtime hash
     // authority over their handle bits (hash(int) == int, etc.), not tp_hash.
-    let native = crate::bridge::GLOBAL_BRIDGE.molt_handle_for_pyobj(op);
+    let native = crate::bridge::GLOBAL_BRIDGE.observed_handle_for_pyobj(op);
     if let Some(value) = native {
         return crate::bridge::molt_hash_from_bits(value.bits());
     }
@@ -3076,7 +3014,7 @@ unsafe fn native_stringify(bits: u64, want_repr: bool) -> *mut PyObject {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_native_repr(op: *mut PyObject) -> *mut PyObject {
-    let native = crate::bridge::GLOBAL_BRIDGE.molt_handle_for_pyobj(op);
+    let native = crate::bridge::GLOBAL_BRIDGE.observed_handle_for_pyobj(op);
     match native {
         Some(value) => unsafe { native_stringify(value.bits(), true) },
         None => ptr::null_mut(),
@@ -3085,7 +3023,7 @@ pub unsafe extern "C" fn molt_native_repr(op: *mut PyObject) -> *mut PyObject {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_native_str(op: *mut PyObject) -> *mut PyObject {
-    let native = crate::bridge::GLOBAL_BRIDGE.molt_handle_for_pyobj(op);
+    let native = crate::bridge::GLOBAL_BRIDGE.observed_handle_for_pyobj(op);
     match native {
         Some(value) => unsafe { native_stringify(value.bits(), false) },
         None => ptr::null_mut(),
@@ -3558,7 +3496,7 @@ pub unsafe extern "C" fn molt_generic_hash(op: *mut PyObject) -> isize {
     // Molt-native value. Decode-safe converter excludes a raw-registered foreign
     // object's `0xA11C` identity anchor (Class-2 mis-decode), so it is NEVER
     // hashed as a garbage float. Resolve then drop the bridge lock before hashing.
-    let native = crate::bridge::GLOBAL_BRIDGE.molt_handle_for_pyobj(op);
+    let native = crate::bridge::GLOBAL_BRIDGE.observed_handle_for_pyobj(op);
     if let Some(bits) = native {
         return crate::bridge::molt_hash_from_bits(bits.bits());
     }
@@ -3797,6 +3735,77 @@ mod class2_decode_tests {
     unsafe extern "C" fn foreign_bool(_op: *mut PyObject) -> c_int {
         BOOL_CALLS.fetch_add(1, Ordering::SeqCst);
         0
+    }
+
+    unsafe fn release_slot_table(ty: &mut PyTypeObject, wrapper: SlotWrapper) {
+        unsafe {
+            match wrapper {
+                SlotWrapper::Direct(_) => {}
+                SlotWrapper::Number(_) => {
+                    drop(Box::from_raw(
+                        ty.tp_as_number.cast::<crate::abi_types::PyNumberMethods>(),
+                    ));
+                    ty.tp_as_number = ptr::null_mut();
+                }
+                SlotWrapper::Sequence(_) => {
+                    drop(Box::from_raw(
+                        ty.tp_as_sequence
+                            .cast::<crate::abi_types::PySequenceMethods>(),
+                    ));
+                    ty.tp_as_sequence = ptr::null_mut();
+                }
+                SlotWrapper::Mapping(_) => {
+                    drop(Box::from_raw(
+                        ty.tp_as_mapping
+                            .cast::<crate::abi_types::PyMappingMethods>(),
+                    ));
+                    ty.tp_as_mapping = ptr::null_mut();
+                }
+                SlotWrapper::Async(_) => {
+                    drop(Box::from_raw(
+                        ty.tp_as_async.cast::<crate::abi_types::PyAsyncMethods>(),
+                    ));
+                    ty.tp_as_async = ptr::null_mut();
+                }
+                SlotWrapper::Buffer(_) => {
+                    drop(Box::from_raw(
+                        ty.tp_as_buffer.cast::<crate::abi_types::PyBufferProcs>(),
+                    ));
+                    ty.tp_as_buffer = ptr::null_mut();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_stable_slot_has_one_symmetric_storage_authority() {
+        crate::bridge::molt_cpython_abi_init();
+        for id in 1..=81 {
+            unsafe { crate::api::errors::PyErr_Clear() };
+            let wrapper = stable_slot_wrapper(id).expect("all public slot ids are mapped");
+            let mut ty: PyTypeObject = unsafe { std::mem::zeroed() };
+
+            // A valid but unset slot returns NULL without manufacturing an error,
+            // including a protocol slot whose parent table does not yet exist.
+            assert!(unsafe { PyType_GetSlot(&raw mut ty, id) }.is_null());
+            assert!(unsafe { crate::api::errors::PyErr_Occurred() }.is_null());
+
+            let storage = unsafe { slot_wrapper_storage(&raw mut ty, wrapper, true) };
+            assert!(!storage.is_null());
+            let sentinel = std::ptr::without_provenance_mut::<c_void>(0x1000 + id as usize * 16);
+            unsafe { storage.write(sentinel) };
+            assert_eq!(unsafe { PyType_GetSlot(&raw mut ty, id) }, sentinel);
+            assert!(unsafe { crate::api::errors::PyErr_Occurred() }.is_null());
+
+            unsafe { release_slot_table(&mut ty, wrapper) };
+        }
+        for id in [-1, 0, 82, i32::MAX] {
+            unsafe { crate::api::errors::PyErr_Clear() };
+            let mut ty: PyTypeObject = unsafe { std::mem::zeroed() };
+            assert!(unsafe { PyType_GetSlot(&raw mut ty, id) }.is_null());
+            assert!(!unsafe { crate::api::errors::PyErr_Occurred() }.is_null());
+        }
+        unsafe { crate::api::errors::PyErr_Clear() };
     }
 
     #[test]

@@ -185,8 +185,12 @@ unsafe fn runpy_import_intrinsic_module(_py: &PyToken<'_>, name: &str) -> Result
                 "errno constants unavailable",
             ));
         }
-        let payload_items = seq_vec_ref(payload_ptr);
-        if payload_items.len() != 2 {
+        let payload_items =
+            crate::object::seq_access::with_immutable_tuple_slice(payload_ptr, |items| {
+                (items.len() == 2).then(|| (items[0], items[1]))
+            })
+            .flatten();
+        let Some((constants_bits, errorcode_bits)) = payload_items else {
             dec_ref_bits(_py, payload_bits);
             dec_ref_bits(_py, module_bits);
             dec_ref_bits(_py, name_bits);
@@ -195,9 +199,7 @@ unsafe fn runpy_import_intrinsic_module(_py: &PyToken<'_>, name: &str) -> Result
                 "RuntimeError",
                 "errno constants unavailable",
             ));
-        }
-        let constants_bits = payload_items[0];
-        let errorcode_bits = payload_items[1];
+        };
         let Some(constants_ptr) = obj_from_bits(constants_bits).as_ptr() else {
             dec_ref_bits(_py, payload_bits);
             dec_ref_bits(_py, module_bits);
@@ -449,10 +451,12 @@ unsafe fn runpy_sys_path_entries(_py: &PyToken<'_>) -> Vec<String> {
             dec_ref_bits(_py, path_bits);
             return Vec::new();
         };
-        let entries = seq_vec_ref(path_ptr)
-            .iter()
-            .filter_map(|&bits| string_obj_to_owned(obj_from_bits(bits)))
-            .collect::<Vec<_>>();
+        let entries = crate::object::seq_access::with_borrowed(path_ptr, |items| {
+            items
+                .iter()
+                .filter_map(|&bits| string_obj_to_owned(obj_from_bits(bits)))
+                .collect::<Vec<_>>()
+        });
         dec_ref_bits(_py, path_bits);
         entries
     }
@@ -969,14 +973,13 @@ unsafe fn runpy_restricted_import_star_into_namespace(
                 if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
                     return Err(MoltObject::none().bits());
                 }
-                let elems = seq_vec_ref(pair_ptr);
-                if elems.len() < 2 {
+                let Some((name_bits, done_bits)) = crate::object::seq_access::tuple_pair(pair_ptr)
+                else {
                     return Err(MoltObject::none().bits());
-                }
-                if is_truthy(_py, obj_from_bits(elems[1])) {
+                };
+                if is_truthy(_py, obj_from_bits(done_bits)) {
                     break;
                 }
-                let name_bits = elems[0];
                 match obj_from_bits(name_bits).as_ptr() {
                     Some(name_ptr) if object_type_id(name_ptr) == TYPE_ID_STRING => {}
                     _ => {
@@ -1902,8 +1905,7 @@ unsafe fn runpy_begin_sys_argv0_swap(
             dec_ref_bits(_py, argv_bits);
             return Ok(None);
         };
-        let argv_vec = seq_vec(argv_ptr);
-        if argv_vec.is_empty() {
+        if crate::object::seq_access::locked_len(argv_ptr) == 0 {
             dec_ref_bits(_py, argv_bits);
             return Ok(None);
         }
@@ -1913,12 +1915,27 @@ unsafe fn runpy_begin_sys_argv0_swap(
             return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
         }
         let argv0_bits = MoltObject::from_ptr(argv0_ptr).bits();
-        let previous_arg0_bits = argv_vec[0];
+        let Some(previous_arg0) = crate::object::seq_access::pin_item(_py, argv_ptr, 0) else {
+            dec_ref_bits(_py, argv0_bits);
+            dec_ref_bits(_py, argv_bits);
+            return Ok(None);
+        };
+        let previous_arg0_bits = previous_arg0.bits();
         inc_ref_bits(_py, previous_arg0_bits);
+        drop(previous_arg0);
         if previous_arg0_bits != argv0_bits {
-            inc_ref_bits(_py, argv0_bits);
-            argv_vec[0] = argv0_bits;
-            dec_ref_bits(_py, previous_arg0_bits);
+            let index = 0usize;
+            if !crate::object::list_mutation::replace_indices(
+                _py,
+                argv_ptr,
+                std::slice::from_ref(&index),
+                std::slice::from_ref(&argv0_bits),
+            ) {
+                dec_ref_bits(_py, previous_arg0_bits);
+                dec_ref_bits(_py, argv0_bits);
+                dec_ref_bits(_py, argv_bits);
+                return Err(MoltObject::none().bits());
+            }
         }
         dec_ref_bits(_py, argv0_bits);
         dec_ref_bits(_py, argv_bits);
@@ -1943,13 +1960,19 @@ unsafe fn runpy_restore_sys_argv0_swap(_py: &PyToken<'_>, state: &mut Option<Run
                 if let Some(argv_ptr) = obj_from_bits(argv_bits).as_ptr()
                     && object_type_id(argv_ptr) == TYPE_ID_LIST
                 {
-                    let argv_vec = seq_vec(argv_ptr);
-                    if !argv_vec.is_empty() {
-                        let current_bits = argv_vec[0];
+                    if crate::object::seq_access::locked_len(argv_ptr) != 0
+                        && let Some(current) = crate::object::seq_access::pin_item(_py, argv_ptr, 0)
+                    {
+                        let current_bits = current.bits();
+                        drop(current);
                         if current_bits != state.previous_arg0_bits {
-                            inc_ref_bits(_py, state.previous_arg0_bits);
-                            argv_vec[0] = state.previous_arg0_bits;
-                            dec_ref_bits(_py, current_bits);
+                            let index = 0usize;
+                            let _ = crate::object::list_mutation::replace_indices(
+                                _py,
+                                argv_ptr,
+                                std::slice::from_ref(&index),
+                                std::slice::from_ref(&state.previous_arg0_bits),
+                            );
                         }
                     }
                 }

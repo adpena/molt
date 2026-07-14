@@ -196,7 +196,7 @@ pub(super) fn urllib_urlencode_impl(
                 "not a valid non-string sequence or mapping object",
             ));
         }
-        let item_fields = unsafe { seq_vec_ref(item_ptr) };
+        let item_fields = unsafe { seq_snapshot(item_ptr) };
         if item_fields.len() != 2 {
             if item_fields.len() < 2 {
                 return Err(raise_exception::<_>(
@@ -223,7 +223,7 @@ pub(super) fn urllib_urlencode_impl(
             if value_type == crate::bridge::type_id_list()
                 || value_type == crate::bridge::type_id_tuple()
             {
-                let seq = unsafe { seq_vec_ref(value_ptr) };
+                let seq = unsafe { seq_snapshot(value_ptr) };
                 for value_bits in seq.iter().copied() {
                     let value_text = crate::bridge::format_obj_str(_py, obj_from_bits(value_bits));
                     let value_enc = urllib_quote_plus_impl(&value_text, safe);

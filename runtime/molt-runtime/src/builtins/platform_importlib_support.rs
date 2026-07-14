@@ -1192,15 +1192,21 @@ pub(super) fn importlib_iter_next_value_bits(
             return Err(MoltObject::none().bits());
         }
     }
-    let pair = unsafe { seq_vec_ref(pair_ptr) };
-    if pair.len() < 2 {
+    if unsafe { crate::object::seq_access::locked_len(pair_ptr) } < 2 {
         return Err(MoltObject::none().bits());
     }
-    if is_truthy(_py, obj_from_bits(pair[1])) {
+    let Some(done) = (unsafe { crate::object::seq_access::pin_item(_py, pair_ptr, 1) }) else {
+        return Err(MoltObject::none().bits());
+    };
+    if is_truthy(_py, obj_from_bits(done.bits())) {
         return Ok(None);
     }
-    inc_ref_bits(_py, pair[0]);
-    Ok(Some(pair[0]))
+    let Some(value) = (unsafe { crate::object::seq_access::pin_item(_py, pair_ptr, 0) }) else {
+        return Err(MoltObject::none().bits());
+    };
+    let value_bits = value.bits();
+    inc_ref_bits(_py, value_bits);
+    Ok(Some(value_bits))
 }
 
 pub(super) fn importlib_best_effort_str(_py: &PyToken<'_>, value_bits: u64) -> String {

@@ -713,8 +713,7 @@ pub unsafe extern "C" fn molt_socket_getnameinfo(addr_bits: u64, flags_bits: u64
             if type_id != TYPE_ID_TUPLE && type_id != TYPE_ID_LIST {
                 return raise_exception::<_>(_py, "TypeError", "sockaddr must be tuple");
             }
-            let elems = seq_vec_ref(ptr);
-            let family = if elems.len() >= 4 {
+            let family = if crate::object::seq_access::len(ptr) >= 4 {
                 libc::AF_INET6
             } else {
                 libc::AF_INET
@@ -778,7 +777,15 @@ pub extern "C" fn molt_socket_getnameinfo(_addr_bits: u64, _flags_bits: u64) -> 
         if type_id != TYPE_ID_TUPLE && type_id != TYPE_ID_LIST {
             return raise_exception::<_>(_py, "TypeError", "sockaddr must be tuple");
         }
-        let elems = unsafe { seq_vec_ref(ptr) };
+        let Some(elems) = (unsafe {
+            crate::object::seq_access::snapshot(
+                _py,
+                ptr,
+                "socket address snapshot allocation failed",
+            )
+        }) else {
+            return MoltObject::none().bits();
+        };
         if elems.len() < 2 {
             return raise_exception::<_>(_py, "TypeError", "sockaddr must be (host, port)");
         }
@@ -965,16 +972,32 @@ fn socket_addrinfo_first_host_bits(_py: &PyToken<'_>, info_bits: u64) -> Result<
             "getaddrinfo returned invalid value",
         ));
     }
-    let info_entries = unsafe { seq_vec_ref(info_ptr) };
-    for entry_bits in info_entries {
-        let Some(entry_ptr) = obj_from_bits(*entry_bits).as_ptr() else {
+    let Some(info_entries) = (unsafe {
+        crate::object::seq_access::snapshot(
+            _py,
+            info_ptr,
+            "address info snapshot allocation failed",
+        )
+    }) else {
+        return Err(MoltObject::none().bits());
+    };
+    for entry_bits in info_entries.iter().copied() {
+        let Some(entry_ptr) = obj_from_bits(entry_bits).as_ptr() else {
             continue;
         };
         let entry_type = unsafe { object_type_id(entry_ptr) };
         if entry_type != TYPE_ID_LIST && entry_type != TYPE_ID_TUPLE {
             continue;
         }
-        let entry = unsafe { seq_vec_ref(entry_ptr) };
+        let Some(entry) = (unsafe {
+            crate::object::seq_access::snapshot(
+                _py,
+                entry_ptr,
+                "address info entry snapshot allocation failed",
+            )
+        }) else {
+            return Err(MoltObject::none().bits());
+        };
         if entry.len() < 5 {
             continue;
         }
@@ -985,7 +1008,15 @@ fn socket_addrinfo_first_host_bits(_py: &PyToken<'_>, info_bits: u64) -> Result<
         if sockaddr_type != TYPE_ID_LIST && sockaddr_type != TYPE_ID_TUPLE {
             continue;
         }
-        let sockaddr = unsafe { seq_vec_ref(sockaddr_ptr) };
+        let Some(sockaddr) = (unsafe {
+            crate::object::seq_access::snapshot(
+                _py,
+                sockaddr_ptr,
+                "socket address snapshot allocation failed",
+            )
+        }) else {
+            return Err(MoltObject::none().bits());
+        };
         if sockaddr.is_empty() {
             continue;
         }
@@ -1008,7 +1039,9 @@ fn socket_tuple_first_string(_py: &PyToken<'_>, value_bits: u64) -> Option<Strin
     if value_type != TYPE_ID_LIST && value_type != TYPE_ID_TUPLE {
         return None;
     }
-    let items = unsafe { seq_vec_ref(ptr) };
+    let items = unsafe {
+        crate::object::seq_access::snapshot(_py, ptr, "socket tuple snapshot allocation failed")?
+    };
     if items.is_empty() {
         return None;
     }
@@ -1087,16 +1120,34 @@ fn socket_collect_reverse_lookup_details(
         dec_ref_bits(_py, info_bits);
         return (aliases, addresses);
     }
-    let entries = unsafe { seq_vec_ref(info_ptr) };
-    for entry_bits in entries {
-        let Some(entry_ptr) = obj_from_bits(*entry_bits).as_ptr() else {
+    let Some(entries) = (unsafe {
+        crate::object::seq_access::snapshot(
+            _py,
+            info_ptr,
+            "reverse lookup snapshot allocation failed",
+        )
+    }) else {
+        dec_ref_bits(_py, info_bits);
+        return (aliases, addresses);
+    };
+    for entry_bits in entries.iter().copied() {
+        let Some(entry_ptr) = obj_from_bits(entry_bits).as_ptr() else {
             continue;
         };
         let entry_type = unsafe { object_type_id(entry_ptr) };
         if entry_type != TYPE_ID_LIST && entry_type != TYPE_ID_TUPLE {
             continue;
         }
-        let entry = unsafe { seq_vec_ref(entry_ptr) };
+        let Some(entry) = (unsafe {
+            crate::object::seq_access::snapshot(
+                _py,
+                entry_ptr,
+                "reverse lookup entry snapshot allocation failed",
+            )
+        }) else {
+            dec_ref_bits(_py, info_bits);
+            return (aliases, addresses);
+        };
         if entry.len() < 5 {
             continue;
         }
@@ -1113,7 +1164,16 @@ fn socket_collect_reverse_lookup_details(
         if sockaddr_type != TYPE_ID_LIST && sockaddr_type != TYPE_ID_TUPLE {
             continue;
         }
-        let sockaddr = unsafe { seq_vec_ref(sockaddr_ptr) };
+        let Some(sockaddr) = (unsafe {
+            crate::object::seq_access::snapshot(
+                _py,
+                sockaddr_ptr,
+                "reverse lookup address snapshot allocation failed",
+            )
+        }) else {
+            dec_ref_bits(_py, info_bits);
+            return (aliases, addresses);
+        };
         if sockaddr.is_empty() {
             continue;
         }
@@ -1324,16 +1384,34 @@ pub extern "C" fn molt_socket_gethostbyaddr(host_bits: u64) -> u64 {
             if let Some(info_ptr) = obj_from_bits(info_bits).as_ptr() {
                 let info_type = unsafe { object_type_id(info_ptr) };
                 if info_type == TYPE_ID_LIST || info_type == TYPE_ID_TUPLE {
-                    let entries = unsafe { seq_vec_ref(info_ptr) };
-                    for entry_bits in entries {
-                        let Some(entry_ptr) = obj_from_bits(*entry_bits).as_ptr() else {
+                    let Some(entries) = (unsafe {
+                        crate::object::seq_access::snapshot(
+                            _py,
+                            info_ptr,
+                            "host lookup snapshot allocation failed",
+                        )
+                    }) else {
+                        dec_ref_bits(_py, info_bits);
+                        return MoltObject::none().bits();
+                    };
+                    for entry_bits in entries.iter().copied() {
+                        let Some(entry_ptr) = obj_from_bits(entry_bits).as_ptr() else {
                             continue;
                         };
                         let entry_type = unsafe { object_type_id(entry_ptr) };
                         if entry_type != TYPE_ID_LIST && entry_type != TYPE_ID_TUPLE {
                             continue;
                         }
-                        let entry = unsafe { seq_vec_ref(entry_ptr) };
+                        let Some(entry) = (unsafe {
+                            crate::object::seq_access::snapshot(
+                                _py,
+                                entry_ptr,
+                                "host lookup entry snapshot allocation failed",
+                            )
+                        }) else {
+                            dec_ref_bits(_py, info_bits);
+                            return MoltObject::none().bits();
+                        };
                         if entry.len() < 4 {
                             continue;
                         }
@@ -1451,7 +1529,11 @@ pub extern "C" fn molt_socket_getfqdn(name_bits: u64) -> u64 {
                         if tuple_type != TYPE_ID_LIST && tuple_type != TYPE_ID_TUPLE {
                             None
                         } else {
-                            let items = unsafe { seq_vec_ref(tuple_ptr) };
+                            let items = unsafe {
+                                crate::object::seq_access::with_borrowed(tuple_ptr, |items| {
+                                    items.to_vec()
+                                })
+                            };
                             if items.len() < 2 {
                                 None
                             } else {
@@ -1463,11 +1545,16 @@ pub extern "C" fn molt_socket_getfqdn(name_bits: u64) -> u64 {
                                         {
                                             None
                                         } else {
-                                            let alias_items = unsafe { seq_vec_ref(alias_ptr) };
+                                            let alias_items = unsafe {
+                                                crate::object::seq_access::with_borrowed(
+                                                    alias_ptr,
+                                                    |items| items.to_vec(),
+                                                )
+                                            };
                                             let mut found: Option<String> = None;
                                             for alias_bits in alias_items {
                                                 if let Some(alias) =
-                                                    string_obj_to_owned(obj_from_bits(*alias_bits))
+                                                    string_obj_to_owned(obj_from_bits(alias_bits))
                                                     && alias.contains('.')
                                                 {
                                                     found = Some(alias);
@@ -2060,7 +2147,16 @@ pub unsafe extern "C" fn molt_socket_recv_fds(
         if result_type != TYPE_ID_TUPLE {
             return result_bits;
         }
-        let parts = unsafe { seq_vec_ref(result_ptr) };
+        let Some(parts) = (unsafe {
+            crate::object::seq_access::snapshot(
+                _py,
+                result_ptr,
+                "recvmsg result snapshot allocation failed",
+            )
+        }) else {
+            dec_ref_bits(_py, result_bits);
+            return MoltObject::none().bits();
+        };
         if parts.len() != 4 {
             dec_ref_bits(_py, result_bits);
             return raise_exception::<u64>(
@@ -2086,7 +2182,16 @@ pub unsafe extern "C" fn molt_socket_recv_fds(
             let Some(entry_ptr) = obj_from_bits(*entry_bits).as_ptr() else {
                 continue;
             };
-            let entry_parts = unsafe { seq_vec_ref(entry_ptr) };
+            let Some(entry_parts) = (unsafe {
+                crate::object::seq_access::snapshot(
+                    _py,
+                    entry_ptr,
+                    "ancillary result snapshot allocation failed",
+                )
+            }) else {
+                dec_ref_bits(_py, result_bits);
+                return MoltObject::none().bits();
+            };
             if entry_parts.len() != 3 {
                 continue;
             }

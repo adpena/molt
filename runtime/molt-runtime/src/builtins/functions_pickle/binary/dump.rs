@@ -498,7 +498,15 @@ fn pickle_dump_items_from_iterable(
                     "dict items iterator must return 2-tuples",
                 ));
             }
-            let fields = unsafe { seq_vec_ref(item_ptr) };
+            let Some(fields) = (unsafe {
+                crate::object::seq_access::snapshot(
+                    _py,
+                    item_ptr,
+                    "sequence snapshot allocation failed",
+                )
+            }) else {
+                return Err(MoltObject::none().bits());
+            };
             if fields.len() != 2 {
                 return Err(raise_exception(
                     _py,
@@ -590,7 +598,11 @@ fn pickle_dump_reduce_value(
             "__reduce__ must return a string or tuple",
         ));
     }
-    let fields = unsafe { seq_vec_ref(ptr) };
+    let Some(fields) = (unsafe {
+        crate::object::seq_access::snapshot(_py, ptr, "sequence snapshot allocation failed")
+    }) else {
+        return Err(MoltObject::none().bits());
+    };
     if !(2..=6).contains(&fields.len()) {
         return Err(pickle_raise(
             _py,
@@ -782,7 +794,16 @@ fn pickle_default_newobj_args(
                 "pickle.dumps: __getnewargs_ex__ must return tuple(size=2)",
             ));
         }
-        let fields = unsafe { seq_vec_ref(tuple_ptr).to_vec() };
+        let Some(fields) = (unsafe {
+            crate::object::seq_access::snapshot(
+                _py,
+                tuple_ptr,
+                "sequence snapshot allocation failed",
+            )
+        }) else {
+            dec_ref_bits(_py, out_bits);
+            return Err(MoltObject::none().bits());
+        };
         if fields.len() != 2 {
             dec_ref_bits(_py, out_bits);
             return Err(pickle_raise(
@@ -1287,7 +1308,11 @@ pub(crate) fn pickle_dump_obj_binary(
             return Ok(());
         }
         if type_id == TYPE_ID_TUPLE {
-            let values = unsafe { seq_vec_ref(ptr).to_vec() };
+            let Some(values) = (unsafe {
+                crate::object::seq_access::snapshot(_py, ptr, "sequence snapshot allocation failed")
+            }) else {
+                return Err(MoltObject::none().bits());
+            };
             match values.len() {
                 0 => state.push(PICKLE_OP_EMPTY_TUPLE),
                 1 => {
@@ -1307,7 +1332,7 @@ pub(crate) fn pickle_dump_obj_binary(
                 }
                 _ => {
                     state.push(PICKLE_OP_MARK);
-                    for entry in values {
+                    for &entry in values.iter() {
                         pickle_dump_obj_binary(_py, state, entry, true)?;
                     }
                     state.push(PICKLE_OP_TUPLE);
@@ -1319,10 +1344,14 @@ pub(crate) fn pickle_dump_obj_binary(
         if type_id == TYPE_ID_LIST {
             state.push(PICKLE_OP_EMPTY_LIST);
             let _ = pickle_memo_store_if_absent(state, obj_bits);
-            let values = unsafe { seq_vec_ref(ptr).to_vec() };
+            let Some(values) = (unsafe {
+                crate::object::seq_access::snapshot(_py, ptr, "sequence snapshot allocation failed")
+            }) else {
+                return Err(MoltObject::none().bits());
+            };
             if !values.is_empty() {
                 state.push(PICKLE_OP_MARK);
-                for entry in values {
+                for &entry in values.iter() {
                     pickle_dump_obj_binary(_py, state, entry, true)?;
                 }
                 state.push(PICKLE_OP_APPENDS);

@@ -158,7 +158,12 @@ unsafe extern "C" fn tuple_item(bits: u64, index: usize) -> BorrowedHandleResult
         .map_or_else(BorrowedHandleResult::error, BorrowedHandleResult::ok)
 }
 
-unsafe extern "C" fn tuple_set(bits: u64, index: usize, value: u64) -> OwnedHandleResult {
+unsafe extern "C" fn tuple_set(
+    bits: u64,
+    index: usize,
+    value: u64,
+    _exact_pointer: *mut PyObject,
+) -> OwnedHandleResult {
     let mut tuples = tuples().lock().unwrap();
     let Some(slot) = tuples.get_mut(&bits).and_then(|items| items.get_mut(index)) else {
         return OwnedHandleResult::error();

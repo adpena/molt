@@ -26,6 +26,11 @@ pub(crate) fn slice_contains_heap_refs(values: &[u64]) -> bool {
     values.iter().any(|&bits| is_heap_ref(bits))
 }
 
+#[inline]
+pub(crate) fn slice_heap_ref_count(values: &[u64]) -> usize {
+    values.iter().filter(|&&bits| is_heap_ref(bits)).count()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

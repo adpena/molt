@@ -345,7 +345,9 @@ pub(crate) fn parse_time_tuple(_py: &PyToken<'_>, tuple_bits: u64) -> Result<Tim
             let msg = format!("strftime() argument 2 must be tuple, not {type_name}");
             return Err(raise_exception::<_>(_py, "TypeError", &msg));
         }
-        let elems = seq_vec_ref(ptr);
+        let Some(elems) = crate::object::seq_access::pin_tuple(_py, ptr) else {
+            return Err(MoltObject::none().bits());
+        };
         if elems.len() != 9 {
             return Err(raise_exception::<_>(
                 _py,
@@ -450,7 +452,9 @@ pub(crate) fn parse_mktime_tuple(_py: &PyToken<'_>, tuple_bits: u64) -> Result<T
                 "Tuple or struct_time argument required",
             ));
         }
-        let elems = seq_vec_ref(ptr);
+        let Some(elems) = crate::object::seq_access::pin_tuple(_py, ptr) else {
+            return Err(MoltObject::none().bits());
+        };
         if elems.len() != 9 {
             return Err(raise_exception::<_>(
                 _py,
@@ -509,7 +513,9 @@ pub(crate) fn parse_timegm_tuple(
                 "Tuple or struct_time argument required",
             ));
         }
-        let elems = seq_vec_ref(ptr);
+        let Some(elems) = crate::object::seq_access::pin_tuple(_py, ptr) else {
+            return Err(MoltObject::none().bits());
+        };
         if elems.len() < 6 {
             let msg = format!(
                 "not enough values to unpack (expected 6, got {})",

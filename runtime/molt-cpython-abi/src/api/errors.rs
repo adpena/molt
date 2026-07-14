@@ -343,13 +343,16 @@ unsafe fn normalize_owned_error(mut error: OwnedCError) -> Option<OwnedCError> {
                 unsafe { (hooks.dec_ref)(value_bits) };
                 return None;
             }
-            let set_result = unsafe { (hooks.tuple_set)(args_bits, 0, value_bits) };
+            let set_result = unsafe {
+                (hooks.tuple_set)(args_bits, 0, value_bits, error.value)
+            };
             match set_result.decode() {
-                crate::hooks::DecodedHandleResult::Ok(old_bits) => unsafe {
+                crate::hooks::DecodedHandleResult::Ok(old_bits) if old_bits != 0 => unsafe {
                     (hooks.dec_ref)(old_bits)
                 },
-                crate::hooks::DecodedHandleResult::Missing
-                | crate::hooks::DecodedHandleResult::Error => {
+                crate::hooks::DecodedHandleResult::Ok(_)
+                | crate::hooks::DecodedHandleResult::Missing => {},
+                crate::hooks::DecodedHandleResult::Error => {
                     unsafe {
                         (hooks.dec_ref)(args_bits);
                         (hooks.dec_ref)(value_bits);
@@ -1057,6 +1060,119 @@ pub unsafe extern "C" fn PyErr_Fetch(
     }
 }
 
+/// Return the runtime's active handled exception (`sys.exception()`) as a new
+/// reference, distinct from the propagating error indicator.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyErr_GetHandledException() -> *mut PyObject {
+    let result = unsafe { (crate::hooks::hooks_or_stubs().handled_exception_get)() };
+    match result.decode() {
+        crate::hooks::DecodedHandleResult::Missing => ptr::null_mut(),
+        crate::hooks::DecodedHandleResult::Error => {
+            let _ = transfer_runtime_pending_to_current();
+            ptr::null_mut()
+        }
+        crate::hooks::DecodedHandleResult::Ok(bits) => unsafe {
+            GLOBAL_BRIDGE.owned_handle_to_pyobj(bits)
+        },
+    }
+}
+
+/// Replace the active handled exception. The public CPython API borrows `exc`;
+/// the hook consumes the independent owned runtime handle minted here.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyErr_SetHandledException(exc: *mut PyObject) {
+    let owned_bits = if exc.is_null() {
+        Some(0)
+    } else {
+        unsafe { GLOBAL_BRIDGE.molt_value_for_pyobj(exc) }
+    };
+    let status = match owned_bits {
+        Some(bits) => unsafe { (crate::hooks::hooks_or_stubs().handled_exception_set)(bits) },
+        None => -1,
+    };
+    if status != 0 && !transfer_runtime_pending_to_current() {
+        crate::capi_trace::record_silent_failure(
+            "PyErr_SetHandledException",
+            Some("runtime handled-exception authority unavailable"),
+        );
+        unsafe {
+            PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_SystemError).cast::<PyObject>(),
+                c"PyErr_SetHandledException: runtime handled-exception authority unavailable"
+                    .as_ptr(),
+            )
+        };
+    }
+}
+
+/// Read the runtime's active handled exception (`sys.exc_info()`). Every
+/// non-NULL output is a new reference, matching CPython 3.12.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyErr_GetExcInfo(
+    p_type: *mut *mut PyObject,
+    p_value: *mut *mut PyObject,
+    p_tb: *mut *mut PyObject,
+) {
+    unsafe {
+        if !p_type.is_null() {
+            *p_type = ptr::null_mut();
+        }
+        if !p_value.is_null() {
+            *p_value = ptr::null_mut();
+        }
+        if !p_tb.is_null() {
+            *p_tb = ptr::null_mut();
+        }
+    }
+    let value = unsafe { PyErr_GetHandledException() };
+    if value.is_null() {
+        return;
+    }
+    let exc_type = unsafe {
+        let tp = (*value).ob_type;
+        if tp.is_null() {
+            ptr::null_mut()
+        } else {
+            crate::api::object::Py_NewRef(tp.cast::<PyObject>())
+        }
+    };
+    let traceback = unsafe { PyException_GetTraceback(value) };
+    unsafe {
+        if p_type.is_null() {
+            crate::api::refcount::Py_XDECREF(exc_type);
+        } else {
+            *p_type = exc_type;
+        }
+        if p_value.is_null() {
+            crate::api::refcount::Py_DECREF(value);
+        } else {
+            *p_value = value;
+        }
+        if p_tb.is_null() {
+            crate::api::refcount::Py_XDECREF(traceback);
+        } else {
+            *p_tb = traceback;
+        }
+    }
+}
+
+/// Replace the runtime's active handled exception. CPython 3.12 ignores the
+/// legacy type/traceback values, derives both from `value`, and still steals all
+/// three incoming references.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyErr_SetExcInfo(
+    exc_type: *mut PyObject,
+    value: *mut PyObject,
+    traceback: *mut PyObject,
+) {
+    unsafe { PyErr_SetHandledException(value) };
+    unsafe {
+        crate::api::refcount::Py_XDECREF(exc_type);
+        crate::api::refcount::Py_XDECREF(value);
+        crate::api::refcount::Py_XDECREF(traceback);
+    }
+}
+
 /// Take ownership of an ingress triple, normalize it to the exact exception
 /// instance, attach/validate its traceback, and install that canonical state.
 #[unsafe(no_mangle)]
@@ -1256,7 +1372,7 @@ pub unsafe extern "C" fn PyException_SetTraceback(exc: *mut PyObject, tb: *mut P
         };
         return -1;
     }
-    if let Some(exception) = GLOBAL_BRIDGE.molt_handle_for_pyobj(exc) {
+    if let Some(exception) = GLOBAL_BRIDGE.observed_handle_for_pyobj(exc) {
         let traceback_bits = if tb.is_null() {
             None
         } else {
@@ -1275,13 +1391,14 @@ pub unsafe extern "C" fn PyException_SetTraceback(exc: *mut PyObject, tb: *mut P
                 c_int::from(!tb.is_null()),
             )
         };
+        let published = status != 0 || GLOBAL_BRIDGE.refresh_exception_view(exception.bits());
         if let Some(bits) = traceback_bits {
             unsafe { (hooks.dec_ref)(bits) };
         }
-        if status == 0 {
+        if status == 0 && published {
             return 0;
         }
-        if !transfer_runtime_pending_to_current() {
+        if !transfer_runtime_pending_to_current() && unsafe { PyErr_Occurred() }.is_null() {
             unsafe {
                 PyErr_SetString(
                     (&raw mut crate::abi_types::PyExc_TypeError)
@@ -1333,7 +1450,7 @@ pub unsafe extern "C" fn PyException_GetTraceback(exc: *mut PyObject) -> *mut Py
     if exc.is_null() {
         return ptr::null_mut();
     }
-    if let Some(exception) = GLOBAL_BRIDGE.molt_handle_for_pyobj(exc) {
+    if let Some(exception) = GLOBAL_BRIDGE.observed_handle_for_pyobj(exc) {
         let result = unsafe {
             (crate::hooks::hooks_or_stubs().exception_get_field)(
                 exception.bits(),
@@ -1383,12 +1500,43 @@ fn foreign_exception_layout(exc: *mut PyObject) -> Option<*mut PyBaseExceptionOb
     Some(exc.cast::<PyBaseExceptionObject>())
 }
 
+/// Return `StopIteration.value` as a new reference without projecting a native
+/// bootstrap exception through generic attribute lookup. Runtime-backed
+/// exceptions retain their own attribute authority; native exceptions created
+/// by [`molt_native_exception_new`] carry the constructor argument in `args`.
+/// CPython's StopIteration constructor accepts zero or one positional value,
+/// so those two physical forms are exact and allocation-free here.
+pub(crate) unsafe fn stop_iteration_value(exc: *mut PyObject) -> *mut PyObject {
+    if exc.is_null() {
+        unsafe { PyErr_BadInternalCall() };
+        return ptr::null_mut();
+    }
+    if GLOBAL_BRIDGE.molt_handle_for_pyobj(exc).is_some() {
+        return unsafe { crate::api::object::PyObject_GetAttrString(exc, c"value".as_ptr()) };
+    }
+    let Some(base) = foreign_exception_layout(exc) else {
+        return unsafe { crate::api::object::PyObject_GetAttrString(exc, c"value".as_ptr()) };
+    };
+    let args = unsafe { (*base).args };
+    if args.is_null() {
+        return unsafe { crate::api::object::Py_NewRef(&raw mut crate::abi_types::Py_None) };
+    }
+    match unsafe { crate::api::sequences::PyTuple_Size(args) } {
+        0 => unsafe { crate::api::object::Py_NewRef(&raw mut crate::abi_types::Py_None) },
+        1 => {
+            let value = unsafe { crate::api::sequences::PyTuple_GetItem(args, 0) };
+            unsafe { crate::api::object::Py_XNewRef(value) }
+        }
+        _ => unsafe { crate::api::object::PyObject_GetAttrString(exc, c"value".as_ptr()) },
+    }
+}
+
 unsafe fn managed_exception_set_field(
     exc: *mut PyObject,
     field: crate::hooks::ExceptionField,
     value: *mut PyObject,
 ) -> Option<c_int> {
-    let exception = GLOBAL_BRIDGE.molt_handle_for_pyobj(exc)?;
+    let exception = GLOBAL_BRIDGE.observed_handle_for_pyobj(exc)?;
     let c_none = value.is_null()
         || (!matches!(field, crate::hooks::ExceptionField::Args)
             && std::ptr::eq(value, &raw mut crate::abi_types::Py_None));
@@ -1409,20 +1557,21 @@ unsafe fn managed_exception_set_field(
             c_int::from(!c_none),
         )
     };
+    let published = status != 0 || GLOBAL_BRIDGE.refresh_exception_view(exception.bits());
     if let Some(bits) = value_bits {
         unsafe { (hooks.dec_ref)(bits) };
     }
     if status != 0 {
         let _ = transfer_runtime_pending_to_current();
     }
-    Some(status)
+    Some(if published { status } else { -1 })
 }
 
 unsafe fn managed_exception_get_field(
     exc: *mut PyObject,
     field: crate::hooks::ExceptionField,
 ) -> Option<Result<*mut PyObject, ()>> {
-    let exception = GLOBAL_BRIDGE.molt_handle_for_pyobj(exc)?;
+    let exception = GLOBAL_BRIDGE.observed_handle_for_pyobj(exc)?;
     let result = unsafe {
         (crate::hooks::hooks_or_stubs().exception_get_field)(exception.bits(), field as u32)
     };

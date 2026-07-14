@@ -1096,8 +1096,13 @@ fn importlib_transaction_fromlist_trace_display(_py: &PyToken<'_>, fromlist_bits
         return format!("<{} bits=0x{fromlist_bits:x}>", type_name(_py, obj));
     }
 
-    let mut items = Vec::new();
-    for &item_bits in unsafe { seq_vec_ref(ptr) } {
+    let item_count = unsafe { crate::object::seq_access::locked_len(ptr) };
+    let mut items = Vec::with_capacity(item_count);
+    for index in 0..item_count {
+        let Some(item) = (unsafe { crate::object::seq_access::pin_item(_py, ptr, index) }) else {
+            break;
+        };
+        let item_bits = item.bits();
         let item_obj = obj_from_bits(item_bits);
         if let Some(text) = string_obj_to_owned(item_obj) {
             items.push(format!("{text:?}"));
@@ -1202,16 +1207,22 @@ pub(super) fn importlib_transaction_string_items(
                 return Err(MoltObject::none().bits());
             }
         }
-        let pair = unsafe { seq_vec_ref(pair_ptr) };
-        if pair.len() < 2 {
+        if unsafe { crate::object::seq_access::locked_len(pair_ptr) } < 2 {
             return Err(MoltObject::none().bits());
         }
-        if is_truthy(_py, obj_from_bits(pair[1])) {
+        let Some(done) = (unsafe { crate::object::seq_access::pin_item(_py, pair_ptr, 1) }) else {
+            return Err(MoltObject::none().bits());
+        };
+        if is_truthy(_py, obj_from_bits(done.bits())) {
             break;
         }
-        let item_obj = obj_from_bits(pair[0]);
+        let Some(item) = (unsafe { crate::object::seq_access::pin_item(_py, pair_ptr, 0) }) else {
+            return Err(MoltObject::none().bits());
+        };
+        let item_bits = item.bits();
+        let item_obj = obj_from_bits(item_bits);
         let Some(text) = string_obj_to_owned(item_obj) else {
-            let item_type = class_name_for_error(type_of_bits(_py, pair[0]));
+            let item_type = class_name_for_error(type_of_bits(_py, item_bits));
             let message = match &context {
                 ImportlibTransactionStringItemsContext::FromList => {
                     format!("Item in ``from list'' must be str, not {item_type}")

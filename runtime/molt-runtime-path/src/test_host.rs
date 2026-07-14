@@ -265,11 +265,14 @@ pub extern "C" fn __molt_path_to_f64(bits: u64, out: *mut f64) -> i32 {
     1
 }
 
-#[allow(improper_ctypes_definitions)]
 #[unsafe(no_mangle)]
-pub extern "C" fn __molt_path_seq_vec_ptr(ptr: *mut u8) -> *mut Vec<u64> {
-    let _ = ptr;
-    unexpected("__molt_path_seq_vec_ptr")
+pub extern "C" fn __molt_path_seq_snapshot(
+    ptr: *mut u8,
+    out_ptr: *mut *const u64,
+    out_len: *mut usize,
+) -> i32 {
+    let _ = (ptr, out_ptr, out_len);
+    unexpected("__molt_path_seq_snapshot")
 }
 
 unexpected_u64!(__molt_path_molt_iter(bits: u64));
@@ -467,12 +470,6 @@ pub extern "C" fn molt_is_truthy_bool_nogil(bits: u64) -> i64 {
     molt_is_truthy_bool(bits)
 }
 
-unexpected_u64!(molt_list_int_getitem_nogil(list_bits: u64, index_bits: u64));
-unexpected_u64!(molt_list_int_setitem_nogil(
-    list_bits: u64,
-    index_bits: u64,
-    value_bits: u64,
-));
 unexpected_i64!(molt_list_int_getitem_raw(list_bits: u64, raw_index: i64));
 unexpected_i64!(molt_list_int_getitem_raw_checked(
     list_bits: u64,

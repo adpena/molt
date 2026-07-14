@@ -1140,7 +1140,15 @@ pub extern "C" fn molt_capi_method_dispatch(
             Ok(ptr) => ptr,
             Err(bits) => return bits,
         };
-        let args_vec = unsafe { seq_vec_ref(args_ptr) };
+        let Some(args_vec) = (unsafe {
+            crate::object::seq_access::snapshot(
+                _py,
+                args_ptr,
+                "C-API callback argument snapshot allocation failed",
+            )
+        }) else {
+            return none_bits();
+        };
         let dynamic_self = obj_from_bits(self_bits).is_none();
         let callback_self_bits = if dynamic_self {
             if args_vec.is_empty() {

@@ -738,15 +738,19 @@ fn percent_consume_next_arg(
     single_consumed: &mut bool,
 ) -> Option<u64> {
     if let Some(ptr) = tuple_ptr {
-        let elems = unsafe { seq_vec_ref(ptr) };
-        if *tuple_idx >= elems.len() {
+        let bits = unsafe {
+            crate::object::seq_access::with_immutable_tuple_slice(ptr, |elems| {
+                elems.get(*tuple_idx).copied()
+            })
+            .flatten()
+        };
+        let Some(bits) = bits else {
             return raise_exception::<Option<u64>>(
                 _py,
                 "TypeError",
                 "not enough arguments for format string",
             );
-        }
-        let bits = elems[*tuple_idx];
+        };
         *tuple_idx += 1;
         return Some(bits);
     }
@@ -959,8 +963,11 @@ pub(super) fn string_percent_format_impl(
     }
     out.push_str(&text[literal_start..]);
     if let Some(ptr) = tuple_ptr {
-        let elems = unsafe { seq_vec_ref(ptr) };
-        if tuple_idx < elems.len() {
+        let len = unsafe {
+            crate::object::seq_access::with_immutable_tuple_slice(ptr, |elems| elems.len())
+                .unwrap_or(0)
+        };
+        if tuple_idx < len {
             return raise_exception::<Option<String>>(
                 _py,
                 "TypeError",

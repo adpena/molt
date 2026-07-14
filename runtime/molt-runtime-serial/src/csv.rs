@@ -692,7 +692,7 @@ fn write_row_to_string(_py: &PyToken, row_bits: u64, dialect: &Dialect) -> Resul
         ));
     };
     // Snapshot the items so we don't hold a borrow across allocations.
-    let items_copy: Vec<u64> = unsafe {
+    let items_copy = unsafe {
         let type_id = object_type_id(row_ptr);
         if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
             let msg = format!(
@@ -701,11 +701,11 @@ fn write_row_to_string(_py: &PyToken, row_bits: u64, dialect: &Dialect) -> Resul
             );
             return Err(raise_exception::<u64>(_py, "TypeError", &msg));
         }
-        seq_vec_ref(row_ptr).to_vec()
+        seq_snapshot(row_ptr)
     };
 
     let mut parts: Vec<String> = Vec::with_capacity(items_copy.len());
-    for item_bits in items_copy {
+    for item_bits in items_copy.iter().copied() {
         let (is_none, is_number) = obj_kind(item_bits);
         let text = render_field_text(_py, item_bits);
         let encoded = match encode_field(&text, dialect, is_none, is_number) {
@@ -732,7 +732,11 @@ fn write_row_to_string(_py: &PyToken, row_bits: u64, dialect: &Dialect) -> Resul
     Ok(record)
 }
 
-fn sequence_items_from_bits(_py: &PyToken, bits: u64, param_name: &str) -> Result<Vec<u64>, u64> {
+fn sequence_items_from_bits(
+    _py: &PyToken,
+    bits: u64,
+    param_name: &str,
+) -> Result<OwnedBridgeHandleSnapshot, u64> {
     let obj = obj_from_bits(bits);
     let Some(ptr) = obj.as_ptr() else {
         let msg = format!("{param_name} must be a sequence");
@@ -743,7 +747,7 @@ fn sequence_items_from_bits(_py: &PyToken, bits: u64, param_name: &str) -> Resul
         let msg = format!("{param_name} must be a sequence");
         return Err(raise_exception::<u64>(_py, "TypeError", &msg));
     }
-    Ok(unsafe { seq_vec_ref(ptr).to_vec() })
+    Ok(unsafe { seq_snapshot(ptr) })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1594,7 +1598,7 @@ pub extern "C" fn molt_csv_writer_writerows(handle_bits: u64, rows_bits: u64) ->
         };
 
         // Snapshot the rows slice so we don't hold a borrow across allocations.
-        let row_bits_vec: Vec<u64> = unsafe {
+        let row_bits_vec = unsafe {
             let type_id = object_type_id(rows_ptr);
             if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
                 let msg = format!(
@@ -1603,11 +1607,11 @@ pub extern "C" fn molt_csv_writer_writerows(handle_bits: u64, rows_bits: u64) ->
                 );
                 return raise_exception::<u64>(_py, "TypeError", &msg);
             }
-            seq_vec_ref(rows_ptr).to_vec()
+            seq_snapshot(rows_ptr)
         };
 
         let mut out = String::new();
-        for row_bits in row_bits_vec {
+        for row_bits in row_bits_vec.iter().copied() {
             let record = match write_row_to_string(_py, row_bits, &dialect) {
                 Ok(s) => s,
                 Err(bits) => return bits,
@@ -1865,7 +1869,7 @@ pub extern "C" fn molt_csv_validate_fmtparams(keys_bits: u64) -> u64 {
             unsafe {
                 let tid = object_type_id(ptr);
                 if tid == TYPE_ID_LIST || tid == TYPE_ID_TUPLE {
-                    let items = seq_vec_ref(ptr);
+                    let items = seq_snapshot(ptr);
                     for &item_bits in items.iter() {
                         if let Some(key) = string_obj_to_owned(obj_from_bits(item_bits))
                             && !VALID_KEYS.contains(&key.as_str())

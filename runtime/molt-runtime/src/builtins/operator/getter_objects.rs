@@ -6,7 +6,7 @@ use molt_obj_model::MoltObject;
 use crate::{
     PyToken, TYPE_ID_DICT, TYPE_ID_STRING, TYPE_ID_TUPLE, alloc_string, alloc_tuple, dec_ref_bits,
     exception_pending, inc_ref_bits, molt_getattr_builtin, molt_index, obj_from_bits,
-    object_class_bits, object_type_id, raise_exception, seq_vec_ref, string_obj_to_owned,
+    object_class_bits, object_type_id, raise_exception, string_obj_to_owned,
 };
 
 unsafe fn itemgetter_items_bits(ptr: *mut u8) -> u64 {
@@ -78,8 +78,7 @@ pub extern "C" fn molt_operator_itemgetter_init(self_bits: u64, items_bits: u64)
                     "itemgetter expected at least 1 argument",
                 );
             }
-            let items = seq_vec_ref(items_ptr);
-            if items.is_empty() {
+            if crate::object::seq_access::len(items_ptr) == 0 {
                 return raise_exception::<_>(
                     _py,
                     "TypeError",
@@ -117,14 +116,15 @@ pub extern "C" fn molt_operator_attrgetter_init(self_bits: u64, attrs_bits: u64)
                     "attrgetter expected at least 1 argument",
                 );
             }
-            let attrs = seq_vec_ref(attrs_ptr);
-            if attrs.is_empty() {
+            if crate::object::seq_access::len(attrs_ptr) == 0 {
                 return raise_exception::<_>(
                     _py,
                     "TypeError",
                     "attrgetter expected at least 1 argument",
                 );
             }
+            let attrs = crate::object::seq_access::pin_tuple(_py, attrs_ptr)
+                .expect("type-checked attrgetter tuple must remain live");
             for &attr_bits in attrs.iter() {
                 let Some(attr_ptr) = obj_from_bits(attr_bits).as_ptr() else {
                     return raise_exception::<_>(
@@ -206,8 +206,7 @@ pub extern "C" fn molt_operator_itemgetter(items_bits: u64) -> u64 {
                     "itemgetter expected at least 1 argument",
                 );
             }
-            let items = seq_vec_ref(items_ptr);
-            if items.is_empty() {
+            if crate::object::seq_access::len(items_ptr) == 0 {
                 return raise_exception::<_>(
                     _py,
                     "TypeError",
@@ -256,14 +255,15 @@ pub extern "C" fn molt_operator_attrgetter(attrs_bits: u64) -> u64 {
                     "attrgetter expected at least 1 argument",
                 );
             }
-            let attrs = seq_vec_ref(attrs_ptr);
-            if attrs.is_empty() {
+            if crate::object::seq_access::len(attrs_ptr) == 0 {
                 return raise_exception::<_>(
                     _py,
                     "TypeError",
                     "attrgetter expected at least 1 argument",
                 );
             }
+            let attrs = crate::object::seq_access::pin_tuple(_py, attrs_ptr)
+                .expect("type-checked attrgetter tuple must remain live");
             for &attr_bits in attrs.iter() {
                 let Some(attr_ptr) = obj_from_bits(attr_bits).as_ptr() else {
                     return raise_exception::<_>(
@@ -360,7 +360,13 @@ pub extern "C" fn molt_operator_itemgetter_call(self_bits: u64, obj_bits: u64) -
             if object_type_id(items_ptr) != TYPE_ID_TUPLE {
                 return MoltObject::none().bits();
             }
-            let items = seq_vec_ref(items_ptr);
+            let Some(items) = crate::object::seq_access::snapshot(
+                _py,
+                items_ptr,
+                "sequence snapshot allocation failed",
+            ) else {
+                return MoltObject::none().bits();
+            };
             if items.len() == 1 {
                 let res_bits = molt_index(obj_bits, items[0]);
                 if exception_pending(_py) {
@@ -441,7 +447,13 @@ pub extern "C" fn molt_operator_attrgetter_call(self_bits: u64, obj_bits: u64) -
             if object_type_id(attrs_ptr) != TYPE_ID_TUPLE {
                 return MoltObject::none().bits();
             }
-            let attrs = seq_vec_ref(attrs_ptr);
+            let Some(attrs) = crate::object::seq_access::snapshot(
+                _py,
+                attrs_ptr,
+                "sequence snapshot allocation failed",
+            ) else {
+                return MoltObject::none().bits();
+            };
             if attrs.len() == 1 {
                 let name = string_obj_to_owned(obj_from_bits(attrs[0])).unwrap_or_default();
                 let res_bits = resolve_attr_path(_py, obj_bits, &name);
@@ -491,14 +503,25 @@ pub extern "C" fn molt_operator_methodcaller_call(self_bits: u64, obj_bits: u64)
             return raise_exception::<u64>(_py, "AttributeError", &name);
         }
         let args_ptr = obj_from_bits(args_bits).as_ptr();
-        let mut arg_list: Vec<u64> = Vec::new();
-        if let Some(args_ptr) = args_ptr {
+        let arg_snapshot = if let Some(args_ptr) = args_ptr {
             unsafe {
                 if object_type_id(args_ptr) == TYPE_ID_TUPLE {
-                    arg_list = seq_vec_ref(args_ptr).clone();
+                    let Some(snapshot) = crate::object::seq_access::snapshot(
+                        _py,
+                        args_ptr,
+                        "sequence snapshot allocation failed",
+                    ) else {
+                        return MoltObject::none().bits();
+                    };
+                    Some(snapshot)
+                } else {
+                    None
                 }
             }
-        }
+        } else {
+            None
+        };
+        let arg_list = arg_snapshot.as_deref().unwrap_or(&[]);
         let kw_ptr = obj_from_bits(kwargs_bits).as_ptr();
         let mut kw_pairs: Vec<(u64, u64)> = Vec::new();
         if let Some(kw_ptr) = kw_ptr {

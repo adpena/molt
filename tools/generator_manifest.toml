@@ -74,6 +74,19 @@ sync_test = "tests/tools/test_gen_cpython_coverage.py"
 discovery_only = false
 
 [[generator]]
+tool = "tools/gen_cpython_type_slots.py"
+outputs = [
+  "runtime/molt-cpython-abi/include/_molt_typeslots.generated.h",
+]
+source = "runtime/molt-cpython-abi/src/type_slots.rs + config/cpython_stable_abi_3_12.toml"
+check_mode = true
+check_command = "tools/gen_cpython_type_slots.py --check"
+idempotent = true
+sync_test = "tests/tools/test_gen_cpython_type_slots.py"
+closed_domains = ["CPython 3.12 stable ABI type-slot ids"]
+discovery_only = false
+
+[[generator]]
 tool = "tools/gen_op_kinds.py"
 outputs = [
   "runtime/molt-ir/src/tir/op_kinds_generated.rs",

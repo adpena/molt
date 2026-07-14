@@ -19,8 +19,7 @@ use crate::{
     molt_set_issubset, molt_set_issuperset, molt_set_new, molt_set_pop, molt_set_remove,
     molt_set_symmetric_difference, molt_set_symmetric_difference_update, molt_set_union_multi,
     molt_set_update_multi, molt_setitem_method, molt_tuple_count, molt_tuple_index_range,
-    molt_tuple_new_bound, obj_from_bits, object_type_id, runtime_state, seq_vec_ref,
-    set_add_in_place,
+    molt_tuple_new_bound, obj_from_bits, object_type_id, runtime_state, set_add_in_place,
 };
 
 pub(crate) fn is_set_like_type(type_id: u32) -> bool {
@@ -603,13 +602,13 @@ pub(crate) unsafe fn list_len(ptr: *mut u8) -> usize {
         } else if tid == TYPE_ID_LIST_BOOL {
             crate::object::layout::list_bool_vec_ref(ptr).len()
         } else {
-            seq_vec_ref(ptr).len()
+            crate::object::seq_access::len(ptr)
         }
     }
 }
 
 pub(crate) unsafe fn tuple_len(ptr: *mut u8) -> usize {
-    unsafe { seq_vec_ref(ptr).len() }
+    unsafe { crate::object::seq_access::len(ptr) }
 }
 
 pub(crate) unsafe fn dict_order_ptr(ptr: *mut u8) -> *mut Vec<u64> {

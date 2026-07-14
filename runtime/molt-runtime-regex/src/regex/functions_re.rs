@@ -37,7 +37,7 @@ fn iter_next_pair(_py: &CoreGilToken, iter_bits: u64) -> Result<(u64, bool), u64
         if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
             return Err(MoltObject::none().bits());
         }
-        let elems = seq_vec_ref(pair_ptr);
+        let elems = seq_snapshot(pair_ptr);
         if elems.len() < 2 {
             return Err(MoltObject::none().bits());
         }
@@ -385,7 +385,7 @@ pub(super) fn re_extract_range_pairs(
                 "ranges must contain (start, end) pairs",
             ));
         }
-        let pair = unsafe { seq_vec_ref(item_ptr) };
+        let pair = unsafe { seq_snapshot(item_ptr) };
         if pair.len() < 2 {
             dec_ref_bits(_py, item_bits);
             return Err(raise_exception::<u64>(
@@ -511,7 +511,7 @@ pub(super) fn re_group_values_from_sequence(
         ));
     }
     let mut out: Vec<Option<String>> = Vec::new();
-    let elems = unsafe { seq_vec_ref(group_values_ptr) };
+    let elems = unsafe { seq_snapshot(group_values_ptr) };
     for &elem_bits in elems.iter() {
         let elem_obj = obj_from_bits(elem_bits);
         if elem_obj.is_none() {
@@ -601,7 +601,7 @@ pub(super) fn re_group_spans_from_sequence(
         ));
     }
     let mut out: Vec<Option<(i64, i64)>> = Vec::new();
-    let elems = unsafe { seq_vec_ref(groups_ptr) };
+    let elems = unsafe { seq_snapshot(groups_ptr) };
     for &elem_bits in elems.iter() {
         let elem_obj = obj_from_bits(elem_bits);
         if elem_obj.is_none() {
@@ -623,7 +623,7 @@ pub(super) fn re_group_spans_from_sequence(
                 "group span must be tuple[int, int] or None",
             ));
         }
-        let span = unsafe { seq_vec_ref(elem_ptr) };
+        let span = unsafe { seq_snapshot(elem_ptr) };
         if span.len() < 2 {
             return Err(raise_exception::<u64>(
                 _py,

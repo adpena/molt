@@ -322,6 +322,17 @@ _MOLT_ABI_SASSERT(sizeof(PyTupleObject) == 32u, "layout drift: sizeof(PyTupleObj
 _MOLT_ABI_SASSERT(offsetof(PyTupleObject, ob_item) == 24u, "layout drift: offsetof(PyTupleObject, ob_item) != 24");
 #endif
 
+/* PyListObject  <-  abi_types.rs */
+#if _MOLT_ABI_PTR32
+_MOLT_ABI_SASSERT(sizeof(PyListObject) == 20u, "layout drift: sizeof(PyListObject) != 20 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyListObject, ob_item) == 12u, "layout drift: offsetof(PyListObject, ob_item) != 12");
+_MOLT_ABI_SASSERT(offsetof(PyListObject, allocated) == 16u, "layout drift: offsetof(PyListObject, allocated) != 16");
+#else
+_MOLT_ABI_SASSERT(sizeof(PyListObject) == 40u, "layout drift: sizeof(PyListObject) != 40 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyListObject, ob_item) == 24u, "layout drift: offsetof(PyListObject, ob_item) != 24");
+_MOLT_ABI_SASSERT(offsetof(PyListObject, allocated) == 32u, "layout drift: offsetof(PyListObject, allocated) != 32");
+#endif
+
 /* PyBytesObject  <-  abi_types.rs */
 #if _MOLT_ABI_PTR32
 _MOLT_ABI_SASSERT(sizeof(PyBytesObject) == 20u, "layout drift: sizeof(PyBytesObject) != 20 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");

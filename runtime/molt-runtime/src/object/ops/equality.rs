@@ -298,23 +298,30 @@ pub(crate) fn obj_eq(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> boo
                 return simd_bytes_eq(bytes_data(lp), bytes_data(rp), l_len);
             }
             if ltype == TYPE_ID_TUPLE {
-                let l_elems = seq_vec_ref(lp);
-                let r_elems = seq_vec_ref(rp);
-                if l_elems.len() != r_elems.len() {
-                    return false;
-                }
-                // SIMD fast path: skip past identity-equal prefix
-                let first_diff = simd_find_first_mismatch(l_elems, r_elems);
-                for idx in first_diff..l_elems.len() {
-                    if !obj_eq(
-                        _py,
-                        obj_from_bits(l_elems[idx]),
-                        obj_from_bits(r_elems[idx]),
-                    ) {
-                        return false;
-                    }
-                }
-                return true;
+                // Published tuples are immutable and the compared objects stay
+                // live for this call. Keep the SIMD lane allocation-free; only
+                // mutable lists need per-item pins around callbacks.
+                return crate::object::seq_access::with_immutable_tuple_slice(lp, |l_elems| {
+                    crate::object::seq_access::with_immutable_tuple_slice(rp, |r_elems| {
+                        if l_elems.len() != r_elems.len() {
+                            return false;
+                        }
+                        // SIMD fast path: skip past identity-equal prefix.
+                        let first_diff = simd_find_first_mismatch(l_elems, r_elems);
+                        for idx in first_diff..l_elems.len() {
+                            if !obj_eq(
+                                _py,
+                                obj_from_bits(l_elems[idx]),
+                                obj_from_bits(r_elems[idx]),
+                            ) {
+                                return false;
+                            }
+                        }
+                        true
+                    })
+                    .unwrap_or(false)
+                })
+                .unwrap_or(false);
             }
             if ltype == TYPE_ID_SLICE {
                 let l_start = slice_start_bits(lp);
@@ -362,26 +369,38 @@ pub(crate) fn obj_eq(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> boo
                     );
                     return false;
                 }
-                let l_elems = seq_vec_ref(lp);
-                let r_elems = seq_vec_ref(rp);
-                if l_elems.len() != r_elems.len() {
+                if crate::object::seq_access::locked_len(lp)
+                    != crate::object::seq_access::locked_len(rp)
+                {
                     crate::state::recursion::recursion_guard_exit_fast();
                     return false;
                 }
-                // SIMD fast path: skip past identity-equal prefix
-                let first_diff = simd_find_first_mismatch(l_elems, r_elems);
-                for idx in first_diff..l_elems.len() {
-                    if !obj_eq(
-                        _py,
-                        obj_from_bits(l_elems[idx]),
-                        obj_from_bits(r_elems[idx]),
-                    ) {
+                let mut idx = 0;
+                loop {
+                    let l_len = crate::object::seq_access::locked_len(lp);
+                    let r_len = crate::object::seq_access::locked_len(rp);
+                    if idx >= l_len.min(r_len) {
+                        crate::state::recursion::recursion_guard_exit_fast();
+                        return l_len == r_len;
+                    }
+                    let Some(l_item) = crate::object::seq_access::pin_item(_py, lp, idx) else {
+                        continue;
+                    };
+                    let Some(r_item) = crate::object::seq_access::pin_item(_py, rp, idx) else {
+                        continue;
+                    };
+                    if l_item.bits() != r_item.bits()
+                        && !obj_eq(
+                            _py,
+                            obj_from_bits(l_item.bits()),
+                            obj_from_bits(r_item.bits()),
+                        )
+                    {
                         crate::state::recursion::recursion_guard_exit_fast();
                         return false;
                     }
+                    idx += 1;
                 }
-                crate::state::recursion::recursion_guard_exit_fast();
-                return true;
             }
             if ltype == TYPE_ID_DICT {
                 if !crate::state::recursion::recursion_guard_enter_fast() {

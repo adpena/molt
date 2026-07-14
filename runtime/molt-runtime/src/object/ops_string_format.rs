@@ -439,7 +439,6 @@ pub extern "C" fn molt_string_format_method(
             if object_type_id(args_ptr) != TYPE_ID_TUPLE {
                 return raise_exception::<_>(_py, "TypeError", "format arguments must be a tuple");
             }
-            let args_vec = seq_vec_ref(args_ptr);
             let mut state = FormatState {
                 next_auto: 0,
                 used_auto: false,
@@ -447,14 +446,19 @@ pub extern "C" fn molt_string_format_method(
                 allow_positional: true,
                 mapping_mode: false,
             };
-            let Some(rendered) = format_string_impl(
-                _py,
-                &text,
-                args_vec.as_slice(),
-                kwargs_bits,
-                &mut state,
-                FormatContext::FormatString,
-            ) else {
+            let rendered =
+                crate::object::seq_access::with_immutable_tuple_slice(args_ptr, |args| {
+                    format_string_impl(
+                        _py,
+                        &text,
+                        args,
+                        kwargs_bits,
+                        &mut state,
+                        FormatContext::FormatString,
+                    )
+                })
+                .flatten();
+            let Some(rendered) = rendered else {
                 return MoltObject::none().bits();
             };
             let out_ptr = alloc_string(_py, rendered.as_bytes());

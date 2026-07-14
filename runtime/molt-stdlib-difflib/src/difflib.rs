@@ -561,9 +561,9 @@ fn list_to_str_vec(_py: &PyToken, bits: u64) -> Result<Vec<String>, u64> {
             &format!("expected list of str, got {tn}"),
         ));
     };
-    let items: Vec<u64> = unsafe { crate::bridge::seq_vec_ref(ptr).to_vec() };
+    let items = unsafe { crate::bridge::seq_snapshot(ptr) };
     let mut out = Vec::with_capacity(items.len());
-    for item_bits in items {
+    for item_bits in items.iter().copied() {
         match string_obj_to_owned(obj_from_bits(item_bits)) {
             Some(s) => out.push(s),
             None => {

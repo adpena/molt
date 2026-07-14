@@ -28,11 +28,13 @@ unsafe fn asyncio_wait_scan(
             let _ = raise_exception::<u64>(_py, "TypeError", "wait tasks must be awaitables");
             return None;
         };
-        let tasks = seq_vec_ref(tasks_ptr);
-        let mut done_flags = Vec::with_capacity(tasks.len());
+        let task_count = crate::object::seq_access::len(tasks_ptr);
+        let mut done_flags = Vec::with_capacity(task_count);
         let mut pending_count = 0usize;
         let mut triggered = false;
-        for &task_bits in tasks {
+        for idx in 0..task_count {
+            let task = crate::object::seq_access::pin_item(_py, tasks_ptr, idx)?;
+            let task_bits = task.bits();
             let done = asyncio_method_truthy(_py, task_bits, b"done")?;
             done_flags.push(done);
             if !done {
@@ -76,25 +78,27 @@ unsafe fn asyncio_wait_build_result(
         let Some(tasks_ptr) = obj_from_bits(tasks_bits).as_ptr() else {
             return raise_exception::<i64>(_py, "TypeError", "wait tasks must be awaitables");
         };
-        let tasks = seq_vec_ref(tasks_ptr);
-        if tasks.len() != done_flags.len() {
+        let task_count = crate::object::seq_access::len(tasks_ptr);
+        if task_count != done_flags.len() {
             return raise_exception::<i64>(_py, "RuntimeError", "invalid wait state");
         }
-        let done_bits = molt_set_new(tasks.len() as u64);
+        let done_bits = molt_set_new(task_count as u64);
         if obj_from_bits(done_bits).is_none() {
             return MoltObject::none().bits() as i64;
         }
-        let pending_bits = molt_set_new(tasks.len() as u64);
+        let pending_bits = molt_set_new(task_count as u64);
         if obj_from_bits(pending_bits).is_none() {
             dec_ref_bits(_py, done_bits);
             return MoltObject::none().bits() as i64;
         }
-        for (idx, &task_bits) in tasks.iter().enumerate() {
-            let target_set = if done_flags[idx] {
-                done_bits
-            } else {
-                pending_bits
+        for (idx, &is_done) in done_flags.iter().enumerate() {
+            let Some(task) = crate::object::seq_access::pin_item(_py, tasks_ptr, idx) else {
+                dec_ref_bits(_py, done_bits);
+                dec_ref_bits(_py, pending_bits);
+                return raise_exception::<i64>(_py, "RuntimeError", "invalid wait state");
             };
+            let task_bits = task.bits();
+            let target_set = if is_done { done_bits } else { pending_bits };
             let _ = molt_set_add(target_set, task_bits);
             if exception_pending(_py) {
                 dec_ref_bits(_py, done_bits);
@@ -153,10 +157,13 @@ unsafe fn asyncio_gather_cancel_pending(
         let Some(tasks_ptr) = obj_from_bits(tasks_bits).as_ptr() else {
             return;
         };
-        let tasks = seq_vec_ref(tasks_ptr);
-        let limit = results_len.min(tasks.len());
-        for (idx, &task_bits) in tasks.iter().take(limit).enumerate() {
+        let limit = results_len.min(crate::object::seq_access::len(tasks_ptr));
+        for idx in 0..limit {
             if *payload_ptr.add(ASYNCIO_GATHER_RESULT_OFFSET + idx) == missing {
+                let Some(task) = crate::object::seq_access::pin_item(_py, tasks_ptr, idx) else {
+                    return;
+                };
+                let task_bits = task.bits();
                 asyncio_cancel_task(_py, task_bits);
             }
         }
@@ -193,7 +200,7 @@ pub extern "C" fn molt_asyncio_wait_new(
             dec_ref_bits(_py, task_tuple_bits);
             return raise_exception::<u64>(_py, "TypeError", "wait tasks must be awaitables");
         };
-        if unsafe { seq_vec_ref(task_tuple_ptr) }.is_empty() {
+        if unsafe { crate::object::seq_access::len(task_tuple_ptr) } == 0 {
             dec_ref_bits(_py, task_tuple_bits);
             return raise_exception::<u64>(
                 _py,
@@ -357,7 +364,7 @@ pub extern "C" fn molt_asyncio_gather_new(tasks_bits: u64, return_exceptions_bit
             dec_ref_bits(_py, task_tuple_bits);
             return raise_exception::<u64>(_py, "TypeError", "gather tasks must be awaitables");
         };
-        let results_len = unsafe { seq_vec_ref(task_tuple_ptr) }.len();
+        let results_len = unsafe { crate::object::seq_access::len(task_tuple_ptr) };
         let payload_slots = ASYNCIO_GATHER_RESULT_OFFSET + results_len;
         let payload_bytes = (payload_slots * std::mem::size_of::<u64>()) as u64;
         let obj_bits = molt_future_new(asyncio_gather_poll_fn_addr(), payload_bytes);
@@ -409,8 +416,8 @@ pub unsafe extern "C" fn molt_asyncio_gather_poll(obj_bits: u64) -> i64 {
             let Some(tasks_ptr) = obj_from_bits(tasks_bits).as_ptr() else {
                 return raise_exception::<i64>(_py, "TypeError", "gather tasks must be awaitables");
             };
-            let tasks = seq_vec_ref(tasks_ptr);
-            if tasks.len() != results_len {
+            let task_count = crate::object::seq_access::len(tasks_ptr);
+            if task_count != results_len {
                 return raise_exception::<i64>(_py, "RuntimeError", "invalid gather payload state");
             }
             let wrapper_ptr = current_task_ptr();
@@ -424,10 +431,18 @@ pub unsafe extern "C" fn molt_asyncio_gather_poll(obj_bits: u64) -> i64 {
 
             let missing = missing_bits(_py);
             let return_exceptions = is_truthy(_py, obj_from_bits(*payload_ptr.add(1)));
-            for (idx, &task_bits) in tasks.iter().enumerate() {
+            for idx in 0..task_count {
                 if *payload_ptr.add(ASYNCIO_GATHER_RESULT_OFFSET + idx) != missing {
                     continue;
                 }
+                let Some(task) = crate::object::seq_access::pin_item(_py, tasks_ptr, idx) else {
+                    return raise_exception::<i64>(
+                        _py,
+                        "RuntimeError",
+                        "invalid gather payload state",
+                    );
+                };
+                let task_bits = task.bits();
                 let done = match asyncio_method_truthy(_py, task_bits, b"done") {
                     Some(value) => value,
                     None => return MoltObject::none().bits() as i64,

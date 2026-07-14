@@ -273,8 +273,8 @@ pub(super) fn urllib_response_headers_list_bits(
             "response headers cache is invalid",
         ));
     }
-    let items = unsafe { seq_vec_ref(cached_ptr) };
-    let list_ptr = alloc_list_with_capacity(_py, items.as_slice(), items.len());
+    let items = unsafe { seq_snapshot(cached_ptr) };
+    let list_ptr = alloc_list_with_capacity(_py, items.as_ref(), items.len());
     if list_ptr.is_null() {
         Err(MoltObject::none().bits())
     } else {
@@ -971,7 +971,7 @@ pub(super) fn urllib_http_extract_headers_mapping(
                 "headers mapping items must be pairs",
             ));
         }
-        let fields = unsafe { seq_vec_ref(item_ptr) };
+        let fields = unsafe { seq_snapshot(item_ptr) };
         if fields.len() != 2 {
             dec_ref_bits(_py, item_bits);
             return Err(raise_exception::<u64>(
@@ -1294,7 +1294,7 @@ pub(super) fn http_client_extract_headers(
                 "header entries must be (name, value) pairs",
             ));
         }
-        let pair = unsafe { seq_vec_ref(item_ptr) };
+        let pair = unsafe { seq_snapshot(item_ptr) };
         if pair.len() < 2 {
             dec_ref_bits(_py, item_bits);
             return Err(raise_exception::<u64>(
@@ -1490,7 +1490,7 @@ pub(super) fn urllib_http_extract_request_headers(
                 "headers mapping items must be pairs",
             ));
         }
-        let fields = unsafe { seq_vec_ref(item_ptr) };
+        let fields = unsafe { seq_snapshot(item_ptr) };
         if fields.len() != 2 {
             dec_ref_bits(_py, item_bits);
             return Err(raise_exception::<u64>(
@@ -1581,8 +1581,8 @@ pub(super) fn urllib_http_find_proxy_for_scheme(
             "opener handler registry is invalid",
         ));
     };
-    let handlers: Vec<u64> = unsafe { seq_vec_ref(list_ptr).to_vec() };
-    for handler_bits in handlers {
+    let handlers = unsafe { seq_snapshot(list_ptr) };
+    for handler_bits in handlers.iter().copied() {
         let Some(proxies_bits) = attr_optional(_py, handler_bits, b"proxies")? else {
             continue;
         };
@@ -1776,7 +1776,7 @@ pub(super) fn urllib_proxy_find_basic_credentials(
             dec_ref_bits(_py, creds_bits);
             continue;
         }
-        let fields = unsafe { seq_vec_ref(creds_ptr) };
+        let fields = unsafe { seq_snapshot(creds_ptr) };
         if fields.len() != 2
             || obj_from_bits(fields[0]).is_none()
             || obj_from_bits(fields[1]).is_none()
@@ -2193,7 +2193,7 @@ pub(super) fn urllib_request_response_handle_from_bits(
             "response object is invalid",
         ));
     }
-    let fields = unsafe { seq_vec_ref(ptr) };
+    let fields = unsafe { seq_snapshot(ptr) };
     if fields.len() != 2 {
         return Err(raise_exception::<u64>(
             _py,

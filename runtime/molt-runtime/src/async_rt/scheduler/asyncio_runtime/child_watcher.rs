@@ -2,7 +2,7 @@ use crate::PyToken;
 use crate::{
     MoltObject, TYPE_ID_DICT, TYPE_ID_LIST, TYPE_ID_TUPLE, alloc_tuple, bits_from_ptr,
     dec_ref_bits, dict_clear_in_place, dict_del_in_place, dict_get_in_place, dict_set_in_place,
-    inc_ref_bits, obj_from_bits, object_type_id, raise_exception, seq_vec_ref, to_i64,
+    inc_ref_bits, obj_from_bits, object_type_id, raise_exception, to_i64,
 };
 
 fn asyncio_child_watcher_dict_ptr(_py: &PyToken<'_>, callbacks_bits: u64) -> Result<*mut u8, u64> {
@@ -45,8 +45,16 @@ fn asyncio_child_watcher_args_tuple_bits(_py: &PyToken<'_>, args_bits: u64) -> R
         return Ok(args_bits);
     }
     if type_id == TYPE_ID_LIST {
-        let elems = unsafe { seq_vec_ref(args_ptr) };
-        let tuple_ptr = alloc_tuple(_py, elems.as_slice());
+        let Some(elems) = (unsafe {
+            crate::object::seq_access::snapshot(
+                _py,
+                args_ptr,
+                "child watcher argument snapshot allocation failed",
+            )
+        }) else {
+            return Err(MoltObject::none().bits());
+        };
+        let tuple_ptr = alloc_tuple(_py, &elems);
         if tuple_ptr.is_null() {
             return Ok(MoltObject::none().bits());
         }

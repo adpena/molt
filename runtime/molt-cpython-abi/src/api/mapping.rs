@@ -88,7 +88,7 @@ pub unsafe extern "C" fn PyDict_SetItem(
             return -1;
         }
     };
-    let (key_bits, key_owned_local) = match bridge.molt_handle_for_pyobj(key) {
+    let (key_bits, key_owned_local) = match bridge.observed_handle_for_pyobj(key) {
         Some(b) => (b.bits(), false),
         None => match unsafe { bridge.molt_value_for_pyobj(key) } {
             // A genuine C-extension object key (numpy uses a builtin dtype/DType
@@ -124,7 +124,7 @@ pub unsafe extern "C" fn PyDict_SetItem(
             }
         },
     };
-    let (val_bits, val_owned_local) = match bridge.molt_handle_for_pyobj(value) {
+    let (val_bits, val_owned_local) = match bridge.observed_handle_for_pyobj(value) {
         Some(b) => (b.bits(), false),
         None => match unsafe { bridge.molt_value_for_pyobj(value) } {
             // A genuine C-extension object value (a numpy dtype instance): give
@@ -524,7 +524,7 @@ pub unsafe extern "C" fn PyDict_GetItem(op: *mut PyObject, key: *mut PyObject) -
         Some(b) => b.bits(),
         None => return ptr::null_mut(),
     };
-    let key_bits = match bridge.molt_handle_for_pyobj(key) {
+    let key_bits = match bridge.observed_handle_for_pyobj(key) {
         Some(b) => b.bits(),
         None => return ptr::null_mut(),
     };
@@ -552,7 +552,7 @@ pub unsafe extern "C" fn PyDict_GetItemWithError(
         return ptr::null_mut();
     }
     let dict_bits = resolve_native_dict(op).expect("validated native dict");
-    let (key_bits, key_owned) = match GLOBAL_BRIDGE.molt_handle_for_pyobj(key) {
+    let (key_bits, key_owned) = match GLOBAL_BRIDGE.observed_handle_for_pyobj(key) {
         Some(value) => (value.bits(), false),
         None => match unsafe { GLOBAL_BRIDGE.molt_value_for_pyobj(key) } {
             Some(bits) => (bits, true),
@@ -752,7 +752,7 @@ pub unsafe extern "C" fn PyDict_DelItem(op: *mut PyObject, key: *mut PyObject) -
             return -1;
         }
     };
-    let (key_bits, key_owned) = match GLOBAL_BRIDGE.molt_handle_for_pyobj(key) {
+    let (key_bits, key_owned) = match GLOBAL_BRIDGE.observed_handle_for_pyobj(key) {
         Some(value) => (value.bits(), false),
         None => match unsafe { GLOBAL_BRIDGE.molt_value_for_pyobj(key) } {
             Some(bits) => (bits, true),

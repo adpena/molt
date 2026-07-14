@@ -68,16 +68,15 @@ pub(crate) fn textwrap_parse_options_ex(
             "max_lines_placeholder must be tuple(max_lines, placeholder)",
         ));
     }
-    let max_lines_placeholder = unsafe { seq_vec_ref(max_lines_placeholder_ptr) };
-    if max_lines_placeholder.len() != 2 {
+    let Some((max_lines_bits, placeholder_bits)) =
+        (unsafe { crate::object::seq_access::tuple_pair(max_lines_placeholder_ptr) })
+    else {
         return Err(raise_exception::<u64>(
             _py,
             "TypeError",
             "max_lines_placeholder must be tuple(max_lines, placeholder)",
         ));
-    }
-    let max_lines_bits = max_lines_placeholder[0];
-    let placeholder_bits = max_lines_placeholder[1];
+    };
 
     let max_lines = if obj_from_bits(max_lines_bits).is_none() {
         None

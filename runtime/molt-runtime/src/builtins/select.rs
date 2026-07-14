@@ -11,7 +11,7 @@ use crate::{
     call_callable0, dec_ref_bits, exception_pending, inc_ref_bits, int_bits_from_i64, is_truthy,
     maybe_ptr_from_bits, missing_bits, molt_getattr_builtin, molt_is_callable, molt_iter,
     molt_iter_next, monotonic_now_secs, obj_from_bits, opaque_handle_bits, ptr_from_bits,
-    raise_exception, release_ptr, seq_vec_ref, to_f64, to_i64,
+    raise_exception, release_ptr, to_f64, to_i64,
 };
 use std::collections::HashMap;
 use std::collections::hash_map::Entry as HashMapEntry;
@@ -96,12 +96,16 @@ fn collect_iterable(_py: &crate::PyToken<'_>, iterable_bits: u64) -> Result<Vec<
     if let Some(iterable_ptr) = obj_from_bits(iterable_bits).as_ptr() {
         let type_id = unsafe { crate::object_type_id(iterable_ptr) };
         if matches!(type_id, TYPE_ID_LIST | TYPE_ID_TUPLE) {
-            let seq = unsafe { seq_vec_ref(iterable_ptr) };
-            let mut out: Vec<u64> = Vec::with_capacity(seq.len());
-            for &obj_bits in seq {
-                inc_ref_bits(_py, obj_bits);
-                out.push(obj_bits);
-            }
+            let out = unsafe {
+                crate::object::seq_access::with_borrowed(iterable_ptr, |seq| {
+                    let mut out: Vec<u64> = Vec::with_capacity(seq.len());
+                    for &obj_bits in seq {
+                        inc_ref_bits(_py, obj_bits);
+                        out.push(obj_bits);
+                    }
+                    out
+                })
+            };
             return Ok(out);
         }
     }
@@ -121,14 +125,14 @@ fn collect_iterable(_py: &crate::PyToken<'_>, iterable_bits: u64) -> Result<Vec<
                 return Err(MoltObject::none().bits());
             }
         }
-        let pair = unsafe { seq_vec_ref(pair_ptr) };
-        if pair.len() < 2 {
+        let Some((obj_bits, done_bits)) =
+            (unsafe { crate::object::seq_access::tuple_pair(pair_ptr) })
+        else {
             return Err(MoltObject::none().bits());
-        }
-        if is_truthy(_py, obj_from_bits(pair[1])) {
+        };
+        if is_truthy(_py, obj_from_bits(done_bits)) {
             break;
         }
-        let obj_bits = pair[0];
         inc_ref_bits(_py, obj_bits);
         out.push(obj_bits);
     }

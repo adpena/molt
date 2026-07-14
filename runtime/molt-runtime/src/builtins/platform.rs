@@ -392,14 +392,21 @@ fn importlib_find_spec_via_meta_path(
                     return Err(MoltObject::none().bits());
                 }
             }
-            let pair = unsafe { seq_vec_ref(pair_ptr) };
-            if pair.len() < 2 {
+            if unsafe { crate::object::seq_access::locked_len(pair_ptr) } < 2 {
                 return Err(MoltObject::none().bits());
             }
-            if is_truthy(_py, obj_from_bits(pair[1])) {
+            let Some(done) = (unsafe { crate::object::seq_access::pin_item(_py, pair_ptr, 1) })
+            else {
+                return Err(MoltObject::none().bits());
+            };
+            if is_truthy(_py, obj_from_bits(done.bits())) {
                 break;
             }
-            let finder_bits = pair[0];
+            let Some(finder) = (unsafe { crate::object::seq_access::pin_item(_py, pair_ptr, 0) })
+            else {
+                return Err(MoltObject::none().bits());
+            };
+            let finder_bits = finder.bits();
             if maybe_ptr_from_bits(finder_bits).is_none() {
                 continue;
             }
@@ -498,21 +505,35 @@ fn importlib_find_spec_via_path_hooks(
                     return Err(MoltObject::none().bits());
                 }
             }
-            let pair = unsafe { seq_vec_ref(pair_ptr) };
-            if pair.len() < 2 {
+            if unsafe { crate::object::seq_access::locked_len(pair_ptr) } < 2 {
                 for hook_bits in hooks {
                     dec_ref_bits(_py, hook_bits);
                 }
                 return Err(MoltObject::none().bits());
             }
-            if is_truthy(_py, obj_from_bits(pair[1])) {
+            let Some(done) = (unsafe { crate::object::seq_access::pin_item(_py, pair_ptr, 1) })
+            else {
+                for hook_bits in hooks {
+                    dec_ref_bits(_py, hook_bits);
+                }
+                return Err(MoltObject::none().bits());
+            };
+            if is_truthy(_py, obj_from_bits(done.bits())) {
                 break;
             }
-            if obj_from_bits(pair[0]).is_none() {
+            let Some(hook) = (unsafe { crate::object::seq_access::pin_item(_py, pair_ptr, 0) })
+            else {
+                for hook_bits in hooks {
+                    dec_ref_bits(_py, hook_bits);
+                }
+                return Err(MoltObject::none().bits());
+            };
+            let hook_bits = hook.bits();
+            if obj_from_bits(hook_bits).is_none() {
                 continue;
             }
-            inc_ref_bits(_py, pair[0]);
-            hooks.push(pair[0]);
+            inc_ref_bits(_py, hook_bits);
+            hooks.push(hook_bits);
         }
         for entry in search_paths {
             let entry_bits = alloc_str_bits(_py, entry)?;
@@ -2806,14 +2827,14 @@ fn importlib_is_str_list_bits(bits: u64) -> bool {
         if object_type_id(ptr) != TYPE_ID_LIST {
             return false;
         }
-        let values = seq_vec_ref(ptr);
-        for &value_bits in values {
-            if string_obj_to_owned(obj_from_bits(value_bits)).is_none() {
-                return false;
-            }
-        }
+        crate::object::seq_access::with_borrowed(ptr, |values| {
+            values.iter().copied().all(|value_bits| {
+                obj_from_bits(value_bits)
+                    .as_ptr()
+                    .is_some_and(|value_ptr| object_type_id(value_ptr) == TYPE_ID_STRING)
+            })
+        })
     }
-    true
 }
 
 fn importlib_module_set_core_state(
@@ -3581,14 +3602,19 @@ fn string_sequence_arg_from_bits(
                 return Err(MoltObject::none().bits());
             }
         }
-        let pair = unsafe { seq_vec_ref(pair_ptr) };
-        if pair.len() < 2 {
+        if unsafe { crate::object::seq_access::locked_len(pair_ptr) } < 2 {
             return Err(MoltObject::none().bits());
         }
-        if is_truthy(_py, obj_from_bits(pair[1])) {
+        let Some(done) = (unsafe { crate::object::seq_access::pin_item(_py, pair_ptr, 1) }) else {
+            return Err(MoltObject::none().bits());
+        };
+        if is_truthy(_py, obj_from_bits(done.bits())) {
             break;
         }
-        let Some(text) = string_obj_to_owned(obj_from_bits(pair[0])) else {
+        let Some(value) = (unsafe { crate::object::seq_access::pin_item(_py, pair_ptr, 0) }) else {
+            return Err(MoltObject::none().bits());
+        };
+        let Some(text) = string_obj_to_owned(obj_from_bits(value.bits())) else {
             return Err(raise_exception::<_>(
                 _py,
                 "TypeError",
@@ -3623,11 +3649,13 @@ fn iterable_count_arg_from_bits(_py: &PyToken<'_>, bits: u64, name: &str) -> Res
                 return Err(MoltObject::none().bits());
             }
         }
-        let pair = unsafe { seq_vec_ref(pair_ptr) };
-        if pair.len() < 2 {
+        if unsafe { crate::object::seq_access::locked_len(pair_ptr) } < 2 {
             return Err(MoltObject::none().bits());
         }
-        if is_truthy(_py, obj_from_bits(pair[1])) {
+        let Some(done) = (unsafe { crate::object::seq_access::pin_item(_py, pair_ptr, 1) }) else {
+            return Err(MoltObject::none().bits());
+        };
+        if is_truthy(_py, obj_from_bits(done.bits())) {
             break;
         }
         count += 1;

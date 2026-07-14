@@ -46,7 +46,7 @@ unsafe extern "C" fn fx_alloc_list() -> u64 {
         .insert(bits, Vec::new());
     bits
 }
-unsafe extern "C" fn fx_list_append(list_bits: u64, item_bits: u64) -> i32 {
+unsafe extern "C" fn fx_list_append(list_bits: u64, item_bits: u64, _item: *mut PyObject) -> i32 {
     if let Some(v) = LISTS
         .lock()
         .unwrap()
@@ -197,7 +197,7 @@ fn int_bits(v: i64) -> u64 {
 fn mk_list(items: &[i64]) -> *mut PyObject {
     let lb = unsafe { fx_alloc_list() };
     for &v in items {
-        unsafe { fx_list_append(lb, int_bits(v)) };
+        unsafe { fx_list_append(lb, int_bits(v), std::ptr::null_mut()) };
     }
     register(lb)
 }

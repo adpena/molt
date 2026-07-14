@@ -1,4 +1,5 @@
 use super::*;
+use crate::object::seq_access::with_immutable_tuple_slice;
 
 struct PreparedClassState {
     metaclass_bits: u64,
@@ -23,7 +24,7 @@ pub(crate) fn call_vararg_args(
             return None;
         }
     }
-    Some(unsafe { seq_vec_ref(args_ptr) }.clone())
+    unsafe { with_immutable_tuple_slice(args_ptr, |args| args.to_vec()) }
 }
 
 pub(crate) fn call_vararg_kwargs(
@@ -127,7 +128,12 @@ fn resolve_bases_impl(_py: &PyToken<'_>, bases_bits: u64) -> u64 {
         dec_ref_bits(_py, bases_tuple_bits);
         return MoltObject::none().bits();
     };
-    let bases = unsafe { seq_vec_ref(bases_tuple_ptr) }.clone();
+    let Some(bases) =
+        (unsafe { with_immutable_tuple_slice(bases_tuple_ptr, |bases| bases.to_vec()) })
+    else {
+        dec_ref_bits(_py, bases_tuple_bits);
+        return MoltObject::none().bits();
+    };
     let Some(mro_entries_name_bits) = attr_name_bits_from_bytes(_py, b"__mro_entries__") else {
         dec_ref_bits(_py, bases_tuple_bits);
         return MoltObject::none().bits();
@@ -201,7 +207,18 @@ fn resolve_bases_impl(_py: &PyToken<'_>, bases_bits: u64) -> u64 {
                     "__mro_entries__ must return a tuple",
                 );
             }
-            out.extend_from_slice(seq_vec_ref(resolved_ptr));
+            let copied = with_immutable_tuple_slice(resolved_ptr, |resolved| {
+                out.extend_from_slice(resolved);
+            });
+            if copied.is_none() {
+                dec_ref_bits(_py, resolved_bits);
+                for bits in keepalive_tuples.drain(..) {
+                    dec_ref_bits(_py, bits);
+                }
+                dec_ref_bits(_py, mro_entries_name_bits);
+                dec_ref_bits(_py, bases_tuple_bits);
+                return MoltObject::none().bits();
+            }
         }
         // Keep the returned tuple alive until after we allocate the final output tuple.
         keepalive_tuples.push(resolved_bits);
@@ -324,7 +341,14 @@ fn prepare_class_impl(
             dec_ref_bits(_py, kwds_copy_bits);
             return None;
         };
-        let bases = unsafe { seq_vec_ref(bases_tuple_ptr) }.clone();
+        let Some(bases) =
+            (unsafe { with_immutable_tuple_slice(bases_tuple_ptr, |bases| bases.to_vec()) })
+        else {
+            dec_ref_bits(_py, bases_tuple_bits);
+            dec_ref_bits(_py, winner_bits);
+            dec_ref_bits(_py, kwds_copy_bits);
+            return None;
+        };
         for base_bits in bases.iter().copied() {
             let base_meta_bits = type_of_bits(_py, base_bits);
             if issubclass_bits(winner_bits, base_meta_bits) {

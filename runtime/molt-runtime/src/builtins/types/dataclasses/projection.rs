@@ -1,5 +1,6 @@
 use super::field_runtime::dc_getattr_default_bits;
 use super::*;
+use crate::object::seq_access::{locked_len, pin_item};
 
 fn dataclasses_class_bits(_py: &PyToken<'_>, obj_bits: u64) -> u64 {
     if obj_from_bits(obj_bits)
@@ -131,6 +132,61 @@ fn dataclasses_deepcopy(_py: &PyToken<'_>, value_bits: u64) -> u64 {
     out_bits
 }
 
+#[derive(Clone, Copy)]
+enum ProjectionKind {
+    Dict,
+    Tuple,
+}
+
+fn dataclasses_project_sequence(
+    _py: &PyToken<'_>,
+    value_bits: u64,
+    value_ptr: *mut u8,
+    factory_bits: u64,
+    field_tag_bits: u64,
+    projection: ProjectionKind,
+) -> u64 {
+    let mut copied: Vec<u64> = Vec::with_capacity(unsafe { locked_len(value_ptr) });
+    let mut index = 0usize;
+    loop {
+        if index >= unsafe { locked_len(value_ptr) } {
+            break;
+        }
+        let Some(elem) = (unsafe { pin_item(_py, value_ptr, index) }) else {
+            continue;
+        };
+        index += 1;
+        let inner_bits = match projection {
+            ProjectionKind::Dict => {
+                dataclasses_asdict_inner(_py, elem.bits(), factory_bits, field_tag_bits)
+            }
+            ProjectionKind::Tuple => {
+                dataclasses_astuple_inner(_py, elem.bits(), factory_bits, field_tag_bits)
+            }
+        };
+        if obj_from_bits(inner_bits).is_none() {
+            for bits in copied {
+                dec_ref_bits(_py, bits);
+            }
+            return MoltObject::none().bits();
+        }
+        copied.push(inner_bits);
+    }
+
+    let copied_list_ptr = alloc_list(_py, copied.as_slice());
+    for bits in copied {
+        dec_ref_bits(_py, bits);
+    }
+    if copied_list_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    let copied_list_bits = MoltObject::from_ptr(copied_list_ptr).bits();
+    let cls_bits = type_of_bits(_py, value_bits);
+    let out_bits = unsafe { call_callable1(_py, cls_bits, copied_list_bits) };
+    dec_ref_bits(_py, copied_list_bits);
+    out_bits
+}
+
 fn dataclasses_asdict_inner(
     _py: &PyToken<'_>,
     value_bits: u64,
@@ -208,59 +264,15 @@ fn dataclasses_asdict_inner(
     };
     unsafe {
         match object_type_id(value_ptr) {
-            TYPE_ID_LIST => {
-                let elems = seq_vec_ref(value_ptr).clone();
-                let mut copied: Vec<u64> = Vec::with_capacity(elems.len());
-                for elem_bits in elems {
-                    let inner_bits =
-                        dataclasses_asdict_inner(_py, elem_bits, dict_factory_bits, field_tag_bits);
-                    if obj_from_bits(inner_bits).is_none() {
-                        for bits in copied {
-                            dec_ref_bits(_py, bits);
-                        }
-                        return MoltObject::none().bits();
-                    }
-                    copied.push(inner_bits);
-                }
-                let copied_list_ptr = alloc_list(_py, copied.as_slice());
-                for bits in copied {
-                    dec_ref_bits(_py, bits);
-                }
-                if copied_list_ptr.is_null() {
-                    return MoltObject::none().bits();
-                }
-                let copied_list_bits = MoltObject::from_ptr(copied_list_ptr).bits();
-                let cls_bits = type_of_bits(_py, value_bits);
-                let out_bits = call_callable1(_py, cls_bits, copied_list_bits);
-                dec_ref_bits(_py, copied_list_bits);
-                return out_bits;
-            }
-            TYPE_ID_TUPLE => {
-                let elems = seq_vec_ref(value_ptr).clone();
-                let mut copied: Vec<u64> = Vec::with_capacity(elems.len());
-                for elem_bits in elems {
-                    let inner_bits =
-                        dataclasses_asdict_inner(_py, elem_bits, dict_factory_bits, field_tag_bits);
-                    if obj_from_bits(inner_bits).is_none() {
-                        for bits in copied {
-                            dec_ref_bits(_py, bits);
-                        }
-                        return MoltObject::none().bits();
-                    }
-                    copied.push(inner_bits);
-                }
-                let copied_list_ptr = alloc_list(_py, copied.as_slice());
-                for bits in copied {
-                    dec_ref_bits(_py, bits);
-                }
-                if copied_list_ptr.is_null() {
-                    return MoltObject::none().bits();
-                }
-                let copied_list_bits = MoltObject::from_ptr(copied_list_ptr).bits();
-                let cls_bits = type_of_bits(_py, value_bits);
-                let out_bits = call_callable1(_py, cls_bits, copied_list_bits);
-                dec_ref_bits(_py, copied_list_bits);
-                return out_bits;
+            TYPE_ID_LIST | TYPE_ID_TUPLE => {
+                return dataclasses_project_sequence(
+                    _py,
+                    value_bits,
+                    value_ptr,
+                    dict_factory_bits,
+                    field_tag_bits,
+                    ProjectionKind::Dict,
+                );
             }
             TYPE_ID_DICT => {
                 let mut pair_bits: Vec<u64> = Vec::new();
@@ -384,67 +396,15 @@ fn dataclasses_astuple_inner(
     };
     unsafe {
         match object_type_id(value_ptr) {
-            TYPE_ID_LIST => {
-                let elems = seq_vec_ref(value_ptr).clone();
-                let mut copied: Vec<u64> = Vec::with_capacity(elems.len());
-                for elem_bits in elems {
-                    let inner_bits = dataclasses_astuple_inner(
-                        _py,
-                        elem_bits,
-                        tuple_factory_bits,
-                        field_tag_bits,
-                    );
-                    if obj_from_bits(inner_bits).is_none() {
-                        for bits in copied {
-                            dec_ref_bits(_py, bits);
-                        }
-                        return MoltObject::none().bits();
-                    }
-                    copied.push(inner_bits);
-                }
-                let copied_list_ptr = alloc_list(_py, copied.as_slice());
-                for bits in copied {
-                    dec_ref_bits(_py, bits);
-                }
-                if copied_list_ptr.is_null() {
-                    return MoltObject::none().bits();
-                }
-                let copied_list_bits = MoltObject::from_ptr(copied_list_ptr).bits();
-                let cls_bits = type_of_bits(_py, value_bits);
-                let out_bits = call_callable1(_py, cls_bits, copied_list_bits);
-                dec_ref_bits(_py, copied_list_bits);
-                return out_bits;
-            }
-            TYPE_ID_TUPLE => {
-                let elems = seq_vec_ref(value_ptr).clone();
-                let mut copied: Vec<u64> = Vec::with_capacity(elems.len());
-                for elem_bits in elems {
-                    let inner_bits = dataclasses_astuple_inner(
-                        _py,
-                        elem_bits,
-                        tuple_factory_bits,
-                        field_tag_bits,
-                    );
-                    if obj_from_bits(inner_bits).is_none() {
-                        for bits in copied {
-                            dec_ref_bits(_py, bits);
-                        }
-                        return MoltObject::none().bits();
-                    }
-                    copied.push(inner_bits);
-                }
-                let copied_list_ptr = alloc_list(_py, copied.as_slice());
-                for bits in copied {
-                    dec_ref_bits(_py, bits);
-                }
-                if copied_list_ptr.is_null() {
-                    return MoltObject::none().bits();
-                }
-                let copied_list_bits = MoltObject::from_ptr(copied_list_ptr).bits();
-                let cls_bits = type_of_bits(_py, value_bits);
-                let out_bits = call_callable1(_py, cls_bits, copied_list_bits);
-                dec_ref_bits(_py, copied_list_bits);
-                return out_bits;
+            TYPE_ID_LIST | TYPE_ID_TUPLE => {
+                return dataclasses_project_sequence(
+                    _py,
+                    value_bits,
+                    value_ptr,
+                    tuple_factory_bits,
+                    field_tag_bits,
+                    ProjectionKind::Tuple,
+                );
             }
             TYPE_ID_DICT => {
                 let mut pair_bits: Vec<u64> = Vec::new();

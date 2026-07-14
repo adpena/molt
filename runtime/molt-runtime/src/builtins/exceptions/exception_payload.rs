@@ -105,7 +105,6 @@ pub(super) unsafe fn oserror_args(args_bits: u64) -> (Option<i64>, u64, u64) {
         if let Some(args_ptr) = args_obj.as_ptr() {
             let type_id = object_type_id(args_ptr);
             if type_id == TYPE_ID_TUPLE || type_id == TYPE_ID_LIST {
-                let elems = seq_vec_ref(args_ptr);
                 // CPython: `OSError(errno, strerror, filename, ...)` interprets positional args
                 // as `(errno, strerror[, filename[, winerror[, filename2]]])`, and uses those to
                 // populate `errno/strerror/filename` and to choose a more specific subclass.
@@ -113,17 +112,22 @@ pub(super) unsafe fn oserror_args(args_bits: u64) -> (Option<i64>, u64, u64) {
                 // When *only one* positional argument is provided (e.g. `OSError(3)`), CPython
                 // does *not* interpret that value as `errno`; the `errno/strerror/filename`
                 // attributes remain `None`.
-                if elems.len() >= 2 {
-                    errno_val = elems
-                        .first()
-                        .and_then(|first| to_i64(obj_from_bits(*first)));
-                    if let Some(second) = elems.get(1) {
-                        strerror_bits = *second;
-                    }
-                    if let Some(third) = elems.get(2) {
-                        filename_bits = *third;
-                    }
-                }
+                (errno_val, strerror_bits, filename_bits) =
+                    crate::object::seq_access::with_borrowed(args_ptr, |elems| {
+                        if elems.len() < 2 {
+                            return (None, MoltObject::none().bits(), MoltObject::none().bits());
+                        }
+                        (
+                            elems
+                                .first()
+                                .and_then(|first| to_i64(obj_from_bits(*first))),
+                            elems[1],
+                            elems
+                                .get(2)
+                                .copied()
+                                .unwrap_or_else(|| MoltObject::none().bits()),
+                        )
+                    });
             }
         }
         (errno_val, strerror_bits, filename_bits)
@@ -282,7 +286,8 @@ pub(super) fn unicode_error_fields_from_args(
         if object_type_id(args_ptr) != TYPE_ID_TUPLE {
             return Err(());
         }
-        let elems = seq_vec_ref(args_ptr);
+        let elems = crate::object::seq_access::pin_tuple(_py, args_ptr)
+            .expect("type-checked UnicodeError args tuple must remain live");
         let expected = match kind {
             UnicodeErrorKind::Translate => 4,
             UnicodeErrorKind::Encode | UnicodeErrorKind::Decode => 5,
@@ -462,10 +467,11 @@ pub(crate) fn alloc_exception_from_class_bits(
                 if let Some(args_ptr) = args_obj.as_ptr() {
                     let type_id = object_type_id(args_ptr);
                     if type_id == TYPE_ID_TUPLE || type_id == TYPE_ID_LIST {
-                        let elems = seq_vec_ref(args_ptr);
-                        if let Some(third) = elems.get(2) {
-                            chars_bits = *third;
-                        }
+                        let _ = crate::object::seq_access::read_item_gil_borrowed(
+                            args_ptr,
+                            2,
+                            &mut chars_bits,
+                        );
                     }
                 }
                 let chars_obj = obj_from_bits(chars_bits);
@@ -525,7 +531,7 @@ fn exception_args_vec(ptr: *mut u8) -> Vec<u64> {
         if let Some(args_ptr) = args_obj.as_ptr() {
             let type_id = object_type_id(args_ptr);
             if type_id == TYPE_ID_TUPLE || type_id == TYPE_ID_LIST {
-                return seq_vec_ref(args_ptr).clone();
+                return crate::object::seq_access::with_borrowed(args_ptr, |items| items.to_vec());
             }
         }
         if args_obj.is_none() {
@@ -672,7 +678,7 @@ pub(crate) fn format_exception_message(_py: &PyToken<'_>, ptr: *mut u8) -> Strin
             unsafe {
                 let type_id = object_type_id(ex_ptr);
                 if type_id == TYPE_ID_TUPLE || type_id == TYPE_ID_LIST {
-                    count = seq_vec_ref(ex_ptr).len();
+                    count = crate::object::seq_access::len(ex_ptr);
                 }
             }
         }

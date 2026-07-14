@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use molt_obj_model::MoltObject;
 
+use crate::object::seq_access::{locked_len, pin_item};
 use crate::state::{RuntimeState, cache::clear_atomic_slots};
 use crate::{
     ClassEdgeOwnership, ClassInfoProtocol, PyToken, RuntimeClassInfo, TYPE_ID_BYTES,
@@ -27,8 +28,7 @@ use crate::{
     molt_repr_from_obj, molt_setitem_method, molt_str_from_obj, molt_string_isidentifier, obj_eq,
     obj_from_bits, object_class_bits, object_type_id, property_del_bits, property_get_bits,
     property_set_bits, raise_exception, raise_not_iterable, runtime_classinfo_protocol_match,
-    runtime_state, seq_vec_ref, string_obj_to_owned, to_i64, tuple_from_iter_bits, type_name,
-    type_of_bits,
+    runtime_state, string_obj_to_owned, to_i64, tuple_from_iter_bits, type_name, type_of_bits,
 };
 
 pub(crate) mod class_construction;
@@ -323,14 +323,20 @@ fn iter_next_pair(_py: &PyToken<'_>, iter_bits: u64) -> Option<(u64, bool)> {
             let _ = raise_exception::<u64>(_py, "TypeError", "object is not an iterator");
             return None;
         }
-        let elems = seq_vec_ref(pair_ptr);
-        if elems.len() < 2 {
+        if locked_len(pair_ptr) < 2 {
             let _ = raise_exception::<u64>(_py, "TypeError", "object is not an iterator");
             return None;
         }
-        let val_bits = elems[0];
-        let done_bits = elems[1];
-        let done = is_truthy(_py, obj_from_bits(done_bits));
+        let Some(val) = pin_item(_py, pair_ptr, 0) else {
+            let _ = raise_exception::<u64>(_py, "TypeError", "object is not an iterator");
+            return None;
+        };
+        let Some(done_value) = pin_item(_py, pair_ptr, 1) else {
+            let _ = raise_exception::<u64>(_py, "TypeError", "object is not an iterator");
+            return None;
+        };
+        let val_bits = val.bits();
+        let done = is_truthy(_py, obj_from_bits(done_value.bits()));
         Some((val_bits, done))
     }
 }
@@ -737,7 +743,7 @@ mod tests {
                 let arg_names_ptr = maybe_ptr_from_bits(arg_names_bits).expect("arg names tuple");
                 assert_eq!(object_type_id(arg_names_ptr), TYPE_ID_TUPLE);
                 assert_eq!(
-                    seq_vec_ref(arg_names_ptr).len(),
+                    locked_len(arg_names_ptr),
                     0,
                     "non-self vararg helpers still need an explicit empty arg-name tuple"
                 );

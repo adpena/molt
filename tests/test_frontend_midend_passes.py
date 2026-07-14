@@ -18,6 +18,61 @@ def _lower_ops(ops: list[MoltOp]) -> list[dict]:
     return gen.map_ops_to_json(ops)
 
 
+def test_list_store_serialization_has_no_scalar_fast_hint() -> None:
+    generic_store = SimpleTIRGenerator(type_hint_policy="trust").map_ops_to_json(
+        [
+            MoltOp(
+                kind="DICT_SET",
+                args=[
+                    MoltValue("items", type_hint="list"),
+                    MoltValue("idx", type_hint="int"),
+                    MoltValue("value", type_hint="int"),
+                ],
+                result=MoltValue("stored", type_hint="list"),
+            )
+        ]
+    )[0]
+    assert generic_store["kind"] == "dict_set"
+    assert generic_store["container_type"] == "list"
+    assert "fast_int" not in generic_store
+
+    compact_ops = SimpleTIRGenerator(type_hint_policy="trust").map_ops_to_json(
+        [
+            MoltOp(
+                kind="LIST_INT_NEW",
+                args=[
+                    MoltValue("count", type_hint="int"),
+                    MoltValue("fill", type_hint="int"),
+                ],
+                result=MoltValue("flat_items", type_hint="list"),
+            ),
+            MoltOp(
+                kind="DICT_SET",
+                args=[
+                    MoltValue("flat_items", type_hint="list"),
+                    MoltValue("idx", type_hint="int"),
+                    MoltValue("value", type_hint="int"),
+                ],
+                result=MoltValue("flat_after", type_hint="list"),
+            ),
+            MoltOp(
+                kind="INDEX",
+                args=[
+                    MoltValue("flat_after", type_hint="list"),
+                    MoltValue("idx", type_hint="int"),
+                ],
+                result=MoltValue("item", type_hint="int"),
+            ),
+        ]
+    )
+    compact_store = compact_ops[1]
+    compact_read = compact_ops[2]
+    assert "fast_int" not in compact_store
+    assert "container_type" not in compact_store
+    assert compact_read["fast_int"] is True
+    assert "container_type" not in compact_read
+
+
 def _undefined_args(lowered: list[dict]) -> list[tuple[int, str, str]]:
     defined: set[str] = set()
     missing: list[tuple[int, str, str]] = []

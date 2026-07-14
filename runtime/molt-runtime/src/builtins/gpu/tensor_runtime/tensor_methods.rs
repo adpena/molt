@@ -199,7 +199,18 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear_split_last_dim(
                 "linear split helper did not return a tuple",
             );
         };
-        let part_data_bits = unsafe { seq_vec_ref(out_parts_ptr) };
+        let Some(part_data_bits) =
+            (unsafe { crate::object::seq_access::pin_tuple(_py, out_parts_ptr) })
+        else {
+            if owns_out_format {
+                crate::dec_ref_bits(_py, out_format_bits);
+            }
+            return raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "linear split helper did not return a tuple",
+            );
+        };
         if part_data_bits.len() != split_sizes.len() {
             if owns_out_format {
                 crate::dec_ref_bits(_py, out_format_bits);
@@ -663,7 +674,15 @@ pub extern "C" fn molt_gpu_tensor__tensor_take_rows(
             return raise_exception::<_>(_py, "ValueError", "x_data buffer is too small");
         }
         let allow_negative = crate::is_truthy(_py, obj_from_bits(allow_negative_bits));
-        let rows = unsafe { seq_vec_ref(rows_list_ptr) };
+        let Some(rows) = (unsafe {
+            crate::object::seq_access::snapshot(
+                _py,
+                rows_list_ptr,
+                "take_rows index snapshot allocation failed",
+            )
+        }) else {
+            return MoltObject::none().bits();
+        };
         if trace_take_rows {
             let preview: Vec<i64> = rows
                 .iter()
@@ -952,7 +971,15 @@ pub extern "C" fn molt_gpu_tensor__tensor_scatter_rows(
             return raise_exception::<_>(_py, "ValueError", "updates buffer is too small");
         }
         let allow_negative = crate::is_truthy(_py, obj_from_bits(allow_negative_bits));
-        let rows = unsafe { seq_vec_ref(rows_list_ptr) };
+        let Some(rows) = (unsafe {
+            crate::object::seq_access::snapshot(
+                _py,
+                rows_list_ptr,
+                "scatter_rows index snapshot allocation failed",
+            )
+        }) else {
+            return MoltObject::none().bits();
+        };
         if trace_scatter_rows {
             let preview: Vec<i64> = rows
                 .iter()

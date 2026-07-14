@@ -155,7 +155,11 @@ unsafe fn asyncio_oserror_errno_from_exception(_py: &PyToken<'_>, exc_bits: u64)
         if object_type_id(args_ptr) != TYPE_ID_TUPLE {
             return None;
         }
-        let args = seq_vec_ref(args_ptr);
+        let args = crate::object::seq_access::snapshot(
+            _py,
+            args_ptr,
+            "exception argument snapshot allocation failed",
+        )?;
         args.first().and_then(|bits| to_i64(obj_from_bits(*bits)))
     }
 }

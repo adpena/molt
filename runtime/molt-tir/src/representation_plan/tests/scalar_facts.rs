@@ -209,6 +209,43 @@ fn index_result_lane_comes_from_element_fact_not_key() {
 }
 
 #[test]
+fn list_write_storage_facts_do_not_enable_the_read_index_lane() {
+    let list_new = op("list_int_new", Some("items"), None, &[]);
+    let index = const_int("idx", 0);
+    let value = const_int("value", 7);
+    let store_index = op(
+        "store_index",
+        Some("after_store"),
+        None,
+        &["items", "idx", "value"],
+    );
+    let dict_set = op(
+        "dict_set",
+        Some("after_dict_set"),
+        None,
+        &["items", "idx", "value"],
+    );
+    let func = function(
+        "list_write_storage_authority",
+        &[],
+        None,
+        vec![
+            list_new,
+            index,
+            value,
+            store_index.clone(),
+            dict_set.clone(),
+        ],
+    );
+    let plan = ScalarRepresentationPlan::for_function_ir(&func);
+
+    assert!(!plan.op_index_key_is_integer_family(&store_index));
+    assert!(!plan.op_index_key_is_integer_family(&dict_set));
+    assert!(plan.op_has_container_storage(3, &store_index, ContainerStorageKind::FlatListInt,));
+    assert!(plan.op_has_container_storage(4, &dict_set, ContainerStorageKind::FlatListInt,));
+}
+
+#[test]
 fn ord_at_result_is_integer_family_from_tir_not_transport_hints() {
     let mut ord_at = op("ord_at", Some("code"), None, &["text", "idx"]);
     ord_at.type_hint = Some("list".to_string());

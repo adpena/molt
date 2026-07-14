@@ -1,3 +1,33 @@
+# HIGHEST PRIORITY: CANONICAL STRUCTURAL ENGINEERING
+
+This is the guiding engineering philosophy for every agent, orchestrator,
+subagent, subsystem, and proof lane.
+
+- Never ship reactionary, type-local, leaf, slice, compatibility, or one-off
+  fixes when an aperture exposes a shared authority class. Sweep the complete
+  sibling family and finish the full structural rip.
+- Systematize, canonicalize, standardize, and reuse one zero-cost or
+  monomorphized primitive across the family. Specialized representations are
+  valid only when they materially improve correctness or performance and still
+  consume the same canonical protocol; they may not create ad hoc control
+  paths.
+- Move every runtime, compiler, ABI projection, ownership edge, caller,
+  backend, tool, test, proof, and document governed by the invariant, then
+  delete duplicate authorities, legacy code, backward compatibility, shims,
+  diagnostic leftovers, and accidental complexity in the same arc.
+- Treat performance and correctness as one design constraint. Profile and gate
+  latency, throughput, allocations, bytes, cache behavior, code size, peak live
+  memory, process-tree RSS/commit, atomics, contention, failure atomicity, and
+  deterministic semantics. Abstraction may not compromise optimization, and a
+  local speed win may not preserve architectural duplication.
+- Engineer RC, GC, weakrefs, mutation/publication, storage, compiler/runtime
+  boundaries, and ABI projections for future free-threaded and gilless
+  execution while preserving deterministic expected CPython behavior by
+  default.
+- A narrow aperture bounds discovery only. It is never the deliverable. No
+  leaves, no slices, no local minima, and no report-only substitute for moving
+  the whole authority family.
+
 # HIGHEST PRIORITY: UPSTREAM PACKAGE CUSTODY, NEVER REINVENTION
 
 These instructions bind every agent, orchestrator, and subagent before any

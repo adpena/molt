@@ -254,10 +254,9 @@ pub extern "C" fn molt_secrets_choice(seq_bits: u64) -> u64 {
             Ok(i) => i,
             Err(exc) => return exc,
         };
-        let vec_ptr = unsafe { seq_vec_ptr(seq_ptr) };
-        let seq = unsafe { &*vec_ptr };
-        let elem_bits = seq[idx];
-        inc_ref_bits(_py, elem_bits);
+        let Some(elem_bits) = (unsafe { seq_read_item_owned(seq_ptr, idx) }) else {
+            return raise_exception::<u64>(_py, "IndexError", "sequence changed during choice");
+        };
         elem_bits
     })
 }

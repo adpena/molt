@@ -34,7 +34,7 @@
 use crate::{
     MoltObject, PyToken, TYPE_ID_BYTES, TYPE_ID_LIST, TYPE_ID_TUPLE, alloc_bytes, alloc_list,
     alloc_string, alloc_tuple, bytes_data, bytes_len, dec_ref_bits, obj_from_bits, object_type_id,
-    raise_exception, seq_vec_ref, string_obj_to_owned, to_i64,
+    raise_exception, string_obj_to_owned, to_i64,
 };
 use molt_db::{SqliteConn, SqliteOpenMode, rusqlite};
 use rusqlite::ErrorCode;
@@ -283,12 +283,15 @@ fn decode_param_seq(seq_bits: u64) -> Result<Vec<SqlValue>, String> {
     if tid != TYPE_ID_LIST && tid != TYPE_ID_TUPLE {
         return Err("parameters must be a list or tuple".into());
     }
-    let elems = unsafe { seq_vec_ref(ptr) };
-    let mut out = Vec::with_capacity(elems.len());
-    for &elem_bits in elems.iter() {
-        out.push(molt_to_sql_value(elem_bits)?);
+    unsafe {
+        crate::object::seq_access::with_borrowed(ptr, |elems| {
+            let mut out = Vec::with_capacity(elems.len());
+            for &elem_bits in elems {
+                out.push(molt_to_sql_value(elem_bits)?);
+            }
+            Ok(out)
+        })
     }
-    Ok(out)
 }
 
 /// Convert a buffered `MoltValue` into runtime bits, allocating heap-backed
@@ -838,7 +841,15 @@ pub extern "C" fn molt_sqlite3_executemany(
                 "executemany() requires an iterable of parameter sequences",
             );
         }
-        let outer_elems = unsafe { seq_vec_ref(outer_ptr) };
+        let Some(outer_elems) = (unsafe {
+            crate::object::seq_access::snapshot(
+                _py,
+                outer_ptr,
+                "sqlite parameter snapshot allocation failed",
+            )
+        }) else {
+            return MoltObject::none().bits();
+        };
         let mut all_params: Vec<Vec<SqlValue>> = Vec::with_capacity(outer_elems.len());
         for &elem in outer_elems.iter() {
             match decode_param_seq(elem) {

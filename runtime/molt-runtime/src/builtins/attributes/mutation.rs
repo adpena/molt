@@ -225,17 +225,19 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                         let (old_name_bits, old_obj_bits) =
                             if let Some(members_ptr) = obj_from_bits(members_bits).as_ptr() {
                                 if object_type_id(members_ptr) == TYPE_ID_TUPLE {
-                                    let elems = seq_vec_ref(members_ptr);
-                                    (
-                                        elems
-                                            .first()
-                                            .copied()
-                                            .unwrap_or_else(|| MoltObject::none().bits()),
-                                        elems
-                                            .get(1)
-                                            .copied()
-                                            .unwrap_or_else(|| MoltObject::none().bits()),
-                                    )
+                                    let mut old_name_bits = MoltObject::none().bits();
+                                    let mut old_obj_bits = MoltObject::none().bits();
+                                    let _ = crate::object::seq_access::read_item_gil_borrowed(
+                                        members_ptr,
+                                        0,
+                                        &mut old_name_bits,
+                                    );
+                                    let _ = crate::object::seq_access::read_item_gil_borrowed(
+                                        members_ptr,
+                                        1,
+                                        &mut old_obj_bits,
+                                    );
+                                    (old_name_bits, old_obj_bits)
                                 } else {
                                     (MoltObject::none().bits(), MoltObject::none().bits())
                                 }

@@ -1462,15 +1462,17 @@ fn bytes_collect_from_iter(
             if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
                 return None;
             }
-            let elems = seq_vec_ref(pair_ptr);
-            if elems.len() < 2 {
+            let Some((val_bits, done_bits)) =
+                crate::object::seq_access::with_immutable_tuple_slice(pair_ptr, |items| {
+                    items.first().copied().zip(items.get(1).copied())
+                })
+                .flatten()
+            else {
                 return None;
-            }
-            let done_bits = elems[1];
+            };
             if is_truthy(_py, obj_from_bits(done_bits)) {
                 break;
             }
-            let val_bits = elems[0];
             let byte = bytes_item_to_u8(_py, val_bits, kind)?;
             out.push(byte);
         }
@@ -1515,7 +1517,13 @@ fn bytes_from_obj_impl(_py: &PyToken<'_>, bits: u64, kind: BytesCtorKind) -> u64
                 return bits;
             }
             if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
-                let elems = seq_vec_ref(ptr);
+                let Some(elems) = crate::object::seq_access::snapshot(
+                    _py,
+                    ptr,
+                    "bytes input snapshot allocation failed",
+                ) else {
+                    return MoltObject::none().bits();
+                };
                 let mut out = Vec::with_capacity(elems.len());
                 for &elem in elems.iter() {
                     let Some(byte) = bytes_item_to_u8(_py, elem, kind) else {

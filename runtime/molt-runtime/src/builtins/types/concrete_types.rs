@@ -1,4 +1,5 @@
 use super::*;
+use crate::object::seq_access::with_immutable_tuple_slice;
 
 unsafe fn mappingproxy_mapping_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr as *const u64) }
@@ -304,8 +305,18 @@ pub extern "C" fn molt_types_mappingproxy_get(
                 );
             }
         }
-        let args = unsafe { seq_vec_ref(args_ptr) };
-        if args.is_empty() || args.len() > 2 {
+        let Some((args_len, key_bits, default_bits)) = (unsafe {
+            with_immutable_tuple_slice(args_ptr, |args| {
+                let default_bits = args
+                    .get(1)
+                    .copied()
+                    .unwrap_or_else(|| MoltObject::none().bits());
+                (args.len(), args.first().copied(), default_bits)
+            })
+        }) else {
+            return raise_exception::<_>(_py, "TypeError", "mappingproxy.get() expects arguments");
+        };
+        if args_len == 0 || args_len > 2 {
             return raise_exception::<_>(
                 _py,
                 "TypeError",
@@ -326,12 +337,7 @@ pub extern "C" fn molt_types_mappingproxy_get(
                 }
             }
         }
-        let key_bits = args[0];
-        let default_bits = if args.len() == 2 {
-            args[1]
-        } else {
-            MoltObject::none().bits()
-        };
+        let key_bits = key_bits.expect("non-empty mappingproxy.get arguments");
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let mapping_bits = unsafe { mappingproxy_mapping_bits(self_ptr) };
         // mappingproxy instances in Molt always wrap a class dict, so route to
@@ -455,7 +461,7 @@ pub extern "C" fn molt_types_simplenamespace_init(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let args_ptr = obj_from_bits(args_bits).as_ptr();
-        let args = if let Some(args_ptr) = args_ptr {
+        let has_args = if let Some(args_ptr) = args_ptr {
             unsafe {
                 if object_type_id(args_ptr) != TYPE_ID_TUPLE {
                     return raise_exception::<_>(
@@ -464,12 +470,12 @@ pub extern "C" fn molt_types_simplenamespace_init(
                         "SimpleNamespace expects arguments",
                     );
                 }
-                seq_vec_ref(args_ptr).clone()
+                with_immutable_tuple_slice(args_ptr, |args| !args.is_empty()).unwrap_or(false)
             }
         } else {
-            Vec::new()
+            false
         };
-        if !args.is_empty() {
+        if has_args {
             return raise_exception::<_>(_py, "TypeError", "no positional arguments expected");
         }
         let dict_ptr = alloc_dict_with_pairs(_py, &[]);

@@ -14,6 +14,7 @@ use std::cmp::Ordering;
 struct SortItem {
     key_bits: u64,
     value_bits: u64,
+    original_index: usize,
 }
 
 enum SortError {
@@ -110,6 +111,15 @@ pub(crate) unsafe fn promote_list_bool_to_list(_py: &PyToken<'_>, ptr: *mut u8) 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_append(list_bits: u64, val_bits: u64) -> u64 {
+    let _ = molt_list_append_with_projection(list_bits, val_bits, std::ptr::null_mut());
+    MoltObject::none().bits()
+}
+
+pub(crate) fn molt_list_append_with_projection(
+    list_bits: u64,
+    val_bits: u64,
+    item_ptr: *mut molt_cpython_abi::abi_types::PyObject,
+) -> bool {
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(list_bits);
         if let Some(ptr) = obj.as_ptr() {
@@ -120,7 +130,16 @@ pub extern "C" fn molt_list_append(list_bits: u64, val_bits: u64) -> u64 {
                 // the generic TYPE_ID_LIST. This preserves the specialized
                 // layout for comprehension-built homogeneous lists that
                 // accumulate elements one at a time.
-                let tid = object_type_id(ptr);
+                let mut tid = object_type_id(ptr);
+                let has_abi_view = (*header_from_obj_ptr(ptr)).flags
+                    & crate::object::HEADER_FLAG_HAS_ABI_VIEW
+                    != 0;
+                if matches!(tid, TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL)
+                    && (has_abi_view || !item_ptr.is_null())
+                {
+                    promote_specialized_list_to_list(_py, ptr);
+                    tid = object_type_id(ptr);
+                }
                 if tid == TYPE_ID_LIST_INT {
                     let val_obj = obj_from_bits(val_bits);
                     if let Some(int_val) = val_obj.as_int() {
@@ -135,7 +154,7 @@ pub extern "C" fn molt_list_append(list_bits: u64, val_bits: u64) -> u64 {
                                 "list allocation failed",
                             );
                         }
-                        return MoltObject::none().bits();
+                        return true;
                     }
                     // Value is not an int — fall through to promote + append.
                 } else if tid == TYPE_ID_LIST_BOOL {
@@ -152,33 +171,22 @@ pub extern "C" fn molt_list_append(list_bits: u64, val_bits: u64) -> u64 {
                                 "list allocation failed",
                             );
                         }
-                        return MoltObject::none().bits();
+                        return true;
                     }
                     // Value is not a bool — fall through to promote + append.
                 }
                 promote_specialized_list_to_list(_py, ptr);
                 if object_type_id(ptr) == TYPE_ID_LIST {
-                    let vec_ptr = seq_vec_ptr(ptr);
-                    let elems = &mut *vec_ptr;
-                    if !crate::object::backing::tracked_vec_reserve_or_raise(
-                        _py,
-                        vec_ptr,
-                        elems.len().saturating_add(1),
-                        "list allocation failed",
+                    if !crate::object::list_mutation::append_with_projection(
+                        _py, ptr, val_bits, item_ptr,
                     ) {
-                        return MoltObject::none().bits();
+                        return false;
                     }
-                    elems.push(val_bits);
-                    inc_ref_bits(_py, val_bits);
-                    if crate::object::refcount_opt::is_heap_ref(val_bits) {
-                        (*header_from_obj_ptr(ptr)).flags |=
-                            crate::object::HEADER_FLAG_CONTAINS_REFS;
-                    }
-                    return MoltObject::none().bits();
+                    return true;
                 }
             }
         }
-        MoltObject::none().bits()
+        false
     })
 }
 
@@ -216,12 +224,8 @@ pub extern "C" fn molt_list_pop(list_bits: u64, index_bits: u64) -> u64 {
                     if idx < 0 || idx >= len {
                         return raise_exception::<_>(_py, "IndexError", "pop index out of range");
                     }
-                    let elems = seq_vec(ptr);
-                    let idx_usize = idx as usize;
-                    let value = elems.remove(idx_usize);
-                    inc_ref_bits(_py, value);
-                    dec_ref_bits(_py, value);
-                    return value;
+                    return crate::object::list_mutation::pop(_py, ptr, idx as usize)
+                        .unwrap_or_else(|| MoltObject::none().bits());
                 }
             }
         }
@@ -239,47 +243,46 @@ pub extern "C" fn molt_list_extend(list_bits: u64, other_bits: u64) -> u64 {
                 if object_type_id(list_ptr) != TYPE_ID_LIST {
                     return MoltObject::none().bits();
                 }
-                let list_elems = seq_vec(list_ptr);
                 let other_obj = obj_from_bits(other_bits);
                 if let Some(other_ptr) = other_obj.as_ptr() {
                     let other_type = object_type_id(other_ptr);
                     if other_type == TYPE_ID_LIST || other_type == TYPE_ID_TUPLE {
-                        // Inherit contains_refs from source container.
-                        let src_has_refs = ((*header_from_obj_ptr(other_ptr)).flags
-                            & crate::object::HEADER_FLAG_CONTAINS_REFS)
-                            != 0;
-                        if other_ptr == list_ptr {
-                            let snapshot = seq_vec_ref(other_ptr).clone();
-                            for item in snapshot {
-                                list_elems.push(item);
-                                inc_ref_bits(_py, item);
-                            }
-                        } else {
-                            let src = seq_vec_ref(other_ptr);
-                            for &item in src.iter() {
-                                list_elems.push(item);
-                                inc_ref_bits(_py, item);
-                            }
-                        }
-                        if src_has_refs {
-                            (*header_from_obj_ptr(list_ptr)).flags |=
-                                crate::object::HEADER_FLAG_CONTAINS_REFS;
+                        let Some(snapshot) = crate::object::seq_access::snapshot(
+                            _py,
+                            other_ptr,
+                            "list extension snapshot allocation failed",
+                        ) else {
+                            return MoltObject::none().bits();
+                        };
+                        let extended = crate::object::list_mutation::extend_from_slice(
+                            _py, list_ptr, &snapshot,
+                        );
+                        if !extended {
+                            return MoltObject::none().bits();
                         }
                         return MoltObject::none().bits();
                     }
                     if other_type == TYPE_ID_DICT {
-                        let src_has_refs = ((*header_from_obj_ptr(other_ptr)).flags
-                            & crate::object::HEADER_FLAG_CONTAINS_REFS)
-                            != 0;
                         let order = dict_order(other_ptr);
+                        let mut snapshot = Vec::new();
+                        if snapshot.try_reserve_exact(order.len() / 2).is_err() {
+                            return raise_exception::<_>(
+                                _py,
+                                "MemoryError",
+                                "list extension snapshot allocation failed",
+                            );
+                        }
                         for idx in (0..order.len()).step_by(2) {
                             let key_bits = order[idx];
-                            list_elems.push(key_bits);
                             inc_ref_bits(_py, key_bits);
+                            snapshot.push(key_bits);
                         }
-                        if src_has_refs {
-                            (*header_from_obj_ptr(list_ptr)).flags |=
-                                crate::object::HEADER_FLAG_CONTAINS_REFS;
+                        let extended = crate::object::list_mutation::extend_from_slice(
+                            _py, list_ptr, &snapshot,
+                        );
+                        list_snapshot_release(_py, snapshot);
+                        if !extended {
+                            return MoltObject::none().bits();
                         }
                         return MoltObject::none().bits();
                     }
@@ -288,31 +291,40 @@ pub extern "C" fn molt_list_extend(list_bits: u64, other_bits: u64) -> u64 {
                         || other_type == TYPE_ID_DICT_ITEMS_VIEW
                     {
                         let len = dict_view_len(other_ptr);
+                        let mut snapshot = Vec::new();
+                        if snapshot.try_reserve_exact(len).is_err() {
+                            return raise_exception::<_>(
+                                _py,
+                                "MemoryError",
+                                "list extension snapshot allocation failed",
+                            );
+                        }
                         for idx in 0..len {
                             if let Some((key_bits, val_bits)) = dict_view_entry(other_ptr, idx) {
                                 if other_type == TYPE_ID_DICT_ITEMS_VIEW {
                                     let tuple_ptr = alloc_tuple(_py, &[key_bits, val_bits]);
                                     if tuple_ptr.is_null() {
+                                        list_snapshot_release(_py, snapshot);
                                         return MoltObject::none().bits();
                                     }
-                                    list_elems.push(MoltObject::from_ptr(tuple_ptr).bits());
-                                    // Newly created tuples are always heap pointers.
-                                    (*header_from_obj_ptr(list_ptr)).flags |=
-                                        crate::object::HEADER_FLAG_CONTAINS_REFS;
+                                    snapshot.push(MoltObject::from_ptr(tuple_ptr).bits());
                                 } else {
                                     let item = if other_type == TYPE_ID_DICT_KEYS_VIEW {
                                         key_bits
                                     } else {
                                         val_bits
                                     };
-                                    list_elems.push(item);
                                     inc_ref_bits(_py, item);
-                                    if crate::object::refcount_opt::is_heap_ref(item) {
-                                        (*header_from_obj_ptr(list_ptr)).flags |=
-                                            crate::object::HEADER_FLAG_CONTAINS_REFS;
-                                    }
+                                    snapshot.push(item);
                                 }
                             }
+                        }
+                        let extended = crate::object::list_mutation::extend_from_slice(
+                            _py, list_ptr, &snapshot,
+                        );
+                        list_snapshot_release(_py, snapshot);
+                        if !extended {
+                            return MoltObject::none().bits();
                         }
                         return MoltObject::none().bits();
                     }
@@ -333,20 +345,23 @@ pub extern "C" fn molt_list_extend(list_bits: u64, other_bits: u64) -> u64 {
                     if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
                         return MoltObject::none().bits();
                     }
-                    let pair_elems = seq_vec_ref(pair_ptr);
-                    if pair_elems.len() < 2 {
+                    let Some((val_bits, done_bits)) =
+                        crate::object::seq_access::tuple_pair(pair_ptr)
+                    else {
                         return MoltObject::none().bits();
-                    }
-                    let done_bits = pair_elems[1];
+                    };
                     if is_truthy(_py, obj_from_bits(done_bits)) {
                         break;
                     }
-                    let val_bits = pair_elems[0];
-                    list_elems.push(val_bits);
                     inc_ref_bits(_py, val_bits);
-                    if crate::object::refcount_opt::is_heap_ref(val_bits) {
-                        (*header_from_obj_ptr(list_ptr)).flags |=
-                            crate::object::HEADER_FLAG_CONTAINS_REFS;
+                    let extended = crate::object::list_mutation::extend_from_slice(
+                        _py,
+                        list_ptr,
+                        std::slice::from_ref(&val_bits),
+                    );
+                    dec_ref_bits(_py, val_bits);
+                    if !extended {
+                        return MoltObject::none().bits();
                     }
                 }
                 return MoltObject::none().bits();
@@ -358,13 +373,22 @@ pub extern "C" fn molt_list_extend(list_bits: u64, other_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_insert(list_bits: u64, index_bits: u64, val_bits: u64) -> u64 {
+    let _ = molt_list_insert_with_projection(list_bits, index_bits, val_bits, std::ptr::null_mut());
+    MoltObject::none().bits()
+}
+
+pub(crate) fn molt_list_insert_with_projection(
+    list_bits: u64,
+    index_bits: u64,
+    val_bits: u64,
+    item_ptr: *mut molt_cpython_abi::abi_types::PyObject,
+) -> bool {
     crate::with_gil_entry_nopanic!(_py, {
         let list_obj = obj_from_bits(list_bits);
         if let Some(list_ptr) = list_obj.as_ptr() {
             unsafe {
                 promote_specialized_list_to_list(_py, list_ptr);
                 if object_type_id(list_ptr) == TYPE_ID_LIST {
-                    let len = list_len(list_ptr) as i64;
                     // CPython raises "'<type>' object cannot be interpreted as an
                     // integer" (version-stable across 3.12/3.13/3.14) when the
                     // insert index lacks a usable __index__.
@@ -372,56 +396,55 @@ pub extern "C" fn molt_list_insert(list_bits: u64, index_bits: u64, val_bits: u6
                         "'{}' object cannot be interpreted as an integer",
                         type_name(_py, obj_from_bits(index_bits))
                     );
-                    let mut idx = index_i64_from_obj(_py, index_bits, &insert_idx_msg);
+                    let idx = index_i64_from_obj(_py, index_bits, &insert_idx_msg);
                     if exception_pending(_py) {
-                        return MoltObject::none().bits();
+                        return false;
                     }
-                    if idx < 0 {
-                        idx += len;
-                    }
-                    if idx < 0 {
-                        idx = 0;
-                    }
-                    if idx > len {
-                        idx = len;
-                    }
-                    let elems = seq_vec(list_ptr);
-                    elems.insert(idx as usize, val_bits);
-                    inc_ref_bits(_py, val_bits);
-                    if crate::object::refcount_opt::is_heap_ref(val_bits) {
-                        (*header_from_obj_ptr(list_ptr)).flags |=
-                            crate::object::HEADER_FLAG_CONTAINS_REFS;
-                    }
-                    return MoltObject::none().bits();
+                    return insert_at_native_index_with_projection(
+                        _py, list_ptr, idx, val_bits, item_ptr,
+                    );
                 }
             }
         }
-        MoltObject::none().bits()
+        false
     })
 }
 
-unsafe fn list_snapshot(_py: &PyToken<'_>, list_ptr: *mut u8) -> Vec<u64> {
-    unsafe {
-        let elems = seq_vec_ref(list_ptr);
-        let mut out = Vec::with_capacity(elems.len());
-        for &elem in elems.iter() {
-            inc_ref_bits(_py, elem);
-            out.push(elem);
+/// Insert an already-native signed index without boxing it into Molt's compact
+/// integer representation. CPython accepts the complete Py_ssize_t domain and
+/// clamps extreme values; the magnitude formulation avoids signed overflow for
+/// `isize::MIN`/`i64::MIN`.
+pub(crate) unsafe fn insert_at_native_index_with_projection(
+    py: &PyToken<'_>,
+    list_ptr: *mut u8,
+    index: i64,
+    val_bits: u64,
+    item_ptr: *mut molt_cpython_abi::abi_types::PyObject,
+) -> bool {
+    if list_ptr.is_null() || unsafe { object_type_id(list_ptr) } != TYPE_ID_LIST {
+        return false;
+    }
+    let len = unsafe { list_len(list_ptr) };
+    let index = if index < 0 {
+        let magnitude = index.unsigned_abs();
+        if magnitude >= len as u64 {
+            0
+        } else {
+            len - magnitude as usize
         }
-        out
+    } else {
+        (index as u64).min(len as u64) as usize
+    };
+    unsafe {
+        crate::object::list_mutation::insert_with_projection(
+            py, list_ptr, index, val_bits, item_ptr,
+        )
     }
 }
 
 unsafe fn list_snapshot_release(_py: &PyToken<'_>, snapshot: Vec<u64>) {
     for elem in snapshot {
         dec_ref_bits(_py, elem);
-    }
-}
-
-pub(crate) unsafe fn list_elem_at(list_ptr: *mut u8, idx: usize) -> Option<u64> {
-    unsafe {
-        let elems = seq_vec_ref(list_ptr);
-        elems.get(idx).copied()
     }
 }
 
@@ -433,35 +456,43 @@ pub extern "C" fn molt_list_remove(list_bits: u64, val_bits: u64) -> u64 {
             unsafe {
                 promote_specialized_list_to_list(_py, list_ptr);
                 if object_type_id(list_ptr) == TYPE_ID_LIST {
-                    let snapshot = list_snapshot(_py, list_ptr);
-                    let mut matched_idx = None;
-                    for (idx, &elem_bits) in snapshot.iter().enumerate() {
+                    let mut idx = 0usize;
+                    loop {
+                        let len = list_len(list_ptr);
+                        if idx >= len {
+                            return raise_exception::<_>(
+                                _py,
+                                "ValueError",
+                                "list.remove(x): x not in list",
+                            );
+                        }
+                        let Some(elem) = crate::object::seq_access::pin_item(_py, list_ptr, idx)
+                        else {
+                            return MoltObject::none().bits();
+                        };
+                        let elem_bits = elem.bits();
                         let eq = match eq_bool_from_bits(_py, elem_bits, val_bits) {
                             Some(val) => val,
-                            None => {
-                                list_snapshot_release(_py, snapshot);
+                            None => return MoltObject::none().bits(),
+                        };
+                        drop(elem);
+                        if eq {
+                            let live_len = list_len(list_ptr);
+                            let low = idx.min(live_len);
+                            let high = idx.saturating_add(1).min(live_len);
+                            if !crate::object::list_mutation::replace_range(
+                                _py,
+                                list_ptr,
+                                low,
+                                high,
+                                &[],
+                            ) {
                                 return MoltObject::none().bits();
                             }
-                        };
-                        if eq {
-                            matched_idx = Some(idx);
-                            break;
-                        }
-                    }
-                    list_snapshot_release(_py, snapshot);
-                    if let Some(target_idx) = matched_idx {
-                        let elems = seq_vec(list_ptr);
-                        if target_idx < elems.len() {
-                            let removed = elems.remove(target_idx);
-                            dec_ref_bits(_py, removed);
                             return MoltObject::none().bits();
                         }
+                        idx = idx.saturating_add(1);
                     }
-                    return raise_exception::<_>(
-                        _py,
-                        "ValueError",
-                        "list.remove(x): x not in list",
-                    );
                 }
             }
         }
@@ -477,12 +508,8 @@ pub extern "C" fn molt_list_clear(list_bits: u64) -> u64 {
             unsafe {
                 promote_specialized_list_to_list(_py, list_ptr);
                 if object_type_id(list_ptr) == TYPE_ID_LIST {
-                    let elems = seq_vec(list_ptr);
-                    let removed: Vec<u64> = std::mem::take(elems);
-                    (*header_from_obj_ptr(list_ptr)).flags &=
-                        !crate::object::HEADER_FLAG_CONTAINS_REFS;
-                    for elem in removed {
-                        dec_ref_bits(_py, elem);
+                    if !crate::object::list_mutation::clear(_py, list_ptr) {
+                        return MoltObject::none().bits();
                     }
                     return MoltObject::none().bits();
                 }
@@ -562,8 +589,14 @@ pub extern "C" fn molt_list_copy(list_bits: u64) -> u64 {
                     };
                 }
                 if object_type_id(list_ptr) == TYPE_ID_LIST {
-                    let elems = seq_vec_ref(list_ptr);
-                    let out_ptr = alloc_list(_py, elems.as_slice());
+                    let Some(elems) = crate::object::seq_access::snapshot(
+                        _py,
+                        list_ptr,
+                        "list copy snapshot allocation failed",
+                    ) else {
+                        return MoltObject::none().bits();
+                    };
+                    let out_ptr = alloc_list(_py, &elems);
                     if out_ptr.is_null() {
                         return MoltObject::none().bits();
                     }
@@ -583,8 +616,9 @@ pub extern "C" fn molt_list_reverse(list_bits: u64) -> u64 {
             unsafe {
                 promote_specialized_list_to_list(_py, list_ptr);
                 if object_type_id(list_ptr) == TYPE_ID_LIST {
-                    let elems = seq_vec(list_ptr);
-                    elems.reverse();
+                    if !crate::object::list_mutation::reverse(_py, list_ptr) {
+                        return MoltObject::none().bits();
+                    }
                     return MoltObject::none().bits();
                 }
             }
@@ -605,9 +639,23 @@ pub extern "C" fn molt_list_sort(list_bits: u64, key_bits: u64, reverse_bits: u6
                 }
                 let use_key = !obj_from_bits(key_bits).is_none();
                 let reverse = is_truthy(_py, obj_from_bits(reverse_bits));
-                let elems = seq_vec_ref(list_ptr);
-                let mut items: Vec<SortItem> = Vec::with_capacity(elems.len());
-                for &val_bits in elems.iter() {
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
+                let len = list_len(list_ptr);
+                let mut items: Vec<SortItem> = Vec::new();
+                let mut ordered_values: Vec<u64> = Vec::new();
+                if items.try_reserve_exact(len).is_err()
+                    || ordered_values.try_reserve_exact(len).is_err()
+                {
+                    return raise_exception::<_>(_py, "MemoryError", "list sort allocation failed");
+                }
+                let Some(sort_txn) =
+                    crate::object::list_mutation::ListSortTxn::begin(_py, list_ptr)
+                else {
+                    return MoltObject::none().bits();
+                };
+                for (original_index, &val_bits) in sort_txn.values().iter().enumerate() {
                     let key_val_bits = if use_key {
                         let res_bits = call_callable1(_py, key_bits, val_bits);
                         if exception_pending(_py) {
@@ -615,6 +663,8 @@ pub extern "C" fn molt_list_sort(list_bits: u64, key_bits: u64, reverse_bits: u6
                             for item in items.drain(..) {
                                 dec_ref_bits(_py, item.key_bits);
                             }
+                            ordered_values.extend_from_slice(sort_txn.values());
+                            let _ = sort_txn.finish(&ordered_values, 0..len);
                             return MoltObject::none().bits();
                         }
                         res_bits
@@ -624,6 +674,7 @@ pub extern "C" fn molt_list_sort(list_bits: u64, key_bits: u64, reverse_bits: u6
                     items.push(SortItem {
                         key_bits: key_val_bits,
                         value_bits: val_bits,
+                        original_index,
                     });
                 }
                 let mut error: Option<SortError> = None;
@@ -655,37 +706,37 @@ pub extern "C" fn molt_list_sort(list_bits: u64, key_bits: u64, reverse_bits: u6
                         }
                     }
                 });
-                if let Some(error) = error {
-                    if use_key {
-                        for item in items.drain(..) {
-                            dec_ref_bits(_py, item.key_bits);
-                        }
-                    }
-                    match error {
-                        SortError::NotComparable(left_bits, right_bits) => {
-                            let msg = format!(
-                                "'<' not supported between instances of '{}' and '{}'",
-                                type_name(_py, obj_from_bits(left_bits)),
-                                type_name(_py, obj_from_bits(right_bits)),
-                            );
-                            return raise_exception::<_>(_py, "TypeError", &msg);
-                        }
-                        SortError::Exception => {
-                            return MoltObject::none().bits();
-                        }
-                    }
-                }
-                let mut new_elems: Vec<u64> = Vec::with_capacity(items.len());
+                let not_comparable_message = match &error {
+                    Some(SortError::NotComparable(left_bits, right_bits)) => Some(format!(
+                        "'<' not supported between instances of '{}' and '{}'",
+                        type_name(_py, obj_from_bits(*left_bits)),
+                        type_name(_py, obj_from_bits(*right_bits)),
+                    )),
+                    _ => None,
+                };
                 for item in items.iter() {
-                    new_elems.push(item.value_bits);
+                    ordered_values.push(item.value_bits);
                 }
                 if use_key {
-                    for item in items.drain(..) {
+                    for item in &items {
                         dec_ref_bits(_py, item.key_bits);
                     }
                 }
-                let elems_mut = seq_vec(list_ptr);
-                *elems_mut = new_elems;
+                let mutated = sort_txn
+                    .finish(
+                        &ordered_values,
+                        items.iter().map(|item| item.original_index),
+                    )
+                    .unwrap_or(false);
+                if let Some(message) = not_comparable_message {
+                    return raise_exception::<_>(_py, "TypeError", &message);
+                }
+                if matches!(error, Some(SortError::Exception)) {
+                    return MoltObject::none().bits();
+                }
+                if mutated {
+                    return raise_exception::<_>(_py, "ValueError", "list modified during sort");
+                }
                 return MoltObject::none().bits();
             }
         }
@@ -724,13 +775,14 @@ pub extern "C" fn molt_list_add_method(list_bits: u64, other_bits: u64) -> u64 {
                 );
                 return raise_exception::<_>(_py, "TypeError", &msg);
             }
-            let l_len = list_len(list_ptr);
-            let r_len = list_len(other_ptr);
-            let l_elems = seq_vec_ref(list_ptr);
-            let r_elems = seq_vec_ref(other_ptr);
-            let mut combined = Vec::with_capacity(l_len + r_len);
-            combined.extend_from_slice(l_elems);
-            combined.extend_from_slice(r_elems);
+            let Some(combined) = crate::object::seq_access::snapshot_concat(
+                _py,
+                list_ptr,
+                other_ptr,
+                "list concatenation allocation failed",
+            ) else {
+                return MoltObject::none().bits();
+            };
             let ptr = alloc_list(_py, &combined);
             if ptr.is_null() {
                 return raise_exception::<_>(_py, "MemoryError", "out of memory");
@@ -850,20 +902,23 @@ fn bisect_item_at(_py: &PyToken<'_>, seq: MoltObject, idx: i64) -> Option<(u64, 
                     raise_exception::<()>(_py, "IndexError", "list index out of range");
                     return None;
                 }
-                let elems = seq_vec_ref(ptr);
-                return Some((elems[idx as usize], false));
+                let mut bits = 0;
+                if crate::object::seq_access::read_item_owned(ptr, idx as usize, &mut bits) == 0 {
+                    raise_exception::<()>(_py, "IndexError", "list index out of range");
+                    return None;
+                }
+                return Some((bits, true));
             }
             if type_id == TYPE_ID_TUPLE {
                 if idx < 0 {
                     raise_exception::<()>(_py, "IndexError", "tuple index out of range");
                     return None;
                 }
-                let elems = seq_vec_ref(ptr);
-                if idx as usize >= elems.len() {
+                let Some(bits) = crate::object::seq_access::item(ptr, idx as usize) else {
                     raise_exception::<()>(_py, "IndexError", "tuple index out of range");
                     return None;
-                }
-                return Some((elems[idx as usize], false));
+                };
+                return Some((bits, false));
             }
             if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__getitem__") {
                 if let Some(call_bits) = attr_lookup_ptr(_py, ptr, name_bits) {
@@ -1000,10 +1055,8 @@ fn bisect_insert(_py: &PyToken<'_>, seq_bits: u64, idx: i64, value_bits: u64) ->
                 if pos > len {
                     pos = len;
                 }
-                let elems = seq_vec(ptr);
-                elems.insert(pos as usize, value_bits);
-                inc_ref_bits(_py, value_bits);
-                return Some(());
+                return crate::object::list_mutation::insert(_py, ptr, pos as usize, value_bits)
+                    .then_some(());
             }
             if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"insert") {
                 if let Some(call_bits) = attr_lookup_ptr(_py, ptr, name_bits) {
@@ -1104,17 +1157,13 @@ pub extern "C" fn molt_list_count(list_bits: u64, val_bits: u64) -> u64 {
                 if object_type_id(ptr) == TYPE_ID_LIST {
                     let mut count = 0i64;
                     let mut idx = 0usize;
-                    while let Some(val) = list_elem_at(ptr, idx) {
-                        let elem_bits = val;
-                        inc_ref_bits(_py, elem_bits);
+                    while let Some(elem) = crate::object::seq_access::pin_item(_py, ptr, idx) {
+                        let elem_bits = elem.bits();
                         let eq = match eq_bool_from_bits(_py, elem_bits, val_bits) {
                             Some(val) => val,
-                            None => {
-                                dec_ref_bits(_py, elem_bits);
-                                return MoltObject::none().bits();
-                            }
+                            None => return MoltObject::none().bits(),
                         };
-                        dec_ref_bits(_py, elem_bits);
+                        drop(elem);
                         if eq {
                             count += 1;
                         }
@@ -1178,19 +1227,17 @@ pub extern "C" fn molt_list_index_range(
                     if start < stop {
                         let mut idx = start;
                         while idx < stop {
-                            let elem_bits = match list_elem_at(ptr, idx as usize) {
-                                Some(val) => val,
-                                None => break,
-                            };
-                            inc_ref_bits(_py, elem_bits);
+                            let elem =
+                                match crate::object::seq_access::pin_item(_py, ptr, idx as usize) {
+                                    Some(elem) => elem,
+                                    None => break,
+                                };
+                            let elem_bits = elem.bits();
                             let eq = match eq_bool_from_bits(_py, elem_bits, val_bits) {
                                 Some(val) => val,
-                                None => {
-                                    dec_ref_bits(_py, elem_bits);
-                                    return MoltObject::none().bits();
-                                }
+                                None => return MoltObject::none().bits(),
                             };
-                            dec_ref_bits(_py, elem_bits);
+                            drop(elem);
                             if eq {
                                 return MoltObject::from_int(idx).bits();
                             }
@@ -1240,18 +1287,20 @@ pub extern "C" fn molt_tuple_count(tuple_bits: u64, val_bits: u64) -> u64 {
         if let Some(ptr) = tuple_obj.as_ptr() {
             unsafe {
                 if object_type_id(ptr) == TYPE_ID_TUPLE {
-                    let elems = seq_vec_ref(ptr);
-                    let mut count = 0i64;
-                    for &elem in elems.iter() {
-                        let eq = match eq_bool_from_bits(_py, elem, val_bits) {
-                            Some(val) => val,
-                            None => return MoltObject::none().bits(),
-                        };
-                        if eq {
-                            count += 1;
+                    return crate::object::seq_access::with_immutable_tuple_slice(ptr, |elems| {
+                        let mut count = 0i64;
+                        for &elem in elems {
+                            let eq = match eq_bool_from_bits(_py, elem, val_bits) {
+                                Some(val) => val,
+                                None => return MoltObject::none().bits(),
+                            };
+                            if eq {
+                                count += 1;
+                            }
                         }
-                    }
-                    return MoltObject::from_int(count).bits();
+                        MoltObject::from_int(count).bits()
+                    })
+                    .unwrap_or_else(|| MoltObject::none().bits());
                 }
             }
         }
@@ -1280,8 +1329,7 @@ pub extern "C" fn molt_tuple_index_range(
         if let Some(ptr) = tuple_obj.as_ptr() {
             unsafe {
                 if object_type_id(ptr) == TYPE_ID_TUPLE {
-                    let elems = seq_vec_ref(ptr);
-                    let len = elems.len() as i64;
+                    let len = crate::object::seq_access::len(ptr) as i64;
                     let mut start = if start_bits != missing {
                         index_i64_from_obj(
                             _py,
@@ -1326,7 +1374,11 @@ pub extern "C" fn molt_tuple_index_range(
                     }
                     let mut idx = start;
                     while idx < stop {
-                        let eq = match eq_bool_from_bits(_py, elems[idx as usize], val_bits) {
+                        let Some(elem_bits) = crate::object::seq_access::item(ptr, idx as usize)
+                        else {
+                            break;
+                        };
+                        let eq = match eq_bool_from_bits(_py, elem_bits, val_bits) {
                             Some(val) => val,
                             None => return MoltObject::none().bits(),
                         };

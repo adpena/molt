@@ -366,6 +366,11 @@
 [typedef.Py_UCS4]
     added = '3.2'
 
+[typedef.PySendResult]
+    added = '3.10'
+[typedef.sendfunc]
+    added = '3.10'
+
 [macro.Py_BEGIN_ALLOW_THREADS]
     added = '3.2'
 [macro.Py_BLOCK_THREADS]
@@ -2224,6 +2229,12 @@
 
 [const.Py_am_send]
     added = '3.10'
+
+# Buffer protocol slots became available to Limited-API type specs in 3.11.
+[const.Py_bf_getbuffer]
+    added = '3.11'
+[const.Py_bf_releasebuffer]
+    added = '3.11'
 
 
 # New GC control functions in Py3.10 (https://bugs.python.org/issue28254)

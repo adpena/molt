@@ -159,7 +159,7 @@ typedef struct {
 #include "../../../include/molt/_numeric_scalar_abi.h"
 
 typedef struct PyCodeObject PyCodeObject;
-typedef struct PyFrameObject PyFrameObject;
+typedef struct _frame PyFrameObject;
 
 /* ── Ob_refcnt / Ob_type helpers ──────────────────────────────────────────── */
 
@@ -177,7 +177,7 @@ struct PyCodeObject {
     int _co_firsttraceable;
 };
 
-struct PyFrameObject {
+struct _frame {
     PyObject_HEAD
     PyFrameObject *f_back;
     PyCodeObject *f_code;
@@ -217,7 +217,12 @@ typedef PyObject *(*getiterfunc) (PyObject *);
 typedef PyObject *(*iternextfunc)(PyObject *);
 typedef PyObject *(*getter)      (PyObject *, void *);
 typedef int (*setter)            (PyObject *, PyObject *, void *);
-typedef PyObject *(*sendfunc)    (PyObject *, PyObject *, int *);
+typedef enum {
+    PYGEN_RETURN = 0,
+    PYGEN_ERROR = -1,
+    PYGEN_NEXT = 1
+} PySendResult;
+typedef PySendResult (*sendfunc) (PyObject *, PyObject *, PyObject **);
 typedef PyObject *(*vectorcallfunc)(PyObject *, PyObject *const *, size_t, PyObject *);
 
 /* ── Number / Sequence / Mapping protocol structs ────────────────────────── */
@@ -730,18 +735,7 @@ typedef struct PyType_Spec {
     PyType_Slot *slots;
 } PyType_Spec;
 
-#define Py_tp_dealloc 52
-#define Py_mp_subscript 5
-#define Py_tp_repr 66
-#define Py_tp_call 50
-#define Py_tp_traverse 71
-#define Py_tp_clear 51
-#define Py_tp_methods 64
-#define Py_tp_members 72
-#define Py_tp_getset 73
-#define Py_tp_descr_get 54
-#define Py_tp_setattro 69
-#define Py_tp_new 65
+#include "_molt_typeslots.generated.h"
 
 typedef struct PyModuleDef_Slot {
     int slot;
@@ -978,6 +972,7 @@ extern PyObject    *PyType_FromSpecWithBases(PyType_Spec *spec, PyObject *bases)
 extern PyObject    *PyType_FromModuleAndSpec(PyObject *module, PyType_Spec *spec, PyObject *bases);
 extern PyObject    *PyType_FromMetaclass(PyTypeObject *metaclass, PyObject *module, PyType_Spec *spec, PyObject *bases);
 extern unsigned long PyType_GetFlags    (PyTypeObject *tp);
+extern void        *PyType_GetSlot      (PyTypeObject *tp, int slot);
 extern int          PyType_HasFeature   (PyTypeObject *tp, unsigned long feature);
 extern int          PyType_Check        (PyObject *op);
 extern int          PyType_IsSubtype    (PyTypeObject *a, PyTypeObject *b);
@@ -1064,6 +1059,7 @@ extern int          _PyObject_LookupAttr(PyObject *op, PyObject *name, PyObject 
 extern PyObject    *PyObject_GetIter(PyObject *op);
 extern int          PyIter_Check(PyObject *op);
 extern PyObject    *PyIter_Next(PyObject *op);
+extern PySendResult PyIter_Send(PyObject *iter, PyObject *arg, PyObject **result);
 extern PyObject    *PyObject_Next(PyObject *op);
 extern PyObject    *PyObject_SelfIter(PyObject *op);
 extern PyObject    *PySeqIter_New(PyObject *seq);
@@ -1210,6 +1206,7 @@ extern PyObject    *PyUnicode_FromFormat          (const char *format, ...);
 extern PyObject    *PyUnicode_FromFormatV         (const char *format, va_list vargs);
 extern void         PyUnicode_InternInPlace       (PyObject **p);
 extern PyObject    *PyUnicode_InternFromString    (const char *s);
+extern Py_UCS4      PyUnicode_ReadChar            (PyObject *unicode, Py_ssize_t index);
 
 #define PyUnicode_GET_LENGTH(op) PyUnicode_GetLength(op)
 extern int PyUnicode_CheckExact(PyObject *op);
@@ -1453,6 +1450,10 @@ extern int       PyErr_ExceptionMatches(PyObject *exc);
 extern int       PyErr_GivenExceptionMatches(PyObject *given, PyObject *exc);
 extern void      PyErr_Fetch      (PyObject **type, PyObject **value, PyObject **traceback);
 extern void      PyErr_Restore    (PyObject *type, PyObject *value, PyObject *traceback);
+extern PyObject *PyErr_GetHandledException(void);
+extern void      PyErr_SetHandledException(PyObject *exc);
+extern void      PyErr_GetExcInfo (PyObject **type, PyObject **value, PyObject **traceback);
+extern void      PyErr_SetExcInfo (PyObject *type, PyObject *value, PyObject *traceback);
 extern void      PyErr_NormalizeException(PyObject **type, PyObject **value, PyObject **traceback);
 extern int       PyException_SetTraceback(PyObject *exc, PyObject *tb);
 extern PyObject *PyException_GetCause(PyObject *exc);
@@ -1746,8 +1747,14 @@ static inline PyTypeObject *_molt_py_typeof(PyObject *obj) {
     return molt_capi_semantic_type(obj);
 }
 #define Py_TYPE(ob)     _molt_py_typeof((PyObject *)(ob))
-#define Py_REFCNT(ob)   (((PyObject *)(ob))->ob_refcnt)
-#define Py_SIZE(ob)     (((PyVarObject *)(ob))->ob_size)
+static inline Py_ssize_t Py_REFCNT(PyObject *ob) {
+    return ob->ob_refcnt;
+}
+#define Py_REFCNT(ob) Py_REFCNT((PyObject *)(ob))
+static inline Py_ssize_t Py_SIZE(PyObject *ob) {
+    return ((PyVarObject *)ob)->ob_size;
+}
+#define Py_SIZE(ob) Py_SIZE((PyObject *)(ob))
 /* No-op on immortals (CPython 3.12+): Py_SET_REFCNT must not mortalize a shared
  * static singleton. Statement macro; use in statement context. */
 #define Py_SET_REFCNT(ob, refcnt)                                   \
@@ -1758,7 +1765,10 @@ static inline PyTypeObject *_molt_py_typeof(PyObject *obj) {
         }                                                           \
     } while (0)
 #define Py_SET_TYPE(ob, type) ((void)molt_capi_set_semantic_type((PyObject *)(ob), (PyTypeObject *)(type)))
-#define Py_SET_SIZE(ob, size) (Py_SIZE(ob) = (size))
+static inline void _molt_Py_SET_SIZE(PyObject *ob, Py_ssize_t size) {
+    ((PyVarObject *)ob)->ob_size = size;
+}
+#define Py_SET_SIZE(ob, size) _molt_Py_SET_SIZE((PyObject *)(ob), (size))
 #define PyExceptionInstance_Class(x) ((PyObject *)Py_TYPE(x))
 
 #ifndef _PyObject_CAST

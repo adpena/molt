@@ -34,6 +34,7 @@ from molt.cli.output import fail as _fail
 from molt.cli.package_distribution import package, publish, verify
 from molt.cli.package_registry import _is_remote_registry
 from molt.cli.queue_cli import handle_queue_command
+from molt.cli.source_extension_producer import produce_source_extension_set
 from molt.cli.target_python import _parse_target_python_version
 from molt.cli.setup_readiness import doctor, setup
 from molt.cli.toolchain_validation import update_repo, validate
@@ -492,6 +493,16 @@ def _dispatch_entrypoint_command(
                 json_output=args.json,
                 verbose=args.verbose,
             )
+        if args.extension_command == "produce-set":
+            return produce_source_extension_set(
+                package=args.package,
+                module_set=args.module_set,
+                source=args.source,
+                build_root=args.build_root,
+                target=args.target,
+                abi_tier=args.abi_tier,
+                json_output=args.json,
+            )
         if args.extension_command == "audit":
             require_abi = (
                 args.require_abi
@@ -576,7 +587,8 @@ def _dispatch_entrypoint_command(
                 verbose=args.verbose,
             )
         return _fail(
-            "Missing extension subcommand (build|metadata|audit|scan).",
+            "Missing extension subcommand "
+            "(build|metadata|produce-set|audit|seal|scan).",
             args.json,
             command="extension",
         )

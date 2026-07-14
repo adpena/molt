@@ -17,7 +17,7 @@ use crate::bridge::{
     exception_pending, inc_ref_bits, index_bigint_from_obj, int_bits_from_bigint, is_truthy,
     maybe_ptr_from_bits, missing_bits, molt_exception_last, molt_float_from_obj,
     molt_getattr_builtin, molt_is_callable, molt_iter, molt_iter_next, molt_list_insert,
-    object_type_id, raise_exception, seq_vec_ref, string_obj_to_owned, to_f64, to_i64,
+    object_type_id, raise_exception, seq_snapshot, string_obj_to_owned, to_f64, to_i64,
 };
 
 #[path = "functions_http/client_core.rs"]

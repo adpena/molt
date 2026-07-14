@@ -227,7 +227,7 @@ fn statistics_normal_dist_samples_mode(
         if object_type_id(seed_ptr) != TYPE_ID_TUPLE {
             None
         } else {
-            let elems = seq_vec_ref(seed_ptr);
+            let elems = seq_snapshot(seed_ptr);
             if elems.len() == 2 {
                 Some((elems[0], elems[1]))
             } else {
@@ -611,7 +611,7 @@ pub extern "C" fn molt_statistics_median_low(data_bits: u64) -> u64 {
                     "median_low expected sorted list payload",
                 );
             }
-            let elems = seq_vec_ref(sorted_ptr);
+            let elems = seq_snapshot(sorted_ptr);
             if elems.is_empty() {
                 if maybe_ptr_from_bits(sorted_bits).is_some() {
                     dec_ref_bits(_py, sorted_bits);
@@ -654,7 +654,7 @@ pub extern "C" fn molt_statistics_median_high(data_bits: u64) -> u64 {
                     "median_high expected sorted list payload",
                 );
             }
-            let elems = seq_vec_ref(sorted_ptr);
+            let elems = seq_snapshot(sorted_ptr);
             if elems.is_empty() {
                 if maybe_ptr_from_bits(sorted_bits).is_some() {
                     dec_ref_bits(_py, sorted_bits);
@@ -1020,7 +1020,7 @@ pub extern "C" fn molt_statistics_mean_slice(
             unsafe {
                 let ty = object_type_id(data_ptr);
                 if ty == TYPE_ID_LIST || ty == TYPE_ID_TUPLE {
-                    let elems = seq_vec_ref(data_ptr);
+                    let elems = seq_snapshot(data_ptr);
                     let Some((start, end)) = normalize_slice_step1_bounds(
                         _py,
                         elems.len(),
@@ -1090,7 +1090,7 @@ pub extern "C" fn molt_statistics_stdev_slice(
             unsafe {
                 let ty = object_type_id(data_ptr);
                 if ty == TYPE_ID_LIST || ty == TYPE_ID_TUPLE {
-                    let elems = seq_vec_ref(data_ptr);
+                    let elems = seq_snapshot(data_ptr);
                     let Some((start, end)) = normalize_slice_step1_bounds(
                         _py,
                         elems.len(),

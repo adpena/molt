@@ -145,13 +145,16 @@ pub(crate) unsafe fn dict_update_apply(
                         return MoltObject::none().bits();
                     }
                     let (item_bits, done_bits) = {
-                        let elems = seq_vec_ref(pair_ptr);
-                        if elems.len() < 2 {
+                        let Some(pair) = crate::object::seq_access::with_immutable_tuple_slice(
+                            pair_ptr,
+                            |items| items.first().copied().zip(items.get(1).copied()),
+                        )
+                        .flatten() else {
                             dec_ref_bits(_py, pair_bits);
                             dec_ref_bits(_py, iter);
                             return MoltObject::none().bits();
-                        }
-                        (elems[0], elems[1])
+                        };
+                        pair
                     };
                     if is_truthy(_py, obj_from_bits(done_bits)) {
                         dec_ref_bits(_py, pair_bits);
@@ -253,14 +256,17 @@ pub(crate) unsafe fn dict_update_apply(
                             return MoltObject::none().bits();
                         }
                         let (key_bits, done_bits) = {
-                            let elems = seq_vec_ref(pair_ptr);
-                            if elems.len() < 2 {
+                            let Some(pair) = crate::object::seq_access::with_immutable_tuple_slice(
+                                pair_ptr,
+                                |items| items.first().copied().zip(items.get(1).copied()),
+                            )
+                            .flatten() else {
                                 dec_ref_bits(_py, pair_bits);
                                 dec_ref_bits(_py, getitem_method_bits);
                                 dec_ref_bits(_py, keys_iter);
                                 return MoltObject::none().bits();
-                            }
-                            (elems[0], elems[1])
+                            };
+                            pair
                         };
                         if is_truthy(_py, obj_from_bits(done_bits)) {
                             dec_ref_bits(_py, pair_bits);
@@ -316,13 +322,17 @@ pub(crate) unsafe fn dict_update_apply(
                 return MoltObject::none().bits();
             }
             let (item_bits, done_bits) = {
-                let elems = seq_vec_ref(pair_ptr);
-                if elems.len() < 2 {
+                let Some(pair) =
+                    crate::object::seq_access::with_immutable_tuple_slice(pair_ptr, |items| {
+                        items.first().copied().zip(items.get(1).copied())
+                    })
+                    .flatten()
+                else {
                     dec_ref_bits(_py, pair_bits);
                     dec_ref_bits(_py, iter);
                     return MoltObject::none().bits();
-                }
-                (elems[0], elems[1])
+                };
+                pair
             };
             if is_truthy(_py, obj_from_bits(done_bits)) {
                 dec_ref_bits(_py, pair_bits);
@@ -882,15 +892,17 @@ pub extern "C" fn molt_dict_update_kwstar(dict_bits: u64, mapping_bits: u64) -> 
                 if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
                     return MoltObject::none().bits();
                 }
-                let elems = seq_vec_ref(pair_ptr);
-                if elems.len() < 2 {
+                let Some((key_bits, done_bits)) =
+                    crate::object::seq_access::with_immutable_tuple_slice(pair_ptr, |items| {
+                        items.first().copied().zip(items.get(1).copied())
+                    })
+                    .flatten()
+                else {
                     return MoltObject::none().bits();
-                }
-                let done_bits = elems[1];
+                };
                 if is_truthy(_py, obj_from_bits(done_bits)) {
                     break;
                 }
-                let key_bits = elems[0];
                 let key_obj = obj_from_bits(key_bits);
                 let Some(key_ptr) = key_obj.as_ptr() else {
                     return raise_exception::<_>(_py, "TypeError", "keywords must be strings");

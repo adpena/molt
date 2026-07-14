@@ -945,7 +945,7 @@ unsafe fn call_method_ic_dispatch(
                     if object_type_id(def_ptr) != TYPE_ID_TUPLE {
                         return None;
                     }
-                    let def_elems = seq_vec_ref(def_ptr);
+                    let def_elems = crate::object::seq_access::pin_tuple(_py, def_ptr)?;
                     let missing = fixed_arity - supplied;
                     if missing > def_elems.len() {
                         // Live defaults cannot cover the gap (e.g. a shrunk

@@ -4157,7 +4157,10 @@ fn c_api_public_libmolt_iterator_dict_list_surface() {
         let Some(pair1_ptr) = obj_from_bits(pair1).as_ptr() else {
             panic!("molt_iter_next should return a tuple pair");
         };
-        let pair1_items = unsafe { seq_vec_ref(pair1_ptr) };
+        let pair1_items = unsafe {
+            crate::object::seq_access::snapshot(_py, pair1_ptr, "test snapshot allocation failed")
+                .unwrap()
+        };
         assert_eq!(pair1_items.len(), 2);
         assert_eq!(to_i64(obj_from_bits(pair1_items[0])), Some(10));
         assert!(!is_truthy(_py, obj_from_bits(pair1_items[1])));
@@ -4167,7 +4170,10 @@ fn c_api_public_libmolt_iterator_dict_list_surface() {
         let Some(pair2_ptr) = obj_from_bits(pair2).as_ptr() else {
             panic!("molt_iter_next should return a tuple pair");
         };
-        let pair2_items = unsafe { seq_vec_ref(pair2_ptr) };
+        let pair2_items = unsafe {
+            crate::object::seq_access::snapshot(_py, pair2_ptr, "test snapshot allocation failed")
+                .unwrap()
+        };
         assert_eq!(to_i64(obj_from_bits(pair2_items[0])), Some(20));
         assert!(!is_truthy(_py, obj_from_bits(pair2_items[1])));
         dec_ref_bits(_py, pair2);
@@ -4176,7 +4182,10 @@ fn c_api_public_libmolt_iterator_dict_list_surface() {
         let Some(pair3_ptr) = obj_from_bits(pair3).as_ptr() else {
             panic!("molt_iter_next should return exhausted tuple pair");
         };
-        let pair3_items = unsafe { seq_vec_ref(pair3_ptr) };
+        let pair3_items = unsafe {
+            crate::object::seq_access::snapshot(_py, pair3_ptr, "test snapshot allocation failed")
+                .unwrap()
+        };
         assert!(is_truthy(_py, obj_from_bits(pair3_items[1])));
         dec_ref_bits(_py, pair3);
         dec_ref_bits(_py, iter);

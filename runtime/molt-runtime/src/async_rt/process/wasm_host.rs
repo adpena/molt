@@ -61,7 +61,15 @@ fn argv_from_bits_wasm(_py: &PyToken<'_>, args_bits: u64) -> Result<Vec<String>,
     if let Some(ptr) = obj.as_ptr() {
         let type_id = unsafe { object_type_id(ptr) };
         if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
-            let elems = unsafe { seq_vec_ref(ptr) };
+            let Some(elems) = (unsafe {
+                crate::object::seq_access::snapshot(
+                    _py,
+                    ptr,
+                    "process argument snapshot allocation failed",
+                )
+            }) else {
+                return Err("process argument snapshot allocation failed".to_string());
+            };
             let mut args = Vec::with_capacity(elems.len());
             for &elem in elems.iter() {
                 args.push(string_from_bits_wasm(_py, elem, "arg")?);

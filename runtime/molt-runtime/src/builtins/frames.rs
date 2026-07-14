@@ -8,8 +8,8 @@ use crate::{
     code_name_bits, dec_ref_bits, dict_get_in_place, dict_order, function_globals_bits,
     function_globals_override_enabled, inc_ref_bits, instance_dict_bits, instance_set_dict_bits,
     intern_runtime_static_name, intern_static_name, module_dict_bits, obj_from_bits,
-    object_mark_has_ptrs, object_type_id, profile_enabled, runtime_state, seq_vec_ref,
-    string_obj_to_owned, to_i64,
+    object_mark_has_ptrs, object_type_id, profile_enabled, runtime_state, string_obj_to_owned,
+    to_i64,
 };
 use molt_obj_model::MoltObject;
 use std::sync::atomic::Ordering as AtomicOrdering;
@@ -628,18 +628,26 @@ unsafe fn alloc_traceback_obj(
                 if object_type_id(linetable_ptr) != TYPE_ID_TUPLE {
                     return -1;
                 }
+                let Some(linetable) = crate::object::seq_access::pin_tuple(_py, linetable_ptr)
+                else {
+                    return -1;
+                };
                 let mut best: Option<(usize, i64)> = None;
-                for (idx, entry_bits) in seq_vec_ref(linetable_ptr).iter().copied().enumerate() {
+                for (idx, entry_bits) in linetable.iter().copied().enumerate() {
                     let Some(entry_ptr) = obj_from_bits(entry_bits).as_ptr() else {
                         continue;
                     };
                     if object_type_id(entry_ptr) != TYPE_ID_TUPLE {
                         continue;
                     }
-                    let parts = seq_vec_ref(entry_ptr);
-                    if parts.len() < 4 {
+                    let Some(parts) =
+                        crate::object::seq_access::with_immutable_tuple_slice(entry_ptr, |parts| {
+                            (parts.len() >= 4).then(|| [parts[0], parts[1], parts[2], parts[3]])
+                        })
+                        .flatten()
+                    else {
                         continue;
-                    }
+                    };
                     let Some(start_line) = to_i64(obj_from_bits(parts[0])) else {
                         continue;
                     };

@@ -84,7 +84,15 @@ fn argv_from_obj(_py: &PyToken<'_>, args_bits: u64) -> Result<Vec<std::ffi::OsSt
     if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
         return Err("args must be a string or sequence".to_string());
     }
-    let elems = unsafe { seq_vec_ref(ptr) };
+    let Some(elems) = (unsafe {
+        crate::object::seq_access::snapshot(
+            _py,
+            ptr,
+            "subprocess argument snapshot allocation failed",
+        )
+    }) else {
+        return Err("subprocess argument snapshot allocation failed".to_string());
+    };
     if elems.is_empty() {
         return Err("args must not be empty".to_string());
     }
