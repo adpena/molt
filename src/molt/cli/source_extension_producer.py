@@ -32,11 +32,18 @@ from molt.cli.extension_manifest import (
     _validate_extension_manifest,
 )
 from molt.cli.file_hashing import _sha256_file
+from molt.cli.extension_wheel import _rewrite_staged_extension_wheel
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import fail as _fail
 from molt.cli.output import json_payload as _json_payload
 from molt.cli.source_extensions import (
     _load_meson_intro_targets_source_extension_plan,
+)
+from molt.cli.source_extension_reproducibility import (
+    _canonical_extension_manifest_for_wheel,
+    _canonicalize_location_string,
+    _canonicalize_locations,
+    _canonicalize_meson_metadata,
 )
 from molt.cli.source_extension_toolchain import (
     MOLT_PKGCONF_REQUIREMENT,
@@ -1029,47 +1036,6 @@ def _preflight_extension_set_plans(
         )
 
 
-def _canonicalize_location_string(
-    value: str,
-    location_roots: Sequence[tuple[Path, str]],
-) -> str:
-    canonical = value
-    for root, token in sorted(
-        location_roots,
-        key=lambda item: len(str(item[0])),
-        reverse=True,
-    ):
-        native = str(root.resolve())
-        posix = root.resolve().as_posix()
-        canonical = canonical.replace(native, token).replace(posix, token)
-    return canonical.replace("\\", "/")
-
-
-def _canonicalize_locations(
-    value: Any,
-    location_roots: Sequence[tuple[Path, str]],
-    source_paths: Mapping[Path, str] | None = None,
-) -> Any:
-    if isinstance(value, str):
-        candidate = Path(value).expanduser()
-        if candidate.is_absolute() and source_paths is not None:
-            replacement = source_paths.get(candidate.resolve())
-            if replacement is not None:
-                return replacement
-        return _canonicalize_location_string(value, location_roots)
-    if isinstance(value, list):
-        return [
-            _canonicalize_locations(item, location_roots, source_paths)
-            for item in value
-        ]
-    if isinstance(value, dict):
-        return {
-            key: _canonicalize_locations(item, location_roots, source_paths)
-            for key, item in value.items()
-        }
-    return value
-
-
 def _manifest_source_candidates(manifest: Mapping[str, Any]) -> tuple[Path, ...]:
     raw_paths: list[str] = []
     closure = manifest.get("object_closure")
@@ -1160,6 +1126,25 @@ def _stage_extension(
     if not isinstance(raw_manifest, dict):
         raise SourceExtensionProducerError("audited extension manifest is not an object")
 
+    raw_source_plan = raw_manifest.get("source_plan")
+    raw_plan_path = (
+        Path(str(raw_source_plan["plan"]))
+        if isinstance(raw_source_plan, Mapping) and raw_source_plan.get("plan")
+        else None
+    )
+    raw_compile_commands_path = (
+        Path(str(raw_source_plan["compile_commands"]))
+        if isinstance(raw_source_plan, Mapping)
+        and raw_source_plan.get("compile_commands")
+        else None
+    )
+    canonical_embedded_manifest = _canonical_extension_manifest_for_wheel(
+        raw_manifest,
+        location_roots=location_roots,
+        meson_plan_path=raw_plan_path,
+        compile_commands_path=raw_compile_commands_path,
+    )
+
     staged_sources = _stage_compiled_inputs(raw_manifest, publish_root=publish_root)
     source_references = {
         source: _relative_manifest_path(publish_root / relative, sidecar_path.parent)
@@ -1180,7 +1165,6 @@ def _stage_extension(
         / produced.wheel_path.name
     )
     wheel_destination = publish_root / wheel_relative
-    _atomic_copy_file(produced.wheel_path, wheel_destination)
     manifest["wheel"] = _relative_manifest_path(
         wheel_destination, sidecar_path.parent
     )
@@ -1265,12 +1249,24 @@ def _stage_extension(
     build = manifest.get("build")
     if isinstance(build, dict):
         build["object_closure_sha256"] = closure["closure_sha256"]
+    try:
+        wheel_sha256, _embedded_manifest = _rewrite_staged_extension_wheel(
+            produced.wheel_path,
+            wheel_destination,
+            canonical_embedded_manifest=canonical_embedded_manifest,
+        )
+    except ValueError as exc:
+        raise SourceExtensionProducerError(
+            f"failed to finalize canonical extension wheel: {exc}"
+        ) from exc
+    manifest["wheel_sha256"] = wheel_sha256
     _atomic_write_json(sidecar_path, manifest, sort_keys=True, indent=2)
     return replace(
         produced,
         artifact_path=destination,
         artifact_manifest_path=sidecar_path,
         wheel_path=wheel_destination,
+        wheel_sha256=wheel_sha256,
         object_closure_sha256=str(closure["closure_sha256"]),
     )
 
@@ -1280,6 +1276,7 @@ def _stage_canonical_metadata_file(
     destination: Path,
     *,
     location_roots: Sequence[tuple[Path, str]],
+    normalize_meson_dependency_ids: bool = False,
 ) -> Path:
     try:
         text = source.read_text(encoding="utf-8")
@@ -1293,7 +1290,11 @@ def _stage_canonical_metadata_file(
         canonical = _canonicalize_location_string(text, location_roots)
         _atomic_write_text(destination, canonical)
     else:
-        canonical_payload = _canonicalize_locations(payload, location_roots)
+        canonical_payload = (
+            _canonicalize_meson_metadata(payload, location_roots)
+            if normalize_meson_dependency_ids
+            else _canonicalize_locations(payload, location_roots)
+        )
         _atomic_write_json(destination, canonical_payload, sort_keys=True, indent=2)
     return destination
 
@@ -1315,6 +1316,7 @@ def _stage_build_metadata(
             intro_targets,
             metadata_publish_root / "meson" / "intro-targets.json",
             location_roots=location_roots,
+            normalize_meson_dependency_ids=True,
         ),
         "compile_commands": _stage_canonical_metadata_file(
             compile_commands,

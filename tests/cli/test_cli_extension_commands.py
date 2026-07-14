@@ -2573,12 +2573,6 @@ def test_extension_metadata_materializes_meson_cross_and_python_pc(
             detail="wasm-ld=/usr/bin/wasm-ld; zig=/usr/bin/zig",
         ),
     )
-    monkeypatch.setattr(
-        cli_source_extension_toolchain.shutil,
-        "which",
-        lambda tool: "/usr/bin/pkg-config" if tool == "pkg-config" else None,
-    )
-
     out_dir = tmp_path / "metadata"
     rc = cli_commands.extension_metadata(
         target="wasm",
