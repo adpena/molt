@@ -1,7 +1,8 @@
 // molt_luau_transpiler.qnt — Quint model for Molt Luau transpiler correctness.
 //
 // Models the critical semantic gaps the Luau backend must bridge when
-// transpiling Python IR to Luau source (~4300 lines in luau.rs):
+// transpiling Python IR to Luau source
+// (runtime/molt-backend-luau/src/luau.rs plus its src/luau/ emitter family):
 //   - 0-based -> 1-based index adjustment
 //   - Builtin function resolution (no nil callables)
 //   - Module import caching

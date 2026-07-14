@@ -2,9 +2,17 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Collection
+from typing import TypedDict
 
 DEFAULT_TYPE_CHECKING_NAMES = frozenset({"TYPE_CHECKING"})
 DEFAULT_TYPE_CHECKING_MODULE_ALIASES = frozenset({"typing", "typing_extensions"})
+
+
+class SysPlatformStaticTruthKwargs(TypedDict, total=False):
+    """Typed keyword facts shared by every frontend static-truth consumer."""
+
+    target_sys_platform: str
+    sys_platform_module_aliases: Collection[str]
 
 
 def is_type_checking_test(

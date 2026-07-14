@@ -21,7 +21,10 @@ from molt.frontend._types import (
     MoltValue,
     _canonical_intrinsic_runtime_name,
 )
-from molt.compiler_analysis.static_truth import static_if_live_branch
+from molt.compiler_analysis.static_truth import (
+    SysPlatformStaticTruthKwargs,
+    static_if_live_branch,
+)
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -35,7 +38,7 @@ else:
 class AnalysisCollectStaticMixin(_MixinBase):
     def _sys_platform_static_truth_kwargs(
         self, extra_sys_platform_module_aliases: Iterable[str] = ()
-    ) -> dict[str, object]:
+    ) -> SysPlatformStaticTruthKwargs:
         target_sys_platform = self.target_sys_platform
         if target_sys_platform is None:
             return {}

@@ -533,15 +533,11 @@ def _extend_native_support_source_closure(
         )
     )
     for module_name, path in closure_graph.items():
-        module_graph.setdefault(
-            module_name,
-            (
-                support_slices[path].generated_path
-                if path in support_slices
-                and support_slices[path].generated_path is not None
-                else path
-            ),
-        )
+        resolved_path = path
+        support_slice = support_slices.get(path)
+        if support_slice is not None and support_slice.generated_path is not None:
+            resolved_path = support_slice.generated_path
+        module_graph.setdefault(module_name, resolved_path)
         _graph_discovery._record_module_reason(
             module_reasons,
             module_name,

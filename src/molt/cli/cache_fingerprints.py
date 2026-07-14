@@ -23,6 +23,7 @@ from molt.cli.file_hashing import (
     _sha256_file,
     _source_fingerprint_files,
 )
+from molt.cli.runtime_fingerprints import _runtime_source_paths
 
 
 _CACHE_SOURCE_FINGERPRINT_SCHEMA_VERSION = "source-tree-v3"
@@ -699,12 +700,6 @@ def _source_tree_cache_fingerprint(
 
 def _selected_source_features(features: Sequence[str]) -> tuple[str, ...]:
     return tuple(sorted({feature for feature in features if feature}))
-
-
-def _runtime_source_paths(root: Path, **kwargs: object) -> list[Path]:
-    from molt.cli.runtime_fingerprints import _runtime_source_paths as impl
-
-    return impl(root, **kwargs)
 
 
 def _cache_fingerprint(

@@ -381,9 +381,7 @@ def _wasi_sdk_root_for_sysroot(sysroot: Path) -> Path | None:
     return None
 
 
-def _wasi_sysroot_llvm_version(sysroot: Path | None) -> str | None:
-    if sysroot is None:
-        return None
+def _wasi_sysroot_llvm_version(sysroot: Path) -> str | None:
     version_file = sysroot / "VERSION"
     if not version_file.is_file():
         return None
@@ -441,13 +439,18 @@ def resolve_wasm_linker() -> WasmLinkerIdentity | None:
     if linker is None:
         return None
     version = _wasm_linker_version(linker)
-    expected = _wasi_sysroot_llvm_version(sysroot)
-    if expected is not None and _llvm_release_line(version) != _llvm_release_line(expected):
-        raise WasmLinkerContractError(
-            "wasm linker/toolchain mismatch: "
-            f"{linker} reports {version}, but {sysroot / 'VERSION'} requires LLVM "
-            f"{expected}; use the matching wasi-sdk bin/wasm-ld or set MOLT_WASM_LD"
-        )
+    expected = None
+    if sysroot is not None:
+        expected = _wasi_sysroot_llvm_version(sysroot)
+        if expected is not None and _llvm_release_line(version) != _llvm_release_line(
+            expected
+        ):
+            raise WasmLinkerContractError(
+                "wasm linker/toolchain mismatch: "
+                f"{linker} reports {version}, but {sysroot / 'VERSION'} requires "
+                f"LLVM {expected}; use the matching wasi-sdk bin/wasm-ld or set "
+                "MOLT_WASM_LD"
+            )
     return WasmLinkerIdentity(linker, version, expected)
 
 

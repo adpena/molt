@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, cast
 
 from molt.cli.atomic_io import _atomic_copy_file, _atomic_write_json
 from molt.c_api_symbols import is_c_api_external_requirement
@@ -295,6 +295,7 @@ def _canonicalize_object_closure_c_api_requirements(
     for item in objects:
         if not isinstance(item, dict):
             continue
+        item = cast(dict[str, Any], item)
         raw_symbols = item.get("required_c_api_symbols")
         if not isinstance(raw_symbols, list):
             continue
@@ -482,6 +483,7 @@ def _canonicalize_object_closure_source_paths(
         if not isinstance(item, dict):
             errors.append(f"object_closure.objects[{index}] must be an object")
             continue
+        item = cast(dict[str, Any], item)
         raw_source = item.get("source")
         if not isinstance(raw_source, str) or not raw_source.strip():
             continue
