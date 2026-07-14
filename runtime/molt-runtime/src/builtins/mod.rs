@@ -23,7 +23,6 @@ pub(crate) mod dbm_dumb;
 pub(crate) mod enum_ext;
 pub(crate) mod exceptions;
 pub(crate) mod fcntl;
-pub(crate) mod fnmatch;
 pub(crate) mod frames;
 pub(crate) mod functions;
 pub(crate) mod functions_fnmatch;

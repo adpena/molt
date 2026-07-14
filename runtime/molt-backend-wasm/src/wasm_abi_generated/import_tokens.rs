@@ -2839,8 +2839,6 @@ pub(crate) enum WasmRuntimeImport {
     PathlibGroup,
     PathlibSamefile,
     PathlibSep,
-    FnmatchFnmatch,
-    FnmatchFnmatchcase,
     TempfileGettempdir,
     TempfileGettempdirb,
     TempfileMkdtemp,

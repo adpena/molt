@@ -14185,16 +14185,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 0,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::FnmatchFnmatch,
-        name: "fnmatch_fnmatch",
-        type_idx: 3,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::FnmatchFnmatchcase,
-        name: "fnmatch_fnmatchcase",
-        type_idx: 3,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::TempfileGettempdir,
         name: "tempfile_gettempdir",
         type_idx: 0,
@@ -20799,10 +20789,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_pathlib_samefile" => Some(WasmRuntimeImport::PathlibSamefile),
         "pathlib_sep" => Some(WasmRuntimeImport::PathlibSep),
         "molt_pathlib_sep" => Some(WasmRuntimeImport::PathlibSep),
-        "fnmatch_fnmatch" => Some(WasmRuntimeImport::FnmatchFnmatch),
-        "molt_fnmatch_fnmatch" => Some(WasmRuntimeImport::FnmatchFnmatch),
-        "fnmatch_fnmatchcase" => Some(WasmRuntimeImport::FnmatchFnmatchcase),
-        "molt_fnmatch_fnmatchcase" => Some(WasmRuntimeImport::FnmatchFnmatchcase),
         "tempfile_gettempdir" => Some(WasmRuntimeImport::TempfileGettempdir),
         "molt_tempfile_gettempdir" => Some(WasmRuntimeImport::TempfileGettempdir),
         "tempfile_gettempdirb" => Some(WasmRuntimeImport::TempfileGettempdirb),

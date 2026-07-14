@@ -14231,18 +14231,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_fnmatch_fnmatch",
-        symbol: "molt_fnmatch_fnmatch",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_fnmatch_fnmatchcase",
-        symbol: "molt_fnmatch_fnmatchcase",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_tempfile_gettempdir",
         symbol: "molt_tempfile_gettempdir",
         arity: 0,
