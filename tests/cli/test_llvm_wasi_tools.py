@@ -121,6 +121,7 @@ def test_source_commands_share_family_and_never_duplicate_target() -> None:
         target_triple="wasm32-wasip1",
     )
 
+    assert set(commands) == {"ar", "c", "cpp", "ld", "nm", "ranlib", "strip"}
     assert commands["c"].count("--target=wasm32-wasip1") == 1
     assert commands["cpp"].count("-target") == 1
     assert commands["nm"] == ("llvm-nm",)
