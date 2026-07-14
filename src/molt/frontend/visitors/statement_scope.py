@@ -149,9 +149,9 @@ class StatementScopeVisitorMixin(_MixinBase):
             def __init__(self) -> None:
                 self.loads: set[str] = set()
 
-            def visit_Name(self, name_node: ast.Name) -> None:
-                if isinstance(name_node.ctx, ast.Load):
-                    self.loads.add(name_node.id)
+            def visit_Name(self, node: ast.Name) -> None:
+                if isinstance(node.ctx, ast.Load):
+                    self.loads.add(node.id)
 
         collector = LoadCollector()
         for stmt in live:
@@ -199,20 +199,20 @@ class StatementScopeVisitorMixin(_MixinBase):
             def __init__(self) -> None:
                 self.loads: set[str] = set()
 
-            def visit_FunctionDef(self, func_node: ast.FunctionDef) -> None:
-                for decorator in func_node.decorator_list:
+            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+                for decorator in node.decorator_list:
                     self.visit(decorator)
-                for default in func_node.args.defaults:
+                for default in node.args.defaults:
                     self.visit(default)
-                for default in func_node.args.kw_defaults:
+                for default in node.args.kw_defaults:
                     if default is not None:
                         self.visit(default)
-                for body_stmt in func_node.body:
+                for body_stmt in node.body:
                     self.visit(body_stmt)
 
-            def visit_Name(self, name_node: ast.Name) -> None:
-                if isinstance(name_node.ctx, ast.Load):
-                    self.loads.add(name_node.id)
+            def visit_Name(self, node: ast.Name) -> None:
+                if isinstance(node.ctx, ast.Load):
+                    self.loads.add(node.id)
 
         collector = LoadCollector()
         original_collector = LoadCollector()

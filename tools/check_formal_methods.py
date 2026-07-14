@@ -46,8 +46,8 @@ CODEGEN_ABI_LIB = ROOT / "runtime" / "molt-codegen-abi" / "src" / "lib.rs"
 NANBOX_LEAN = LEAN_DIR / "MoltTIR" / "Runtime" / "NanBox.lean"
 # Lean Luau backend builtin mapping
 LUAU_EMIT_LEAN = LEAN_DIR / "MoltTIR" / "Backend" / "LuauEmit.lean"
-# Rust Luau backend
-LUAU_RS = ROOT / "runtime" / "molt-backend" / "src" / "luau.rs"
+# Canonical Rust Luau backend authority (the legacy molt-backend copy was deleted).
+LUAU_BACKEND_SRC = ROOT / "runtime" / "molt-backend-luau" / "src"
 
 # Terminal colors
 
@@ -475,20 +475,23 @@ def check_nanbox_correspondence() -> CheckResult:
 
 
 def check_luau_builtin_correspondence() -> CheckResult:
-    """Verify Lean builtinMapping entries exist in Rust luau.rs."""
+    """Verify Lean builtinMapping entries exist in the canonical Rust backend."""
     if not LUAU_EMIT_LEAN.exists():
         return CheckResult(
             "Luau builtin correspondence",
             False,
             f"Lean source not found: {LUAU_EMIT_LEAN}",
         )
-    if not LUAU_RS.exists():
+    rust_sources = sorted(LUAU_BACKEND_SRC.rglob("*.rs"))
+    if not rust_sources:
         return CheckResult(
-            "Luau builtin correspondence", False, f"Rust source not found: {LUAU_RS}"
+            "Luau builtin correspondence",
+            False,
+            f"Rust source family not found: {LUAU_BACKEND_SRC}",
         )
 
     lean_mappings = parse_lean_builtin_mappings(LUAU_EMIT_LEAN.read_text())
-    rust_text = LUAU_RS.read_text()
+    rust_text = "\n".join(path.read_text() for path in rust_sources)
 
     if not lean_mappings:
         return CheckResult(
@@ -511,7 +514,8 @@ def check_luau_builtin_correspondence() -> CheckResult:
     warnings: list[str] = []
     if missing:
         warnings.append(
-            f"{len(missing)} Lean builtins not found in luau.rs: {', '.join(missing[:5])}"
+            f"{len(missing)} Lean builtins not found in the Rust backend source family: "
+            f"{', '.join(missing[:5])}"
             + (f" (+{len(missing) - 5} more)" if len(missing) > 5 else "")
         )
 

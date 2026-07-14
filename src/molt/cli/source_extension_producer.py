@@ -644,42 +644,53 @@ def _object_closure_digest(object_closure: Mapping[str, Any]) -> str:
             raise SourceExtensionProducerError(
                 f"extension object_closure.objects[{index}] is not an object"
             )
-        digest_item = {
-            key: item.get(key)
-            for key in (
-                "source",
-                "object",
-                "source_sha256",
-                "object_sha256",
-                "defined_symbols",
-                "undefined_symbols",
-            )
-        }
-        if not all(
-            isinstance(digest_item[key], str) and digest_item[key]
-            for key in ("source", "object", "source_sha256", "object_sha256")
+        source = item.get("source")
+        object_path = item.get("object")
+        source_sha256 = item.get("source_sha256")
+        object_sha256 = item.get("object_sha256")
+        if not (
+            isinstance(source, str)
+            and source
+            and isinstance(object_path, str)
+            and object_path
+            and isinstance(source_sha256, str)
+            and source_sha256
+            and isinstance(object_sha256, str)
+            and object_sha256
         ):
             raise SourceExtensionProducerError(
                 f"extension object_closure.objects[{index}] lacks checksum custody"
             )
-        source_path = Path(str(digest_item["source"]))
+        source_path = Path(source)
         if not source_path.is_file():
             raise SourceExtensionProducerError(
                 f"extension object_closure source is missing: {source_path}"
             )
-        if _sha256_file(source_path) != digest_item["source_sha256"]:
+        if _sha256_file(source_path) != source_sha256:
             raise SourceExtensionProducerError(
                 f"extension object_closure source checksum mismatch: {source_path}"
             )
-        if not all(
-            isinstance(digest_item[key], list)
-            and all(isinstance(value, str) for value in digest_item[key])
-            for key in ("defined_symbols", "undefined_symbols")
+        defined_symbols = item.get("defined_symbols")
+        undefined_symbols = item.get("undefined_symbols")
+        if not (
+            isinstance(defined_symbols, list)
+            and all(isinstance(value, str) for value in defined_symbols)
+            and isinstance(undefined_symbols, list)
+            and all(isinstance(value, str) for value in undefined_symbols)
         ):
             raise SourceExtensionProducerError(
                 f"extension object_closure.objects[{index}] has invalid symbols"
             )
-        digest_objects.append(digest_item)
+        digest_objects.append(
+            {
+                "source": source,
+                "object": object_path,
+                "source_sha256": source_sha256,
+                "object_sha256": object_sha256,
+                "defined_symbols": defined_symbols,
+                "undefined_symbols": undefined_symbols,
+            }
+        )
     digest_payload = {
         "schema_version": 1,
         "root_symbol": object_closure.get("root_symbol"),

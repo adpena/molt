@@ -59,6 +59,7 @@ if TYPE_CHECKING:
     from molt.frontend.sema import FunctionKind
     from molt.frontend.sema import SemaResult
     from molt.frontend.lowering.serialization_context import SerializationContext
+    from molt.compiler_analysis.static_truth import SysPlatformStaticTruthKwargs
     from molt.type_facts import TypeFacts
 
 
@@ -2353,7 +2354,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _sys_platform_static_truth_kwargs(
         self, extra_sys_platform_module_aliases: Iterable[str] = ()
-    ) -> dict[str, object]: ...
+    ) -> SysPlatformStaticTruthKwargs: ...
 
     def _task_closure_size(
         self, payload_slots: int, *, include_gen_control: bool

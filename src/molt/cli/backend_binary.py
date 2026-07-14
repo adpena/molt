@@ -505,9 +505,8 @@ def _ensure_backend_binary(
                 "backend_binary_artifact_freshness",
                 stage_start,
             )
-            if _runtime_fingerprint_metadata_needs_refresh(
-                stored_fingerprint,
-                fingerprint,
+            if fingerprint is not None and _runtime_fingerprint_metadata_needs_refresh(
+                stored_fingerprint, fingerprint
             ):
                 with contextlib.suppress(OSError):
                     _refresh_runtime_fingerprint_metadata(

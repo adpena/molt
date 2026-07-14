@@ -110,6 +110,7 @@ _TYPE_CHECKING_IMPORTS = {
     "FunctionKind": "molt.frontend.sema",
     "SemaResult": "molt.frontend.sema",
     "SerializationContext": "molt.frontend.lowering.serialization_context",
+    "SysPlatformStaticTruthKwargs": "molt.compiler_analysis.static_truth",
     "TypeFacts": "molt.type_facts",
 }
 

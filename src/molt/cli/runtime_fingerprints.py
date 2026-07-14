@@ -11,11 +11,9 @@ from molt.cli.cargo_source_closure import _cargo_crate_source_closure
 from molt.cli.capability_spec import _dedupe_preserve_order
 from molt.cli.compiler_metadata import _compiler_clean_source_state, _rustc_version
 from molt.cli.file_hashing import (
-    _hash_source_tree_file as _hash_runtime_file,
     _hash_source_tree_metadata,
     _hash_source_tree_paths,
     _sha256_file,
-    _source_fingerprint_files,
 )
 from molt.cli.json_cache import _read_cached_json_object, _write_cached_json_object
 from molt.wasm_artifact import is_valid_wasm_binary
@@ -189,9 +187,9 @@ def _stored_fingerprint_matches_clean_source_state(
 
 def _runtime_fingerprint_metadata_needs_refresh(
     stored_fingerprint: dict[str, Any] | None,
-    fingerprint: dict[str, Any] | None,
+    fingerprint: dict[str, Any],
 ) -> bool:
-    if stored_fingerprint is None or fingerprint is None:
+    if stored_fingerprint is None:
         return False
     for key in ("hash", "rustc", "inputs_digest", "meta_digest", "source_state"):
         if stored_fingerprint.get(key) != fingerprint.get(key):
