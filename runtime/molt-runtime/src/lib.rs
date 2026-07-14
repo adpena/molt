@@ -502,7 +502,6 @@ pub(crate) use crate::builtins::exceptions::{
 };
 pub(crate) use crate::builtins::exceptions::{raise_os_error, raise_os_error_errno};
 pub use crate::builtins::fcntl::*;
-pub use crate::builtins::fnmatch::*;
 pub(crate) use crate::builtins::frames::{
     exception_materialize_traceback_bits, frame_stack_active_builtins_bits,
     frame_stack_active_globals_bits, frame_stack_pop, frame_stack_push_function,

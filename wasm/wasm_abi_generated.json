@@ -3437,8 +3437,6 @@
     "fn_ptr_code_set": "molt_fn_ptr_code_set",
     "fnmatch": "molt_fnmatch",
     "fnmatch_filter": "molt_fnmatch_filter",
-    "fnmatch_fnmatch": "molt_fnmatch_fnmatch",
-    "fnmatch_fnmatchcase": "molt_fnmatch_fnmatchcase",
     "fnmatch_translate": "molt_fnmatch_translate",
     "fnmatchcase": "molt_fnmatchcase",
     "format_builtin": "molt_format_builtin",
