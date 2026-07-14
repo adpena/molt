@@ -19,14 +19,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_fnmatch_translate",
             crate::molt_fnmatch_translate as *const (),
         )),
-        "molt_fnmatch_fnmatch" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_fnmatch_fnmatch",
-            crate::molt_fnmatch_fnmatch as *const (),
-        )),
-        "molt_fnmatch_fnmatchcase" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_fnmatch_fnmatchcase",
-            crate::molt_fnmatch_fnmatchcase as *const (),
-        )),
         _ => None,
     }
 }

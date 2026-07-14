@@ -2370,8 +2370,6 @@ INTRINSIC_SYMBOL_NAMES: dict[str, str] = {
     "molt_pathlib_group": "molt_pathlib_group",
     "molt_pathlib_samefile": "molt_pathlib_samefile",
     "molt_pathlib_sep": "molt_pathlib_sep",
-    "molt_fnmatch_fnmatch": "molt_fnmatch_fnmatch",
-    "molt_fnmatch_fnmatchcase": "molt_fnmatch_fnmatchcase",
     "molt_tempfile_gettempdir": "molt_tempfile_gettempdir",
     "molt_tempfile_gettempdirb": "molt_tempfile_gettempdirb",
     "molt_tempfile_mkdtemp": "molt_tempfile_mkdtemp",

@@ -7,8 +7,8 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 __all__ = ["filter", "filterfalse", "fnmatch", "fnmatchcase", "translate"]
 
 
-_MOLT_FNMATCH_FNMATCH = _require_intrinsic("molt_fnmatch_fnmatch")
-_MOLT_FNMATCH_FNMATCHCASE = _require_intrinsic("molt_fnmatch_fnmatchcase")
+_MOLT_FNMATCH = _require_intrinsic("molt_fnmatch")
+_MOLT_FNMATCHCASE = _require_intrinsic("molt_fnmatchcase")
 _MOLT_FNMATCH_FILTER = _require_intrinsic("molt_fnmatch_filter")
 _MOLT_FNMATCH_TRANSLATE = _require_intrinsic("molt_fnmatch_translate")
 
@@ -18,12 +18,12 @@ def fnmatch(name: str | bytes, pat: str | bytes) -> bool:
 
     Case-insensitive on Windows/macOS, case-sensitive on Linux.
     """
-    return bool(_MOLT_FNMATCH_FNMATCH(name, pat))
+    return bool(_MOLT_FNMATCH(name, pat))
 
 
 def fnmatchcase(name: str | bytes, pat: str | bytes) -> bool:
     """Test whether FILENAME matches PATTERN, always case-sensitive (via Rust intrinsic)."""
-    return bool(_MOLT_FNMATCH_FNMATCHCASE(name, pat))
+    return bool(_MOLT_FNMATCHCASE(name, pat))
 
 
 def filter(names, pat: str | bytes):

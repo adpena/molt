@@ -43,8 +43,8 @@ builtins._molt_intrinsics = {{
     "molt_graphlib_done": lambda handle, nodes: None,
     "molt_graphlib_static_order": lambda handle: (True, tuple(handle["ready"])),
     "molt_graphlib_drop": lambda handle: None,
-    "molt_fnmatch_fnmatch": lambda name, pat: str(name).endswith(str(pat).lstrip("*")),
-    "molt_fnmatch_fnmatchcase": lambda name, pat: str(name) == str(pat),
+    "molt_fnmatch": lambda name, pat: str(name).endswith(str(pat).lstrip("*")),
+    "molt_fnmatchcase": lambda name, pat: str(name) == str(pat),
     "molt_fnmatch_filter": lambda names, pat, _case: [name for name in names if str(name).endswith(str(pat).lstrip("*"))],
     "molt_fnmatch_translate": lambda pat: f"re:{{pat}}",
     "molt_gettext_gettext": lambda message: f"T:{{message}}",
@@ -98,7 +98,7 @@ checks = {{
     "fnmatch": (
         fnmatch_mod.fnmatch("a.py", "*.py") is True
         and fnmatch_mod.filter(["a.py", "b.txt"], "*.py") == ["a.py"]
-        and "molt_fnmatch_fnmatch" not in fnmatch_mod.__dict__
+        and "molt_fnmatch" not in fnmatch_mod.__dict__
     ),
     "gettext": (
         gettext_mod.gettext("hello") == "T:hello"
