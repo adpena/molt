@@ -4,7 +4,6 @@ import hashlib
 import json
 import os
 import shlex
-import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass, replace
@@ -453,9 +452,6 @@ def _source_extension_c_commands(
         "ranlib": tools.ranlib.command,
         "strip": tools.strip.command,
     }
-    pkg_config = shutil.which("pkg-config") or shutil.which("pkgconf")
-    if pkg_config is not None:
-        commands["pkg-config"] = (pkg_config,)
     return commands
 
 
