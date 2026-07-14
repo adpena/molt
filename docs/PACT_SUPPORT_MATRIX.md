@@ -1,7 +1,7 @@
 # Molt runtime support matrix — {WASM-CPU, WebGPU} × {headless, browser}
 
-Status: evidence-based, 2026-07-10. Answers the question pact asked three times -
-`008 §4` (P1), `009 P1`, `010 W1(a)` - so the collaboration can pick the
+Status: evidence-based, reviewed through reports 011/012 on 2026-07-14. Answers
+the question Pact asked in `008 §4`, `009 P1`, and `010 W1(a)` so the collaboration can pick the
 **contest-legal decode target** with confidence. Accuracy over optimism: this doc
 gates a real decision, so every cell is graded against captured evidence (files,
 tests, docs on disk), not intent. Where the honest answer is "infra exists but is
@@ -49,15 +49,15 @@ pass; each cell is graded on its own captured evidence.
   through it). A broad suite of node-run WASM tests passes
   (`tests/wasm_linked_runner.py` resolves `node`; `test_wasm_control_flow`,
   `test_wasm_string_ops`, `test_wasm_list_dict_ops`, `test_wasm_pipeline_e2e.py`,
-  etc.), and a genuine compiled-WASM numeric forward pass runs end-to-end in node
-  (`tests/test_wasm_browser_embed.py::
-  test_browser_embed_forward_roundtrips_float32_typed_arrays`, `@slow`).
+  etc.). The slow numeric-forward roundtrip test exists at
+  `tests/test_wasm_browser_embed.py::test_browser_embed_forward_roundtrips_float32_typed_arrays`,
+  but the contract ledger does not contain a captured passing run; its presence
+  proves the intended path, not completed `EMBED-API` acceptance.
 - **Witness (Kernel A) parity is NOT green.** The `pact-witness-acceptance` lane
-  builds + links and runs numpy `_multiarray_umath` init, but E2E RUN_ID
-  `20260710T033748-pact-witness-acceptance-ae136709e9574896` (rc=1) halts at a
-  split-runtime `call-indirect` trap before `candidate_outputs.npz`. This is the
-  P0 grind (see `STATUS.md`), not a matrix-cell capability gap - the substrate is
-  supported; the numpy/scipy witness closure is mid-flight.
+  has not produced a passing `candidate_outputs.npz`. The dated call-indirect
+  failure in `STATUS.md` is historical; `PACT_CONTRACT_LEDGER.md` row `KA` and
+  the proof queue own the current prerequisite. This is the P0 grind, not a
+  matrix-cell substrate claim.
 - **Honest caveat:** the PaddleOCR node harnesses (`tests/e2e/run_paddleocr_wasm.js`,
   `tests/e2e/bench_paddleocr_compiled.js`) prove **instantiation + primitive
   matmul throughput only**, not an OCR round-trip - the harness self-documents
@@ -71,9 +71,10 @@ pass; each cell is graded on its own captured evidence.
   `wasm/browser_embed.js` (narrow single-function embed), `wasm/browser_host.html`,
   `wasm/molt_vfs_browser.js`, and the `examples/browser_embed_forward/` sample
   (`forward.py` + `run_browser_embed_forward.mjs`, no process host).
-- **Proven under node, not a real browser.** The `tests/test_wasm_browser_embed.py`
-  suite passes but executes under **node** (import-manifest parsers,
-  native-callable adapters, the forward roundtrip). The only "browser" check
+- **Scoped under node, not a real browser.** The non-slow structural tests in
+  `tests/test_wasm_browser_embed.py` execute under **node** (import-manifest
+  parsers and native-callable adapters); the slow forward roundtrip remains
+  uncaptured in the contract ledger. The only "browser" check
   (`tests/e2e/test_webgpu_correctness.py::TestBrowserTestPageDeployment`) `curl`s a
   deployed Cloudflare Worker for HTTP 200 - a page-serving check, not a compute
   test. No Playwright / Puppeteer / headless-Chrome automation drives molt WASM in
@@ -149,9 +150,9 @@ pass; each cell is graded on its own captured evidence.
 
 ## What would move each cell to "supported"
 
-- **WASM-CPU × headless -> fully supported for the witness:** close the
-  split-runtime `call-indirect` frontier so numpy import completes and
-  `check_parity.py candidate_outputs.npz` passes (the live P0).
+- **WASM-CPU × headless -> fully supported for the witness:** complete the
+  current package/runtime prerequisites, produce all 11 candidate outputs, and
+  pass the canonical manifest-driven parity engine (the live P0).
 - **WASM-CPU × browser:** add a real-browser (Playwright/headless-Chrome)
   automation that loads a molt WASM build and asserts a numeric result + the
   pinned `EMBED-API` roundtrip test captured green on a quiet machine.
@@ -180,5 +181,5 @@ pass; each cell is graded on its own captured evidence.
   `docs/architecture/webgpu-inference-roadmap.md` ("Current State: CPU-Only WASM"),
   `collab/pact/010_*.md` (deterministic-per-device acceptance),
   `collab/pact/008_*.md` §4 (the original open question).
-- Witness frontier: `docs/agent/CLAIMS.md` row 186; `collab/pact/STATUS.md`
-  (2026-07-10).
+- Witness frontier: `docs/agent/PACT_CONTRACT_LEDGER.md` row `KA`, the proof
+  queue, and current logs. `collab/pact/STATUS.md` is dated history.

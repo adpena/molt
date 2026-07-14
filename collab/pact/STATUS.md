@@ -1,5 +1,11 @@
 # STATUS - Pact dogfooding of Molt (2026-07-10)
 
+> **Dated snapshot, not live authority.** This file preserves the 2026-07-10
+> execution narrative. Reports 011/012 and later implementation work moved the
+> frontier. Use `docs/agent/PACT_CONTRACT_LEDGER.md` for obligations and
+> `tools/proof_queue.py` plus current logs for execution status. Do not act on a
+> blocker labelled "live" below without re-verifying it there.
+
 Positive signal first: the witness build is no longer blocked at build/link or at
 "cannot run numpy". The `pact-witness-acceptance` lane now builds and links the
 split-runtime `app.wasm` + `molt_runtime.wasm` with the sealed numpy/scipy roots
@@ -26,9 +32,9 @@ is real, gated forward motion through numpy import - not a claim that numpy/scip
 run or that `field_solve` executes. Trust this file + `docs/agent/CLAIMS.md` +
 `git log`; the frontier moves daily.
 
-## Current Blocker
+## Historical blocker record
 
-### 2026-07-10 numpy `_multiarray_umath` call-indirect frontier (LIVE)
+### 2026-07-10 numpy `_multiarray_umath` call-indirect frontier (snapshot)
 
 Since the 2026-07-01 call-arity/function-index snapshot below, the witness walked
 forward through the full numpy/scipy import closure and a chain of runtime C-API
@@ -359,7 +365,7 @@ progress in read-only process snapshots, then the tool session disappeared
 without a captured pytest footer. Treat it as not proven until rerun on a quiet
 machine.
 
-## Next Step
+## Historical next step (superseded; consult the ledger)
 
 Still Kernel A first, not Kernel B - the sequencing below is unchanged. But the
 upstream extension-custody and package-closure work described here is now **done**

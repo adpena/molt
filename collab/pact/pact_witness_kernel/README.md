@@ -43,7 +43,9 @@ python check_parity.py reference_outputs.npz   # sanity: all PASS
    (`MoltCompiler::compile_to_wasm` or the microgpt build recipe).
 2. Run it in WASM on `lstar_sample.npz` (load the `lstar` array → `field_solve` → save all 11 keys
    to `candidate_outputs.npz`).
-3. `python check_parity.py candidate_outputs.npz` → **PASS** is the done-criterion.
+3. Run `../parity/check_parity.py candidate_outputs.npz reference_outputs.npz
+   field_solve_gates.json`; **PASS** is the done criterion. The proof queue owns
+   generation and location of the ignored `.npz` inputs.
 
 The Molt-side browser/WASM attempt is no longer a raw local command. Route it
 through the proof queue:
@@ -75,7 +77,8 @@ sanity self-check. Kernels B..7 land as a `<k>_gates.json` manifest for the shar
 `field_solve` is deterministic (no RNG/time/I/O) and bit-identical across CPython re-runs. The two
 cross-implementation-fragile spots (sort tie-order, eigh sign) are **already canonicalized inside the
 kernel**, so WASM does not need to match LAPACK's sign or numpy's tie convention — only the ops in
-the gate table below. See `../006_precise_contract.md` for the full determinism-gate breakdown.
+the gate table below. See `../006_precise_contract_full_witness_pipeline.md` for
+the full determinism-gate breakdown.
 
 ## Output keys (all numpy arrays; H=384 W=512)
 `sdf_argmax`(H,W u8, ==lstar) · `sdf_margin_m12`(H,W f32) · `sdf_gap13`(H,W f32) ·

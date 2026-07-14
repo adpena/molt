@@ -4,6 +4,10 @@ executable blueprint. Governed by DESIGN_DOCTRINE.md. -->
 
 # 100-Year Plan — Portfolio Integration Index (the execution DAG)
 
+The canonical century mission, invariants, horizon exits, governance, operations,
+and succession contract live in [`../CENTURY_SYSTEMS_PLAN.md`](../CENTURY_SYSTEMS_PLAN.md).
+This file remains its executable foundation dependency index.
+
 Every node below is an executable foundation blueprint. This index gives the **dependency
 DAG** (which arc unblocks which) and the **execution order**, so the parallel swarm has one
 map. All arcs are checkable against [DESIGN_DOCTRINE.md](DESIGN_DOCTRINE.md): retire a
