@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import ctypes
 import datetime as dt
 import hashlib
@@ -43,6 +44,7 @@ from tools.dirty_tree_policy import (  # noqa: E402
     filter_status_lines,
 )
 from molt.scientific_stack_versions import (  # noqa: E402
+    CONFIG_ENV as SCIENTIFIC_STACK_CONFIG_ENV,
     ScientificExtensionSet,
     ScientificStackVersion,
     attest_numpy_witness_seal,
@@ -52,9 +54,15 @@ from molt.scientific_stack_versions import (  # noqa: E402
     scipy_witness_seal_root,
 )
 from molt.cli.extension_manifest import _default_molt_c_api_version  # noqa: E402
+from molt.cli.file_hashing import _sha256_file  # noqa: E402
+from molt.cli.source_package_seal import (  # noqa: E402
+    SourcePackageSealVerificationError,
+    verify_source_package_seal,
+)
 from molt.cli.source_extension_toolchain import (  # noqa: E402
     MOLT_PKGCONF_REQUIREMENT,
 )
+from molt.dx import select_external_artifact_root  # noqa: E402
 
 RUNNING = {"queued", "dispatched", "running"}
 LAUNCHED = {"dispatched", "running"}
@@ -170,7 +178,7 @@ NATIVE_SUPPORT_CUSTODY_RE = re.compile(
 )
 SOURCE_EXTENSION_NM_MISSING_RE = re.compile(
     r"unable to read global symbol table for compiled extension object "
-    r"(?P<object>[^\r\n;]+); install llvm-nm/nm or set MOLT_NM"
+    r"(?P<object>[^\r\n;]+); canonical LLVM/WASI nm authority is unavailable"
 )
 STDLIB_PROFILE_REFUSAL_RE = re.compile(
     r"Profile '(?P<profile>[^']+)' excludes the '(?P<feature>[^']+)' "
@@ -3028,6 +3036,73 @@ def _env_overrides_from_spec(raw: object) -> dict[str, str]:
     )
 
 
+def _named_spec_user_env_overrides(
+    logical_id: str, raw_locked: object, user_pairs: list[str]
+) -> dict[str, str]:
+    """Admit user diagnostics without weakening a named proof's custody."""
+    if not isinstance(raw_locked, (list, tuple)) or not all(
+        isinstance(name, str) and name for name in raw_locked
+    ):
+        raise SystemExit(
+            f"named proof {logical_id!r} has invalid locked_env authority; "
+            "expected a list of non-empty environment variable names"
+        )
+    locked_by_casefold = {name.casefold(): name for name in raw_locked}
+    if len(locked_by_casefold) != len(raw_locked):
+        raise SystemExit(
+            f"named proof {logical_id!r} has duplicate locked_env authority"
+        )
+
+    user_overrides = _env_overrides_from_pairs(user_pairs)
+    conflicts = sorted(
+        {
+            locked_by_casefold[name.casefold()]
+            for name in user_overrides
+            if name.casefold() in locked_by_casefold
+        }
+    )
+    if conflicts:
+        raise SystemExit(
+            f"named proof {logical_id!r} rejects --env overrides for locked "
+            "environment custody: "
+            + ", ".join(conflicts)
+        )
+    return user_overrides
+
+
+def _named_spec_env_overrides(
+    spec: Mapping[str, object], user_pairs: list[str]
+) -> dict[str, str]:
+    """Merge admitted diagnostics with a named proof's canonical environment."""
+    logical_id = str(spec.get("logical_id") or "named-proof")
+    user_overrides = _named_spec_user_env_overrides(
+        logical_id, spec.get("locked_env", ()), user_pairs
+    )
+
+    raw_defaults = spec.get("env_overrides", {})
+    if not isinstance(raw_defaults, Mapping) or not all(
+        isinstance(name, str) and isinstance(value, str)
+        for name, value in raw_defaults.items()
+    ):
+        raise SystemExit(
+            f"named proof {logical_id!r} has invalid env_overrides authority"
+        )
+    env_overrides = dict(raw_defaults)
+    locked_names = spec.get("locked_env", ())
+    assert isinstance(locked_names, (list, tuple))
+    defaults_by_casefold = {name.casefold() for name in env_overrides}
+    missing_locked = sorted(
+        name for name in locked_names if name.casefold() not in defaults_by_casefold
+    )
+    if missing_locked:
+        raise SystemExit(
+            f"named proof {logical_id!r} has locked environment names without "
+            "canonical launch values: " + ", ".join(missing_locked)
+        )
+    env_overrides.update(user_overrides)
+    return env_overrides
+
+
 def _uv_active_python_command(
     *args: str,
     with_packages: list[str] | None = None,
@@ -3175,6 +3250,33 @@ def _pact_object_closure_digest(object_closure: Mapping[str, object]) -> str | N
             for key in ("defined_symbols", "undefined_symbols")
         ):
             return None
+        if "compile_command" in item:
+            compile_command = item.get("compile_command")
+            if not isinstance(compile_command, list) or not compile_command or not all(
+                isinstance(value, str) and value for value in compile_command
+            ):
+                return None
+            digest_item["compile_command"] = compile_command
+        if "symbol_command" in item:
+            symbol_command = item.get("symbol_command")
+            if not isinstance(symbol_command, list) or not symbol_command or not all(
+                isinstance(value, str) and value for value in symbol_command
+            ):
+                return None
+            digest_item["symbol_command"] = symbol_command
+        if "dependencies" in item:
+            dependencies = item.get("dependencies")
+            if not isinstance(dependencies, list) or not all(
+                isinstance(dependency, Mapping)
+                and set(dependency) == {"path", "sha256"}
+                and isinstance(dependency.get("path"), str)
+                and bool(dependency.get("path"))
+                and isinstance(dependency.get("sha256"), str)
+                and bool(dependency.get("sha256"))
+                for dependency in dependencies
+            ):
+                return None
+            digest_item["dependencies"] = [dict(dependency) for dependency in dependencies]
         digest_objects.append(digest_item)
     payload = {
         "schema_version": 1,
@@ -3212,6 +3314,90 @@ def _pact_scipy_extension_set_manifest_problems(
     for field, expected in expected_scalars.items():
         if manifest.get(field) != expected:
             problems.append(f"extension-set manifest {field} must be {expected!r}")
+    target_metadata = manifest.get("target_metadata")
+    if not isinstance(target_metadata, Mapping):
+        problems.append("extension-set manifest target_metadata is missing")
+    else:
+        target_identity = dict(target_metadata)
+        target_digest = target_identity.pop("digest", None)
+        computed_target_digest = hashlib.sha256(
+            json.dumps(
+                target_identity,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        if target_digest != computed_target_digest:
+            problems.append("extension-set target_metadata identity checksum mismatch")
+        target_sidecar = _load_json_mapping(
+            root
+            / "provenance"
+            / "metadata"
+            / "target"
+            / "source-extension-target-metadata.json"
+        )
+        if target_sidecar != target_metadata:
+            problems.append(
+                "extension-set target_metadata differs from canonical sidecar"
+            )
+        target_digests = target_metadata.get("digests")
+        target_files = {
+            "python_pc_sha256": (
+                root / "provenance/metadata/target/pkgconfig/python3.pc"
+            ),
+            "meson_cross_sha256": (
+                root / "provenance/metadata/target/meson.cross"
+            ),
+        }
+        if not isinstance(target_digests, Mapping):
+            problems.append("extension-set target_metadata digests are missing")
+        else:
+            for digest_name, target_file in target_files.items():
+                if (
+                    not target_file.is_file()
+                    or target_digests.get(digest_name) != _sha256_file(target_file)
+                ):
+                    problems.append(
+                        f"extension-set target_metadata {digest_name} mismatch"
+                    )
+        toolchain = target_metadata.get("toolchain")
+        tools = toolchain.get("tools") if isinstance(toolchain, Mapping) else None
+        raw_target_commands = (
+            toolchain.get("commands") if isinstance(toolchain, Mapping) else None
+        )
+        tool_roles = {
+            "ar": "ar",
+            "c": "cc",
+            "cpp": "cxx",
+            "ld": "wasm_ld",
+            "nm": "nm",
+            "ranlib": "ranlib",
+            "strip": "strip",
+        }
+        if not isinstance(tools, Mapping) or set(tools) != set(tool_roles.values()):
+            problems.append("extension-set target tool identity family is incomplete")
+        if not isinstance(raw_target_commands, Mapping) or set(
+            raw_target_commands
+        ) != set(tool_roles):
+            problems.append("extension-set target command family is incomplete")
+        elif isinstance(tools, Mapping):
+            for command_role, tool_role in tool_roles.items():
+                identity = tools.get(tool_role)
+                command = raw_target_commands.get(command_role)
+                if not (
+                    isinstance(identity, Mapping)
+                    and isinstance(identity.get("command"), list)
+                    and identity.get("command")
+                    and isinstance(identity.get("path"), str)
+                    and isinstance(identity.get("sha256"), str)
+                    and len(str(identity.get("sha256"))) == 64
+                    and isinstance(command, list)
+                    and command
+                    and command[0] == identity["command"][0]
+                ):
+                    problems.append(
+                        f"extension-set target {command_role} identity is invalid"
+                    )
     build_environment = manifest.get("build_environment")
     if not isinstance(build_environment, Mapping) or set(build_environment) != {
         "python_executable",
@@ -3335,14 +3521,33 @@ def _pact_scipy_extension_set_manifest_problems(
                     "extension-set manifest Meson config tool set/order drift"
                 )
             for item in config_tools:
-                if set(item) != {"name", "path", "distribution", "version"} or not all(
+                if set(item) != {
+                    "name",
+                    "path",
+                    "distribution",
+                    "version",
+                    "sha256",
+                } or not all(
                     isinstance(item.get(field), str) and item.get(field)
-                    for field in ("name", "path", "distribution", "version")
+                    for field in (
+                        "name",
+                        "path",
+                        "distribution",
+                        "version",
+                        "sha256",
+                    )
                 ):
                     problems.append(
                         "extension-set manifest Meson config tool shape is invalid"
                     )
                     continue
+                sha256 = str(item["sha256"])
+                if len(sha256) != 64 or any(
+                    character not in "0123456789abcdef" for character in sha256
+                ):
+                    problems.append(
+                        "extension-set manifest Meson config tool sha256 is invalid"
+                    )
                 name = str(item["name"])
                 expected_distribution = expected_config_tool_distributions.get(name)
                 if (
@@ -3447,33 +3652,60 @@ def _pact_scipy_witness_seal_problems(
 ) -> list[str]:
     selected = resolve_scientific_stack() if stack is None else stack
     problems: list[str] = []
+    try:
+        verified_seal = verify_source_package_seal(root)
+    except (OSError, SourcePackageSealVerificationError) as exc:
+        problems.append(f"source-package seal verification failed: {exc}")
+        payload_root = root / "files"
+        if not payload_root.is_dir():
+            return problems
+    else:
+        payload_root = verified_seal.payload_root
     expected_manifests = {
         _scientific_extension_manifest_path(
-            root, extension.module, extension.target
+            payload_root, extension.module, extension.target
         ).resolve(): extension.module
         for extension in extension_set.extensions
     }
     actual_manifests = {
         manifest.resolve()
-        for manifest in root.glob("**/*.molt.wasm.extension_manifest.json")
+        for manifest in payload_root.glob("**/*.molt.wasm.extension_manifest.json")
         if manifest.is_file()
     }
     for missing in sorted(expected_manifests.keys() - actual_manifests):
         problems.append(
             "missing "
-            f"{expected_manifests[missing]} manifest {missing.relative_to(root.resolve())}"
+            f"{expected_manifests[missing]} manifest "
+            f"{missing.relative_to(payload_root.resolve())}"
         )
     for unexpected in sorted(actual_manifests - expected_manifests.keys()):
         problems.append(
             "unexpected SciPy extension manifest "
-            f"{unexpected.relative_to(root.resolve())}"
+            f"{unexpected.relative_to(payload_root.resolve())}"
         )
     current_abi = _default_molt_c_api_version(ROOT)
     current_abi_tag = f"molt_abi{current_abi.split('.', 1)[0]}"
+    set_manifest = _load_json_mapping(payload_root / "extension_set_manifest.json")
+    set_target_metadata = (
+        set_manifest.get("target_metadata")
+        if isinstance(set_manifest, Mapping)
+        else None
+    )
+    set_toolchain = (
+        set_target_metadata.get("toolchain")
+        if isinstance(set_target_metadata, Mapping)
+        else None
+    )
+    raw_target_commands = (
+        set_toolchain.get("commands") if isinstance(set_toolchain, Mapping) else None
+    )
+    target_commands = (
+        raw_target_commands if isinstance(raw_target_commands, Mapping) else None
+    )
     sidecars: dict[str, Mapping[str, object]] = {}
     for extension in extension_set.extensions:
         manifest_path = _scientific_extension_manifest_path(
-            root, extension.module, extension.target
+            payload_root, extension.module, extension.target
         )
         manifest = _load_json_mapping(manifest_path)
         if manifest is None:
@@ -3550,6 +3782,98 @@ def _pact_scipy_witness_seal_problems(
             objects = object_closure.get("objects")
             if not isinstance(objects, list) or not objects:
                 problems.append(f"{extension.module}: object_closure is empty")
+            elif all(isinstance(item, Mapping) for item in objects):
+                for object_index, item in enumerate(objects):
+                    compile_command = item.get("compile_command")
+                    if not isinstance(compile_command, list) or not compile_command or not all(
+                        isinstance(value, str) and value for value in compile_command
+                    ):
+                        problems.append(
+                            f"{extension.module}: object_closure compile command is invalid"
+                        )
+                    symbol_command = item.get("symbol_command")
+                    if not isinstance(symbol_command, list) or not symbol_command or not all(
+                        isinstance(value, str) and value for value in symbol_command
+                    ):
+                        problems.append(
+                            f"{extension.module}: object_closure symbol command is invalid"
+                        )
+                    if target_commands is not None:
+                        source_value = item.get("source")
+                        compiler_role = (
+                            "cpp"
+                            if isinstance(source_value, str)
+                            and Path(source_value).suffix.lower()
+                            in {".cc", ".cpp", ".cxx", ".c++"}
+                            else "c"
+                        )
+                        expected_compiler = target_commands.get(compiler_role)
+                        expected_nm = target_commands.get("nm")
+                        if not (
+                            isinstance(expected_compiler, list)
+                            and isinstance(compile_command, list)
+                            and compile_command[: len(expected_compiler)]
+                            == expected_compiler
+                            and isinstance(expected_nm, list)
+                            and symbol_command == expected_nm
+                        ):
+                            problems.append(
+                                f"{extension.module}: object_closure did not consume "
+                                "the target compiler/nm commands"
+                            )
+                    source = item.get("source")
+                    source_sha256 = item.get("source_sha256")
+                    if not isinstance(source, str) or not isinstance(
+                        source_sha256, str
+                    ):
+                        problems.append(
+                            f"{extension.module}: object_closure source custody is invalid"
+                        )
+                        continue
+                    source_path = (manifest_path.parent / source).resolve()
+                    if (
+                        Path(source).is_absolute()
+                        or not source_path.is_relative_to(payload_root.resolve())
+                        or not source_path.is_file()
+                        or _sha256_file(source_path) != source_sha256
+                    ):
+                        problems.append(
+                            f"{extension.module}: object_closure source[{object_index}] "
+                            "is not sealed or checksummed"
+                        )
+                    dependencies = item.get("dependencies", [])
+                    if not isinstance(dependencies, list):
+                        problems.append(
+                            f"{extension.module}: object_closure dependencies are invalid"
+                        )
+                        continue
+                    for dependency_index, dependency in enumerate(dependencies):
+                        if not isinstance(dependency, Mapping):
+                            problems.append(
+                                f"{extension.module}: object_closure dependency is invalid"
+                            )
+                            continue
+                        raw_path = dependency.get("path")
+                        expected_sha256 = dependency.get("sha256")
+                        if not isinstance(raw_path, str) or not isinstance(
+                            expected_sha256, str
+                        ):
+                            problems.append(
+                                f"{extension.module}: object_closure dependency is invalid"
+                            )
+                            continue
+                        dependency_path = (manifest_path.parent / raw_path).resolve()
+                        if (
+                            Path(raw_path).is_absolute()
+                            or not dependency_path.is_relative_to(payload_root.resolve())
+                            or not dependency_path.is_file()
+                            or _sha256_file(dependency_path) != expected_sha256
+                        ):
+                            problems.append(
+                                f"{extension.module}: object_closure dependency"
+                                f"[{object_index}][{dependency_index}] is not sealed "
+                                "or checksummed"
+                            )
             closure_sha256 = object_closure.get("closure_sha256")
             computed_closure_sha256 = _pact_object_closure_digest(object_closure)
             if (
@@ -3560,7 +3884,7 @@ def _pact_scipy_witness_seal_problems(
                 problems.append(f"{extension.module}: object_closure checksum mismatch")
     problems.extend(
         _pact_scipy_extension_set_manifest_problems(
-            root,
+            payload_root,
             extension_set,
             stack=selected,
             sidecars=sidecars,
@@ -3601,7 +3925,8 @@ def _pact_witness_native_roots(repo_root: Path = ROOT) -> list[Path]:
             f"{durable_scipy_root} with exactly the configured extension set: "
             + "; ".join(scipy_problems)
         )
-    return [durable_numpy_root.resolve(), durable_scipy_root.resolve()]
+    verified_scipy = verify_source_package_seal(durable_scipy_root)
+    return [durable_numpy_root.resolve(), verified_scipy.payload_root.resolve()]
 
 
 def _pact_witness_env_overrides(repo_root: Path = ROOT) -> dict[str, str]:
@@ -3613,7 +3938,12 @@ def _pact_witness_env_overrides(repo_root: Path = ROOT) -> dict[str, str]:
     # and the default file encoding UTF-8 tree-wide — the single-primitive fix for
     # this recurring encoding bug class. Set unconditionally (independent of the
     # native-root delta below) so the guarantee holds on every witness path.
-    env: dict[str, str] = {"PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+    env: dict[str, str] = {
+        "PYTHONUTF8": "1",
+        "PYTHONIOENCODING": "utf-8",
+        "MOLT_MODULE_ROOTS": "",
+        "MOLT_EXTERNAL_STATIC_PACKAGES": "",
+    }
     roots = _pact_witness_native_roots(repo_root)
     if roots:
         env["MOLT_MODULE_ROOTS"] = os.pathsep.join(str(root) for root in roots)
@@ -3621,17 +3951,77 @@ def _pact_witness_env_overrides(repo_root: Path = ROOT) -> dict[str, str]:
     return env
 
 
+_PACT_WITNESS_ACCEPTANCE_LOGICAL_ID = "pact-witness-acceptance"
+_PACT_WITNESS_ACCEPTANCE_LOCKED_ENV = (
+    "MOLT_MODULE_ROOTS",
+    "MOLT_EXTERNAL_STATIC_PACKAGES",
+    "MOLT_WITNESS_EXPECTED_REPO_ROOT",
+    "MOLT_WITNESS_EXPECTED_GIT_HEAD",
+    SCIENTIFIC_STACK_CONFIG_ENV,
+    "MOLT_EXT_ROOT",
+    "MOLT_EXTERNAL_ARTIFACT_ROOTS",
+    "PYTHONUTF8",
+    "PYTHONIOENCODING",
+)
+
+
+def _pact_canonical_input_environment(repo_root: Path) -> dict[str, str]:
+    """Resolve named Pact input custody without consulting ambient overrides."""
+    root = repo_root.resolve()
+    config_path = root / "config" / "scientific_stack_versions.toml"
+    if not config_path.is_file():
+        raise SystemExit(
+            f"named Pact proof is missing canonical stack config {config_path}"
+        )
+    selection_env = {"MOLT_ALLOW_C_DRIVE_ARTIFACTS": "1"} if os.name == "nt" else {}
+    artifact_root = select_external_artifact_root(
+        root,
+        selection_env,
+        create_dirs=False,
+        prefer_external=True,
+    )
+    if artifact_root is None:
+        # This fallback is a stable repo-derived identity for hosts without a
+        # configured external volume. Seal verification still fails closed if
+        # the durable package roots are absent; ambient variables cannot choose
+        # a different tree.
+        artifact_root = root / "tmp" / "pact-artifacts"
+    canonical_artifact_root = str(artifact_root.resolve())
+    return {
+        SCIENTIFIC_STACK_CONFIG_ENV: str(config_path.resolve()),
+        "MOLT_EXT_ROOT": canonical_artifact_root,
+        "MOLT_EXTERNAL_ARTIFACT_ROOTS": canonical_artifact_root,
+    }
+
+
+@contextlib.contextmanager
+def _temporary_environment(overrides: Mapping[str, str]):
+    previous = {name: os.environ.get(name) for name in overrides}
+    try:
+        os.environ.update(overrides)
+        yield
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
 def _pact_witness_acceptance_spec(
     timeout: float | None = None, repo_root: Path = ROOT
 ) -> dict[str, object]:
-    stack = resolve_scientific_stack()
-    git_snapshot = _git_snapshot(repo_root)
-    expected_head = git_snapshot.get("head")
-    if not isinstance(expected_head, str) or not expected_head:
-        raise SystemExit(
-            "pact-witness-acceptance requires a git worktree with a resolvable HEAD"
-        )
-    env_overrides = _pact_witness_env_overrides(repo_root)
+    canonical_inputs = _pact_canonical_input_environment(repo_root)
+    with _temporary_environment(canonical_inputs):
+        stack = resolve_scientific_stack()
+        git_snapshot = _git_snapshot(repo_root)
+        expected_head = git_snapshot.get("head")
+        if not isinstance(expected_head, str) or not expected_head:
+            raise SystemExit(
+                "pact-witness-acceptance requires a git worktree with a resolvable HEAD"
+            )
+        env_overrides = _pact_witness_env_overrides(repo_root)
+    env_overrides.update(canonical_inputs)
     env_overrides.update(
         {
             "MOLT_WITNESS_EXPECTED_REPO_ROOT": str(repo_root.resolve()),
@@ -3639,7 +4029,7 @@ def _pact_witness_acceptance_spec(
         }
     )
     return {
-        "logical_id": "pact-witness-acceptance",
+        "logical_id": _PACT_WITNESS_ACCEPTANCE_LOGICAL_ID,
         "reason": (
             "Run the Pact Kernel A browser/WASM witness acceptance aperture "
             "through queue custody."
@@ -3663,12 +4053,14 @@ def _pact_witness_acceptance_spec(
             "config/scientific_stack_versions.toml",
         ],
         "env_overrides": env_overrides,
+        "locked_env": _PACT_WITNESS_ACCEPTANCE_LOCKED_ENV,
         "notes": [
             "Named Pact acceptance requires the version-keyed durable NumPy "
             "and canonical four-extension SciPy seals, builds field_solve.py, "
             "regenerates the fixture/reference oracle in the run directory, "
             "runs the WASM artifact to produce candidate_outputs.npz, and "
-            "executes check_parity.py; --env can override for power-user lanes."
+            "executes check_parity.py; --env remains available for diagnostics "
+            "but cannot override the named lane's input and identity custody."
         ],
         "timeout": timeout if timeout is not None else 1800.0,
     }
@@ -3861,8 +4253,7 @@ def _native_molt_run_spec(
 
 
 def _run_named_spec(args: argparse.Namespace, spec: dict[str, object]) -> int:
-    env_overrides = dict(spec["env_overrides"])
-    env_overrides.update(_env_overrides_from_pairs(args.env))
+    env_overrides = _named_spec_env_overrides(spec, args.env)
     initial_notes = _notes_from_raw(spec.get("note"))
     initial_notes.extend(_notes_from_raw(spec.get("notes")))
     initial_notes.extend(getattr(args, "note", []) or [])
@@ -3937,6 +4328,14 @@ def _run_named_spec(args: argparse.Namespace, spec: dict[str, object]) -> int:
 
 
 def _cmd_pact_witness_acceptance(args: argparse.Namespace) -> int:
+    # Admission must precede seal/config resolution so a forbidden override
+    # cannot redirect spec construction or turn a policy refusal into a producer
+    # traceback. _run_named_spec revalidates the completed spec before use.
+    _named_spec_user_env_overrides(
+        _PACT_WITNESS_ACCEPTANCE_LOGICAL_ID,
+        _PACT_WITNESS_ACCEPTANCE_LOCKED_ENV,
+        args.env,
+    )
     return _run_named_spec(
         args, _pact_witness_acceptance_spec(args.timeout, _repo_root(args))
     )
@@ -5145,6 +5544,20 @@ def _cmd_prune_stale(args: argparse.Namespace) -> int:
     pruned = 0
     for row in rows:
         if row["status"] == "queued":
+            if run_ids:
+                _update_run(
+                    conn,
+                    row["run_id"],
+                    status="stale",
+                    returncode=PROOF_QUEUE_STALE_EXIT_CODE,
+                    finished_at=_utc_now(),
+                )
+                pruned += 1
+                print(
+                    f"stale {row['run_id']} diagnosis=selected-queued-cancellation "
+                    "[infra]: explicitly selected queued row never acquired "
+                    "process or resource custody"
+                )
             continue
         if row["status"] == "dispatched":
             dispatch_age = _running_age_seconds(_row_value(row, "started_at"))

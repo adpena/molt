@@ -190,8 +190,9 @@ def _stage_runtime_callable_symbols_for_native_codegen(
             "requires this set (the per-app resolver must not reference "
             "symbols the linker cannot satisfy). Remediation: install an "
             "LLVM matching your Rust toolchain (`brew install llvm` or "
-            "`rustup component add llvm-tools`), or point MOLT_NM at a "
-            "bitcode-capable llvm-nm.",
+            "`rustup component add llvm-tools`) or repair the managed "
+            "MOLT_TARGET_ROOT toolchain family so its llvm-nm can read "
+            "the selected Rust bitcode.",
             json_output,
             command="build",
         )

@@ -7,11 +7,17 @@ import shlex
 import shutil
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 from molt.cli.file_hashing import _sha256_file
+from molt.cli.llvm_wasi_tools import (
+    LlvmToolRole,
+    LlvmWasiToolFamily,
+    resolve_explicit_tool_command,
+    resolve_llvm_wasi_tool_family,
+)
 from molt.cli.native_toolchain import _zig_target_query
 from molt.cli.wasm_toolchain import resolve_wasi_sysroot as _resolve_wasi_sysroot
 from molt.scientific_stack_versions import (
@@ -35,8 +41,7 @@ _SOURCE_EXTENSION_INCLUDE_FILE_SUFFIXES = {
 class _SourceExtensionWasmToolchain:
     ok: bool
     compiler_kind: str | None
-    compiler_cmd: tuple[str, ...]
-    wasm_ld: str | None
+    tools: LlvmWasiToolFamily
     wasi_sysroot: Path | None
     detail: str
 
@@ -66,40 +71,17 @@ def _wasi_sysroot_setup_advice(_system: str) -> list[str]:
     ]
 
 
-def _path_like_command(command: str) -> bool:
-    return (
-        Path(command).is_absolute()
-        or "/" in command
-        or "\\" in command
-        or (os.altsep is not None and os.altsep in command)
-    )
-
-
-def _resolve_tool_command(raw_command: str, *, label: str) -> tuple[str, ...] | str:
-    try:
-        argv = shlex.split(raw_command)
-    except ValueError as exc:
-        return f"{label} is not a valid shell command: {exc}"
-    if not argv:
-        return f"{label} is empty"
-    executable = argv[0]
-    if _path_like_command(executable):
-        path = Path(executable).expanduser()
-        if not path.exists() or not path.is_file():
-            return f"{label} executable not found: {executable}"
-        return (str(path.resolve()), *argv[1:])
-    resolved = shutil.which(executable)
-    if resolved is None:
-        return f"{label} executable not found on PATH: {executable}"
-    return (resolved, *argv[1:])
-
-
 def _source_extension_toolchain_advice() -> str:
     return "; ".join(_wasi_sysroot_setup_advice(os.name))
 
 
 def _wasm_compiler_probe_target_args(command: tuple[str, ...]) -> tuple[str, ...]:
-    has_target = any(arg == "-target" or arg.startswith("--target") for arg in command)
+    has_target = any(
+        arg in {"-target", "--target"}
+        or arg.startswith("-target=")
+        or arg.startswith("--target=")
+        for arg in command
+    )
     return () if has_target else ("-target", "wasm32-wasip1")
 
 
@@ -145,34 +127,37 @@ def _resolve_env_wasm_compiler(
     *,
     env_name: str,
     raw_command: str,
-    wasm_ld_path: str | None,
 ) -> _SourceExtensionWasmToolchain:
-    compiler = _resolve_tool_command(raw_command, label=env_name)
-    if isinstance(compiler, str):
+    try:
+        compiler = resolve_explicit_tool_command(raw_command, label=env_name)
+    except ValueError as exc:
         return _SourceExtensionWasmToolchain(
             ok=False,
             compiler_kind=env_name.lower(),
-            compiler_cmd=(),
-            wasm_ld=wasm_ld_path,
+            tools=resolve_llvm_wasi_tool_family(),
             wasi_sysroot=None,
-            detail=compiler,
+            detail=str(exc),
         )
-    if wasm_ld_path is None:
+    tools = resolve_llvm_wasi_tool_family(explicit_commands={"cc": compiler})
+    missing = tools.missing_roles()
+    if missing:
         return _SourceExtensionWasmToolchain(
             ok=False,
             compiler_kind=env_name.lower(),
-            compiler_cmd=compiler,
-            wasm_ld=None,
+            tools=tools,
             wasi_sysroot=None,
-            detail=f"missing wasm-ld; {env_name} is configured",
+            detail=(
+                "missing LLVM/WASI tools "
+                + ", ".join(missing)
+                + f"; {env_name} is configured"
+            ),
         )
     probe_error = _probe_wasm_source_extension_compiler(compiler)
     if probe_error is not None:
         return _SourceExtensionWasmToolchain(
             ok=False,
             compiler_kind=env_name.lower(),
-            compiler_cmd=compiler,
-            wasm_ld=wasm_ld_path,
+            tools=tools,
             wasi_sysroot=None,
             detail=(
                 f"{env_name} cannot compile the WASI source-extension probe "
@@ -183,24 +168,41 @@ def _resolve_env_wasm_compiler(
     return _SourceExtensionWasmToolchain(
         ok=True,
         compiler_kind=env_name.lower(),
-        compiler_cmd=compiler,
-        wasm_ld=wasm_ld_path,
+        tools=tools,
         wasi_sysroot=None,
         detail=(
-            f"wasm-ld={wasm_ld_path}; {env_name}="
+            f"{_llvm_wasi_tool_family_detail(tools)}; {env_name}="
             + " ".join(shlex.quote(arg) for arg in compiler)
         ),
     )
 
 
+def _llvm_wasi_tool_family_detail(tools: LlvmWasiToolFamily) -> str:
+    details: list[str] = []
+    for role in ("cc", "cxx", "wasm_ld", "ar", "ranlib", "nm", "strip"):
+        tool = getattr(tools, role)
+        if tool is None:
+            details.append(f"{role}=missing")
+            continue
+        version = tool.version or "unattested"
+        details.append(f"{role}={tool.path} version={version}")
+    return "; ".join(details)
+
+
+def _with_compiler_command(
+    tools: LlvmWasiToolFamily,
+    command: tuple[str, ...],
+) -> LlvmWasiToolFamily:
+    assert tools.cc is not None
+    return replace(tools, cc=replace(tools.cc, command=command))
+
+
 def _resolve_source_extension_wasm_toolchain() -> _SourceExtensionWasmToolchain:
-    wasm_ld_path = shutil.which("wasm-ld")
     raw_wasm_cc = os.environ.get("MOLT_WASM_CC", "").strip()
     if raw_wasm_cc:
         return _resolve_env_wasm_compiler(
             env_name="MOLT_WASM_CC",
             raw_command=raw_wasm_cc,
-            wasm_ld_path=wasm_ld_path,
         )
 
     raw_cross_cc = os.environ.get("MOLT_CROSS_CC", "").strip()
@@ -208,29 +210,32 @@ def _resolve_source_extension_wasm_toolchain() -> _SourceExtensionWasmToolchain:
         return _resolve_env_wasm_compiler(
             env_name="MOLT_CROSS_CC",
             raw_command=raw_cross_cc,
-            wasm_ld_path=wasm_ld_path,
         )
 
-    clang_path = shutil.which("clang")
+    tools = resolve_llvm_wasi_tool_family()
     wasi_sysroot = _resolve_wasi_sysroot()
-    if clang_path is not None and wasi_sysroot is not None:
-        clang_cmd = (clang_path, "--sysroot", str(wasi_sysroot))
-        if wasm_ld_path is None:
+    if tools.cc is not None and wasi_sysroot is not None:
+        clang_cmd = (*tools.cc.command, "--sysroot", str(wasi_sysroot))
+        tools = _with_compiler_command(tools, clang_cmd)
+        missing = tools.missing_roles()
+        if missing:
             return _SourceExtensionWasmToolchain(
                 ok=False,
                 compiler_kind="clang",
-                compiler_cmd=clang_cmd,
-                wasm_ld=None,
+                tools=tools,
                 wasi_sysroot=wasi_sysroot,
-                detail="missing wasm-ld; clang and WASI sysroot are available",
+                detail=(
+                    "missing LLVM/WASI tools "
+                    + ", ".join(missing)
+                    + "; clang and WASI sysroot are available"
+                ),
             )
         probe_error = _probe_wasm_source_extension_compiler(clang_cmd)
         if probe_error is not None:
             return _SourceExtensionWasmToolchain(
                 ok=False,
                 compiler_kind="clang",
-                compiler_cmd=clang_cmd,
-                wasm_ld=wasm_ld_path,
+                tools=tools,
                 wasi_sysroot=wasi_sysroot,
                 detail=(
                     "clang+WASI sysroot cannot compile the source-extension "
@@ -241,46 +246,56 @@ def _resolve_source_extension_wasm_toolchain() -> _SourceExtensionWasmToolchain:
         return _SourceExtensionWasmToolchain(
             ok=True,
             compiler_kind="clang",
-            compiler_cmd=clang_cmd,
-            wasm_ld=wasm_ld_path,
+            tools=tools,
             wasi_sysroot=wasi_sysroot,
             detail=(
-                f"wasm-ld={wasm_ld_path}; clang={clang_path}; "
-                f"WASI sysroot={wasi_sysroot}"
+                f"{_llvm_wasi_tool_family_detail(tools)}; WASI sysroot={wasi_sysroot}"
             ),
         )
 
-    zig_path = shutil.which("zig")
-    if zig_path is not None:
-        if wasm_ld_path is None:
+    try:
+        zig_command = resolve_explicit_tool_command("zig", label="zig")
+    except ValueError:
+        zig_command = None
+    if zig_command is not None:
+        zig = zig_command[0]
+        zig_explicit_commands: dict[LlvmToolRole, tuple[str, ...]] = {
+            "cc": (zig, "cc"),
+            "cxx": (zig, "c++"),
+            "ar": (zig, "ar"),
+            "ranlib": (zig, "ranlib"),
+            "strip": (zig, "strip"),
+        }
+        zig_tools = resolve_llvm_wasi_tool_family(
+            explicit_commands=zig_explicit_commands
+        )
+        missing = zig_tools.missing_roles()
+        if missing:
             return _SourceExtensionWasmToolchain(
                 ok=False,
                 compiler_kind="zig",
-                compiler_cmd=(zig_path, "cc"),
-                wasm_ld=None,
+                tools=zig_tools,
                 wasi_sysroot=None,
-                detail="missing wasm-ld; zig is available",
+                detail="missing LLVM/WASI tools "
+                + ", ".join(missing)
+                + "; zig is available",
             )
         return _SourceExtensionWasmToolchain(
             ok=True,
             compiler_kind="zig",
-            compiler_cmd=(zig_path, "cc"),
-            wasm_ld=wasm_ld_path,
+            tools=zig_tools,
             wasi_sysroot=None,
-            detail=f"wasm-ld={wasm_ld_path}; zig={zig_path}",
+            detail=_llvm_wasi_tool_family_detail(zig_tools),
         )
 
-    missing: list[str] = []
-    if wasm_ld_path is None:
-        missing.append("wasm-ld")
+    missing: list[str] = list(tools.missing_roles())
     missing.append(
         "zig, valid MOLT_WASM_CC, valid MOLT_CROSS_CC, or clang+WASI sysroot"
     )
     return _SourceExtensionWasmToolchain(
         ok=False,
         compiler_kind=None,
-        compiler_cmd=(),
-        wasm_ld=wasm_ld_path,
+        tools=tools,
         wasi_sysroot=wasi_sysroot,
         detail="missing "
         + ", ".join(missing)
@@ -392,13 +407,13 @@ def _meson_value(value: object) -> str:
     return _meson_quote(str(value))
 
 
-def _tool_variant(path: str, *, basename: str) -> str:
-    candidate = Path(path)
-    suffix = candidate.suffix
-    replacement = basename + suffix
-    if candidate.parent == Path("."):
-        return replacement
-    return str(candidate.with_name(replacement))
+def _compiler_command_with_target(
+    command: tuple[str, ...],
+    target: str,
+) -> tuple[str, ...]:
+    if not _wasm_compiler_probe_target_args(command):
+        return command
+    return (*command, "-target", target)
 
 
 def _source_extension_c_commands(
@@ -411,36 +426,33 @@ def _source_extension_c_commands(
         if toolchain.compiler_kind == "zig"
         else target_triple
     )
-    c_cmd = (*toolchain.compiler_cmd, "-target", target_arg)
-    cpp_cmd: tuple[str, ...] | None = None
-    ar_cmd: tuple[str, ...] | None = None
-    strip_cmd: tuple[str, ...] | None = None
-    if toolchain.compiler_kind == "zig":
-        zig = toolchain.compiler_cmd[0]
-        cpp_cmd = (zig, "c++", "-target", target_arg)
-        ar_cmd = (zig, "ar")
-        strip_cmd = (zig, "strip")
-    elif toolchain.compiler_cmd:
-        compiler = Path(toolchain.compiler_cmd[0]).name.lower()
-        if compiler in {"clang", "clang.exe"}:
-            cpp = shutil.which(
-                _tool_variant(toolchain.compiler_cmd[0], basename="clang++")
-            )
-            if cpp is not None:
-                cpp_cmd = (cpp, *toolchain.compiler_cmd[1:], "-target", target_arg)
-        llvm_ar = shutil.which("llvm-ar")
-        llvm_strip = shutil.which("llvm-strip")
-        if llvm_ar is not None:
-            ar_cmd = (llvm_ar,)
-        if llvm_strip is not None:
-            strip_cmd = (llvm_strip,)
-    commands: dict[str, tuple[str, ...]] = {"c": c_cmd}
-    if cpp_cmd is not None:
-        commands["cpp"] = cpp_cmd
-    if ar_cmd is not None:
-        commands["ar"] = ar_cmd
-    if strip_cmd is not None:
-        commands["strip"] = strip_cmd
+    tools = toolchain.tools
+    if tools.missing_roles():
+        raise ValueError(
+            "source-extension command materialization requires complete LLVM/WASI tools"
+        )
+    assert tools.cc is not None
+    assert tools.cxx is not None
+    assert tools.wasm_ld is not None
+    assert tools.ar is not None
+    assert tools.ranlib is not None
+    assert tools.nm is not None
+    assert tools.strip is not None
+    c_cmd = _compiler_command_with_target(tools.cc.command, target_arg)
+    if toolchain.compiler_kind == "zig" or len(tools.cxx.command) > 1:
+        cxx_base = tools.cxx.command
+    else:
+        cxx_base = (*tools.cxx.command, *tools.cc.command[1:])
+    cpp_cmd = _compiler_command_with_target(cxx_base, target_arg)
+    commands: dict[str, tuple[str, ...]] = {
+        "ar": tools.ar.command,
+        "c": c_cmd,
+        "cpp": cpp_cmd,
+        "ld": tools.wasm_ld.command,
+        "nm": tools.nm.command,
+        "ranlib": tools.ranlib.command,
+        "strip": tools.strip.command,
+    }
     pkg_config = shutil.which("pkg-config") or shutil.which("pkgconf")
     if pkg_config is not None:
         commands["pkg-config"] = (pkg_config,)
@@ -554,6 +566,10 @@ def _materialize_source_extension_target_metadata(
     )
     include_surface = _source_extension_include_surface(include_dirs)
     meson_cross_properties = _source_extension_meson_cross_properties(resolved_target)
+    materialized_commands = _source_extension_c_commands(
+        toolchain=toolchain,
+        target_triple=resolved_target,
+    )
     pkg_config_dir.mkdir(parents=True, exist_ok=True)
     python_pc.write_text(
         _python_pc_text(
@@ -571,7 +587,7 @@ def _materialize_source_extension_target_metadata(
         encoding="utf-8",
     )
     payload: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "molt-source-extension-target-metadata",
         "target_triple": resolved_target,
         "abi": {
@@ -583,8 +599,11 @@ def _materialize_source_extension_target_metadata(
         },
         "toolchain": {
             "compiler_kind": toolchain.compiler_kind,
-            "compiler_cmd": list(toolchain.compiler_cmd),
-            "wasm_ld": toolchain.wasm_ld,
+            "tools": toolchain.tools.metadata(),
+            "commands": {
+                role: list(command)
+                for role, command in sorted(materialized_commands.items())
+            },
             "wasi_sysroot": str(toolchain.wasi_sysroot)
             if toolchain.wasi_sysroot is not None
             else None,

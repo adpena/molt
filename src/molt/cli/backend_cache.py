@@ -35,6 +35,7 @@ from molt.cli.cache_keys import _cache_key, _sorted_ir_functions
 from molt.cli.command_runtime import _run_completed_command
 from molt.cli.default_paths import _default_molt_cache
 from molt.cli.file_hashing import _sha256_file
+from molt.cli.llvm_wasi_tools import llvm_tool_candidates
 from molt.cli import function_references as _function_references
 from molt.cli.models import _ModuleGraphMetadata
 from molt.cli.runtime_wasm_validation import _is_reusable_wasm_artifact
@@ -53,7 +54,7 @@ _SharedStdlibCacheValidationToken = tuple[
 ]
 _NativeObjectSymbolSets = tuple[set[str], set[str]]
 _NATIVE_OBJECT_SYMBOL_SETS_CACHE: dict[
-    tuple[str, int, int, int, str, str, str],
+    tuple[str, int, int, int, str, str, str, str, tuple[str, ...]],
     tuple[frozenset[str], frozenset[str]] | None,
 ] = {}
 _NATIVE_OBJECT_SYMBOL_SETS_CACHE_LIMIT = 256
@@ -93,8 +94,8 @@ def _normalize_native_symbol_name(name: str) -> str:
     return name
 
 
-def _native_nm_command(nm_bin: str, path: Path) -> list[str]:
-    return [nm_bin, "-g", str(path)]
+def _native_nm_command(nm_command: Sequence[str], path: Path) -> list[str]:
+    return [*nm_command, "-g", str(path)]
 
 
 def _nm_result_reports_no_symbols(result: subprocess.CompletedProcess[str]) -> bool:
@@ -126,13 +127,18 @@ def _native_object_global_symbols_result(
     path: Path,
     *,
     timeout: float,
+    nm_command: Sequence[str] | None = None,
 ) -> subprocess.CompletedProcess[str] | None:
-    candidates = _nm_candidate_binaries()
+    candidates = (
+        [tuple(nm_command)]
+        if nm_command is not None
+        else [(candidate,) for candidate in _nm_candidate_binaries()]
+    )
     if not candidates:
         return None
     read_timeout = _nm_read_timeout(timeout)
     last_failure: subprocess.CompletedProcess[str] | None = None
-    for nm_bin in candidates:
+    for candidate in candidates:
         try:
             # Reading a static object's global symbol table is a leaf,
             # non-spawning, read-only operation: it can neither orphan a process
@@ -143,7 +149,7 @@ def _native_object_global_symbols_result(
             # (rc=124), stalling every source-recompiled extension seal at the
             # object-fact step. A plain subprocess timeout is the correct bound.
             result = _run_completed_command(
-                _native_nm_command(nm_bin, path),
+                _native_nm_command(candidate, path),
                 capture_output=True,
                 timeout=read_timeout,
                 env=None,
@@ -169,7 +175,9 @@ def _native_object_symbol_facts_sidecar_path(path: Path) -> Path:
 def _native_object_symbol_cache_key(
     path: Path,
     object_digest: str,
-) -> tuple[str, int, int, int, str, str, str] | None:
+    *,
+    nm_command: Sequence[str] | None,
+) -> tuple[str, int, int, int, str, str, str, str, tuple[str, ...]] | None:
     try:
         resolved = path.resolve()
         stat = path.stat()
@@ -181,8 +189,10 @@ def _native_object_symbol_cache_key(
         int(stat.st_mtime_ns),
         int(getattr(stat, "st_ctime_ns", 0)),
         object_digest,
-        os.environ.get("MOLT_NM", ""),
+        os.environ.get("MOLT_TARGET_ROOT", ""),
+        os.environ.get("PATH", ""),
         os.environ.get("MOLT_NM_TIMEOUT_SEC", ""),
+        tuple(nm_command or ()),
     )
 
 
@@ -261,12 +271,20 @@ def _ensure_native_object_symbol_facts(path: Path, *, is_wasm: bool) -> None:
         _native_object_global_symbol_sets(path)
 
 
-def _native_object_global_symbol_sets(path: Path) -> _NativeObjectSymbolSets | None:
+def _native_object_global_symbol_sets(
+    path: Path,
+    *,
+    nm_command: Sequence[str] | None = None,
+) -> _NativeObjectSymbolSets | None:
     try:
         object_digest = _sha256_file(path)
     except OSError:
         object_digest = ""
-    cache_key = _native_object_symbol_cache_key(path, object_digest)
+    cache_key = _native_object_symbol_cache_key(
+        path,
+        object_digest,
+        nm_command=nm_command,
+    )
     if cache_key is not None:
         cached = _NATIVE_OBJECT_SYMBOL_SETS_CACHE.get(cache_key)
         if cached is not None:
@@ -287,7 +305,11 @@ def _native_object_global_symbol_sets(path: Path) -> _NativeObjectSymbolSets | N
                     frozenset(undefined),
                 )
             return symbol_facts
-    result = _native_object_global_symbols_result(path, timeout=5)
+    result = _native_object_global_symbols_result(
+        path,
+        timeout=5,
+        nm_command=nm_command,
+    )
     if result is None:
         if cache_key is not None:
             _NATIVE_OBJECT_SYMBOL_SETS_CACHE[cache_key] = None
@@ -448,42 +470,9 @@ def _nm_candidate_binaries() -> list[str]:
     Order newest/most-capable readers first; the extraction loop validates each
     candidate (clean exit AND a non-empty ``molt_*`` set) before trusting it.
     """
-    candidates: list[str] = []
-    env_override = os.environ.get("MOLT_NM")
-    if env_override:
-        candidates.append(env_override)
-    # The Rust toolchain's own llvm-nm (the `llvm-tools` component) matches the
-    # bitcode producer exactly when installed. ``rustc --print sysroot`` is a
-    # leaf, read-only path probe (no child processes, no memory pressure), so it
-    # does NOT go through the process-tree memory guard: guarding it made this
-    # nm-candidate enumeration hang on slow hosts where the guard's per-call
-    # repo-scoped orphan cleanup dominates the probe.
-    try:
-        sysroot_result = _run_completed_command(
-            ["rustc", "--print", "sysroot"],
-            capture_output=True,
-            timeout=_nm_read_timeout(10),
-            env=None,
-            cwd=None,
-            memory_guard_prefix=None,
-        )
-        sysroot = sysroot_result.stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        sysroot = ""
-    if sysroot:
-        candidates.extend(
-            str(p) for p in sorted(Path(sysroot).glob("lib/rustlib/*/bin/llvm-nm"))
-        )
-    # Homebrew LLVM kegs (Apple Silicon + Intel prefixes), newest keg first.
-    for prefix in ("/opt/homebrew/opt", "/usr/local/opt"):
-        candidates.extend(
-            str(p) for p in sorted(Path(prefix).glob("llvm*/bin/llvm-nm"), reverse=True)
-        )
-    for which_name in ("llvm-nm", "nm"):
-        found = shutil.which(which_name)
-        if found:
-            candidates.append(found)
-    return list(dict.fromkeys(candidates))
+    return [
+        str(path) for path in llvm_tool_candidates("nm", include_rust_toolchain=True)
+    ]
 
 
 @functools.lru_cache(maxsize=64)

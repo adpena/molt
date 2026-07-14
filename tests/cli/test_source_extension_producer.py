@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import subprocess
 from pathlib import Path
 
@@ -53,11 +52,70 @@ def _write_complete_root(root: Path, *, marker: str) -> None:
                     "module": module,
                     "extension_sha256": artifact_sha256,
                     "wheel_sha256": f"wheel-{module}",
-                    "object_closure": {"closure_sha256": f"closure-{module}"},
+                    "object_closure": {
+                        "closure_sha256": f"closure-{module}",
+                        "objects": [
+                            {
+                                "source": f"{path.stem}.c",
+                                "compile_command": ["clang"],
+                                "symbol_command": ["llvm-nm"],
+                            }
+                        ],
+                    },
                 }
             ),
             encoding="utf-8",
         )
+
+
+def _write_target_metadata(root: Path) -> dict[str, object]:
+    target_root = root / "provenance/metadata/target"
+    python_pc = target_root / "pkgconfig/python3.pc"
+    meson_cross = target_root / "meson.cross"
+    python_pc.parent.mkdir(parents=True, exist_ok=True)
+    python_pc.write_text("prefix=@molt\n", encoding="utf-8")
+    meson_cross.write_text("[binaries]\n", encoding="utf-8")
+    tool_names = {
+        "cc": "clang",
+        "cxx": "clang++",
+        "wasm_ld": "wasm-ld",
+        "ar": "llvm-ar",
+        "ranlib": "llvm-ranlib",
+        "nm": "llvm-nm",
+        "strip": "llvm-strip",
+    }
+    tools = {
+        role: {
+            "command": [name],
+            "path": name,
+            "version": "test",
+            "sha256": "a" * 64,
+        }
+        for role, name in tool_names.items()
+    }
+    commands = {
+        "c": ["clang"],
+        "cpp": ["clang++"],
+        "ld": ["wasm-ld"],
+        "ar": ["llvm-ar"],
+        "ranlib": ["llvm-ranlib"],
+        "nm": ["llvm-nm"],
+        "strip": ["llvm-strip"],
+    }
+    metadata: dict[str, object] = {
+        "schema_version": 2,
+        "toolchain": {"tools": tools, "commands": commands},
+        "digests": {
+            "python_pc_sha256": producer._sha256_file(python_pc),
+            "meson_cross_sha256": producer._sha256_file(meson_cross),
+        },
+    }
+    encoded = json.dumps(metadata, sort_keys=True, separators=(",", ":")).encode()
+    metadata["digest"] = hashlib.sha256(encoded).hexdigest()
+    (target_root / "source-extension-target-metadata.json").write_text(
+        json.dumps(metadata), encoding="utf-8"
+    )
+    return metadata
 
 
 def test_produce_set_parser_has_no_partial_or_nondeterministic_lane() -> None:
@@ -243,6 +301,7 @@ def test_build_extension_routes_real_meson_authority_deterministically(
         capabilities=(),
         target="wasm",
         abi_tier="cpython-abi",
+        tool_commands={"ld": ("/tools/wasm-ld",)},
     )
 
     assert actual is expected
@@ -254,6 +313,7 @@ def test_build_extension_routes_real_meson_authority_deterministically(
     assert calls[0]["source_plan_target"] == "_nd_image"
     assert calls[0]["python_export"] == ["scipy"]
     assert calls[0]["capabilities"] == []
+    assert calls[0]["tool_commands"] == {"ld": ("/tools/wasm-ld",)}
 
 
 def test_transactional_wheel_bytes_must_match_manifest(
@@ -329,7 +389,12 @@ def test_source_build_environment_noop_records_exact_resolutions(
     environment = producer._ensure_source_build_environment(tmp_path)
 
     assert environment.manifest_payload() == {
-        "python_executable": producer.sys.executable,
+        "python_executable": (
+            f"{producer.sys.implementation.name}-"
+            f"{producer.sys.version_info.major}.{producer.sys.version_info.minor}."
+            f"{producer.sys.version_info.micro}/"
+            f"{Path(producer.sys.executable).name}"
+        ),
         "requirements": list(requirements),
         "resolved": [
             {
@@ -346,7 +411,7 @@ def test_source_build_environment_noop_records_exact_resolutions(
     }
 
 
-def test_source_build_environment_installs_only_unsatisfied_requirements(
+def test_source_build_environment_rejects_unsatisfied_without_mutating_interpreter(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _write_build_pyproject(tmp_path, ("meson>=1.5", "Cython>=3.0"))
@@ -355,35 +420,21 @@ def test_source_build_environment_installs_only_unsatisfied_requirements(
     def distribution(name: str) -> _Distribution:
         return _Distribution(name, versions[name])
 
-    calls: list[tuple[str, ...]] = []
-
-    def run_process(argv, *, cwd):
-        assert cwd == tmp_path
-        calls.append(tuple(argv))
-        versions["meson"] = "1.8.0"
-        return subprocess.CompletedProcess(
-            args=list(argv), returncode=0, stdout="installed", stderr=""
-        )
-
     monkeypatch.setattr(producer.importlib_metadata, "distribution", distribution)
-    monkeypatch.setattr(producer, "_run_process", run_process)
+    monkeypatch.setattr(
+        producer,
+        "_run_process",
+        lambda *_args, **_kwargs: pytest.fail("producer must not invoke an installer"),
+    )
 
-    environment = producer._ensure_source_build_environment(tmp_path)
-
-    assert calls == [
-        (
-            producer.sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--disable-pip-version-check",
-            "meson>=1.5",
-        )
-    ]
-    assert [item.version for item in environment.resolved] == ["1.8.0", "3.1.2"]
+    with pytest.raises(
+        producer.SourceExtensionProducerError,
+        match="never mutates its active interpreter.*meson>=1.5",
+    ):
+        producer._ensure_source_build_environment(tmp_path)
 
 
-def test_source_build_environment_install_failure_is_fail_closed(
+def test_source_build_environment_missing_distribution_is_fail_closed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _write_build_pyproject(tmp_path, ("meson>=1.5",))
@@ -395,13 +446,12 @@ def test_source_build_environment_install_failure_is_fail_closed(
     monkeypatch.setattr(
         producer,
         "_run_process",
-        lambda argv, *, cwd: subprocess.CompletedProcess(
-            args=list(argv), returncode=1, stdout="", stderr="index unavailable"
-        ),
+        lambda *_args, **_kwargs: pytest.fail("producer must not invoke an installer"),
     )
 
     with pytest.raises(
-        producer.SourceExtensionProducerError, match="index unavailable"
+        producer.SourceExtensionProducerError,
+        match="never mutates its active interpreter.*meson>=1.5",
     ):
         producer._ensure_source_build_environment(tmp_path)
 
@@ -478,6 +528,25 @@ def test_meson_pkg_config_is_pinned_and_attested(
         distribution="pkgconf",
         version="3.0.1.post0",
     )
+
+
+def test_meson_pkg_config_missing_does_not_install_into_active_interpreter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        producer, "_installed_build_requirement", lambda *_args: None
+    )
+    monkeypatch.setattr(
+        producer,
+        "_run_process",
+        lambda *_args, **_kwargs: pytest.fail("producer must not invoke an installer"),
+    )
+
+    with pytest.raises(
+        producer.SourceExtensionProducerError,
+        match="never installs into its active interpreter",
+    ):
+        producer._ensure_meson_pkg_config(tmp_path)
 
 
 def test_meson_config_tool_cross_is_generic_and_deterministic(tmp_path: Path) -> None:
@@ -604,6 +673,7 @@ def test_complete_set_validator_rejects_duplicate_module_sidecar(
         ),
     )
     set_manifest = {
+        "target_metadata": _write_target_metadata(publish),
         "extensions": [
             {
                 "module": spec.module,
@@ -649,55 +719,195 @@ def test_complete_set_validator_rejects_duplicate_module_sidecar(
         )
 
 
-def test_extension_set_publication_exposes_all_four_together(tmp_path: Path) -> None:
-    destination = tmp_path / "pact-witness"
-    staged = tmp_path / "transaction" / "publish"
-    _write_complete_root(destination, marker="old")
-    _write_complete_root(staged, marker="new")
-
-    producer._publish_directory_atomically(staged, destination)
-
-    assert (destination / "marker.txt").read_text(encoding="utf-8") == "new"
-    assert all(
-        destination.joinpath(*module.split(".")).with_suffix(".molt.wasm").is_file()
-        for module in _MODULES
-    )
-    assert len(list(destination.glob("**/*.molt.wasm.extension_manifest.json"))) == 4
-    assert all(
-        destination.joinpath(*module.split("."))
-        .with_suffix(".molt.wasm")
-        .read_text(encoding="utf-8")
-        == f"new:{module}"
-        for module in _MODULES
-    )
-    assert not staged.exists()
-
-
-def test_extension_set_publication_failure_restores_old_complete_root(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_extension_staging_rewrites_all_inputs_into_relocatable_seal_payload(
+    tmp_path: Path,
 ) -> None:
-    destination = tmp_path / "pact-witness"
-    staged = tmp_path / "transaction" / "publish"
-    _write_complete_root(destination, marker="old")
-    _write_complete_root(staged, marker="new")
-    real_replace = os.replace
-
-    def fail_new_root(source: str | Path, target: str | Path) -> None:
-        if Path(source) == staged and Path(target) == destination:
-            raise OSError("injected publication failure")
-        real_replace(source, target)
-
-    monkeypatch.setattr(producer.os, "replace", fail_new_root)
-
-    with pytest.raises(OSError, match="injected publication failure"):
-        producer._publish_directory_atomically(staged, destination)
-
-    assert (destination / "marker.txt").read_text(encoding="utf-8") == "old"
-    assert all(
-        destination.joinpath(*module.split("."))
-        .with_suffix(".molt.wasm")
-        .read_text(encoding="utf-8")
-        == f"old:{module}"
-        for module in _MODULES
+    source_root = tmp_path / "checkout"
+    build_root = tmp_path / "meson-build"
+    transaction = tmp_path / "transaction"
+    output = transaction / "builds" / "00-extension"
+    publish = transaction / "publish"
+    module = "scipy.ndimage._nd_image"
+    source = source_root / "scipy/ndimage/src/nd_image.c"
+    generated = build_root / "scipy/ndimage/_nd_image.c"
+    for path, content in (
+        (source, b"int source_symbol(void) { return 1; }\n"),
+        (generated, b"int PyInit__nd_image(void) { return 2; }\n"),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    artifact = output / "scipy/ndimage/_nd_image.molt.wasm"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_bytes(b"\x00asm-object")
+    wheel = output / "scipy-1.0-py3-molt_abi1-wasm32_wasip1.whl"
+    wheel.parent.mkdir(parents=True, exist_ok=True)
+    wheel.write_bytes(b"wheel")
+    closure = {
+        "schema_version": 1,
+        "root_symbol": "PyInit__nd_image",
+        "init_symbol_owner": "1.o",
+        "runtime_symbols": [],
+        "objects": [
+            {
+                "source": str(source),
+                "object": "0.o",
+                "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                "object_sha256": "1" * 64,
+                "defined_symbols": ["source_symbol"],
+                "undefined_symbols": [],
+                "compile_command": ["clang", "-c", str(source)],
+                "symbol_command": ["llvm-nm"],
+                "dependencies": [],
+            },
+            {
+                "source": str(generated),
+                "object": "1.o",
+                "source_sha256": hashlib.sha256(generated.read_bytes()).hexdigest(),
+                "object_sha256": "2" * 64,
+                "defined_symbols": ["PyInit__nd_image"],
+                "undefined_symbols": [],
+                "compile_command": ["clang", "-c", str(generated)],
+                "symbol_command": ["llvm-nm"],
+                "dependencies": [],
+            },
+        ],
+    }
+    manifest = {
+        "module": module,
+        "extension": artifact.name,
+        "wheel": wheel.name,
+        "wheel_sha256": hashlib.sha256(wheel.read_bytes()).hexdigest(),
+        "extension_sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+        "sources": [str(source), str(generated)],
+        "source_plan": {
+            "source_root": str(source_root),
+            "build_root": str(build_root),
+            "target_selector": "_nd_image",
+            "sources": [str(source)],
+            "generated_sources": [str(generated)],
+            "compile_units": [
+                {"source": str(source)},
+                {"source": str(generated)},
+            ],
+            "digest": "stale-location-dependent-digest",
+        },
+        "build": {"source_plan_digest": "stale", "object_closure_sha256": "stale"},
+        "object_closure": closure,
+    }
+    sidecar = artifact.with_name(artifact.name + ".extension_manifest.json")
+    sidecar.write_text(json.dumps(manifest), encoding="utf-8")
+    intro = publish / "provenance/metadata/meson/intro-targets.json"
+    commands = publish / "provenance/metadata/meson/compile-commands.json"
+    intro.parent.mkdir(parents=True)
+    intro.write_text("{}\n", encoding="utf-8")
+    commands.write_text("[]\n", encoding="utf-8")
+    produced = producer._ProducedExtension(
+        module=module,
+        target="_nd_image",
+        capabilities=(),
+        output_root=output,
+        manifest_path=output / "extension_manifest.json",
+        artifact_path=artifact,
+        artifact_manifest_path=sidecar,
+        wheel_path=wheel,
+        artifact_sha256=hashlib.sha256(artifact.read_bytes()).hexdigest(),
+        wheel_sha256=hashlib.sha256(wheel.read_bytes()).hexdigest(),
+        object_closure_sha256="stale",
     )
-    assert (staged / "marker.txt").read_text(encoding="utf-8") == "new"
+
+    staged = producer._stage_extension(
+        produced,
+        publish_root=publish,
+        location_roots=(
+            (source_root, "@source"),
+            (build_root, "@build"),
+            (transaction, "@transaction"),
+        ),
+        plan_metadata={"intro_targets": intro, "compile_commands": commands},
+    )
+
+    staged_manifest = json.loads(staged.artifact_manifest_path.read_text())
+    assert "source_root" not in staged_manifest["source_plan"]
+    assert "build_root" not in staged_manifest["source_plan"]
+    assert "compile_units" not in staged_manifest["source_plan"]
+    assert "generated_sources" not in staged_manifest["source_plan"]
+    assert staged_manifest["sources"] == [
+        item["source"] for item in staged_manifest["object_closure"]["objects"]
+    ]
+    assert str(tmp_path) not in json.dumps(staged_manifest)
+    for item in staged_manifest["object_closure"]["objects"]:
+        staged_source = (staged.artifact_manifest_path.parent / item["source"]).resolve()
+        assert staged_source.is_file()
+        assert staged_source.is_relative_to(
+            (publish / "provenance/compiled-inputs").resolve()
+        )
+    staged_wheel = (
+        staged.artifact_manifest_path.parent / staged_manifest["wheel"]
+    ).resolve()
+    assert staged_wheel == staged.wheel_path.resolve()
+    assert staged_manifest["object_closure"]["closure_sha256"] == (
+        staged.object_closure_sha256
+    )
+
+
+def test_stage_build_metadata_recomputes_canonical_leaf_and_identity_digests(
+    tmp_path: Path,
+) -> None:
+    transaction = tmp_path / "transaction"
+    publish = transaction / "publish"
+    metadata_root = transaction / "target-metadata"
+    pkgconfig = metadata_root / "pkgconfig"
+    pkgconfig.mkdir(parents=True)
+    (pkgconfig / "python3.pc").write_text(
+        f"prefix={transaction}\n", encoding="utf-8"
+    )
+    (metadata_root / "meson.cross").write_text(
+        f"sys_root = '{transaction}'\n", encoding="utf-8"
+    )
+    (metadata_root / "source-extension-target-metadata.json").write_text(
+        "{}\n", encoding="utf-8"
+    )
+    meson = tmp_path / "meson"
+    meson.mkdir()
+    intro = meson / "intro-targets.json"
+    commands = meson / "compile_commands.json"
+    installed = meson / "intro-installed.json"
+    intro.write_text("[]\n", encoding="utf-8")
+    commands.write_text("[]\n", encoding="utf-8")
+    installed.write_text("{}\n", encoding="utf-8")
+    raw_payload = {
+        "schema_version": 2,
+        "paths": {"out_dir": str(metadata_root)},
+        "digests": {
+            "python_pc_sha256": "stale",
+            "meson_cross_sha256": "stale",
+        },
+        "digest": "stale",
+    }
+
+    staged, canonical = producer._stage_build_metadata(
+        publish_root=publish,
+        metadata_root=metadata_root,
+        intro_targets=intro,
+        compile_commands=commands,
+        intro_installed=installed,
+        config_tool_cross=None,
+        target_metadata_payload=raw_payload,
+        location_roots=((transaction, "@transaction"),),
+    )
+
+    assert canonical["digests"] == {
+        "python_pc_sha256": producer._sha256_file(
+            staged["target/pkgconfig/python3.pc"]
+        ),
+        "meson_cross_sha256": producer._sha256_file(staged["target/meson.cross"]),
+    }
+    identity = dict(canonical)
+    digest = identity.pop("digest")
+    assert digest == hashlib.sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    assert json.loads(
+        staged["target/source-extension-target-metadata.json"].read_text()
+    ) == canonical
+    assert "stale" not in json.dumps(canonical)

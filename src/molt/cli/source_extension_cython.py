@@ -36,6 +36,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from molt.cli.dependency_files import parse_make_depfile
+from molt.cli.file_hashing import _sha256_file
+
 # Cython emits the ``.pyx`` -> C generated file with the same stem. A Cython
 # source group in a meson build pairs the ``.pyx`` (a non-compiled input) with
 # the generated ``.c``/``.cpp`` by stem, so stem matching is the pairing key.
@@ -95,6 +98,17 @@ class _CythonRequirement:
 
 
 @dataclass(frozen=True)
+class CythonDependency:
+    """One checksummed input declared by Cython's own dependency graph."""
+
+    path: Path
+    sha256: str
+
+    def manifest_payload(self) -> dict[str, str]:
+        return {"path": str(self.path), "sha256": self.sha256}
+
+
+@dataclass(frozen=True)
 class CythonRegeneration:
     """Result of regenerating one Cython extension's C standalone."""
 
@@ -106,6 +120,8 @@ class CythonRegeneration:
     cimport_packages: tuple[str, ...] = ()
     cimport_pxd_roots: tuple[Path, ...] = ()
     cimport_header_include_dirs: tuple[Path, ...] = ()
+    dependencies: tuple[CythonDependency, ...] = ()
+    working_directory: Path | None = None
 
     def manifest_payload(self) -> dict[str, Any]:
         return {
@@ -122,6 +138,14 @@ class CythonRegeneration:
             "cimport_header_include_dirs": [
                 str(path) for path in self.cimport_header_include_dirs
             ],
+            "dependencies": [
+                dependency.manifest_payload() for dependency in self.dependencies
+            ],
+            "working_directory": (
+                str(self.working_directory)
+                if self.working_directory is not None
+                else None
+            ),
         }
 def _leading_int(version: str) -> int | None:
     match = re.match(r"(\d+)", version)
@@ -1016,12 +1040,16 @@ def regenerate_cython_c_standalone(
             argv.append("--cplus")
     else:
         argv.extend(generator_args)
+    if "-M" not in argv and "--depfile" not in argv:
+        argv.append("-M")
     for include_dir in resolved_includes:
         argv.extend(["-I", str(include_dir)])
     argv.extend([str(pyx_path), "-o", str(regenerated_c)])
+    working_directory = Path.cwd().resolve()
     try:
         result = subprocess.run(
             argv,
+            cwd=working_directory,
             capture_output=True,
             text=True,
             timeout=600,
@@ -1047,6 +1075,25 @@ def regenerate_cython_c_standalone(
             f"Standalone `cython -3` regeneration of {pyx_path.name} failed "
             f"(argv: {' '.join(argv)}):\n{detail}"
         )
+    dependency_file = regenerated_c.with_name(regenerated_c.name + ".dep")
+    dependency_paths, dependency_error = parse_make_depfile(
+        dependency_file,
+        cwd=working_directory,
+        producer="Cython",
+    )
+    if dependency_error is not None:
+        return None, dependency_error
+    assert dependency_paths is not None
+    resolved_pyx = pyx_path.resolve()
+    if resolved_pyx not in dependency_paths:
+        return None, (
+            "Cython dependency closure omitted its primary input: "
+            f"{resolved_pyx}"
+        )
+    dependencies = tuple(
+        CythonDependency(path=path, sha256=_sha256_file(path))
+        for path in dependency_paths
+    )
     return (
         CythonRegeneration(
             pyx_path=pyx_path.resolve(),
@@ -1057,6 +1104,8 @@ def regenerate_cython_c_standalone(
             cimport_packages=cimport_packages,
             cimport_pxd_roots=cimport_pxd_roots,
             cimport_header_include_dirs=cimport_header_include_dirs,
+            dependencies=dependencies,
+            working_directory=working_directory,
         ),
         None,
     )

@@ -355,13 +355,14 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
                 severity="infra",
                 summary=(
                     "Source-extension object-symbol scan could not read "
-                    f"{object_path.name} because nm/llvm-nm was unavailable."
+                    f"{object_path.name} because canonical LLVM/WASI nm "
+                    "authority was unavailable."
                 ),
                 evidence=match.group(0),
                 next_action=(
-                    "Install nm/llvm-nm or rerun with MOLT_NM pointing at a "
-                    "bitcode-capable llvm-nm and record that env in the queue row; "
-                    "this is toolchain custody, not a product closure failure."
+                    "Repair or install the complete managed LLVM/WASI tool family "
+                    "under MOLT_TARGET_ROOT; the compiler/linker/symbol-reader "
+                    "family is one authority, not a per-command override."
                 ),
                 scopes=(
                     "src/molt/cli/source_extensions.py",

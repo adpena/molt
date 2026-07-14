@@ -460,6 +460,10 @@ def test_regeneration_replays_real_ninja_cython_directives(
         generation_calls.append(argv)
         output = Path(argv[argv.index("-o") + 1])
         output.write_text("/* generated */\n", encoding="utf-8")
+        Path(str(output) + ".dep").write_text(
+            f"{output}: {pyx}\n",
+            encoding="utf-8",
+        )
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     monkeypatch.setattr(cython_authority.shutil, "which", lambda _name: "/tools/ninja")
@@ -489,6 +493,13 @@ def test_regeneration_replays_real_ninja_cython_directives(
     assert "ignored" not in argv
     assert argv.count(str(pyx)) == 1
     assert argv.count(str(regeneration.regenerated_c)) == 1
+    assert regeneration.dependencies[0].path == pyx.resolve()
+    assert regeneration.manifest_payload()["dependencies"] == [
+        {
+            "path": str(pyx.resolve()),
+            "sha256": regeneration.dependencies[0].sha256,
+        }
+    ]
 
 
 def test_ninja_command_strips_separate_shared_and_replaced_paths(
