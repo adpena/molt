@@ -3,12 +3,14 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+import zipfile
 from pathlib import Path
 
 import pytest
 
 from molt.cli import entrypoint_dispatch, entrypoint_parser
 from molt.cli import source_extension_producer as producer
+from molt.cli.extension_wheel import _write_extension_wheel
 from molt.scientific_stack_versions import (
     ScientificExtensionSet,
     ScientificExtensionSpec,
@@ -21,6 +23,33 @@ _MODULES = (
     "scipy.ndimage._rank_filter_1d",
     "scipy._lib._ccallback_c",
 )
+
+
+def _write_test_extension_wheel(
+    wheel: Path,
+    *,
+    extension_path: str,
+    extension_bytes: bytes,
+) -> str:
+    dist_info = "scipy-1.0.dist-info"
+    embedded_manifest = {
+        "module": "scipy.ndimage._nd_image",
+        "extension": extension_path,
+        "wheel": wheel.name,
+    }
+    return _write_extension_wheel(
+        wheel,
+        entries=(
+            (extension_path, extension_bytes),
+            (
+                "extension_manifest.json",
+                json.dumps(embedded_manifest, sort_keys=True).encode() + b"\n",
+            ),
+            (f"{dist_info}/WHEEL", b"Wheel-Version: 1.0\n"),
+            (f"{dist_info}/METADATA", b"Metadata-Version: 2.1\n"),
+        ),
+        record_path=f"{dist_info}/RECORD",
+    )
 
 
 class _Distribution:
@@ -740,8 +769,11 @@ def test_extension_staging_rewrites_all_inputs_into_relocatable_seal_payload(
     artifact.parent.mkdir(parents=True)
     artifact.write_bytes(b"\x00asm-object")
     wheel = output / "scipy-1.0-py3-molt_abi1-wasm32_wasip1.whl"
-    wheel.parent.mkdir(parents=True, exist_ok=True)
-    wheel.write_bytes(b"wheel")
+    raw_wheel_sha256 = _write_test_extension_wheel(
+        wheel,
+        extension_path="scipy/ndimage/_nd_image.molt.wasm",
+        extension_bytes=artifact.read_bytes(),
+    )
     closure = {
         "schema_version": 1,
         "root_symbol": "PyInit__nd_image",
@@ -776,7 +808,7 @@ def test_extension_staging_rewrites_all_inputs_into_relocatable_seal_payload(
         "module": module,
         "extension": artifact.name,
         "wheel": wheel.name,
-        "wheel_sha256": hashlib.sha256(wheel.read_bytes()).hexdigest(),
+        "wheel_sha256": raw_wheel_sha256,
         "extension_sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
         "sources": [str(source), str(generated)],
         "source_plan": {
@@ -845,6 +877,20 @@ def test_extension_staging_rewrites_all_inputs_into_relocatable_seal_payload(
         staged.artifact_manifest_path.parent / staged_manifest["wheel"]
     ).resolve()
     assert staged_wheel == staged.wheel_path.resolve()
+    assert staged_manifest["wheel_sha256"] == producer._sha256_file(staged_wheel)
+    assert staged.wheel_sha256 == staged_manifest["wheel_sha256"]
+    with zipfile.ZipFile(staged_wheel) as archive:
+        embedded = json.loads(archive.read("extension_manifest.json"))
+        assert embedded["extension"] == "scipy/ndimage/_nd_image.molt.wasm"
+        assert str(tmp_path) not in json.dumps(embedded)
+        assert embedded["extension_sha256"] == staged_manifest["extension_sha256"]
+        assert embedded["object_closure"]["objects"][0]["source"].startswith(
+            "@source/"
+        )
+        assert embedded["object_closure"]["objects"][1]["source"].startswith(
+            "@build/"
+        )
+        assert all(info.date_time == (1980, 1, 1, 0, 0, 0) for info in archive.infolist())
     assert staged_manifest["object_closure"]["closure_sha256"] == (
         staged.object_closure_sha256
     )

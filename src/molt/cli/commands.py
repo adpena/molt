@@ -20,6 +20,10 @@ from molt.dx import DxConfigError, DxProject
 from molt.cli import build_inputs as _build_inputs
 from molt.cli import source_extensions as _source_extensions
 from molt.cli import source_extension_cython as _source_extension_cython
+from molt.cli.source_extension_reproducibility import (
+    _canonical_extension_manifest_for_wheel,
+    _source_extension_deterministic_path_args,
+)
 from molt.cli import dependency_files as _dependency_files
 from molt.cli.arg_helpers import (
     _build_args_has_cache_flag,
@@ -33,7 +37,6 @@ from molt.cli.atomic_io import (
     _atomic_copy_file,
     _atomic_write_bytes,
     _atomic_write_json,
-    _atomic_zip_file,
 )
 from molt.cli.backend_cache import _native_object_global_symbol_sets
 from molt.cli.capability_spec import (
@@ -68,11 +71,10 @@ from molt.cli.extension_manifest import (
     _manifest_dotted_name_tuple,
     _module_parts,
     _normalize_effects,
-    _wheel_record_line,
     _wheel_token,
     _wheel_version_token,
-    _write_zip_member,
 )
+from molt.cli.extension_wheel import _write_extension_wheel
 from molt.cli.extension_support import module_attr_support_files
 from molt.cli.external_native import (
     _source_recompiled_external_package_root,
@@ -1704,34 +1706,6 @@ def _source_extension_compile_command_for_source(
     return list(cc_cmd)
 
 
-def _source_extension_deterministic_path_args(
-    *,
-    compiler_command: Sequence[str],
-    roots: Sequence[tuple[Path | None, str]],
-) -> list[str]:
-    """Map every build-location authority out of compiler-visible bytes."""
-    if not compiler_command:
-        return []
-    deduped: dict[Path, str] = {}
-    for path, replacement in roots:
-        if path is None:
-            continue
-        deduped.setdefault(path.resolve(), replacement)
-    ordered = sorted(deduped.items(), key=lambda item: len(str(item[0])), reverse=True)
-    tool = Path(compiler_command[0]).name.lower()
-    if tool in {"cl", "cl.exe", "clang-cl", "clang-cl.exe"}:
-        return [f"/pathmap:{path}={replacement}" for path, replacement in ordered]
-    return [
-        argument
-        for path, replacement in ordered
-        for argument in (
-            f"-ffile-prefix-map={path}={replacement}",
-            f"-fdebug-prefix-map={path}={replacement}",
-            f"-fmacro-prefix-map={path}={replacement}",
-        )
-    ]
-
-
 def _extension_export_package(module_parts: list[str]) -> str:
     return module_parts[0]
 
@@ -3204,8 +3178,41 @@ def extension_build(
             manifest_payload["callable_exports"] = callable_exports
         if not support_files:
             manifest_payload.pop("support_files", None)
+        wheel_identity_roots: list[tuple[Path | None, str]] = [
+            (project_root, "@source"),
+            (
+                loaded_source_plan.build_root
+                if loaded_source_plan is not None
+                else None,
+                "@build",
+            ),
+            (output_root, "@output"),
+            (build_tmp, "@object-root"),
+            (molt_root, "@molt"),
+            (wasi_sysroot, "@wasi-sysroot"),
+            (Path(sys.prefix), "@python"),
+        ]
+        for command in effective_tool_commands.values():
+            if command:
+                wheel_identity_roots.append(
+                    (Path(command[0]).resolve().parent, "@toolchain")
+                )
+        wheel_manifest_payload = _canonical_extension_manifest_for_wheel(
+            manifest_payload,
+            location_roots=tuple(wheel_identity_roots),
+            meson_plan_path=(
+                loaded_source_plan.plan_path
+                if loaded_source_plan is not None
+                else None
+            ),
+            compile_commands_path=(
+                loaded_source_plan.compile_commands_path
+                if loaded_source_plan is not None
+                else None
+            ),
+        )
         manifest_bytes = (
-            json.dumps(manifest_payload, sort_keys=True, indent=2).encode("utf-8")
+            json.dumps(wheel_manifest_payload, sort_keys=True, indent=2).encode("utf-8")
             + b"\n"
         )
 
@@ -3238,14 +3245,11 @@ def extension_build(
         for support in support_files:
             wheel_entries.append((support.rel_path, support.source_path.read_bytes()))
         record_path = f"{dist_info}/RECORD"
-        record_lines = [_wheel_record_line(path, data) for path, data in wheel_entries]
-        record_lines.append(f"{record_path},,")
-        record_bytes = ("\n".join(record_lines) + "\n").encode("utf-8")
-
-        with _atomic_zip_file(wheel_path) as zf:
-            for path, data in wheel_entries:
-                _write_zip_member(zf, path, data)
-            _write_zip_member(zf, record_path, record_bytes)
+        _write_extension_wheel(
+            wheel_path,
+            entries=wheel_entries,
+            record_path=record_path,
+        )
 
     wheel_sha = _sha256_file(wheel_path)
     extension_sha = hashlib.sha256(extension_bytes).hexdigest()
