@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -13,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 import tools.proof_queue as proof_queue
+from molt.cli.source_package_seal import SourcePackageInput, stage_source_package_seal
 from molt.scientific_stack_versions import (
     resolve_scientific_stack,
     scientific_extension_set,
@@ -6678,7 +6680,7 @@ def test_proof_queue_diagnoses_source_extension_nm_missing(
     log_path.write_text(
         "unable to read global symbol table for compiled extension object "
         "D:\\Molt\\tmp\\pact_numpy\\82_umathmodule.o; "
-        "install llvm-nm/nm or set MOLT_NM\n",
+        "canonical LLVM/WASI nm authority is unavailable\n",
         encoding="utf-8",
     )
     proof_queue._update_run(conn, "source-extension-nm", status="failed", returncode=2)
@@ -6704,7 +6706,7 @@ def test_proof_queue_diagnoses_source_extension_nm_missing(
     assert diagnostics[0]["signal_id"] == "source-extension-nm-missing"
     assert diagnostics[0]["severity"] == "infra"
     assert "82_umathmodule.o" in diagnostics[0]["summary"]
-    assert "MOLT_NM" in diagnostics[0]["next_action"]
+    assert "MOLT_TARGET_ROOT" in diagnostics[0]["next_action"]
     assert str(log_path) in diagnostics[0]["artifacts"]
     assert "unclassified-failed-proof" not in {
         item["signal_id"] for item in diagnostics
@@ -8748,6 +8750,211 @@ def test_proof_queue_pact_witness_acceptance_is_queue_native(
     assert proof_queue._proof_command_policy_error(command) is None
 
 
+def test_proof_queue_named_spec_locked_environment_authority_is_generic(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    spec = {
+        "logical_id": "generic-locked-environment",
+        "env_overrides": {"LOCKED_INPUT": "attested"},
+        "locked_env": ["LOCKED_INPUT"],
+    }
+    args = SimpleNamespace(env=["locked_input=user"], print_spec=True)
+
+    with pytest.raises(SystemExit) as exc:
+        proof_queue._run_named_spec(args, spec)
+
+    assert exc.value.code == (
+        "named proof 'generic-locked-environment' rejects --env overrides for "
+        "locked environment custody: LOCKED_INPUT"
+    )
+    assert capsys.readouterr().out == ""
+
+
+def test_proof_queue_named_spec_requires_launch_value_for_every_locked_name() -> None:
+    spec = {
+        "logical_id": "generic-missing-locked-value",
+        "env_overrides": {},
+        "locked_env": ["LOCKED_INPUT"],
+    }
+    args = SimpleNamespace(env=[], print_spec=True)
+
+    with pytest.raises(SystemExit, match="without canonical launch values"):
+        proof_queue._run_named_spec(args, spec)
+
+
+@pytest.mark.parametrize(
+    "name",
+    proof_queue._PACT_WITNESS_ACCEPTANCE_LOCKED_ENV,
+)
+def test_proof_queue_pact_witness_acceptance_rejects_locked_env_before_print_spec(
+    name: str,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+
+    with pytest.raises(SystemExit) as exc:
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "pact-witness-acceptance",
+                "--env",
+                f"{name}=user-value",
+                "--print-spec",
+            ]
+        )
+
+    message = str(exc.value.code)
+    assert "rejects --env overrides for locked environment custody" in message
+    assert name in message
+    assert "Traceback" not in message
+    assert capsys.readouterr().out == ""
+    assert not db.exists()
+
+
+def test_proof_queue_pact_witness_acceptance_rejects_locked_env_before_queue(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+
+    with pytest.raises(SystemExit, match="MOLT_MODULE_ROOTS"):
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "pact-witness-acceptance",
+                "--env",
+                "molt_module_roots=user-root",
+                "--queue-only",
+            ]
+        )
+
+    assert not db.exists()
+
+
+def test_proof_queue_pact_witness_acceptance_allows_diagnostic_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    monkeypatch.setattr(proof_queue, "_pact_witness_native_roots", lambda _root: [])
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "pact-witness-acceptance",
+                "--env",
+                "MOLT_TRACE_CAPI=1",
+                "--env",
+                "MOLT_TRACE_IMPORT_STAGE=1",
+                "--print-spec",
+            ]
+        )
+        == 0
+    )
+    spec = json.loads(capsys.readouterr().out)
+    assert spec["env_overrides"]["MOLT_TRACE_CAPI"] == "1"
+    assert spec["env_overrides"]["MOLT_TRACE_IMPORT_STAGE"] == "1"
+    assert set(spec["locked_env"]) == set(
+        proof_queue._PACT_WITNESS_ACCEPTANCE_LOCKED_ENV
+    )
+    assert not db.exists()
+
+
+def test_proof_queue_pact_witness_acceptance_scrubs_ambient_input_redirects(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("MOLT_SCIENTIFIC_STACK_CONFIG", str(tmp_path / "host.toml"))
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "host-artifacts"))
+    monkeypatch.setenv(
+        "MOLT_EXTERNAL_ARTIFACT_ROOTS", str(tmp_path / "other-artifacts")
+    )
+    monkeypatch.setattr(proof_queue, "_pact_witness_native_roots", lambda _root: [])
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(tmp_path / "proof_queue.sqlite3"),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "pact-witness-acceptance",
+                "--print-spec",
+            ]
+        )
+        == 0
+    )
+
+    spec = json.loads(capsys.readouterr().out)
+    canonical = proof_queue._pact_canonical_input_environment(proof_queue.ROOT)
+    for name, value in canonical.items():
+        assert spec["env_overrides"][name] == value
+    assert str(tmp_path) not in json.dumps(spec["env_overrides"])
+
+
+def test_proof_queue_prune_stale_explicitly_cancels_selected_queued_row(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="abandoned-queued-run",
+        logical_id="abandoned",
+        reason="prove explicit queued cancellation",
+        command=[sys.executable, "-c", "print('never launched')"],
+        cwd=proof_queue.ROOT,
+        resource_family="python-tests",
+        contention_key="proof-queue-dx-abandoned",
+        scopes=["tools/proof_queue.py"],
+        log_path=tmp_path / "abandoned.log",
+        summary_json=tmp_path / "abandoned.memory_guard.json",
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "prune-stale",
+                "--run-id",
+                "abandoned-queued-run",
+            ]
+        )
+        == 0
+    )
+
+    output = capsys.readouterr().out
+    assert "selected-queued-cancellation" in output
+    assert "pruned=1" in output
+    row = _rows(db)[0]
+    assert row["status"] == "stale"
+    assert row["returncode"] == proof_queue.PROOF_QUEUE_STALE_EXIT_CODE
+
+
 def test_proof_queue_r6_target_version_parity_is_queue_native() -> None:
     spec = proof_queue._r6_target_version_parity_spec("3.12")
 
@@ -8910,6 +9117,13 @@ def _write_current_scipy_seal(
     missing_module: str | None = None,
     exports_override: dict[str, list[str]] | None = None,
 ) -> None:
+    destination = root
+    root = destination.parent / f".{destination.name}.fixture-payload"
+    transaction_root = destination.parent / f".{destination.name}.fixture-transaction"
+    if root.exists():
+        shutil.rmtree(root)
+    if transaction_root.exists():
+        shutil.rmtree(transaction_root)
     extension_set = scientific_extension_set("scipy", "pact-witness")
     stack = resolve_scientific_stack()
     current_abi = proof_queue._default_molt_c_api_version(proof_queue.ROOT)
@@ -8920,6 +9134,8 @@ def _write_current_scipy_seal(
         artifact_bytes = b"\x00asm" + extension.target.encode("utf-8")
         artifact_sha256 = hashlib.sha256(artifact_bytes).hexdigest()
         wheel_sha256 = hashlib.sha256(f"wheel:{extension.target}".encode()).hexdigest()
+        source_bytes = f"/* {extension.module} */\n".encode()
+        source_sha256 = hashlib.sha256(source_bytes).hexdigest()
         init_symbol = f"PyInit_{extension.module.rsplit('.', 1)[-1]}"
         object_closure: dict[str, object] = {
             "schema_version": 1,
@@ -8930,10 +9146,18 @@ def _write_current_scipy_seal(
                 {
                     "source": f"sources/{extension.target}.c",
                     "object": "0.o",
-                    "source_sha256": "1" * 64,
+                    "source_sha256": source_sha256,
                     "object_sha256": "2" * 64,
                     "defined_symbols": [init_symbol],
                     "undefined_symbols": [],
+                    "compile_command": [
+                        "@llvm-bin/clang",
+                        "--target=wasm32-wasip1",
+                        "-c",
+                        f"sources/{extension.target}.c",
+                    ],
+                    "symbol_command": ["@llvm-bin/llvm-nm"],
+                    "dependencies": [],
                 }
             ],
         }
@@ -8954,6 +9178,9 @@ def _write_current_scipy_seal(
             continue
         package_dir = root.joinpath(*extension.module.split(".")[:-1])
         package_dir.mkdir(parents=True, exist_ok=True)
+        source_path = package_dir / "sources" / f"{extension.target}.c"
+        source_path.parent.mkdir(parents=True, exist_ok=True)
+        source_path.write_bytes(source_bytes)
         (package_dir / artifact_name).write_bytes(artifact_bytes)
         manifest_path = package_dir / f"{artifact_name}.extension_manifest.json"
         manifest_path.write_text(
@@ -8990,6 +9217,58 @@ def _write_current_scipy_seal(
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(f"# {relative}\n", encoding="utf-8")
+    target_root = root / "provenance/metadata/target"
+    python_pc = target_root / "pkgconfig/python3.pc"
+    meson_cross = target_root / "meson.cross"
+    python_pc.parent.mkdir(parents=True, exist_ok=True)
+    python_pc.write_text("prefix=@molt\n", encoding="utf-8")
+    meson_cross.write_text("[binaries]\n", encoding="utf-8")
+    tool_names = {
+        "cc": "@llvm-bin/clang",
+        "cxx": "@llvm-bin/clang++",
+        "wasm_ld": "@llvm-bin/wasm-ld",
+        "ar": "@llvm-bin/llvm-ar",
+        "ranlib": "@llvm-bin/llvm-ranlib",
+        "nm": "@llvm-bin/llvm-nm",
+        "strip": "@llvm-bin/llvm-strip",
+    }
+    target_metadata: dict[str, object] = {
+        "schema_version": 2,
+        "toolchain": {
+            "tools": {
+                role: {
+                    "command": [name],
+                    "path": name,
+                    "version": "test",
+                    "sha256": "a" * 64,
+                }
+                for role, name in tool_names.items()
+            },
+            "commands": {
+                "c": ["@llvm-bin/clang", "--target=wasm32-wasip1"],
+                "cpp": ["@llvm-bin/clang++", "--target=wasm32-wasip1"],
+                "ld": ["@llvm-bin/wasm-ld"],
+                "ar": ["@llvm-bin/llvm-ar"],
+                "ranlib": ["@llvm-bin/llvm-ranlib"],
+                "nm": ["@llvm-bin/llvm-nm"],
+                "strip": ["@llvm-bin/llvm-strip"],
+            },
+        },
+        "digests": {
+            "python_pc_sha256": proof_queue._sha256_file(python_pc),
+            "meson_cross_sha256": proof_queue._sha256_file(meson_cross),
+        },
+    }
+    target_metadata["digest"] = hashlib.sha256(
+        json.dumps(
+            target_metadata,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    (target_root / "source-extension-target-metadata.json").write_text(
+        json.dumps(target_metadata), encoding="utf-8"
+    )
     (root / "extension_set_manifest.json").write_text(
         json.dumps(
             {
@@ -9002,6 +9281,7 @@ def _write_current_scipy_seal(
                 "target": "wasm",
                 "target_triple": "wasm32-wasip1",
                 "abi_tier": "cpython-abi",
+                "target_metadata": target_metadata,
                 "build_environment": {
                     "python_executable": sys.executable,
                     "requirements": [
@@ -9052,24 +9332,28 @@ def _write_current_scipy_seal(
                             "path": "C:/tools/numpy-config.exe",
                             "distribution": "numpy",
                             "version": "2.5.1",
+                            "sha256": "7" * 64,
                         },
                         {
                             "name": "pkg-config",
                             "path": "C:/tools/pkg-config.exe",
                             "distribution": "pkgconf",
                             "version": "3.0.1.post0",
+                            "sha256": "8" * 64,
                         },
                         {
                             "name": "pybind11-config",
                             "path": "C:/tools/pybind11-config.exe",
                             "distribution": "pybind11",
                             "version": "3.0.4",
+                            "sha256": "9" * 64,
                         },
                         {
                             "name": "pythran-config",
                             "path": "C:/tools/pythran-config.exe",
                             "distribution": "pythran",
                             "version": "0.18.1",
+                            "sha256": "a" * 64,
                         },
                     ],
                     "pkg_config_requirement": proof_queue.MOLT_PKGCONF_REQUIREMENT,
@@ -9080,6 +9364,23 @@ def _write_current_scipy_seal(
         ),
         encoding="utf-8",
     )
+    seal = stage_source_package_seal(
+        transaction_root,
+        [
+            SourcePackageInput(
+                path,
+                path.relative_to(root).as_posix(),
+                "fixture",
+            )
+            for path in sorted(root.rglob("*"))
+            if path.is_file()
+        ],
+    )
+    if destination.exists():
+        shutil.rmtree(destination)
+    shutil.copytree(seal.root, destination)
+    shutil.rmtree(root)
+    shutil.rmtree(transaction_root)
 
 
 def test_proof_queue_r6_target_version_parity_print_spec(
@@ -9124,7 +9425,18 @@ def test_proof_queue_pact_witness_acceptance_admits_staged_native_roots(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
-    expected_roots = [
+    monkeypatch.setattr(
+        proof_queue,
+        "_pact_canonical_input_environment",
+        lambda _root: {
+            proof_queue.SCIENTIFIC_STACK_CONFIG_ENV: str(
+                proof_queue.ROOT / "config/scientific_stack_versions.toml"
+            ),
+            "MOLT_EXT_ROOT": str(tmp_path / "artifacts"),
+            "MOLT_EXTERNAL_ARTIFACT_ROOTS": str(tmp_path / "artifacts"),
+        },
+    )
+    expected_seals = [
         tmp_path
         / "artifacts/package-seals/numpy/2.5.1/pact_numpy_multiarray_sealed_for_witness",
         tmp_path / "artifacts/package-seals/scipy/1.18.0/pact_scipy_witness",
@@ -9137,12 +9449,12 @@ def test_proof_queue_pact_witness_acceptance_admits_staged_native_roots(
         tmp_path / "bench/friends/repos/numpy_off_the_shelf",
         tmp_path / "bench/friends/repos/scipy_off_the_shelf",
     ]
-    for root in expected_roots:
+    for root in expected_seals:
         root.mkdir(parents=True)
     for root in legacy_roots:
         root.mkdir(parents=True)
-    _write_current_numpy_seal_manifest(expected_roots[0], tmp_path / "numpy-source")
-    _write_current_scipy_seal(expected_roots[1])
+    _write_current_numpy_seal_manifest(expected_seals[0], tmp_path / "numpy-source")
+    _write_current_scipy_seal(expected_seals[1])
     for root in legacy_roots[:4]:
         (root / "extension_manifest.json").write_text("{}", encoding="utf-8")
 
@@ -9151,7 +9463,8 @@ def test_proof_queue_pact_witness_acceptance_admits_staged_native_roots(
 
     assert env["MOLT_EXTERNAL_STATIC_PACKAGES"] == "numpy scipy"
     assert env["MOLT_MODULE_ROOTS"].split(os.pathsep) == [
-        str(root.resolve()) for root in expected_roots
+        str(expected_seals[0].resolve()),
+        str((expected_seals[1] / "files").resolve()),
     ]
     assert any("canonical four-extension SciPy seals" in note for note in spec["notes"])
 
@@ -9243,7 +9556,7 @@ def test_proof_queue_rejects_scipy_seal_contract_drift(
     extension_set = scientific_extension_set("scipy", "pact-witness")
     extension = extension_set.extensions[0]
     manifest_path = proof_queue._scientific_extension_manifest_path(
-        root, extension.module, extension.target
+        root / "files", extension.module, extension.target
     )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest[field] = value
@@ -9262,7 +9575,7 @@ def test_proof_queue_requires_explicit_scipy_determinism_attestation(
     extension_set = scientific_extension_set("scipy", "pact-witness")
     extension = extension_set.extensions[0]
     manifest_path = proof_queue._scientific_extension_manifest_path(
-        root, extension.module, extension.target
+        root / "files", extension.module, extension.target
     )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     del manifest["deterministic"]
@@ -9289,7 +9602,7 @@ def test_proof_queue_rejects_scipy_object_closure_identity_drift(
     extension_set = scientific_extension_set("scipy", "pact-witness")
     extension = extension_set.extensions[0]
     manifest_path = proof_queue._scientific_extension_manifest_path(
-        root, extension.module, extension.target
+        root / "files", extension.module, extension.target
     )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["object_closure"][field] = value
@@ -9314,7 +9627,7 @@ def test_proof_queue_rejects_scipy_set_manifest_identity_drift(
 ) -> None:
     root = tmp_path / "pact_scipy_witness"
     _write_current_scipy_seal(root)
-    set_manifest_path = root / "extension_set_manifest.json"
+    set_manifest_path = root / "files" / "extension_set_manifest.json"
     manifest = json.loads(set_manifest_path.read_text(encoding="utf-8"))
     manifest[field] = value
     set_manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
@@ -9352,7 +9665,7 @@ def test_proof_queue_rejects_scipy_set_manifest_transaction_drift(
 ) -> None:
     root = tmp_path / "pact_scipy_witness"
     _write_current_scipy_seal(root)
-    set_manifest_path = root / "extension_set_manifest.json"
+    set_manifest_path = root / "files" / "extension_set_manifest.json"
     manifest = json.loads(set_manifest_path.read_text(encoding="utf-8"))
     if mutation == "ordered_set":
         manifest["extensions"] = list(reversed(manifest["extensions"]))
@@ -9382,7 +9695,7 @@ def test_proof_queue_rejects_scipy_set_manifest_transaction_drift(
         manifest["installed_python_files"].remove("scipy/__config__.py")
         expected = "missing installed Python files: scipy/__config__.py"
     elif mutation == "installed_python_on_disk":
-        (root / "scipy/__config__.py").unlink()
+        (root / "files/scipy/__config__.py").unlink()
         expected = "installed Python files absent on disk: scipy/__config__.py"
     elif mutation == "build_requirements":
         manifest["build_environment"]["requirements"] = []
@@ -9429,7 +9742,7 @@ def test_proof_queue_pact_witness_roots_accept_artifact_specific_manifests(
 
     assert roots == [
         durable_numpy.resolve(),
-        artifact_root.resolve(),
+        (artifact_root / "files").resolve(),
     ]
 
 

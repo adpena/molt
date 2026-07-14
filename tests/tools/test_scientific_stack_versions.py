@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from molt.scientific_stack_versions import (
     scientific_extension_set_root,
     scipy_witness_seal_root,
     verify_cpython_abi_headers,
+    verify_source_checkout,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -172,8 +174,12 @@ def test_unsupported_selection_fails_honestly_early(
         resolve_scientific_stack()
 
     proof_queue = _load_tool("proof_queue")
-    with pytest.raises(ValueError, match="not in Molt's verified-support matrix"):
-        proof_queue._pact_witness_acceptance_spec()
+    monkeypatch.setattr(proof_queue, "_pact_witness_env_overrides", lambda _root: {})
+    spec = proof_queue._pact_witness_acceptance_spec()
+    assert "numpy==2.5.1" in spec["command"]
+    assert spec["env_overrides"][CONFIG_ENV] == str(
+        proof_queue.ROOT / "config/scientific_stack_versions.toml"
+    )
 
 
 def test_schema_v3_rejects_legacy_scipy_root_fields(tmp_path: Path) -> None:
@@ -221,6 +227,55 @@ def test_schema_v3_requires_canonical_module_capability_authority(
 
     with pytest.raises(ValueError, match=problem):
         resolve_scientific_stack(config)
+
+
+@pytest.mark.parametrize("dirty_kind", ["tracked", "untracked"])
+def test_source_checkout_attestation_rejects_every_dirty_input(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    dirty_kind: str,
+) -> None:
+    source = tmp_path / "scipy"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q", str(source)], check=True)
+    subprocess.run(
+        ["git", "-C", str(source), "config", "user.email", "molt@example.invalid"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(source), "config", "user.name", "Molt Test"],
+        check=True,
+    )
+    tracked = source / "scipy.c"
+    tracked.write_text("int scipy(void) { return 1; }\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(source), "add", "scipy.c"], check=True)
+    subprocess.run(
+        ["git", "-C", str(source), "commit", "-q", "-m", "source"], check=True
+    )
+    head = subprocess.run(
+        ["git", "-C", str(source), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    config = tmp_path / "scientific.toml"
+    _write_config(config, selected_numpy="2.5.1")
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            'scipy_repo_ref = "scipy-ref"', f'scipy_repo_ref = "{head}"'
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(CONFIG_ENV, str(config))
+
+    verify_source_checkout("scipy", source)
+    if dirty_kind == "tracked":
+        tracked.write_text("int scipy(void) { return 2; }\n", encoding="utf-8")
+    else:
+        (source / "untracked.c").write_text("int drift;\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="not a clean immutable input"):
+        verify_source_checkout("scipy", source)
 
 
 def test_config_only_version_change_propagates_to_consumers(

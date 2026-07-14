@@ -13,6 +13,7 @@ from molt._wasm_runtime_exports import wasm_static_link_runtime_symbols_for_impo
 from molt.cli import commands as cli_commands
 from molt.cli import backend_cache as cli_backend_cache
 from molt.cli import entrypoint_parser as cli_entrypoint_parser
+from molt.cli import llvm_wasi_tools as cli_llvm_wasi_tools
 from molt.cli import source_extensions as cli_source_extensions
 from molt.cli.extension_manifest import (
     _CURRENT_MOLT_C_API_VERSION,
@@ -29,6 +30,16 @@ from tests.cli.process_guard import run_cli_test_process
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def _write_fake_compiler_depfile(cmd: list[str]) -> None:
+    if "-MF" not in cmd:
+        return
+    dependency_file = Path(cmd[cmd.index("-MF") + 1])
+    dependency_file.write_text(
+        f"object.o: {cmd[cmd.index('-c') + 1]}\n",
+        encoding="utf-8",
+    )
 
 
 def test_resolve_wasm_linker_prefers_matching_wasi_sdk_linker(
@@ -159,7 +170,12 @@ def _install_extension_object_symbol_facts(
 ) -> None:
     symbol_facts = by_stem or {}
 
-    def fake_object_symbols(path: Path) -> tuple[set[str], set[str]] | None:
+    def fake_object_symbols(
+        path: Path,
+        *,
+        nm_command: tuple[str, ...] | None = None,
+    ) -> tuple[set[str], set[str]] | None:
+        del nm_command
         stem = path.stem.split("_", 1)[1] if "_" in path.stem else path.stem
         if stem in symbol_facts:
             defined, undefined = symbol_facts[stem]
@@ -1733,6 +1749,12 @@ def test_extension_build_consumes_meson_source_plan_object_closure(
         out_path = Path(cmd[out_index + 1])
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_bytes(b"obj" if "-c" in cmd else b"shared")
+        if "-MF" in cmd:
+            dependency_file = Path(cmd[cmd.index("-MF") + 1])
+            dependency_file.write_text(
+                f"object.o: {cmd[cmd.index('-c') + 1]}\n",
+                encoding="utf-8",
+            )
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
@@ -1936,6 +1958,12 @@ def test_extension_build_threads_source_plan_roots_to_cython_regeneration(
         out_path = Path(cmd[out_index + 1])
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_bytes(b"obj" if "-c" in cmd else b"shared")
+        if "-MF" in cmd:
+            dependency_file = Path(cmd[cmd.index("-MF") + 1])
+            dependency_file.write_text(
+                f"object.o: {cmd[cmd.index('-c') + 1]}\n",
+                encoding="utf-8",
+            )
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     def fake_regenerate(
@@ -2079,6 +2107,7 @@ def test_extension_build_derives_module_attr_support_source_closure(
         out_path = Path(cmd[out_index + 1])
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_bytes(b"obj" if "-c" in cmd else b"shared")
+        _write_fake_compiler_depfile(cmd)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
@@ -2161,6 +2190,7 @@ def test_extension_build_follows_linked_static_library_source_closure(
         out_path = Path(cmd[out_index + 1])
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_bytes(b"obj" if "-c" in cmd else b"shared")
+        _write_fake_compiler_depfile(cmd)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
@@ -2255,6 +2285,7 @@ def test_extension_build_excludes_linked_static_library(
         out_path = Path(cmd[out_index + 1])
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_bytes(b"obj" if "-c" in cmd else b"shared")
+        _write_fake_compiler_depfile(cmd)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
@@ -2326,6 +2357,7 @@ def test_extension_build_follows_meson_aggregate_static_library_members(
         out_path = Path(cmd[out_index + 1])
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_bytes(b"obj" if "-c" in cmd else b"shared")
+        _write_fake_compiler_depfile(cmd)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
@@ -2509,14 +2541,34 @@ def test_extension_metadata_materializes_meson_cross_and_python_pc(
     monkeypatch: pytest.MonkeyPatch,
     capsys,
 ) -> None:
+    def tool(
+        role: cli_llvm_wasi_tools.LlvmToolRole,
+        command: tuple[str, ...],
+    ) -> cli_llvm_wasi_tools.ResolvedLlvmTool:
+        return cli_llvm_wasi_tools.ResolvedLlvmTool(
+            role=role,
+            command=command,
+            path=Path(command[0]),
+            version="22.1.0",
+            sha256="a" * 64,
+        )
+
+    zig_tools = cli_llvm_wasi_tools.LlvmWasiToolFamily(
+        cc=tool("cc", ("/usr/bin/zig", "cc")),
+        cxx=tool("cxx", ("/usr/bin/zig", "c++")),
+        wasm_ld=tool("wasm_ld", ("/usr/bin/wasm-ld",)),
+        ar=tool("ar", ("/usr/bin/zig", "ar")),
+        ranlib=tool("ranlib", ("/usr/bin/zig", "ranlib")),
+        nm=tool("nm", ("/usr/bin/llvm-nm",)),
+        strip=tool("strip", ("/usr/bin/zig", "strip")),
+    )
     monkeypatch.setattr(
         cli_source_extension_toolchain,
         "_resolve_source_extension_wasm_toolchain",
         lambda: cli_source_extension_toolchain._SourceExtensionWasmToolchain(
             ok=True,
             compiler_kind="zig",
-            compiler_cmd=("zig", "cc"),
-            wasm_ld="/usr/bin/wasm-ld",
+            tools=zig_tools,
             wasi_sysroot=None,
             detail="wasm-ld=/usr/bin/wasm-ld; zig=/usr/bin/zig",
         ),
@@ -2540,6 +2592,25 @@ def test_extension_metadata_materializes_meson_cross_and_python_pc(
     payload = json.loads(capsys.readouterr().out)
     assert payload["data"]["target_triple"] == "wasm32-wasip1"
     assert payload["data"]["abi"]["tier"] == "cpython-abi"
+    assert payload["data"]["schema_version"] == 2
+    assert payload["data"]["toolchain"]["tools"]["nm"] == {
+        "command": ["/usr/bin/llvm-nm"],
+        "path": str(Path("/usr/bin/llvm-nm")),
+        "sha256": "a" * 64,
+        "version": "22.1.0",
+    }
+    assert payload["data"]["toolchain"]["commands"]["c"] == [
+        "/usr/bin/zig",
+        "cc",
+        "-target",
+        "wasm32-wasi",
+    ]
+    assert payload["data"]["toolchain"]["commands"]["cpp"] == [
+        "/usr/bin/zig",
+        "c++",
+        "-target",
+        "wasm32-wasi",
+    ]
     assert payload["data"]["paths"]["python_pc"] == str(
         out_dir / "pkgconfig" / "python3.pc"
     )
@@ -2551,14 +2622,20 @@ def test_extension_metadata_materializes_meson_cross_and_python_pc(
 def test_source_extension_toolchain_rejects_wasm_cc_without_wasi_headers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(cli_llvm_wasi_tools, "_sha256_file", lambda _path: "a" * 64)
     monkeypatch.setenv("MOLT_WASM_CC", "clang")
     monkeypatch.delenv("MOLT_CROSS_CC", raising=False)
     monkeypatch.setattr(
-        cli_source_extension_toolchain.shutil,
+        cli_llvm_wasi_tools.shutil,
         "which",
         lambda tool: {
             "clang": "/tools/clang",
+            "clang++": "/tools/clang++",
             "wasm-ld": "/tools/wasm-ld",
+            "llvm-ar": "/tools/llvm-ar",
+            "llvm-ranlib": "/tools/llvm-ranlib",
+            "llvm-nm": "/tools/llvm-nm",
+            "llvm-strip": "/tools/llvm-strip",
         }.get(tool),
     )
 
@@ -2593,16 +2670,22 @@ def test_source_extension_toolchain_rejects_wasm_cc_without_wasi_headers(
 def test_source_extension_toolchain_prefers_wasm_cc_and_probes_target(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(cli_llvm_wasi_tools, "_sha256_file", lambda _path: "a" * 64)
     seen_commands: list[list[str]] = []
     monkeypatch.setenv("MOLT_WASM_CC", "clang-wasm")
     monkeypatch.setenv("MOLT_CROSS_CC", "wrong-cross")
     monkeypatch.setattr(
-        cli_source_extension_toolchain.shutil,
+        cli_llvm_wasi_tools.shutil,
         "which",
         lambda tool: {
             "clang-wasm": "/tools/clang-wasm",
             "wrong-cross": "/tools/wrong-cross",
+            "clang++": "/tools/clang++",
             "wasm-ld": "/tools/wasm-ld",
+            "llvm-ar": "/tools/llvm-ar",
+            "llvm-ranlib": "/tools/llvm-ranlib",
+            "llvm-nm": "/tools/llvm-nm",
+            "llvm-strip": "/tools/llvm-strip",
         }.get(tool),
     )
 
@@ -2623,17 +2706,24 @@ def test_source_extension_toolchain_prefers_wasm_cc_and_probes_target(
 
     assert toolchain.ok is True
     assert toolchain.compiler_kind == "molt_wasm_cc"
-    assert toolchain.compiler_cmd == ("/tools/clang-wasm",)
+    assert toolchain.tools.cc is not None
+    assert toolchain.tools.cc.command == ("/tools/clang-wasm",)
     assert "MOLT_WASM_CC=/tools/clang-wasm" in toolchain.detail
     assert "wrong-cross" not in toolchain.detail
-    assert seen_commands
-    assert seen_commands[0][:3] == ["/tools/clang-wasm", "-target", "wasm32-wasip1"]
+    compile_commands = [command for command in seen_commands if "-c" in command]
+    assert compile_commands
+    assert compile_commands[0][:3] == [
+        "/tools/clang-wasm",
+        "-target",
+        "wasm32-wasip1",
+    ]
 
 
 def test_source_extension_toolchain_accepts_target_specific_wasi_sysroot_layout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(cli_llvm_wasi_tools, "_sha256_file", lambda _path: "a" * 64)
     sysroot = tmp_path / "wasi-sysroot-33.0+m"
     include_dir = sysroot / "include" / "wasm32-wasip1"
     include_dir.mkdir(parents=True)
@@ -2643,12 +2733,17 @@ def test_source_extension_toolchain_accepts_target_specific_wasi_sysroot_layout(
     monkeypatch.delenv("MOLT_WASM_CC", raising=False)
     monkeypatch.delenv("MOLT_CROSS_CC", raising=False)
     monkeypatch.setattr(
-        cli_source_extension_toolchain.shutil,
+        cli_llvm_wasi_tools.shutil,
         "which",
         lambda tool: {
             "clang": "/tools/clang",
+            "clang++": "/tools/clang++",
             "zig": "/tools/zig",
             "wasm-ld": "/tools/wasm-ld",
+            "llvm-ar": "/tools/llvm-ar",
+            "llvm-ranlib": "/tools/llvm-ranlib",
+            "llvm-nm": "/tools/llvm-nm",
+            "llvm-strip": "/tools/llvm-strip",
         }.get(tool),
     )
     seen_commands: list[list[str]] = []
@@ -2670,16 +2765,18 @@ def test_source_extension_toolchain_accepts_target_specific_wasi_sysroot_layout(
 
     assert toolchain.ok is True
     assert toolchain.compiler_kind == "clang"
-    assert toolchain.compiler_cmd == (
-        "/tools/clang",
+    assert toolchain.tools.cc is not None
+    assert toolchain.tools.cc.command == (
+        str(Path("/tools/clang").resolve(strict=False)),
         "--sysroot",
         str(sysroot.resolve(strict=False)),
     )
     assert toolchain.wasi_sysroot == sysroot.resolve(strict=False)
     assert "/tools/zig" not in toolchain.detail
-    assert seen_commands
-    assert seen_commands[0][:4] == [
-        "/tools/clang",
+    compile_commands = [command for command in seen_commands if "-c" in command]
+    assert compile_commands
+    assert compile_commands[0][:4] == [
+        str(Path("/tools/clang").resolve(strict=False)),
         "--sysroot",
         str(sysroot.resolve(strict=False)),
         "-target",

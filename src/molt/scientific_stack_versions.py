@@ -459,6 +459,33 @@ def verify_source_checkout(
             f"{package} source checkout {root} does not match verified "
             f"{selected.tuple_label}: expected {expected}, got {detail}"
         )
+    status = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(root),
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    dirty = tuple(line for line in status.stdout.splitlines() if line.strip())
+    if status.returncode != 0 or dirty:
+        detail = (
+            "; ".join(dirty[:8])
+            or status.stderr.strip()
+            or f"returncode={status.returncode}"
+        )
+        suffix = "" if len(dirty) <= 8 else f"; +{len(dirty) - 8} more"
+        raise ValueError(
+            f"{package} source checkout {root} is not a clean immutable input: "
+            f"{detail}{suffix}"
+        )
 
 
 def verify_cpython_abi_headers(

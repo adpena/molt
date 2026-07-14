@@ -1681,6 +1681,7 @@ def _resolve_external_package_native_artifact_plan(
         package: set() for package in required_package_roots
     }
     selected_modules: set[tuple[str, str]] = set()
+    provider_identities: dict[tuple[str, str], tuple[Path, str, str]] = {}
     for package in sorted(admitted_packages):
         for root in external_module_roots:
             package_dir = _external_package_dir(root.resolve(), package)
@@ -1695,6 +1696,33 @@ def _resolve_external_package_native_artifact_plan(
                 provider_candidates.append(
                     (package, package_dir, artifact_path, module_name)
                 )
+                manifest_path = _find_external_extension_manifest(
+                    artifact_path=artifact_path,
+                    package_dir=package_dir,
+                )
+                if manifest_path is not None:
+                    try:
+                        identity = (
+                            artifact_path.resolve(),
+                            _sha256_file(artifact_path),
+                            _sha256_file(manifest_path),
+                        )
+                    except OSError:
+                        identity = None
+                    if identity is not None:
+                        module_key = (package, module_name)
+                        previous = provider_identities.get(module_key)
+                        if previous is None:
+                            provider_identities[module_key] = identity
+                        elif previous[0] != identity[0] and previous[1:] != identity[1:]:
+                            errors.append(
+                                f"{package}: conflicting native artifact providers for "
+                                f"{module_name!r}: {previous[0]} "
+                                f"(artifact={previous[1]}, manifest={previous[2]}) vs "
+                                f"{identity[0]} (artifact={identity[1]}, "
+                                f"manifest={identity[2]}). Module-root order is not "
+                                "provider authority; publish one canonical package seal."
+                            )
                 python_exports = _peek_external_artifact_python_exports(
                     package=package,
                     package_dir=package_dir,

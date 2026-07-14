@@ -20,6 +20,12 @@ subagent, subsystem, and proof lane.
   memory, process-tree RSS/commit, atomics, contention, failure atomicity, and
   deterministic semantics. Abstraction may not compromise optimization, and a
   local speed win may not preserve architectural duplication.
+- World-class DX and UX is a matrix invariant: native and WASM, every supported
+  target, backend, profile, and optimization level. One green cell never proves
+  the family. Shared typed/generated authorities must drive discovery,
+  diagnostics, configuration, caching, artifacts, execution, profiling, and
+  verification across the complete claimed matrix; unsupported cells fail early
+  with precise remediation and no backend-local workaround or silent fallback.
 - Engineer RC, GC, weakrefs, mutation/publication, storage, compiler/runtime
   boundaries, and ABI projections for future free-threaded and gilless
   execution while preserving deterministic expected CPython behavior by
