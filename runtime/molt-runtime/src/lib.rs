@@ -105,6 +105,7 @@ mod math_bridge;
 mod path_bridge;
 #[cfg(feature = "stdlib_regex")]
 mod regex_bridge;
+mod seq_snapshot_bridge;
 #[cfg(feature = "stdlib_serial")]
 mod serial_bridge;
 #[cfg(feature = "stdlib_stringprep")]
@@ -570,9 +571,9 @@ pub use crate::builtins::sys_ext::*;
 #[cfg(feature = "stdlib_fs_extra")]
 pub use crate::builtins::tempfile_mod::*;
 pub(crate) use crate::builtins::type_ops::{
-    ClassInfoProtocol, RuntimeClassInfo, class_bases_vec, class_mro_ref, class_mro_vec,
-    collect_runtime_classinfo, isinstance_bits, isinstance_runtime, issubclass_bits,
-    issubclass_runtime, runtime_classinfo_protocol_match, type_of_bits,
+    ClassInfoProtocol, RuntimeClassInfo, class_bases_vec, class_mro_pinned, class_mro_vec,
+    class_mro_view, collect_runtime_classinfo, isinstance_bits, isinstance_runtime,
+    issubclass_bits, issubclass_runtime, runtime_classinfo_protocol_match, type_of_bits,
 };
 pub use crate::builtins::types::*;
 pub use crate::builtins::warnings_ext::*;
@@ -629,10 +630,9 @@ pub(crate) use crate::object::layout::{
     iter_set_cached_tuple, iter_set_index, iter_target_bits, map_cached_tuple, map_func_bits,
     map_iters_ptr, map_set_cached_tuple, module_dict_bits, module_name_bits, property_del_bits,
     property_get_bits, property_set_bits, range_len_i64, range_start_bits, range_step_bits,
-    range_stop_bits, reversed_index, reversed_set_index, reversed_target_bits, seq_vec,
-    seq_vec_ptr, seq_vec_ref, slice_start_bits, slice_step_bits, slice_stop_bits,
-    staticmethod_func_bits, super_obj_bits, super_type_bits, union_type_args_bits, zip_iters_ptr,
-    zip_set_strict_bits, zip_strict_bits,
+    range_stop_bits, reversed_index, reversed_set_index, reversed_target_bits, seq_vec_ptr,
+    slice_start_bits, slice_step_bits, slice_stop_bits, staticmethod_func_bits, super_obj_bits,
+    super_type_bits, union_type_args_bits, zip_iters_ptr, zip_set_strict_bits, zip_strict_bits,
 };
 pub use crate::object::memoryview::MoltBufferView;
 pub(crate) use crate::object::memoryview::{

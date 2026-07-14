@@ -609,7 +609,7 @@ impl ScalarRepresentationPlan {
     }
 
     pub fn op_index_key_is_integer_family(&self, op: &OpIR) -> bool {
-        matches!(op.kind.as_str(), "index" | "store_index" | "dict_set")
+        op.kind == "index"
             && op.args.as_ref().is_some_and(|args| {
                 args.get(1)
                     .is_some_and(|key| self.name_is_integer_family(key))

@@ -534,13 +534,6 @@ pub mod ffi {
         /// GIL-free truthy for known-bool.  No GIL, no catch_unwind, no signal checks.
         pub fn molt_is_truthy_bool_nogil(bits: u64) -> i64;
 
-        /// GIL-free list[int] getitem (NaN-boxed interface).
-        pub fn molt_list_int_getitem_nogil(list_bits: u64, index_bits: u64) -> u64;
-
-        /// GIL-free list[int] setitem (NaN-boxed interface).
-        pub fn molt_list_int_setitem_nogil(list_bits: u64, index_bits: u64, value_bits: u64)
-        -> u64;
-
         /// Raw-register list[int] getitem: raw i64 index in, raw i64 value out.
         pub fn molt_list_int_getitem_raw(list_bits: u64, raw_index: i64) -> i64;
 
@@ -879,6 +872,52 @@ pub unsafe fn bridge_owned_u64_buffer(ptr: *const u64, len: usize) -> OwnedBridg
     OwnedBridgeU64Buffer { ptr, len }
 }
 
+/// A read-only sequence snapshot whose handles are pinned by the runtime.
+///
+/// Satellite crates use this guard instead of borrowing the runtime's backing
+/// `Vec<u64>` across an FFI boundary. The producing runtime increments every
+/// handle before exporting the buffer; dropping the guard releases those
+/// handles before returning the buffer to the runtime allocator.
+pub struct OwnedBridgeHandleSnapshot {
+    buffer: OwnedBridgeU64Buffer,
+}
+
+impl std::ops::Deref for OwnedBridgeHandleSnapshot {
+    type Target = [u64];
+
+    fn deref(&self) -> &Self::Target {
+        &self.buffer
+    }
+}
+
+impl AsRef<[u64]> for OwnedBridgeHandleSnapshot {
+    fn as_ref(&self) -> &[u64] {
+        &self.buffer
+    }
+}
+
+impl Drop for OwnedBridgeHandleSnapshot {
+    fn drop(&mut self) {
+        for &bits in self.buffer.iter() {
+            rt_dec_ref(bits);
+        }
+    }
+}
+
+/// Wrap a runtime-owned sequence snapshot in a pinned read-only guard.
+///
+/// # Safety
+/// `ptr`/`len` must come from a Molt sequence-snapshot bridge function. Every
+/// handle in the buffer must carry one reference owned by the snapshot.
+pub unsafe fn bridge_owned_handle_snapshot(
+    ptr: *const u64,
+    len: usize,
+) -> OwnedBridgeHandleSnapshot {
+    OwnedBridgeHandleSnapshot {
+        buffer: unsafe { bridge_owned_u64_buffer(ptr, len) },
+    }
+}
+
 /// Copy an owned UTF-8 bridge buffer into a Rust `String` and release it
 /// through the runtime that allocated it.
 ///
@@ -942,10 +981,11 @@ pub mod prelude {
     pub use crate::with_gil_entry;
     pub use crate::with_gil_entry_body;
     pub use crate::{
-        CoreGilGuard, CoreGilToken, GilReleaseGuard, MoltObject, PyToken, bits_from_ptr,
-        bridge_owned_u8_buffer, bridge_owned_u8_to_string_lossy, bridge_owned_u8_to_vec,
-        bridge_owned_u64_buffer, bridge_owned_u64_to_vec, obj_from_bits, opaque_handle_bits,
-        opaque_handle_ptr_from_bits, ptr_from_bits,
+        CoreGilGuard, CoreGilToken, GilReleaseGuard, MoltObject, OwnedBridgeHandleSnapshot,
+        PyToken, bits_from_ptr, bridge_owned_handle_snapshot, bridge_owned_u8_buffer,
+        bridge_owned_u8_to_string_lossy, bridge_owned_u8_to_vec, bridge_owned_u64_buffer,
+        bridge_owned_u64_to_vec, obj_from_bits, opaque_handle_bits, opaque_handle_ptr_from_bits,
+        ptr_from_bits,
     };
 
     // Safe runtime wrappers
@@ -1065,7 +1105,7 @@ pub struct RuntimeVtable {
     pub dict_get_in_place: unsafe extern "C" fn(*mut u8, u64, *mut u64) -> i32,
     pub dict_set_in_place: unsafe extern "C" fn(*mut u8, u64, u64) -> i32,
     pub list_len: unsafe extern "C" fn(*mut u8) -> usize,
-    pub seq_vec_ptr: unsafe extern "C" fn(*mut u8) -> *mut Vec<u64>,
+    pub seq_snapshot: unsafe extern "C" fn(*mut u8, *mut *const u64, *mut usize) -> i32,
     pub dict_order_clone: unsafe extern "C" fn(*mut u8, *mut *const u64, *mut usize) -> i32,
 
     // --- Iteration ---

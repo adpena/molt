@@ -9,7 +9,8 @@ use crate::bridge::{
     bridge_molt_eq, bridge_molt_iter_next, call_callable1, call_callable2, class_set_iter_next,
     class_set_new, dec_ref_bits, exception_pending, inc_ref_bits, index_i64_from_obj, is_truthy,
     missing_bits, molt_iter_bridge as molt_iter, object_class_bits, object_type_id,
-    raise_exception, raise_not_iterable, seq_vec_ref, tuple_from_iter_bits,
+    raise_exception, raise_not_iterable, seq_read_item_gil_borrowed, seq_read_item_owned,
+    seq_read_len, seq_snapshot, tuple_from_iter_bits,
 };
 use molt_runtime_core::prelude::*;
 use molt_runtime_core::type_ids::*;
@@ -1103,7 +1104,7 @@ fn iter_next_pair(_py: &PyToken, iter_bits: u64) -> Option<(u64, bool)> {
             let _ = raise_exception::<u64>(_py, "TypeError", "object is not an iterator");
             return None;
         }
-        let elems = seq_vec_ref(pair_ptr);
+        let elems = seq_snapshot(pair_ptr);
         if elems.len() < 2 {
             let _ = raise_exception::<u64>(_py, "TypeError", "object is not an iterator");
             return None;
@@ -1513,14 +1514,15 @@ pub extern "C" fn molt_itertools_cycle_next(self_bits: u64) -> u64 {
             if object_type_id(list_ptr) != TYPE_ID_LIST {
                 return raise_exception::<u64>(_py, "StopIteration", "");
             }
-            let values = seq_vec_ref(list_ptr);
-            if values.is_empty() {
+            let values_len = seq_read_len(list_ptr);
+            if values_len == 0 {
                 return raise_exception::<u64>(_py, "StopIteration", "");
             }
-            let idx = cycle_index(self_ptr) as usize % values.len();
-            let val_bits = values[idx];
+            let idx = cycle_index(self_ptr) as usize % values_len;
+            let Some(val_bits) = seq_read_item_owned(list_ptr, idx) else {
+                return raise_exception::<u64>(_py, "StopIteration", "");
+            };
             cycle_set_index(self_ptr, (idx + 1) as i64);
-            inc_ref_bits(_py, val_bits);
             val_bits
         }
     })
@@ -1970,7 +1972,7 @@ pub extern "C" fn molt_itertools_product(iterables_bits: u64, repeat_bits: u64) 
             if unsafe { object_type_id(iterables_ptr) } != TYPE_ID_TUPLE {
                 return raise_exception::<_>(_py, "TypeError", "product expects a tuple");
             }
-            let iterables = unsafe { seq_vec_ref(iterables_ptr) };
+            let iterables = unsafe { seq_snapshot(iterables_ptr) };
             let mut base_pools: Vec<u64> = Vec::with_capacity(iterables.len());
             for &iterable_bits in iterables.iter() {
                 let Some(tuple_bits) = tuple_from_iter_bits(_py, iterable_bits) else {
@@ -1981,7 +1983,7 @@ pub extern "C" fn molt_itertools_product(iterables_bits: u64, repeat_bits: u64) 
                 };
                 if !done {
                     let tuple_ptr = obj_from_bits(tuple_bits).as_ptr().unwrap();
-                    if unsafe { seq_vec_ref(tuple_ptr) }.is_empty() {
+                    if unsafe { seq_read_len(tuple_ptr) } == 0 {
                         done = true;
                     }
                 }
@@ -2056,7 +2058,7 @@ pub extern "C" fn molt_itertools_product_next(self_bits: u64) -> u64 {
             for idx in (0..data.indices.len()).rev() {
                 let pool_bits = data.pools_bits[idx];
                 let pool_ptr = obj_from_bits(pool_bits).as_ptr().unwrap();
-                let pool_len = unsafe { seq_vec_ref(pool_ptr) }.len();
+                let pool_len = unsafe { seq_read_len(pool_ptr) };
                 if data.indices[idx] + 1 < pool_len {
                     data.indices[idx] += 1;
                     for j in idx + 1..data.indices.len() {
@@ -2082,8 +2084,12 @@ pub extern "C" fn molt_itertools_product_next(self_bits: u64) -> u64 {
         data.row_buf.clear();
         for (idx, &pool_bits) in data.pools_bits.iter().enumerate() {
             let pool_ptr = obj_from_bits(pool_bits).as_ptr().unwrap();
-            let pool = unsafe { seq_vec_ref(pool_ptr) };
-            data.row_buf.push(pool[data.indices[idx]]);
+            let Some(item_bits) =
+                (unsafe { seq_read_item_gil_borrowed(pool_ptr, data.indices[idx]) })
+            else {
+                return raise_exception::<u64>(_py, "RuntimeError", "product pool changed");
+            };
+            data.row_buf.push(item_bits);
         }
         let tuple_ptr = alloc_tuple(_py, data.row_buf.as_slice());
         if tuple_ptr.is_null() {
@@ -2100,8 +2106,7 @@ pub extern "C" fn molt_itertools_permutations(iterable_bits: u64, r_bits: u64) -
             return MoltObject::none().bits();
         };
         let pool_ptr = obj_from_bits(pool_bits).as_ptr().unwrap();
-        let pool = unsafe { seq_vec_ref(pool_ptr) };
-        let n = pool.len();
+        let n = unsafe { seq_read_len(pool_ptr) };
         let r = if obj_from_bits(r_bits).is_none() {
             n as i64
         } else {
@@ -2205,10 +2210,13 @@ pub extern "C" fn molt_itertools_permutations_next(self_bits: u64) -> u64 {
             return MoltObject::from_ptr(tuple_ptr).bits();
         }
         let pool_ptr = obj_from_bits(data.pool_bits).as_ptr().unwrap();
-        let pool = unsafe { seq_vec_ref(pool_ptr) };
         data.row_buf.clear();
         for &pool_idx in data.indices.iter().take(data.r) {
-            data.row_buf.push(pool[pool_idx]);
+            let Some(item_bits) = (unsafe { seq_read_item_gil_borrowed(pool_ptr, pool_idx) })
+            else {
+                return raise_exception::<u64>(_py, "RuntimeError", "permutations pool changed");
+            };
+            data.row_buf.push(item_bits);
         }
         let tuple_ptr = alloc_tuple(_py, data.row_buf.as_slice());
         if tuple_ptr.is_null() {
@@ -2225,8 +2233,7 @@ pub extern "C" fn molt_itertools_combinations(iterable_bits: u64, r_bits: u64) -
             return MoltObject::none().bits();
         };
         let pool_ptr = obj_from_bits(pool_bits).as_ptr().unwrap();
-        let pool = unsafe { seq_vec_ref(pool_ptr) };
-        let n = pool.len();
+        let n = unsafe { seq_read_len(pool_ptr) };
         let r = index_i64_from_obj(_py, r_bits, "r must be an integer");
         if exception_pending(_py) {
             dec_ref_bits(_py, pool_bits);
@@ -2285,8 +2292,7 @@ pub extern "C" fn molt_itertools_combinations_with_replacement(
             return MoltObject::none().bits();
         };
         let pool_ptr = obj_from_bits(pool_bits).as_ptr().unwrap();
-        let pool = unsafe { seq_vec_ref(pool_ptr) };
-        let n = pool.len();
+        let n = unsafe { seq_read_len(pool_ptr) };
         let r = index_i64_from_obj(_py, r_bits, "r must be an integer");
         if exception_pending(_py) {
             dec_ref_bits(_py, pool_bits);
@@ -2378,7 +2384,7 @@ pub extern "C" fn molt_itertools_combinations_next(self_bits: u64) -> u64 {
             return MoltObject::from_ptr(tuple_ptr).bits();
         }
         let pool_ptr = obj_from_bits(data.pool_bits).as_ptr().unwrap();
-        let pool = unsafe { seq_vec_ref(pool_ptr) };
+        let pool = unsafe { seq_snapshot(pool_ptr) };
         data.row_buf.clear();
         for &idx in data.indices.iter() {
             data.row_buf.push(pool[idx]);
@@ -2435,7 +2441,7 @@ pub extern "C" fn molt_itertools_combinations_with_replacement_next(self_bits: u
             return MoltObject::from_ptr(tuple_ptr).bits();
         }
         let pool_ptr = obj_from_bits(data.pool_bits).as_ptr().unwrap();
-        let pool = unsafe { seq_vec_ref(pool_ptr) };
+        let pool = unsafe { seq_snapshot(pool_ptr) };
         data.row_buf.clear();
         for &idx in data.indices.iter() {
             data.row_buf.push(pool[idx]);
@@ -2753,7 +2759,7 @@ pub extern "C" fn molt_itertools_zip_longest(iterables_bits: u64, fillvalue_bits
         if unsafe { object_type_id(iterables_ptr) } != TYPE_ID_TUPLE {
             return raise_exception::<u64>(_py, "TypeError", "zip_longest expects a tuple");
         }
-        let iterables = unsafe { seq_vec_ref(iterables_ptr) };
+        let iterables = unsafe { seq_snapshot(iterables_ptr) };
         let mut iter_bits_vec = Vec::with_capacity(iterables.len());
         for &iterable_bits in iterables.iter() {
             let iter_bits = molt_iter(_py, iterable_bits);

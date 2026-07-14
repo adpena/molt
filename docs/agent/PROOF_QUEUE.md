@@ -389,15 +389,15 @@ Before spending the heavy slot, inspect the rendered lane:
 uv run --active --project . --python 3.12 python tools\proof_queue.py pact-witness-acceptance --print-spec
 ```
 
-Root selection is priority ordered, not directory-discovery ordered. The default
-selector should prefer the canonical sealed witness roots
-`tmp/pact_numpy_multiarray_sealed_for_witness` and
-`tmp/pact_scipy_ndimage_sealed_for_witness_next`, followed by required
-native sidecars and source roots. Older recovery roots may remain under `tmp/` as
-fallback evidence, but they must not shadow the canonical roots. A staged root
-may publish either a root `extension_manifest.json` or artifact-specific
-`*.extension_manifest.json` sidecars; both forms are admitted by the queue
-selector before the build path does deeper package-native validation.
+Root selection is authority-driven, not directory-discovery ordered. The queue
+admits exactly the versioned NumPy seal and the configured SciPy
+`pact-witness` set resolved from `config/scientific_stack_versions.toml`. The
+SciPy root lives under
+`$MOLT_EXT_ROOT/package-seals/scipy/<version>/pact_scipy_witness` and must
+contain the exact configured four-module transaction; historical per-module
+roots under `tmp/` are evidence only and are never unioned or used as fallback.
+Missing, extra, stale-ABI, nondeterministic, checksum-inconsistent, or
+incomplete transaction manifests fail before the heavyweight acceptance lane.
 
 ## Append-Only Notes
 

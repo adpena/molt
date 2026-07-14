@@ -648,11 +648,19 @@ pub unsafe fn list_len(ptr: *mut u8) -> usize {
     unsafe { (vt().list_len)(ptr) }
 }
 
-/// # Safety
+/// Return a reference-pinned, read-only snapshot of a live sequence.
 ///
-/// `ptr` must refer to a live Molt sequence object backed by `Vec<u64>`.
-pub unsafe fn seq_vec_ref(ptr: *mut u8) -> &'static Vec<u64> {
-    unsafe { &*(vt().seq_vec_ptr)(ptr) }
+/// # Safety
+/// `ptr` must refer to a live Molt list or tuple for the duration of this call.
+pub unsafe fn seq_snapshot(ptr: *mut u8) -> OwnedBridgeHandleSnapshot {
+    let mut out_ptr: *const u64 = std::ptr::null();
+    let mut out_len = 0usize;
+    let ok = unsafe { (vt().seq_snapshot)(ptr, &mut out_ptr, &mut out_len) };
+    if ok == 0 {
+        out_ptr = std::ptr::null();
+        out_len = 0;
+    }
+    unsafe { bridge_owned_handle_snapshot(out_ptr, out_len) }
 }
 
 // ---------------------------------------------------------------------------

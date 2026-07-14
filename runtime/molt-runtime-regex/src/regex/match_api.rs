@@ -33,7 +33,7 @@ pub extern "C" fn molt_re_match_group(
         let Some(mt_ptr) = obj_from_bits(match_tuple_bits).as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "match_tuple must be a tuple");
         };
-        let mt = unsafe { seq_vec_ref(mt_ptr) };
+        let mt = unsafe { seq_snapshot(mt_ptr) };
         if mt.len() < 3 {
             return raise_exception::<_>(_py, "ValueError", "invalid match tuple");
         }
@@ -48,7 +48,7 @@ pub extern "C" fn molt_re_match_group(
         let Some(groups_ptr) = obj_from_bits(mt[2]).as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "groups must be a tuple");
         };
-        let group_spans = unsafe { seq_vec_ref(groups_ptr) };
+        let group_spans = unsafe { seq_snapshot(groups_ptr) };
 
         // Helper: resolve a group index from an int or string selector.
         let resolve_group = |sel_bits: u64| -> Option<usize> {
@@ -104,7 +104,7 @@ pub extern "C" fn molt_re_match_group(
             let Some(span_ptr) = obj_from_bits(span_bits).as_ptr() else {
                 return MoltObject::none().bits();
             };
-            let span = unsafe { seq_vec_ref(span_ptr) };
+            let span = unsafe { seq_snapshot(span_ptr) };
             if span.len() < 2 {
                 return MoltObject::none().bits();
             }
@@ -136,7 +136,7 @@ pub extern "C" fn molt_re_match_group(
             // No indices → return group(0) = whole match.
             return group_text_bits(0);
         };
-        let indices = unsafe { seq_vec_ref(indices_ptr) };
+        let indices = unsafe { seq_snapshot(indices_ptr) };
 
         if indices.is_empty() {
             // group() with no args → group(0)
@@ -193,7 +193,7 @@ pub extern "C" fn molt_re_match_groups(
         let Some(mt_ptr) = obj_from_bits(match_tuple_bits).as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "match_tuple must be a tuple");
         };
-        let mt = unsafe { seq_vec_ref(mt_ptr) };
+        let mt = unsafe { seq_snapshot(mt_ptr) };
         if mt.len() < 3 {
             return raise_exception::<_>(_py, "ValueError", "invalid match tuple");
         }
@@ -205,7 +205,7 @@ pub extern "C" fn molt_re_match_groups(
                 MoltObject::from_ptr(ptr).bits()
             };
         };
-        let group_spans = unsafe { seq_vec_ref(groups_ptr) };
+        let group_spans = unsafe { seq_snapshot(groups_ptr) };
 
         let mut result: Vec<u64> = Vec::with_capacity(group_spans.len());
         for &span_bits in group_spans.iter() {
@@ -219,7 +219,7 @@ pub extern "C" fn molt_re_match_groups(
                 result.push(default_bits);
                 continue;
             };
-            let span = unsafe { seq_vec_ref(span_ptr) };
+            let span = unsafe { seq_snapshot(span_ptr) };
             if span.len() < 2 {
                 inc_ref_bits(_py, default_bits);
                 result.push(default_bits);
@@ -284,7 +284,7 @@ pub extern "C" fn molt_re_match_groupdict(
         let Some(mt_ptr) = obj_from_bits(match_tuple_bits).as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "match_tuple must be a tuple");
         };
-        let mt = unsafe { seq_vec_ref(mt_ptr) };
+        let mt = unsafe { seq_snapshot(mt_ptr) };
         if mt.len() < 3 {
             return raise_exception::<_>(_py, "ValueError", "invalid match tuple");
         }
@@ -324,12 +324,12 @@ pub extern "C" fn molt_re_match_groupdict(
 
             // Get the group text for this index.
             let val_bits = if let Some(groups_ptr) = groups_ptr_opt {
-                let group_spans = unsafe { seq_vec_ref(groups_ptr) };
+                let group_spans = unsafe { seq_snapshot(groups_ptr) };
                 let span_idx = (idx as usize).wrapping_sub(1);
                 if span_idx < group_spans.len() {
                     let span_bits = group_spans[span_idx];
                     if let Some(span_ptr) = obj_from_bits(span_bits).as_ptr() {
-                        let span = unsafe { seq_vec_ref(span_ptr) };
+                        let span = unsafe { seq_snapshot(span_ptr) };
                         if span.len() >= 2 {
                             let gs = to_i64(obj_from_bits(span[0])).unwrap_or(-1);
                             let ge = to_i64(obj_from_bits(span[1])).unwrap_or(-1);

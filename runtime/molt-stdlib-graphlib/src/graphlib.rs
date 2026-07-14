@@ -9,7 +9,7 @@
 use crate::bridge::{
     alloc_dict_with_pairs, alloc_list, alloc_tuple, dec_ref_bits, dict_get_in_place,
     dict_set_in_place, exception_pending, inc_ref_bits, object_type_id, raise_exception,
-    seq_vec_ref, string_obj_to_owned, to_i64,
+    seq_snapshot, string_obj_to_owned, to_i64,
 };
 use molt_runtime_core::prelude::*;
 use std::collections::HashMap;
@@ -286,7 +286,7 @@ pub extern "C" fn molt_graphlib_add(handle_bits: u64, node_bits: u64, preds_bits
             if type_id != TYPE_ID_TUPLE && type_id != TYPE_ID_LIST {
                 return raise_exception::<_>(_py, "TypeError", "predecessors must be a tuple");
             }
-            let elems = seq_vec_ref(preds_ptr);
+            let elems = seq_snapshot(preds_ptr);
             let pred_count = elems.len();
             if pred_count > 0 {
                 state.nodes[node_idx].npredecessors += pred_count as i64;
@@ -382,7 +382,7 @@ pub extern "C" fn molt_graphlib_done(handle_bits: u64, nodes_bits: u64) -> u64 {
             if type_id != TYPE_ID_TUPLE && type_id != TYPE_ID_LIST {
                 return raise_exception::<_>(_py, "TypeError", "nodes must be a tuple");
             }
-            let elems = seq_vec_ref(nodes_ptr);
+            let elems = seq_snapshot(nodes_ptr);
             for &node_bits in elems.iter() {
                 let node_idx = match state.lookup_node_index(_py, node_bits) {
                     Ok(Some(idx)) => idx,

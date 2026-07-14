@@ -274,15 +274,17 @@ pub extern "C" fn molt_set_update(set_bits: u64, other_bits: u64) -> u64 {
                 if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
                     return MoltObject::none().bits();
                 }
-                let pair_elems = seq_vec_ref(pair_ptr);
-                if pair_elems.len() < 2 {
+                let Some((val_bits, done_bits)) =
+                    crate::object::seq_access::with_immutable_tuple_slice(pair_ptr, |items| {
+                        items.first().copied().zip(items.get(1).copied())
+                    })
+                    .flatten()
+                else {
                     return MoltObject::none().bits();
-                }
-                let done_bits = pair_elems[1];
+                };
                 if is_truthy(_py, obj_from_bits(done_bits)) {
                     break;
                 }
-                let val_bits = pair_elems[0];
                 set_add_in_place(_py, set_ptr, val_bits, HashContext::SetElement);
                 if exception_pending(_py) {
                     return MoltObject::none().bits();
@@ -462,15 +464,18 @@ pub extern "C" fn molt_set_difference_update(set_bits: u64, other_bits: u64) -> 
                         if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
                             return MoltObject::none().bits();
                         }
-                        let pair_elems = seq_vec_ref(pair_ptr);
-                        if pair_elems.len() < 2 {
+                        let Some((val_bits, done_bits)) =
+                            crate::object::seq_access::with_immutable_tuple_slice(
+                                pair_ptr,
+                                |items| items.first().copied().zip(items.get(1).copied()),
+                            )
+                            .flatten()
+                        else {
                             return MoltObject::none().bits();
-                        }
-                        let done_bits = pair_elems[1];
+                        };
                         if is_truthy(_py, obj_from_bits(done_bits)) {
                             break;
                         }
-                        let val_bits = pair_elems[0];
                         set_del_in_place(_py, set_ptr, val_bits);
                         if exception_pending(_py) {
                             return MoltObject::none().bits();
@@ -655,7 +660,14 @@ pub extern "C" fn molt_set_update_multi(set_bits: u64, others_bits: u64) -> u64 
             if object_type_id(others_ptr) != TYPE_ID_TUPLE {
                 return MoltObject::none().bits();
             }
-            for &other_bits in seq_vec_ref(others_ptr).iter() {
+            let Some(others) = crate::object::seq_access::snapshot(
+                _py,
+                others_ptr,
+                "set operand snapshot allocation failed",
+            ) else {
+                return MoltObject::none().bits();
+            };
+            for &other_bits in others.iter() {
                 let _ = molt_set_update(set_bits, other_bits);
                 if exception_pending(_py) {
                     return MoltObject::none().bits();
@@ -735,7 +747,14 @@ pub extern "C" fn molt_set_intersection_update_multi(set_bits: u64, others_bits:
             if object_type_id(others_ptr) != TYPE_ID_TUPLE {
                 return MoltObject::none().bits();
             }
-            for &other_bits in seq_vec_ref(others_ptr).iter() {
+            let Some(others) = crate::object::seq_access::snapshot(
+                _py,
+                others_ptr,
+                "set operand snapshot allocation failed",
+            ) else {
+                return MoltObject::none().bits();
+            };
+            for &other_bits in others.iter() {
                 let _ = molt_set_intersection_update(set_bits, other_bits);
                 if exception_pending(_py) {
                     return MoltObject::none().bits();
@@ -763,7 +782,14 @@ pub extern "C" fn molt_set_difference_update_multi(set_bits: u64, others_bits: u
             if object_type_id(others_ptr) != TYPE_ID_TUPLE {
                 return MoltObject::none().bits();
             }
-            for &other_bits in seq_vec_ref(others_ptr).iter() {
+            let Some(others) = crate::object::seq_access::snapshot(
+                _py,
+                others_ptr,
+                "set operand snapshot allocation failed",
+            ) else {
+                return MoltObject::none().bits();
+            };
+            for &other_bits in others.iter() {
                 let _ = molt_set_difference_update(set_bits, other_bits);
                 if exception_pending(_py) {
                     return MoltObject::none().bits();
@@ -805,7 +831,15 @@ pub extern "C" fn molt_set_union_multi(set_bits: u64, others_bits: u64) -> u64 {
             if object_type_id(others_ptr) != TYPE_ID_TUPLE {
                 return result_bits;
             }
-            for &other_bits in seq_vec_ref(others_ptr).iter() {
+            let Some(others) = crate::object::seq_access::snapshot(
+                _py,
+                others_ptr,
+                "set operand snapshot allocation failed",
+            ) else {
+                dec_ref_bits(_py, result_bits);
+                return MoltObject::none().bits();
+            };
+            for &other_bits in others.iter() {
                 let Some((other_ptr, drop_bits)) =
                     set_like_ptr_from_bits(_py, other_bits, HashContext::SetElement)
                 else {
@@ -860,7 +894,15 @@ pub extern "C" fn molt_set_intersection_multi(set_bits: u64, others_bits: u64) -
             if object_type_id(others_ptr) != TYPE_ID_TUPLE {
                 return result_bits;
             }
-            for &other_bits in seq_vec_ref(others_ptr).iter() {
+            let Some(others) = crate::object::seq_access::snapshot(
+                _py,
+                others_ptr,
+                "set operand snapshot allocation failed",
+            ) else {
+                dec_ref_bits(_py, result_bits);
+                return MoltObject::none().bits();
+            };
+            for &other_bits in others.iter() {
                 // intersection probes the realized other; unhashable elements
                 // are reported bare on every version.
                 let Some((other_ptr, drop_bits)) =
@@ -917,7 +959,15 @@ pub extern "C" fn molt_set_difference_multi(set_bits: u64, others_bits: u64) -> 
             if object_type_id(others_ptr) != TYPE_ID_TUPLE {
                 return result_bits;
             }
-            for &other_bits in seq_vec_ref(others_ptr).iter() {
+            let Some(others) = crate::object::seq_access::snapshot(
+                _py,
+                others_ptr,
+                "set operand snapshot allocation failed",
+            ) else {
+                dec_ref_bits(_py, result_bits);
+                return MoltObject::none().bits();
+            };
+            for &other_bits in others.iter() {
                 let Some((other_ptr, drop_bits)) =
                     set_like_ptr_from_bits(_py, other_bits, HashContext::SetElement)
                 else {

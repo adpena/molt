@@ -766,7 +766,7 @@ pub extern "C" fn molt_random_setstate(handle_bits: u64, state_bits: u64) -> u64
             return raise_exception::<u64>(_py, "TypeError", "state must be a tuple");
         }
 
-        let outer_elems = unsafe { seq_vec_ref(state_ptr) };
+        let outer_elems = unsafe { seq_snapshot(state_ptr) };
         if outer_elems.len() < 3 {
             return raise_exception::<u64>(_py, "ValueError", "state tuple must have 3 elements");
         }
@@ -781,7 +781,7 @@ pub extern "C" fn molt_random_setstate(handle_bits: u64, state_bits: u64) -> u64
         if inner_type != TYPE_ID_TUPLE && inner_type != TYPE_ID_LIST {
             return raise_exception::<u64>(_py, "TypeError", "internalstate must be a tuple");
         }
-        let inner_elems = unsafe { seq_vec_ref(inner_ptr) };
+        let inner_elems = unsafe { seq_snapshot(inner_ptr) };
         if inner_elems.len() != MT_N + 1 {
             return raise_exception::<u64>(
                 _py,
@@ -860,8 +860,8 @@ pub extern "C" fn molt_random_shuffle(handle_bits: u64, list_bits: u64) -> u64 {
             return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
         };
 
-        // Fisher-Yates: for i from n-1 down to 1, swap list[i] with list[randbelow(i+1)]
-        let vec = unsafe { seq_vec(list_ptr) };
+        // Fisher-Yates: generate each index under the RNG lock, then mutate
+        // through the runtime-owned list authority.
         for i in (1..n).rev() {
             // Inline rejection sampling for [0, i+1) using u32 words from the MT.
             let upper = (i + 1) as u32;
@@ -880,7 +880,9 @@ pub extern "C" fn molt_random_shuffle(handle_bits: u64, list_bits: u64) -> u64 {
                 };
                 idx_32 as usize
             };
-            vec.swap(i, j);
+            if !list_swap(list_bits, i, j) {
+                return MoltObject::none().bits();
+            }
         }
 
         MoltObject::none().bits()
@@ -1318,7 +1320,7 @@ pub extern "C" fn molt_random_choices(
         if pop_type != TYPE_ID_LIST && pop_type != TYPE_ID_TUPLE {
             return raise_exception::<u64>(_py, "TypeError", "population must be a list or tuple");
         }
-        let pop_elems = unsafe { seq_vec_ref(pop_ptr) };
+        let pop_elems = unsafe { seq_snapshot(pop_ptr) };
         let pop_len = pop_elems.len();
 
         if pop_len == 0 {
@@ -1354,7 +1356,7 @@ pub extern "C" fn molt_random_choices(
                     "cum_weights must be a list or tuple",
                 );
             }
-            let cw_elems = unsafe { seq_vec_ref(cw_ptr) };
+            let cw_elems = unsafe { seq_snapshot(cw_ptr) };
             if cw_elems.len() != pop_len {
                 return raise_exception::<u64>(
                     _py,
@@ -1363,7 +1365,7 @@ pub extern "C" fn molt_random_choices(
                 );
             }
             let mut weights = Vec::with_capacity(pop_len);
-            for &w_bits in cw_elems {
+            for &w_bits in cw_elems.iter() {
                 let Some(w) = f64_from_bits(_py, w_bits, "cum_weight") else {
                     return MoltObject::none().bits();
                 };
@@ -1430,7 +1432,7 @@ pub extern "C" fn molt_random_sample(handle_bits: u64, population_bits: u64, k_b
         if pop_type != TYPE_ID_LIST && pop_type != TYPE_ID_TUPLE {
             return raise_exception::<u64>(_py, "TypeError", "population must be a list or tuple");
         }
-        let pop_elems = unsafe { seq_vec_ref(pop_ptr) };
+        let pop_elems = unsafe { seq_snapshot(pop_ptr) };
         let n = pop_elems.len();
 
         let k_obj = obj_from_bits(k_bits);

@@ -504,20 +504,3 @@ pub(in crate::native_backend::simple_backend) fn emit_list_int_load(
         .load(types::I64, MemFlagsData::trusted(), elem_addr, 0);
     box_int_value(builder, raw_val, nbc)
 }
-
-/// Store element into list_int data pointer at given index.
-/// MUST only be called after bounds check passes (i.e., inside the fast block).
-#[cfg(feature = "native-backend")]
-#[allow(dead_code)]
-pub(in crate::native_backend::simple_backend) fn emit_list_int_store(
-    builder: &mut FunctionBuilder,
-    data_ptr: Value,
-    index_raw: Value,
-    value_raw: Value,
-) {
-    let offset = builder.ins().imul_imm(index_raw, 8);
-    let elem_addr = builder.ins().iadd(data_ptr, offset);
-    builder
-        .ins()
-        .store(MemFlagsData::trusted(), value_raw, elem_addr, 0);
-}

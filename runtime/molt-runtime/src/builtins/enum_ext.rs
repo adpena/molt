@@ -182,7 +182,11 @@ pub extern "C" fn molt_enum_unique_check(members_bits: u64) -> u64 {
         if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
             return raise_exception::<_>(_py, "TypeError", "members must be a list");
         }
-        let elems = unsafe { seq_vec_ref(ptr) };
+        let Some(elems) = (unsafe {
+            crate::object::seq_access::snapshot(_py, ptr, "enum member snapshot allocation failed")
+        }) else {
+            return MoltObject::none().bits();
+        };
         let mut seen_values: std::collections::HashSet<u64> = std::collections::HashSet::new();
         for &elem_bits in elems.iter() {
             let elem_obj = obj_from_bits(elem_bits);
@@ -197,11 +201,18 @@ pub extern "C" fn molt_enum_unique_check(members_bits: u64) -> u64 {
                     "each member must be a (name, value) tuple",
                 );
             }
-            let pair = unsafe { seq_vec_ref(eptr) };
-            if pair.len() < 2 {
+            let pair = if etype == TYPE_ID_TUPLE {
+                unsafe { crate::object::seq_access::tuple_pair(eptr) }
+            } else {
+                unsafe {
+                    crate::object::seq_access::with_borrowed(eptr, |pair| {
+                        (pair.len() >= 2).then(|| (pair[0], pair[1]))
+                    })
+                }
+            };
+            let Some((_, val_bits)) = pair else {
                 return raise_exception::<_>(_py, "ValueError", "each member must have 2 elements");
-            }
-            let val_bits = pair[1];
+            };
             if !seen_values.insert(val_bits) {
                 return MoltObject::from_bool(false).bits();
             }
@@ -225,7 +236,11 @@ pub extern "C" fn molt_enum_verify_member(members_bits: u64, value_bits: u64) ->
         if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
             return raise_exception::<_>(_py, "TypeError", "members must be a list");
         }
-        let elems = unsafe { seq_vec_ref(ptr) };
+        let Some(elems) = (unsafe {
+            crate::object::seq_access::snapshot(_py, ptr, "sequence snapshot allocation failed")
+        }) else {
+            return MoltObject::none().bits();
+        };
         for &elem_bits in elems.iter() {
             let elem_obj = obj_from_bits(elem_bits);
             let Some(eptr) = elem_obj.as_ptr() else {
@@ -235,15 +250,20 @@ pub extern "C" fn molt_enum_verify_member(members_bits: u64, value_bits: u64) ->
             if etype != TYPE_ID_TUPLE && etype != TYPE_ID_LIST {
                 continue;
             }
-            let pair = unsafe { seq_vec_ref(eptr) };
-            if pair.len() < 2 {
+            let Some(member_value) = (unsafe { crate::object::seq_access::pin_item(_py, eptr, 1) })
+            else {
                 continue;
-            }
-            if pair[1] == value_bits {
+            };
+            let member_value_bits = member_value.bits();
+            if member_value_bits == value_bits {
                 return MoltObject::from_bool(true).bits();
             }
             // Also compare by value equality for int/float/str.
-            if obj_eq(_py, obj_from_bits(pair[1]), obj_from_bits(value_bits)) {
+            if obj_eq(
+                _py,
+                obj_from_bits(member_value_bits),
+                obj_from_bits(value_bits),
+            ) {
                 return MoltObject::from_bool(true).bits();
             }
         }
@@ -400,7 +420,15 @@ pub extern "C" fn molt_enum_create(name_bits: u64, members_bits: u64, bases_bits
         if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
             return raise_exception::<_>(_py, "TypeError", "members must be a list or tuple");
         }
-        let elems = unsafe { seq_vec_ref(members_ptr) };
+        let Some(elems) = (unsafe {
+            crate::object::seq_access::snapshot(
+                _py,
+                members_ptr,
+                "enum member snapshot allocation failed",
+            )
+        }) else {
+            return MoltObject::none().bits();
+        };
 
         // Build pairs array for the dict: [key1, val1, key2, val2, ...]
         let mut dict_pairs: Vec<u64> = Vec::with_capacity(elems.len() * 2);
@@ -421,16 +449,24 @@ pub extern "C" fn molt_enum_create(name_bits: u64, members_bits: u64, bases_bits
                     "each member must be a (name, value) tuple",
                 );
             }
-            let pair = unsafe { seq_vec_ref(eptr) };
-            if pair.len() < 2 {
+            let pair = if etype == TYPE_ID_TUPLE {
+                unsafe { crate::object::seq_access::tuple_pair(eptr) }
+            } else {
+                unsafe {
+                    crate::object::seq_access::with_borrowed(eptr, |pair| {
+                        (pair.len() >= 2).then(|| (pair[0], pair[1]))
+                    })
+                }
+            };
+            let Some((name_bits, value_bits)) = pair else {
                 return raise_exception::<_>(
                     _py,
                     "ValueError",
                     "each member must have at least 2 elements",
                 );
-            }
-            dict_pairs.push(pair[0]); // name
-            dict_pairs.push(pair[1]); // value
+            };
+            dict_pairs.push(name_bits);
+            dict_pairs.push(value_bits);
         }
 
         let members_dict_ptr = alloc_dict_with_pairs(_py, &dict_pairs);

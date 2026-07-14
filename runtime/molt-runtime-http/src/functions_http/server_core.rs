@@ -74,7 +74,7 @@ pub(super) fn socketserver_extract_handle_request_tuple(
             "get_request() must return a 3-item tuple",
         ));
     }
-    let fields = unsafe { seq_vec_ref(ptr) };
+    let fields = unsafe { seq_snapshot(ptr) };
     if fields.len() != 3 {
         return Err(raise_exception::<u64>(
             _py,

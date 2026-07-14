@@ -892,7 +892,7 @@ pub extern "C" fn molt_struct_pack(format_bits: u64, values_bits: u64) -> u64 {
                 return raise_exception::<u64>(_py, "TypeError", "pack expects a tuple");
             }
         }
-        let values = unsafe { seq_vec_ref(values_ptr) };
+        let values = unsafe { seq_snapshot(values_ptr) };
         let expected = expected_value_count(&ops);
         if values.len() != expected {
             let msg = format!(

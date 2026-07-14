@@ -513,7 +513,13 @@ fn c_api_method_decode_closure(
                 "invalid C-API method closure: expected tuple",
             ));
         }
-        let slots = seq_vec_ref(closure_ptr);
+        let Some(slots) = crate::object::seq_access::snapshot(
+            _py,
+            closure_ptr,
+            "C-API method closure snapshot allocation failed",
+        ) else {
+            return Err(MoltObject::none().bits());
+        };
         if slots.len() != 3 {
             return Err(raise_exception::<u64>(
                 _py,
@@ -597,7 +603,7 @@ fn c_api_method_kwargs_present(_py: &PyToken<'_>, kwargs_bits: u64) -> Result<bo
 fn c_api_method_tuple_len(_py: &PyToken<'_>, args_ptr: *mut u8) -> usize {
     unsafe {
         debug_assert!(object_type_id(args_ptr) == TYPE_ID_TUPLE);
-        seq_vec_ref(args_ptr).len()
+        crate::object::seq_access::len(args_ptr)
     }
 }
 
@@ -608,8 +614,10 @@ fn callargs_builder_for_call(
     args_bits: u64,
     kwargs_bits: u64,
 ) -> u64 {
-    let mut pos: &[u64] = &[];
-    if !obj_from_bits(args_bits).is_none() {
+    let pos_snapshot;
+    let pos: &[u64] = if obj_from_bits(args_bits).is_none() {
+        &[]
+    } else {
         let Some(args_ptr) = obj_from_bits(args_bits).as_ptr() else {
             return raise_exception::<u64>(_py, "TypeError", "args must be tuple or list");
         };
@@ -618,9 +626,17 @@ fn callargs_builder_for_call(
             if type_id != TYPE_ID_TUPLE && type_id != TYPE_ID_LIST {
                 return raise_exception::<u64>(_py, "TypeError", "args must be tuple or list");
             }
-            pos = seq_vec_ref(args_ptr);
+            let Some(snapshot) = crate::object::seq_access::snapshot(
+                _py,
+                args_ptr,
+                "call argument snapshot allocation failed",
+            ) else {
+                return none_bits();
+            };
+            pos_snapshot = snapshot;
+            &*pos_snapshot
         }
-    }
+    };
 
     let builder_bits = molt_callargs_new(pos.len() as u64, 0);
     if builder_bits == 0 || obj_from_bits(builder_bits).is_none() {

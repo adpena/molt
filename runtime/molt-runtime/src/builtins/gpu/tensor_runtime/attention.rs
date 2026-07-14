@@ -61,27 +61,37 @@ fn decode_float_sequence_bits(_py: &PyToken<'_>, bits: u64, label: &str) -> Resu
             &format!("{label} must be a list or tuple"),
         ));
     }
-    let elems = unsafe { seq_vec_ref(ptr) };
-    let mut out = Vec::with_capacity(elems.len());
-    for &elem_bits in elems.iter() {
-        let elem = obj_from_bits(elem_bits);
-        let value = if let Some(value) = to_f64(elem) {
-            value as f32
-        } else if let Some(value) = to_i64(elem) {
-            value as f32
-        } else {
-            return Err(raise_exception::<u64>(
-                _py,
-                "TypeError",
-                &format!("{label} elements must be numbers"),
-            ));
-        };
-        out.push(value);
-    }
-    Ok(out)
+    let decoded = unsafe {
+        crate::object::seq_access::with_borrowed(ptr, |elems| {
+            let mut out = Vec::with_capacity(elems.len());
+            for &elem_bits in elems {
+                let elem = obj_from_bits(elem_bits);
+                let value = if let Some(value) = to_f64(elem) {
+                    value as f32
+                } else if let Some(value) = to_i64(elem) {
+                    value as f32
+                } else {
+                    return None;
+                };
+                out.push(value);
+            }
+            Some(out)
+        })
+    };
+    decoded.ok_or_else(|| {
+        raise_exception::<u64>(
+            _py,
+            "TypeError",
+            &format!("{label} elements must be numbers"),
+        )
+    })
 }
 
-fn decode_u64_sequence_bits(_py: &PyToken<'_>, bits: u64, label: &str) -> Result<Vec<u64>, u64> {
+fn decode_u64_sequence_bits<'a, 'py>(
+    _py: &'a PyToken<'py>,
+    bits: u64,
+    label: &str,
+) -> Result<crate::object::seq_access::PinnedSequenceSnapshot<'a, 'py>, u64> {
     let Some(ptr) = obj_from_bits(bits).as_ptr() else {
         return Err(raise_exception::<u64>(
             _py,
@@ -97,7 +107,10 @@ fn decode_u64_sequence_bits(_py: &PyToken<'_>, bits: u64, label: &str) -> Result
             &format!("{label} must be a list or tuple"),
         ));
     }
-    Ok(unsafe { seq_vec_ref(ptr) }.to_vec())
+    unsafe {
+        crate::object::seq_access::snapshot(_py, ptr, "GPU sequence snapshot allocation failed")
+    }
+    .ok_or_else(|| MoltObject::none().bits())
 }
 
 fn require_attr_bits(

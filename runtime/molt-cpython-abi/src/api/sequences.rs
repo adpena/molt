@@ -1,11 +1,10 @@
 //! Sequence API — PyList_*, PyTuple_*.
 
-use crate::abi_types::{Py_ssize_t, PyObject, PyTupleObject, PyVarObject};
+use crate::abi_types::{Py_ssize_t, PyObject, PyTupleObject};
 #[allow(unused_imports)]
 use crate::abi_types::{PyList_Type, PyTuple_Type};
 use crate::bridge::GLOBAL_BRIDGE;
 use crate::hooks::hooks_or_stubs;
-use molt_lang_obj_model::MoltObject;
 use std::os::raw::c_int;
 use std::ptr;
 
@@ -37,7 +36,7 @@ pub unsafe extern "C" fn PyList_New(size: Py_ssize_t) -> *mut PyObject {
         return ptr::null_mut();
     }
     let h = hooks_or_stubs();
-    let bits = unsafe { (h.alloc_list)() };
+    let bits = unsafe { (h.alloc_list_presized)(size as usize) };
     if bits == 0 {
         // Allocation failed. CPython's PyList_New returns NULL with MemoryError
         // set. Returning Py_None (non-NULL) here would defeat the extension's
@@ -52,16 +51,16 @@ pub unsafe extern "C" fn PyList_New(size: Py_ssize_t) -> *mut PyObject {
         return ptr::null_mut();
     }
     // CPython pre-sizes the list to `size` NULL slots: PyList_GET_SIZE reports
-    // `size` immediately and PyList_SetItem/SET_ITEM stores at ANY index in
-    // [0,size) — including out of order. The previous body ignored `size`
-    // (empty list) and SET_ITEM appended, silently mis-placing out-of-order
-    // fills. Molt slots are pre-filled with None (the runtime has no NULL
-    // slot; extensions must fill before reading either way).
-    let none_bits = MoltObject::none().bits();
-    for _ in 0..size {
-        unsafe { (h.list_append)(bits, none_bits) };
+    // `size` immediately and PyList_SetItem/SET_ITEM stores at any index in
+    // [0,size), including out of order. Molt establishes the logical length in
+    // one backing-store allocation and the bridge records that the physical
+    // slots remain unreadable until the extension initializes them.
+    let result = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
+    if result.is_null() || !GLOBAL_BRIDGE.mark_list_view_uninitialized(bits) {
+        unsafe { crate::api::refcount::Py_XDECREF(result) };
+        return ptr::null_mut();
     }
-    unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) }
+    result
 }
 
 #[unsafe(no_mangle)]
@@ -80,6 +79,9 @@ pub unsafe extern "C" fn PyList_Append(list: *mut PyObject, item: *mut PyObject)
             return -1;
         }
     };
+    if !bridge.commit_list_view(list_bits) {
+        return -1;
+    }
     let (item_bits, owned_local) = match bridge.molt_handle_for_pyobj(item) {
         Some(b) => (b.bits(), false),
         None => match unsafe { bridge.molt_value_for_pyobj(item) } {
@@ -103,7 +105,7 @@ pub unsafe extern "C" fn PyList_Append(list: *mut PyObject, item: *mut PyObject)
         },
     };
     let h = hooks_or_stubs();
-    let rc = unsafe { (h.list_append)(list_bits, item_bits) };
+    let rc = unsafe { (h.list_append)(list_bits, item_bits, item) };
     // CPython contract: `PyList_Append` takes its own strong reference to the
     // item (it does not steal). Anchor the item proxy so the extension's
     // balancing `Py_DECREF` cannot sever the pointer↔handle mapping while the
@@ -137,8 +139,12 @@ pub unsafe extern "C" fn PyList_GET_ITEM(op: *mut PyObject, i: Py_ssize_t) -> *m
         Some(b) => b.bits(),
         None => return ptr::null_mut(),
     };
-    let h = hooks_or_stubs();
-    unsafe { GLOBAL_BRIDGE.borrowed_result_to_borrowed_pyobj((h.list_item)(bits, i as usize)) }
+    if !bridge.commit_list_view_partial(bits) {
+        return ptr::null_mut();
+    }
+    bridge
+        .list_view_item_pointer(bits, i as usize)
+        .unwrap_or(ptr::null_mut())
 }
 
 #[unsafe(no_mangle)]
@@ -154,11 +160,35 @@ pub unsafe extern "C" fn PyList_GetItem(op: *mut PyObject, i: Py_ssize_t) -> *mu
             return ptr::null_mut();
         }
     };
-    let h = hooks_or_stubs();
+    if !GLOBAL_BRIDGE.commit_list_view_partial(bits) {
+        return ptr::null_mut();
+    }
     if i >= 0 {
-        let result = unsafe { (h.list_item)(bits, i as usize) };
-        if let crate::hooks::DecodedHandleResult::Ok(bits) = result.decode() {
-            return unsafe { GLOBAL_BRIDGE.handle_to_borrowed_pyobj(bits) };
+        match GLOBAL_BRIDGE.list_view_item_initialized(bits, i as usize) {
+            Some(true) => {
+                if let Some(pointer) = GLOBAL_BRIDGE.list_view_item_pointer(bits, i as usize) {
+                    return pointer;
+                }
+                unsafe {
+                    crate::api::errors::PyErr_SetString(
+                        (&raw mut crate::abi_types::PyExc_SystemError)
+                            .cast::<crate::abi_types::PyObject>(),
+                        c"PyList_GetItem: initialized projection has no object".as_ptr(),
+                    );
+                }
+                return ptr::null_mut();
+            }
+            Some(false) => {
+                unsafe {
+                    crate::api::errors::PyErr_SetString(
+                        (&raw mut crate::abi_types::PyExc_SystemError)
+                            .cast::<crate::abi_types::PyObject>(),
+                        c"PyList_GetItem: uninitialized list item".as_ptr(),
+                    );
+                }
+                return ptr::null_mut();
+            }
+            None => {}
         }
     }
     unsafe {
@@ -224,6 +254,11 @@ pub unsafe extern "C" fn PyList_SetItem(
             return -1;
         }
     };
+    let _runtime_gil = crate::hooks::RuntimeGilGuard::ensure();
+    if !GLOBAL_BRIDGE.commit_list_view_partial(list_bits) {
+        unsafe { crate::api::refcount::Py_XDECREF(v) };
+        return -1;
+    }
     if v.is_null() {
         // CPython would store a NULL slot; Molt lists have no NULL slot. An
         // honest SystemError beats fabricating a stored value.
@@ -250,6 +285,13 @@ pub unsafe extern "C" fn PyList_SetItem(
             }
         },
     };
+    if !GLOBAL_BRIDGE.prepare_list_set_stolen_ref(v) {
+        if owned_local {
+            unsafe { (hooks_or_stubs().dec_ref)(val_bits) };
+        }
+        unsafe { crate::api::refcount::Py_XDECREF(v) };
+        return -1;
+    }
     let h = hooks_or_stubs();
     let stored = if i >= 0 {
         unsafe { (h.list_set)(list_bits, i as usize, val_bits) }
@@ -262,11 +304,12 @@ pub unsafe extern "C" fn PyList_SetItem(
             None
         }
     };
-    if owned_local {
-        unsafe { (h.dec_ref)(val_bits) };
-    }
-    unsafe { crate::api::refcount::Py_XDECREF(v) };
     let Some(old_bits) = old_bits else {
+        GLOBAL_BRIDGE.cancel_list_set_stolen_ref(v);
+        if owned_local {
+            unsafe { (h.dec_ref)(val_bits) };
+        }
+        unsafe { crate::api::refcount::Py_XDECREF(v) };
         // OOB: CPython Py_XDECREFs the stolen reference, then IndexError.
         unsafe {
             if crate::api::errors::PyErr_Occurred().is_null() {
@@ -279,6 +322,13 @@ pub unsafe extern "C" fn PyList_SetItem(
         }
         return -1;
     };
+    if !GLOBAL_BRIDGE.publish_list_set_from_stolen(list_bits, i as usize, v) {
+        eprintln!("molt fatal: successful runtime list store could not publish its ABI view");
+        std::process::abort();
+    }
+    if owned_local {
+        unsafe { (h.dec_ref)(val_bits) };
+    }
     unsafe { (h.dec_ref)(old_bits) };
     // Steal contract on success: the container takes over the caller's
     // reference — a bridge proxy is NOT INCREF'd (unlike the non-stealing
@@ -357,8 +407,14 @@ pub(crate) unsafe fn tuple_layout_object(op: *mut PyObject) -> Option<*mut PyTup
         return None;
     }
     let ob_type = unsafe { (*op).ob_type };
-    if std::ptr::eq(ob_type, &raw mut crate::abi_types::PyTuple_Type)
-        && GLOBAL_BRIDGE.molt_handle_for_pyobj(op).is_none()
+    if !ob_type.is_null()
+        && (std::ptr::eq(ob_type, &raw mut crate::abi_types::PyTuple_Type)
+            || unsafe {
+                crate::api::typeobj::PyType_IsSubtype(
+                    ob_type,
+                    &raw mut crate::abi_types::PyTuple_Type,
+                )
+            } != 0)
     {
         Some(op.cast::<PyTupleObject>())
     } else {
@@ -366,65 +422,33 @@ pub(crate) unsafe fn tuple_layout_object(op: *mut PyObject) -> Option<*mut PyTup
     }
 }
 
-fn tuple_allocation_layout(len: usize) -> Option<std::alloc::Layout> {
-    let item_offset = std::mem::offset_of!(PyTupleObject, ob_item);
-    let item_bytes = len.checked_mul(std::mem::size_of::<*mut PyObject>())?;
-    let required = item_offset.checked_add(item_bytes)?;
-    std::alloc::Layout::from_size_align(
-        required.max(std::mem::size_of::<PyTupleObject>()),
-        std::mem::align_of::<PyTupleObject>(),
-    )
-    .ok()
-}
-
 #[inline]
 pub(crate) unsafe fn tuple_items_ptr(tuple: *mut PyTupleObject) -> *mut *mut PyObject {
     unsafe { std::ptr::addr_of_mut!((*tuple).ob_item).cast() }
 }
 
-unsafe fn allocate_tuple_layout(len: usize) -> *mut PyTupleObject {
-    let Some(layout) = tuple_allocation_layout(len) else {
-        return ptr::null_mut();
-    };
-    let allocation = unsafe { std::alloc::alloc_zeroed(layout) };
-    let tuple = allocation.cast::<PyTupleObject>();
-    if tuple.is_null() {
-        return ptr::null_mut();
-    }
-    unsafe {
-        tuple.write(PyTupleObject {
-            ob_base: PyVarObject {
-                ob_base: PyObject {
-                    ob_refcnt: 1,
-                    ob_type: &raw mut crate::abi_types::PyTuple_Type,
-                },
-                ob_size: len as Py_ssize_t,
-            },
-            ob_item: [ptr::null_mut()],
-        });
-    }
-    tuple
-}
-
-unsafe fn deallocate_tuple_layout(tuple: *mut PyTupleObject, len: usize) {
-    if let Some(layout) = tuple_allocation_layout(len) {
-        unsafe { std::alloc::dealloc(tuple.cast::<u8>(), layout) };
-    }
-}
-
-pub unsafe extern "C" fn molt_tuple_dealloc(op: *mut PyObject) {
-    let Some(tuple) = (unsafe { tuple_layout_object(op) }) else {
+/// Deallocate a genuine foreign tuple subclass. Exact builtin tuples are
+/// runtime-backed managed views and are retired by the bridge before `tp_dealloc`
+/// dispatch; only subclass storage allocated by its type reaches this function.
+pub unsafe extern "C" fn molt_tuple_subtype_dealloc(op: *mut PyObject) {
+    if op.is_null() {
         return;
-    };
-    let len = unsafe { (*tuple).ob_base.ob_size };
-    let item_ptr = unsafe { tuple_items_ptr(tuple) };
-    if len > 0 {
-        let items = unsafe { std::slice::from_raw_parts_mut(item_ptr, len as usize) };
-        for item in items.iter_mut() {
-            unsafe { crate::api::refcount::Py_XDECREF(*item) };
-        }
     }
-    unsafe { deallocate_tuple_layout(tuple, len.max(0) as usize) };
+    let tuple = op.cast::<PyTupleObject>();
+    let len = unsafe { (*tuple).ob_base.ob_size.max(0) as usize };
+    let items = unsafe { std::slice::from_raw_parts_mut(tuple_items_ptr(tuple), len) };
+    for pointer in items.iter_mut() {
+        let item = std::mem::replace(pointer, ptr::null_mut());
+        unsafe { crate::api::refcount::Py_XDECREF(item) };
+    }
+    let ty = unsafe { (*op).ob_type };
+    if !ty.is_null()
+        && let Some(free) = unsafe { (*ty).tp_free }
+    {
+        unsafe { free(op.cast()) };
+    } else {
+        unsafe { crate::api::memory::PyObject_GC_Del(op.cast()) };
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -433,11 +457,14 @@ pub unsafe extern "C" fn PyTuple_New(size: Py_ssize_t) -> *mut PyObject {
         unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return ptr::null_mut();
     }
-    let tuple = unsafe { allocate_tuple_layout(size as usize) };
-    if tuple.is_null() {
-        unsafe { crate::api::errors::PyErr_NoMemory() };
+    let bits = unsafe { (hooks_or_stubs().alloc_tuple)(size as usize) };
+    if bits == 0 {
+        if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+            unsafe { crate::api::errors::PyErr_NoMemory() };
+        }
+        return ptr::null_mut();
     }
-    tuple.cast::<PyObject>()
+    unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) }
 }
 
 #[unsafe(no_mangle)]
@@ -559,6 +586,10 @@ pub unsafe extern "C" fn PyTuple_GET_SIZE(op: *mut PyObject) -> Py_ssize_t {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyTuple_Size(op: *mut PyObject) -> Py_ssize_t {
+    if unsafe { PyTuple_Check(op) } == 0 {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return -1;
+    }
     unsafe { PyTuple_GET_SIZE(op) }
 }
 
@@ -575,6 +606,10 @@ pub unsafe extern "C" fn PyTuple_GetSlice(
     let len = unsafe { PyTuple_GET_SIZE(op) };
     let lo = start.clamp(0, len);
     let hi = end.clamp(lo, len);
+    if lo == 0 && hi == len && unsafe { PyTuple_CheckExact(op) } != 0 {
+        unsafe { crate::api::refcount::Py_INCREF(op) };
+        return op;
+    }
     let out = unsafe { PyTuple_New(hi - lo) };
     if out.is_null() {
         return ptr::null_mut();
@@ -587,10 +622,7 @@ pub unsafe extern "C" fn PyTuple_GetSlice(
         }
         unsafe { crate::api::refcount::Py_INCREF(item) };
         if unsafe { PyTuple_SetItem(out, index - lo, item) } != 0 {
-            unsafe {
-                crate::api::refcount::Py_DECREF(item);
-                crate::api::refcount::Py_DECREF(out);
-            }
+            unsafe { crate::api::refcount::Py_DECREF(out) };
             return ptr::null_mut();
         }
     }
@@ -599,53 +631,59 @@ pub unsafe extern "C" fn PyTuple_GetSlice(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn _PyTuple_Resize(pv: *mut *mut PyObject, newsize: Py_ssize_t) -> c_int {
-    if pv.is_null() || newsize < 0 {
+    if pv.is_null() {
         unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return -1;
     }
     let op = unsafe { *pv };
-    let Some(tuple) = (unsafe { tuple_layout_object(op) }) else {
-        unsafe { crate::api::errors::PyErr_BadInternalCall() };
-        return -1;
-    };
-    if unsafe { (*op).ob_refcnt } != 1 {
-        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+    if newsize < 0 || unsafe { PyTuple_CheckExact(op) } == 0 || unsafe { (*op).ob_refcnt } != 1 {
+        unsafe {
+            *pv = ptr::null_mut();
+            crate::api::refcount::Py_XDECREF(op);
+            crate::api::errors::PyErr_BadInternalCall();
+        }
         return -1;
     }
-    let oldsize = unsafe { (*tuple).ob_base.ob_size };
-    let oldptr = unsafe { tuple_items_ptr(tuple) };
-    let replacement = unsafe { allocate_tuple_layout(newsize as usize) };
+    let oldsize = unsafe { PyTuple_GET_SIZE(op) };
+    if oldsize == newsize {
+        return 0;
+    }
+    let replacement = unsafe { PyTuple_New(newsize) };
     if replacement.is_null() {
-        unsafe { crate::api::errors::PyErr_NoMemory() };
+        unsafe {
+            *pv = ptr::null_mut();
+            crate::api::refcount::Py_DECREF(op);
+        }
         return -1;
     }
-    unsafe {
-        (*replacement).ob_base.ob_base.ob_refcnt = (*tuple).ob_base.ob_base.ob_refcnt;
-        (*replacement).ob_base.ob_base.ob_type = (*tuple).ob_base.ob_base.ob_type;
-    }
-    let newptr = unsafe { tuple_items_ptr(replacement) };
     let copied = oldsize.min(newsize);
     for index in 0..copied {
-        unsafe { *newptr.add(index as usize) = *oldptr.add(index as usize) };
-    }
-    if newsize < oldsize {
-        for index in newsize..oldsize {
-            unsafe { crate::api::refcount::Py_XDECREF(*oldptr.add(index as usize)) };
+        let item = unsafe { PyTuple_GET_ITEM(op, index) };
+        if item.is_null() {
+            continue;
+        }
+        unsafe { crate::api::refcount::Py_INCREF(item) };
+        if unsafe { PyTuple_SetItem(replacement, index, item) } != 0 {
+            unsafe {
+                crate::api::refcount::Py_DECREF(replacement);
+                crate::api::refcount::Py_DECREF(op);
+                *pv = ptr::null_mut();
+            }
+            return -1;
         }
     }
     unsafe {
-        deallocate_tuple_layout(tuple, oldsize as usize);
-        *pv = replacement.cast::<PyObject>();
+        crate::api::refcount::Py_DECREF(op);
+        *pv = replacement;
     }
     0
 }
 
 /// Faithful `Objects/tupleobject.c` `PyTuple_SetItem`: steals the reference to
 /// `v` and `Py_XDECREF`s it on EVERY error path; non-tuple → BadInternalCall;
-/// OOB → IndexError "tuple assignment index out of range". The bridge tier is
-/// bounds-checked before the store (the raw `tuple_set` hook auto-grows, which
-/// would silently accept an OOB index). Foreign `v` gets `TYPE_ID_FOREIGN`
-/// custody (same contract as `PyList_SetItem`).
+/// OOB → IndexError "tuple assignment index out of range". The bridge and
+/// fixed-length runtime storage both reject an OOB index. Foreign `v` gets
+/// `TYPE_ID_FOREIGN` custody (same contract as `PyList_SetItem`).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyTuple_SetItem(
     op: *mut PyObject,
@@ -659,8 +697,25 @@ pub unsafe extern "C" fn PyTuple_SetItem(
         }
         return -1;
     }
-    // ABI-layout tuple: direct slot store (steal), zero hook calls.
-    if let Some(tuple) = unsafe { tuple_layout_object(op) } {
+    // CPython permits tuple slot initialization only while the new exact
+    // tuple has unique ownership. Enforce that publication boundary before
+    // either physical or runtime-backed storage can change; otherwise a
+    // shared tuple could be mutated behind readers that correctly treat it as
+    // immutable (and behind future free-threaded readers).
+    if unsafe { (*op).ob_refcnt } != 1 {
+        unsafe {
+            crate::api::refcount::Py_XDECREF(v);
+            crate::api::errors::PyErr_BadInternalCall();
+        }
+        return -1;
+    }
+    let bridge = &*GLOBAL_BRIDGE;
+    let managed_bits = bridge.molt_handle_for_pyobj(op).map(|value| value.bits());
+    // Genuine foreign tuple subclasses retain their physical storage. Exact
+    // builtin tuples are always bridge-managed from PyTuple_New onward.
+    if managed_bits.is_none()
+        && let Some(tuple) = unsafe { tuple_layout_object(op) }
+    {
         let len = unsafe { (*tuple).ob_base.ob_size };
         if i < 0 || i >= len {
             unsafe {
@@ -681,10 +736,8 @@ pub unsafe extern "C" fn PyTuple_SetItem(
         }
         return 0;
     }
-    // Bridge-managed Molt tuple.
-    let bridge = &*GLOBAL_BRIDGE;
-    let tuple_bits = match bridge.molt_handle_for_pyobj(op) {
-        Some(b) if b.decode().is_ptr() => b.bits(),
+    let tuple_bits = match managed_bits {
+        Some(bits) => bits,
         _ => {
             unsafe {
                 crate::api::refcount::Py_XDECREF(v);
@@ -693,7 +746,15 @@ pub unsafe extern "C" fn PyTuple_SetItem(
             return -1;
         }
     };
-    let (val_bits, owned_local) = match bridge.molt_handle_for_pyobj(v) {
+    let h = hooks_or_stubs();
+    if unsafe { (h.ref_count)(tuple_bits) } != 1 {
+        unsafe {
+            crate::api::refcount::Py_XDECREF(v);
+            crate::api::errors::PyErr_BadInternalCall();
+        }
+        return -1;
+    }
+    let (val_bits, owned_local) = match bridge.observed_handle_for_pyobj(v) {
         Some(b) => (b.bits(), false),
         None => match unsafe { bridge.molt_value_for_pyobj(v) } {
             Some(b) => (b, true),
@@ -712,9 +773,6 @@ pub unsafe extern "C" fn PyTuple_SetItem(
             }
         },
     };
-    let h = hooks_or_stubs();
-    // Bounds/type check first: the raw tuple_set hook grows the backing vector
-    // on an OOB index instead of failing, so gate it here.
     let is_tuple =
         unsafe { (h.classify_heap)(tuple_bits) } == crate::abi_types::MoltTypeTag::Tuple as u8;
     let in_bounds = i >= 0 && is_tuple && (i as usize) < unsafe { (h.tuple_len)(tuple_bits) };
@@ -736,32 +794,41 @@ pub unsafe extern "C" fn PyTuple_SetItem(
         }
         return -1;
     }
-    let result = unsafe { (h.tuple_set)(tuple_bits, i as usize, val_bits) };
+    let Some(prepared) = (unsafe {
+        bridge.prepare_tuple_value(tuple_bits, i as usize, val_bits, v)
+    }) else {
+        if owned_local {
+            unsafe { (h.dec_ref)(val_bits) };
+        }
+        return -1;
+    };
+    let result = unsafe { (h.tuple_set)(tuple_bits, i as usize, val_bits, v) };
     let old_bits = match result.decode() {
         crate::hooks::DecodedHandleResult::Ok(bits) => Some(bits),
-        crate::hooks::DecodedHandleResult::Missing | crate::hooks::DecodedHandleResult::Error => {
-            None
-        }
+        crate::hooks::DecodedHandleResult::Missing => Some(0),
+        crate::hooks::DecodedHandleResult::Error => None,
     };
     if owned_local {
         unsafe { (h.dec_ref)(val_bits) };
     }
-    if old_bits.is_some() && !bridge.set_tuple_view_item(tuple_bits, i as usize, v) {
-        // Bounds and canonical-view presence were established above.  Once the
-        // runtime mutation commits, a missing sidecar slot would make direct
-        // compiled PyTuple_GET_ITEM observe stale storage.  This is a broken
-        // bridge invariant, not a recoverable Python exception.
-        eprintln!("molt fatal: committed tuple mutation could not update canonical ABI view");
-        std::process::abort();
-    }
-    unsafe { crate::api::refcount::Py_DECREF(v) };
     let Some(old_bits) = old_bits else {
+        // `prepared` consumes the stolen C reference on this error path.
+        drop(prepared);
         if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
             unsafe { crate::api::errors::PyErr_BadInternalCall() };
         }
         return -1;
     };
-    unsafe { (h.dec_ref)(old_bits) };
+    let Some(retired) = (unsafe { prepared.publish() }) else {
+        eprintln!("molt fatal: committed tuple mutation could not publish canonical ABI slot");
+        std::process::abort();
+    };
+    // Publish both authorities before either displaced edge can run a
+    // finalizer. Physical ownership retires first, then the runtime edge.
+    drop(retired);
+    if old_bits != 0 {
+        unsafe { (h.dec_ref)(old_bits) };
+    }
     0
 }
 
@@ -1284,23 +1351,25 @@ pub unsafe extern "C" fn PyList_GetSlice(
         Some(b) => b.bits(),
         None => return ptr::null_mut(),
     };
+    if !bridge.commit_list_view(bits) {
+        return ptr::null_mut();
+    }
     let h = hooks_or_stubs();
     let len = unsafe { (h.list_len)(bits) } as Py_ssize_t;
     let low = ilow.max(0).min(len);
     let high = ihigh.max(low).min(len);
-    let new_list = unsafe { (h.alloc_list)() };
-    if new_list == 0 {
+    let new_list = unsafe { PyList_New(0) };
+    if new_list.is_null() {
         return ptr::null_mut();
     }
     for i in low..high {
-        let result = unsafe { (h.list_item)(bits, i as usize) };
-        let crate::hooks::DecodedHandleResult::Ok(item) = result.decode() else {
-            unsafe { (h.dec_ref)(new_list) };
+        let item = unsafe { PyList_GetItem(op, i) };
+        if item.is_null() || unsafe { PyList_Append(new_list, item) } != 0 {
+            unsafe { crate::api::refcount::Py_DECREF(new_list) };
             return ptr::null_mut();
-        };
-        unsafe { (h.list_append)(new_list, item) };
+        }
     }
-    unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(new_list) }
+    new_list
 }
 
 /// Real slice assignment/deletion (CPython `list_ass_slice`): replaces
@@ -1321,38 +1390,77 @@ pub unsafe extern "C" fn PyList_SetSlice(
             return -1;
         }
     };
+    if !GLOBAL_BRIDGE.commit_list_view(list_bits) {
+        return -1;
+    }
     let itemlist_bits = if itemlist.is_null() {
         0 // deletion
     } else {
         let itemlist_handle = GLOBAL_BRIDGE.molt_handle_for_pyobj(itemlist);
         match itemlist_handle {
-            Some(b) if b.decode().is_ptr() => b.bits(),
+            Some(b) if b.decode().is_ptr() => {
+                if unsafe { (hooks_or_stubs().classify_heap)(b.bits()) }
+                    == crate::abi_types::MoltTypeTag::List as u8
+                    && !GLOBAL_BRIDGE.commit_list_view(b.bits())
+                {
+                    return -1;
+                }
+                b.bits()
+            }
             _ => {
                 unsafe { crate::api::errors::PyErr_BadInternalCall() };
                 return -1;
             }
         }
     };
-    let h = hooks_or_stubs();
-    // CPython INCREFs each item copied in from itemlist (the receiving list
-    // takes its own references). Anchor the incoming item proxies exactly as
-    // PyList_Append does; removed items keep their anchor (the documented
-    // PyDict_SetItem custody trade — leak-not-corrupt).
-    if itemlist_bits != 0 {
-        let n = unsafe { (h.list_len)(itemlist_bits) };
-        let bridge = &*GLOBAL_BRIDGE;
-        for idx in 0..n {
-            let result = unsafe { (h.list_item)(itemlist_bits, idx) };
-            let crate::hooks::DecodedHandleResult::Ok(item_bits) = result.decode() else {
-                return -1;
-            };
-            if MoltObject::from_bits(item_bits).is_ptr() {
-                let proxy = unsafe { bridge.handle_to_borrowed_pyobj(item_bits) };
-                unsafe { crate::api::refcount::Py_INCREF(proxy) };
-            }
-        }
+    let Some(current) =
+        (unsafe { crate::api::abstract_sequence::materialize_iterable_pointers(op, None) })
+    else {
+        return -1;
+    };
+    let replacement = if itemlist.is_null() {
+        None
+    } else {
+        let Some(items) = (unsafe {
+            crate::api::abstract_sequence::materialize_iterable_pointers(itemlist, None)
+        }) else {
+            return -1;
+        };
+        Some(items)
+    };
+    let len = current.len() as Py_ssize_t;
+    let low = ilow.clamp(0, len) as usize;
+    let high = ihigh.clamp(low as Py_ssize_t, len) as usize;
+    let replacement_len = replacement.as_ref().map_or(0, |items| items.len());
+    let Some(future_len) = current
+        .len()
+        .checked_sub(high - low)
+        .and_then(|base| base.checked_add(replacement_len))
+    else {
+        unsafe { crate::api::errors::PyErr_NoMemory() };
+        return -1;
+    };
+    let mut future = Vec::new();
+    if future.try_reserve_exact(future_len).is_err() {
+        unsafe { crate::api::errors::PyErr_NoMemory() };
+        return -1;
     }
-    let rc = unsafe { (h.list_set_slice)(list_bits, ilow, ihigh, itemlist_bits) };
+    future.extend_from_slice(&current.as_slice()[..low]);
+    if let Some(replacement) = &replacement {
+        future.extend_from_slice(replacement.as_slice());
+    }
+    future.extend_from_slice(&current.as_slice()[high..]);
+    let h = hooks_or_stubs();
+    let rc = unsafe {
+        (h.list_set_slice)(
+            list_bits,
+            ilow,
+            ihigh,
+            itemlist_bits,
+            future.as_ptr(),
+            future.len(),
+        )
+    };
     if rc != 0 {
         unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return -1;
@@ -1372,6 +1480,9 @@ pub unsafe extern "C" fn PyList_Sort(op: *mut PyObject) -> c_int {
             return -1;
         }
     };
+    if !GLOBAL_BRIDGE.commit_list_view(list_bits) {
+        return -1;
+    }
     let h = hooks_or_stubs();
     let rc = unsafe { (h.list_sort)(list_bits) };
     if rc != 0 {
@@ -1394,6 +1505,9 @@ pub unsafe extern "C" fn PyList_Reverse(op: *mut PyObject) -> c_int {
             return -1;
         }
     };
+    if !GLOBAL_BRIDGE.commit_list_view(list_bits) {
+        return -1;
+    }
     let h = hooks_or_stubs();
     let rc = unsafe { (h.list_reverse)(list_bits) };
     if rc != 0 {
@@ -1453,6 +1567,9 @@ pub unsafe extern "C" fn PyList_Insert(
             return -1;
         }
     };
+    if !GLOBAL_BRIDGE.commit_list_view(list_bits) {
+        return -1;
+    }
     let bridge = &*GLOBAL_BRIDGE;
     let mut item_is_foreign = false;
     let item_bits = match bridge.molt_handle_for_pyobj(v) {
@@ -1477,15 +1594,16 @@ pub unsafe extern "C" fn PyList_Insert(
         },
     };
     let h = hooks_or_stubs();
-    let rc = unsafe { (h.list_insert)(list_bits, where_, item_bits) };
+    let rc = unsafe { (h.list_insert)(list_bits, where_, item_bits, v) };
     if rc != 0 {
+        if item_is_foreign {
+            unsafe { (h.dec_ref)(item_bits) };
+        }
         unsafe { ensure_set_error(c"PyList_Insert failed: runtime list authority unavailable") };
         return -1;
     }
-    // Non-stealing contract (same anchor discipline as PyList_Append). A
-    // foreign wrapper already owns its strong reference.
-    if !item_is_foreign {
-        unsafe { crate::api::refcount::Py_INCREF(v) };
+    if item_is_foreign {
+        unsafe { (h.dec_ref)(item_bits) };
     }
     0
 }

@@ -628,7 +628,7 @@ pub(crate) unsafe fn poll_future_with_task_stack(
             *stack.borrow_mut() = caller_handlers;
         });
         exception_stack_set_depth(_py, caller_depth);
-        exception_context_fallback_pop();
+        exception_context_fallback_pop(_py);
         if debug_task && prev_task.is_null() {
             eprintln!(
                 "molt task trace: restoring prev_task=null after task=0x{:x}",

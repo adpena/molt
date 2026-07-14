@@ -51,7 +51,6 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
-    scalar_fast_paths_enabled: bool,
     nbc: &crate::NanBoxConsts,
 ) -> OpFlow {
     // Reconstruct the original op-local closure (captures representation_plan +
@@ -80,9 +79,6 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
             representation_plan,
             nbc,
         )
-    };
-    let op_index_key_is_integer_family = |op: &OpIR| {
-        scalar_fast_paths_enabled && representation_plan.op_index_key_is_integer_family(op)
     };
     match op.kind.as_str() {
         "dict_new" => {
@@ -899,73 +895,22 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 representation_plan,
             )
             .unwrap_or_else(|| panic!("Value not found in {} op {}", func_name, op_idx));
-            // Dispatch based on container specialization:
-            // - list_int: flat i64 storage (Codon-style)
-            // - fast_int: generic list but key is known int
-            // - default: full dict/generic dispatch
-            if representation_plan.op_has_container_storage(
-                op_idx,
-                op,
-                ContainerStorageKind::FlatListInt,
-            ) {
-                // raw-int carrier fast path for list_int dict_set.
-                // Inside loops, use Variable-only shadows (phi-correct).
-                let raw_key_opt = int_raw_value(&mut *builder, vars, representation_plan, &args[1]);
-                let raw_val_opt = int_raw_value(&mut *builder, vars, representation_plan, &args[2]);
-                if let (Some(raw_key), Some(raw_val)) = (raw_key_opt, raw_val_opt) {
-                    let callee = SimpleBackend::import_func_id_split(
-                        &mut *module,
-                        &mut *import_ids,
-                        "molt_list_int_setitem_unchecked",
-                        &[types::I64, types::I64, types::I64],
-                        &[types::I64],
-                    );
-                    let local_callee = module.declare_func_in_func(callee, builder.func);
-                    let call = builder
-                        .ins()
-                        .call(local_callee, &[*dict_bits, raw_key, raw_val]);
-                    let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out.as_ref() {
-                        def_var_named(&mut *builder, vars, out__, res);
-                    }
-                } else {
-                    let callee = SimpleBackend::import_func_id_split(
-                        &mut *module,
-                        &mut *import_ids,
-                        "molt_list_int_setitem",
-                        &[types::I64, types::I64, types::I64],
-                        &[types::I64],
-                    );
-                    let local_callee = module.declare_func_in_func(callee, builder.func);
-                    let call = builder
-                        .ins()
-                        .call(local_callee, &[*dict_bits, *key_bits, *val_bits]);
-                    let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out.as_ref() {
-                        def_var_named(&mut *builder, vars, out__, res);
-                    }
-                }
-            } else {
-                let fn_name = if op_index_key_is_integer_family(op) {
-                    "molt_list_setitem_int_fast"
-                } else {
-                    "molt_dict_set"
-                };
-                let callee = SimpleBackend::import_func_id_split(
-                    &mut *module,
-                    &mut *import_ids,
-                    fn_name,
-                    &[types::I64, types::I64, types::I64],
-                    &[types::I64],
-                );
-                let local_callee = module.declare_func_in_func(callee, builder.func);
-                let call = builder
-                    .ins()
-                    .call(local_callee, &[*dict_bits, *key_bits, *val_bits]);
-                let res = builder.inst_results(call)[0];
-                if let Some(out__) = op.out.as_ref() {
-                    def_var_named(&mut *builder, vars, out__, res);
-                }
+            // Live runtime type dispatch preserves compact int/bool storage
+            // only until ABI publication promotes it to a generic list.
+            let callee = SimpleBackend::import_func_id_split(
+                &mut *module,
+                &mut *import_ids,
+                "molt_store_index",
+                &[types::I64, types::I64, types::I64],
+                &[types::I64],
+            );
+            let local_callee = module.declare_func_in_func(callee, builder.func);
+            let call = builder
+                .ins()
+                .call(local_callee, &[*dict_bits, *key_bits, *val_bits]);
+            let res = builder.inst_results(call)[0];
+            if let Some(out__) = op.out.as_ref() {
+                def_var_named(&mut *builder, vars, out__, res);
             }
         }
         "dict_update_missing" => {

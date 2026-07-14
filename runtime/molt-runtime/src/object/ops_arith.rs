@@ -138,13 +138,14 @@ pub extern "C" fn molt_add(a: u64, b: u64) -> u64 {
                     return MoltObject::none().bits();
                 }
                 if ltype == TYPE_ID_LIST && rtype == TYPE_ID_LIST {
-                    let l_len = list_len(lp);
-                    let r_len = list_len(rp);
-                    let l_elems = seq_vec_ref(lp);
-                    let r_elems = seq_vec_ref(rp);
-                    let mut combined = Vec::with_capacity(l_len + r_len);
-                    combined.extend_from_slice(l_elems);
-                    combined.extend_from_slice(r_elems);
+                    let Some(combined) = crate::object::seq_access::snapshot_concat(
+                        _py,
+                        lp,
+                        rp,
+                        "list concatenation allocation failed",
+                    ) else {
+                        return MoltObject::none().bits();
+                    };
                     let ptr = alloc_list(_py, &combined);
                     if ptr.is_null() {
                         return MoltObject::none().bits();
@@ -154,11 +155,13 @@ pub extern "C" fn molt_add(a: u64, b: u64) -> u64 {
                 if ltype == TYPE_ID_TUPLE && rtype == TYPE_ID_TUPLE {
                     let l_len = tuple_len(lp);
                     let r_len = tuple_len(rp);
-                    let l_elems = seq_vec_ref(lp);
-                    let r_elems = seq_vec_ref(rp);
                     let mut combined = Vec::with_capacity(l_len + r_len);
-                    combined.extend_from_slice(l_elems);
-                    combined.extend_from_slice(r_elems);
+                    crate::object::seq_access::with_immutable_tuple_slice(lp, |items| {
+                        combined.extend_from_slice(items)
+                    });
+                    crate::object::seq_access::with_immutable_tuple_slice(rp, |items| {
+                        combined.extend_from_slice(items)
+                    });
                     let ptr = alloc_tuple(_py, &combined);
                     if ptr.is_null() {
                         return MoltObject::none().bits();
@@ -524,7 +527,11 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
         let times = count as usize;
         match type_id {
             TYPE_ID_LIST => {
-                let elems = seq_vec_ref(ptr);
+                let elems = crate::object::seq_access::snapshot(
+                    _py,
+                    ptr,
+                    "list repeat snapshot allocation failed",
+                )?;
                 let total = match elems.len().checked_mul(times) {
                     Some(total) => total,
                     None => return raise_exception::<_>(_py, "MemoryError", "out of memory"),
@@ -590,7 +597,7 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
                 } else {
                     let mut combined = Vec::with_capacity(total);
                     for _ in 0..times {
-                        combined.extend_from_slice(elems);
+                        combined.extend_from_slice(&elems);
                     }
                     let out_ptr = alloc_list(_py, &combined);
                     if out_ptr.is_null() {
@@ -620,8 +627,7 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
                     Err(_) => None,
                 }
             }
-            TYPE_ID_TUPLE => {
-                let elems = seq_vec_ref(ptr);
+            TYPE_ID_TUPLE => crate::object::seq_access::with_immutable_tuple_slice(ptr, |elems| {
                 let total = match elems.len().checked_mul(times) {
                     Some(total) => total,
                     None => return raise_exception::<_>(_py, "MemoryError", "out of memory"),
@@ -629,7 +635,7 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
                 if elems.len() == 1 {
                     let val = elems[0];
                     let combined = vec![val; total];
-                    let out_ptr = alloc_tuple_with_capacity_owned(_py, &combined, total);
+                    let out_ptr = crate::object::builders::alloc_tuple_owned(_py, &combined);
                     if out_ptr.is_null() {
                         return raise_exception::<_>(_py, "MemoryError", "out of memory");
                     }
@@ -654,7 +660,7 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
                     }
                     Some(MoltObject::from_ptr(out_ptr).bits())
                 }
-            }
+            })?,
             TYPE_ID_STRING => {
                 let len = string_len(ptr);
                 let bytes = std::slice::from_raw_parts(string_bytes(ptr), len);
@@ -710,18 +716,11 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
 }
 
 unsafe fn list_repeat_in_place(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> bool {
-    unsafe {
-        let vec_ptr = seq_vec_ptr(ptr);
-        let elems = &mut *vec_ptr;
-        if count <= 0 {
-            for &item in elems.iter() {
-                dec_ref_bits(_py, item);
-            }
-            elems.clear();
-            return true;
-        }
-        let count = match usize::try_from(count) {
-            Ok(val) => val,
+    let count = if count <= 0 {
+        0
+    } else {
+        match usize::try_from(count) {
+            Ok(value) => value,
             Err(_) => {
                 return raise_exception::<_>(
                     _py,
@@ -729,40 +728,9 @@ unsafe fn list_repeat_in_place(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> b
                     "cannot fit 'int' into an index-sized integer",
                 );
             }
-        };
-        if count == 1 {
-            return true;
         }
-        let snapshot = elems.clone();
-        if snapshot.is_empty() {
-            return true;
-        }
-        let total = match snapshot.len().checked_mul(count) {
-            Some(total) => total,
-            None => {
-                return raise_exception::<_>(
-                    _py,
-                    "OverflowError",
-                    "cannot fit 'int' into an index-sized integer",
-                );
-            }
-        };
-        if !crate::object::backing::tracked_vec_reserve_or_raise(
-            _py,
-            vec_ptr,
-            total,
-            "list allocation failed",
-        ) {
-            return false;
-        }
-        for _ in 1..count {
-            for &item in snapshot.iter() {
-                elems.push(item);
-                inc_ref_bits(_py, item);
-            }
-        }
-        true
-    }
+    };
+    unsafe { crate::object::list_mutation::repeat(_py, ptr, count) }
 }
 
 unsafe fn bytearray_repeat_in_place(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> bool {
@@ -2040,7 +2008,13 @@ fn collect_union_args(_py: &PyToken<'_>, bits: u64, args: &mut Vec<u64>) {
                 if let Some(args_ptr) = args_obj.as_ptr()
                     && object_type_id(args_ptr) == TYPE_ID_TUPLE
                 {
-                    let elems = seq_vec_ref(args_ptr);
+                    let Some(elems) = crate::object::seq_access::snapshot(
+                        _py,
+                        args_ptr,
+                        "union argument snapshot allocation failed",
+                    ) else {
+                        return;
+                    };
                     for &elem_bits in elems.iter() {
                         append_union_arg(_py, args, elem_bits);
                     }

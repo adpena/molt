@@ -84,7 +84,15 @@ pub(super) fn parse_sendmsg_ancillary_items(
                 "sendmsg ancillary data must be iterable of 3-item tuples",
             ));
         }
-        let parts = unsafe { seq_vec_ref(entry_ptr) };
+        let Some(parts) = (unsafe {
+            crate::object::seq_access::snapshot(
+                _py,
+                entry_ptr,
+                "ancillary item snapshot allocation failed",
+            )
+        }) else {
+            return Err(MoltObject::none().bits());
+        };
         if parts.len() != 3 {
             return Err(raise_exception::<u64>(
                 _py,

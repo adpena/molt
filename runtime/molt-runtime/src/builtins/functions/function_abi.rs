@@ -719,7 +719,15 @@ pub extern "C" fn molt_func_new_closure(
                 if let Some(closure_ptr) = closure_obj.as_ptr() {
                     unsafe {
                         if object_type_id(closure_ptr) == TYPE_ID_TUPLE {
-                            for &entry_bits in seq_vec_ref(closure_ptr).iter() {
+                            let Some(closure) = crate::object::seq_access::snapshot(
+                                _py,
+                                closure_ptr,
+                                "sequence snapshot allocation failed",
+                            ) else {
+                                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                                return MoltObject::none().bits();
+                            };
+                            for &entry_bits in closure.iter() {
                                 let entry_obj = obj_from_bits(entry_bits);
                                 let Some(entry_ptr) = entry_obj.as_ptr() else {
                                     continue;
@@ -727,7 +735,7 @@ pub extern "C" fn molt_func_new_closure(
                                 if object_type_id(entry_ptr) != TYPE_ID_LIST {
                                     continue;
                                 }
-                                if seq_vec_ref(entry_ptr).len() != 1 {
+                                if crate::object::seq_access::len(entry_ptr) != 1 {
                                     continue;
                                 }
                                 let old_class_bits = object_class_bits(entry_ptr);
@@ -833,7 +841,7 @@ pub(crate) unsafe fn function_type_new_from_args(_py: &PyToken<'_>, args: &[u64]
                     "arg 5 (closure) must be None or tuple",
                 );
             }
-            if !seq_vec_ref(closure_ptr).is_empty() {
+            if crate::object::seq_access::len(closure_ptr) != 0 {
                 return raise_exception::<_>(
                     _py,
                     "NotImplementedError",
@@ -1070,7 +1078,15 @@ pub extern "C" fn molt_function_init_metadata_packed(
                 return raise_exception::<_>(_py, "TypeError", "expected metadata tuple");
             }
         }
-        let metadata = unsafe { seq_vec_ref(metadata_ptr) };
+        let Some(metadata) = (unsafe {
+            crate::object::seq_access::snapshot(
+                _py,
+                metadata_ptr,
+                "sequence snapshot allocation failed",
+            )
+        }) else {
+            return MoltObject::none().bits();
+        };
         if metadata.len() != 11 {
             return raise_exception::<_>(_py, "TypeError", "metadata tuple must contain 11 items");
         }

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Regenerate the sealed pact-witness NumPy/SciPy extension roots.
+"""Regenerate the sealed pact-witness NumPy extension roots.
 
-The pact Kernel A witness acceptance lane links source-recompiled NumPy and
-SciPy ``.molt.wasm`` static-link artifacts through sealed extension roots under
+The pact Kernel A witness acceptance lane links source-recompiled NumPy
+``.molt.wasm`` static-link artifacts through sealed extension roots under
 ``tmp/`` (see ``tools/proof_queue.py::_pact_witness_native_roots``). Those roots
 are gitignored, ephemeral build artifacts. Their extension manifests record the
 ``molt_c_api_version`` / ``abi_tag`` of the runtime they were produced against.
@@ -35,7 +35,7 @@ without hand-editing generated manifests:
 
 The underlying ``.molt.wasm`` relocatable objects are unchanged: the Molt
 extension ABI is a monotonically forward-compatible stable core, and the
-NumPy/SciPy 1->N C-API version bumps observed here were additive. An artifact
+NumPy 1->N C-API version bumps observed here were additive. An artifact
 recorded at a newer major ABI than the current runtime is a genuine mismatch;
 ``molt extension seal`` refuses to re-stamp it downward and fails closed.
 
@@ -91,7 +91,6 @@ from molt.scientific_stack_versions import (  # noqa: E402
 if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pact_witness_numpy_python_closure as _numpy_python_closure  # noqa: E402
-import pact_witness_scipy_python_closure as _scipy_python_closure  # noqa: E402
 
 
 # The witness sealed roots, relative to the repo root. These mirror the primary
@@ -100,9 +99,6 @@ import pact_witness_scipy_python_closure as _scipy_python_closure  # noqa: E402
 # partial staging environment fails closed rather than silently skipping.
 _DEFAULT_WITNESS_ROOTS: tuple[str, ...] = (
     "tmp/pact_numpy_multiarray_sealed_for_witness",
-    "tmp/pact_scipy_ndimage_sealed_for_witness_next",
-    "tmp/pact_scipy_ni_label_molt_ext_wasm_cpython_abi",
-    "tmp/pact_scipy_ccallback_c_molt_ext_wasm_cpython_abi",
 )
 
 _ARTIFACT_MANIFEST_SUFFIX = ".extension_manifest.json"
@@ -304,6 +300,39 @@ def _source_plan_relative_source(
     return None
 
 
+def _relocate_source_plan_root(
+    *,
+    manifest: dict,
+    manifest_path: Path,
+    resolved_source: Path,
+) -> bool:
+    source_plan = manifest.get("source_plan")
+    if not isinstance(source_plan, dict):
+        return False
+    resolved = resolved_source.resolve()
+    for field in ("source_root", "build_root"):
+        raw_root = source_plan.get(field)
+        if not isinstance(raw_root, str) or not raw_root.strip():
+            continue
+        logical_root = Path(raw_root).expanduser()
+        try:
+            resolved.relative_to(logical_root.resolve())
+            return False
+        except ValueError:
+            pass
+        for relocated_root in _source_extension_relocation_roots(
+            logical_root,
+            manifest_path=manifest_path,
+        ):
+            try:
+                resolved.relative_to(relocated_root.resolve())
+            except ValueError:
+                continue
+            source_plan[field] = str(relocated_root.resolve())
+            return True
+    return False
+
+
 def _relativize_object_closure_sources(manifest_path: Path) -> bool:
     manifest = _load_manifest(manifest_path)
     object_closure = manifest.get("object_closure")
@@ -346,6 +375,12 @@ def _relativize_object_closure_sources(manifest_path: Path) -> bool:
             )
         if source != relative_source:
             item["source"] = relative_source
+            changed = True
+        if _relocate_source_plan_root(
+            manifest=manifest,
+            manifest_path=manifest_path,
+            resolved_source=source_path,
+        ):
             changed = True
     if changed:
         manifest_path.write_text(
@@ -396,6 +431,9 @@ def _regenerate_root(root: Path, expected_abi: str, expected_tag: str) -> None:
     manifests = _ordered_manifests(root)
     if not manifests:
         raise RegenError(f"{root}: no per-artifact extension manifests to re-seal")
+    # Repair relocatable source custody before extension_seal validates it. The
+    # seal then recomputes derived import/closure facts from the relative path.
+    _relativize_root_object_closure_sources(root)
     for manifest_path in manifests:
         manifest = _load_manifest(manifest_path)
         artifact = _resolve_declared_artifact(manifest, manifest_path)
@@ -409,7 +447,6 @@ def _regenerate_root(root: Path, expected_abi: str, expected_tag: str) -> None:
             raise RegenError(
                 f"molt extension seal failed (rc={rc}) for {manifest_path}"
             )
-    _relativize_root_object_closure_sources(root)
     problems = _check_root(root, expected_abi, expected_tag)
     if problems:
         raise RegenError(
@@ -498,6 +535,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"FAIL  {root}: {exc}", file=sys.stderr)
             exit_code = 2
 
+    # An explicit root request is intentionally scoped to those roots. Default
+    # NumPy closure staging is a separate side effect and must not run while a
+    # caller is inspecting or repairing an isolated root.
+    if args.roots is not None:
+        return exit_code
+
     # NumPy's pure-Python submodules (and its build-generated version.py/
     # __config__.py) do not travel with a source-derived C-ext re-seal; stage
     # NumPy's full importable subtree from the off-the-shelf checkout into every
@@ -523,33 +566,6 @@ def main(argv: list[str] | None = None) -> int:
         _numpy_python_closure._generated.GeneratedModuleError,
     ) as exc:
         print(f"FAIL  numpy pure-Python closure: {exc}", file=sys.stderr)
-        exit_code = 2
-
-    # SciPy's pure-Python submodules (and its build-generated version.py) do not
-    # travel with a source-derived C-ext re-seal; stage SciPy's full importable
-    # subtree (respecting meson install renames) from the off-the-shelf checkout
-    # into every sealed root. version.py always materializes; __config__.py fails
-    # closed until a real SciPy wasm meson build emits it.
-    try:
-        if args.check:
-            problems = _scipy_python_closure.check(repo_root)
-            if problems:
-                print(f"STALE {repo_root} (scipy pure-Python closure):")
-                for problem in problems[:20]:
-                    print(f"  {problem}")
-                if len(problems) > 20:
-                    print(f"  ... (+{len(problems) - 20} more)")
-                exit_code = exit_code or 1
-            else:
-                print("OK    scipy pure-Python closure staged + current")
-        else:
-            written = _scipy_python_closure.stage(repo_root)
-            print(f"STAGED {len(written)} scipy module files across witness roots")
-    except (
-        _scipy_python_closure.ClosureStagingError,
-        _scipy_python_closure._generated.GeneratedModuleError,
-    ) as exc:
-        print(f"FAIL  scipy pure-Python closure: {exc}", file=sys.stderr)
         exit_code = 2
 
     return exit_code

@@ -628,9 +628,14 @@ extern "C" fn bridge_list_len(ptr: *mut u8) -> usize {
     unsafe { _list_len(ptr) }
 }
 
-#[allow(improper_ctypes_definitions)]
-extern "C" fn bridge_seq_vec_ptr(ptr: *mut u8) -> *mut Vec<u64> {
-    unsafe { seq_vec_ptr(ptr) }
+extern "C" fn bridge_seq_snapshot(
+    ptr: *mut u8,
+    out_ptr: *mut *const u64,
+    out_len: *mut usize,
+) -> i32 {
+    crate::with_gil_entry_nopanic!(_py, {
+        unsafe { crate::seq_snapshot_bridge::export(_py, ptr, out_ptr, out_len) }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -866,7 +871,7 @@ static RUNTIME_VTABLE: RuntimeVtable = RuntimeVtable {
     dict_get_in_place: bridge_dict_get_in_place,
     dict_set_in_place: bridge_dict_set_in_place,
     list_len: bridge_list_len,
-    seq_vec_ptr: bridge_seq_vec_ptr,
+    seq_snapshot: bridge_seq_snapshot,
     dict_order_clone: bridge_dict_order_clone,
     molt_iter: bridge_molt_iter,
     molt_iter_next: bridge_molt_iter_next,

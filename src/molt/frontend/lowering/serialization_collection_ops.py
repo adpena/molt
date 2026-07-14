@@ -482,15 +482,6 @@ class SerializationCollectionOpsMixin(_MixinBase):
                 "args": [arg.name for arg in op.args],
                 "out": op.result.name,
             }
-            # fast_int: when the key is a known int (list subscript store),
-            # use molt_list_setitem_int_fast in the backend.
-            if (
-                len(op.args) >= 2
-                and self._hints_enabled()
-                and isinstance(op.args[1], MoltValue)
-                and op.args[1].type_hint in {"int", "bool"}
-            ):
-                ds_entry["fast_int"] = True
             # Flat i64-list storage is tracked structurally from
             # list_int_new; do not encode it as container_type metadata.
             if (

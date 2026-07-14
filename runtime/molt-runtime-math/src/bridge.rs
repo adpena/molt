@@ -582,7 +582,9 @@ unsafe extern "C" {
     fn __molt_math_dict_get_in_place(dict_ptr: *mut u8, key_bits: u64, out: *mut u64) -> i32;
     fn __molt_math_dict_set_in_place(dict_ptr: *mut u8, key_bits: u64, val_bits: u64) -> i32;
     fn __molt_math_list_len(ptr: *mut u8) -> usize;
-    fn __molt_math_seq_vec_ptr(ptr: *mut u8) -> *mut Vec<u64>;
+    fn __molt_math_seq_snapshot(ptr: *mut u8, out_ptr: *mut *const u64, out_len: *mut usize)
+    -> i32;
+    fn __molt_math_list_swap(list_bits: u64, left: usize, right: usize) -> i32;
 }
 
 /// # Safety
@@ -617,9 +619,20 @@ pub unsafe fn list_len(ptr: *mut u8) -> usize {
 
 /// # Safety
 ///
-/// `ptr` must refer to a live Molt sequence object backed by `Vec<u64>`.
-pub unsafe fn seq_vec_ref(ptr: *mut u8) -> &'static Vec<u64> {
-    unsafe { &*__molt_math_seq_vec_ptr(ptr) }
+/// `ptr` must refer to a live Molt list or tuple for the duration of this call.
+pub unsafe fn seq_snapshot(ptr: *mut u8) -> OwnedBridgeHandleSnapshot {
+    let mut out_ptr: *const u64 = std::ptr::null();
+    let mut out_len = 0usize;
+    let ok = unsafe { __molt_math_seq_snapshot(ptr, &mut out_ptr, &mut out_len) };
+    if ok == 0 {
+        out_ptr = std::ptr::null();
+        out_len = 0;
+    }
+    unsafe { bridge_owned_handle_snapshot(out_ptr, out_len) }
+}
+
+pub fn list_swap(list_bits: u64, left: usize, right: usize) -> bool {
+    unsafe { __molt_math_list_swap(list_bits, left, right) != 0 }
 }
 
 // ---------------------------------------------------------------------------
@@ -674,17 +687,6 @@ pub fn fill_os_random(buf: &mut [u8]) -> Result<(), FillOsRandomError> {
     } else {
         Err(FillOsRandomError)
     }
-}
-
-// ---------------------------------------------------------------------------
-// Mutable container access (for shuffle)
-// ---------------------------------------------------------------------------
-
-/// # Safety
-///
-/// `ptr` must refer to a live Molt sequence object backed by `Vec<u64>`.
-pub unsafe fn seq_vec(ptr: *mut u8) -> &'static mut Vec<u64> {
-    unsafe { &mut *__molt_math_seq_vec_ptr(ptr) }
 }
 
 // ---------------------------------------------------------------------------

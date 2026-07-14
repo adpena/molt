@@ -731,14 +731,15 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
                 ),
                 evidence=match.group(0),
                 next_action=(
-                    "Regenerate and re-seal the source-recompiled extension root "
-                    "from live source/build custody so seal persists "
+                    "Reproduce the configured extension set from live upstream "
+                    "Meson custody so the atomic seal persists "
                     "runtime_python_import_modules; do not rerun the heavy "
                     "pact-witness-acceptance lane until package admission passes."
                 ),
                 scopes=(
                     "src/molt/cli/external_native.py",
                     "src/molt/cli/extension_seal.py",
+                    "src/molt/cli/source_extension_producer.py",
                     "tools/pact_seal_witness_roots.py",
                 ),
             )

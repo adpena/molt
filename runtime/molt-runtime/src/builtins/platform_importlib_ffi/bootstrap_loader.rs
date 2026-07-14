@@ -1290,21 +1290,30 @@ pub(in super::super) fn importlib_coerce_search_paths_values(
                 clear_exception(_py);
                 return Err(raise_exception::<_>(_py, "RuntimeError", label));
             };
-            let pair = unsafe {
+            unsafe {
                 if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
                     clear_exception(_py);
                     return Err(raise_exception::<_>(_py, "RuntimeError", label));
                 }
-                seq_vec_ref(pair_ptr)
-            };
-            if pair.len() < 2 {
+            }
+            if unsafe { crate::object::seq_access::locked_len(pair_ptr) } < 2 {
                 clear_exception(_py);
                 return Err(raise_exception::<_>(_py, "RuntimeError", label));
             }
-            if is_truthy(_py, obj_from_bits(pair[1])) {
+            let Some(done) = (unsafe { crate::object::seq_access::pin_item(_py, pair_ptr, 1) })
+            else {
+                clear_exception(_py);
+                return Err(raise_exception::<_>(_py, "RuntimeError", label));
+            };
+            if is_truthy(_py, obj_from_bits(done.bits())) {
                 break;
             }
-            let text_bits = unsafe { call_callable1(_py, builtin_classes(_py).str, pair[0]) };
+            let Some(value) = (unsafe { crate::object::seq_access::pin_item(_py, pair_ptr, 0) })
+            else {
+                clear_exception(_py);
+                return Err(raise_exception::<_>(_py, "RuntimeError", label));
+            };
+            let text_bits = unsafe { call_callable1(_py, builtin_classes(_py).str, value.bits()) };
             if exception_pending(_py) {
                 clear_exception(_py);
                 if !obj_from_bits(text_bits).is_none() {
@@ -1379,21 +1388,28 @@ pub(super) fn importlib_finder_signature_tuple_bits(
             clear_exception(_py);
             return Err(raise_exception::<_>(_py, "RuntimeError", label));
         };
-        let pair = unsafe {
+        unsafe {
             if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
                 clear_exception(_py);
                 return Err(raise_exception::<_>(_py, "RuntimeError", label));
             }
-            seq_vec_ref(pair_ptr)
-        };
-        if pair.len() < 2 {
+        }
+        if unsafe { crate::object::seq_access::locked_len(pair_ptr) } < 2 {
             clear_exception(_py);
             return Err(raise_exception::<_>(_py, "RuntimeError", label));
         }
-        if is_truthy(_py, obj_from_bits(pair[1])) {
+        let Some(done) = (unsafe { crate::object::seq_access::pin_item(_py, pair_ptr, 1) }) else {
+            clear_exception(_py);
+            return Err(raise_exception::<_>(_py, "RuntimeError", label));
+        };
+        if is_truthy(_py, obj_from_bits(done.bits())) {
             break;
         }
-        let id_bits = crate::molt_id(pair[0]);
+        let Some(value) = (unsafe { crate::object::seq_access::pin_item(_py, pair_ptr, 0) }) else {
+            clear_exception(_py);
+            return Err(raise_exception::<_>(_py, "RuntimeError", label));
+        };
+        let id_bits = crate::molt_id(value.bits());
         if exception_pending(_py) {
             clear_exception(_py);
             if !obj_from_bits(id_bits).is_none() {

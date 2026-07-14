@@ -618,26 +618,23 @@ fn array_index_arg_from_bits(_py: &PyToken<'_>, index_bits: u64) -> Option<i64> 
     index_i64_with_overflow(_py, index_bits, &err, None)
 }
 
-fn elem_from_bits(_py: &PyToken<'_>, tc: Typecode, value_bits: u64) -> Result<ArrayElem, u64> {
+fn elem_from_bits_unraised(tc: Typecode, value_bits: u64) -> Result<ArrayElem, &'static str> {
     let obj = obj_from_bits(value_bits);
     if tc.is_float() {
         let Some(v) = to_f64(obj) else {
-            return Err(raise_exception::<u64>(
-                _py,
-                "TypeError",
-                "a float is required",
-            ));
+            return Err("a float is required");
         };
         return Ok(ArrayElem::Float(v));
     }
     if let Some(v) = to_i64(obj) {
         return Ok(ArrayElem::Int(v));
     }
-    Err(raise_exception::<u64>(
-        _py,
-        "TypeError",
-        "an integer is required",
-    ))
+    Err("an integer is required")
+}
+
+fn elem_from_bits(_py: &PyToken<'_>, tc: Typecode, value_bits: u64) -> Result<ArrayElem, u64> {
+    elem_from_bits_unraised(tc, value_bits)
+        .map_err(|message| raise_exception::<u64>(_py, "TypeError", message))
 }
 
 fn elem_to_bits(_py: &PyToken<'_>, elem: ArrayElem) -> u64 {
@@ -720,18 +717,19 @@ pub extern "C" fn molt_array_from_list(typecode_bits: u64, items_bits: u64) -> u
         let Some(list_ptr) = items_obj.as_ptr() else {
             return array_bits(_py, handle);
         };
-        let n = unsafe { crate::list_len(list_ptr) };
-        let seq_vec_ptr = unsafe { crate::seq_vec_ptr(list_ptr) };
-        let seq = unsafe { &*seq_vec_ptr };
-
-        for &elem_bits in seq.iter().take(n) {
-            let elem = match elem_from_bits(_py, tc, elem_bits) {
-                Ok(e) => e,
-                Err(exc) => return exc,
-            };
-            if let Err(msg) = handle.push_elem(elem) {
-                return raise_exception::<u64>(_py, "OverflowError", msg);
-            }
+        let converted = unsafe {
+            crate::object::seq_access::with_borrowed(list_ptr, |seq| {
+                for &elem_bits in seq {
+                    let elem = elem_from_bits(_py, tc, elem_bits)?;
+                    if let Err(msg) = handle.push_elem(elem) {
+                        return Err(raise_exception::<u64>(_py, "OverflowError", msg));
+                    }
+                }
+                Ok(())
+            })
+        };
+        if let Err(exc) = converted {
+            return exc;
         }
         array_bits(_py, handle)
     })
@@ -766,32 +764,36 @@ pub extern "C" fn molt_array_extend(handle_bits: u64, items_bits: u64) -> u64 {
             let Some(list_ptr) = items_obj.as_ptr() else {
                 return MoltObject::none().bits();
             };
-            let n = unsafe { crate::list_len(list_ptr) };
-            let seq_vec_ptr = unsafe { crate::seq_vec_ptr(list_ptr) };
-            let seq = unsafe { &*seq_vec_ptr };
             // Collect first to avoid partial mutation on error.
             let itemsize = handle.typecode.itemsize();
-            let Some(additional_bytes) = n.checked_mul(itemsize) else {
-                return raise_exception::<u64>(_py, "OverflowError", "array is too large");
+            let encoded = unsafe {
+                crate::object::seq_access::with_borrowed(list_ptr, |seq| {
+                    let Some(additional_bytes) = seq.len().checked_mul(itemsize) else {
+                        return Err(("OverflowError", "array is too large"));
+                    };
+                    let Some(final_len) = handle.data.len().checked_add(additional_bytes) else {
+                        return Err(("OverflowError", "array is too large"));
+                    };
+                    let mut encoded: Vec<u8> = Vec::new();
+                    if encoded.try_reserve_exact(additional_bytes).is_err() {
+                        return Err(("MemoryError", "out of memory"));
+                    }
+                    for &elem_bits in seq {
+                        let elem = elem_from_bits_unraised(tc, elem_bits)
+                            .map_err(|message| ("TypeError", message))?;
+                        let mut item = [0_u8; 8];
+                        match handle.encode_elem_into(elem, &mut item) {
+                            Ok(len) => encoded.extend_from_slice(&item[..len]),
+                            Err(message) => return Err(("OverflowError", message)),
+                        }
+                    }
+                    Ok((encoded, final_len))
+                })
             };
-            let Some(final_len) = handle.data.len().checked_add(additional_bytes) else {
-                return raise_exception::<u64>(_py, "OverflowError", "array is too large");
+            let (encoded, final_len) = match encoded {
+                Ok(encoded) => encoded,
+                Err((kind, message)) => return raise_exception::<u64>(_py, kind, message),
             };
-            let mut encoded: Vec<u8> = Vec::new();
-            if encoded.try_reserve_exact(additional_bytes).is_err() {
-                return raise_exception::<u64>(_py, "MemoryError", "out of memory");
-            }
-            for &elem_bits in seq.iter().take(n) {
-                let elem = match elem_from_bits(_py, tc, elem_bits) {
-                    Ok(e) => e,
-                    Err(exc) => return exc,
-                };
-                let mut item = [0_u8; 8];
-                match handle.encode_elem_into(elem, &mut item) {
-                    Ok(len) => encoded.extend_from_slice(&item[..len]),
-                    Err(msg) => return raise_exception::<u64>(_py, "OverflowError", msg),
-                }
-            }
             if !encoded.is_empty()
                 && let Err(exc) = ensure_array_resizable(_py, handle)
             {

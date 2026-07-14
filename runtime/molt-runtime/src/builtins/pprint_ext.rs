@@ -110,8 +110,7 @@ pub(crate) fn safe_repr_inner(
 
     let result = match type_id {
         TYPE_ID_LIST => {
-            let src = unsafe { seq_vec_ref(ptr) };
-            let len = src.len();
+            let len = unsafe { crate::object::seq_access::locked_len(ptr) };
             if len == 0 {
                 ("[]".to_string(), true, false)
             } else {
@@ -123,9 +122,14 @@ pub(crate) fn safe_repr_inner(
                 } else {
                     len
                 };
-                for &item in src.iter().take(display_len) {
+                for index in 0..display_len {
+                    let Some(item) =
+                        (unsafe { crate::object::seq_access::pin_item(_py, ptr, index) })
+                    else {
+                        break;
+                    };
                     let (s, r, rec) =
-                        safe_repr_inner(_py, item, seen, depth + 1, max_depth, max_width);
+                        safe_repr_inner(_py, item.bits(), seen, depth + 1, max_depth, max_width);
                     if !r {
                         readable = false;
                     }
@@ -142,8 +146,7 @@ pub(crate) fn safe_repr_inner(
             }
         }
         TYPE_ID_TUPLE => {
-            let src = unsafe { seq_vec_ref(ptr) };
-            let len = src.len();
+            let len = unsafe { crate::object::seq_access::locked_len(ptr) };
             if len == 0 {
                 ("()".to_string(), true, false)
             } else {
@@ -155,9 +158,14 @@ pub(crate) fn safe_repr_inner(
                 } else {
                     len
                 };
-                for &item in src.iter().take(display_len) {
+                for index in 0..display_len {
+                    let Some(item) =
+                        (unsafe { crate::object::seq_access::pin_item(_py, ptr, index) })
+                    else {
+                        break;
+                    };
                     let (s, r, rec) =
-                        safe_repr_inner(_py, item, seen, depth + 1, max_depth, max_width);
+                        safe_repr_inner(_py, item.bits(), seen, depth + 1, max_depth, max_width);
                     if !r {
                         readable = false;
                     }
@@ -427,20 +435,19 @@ fn pformat_recursive(
             }
         }
         TYPE_ID_LIST => {
-            let src = unsafe { seq_vec_ref(ptr) };
-            if src.is_empty() {
+            if unsafe { crate::object::seq_access::locked_len(ptr) } == 0 {
                 "[]".to_string()
             } else {
-                format_sequence_pformat(_py, src, seen, current_indent, level, config, ("[", "]"))
+                format_sequence_pformat(_py, ptr, seen, current_indent, level, config, ("[", "]"))
             }
         }
         TYPE_ID_TUPLE => {
-            let src = unsafe { seq_vec_ref(ptr) };
-            if src.is_empty() {
+            let len = unsafe { crate::object::seq_access::locked_len(ptr) };
+            if len == 0 {
                 "()".to_string()
             } else {
-                let end = if src.len() == 1 { ",)" } else { ")" };
-                format_sequence_pformat(_py, src, seen, current_indent, level, config, ("(", end))
+                let end = if len == 1 { ",)" } else { ")" };
+                format_sequence_pformat(_py, ptr, seen, current_indent, level, config, ("(", end))
             }
         }
         _ => simple,
@@ -455,7 +462,7 @@ fn pformat_recursive(
 
 fn format_sequence_pformat(
     _py: &PyToken<'_>,
-    elems: &[u64],
+    ptr: *mut u8,
     seen: &mut HashSet<u64>,
     current_indent: i64,
     level: i64,
@@ -465,6 +472,26 @@ fn format_sequence_pformat(
     let (open, close) = delimiters;
     let child_indent = current_indent + config.indent_per_level;
     let indent_str = " ".repeat(child_indent as usize);
+    let mut reprs = Vec::with_capacity(unsafe { crate::object::seq_access::locked_len(ptr) });
+    let mut index = 0usize;
+    loop {
+        let live_len = unsafe { crate::object::seq_access::locked_len(ptr) };
+        if index >= live_len {
+            break;
+        }
+        let Some(item) = (unsafe { crate::object::seq_access::pin_item(_py, ptr, index) }) else {
+            continue;
+        };
+        reprs.push(pformat_recursive(
+            _py,
+            item.bits(),
+            seen,
+            child_indent,
+            level + 1,
+            config,
+        ));
+        index += 1;
+    }
 
     if config.compact {
         // In compact mode, try to fit multiple items on each line
@@ -472,21 +499,20 @@ fn format_sequence_pformat(
         let mut current_line = String::new();
         let max_line = config.width - child_indent;
 
-        for (i, &elem) in elems.iter().enumerate() {
-            let repr = pformat_recursive(_py, elem, seen, child_indent, level + 1, config);
+        for (i, repr) in reprs.iter().enumerate() {
             let candidate = if current_line.is_empty() {
                 repr.clone()
             } else {
                 format!("{}, {}", current_line, repr)
             };
-            let extra = if i == elems.len() - 1 {
+            let extra = if i == reprs.len() - 1 {
                 close.len() as i64
             } else {
                 2 // ", "
             };
             if !current_line.is_empty() && (candidate.len() as i64 + extra) > max_line {
                 lines.push(current_line);
-                current_line = repr;
+                current_line = repr.clone();
             } else {
                 current_line = candidate;
             }
@@ -516,13 +542,8 @@ fn format_sequence_pformat(
         } else {
             open.to_string()
         };
-        let mut parts = Vec::with_capacity(elems.len());
-        for &elem in elems {
-            let repr = pformat_recursive(_py, elem, seen, child_indent, level + 1, config);
-            parts.push(repr);
-        }
         let sep = format!(",\n{indent_str}");
-        format!("{}{}{}", prefix, parts.join(&sep), close)
+        format!("{}{}{}", prefix, reprs.join(&sep), close)
     }
 }
 

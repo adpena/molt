@@ -135,7 +135,7 @@ pub(super) fn iter_next_pair(_py: &CoreGilToken, iter_bits: u64) -> Result<(u64,
         if object_type_id(pair_ptr) != crate::bridge::type_id_tuple() {
             return Err(MoltObject::none().bits());
         }
-        let elems = seq_vec_ref(pair_ptr);
+        let elems = seq_snapshot(pair_ptr);
         if elems.len() < 2 {
             return Err(MoltObject::none().bits());
         }

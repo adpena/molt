@@ -251,12 +251,22 @@ fn fromspec_installs_all_slot_families() {
             Some(new_ptr),
             "Py_tp_new slot must install tp_new"
         );
+        assert_eq!(
+            molt_cpython_abi::api::typeobj::PyType_GetSlot(tp, PY_TP_NEW),
+            new_ptr,
+            "PyType_GetSlot must read the same tp_new field FromSpec populated"
+        );
 
         // tp_repr carries the supplied function.
         assert_eq!(
             (*tp).tp_repr.map(|f| f as *mut c_void),
             Some(repr_ptr),
             "Py_tp_repr slot must install tp_repr"
+        );
+        assert_eq!(
+            molt_cpython_abi::api::typeobj::PyType_GetSlot(tp, PY_TP_REPR),
+            repr_ptr,
+            "PyType_GetSlot must read direct function slots"
         );
 
         // tp_as_number allocated and nb_add set to the supplied function.
@@ -269,6 +279,11 @@ fn fromspec_installs_all_slot_families() {
             (*num).nb_add,
             nb_add_ptr,
             "nb_add field must hold the supplied function"
+        );
+        assert_eq!(
+            molt_cpython_abi::api::typeobj::PyType_GetSlot(tp, PY_NB_ADD),
+            nb_add_ptr,
+            "PyType_GetSlot must read protocol sub-table slots"
         );
         // A sibling number field we never set stays null (no stray writes).
         assert!(
@@ -288,6 +303,11 @@ fn fromspec_installs_all_slot_families() {
             DOC,
             "tp_doc copy must equal the source string"
         );
+        assert_eq!(
+            molt_cpython_abi::api::typeobj::PyType_GetSlot(tp, PY_TP_DOC),
+            (*tp).tp_doc.cast_mut().cast::<c_void>(),
+            "PyType_GetSlot must return direct data slot pointers"
+        );
 
         // Method installed into tp_dict by PyType_Ready.
         assert!(!(*tp).tp_dict.is_null(), "tp_dict must be built");
@@ -298,6 +318,19 @@ fn fromspec_installs_all_slot_families() {
             "Py_tp_methods entry must be resolvable in tp_dict"
         );
     }
+}
+
+#[test]
+fn getslot_invalid_id_fails_closed() {
+    install_hooks();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+    let mut ty: PyTypeObject = unsafe { std::mem::zeroed() };
+
+    let result = unsafe { molt_cpython_abi::api::typeobj::PyType_GetSlot(&mut ty, 9999) };
+
+    assert!(result.is_null());
+    assert!(!unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 }
 
 // ===========================================================================

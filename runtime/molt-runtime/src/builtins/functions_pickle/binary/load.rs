@@ -170,7 +170,12 @@ pub(crate) fn pickle_lookup_extension_bits(
         dec_ref_bits(_py, copyreg_bits);
         return Err(pickle_raise(_py, "pickle.loads: invalid extension entry"));
     }
-    let fields = unsafe { seq_vec_ref(entry_ptr) };
+    let Some(fields) = (unsafe {
+        crate::object::seq_access::snapshot(_py, entry_ptr, "sequence snapshot allocation failed")
+    }) else {
+        dec_ref_bits(_py, copyreg_bits);
+        return Err(MoltObject::none().bits());
+    };
     if fields.len() != 2 {
         dec_ref_bits(_py, copyreg_bits);
         return Err(pickle_raise(_py, "pickle.loads: invalid extension entry"));
@@ -202,7 +207,12 @@ pub(crate) fn pickle_apply_newobj(
         dec_ref_bits(_py, new_bits);
         return Err(pickle_raise(_py, "pickle.loads: NEWOBJ args must be tuple"));
     }
-    let args = unsafe { seq_vec_ref(args_ptr).to_vec() };
+    let Some(args) = (unsafe {
+        crate::object::seq_access::snapshot(_py, args_ptr, "sequence snapshot allocation failed")
+    }) else {
+        dec_ref_bits(_py, new_bits);
+        return Err(MoltObject::none().bits());
+    };
     let kw_len = if let Some(kw_bits) = kwargs_bits {
         let Some(kw_ptr) = obj_from_bits(kw_bits).as_ptr() else {
             dec_ref_bits(_py, new_bits);
@@ -228,7 +238,7 @@ pub(crate) fn pickle_apply_newobj(
         dec_ref_bits(_py, new_bits);
         return Err(MoltObject::none().bits());
     }
-    for arg in args {
+    for arg in args.iter().copied() {
         let _ = unsafe { crate::molt_callargs_push_pos(builder_bits, arg) };
         if exception_pending(_py) {
             dec_ref_bits(_py, new_bits);
@@ -365,10 +375,11 @@ pub(crate) fn pickle_apply_build(
     if let Some(state_ptr) = obj_from_bits(state_bits).as_ptr()
         && unsafe { object_type_id(state_ptr) } == TYPE_ID_TUPLE
     {
-        let fields = unsafe { seq_vec_ref(state_ptr) };
-        if fields.len() == 2 {
-            dict_state_bits = fields[0];
-            slot_state_bits = Some(fields[1]);
+        if let Some((dict_bits, slots_bits)) =
+            unsafe { crate::object::seq_access::tuple_pair(state_ptr) }
+        {
+            dict_state_bits = dict_bits;
+            slot_state_bits = Some(slots_bits);
         }
     }
     pickle_apply_dict_state(_py, inst_bits, dict_state_bits)?;
@@ -413,7 +424,11 @@ pub(crate) fn pickle_apply_reduce_vm(
     if unsafe { object_type_id(args_ptr) } != TYPE_ID_TUPLE {
         return Err(pickle_raise(_py, "pickle.loads: reduce args must be tuple"));
     }
-    let args = unsafe { seq_vec_ref(args_ptr).to_vec() };
+    let Some(args) = (unsafe {
+        crate::object::seq_access::snapshot(_py, args_ptr, "sequence snapshot allocation failed")
+    }) else {
+        return Err(MoltObject::none().bits());
+    };
     let out_bits = match callable {
         PickleVmItem::Mark => {
             return Err(pickle_raise(_py, "pickle.loads: mark cannot be called"));
@@ -446,14 +461,14 @@ pub(crate) fn pickle_apply_reduce_vm(
         }
         PickleVmItem::Global(global) => {
             let callable_bits = pickle_global_callable_bits(_py, global)?;
-            let out_bits = pickle_call_with_args(_py, callable_bits, args.as_slice());
+            let out_bits = pickle_call_with_args(_py, callable_bits, &args);
             if exception_pending(_py) {
                 return Err(MoltObject::none().bits());
             }
             out_bits
         }
         PickleVmItem::Value(callable_bits) => {
-            let out_bits = pickle_call_with_args(_py, callable_bits, args.as_slice());
+            let out_bits = pickle_call_with_args(_py, callable_bits, &args);
             if exception_pending(_py) {
                 return Err(MoltObject::none().bits());
             }
@@ -474,8 +489,12 @@ pub(crate) fn pickle_apply_reduce_bits(
     if unsafe { object_type_id(args_ptr) } != TYPE_ID_TUPLE {
         return Err(pickle_raise(_py, "pickle.loads: reduce args must be tuple"));
     }
-    let args = unsafe { seq_vec_ref(args_ptr).to_vec() };
-    let out_bits = pickle_call_with_args(_py, callable_bits, args.as_slice());
+    let Some(args) = (unsafe {
+        crate::object::seq_access::snapshot(_py, args_ptr, "sequence snapshot allocation failed")
+    }) else {
+        return Err(MoltObject::none().bits());
+    };
+    let out_bits = pickle_call_with_args(_py, callable_bits, &args);
     if exception_pending(_py) {
         Err(MoltObject::none().bits())
     } else {

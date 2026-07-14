@@ -58,10 +58,15 @@ pub struct StubSingleton {
     pub ob_type: usize,
 }
 #[unsafe(export_name = "_Py_EllipsisObject")]
-pub static DISCOVERY_ELLIPSIS: StubSingleton = StubSingleton { ob_refcnt: 1 << 30, ob_type: 0 };
+pub static DISCOVERY_ELLIPSIS: StubSingleton = StubSingleton {
+    ob_refcnt: 1 << 30,
+    ob_type: 0,
+};
 #[unsafe(export_name = "_Py_NotImplementedStruct")]
-pub static DISCOVERY_NOTIMPLEMENTED: StubSingleton =
-    StubSingleton { ob_refcnt: 1 << 30, ob_type: 0 };
+pub static DISCOVERY_NOTIMPLEMENTED: StubSingleton = StubSingleton {
+    ob_refcnt: 1 << 30,
+    ob_type: 0,
+};
 
 // ─── LOUD instrumentation stubs for genuine ABI function gaps ─────────────────
 
@@ -70,13 +75,19 @@ pub unsafe extern "C" fn PyStructSequence_InitType2(
     _type: *mut c_void,
     _desc: *mut c_void,
 ) -> c_int {
-    note_first(once_flag!(), "PyStructSequence_InitType2",
-        "struct-sequence type init (UNIMPLEMENTED in molt ABI)");
+    note_first(
+        once_flag!(),
+        "PyStructSequence_InitType2",
+        "struct-sequence type init (UNIMPLEMENTED in molt ABI)",
+    );
     0
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyStructSequence_New(_type: *mut c_void) -> *mut c_void {
-    note_first(once_flag!(), "PyStructSequence_New",
-        "struct-sequence instance (UNIMPLEMENTED in molt ABI; returns NULL)");
+    note_first(
+        once_flag!(),
+        "PyStructSequence_New",
+        "struct-sequence instance (UNIMPLEMENTED in molt ABI; returns NULL)",
+    );
     std::ptr::null_mut()
 }

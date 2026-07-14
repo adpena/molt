@@ -1740,11 +1740,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 3,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::ListIntGetitemNogil,
-        name: "list_int_getitem_nogil",
-        type_idx: 3,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::ListIntGetitemRaw,
         name: "list_int_getitem_raw",
         type_idx: 3,
@@ -1777,11 +1772,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::ListIntSetitem,
         name: "list_int_setitem",
-        type_idx: 5,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::ListIntSetitemNogil,
-        name: "list_int_setitem_nogil",
         type_idx: 5,
     },
     RuntimeImportSpec {
@@ -15320,7 +15310,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "list_builder_new" => Some(WasmRuntimeImport::ListBuilderNew),
         "list_clear" => Some(WasmRuntimeImport::ListClear),
         "list_int_getitem" => Some(WasmRuntimeImport::ListIntGetitem),
-        "list_int_getitem_nogil" => Some(WasmRuntimeImport::ListIntGetitemNogil),
         "list_int_getitem_raw" => Some(WasmRuntimeImport::ListIntGetitemRaw),
         "list_int_getitem_raw_checked" => Some(WasmRuntimeImport::ListIntGetitemRawChecked),
         "list_int_getitem_truthy" => Some(WasmRuntimeImport::ListIntGetitemTruthy),
@@ -15328,7 +15317,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "list_int_new" => Some(WasmRuntimeImport::ListIntNew),
         "list_fill_new" => Some(WasmRuntimeImport::ListFillNew),
         "list_int_setitem" => Some(WasmRuntimeImport::ListIntSetitem),
-        "list_int_setitem_nogil" => Some(WasmRuntimeImport::ListIntSetitemNogil),
         "list_copy" => Some(WasmRuntimeImport::ListCopy),
         "list_count" => Some(WasmRuntimeImport::ListCount),
         "list_extend" => Some(WasmRuntimeImport::ListExtend),

@@ -24,7 +24,10 @@ fn heapq_lt(_py: &PyToken<'_>, a_bits: u64, b_bits: u64) -> Option<bool> {
     Some(truthy)
 }
 
-unsafe fn heapq_siftdown(
+/// Sift helpers for private, callback-unreachable temporary vectors used by
+/// nsmallest/nlargest/merge. Published Python lists use the guarded helpers
+/// below instead.
+unsafe fn heapq_siftdown_slice(
     _py: &PyToken<'_>,
     heap: &mut [u64],
     startpos: usize,
@@ -34,44 +37,177 @@ unsafe fn heapq_siftdown(
     while pos > startpos {
         let parentpos = (pos - 1) / 2;
         let parent = heap[parentpos];
-        let lt = match heapq_lt(_py, newitem, parent) {
-            Some(val) => val,
-            None => return false,
+        let Some(lt) = heapq_lt(_py, newitem, parent) else {
+            return false;
         };
-        if lt {
-            heap[pos] = parent;
-            pos = parentpos;
-            continue;
+        if !lt {
+            break;
         }
-        break;
+        heap[pos] = parent;
+        pos = parentpos;
     }
     heap[pos] = newitem;
     true
 }
 
-unsafe fn heapq_siftup(_py: &PyToken<'_>, heap: &mut [u64], mut pos: usize) -> bool {
+unsafe fn heapq_siftup_slice(_py: &PyToken<'_>, heap: &mut [u64], mut pos: usize) -> bool {
+    let endpos = heap.len();
+    let startpos = pos;
+    let newitem = heap[pos];
+    let mut childpos = 2 * pos + 1;
+    while childpos < endpos {
+        let rightpos = childpos + 1;
+        if rightpos < endpos {
+            let Some(left_lt_right) = heapq_lt(_py, heap[childpos], heap[rightpos]) else {
+                return false;
+            };
+            if !left_lt_right {
+                childpos = rightpos;
+            }
+        }
+        heap[pos] = heap[childpos];
+        pos = childpos;
+        childpos = 2 * pos + 1;
+    }
+    heap[pos] = newitem;
+    unsafe { heapq_siftdown_slice(_py, heap, startpos, pos) }
+}
+
+unsafe fn heapq_siftdown_max_slice(
+    _py: &PyToken<'_>,
+    heap: &mut [u64],
+    startpos: usize,
+    mut pos: usize,
+) -> bool {
+    let newitem = heap[pos];
+    while pos > startpos {
+        let parentpos = (pos - 1) / 2;
+        let parent = heap[parentpos];
+        let Some(lt) = heapq_lt(_py, parent, newitem) else {
+            return false;
+        };
+        if !lt {
+            break;
+        }
+        heap[pos] = parent;
+        pos = parentpos;
+    }
+    heap[pos] = newitem;
+    true
+}
+
+unsafe fn heapq_siftup_max_slice(_py: &PyToken<'_>, heap: &mut [u64], mut pos: usize) -> bool {
+    let endpos = heap.len();
+    let startpos = pos;
+    let newitem = heap[pos];
+    let mut childpos = 2 * pos + 1;
+    while childpos < endpos {
+        let rightpos = childpos + 1;
+        if rightpos < endpos {
+            let Some(right_lt_left) = heapq_lt(_py, heap[rightpos], heap[childpos]) else {
+                return false;
+            };
+            if !right_lt_left {
+                childpos = rightpos;
+            }
+        }
+        heap[pos] = heap[childpos];
+        pos = childpos;
+        childpos = 2 * pos + 1;
+    }
+    heap[pos] = newitem;
+    unsafe { heapq_siftdown_max_slice(_py, heap, startpos, pos) }
+}
+
+unsafe fn heapq_siftdown(
+    _py: &PyToken<'_>,
+    heap_ptr: *mut u8,
+    startpos: usize,
+    mut pos: usize,
+) -> bool {
+    let size = unsafe { list_len(heap_ptr) };
+    if pos >= size {
+        let _ = raise_exception::<u64>(_py, "IndexError", "index out of range");
+        return false;
+    }
+    while pos > startpos {
+        let parentpos = (pos - 1) / 2;
+        let Some(newitem) = (unsafe { crate::object::seq_access::pin_item(_py, heap_ptr, pos) })
+        else {
+            return false;
+        };
+        let Some(parent) =
+            (unsafe { crate::object::seq_access::pin_item(_py, heap_ptr, parentpos) })
+        else {
+            return false;
+        };
+        let lt = heapq_lt(_py, newitem.bits(), parent.bits());
+        let lt = match lt {
+            Some(val) => val,
+            None => return false,
+        };
+        if unsafe { list_len(heap_ptr) } != size {
+            let _ =
+                raise_exception::<u64>(_py, "RuntimeError", "list changed size during iteration");
+            return false;
+        }
+        if lt {
+            if !unsafe { crate::object::list_mutation::swap_indices(_py, heap_ptr, pos, parentpos) }
+            {
+                return false;
+            }
+            pos = parentpos;
+            continue;
+        }
+        break;
+    }
+    true
+}
+
+unsafe fn heapq_siftup(_py: &PyToken<'_>, heap_ptr: *mut u8, mut pos: usize) -> bool {
     unsafe {
-        let endpos = heap.len();
+        let endpos = list_len(heap_ptr);
         let startpos = pos;
-        let newitem = heap[pos];
+        if pos >= endpos {
+            let _ = raise_exception::<u64>(_py, "IndexError", "index out of range");
+            return false;
+        }
         let mut childpos = 2 * pos + 1;
         while childpos < endpos {
             let rightpos = childpos + 1;
             if rightpos < endpos {
-                let left_lt_right = match heapq_lt(_py, heap[childpos], heap[rightpos]) {
+                let Some(left) = crate::object::seq_access::pin_item(_py, heap_ptr, childpos)
+                else {
+                    return false;
+                };
+                let Some(right) = crate::object::seq_access::pin_item(_py, heap_ptr, rightpos)
+                else {
+                    return false;
+                };
+                let compared = heapq_lt(_py, left.bits(), right.bits());
+                let left_lt_right = match compared {
                     Some(val) => val,
                     None => return false,
                 };
+                if list_len(heap_ptr) != endpos {
+                    let _ = raise_exception::<u64>(
+                        _py,
+                        "RuntimeError",
+                        "list changed size during iteration",
+                    );
+                    return false;
+                }
                 if !left_lt_right {
                     childpos = rightpos;
                 }
             }
-            heap[pos] = heap[childpos];
+            if !crate::object::list_mutation::swap_indices(_py, heap_ptr, pos, childpos) {
+                return false;
+            }
             pos = childpos;
             childpos = 2 * pos + 1;
         }
-        heap[pos] = newitem;
-        heapq_siftdown(_py, heap, startpos, pos)
+        heapq_siftdown(_py, heap_ptr, startpos, pos)
     }
 }
 
@@ -86,13 +222,12 @@ pub extern "C" fn molt_heapq_heapify(list_bits: u64) -> u64 {
             if object_type_id(list_ptr) != TYPE_ID_LIST {
                 return MoltObject::none().bits();
             }
-            let elems = seq_vec(list_ptr);
-            let len = elems.len();
+            let len = list_len(list_ptr);
             if len < 2 {
                 return MoltObject::none().bits();
             }
             for idx in (0..len / 2).rev() {
-                if !heapq_siftup(_py, elems, idx) {
+                if !heapq_siftup(_py, list_ptr, idx) {
                     return MoltObject::none().bits();
                 }
             }
@@ -112,11 +247,15 @@ pub extern "C" fn molt_heapq_heappush(list_bits: u64, item_bits: u64) -> u64 {
             if object_type_id(list_ptr) != TYPE_ID_LIST {
                 return MoltObject::none().bits();
             }
-            let elems = seq_vec(list_ptr);
-            elems.push(item_bits);
-            inc_ref_bits(_py, item_bits);
-            let len = elems.len();
-            if len > 1 && !heapq_siftdown(_py, elems, 0, len - 1) {
+            if !crate::object::list_mutation::extend_from_slice(
+                _py,
+                list_ptr,
+                std::slice::from_ref(&item_bits),
+            ) {
+                return MoltObject::none().bits();
+            }
+            let len = list_len(list_ptr);
+            if len > 1 && !heapq_siftdown(_py, list_ptr, 0, len - 1) {
                 return MoltObject::none().bits();
             }
         }
@@ -135,23 +274,47 @@ pub extern "C" fn molt_heapq_heappop(list_bits: u64) -> u64 {
             if object_type_id(list_ptr) != TYPE_ID_LIST {
                 return MoltObject::none().bits();
             }
-            let elems = seq_vec(list_ptr);
-            if elems.is_empty() {
+            let len = list_len(list_ptr);
+            if len == 0 {
                 return raise_exception::<_>(_py, "IndexError", "index out of range");
             }
-            let last = elems.pop().unwrap();
-            if elems.is_empty() {
-                inc_ref_bits(_py, last);
+            let Some(last_item) = crate::object::seq_access::pin_item(_py, list_ptr, len - 1)
+            else {
+                return MoltObject::none().bits();
+            };
+            let last = last_item.bits();
+            inc_ref_bits(_py, last);
+            drop(last_item);
+            if !crate::object::list_mutation::replace_range(_py, list_ptr, len - 1, len, &[]) {
                 dec_ref_bits(_py, last);
-                return last;
-            }
-            let return_bits = elems[0];
-            elems[0] = last;
-            if !heapq_siftup(_py, elems, 0) {
                 return MoltObject::none().bits();
             }
+            if len == 1 {
+                return last;
+            }
+            let Some(return_item) = crate::object::seq_access::pin_item(_py, list_ptr, 0) else {
+                dec_ref_bits(_py, last);
+                return MoltObject::none().bits();
+            };
+            let return_bits = return_item.bits();
             inc_ref_bits(_py, return_bits);
-            dec_ref_bits(_py, return_bits);
+            drop(return_item);
+            let root = 0usize;
+            if !crate::object::list_mutation::replace_indices(
+                _py,
+                list_ptr,
+                std::slice::from_ref(&root),
+                std::slice::from_ref(&last),
+            ) {
+                dec_ref_bits(_py, return_bits);
+                dec_ref_bits(_py, last);
+                return MoltObject::none().bits();
+            }
+            dec_ref_bits(_py, last);
+            if !heapq_siftup(_py, list_ptr, 0) {
+                dec_ref_bits(_py, return_bits);
+                return MoltObject::none().bits();
+            }
             return_bits
         }
     })
@@ -168,18 +331,29 @@ pub extern "C" fn molt_heapq_heapreplace(list_bits: u64, item_bits: u64) -> u64 
             if object_type_id(list_ptr) != TYPE_ID_LIST {
                 return MoltObject::none().bits();
             }
-            let elems = seq_vec(list_ptr);
-            if elems.is_empty() {
+            if list_len(list_ptr) == 0 {
                 return raise_exception::<_>(_py, "IndexError", "index out of range");
             }
-            let return_bits = elems[0];
-            elems[0] = item_bits;
-            inc_ref_bits(_py, item_bits);
-            if !heapq_siftup(_py, elems, 0) {
+            let Some(return_item) = crate::object::seq_access::pin_item(_py, list_ptr, 0) else {
+                return MoltObject::none().bits();
+            };
+            let return_bits = return_item.bits();
+            inc_ref_bits(_py, return_bits);
+            drop(return_item);
+            let root = 0usize;
+            if !crate::object::list_mutation::replace_indices(
+                _py,
+                list_ptr,
+                std::slice::from_ref(&root),
+                std::slice::from_ref(&item_bits),
+            ) {
+                dec_ref_bits(_py, return_bits);
                 return MoltObject::none().bits();
             }
-            inc_ref_bits(_py, return_bits);
-            dec_ref_bits(_py, return_bits);
+            if !heapq_siftup(_py, list_ptr, 0) {
+                dec_ref_bits(_py, return_bits);
+                return MoltObject::none().bits();
+            }
             return_bits
         }
     })
@@ -196,24 +370,43 @@ pub extern "C" fn molt_heapq_heappushpop(list_bits: u64, item_bits: u64) -> u64 
             if object_type_id(list_ptr) != TYPE_ID_LIST {
                 return MoltObject::none().bits();
             }
-            let elems = seq_vec(list_ptr);
-            if elems.is_empty() {
+            if list_len(list_ptr) == 0 {
                 inc_ref_bits(_py, item_bits);
                 return item_bits;
             }
-            let lt = match heapq_lt(_py, elems[0], item_bits) {
+            let Some(top) = crate::object::seq_access::pin_item(_py, list_ptr, 0) else {
+                return MoltObject::none().bits();
+            };
+            let compared = heapq_lt(_py, top.bits(), item_bits);
+            let lt = match compared {
                 Some(val) => val,
                 None => return MoltObject::none().bits(),
             };
             if lt {
-                let return_bits = elems[0];
-                elems[0] = item_bits;
-                inc_ref_bits(_py, item_bits);
-                if !heapq_siftup(_py, elems, 0) {
+                if list_len(list_ptr) == 0 {
+                    return raise_exception::<_>(_py, "IndexError", "index out of range");
+                }
+                let Some(return_item) = crate::object::seq_access::pin_item(_py, list_ptr, 0)
+                else {
+                    return MoltObject::none().bits();
+                };
+                let return_bits = return_item.bits();
+                inc_ref_bits(_py, return_bits);
+                drop(return_item);
+                let root = 0usize;
+                if !crate::object::list_mutation::replace_indices(
+                    _py,
+                    list_ptr,
+                    std::slice::from_ref(&root),
+                    std::slice::from_ref(&item_bits),
+                ) {
+                    dec_ref_bits(_py, return_bits);
                     return MoltObject::none().bits();
                 }
-                inc_ref_bits(_py, return_bits);
-                dec_ref_bits(_py, return_bits);
+                if !heapq_siftup(_py, list_ptr, 0) {
+                    dec_ref_bits(_py, return_bits);
+                    return MoltObject::none().bits();
+                }
                 return return_bits;
             }
             inc_ref_bits(_py, item_bits);
@@ -230,56 +423,95 @@ pub extern "C" fn molt_heapq_heappushpop(list_bits: u64, item_bits: u64) -> u64 
 /// invariant (largest element at index 0).
 unsafe fn heapq_siftdown_max(
     _py: &PyToken<'_>,
-    heap: &mut [u64],
+    heap_ptr: *mut u8,
     startpos: usize,
     mut pos: usize,
 ) -> bool {
-    let newitem = heap[pos];
+    let size = unsafe { list_len(heap_ptr) };
+    if pos >= size {
+        let _ = raise_exception::<u64>(_py, "IndexError", "index out of range");
+        return false;
+    }
     while pos > startpos {
         let parentpos = (pos - 1) / 2;
-        let parent = heap[parentpos];
-        // Max-heap: bubble up if parent < newitem (newitem is larger)
-        let lt = match heapq_lt(_py, parent, newitem) {
+        let Some(newitem) = (unsafe { crate::object::seq_access::pin_item(_py, heap_ptr, pos) })
+        else {
+            return false;
+        };
+        let Some(parent) =
+            (unsafe { crate::object::seq_access::pin_item(_py, heap_ptr, parentpos) })
+        else {
+            return false;
+        };
+        let compared = heapq_lt(_py, parent.bits(), newitem.bits());
+        let lt = match compared {
             Some(val) => val,
             None => return false,
         };
+        if unsafe { list_len(heap_ptr) } != size {
+            let _ =
+                raise_exception::<u64>(_py, "RuntimeError", "list changed size during iteration");
+            return false;
+        }
         if lt {
-            heap[pos] = parent;
+            if !unsafe { crate::object::list_mutation::swap_indices(_py, heap_ptr, pos, parentpos) }
+            {
+                return false;
+            }
             pos = parentpos;
             continue;
         }
         break;
     }
-    heap[pos] = newitem;
     true
 }
 
 /// Like `heapq_siftup` but maintains a max-heap (largest element at root).
 /// Pushes the root value down, always choosing the larger child.
-unsafe fn heapq_siftup_max(_py: &PyToken<'_>, heap: &mut [u64], mut pos: usize) -> bool {
+unsafe fn heapq_siftup_max(_py: &PyToken<'_>, heap_ptr: *mut u8, mut pos: usize) -> bool {
     unsafe {
-        let endpos = heap.len();
+        let endpos = list_len(heap_ptr);
         let startpos = pos;
-        let newitem = heap[pos];
+        if pos >= endpos {
+            let _ = raise_exception::<u64>(_py, "IndexError", "index out of range");
+            return false;
+        }
         let mut childpos = 2 * pos + 1;
         while childpos < endpos {
             let rightpos = childpos + 1;
             if rightpos < endpos {
-                // Max-heap: choose the larger child (right if left < right)
-                let left_lt_right = match heapq_lt(_py, heap[childpos], heap[rightpos]) {
+                let Some(left) = crate::object::seq_access::pin_item(_py, heap_ptr, childpos)
+                else {
+                    return false;
+                };
+                let Some(right) = crate::object::seq_access::pin_item(_py, heap_ptr, rightpos)
+                else {
+                    return false;
+                };
+                let compared = heapq_lt(_py, right.bits(), left.bits());
+                let right_lt_left = match compared {
                     Some(val) => val,
                     None => return false,
                 };
-                if left_lt_right {
+                if list_len(heap_ptr) != endpos {
+                    let _ = raise_exception::<u64>(
+                        _py,
+                        "RuntimeError",
+                        "list changed size during iteration",
+                    );
+                    return false;
+                }
+                if !right_lt_left {
                     childpos = rightpos;
                 }
             }
-            heap[pos] = heap[childpos];
+            if !crate::object::list_mutation::swap_indices(_py, heap_ptr, pos, childpos) {
+                return false;
+            }
             pos = childpos;
             childpos = 2 * pos + 1;
         }
-        heap[pos] = newitem;
-        heapq_siftdown_max(_py, heap, startpos, pos)
+        heapq_siftdown_max(_py, heap_ptr, startpos, pos)
     }
 }
 
@@ -298,13 +530,12 @@ pub extern "C" fn molt_heapq_heapify_max(list_bits: u64) -> u64 {
             if object_type_id(list_ptr) != TYPE_ID_LIST {
                 return MoltObject::none().bits();
             }
-            let elems = seq_vec(list_ptr);
-            let len = elems.len();
+            let len = list_len(list_ptr);
             if len < 2 {
                 return MoltObject::none().bits();
             }
             for idx in (0..len / 2).rev() {
-                if !heapq_siftup_max(_py, elems, idx) {
+                if !heapq_siftup_max(_py, list_ptr, idx) {
                     return MoltObject::none().bits();
                 }
             }
@@ -328,25 +559,47 @@ pub extern "C" fn molt_heapq_heappop_max(list_bits: u64) -> u64 {
             if object_type_id(list_ptr) != TYPE_ID_LIST {
                 return MoltObject::none().bits();
             }
-            let elems = seq_vec(list_ptr);
-            if elems.is_empty() {
+            let len = list_len(list_ptr);
+            if len == 0 {
                 return raise_exception::<_>(_py, "IndexError", "index out of range");
             }
-            let last = elems.pop().unwrap();
-            if elems.is_empty() {
-                // Only one element was in the heap; return it directly.
-                // inc_ref + dec_ref transfers ownership back to caller.
-                inc_ref_bits(_py, last);
+            let Some(last_item) = crate::object::seq_access::pin_item(_py, list_ptr, len - 1)
+            else {
+                return MoltObject::none().bits();
+            };
+            let last = last_item.bits();
+            inc_ref_bits(_py, last);
+            drop(last_item);
+            if !crate::object::list_mutation::replace_range(_py, list_ptr, len - 1, len, &[]) {
                 dec_ref_bits(_py, last);
-                return last;
-            }
-            let return_bits = elems[0];
-            elems[0] = last;
-            if !heapq_siftup_max(_py, elems, 0) {
                 return MoltObject::none().bits();
             }
+            if len == 1 {
+                return last;
+            }
+            let Some(return_item) = crate::object::seq_access::pin_item(_py, list_ptr, 0) else {
+                dec_ref_bits(_py, last);
+                return MoltObject::none().bits();
+            };
+            let return_bits = return_item.bits();
             inc_ref_bits(_py, return_bits);
-            dec_ref_bits(_py, return_bits);
+            drop(return_item);
+            let root = 0usize;
+            if !crate::object::list_mutation::replace_indices(
+                _py,
+                list_ptr,
+                std::slice::from_ref(&root),
+                std::slice::from_ref(&last),
+            ) {
+                dec_ref_bits(_py, return_bits);
+                dec_ref_bits(_py, last);
+                return MoltObject::none().bits();
+            }
+            dec_ref_bits(_py, last);
+            if !heapq_siftup_max(_py, list_ptr, 0) {
+                dec_ref_bits(_py, return_bits);
+                return MoltObject::none().bits();
+            }
             return_bits
         }
     })
@@ -399,7 +652,14 @@ pub extern "C" fn molt_heapq_nsmallest(n_bits: u64, iterable_bits: u64, key_bits
                     return MoltObject::none().bits();
                 }
             };
-            let src = seq_vec_ref(src_ptr);
+            let Some(src) = crate::object::seq_access::snapshot(
+                _py,
+                src_ptr,
+                "nsmallest snapshot allocation failed",
+            ) else {
+                dec_ref_bits(_py, src_bits);
+                return MoltObject::none().bits();
+            };
             let src_len = src.len();
 
             // Fast path: n >= len — sort a full copy.
@@ -514,7 +774,7 @@ pub extern "C" fn molt_heapq_nsmallest(n_bits: u64, iterable_bits: u64, key_bits
                 if use_key {
                     let hlen = heap_keys.len();
                     for idx in (0..hlen / 2).rev() {
-                        if !heapq_siftup_max(_py, &mut heap_keys, idx) {
+                        if !heapq_siftup_max_slice(_py, &mut heap_keys, idx) {
                             dec_ref_bits(_py, src_bits);
                             for k in heap_keys {
                                 dec_ref_bits(_py, k);
@@ -697,7 +957,7 @@ pub extern "C" fn molt_heapq_nsmallest(n_bits: u64, iterable_bits: u64, key_bits
                     // No key function: work directly on values.
                     let hlen = heap_vals.len();
                     for idx in (0..hlen / 2).rev() {
-                        if !heapq_siftup_max(_py, &mut heap_vals, idx) {
+                        if !heapq_siftup_max_slice(_py, &mut heap_vals, idx) {
                             dec_ref_bits(_py, src_bits);
                             return MoltObject::none().bits();
                         }
@@ -826,7 +1086,14 @@ pub extern "C" fn molt_heapq_nlargest(n_bits: u64, iterable_bits: u64, key_bits:
                     return MoltObject::none().bits();
                 }
             };
-            let src = seq_vec_ref(src_ptr);
+            let Some(src) = crate::object::seq_access::snapshot(
+                _py,
+                src_ptr,
+                "nlargest snapshot allocation failed",
+            ) else {
+                dec_ref_bits(_py, src_bits);
+                return MoltObject::none().bits();
+            };
             let src_len = src.len();
 
             if n >= src_len {
@@ -1072,7 +1339,7 @@ pub extern "C" fn molt_heapq_nlargest(n_bits: u64, iterable_bits: u64, key_bits:
                     let mut heap_vals: Vec<u64> = src[..n].to_vec();
                     let hlen = heap_vals.len();
                     for idx in (0..hlen / 2).rev() {
-                        if !heapq_siftup(_py, &mut heap_vals, idx) {
+                        if !heapq_siftup_slice(_py, &mut heap_vals, idx) {
                             dec_ref_bits(_py, src_bits);
                             return MoltObject::none().bits();
                         }
@@ -1196,7 +1463,13 @@ pub extern "C" fn molt_heapq_merge(iterables_bits: u64, key_bits: u64, reverse_b
             }
 
             // Materialise each source iterable into its own Vec<u64>.
-            let outer = seq_vec_ref(iter_ptr);
+            let Some(outer) = crate::object::seq_access::snapshot(
+                _py,
+                iter_ptr,
+                "heap merge source snapshot allocation failed",
+            ) else {
+                return MoltObject::none().bits();
+            };
             let k = outer.len();
             if k == 0 {
                 let ptr = alloc_list(_py, &[]);
@@ -1334,11 +1607,10 @@ pub extern "C" fn molt_heapq_merge(iterables_bits: u64, key_bits: u64, reverse_b
                     Some(p) => p,
                     None => continue,
                 };
-                let sl = seq_vec_ref(sl_ptr);
-                if sl.is_empty() {
+                let Some(val) = crate::object::seq_access::pin_item(_py, sl_ptr, 0) else {
                     continue;
-                }
-                let val_bits = sl[0];
+                };
+                let val_bits = val.bits();
                 positions[src_idx] = 1;
                 let key_bits_entry = if use_key {
                     let k_bits = call_callable1(_py, key_bits, val_bits);
@@ -1389,10 +1661,13 @@ pub extern "C" fn molt_heapq_merge(iterables_bits: u64, key_bits: u64, reverse_b
                     Some(p) => p,
                     None => continue,
                 };
-                let sl = seq_vec_ref(sl_ptr);
                 let pos = positions[src_idx];
-                if pos < sl.len() {
-                    let next_val = sl[pos];
+                if pos < crate::object::seq_access::locked_len(sl_ptr) {
+                    let Some(next_item) = crate::object::seq_access::pin_item(_py, sl_ptr, pos)
+                    else {
+                        continue;
+                    };
+                    let next_val = next_item.bits();
                     positions[src_idx] = pos + 1;
                     let next_key = if use_key {
                         let k_bits = call_callable1(_py, key_bits, next_val);

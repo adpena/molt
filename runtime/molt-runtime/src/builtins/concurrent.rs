@@ -604,11 +604,12 @@ pub extern "C" fn molt_concurrent_as_completed(futures_bits: u64, timeout_bits: 
                         "as_completed expects list or tuple",
                     );
                 }
-                let elems = seq_vec_ref(ptr);
-                elems
-                    .iter()
-                    .filter_map(|&b| to_i64(obj_from_bits(b)))
-                    .collect()
+                crate::object::seq_access::with_borrowed(ptr, |elems| {
+                    elems
+                        .iter()
+                        .filter_map(|&b| to_i64(obj_from_bits(b)))
+                        .collect()
+                })
             }
         };
 
@@ -690,11 +691,12 @@ pub extern "C" fn molt_concurrent_wait(
                 if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
                     return raise_exception::<u64>(_py, "TypeError", "wait expects list or tuple");
                 }
-                let elems = seq_vec_ref(ptr);
-                elems
-                    .iter()
-                    .filter_map(|&b| to_i64(obj_from_bits(b)))
-                    .collect()
+                crate::object::seq_access::with_borrowed(ptr, |elems| {
+                    elems
+                        .iter()
+                        .filter_map(|&b| to_i64(obj_from_bits(b)))
+                        .collect()
+                })
             }
         };
 

@@ -76,6 +76,18 @@ def test_generated_header_pins_pyobject_and_pytypeobject_size() -> None:
     assert gen.GENERATED_BANNER in text
 
 
+def test_generated_header_pins_truthful_pylistobject_layout() -> None:
+    gen = _load()
+    text = gen.build()
+    # CPython 3.12: PyVarObject head followed by ob_item and allocated.
+    assert "sizeof(PyListObject) == 40u" in text
+    assert "offsetof(PyListObject, ob_item) == 24u" in text
+    assert "offsetof(PyListObject, allocated) == 32u" in text
+    assert "sizeof(PyListObject) == 20u" in text
+    assert "offsetof(PyListObject, ob_item) == 12u" in text
+    assert "offsetof(PyListObject, allocated) == 16u" in text
+
+
 def test_generated_header_pins_wasm32_ilp32_layout() -> None:
     """The generated header must ALSO pin the wasm32 ILP32 (4-byte pointer)
     layout, guarded by pointer width, so the CPython-ABI extension tier compiles

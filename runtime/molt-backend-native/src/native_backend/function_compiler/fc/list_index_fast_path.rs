@@ -211,88 +211,6 @@ pub(in crate::native_backend::function_compiler) fn generic_list_int_lane_eligib
 }
 
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) fn emit_set_contains_refs_if_heap(
-    builder: &mut FunctionBuilder<'_>,
-    sealed_blocks: &mut BTreeSet<Block>,
-    list_bits: Value,
-    val_bits: Value,
-) {
-    let tag_bits = builder.ins().band_imm(val_bits, (QNAN | TAG_MASK) as i64);
-    let is_ptr = builder
-        .ins()
-        .icmp_imm(IntCC::Equal, tag_bits, (QNAN | TAG_PTR) as i64);
-    let set_flag_block = builder.create_block();
-    let done_block = builder.create_block();
-    builder
-        .ins()
-        .brif(is_ptr, set_flag_block, &[], done_block, &[]);
-
-    switch_to_block_materialized(builder, set_flag_block);
-    seal_block_once(builder, sealed_blocks, set_flag_block);
-    let masked = builder.ins().band_imm(list_bits, POINTER_MASK as i64);
-    let shifted = builder.ins().ishl_imm(masked, 16);
-    let obj_ptr = builder.ins().sshr_imm(shifted, 16);
-    let flags = builder.ins().load(
-        types::I32,
-        MemFlagsData::trusted(),
-        obj_ptr,
-        HEADER_FLAGS_OFFSET,
-    );
-    let contains_refs = builder
-        .ins()
-        .iconst(types::I32, i64::from(HEADER_FLAG_CONTAINS_REFS));
-    let flags = builder.ins().bor(flags, contains_refs);
-    builder
-        .ins()
-        .store(MemFlagsData::trusted(), flags, obj_ptr, HEADER_FLAGS_OFFSET);
-    jump_block(builder, done_block, &[]);
-
-    switch_to_block_materialized(builder, done_block);
-    seal_block_once(builder, sealed_blocks, done_block);
-}
-
-#[cfg(feature = "native-backend")]
-#[allow(clippy::too_many_arguments)]
-pub(in crate::native_backend::function_compiler) fn emit_regular_list_container_absorb_store(
-    builder: &mut FunctionBuilder<'_>,
-    sealed_blocks: &mut BTreeSet<Block>,
-    list_bits: Value,
-    elem_addr: Value,
-    val_bits: Value,
-    val_known_non_heap: bool,
-    local_inc_ref_obj: FuncRef,
-    local_dec_ref_obj: FuncRef,
-    nbc: &crate::NanBoxConsts,
-    merge_block: Block,
-) {
-    let old_elem = builder
-        .ins()
-        .load(types::I64, MemFlagsData::trusted(), elem_addr, 0);
-    let same_elem = builder.ins().icmp(IntCC::Equal, old_elem, val_bits);
-    let same_block = builder.create_block();
-    let replace_block = builder.create_block();
-    builder
-        .ins()
-        .brif(same_elem, same_block, &[], replace_block, &[]);
-
-    switch_to_block_materialized(builder, same_block);
-    seal_block_once(builder, sealed_blocks, same_block);
-    jump_block(builder, merge_block, &[]);
-
-    switch_to_block_materialized(builder, replace_block);
-    seal_block_once(builder, sealed_blocks, replace_block);
-    if !val_known_non_heap {
-        emit_inc_ref_obj(builder, val_bits, local_inc_ref_obj, nbc);
-        emit_set_contains_refs_if_heap(builder, sealed_blocks, list_bits, val_bits);
-    }
-    builder
-        .ins()
-        .store(MemFlagsData::trusted(), val_bits, elem_addr, 0);
-    emit_dec_ref_obj(builder, old_elem, local_dec_ref_obj, nbc);
-    jump_block(builder, merge_block, &[]);
-}
-
-#[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) fn index_fallback_import_name(
     representation_plan: &ScalarRepresentationPlan,
     op: &OpIR,
@@ -310,11 +228,9 @@ pub(in crate::native_backend::function_compiler) fn index_fallback_import_name(
 pub(in crate::native_backend::function_compiler) fn store_index_fallback_import_name(
     representation_plan: &ScalarRepresentationPlan,
     op: &OpIR,
-    integer_key_lane: bool,
 ) -> &'static str {
     match representation_plan.op_container_kind(op) {
         Some(ContainerKind::Dict) => "molt_dict_setitem",
-        _ if integer_key_lane => "molt_list_setitem_int_fast",
         _ => "molt_store_index",
     }
 }

@@ -149,12 +149,23 @@ pub fn to_f64(obj: MoltObject) -> Option<f64> {
 
 #[allow(improper_ctypes)]
 unsafe extern "C" {
-    fn __molt_difflib_seq_vec_ptr(ptr: *mut u8) -> *mut Vec<u64>;
+    fn __molt_difflib_seq_snapshot(
+        ptr: *mut u8,
+        out_ptr: *mut *const u64,
+        out_len: *mut usize,
+    ) -> i32;
 }
 
 /// # Safety
 ///
-/// `ptr` must refer to a live Molt sequence object backed by `Vec<u64>`.
-pub unsafe fn seq_vec_ref(ptr: *mut u8) -> &'static Vec<u64> {
-    unsafe { &*__molt_difflib_seq_vec_ptr(ptr) }
+/// `ptr` must refer to a live Molt list or tuple for the duration of this call.
+pub unsafe fn seq_snapshot(ptr: *mut u8) -> OwnedBridgeHandleSnapshot {
+    let mut out_ptr: *const u64 = std::ptr::null();
+    let mut out_len = 0usize;
+    let ok = unsafe { __molt_difflib_seq_snapshot(ptr, &mut out_ptr, &mut out_len) };
+    if ok == 0 {
+        out_ptr = std::ptr::null();
+        out_len = 0;
+    }
+    unsafe { bridge_owned_handle_snapshot(out_ptr, out_len) }
 }

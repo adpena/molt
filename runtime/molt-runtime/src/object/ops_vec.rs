@@ -547,6 +547,18 @@ fn max_ints_trusted(elems: &[u64], acc: i64) -> i64 {
     max_ints_trusted_scalar(elems, acc)
 }
 
+#[inline]
+unsafe fn read_generic_sequence<R>(
+    ptr: *mut u8,
+    read: impl for<'slice> FnOnce(&'slice [u64]) -> R,
+) -> Option<R> {
+    let type_id = unsafe { object_type_id(ptr) };
+    if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
+        return None;
+    }
+    Some(unsafe { crate::object::seq_access::with_borrowed(ptr, read) })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_vec_sum_int(seq_bits: u64, acc_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -567,14 +579,11 @@ pub extern "C" fn molt_vec_sum_int(seq_bits: u64, acc_bits: u64) -> u64 {
             }
         };
         unsafe {
-            let type_id = object_type_id(ptr);
-            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
-                seq_vec_ref(ptr)
-            } else {
+            let Some(sum) = read_generic_sequence(ptr, |elems| sum_ints_checked(elems, acc)) else {
                 vec_lane_record(&VEC_SUM_INT_HITS, &VEC_SUM_INT_MISSES, false);
                 return vec_sum_i64_result(_py, acc, false);
             };
-            if let Some(sum) = sum_ints_checked(elems, acc) {
+            if let Some(sum) = sum {
                 vec_lane_record(&VEC_SUM_INT_HITS, &VEC_SUM_INT_MISSES, true);
                 return vec_sum_i64_result(_py, sum, true);
             }
@@ -604,14 +613,10 @@ pub extern "C" fn molt_vec_sum_int_trusted(seq_bits: u64, acc_bits: u64) -> u64 
             }
         };
         unsafe {
-            let type_id = object_type_id(ptr);
-            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
-                seq_vec_ref(ptr)
-            } else {
+            let Some(sum) = read_generic_sequence(ptr, |elems| sum_ints_trusted(elems, acc)) else {
                 vec_lane_record(&VEC_SUM_INT_HITS, &VEC_SUM_INT_MISSES, false);
                 return vec_sum_i64_result(_py, acc, false);
             };
-            let sum = sum_ints_trusted(elems, acc);
             vec_lane_record(&VEC_SUM_INT_HITS, &VEC_SUM_INT_MISSES, true);
             vec_sum_i64_result(_py, sum, true)
         }
@@ -642,12 +647,11 @@ pub extern "C" fn molt_vec_prod_int(seq_bits: u64, acc_bits: u64) -> u64 {
                 let prod = prod_list_int_storage(ptr, acc);
                 return vec_sum_result(_py, MoltObject::from_int(prod).bits(), true);
             }
-            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
-                seq_vec_ref(ptr)
-            } else {
+            let Some(prod) = read_generic_sequence(ptr, |elems| prod_ints_checked(elems, acc))
+            else {
                 return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
             };
-            if let Some(prod) = prod_ints_checked(elems, acc) {
+            if let Some(prod) = prod {
                 return vec_sum_result(_py, MoltObject::from_int(prod).bits(), true);
             }
         }
@@ -679,12 +683,10 @@ pub extern "C" fn molt_vec_prod_int_trusted(seq_bits: u64, acc_bits: u64) -> u64
                 let prod = prod_list_int_storage(ptr, acc);
                 return vec_sum_result(_py, MoltObject::from_int(prod).bits(), true);
             }
-            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
-                seq_vec_ref(ptr)
-            } else {
+            let Some(prod) = read_generic_sequence(ptr, |elems| prod_ints_trusted(elems, acc))
+            else {
                 return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
             };
-            let prod = prod_ints_trusted(elems, acc);
             vec_sum_result(_py, MoltObject::from_int(prod).bits(), true)
         }
     })
@@ -704,13 +706,10 @@ pub extern "C" fn molt_vec_min_int(seq_bits: u64, acc_bits: u64) -> u64 {
             None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
         };
         unsafe {
-            let type_id = object_type_id(ptr);
-            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
-                seq_vec_ref(ptr)
-            } else {
+            let Some(val) = read_generic_sequence(ptr, |elems| min_ints_checked(elems, acc)) else {
                 return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
             };
-            if let Some(val) = min_ints_checked(elems, acc) {
+            if let Some(val) = val {
                 return vec_sum_result(_py, MoltObject::from_int(val).bits(), true);
             }
         }
@@ -732,13 +731,9 @@ pub extern "C" fn molt_vec_min_int_trusted(seq_bits: u64, acc_bits: u64) -> u64 
             None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
         };
         unsafe {
-            let type_id = object_type_id(ptr);
-            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
-                seq_vec_ref(ptr)
-            } else {
+            let Some(val) = read_generic_sequence(ptr, |elems| min_ints_trusted(elems, acc)) else {
                 return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
             };
-            let val = min_ints_trusted(elems, acc);
             vec_sum_result(_py, MoltObject::from_int(val).bits(), true)
         }
     })
@@ -758,13 +753,10 @@ pub extern "C" fn molt_vec_max_int(seq_bits: u64, acc_bits: u64) -> u64 {
             None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
         };
         unsafe {
-            let type_id = object_type_id(ptr);
-            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
-                seq_vec_ref(ptr)
-            } else {
+            let Some(val) = read_generic_sequence(ptr, |elems| max_ints_checked(elems, acc)) else {
                 return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
             };
-            if let Some(val) = max_ints_checked(elems, acc) {
+            if let Some(val) = val {
                 return vec_sum_result(_py, MoltObject::from_int(val).bits(), true);
             }
         }
@@ -786,13 +778,9 @@ pub extern "C" fn molt_vec_max_int_trusted(seq_bits: u64, acc_bits: u64) -> u64 
             None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
         };
         unsafe {
-            let type_id = object_type_id(ptr);
-            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
-                seq_vec_ref(ptr)
-            } else {
+            let Some(val) = read_generic_sequence(ptr, |elems| max_ints_trusted(elems, acc)) else {
                 return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
             };
-            let val = max_ints_trusted(elems, acc);
             vec_sum_result(_py, MoltObject::from_int(val).bits(), true)
         }
     })
@@ -835,15 +823,13 @@ pub extern "C" fn molt_vec_sum_int_range(seq_bits: u64, acc_bits: u64, start_bit
             None => return vec_sum_i64_result(_py, acc, false),
         };
         unsafe {
-            let type_id = object_type_id(ptr);
-            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
-                seq_vec_ref(ptr)
-            } else {
+            let Some(sum) = read_generic_sequence(ptr, |elems| {
+                let start_idx = (start as usize).min(elems.len());
+                sum_ints_checked(&elems[start_idx..], acc)
+            }) else {
                 return vec_sum_i64_result(_py, acc, false);
             };
-            let start_idx = (start as usize).min(elems.len());
-            let slice = &elems[start_idx..];
-            if let Some(sum) = sum_ints_checked(slice, acc) {
+            if let Some(sum) = sum {
                 return vec_sum_i64_result(_py, sum, true);
             }
         }
@@ -877,15 +863,12 @@ pub extern "C" fn molt_vec_sum_int_range_trusted(
             None => return vec_sum_i64_result(_py, acc, false),
         };
         unsafe {
-            let type_id = object_type_id(ptr);
-            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
-                seq_vec_ref(ptr)
-            } else {
+            let Some(sum) = read_generic_sequence(ptr, |elems| {
+                let start_idx = (start as usize).min(elems.len());
+                sum_ints_trusted(&elems[start_idx..], acc)
+            }) else {
                 return vec_sum_i64_result(_py, acc, false);
             };
-            let start_idx = (start as usize).min(elems.len());
-            let slice = &elems[start_idx..];
-            let sum = sum_ints_trusted(slice, acc);
             vec_sum_i64_result(_py, sum, true)
         }
     })
@@ -961,14 +944,11 @@ pub extern "C" fn molt_vec_sum_float(seq_bits: u64, acc_bits: u64) -> u64 {
             }
         };
         unsafe {
-            let type_id = object_type_id(ptr);
-            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
-                seq_vec_ref(ptr)
-            } else {
+            let Some(sum) = read_generic_sequence(ptr, |elems| sum_floats_simd(elems, acc)) else {
                 vec_lane_record(&VEC_SUM_FLOAT_HITS, &VEC_SUM_FLOAT_MISSES, false);
                 return vec_sum_f64_result(_py, acc, false);
             };
-            if let Some(sum) = sum_floats_simd(elems, acc) {
+            if let Some(sum) = sum {
                 vec_lane_record(&VEC_SUM_FLOAT_HITS, &VEC_SUM_FLOAT_MISSES, true);
                 return vec_sum_f64_result(_py, sum, true);
             }
@@ -996,14 +976,11 @@ pub extern "C" fn molt_vec_sum_float_trusted(seq_bits: u64, acc_bits: u64) -> u6
             }
         };
         unsafe {
-            let type_id = object_type_id(ptr);
-            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
-                seq_vec_ref(ptr)
-            } else {
+            let Some(sum) = read_generic_sequence(ptr, |elems| sum_floats_simd(elems, acc)) else {
                 vec_lane_record(&VEC_SUM_FLOAT_HITS, &VEC_SUM_FLOAT_MISSES, false);
                 return vec_sum_f64_result(_py, acc, false);
             };
-            if let Some(sum) = sum_floats_simd(elems, acc) {
+            if let Some(sum) = sum {
                 vec_lane_record(&VEC_SUM_FLOAT_HITS, &VEC_SUM_FLOAT_MISSES, true);
                 return vec_sum_f64_result(_py, sum, true);
             }
@@ -1032,15 +1009,13 @@ pub extern "C" fn molt_vec_sum_float_range(seq_bits: u64, acc_bits: u64, start_b
             None => return vec_sum_f64_result(_py, acc, false),
         };
         unsafe {
-            let type_id = object_type_id(ptr);
-            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
-                seq_vec_ref(ptr)
-            } else {
+            let Some(sum) = read_generic_sequence(ptr, |elems| {
+                let start_idx = (start as usize).min(elems.len());
+                sum_floats_scalar(&elems[start_idx..], acc)
+            }) else {
                 return vec_sum_f64_result(_py, acc, false);
             };
-            let start_idx = (start as usize).min(elems.len());
-            let slice = &elems[start_idx..];
-            if let Some(sum) = sum_floats_scalar(slice, acc) {
+            if let Some(sum) = sum {
                 return vec_sum_f64_result(_py, sum, true);
             }
         }
@@ -1071,15 +1046,13 @@ pub extern "C" fn molt_vec_sum_float_range_trusted(
             None => return vec_sum_f64_result(_py, acc, false),
         };
         unsafe {
-            let type_id = object_type_id(ptr);
-            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
-                seq_vec_ref(ptr)
-            } else {
+            let Some(sum) = read_generic_sequence(ptr, |elems| {
+                let start_idx = (start as usize).min(elems.len());
+                sum_floats_scalar(&elems[start_idx..], acc)
+            }) else {
                 return vec_sum_f64_result(_py, acc, false);
             };
-            let start_idx = (start as usize).min(elems.len());
-            let slice = &elems[start_idx..];
-            if let Some(sum) = sum_floats_scalar(slice, acc) {
+            if let Some(sum) = sum {
                 return vec_sum_f64_result(_py, sum, true);
             }
         }
@@ -1176,14 +1149,13 @@ pub extern "C" fn molt_vec_prod_int_range(seq_bits: u64, acc_bits: u64, start_bi
                 let prod = prod_ints_unboxed(&slice[start_idx..], acc);
                 return vec_sum_result(_py, MoltObject::from_int(prod).bits(), true);
             }
-            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
-                seq_vec_ref(ptr)
-            } else {
+            let Some(prod) = read_generic_sequence(ptr, |elems| {
+                let start_idx = (start as usize).min(elems.len());
+                prod_ints_checked(&elems[start_idx..], acc)
+            }) else {
                 return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
             };
-            let start_idx = (start as usize).min(elems.len());
-            let slice = &elems[start_idx..];
-            if let Some(prod) = prod_ints_checked(slice, acc) {
+            if let Some(prod) = prod {
                 return vec_sum_result(_py, MoltObject::from_int(prod).bits(), true);
             }
         }
@@ -1232,14 +1204,12 @@ pub extern "C" fn molt_vec_prod_int_range_trusted(
                 let prod = prod_ints_unboxed(&slice[start_idx..], acc);
                 return vec_sum_result(_py, MoltObject::from_int(prod).bits(), true);
             }
-            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
-                seq_vec_ref(ptr)
-            } else {
+            let Some(prod) = read_generic_sequence(ptr, |elems| {
+                let start_idx = (start as usize).min(elems.len());
+                prod_ints_trusted(&elems[start_idx..], acc)
+            }) else {
                 return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
             };
-            let start_idx = (start as usize).min(elems.len());
-            let slice = &elems[start_idx..];
-            let prod = prod_ints_trusted(slice, acc);
             vec_sum_result(_py, MoltObject::from_int(prod).bits(), true)
         }
     })
@@ -1267,15 +1237,13 @@ pub extern "C" fn molt_vec_min_int_range(seq_bits: u64, acc_bits: u64, start_bit
             None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
         };
         unsafe {
-            let type_id = object_type_id(ptr);
-            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
-                seq_vec_ref(ptr)
-            } else {
+            let Some(val) = read_generic_sequence(ptr, |elems| {
+                let start_idx = (start as usize).min(elems.len());
+                min_ints_checked(&elems[start_idx..], acc)
+            }) else {
                 return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
             };
-            let start_idx = (start as usize).min(elems.len());
-            let slice = &elems[start_idx..];
-            if let Some(val) = min_ints_checked(slice, acc) {
+            if let Some(val) = val {
                 return vec_sum_result(_py, MoltObject::from_int(val).bits(), true);
             }
         }
@@ -1309,15 +1277,12 @@ pub extern "C" fn molt_vec_min_int_range_trusted(
             None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
         };
         unsafe {
-            let type_id = object_type_id(ptr);
-            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
-                seq_vec_ref(ptr)
-            } else {
+            let Some(val) = read_generic_sequence(ptr, |elems| {
+                let start_idx = (start as usize).min(elems.len());
+                min_ints_trusted(&elems[start_idx..], acc)
+            }) else {
                 return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
             };
-            let start_idx = (start as usize).min(elems.len());
-            let slice = &elems[start_idx..];
-            let val = min_ints_trusted(slice, acc);
             vec_sum_result(_py, MoltObject::from_int(val).bits(), true)
         }
     })
@@ -1345,15 +1310,13 @@ pub extern "C" fn molt_vec_max_int_range(seq_bits: u64, acc_bits: u64, start_bit
             None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
         };
         unsafe {
-            let type_id = object_type_id(ptr);
-            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
-                seq_vec_ref(ptr)
-            } else {
+            let Some(val) = read_generic_sequence(ptr, |elems| {
+                let start_idx = (start as usize).min(elems.len());
+                max_ints_checked(&elems[start_idx..], acc)
+            }) else {
                 return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
             };
-            let start_idx = (start as usize).min(elems.len());
-            let slice = &elems[start_idx..];
-            if let Some(val) = max_ints_checked(slice, acc) {
+            if let Some(val) = val {
                 return vec_sum_result(_py, MoltObject::from_int(val).bits(), true);
             }
         }
@@ -1387,15 +1350,12 @@ pub extern "C" fn molt_vec_max_int_range_trusted(
             None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
         };
         unsafe {
-            let type_id = object_type_id(ptr);
-            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
-                seq_vec_ref(ptr)
-            } else {
+            let Some(val) = read_generic_sequence(ptr, |elems| {
+                let start_idx = (start as usize).min(elems.len());
+                max_ints_trusted(&elems[start_idx..], acc)
+            }) else {
                 return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
             };
-            let start_idx = (start as usize).min(elems.len());
-            let slice = &elems[start_idx..];
-            let val = max_ints_trusted(slice, acc);
             vec_sum_result(_py, MoltObject::from_int(val).bits(), true)
         }
     })

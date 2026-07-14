@@ -599,9 +599,15 @@ pub unsafe extern "C" fn molt_asyncio_cancel_pending(tasks_bits: u64) -> u64 {
                     "task collection must be awaitables",
                 );
             };
-            let tasks = seq_vec_ref(task_tuple_ptr);
+            let task_count = crate::object::seq_access::len(task_tuple_ptr);
             let mut cancelled_count = 0i64;
-            for &task_bits in tasks {
+            for idx in 0..task_count {
+                let Some(task) = crate::object::seq_access::pin_item(_py, task_tuple_ptr, idx)
+                else {
+                    dec_ref_bits(_py, task_tuple_bits);
+                    return raise_exception::<u64>(_py, "RuntimeError", "invalid task state");
+                };
+                let task_bits = task.bits();
                 let Some(done) = asyncio_method_truthy(_py, task_bits, b"done") else {
                     dec_ref_bits(_py, task_tuple_bits);
                     return MoltObject::none().bits();

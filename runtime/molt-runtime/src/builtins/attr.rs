@@ -1,5 +1,4 @@
 use crate::PyToken;
-use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::sync::OnceLock;
@@ -18,18 +17,18 @@ use crate::{
     alloc_dict_with_pairs, alloc_function_obj, alloc_property_obj, alloc_string, alloc_tuple,
     attr_lookup_ptr, builtin_class_method_bits, builtin_classes, builtin_func_bits, call_callable1,
     call_callable3, call_function_obj1, class_bases_bits, class_bases_vec, class_dict_bits,
-    class_layout_version_bits, class_mro_ref, class_mro_vec, class_name_bits, class_name_for_error,
-    classmethod_func_bits, clear_exception, dataclass_desc_ptr, dataclass_dict_bits,
-    dataclass_fields_ref, dataclass_set_dict_bits, dec_ref_bits, dict_get_in_place, dict_order,
-    dict_set_in_place, exception_dict_bits, exception_kind_bits, exception_last_bits_noinc,
-    exception_pending, exception_stack_pop, exception_stack_push, inc_ref_bits, init_atomic_bits,
-    instance_dict_bits, instance_set_dict_bits, intern_static_name, is_builtin_class_bits,
-    is_missing_bits, is_truthy, issubclass_bits, maybe_ptr_from_bits, module_dict_bits,
-    molt_awaitable_await, molt_bound_method_new, molt_function_get_code, molt_function_get_globals,
-    molt_iter, molt_iter_next, obj_eq, obj_from_bits, object_class_bits, object_field_get_ptr_raw,
-    object_type_id, profile_hit_unchecked, property_get_bits, raise_exception, runtime_state,
-    seq_vec_ref, staticmethod_func_bits, string_bytes, string_len, string_obj_to_owned, type_name,
-    type_of_bits,
+    class_layout_version_bits, class_mro_pinned, class_mro_vec, class_mro_view, class_name_bits,
+    class_name_for_error, classmethod_func_bits, clear_exception, dataclass_desc_ptr,
+    dataclass_dict_bits, dataclass_fields_ref, dataclass_set_dict_bits, dec_ref_bits,
+    dict_get_in_place, dict_order, dict_set_in_place, exception_dict_bits, exception_kind_bits,
+    exception_last_bits_noinc, exception_pending, exception_stack_pop, exception_stack_push,
+    inc_ref_bits, init_atomic_bits, instance_dict_bits, instance_set_dict_bits, intern_static_name,
+    is_builtin_class_bits, is_missing_bits, is_truthy, issubclass_bits, maybe_ptr_from_bits,
+    module_dict_bits, molt_awaitable_await, molt_bound_method_new, molt_function_get_code,
+    molt_function_get_globals, molt_iter, molt_iter_next, obj_eq, obj_from_bits, object_class_bits,
+    object_field_get_ptr_raw, object_type_id, profile_hit_unchecked, property_get_bits,
+    raise_exception, runtime_state, staticmethod_func_bits, string_bytes, string_len,
+    string_obj_to_owned, type_name, type_of_bits,
 };
 
 const ATTR_NAME_INLINE_CAP: usize = 32;
@@ -1080,7 +1079,7 @@ pub(crate) unsafe fn class_attr_lookup_raw_mro(
             }
         }
         let debug_bound = crate::builtins::attributes::debug_bound_method_enabled();
-        if let Some(mro) = class_mro_ref(class_ptr) {
+        if let Some(mro) = class_mro_pinned(_py, class_ptr) {
             for class_bits in mro.iter() {
                 let class_obj = obj_from_bits(*class_bits);
                 let Some(ptr) = class_obj.as_ptr() else {
@@ -1190,11 +1189,7 @@ pub(crate) unsafe fn class_field_offset(
             &runtime_state(_py).interned.field_offsets_name,
             b"__molt_field_offsets__",
         );
-        let mro: Cow<'_, [u64]> = if let Some(mro) = class_mro_ref(class_ptr) {
-            Cow::Borrowed(mro.as_slice())
-        } else {
-            Cow::Owned(class_mro_vec(MoltObject::from_ptr(class_ptr).bits()))
-        };
+        let mro = class_mro_view(_py, class_ptr);
         for class_bits in mro.iter().copied() {
             let Some(current_ptr) = obj_from_bits(class_bits).as_ptr() else {
                 continue;
@@ -1237,10 +1232,18 @@ unsafe fn slots_value_declares_attr(_py: &PyToken<'_>, slots_bits: u64, attr_bit
         };
         match object_type_id(slots_ptr) {
             TYPE_ID_STRING => obj_eq(_py, slots_obj, obj_from_bits(attr_bits)),
-            TYPE_ID_TUPLE | TYPE_ID_LIST => seq_vec_ref(slots_ptr)
-                .iter()
-                .copied()
-                .any(|slot_bits| obj_eq(_py, obj_from_bits(slot_bits), obj_from_bits(attr_bits))),
+            TYPE_ID_TUPLE | TYPE_ID_LIST => {
+                let Some(slots) = crate::object::seq_access::snapshot(
+                    _py,
+                    slots_ptr,
+                    "sequence snapshot allocation failed",
+                ) else {
+                    return false;
+                };
+                slots.iter().copied().any(|slot_bits| {
+                    obj_eq(_py, obj_from_bits(slot_bits), obj_from_bits(attr_bits))
+                })
+            }
             _ => false,
         }
     }
@@ -1305,11 +1308,7 @@ pub(crate) unsafe fn for_each_object_inline_field_ptr(
             &runtime_state(_py).interned.field_offsets_name,
             b"__molt_field_offsets__",
         );
-        let mro: Cow<'_, [u64]> = if let Some(mro) = class_mro_ref(class_ptr) {
-            Cow::Borrowed(mro.as_slice())
-        } else {
-            Cow::Owned(class_mro_vec(MoltObject::from_ptr(class_ptr).bits()))
-        };
+        let mro = class_mro_view(_py, class_ptr);
         let payload = crate::object::object_payload_size(obj_ptr);
         let mut seen: Vec<usize> = Vec::new();
         for class_bits in mro.iter().copied() {
@@ -1772,11 +1771,7 @@ pub(crate) unsafe fn class_slots_info(_py: &PyToken<'_>, class_ptr: *mut u8) -> 
         let dict_obj = obj_from_bits(dict_name_bits);
         let weakref_obj = obj_from_bits(weakref_name_bits);
         let object_class_bits = builtin_classes(_py).object;
-        let mro: Cow<'_, [u64]> = if let Some(mro) = class_mro_ref(class_ptr) {
-            Cow::Borrowed(mro.as_slice())
-        } else {
-            Cow::Owned(class_mro_vec(MoltObject::from_ptr(class_ptr).bits()))
-        };
+        let mro = class_mro_view(_py, class_ptr);
         for class_bits in mro.iter().copied() {
             let Some(ptr) = obj_from_bits(class_bits).as_ptr() else {
                 continue;
@@ -1814,7 +1809,14 @@ pub(crate) unsafe fn class_slots_info(_py: &PyToken<'_>, class_ptr: *mut u8) -> 
                         }
                     }
                     TYPE_ID_TUPLE | TYPE_ID_LIST => {
-                        for slot_bits in seq_vec_ref(slots_ptr).iter().copied() {
+                        let Some(slots) = crate::object::seq_access::snapshot(
+                            _py,
+                            slots_ptr,
+                            "sequence snapshot allocation failed",
+                        ) else {
+                            return None;
+                        };
+                        for slot_bits in slots.iter().copied() {
                             let slot_obj = obj_from_bits(slot_bits);
                             if obj_eq(_py, dict_obj, slot_obj) {
                                 allows_dict = true;
@@ -1865,7 +1867,14 @@ pub(crate) unsafe fn apply_class_slots_layout(_py: &PyToken<'_>, class_ptr: *mut
         match object_type_id(slots_ptr) {
             TYPE_ID_STRING => slot_names.push(slots_bits),
             TYPE_ID_TUPLE | TYPE_ID_LIST => {
-                for slot_bits in seq_vec_ref(slots_ptr).iter().copied() {
+                let Some(slots) = crate::object::seq_access::snapshot(
+                    _py,
+                    slots_ptr,
+                    "sequence snapshot allocation failed",
+                ) else {
+                    return false;
+                };
+                for slot_bits in slots.iter().copied() {
                     let slot_obj = obj_from_bits(slot_bits);
                     let Some(slot_ptr) = slot_obj.as_ptr() else {
                         raise_exception::<()>(_py, "TypeError", "__slots__ items must be str");
@@ -1910,8 +1919,7 @@ pub(crate) unsafe fn apply_class_slots_layout(_py: &PyToken<'_>, class_ptr: *mut
                         );
                         return false;
                     }
-                    let elems = seq_vec_ref(pair_ptr);
-                    if elems.len() < 2 {
+                    if crate::object::seq_access::len(pair_ptr) < 2 {
                         raise_exception::<()>(
                             _py,
                             "TypeError",
@@ -1919,11 +1927,29 @@ pub(crate) unsafe fn apply_class_slots_layout(_py: &PyToken<'_>, class_ptr: *mut
                         );
                         return false;
                     }
-                    let done_bits = elems[1];
+                    let mut done_bits = 0;
+                    let mut slot_bits = 0;
+                    if crate::object::seq_access::read_item_gil_borrowed(
+                        pair_ptr,
+                        1,
+                        &mut done_bits,
+                    ) == 0
+                        || crate::object::seq_access::read_item_gil_borrowed(
+                            pair_ptr,
+                            0,
+                            &mut slot_bits,
+                        ) == 0
+                    {
+                        raise_exception::<()>(
+                            _py,
+                            "TypeError",
+                            "__slots__ must be a string or iterable",
+                        );
+                        return false;
+                    }
                     if is_truthy(_py, obj_from_bits(done_bits)) {
                         break;
                     }
-                    let slot_bits = elems[0];
                     let slot_obj = obj_from_bits(slot_bits);
                     let Some(slot_ptr) = slot_obj.as_ptr() else {
                         raise_exception::<()>(_py, "TypeError", "__slots__ items must be str");
@@ -2009,11 +2035,7 @@ pub(crate) unsafe fn apply_class_slots_layout(_py: &PyToken<'_>, class_ptr: *mut
 
         let mut updated = false;
         let mut occupied_offsets: Vec<usize> = Vec::new();
-        let mro: Cow<'_, [u64]> = if let Some(mro) = class_mro_ref(class_ptr) {
-            Cow::Borrowed(mro.as_slice())
-        } else {
-            Cow::Owned(class_mro_vec(MoltObject::from_ptr(class_ptr).bits()))
-        };
+        let mro = class_mro_view(_py, class_ptr);
         for base_bits in mro.iter().copied().skip(1) {
             let Some(base_ptr) = obj_from_bits(base_bits).as_ptr() else {
                 continue;
@@ -2654,11 +2676,7 @@ pub(crate) unsafe fn super_resolve_method_unbound(
             return None;
         }
         let self_class_version = class_layout_version_bits(obj_type_ptr);
-        let mro: Cow<'_, [u64]> = if let Some(mro) = class_mro_ref(obj_type_ptr) {
-            Cow::Borrowed(mro.as_slice())
-        } else {
-            Cow::Owned(class_mro_vec(obj_type_bits))
-        };
+        let mro = class_mro_view(_py, obj_type_ptr);
         let mut found_start = false;
         for class_bits in mro.iter().copied() {
             if !found_start {

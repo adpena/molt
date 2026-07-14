@@ -917,12 +917,12 @@ pub unsafe extern "C" fn PyObject_GenericSetAttr(
     let (obj_bits, name_bits, value_bits) = {
         let bridge = &*GLOBAL_BRIDGE;
         (
-            bridge.molt_handle_for_pyobj(o),
-            bridge.molt_handle_for_pyobj(name),
+            bridge.observed_handle_for_pyobj(o),
+            bridge.observed_handle_for_pyobj(name),
             if value.is_null() {
                 None
             } else {
-                bridge.molt_handle_for_pyobj(value)
+                bridge.observed_handle_for_pyobj(value)
             },
         )
     };
@@ -1239,8 +1239,8 @@ pub unsafe extern "C" fn PyObject_Format(
     let (obj_bits, spec_bits) = {
         let bridge = &*GLOBAL_BRIDGE;
         (
-            bridge.molt_handle_for_pyobj(o),
-            bridge.molt_handle_for_pyobj(spec),
+            bridge.observed_handle_for_pyobj(o),
+            bridge.observed_handle_for_pyobj(spec),
         )
     };
     if let (Some(obj_bits), Some(spec_bits)) = (obj_bits, spec_bits) {
@@ -1621,7 +1621,7 @@ pub unsafe extern "C" fn PyObject_GetItem(o: *mut PyObject, key: *mut PyObject) 
     // A bridge miss (`None`) means `o` is a genuine foreign C-extension object
     // that never crossed into Molt: fall through to the foreign-slot dispatch
     // tier instead of the prior bare-NULL return.
-    let o_bits = GLOBAL_BRIDGE.molt_handle_for_pyobj(o);
+    let o_bits = GLOBAL_BRIDGE.observed_handle_for_pyobj(o);
     if let Some(o_bits) = o_bits {
         let h = hooks_or_stubs();
         let obj = o_bits.decode();
@@ -1672,12 +1672,20 @@ pub unsafe extern "C" fn PyObject_GetItem(o: *mut PyObject, key: *mut PyObject) 
                             }
                             return ptr::null_mut();
                         }
-                        return unsafe {
-                            GLOBAL_BRIDGE.borrowed_result_to_new_pyobj((h.list_item)(
-                                o_bits.bits(),
-                                actual_idx as usize,
-                            ))
+                        let Some(pointer) = GLOBAL_BRIDGE
+                            .list_view_item_pointer(o_bits.bits(), actual_idx as usize)
+                        else {
+                            unsafe {
+                                crate::api::errors::PyErr_SetString(
+                                    (&raw mut crate::abi_types::PyExc_SystemError)
+                                        .cast::<crate::abi_types::PyObject>(),
+                                    c"list projection item unavailable".as_ptr(),
+                                );
+                            }
+                            return ptr::null_mut();
                         };
+                        unsafe { crate::api::refcount::Py_INCREF(pointer) };
+                        return pointer;
                     }
                 }
             }
@@ -1725,7 +1733,7 @@ pub unsafe extern "C" fn PyObject_SetItem(
     }
     // ── Molt-native fast path (dict lane — ordering unchanged). A bridge miss
     // means `o` is a genuine foreign object; fall through to slot dispatch. ──
-    let o_bits = GLOBAL_BRIDGE.molt_handle_for_pyobj(o);
+    let o_bits = GLOBAL_BRIDGE.observed_handle_for_pyobj(o);
     if let Some(o_bits) = o_bits {
         let h = hooks_or_stubs();
         let obj = o_bits.decode();
@@ -1754,7 +1762,7 @@ pub unsafe extern "C" fn PyObject_DelItem(o: *mut PyObject, key: *mut PyObject) 
     }
     // ── Native dict fast path: real deletion via the runtime dict authority.
     // A bridge miss means `o` is a genuine foreign object; fall to slot dispatch.
-    let o_bits = GLOBAL_BRIDGE.molt_handle_for_pyobj(o);
+    let o_bits = GLOBAL_BRIDGE.observed_handle_for_pyobj(o);
     if let Some(o_bits) = o_bits {
         let h = hooks_or_stubs();
         let obj = o_bits.decode();
@@ -1915,6 +1923,127 @@ pub unsafe extern "C" fn PyIter_Next(iter: *mut PyObject) -> *mut PyObject {
     ptr::null_mut()
 }
 
+const PYGEN_RETURN: c_int = 0;
+const PYGEN_ERROR: c_int = -1;
+const PYGEN_NEXT: c_int = 1;
+
+/// Consume a pending `StopIteration` and return its exact `.value` as a new
+/// reference. A NULL iterator result with no exception is normal exhaustion
+/// and therefore returns a new reference to `None`.
+unsafe fn fetch_stop_iteration_value(result: *mut *mut PyObject) -> c_int {
+    if unsafe {
+        crate::api::errors::PyErr_ExceptionMatches(
+            (&raw mut crate::abi_types::PyExc_StopIteration).cast::<PyObject>(),
+        )
+    } == 0
+    {
+        if !unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+            return -1;
+        }
+        unsafe { *result = Py_NewRef(&raw mut Py_None) };
+        return 0;
+    }
+
+    let mut exc_type = ptr::null_mut();
+    let mut exc_value = ptr::null_mut();
+    let mut traceback = ptr::null_mut();
+    unsafe {
+        crate::api::errors::PyErr_Fetch(&raw mut exc_type, &raw mut exc_value, &raw mut traceback);
+        crate::api::errors::PyErr_NormalizeException(
+            &raw mut exc_type,
+            &raw mut exc_value,
+            &raw mut traceback,
+        );
+    }
+    if exc_value.is_null() {
+        unsafe {
+            crate::api::refcount::Py_XDECREF(exc_type);
+            crate::api::refcount::Py_XDECREF(traceback);
+        }
+        return -1;
+    }
+    let value = unsafe { crate::api::errors::stop_iteration_value(exc_value) };
+    unsafe {
+        crate::api::refcount::Py_XDECREF(exc_type);
+        crate::api::refcount::Py_DECREF(exc_value);
+        crate::api::refcount::Py_XDECREF(traceback);
+    }
+    if value.is_null() {
+        return -1;
+    }
+    unsafe { *result = value };
+    0
+}
+
+/// Send one value into a generator, coroutine, or iterator, matching CPython
+/// 3.12's dispatch and `StopIteration.value` transfer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyIter_Send(
+    iter: *mut PyObject,
+    arg: *mut PyObject,
+    result: *mut *mut PyObject,
+) -> c_int {
+    if iter.is_null() || arg.is_null() || result.is_null() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return PYGEN_ERROR;
+    }
+    unsafe { *result = ptr::null_mut() };
+
+    let tp = unsafe { (*iter).ob_type };
+    if tp.is_null() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return PYGEN_ERROR;
+    }
+    let async_methods = unsafe { (*tp).tp_as_async.cast::<crate::abi_types::PyAsyncMethods>() };
+    if !async_methods.is_null() {
+        let am_send = unsafe { (*async_methods).am_send };
+        if !am_send.is_null() {
+            let send: unsafe extern "C" fn(
+                *mut PyObject,
+                *mut PyObject,
+                *mut *mut PyObject,
+            ) -> c_int = unsafe { std::mem::transmute(am_send) };
+            let status = unsafe { send(iter, arg, result) };
+            if matches!(status, PYGEN_ERROR | PYGEN_RETURN | PYGEN_NEXT) {
+                return status;
+            }
+            unsafe {
+                crate::api::errors::PyErr_SetString(
+                    (&raw mut crate::abi_types::PyExc_SystemError).cast::<PyObject>(),
+                    c"am_send returned an invalid PySendResult".as_ptr(),
+                )
+            };
+            unsafe { *result = ptr::null_mut() };
+            return PYGEN_ERROR;
+        }
+    }
+
+    let yielded = if std::ptr::eq(arg, &raw mut Py_None) && unsafe { PyIter_Check(iter) } != 0 {
+        let Some(iternext) = (unsafe { (*tp).tp_iternext }) else {
+            unsafe { crate::api::errors::PyErr_BadInternalCall() };
+            return PYGEN_ERROR;
+        };
+        unsafe { iternext(iter) }
+    } else {
+        let method = unsafe { PyObject_GetAttrString(iter, c"send".as_ptr()) };
+        if method.is_null() {
+            ptr::null_mut()
+        } else {
+            let value = unsafe { PyObject_CallOneArg(method, arg) };
+            unsafe { crate::api::refcount::Py_DECREF(method) };
+            value
+        }
+    };
+    unsafe { *result = yielded };
+    if !yielded.is_null() {
+        PYGEN_NEXT
+    } else if unsafe { fetch_stop_iteration_value(result) } == 0 {
+        PYGEN_RETURN
+    } else {
+        PYGEN_ERROR
+    }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_Next(iter: *mut PyObject) -> *mut PyObject {
     unsafe { PyIter_Next(iter) }
@@ -2056,7 +2185,7 @@ pub unsafe extern "C" fn PyObject_Dir(o: *mut PyObject) -> *mut PyObject {
         }
         return ptr::null_mut();
     }
-    let o_handle = GLOBAL_BRIDGE.molt_handle_for_pyobj(o);
+    let o_handle = GLOBAL_BRIDGE.observed_handle_for_pyobj(o);
     let bits = match o_handle {
         Some(value) => value.bits(),
         None => {
@@ -2125,7 +2254,7 @@ pub unsafe extern "C" fn PyObject_Call(
     // dispatch, kwargs binding, CPython-shaped exceptions). Raw-registered C
     // objects are excluded — their synthetic handles are identity anchors, not
     // Molt object bits — and fall through to the honest TypeError below.
-    let callable_bits = GLOBAL_BRIDGE.molt_handle_for_pyobj(callable);
+    let callable_bits = GLOBAL_BRIDGE.observed_handle_for_pyobj(callable);
     if let Some(callable_bits) = callable_bits {
         return unsafe { call_bridged_callable(callable_bits.bits(), args, kwargs) };
     }
@@ -2166,7 +2295,7 @@ unsafe fn call_bridged_callable(
     let args_bits = if args.is_null() {
         0
     } else {
-        let resolved = GLOBAL_BRIDGE.molt_handle_for_pyobj(args);
+        let resolved = GLOBAL_BRIDGE.observed_handle_for_pyobj(args);
         match resolved {
             Some(bits) => bits.bits(),
             // The shim's `PyTuple_New` / `PyTuple_Pack` mint C-LAYOUT tuples
@@ -2203,7 +2332,7 @@ unsafe fn call_bridged_callable(
     {
         0
     } else {
-        let kwargs_handle = GLOBAL_BRIDGE.molt_handle_for_pyobj(kwargs);
+        let kwargs_handle = GLOBAL_BRIDGE.observed_handle_for_pyobj(kwargs);
         match kwargs_handle {
             Some(bits) => bits.bits(),
             None => {
@@ -2247,12 +2376,19 @@ pub(crate) unsafe fn molt_tuple_bits_from_c_tuple(args: *mut PyObject) -> Option
     }
     let n = len as usize;
     let items = unsafe { crate::api::sequences::tuple_items_ptr(tuple) };
-    let mut item_bits = Vec::with_capacity(n);
+    let mut item_bits = Vec::new();
+    if item_bits.try_reserve_exact(n).is_err() {
+        unsafe { crate::api::errors::PyErr_NoMemory() };
+        return None;
+    }
     {
         let bridge = &*GLOBAL_BRIDGE;
         for i in 0..n {
             let item = unsafe { *items.add(i) };
             if item.is_null() {
+                for bits in item_bits.drain(..) {
+                    unsafe { (hooks_or_stubs().dec_ref)(bits) };
+                }
                 return None;
             }
             // Cross each argument INTO Molt as a first-class value: bridge
@@ -2260,20 +2396,43 @@ pub(crate) unsafe fn molt_tuple_bits_from_c_tuple(args: *mut PyObject) -> Option
             // C-extension object gets a `TYPE_ID_FOREIGN` wrapper so the callee
             // can `getattr`/call it. Each is an owned reference the fresh Molt
             // tuple takes ownership of (released when the tuple is dropped).
-            item_bits.push(unsafe { bridge.molt_value_for_pyobj(item) }?);
+            let Some(bits) = (unsafe { bridge.molt_value_for_pyobj(item) }) else {
+                for bits in item_bits.drain(..) {
+                    unsafe { (hooks_or_stubs().dec_ref)(bits) };
+                }
+                return None;
+            };
+            item_bits.push(bits);
         }
     }
     let h = hooks_or_stubs();
     let tuple_bits = unsafe { (h.alloc_tuple)(n) };
     if tuple_bits == 0 {
+        for bits in item_bits.drain(..) {
+            unsafe { (h.dec_ref)(bits) };
+        }
         return None;
     }
-    for (i, bits) in item_bits.into_iter().enumerate() {
-        match unsafe { (h.tuple_set)(tuple_bits, i, bits) }.decode() {
-            crate::hooks::DecodedHandleResult::Ok(old_bits) => unsafe { (h.dec_ref)(old_bits) },
-            crate::hooks::DecodedHandleResult::Missing
-            | crate::hooks::DecodedHandleResult::Error => return None,
+    for i in 0..item_bits.len() {
+        let bits = item_bits[i];
+        let pointer = unsafe { *items.add(i) };
+        match unsafe { (h.tuple_set)(tuple_bits, i, bits, pointer) }.decode() {
+            crate::hooks::DecodedHandleResult::Ok(old_bits) if old_bits != 0 => unsafe {
+                (h.dec_ref)(old_bits)
+            },
+            crate::hooks::DecodedHandleResult::Ok(_)
+            | crate::hooks::DecodedHandleResult::Missing => {},
+            crate::hooks::DecodedHandleResult::Error => {
+                for bits in item_bits.drain(..) {
+                    unsafe { (h.dec_ref)(bits) };
+                }
+                unsafe { (h.dec_ref)(tuple_bits) };
+                return None;
+            }
         }
+    }
+    for bits in item_bits.drain(..) {
+        unsafe { (h.dec_ref)(bits) };
     }
     Some(tuple_bits)
 }
@@ -3955,7 +4114,8 @@ mod item_access_slot_tests {
 mod f3_divergence_tests {
     use super::*;
     use crate::abi_types::{
-        PyMappingMethods, PyNumberMethods, PyObject, PySequenceMethods, PyTypeObject,
+        PyAsyncMethods, PyMappingMethods, PyNumberMethods, PyObject, PySequenceMethods,
+        PyTypeObject,
     };
     use std::sync::atomic::{AtomicI64, Ordering};
 
@@ -3968,6 +4128,139 @@ mod f3_divergence_tests {
     }
     unsafe extern "C" fn fake_len_three(_o: *mut PyObject) -> Py_ssize_t {
         3
+    }
+
+    unsafe extern "C" fn fake_am_send(
+        _iter: *mut PyObject,
+        arg: *mut PyObject,
+        result: *mut *mut PyObject,
+    ) -> c_int {
+        unsafe { *result = Py_NewRef(arg) };
+        PYGEN_NEXT
+    }
+
+    unsafe extern "C" fn fake_stop_iteration(_iter: *mut PyObject) -> *mut PyObject {
+        let payload =
+            unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(MoltObject::from_int(42).bits()) };
+        unsafe {
+            crate::api::errors::PyErr_SetObject(
+                (&raw mut crate::abi_types::PyExc_StopIteration).cast::<PyObject>(),
+                payload,
+            );
+            crate::api::refcount::Py_DECREF(payload);
+        }
+        ptr::null_mut()
+    }
+
+    #[repr(C)]
+    struct SendableTestObject {
+        ob_base: PyObject,
+        method: *mut PyObject,
+    }
+
+    unsafe extern "C" fn sendable_getattr(
+        object: *mut PyObject,
+        _name: *const c_char,
+    ) -> *mut PyObject {
+        let method = unsafe { (*object.cast::<SendableTestObject>()).method };
+        unsafe { Py_NewRef(method) }
+    }
+
+    unsafe extern "C" fn send_method_call(
+        _callable: *mut PyObject,
+        args: *mut PyObject,
+        _kwargs: *mut PyObject,
+    ) -> *mut PyObject {
+        let arg = unsafe { crate::api::sequences::PyTuple_GetItem(args, 0) };
+        unsafe { Py_NewRef(arg) }
+    }
+
+    #[test]
+    fn iter_send_dispatches_am_send_with_exact_result_contract() {
+        unsafe { crate::api::errors::PyErr_Clear() };
+        let mut async_methods: PyAsyncMethods = unsafe { std::mem::zeroed() };
+        async_methods.am_send = fake_am_send as *mut c_void;
+        let mut ty: PyTypeObject = unsafe { std::mem::zeroed() };
+        ty.tp_as_async = (&raw mut async_methods).cast::<c_void>();
+        let mut iter = PyObject {
+            ob_refcnt: 1,
+            ob_type: &raw mut ty,
+        };
+        let mut arg = PyObject {
+            ob_refcnt: 1,
+            ob_type: ptr::null_mut(),
+        };
+        let mut result = ptr::null_mut();
+        assert_eq!(
+            unsafe { PyIter_Send(&raw mut iter, &raw mut arg, &raw mut result) },
+            PYGEN_NEXT
+        );
+        assert!(std::ptr::eq(result, &raw mut arg));
+        assert_eq!(arg.ob_refcnt, 2);
+        unsafe { crate::api::refcount::Py_DECREF(result) };
+    }
+
+    #[test]
+    fn iter_send_transfers_stop_iteration_value_and_clears_error() {
+        crate::bridge::molt_cpython_abi_init();
+        unsafe { crate::api::errors::PyErr_Clear() };
+        let mut ty: PyTypeObject = unsafe { std::mem::zeroed() };
+        ty.tp_iternext = Some(fake_stop_iteration);
+        let mut iter = PyObject {
+            ob_refcnt: 1,
+            ob_type: &raw mut ty,
+        };
+        let mut result = ptr::null_mut();
+        assert_eq!(
+            unsafe { PyIter_Send(&raw mut iter, &raw mut Py_None, &raw mut result,) },
+            PYGEN_RETURN
+        );
+        assert!(!result.is_null());
+        assert_eq!(unsafe { crate::api::numbers::PyLong_AsLong(result) }, 42);
+        assert!(unsafe { crate::api::errors::PyErr_Occurred() }.is_null());
+        unsafe { crate::api::refcount::Py_DECREF(result) };
+    }
+
+    #[test]
+    fn iter_send_falls_back_to_send_method_for_non_none_argument() {
+        crate::bridge::molt_cpython_abi_init();
+        unsafe { crate::api::errors::PyErr_Clear() };
+        let mut method_type: PyTypeObject = unsafe { std::mem::zeroed() };
+        method_type.tp_call = Some(send_method_call);
+        let mut method = PyObject {
+            ob_refcnt: 1,
+            ob_type: &raw mut method_type,
+        };
+        let mut iter_type: PyTypeObject = unsafe { std::mem::zeroed() };
+        iter_type.tp_getattr = Some(sendable_getattr);
+        let mut iter = SendableTestObject {
+            ob_base: PyObject {
+                ob_refcnt: 1,
+                ob_type: &raw mut iter_type,
+            },
+            method: &raw mut method,
+        };
+        let mut arg = PyObject {
+            ob_refcnt: 1,
+            ob_type: ptr::null_mut(),
+        };
+        let mut result = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                PyIter_Send(
+                    (&raw mut iter).cast::<PyObject>(),
+                    &raw mut arg,
+                    &raw mut result,
+                )
+            },
+            PYGEN_NEXT
+        );
+        assert!(std::ptr::eq(result, &raw mut arg));
+        assert_eq!(
+            method.ob_refcnt, 1,
+            "temporary bound method ref must be released"
+        );
+        unsafe { crate::api::refcount::Py_DECREF(result) };
     }
 
     /// `PyObject_IsTrue` must dispatch a foreign object's `nb_bool` (the numpy

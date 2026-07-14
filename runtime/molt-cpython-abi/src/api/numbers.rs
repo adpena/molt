@@ -1,7 +1,8 @@
 //! Numeric type bridge — PyLong_*, PyFloat_*, PyBool_*.
 
 use crate::abi_types::{
-    Py_False, Py_True, Py_complex, Py_ssize_t, PyComplexObject, PyFloatObject, PyObject,
+    IMMORTAL_REFCNT, Py_False, Py_True, Py_complex, Py_ssize_t, PyComplexObject, PyFloatObject,
+    PyLongObject, PyLongValue, PyObject,
 };
 use crate::bridge::{GLOBAL_BRIDGE, ResolvedPyObject, resolve_pyobject, resolved_molt_handle};
 use crate::hooks::hooks_or_stubs;
@@ -12,6 +13,7 @@ use molt_lang_obj_model::float_bits::{
 use molt_lang_obj_model::int_literal::{
     IntLiteralErrorKind, ScannedIntLiteral, scan_int_literal_with_limit,
 };
+use std::cell::UnsafeCell;
 use std::ffi::c_void;
 use std::os::raw::{c_char, c_double, c_int, c_long, c_longlong, c_ulong, c_ulonglong};
 use std::ptr;
@@ -19,6 +21,9 @@ use std::ptr;
 // ─── PyLong ──────────────────────────────────────────────────────────────────
 
 fn py_long_from_i64(v: i64) -> *mut PyObject {
+    if let Some(ptr) = cached_small_int_ptr(v) {
+        return ptr;
+    }
     let bits = MoltObject::try_from_int(v)
         .map(MoltObject::bits)
         .unwrap_or_else(|| unsafe { (hooks_or_stubs().int_from_i64)(v) });
@@ -30,6 +35,11 @@ fn py_long_from_i64(v: i64) -> *mut PyObject {
 }
 
 fn py_long_from_u64(v: u64) -> *mut PyObject {
+    if v <= SMALL_INT_MAX as u64
+        && let Some(ptr) = cached_small_int_ptr(v as i64)
+    {
+        return ptr;
+    }
     let bits = MoltObject::try_from_uint(v)
         .map(MoltObject::bits)
         .unwrap_or_else(|| unsafe { (hooks_or_stubs().int_from_u64)(v) });
@@ -280,6 +290,102 @@ const PYLONG_BITS_IN_DIGIT: usize = 30;
 const PYLONG_SIGN_MASK: usize = 3;
 const PYLONG_ZERO_TAG: usize = 1;
 const PYLONG_NEGATIVE_TAG: usize = 2;
+
+// CPython's one canonical small-integer family. These objects are built in
+// static storage, carry the public compact-PyLong layout, and are immortal, so
+// all threads observe one deterministic pointer without initialization locks,
+// refcount writes, bridge-ledger entries, or heap traffic. The range is part of
+// CPython's public implementation behavior (`_PY_NSMALLNEGINTS == 5`,
+// `_PY_NSMALLPOSINTS == 257`); values outside it retain ordinary object
+// identity and must never be interned by value.
+const SMALL_INT_MIN: i64 = -5;
+const SMALL_INT_MAX: i64 = 256;
+const SMALL_INT_COUNT: usize = (SMALL_INT_MAX - SMALL_INT_MIN + 1) as usize;
+
+const fn build_small_int_cache() -> [PyLongObject; SMALL_INT_COUNT] {
+    let mut values = [const {
+        PyLongObject {
+            ob_base: PyObject {
+                ob_refcnt: IMMORTAL_REFCNT,
+                ob_type: std::ptr::null_mut(),
+            },
+            long_value: PyLongValue {
+                lv_tag: PYLONG_ZERO_TAG,
+                ob_digit: [0],
+            },
+        }
+    }; SMALL_INT_COUNT];
+    let mut index = 0;
+    while index < SMALL_INT_COUNT {
+        let value = SMALL_INT_MIN + index as i64;
+        let (tag, digit) = if value == 0 {
+            (PYLONG_ZERO_TAG, 0)
+        } else if value < 0 {
+            ((1 << 3) | PYLONG_NEGATIVE_TAG, (-value) as u32)
+        } else {
+            (1 << 3, value as u32)
+        };
+        values[index] = PyLongObject {
+            ob_base: PyObject {
+                ob_refcnt: IMMORTAL_REFCNT,
+                ob_type: &raw mut crate::abi_types::PyLong_Type,
+            },
+            long_value: PyLongValue {
+                lv_tag: tag,
+                ob_digit: [digit],
+            },
+        };
+        index += 1;
+    }
+    values
+}
+
+#[repr(transparent)]
+struct SmallIntCache(UnsafeCell<[PyLongObject; SMALL_INT_COUNT]>);
+
+// The only semantically mutable public field is `ob_refcnt`, and the sole
+// refcount authority makes every operation on an immortal object a no-op.
+// All value/type fields are initialized at compile time and never change.
+unsafe impl Sync for SmallIntCache {}
+
+static SMALL_INT_CACHE: SmallIntCache = SmallIntCache(UnsafeCell::new(build_small_int_cache()));
+
+#[inline]
+pub(crate) fn cached_small_int_ptr(value: i64) -> Option<*mut PyObject> {
+    if !(SMALL_INT_MIN..=SMALL_INT_MAX).contains(&value) {
+        return None;
+    }
+    let index = (value - SMALL_INT_MIN) as usize;
+    let base = SMALL_INT_CACHE.0.get().cast::<PyLongObject>();
+    Some(unsafe { base.add(index).cast::<PyObject>() })
+}
+
+/// Reverse-map only exact pointers into the static cache; no dereference is
+/// performed, so arbitrary or stale foreign pointers are safe to classify.
+pub(crate) fn cached_small_int_bits_from_ptr(ptr: *mut PyObject) -> Option<u64> {
+    if ptr.is_null() {
+        return None;
+    }
+    let stride = std::mem::size_of::<PyLongObject>();
+    let base = SMALL_INT_CACHE.0.get().cast::<PyLongObject>() as usize;
+    let offset = (ptr as usize).checked_sub(base)?;
+    if offset % stride != 0 {
+        return None;
+    }
+    let index = offset / stride;
+    if index >= SMALL_INT_COUNT {
+        return None;
+    }
+    let value = SMALL_INT_MIN + index as i64;
+    MoltObject::try_from_int(value).map(MoltObject::bits)
+}
+
+#[inline]
+pub(crate) fn is_cached_small_int_handle(bits: u64) -> bool {
+    MoltObject::from_bits(bits)
+        .as_int()
+        .is_some_and(|value| (SMALL_INT_MIN..=SMALL_INT_MAX).contains(&value))
+}
 
 /// True when `op` carries the public CPython long layout directly.
 ///
@@ -2656,6 +2762,11 @@ unsafe fn materialize_numeric_carrier(bits: u64) -> (*mut PyObject, bool) {
         };
         return (ptr, false);
     }
+    if let Some(value) = obj.as_int()
+        && let Some(ptr) = cached_small_int_ptr(value)
+    {
+        return (ptr, false);
+    }
     if let Some(value) = obj.as_float() {
         let carrier = Box::new(PyFloatObject {
             ob_base: PyObject {
@@ -2713,37 +2824,41 @@ unsafe fn materialize_long_carrier(bits: u64, sign: i32) -> (*mut PyObject, bool
     if !matches!(sign, -1..=1) || sign == 0 && bit_len != 0 {
         return (ptr::null_mut(), false);
     }
-    let Some(byte_len) = bit_len.div_ceil(8).checked_add(1) else {
-        unsafe { crate::api::errors::PyErr_NoMemory() };
-        return (ptr::null_mut(), false);
-    };
-    let byte_len = byte_len.max(1);
-    let mut magnitude = Vec::new();
-    if magnitude.try_reserve_exact(byte_len).is_err() {
-        unsafe { crate::api::errors::PyErr_NoMemory() };
-        return (ptr::null_mut(), false);
-    }
-    magnitude.resize(byte_len, 0);
-    if let Some(value) = inline_value {
-        magnitude.fill(if value < 0 { 0xff } else { 0 });
-        magnitude[..8.min(byte_len)].copy_from_slice(&value.to_le_bytes()[..8.min(byte_len)]);
-    } else {
+    // Inline integers already fit in one machine word. Construct their base-
+    // 2^30 digits directly and reserve scratch bytes only for arbitrary-width
+    // runtime integers. This removes the second allocation from the common
+    // non-cached PyLong path.
+    let mut heap_magnitude = if inline_value.is_none() {
+        let Some(byte_len) = bit_len.div_ceil(8).checked_add(1) else {
+            unsafe { crate::api::errors::PyErr_NoMemory() };
+            return (ptr::null_mut(), false);
+        };
+        let byte_len = byte_len.max(1);
+        let mut magnitude = Vec::new();
+        if magnitude.try_reserve_exact(byte_len).is_err() {
+            unsafe { crate::api::errors::PyErr_NoMemory() };
+            return (ptr::null_mut(), false);
+        }
+        magnitude.resize(byte_len, 0);
         let status = unsafe { (hooks.int_to_bytes)(bits, magnitude.as_mut_ptr(), byte_len, 1, 1) };
         if status != crate::hooks::INT_BYTES_OK {
             return (ptr::null_mut(), false);
         }
-    }
-    if sign < 0 {
-        let mut carry = 1u16;
-        for byte in &mut magnitude {
-            let next = ((!*byte) as u16) + carry;
-            *byte = next as u8;
-            carry = next >> 8;
+        if sign < 0 {
+            let mut carry = 1u16;
+            for byte in &mut magnitude {
+                let next = ((!*byte) as u16) + carry;
+                *byte = next as u8;
+                carry = next >> 8;
+            }
         }
-    }
-    while magnitude.len() > 1 && magnitude.last() == Some(&0) {
-        magnitude.pop();
-    }
+        while magnitude.len() > 1 && magnitude.last() == Some(&0) {
+            magnitude.pop();
+        }
+        Some(magnitude)
+    } else {
+        None
+    };
     let digits = if sign == 0 {
         0
     } else {
@@ -2786,14 +2901,23 @@ unsafe fn materialize_long_carrier(bits: u64, sign: i32) -> (*mut PyObject, bool
         );
         let digit_ptr = tag_ptr.add(1).cast::<u32>();
         for digit_index in 0..digits {
-            let mut digit = 0u32;
-            for bit in 0..PYLONG_BITS_IN_DIGIT {
-                let source_bit = digit_index * PYLONG_BITS_IN_DIGIT + bit;
-                let byte = source_bit / 8;
-                if byte < magnitude.len() && magnitude[byte] & (1 << (source_bit % 8)) != 0 {
-                    digit |= 1 << bit;
+            let digit = if let Some(value) = inline_value {
+                ((value.unsigned_abs() >> (digit_index * PYLONG_BITS_IN_DIGIT))
+                    & ((1_u64 << PYLONG_BITS_IN_DIGIT) - 1)) as u32
+            } else {
+                let magnitude = heap_magnitude
+                    .as_mut()
+                    .expect("heap PyLong carrier missing magnitude bytes");
+                let mut digit = 0u32;
+                for bit in 0..PYLONG_BITS_IN_DIGIT {
+                    let source_bit = digit_index * PYLONG_BITS_IN_DIGIT + bit;
+                    let byte = source_bit / 8;
+                    if byte < magnitude.len() && magnitude[byte] & (1 << (source_bit % 8)) != 0 {
+                        digit |= 1 << bit;
+                    }
                 }
-            }
+                digit
+            };
             digit_ptr.add(digit_index).write(digit);
         }
     }
@@ -3175,7 +3299,13 @@ pub unsafe extern "C" fn PyNumber_Check(op: *mut PyObject) -> c_int {
 
 #[cfg(test)]
 mod tests {
-    use super::{NumericParseError, parse_python_float_literal, parse_python_int_literal};
+    use super::{
+        NumericParseError, PyLong_AsLongLong, PyLong_FromLong, cached_small_int_bits_from_ptr,
+        cached_small_int_ptr, parse_python_float_literal, parse_python_int_literal,
+    };
+    use crate::abi_types::{IMMORTAL_REFCNT, is_immortal_refcnt};
+    use crate::api::refcount::Py_DECREF;
+    use molt_lang_obj_model::MoltObject;
 
     #[test]
     fn parses_python_int_literals_with_base_prefixes_and_underscores() {
@@ -3224,5 +3354,64 @@ mod tests {
             parse_python_float_literal("π".as_bytes()),
             Err(NumericParseError::InvalidLiteral)
         );
+    }
+
+    #[test]
+    fn small_integer_family_has_one_immortal_bidirectional_authority() {
+        for value in [-5_i64, 0, 1, 101, 256] {
+            let first = unsafe { PyLong_FromLong(value as _) };
+            let second = unsafe { PyLong_FromLong(value as _) };
+            assert_eq!(first, second, "cached identity drifted for {value}");
+            assert_eq!(cached_small_int_ptr(value), Some(first));
+            assert_eq!(
+                cached_small_int_bits_from_ptr(first),
+                MoltObject::try_from_int(value).map(MoltObject::bits)
+            );
+            assert_eq!(unsafe { PyLong_AsLongLong(first) }, value as _);
+            assert_eq!(unsafe { (*first).ob_refcnt }, IMMORTAL_REFCNT);
+            assert!(is_immortal_refcnt(unsafe { (*first).ob_refcnt }));
+            unsafe {
+                Py_DECREF(first);
+                Py_DECREF(second);
+            }
+            assert_eq!(unsafe { (*first).ob_refcnt }, IMMORTAL_REFCNT);
+        }
+
+        let below_a = unsafe { PyLong_FromLong(-6) };
+        let below_b = unsafe { PyLong_FromLong(-6) };
+        let above_a = unsafe { PyLong_FromLong(257) };
+        let above_b = unsafe { PyLong_FromLong(257) };
+        assert_ne!(below_a, below_b, "-6 must retain ordinary CPython identity");
+        assert_ne!(
+            above_a, above_b,
+            "257 must retain ordinary CPython identity"
+        );
+        assert_eq!(cached_small_int_bits_from_ptr(below_a), None);
+        assert_eq!(cached_small_int_bits_from_ptr(above_a), None);
+        unsafe {
+            Py_DECREF(below_a);
+            Py_DECREF(below_b);
+            Py_DECREF(above_a);
+            Py_DECREF(above_b);
+        }
+    }
+
+    #[test]
+    fn small_integer_identity_is_deterministic_across_threads() {
+        let expected = cached_small_int_ptr(101).unwrap() as usize;
+        let workers = (0..8)
+            .map(|_| {
+                std::thread::spawn(move || {
+                    for _ in 0..4096 {
+                        let ptr = unsafe { PyLong_FromLong(101) };
+                        assert_eq!(ptr as usize, expected);
+                        unsafe { Py_DECREF(ptr) };
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        for worker in workers {
+            worker.join().unwrap();
+        }
     }
 }

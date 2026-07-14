@@ -99,7 +99,7 @@ def test_cython_build_requirement_from_pyproject() -> None:
     assert requirement.raw == "Cython==3.1.8"
 
 
-def test_regenerated_c_compile_policy_is_exact_manifested_and_exclusive(
+def test_regenerated_c_compile_profile_is_exact_and_manifested(
     tmp_path: Path,
 ) -> None:
     regeneration = cython_authority.CythonRegeneration(
@@ -109,21 +109,31 @@ def test_regenerated_c_compile_policy_is_exact_manifested_and_exclusive(
         cython_version="test",
         cython_argv=("python", "-m", "cython", "-3"),
     )
-    exact_policy = ("-DPy_LIMITED_API=0x030C0000",)
-    assert cython_authority.CYTHON_REGENERATED_C_COMPILE_ARGS == exact_policy
-    assert cython_authority.compile_args_for_regeneration(None) == ()
-    assert (
-        cython_authority.compile_args_for_regeneration(regeneration) == exact_policy
+    exact_policy = (
+        "-DCYTHON_FAST_THREAD_STATE=0",
+        "-DCYTHON_USE_UNICODE_INTERNALS=0",
+        "-DCYTHON_USE_PYLIST_INTERNALS=0",
+        "-DCYTHON_USE_PYLONG_INTERNALS=0",
+        "-DCYTHON_USE_PYTYPE_LOOKUP=0",
+        "-DCYTHON_ASSUME_SAFE_MACROS=0",
+        "-DCYTHON_ASSUME_SAFE_SIZE=0",
+        "-DCYTHON_UNPACK_METHODS=0",
+        "-DCYTHON_AVOID_BORROWED_REFS=1",
+        "-DCYTHON_AVOID_THREAD_UNSAFE_BORROWED_REFS=1",
+    )
+    assert cython_authority.CYTHON_CPYTHON_ABI_COMPILE_ARGS == exact_policy
+    assert regeneration.manifest_payload()["compile_profile"] == (
+        "molt-cpython-abi-safe-v1"
     )
     assert regeneration.manifest_payload()["compile_args"] == list(exact_policy)
 
 
 @requires_cython
 @requires_clang
-def test_regenerated_cython_limited_api_preprocess_is_fail_closed(
+def test_regenerated_cython_safe_cpython_profile_is_fail_closed(
     tmp_path: Path,
 ) -> None:
-    """The compile policy selects limited branches, not direct builtin fields."""
+    """The profile selects public-error CPython branches without unsafe internals."""
 
     pyx_path = tmp_path / "limited_probe.pyx"
     pyx_path.write_text(
@@ -143,8 +153,8 @@ def test_regenerated_cython_limited_api_preprocess_is_fail_closed(
     )
     assert error is None, error
     assert regeneration is not None
-    compile_args = cython_authority.compile_args_for_regeneration(regeneration)
-    assert compile_args == ("-DPy_LIMITED_API=0x030C0000",)
+    compile_args = cython_authority.CYTHON_CPYTHON_ABI_COMPILE_ARGS
+    assert all("Py_LIMITED_API" not in arg for arg in compile_args)
 
     clang = shutil.which("clang")
     assert clang is not None
@@ -179,18 +189,37 @@ def test_regenerated_cython_limited_api_preprocess_is_fail_closed(
     )
     assert macro_dump.returncode == 0, macro_dump.stderr
     assert re.search(
-        r"^#define CYTHON_COMPILING_IN_CPYTHON 0$", macro_dump.stdout, re.MULTILINE
+        r"^#define CYTHON_COMPILING_IN_CPYTHON 1$", macro_dump.stdout, re.MULTILINE
     )
     assert re.search(
-        r"^#define CYTHON_COMPILING_IN_LIMITED_API 1$",
+        r"^#define CYTHON_COMPILING_IN_LIMITED_API 0$",
         macro_dump.stdout,
         re.MULTILINE,
     )
 
-    # Check direct field-access expressions after preprocessing. Type names may
-    # legitimately remain in declarations, so absence of names is not evidence.
+    for macro in (
+        "CYTHON_FAST_THREAD_STATE",
+        "CYTHON_USE_UNICODE_INTERNALS",
+        "CYTHON_USE_PYLIST_INTERNALS",
+        "CYTHON_USE_PYLONG_INTERNALS",
+        "CYTHON_USE_PYTYPE_LOOKUP",
+        "CYTHON_ASSUME_SAFE_MACROS",
+        "CYTHON_ASSUME_SAFE_SIZE",
+        "CYTHON_UNPACK_METHODS",
+    ):
+        assert re.search(
+            rf"^#define {macro} 0$", macro_dump.stdout, re.MULTILINE
+        ), macro
+    assert re.search(
+        r"^#define CYTHON_AVOID_BORROWED_REFS 1$",
+        macro_dump.stdout,
+        re.MULTILINE,
+    )
+
+    # Check the disabled internal families after preprocessing. The one
+    # unavoidable PyListObject.ob_item construction write is covered by Molt's
+    # concrete list layout and is therefore deliberately not forbidden here.
     forbidden_field_access = {
-        "List": r"->\s*ob_item\b",
         "Long": r"->\s*(?:long_value|ob_digit)\b",
         "Unicode": (
             r"->\s*(?:wstr_length|utf8|utf8_length)\b"
@@ -200,7 +229,7 @@ def test_regenerated_cython_limited_api_preprocess_is_fail_closed(
     }
     for builtin, pattern in forbidden_field_access.items():
         assert re.search(pattern, preprocess.stdout) is None, (
-            f"regenerated limited-API C still contains direct {builtin} field access"
+            f"safe CPython profile still contains direct {builtin} field access"
         )
 
 
@@ -383,6 +412,165 @@ def test_pair_generated_c_with_pyx_matches_by_stem() -> None:
         )
         is None
     )
+    # Duplicate same-stem inputs are ambiguous; never select by list order.
+    assert (
+        cython_authority.pair_generated_c_with_pyx(
+            generated_c=Path("/build/_ni_label.c"),
+            pyx_candidates=[pyx, Path("/other/_ni_label.pyx")],
+        )
+        is None
+    )
+
+
+def test_regeneration_replays_real_ninja_cython_directives(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "source"
+    build_root = tmp_path / "build"
+    pyx = source_root / "pkg" / "probe.pyx"
+    original_c = build_root / "pkg" / "probe.c"
+    pyx.parent.mkdir(parents=True)
+    build_root.mkdir()
+    pyx.write_text("def probe():\n    return 1\n", encoding="utf-8")
+    (build_root / "build.ninja").write_text("# queried through ninja -t commands\n")
+    ninja_command = subprocess.list2cmdline(
+        [
+            "/tools/cython",
+            "-M",
+            "-3",
+            "--fast-fail",
+            "-Xfreethreading_compatible=True",
+            "--shared=scipy._cyutility",
+            "--include-dir",
+            "ignored",
+            str(pyx),
+            "-o",
+            str(original_c),
+        ]
+    )
+    generation_calls: list[list[str]] = []
+
+    def fake_run(
+        argv: list[str],
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        if "commands" in argv:
+            return subprocess.CompletedProcess(argv, 0, ninja_command + "\n", "")
+        generation_calls.append(argv)
+        output = Path(argv[argv.index("-o") + 1])
+        output.write_text("/* generated */\n", encoding="utf-8")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(cython_authority.shutil, "which", lambda _name: "/tools/ninja")
+    monkeypatch.setattr(cython_authority.subprocess, "run", fake_run)
+    regeneration, error = cython_authority.regenerate_cython_c_standalone(
+        pyx_path=pyx,
+        original_c=original_c,
+        out_dir=build_root / "standalone",
+        include_dirs=(),
+        cython_version="test",
+        python_exe=sys.executable,
+        package_roots=(source_root, build_root),
+    )
+
+    assert error is None, error
+    assert regeneration is not None
+    assert generation_calls == [list(regeneration.cython_argv)]
+    argv = regeneration.cython_argv
+    assert argv[:3] == (sys.executable, "-m", "cython")
+    assert argv[3:7] == (
+        "-M",
+        "-3",
+        "--fast-fail",
+        "-Xfreethreading_compatible=True",
+    )
+    assert not any(arg == "--shared" or arg.startswith("--shared=") for arg in argv)
+    assert "ignored" not in argv
+    assert argv.count(str(pyx)) == 1
+    assert argv.count(str(regeneration.regenerated_c)) == 1
+
+
+def test_ninja_command_strips_separate_shared_and_replaced_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "source"
+    build_root = tmp_path / "build"
+    pyx = source_root / "pkg" / "probe.pyx"
+    original_c = build_root / "pkg" / "probe.c"
+    pyx.parent.mkdir(parents=True)
+    build_root.mkdir()
+    pyx.write_text("def probe():\n    return 1\n", encoding="utf-8")
+    (build_root / "build.ninja").write_text("# queried through ninja -t commands\n")
+    command = subprocess.list2cmdline(
+        [
+            "/tools/cython",
+            "-3",
+            "--fast-fail",
+            "-X",
+            "freethreading_compatible=True",
+            "--output-file",
+            str(original_c),
+            "--include-dir",
+            ".",
+            str(pyx),
+            "--shared",
+            "scipy._cyutility",
+        ]
+    )
+    monkeypatch.setattr(cython_authority.shutil, "which", lambda _name: "/tools/ninja")
+    monkeypatch.setattr(
+        cython_authority.subprocess,
+        "run",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(
+            argv, 0, command + "\n", ""
+        ),
+    )
+
+    args, error = cython_authority._cython_generator_args_from_ninja(
+        pyx_path=pyx,
+        original_c=original_c,
+        package_roots=(source_root, build_root),
+    )
+
+    assert error is None, error
+    assert args == ("-3", "--fast-fail", "-X", "freethreading_compatible=True")
+
+
+def test_ninja_generator_command_ambiguity_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "source"
+    build_root = tmp_path / "build"
+    pyx = source_root / "pkg" / "probe.pyx"
+    original_c = build_root / "pkg" / "probe.c"
+    pyx.parent.mkdir(parents=True)
+    build_root.mkdir()
+    pyx.write_text("def probe():\n    return 1\n", encoding="utf-8")
+    (build_root / "build.ninja").write_text("# queried through ninja -t commands\n")
+    command = subprocess.list2cmdline(
+        ["/tools/cython", "-3", str(pyx), "-o", str(original_c)]
+    )
+    monkeypatch.setattr(cython_authority.shutil, "which", lambda _name: "/tools/ninja")
+    monkeypatch.setattr(
+        cython_authority.subprocess,
+        "run",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(
+            argv, 0, f"{command}\n{command}\n", ""
+        ),
+    )
+
+    args, error = cython_authority._cython_generator_args_from_ninja(
+        pyx_path=pyx,
+        original_c=original_c,
+        package_roots=(source_root, build_root),
+    )
+
+    assert args is None
+    assert error is not None
+    assert "ambiguously contains" in error
 
 
 @requires_ni_label

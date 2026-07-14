@@ -1,7 +1,6 @@
 use crate::PyToken;
 use crate::object::{HEADER_FLAG_COROUTINE, NEWLINE_KIND_CR, NEWLINE_KIND_CRLF, NEWLINE_KIND_LF};
 use molt_obj_model::MoltObject;
-use std::borrow::Cow;
 use std::sync::atomic::Ordering;
 
 use crate::async_rt::generators::{generator_locals_dict, generator_yieldfrom_bits};
@@ -154,7 +153,8 @@ pub extern "C" fn molt_code_positions(code_bits: u64) -> u64 {
         let mut table_bits = unsafe { code_linetable_bits(code_ptr) };
         let needs_fallback = if let Some(table_ptr) = obj_from_bits(table_bits).as_ptr() {
             unsafe {
-                object_type_id(table_ptr) != TYPE_ID_TUPLE || seq_vec_ref(table_ptr).is_empty()
+                object_type_id(table_ptr) != TYPE_ID_TUPLE
+                    || crate::object::seq_access::len(table_ptr) == 0
             }
         } else {
             true
@@ -416,18 +416,9 @@ pub(crate) unsafe fn attr_lookup_ptr(
                             if let Some(members_ptr) = obj_from_bits(members_bits).as_ptr()
                                 && object_type_id(members_ptr) == TYPE_ID_TUPLE
                             {
-                                let elems = seq_vec_ref(members_ptr);
-                                let bits = if attr_name == "name" {
-                                    elems
-                                        .first()
-                                        .copied()
-                                        .unwrap_or_else(|| MoltObject::none().bits())
-                                } else {
-                                    elems
-                                        .get(1)
-                                        .copied()
-                                        .unwrap_or_else(|| MoltObject::none().bits())
-                                };
+                                let index = usize::from(attr_name != "name");
+                                let bits = crate::object::seq_access::item(members_ptr, index)
+                                    .unwrap_or_else(|| MoltObject::none().bits());
                                 inc_ref_bits(_py, bits);
                                 return Some(bits);
                             }
@@ -852,7 +843,14 @@ pub(crate) unsafe fn attr_lookup_ptr(
                     if let Some(args_ptr) = obj_from_bits(args_bits).as_ptr()
                         && object_type_id(args_ptr) == TYPE_ID_TUPLE
                     {
-                        for &arg_bits in seq_vec_ref(args_ptr).iter() {
+                        let Some(args) = crate::object::seq_access::snapshot(
+                            _py,
+                            args_ptr,
+                            "sequence snapshot allocation failed",
+                        ) else {
+                            return Some(MoltObject::none().bits());
+                        };
+                        for &arg_bits in args.iter() {
                             if !is_typing_param(_py, arg_bits) {
                                 continue;
                             }
@@ -1251,11 +1249,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
             if object_type_id(obj_type_ptr) != TYPE_ID_TYPE {
                 return None;
             }
-            let mro_storage: Cow<'_, [u64]> = if let Some(mro) = class_mro_ref(obj_type_ptr) {
-                Cow::Borrowed(mro.as_slice())
-            } else {
-                Cow::Owned(class_mro_vec(obj_type_bits))
-            };
+            let mro_storage = class_mro_view(_py, obj_type_ptr);
             let mut instance_ptr = None;
             let mut owner_ptr = obj_type_ptr;
             if let Some(raw_ptr) = target_ptr {

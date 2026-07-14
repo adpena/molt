@@ -388,7 +388,8 @@ pub(super) unsafe fn bind_builtin_call(
             && let Some(def_ptr) = obj_from_bits(dbits).as_ptr()
             && object_type_id(def_ptr) == TYPE_ID_TUPLE
         {
-            let defaults = seq_vec_ref(def_ptr);
+            let defaults = crate::object::seq_access::pin_tuple(_py, def_ptr)
+                .expect("type-checked defaults tuple must be pinnable");
             let n_defaults = defaults.len();
             if missing <= n_defaults {
                 // The defaults tuple covers the last n_defaults

@@ -694,7 +694,7 @@ fn collect_real_vec(_py: &PyToken, iter_bits: u64) -> Option<Vec<f64>> {
                     "object is not an iterator",
                 );
             }
-            let elems = seq_vec_ref(pair_ptr);
+            let elems = seq_snapshot(pair_ptr);
             if elems.len() < 2 {
                 return raise_exception::<Option<Vec<f64>>>(
                     _py,
@@ -2067,7 +2067,7 @@ pub extern "C" fn molt_math_prod(iter_bits: u64, start_bits: u64) -> u64 {
                 if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
                     return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
                 }
-                let elems = seq_vec_ref(pair_ptr);
+                let elems = seq_snapshot(pair_ptr);
                 if elems.len() < 2 {
                     return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
                 }
@@ -2114,7 +2114,7 @@ pub extern "C" fn molt_math_fsum(iter_bits: u64) -> u64 {
                 if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
                     return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
                 }
-                let elems = seq_vec_ref(pair_ptr);
+                let elems = seq_snapshot(pair_ptr);
                 if elems.len() < 2 {
                     return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
                 }
@@ -2177,12 +2177,12 @@ pub extern "C" fn molt_math_gcd(args_bits: u64) -> u64 {
             if object_type_id(args_ptr) != TYPE_ID_TUPLE {
                 return raise_exception::<_>(_py, "TypeError", "gcd() expected arguments");
             }
-            let elems = seq_vec_ref(args_ptr);
+            let elems = seq_snapshot(args_ptr);
             if elems.is_empty() {
                 return MoltObject::from_int(0).bits();
             }
             let mut result = BigInt::zero();
-            for &val_bits in elems {
+            for &val_bits in elems.iter() {
                 let msg = format!(
                     "gcd() argument must be an integer, not {}",
                     type_name(_py, obj_from_bits(val_bits))
@@ -2215,12 +2215,12 @@ pub extern "C" fn molt_math_lcm(args_bits: u64) -> u64 {
             if object_type_id(args_ptr) != TYPE_ID_TUPLE {
                 return raise_exception::<_>(_py, "TypeError", "lcm() expected arguments");
             }
-            let elems = seq_vec_ref(args_ptr);
+            let elems = seq_snapshot(args_ptr);
             if elems.is_empty() {
                 return MoltObject::from_int(1).bits();
             }
             let mut result = BigInt::one();
-            for &val_bits in elems {
+            for &val_bits in elems.iter() {
                 let msg = format!(
                     "lcm() argument must be an integer, not {}",
                     type_name(_py, obj_from_bits(val_bits))
@@ -2421,13 +2421,13 @@ pub extern "C" fn molt_math_hypot(args_bits: u64) -> u64 {
         if unsafe { object_type_id(args_ptr) } != TYPE_ID_TUPLE {
             return raise_exception::<_>(_py, "TypeError", "hypot() expected arguments");
         }
-        let elems = unsafe { seq_vec_ref(args_ptr) };
+        let elems = unsafe { seq_snapshot(args_ptr) };
         if elems.is_empty() {
             return float_result_bits(_py, 0.0);
         }
         // Pre-extract all f64 values for SIMD processing
         let mut vals: Vec<f64> = Vec::with_capacity(elems.len());
-        for &val_bits in elems {
+        for &val_bits in elems.iter() {
             let Some(value) = coerce_real_named(_py, val_bits, "hypot") else {
                 return MoltObject::none().bits();
             };
@@ -2787,7 +2787,7 @@ fn collect_values_vec(_py: &PyToken, iter_bits: u64) -> Option<Vec<u64>> {
                     "object is not an iterator",
                 );
             }
-            let elems = seq_vec_ref(pair_ptr);
+            let elems = seq_snapshot(pair_ptr);
             if elems.len() < 2 {
                 return raise_exception::<Option<Vec<u64>>>(
                     _py,

@@ -134,8 +134,8 @@ fn shallow_copy_bits(_py: &PyToken<'_>, bits: u64) -> u64 {
         TYPE_ID_LIST => {
             // Shallow copy: new list with same element refs
             unsafe {
-                let src = seq_vec_ref(ptr);
-                let new_ptr = alloc_list(_py, src);
+                let new_ptr =
+                    crate::object::seq_access::with_borrowed(ptr, |src| alloc_list(_py, src));
                 if new_ptr.is_null() {
                     return raise_exception::<_>(_py, "MemoryError", "out of memory");
                 }
@@ -241,18 +241,27 @@ fn deep_copy_bits(_py: &PyToken<'_>, bits: u64, memo_handle: i64) -> u64 {
             memo_put(_py, memo_handle, obj_id, new_bits);
 
             unsafe {
-                let src = seq_vec_ref(ptr);
-                let len = src.len();
-                let new_vec_ptr = *(new_ptr as *mut *mut Vec<u64>);
-                let new_vec = &mut *new_vec_ptr;
-                new_vec.reserve(len);
-                for &elem in src.iter().take(len) {
-                    let copied = deep_copy_bits(_py, elem, memo_handle);
+                let mut index = 0usize;
+                while index < crate::object::seq_access::locked_len(ptr) {
+                    let Some(elem) = crate::object::seq_access::pin_item(_py, ptr, index) else {
+                        return MoltObject::none().bits();
+                    };
+                    let copied = deep_copy_bits(_py, elem.bits(), memo_handle);
+                    drop(elem);
                     if exception_pending(_py) {
+                        dec_ref_bits(_py, copied);
                         return MoltObject::none().bits();
                     }
-                    new_vec.push(copied);
-                    inc_ref_bits(_py, copied);
+                    if !crate::object::list_mutation::extend_from_slice(
+                        _py,
+                        new_ptr,
+                        std::slice::from_ref(&copied),
+                    ) {
+                        dec_ref_bits(_py, copied);
+                        return MoltObject::none().bits();
+                    }
+                    dec_ref_bits(_py, copied);
+                    index = index.saturating_add(1);
                 }
             }
             new_bits
@@ -260,35 +269,37 @@ fn deep_copy_bits(_py: &PyToken<'_>, bits: u64, memo_handle: i64) -> u64 {
         TYPE_ID_TUPLE => {
             // Deep copy tuple: copy all elements, but if all are identical, return self.
             unsafe {
-                let src = seq_vec_ref(ptr);
-                if src.is_empty() {
-                    inc_ref_bits(_py, bits);
-                    return bits;
-                }
-                let mut all_same = true;
-                let mut copied_elems = Vec::with_capacity(src.len());
-                for &elem in src.iter() {
-                    let copied = deep_copy_bits(_py, elem, memo_handle);
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
+                crate::object::seq_access::with_immutable_tuple_slice(ptr, |src| {
+                    if src.is_empty() {
+                        inc_ref_bits(_py, bits);
+                        return bits;
                     }
-                    if copied != elem {
-                        all_same = false;
+                    let mut all_same = true;
+                    let mut copied_elems = Vec::with_capacity(src.len());
+                    for &elem in src.iter() {
+                        let copied = deep_copy_bits(_py, elem, memo_handle);
+                        if exception_pending(_py) {
+                            return MoltObject::none().bits();
+                        }
+                        if copied != elem {
+                            all_same = false;
+                        }
+                        copied_elems.push(copied);
                     }
-                    copied_elems.push(copied);
-                }
-                if all_same {
-                    inc_ref_bits(_py, bits);
-                    memo_put(_py, memo_handle, obj_id, bits);
-                    return bits;
-                }
-                let new_ptr = alloc_tuple(_py, &copied_elems);
-                if new_ptr.is_null() {
-                    return raise_exception::<_>(_py, "MemoryError", "out of memory");
-                }
-                let new_bits = MoltObject::from_ptr(new_ptr).bits();
-                memo_put(_py, memo_handle, obj_id, new_bits);
-                new_bits
+                    if all_same {
+                        inc_ref_bits(_py, bits);
+                        memo_put(_py, memo_handle, obj_id, bits);
+                        return bits;
+                    }
+                    let new_ptr = alloc_tuple(_py, &copied_elems);
+                    if new_ptr.is_null() {
+                        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                    }
+                    let new_bits = MoltObject::from_ptr(new_ptr).bits();
+                    memo_put(_py, memo_handle, obj_id, new_bits);
+                    new_bits
+                })
+                .unwrap_or_else(|| MoltObject::none().bits())
             }
         }
         TYPE_ID_DICT => {

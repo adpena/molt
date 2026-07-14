@@ -10,7 +10,7 @@ use crate::{
     function_fn_ptr, function_name_bits, function_trampoline_ptr, header_from_obj_ptr,
     inc_ref_bits, intern_static_name, is_truthy, molt_exception_clear, obj_from_bits,
     object_type_id, profile_hit, raise_exception, recursion_guard_enter, recursion_guard_exit,
-    runtime_state, seq_vec_ref, type_name,
+    runtime_state, type_name,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -2754,7 +2754,8 @@ pub(crate) unsafe fn call_function_obj_trampoline(
                     && let Some(def_ptr) = obj_from_bits(dbits).as_ptr()
                     && object_type_id(def_ptr) == TYPE_ID_TUPLE
                 {
-                    let defaults = seq_vec_ref(def_ptr);
+                    let defaults = crate::object::seq_access::pin_tuple(_py, def_ptr)
+                        .expect("type-checked defaults tuple must be pinnable");
                     let n_defaults = defaults.len();
                     let missing = a - n;
                     if missing <= n_defaults {
@@ -3146,7 +3147,7 @@ mod tests {
                 crate::TYPE_ID_TUPLE
             );
             assert!(
-                unsafe { crate::seq_vec_ref(result_ptr) }.is_empty(),
+                unsafe { crate::object::seq_access::len(result_ptr) } == 0,
                 "binder must pack no extra positional arguments into an empty *args tuple"
             );
 

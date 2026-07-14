@@ -109,7 +109,13 @@ pub(crate) fn sockaddr_from_bits(
         if type_id != TYPE_ID_TUPLE && type_id != TYPE_ID_LIST {
             return Err("address must be tuple".to_string());
         }
-        let elems = seq_vec_ref(ptr);
+        let Some(elems) = crate::object::seq_access::snapshot(
+            _py,
+            ptr,
+            "socket address snapshot allocation failed",
+        ) else {
+            return Err("socket address snapshot allocation failed".to_string());
+        };
         if elems.len() < 2 {
             return Err("address must be (host, port)".to_string());
         }
@@ -245,7 +251,13 @@ pub(super) fn encode_sockaddr(
         if type_id != TYPE_ID_TUPLE && type_id != TYPE_ID_LIST {
             return Err("address must be tuple".to_string());
         }
-        let elems = seq_vec_ref(ptr);
+        let Some(elems) = crate::object::seq_access::snapshot(
+            _py,
+            ptr,
+            "socket address snapshot allocation failed",
+        ) else {
+            return Err("socket address snapshot allocation failed".to_string());
+        };
         if elems.len() < 2 {
             return Err("address must be (host, port)".to_string());
         }

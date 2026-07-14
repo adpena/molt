@@ -283,7 +283,8 @@ pub fn molt_float_from_obj(val_bits: u64) -> u64 {
 
 #[allow(improper_ctypes)]
 unsafe extern "C" {
-    fn __molt_http_seq_vec_ptr(ptr: *mut u8) -> *mut Vec<u64>;
+    fn __molt_http_seq_snapshot(ptr: *mut u8, out_ptr: *mut *const u64, out_len: *mut usize)
+    -> i32;
     fn __molt_http_dict_get_in_place(dict_ptr: *mut u8, key_bits: u64, out: *mut u64) -> i32;
     fn __molt_http_molt_list_insert(list_bits: u64, index_bits: u64, value_bits: u64) -> u64;
     fn __molt_http_molt_dict_new(initial_capacity: usize) -> u64;
@@ -291,9 +292,16 @@ unsafe extern "C" {
 
 /// # Safety
 ///
-/// `ptr` must refer to a live Molt sequence object backed by `Vec<u64>`.
-pub unsafe fn seq_vec_ref(ptr: *mut u8) -> &'static Vec<u64> {
-    unsafe { &*__molt_http_seq_vec_ptr(ptr) }
+/// `ptr` must refer to a live Molt list or tuple for the duration of this call.
+pub unsafe fn seq_snapshot(ptr: *mut u8) -> OwnedBridgeHandleSnapshot {
+    let mut out_ptr: *const u64 = std::ptr::null();
+    let mut out_len = 0usize;
+    let ok = unsafe { __molt_http_seq_snapshot(ptr, &mut out_ptr, &mut out_len) };
+    if ok == 0 {
+        out_ptr = std::ptr::null();
+        out_len = 0;
+    }
+    unsafe { bridge_owned_handle_snapshot(out_ptr, out_len) }
 }
 
 /// # Safety

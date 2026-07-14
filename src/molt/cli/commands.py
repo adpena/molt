@@ -2540,6 +2540,14 @@ def extension_build(
                             command="extension-build",
                         )
                     assert regeneration is not None
+                    if normalized_abi_tier != "cpython-abi":
+                        return _fail(
+                            "Standalone Cython extensions require --abi-tier "
+                            "cpython-abi; the legacy source-compat/limited-API "
+                            "Cython lane has been removed",
+                            json_output,
+                            command="extension-build",
+                        )
                     cython_regenerations[original_c] = regeneration
         for idx, source_path in enumerate(source_paths):
             regeneration = cython_regenerations.get(source_path.resolve())
@@ -2637,14 +2645,12 @@ def extension_build(
                     )
                     if libcxx_inc is not None:
                         cmd.extend(["-I", str(libcxx_inc)])
-            # Regenerated Cython C must select Cython's limited-API branches.
-            # This named policy is intentionally appended immediately before
-            # the source-plan driver's unit args: only ``regeneration != None``
-            # receives it, while the driver remains authoritative for all
-            # original per-unit flags.
-            cmd.extend(
-                _source_extension_cython.compile_args_for_regeneration(regeneration)
-            )
+            # Regenerated Cython C has one explicit full-CPython ABI profile.
+            # The source-compat/limited-API branch was deleted above; only a
+            # successful standalone regeneration on cpython-abi receives these
+            # selectors, immediately before the source-plan unit authority.
+            if regeneration is not None:
+                cmd.extend(_source_extension_cython.CYTHON_CPYTHON_ABI_COMPILE_ARGS)
             cmd.extend(
                 _source_extensions._source_extension_unit_args_for_driver(
                     unit_compile_args,

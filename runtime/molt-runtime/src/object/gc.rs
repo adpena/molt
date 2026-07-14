@@ -75,7 +75,7 @@ use crate::builtins::exceptions::{
 };
 use crate::object::layout::{
     iter_cached_tuple, iter_expected_version, iter_set_cached_tuple, iter_set_expected_version,
-    iter_set_target_bits, iter_target_bits, seq_vec_ptr, seq_vec_ref,
+    iter_set_target_bits, iter_target_bits, seq_vec_ptr,
 };
 use crate::object::{
     HEADER_FLAG_FINALIZER_RAN, HEADER_FLAG_GC_COLLECTING, HEADER_FLAG_GC_PINNED,
@@ -367,16 +367,51 @@ pub(crate) unsafe fn molt_traverse(py: &PyToken<'_>, ptr: *mut u8, visit: &mut d
             crate::dec_ref_bits(py, bits);
         }
         match type_id {
-            TYPE_ID_LIST | TYPE_ID_TUPLE => {
-                let vec_ptr = seq_vec_ptr(ptr);
-                if vec_ptr.is_null() {
+            TYPE_ID_LIST => {
+                let Some(heap_edge_count) = crate::object::seq_access::tracked_heap_edge_count(ptr)
+                else {
                     return;
-                }
-                for &bits in seq_vec_ref(ptr).iter() {
-                    if let Some(child) = obj_from_bits(bits).as_ptr() {
-                        visit(child);
+                };
+                #[cfg(debug_assertions)]
+                debug_assert_eq!(
+                    heap_edge_count,
+                    crate::object::seq_access::with_borrowed(ptr, |items| {
+                        items
+                            .iter()
+                            .copied()
+                            .filter(|bits| crate::object::refcount_opt::is_heap_ref(*bits))
+                            .count()
+                    }),
+                    "generic sequence heap-edge count drifted from canonical storage"
+                );
+                #[cfg(not(debug_assertions))]
+                let _ = heap_edge_count;
+                crate::object::seq_access::with_borrowed(ptr, |items| {
+                    for &bits in items {
+                        if let Some(child) = obj_from_bits(bits).as_ptr() {
+                            visit(child);
+                        }
+                    }
+                });
+                if (flags & HEADER_FLAG_HAS_ABI_VIEW) != 0 {
+                    let self_bits = MoltObject::from_ptr(ptr).bits();
+                    for child_bits in
+                        molt_cpython_abi::bridge::GLOBAL_BRIDGE.list_view_handles_for_gc(self_bits)
+                    {
+                        if let Some(child) = obj_from_bits(child_bits).as_ptr() {
+                            visit(child);
+                        }
                     }
                 }
+            }
+            TYPE_ID_TUPLE => {
+                crate::object::seq_access::with_immutable_tuple_slice(ptr, |items| {
+                    for &bits in items {
+                        if let Some(child) = obj_from_bits(bits).as_ptr() {
+                            visit(child);
+                        }
+                    }
+                });
             }
             TYPE_ID_DICT => {
                 // `order` is the [key0, val0, key1, val1, ...] interleaved Vec, the
@@ -485,21 +520,32 @@ pub(crate) unsafe fn molt_clear(py: &PyToken<'_>, ptr: *mut u8) {
         };
         super::weakref::weakref_object_release(py, weakref_registration);
         match type_id {
-            TYPE_ID_LIST | TYPE_ID_TUPLE => {
-                // Tuples are immutable to Python, but a cyclic tuple's backing is ours
-                // to clear during collection (CPython's tuple participates in cycle
-                // breaking). Detach the elements FIRST, then dec-ref, so a re-entrant
-                // dec_ref (a child's `__del__`, or the cascade reaching back into this
-                // container) sees an empty container, never a stale element.
+            TYPE_ID_LIST => {
                 let vec_ptr = seq_vec_ptr(ptr);
                 if vec_ptr.is_null() {
                     return;
                 }
-                let detached: Vec<u64> = std::mem::take(&mut *vec_ptr);
-                for bits in detached {
+                let mutation_guard = crate::object::backing::tracked_vec_mutation_lock(vec_ptr);
+                let detached = crate::object::backing::tracked_vec_take_contents(vec_ptr);
+                let clear_list_projection = (flags & HEADER_FLAG_HAS_ABI_VIEW) != 0;
+                (*header_from_obj_ptr(ptr)).flags &= !super::HEADER_FLAG_CONTAINS_REFS;
+                crate::object::backing::tracked_vec_bump_mutation_epoch(vec_ptr);
+                drop(mutation_guard);
+                if clear_list_projection {
+                    // `clear_list_view` retires C edges and may run finalizers;
+                    // never retain the per-list mutation lock across it.
+                    molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                        .clear_list_view(MoltObject::from_ptr(ptr).bits());
+                }
+                for &bits in detached.iter() {
                     crate::dec_ref_bits(py, bits);
                 }
+                drop(detached);
             }
+            // CPython tuples have no tp_clear. Their immutable edges remain
+            // stable; a mutable peer (list, dict, set, or instance) breaks every
+            // collectable cycle in which a tuple participates.
+            TYPE_ID_TUPLE => {}
             TYPE_ID_DICT => {
                 let order_ptr = crate::builtins::containers::dict_order_ptr(ptr);
                 let table_ptr = crate::builtins::containers::dict_table_ptr(ptr);

@@ -66,6 +66,8 @@ def sample(base: str, mode: str, index: int) -> dict[str, object]:
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     try:
         done = subprocess.run(
@@ -79,12 +81,20 @@ def sample(base: str, mode: str, index: int) -> dict[str, object]:
             check=True,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=150,
         )
         return json.loads(done.stdout)
     finally:
         subprocess.run(
-            [*command, "close"], cwd=ROOT, check=False, capture_output=True, text=True
+            [*command, "close"],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
         )
 
 

@@ -49,7 +49,7 @@ fn native_container_dispatch_uses_tir_container_facts() {
         std::slice::from_ref(&dict_store),
     );
     assert_eq!(
-        store_index_fallback_import_name(&dict_store_plan, &dict_store, false),
+        store_index_fallback_import_name(&dict_store_plan, &dict_store),
         "molt_dict_setitem"
     );
 }
@@ -95,13 +95,13 @@ fn native_container_dispatch_ignores_transport_only_container_type() {
     );
 
     assert_eq!(
-        store_index_fallback_import_name(&store_plan, &transport_store, false),
+        store_index_fallback_import_name(&store_plan, &transport_store),
         "molt_store_index"
     );
 }
 
 #[test]
-fn native_generic_list_inlining_uses_tir_container_facts() {
+fn native_generic_list_reads_inline_but_stores_use_runtime_authority() {
     let list_index = OpIR {
         kind: "index".to_string(),
         args: Some(vec!["items".to_string(), "idx".to_string()]),
@@ -116,6 +116,50 @@ fn native_generic_list_inlining_uses_tir_container_facts() {
 
     assert!(generic_list_int_lane_eligible(&plan, &list_index, true));
     assert!(!generic_list_int_lane_eligible(&plan, &list_index, false));
+
+    let list_store = OpIR {
+        kind: "store_index".to_string(),
+        args: Some(vec![
+            "items".to_string(),
+            "idx".to_string(),
+            "value".to_string(),
+        ]),
+        ..OpIR::default()
+    };
+    let store_plan = representation_plan_for_typed_ops(
+        &["items", "idx", "value"],
+        Some(vec!["list[int]", "int", "int"]),
+        std::slice::from_ref(&list_store),
+    );
+    assert_eq!(
+        store_index_fallback_import_name(&store_plan, &list_store),
+        "molt_store_index"
+    );
+
+    let list_int_new = OpIR {
+        kind: "list_int_new".to_string(),
+        out: Some("flat_items".to_string()),
+        ..OpIR::default()
+    };
+    let flat_store = OpIR {
+        kind: "store_index".to_string(),
+        args: Some(vec![
+            "flat_items".to_string(),
+            "idx".to_string(),
+            "value".to_string(),
+        ]),
+        out: Some("flat_result".to_string()),
+        ..OpIR::default()
+    };
+    let flat_ops = [list_int_new, flat_store.clone()];
+    let flat_plan =
+        representation_plan_for_typed_ops(&["idx", "value"], Some(vec!["int", "int"]), &flat_ops);
+    assert!(flat_plan.op_has_container_storage(1, &flat_store, ContainerStorageKind::FlatListInt,));
+    assert_eq!(
+        store_index_fallback_import_name(&flat_plan, &flat_store),
+        "molt_store_index",
+        "physical storage proof alone cannot prove that ABI publication never promoted the list",
+    );
 }
 
 #[test]

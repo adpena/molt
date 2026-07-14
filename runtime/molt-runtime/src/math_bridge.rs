@@ -633,10 +633,29 @@ pub extern "C" fn __molt_math_list_len(ptr: *mut u8) -> usize {
     unsafe { _list_len(ptr) }
 }
 
-#[allow(improper_ctypes_definitions)]
 #[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_seq_vec_ptr(ptr: *mut u8) -> *mut Vec<u64> {
-    unsafe { seq_vec_ptr(ptr) }
+pub extern "C" fn __molt_math_seq_snapshot(
+    ptr: *mut u8,
+    out_ptr: *mut *const u64,
+    out_len: *mut usize,
+) -> i32 {
+    crate::with_gil_entry_nopanic!(_py, {
+        unsafe { crate::seq_snapshot_bridge::export(_py, ptr, out_ptr, out_len) }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_math_list_swap(list_bits: u64, left: usize, right: usize) -> i32 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let Some(ptr) = obj_from_bits(list_bits).as_ptr() else {
+            return 0;
+        };
+        if unsafe { crate::object::list_mutation::swap_indices(_py, ptr, left, right) } {
+            1
+        } else {
+            0
+        }
+    })
 }
 
 // ---------------------------------------------------------------------------

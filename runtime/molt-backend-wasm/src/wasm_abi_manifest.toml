@@ -1883,10 +1883,6 @@ name = "list_int_getitem"
 type = 3
 
 [[import]]
-name = "list_int_getitem_nogil"
-type = 3
-
-[[import]]
 name = "list_int_getitem_raw"
 type = 3
 
@@ -1912,10 +1908,6 @@ type = 3
 
 [[import]]
 name = "list_int_setitem"
-type = 5
-
-[[import]]
-name = "list_int_setitem_nogil"
 type = 5
 
 [[import]]

@@ -40,6 +40,8 @@ def sample(artifact: Path, mode: str) -> dict[str, int | float]:
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         cwd=ROOT,
     )
     return json.loads(completed.stdout)
@@ -84,7 +86,13 @@ def main() -> int:
         "artifact": str(artifact),
         "artifact_sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
         "git_revision": subprocess.run(
-            ["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True, cwd=ROOT
+            ["git", "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=ROOT,
         ).stdout.strip(),
         "before": {"runs": before_ms, "median_ms": statistics.median(before_ms)},
         "after": {"runs": after_ms, "median_ms": statistics.median(after_ms)},

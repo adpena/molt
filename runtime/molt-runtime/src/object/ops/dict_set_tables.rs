@@ -181,15 +181,17 @@ pub(crate) extern "C" fn dict_fromkeys_method(
                 if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
                     return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
                 }
-                let elems = seq_vec_ref(pair_ptr);
-                if elems.len() < 2 {
+                let Some((key_bits, done_bits)) =
+                    crate::object::seq_access::with_immutable_tuple_slice(pair_ptr, |items| {
+                        items.first().copied().zip(items.get(1).copied())
+                    })
+                    .flatten()
+                else {
                     return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
-                }
-                let done_bits = elems[1];
+                };
                 if is_truthy(_py, obj_from_bits(done_bits)) {
                     break;
                 }
-                let key_bits = elems[0];
                 let _ = molt_store_index(dict_bits, key_bits, default_bits);
                 if exception_pending(_py) {
                     return MoltObject::none().bits() as i64;

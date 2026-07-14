@@ -139,7 +139,9 @@ unsafe extern "C" {
 unsafe fn dump_pending_exception() {
     let occ = unsafe { PyErr_Occurred() };
     if occ.is_null() {
-        eprintln!("===MOLT_DISCOVERY_EXC: no pending exception on NULL return (numpy bailed silently — likely a failed ABI call that did not set an exception; run under lldb to localise)");
+        eprintln!(
+            "===MOLT_DISCOVERY_EXC: no pending exception on NULL return (numpy bailed silently — likely a failed ABI call that did not set an exception; run under lldb to localise)"
+        );
         return;
     }
     // Name the exception TYPE by resolving its pointer to the nearest exported
@@ -177,14 +179,18 @@ unsafe fn dump_pending_exception() {
         if !s.is_null() {
             let utf8 = unsafe { PyUnicode_AsUTF8(s) };
             if !utf8.is_null() {
-                let msg = unsafe { CStr::from_ptr(utf8) }.to_string_lossy().into_owned();
+                let msg = unsafe { CStr::from_ptr(utf8) }
+                    .to_string_lossy()
+                    .into_owned();
                 eprintln!("===MOLT_DISCOVERY_EXC: pending exception value = {msg:?}");
                 printed = true;
             }
         }
     }
     if !printed {
-        eprintln!("===MOLT_DISCOVERY_EXC: pending exception present (type ptr={ptype:p}, value ptr={pvalue:p}); could not stringify via PyObject_Str/PyUnicode_AsUTF8");
+        eprintln!(
+            "===MOLT_DISCOVERY_EXC: pending exception present (type ptr={ptype:p}, value ptr={pvalue:p}); could not stringify via PyObject_Str/PyUnicode_AsUTF8"
+        );
     }
     // Restore + let the ABI's own printer render it (traceback etc.).
     // (PyErr_Fetch cleared it; re-raise so PyErr_Print has something to show.)

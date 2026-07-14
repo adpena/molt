@@ -4,8 +4,8 @@ use crate::{
     MoltObject, PyToken, TYPE_ID_BYTEARRAY, TYPE_ID_BYTES, TYPE_ID_LIST, TYPE_ID_TUPLE,
     TYPE_ID_TYPE, alloc_bytearray, alloc_bytes, alloc_tuple, attr_name_bits_from_bytes, bytes_data,
     bytes_len, dec_ref_bits, molt_call_bind, molt_exception_clear, molt_exception_kind,
-    molt_exception_last, obj_from_bits, object_type_id, raise_exception, seq_vec_ref,
-    string_obj_to_owned, to_f64, to_i64,
+    molt_exception_last, obj_from_bits, object_type_id, raise_exception, string_obj_to_owned,
+    to_f64, to_i64,
 };
 use molt_gpu::runtime_backend::{GpuBackend, requested_gpu_backend};
 #[cfg(any(
@@ -2165,7 +2165,16 @@ fn normalize_shape_bits(_py: &crate::PyToken<'_>, bits: u64) -> Result<(u64, boo
         return match unsafe { object_type_id(ptr) } {
             TYPE_ID_TUPLE => Ok((bits, false)),
             TYPE_ID_LIST => {
-                let tuple_ptr = alloc_tuple(_py, unsafe { seq_vec_ref(ptr) });
+                let Some(shape) = (unsafe {
+                    crate::object::seq_access::snapshot(
+                        _py,
+                        ptr,
+                        "sequence snapshot allocation failed",
+                    )
+                }) else {
+                    return Err(MoltObject::none().bits());
+                };
+                let tuple_ptr = alloc_tuple(_py, &shape);
                 if tuple_ptr.is_null() {
                     Err(MoltObject::none().bits())
                 } else {

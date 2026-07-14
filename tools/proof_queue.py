@@ -16,7 +16,7 @@ import sys
 import time
 import tomllib
 import traceback
-from typing import Callable, Mapping, Sequence
+from typing import Mapping, Sequence
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,9 +43,17 @@ from tools.dirty_tree_policy import (  # noqa: E402
     filter_status_lines,
 )
 from molt.scientific_stack_versions import (  # noqa: E402
+    ScientificExtensionSet,
+    ScientificStackVersion,
     attest_numpy_witness_seal,
     numpy_witness_seal_root,
     resolve_scientific_stack,
+    scientific_extension_set,
+    scipy_witness_seal_root,
+)
+from molt.cli.extension_manifest import _default_molt_c_api_version  # noqa: E402
+from molt.cli.source_extension_toolchain import (  # noqa: E402
+    MOLT_PKGCONF_REQUIREMENT,
 )
 
 RUNNING = {"queued", "dispatched", "running"}
@@ -222,8 +230,7 @@ NATIVE_IMPORT_BOOTSTRAP_NODE_PREFIX = (
 NATIVE_CALL_LANE_SCOPES = (
     "tests/test_native_import_bootstrap_regressions.py",
     "runtime/molt-runtime/src/call/function.rs",
-    "runtime/molt-backend-native/src/native_backend/function_compiler/fc/"
-    "modules.rs",
+    "runtime/molt-backend-native/src/native_backend/function_compiler/fc/modules.rs",
     "runtime/molt-runtime/src/call/class_init.rs",
     "runtime/molt-runtime/src/builtins/containers.rs",
     "runtime/molt-runtime/src/builtins/exceptions.rs",
@@ -378,7 +385,8 @@ def _is_guard_command(command: object) -> bool:
     if not isinstance(command, list):
         return False
     return any(
-        isinstance(part, str) and part.replace("\\", "/").endswith("tools/memory_guard.py")
+        isinstance(part, str)
+        and part.replace("\\", "/").endswith("tools/memory_guard.py")
         for part in command
     )
 
@@ -427,7 +435,9 @@ def _pytest_current_status_line(summary_json: object) -> str | None:
                 return f"  pytest_current=missing path={path}"
             error = current_test_file.get("error")
             if isinstance(error, str) and error.strip():
-                return f"  pytest_current=unreadable error={_shorten(error.strip(), 120)}"
+                return (
+                    f"  pytest_current=unreadable error={_shorten(error.strip(), 120)}"
+                )
         current = pytest_section.get("current_test")
         if isinstance(current, str) and current.strip():
             return f"  pytest_current={current.strip()}"
@@ -563,7 +573,11 @@ def _descendant_sample_evidence(
             break
     if not snippets:
         return None
-    suffix = "" if len(descendants) <= len(snippets) else f" +{len(descendants) - len(snippets)} more"
+    suffix = (
+        ""
+        if len(descendants) <= len(snippets)
+        else f" +{len(descendants) - len(snippets)} more"
+    )
     return "descendant_samples=" + "; ".join(snippets) + suffix
 
 
@@ -600,8 +614,7 @@ def _running_pytest_failures_observed_diagnostic(
         signal_id="running-pytest-failures-observed",
         severity="warning",
         summary=(
-            "Running pytest proof has already emitted failure/error progress "
-            "markers."
+            "Running pytest proof has already emitted failure/error progress markers."
         ),
         evidence=" ".join(evidence_parts),
         next_action=(
@@ -753,7 +766,9 @@ def _running_child_missing_diagnostic(row: sqlite3.Row) -> dict[str, object] | N
                 scopes=("tools/proof_queue.py", "tools/memory_guard.py"),
                 artifacts=(str(row["summary_json"]), str(row["log_path"])),
             )
-        summary_text = "Running proof row's nested memory guard child is no longer live."
+        summary_text = (
+            "Running proof row's nested memory guard child is no longer live."
+        )
     else:
         try:
             from tools import memory_guard
@@ -1256,10 +1271,7 @@ def _connect(db: Path) -> sqlite3.Connection:
             command=[str(part) for part in command],
         )
         if resource_mutex_key is not None:
-            if (
-                row[4] in LAUNCHED
-                and resource_mutex_key in claimed_active_mutexes
-            ):
+            if row[4] in LAUNCHED and resource_mutex_key in claimed_active_mutexes:
                 continue
             if row[4] in LAUNCHED:
                 claimed_active_mutexes.add(resource_mutex_key)
@@ -1910,8 +1922,6 @@ def _pytest_timeout_context(summary_json: object) -> tuple[str, str | None] | No
     return None
 
 
-
-
 def _diagnostics_have_terminal_stale_signal(
     diagnostics: Sequence[dict[str, object]],
 ) -> bool:
@@ -2037,8 +2047,7 @@ def _wait_for_guard_completion_or_stale(
             guard_rc = _terminate_queue_owned_guard_process(proc, log, run_id=run_id)
             if guard_rc is not None:
                 print(
-                    "proof_queue stale terminalization guard_exit_code="
-                    f"{guard_rc}",
+                    f"proof_queue stale terminalization guard_exit_code={guard_rc}",
                     file=log,
                     flush=True,
                 )
@@ -2350,9 +2359,7 @@ def _refresh_blocked_queued_runs(
     else:
         rows = list(
             conn.execute(
-                "SELECT * FROM proof_runs "
-                "WHERE status = 'queued' "
-                "ORDER BY rowid"
+                "SELECT * FROM proof_runs WHERE status = 'queued' ORDER BY rowid"
             )
         )
     blocked_count = 0
@@ -2705,7 +2712,9 @@ def _write_queued_submission_log(
                 file=log,
             )
         if depends_on:
-            print(f"depends_on={json.dumps(list(depends_on), sort_keys=True)}", file=log)
+            print(
+                f"depends_on={json.dumps(list(depends_on), sort_keys=True)}", file=log
+            )
         print("", file=log)
         print("No proof command has launched for this queued row.", file=log)
 
@@ -3062,18 +3071,6 @@ def _canonical_cargo_proof_command(cargo_args: list[str]) -> list[str]:
     )
 
 
-def _first_existing_manifest_root(
-    repo_root: Path, candidates: list[str]
-) -> Path | None:
-    for candidate in candidates:
-        root = repo_root / candidate
-        if (root / "extension_manifest.json").is_file() or any(
-            root.glob("**/*.extension_manifest.json")
-        ):
-            return root
-    return None
-
-
 def _load_json_mapping(path: Path) -> Mapping[str, object] | None:
     try:
         loaded = json.loads(path.read_text(encoding="utf-8"))
@@ -3137,62 +3134,450 @@ def _pact_numpy_multiarray_seal_root_is_current(root: Path) -> bool:
     return _pact_manifest_object_sources_resolve(manifest)
 
 
-def _git_worktree_roots(repo_root: Path) -> tuple[Path, ...]:
-    result = subprocess.run(
-        ["git", "worktree", "list", "--porcelain"],
-        cwd=repo_root,
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
+def _scientific_extension_manifest_path(root: Path, module: str, target: str) -> Path:
+    return root.joinpath(
+        *module.split(".")[:-1], f"{target}.molt.wasm.extension_manifest.json"
     )
-    if result.returncode != 0:
-        return ()
-    roots: list[Path] = []
-    for line in result.stdout.splitlines():
-        if line.startswith("worktree "):
-            raw = line[len("worktree ") :].strip()
-            if raw:
-                roots.append(Path(raw))
-    return tuple(roots)
 
 
-def _pact_witness_candidate_repo_roots(repo_root: Path) -> tuple[Path, ...]:
-    roots = [Path(repo_root)]
-    roots.extend(_git_worktree_roots(repo_root))
-    deduped: list[Path] = []
-    seen: set[Path] = set()
-    for root in roots:
-        try:
-            resolved = root.resolve()
-        except OSError:
-            continue
-        if resolved in seen or not resolved.exists():
-            continue
-        seen.add(resolved)
-        deduped.append(resolved)
-    return tuple(deduped)
+def _pact_object_closure_digest(object_closure: Mapping[str, object]) -> str | None:
+    objects = object_closure.get("objects")
+    runtime_symbols = object_closure.get("runtime_symbols")
+    if not isinstance(objects, list) or not objects:
+        return None
+    if not isinstance(runtime_symbols, list) or not all(
+        isinstance(item, str) for item in runtime_symbols
+    ):
+        return None
+    digest_objects: list[dict[str, object]] = []
+    for item in objects:
+        if not isinstance(item, Mapping):
+            return None
+        digest_item = {
+            key: item.get(key)
+            for key in (
+                "source",
+                "object",
+                "source_sha256",
+                "object_sha256",
+                "defined_symbols",
+                "undefined_symbols",
+            )
+        }
+        if not all(
+            isinstance(digest_item[key], str) and digest_item[key]
+            for key in ("source", "object", "source_sha256", "object_sha256")
+        ):
+            return None
+        if not all(
+            isinstance(digest_item[key], list)
+            and all(isinstance(value, str) for value in digest_item[key])
+            for key in ("defined_symbols", "undefined_symbols")
+        ):
+            return None
+        digest_objects.append(digest_item)
+    payload = {
+        "schema_version": 1,
+        "root_symbol": object_closure.get("root_symbol"),
+        "objects": digest_objects,
+        "runtime_symbols": runtime_symbols,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
-def _first_existing_manifest_root_across(
-    repo_roots: Sequence[Path],
-    candidates: list[str],
+def _pact_scipy_extension_set_manifest_problems(
+    root: Path,
+    extension_set: ScientificExtensionSet,
     *,
-    validator: Callable[[Path], bool] | None = None,
-) -> Path | None:
-    for candidate in candidates:
-        for repo_root in repo_roots:
-            root = _first_existing_manifest_root(repo_root, [candidate])
-            if root is not None and (validator is None or validator(root)):
-                return root
-    return None
+    stack: ScientificStackVersion,
+    sidecars: Mapping[str, Mapping[str, object]],
+) -> list[str]:
+    path = root / "extension_set_manifest.json"
+    manifest = _load_json_mapping(path)
+    if manifest is None:
+        return [f"missing or unreadable extension-set manifest {path}"]
+    problems: list[str] = []
+    expected_scalars: dict[str, object] = {
+        "schema_version": 1,
+        "kind": "molt-source-extension-set",
+        "package": extension_set.package,
+        "name": extension_set.name,
+        "seal_name": extension_set.seal_name,
+        "source_head": stack.scipy_repo_ref,
+        "target": "wasm",
+        "target_triple": "wasm32-wasip1",
+        "abi_tier": "cpython-abi",
+    }
+    for field, expected in expected_scalars.items():
+        if manifest.get(field) != expected:
+            problems.append(f"extension-set manifest {field} must be {expected!r}")
+    build_environment = manifest.get("build_environment")
+    if not isinstance(build_environment, Mapping) or set(build_environment) != {
+        "python_executable",
+        "requirements",
+        "resolved",
+    }:
+        problems.append("extension-set manifest build_environment shape is invalid")
+    else:
+        python_executable = build_environment.get("python_executable")
+        requirements = build_environment.get("requirements")
+        resolved = build_environment.get("resolved")
+        if not isinstance(python_executable, str) or not python_executable:
+            problems.append("extension-set manifest build Python executable is empty")
+        if (
+            not isinstance(requirements, list)
+            or not requirements
+            or not all(isinstance(item, str) and item for item in requirements)
+        ):
+            problems.append("extension-set manifest build requirements are invalid")
+        if not isinstance(resolved, list) or not resolved:
+            problems.append("extension-set manifest resolved requirements are empty")
+        elif isinstance(requirements, list):
+            requirement_positions = {
+                requirement: index
+                for index, requirement in enumerate(requirements)
+                if isinstance(requirement, str)
+            }
+            resolved_positions: list[int] = []
+            resolved_requirements: list[str] = []
+            seen_requirements: set[str] = set()
+            for item in resolved:
+                if not isinstance(item, Mapping) or set(item) != {
+                    "requirement",
+                    "distribution",
+                    "version",
+                }:
+                    problems.append(
+                        "extension-set manifest resolved requirement shape is invalid"
+                    )
+                    continue
+                if not all(
+                    isinstance(item.get(field), str) and item.get(field)
+                    for field in ("requirement", "distribution", "version")
+                ):
+                    problems.append(
+                        "extension-set manifest resolved requirement values are invalid"
+                    )
+                    continue
+                requirement = str(item["requirement"])
+                position = requirement_positions.get(requirement)
+                if position is None or requirement in seen_requirements:
+                    problems.append(
+                        "extension-set manifest resolved requirements do not match "
+                        "the original requirement authority"
+                    )
+                    continue
+                seen_requirements.add(requirement)
+                resolved_positions.append(position)
+                resolved_requirements.append(requirement)
+            if resolved_positions != sorted(resolved_positions):
+                problems.append(
+                    "extension-set manifest resolved requirements are out of source order"
+                )
+            if resolved_requirements != requirements:
+                problems.append(
+                    "extension-set manifest resolved requirements do not exactly "
+                    "cover the source requirement authority"
+                )
+    meson = manifest.get("meson")
+    expected_meson_fields = {
+        "build_root",
+        "setup_args",
+        "intro_targets_sha256",
+        "compile_commands_sha256",
+        "intro_installed_sha256",
+        "config_tool_cross_sha256",
+        "config_tools",
+        "pkg_config_requirement",
+    }
+    if not isinstance(meson, Mapping) or set(meson) != expected_meson_fields:
+        problems.append("extension-set manifest meson metadata is missing")
+    else:
+        build_root = meson.get("build_root")
+        if not isinstance(build_root, str) or not build_root:
+            problems.append("extension-set manifest meson.build_root is empty")
+        if tuple(meson.get("setup_args") or ()) != extension_set.meson_setup_args:
+            problems.append("extension-set manifest Meson setup_args drift")
+        for field in (
+            "intro_targets_sha256",
+            "compile_commands_sha256",
+            "intro_installed_sha256",
+            "config_tool_cross_sha256",
+        ):
+            value = meson.get(field)
+            if (
+                not isinstance(value, str)
+                or len(value) != 64
+                or any(character not in "0123456789abcdef" for character in value)
+            ):
+                problems.append(
+                    f"extension-set manifest meson.{field} is not a SHA-256 digest"
+                )
+        if meson.get("pkg_config_requirement") != MOLT_PKGCONF_REQUIREMENT:
+            problems.append("extension-set manifest Meson pkg-config requirement drift")
+        config_tools = meson.get("config_tools")
+        expected_config_tool_distributions = {
+            "numpy-config": "numpy",
+            "pkg-config": "pkgconf",
+            "pybind11-config": "pybind11",
+            "pythran-config": "pythran",
+        }
+        if not isinstance(config_tools, list) or not all(
+            isinstance(item, Mapping) for item in config_tools
+        ):
+            problems.append("extension-set manifest Meson config_tools are invalid")
+        else:
+            actual_names = tuple(item.get("name") for item in config_tools)
+            expected_names = tuple(sorted(expected_config_tool_distributions))
+            if actual_names != expected_names:
+                problems.append(
+                    "extension-set manifest Meson config tool set/order drift"
+                )
+            for item in config_tools:
+                if set(item) != {"name", "path", "distribution", "version"} or not all(
+                    isinstance(item.get(field), str) and item.get(field)
+                    for field in ("name", "path", "distribution", "version")
+                ):
+                    problems.append(
+                        "extension-set manifest Meson config tool shape is invalid"
+                    )
+                    continue
+                name = str(item["name"])
+                expected_distribution = expected_config_tool_distributions.get(name)
+                if (
+                    expected_distribution is not None
+                    and str(item["distribution"]).casefold()
+                    != expected_distribution.casefold()
+                ):
+                    problems.append(
+                        f"extension-set manifest Meson {name} distribution drift"
+                    )
+                if (
+                    name == "pkg-config"
+                    and item.get("version")
+                    != (MOLT_PKGCONF_REQUIREMENT.split("==", 1)[1])
+                ):
+                    problems.append(
+                        "extension-set manifest Meson pkg-config version drift"
+                    )
+    installed_files = manifest.get("installed_python_files")
+    required_installed = {
+        "scipy/__init__.py",
+        "scipy/version.py",
+        "scipy/__config__.py",
+    }
+    if not isinstance(installed_files, list) or not all(
+        isinstance(item, str) and item for item in installed_files
+    ):
+        problems.append("extension-set manifest installed_python_files is invalid")
+    else:
+        missing_installed = sorted(required_installed - set(installed_files))
+        if missing_installed:
+            problems.append(
+                "extension-set manifest missing installed Python files: "
+                + ", ".join(missing_installed)
+            )
+        missing_on_disk = sorted(
+            item for item in required_installed if not (root / item).is_file()
+        )
+        if missing_on_disk:
+            problems.append(
+                "extension-set installed Python files absent on disk: "
+                + ", ".join(missing_on_disk)
+            )
+    raw_extensions = manifest.get("extensions")
+    expected_contracts = tuple(
+        (extension.module, extension.target, extension.capabilities)
+        for extension in extension_set.extensions
+    )
+    if not isinstance(raw_extensions, list) or not all(
+        isinstance(item, Mapping) for item in raw_extensions
+    ):
+        problems.append("extension-set manifest extensions is invalid")
+        return problems
+    actual_contracts: list[tuple[object, object, tuple[str, ...]]] = []
+    for item in raw_extensions:
+        capabilities = item.get("capabilities")
+        if not isinstance(capabilities, list) or not all(
+            isinstance(value, str) for value in capabilities
+        ):
+            problems.append("extension-set manifest extension capabilities are invalid")
+            normalized_capabilities: tuple[str, ...] = ()
+        else:
+            normalized_capabilities = tuple(capabilities)
+        actual_contracts.append(
+            (item.get("module"), item.get("target"), normalized_capabilities)
+        )
+    if tuple(actual_contracts) != expected_contracts:
+        problems.append(
+            "extension-set manifest ordered module/target/capability set drift"
+        )
+    for raw_extension in raw_extensions:
+        module = raw_extension.get("module")
+        if not isinstance(module, str):
+            continue
+        sidecar = sidecars.get(module)
+        if sidecar is None:
+            continue
+        object_closure = sidecar.get("object_closure")
+        closure_sha256 = (
+            object_closure.get("closure_sha256")
+            if isinstance(object_closure, Mapping)
+            else None
+        )
+        checksum_pairs = (
+            ("artifact_sha256", sidecar.get("extension_sha256")),
+            ("wheel_sha256", sidecar.get("wheel_sha256")),
+            ("object_closure_sha256", closure_sha256),
+        )
+        for field, expected in checksum_pairs:
+            value = raw_extension.get(field)
+            if not isinstance(value, str) or not value or value != expected:
+                problems.append(
+                    f"extension-set manifest {module} {field} differs from sidecar"
+                )
+    return problems
+
+
+def _pact_scipy_witness_seal_problems(
+    root: Path,
+    extension_set: ScientificExtensionSet,
+    stack: ScientificStackVersion | None = None,
+) -> list[str]:
+    selected = resolve_scientific_stack() if stack is None else stack
+    problems: list[str] = []
+    expected_manifests = {
+        _scientific_extension_manifest_path(
+            root, extension.module, extension.target
+        ).resolve(): extension.module
+        for extension in extension_set.extensions
+    }
+    actual_manifests = {
+        manifest.resolve()
+        for manifest in root.glob("**/*.molt.wasm.extension_manifest.json")
+        if manifest.is_file()
+    }
+    for missing in sorted(expected_manifests.keys() - actual_manifests):
+        problems.append(
+            "missing "
+            f"{expected_manifests[missing]} manifest {missing.relative_to(root.resolve())}"
+        )
+    for unexpected in sorted(actual_manifests - expected_manifests.keys()):
+        problems.append(
+            "unexpected SciPy extension manifest "
+            f"{unexpected.relative_to(root.resolve())}"
+        )
+    current_abi = _default_molt_c_api_version(ROOT)
+    current_abi_tag = f"molt_abi{current_abi.split('.', 1)[0]}"
+    sidecars: dict[str, Mapping[str, object]] = {}
+    for extension in extension_set.extensions:
+        manifest_path = _scientific_extension_manifest_path(
+            root, extension.module, extension.target
+        )
+        manifest = _load_json_mapping(manifest_path)
+        if manifest is None:
+            if manifest_path.resolve() in actual_manifests:
+                problems.append(f"{extension.module}: unreadable extension manifest")
+            continue
+        sidecars[extension.module] = manifest
+        if manifest.get("module") != extension.module:
+            problems.append(f"{extension.module}: manifest module mismatch")
+        if manifest.get("molt_c_api_version") != current_abi:
+            problems.append(f"{extension.module}: stale molt_c_api_version")
+        if manifest.get("abi_tag") != current_abi_tag:
+            problems.append(f"{extension.module}: stale abi_tag")
+        if manifest.get("loader_kind") != "libmolt_source":
+            problems.append(f"{extension.module}: loader_kind must be libmolt_source")
+        if manifest.get("target_triple") != "wasm32-wasip1":
+            problems.append(f"{extension.module}: target_triple must be wasm32-wasip1")
+        if manifest.get("runtime_linkage") != "static_link":
+            problems.append(f"{extension.module}: runtime_linkage must be static_link")
+        if manifest.get("artifact_kind") != "wasm_relocatable_object":
+            problems.append(
+                f"{extension.module}: artifact_kind must be wasm_relocatable_object"
+            )
+        if manifest.get("deterministic") is not True:
+            problems.append(f"{extension.module}: deterministic must be true")
+        if manifest.get("capabilities") != list(extension.capabilities):
+            problems.append(f"{extension.module}: capabilities drift")
+        expected_init_symbol = f"PyInit_{extension.module.rsplit('.', 1)[-1]}"
+        if manifest.get("init_symbol") != expected_init_symbol:
+            problems.append(f"{extension.module}: init_symbol mismatch")
+        source_plan = manifest.get("source_plan")
+        if (
+            not isinstance(source_plan, Mapping)
+            or source_plan.get("target_selector") != extension.target
+        ):
+            problems.append(f"{extension.module}: Meson source_plan target mismatch")
+        raw_exports = manifest.get("python_exports")
+        if not isinstance(raw_exports, list) or not all(
+            isinstance(item, str) and item for item in raw_exports
+        ):
+            problems.append(f"{extension.module}: invalid python_exports")
+        elif tuple(raw_exports) != extension.python_exports:
+            problems.append(f"{extension.module}: python_exports drift")
+        artifact = manifest.get("extension")
+        expected_artifact = f"{extension.target}.molt.wasm"
+        if (
+            not isinstance(artifact, str)
+            or artifact != expected_artifact
+            or not (manifest_path.parent / artifact).is_file()
+        ):
+            problems.append(f"{extension.module}: extension artifact is missing")
+        else:
+            artifact_path = manifest_path.parent / artifact
+            artifact_sha256 = manifest.get("extension_sha256")
+            try:
+                actual_sha256 = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
+            except OSError:
+                actual_sha256 = ""
+            if not isinstance(artifact_sha256, str) or actual_sha256 != artifact_sha256:
+                problems.append(f"{extension.module}: extension_sha256 mismatch")
+        object_closure = manifest.get("object_closure")
+        if not isinstance(object_closure, Mapping):
+            problems.append(f"{extension.module}: object_closure is missing")
+        else:
+            if object_closure.get("root_symbol") != expected_init_symbol:
+                problems.append(
+                    f"{extension.module}: object_closure root_symbol mismatch"
+                )
+            owner = object_closure.get("init_symbol_owner")
+            if not isinstance(owner, str) or not owner:
+                problems.append(
+                    f"{extension.module}: object_closure init_symbol_owner is empty"
+                )
+            objects = object_closure.get("objects")
+            if not isinstance(objects, list) or not objects:
+                problems.append(f"{extension.module}: object_closure is empty")
+            closure_sha256 = object_closure.get("closure_sha256")
+            computed_closure_sha256 = _pact_object_closure_digest(object_closure)
+            if (
+                not isinstance(closure_sha256, str)
+                or not closure_sha256
+                or closure_sha256 != computed_closure_sha256
+            ):
+                problems.append(f"{extension.module}: object_closure checksum mismatch")
+    problems.extend(
+        _pact_scipy_extension_set_manifest_problems(
+            root,
+            extension_set,
+            stack=selected,
+            sidecars=sidecars,
+        )
+    )
+    return problems
+
+
+def _pact_scipy_witness_seal_root_is_complete(
+    root: Path, extension_set: ScientificExtensionSet
+) -> bool:
+    return not _pact_scipy_witness_seal_problems(root, extension_set)
 
 
 def _pact_witness_native_roots(repo_root: Path = ROOT) -> list[Path]:
-    repo_root = Path(repo_root)
+    del repo_root
     stack = resolve_scientific_stack()
-    selected: list[Path] = []
-    candidate_repo_roots = _pact_witness_candidate_repo_roots(repo_root)
     durable_numpy_root = numpy_witness_seal_root(stack=stack)
     if not (
         durable_numpy_root.exists()
@@ -3203,37 +3588,21 @@ def _pact_witness_native_roots(repo_root: Path = ROOT) -> list[Path]:
             f"{stack.numpy}; expected durable root {durable_numpy_root}. "
             "Run tools/provision_numpy_witness_seal.py with a genuine matching seal."
         )
-    artifact_roots = [
-        durable_numpy_root,
-        _first_existing_manifest_root_across(
-            candidate_repo_roots, list(stack.scipy_primary_seal_root_candidates)
-        ),
-    ]
-    artifact_roots.extend(
-        root
-        for root in (
-            _first_existing_manifest_root_across(candidate_repo_roots, [seal_root])
-            for seal_root in stack.scipy_additional_seal_roots
-        )
-        if root is not None
+    scipy_set = scientific_extension_set("scipy", "pact-witness", stack=stack)
+    durable_scipy_root = scipy_witness_seal_root(stack=stack)
+    scipy_problems = (
+        _pact_scipy_witness_seal_problems(durable_scipy_root, scipy_set, stack)
+        if durable_scipy_root.exists()
+        else ["canonical root does not exist"]
     )
-    source_roots = []
-    for source_rel in [
-        "bench/friends/repos/numpy_off_the_shelf",
-        "bench/friends/repos/scipy_off_the_shelf",
-    ]:
-        for candidate_repo_root in candidate_repo_roots:
-            root = candidate_repo_root / source_rel
-            if root.exists():
-                source_roots.append(root)
-                break
-    for root in [*artifact_roots, *source_roots]:
-        if root is None or not root.exists():
-            continue
-        resolved = root.resolve()
-        if resolved not in selected:
-            selected.append(resolved)
-    return selected
+    if scipy_problems:
+        raise ValueError(
+            "canonical SciPy witness seal is absent or incomplete; expected "
+            f"{durable_scipy_root} with exactly the configured extension set: "
+            + "; ".join(scipy_problems)
+        )
+    return [durable_numpy_root.resolve(), durable_scipy_root.resolve()]
+
 
 def _pact_witness_env_overrides(repo_root: Path = ROOT) -> dict[str, str]:
     # Force UTF-8 across the ENTIRE witness process tree (the parent tool + every
@@ -3291,12 +3660,12 @@ def _pact_witness_acceptance_spec(
             "wasm/browser_host.js",
             "wasm/run_wasm.js",
             "tools/pact_witness_acceptance.py",
-            *stack.seal_roots,
+            "config/scientific_stack_versions.toml",
         ],
         "env_overrides": env_overrides,
         "notes": [
-            "Named Pact acceptance auto-admits conventional manifest-led "
-            "NumPy/SciPy staging roots when present, builds field_solve.py, "
+            "Named Pact acceptance requires the version-keyed durable NumPy "
+            "and canonical four-extension SciPy seals, builds field_solve.py, "
             "regenerates the fixture/reference oracle in the run directory, "
             "runs the WASM artifact to produce candidate_outputs.npz, and "
             "executes check_parity.py; --env can override for power-user lanes."
@@ -3433,7 +3802,7 @@ def _r6_target_version_parity_spec(
             "Selected R6 fixtures: " + ", ".join(selected_fixtures),
         ],
         "timeout": timeout if timeout is not None else 900.0,
-}
+    }
 
 
 def _native_molt_run_spec(
@@ -3639,8 +4008,11 @@ def _queue_one(
         raise SystemExit(f"unknown proof edge kind {edge_kind!r}; allowed: {allowed}")
     _refresh_blocked_queued_runs(args, conn)
     maturity = _lane_maturity_admission(
-        conn=conn, repo_root=repo_root, logical_id=logical_id,
-        resource_family=resource_family, depends_on=depends_on or (),
+        conn=conn,
+        repo_root=repo_root,
+        logical_id=logical_id,
+        resource_family=resource_family,
+        depends_on=depends_on or (),
     )
     if not maturity.allow:
         print(f"lane maturity refused {logical_id}: {maturity.reason}", file=sys.stderr)
@@ -3960,8 +4332,6 @@ def _record_policy_rejection(
             phase="policy rejection projection",
         )
     return 2
-
-
 
 
 def _command_after_dash(argv: list[str]) -> tuple[list[str], list[str]]:
@@ -4455,10 +4825,13 @@ def _cmd_run(args: argparse.Namespace) -> int:
                 "already selected"
             )
             continue
-        if args.detach and mutex_key is not None and mutex_key in selected_detached_mutexes:
+        if (
+            args.detach
+            and mutex_key is not None
+            and mutex_key in selected_detached_mutexes
+        ):
             print(
-                f"waiting {row['run_id']} resource_mutex={mutex_key} "
-                "already selected"
+                f"waiting {row['run_id']} resource_mutex={mutex_key} already selected"
             )
             continue
         state, blockers = _dependency_state(conn, row["run_id"])
@@ -5080,10 +5453,13 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
             diagnostic_counts[signal_id] = diagnostic_counts.get(signal_id, 0) + 1
 
         if status == "failed":
-            if any(
-                str(item["signal_id"]) == "unclassified-failed-proof"
-                for item in diagnostics
-            ) and not superseded_terminal_row:
+            if (
+                any(
+                    str(item["signal_id"]) == "unclassified-failed-proof"
+                    for item in diagnostics
+                )
+                and not superseded_terminal_row
+            ):
                 issues.append(
                     _audit_issue(
                         signal_id="audit-unclassified-failure",
@@ -5117,9 +5493,7 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
                         summary=str(item["summary"]),
                         evidence=str(item["evidence"]),
                         next_action=str(item["next_action"]),
-                        artifacts=[
-                            str(path) for path in item.get("artifacts", [])
-                        ]
+                        artifacts=[str(path) for path in item.get("artifacts", [])]
                         if isinstance(item.get("artifacts"), list)
                         else (),
                     )
@@ -5334,9 +5708,7 @@ def _cmd_audit(args: argparse.Namespace) -> int:
             else:
                 print("- no queue health issues")
         max_issues = max(0, int(args.max_issues))
-        issues = (
-            issues_source if max_issues == 0 else issues_source[:max_issues]
-        )
+        issues = issues_source if max_issues == 0 else issues_source[:max_issues]
         for issue in issues:
             run = f" run={issue['run_id']}" if issue.get("run_id") else ""
             print(
@@ -5630,8 +6002,6 @@ def _add_named_lane_args(parser: argparse.ArgumentParser, *, note_help: str) -> 
     )
     execution.add_argument("--detach", action="store_true")
     parser.add_argument("--print-spec", action="store_true")
-
-
 
 
 # --- decomposed proof_queue regions (kept importable in this namespace) ---

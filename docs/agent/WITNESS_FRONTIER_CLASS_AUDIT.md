@@ -81,22 +81,13 @@ linked (pure-ABI tests). Not a production path.
 **Verdict:** the duplicate/bypass hook class is closed on the vtable surface. No
 second `hook_dict_set`-style duplicate exists.
 
-### 1.2 Missing-type-guard hooks — HARDENING (low)
+### 1.2 Construction-hook type guards — RESOLVED
 
-Four construction-primitive hooks omit the `object_type_id` guard that their
-`*_len` siblings carry, so a mis-routed handle silently corrupts instead of
-no-op'ing:
-
-| Hook | file:line | Gap |
-|---|---|---|
-| `hook_list_append` | cpython_abi_hooks.rs:153 | `seq_vec(ptr).push` with no `TYPE_ID_LIST` guard |
-| `hook_list_item` | :174 | `seq_vec_ref(ptr).get` no guard (cf. `hook_list_len` :162 which guards) |
-| `hook_tuple_set` | :278 | no `TYPE_ID_TUPLE` guard; also **grows** the vec on OOB `i` (tuples are fixed-size) |
-| `hook_tuple_item` | :305 | no guard (cf. `hook_tuple_len` :293 which guards) |
-
-Low risk (callers pass freshly-allocated handles), but a defensive `TYPE_ID`
-guard makes the class total. Overlaps `PANIC_REACHABILITY_LEDGER` Lane 2
-(PANIC-PLUMB "missing TYPE_ID_LIST/TUPLE type guards").
+List hooks now classify generic and compact list types before access, promote
+compact storage through the shared runtime authority, and publish generic
+mutations through `object::list_mutation`. Tuple hooks reject non-tuples and
+out-of-range stores. The former raw `seq_vec(ptr).push` list bypass no longer
+exists, and the external mutable-vector bridge family was deleted with it.
 
 ### 1.3 ZEROED-SHELL builtin type-object slots — OPEN, P0 (the (a) class, not fully swept)
 

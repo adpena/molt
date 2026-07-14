@@ -22,7 +22,7 @@ use super::{
 };
 use crate::{
     MoltObject, alloc_bytes, alloc_class_obj, alloc_string, alloc_tuple, attr_name_bits_from_bytes,
-    builtin_classes, bytes_data, bytes_len, dec_ref_bits, obj_from_bits, seq_vec_ref, to_f64,
+    builtin_classes, bytes_data, bytes_len, dec_ref_bits, obj_from_bits, to_f64,
 };
 
 fn f32_bytes(values: &[f32]) -> Vec<u8> {
@@ -520,8 +520,13 @@ fn gpu_tensor_from_parts_wraps_tensor_and_buffer_objects() {
         let shape_ptr = obj_from_bits(shape_bits)
             .as_ptr()
             .expect("tensor shape should be a tuple");
-        let dims = unsafe { seq_vec_ref(shape_ptr) };
-        assert_eq!(dims.len(), 2);
+        let dims = unsafe {
+            crate::object::seq_access::with_immutable_tuple_slice(shape_ptr, |dims| {
+                assert_eq!(dims.len(), 2);
+                [dims[0], dims[1]]
+            })
+        }
+        .expect("shape tuple payload");
         assert_eq!(crate::to_i64(obj_from_bits(dims[0])), Some(2));
         assert_eq!(crate::to_i64(obj_from_bits(dims[1])), Some(2));
         assert_eq!(
@@ -603,12 +608,15 @@ fn gpu_buffer_to_list_f32_roundtrip() {
         let list_ptr = obj_from_bits(list_bits)
             .as_ptr()
             .expect("buffer_to_list should return a list");
-        let elems = unsafe { seq_vec_ref(list_ptr) };
-        let values: Vec<f64> = elems
-            .iter()
-            .copied()
-            .map(|bits| to_f64(obj_from_bits(bits)).expect("float element"))
-            .collect();
+        let values: Vec<f64> = unsafe {
+            crate::object::seq_access::with_borrowed(list_ptr, |elems| {
+                elems
+                    .iter()
+                    .copied()
+                    .map(|bits| to_f64(obj_from_bits(bits)).expect("float element"))
+                    .collect()
+            })
+        };
         assert_eq!(values, vec![1.0, 2.0, 3.0, 4.0]);
     });
 }
@@ -644,19 +652,27 @@ fn gpu_module_tensor_linear_wrapper_roundtrip() {
 
         let out_shape_bits = attr_bits(_py, out_bits, b"_shape");
         let out_shape_ptr = obj_from_bits(out_shape_bits).as_ptr().expect("shape tuple");
-        let out_dims = unsafe { seq_vec_ref(out_shape_ptr) };
+        let out_dims = unsafe {
+            crate::object::seq_access::with_immutable_tuple_slice(out_shape_ptr, |dims| {
+                [dims[0], dims[1]]
+            })
+        }
+        .expect("shape tuple payload");
         assert_eq!(crate::to_i64(obj_from_bits(out_dims[0])), Some(2));
         assert_eq!(crate::to_i64(obj_from_bits(out_dims[1])), Some(3));
 
         let out_buf_bits = attr_bits(_py, out_bits, b"_buf");
         let list_bits = molt_gpu_buffer_to_list(out_buf_bits, MoltObject::from_int(6).bits());
         let list_ptr = obj_from_bits(list_bits).as_ptr().expect("list");
-        let elems = unsafe { seq_vec_ref(list_ptr) };
-        let values: Vec<f64> = elems
-            .iter()
-            .copied()
-            .map(|bits| to_f64(obj_from_bits(bits)).expect("float element"))
-            .collect();
+        let values: Vec<f64> = unsafe {
+            crate::object::seq_access::with_borrowed(list_ptr, |elems| {
+                elems
+                    .iter()
+                    .copied()
+                    .map(|bits| to_f64(obj_from_bits(bits)).expect("float element"))
+                    .collect()
+            })
+        };
         assert_eq!(values, vec![17.0, 23.0, 29.0, 39.0, 53.0, 67.0]);
     });
 }
@@ -702,7 +718,12 @@ fn gpu_module_tensor_reshape_view_wrapper_reuses_buffer() {
         let reshaped_shape_ptr = obj_from_bits(reshaped_shape_bits)
             .as_ptr()
             .expect("shape tuple");
-        let dims = unsafe { seq_vec_ref(reshaped_shape_ptr) };
+        let dims = unsafe {
+            crate::object::seq_access::with_immutable_tuple_slice(reshaped_shape_ptr, |dims| {
+                [dims[0], dims[1]]
+            })
+        }
+        .expect("shape tuple payload");
         assert_eq!(crate::to_i64(obj_from_bits(dims[0])), Some(2));
         assert_eq!(crate::to_i64(obj_from_bits(dims[1])), Some(2));
     });
@@ -730,12 +751,15 @@ fn gpu_module_tensor_data_list_and_zeros_wrappers_roundtrip() {
         let list_bits = molt_gpu_tensor__tensor_data_list(tensor_bits);
         assert!(!crate::exception_pending(_py));
         let list_ptr = obj_from_bits(list_bits).as_ptr().expect("list");
-        let elems = unsafe { seq_vec_ref(list_ptr) };
-        let values: Vec<f64> = elems
-            .iter()
-            .copied()
-            .map(|bits| to_f64(obj_from_bits(bits)).expect("float element"))
-            .collect();
+        let values: Vec<f64> = unsafe {
+            crate::object::seq_access::with_borrowed(list_ptr, |elems| {
+                elems
+                    .iter()
+                    .copied()
+                    .map(|bits| to_f64(obj_from_bits(bits)).expect("float element"))
+                    .collect()
+            })
+        };
         assert_eq!(values, vec![1.0, 2.0, 3.0, 4.0]);
 
         let zero_shape_ptr = alloc_tuple(
@@ -754,18 +778,27 @@ fn gpu_module_tensor_data_list_and_zeros_wrappers_roundtrip() {
         let zero_shape_ptr = obj_from_bits(zero_shape_bits)
             .as_ptr()
             .expect("shape tuple");
-        let zero_dims = unsafe { seq_vec_ref(zero_shape_ptr) };
+        let zero_dims = unsafe {
+            crate::object::seq_access::with_immutable_tuple_slice(zero_shape_ptr, |dims| {
+                [dims[0], dims[1]]
+            })
+        }
+        .expect("shape tuple payload");
         assert_eq!(crate::to_i64(obj_from_bits(zero_dims[0])), Some(2));
         assert_eq!(crate::to_i64(obj_from_bits(zero_dims[1])), Some(3));
 
         let zero_buf_bits = attr_bits(_py, zeros_bits, b"_buf");
         let zero_list_bits = molt_gpu_buffer_to_list(zero_buf_bits, MoltObject::from_int(6).bits());
         let zero_list_ptr = obj_from_bits(zero_list_bits).as_ptr().expect("zero list");
-        let zero_values: Vec<f64> = unsafe { seq_vec_ref(zero_list_ptr) }
-            .iter()
-            .copied()
-            .map(|bits| to_f64(obj_from_bits(bits)).expect("float element"))
-            .collect();
+        let zero_values: Vec<f64> = unsafe {
+            crate::object::seq_access::with_borrowed(zero_list_ptr, |elems| {
+                elems
+                    .iter()
+                    .copied()
+                    .map(|bits| to_f64(obj_from_bits(bits)).expect("float element"))
+                    .collect()
+            })
+        };
         assert_eq!(zero_values, vec![0.0; 6]);
     });
 }
@@ -834,8 +867,13 @@ fn gpu_linear_split_last_dim_contiguous_f32_roundtrip() {
         let out_ptr = obj_from_bits(out_bits)
             .as_ptr()
             .expect("linear split intrinsic should return tuple");
-        let parts = unsafe { crate::seq_vec_ref(out_ptr) };
-        assert_eq!(parts.len(), 2);
+        let parts = unsafe {
+            crate::object::seq_access::with_immutable_tuple_slice(out_ptr, |parts| {
+                assert_eq!(parts.len(), 2);
+                [parts[0], parts[1]]
+            })
+        }
+        .expect("linear split tuple payload");
 
         let left_ptr = obj_from_bits(parts[0]).as_ptr().expect("left bytes");
         let left = unsafe { std::slice::from_raw_parts(bytes_data(left_ptr), bytes_len(left_ptr)) };
@@ -892,8 +930,13 @@ fn gpu_linear_split_last_dim_contiguous_f32_three_way_wider_roundtrip() {
         let out_ptr = obj_from_bits(out_bits)
             .as_ptr()
             .expect("linear split intrinsic should return tuple");
-        let parts = unsafe { crate::seq_vec_ref(out_ptr) };
-        assert_eq!(parts.len(), 3);
+        let parts = unsafe {
+            crate::object::seq_access::with_immutable_tuple_slice(out_ptr, |parts| {
+                assert_eq!(parts.len(), 3);
+                [parts[0], parts[1], parts[2]]
+            })
+        }
+        .expect("linear split tuple payload");
 
         let decode = |bits: u64| {
             let ptr = obj_from_bits(bits).as_ptr().expect("bytes");

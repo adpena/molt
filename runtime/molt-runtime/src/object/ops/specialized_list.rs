@@ -21,51 +21,6 @@ fn list_assignment_out_of_range_error() -> u64 {
     })
 }
 
-#[inline]
-fn list_fast_load_needs_gil(val_bits: u64) -> bool {
-    crate::object::refcount_opt::is_heap_ref(val_bits)
-}
-
-#[inline]
-fn list_fast_store_needs_gil(old_bits: u64, val_bits: u64) -> bool {
-    old_bits != val_bits
-        && (crate::object::refcount_opt::is_heap_ref(old_bits)
-            || crate::object::refcount_opt::is_heap_ref(val_bits))
-}
-
-#[inline]
-unsafe fn list_store_refcounted_fast(
-    ptr: *mut u8,
-    idx: usize,
-    val_bits: u64,
-    success_bits: u64,
-) -> u64 {
-    let old_bits = unsafe { seq_vec(ptr)[idx] };
-    if old_bits == val_bits {
-        return success_bits;
-    }
-    if !list_fast_store_needs_gil(old_bits, val_bits) {
-        unsafe {
-            seq_vec(ptr)[idx] = val_bits;
-        }
-        return success_bits;
-    }
-    crate::with_gil_entry_nopanic!(_py, {
-        unsafe {
-            let elems = seq_vec(ptr);
-            if crate::object::refcount_opt::is_heap_ref(val_bits) {
-                inc_ref_bits(_py, val_bits);
-                (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
-            }
-            elems[idx] = val_bits;
-            if crate::object::refcount_opt::is_heap_ref(old_bits) {
-                dec_ref_bits(_py, old_bits);
-            }
-            success_bits
-        }
-    })
-}
-
 unsafe fn list_int_slice_to_flat_list(_py: &PyToken<'_>, ptr: *mut u8, slice_ptr: *mut u8) -> u64 {
     unsafe {
         let len = list_len(ptr) as isize;
@@ -259,65 +214,6 @@ pub extern "C" fn molt_list_int_getitem_raw_checked(list_bits: u64, raw_index: i
         }
         *storage.data.add(idx as usize)
     }
-}
-
-/// Ultra-fast list[int] getitem: no bounds check, no negative index handling.
-/// Used when the compiler can prove the index is non-negative and in bounds
-/// (e.g., loop counter bounded by list length).
-///
-/// # Safety
-/// Caller must guarantee `0 <= raw_index < len(list)`.
-#[unsafe(no_mangle)]
-#[inline(never)]
-pub extern "C" fn molt_list_int_getitem_unchecked(list_bits: u64, raw_index: i64) -> i64 {
-    unsafe {
-        let ptr = obj_from_bits(list_bits).as_ptr().unwrap_unchecked();
-        let storage = &*crate::object::layout::list_int_storage_ptr(ptr);
-        *storage.data.add(raw_index as usize)
-    }
-}
-
-/// Ultra-fast list[int] setitem — no bounds check, no negative index handling.
-///
-/// # Safety
-/// Caller must guarantee `0 <= raw_index < len(list)`.
-#[unsafe(no_mangle)]
-#[inline(never)]
-pub extern "C" fn molt_list_int_setitem_unchecked(
-    list_bits: u64,
-    raw_index: i64,
-    raw_value: i64,
-) -> u64 {
-    unsafe {
-        let ptr = obj_from_bits(list_bits).as_ptr().unwrap_unchecked();
-        let storage = &mut *crate::object::layout::list_int_storage_ptr(ptr);
-        *storage.data.add(raw_index as usize) = raw_value;
-    }
-    list_bits
-}
-
-/// GIL-free list[int] getitem with NaN-boxed interface.
-///
-/// Identical to `molt_list_int_getitem` (which already skips GIL), but named
-/// `_nogil` to make the contract explicit for the compiler backend.
-/// No GIL acquisition, no catch_unwind, no signal checks.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_list_int_getitem_nogil(list_bits: u64, index_bits: u64) -> u64 {
-    molt_list_int_getitem(list_bits, index_bits)
-}
-
-/// GIL-free list[int] setitem with NaN-boxed interface.
-///
-/// Identical to `molt_list_int_setitem` (which already skips GIL), but named
-/// `_nogil` to make the contract explicit for the compiler backend.
-/// No GIL acquisition, no catch_unwind, no signal checks.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_list_int_setitem_nogil(
-    list_bits: u64,
-    index_bits: u64,
-    value_bits: u64,
-) -> u64 {
-    molt_list_int_setitem(list_bits, index_bits, value_bits)
 }
 
 /// Set element in a specialized list[int].
@@ -516,53 +412,6 @@ pub extern "C" fn molt_list_int_getitem_truthy(list_bits: u64, index_bits: u64) 
     }
 }
 
-/// Fast path: integer index store into a list (STORE_SUBSCR_LIST_INT).
-///
-/// On any failure falls through to the full `molt_store_index` slow path.
-/// Returns the container bits on success (matching `molt_store_index`),
-/// or `MoltObject::none().bits()` on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_list_setitem_int_fast(
-    list_bits: u64,
-    index_bits: u64,
-    val_bits: u64,
-) -> u64 {
-    // 1. Fast tag check: index must be a NaN-boxed int.
-    let index_obj = obj_from_bits(index_bits);
-    if !index_obj.is_int() {
-        return molt_store_index(list_bits, index_bits, val_bits);
-    }
-    // 2. List must be a heap pointer.
-    let list_obj = obj_from_bits(list_bits);
-    let Some(ptr) = list_obj.as_ptr() else {
-        return molt_store_index(list_bits, index_bits, val_bits);
-    };
-    unsafe {
-        // 3. Must actually be a list (regular or specialized).
-        let tid = object_type_id(ptr);
-        if tid == TYPE_ID_LIST_BOOL {
-            // list[bool] fast path — delegate to specialized setitem.
-            return molt_list_bool_setitem(list_bits, index_bits, val_bits);
-        }
-        if tid != TYPE_ID_LIST {
-            return molt_store_index(list_bits, index_bits, val_bits);
-        }
-        // 4. Extract index and list length.
-        let mut idx = index_obj.as_int_unchecked();
-        let len = list_len(ptr) as i64;
-        // 5. Handle negative indexing.
-        if idx < 0 {
-            idx += len;
-        }
-        // 6. Bounds check — fall through to slow path which raises IndexError.
-        if idx < 0 || idx >= len {
-            return molt_store_index(list_bits, index_bits, val_bits);
-        }
-        // 7. Direct array store; enter the GIL only when a heap refcount changes.
-        list_store_refcounted_fast(ptr, idx as usize, val_bits, list_bits)
-    }
-}
-
 /// Unchecked list getitem — used when BCE (Bounds Check Elimination) has proven
 /// the index is in bounds.
 ///
@@ -578,17 +427,13 @@ pub extern "C" fn molt_list_getitem_unchecked(list_bits: u64, index: i64) -> u64
     let list_obj = obj_from_bits(list_bits);
     // Safety: caller guarantees list_bits is a valid list heap pointer.
     let ptr = unsafe { list_obj.as_ptr().unwrap_unchecked() };
-    unsafe {
-        let elems = seq_vec_ref(ptr);
-        // Safety: caller guarantees 0 <= index < len.
-        let val = *elems.get_unchecked(index as usize);
-        if list_fast_load_needs_gil(val) {
-            crate::with_gil_entry_nopanic!(_py, {
-                inc_ref_bits(_py, val);
-            });
-        }
-        val
+    let mut val = 0;
+    // The owned read pins the element under the backing lock and transfers
+    // that reference directly to the caller.
+    if crate::object::seq_access::read_item_owned(ptr, index as usize, &mut val) == 0 {
+        return 0;
     }
+    val
 }
 
 // ---------------------------------------------------------------------------
@@ -639,8 +484,7 @@ pub extern "C" fn molt_list_getitem_int_fast(list_bits: u64, index_bits: u64) ->
         }
         // 4. Extract index and list length.
         let mut idx = index_obj.as_int_unchecked();
-        let elems = seq_vec_ref(ptr);
-        let len = elems.len() as i64;
+        let len = crate::object::seq_access::len(ptr) as i64;
         // 5. Handle negative indexing.
         if idx < 0 {
             idx += len;
@@ -649,20 +493,12 @@ pub extern "C" fn molt_list_getitem_int_fast(list_bits: u64, index_bits: u64) ->
         if idx < 0 || idx >= len {
             return molt_index(list_bits, index_bits);
         }
-        // 7. Direct array load and reference-count increment.
-        // Skip with_gil_entry! — compiled code already holds the GIL and
-        // inc_ref is just an atomic fetch_add that cannot panic. Eliminating
-        // catch_unwind saves ~15ns per list access in hot loops.
-        let val = elems[idx as usize];
-        let val_obj = obj_from_bits(val);
-        if let Some(val_ptr) = val_obj.as_ptr() {
-            let header = val_ptr.sub(std::mem::size_of::<crate::object::MoltHeader>())
-                as *mut crate::object::MoltHeader;
-            if ((*header).flags & crate::object::HEADER_FLAG_IMMORTAL) == 0 {
-                (*header)
-                    .ref_count
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
+        // 7. Lock-pinned load. `read_item_owned` uses the no-op reentrant GIL
+        // lane when compiled code already owns it and transfers one reference
+        // to the result stack.
+        let mut val = 0;
+        if crate::object::seq_access::read_item_owned(ptr, idx as usize, &mut val) == 0 {
+            return molt_index(list_bits, index_bits);
         }
         val
     }
@@ -688,8 +524,7 @@ pub extern "C" fn molt_list_getitem_raw_idx(list_bits: u64, raw_idx: i64) -> u64
             return molt_list_getitem_int_fast(list_bits, MoltObject::from_int(raw_idx).bits());
         }
         let mut idx = raw_idx;
-        let elems = seq_vec_ref(ptr);
-        let len = elems.len() as i64;
+        let len = crate::object::seq_access::len(ptr) as i64;
         if idx < 0 {
             idx += len;
         }
@@ -697,55 +532,11 @@ pub extern "C" fn molt_list_getitem_raw_idx(list_bits: u64, raw_idx: i64) -> u64
             // Out of bounds — fall back to generic path which raises IndexError
             return molt_list_getitem_int_fast(list_bits, MoltObject::from_int(raw_idx).bits());
         }
-        let val = elems[idx as usize];
-        let val_obj = obj_from_bits(val);
-        if let Some(val_ptr) = val_obj.as_ptr() {
-            let header = val_ptr.sub(std::mem::size_of::<crate::object::MoltHeader>())
-                as *mut crate::object::MoltHeader;
-            if ((*header).flags & crate::object::HEADER_FLAG_IMMORTAL) == 0 {
-                (*header)
-                    .ref_count
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
+        let mut val = 0;
+        if crate::object::seq_access::read_item_owned(ptr, idx as usize, &mut val) == 0 {
+            return molt_list_getitem_int_fast(list_bits, MoltObject::from_int(raw_idx).bits());
         }
         val
-    }
-}
-
-/// List setitem with a raw i64 index.
-#[unsafe(no_mangle)]
-#[inline(never)]
-pub extern "C" fn molt_list_setitem_raw_idx(list_bits: u64, raw_idx: i64, val_bits: u64) -> u64 {
-    let list_obj = obj_from_bits(list_bits);
-    let Some(ptr) = list_obj.as_ptr() else {
-        return molt_list_setitem_int_fast(
-            list_bits,
-            MoltObject::from_int(raw_idx).bits(),
-            val_bits,
-        );
-    };
-    unsafe {
-        if object_type_id(ptr) != TYPE_ID_LIST {
-            return molt_list_setitem_int_fast(
-                list_bits,
-                MoltObject::from_int(raw_idx).bits(),
-                val_bits,
-            );
-        }
-        let mut idx = raw_idx;
-        let len = list_len(ptr) as i64;
-        if idx < 0 {
-            idx += len;
-        }
-        if idx < 0 || idx >= len {
-            // Out of bounds - fall back to generic path which raises IndexError.
-            return molt_list_setitem_int_fast(
-                list_bits,
-                MoltObject::from_int(raw_idx).bits(),
-                val_bits,
-            );
-        }
-        list_store_refcounted_fast(ptr, idx as usize, val_bits, MoltObject::none().bits())
     }
 }
 
@@ -832,6 +623,10 @@ pub extern "C" fn molt_list_fill_new(count: u64, fill_value: u64) -> u64 {
                 return raise_exception::<_>(_py, "MemoryError", "list allocation failed");
             };
             (*vec_ptr).resize(n, fill_value);
+            crate::object::backing::tracked_vec_set_heap_edge_count(
+                vec_ptr,
+                usize::from(crate::object::refcount_opt::is_heap_ref(fill_value)).saturating_mul(n),
+            );
             *(ptr as *mut *mut Vec<u64>) = vec_ptr;
             if let Some(fill_ptr) = obj_from_bits(fill_value).as_ptr() {
                 let mut remaining = n;
@@ -850,46 +645,6 @@ pub extern "C" fn molt_list_fill_new(count: u64, fill_value: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::alloc::{Layout, alloc, dealloc};
-
-    fn with_heap_bits(assertion: impl FnOnce(u64)) {
-        let layout = Layout::from_size_align(8, 8).unwrap();
-        let ptr = unsafe { alloc(layout) };
-        assert!(!ptr.is_null());
-        assertion(MoltObject::from_ptr(ptr).bits());
-        unsafe { dealloc(ptr, layout) };
-    }
-
-    #[test]
-    fn list_fast_load_enters_gil_only_for_heap_refs() {
-        for bits in [
-            MoltObject::from_int(1).bits(),
-            MoltObject::from_float(2.5).bits(),
-            MoltObject::from_bool(true).bits(),
-            MoltObject::none().bits(),
-        ] {
-            assert!(!list_fast_load_needs_gil(bits));
-        }
-        with_heap_bits(|bits| assert!(list_fast_load_needs_gil(bits)));
-    }
-
-    #[test]
-    fn list_fast_store_enters_gil_only_when_heap_refs_change() {
-        let int_bits = MoltObject::from_int(1).bits();
-        let float_bits = MoltObject::from_float(2.5).bits();
-        let bool_bits = MoltObject::from_bool(false).bits();
-        let none_bits = MoltObject::none().bits();
-
-        assert!(!list_fast_store_needs_gil(int_bits, int_bits));
-        assert!(!list_fast_store_needs_gil(int_bits, float_bits));
-        assert!(!list_fast_store_needs_gil(bool_bits, none_bits));
-
-        with_heap_bits(|heap_bits| {
-            assert!(list_fast_store_needs_gil(int_bits, heap_bits));
-            assert!(list_fast_store_needs_gil(heap_bits, float_bits));
-            assert!(!list_fast_store_needs_gil(heap_bits, heap_bits));
-        });
-    }
 
     #[test]
     fn list_int_slice_preserves_flat_storage() {

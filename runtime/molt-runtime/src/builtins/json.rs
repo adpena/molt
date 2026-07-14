@@ -1503,7 +1503,13 @@ fn object_to_json_with_options(
                 stack.push(marker);
             }
 
-            let elems = unsafe { seq_vec_ref(ptr) };
+            let Some(elems) = (unsafe {
+                crate::object::seq_access::snapshot(_py, ptr, "sequence snapshot allocation failed")
+            }) else {
+                return Err(JsonEncodeError::Value(
+                    "sequence snapshot allocation failed".to_string(),
+                ));
+            };
             out.push('[');
             for (idx, elem_bits) in elems.iter().enumerate() {
                 if idx > 0 {

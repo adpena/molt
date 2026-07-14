@@ -44,7 +44,14 @@ pub extern "C" fn PyIter_Next(iter: u64) -> u64 {
                 dec_ref_bits(_py, pair_bits);
                 return 0;
             }
-            let elems = seq_vec_ref(pair_ptr);
+            let Some(elems) = crate::object::seq_access::snapshot(
+                _py,
+                pair_ptr,
+                "iterator result snapshot allocation failed",
+            ) else {
+                dec_ref_bits(_py, pair_bits);
+                return 0;
+            };
             if elems.len() < 2 {
                 dec_ref_bits(_py, pair_bits);
                 return 0;
@@ -207,8 +214,7 @@ pub extern "C" fn PyList_GetItem(list: u64, index: isize) -> u64 {
                 let _ = raise_exception::<u64>(_py, "TypeError", "expected list object");
                 return 0;
             }
-            let elems = seq_vec_ref(ptr);
-            let len = elems.len();
+            let len = crate::object::seq_access::len(ptr);
             let actual_idx = if index < 0 {
                 let adjusted = (len as isize) + index;
                 if adjusted < 0 {
@@ -224,7 +230,7 @@ pub extern "C" fn PyList_GetItem(list: u64, index: isize) -> u64 {
                 return 0;
             }
             // Borrowed reference — do not inc_ref.
-            elems[actual_idx]
+            crate::object::seq_access::item(ptr, actual_idx).unwrap_or(0)
         }
     })
 }
@@ -245,8 +251,7 @@ pub extern "C" fn PyList_SetItem(list: u64, index: isize, item: u64) -> i32 {
                 let _ = raise_exception::<u64>(_py, "TypeError", "expected list object");
                 return -1;
             }
-            let elems = seq_vec(ptr);
-            let len = elems.len();
+            let len = list_len(ptr);
             let actual_idx = if index < 0 {
                 let adjusted = (len as isize) + index;
                 if adjusted < 0 {
@@ -268,11 +273,17 @@ pub extern "C" fn PyList_SetItem(list: u64, index: isize, item: u64) -> i32 {
                     raise_exception::<u64>(_py, "IndexError", "list assignment index out of range");
                 return -1;
             }
-            let old = elems[actual_idx];
-            // Item reference is stolen (not inc_ref'd), just place it.
-            elems[actual_idx] = item;
-            dec_ref_bits(_py, old);
-            0
+            let changed = crate::object::list_mutation::replace_indices(
+                _py,
+                ptr,
+                std::slice::from_ref(&actual_idx),
+                std::slice::from_ref(&item),
+            );
+            // Steal the caller's reference on both success and failure. The
+            // canonical mutation authority acquired the list's own edge before
+            // publication when the store succeeded.
+            dec_ref_bits(_py, item);
+            if changed { 0 } else { -1 }
         }
     })
 }
@@ -290,10 +301,15 @@ pub extern "C" fn PyList_Append(list: u64, item: u64) -> i32 {
                 let _ = raise_exception::<u64>(_py, "TypeError", "expected list object");
                 return -1;
             }
-            let elems = seq_vec(ptr);
-            inc_ref_bits(_py, item);
-            elems.push(item);
-            0
+            if crate::object::list_mutation::extend_from_slice(
+                _py,
+                ptr,
+                std::slice::from_ref(&item),
+            ) {
+                0
+            } else {
+                -1
+            }
         }
     })
 }
@@ -444,7 +460,7 @@ pub extern "C" fn PyDict_Contains(dict: u64, key: u64) -> i32 {
 // libmolt C-API Phase 1 — Tuple direct access
 // ---------------------------------------------------------------------------
 
-/// `PyTuple_New(size)` — create a new tuple of length `size` filled with None values.
+/// `PyTuple_New(size)` — create a new exact-length tuple with uninitialized slots.
 /// Returns the new tuple handle (caller owns the reference) or 0 on error.
 pub extern "C" fn PyTuple_New(size: isize) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -454,9 +470,7 @@ pub extern "C" fn PyTuple_New(size: isize) -> u64 {
             return 0;
         }
         let n = size as usize;
-        let none = none_bits();
-        let elems: Vec<u64> = vec![none; n];
-        let ptr = alloc_tuple(_py, &elems);
+        let ptr = crate::object::builders::alloc_tuple_uninitialized(_py, n);
         if ptr.is_null() {
             return 0;
         }
@@ -494,14 +508,13 @@ pub extern "C" fn PyTuple_GetItem(tuple: u64, index: isize) -> u64 {
                 let _ = raise_exception::<u64>(_py, "TypeError", "expected tuple object");
                 return 0;
             }
-            let elems = seq_vec_ref(ptr);
-            let len = elems.len();
+            let len = crate::object::seq_access::len(ptr);
             if index < 0 || (index as usize) >= len {
                 let _ = raise_exception::<u64>(_py, "IndexError", "tuple index out of range");
                 return 0;
             }
             // Borrowed reference — do not inc_ref.
-            elems[index as usize]
+            crate::object::seq_access::item(ptr, index as usize).unwrap_or(0)
         }
     })
 }
@@ -522,17 +535,24 @@ pub extern "C" fn PyTuple_SetItem(tuple: u64, index: isize, item: u64) -> i32 {
                 let _ = raise_exception::<u64>(_py, "TypeError", "expected tuple object");
                 return -1;
             }
-            let elems = seq_vec(ptr);
-            let len = elems.len();
-            if index < 0 || (index as usize) >= len {
+            if index < 0 || (index as usize) >= crate::object::seq_access::len(ptr) {
                 dec_ref_bits(_py, item);
                 let _ = raise_exception::<u64>(_py, "IndexError", "tuple index out of range");
                 return -1;
             }
-            let actual_idx = index as usize;
-            let old = elems[actual_idx];
-            // Item reference is stolen (not inc_ref'd), just place it.
-            elems[actual_idx] = item;
+            let Some(old) = crate::object::seq_access::replace_unique_item_owned(
+                ptr,
+                index as usize,
+                item,
+            ) else {
+                dec_ref_bits(_py, item);
+                let _ = raise_exception::<u64>(
+                    _py,
+                    "SystemError",
+                    "PyTuple_SetItem requires a uniquely owned tuple",
+                );
+                return -1;
+            };
             dec_ref_bits(_py, old);
             0
         }
@@ -2029,8 +2049,14 @@ pub extern "C" fn PyList_AsTuple(list: u64) -> u64 {
                 let _ = raise_exception::<u64>(_py, "TypeError", "expected list object");
                 return 0;
             }
-            let elems = seq_vec_ref(ptr);
-            let tuple_ptr = alloc_tuple(_py, elems);
+            let Some(elems) = crate::object::seq_access::snapshot(
+                _py,
+                ptr,
+                "list-to-tuple snapshot allocation failed",
+            ) else {
+                return 0;
+            };
+            let tuple_ptr = alloc_tuple(_py, &elems);
             if tuple_ptr.is_null() {
                 return 0;
             }

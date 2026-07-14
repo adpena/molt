@@ -114,16 +114,17 @@ fn sum_next_iterator_value(_py: &PyToken<'_>, iter_obj: u64) -> Result<Option<u6
                 "object is not an iterator",
             ));
         }
-        let elems = seq_vec_ref(pair_ptr);
-        if elems.len() < 2 {
+        let pair = crate::object::seq_access::with_immutable_tuple_slice(pair_ptr, |elems| {
+            (elems.len() >= 2).then(|| (elems[0], elems[1]))
+        })
+        .flatten();
+        let Some((val_bits, done_bits)) = pair else {
             return Err(raise_exception::<u64>(
                 _py,
                 "TypeError",
                 "object is not an iterator",
             ));
-        }
-        let val_bits = elems[0];
-        let done_bits = elems[1];
+        };
         if is_truthy(_py, obj_from_bits(done_bits)) {
             Ok(None)
         } else {
@@ -224,13 +225,16 @@ fn molt_minmax_builtin(
             let msg = format!("{name} expected at least 1 argument, got 0");
             return raise_exception::<_>(_py, "TypeError", &msg);
         }
-        let args = seq_vec_ref(args_ptr);
-        if args.is_empty() {
+        let args = crate::object::seq_access::with_immutable_tuple_slice(args_ptr, |args| {
+            args.first().copied().map(|first| (args.len(), first))
+        })
+        .flatten();
+        let Some((args_len, first_arg)) = args else {
             let msg = format!("{name} expected at least 1 argument, got 0");
             return raise_exception::<_>(_py, "TypeError", &msg);
-        }
+        };
         let has_default = default_bits != missing;
-        if args.len() > 1 && has_default {
+        if args_len > 1 && has_default {
             let msg =
                 format!("Cannot specify a default for {name}() with multiple positional arguments");
             return raise_exception::<_>(_py, "TypeError", &msg);
@@ -238,10 +242,10 @@ fn molt_minmax_builtin(
         let use_key = !obj_from_bits(key_bits).is_none();
         let mut best_bits;
         let mut best_key_bits: u64;
-        if args.len() == 1 {
-            let iter_bits = molt_iter(args[0]);
+        if args_len == 1 {
+            let iter_bits = molt_iter(first_arg);
             if obj_from_bits(iter_bits).is_none() {
-                return raise_not_iterable(_py, args[0]);
+                return raise_not_iterable(_py, first_arg);
             }
             let pair_bits = molt_iter_next(iter_bits);
             let pair_obj = obj_from_bits(pair_bits);
@@ -251,12 +255,13 @@ fn molt_minmax_builtin(
             if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
                 return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
             }
-            let elems = seq_vec_ref(pair_ptr);
-            if elems.len() < 2 {
+            let pair = crate::object::seq_access::with_immutable_tuple_slice(pair_ptr, |elems| {
+                (elems.len() >= 2).then(|| (elems[0], elems[1]))
+            })
+            .flatten();
+            let Some((val_bits, done_bits)) = pair else {
                 return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
-            }
-            let val_bits = elems[0];
-            let done_bits = elems[1];
+            };
             if is_truthy(_py, obj_from_bits(done_bits)) {
                 if has_default {
                     inc_ref_bits(_py, default_bits);
@@ -283,12 +288,14 @@ fn molt_minmax_builtin(
                 if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
                     return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
                 }
-                let elems = seq_vec_ref(pair_ptr);
-                if elems.len() < 2 {
+                let pair =
+                    crate::object::seq_access::with_immutable_tuple_slice(pair_ptr, |elems| {
+                        (elems.len() >= 2).then(|| (elems[0], elems[1]))
+                    })
+                    .flatten();
+                let Some((val_bits, done_bits)) = pair else {
                     return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
-                }
-                let val_bits = elems[0];
-                let done_bits = elems[1];
+                };
                 if is_truthy(_py, obj_from_bits(done_bits)) {
                     if use_key {
                         dec_ref_bits(_py, best_key_bits);
@@ -345,7 +352,7 @@ fn molt_minmax_builtin(
                 }
             }
         }
-        best_bits = args[0];
+        best_bits = first_arg;
         if use_key {
             best_key_bits = call_callable1(_py, key_bits, best_bits);
             if exception_pending(_py) {
@@ -354,7 +361,10 @@ fn molt_minmax_builtin(
         } else {
             best_key_bits = best_bits;
         }
-        for &val_bits in args.iter().skip(1) {
+        for idx in 1..args_len {
+            let val_bits =
+                crate::object::seq_access::with_immutable_tuple_slice(args_ptr, |args| args[idx])
+                    .unwrap_or(first_arg);
             let cand_key_bits = if use_key {
                 let res_bits = call_callable1(_py, key_bits, val_bits);
                 if exception_pending(_py) {
@@ -471,17 +481,19 @@ pub extern "C" fn molt_sorted_builtin(iter_bits: u64, key_bits: u64, reverse_bit
                     }
                     return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
                 }
-                let elems = seq_vec_ref(pair_ptr);
-                if elems.len() < 2 {
+                let pair =
+                    crate::object::seq_access::with_immutable_tuple_slice(pair_ptr, |elems| {
+                        (elems.len() >= 2).then(|| (elems[0], elems[1]))
+                    })
+                    .flatten();
+                let Some((val_bits, done_bits)) = pair else {
                     if use_key {
                         for item in items.drain(..) {
                             dec_ref_bits(_py, item.key_bits);
                         }
                     }
                     return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
-                }
-                let val_bits = elems[0];
-                let done_bits = elems[1];
+                };
                 if is_truthy(_py, obj_from_bits(done_bits)) {
                     break;
                 }
@@ -607,24 +619,28 @@ pub extern "C" fn molt_sum_builtin(iter_bits: u64, start_bits: u64) -> u64 {
             if let Some(ptr) = iter_obj_check.as_ptr() {
                 let type_id = unsafe { object_type_id(ptr) };
                 if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
-                    let elems = unsafe { seq_vec_ref(ptr) };
-                    if elems.is_empty() && SumExactInt::from_obj(start_obj).is_some() {
+                    let (empty_exact_start, exact_sum) = unsafe {
+                        crate::object::seq_access::with_borrowed(ptr, |elems| {
+                            if elems.is_empty() && SumExactInt::from_obj(start_obj).is_some() {
+                                return (true, None);
+                            }
+                            let Some(mut acc) = SumExactInt::from_obj(start_obj) else {
+                                return (false, None);
+                            };
+                            for &bits in elems {
+                                let Some(i) = SumExactInt::from_obj(obj_from_bits(bits)) else {
+                                    return (false, None);
+                                };
+                                acc.add_exact(i);
+                            }
+                            (false, Some(acc))
+                        })
+                    };
+                    if empty_exact_start {
                         return sum_return_original_start(_py, start_bits);
                     }
-                    if let Some(mut acc) = SumExactInt::from_obj(start_obj) {
-                        let mut all_int = true;
-                        for &bits in elems.iter() {
-                            let elem = obj_from_bits(bits);
-                            if let Some(i) = SumExactInt::from_obj(elem) {
-                                acc.add_exact(i);
-                            } else {
-                                all_int = false;
-                                break;
-                            }
-                        }
-                        if all_int {
-                            return acc.into_bits(_py);
-                        }
+                    if let Some(acc) = exact_sum {
+                        return acc.into_bits(_py);
                     }
                 }
                 // Specialized list[int] — elements are raw i64, no NaN-boxing.

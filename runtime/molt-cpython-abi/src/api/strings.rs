@@ -833,6 +833,31 @@ pub unsafe extern "C" fn PyUnicode_GetLength(op: *mut PyObject) -> Py_ssize_t {
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyUnicode_ReadChar(unicode: *mut PyObject, index: Py_ssize_t) -> u32 {
+    let Some(bytes) = (unsafe { unicode_bytes(unicode) }) else {
+        unsafe { crate::api::errors::PyErr_BadArgument() };
+        return u32::MAX;
+    };
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        unsafe { crate::api::errors::PyErr_BadArgument() };
+        return u32::MAX;
+    };
+    let Some(character) = usize::try_from(index)
+        .ok()
+        .and_then(|index| text.chars().nth(index))
+    else {
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_IndexError).cast::<PyObject>(),
+                c"string index out of range".as_ptr(),
+            )
+        };
+        return u32::MAX;
+    };
+    character as u32
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyUnicode_Check(op: *mut PyObject) -> c_int {
     if op.is_null() {
         return 0;

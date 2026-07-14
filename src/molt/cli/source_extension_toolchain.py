@@ -20,6 +20,7 @@ from molt.scientific_stack_versions import (
 )
 
 _SOURCE_EXTENSION_ABI_TIERS = {"source-compat", "cpython-abi"}
+MOLT_PKGCONF_REQUIREMENT = "pkgconf==3.0.1.post0"
 _SOURCE_EXTENSION_INCLUDE_FILE_SUFFIXES = {
     ".c",
     ".h",

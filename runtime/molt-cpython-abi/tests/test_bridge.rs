@@ -198,8 +198,9 @@ fn test_pyobj_to_handle_null_returns_none() {
 #[test]
 fn test_none_hash_uses_pointer_width_py_hash() {
     init();
-    let none = molt_cpython_abi::bridge::bits_to_pyobject(MoltObject::none().bits());
-    let hash = molt_cpython_abi::bridge::molt_bridge_hash(none);
+    let hash = unsafe {
+        molt_cpython_abi::api::typeobj::PyObject_Hash(&raw mut molt_cpython_abi::abi_types::Py_None)
+    };
     let expected = if std::mem::size_of::<isize>() >= 8 {
         0x0FCA_86420_u64 as isize
     } else {
@@ -297,7 +298,7 @@ fn tag_table_uses_physical_types_only_for_exact_layout_carriers() {
         (MoltTypeTag::Complex, managed),
         (MoltTypeTag::Str, managed),
         (MoltTypeTag::Bytes, managed),
-        (MoltTypeTag::List, managed),
+        (MoltTypeTag::List, &raw mut PyList_Type),
         (MoltTypeTag::Tuple, &raw mut PyTuple_Type),
         (MoltTypeTag::Dict, managed),
         (MoltTypeTag::Set, managed),

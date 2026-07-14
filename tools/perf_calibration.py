@@ -106,6 +106,15 @@ if sys.platform == "win32":
             return int(pmc.PeakWorkingSetSize)
         return None
 
+    def _win_current_wset(handle) -> Optional[int]:
+        if not handle:
+            return None
+        pmc = _PROCESS_MEMORY_COUNTERS()
+        pmc.cb = ctypes.sizeof(_PROCESS_MEMORY_COUNTERS)
+        if _gpmi(handle, ctypes.byref(pmc), pmc.cb):
+            return int(pmc.WorkingSetSize)
+        return None
+
     def _win_open(pid: int):
         return (
             _kernel32.OpenProcess(
@@ -113,6 +122,16 @@ if sys.platform == "win32":
                 | _PROCESS_VM_READ
                 | _PROCESS_SET_QUOTA
                 | _PROCESS_TERMINATE,
+                False,
+                pid,
+            )
+            or None
+        )
+
+    def _win_open_query(pid: int):
+        return (
+            _kernel32.OpenProcess(
+                _PROCESS_QUERY_INFORMATION | _PROCESS_VM_READ,
                 False,
                 pid,
             )
@@ -164,6 +183,15 @@ if sys.platform == "win32":
             ("PeakJobMemoryUsed", ctypes.c_size_t),
         ]
 
+    _JOB_PID_CAPACITY = 1024
+
+    class _JOBOBJECT_BASIC_PROCESS_ID_LIST(ctypes.Structure):
+        _fields_ = [
+            ("NumberOfAssignedProcesses", wintypes.DWORD),
+            ("NumberOfProcessIdsInList", wintypes.DWORD),
+            ("ProcessIdList", _ULONG_PTR * _JOB_PID_CAPACITY),
+        ]
+
     _kernel32.CreateJobObjectW.restype = wintypes.HANDLE
     _kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
     _kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
@@ -177,6 +205,7 @@ if sys.platform == "win32":
         wintypes.LPDWORD,
     ]
     _JobObjectExtendedLimitInformation = 9
+    _JobObjectBasicProcessIdList = 3
 
     def _win_create_job():
         return _kernel32.CreateJobObjectW(None, None) or None
@@ -195,6 +224,33 @@ if sys.platform == "win32":
         ):
             return int(info.PeakJobMemoryUsed) or None
         return None
+
+    def _win_job_current_rss(hjob) -> Optional[int]:
+        """Current summed working set of every live process in a Job."""
+        if not hjob:
+            return None
+        processes = _JOBOBJECT_BASIC_PROCESS_ID_LIST()
+        if not _kernel32.QueryInformationJobObject(
+            hjob,
+            _JobObjectBasicProcessIdList,
+            ctypes.byref(processes),
+            ctypes.sizeof(processes),
+            None,
+        ):
+            return None
+        count = min(int(processes.NumberOfProcessIdsInList), _JOB_PID_CAPACITY)
+        total = 0
+        observed = False
+        for index in range(count):
+            handle = _win_open_query(int(processes.ProcessIdList[index]))
+            try:
+                current = _win_current_wset(handle)
+                if current is not None:
+                    total += current
+                    observed = True
+            finally:
+                _win_close(handle)
+        return total if observed else None
 
 
 # ---------------------------------------------------------------------------
@@ -272,6 +328,7 @@ class RunMeasurement:
     returncode: int
     elapsed_s: float
     peak_rss_bytes: Optional[int]
+    peak_job_commit_bytes: Optional[int]
     stdout: str
     stderr: str
     timed_out: bool = False
@@ -284,6 +341,7 @@ def run_and_measure(
     env: Optional[dict] = None,
     cwd: Optional[str] = None,
     poll_interval: float = 0.003,
+    on_spawn: Optional[Callable[[int], None]] = None,
 ) -> RunMeasurement:
     """Spawn argv, capturing wall time AND cross-platform peak RSS by polling.
 
@@ -305,6 +363,14 @@ def run_and_measure(
         proc = subprocess.Popen(
             list(argv), stdout=ofh, stderr=efh, env=full_env, cwd=cwd
         )
+
+        if on_spawn is not None:
+            try:
+                on_spawn(proc.pid)
+            except BaseException:
+                proc.kill()
+                proc.wait()
+                raise
         handle = _win_open(proc.pid) if sys.platform == "win32" else None
         job = _win_create_job() if sys.platform == "win32" else None
         assigned_job = (
@@ -315,7 +381,8 @@ def run_and_measure(
             and _win_assign_job(job, handle)
             else None
         )
-        peak = 0
+        peak_rss = 0
+        peak_job_commit = 0
         timed_out = False
         try:
             while True:
@@ -324,11 +391,16 @@ def run_and_measure(
                     done = True
                 except subprocess.TimeoutExpired:
                     done = False
-                s = _win_job_peak(assigned_job) if assigned_job is not None else None
-                if s is None:
-                    s = _sample_peak_rss(proc.pid, handle)
-                if s:
-                    peak = max(peak, s)
+                rss = (
+                    _win_job_current_rss(assigned_job)
+                    if assigned_job is not None
+                    else _sample_peak_rss(proc.pid, handle)
+                )
+                if rss:
+                    peak_rss = max(peak_rss, rss)
+                committed = _win_job_peak(assigned_job) if assigned_job is not None else None
+                if committed:
+                    peak_job_commit = max(peak_job_commit, committed)
                 if done:
                     break
                 if timeout is not None and (time.perf_counter() - t0) > timeout:
@@ -336,13 +408,18 @@ def run_and_measure(
                     proc.wait()
                     timed_out = True
                     break
-            # Final sample from monotone fields. On Windows, Job peak captures
-            # the child process tree even after descendants have exited.
-            s = _win_job_peak(assigned_job) if assigned_job is not None else None
-            if s is None:
-                s = _sample_peak_rss(proc.pid, handle)
-            if s:
-                peak = max(peak, s)
+            # Final direct sample may survive root exit on monotone OS fields;
+            # the live loop above captures the Windows Job's summed RSS.
+            rss = (
+                _win_job_current_rss(assigned_job)
+                if assigned_job is not None
+                else _sample_peak_rss(proc.pid, handle)
+            )
+            if rss:
+                peak_rss = max(peak_rss, rss)
+            committed = _win_job_peak(assigned_job) if assigned_job is not None else None
+            if committed:
+                peak_job_commit = max(peak_job_commit, committed)
         finally:
             if sys.platform == "win32":
                 _win_close(job)
@@ -353,7 +430,15 @@ def run_and_measure(
         efh.seek(0)
         err = efh.read().decode("utf-8", "replace")
     rc = proc.returncode if proc.returncode is not None else -1
-    return RunMeasurement(rc, elapsed, peak or None, out, err, timed_out)
+    return RunMeasurement(
+        rc,
+        elapsed,
+        peak_rss or None,
+        peak_job_commit or None,
+        out,
+        err,
+        timed_out,
+    )
 
 
 # ---------------------------------------------------------------------------

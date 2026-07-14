@@ -139,6 +139,12 @@ pub extern "C" fn __molt_difflib_to_f64(bits: u64, out: *mut f64) -> i32 {
 // ---------------------------------------------------------------------------
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __molt_difflib_seq_vec_ptr(ptr: *mut u8) -> *mut Vec<u64> {
-    unsafe { crate::object::layout::seq_vec_ptr(ptr) }
+pub extern "C" fn __molt_difflib_seq_snapshot(
+    ptr: *mut u8,
+    out_ptr: *mut *const u64,
+    out_len: *mut usize,
+) -> i32 {
+    crate::with_gil_entry_nopanic!(_py, {
+        unsafe { crate::seq_snapshot_bridge::export(_py, ptr, out_ptr, out_len) }
+    })
 }

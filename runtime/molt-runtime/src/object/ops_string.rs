@@ -757,11 +757,15 @@ pub extern "C" fn molt_string_startswith_slice(
                     return MoltObject::from_bool(ok).bits();
                 }
                 if needle_type == TYPE_ID_TUPLE {
-                    let elems = seq_vec_ref(needle_ptr);
-                    if elems.is_empty() {
+                    let len = crate::object::seq_access::len(needle_ptr);
+                    if len == 0 {
                         return MoltObject::from_bool(false).bits();
                     }
-                    for &elem_bits in elems.iter() {
+                    for idx in 0..len {
+                        let Some(elem_bits) = crate::object::seq_access::item(needle_ptr, idx)
+                        else {
+                            return MoltObject::from_bool(false).bits();
+                        };
                         let elem = obj_from_bits(elem_bits);
                         let elem_ptr = match elem.as_ptr() {
                             Some(ptr) => ptr,
@@ -858,11 +862,15 @@ pub extern "C" fn molt_string_endswith_slice(
                     return MoltObject::from_bool(ok).bits();
                 }
                 if needle_type == TYPE_ID_TUPLE {
-                    let elems = seq_vec_ref(needle_ptr);
-                    if elems.is_empty() {
+                    let len = crate::object::seq_access::len(needle_ptr);
+                    if len == 0 {
                         return MoltObject::from_bool(false).bits();
                     }
-                    for &elem_bits in elems.iter() {
+                    for idx in 0..len {
+                        let Some(elem_bits) = crate::object::seq_access::item(needle_ptr, idx)
+                        else {
+                            return MoltObject::from_bool(false).bits();
+                        };
                         let elem = obj_from_bits(elem_bits);
                         let elem_ptr = match elem.as_ptr() {
                             Some(ptr) => ptr,
@@ -1091,10 +1099,17 @@ pub extern "C" fn molt_string_join(sep_bits: u64, items_bits: u64) -> u64 {
             let mut first_len = 0usize;
             let mut owned_bits = Vec::new();
             let mut iter_owned = false;
+            let mut _sequence_snapshot = None;
             if let Some(ptr) = items.as_ptr() {
                 let type_id = object_type_id(ptr);
                 if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
-                    let elems = seq_vec_ref(ptr);
+                    let Some(elems) = crate::object::seq_access::snapshot(
+                        _py,
+                        ptr,
+                        "string join snapshot allocation failed",
+                    ) else {
+                        return MoltObject::none().bits();
+                    };
                     parts.reserve(elems.len());
                     for (idx, &elem_bits) in elems.iter().enumerate() {
                         let elem_obj = obj_from_bits(elem_bits);
@@ -1127,6 +1142,7 @@ pub extern "C" fn molt_string_join(sep_bits: u64, items_bits: u64) -> u64 {
                         }
                         parts.push(StringPart { data, len });
                     }
+                    _sequence_snapshot = Some(elems);
                 }
             }
             if parts.is_empty() {
@@ -1160,18 +1176,17 @@ pub extern "C" fn molt_string_join(sep_bits: u64, items_bits: u64) -> u64 {
                         }
                         return MoltObject::none().bits();
                     }
-                    let pair_elems = seq_vec_ref(pair_ptr);
-                    if pair_elems.len() < 2 {
+                    let Some((elem_bits, done_bits)) =
+                        crate::object::seq_access::tuple_pair(pair_ptr)
+                    else {
                         for bits in owned_bits.iter().copied() {
                             dec_ref_bits(_py, bits);
                         }
                         return MoltObject::none().bits();
-                    }
-                    let done_bits = pair_elems[1];
+                    };
                     if is_truthy(_py, obj_from_bits(done_bits)) {
                         break;
                     }
-                    let elem_bits = pair_elems[0];
                     let elem_obj = obj_from_bits(elem_bits);
                     let elem_ptr = match elem_obj.as_ptr() {
                         Some(ptr) => ptr,

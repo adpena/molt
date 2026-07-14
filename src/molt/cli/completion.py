@@ -27,7 +27,14 @@ def _completion_script(shell: str) -> str:
         "config",
         "completion",
     ]
-    extension_subcommands = ["build", "audit", "scan"]
+    extension_subcommands = [
+        "build",
+        "audit",
+        "metadata",
+        "produce-set",
+        "seal",
+        "scan",
+    ]
     extension_options = {
         "build": [
             "--project",
@@ -45,6 +52,33 @@ def _completion_script(shell: str) -> str:
             "--require-capabilities",
             "--require-abi",
             "--require-checksum",
+            "--json",
+            "--verbose",
+        ],
+        "metadata": ["--target", "--out-dir", "--abi-tier", "--json", "--verbose"],
+        "produce-set": [
+            "--package",
+            "--module-set",
+            "--source",
+            "--build-root",
+            "--target",
+            "--abi-tier",
+            "--json",
+        ],
+        "seal": [
+            "--path",
+            "--out-dir",
+            "--python-export",
+            "--callable-export-json",
+            "--support-file",
+            "--json",
+            "--verbose",
+        ],
+        "scan": [
+            "--project",
+            "--source",
+            "--exclude-dir",
+            "--fail-on-missing",
             "--json",
             "--verbose",
         ],
@@ -288,7 +322,7 @@ def _completion_script(shell: str) -> str:
             "  fi",
             '  if [[ "${COMP_WORDS[1]}" == "extension" ]]; then',
             "    if [[ ${COMP_CWORD} -eq 2 ]]; then",
-            '      COMPREPLY=( $(compgen -W "build audit" -- "$cur") )',
+            f'      COMPREPLY=( $(compgen -W "{" ".join(extension_subcommands)}" -- "$cur") )',
             "      return 0",
             "    fi",
             '    case "${COMP_WORDS[2]}" in',
@@ -331,7 +365,7 @@ def _completion_script(shell: str) -> str:
             "  fi",
             "  if [[ $words[2] == extension ]]; then",
             "    if (( CURRENT == 3 )); then",
-            "      compadd build audit",
+            f"      compadd {' '.join(extension_subcommands)}",
             "      return",
             "    fi",
             "    local -a extension_opts",
@@ -367,7 +401,9 @@ def _completion_script(shell: str) -> str:
     if shell == "fish":
         lines = [
             f"complete -c molt -f -n '__fish_use_subcommand' -a \"{' '.join(commands)}\"",
-            "complete -c molt -f -n '__fish_seen_subcommand_from extension; and not __fish_seen_subcommand_from build audit' -a \"build audit\"",
+            "complete -c molt -f -n '__fish_seen_subcommand_from extension; and not "
+            f"__fish_seen_subcommand_from {' '.join(extension_subcommands)}' -a "
+            f"\"{' '.join(extension_subcommands)}\"",
         ]
         for cmd in commands:
             for opt in options.get(cmd, []):

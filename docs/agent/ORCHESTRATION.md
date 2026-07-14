@@ -1080,6 +1080,12 @@ its version/platform gate expressed, not hardcoded.
 ### R7. Ecosystem custody generalization (owner: orchestrator)
 
 Turn the numpy/scipy witness machinery into THE reusable primitives:
+- `molt extension produce-set` is the canonical multi-extension package
+  producer: one verified source commit, one upstream Meson setup, exact typed
+  module/target/export ownership, real installed Python closure, deterministic
+  per-artifact custody, and one rollback-safe atomic package seal. The Pact
+  SciPy set must use this root exclusively; no union of historical per-module
+  roots or package-specific config/closure/source-plan adapters.
 - `molt extension build` (meson intro-targets + compile_commands source
   plans; zig as the wasm C++ toolchain; PyMODINIT_FUNC extern "C") is the
   one path for source-recompiled extensions — generalize beyond the

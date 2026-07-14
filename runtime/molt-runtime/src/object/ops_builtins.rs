@@ -1072,7 +1072,13 @@ pub extern "C" fn molt_call_func_dispatch(
                     && let Some(def_ptr) = obj_from_bits(dbits).as_ptr()
                     && object_type_id(def_ptr) == TYPE_ID_TUPLE
                 {
-                    let defaults = seq_vec_ref(def_ptr);
+                    let Some(defaults) = crate::object::seq_access::snapshot(
+                        _py,
+                        def_ptr,
+                        "function defaults snapshot allocation failed",
+                    ) else {
+                        return MoltObject::none().bits();
+                    };
                     let n_defaults = defaults.len();
                     if missing <= n_defaults {
                         let total = eff_nargs + missing;
@@ -1128,7 +1134,13 @@ pub extern "C" fn molt_call_func_dispatch(
                     && let Some(kw_ptr) = obj_from_bits(kw_bits).as_ptr()
                     && object_type_id(kw_ptr) == TYPE_ID_TUPLE
                 {
-                    let kwonly_names = seq_vec_ref(kw_ptr);
+                    let Some(kwonly_names) = crate::object::seq_access::snapshot(
+                        _py,
+                        kw_ptr,
+                        "keyword-only names snapshot allocation failed",
+                    ) else {
+                        return MoltObject::none().bits();
+                    };
                     let n_kwonly = kwonly_names.len();
                     if n_kwonly > 0 {
                         // Get __kwdefaults__ dict
@@ -1167,7 +1179,14 @@ pub extern "C" fn molt_call_func_dispatch(
                                 && let Some(pd_ptr) = obj_from_bits(pd_bits).as_ptr()
                                 && object_type_id(pd_ptr) == TYPE_ID_TUPLE
                             {
-                                pos_def_owned = seq_vec_ref(pd_ptr).clone();
+                                let Some(snapshot) = crate::object::seq_access::snapshot(
+                                    _py,
+                                    pd_ptr,
+                                    "positional defaults snapshot allocation failed",
+                                ) else {
+                                    return MoltObject::none().bits();
+                                };
+                                pos_def_owned = snapshot;
                                 pos_def_vec = &pos_def_owned;
                             }
 
@@ -1729,15 +1748,17 @@ pub extern "C" fn molt_any_builtin(iter_bits: u64) -> u64 {
                     }
                     return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
                 }
-                let elems = seq_vec_ref(pair_ptr);
-                if elems.len() < 2 {
+                let Some((val_bits, done_bits)) =
+                    crate::object::seq_access::with_immutable_tuple_slice(pair_ptr, |items| {
+                        items.first().copied().zip(items.get(1).copied())
+                    })
+                    .flatten()
+                else {
                     if exception_pending(_py) {
                         return MoltObject::none().bits();
                     }
                     return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
-                }
-                let val_bits = elems[0];
-                let done_bits = elems[1];
+                };
                 if is_truthy(_py, obj_from_bits(done_bits)) {
                     return MoltObject::from_bool(false).bits();
                 }
@@ -1772,15 +1793,17 @@ pub extern "C" fn molt_all_builtin(iter_bits: u64) -> u64 {
                     }
                     return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
                 }
-                let elems = seq_vec_ref(pair_ptr);
-                if elems.len() < 2 {
+                let Some((val_bits, done_bits)) =
+                    crate::object::seq_access::with_immutable_tuple_slice(pair_ptr, |items| {
+                        items.first().copied().zip(items.get(1).copied())
+                    })
+                    .flatten()
+                else {
                     if exception_pending(_py) {
                         return MoltObject::none().bits();
                     }
                     return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
-                }
-                let val_bits = elems[0];
-                let done_bits = elems[1];
+                };
                 if is_truthy(_py, obj_from_bits(done_bits)) {
                     return MoltObject::from_bool(true).bits();
                 }
@@ -2741,7 +2764,13 @@ pub extern "C" fn molt_print_builtin(
                 }
             }
 
-            let elems = seq_vec_ref(args_ptr);
+            let Some(elems) = crate::object::seq_access::snapshot(
+                _py,
+                args_ptr,
+                "print argument snapshot allocation failed",
+            ) else {
+                return MoltObject::none().bits();
+            };
             let do_flush = is_truthy(_py, obj_from_bits(flush_bits));
 
             // Fall back to raw C stdio when the resolved file is None —
@@ -3340,9 +3369,16 @@ pub extern "C" fn molt_slice(obj_bits: u64, start_bits: u64, end_bits: u64) -> u
                         }
                         return MoltObject::from_ptr(out).bits();
                     }
-                    let elems = seq_vec_ref(ptr);
-                    let slice = &elems[start as usize..end as usize];
-                    let out = alloc_list(_py, slice);
+                    let Some(elems) = crate::object::seq_access::snapshot(
+                        _py,
+                        ptr,
+                        "list slice snapshot allocation failed",
+                    ) else {
+                        return MoltObject::none().bits();
+                    };
+                    let start = (start as usize).min(elems.len());
+                    let end = (end as usize).min(elems.len()).max(start);
+                    let out = alloc_list(_py, &elems[start..end]);
                     if out.is_null() {
                         return MoltObject::none().bits();
                     }
@@ -3365,9 +3401,12 @@ pub extern "C" fn molt_slice(obj_bits: u64, start_bits: u64, end_bits: u64) -> u
                         }
                         return MoltObject::from_ptr(out).bits();
                     }
-                    let elems = seq_vec_ref(ptr);
-                    let slice = &elems[start as usize..end as usize];
-                    let out = alloc_tuple(_py, slice);
+                    let out = crate::object::seq_access::with_immutable_tuple_slice(ptr, |elems| {
+                        let start = (start as usize).min(elems.len());
+                        let end = (end as usize).min(elems.len()).max(start);
+                        alloc_tuple(_py, &elems[start..end])
+                    })
+                    .unwrap_or(std::ptr::null_mut());
                     if out.is_null() {
                         return MoltObject::none().bits();
                     }
@@ -3392,20 +3431,21 @@ pub extern "C" fn molt_intarray_from_seq(bits: u64) -> u64 {
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
                 let type_id = object_type_id(ptr);
-                let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
-                    seq_vec_ref(ptr)
-                } else {
+                if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
+                    return MoltObject::none().bits();
+                }
+                let out = crate::object::seq_access::with_borrowed(ptr, |elems| {
+                    let mut out = Vec::with_capacity(elems.len());
+                    for &elem in elems {
+                        let val = MoltObject::from_bits(elem);
+                        let i = val.as_int()?;
+                        out.push(i);
+                    }
+                    Some(out)
+                });
+                let Some(out) = out else {
                     return MoltObject::none().bits();
                 };
-                let mut out = Vec::with_capacity(elems.len());
-                for &elem in elems {
-                    let val = MoltObject::from_bits(elem);
-                    if let Some(i) = val.as_int() {
-                        out.push(i);
-                    } else {
-                        return MoltObject::none().bits();
-                    }
-                }
                 let out_ptr = alloc_intarray(_py, &out);
                 if out_ptr.is_null() {
                     return MoltObject::none().bits();
@@ -3429,8 +3469,14 @@ pub extern "C" fn molt_tuple_from_list(bits: u64) -> u64 {
                     return bits;
                 }
                 if type_id == TYPE_ID_LIST {
-                    let elems = seq_vec_ref(ptr);
-                    let out_ptr = alloc_tuple(_py, elems);
+                    let Some(elems) = crate::object::seq_access::snapshot(
+                        _py,
+                        ptr,
+                        "tuple conversion snapshot allocation failed",
+                    ) else {
+                        return MoltObject::none().bits();
+                    };
+                    let out_ptr = alloc_tuple(_py, &elems);
                     if out_ptr.is_null() {
                         return MoltObject::none().bits();
                     }

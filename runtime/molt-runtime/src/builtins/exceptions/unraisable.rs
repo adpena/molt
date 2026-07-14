@@ -35,7 +35,7 @@ struct RaisedSnapshot {
 
 struct HandledSnapshot {
     active: Vec<u64>,
-    fallback: Vec<u64>,
+    fallback: Vec<ExceptionContextFallback>,
 }
 
 /// A transaction is required at every unraisable boundary. It preserves the
@@ -90,13 +90,21 @@ fn release_stack(_py: &PyToken<'_>, stack: Vec<u64>) {
     }
 }
 
+fn release_fallback_stack(_py: &PyToken<'_>, stack: Vec<ExceptionContextFallback>) {
+    for entry in stack {
+        if entry.owned && !obj_from_bits(entry.bits).is_none() {
+            dec_ref_bits(_py, entry.bits);
+        }
+    }
+}
+
 fn restore_handled(_py: &PyToken<'_>, saved: HandledSnapshot) {
     let old_active = ACTIVE_EXCEPTION_STACK
         .with(|stack| std::mem::replace(&mut *stack.borrow_mut(), saved.active));
     let old_fallback = ACTIVE_EXCEPTION_FALLBACK
         .with(|stack| std::mem::replace(&mut *stack.borrow_mut(), saved.fallback));
     release_stack(_py, old_active);
-    release_stack(_py, old_fallback);
+    release_fallback_stack(_py, old_fallback);
 }
 
 fn restore_raised(_py: &PyToken<'_>, saved: RaisedSnapshot) {
@@ -602,8 +610,7 @@ fn unraisable_args_field(_py: &PyToken<'_>, self_bits: u64, index: usize) -> u64
             "UnraisableHookArgs descriptor requires an instance",
         );
     }
-    let fields = unsafe { seq_vec_ref(ptr) };
-    let Some(bits) = fields.get(index).copied() else {
+    let Some(bits) = (unsafe { crate::object::seq_access::item(ptr, index) }) else {
         return raise_exception::<_>(_py, "RuntimeError", "invalid UnraisableHookArgs payload");
     };
     inc_ref_bits(_py, bits);
@@ -666,21 +673,31 @@ extern "C" fn molt_unraisable_hook_args_new(
         let Some(source_ptr) = obj_from_bits(source_bits).as_ptr() else {
             return MoltObject::none().bits();
         };
-        let fields = unsafe { seq_vec_ref(source_ptr) };
-        if fields.len() != UNRAISABLE_FIELDS.len() {
-            let actual = fields.len();
-            dec_ref_bits(_py, source_bits);
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                &format!(
-                    "UnraisableHookArgs() takes a {}-sequence ({}-sequence given)",
-                    UNRAISABLE_FIELDS.len(),
-                    actual
-                ),
-            );
+        let fields = unsafe {
+            crate::object::seq_access::with_immutable_tuple_slice(source_ptr, |fields| {
+                if fields.len() == UNRAISABLE_FIELDS.len() {
+                    Ok([fields[0], fields[1], fields[2], fields[3], fields[4]])
+                } else {
+                    Err(fields.len())
+                }
+            })
         }
-        let fields = [fields[0], fields[1], fields[2], fields[3], fields[4]];
+        .unwrap_or(Err(0));
+        let fields = match fields {
+            Ok(fields) => fields,
+            Err(actual) => {
+                dec_ref_bits(_py, source_bits);
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    &format!(
+                        "UnraisableHookArgs() takes a {}-sequence ({}-sequence given)",
+                        UNRAISABLE_FIELDS.len(),
+                        actual
+                    ),
+                );
+            }
+        };
         // The source tuple may be the sole owner of one or more heap fields.
         // Retain them into the new tuple before releasing the source edge.
         let ptr = alloc_tuple(_py, &fields);
@@ -708,10 +725,16 @@ extern "C" fn molt_unraisable_hook_args_repr(self_bits: u64) -> u64 {
                 "UnraisableHookArgs.__repr__ requires an instance",
             );
         }
-        let fields = unsafe { seq_vec_ref(ptr) };
-        if fields.len() != UNRAISABLE_FIELDS.len() {
-            return raise_exception::<_>(_py, "RuntimeError", "invalid UnraisableHookArgs payload");
+        let fields = unsafe {
+            crate::object::seq_access::with_immutable_tuple_slice(ptr, |fields| {
+                (fields.len() == UNRAISABLE_FIELDS.len())
+                    .then(|| [fields[0], fields[1], fields[2], fields[3], fields[4]])
+            })
         }
+        .flatten();
+        let Some(fields) = fields else {
+            return raise_exception::<_>(_py, "RuntimeError", "invalid UnraisableHookArgs payload");
+        };
         let mut rendered = String::new();
         if rendered.try_reserve_exact(96).is_err() {
             return raise_exception::<_>(
@@ -721,7 +744,7 @@ extern "C" fn molt_unraisable_hook_args_repr(self_bits: u64) -> u64 {
             );
         }
         rendered.push_str("UnraisableHookArgs(");
-        for (index, (name, bits)) in UNRAISABLE_FIELDS.iter().zip(fields.iter()).enumerate() {
+        for (index, (name, bits)) in UNRAISABLE_FIELDS.iter().zip(fields).enumerate() {
             let punctuation = if index == 0 { 1 } else { 3 };
             let reserve = name.len().checked_add(punctuation);
             if reserve.is_none_or(|reserve| rendered.try_reserve(reserve).is_err()) {
@@ -736,7 +759,7 @@ extern "C" fn molt_unraisable_hook_args_repr(self_bits: u64) -> u64 {
             }
             rendered.push_str(name);
             rendered.push('=');
-            let repr_bits = crate::molt_repr_from_obj(*bits);
+            let repr_bits = crate::molt_repr_from_obj(bits);
             if exception_pending(_py) || obj_from_bits(repr_bits).is_none() {
                 if !obj_from_bits(repr_bits).is_none() {
                     dec_ref_bits(_py, repr_bits);
@@ -1010,7 +1033,14 @@ mod tests {
 
             let args_ptr = obj_from_bits(args_bits).as_ptr().expect("args pointer");
             assert_eq!(unsafe { object_type_id(args_ptr) }, TYPE_ID_TUPLE);
-            assert_eq!(unsafe { seq_vec_ref(args_ptr) }, &fields);
+            assert_eq!(
+                unsafe {
+                    crate::object::seq_access::with_immutable_tuple_slice(args_ptr, |items| {
+                        items == fields
+                    })
+                },
+                Some(true)
+            );
             assert!(isinstance_bits(_py, args_bits, builtin_classes(_py).tuple));
             assert_eq!(unraisable_args_field(_py, args_bits, 1), fields[1]);
 

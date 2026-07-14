@@ -46,8 +46,7 @@ use crate::{
     function_set_globals_override_enabled, function_set_trampoline_ptr, inc_ref_bits, is_truthy,
     missing_bits, module_dict_bits, molt_cpython_abi_cext_call_trampoline, molt_getattr_builtin,
     molt_getitem_method, molt_iter, molt_iter_next, molt_trace_enter_slot, obj_from_bits,
-    object_class_bits, object_type_id, raise_exception, seq_vec_ref, string_obj_to_owned, to_i64,
-    type_name,
+    object_class_bits, object_type_id, raise_exception, string_obj_to_owned, to_i64, type_name,
 };
 mod compile_codeop;
 mod function_abi;
@@ -134,12 +133,16 @@ pub(super) fn iter_next_pair(_py: &crate::PyToken<'_>, iter_bits: u64) -> Result
         if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
             return Err(MoltObject::none().bits());
         }
-        let elems = seq_vec_ref(pair_ptr);
-        if elems.len() < 2 {
+        if crate::object::seq_access::len(pair_ptr) < 2 {
             return Err(MoltObject::none().bits());
         }
-        let val_bits = elems[0];
-        let done_bits = elems[1];
+        let mut val_bits = 0;
+        let mut done_bits = 0;
+        if crate::object::seq_access::read_item_gil_borrowed(pair_ptr, 0, &mut val_bits) == 0
+            || crate::object::seq_access::read_item_gil_borrowed(pair_ptr, 1, &mut done_bits) == 0
+        {
+            return Err(MoltObject::none().bits());
+        }
         let done = is_truthy(_py, obj_from_bits(done_bits));
         Ok((val_bits, done))
     }

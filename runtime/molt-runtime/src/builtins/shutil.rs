@@ -625,13 +625,16 @@ pub extern "C" fn molt_shutil_get_terminal_size(fallback_bits: u64) -> u64 {
         } else if let Some(ptr) = obj_from_bits(fallback_bits).as_ptr() {
             let type_id = unsafe { object_type_id(ptr) };
             if type_id == TYPE_ID_TUPLE || type_id == TYPE_ID_LIST {
-                let elems = unsafe { seq_vec_ref(ptr) };
-                if elems.len() >= 2 {
-                    let c = to_i64(obj_from_bits(elems[0])).unwrap_or(80);
-                    let l = to_i64(obj_from_bits(elems[1])).unwrap_or(24);
-                    (c, l)
-                } else {
-                    (80, 24)
+                unsafe {
+                    crate::object::seq_access::with_borrowed(ptr, |elems| {
+                        if elems.len() >= 2 {
+                            let c = to_i64(obj_from_bits(elems[0])).unwrap_or(80);
+                            let l = to_i64(obj_from_bits(elems[1])).unwrap_or(24);
+                            (c, l)
+                        } else {
+                            (80, 24)
+                        }
+                    })
                 }
             } else {
                 (80, 24)
@@ -710,13 +713,16 @@ pub extern "C" fn molt_shutil_get_terminal_size(fallback_bits: u64) -> u64 {
         } else if let Some(ptr) = obj_from_bits(fallback_bits).as_ptr() {
             let type_id = unsafe { object_type_id(ptr) };
             if type_id == TYPE_ID_TUPLE || type_id == TYPE_ID_LIST {
-                let elems = unsafe { seq_vec_ref(ptr) };
-                if elems.len() >= 2 {
-                    let c = to_i64(obj_from_bits(elems[0])).unwrap_or(80);
-                    let l = to_i64(obj_from_bits(elems[1])).unwrap_or(24);
-                    (c, l)
-                } else {
-                    (80, 24)
+                unsafe {
+                    crate::object::seq_access::with_borrowed(ptr, |elems| {
+                        if elems.len() >= 2 {
+                            let c = to_i64(obj_from_bits(elems[0])).unwrap_or(80);
+                            let l = to_i64(obj_from_bits(elems[1])).unwrap_or(24);
+                            (c, l)
+                        } else {
+                            (80, 24)
+                        }
+                    })
                 }
             } else {
                 (80, 24)

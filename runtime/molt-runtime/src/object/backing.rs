@@ -2,6 +2,7 @@ use std::alloc::{Layout, alloc};
 use std::mem::size_of;
 use std::ops::{Deref, DerefMut};
 use std::ptr::{self, NonNull};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct BackingCharge {
@@ -12,11 +13,45 @@ struct BackingCharge {
 #[repr(C)]
 struct TrackedVecBox<T> {
     charge: BackingCharge,
+    /// Monotonic publication generation for object-owned mutable sequence
+    /// storage. Ordinary runtime execution serializes mutation with the GIL;
+    /// the atomic generation is the lock-free observation seam for callback
+    /// reentrancy and the future free-threaded object-lock path.
+    mutation_epoch: AtomicU64,
+    mutation_lock: AtomicBool,
+    /// Exact heap-reference edge count for generic list/tuple storage. Other
+    /// tracked Vec owners leave this at zero. Keeping it beside the stable
+    /// mutation generation removes full-sequence rescans from scalar mutation
+    /// hot paths.
+    heap_edge_count: AtomicUsize,
     vec: Vec<T>,
+}
+
+pub(crate) struct TrackedVecMutationGuard<T> {
+    owner: NonNull<TrackedVecBox<T>>,
+}
+
+impl<T> Drop for TrackedVecMutationGuard<T> {
+    fn drop(&mut self) {
+        unsafe {
+            self.owner
+                .as_ref()
+                .mutation_lock
+                .store(false, Ordering::Release);
+        }
+    }
 }
 
 pub(crate) struct TrackedVecOwner<T> {
     ptr: NonNull<TrackedVecBox<T>>,
+}
+
+/// Detached backing-buffer custody from a still-live tracked Vec owner. The
+/// stable owner retains its lock/epoch identity with an empty zero-charge Vec;
+/// dropping this value releases the displaced buffer's resource charge.
+pub(crate) struct TrackedVecContents<T> {
+    vec: Vec<T>,
+    buffer_bytes: usize,
 }
 
 impl<T> Deref for TrackedVecOwner<T> {
@@ -41,6 +76,26 @@ impl<T> Drop for TrackedVecOwner<T> {
             drop(boxed);
             release_alloc(charge.owner_bytes.saturating_add(charge.buffer_bytes));
         }
+    }
+}
+
+impl<T> Deref for TrackedVecContents<T> {
+    type Target = Vec<T>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.vec
+    }
+}
+
+impl<T> DerefMut for TrackedVecContents<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.vec
+    }
+}
+
+impl<T> Drop for TrackedVecContents<T> {
+    fn drop(&mut self) {
+        release_alloc(self.buffer_bytes);
     }
 }
 
@@ -164,11 +219,139 @@ pub(crate) fn tracked_vec_box_with_capacity<T>(capacity: usize) -> Option<*mut V
                     owner_bytes: vec_owner_bytes::<T>(),
                     buffer_bytes: actual_buffer_bytes,
                 },
+                mutation_epoch: AtomicU64::new(0),
+                mutation_lock: AtomicBool::new(false),
+                heap_edge_count: AtomicUsize::new(0),
                 vec,
             },
         );
         Some(ptr::addr_of_mut!((*raw).vec))
     }
+}
+
+/// Acquire the stable mutation lock associated with an object-owned vector.
+/// The ordinary deterministic runtime path is serialized by the GIL, so this
+/// is uncontended today; the same lock becomes the per-object publication
+/// boundary for free-threaded execution.
+///
+/// # Safety
+/// `ptr` must be a live Vec pointer allocated by
+/// [`tracked_vec_box_with_capacity`].
+pub(crate) unsafe fn tracked_vec_mutation_lock<T>(ptr: *mut Vec<T>) -> TrackedVecMutationGuard<T> {
+    let owner = unsafe { owner_ptr_from_vec(ptr) };
+    loop {
+        let acquired = unsafe {
+            (*owner)
+                .mutation_lock
+                .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok()
+        };
+        if acquired {
+            return TrackedVecMutationGuard {
+                owner: unsafe { NonNull::new_unchecked(owner) },
+            };
+        }
+        std::hint::spin_loop();
+    }
+}
+
+/// Return the current publication generation for tracked sequence storage.
+///
+/// # Safety
+/// `ptr` must be a live Vec pointer allocated by
+/// [`tracked_vec_box_with_capacity`].
+#[inline]
+pub(crate) unsafe fn tracked_vec_mutation_epoch<T>(ptr: *mut Vec<T>) -> u64 {
+    let owner = unsafe { owner_ptr_from_vec(ptr) };
+    unsafe { (*owner).mutation_epoch.load(Ordering::Acquire) }
+}
+
+/// Publish one in-place mutation and return the new generation.
+///
+/// # Safety
+/// `ptr` must be a live Vec pointer allocated by
+/// [`tracked_vec_box_with_capacity`].
+#[inline]
+pub(crate) unsafe fn tracked_vec_bump_mutation_epoch<T>(ptr: *mut Vec<T>) -> u64 {
+    let owner = unsafe { owner_ptr_from_vec(ptr) };
+    unsafe {
+        (*owner)
+            .mutation_epoch
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1)
+    }
+}
+
+#[inline]
+pub(crate) unsafe fn tracked_vec_heap_edge_count<T>(ptr: *mut Vec<T>) -> usize {
+    let owner = unsafe { owner_ptr_from_vec(ptr) };
+    unsafe { (*owner).heap_edge_count.load(Ordering::Acquire) }
+}
+
+#[inline]
+pub(crate) unsafe fn tracked_vec_set_heap_edge_count<T>(ptr: *mut Vec<T>, count: usize) {
+    let owner = unsafe { owner_ptr_from_vec(ptr) };
+    unsafe { (*owner).heap_edge_count.store(count, Ordering::Release) };
+}
+
+#[inline]
+pub(crate) unsafe fn tracked_vec_adjust_heap_edge_count<T>(
+    ptr: *mut Vec<T>,
+    removed: usize,
+    added: usize,
+) -> usize {
+    let owner = unsafe { owner_ptr_from_vec(ptr) };
+    let current = unsafe { (*owner).heap_edge_count.load(Ordering::Relaxed) };
+    let next = current
+        .checked_sub(removed)
+        .and_then(|count| count.checked_add(added))
+        .unwrap_or_else(|| {
+            eprintln!("molt fatal: list heap-edge count underflow or overflow");
+            std::process::abort();
+        });
+    unsafe { (*owner).heap_edge_count.store(next, Ordering::Release) };
+    next
+}
+
+/// Swap only the vector contents and their charged buffer ownership while
+/// preserving each allocation's stable lock/generation identity.
+///
+/// # Safety
+/// Both pointers must be distinct, live tracked Vec allocations of the same
+/// element type. The caller must hold the live allocation's mutation lock and
+/// exclusive custody of the staged allocation.
+pub(crate) unsafe fn tracked_vec_swap_contents<T>(live: *mut Vec<T>, staged: *mut Vec<T>) {
+    debug_assert_ne!(live, staged);
+    let live_owner = unsafe { owner_ptr_from_vec(live) };
+    let staged_owner = unsafe { owner_ptr_from_vec(staged) };
+    unsafe {
+        std::mem::swap(
+            &mut (*live_owner).charge.buffer_bytes,
+            &mut (*staged_owner).charge.buffer_bytes,
+        );
+        let live_edges = (*live_owner).heap_edge_count.load(Ordering::Relaxed);
+        let staged_edges = (*staged_owner).heap_edge_count.load(Ordering::Relaxed);
+        (*live_owner)
+            .heap_edge_count
+            .store(staged_edges, Ordering::Relaxed);
+        (*staged_owner)
+            .heap_edge_count
+            .store(live_edges, Ordering::Relaxed);
+        std::mem::swap(&mut (*live_owner).vec, &mut (*staged_owner).vec);
+    }
+}
+
+/// Detach all elements and capacity from a live tracked Vec without allocating
+/// a replacement owner. The caller must hold the stable mutation lock.
+///
+/// # Safety
+/// `ptr` must be a live tracked Vec pointer under exclusive mutation custody.
+pub(crate) unsafe fn tracked_vec_take_contents<T>(ptr: *mut Vec<T>) -> TrackedVecContents<T> {
+    let owner = unsafe { owner_ptr_from_vec(ptr) };
+    let vec = unsafe { std::mem::take(&mut (*owner).vec) };
+    let buffer_bytes = unsafe { std::mem::take(&mut (*owner).charge.buffer_bytes) };
+    unsafe { (*owner).heap_edge_count.store(0, Ordering::Release) };
+    TrackedVecContents { vec, buffer_bytes }
 }
 
 pub(crate) fn tracked_vec_box_from_slice<T: Copy>(

@@ -594,6 +594,49 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         "--verbose", action="store_true", help="Emit verbose diagnostics."
     )
 
+    extension_produce_set_parser = extension_subparsers.add_parser(
+        "produce-set",
+        help=(
+            "Build and atomically publish a configured scientific extension set "
+            "from upstream Meson metadata."
+        ),
+    )
+    extension_produce_set_parser.add_argument(
+        "--package",
+        required=True,
+        help="Configured scientific package name (for example: scipy).",
+    )
+    extension_produce_set_parser.add_argument(
+        "--module-set",
+        required=True,
+        help="Configured extension-set name (for example: pact-witness).",
+    )
+    extension_produce_set_parser.add_argument(
+        "--source",
+        required=True,
+        help="Pinned upstream source checkout.",
+    )
+    extension_produce_set_parser.add_argument(
+        "--build-root",
+        required=True,
+        help="Absent or empty build root for the single upstream Meson setup.",
+    )
+    extension_produce_set_parser.add_argument(
+        "--target",
+        choices=("wasm",),
+        default="wasm",
+        help="Extension-set target (default: wasm).",
+    )
+    extension_produce_set_parser.add_argument(
+        "--abi-tier",
+        choices=("cpython-abi",),
+        default="cpython-abi",
+        help="Extension-set ABI tier (default: cpython-abi).",
+    )
+    extension_produce_set_parser.add_argument(
+        "--json", action="store_true", help="Emit JSON output for tooling."
+    )
+
     extension_audit_parser = extension_subparsers.add_parser(
         "audit",
         help="Audit an extension manifest and wheel for ABI/capability compatibility.",

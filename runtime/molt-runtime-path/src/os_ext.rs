@@ -1139,7 +1139,7 @@ pub extern "C" fn molt_os_path_commonpath(paths_bits: u64) -> u64 {
             if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
                 return raise_exception::<_>(_py, "TypeError", "paths must be a list or tuple");
             }
-            let elems = unsafe { seq_vec_ref(ptr) };
+            let elems = unsafe { seq_snapshot(ptr) };
             if elems.is_empty() {
                 return raise_exception::<_>(
                     _py,
@@ -1214,7 +1214,7 @@ pub extern "C" fn molt_os_path_commonprefix(paths_bits: u64) -> u64 {
             if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
                 return raise_exception::<_>(_py, "TypeError", "paths must be a list or tuple");
             }
-            let elems = unsafe { seq_vec_ref(ptr) };
+            let elems = unsafe { seq_snapshot(ptr) };
             if elems.is_empty() {
                 let ep = alloc_string(_py, b"");
                 return if ep.is_null() {
