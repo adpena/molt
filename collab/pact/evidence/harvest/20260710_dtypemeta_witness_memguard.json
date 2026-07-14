@@ -1,0 +1,60 @@
+{
+  "cargo_incremental_quarantine": null,
+  "child_process": {
+    "command": [
+      "C:\\Molt\\molt-src\\.venv\\Scripts\\python.exe",
+      "C:\\Molt\\molt-src\\tools\\memory_guard.py"
+    ],
+    "pgid": null,
+    "pid": 21544,
+    "sid": null,
+    "started_at": "2026-07-10T12:53:47Z"
+  },
+  "child_rlimit_gb": 12.0,
+  "child_rlimit_kb": 12582912,
+  "command": [
+    "uv",
+    "run",
+    "--active",
+    "--project",
+    ".",
+    "--python",
+    "3.12",
+    "--with",
+    "numpy==1.26.4",
+    "--with",
+    "scipy==1.17.1",
+    "python",
+    "tools/pact_witness_acceptance.py",
+    "--out-dir",
+    "tmp/pact_witness_acceptance_queue"
+  ],
+  "elapsed_s": 1026.3129999999946,
+  "exit_signal": null,
+  "guard_signal": null,
+  "incident": null,
+  "limit_at_violation": null,
+  "max_rss_gb": 12.0,
+  "max_rss_kb": 12582912,
+  "max_total_rss_gb": 18.0,
+  "max_total_rss_kb": 18874368,
+  "orphaned_process_groups": [],
+  "peak": {
+    "command": "\"C:\\Users\\adpen\\AppData\\Roaming\\uv\\python\\cpython-3.12-windows-x86_64-none\\python.exe\" -m molt build collab/pact/pact_witness_kernel/field_solve.py --target wasm --profile browser --wasm-profile auto --split-runtime --out-dir C:\\Molt\\molt-src\\tmp\\pact_witness_acceptance_queue\\runs\\manual-20260710T125349.921684Z-23156\\build",
+    "pid": 20700,
+    "rss_gb": 1.9451332092285156,
+    "rss_kb": 2039620,
+    "scope": "process"
+  },
+  "peak_total": {
+    "command": "process tree aggregate",
+    "pid": 21544,
+    "rss_gb": 2.8917999267578125,
+    "rss_kb": 3032272,
+    "scope": "process_tree"
+  },
+  "returncode": 1,
+  "termination_reports": [],
+  "timed_out": false,
+  "violation": null
+}
