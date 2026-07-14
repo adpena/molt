@@ -670,7 +670,7 @@ not the model, is the design.
   deliberate. Adopt only the layered secret-scan shape if/when an auto-push
   lane is ever wanted.
 - omx/Ralph loop macros — Claude-Code-native molt equivalents exist
-  (ORCHESTRATOR_GOAL.md + /goal); the durable-state-on-disk PRINCIPLE is
+  (CODEX_CENTURY_GOAL.md + /goal); the durable-state-on-disk PRINCIPLE is
   already molt doctrine (M22, ledgers), the macro layer is not needed.
 
 ## Part 5 — Sequencing

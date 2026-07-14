@@ -145,7 +145,7 @@ worktree that vanishes was SUPERSEDED or bundled — do NOT re-create it.
 1. **OWNERSHIP GATE.** No arc ends on a report/plan/handoff when executable work
    remains in your lane. Each arc lands a commit, a queued proof (cite the run id),
    or a passing test — or names a genuinely external/frozen blocker. Reporting
-   without landing is POISON (ORCHESTRATOR_GOAL.md non-negotiable #1).
+   without landing is POISON (CODEX_CENTURY_GOAL.md continuous-ownership contract).
 2. **VERIFY THE FULL SURFACE.** "Landed + verified" means you ran the whole
    relevant test surface, not one file. An unrun RED test elsewhere = not verified.
 3. **BUILD HYGIENE.** `git fetch && rebase origin/main` before every arc. Do NOT
