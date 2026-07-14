@@ -1029,7 +1029,7 @@ def build_seed_findings() -> list[Finding]:
             ),
             producers=("commit 522b7fe04", "commit 522b7fe04 (SCC condensation)"),
             consumers=(
-                "docs/agent/ORCHESTRATOR_GOAL.md",
+                "docs/agent/CODEX_CENTURY_GOAL.md",
                 "memory/M55",
                 "memory/M57",
             ),

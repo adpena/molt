@@ -10,7 +10,7 @@ that reflect a *stale* or *dirty-masked* tree rather than current ``origin/main`
 closed). This tool turns that silent masking into a one-line, fail-closed verdict.
 
 It is the instrument behind the drift-sweep cadence in
-``docs/agent/ORCHESTRATOR_GOAL.md`` / ``docs/agent/ORCHESTRATION.md``: run it at
+``docs/agent/CODEX_CENTURY_GOAL.md`` / ``docs/agent/ORCHESTRATION.md``: run it at
 the start of an arc, before trusting a result, or before landing.
 
 Usage::
@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import argparse
 import subprocess
-import sys
 from pathlib import Path
 
 # Files whose staleness silently MASKS the witness/E1 frontier: if the shared
