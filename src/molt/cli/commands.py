@@ -20,6 +20,7 @@ from molt.dx import DxConfigError, DxProject
 from molt.cli import build_inputs as _build_inputs
 from molt.cli import source_extensions as _source_extensions
 from molt.cli import source_extension_cython as _source_extension_cython
+from molt.cli import dependency_files as _dependency_files
 from molt.cli.arg_helpers import (
     _build_args_has_cache_flag,
     _build_args_has_capabilities_flag,
@@ -78,6 +79,11 @@ from molt.cli.external_native import (
 )
 from molt.cli.file_hashing import _sha256_file
 from molt.cli.lockfiles import _check_lockfiles
+from molt.cli.llvm_wasi_tools import (
+    LlvmToolRole,
+    resolve_explicit_tool_command,
+    resolve_llvm_wasi_tool_family,
+)
 from molt.cli.models import (
     BuildProfile,
     EmitMode,
@@ -103,6 +109,7 @@ from molt.cli.source_extension_toolchain import (
     _normalize_source_extension_abi_tier,
     _normalize_source_extension_metadata_target,
     _resolve_source_extension_wasm_toolchain,
+    _source_extension_c_commands,
     _source_extension_include_dirs_for_abi_tier,
     _source_extension_python_header_for_abi_tier,
 )
@@ -1686,39 +1693,43 @@ def _source_plan_abi_include_order(
 _SOURCE_EXTENSION_CPP_SUFFIXES = {".cc", ".cpp", ".cxx", ".c++", ".mm"}
 
 
-def _tool_basename_variant(path: str, *, basename: str) -> str:
-    candidate = Path(path)
-    replacement = basename + candidate.suffix
-    if candidate.parent == Path("."):
-        return replacement
-    return str(candidate.with_name(replacement))
-
-
 def _source_extension_compile_command_for_source(
     *,
     source_path: Path,
     cc_cmd: Sequence[str],
+    cxx_cmd: Sequence[str],
 ) -> list[str]:
-    command = list(cc_cmd)
-    if source_path.suffix.lower() not in _SOURCE_EXTENSION_CPP_SUFFIXES or not command:
-        return command
+    if source_path.suffix.lower() in _SOURCE_EXTENSION_CPP_SUFFIXES:
+        return list(cxx_cmd)
+    return list(cc_cmd)
 
-    tool = Path(command[0]).name.lower()
-    if tool in {"zig", "zig.exe"}:
-        if len(command) >= 2 and command[1] in {"cc", "c++"}:
-            command[1] = "c++"
-        else:
-            command.insert(1, "c++")
-        return command
 
-    if tool in {"clang", "clang.exe"}:
-        variant = _tool_basename_variant(command[0], basename="clang++")
-        resolved = shutil.which(variant) or shutil.which(Path(variant).name)
-        if resolved is not None:
-            command[0] = resolved
-        else:
-            command[0] = variant
-    return command
+def _source_extension_deterministic_path_args(
+    *,
+    compiler_command: Sequence[str],
+    roots: Sequence[tuple[Path | None, str]],
+) -> list[str]:
+    """Map every build-location authority out of compiler-visible bytes."""
+    if not compiler_command:
+        return []
+    deduped: dict[Path, str] = {}
+    for path, replacement in roots:
+        if path is None:
+            continue
+        deduped.setdefault(path.resolve(), replacement)
+    ordered = sorted(deduped.items(), key=lambda item: len(str(item[0])), reverse=True)
+    tool = Path(compiler_command[0]).name.lower()
+    if tool in {"cl", "cl.exe", "clang-cl", "clang-cl.exe"}:
+        return [f"/pathmap:{path}={replacement}" for path, replacement in ordered]
+    return [
+        argument
+        for path, replacement in ordered
+        for argument in (
+            f"-ffile-prefix-map={path}={replacement}",
+            f"-fdebug-prefix-map={path}={replacement}",
+            f"-fmacro-prefix-map={path}={replacement}",
+        )
+    ]
 
 
 def _extension_export_package(module_parts: list[str]) -> str:
@@ -1805,6 +1816,7 @@ def extension_build(
     source_plan_compile_commands: str | None = None,
     source_plan_exclude_linked_static_libraries: list[str] | None = None,
     abi_tier: str | None = None,
+    tool_commands: Mapping[str, Sequence[str]] | None = None,
     json_output: bool = False,
     verbose: bool = False,
 ) -> int:
@@ -2308,6 +2320,7 @@ def extension_build(
 
     cc = os.environ.get("CC", "clang")
     cc_cmd = shlex.split(cc)
+    effective_tool_commands: Mapping[str, Sequence[str]] = tool_commands or {}
     if not cc_cmd:
         return _fail(
             "Compiler command is empty. Set CC or install clang.",
@@ -2317,25 +2330,33 @@ def extension_build(
     wasi_sysroot: Path | None = None
     if wasm_static_link:
         if loaded_source_plan is not None:
-            wasm_toolchain = _resolve_source_extension_wasm_toolchain()
-            if not wasm_toolchain.ok:
+            target_arg = runtime_target_triple or "wasm32-wasip1"
+            if not effective_tool_commands:
+                wasm_toolchain = _resolve_source_extension_wasm_toolchain()
+                if not wasm_toolchain.ok:
+                    return _fail(
+                        "WASM source-extension build requires a valid wasm compiler "
+                        "and linker toolchain: " + wasm_toolchain.detail,
+                        json_output,
+                        command="extension-build",
+                    )
+                effective_tool_commands = _source_extension_c_commands(
+                    toolchain=wasm_toolchain,
+                    target_triple=target_arg,
+                )
+                wasi_sysroot = wasm_toolchain.wasi_sysroot
+            cc_cmd = list(effective_tool_commands.get("c", ()))
+            if not cc_cmd:
                 return _fail(
-                    "WASM source-extension build requires a valid wasm compiler "
-                    "and linker toolchain: " + wasm_toolchain.detail,
+                    "Canonical LLVM/WASI tool authority has no C compiler command.",
                     json_output,
                     command="extension-build",
                 )
-            cc_cmd = list(wasm_toolchain.compiler_cmd)
-            target_arg = runtime_target_triple or "wasm32-wasip1"
-            if wasm_toolchain.compiler_kind == "zig":
-                normalized = _zig_target_query(target_arg)
-                if normalized != target_arg:
-                    warnings.append(
-                        f"Zig target normalized to {normalized} from {target_arg}."
-                    )
-                target_arg = normalized
-            cc_cmd.extend(["-target", target_arg])
-            wasi_sysroot = wasm_toolchain.wasi_sysroot
+            explicit_sysroot = _sysroot_arg_value(cc_cmd)
+            if explicit_sysroot:
+                wasi_sysroot = normalize_wasi_sysroot(
+                    Path(explicit_sysroot).expanduser()
+                )
         else:
             wasm_cc = os.environ.get("MOLT_WASM_CC")
             if wasm_cc:
@@ -2410,6 +2431,49 @@ def extension_build(
             )
         cc_cmd.extend(["-target", target_arg])
 
+    if loaded_source_plan is not None and not wasm_static_link and not runtime_target_triple:
+        try:
+            canonical_cc = resolve_explicit_tool_command(
+                os.environ.get("CC", "clang"),
+                label="CC",
+            )
+            explicit_native_tools: dict[LlvmToolRole, tuple[str, ...]] = {
+                "cc": canonical_cc
+            }
+            configured_cxx = os.environ.get("CXX", "").strip()
+            if configured_cxx:
+                explicit_native_tools["cxx"] = resolve_explicit_tool_command(
+                    configured_cxx,
+                    label="CXX",
+                )
+            native_family = resolve_llvm_wasi_tool_family(
+                explicit_commands=explicit_native_tools,
+                sibling_directories=(Path(canonical_cc[0]).parent,),
+            )
+        except (OSError, ValueError) as exc:
+            return _fail(
+                f"Native source-plan tool family is invalid: {exc}",
+                json_output,
+                command="extension-build",
+            )
+        if (
+            native_family.cc is None
+            or native_family.cxx is None
+            or native_family.nm is None
+        ):
+            return _fail(
+                "Native source-plan builds require one canonical C/C++/nm "
+                "tool family.",
+                json_output,
+                command="extension-build",
+            )
+        effective_tool_commands = {
+            "c": native_family.cc.command,
+            "cpp": native_family.cxx.command,
+            "nm": native_family.nm.command,
+        }
+        cc_cmd = list(native_family.cc.command)
+
     dist_name = _normalize_name(str(project_name)).replace("-", "_")
     wheel_version = _wheel_version_token(str(project_version))
     target_triple = manifest_target_triple
@@ -2421,9 +2485,9 @@ def extension_build(
     wheel_path = output_root / wheel_name
 
     build_env = os.environ.copy()
-    # Supply-chain: always set SOURCE_DATE_EPOCH for release builds for reproducibility
+    # Reproducibility is a build input, never ambient policy.
     if deterministic or profile == "release":
-        build_env.setdefault("SOURCE_DATE_EPOCH", "315532800")
+        build_env["SOURCE_DATE_EPOCH"] = "315532800"
 
     if wasm_static_link:
         module_rel = Path(*module_parts[:-1], module_parts[-1] + ".molt.wasm")
@@ -2488,23 +2552,9 @@ def extension_build(
                         command="extension-build",
                     )
                 assert cython_version is not None
-                # Stage the STANDALONE-regenerated Cython C into the source
-                # plan's build_root (a stable, persistent source-plan relocation
-                # root), NOT the ephemeral per-build TemporaryDirectory. The
-                # object_closure records each object's ``source`` at the path we
-                # compile, and the seal validator relativizes/resolves that path
-                # only when it lives under source_plan.source_root/build_root
-                # (source_extensions._manifest_source_plan_relocation_roots). A
-                # TemporaryDirectory under output_root is deleted when this
-                # ``with`` block exits and is outside every relocation root, so
-                # the recorded source became unresolvable and the sealed witness
-                # root failed closed at scipy custody. build_root is the same
-                # stable home numpy's meson lane records generated sources
-                # against (it holds the meson-generated C already), so the
-                # regenerated Cython C relativizes to
-                # ``molt_cython_standalone/<stem>.c`` and resolves at witness
-                # time. build_root persists across builds; only source_root (the
-                # vendored package tree) is off-limits for generated outputs.
+                # Keep generated C under the source plan's build root until the
+                # package producer content-addresses every compiled input and
+                # rewrites the final sidecar to its sealed relative path.
                 cython_out_dir = (
                     loaded_source_plan.build_root / "molt_cython_standalone"
                 )
@@ -2578,12 +2628,40 @@ def extension_build(
                 _source_extension_compile_command_for_source(
                     source_path=source_path,
                     cc_cmd=cc_cmd,
+                    cxx_cmd=effective_tool_commands.get("cpp", ()),
                 )
                 if plan_unit is not None
                 else list(cc_cmd)
             )
+            if not unit_cc_cmd:
+                return _fail(
+                    "Canonical source-extension tool authority has no compiler "
+                    f"for {source_path.suffix or 'this source kind'}.",
+                    json_output,
+                    command="extension-build",
+                )
             object_path = build_tmp / f"{idx}_{source_path.stem}.o"
             cmd = [*unit_cc_cmd, "-c", str(source_path), "-o", str(object_path)]
+            dependency_file: Path | None = None
+            if loaded_source_plan is not None:
+                driver = Path(unit_cc_cmd[0]).name.lower() if unit_cc_cmd else ""
+                if not any(name in driver for name in ("clang", "gcc", "zig")):
+                    return _fail(
+                        "Source-plan compilation requires a compiler that emits "
+                        f"canonical Make depfiles; unsupported driver: {driver}",
+                        json_output,
+                        command="extension-build",
+                    )
+                dependency_file = build_tmp / f"{idx}_{source_path.stem}.d"
+                cmd.extend(
+                    [
+                        "-MD",
+                        "-MF",
+                        str(dependency_file),
+                        "-MT",
+                        object_path.name,
+                    ]
+                )
             if wasm_static_link:
                 cmd.append("-DMOLT_EXTENSION_WASM_STATIC_LINK=1")
             else:
@@ -2610,9 +2688,29 @@ def extension_build(
             if os.name != "nt" and not wasm_static_link:
                 cmd.append("-fPIC")
             if deterministic:
-                prefix = str(project_root)
-                cmd.append(f"-ffile-prefix-map={prefix}=.")
-                cmd.append(f"-fdebug-prefix-map={prefix}=.")
+                cmd.extend(
+                    _source_extension_deterministic_path_args(
+                        compiler_command=unit_cc_cmd,
+                        roots=(
+                            (project_root, ".molt/source"),
+                            (
+                                loaded_source_plan.build_root
+                                if loaded_source_plan is not None
+                                else None,
+                                ".molt/build",
+                            ),
+                            (output_root, ".molt/output"),
+                            (build_tmp, ".molt/objects"),
+                            (molt_root, ".molt/repo"),
+                            (wasi_sysroot, ".molt/wasi-sysroot"),
+                            (Path(sys.prefix), ".molt/python"),
+                            (
+                                Path(unit_cc_cmd[0]).resolve().parent,
+                                ".molt/toolchain",
+                            ),
+                        ),
+                    )
+                )
             if plan_unit is not None:
                 cmd.extend(
                     _source_extensions._source_extension_gc_compile_args(
@@ -2652,9 +2750,8 @@ def extension_build(
             if regeneration is not None:
                 cmd.extend(_source_extension_cython.CYTHON_CPYTHON_ABI_COMPILE_ARGS)
             cmd.extend(
-                _source_extensions._source_extension_unit_args_for_driver(
+                _source_extensions._source_extension_replay_compile_args(
                     unit_compile_args,
-                    cc_cmd=unit_cc_cmd,
                 )
             )
             result = _run_completed_command(
@@ -2676,10 +2773,38 @@ def extension_build(
             compile_commands.append(cmd)
             object_paths.append(object_path)
             if loaded_source_plan is not None:
+                assert dependency_file is not None
+                dependency_paths, dependency_error = (
+                    _dependency_files.parse_make_depfile(
+                        dependency_file,
+                        cwd=project_root,
+                        producer="compiler",
+                    )
+                )
+                if dependency_error is not None:
+                    return _fail(
+                        dependency_error,
+                        json_output,
+                        command="extension-build",
+                    )
+                assert dependency_paths is not None
                 object_fact, object_fact_error = (
                     _source_extensions._source_extension_object_fact(
                         source_path=source_path,
                         object_path=object_path,
+                        compile_command=cmd,
+                        dependency_paths=(
+                            *dependency_paths,
+                            *(
+                                tuple(
+                                    dependency.path
+                                    for dependency in regeneration.dependencies
+                                )
+                                if regeneration is not None
+                                else ()
+                            ),
+                        ),
+                        nm_command=effective_tool_commands.get("nm"),
                     )
                 )
                 if object_fact_error is not None:
@@ -2779,10 +2904,11 @@ def extension_build(
             if loaded_source_plan is None and len(object_paths) == 1:
                 _atomic_copy_file(object_paths[0], built_extension)
             else:
-                wasm_ld_cmd = shlex.split(os.environ.get("MOLT_WASM_LD", "wasm-ld"))
+                wasm_ld_cmd = list((effective_tool_commands or {}).get("ld", ()))
                 if not wasm_ld_cmd:
                     return _fail(
-                        "Compiler command is empty. Set MOLT_WASM_LD or install wasm-ld.",
+                        "Source-extension linker authority is missing the canonical "
+                        "LLVM/WASI 'ld' command.",
                         json_output,
                         command="extension-build",
                     )
@@ -2932,6 +3058,10 @@ def extension_build(
         )
         build_payload: dict[str, Any] = {
             "compiler": cc_cmd,
+            "tool_commands": {
+                role: list(command)
+                for role, command in sorted(effective_tool_commands.items())
+            },
             "compiler_target": runtime_target_triple or "native",
             "wasi_sysroot": wasi_sysroot_path,
             "runtime_linkage": runtime_linkage,
@@ -2942,6 +3072,7 @@ def extension_build(
             "python_header": str(python_header),
             "extra_compile_args": compile_args,
             "extra_link_args": link_args,
+            "source_date_epoch": build_env.get("SOURCE_DATE_EPOCH"),
         }
         manifest_payload: dict[str, Any] = {
             "schema_version": 1,

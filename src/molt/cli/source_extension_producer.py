@@ -11,9 +11,8 @@ import sys
 import sysconfig
 import tempfile
 import tomllib
-import uuid
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +23,7 @@ from molt.cli import commands
 from molt.cli.atomic_io import (
     _atomic_copy_file,
     _atomic_write_json,
+    _atomic_write_text,
     _remove_file_or_tree,
 )
 from molt.cli.extension_manifest import (
@@ -42,6 +42,16 @@ from molt.cli.source_extension_toolchain import (
     MOLT_PKGCONF_REQUIREMENT,
     _materialize_source_extension_target_metadata,
     _meson_array,
+)
+from molt.cli.source_package_seal import (
+    SourcePackageInput,
+    SourcePackageSealError,
+    SourcePackageSealVerificationError,
+    commit_source_package_seal,
+    prepare_source_package_seal_commit,
+    recover_source_package_seal_commits,
+    stage_source_package_seal,
+    verify_source_package_seal,
 )
 from molt.scientific_stack_versions import (
     ScientificExtensionSet,
@@ -72,6 +82,7 @@ class _ProducedExtension:
     manifest_path: Path
     artifact_path: Path
     artifact_manifest_path: Path
+    wheel_path: Path
     artifact_sha256: str
     wheel_sha256: str
     object_closure_sha256: str
@@ -99,7 +110,11 @@ class _SourceBuildEnvironment:
 
     def manifest_payload(self) -> dict[str, Any]:
         return {
-            "python_executable": self.python_executable,
+            "python_executable": (
+                f"{sys.implementation.name}-"
+                f"{sys.version_info.major}.{sys.version_info.minor}."
+                f"{sys.version_info.micro}/{Path(self.python_executable).name}"
+            ),
             "requirements": list(self.requirements),
             "resolved": [item.manifest_payload() for item in self.resolved],
         }
@@ -115,9 +130,10 @@ class _SourceBuildConfigTool:
     def manifest_payload(self) -> dict[str, str]:
         return {
             "name": self.name,
-            "path": str(self.path),
+            "path": self.path.name,
             "distribution": self.distribution,
             "version": self.version,
+            "sha256": _sha256_file(self.path),
         }
 
 
@@ -339,36 +355,16 @@ def _ensure_source_build_environment(source_root: Path) -> _SourceBuildEnvironme
         if _installed_build_requirement(raw, requirement) is None
     ]
     if unsatisfied:
-        result = _run_process(
-            (
-                sys.executable,
-                "-m",
-                "pip",
-                "install",
-                "--disable-pip-version-check",
-                *unsatisfied,
-            ),
-            cwd=source_root,
+        raise SourceExtensionProducerError(
+            "source build environment is not pre-provisioned from locked custody; "
+            "the producer never mutates its active interpreter. Missing or "
+            "out-of-range requirements: " + ", ".join(unsatisfied)
         )
-        if result.returncode != 0:
-            detail = (result.stderr or result.stdout).strip()
-            raise SourceExtensionProducerError(
-                "failed to install source build requirements "
-                f"{unsatisfied}: {detail or f'returncode={result.returncode}'}"
-            )
     resolved: list[_ResolvedBuildRequirement] = []
-    unresolved: list[str] = []
     for raw, requirement in active:
         installed = _installed_build_requirement(raw, requirement)
-        if installed is None:
-            unresolved.append(raw)
-        else:
-            resolved.append(installed)
-    if unresolved:
-        raise SourceExtensionProducerError(
-            "source build requirements remain missing or out of range after "
-            "installation: " + ", ".join(unresolved)
-        )
+        assert installed is not None
+        resolved.append(installed)
     return _SourceBuildEnvironment(
         python_executable=sys.executable,
         requirements=originals,
@@ -433,29 +429,10 @@ def _ensure_meson_pkg_config(source_root: Path) -> _SourceBuildConfigTool:
     requirement = Requirement(MOLT_PKGCONF_REQUIREMENT)
     resolved = _installed_build_requirement(MOLT_PKGCONF_REQUIREMENT, requirement)
     if resolved is None:
-        result = _run_process(
-            (
-                sys.executable,
-                "-m",
-                "pip",
-                "install",
-                "--disable-pip-version-check",
-                MOLT_PKGCONF_REQUIREMENT,
-            ),
-            cwd=source_root,
-        )
-        if result.returncode != 0:
-            detail = (result.stderr or result.stdout).strip()
-            raise SourceExtensionProducerError(
-                "failed to provision Molt's pinned Meson pkg-config tool "
-                f"{MOLT_PKGCONF_REQUIREMENT}: "
-                f"{detail or f'returncode={result.returncode}'}"
-            )
-        resolved = _installed_build_requirement(MOLT_PKGCONF_REQUIREMENT, requirement)
-    if resolved is None:
         raise SourceExtensionProducerError(
-            f"Molt Meson tool requirement remains unsatisfied: "
-            f"{MOLT_PKGCONF_REQUIREMENT}"
+            "source build environment is missing Molt's locked Meson tool "
+            f"requirement {MOLT_PKGCONF_REQUIREMENT}; the producer never installs "
+            "into its active interpreter"
         )
     path = _active_console_script("pkg-config")
     version = _run_process((str(path), "--version"), cwd=source_root)
@@ -627,7 +604,9 @@ def _stage_installed_python_files(
     return tuple(sorted((publish_root / path) for path in staged_by_relative))
 
 
-def _object_closure_digest(object_closure: Mapping[str, Any]) -> str:
+def _object_closure_digest(
+    object_closure: Mapping[str, Any], *, manifest_dir: Path | None = None
+) -> str:
     objects = object_closure.get("objects")
     runtime_symbols = object_closure.get("runtime_symbols")
     if not isinstance(objects, list) or not objects:
@@ -662,6 +641,8 @@ def _object_closure_digest(object_closure: Mapping[str, Any]) -> str:
                 f"extension object_closure.objects[{index}] lacks checksum custody"
             )
         source_path = Path(source)
+        if not source_path.is_absolute() and manifest_dir is not None:
+            source_path = manifest_dir / source_path
         if not source_path.is_file():
             raise SourceExtensionProducerError(
                 f"extension object_closure source is missing: {source_path}"
@@ -672,25 +653,75 @@ def _object_closure_digest(object_closure: Mapping[str, Any]) -> str:
             )
         defined_symbols = item.get("defined_symbols")
         undefined_symbols = item.get("undefined_symbols")
+        compile_command = item.get("compile_command")
+        symbol_command = item.get("symbol_command")
         if not (
             isinstance(defined_symbols, list)
             and all(isinstance(value, str) for value in defined_symbols)
             and isinstance(undefined_symbols, list)
             and all(isinstance(value, str) for value in undefined_symbols)
+            and isinstance(compile_command, list)
+            and bool(compile_command)
+            and all(isinstance(value, str) and value for value in compile_command)
+            and isinstance(symbol_command, list)
+            and bool(symbol_command)
+            and all(isinstance(value, str) and value for value in symbol_command)
         ):
             raise SourceExtensionProducerError(
-                f"extension object_closure.objects[{index}] has invalid symbols"
+                f"extension object_closure.objects[{index}] has invalid symbols "
+                "or tool command"
             )
-        digest_objects.append(
-            {
-                "source": source,
-                "object": object_path,
-                "source_sha256": source_sha256,
-                "object_sha256": object_sha256,
-                "defined_symbols": defined_symbols,
-                "undefined_symbols": undefined_symbols,
-            }
-        )
+        digest_object: dict[str, Any] = {
+            "source": source,
+            "object": object_path,
+            "source_sha256": source_sha256,
+            "object_sha256": object_sha256,
+            "defined_symbols": defined_symbols,
+            "undefined_symbols": undefined_symbols,
+            "compile_command": compile_command,
+            "symbol_command": symbol_command,
+        }
+        raw_dependencies = item.get("dependencies")
+        if not isinstance(raw_dependencies, list):
+            raise SourceExtensionProducerError(
+                f"extension object_closure.objects[{index}].dependencies "
+                "must be a list"
+            )
+        dependencies: list[dict[str, str]] = []
+        for dependency_index, raw_dependency in enumerate(raw_dependencies):
+            if not isinstance(raw_dependency, Mapping):
+                raise SourceExtensionProducerError(
+                    "extension object_closure dependency is not an object"
+                )
+            dependency_path_raw = raw_dependency.get("path")
+            dependency_sha256 = raw_dependency.get("sha256")
+            if not (
+                isinstance(dependency_path_raw, str)
+                and dependency_path_raw
+                and isinstance(dependency_sha256, str)
+                and dependency_sha256
+            ):
+                raise SourceExtensionProducerError(
+                    "extension object_closure dependency lacks path/checksum "
+                    f"at objects[{index}].dependencies[{dependency_index}]"
+                )
+            dependency_path = Path(dependency_path_raw)
+            if not dependency_path.is_absolute() and manifest_dir is not None:
+                dependency_path = manifest_dir / dependency_path
+            if not dependency_path.is_file():
+                raise SourceExtensionProducerError(
+                    f"extension object_closure dependency is missing: {dependency_path}"
+                )
+            if _sha256_file(dependency_path) != dependency_sha256:
+                raise SourceExtensionProducerError(
+                    "extension object_closure dependency checksum mismatch: "
+                    f"{dependency_path}"
+                )
+            dependencies.append(
+                {"path": dependency_path_raw, "sha256": dependency_sha256}
+            )
+        digest_object["dependencies"] = dependencies
+        digest_objects.append(digest_object)
     digest_payload = {
         "schema_version": 1,
         "root_symbol": object_closure.get("root_symbol"),
@@ -703,18 +734,13 @@ def _object_closure_digest(object_closure: Mapping[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _audit_declared_wheel(
+def _declared_wheel_path(
     manifest: Mapping[str, Any], *, output_root: Path, module: str
-) -> str:
+) -> Path:
     raw_wheel = manifest.get("wheel")
-    expected_sha256 = manifest.get("wheel_sha256")
     if not isinstance(raw_wheel, str) or not raw_wheel.strip():
         raise SourceExtensionProducerError(
             f"built extension {module} has no declared wheel path"
-        )
-    if not isinstance(expected_sha256, str) or not expected_sha256:
-        raise SourceExtensionProducerError(
-            f"built extension {module} has no wheel checksum"
         )
     wheel = Path(raw_wheel).expanduser()
     if not wheel.is_absolute():
@@ -729,6 +755,22 @@ def _audit_declared_wheel(
         raise SourceExtensionProducerError(
             f"built extension {module} wheel is missing: {wheel}"
         )
+    return wheel
+
+
+def _audit_declared_wheel(
+    manifest: Mapping[str, Any], *, output_root: Path, module: str
+) -> str:
+    expected_sha256 = manifest.get("wheel_sha256")
+    if not isinstance(expected_sha256, str) or not expected_sha256:
+        raise SourceExtensionProducerError(
+            f"built extension {module} has no wheel checksum"
+        )
+    wheel = _declared_wheel_path(
+        manifest,
+        output_root=output_root,
+        module=module,
+    )
     actual_sha256 = _sha256_file(wheel)
     if actual_sha256 != expected_sha256:
         raise SourceExtensionProducerError(
@@ -850,7 +892,7 @@ def _audit_extension_output(
         raise SourceExtensionProducerError(
             f"built extension {module} object closure has no init-symbol owner"
         )
-    closure_digest = _object_closure_digest(closure)
+    closure_digest = _object_closure_digest(closure, manifest_dir=output_root)
     if closure.get("closure_sha256") != closure_digest:
         raise SourceExtensionProducerError(
             f"built extension {module} object closure checksum mismatch"
@@ -890,6 +932,9 @@ def _audit_extension_output(
     wheel_sha256 = _audit_declared_wheel(
         manifest, output_root=output_root, module=module
     )
+    wheel_path = _declared_wheel_path(
+        manifest, output_root=output_root, module=module
+    )
     return _ProducedExtension(
         module=module,
         target=target,
@@ -898,6 +943,7 @@ def _audit_extension_output(
         manifest_path=manifest_path,
         artifact_path=artifact_path,
         artifact_manifest_path=artifact_manifest_path,
+        wheel_path=wheel_path,
         artifact_sha256=artifact_sha256,
         wheel_sha256=wheel_sha256,
         object_closure_sha256=closure_digest,
@@ -917,6 +963,7 @@ def _build_extension(
     capabilities: Sequence[str],
     target: str,
     abi_tier: str,
+    tool_commands: Mapping[str, Sequence[str]],
 ) -> _ProducedExtension:
     stdout = io.StringIO()
     stderr = io.StringIO()
@@ -935,6 +982,7 @@ def _build_extension(
             source_plan_build_root=str(build_root),
             source_plan_compile_commands=str(compile_commands),
             abi_tier=abi_tier,
+            tool_commands=tool_commands,
             json_output=False,
             verbose=False,
         )
@@ -981,14 +1029,437 @@ def _preflight_extension_set_plans(
         )
 
 
-def _stage_extension(produced: _ProducedExtension, *, publish_root: Path) -> None:
+def _canonicalize_location_string(
+    value: str,
+    location_roots: Sequence[tuple[Path, str]],
+) -> str:
+    canonical = value
+    for root, token in sorted(
+        location_roots,
+        key=lambda item: len(str(item[0])),
+        reverse=True,
+    ):
+        native = str(root.resolve())
+        posix = root.resolve().as_posix()
+        canonical = canonical.replace(native, token).replace(posix, token)
+    return canonical.replace("\\", "/")
+
+
+def _canonicalize_locations(
+    value: Any,
+    location_roots: Sequence[tuple[Path, str]],
+    source_paths: Mapping[Path, str] | None = None,
+) -> Any:
+    if isinstance(value, str):
+        candidate = Path(value).expanduser()
+        if candidate.is_absolute() and source_paths is not None:
+            replacement = source_paths.get(candidate.resolve())
+            if replacement is not None:
+                return replacement
+        return _canonicalize_location_string(value, location_roots)
+    if isinstance(value, list):
+        return [
+            _canonicalize_locations(item, location_roots, source_paths)
+            for item in value
+        ]
+    if isinstance(value, dict):
+        return {
+            key: _canonicalize_locations(item, location_roots, source_paths)
+            for key, item in value.items()
+        }
+    return value
+
+
+def _manifest_source_candidates(manifest: Mapping[str, Any]) -> tuple[Path, ...]:
+    raw_paths: list[str] = []
+    closure = manifest.get("object_closure")
+    if isinstance(closure, Mapping):
+        objects = closure.get("objects")
+        if isinstance(objects, list):
+            raw_paths.extend(
+                str(item["source"])
+                for item in objects
+                if isinstance(item, Mapping) and isinstance(item.get("source"), str)
+            )
+            for item in objects:
+                dependencies = (
+                    item.get("dependencies") if isinstance(item, Mapping) else None
+                )
+                if isinstance(dependencies, list):
+                    raw_paths.extend(
+                        str(dependency["path"])
+                        for dependency in dependencies
+                        if isinstance(dependency, Mapping)
+                        and isinstance(dependency.get("path"), str)
+                    )
+    return tuple(
+        sorted(
+            {
+                Path(raw).expanduser().resolve()
+                for raw in raw_paths
+                if Path(raw).expanduser().is_absolute()
+            }
+        )
+    )
+
+
+def _stage_compiled_inputs(
+    manifest: Mapping[str, Any], *, publish_root: Path
+) -> dict[Path, Path]:
+    staged: dict[Path, Path] = {}
+    for source in _manifest_source_candidates(manifest):
+        if not source.is_file():
+            raise SourceExtensionProducerError(
+                f"source-extension manifest input is missing before sealing: {source}"
+            )
+        sha256 = _sha256_file(source)
+        relative = (
+            Path("provenance")
+            / "compiled-inputs"
+            / "sha256"
+            / sha256[:2]
+            / sha256
+            / source.name
+        )
+        destination = publish_root / relative
+        if destination.exists() and _sha256_file(destination) != sha256:
+            raise SourceExtensionProducerError(
+                f"content-addressed compiled input collision at {destination}"
+            )
+        if not destination.exists():
+            _atomic_copy_file(source, destination)
+        staged[source] = relative
+    return staged
+
+
+def _relative_manifest_path(path: Path, manifest_dir: Path) -> str:
+    return os.path.relpath(path, manifest_dir).replace("\\", "/")
+
+
+def _stage_extension(
+    produced: _ProducedExtension,
+    *,
+    publish_root: Path,
+    location_roots: Sequence[tuple[Path, str]],
+    plan_metadata: Mapping[str, Path],
+) -> _ProducedExtension:
     relative_artifact = produced.artifact_path.relative_to(produced.output_root)
     destination = publish_root / relative_artifact
     _atomic_copy_file(produced.artifact_path, destination)
-    _atomic_copy_file(
-        produced.artifact_manifest_path,
-        destination.with_name(destination.name + ".extension_manifest.json"),
+    sidecar_path = destination.with_name(
+        destination.name + ".extension_manifest.json"
     )
+    try:
+        raw_manifest = json.loads(
+            produced.artifact_manifest_path.read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise SourceExtensionProducerError(
+            f"failed to reload audited extension manifest: {exc}"
+        ) from exc
+    if not isinstance(raw_manifest, dict):
+        raise SourceExtensionProducerError("audited extension manifest is not an object")
+
+    staged_sources = _stage_compiled_inputs(raw_manifest, publish_root=publish_root)
+    source_references = {
+        source: _relative_manifest_path(publish_root / relative, sidecar_path.parent)
+        for source, relative in staged_sources.items()
+    }
+    manifest = _canonicalize_locations(
+        raw_manifest,
+        location_roots,
+        source_references,
+    )
+    assert isinstance(manifest, dict)
+    manifest["extension"] = destination.name
+
+    wheel_relative = (
+        Path("provenance")
+        / "wheels"
+        / Path(*produced.module.split("."))
+        / produced.wheel_path.name
+    )
+    wheel_destination = publish_root / wheel_relative
+    _atomic_copy_file(produced.wheel_path, wheel_destination)
+    manifest["wheel"] = _relative_manifest_path(
+        wheel_destination, sidecar_path.parent
+    )
+
+    raw_source_plan = manifest.get("source_plan")
+    if isinstance(raw_source_plan, dict):
+        source_plan = {
+            key: raw_source_plan[key]
+            for key in (
+                "kind",
+                "target_id",
+                "target_name",
+                "target_selector",
+                "target_type",
+            )
+            if key in raw_source_plan
+        }
+        source_plan["schema_version"] = 1
+        source_plan["plan"] = _relative_manifest_path(
+            plan_metadata["intro_targets"], sidecar_path.parent
+        )
+        source_plan["compile_commands"] = _relative_manifest_path(
+            plan_metadata["compile_commands"], sidecar_path.parent
+        )
+        source_plan["plan_sha256"] = _sha256_file(plan_metadata["intro_targets"])
+        source_plan["compile_commands_sha256"] = _sha256_file(
+            plan_metadata["compile_commands"]
+        )
+        source_plan_identity = dict(source_plan)
+        source_plan["digest"] = hashlib.sha256(
+            json.dumps(
+                source_plan_identity,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        manifest["source_plan"] = source_plan
+        build = manifest.get("build")
+        if isinstance(build, dict):
+            build["source_plan_digest"] = source_plan["digest"]
+
+    closure = manifest.get("object_closure")
+    if not isinstance(closure, dict):
+        raise SourceExtensionProducerError(
+            f"built extension {produced.module} lost object-closure custody"
+        )
+    objects = closure.get("objects")
+    if not isinstance(objects, list) or not objects:
+        raise SourceExtensionProducerError(
+            f"built extension {produced.module} has no final object closure"
+        )
+    manifest["sources"] = [
+        str(item["source"])
+        for item in objects
+        if isinstance(item, Mapping) and isinstance(item.get("source"), str)
+    ]
+    raw_regenerations = manifest.get("cython_standalone")
+    if isinstance(raw_regenerations, list):
+        manifest["cython_standalone"] = [
+            {
+                key: regeneration[key]
+                for key in (
+                    "pyx",
+                    "regenerated_c",
+                    "standalone",
+                    "cython_version",
+                    "cython_argv",
+                    "compile_profile",
+                    "compile_args",
+                    "cimport_packages",
+                    "dependencies",
+                    "working_directory",
+                )
+                if key in regeneration
+            }
+            for regeneration in raw_regenerations
+            if isinstance(regeneration, Mapping)
+        ]
+    closure["closure_sha256"] = _object_closure_digest(
+        closure, manifest_dir=sidecar_path.parent
+    )
+    build = manifest.get("build")
+    if isinstance(build, dict):
+        build["object_closure_sha256"] = closure["closure_sha256"]
+    _atomic_write_json(sidecar_path, manifest, sort_keys=True, indent=2)
+    return replace(
+        produced,
+        artifact_path=destination,
+        artifact_manifest_path=sidecar_path,
+        wheel_path=wheel_destination,
+        object_closure_sha256=str(closure["closure_sha256"]),
+    )
+
+
+def _stage_canonical_metadata_file(
+    source: Path,
+    destination: Path,
+    *,
+    location_roots: Sequence[tuple[Path, str]],
+) -> Path:
+    try:
+        text = source.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise SourceExtensionProducerError(
+            f"cannot stage build metadata {source}: {exc}"
+        ) from exc
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        canonical = _canonicalize_location_string(text, location_roots)
+        _atomic_write_text(destination, canonical)
+    else:
+        canonical_payload = _canonicalize_locations(payload, location_roots)
+        _atomic_write_json(destination, canonical_payload, sort_keys=True, indent=2)
+    return destination
+
+
+def _stage_build_metadata(
+    *,
+    publish_root: Path,
+    metadata_root: Path,
+    intro_targets: Path,
+    compile_commands: Path,
+    intro_installed: Path,
+    config_tool_cross: Path | None,
+    target_metadata_payload: Mapping[str, Any],
+    location_roots: Sequence[tuple[Path, str]],
+) -> tuple[dict[str, Path], dict[str, Any]]:
+    metadata_publish_root = publish_root / "provenance" / "metadata"
+    staged = {
+        "intro_targets": _stage_canonical_metadata_file(
+            intro_targets,
+            metadata_publish_root / "meson" / "intro-targets.json",
+            location_roots=location_roots,
+        ),
+        "compile_commands": _stage_canonical_metadata_file(
+            compile_commands,
+            metadata_publish_root / "meson" / "compile-commands.json",
+            location_roots=location_roots,
+        ),
+        "intro_installed": _stage_canonical_metadata_file(
+            intro_installed,
+            metadata_publish_root / "meson" / "intro-installed.json",
+            location_roots=location_roots,
+        ),
+    }
+    if config_tool_cross is not None:
+        staged["config_tool_cross"] = _stage_canonical_metadata_file(
+            config_tool_cross,
+            metadata_publish_root / "meson" / "build-config-tools.cross",
+            location_roots=location_roots,
+        )
+    for path in sorted(metadata_root.rglob("*")):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(metadata_root)
+        if relative.as_posix() == "source-extension-target-metadata.json":
+            continue
+        staged[f"target/{relative.as_posix()}"] = _stage_canonical_metadata_file(
+            path,
+            metadata_publish_root / "target" / relative,
+            location_roots=location_roots,
+        )
+    canonical_target_metadata = _canonicalize_locations(
+        target_metadata_payload,
+        location_roots,
+    )
+    if not isinstance(canonical_target_metadata, dict):
+        raise SourceExtensionProducerError(
+            "canonical target metadata is not an object"
+        )
+    python_pc = staged.get("target/pkgconfig/python3.pc")
+    meson_cross = staged.get("target/meson.cross")
+    if python_pc is None or meson_cross is None:
+        raise SourceExtensionProducerError(
+            "canonical target metadata lost python3.pc or meson.cross"
+        )
+    canonical_target_metadata["digests"] = {
+        "python_pc_sha256": _sha256_file(python_pc),
+        "meson_cross_sha256": _sha256_file(meson_cross),
+    }
+    canonical_target_metadata.pop("digest", None)
+    encoded = json.dumps(
+        canonical_target_metadata,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    canonical_target_metadata["digest"] = hashlib.sha256(encoded).hexdigest()
+    target_sidecar = (
+        metadata_publish_root / "target" / "source-extension-target-metadata.json"
+    )
+    _atomic_write_json(
+        target_sidecar,
+        canonical_target_metadata,
+        sort_keys=True,
+        indent=2,
+    )
+    staged["target/source-extension-target-metadata.json"] = target_sidecar
+    return staged, canonical_target_metadata
+
+
+def _source_package_input_role(relative: Path) -> str:
+    posix = relative.as_posix()
+    if posix == "extension_set_manifest.json":
+        return "set-manifest"
+    if posix.endswith(".molt.wasm"):
+        return "extension-artifact"
+    if posix.endswith(".molt.wasm.extension_manifest.json"):
+        return "extension-manifest"
+    if posix.startswith("provenance/compiled-inputs/"):
+        return "compiled-input"
+    if posix.startswith("provenance/wheels/"):
+        return "wheel"
+    if posix.startswith("provenance/metadata/"):
+        return "build-metadata"
+    if relative.suffix in {".py", ".pyi"} or relative.name == "py.typed":
+        return "python-source"
+    return "package-data"
+
+
+def _target_tool_commands(metadata_payload: Mapping[str, Any]) -> dict[str, tuple[str, ...]]:
+    toolchain = metadata_payload.get("toolchain")
+    raw_commands = (
+        toolchain.get("commands") if isinstance(toolchain, Mapping) else None
+    )
+    if not isinstance(raw_commands, Mapping):
+        raise SourceExtensionProducerError(
+            "target metadata has no materialized LLVM/WASI command family"
+        )
+    required_roles = ("ar", "c", "cpp", "ld", "nm", "ranlib", "strip")
+    commands: dict[str, tuple[str, ...]] = {}
+    for command_role in required_roles:
+        raw_command = raw_commands.get(command_role)
+        if not isinstance(raw_command, list) or not raw_command or not all(
+            isinstance(item, str) and item for item in raw_command
+        ):
+            raise SourceExtensionProducerError(
+                f"target metadata is missing materialized {command_role} command"
+            )
+        commands[command_role] = tuple(raw_command)
+    return commands
+
+
+def _producer_location_roots(
+    *,
+    source_root: Path,
+    build_root: Path,
+    transaction_root: Path,
+    metadata_payload: Mapping[str, Any],
+    config_tools: Sequence[_SourceBuildConfigTool],
+) -> tuple[tuple[Path, str], ...]:
+    roots: list[tuple[Path, str]] = [
+        (source_root, "@source"),
+        (build_root, "@build"),
+        (transaction_root, "@transaction"),
+        (_REPO_ROOT, "@molt"),
+        (Path(sys.prefix), "@python"),
+    ]
+    toolchain = metadata_payload.get("toolchain")
+    if isinstance(toolchain, Mapping):
+        wasi_sysroot = toolchain.get("wasi_sysroot")
+        if isinstance(wasi_sysroot, str) and wasi_sysroot:
+            roots.append((Path(wasi_sysroot), "@wasi-sysroot"))
+        tools = toolchain.get("tools")
+        if isinstance(tools, Mapping):
+            tool_parents = {
+                Path(str(tool["path"])).expanduser().resolve().parent
+                for tool in tools.values()
+                if isinstance(tool, Mapping)
+                and isinstance(tool.get("path"), str)
+                and tool.get("path")
+            }
+            roots.extend((path, "@llvm-bin") for path in sorted(tool_parents))
+    config_parents = {tool.path.resolve().parent for tool in config_tools}
+    roots.extend((path, "@python-scripts") for path in sorted(config_parents))
+    deduped: dict[Path, str] = {}
+    for path, token in roots:
+        deduped.setdefault(path.resolve(), token)
+    return tuple(deduped.items())
 
 
 def _validate_complete_publish_root(
@@ -997,6 +1468,103 @@ def _validate_complete_publish_root(
     extension_set: ScientificExtensionSet,
     set_manifest: Mapping[str, Any],
 ) -> None:
+    target_metadata = set_manifest.get("target_metadata")
+    if not isinstance(target_metadata, Mapping):
+        raise SourceExtensionProducerError(
+            "extension-set manifest target_metadata is missing"
+        )
+    target_identity = dict(target_metadata)
+    target_digest = target_identity.pop("digest", None)
+    computed_target_digest = hashlib.sha256(
+        json.dumps(
+            target_identity,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    if target_digest != computed_target_digest:
+        raise SourceExtensionProducerError(
+            "extension-set target_metadata identity checksum is false"
+        )
+    target_sidecar_path = (
+        publish_root
+        / "provenance"
+        / "metadata"
+        / "target"
+        / "source-extension-target-metadata.json"
+    )
+    try:
+        target_sidecar = json.loads(target_sidecar_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise SourceExtensionProducerError(
+            f"cannot read canonical target metadata sidecar: {exc}"
+        ) from exc
+    if target_sidecar != target_metadata:
+        raise SourceExtensionProducerError(
+            "extension-set target_metadata differs from its canonical sidecar"
+        )
+    target_digests = target_metadata.get("digests")
+    if not isinstance(target_digests, Mapping):
+        raise SourceExtensionProducerError(
+            "extension-set target_metadata digests are missing"
+        )
+    target_files = {
+        "python_pc_sha256": (
+            publish_root / "provenance/metadata/target/pkgconfig/python3.pc"
+        ),
+        "meson_cross_sha256": (
+            publish_root / "provenance/metadata/target/meson.cross"
+        ),
+    }
+    for digest_name, target_file in target_files.items():
+        if not target_file.is_file() or target_digests.get(digest_name) != _sha256_file(
+            target_file
+        ):
+            raise SourceExtensionProducerError(
+                f"extension-set target_metadata {digest_name} is false"
+            )
+    toolchain = target_metadata.get("toolchain")
+    tools = toolchain.get("tools") if isinstance(toolchain, Mapping) else None
+    target_commands = (
+        toolchain.get("commands") if isinstance(toolchain, Mapping) else None
+    )
+    tool_roles = {
+        "ar": "ar",
+        "c": "cc",
+        "cpp": "cxx",
+        "ld": "wasm_ld",
+        "nm": "nm",
+        "ranlib": "ranlib",
+        "strip": "strip",
+    }
+    if not isinstance(tools, Mapping) or set(tools) != set(tool_roles.values()):
+        raise SourceExtensionProducerError(
+            "extension-set target metadata has an incomplete tool identity family"
+        )
+    if not isinstance(target_commands, Mapping) or set(target_commands) != set(
+        tool_roles
+    ):
+        raise SourceExtensionProducerError(
+            "extension-set target metadata has an incomplete command family"
+        )
+    for command_role, tool_role in tool_roles.items():
+        identity = tools.get(tool_role)
+        command = target_commands.get(command_role)
+        if not (
+            isinstance(identity, Mapping)
+            and isinstance(identity.get("path"), str)
+            and isinstance(identity.get("sha256"), str)
+            and len(str(identity.get("sha256"))) == 64
+            and isinstance(identity.get("command"), list)
+            and identity.get("command")
+            and isinstance(command, list)
+            and command
+            and command[0] == identity["command"][0]
+        ):
+            raise SourceExtensionProducerError(
+                f"extension-set target metadata {command_role} identity is invalid"
+            )
+
     configured_contracts = tuple(
         (spec.module, spec.target, spec.capabilities)
         for spec in extension_set.extensions
@@ -1093,46 +1661,43 @@ def _validate_complete_publish_root(
                     f"extension-set manifest {field_name} differs from sidecar for "
                     f"{spec.module}"
                 )
+        closure_objects = closure.get("objects") if isinstance(closure, Mapping) else None
+        if not isinstance(closure_objects, list):
+            raise SourceExtensionProducerError(
+                f"extension sidecar object closure is invalid for {spec.module}"
+            )
+        for object_index, closure_object in enumerate(closure_objects):
+            if not isinstance(closure_object, Mapping):
+                raise SourceExtensionProducerError(
+                    f"extension sidecar object[{object_index}] is invalid"
+                )
+            source = closure_object.get("source")
+            compile_command = closure_object.get("compile_command")
+            symbol_command = closure_object.get("symbol_command")
+            compiler_role = (
+                "cpp"
+                if isinstance(source, str)
+                and Path(source).suffix.lower() in {".cc", ".cpp", ".cxx", ".c++"}
+                else "c"
+            )
+            expected_compiler = target_commands[compiler_role]
+            expected_nm = target_commands["nm"]
+            if not (
+                isinstance(compile_command, list)
+                and compile_command[: len(expected_compiler)] == expected_compiler
+                and isinstance(symbol_command, list)
+                and symbol_command == expected_nm
+            ):
+                raise SourceExtensionProducerError(
+                    f"extension sidecar object[{object_index}] for {spec.module} "
+                    "did not consume the canonical compiler/nm commands"
+                )
         artifact_path = Path(str(sidecar_path).removesuffix(".extension_manifest.json"))
         if _sha256_file(artifact_path) != entry.get("artifact_sha256"):
             raise SourceExtensionProducerError(
                 f"extension-set manifest artifact checksum differs from bytes for "
                 f"{spec.module}"
             )
-
-
-def _same_volume(left: Path, right: Path) -> bool:
-    if os.name == "nt":
-        return left.resolve().drive.casefold() == right.resolve().drive.casefold()
-    return left.stat().st_dev == right.stat().st_dev
-
-
-def _publish_directory_atomically(staged_root: Path, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if not _same_volume(staged_root, destination.parent):
-        raise SourceExtensionProducerError(
-            "transaction and extension-set destination are on different volumes"
-        )
-    backup = destination.with_name(
-        f".{destination.name}.{os.getpid()}.{uuid.uuid4().hex}.old"
-    )
-    had_existing = destination.exists() or destination.is_symlink()
-    if had_existing:
-        os.replace(destination, backup)
-    try:
-        os.replace(staged_root, destination)
-    except BaseException as publish_error:
-        if had_existing and backup.exists() and not destination.exists():
-            try:
-                os.replace(backup, destination)
-            except BaseException as restore_error:
-                raise SourceExtensionProducerError(
-                    "extension-set publication failed and the prior root could not "
-                    f"be restored; preserved backup: {backup}"
-                ) from restore_error
-        raise publish_error
-    if backup.exists():
-        _remove_file_or_tree(backup)
 
 
 def produce_source_extension_set(
@@ -1148,6 +1713,7 @@ def produce_source_extension_set(
     source_root = Path(source).expanduser().resolve()
     resolved_build_root = Path(build_root).expanduser().resolve()
     transaction_root: Path | None = None
+    published = False
     try:
         if not source_root.is_dir():
             raise SourceExtensionProducerError(
@@ -1156,6 +1722,16 @@ def produce_source_extension_set(
         extension_set = scientific_extension_set(package, module_set)
         destination = scientific_extension_set_root(extension_set)
         destination.parent.mkdir(parents=True, exist_ok=True)
+        for prior in sorted(
+            destination.parent.glob(f".{destination.name}.produce-*")
+        ):
+            store = prior / "package-store"
+            with contextlib.suppress(
+                OSError,
+                SourcePackageSealError,
+                SourcePackageSealVerificationError,
+            ):
+                recover_source_package_seal_commits(store)
         verify_source_checkout(package, source_root)
         _provision_recursive_submodules(source_root)
         submodules = _verify_recursive_submodules(source_root)
@@ -1194,6 +1770,7 @@ def produce_source_extension_set(
                 "failed to materialize source-extension target metadata: "
                 + "; ".join(metadata_errors)
             )
+        tool_commands = _target_tool_commands(metadata.payload)
         config_tool_cross = _materialize_meson_config_tool_cross(
             metadata_root / "build-config-tools.cross",
             build_config_tools,
@@ -1209,6 +1786,23 @@ def produce_source_extension_set(
         )
         intro_targets, compile_commands, intro_installed = _require_real_meson_metadata(
             resolved_build_root
+        )
+        location_roots = _producer_location_roots(
+            source_root=source_root,
+            build_root=resolved_build_root,
+            transaction_root=transaction_root,
+            metadata_payload=metadata.payload,
+            config_tools=build_config_tools,
+        )
+        staged_metadata, canonical_target_metadata = _stage_build_metadata(
+            publish_root=publish_root,
+            metadata_root=metadata_root,
+            intro_targets=intro_targets,
+            compile_commands=compile_commands,
+            intro_installed=intro_installed,
+            config_tool_cross=config_tool_cross,
+            target_metadata_payload=metadata.payload,
+            location_roots=location_roots,
         )
         installed_files = _stage_installed_python_files(
             intro_installed=intro_installed,
@@ -1240,10 +1834,13 @@ def produce_source_extension_set(
                 capabilities=spec.capabilities,
                 target=target,
                 abi_tier=abi_tier,
+                tool_commands=tool_commands,
             )
-            _stage_extension(
+            result = _stage_extension(
                 result,
                 publish_root=publish_root,
+                location_roots=location_roots,
+                plan_metadata=staged_metadata,
             )
             produced.append(result)
 
@@ -1253,7 +1850,6 @@ def produce_source_extension_set(
             "package": extension_set.package,
             "name": extension_set.name,
             "seal_name": extension_set.seal_name,
-            "source_root": str(source_root),
             "source_head": _git_head(source_root),
             "submodules": list(submodules),
             "target": target,
@@ -1261,14 +1857,20 @@ def produce_source_extension_set(
             "abi_tier": abi_tier,
             "build_environment": build_environment.manifest_payload(),
             "meson": {
-                "build_root": str(resolved_build_root),
+                "build_root": "@build",
                 "setup_args": list(extension_set.meson_setup_args),
-                "intro_targets_sha256": _sha256_file(intro_targets),
-                "compile_commands_sha256": _sha256_file(compile_commands),
-                "intro_installed_sha256": _sha256_file(intro_installed),
+                "intro_targets_sha256": _sha256_file(
+                    staged_metadata["intro_targets"]
+                ),
+                "compile_commands_sha256": _sha256_file(
+                    staged_metadata["compile_commands"]
+                ),
+                "intro_installed_sha256": _sha256_file(
+                    staged_metadata["intro_installed"]
+                ),
                 "config_tool_cross_sha256": (
-                    _sha256_file(config_tool_cross)
-                    if config_tool_cross is not None
+                    _sha256_file(staged_metadata["config_tool_cross"])
+                    if "config_tool_cross" in staged_metadata
                     else None
                 ),
                 "config_tools": [
@@ -1276,6 +1878,7 @@ def produce_source_extension_set(
                 ],
                 "pkg_config_requirement": MOLT_PKGCONF_REQUIREMENT,
             },
+            "target_metadata": canonical_target_metadata,
             "installed_python_files": [
                 str(path.relative_to(publish_root)).replace("\\", "/")
                 for path in installed_files
@@ -1302,11 +1905,37 @@ def produce_source_extension_set(
             extension_set=extension_set,
             set_manifest=set_manifest,
         )
-        _publish_directory_atomically(publish_root, destination)
+        package_store = transaction_root / "package-store"
+        seal = stage_source_package_seal(
+            package_store,
+            [
+                SourcePackageInput(
+                    path,
+                    path.relative_to(publish_root).as_posix(),
+                    _source_package_input_role(path.relative_to(publish_root)),
+                )
+                for path in sorted(publish_root.rglob("*"))
+                if path.is_file()
+            ],
+        )
+        verify_source_package_seal(seal.root, expected_sha256=seal.seal_sha256)
+        commit = prepare_source_package_seal_commit(
+            package_store,
+            seal,
+            destination,
+        )
+        committed = commit_source_package_seal(commit)
+        published_seal = verify_source_package_seal(
+            committed.destination,
+            expected_sha256=seal.seal_sha256,
+        )
+        published = True
         data = {
             "package": extension_set.package,
             "module_set": extension_set.name,
             "root": str(destination),
+            "module_root": str(published_seal.payload_root),
+            "seal_sha256": published_seal.seal_sha256,
             "modules": [item.module for item in produced],
             "installed_python_file_count": len(installed_files),
             "target": metadata.target_triple,
@@ -1321,9 +1950,18 @@ def produce_source_extension_set(
             print(f"Published extension set: {destination}")
             print("Modules: " + ", ".join(data["modules"]))
         return 0
-    except (OSError, SourceExtensionProducerError, ValueError) as exc:
-        return _fail(str(exc), json_output, command="extension-produce-set")
-    finally:
+    except (
+        OSError,
+        SourceExtensionProducerError,
+        SourcePackageSealError,
+        SourcePackageSealVerificationError,
+        ValueError,
+    ) as exc:
+        detail = str(exc)
         if transaction_root is not None and transaction_root.exists():
+            detail += f"; preserved producer transaction: {transaction_root}"
+        return _fail(detail, json_output, command="extension-produce-set")
+    finally:
+        if published and transaction_root is not None and transaction_root.exists():
             with contextlib.suppress(OSError):
                 _remove_file_or_tree(transaction_root)

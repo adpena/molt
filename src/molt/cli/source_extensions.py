@@ -76,6 +76,15 @@ _SOURCE_EXTENSION_GENERIC_IMPORT_CALLEES = frozenset(
 
 
 @dataclass(frozen=True)
+class _SourceExtensionDependencyFact:
+    path: Path
+    sha256: str
+
+    def manifest_payload(self) -> dict[str, str]:
+        return {"path": str(self.path), "sha256": self.sha256}
+
+
+@dataclass(frozen=True)
 class _SourceExtensionObjectFact:
     source_path: Path
     object_path: Path
@@ -83,6 +92,9 @@ class _SourceExtensionObjectFact:
     object_sha256: str
     defined_symbols: tuple[str, ...]
     undefined_symbols: tuple[str, ...]
+    compile_command: tuple[str, ...]
+    symbol_command: tuple[str, ...]
+    dependencies: tuple[_SourceExtensionDependencyFact, ...] = ()
 
     def manifest_payload(
         self,
@@ -98,6 +110,11 @@ class _SourceExtensionObjectFact:
             "object_sha256": self.object_sha256,
             "defined_symbols": list(self.defined_symbols),
             "undefined_symbols": list(self.undefined_symbols),
+            "compile_command": list(self.compile_command),
+            "symbol_command": list(self.symbol_command),
+            "dependencies": [
+                dependency.manifest_payload() for dependency in self.dependencies
+            ],
             "required_c_api_symbols": list(required_c_api_symbols),
             "required_capsules": list(required_capsules),
             "project_generated_c_api_symbols": list(project_generated_c_api_symbols),
@@ -1578,22 +1595,16 @@ def _source_extension_wasm_compile_args(
     return []
 
 
-def _source_extension_unit_args_for_driver(
+def _source_extension_replay_compile_args(
     unit_compile_args: Sequence[str],
-    *,
-    cc_cmd: Sequence[str],
 ) -> list[str]:
-    """Translate replayed compile_commands args for the active driver.
+    """Replay semantic unit flags without duplicating target authority.
 
-    Source plans replay the upstream build's per-source arguments verbatim.
-    Zig owns its own target and sysroot (its `-target` grammar names the WASI
-    OS "wasi", and its bundled libc/libc++ replace the clang sysroot), so the
-    upstream clang-shaped `-target`/`--sysroot` pairs must not reach it.
-    Other drivers keep the full replay.
+    The canonical C/C++ command family owns the target and sysroot. Upstream
+    compile databases remain authoritative for per-unit language/optimization
+    flags, but may not silently override that attested command after it is
+    materialized.
     """
-    tool = Path(cc_cmd[0]).name.lower() if cc_cmd else ""
-    if tool not in {"zig", "zig.exe"}:
-        return list(unit_compile_args)
     out: list[str] = []
     skip_next = False
     for token in unit_compile_args:
@@ -1629,19 +1640,59 @@ def _source_extension_object_fact(
     *,
     source_path: Path,
     object_path: Path,
+    compile_command: Sequence[str] = (),
+    dependency_paths: Sequence[Path] = (),
+    nm_command: Sequence[str] | None = None,
 ) -> tuple[_SourceExtensionObjectFact | None, str | None]:
     # Reading a native object file's global symbols is a backend/native-link
     # concern; import it lazily so this module stays off the frontend import path.
     from molt.cli.backend_cache import _native_object_global_symbol_sets
 
-    symbol_sets = _native_object_global_symbol_sets(object_path)
+    symbol_sets = (
+        _native_object_global_symbol_sets(object_path, nm_command=nm_command)
+        if nm_command is not None
+        else _native_object_global_symbol_sets(object_path)
+    )
     if symbol_sets is None:
         return (
             None,
             "unable to read global symbol table for compiled extension object "
-            f"{object_path}; install llvm-nm/nm or set MOLT_NM",
+            f"{object_path}; canonical LLVM/WASI nm authority is unavailable",
         )
     defined, undefined = symbol_sets
+    object_root = object_path.parent.resolve()
+    canonical_compile_command_parts: list[str] = []
+    transient_value_flags = {"-o", "-MF"}
+    for index, token in enumerate(compile_command):
+        previous = compile_command[index - 1] if index else None
+        canonical = token
+        if token in {str(object_path), object_path.as_posix()} or (
+            previous in transient_value_flags
+            and Path(token).expanduser().parent.resolve() == object_root
+        ):
+            canonical = f"@object-root/{Path(token).name}"
+        elif token.startswith(
+            ("-ffile-prefix-map=", "-fdebug-prefix-map=", "-fmacro-prefix-map=")
+        ):
+            canonical = token.replace(str(object_root), "@object-root").replace(
+                object_root.as_posix(), "@object-root"
+            )
+        if "@object-root" in canonical:
+            canonical = canonical.replace("\\", "/")
+        canonical_compile_command_parts.append(canonical)
+    canonical_compile_command = tuple(canonical_compile_command_parts)
+    dependencies: list[_SourceExtensionDependencyFact] = []
+    for dependency in sorted({path.resolve() for path in dependency_paths}):
+        if dependency == source_path.resolve():
+            continue
+        if not dependency.is_file():
+            return None, f"compiled extension dependency is missing: {dependency}"
+        dependencies.append(
+            _SourceExtensionDependencyFact(
+                path=dependency,
+                sha256=_sha256_file(dependency),
+            )
+        )
     return (
         _SourceExtensionObjectFact(
             source_path=source_path.resolve(),
@@ -1650,6 +1701,9 @@ def _source_extension_object_fact(
             object_sha256=_sha256_file(object_path),
             defined_symbols=tuple(sorted(defined)),
             undefined_symbols=tuple(sorted(undefined)),
+            compile_command=canonical_compile_command,
+            symbol_command=tuple(nm_command or ()),
+            dependencies=tuple(dependencies),
         ),
         None,
     )
@@ -2147,6 +2201,48 @@ def _source_extension_manifest_source_paths(
                     errors.extend(source_errors)
                     if source_path is not None:
                         paths.append(source_path)
+                dependencies = item.get("dependencies", [])
+                if not isinstance(dependencies, list):
+                    errors.append(
+                        "extension_manifest.json object_closure.objects"
+                        f"[{index}].dependencies must be a list"
+                    )
+                    continue
+                for dependency_index, dependency in enumerate(dependencies):
+                    if not isinstance(dependency, Mapping):
+                        errors.append(
+                            "extension_manifest.json object_closure dependency "
+                            "must be an object"
+                        )
+                        continue
+                    raw_dependency = dependency.get("path")
+                    dependency_sha256 = dependency.get("sha256")
+                    if not (
+                        isinstance(raw_dependency, str)
+                        and raw_dependency.strip()
+                        and isinstance(dependency_sha256, str)
+                        and dependency_sha256.strip()
+                    ):
+                        errors.append(
+                            "extension_manifest.json object_closure dependency "
+                            "requires path and sha256"
+                        )
+                        continue
+                    dependency_path, dependency_errors = (
+                        _resolve_source_extension_manifest_source(
+                            raw_dependency,
+                            manifest=manifest,
+                            manifest_path=manifest_path,
+                            expected_sha256=dependency_sha256,
+                            field_name=(
+                                f"object_closure.objects[{index}].dependencies"
+                                f"[{dependency_index}].path"
+                            ),
+                        )
+                    )
+                    errors.extend(dependency_errors)
+                    if dependency_path is not None:
+                        paths.append(dependency_path)
     if errors and not (
         allow_missing_sources
         and source_extension_manifest_errors_are_missing_sources(errors)
@@ -2596,6 +2692,12 @@ def _source_extension_closure_digest(
                 "object_sha256": fact.object_sha256,
                 "defined_symbols": list(fact.defined_symbols),
                 "undefined_symbols": list(fact.undefined_symbols),
+                "compile_command": list(fact.compile_command),
+                "symbol_command": list(fact.symbol_command),
+                "dependencies": [
+                    dependency.manifest_payload()
+                    for dependency in fact.dependencies
+                ],
             }
             for fact in objects
         ],
