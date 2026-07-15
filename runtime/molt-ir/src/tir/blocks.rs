@@ -91,6 +91,213 @@ pub enum Terminator {
     Unreachable,
 }
 
+impl Terminator {
+    /// Visit every explicit CFG edge and the values forwarded to its target.
+    ///
+    /// This is the canonical structural projection of a terminator into CFG
+    /// edges. Keeping the variant-to-edge mapping here prevents passes and
+    /// backends from growing partial `match` classifiers when a terminator is
+    /// added. The visitor is monomorphized and allocation-free.
+    #[inline]
+    pub fn for_each_edge(&self, mut visit: impl FnMut(BlockId, &[ValueId])) {
+        match self {
+            Terminator::Branch { target, args } => visit(*target, args),
+            Terminator::CondBranch {
+                then_block,
+                then_args,
+                else_block,
+                else_args,
+                ..
+            } => {
+                visit(*then_block, then_args);
+                visit(*else_block, else_args);
+            }
+            Terminator::Switch {
+                cases,
+                default,
+                default_args,
+                ..
+            }
+            | Terminator::StateDispatch {
+                cases,
+                default,
+                default_args,
+            } => {
+                for (_, target, args) in cases {
+                    visit(*target, args);
+                }
+                visit(*default, default_args);
+            }
+            Terminator::Return { .. } | Terminator::Unreachable => {}
+        }
+    }
+
+    /// Mutably visit every explicit CFG edge and its forwarded values.
+    ///
+    /// Retargeting and block-argument rewrites must use this projection so
+    /// `Switch` and `StateDispatch` cannot silently diverge.
+    #[inline]
+    pub fn for_each_edge_mut(&mut self, mut visit: impl FnMut(&mut BlockId, &mut Vec<ValueId>)) {
+        match self {
+            Terminator::Branch { target, args } => visit(target, args),
+            Terminator::CondBranch {
+                then_block,
+                then_args,
+                else_block,
+                else_args,
+                ..
+            } => {
+                visit(then_block, then_args);
+                visit(else_block, else_args);
+            }
+            Terminator::Switch {
+                cases,
+                default,
+                default_args,
+                ..
+            }
+            | Terminator::StateDispatch {
+                cases,
+                default,
+                default_args,
+            } => {
+                for (_, target, args) in cases {
+                    visit(target, args);
+                }
+                visit(default, default_args);
+            }
+            Terminator::Return { .. } | Terminator::Unreachable => {}
+        }
+    }
+
+    /// Append explicit successor blocks in stable edge order without an
+    /// intermediate allocation.
+    #[inline]
+    pub fn append_successors(&self, out: &mut Vec<BlockId>) {
+        self.for_each_edge(|target, _| out.push(target));
+    }
+
+    /// Number of explicit CFG edges carried by this terminator.
+    #[inline]
+    pub fn successor_count(&self) -> usize {
+        match self {
+            Terminator::Branch { .. } => 1,
+            Terminator::CondBranch { .. } => 2,
+            Terminator::Switch { cases, .. } | Terminator::StateDispatch { cases, .. } => {
+                cases.len() + 1
+            }
+            Terminator::Return { .. } | Terminator::Unreachable => 0,
+        }
+    }
+
+    /// Collect explicit successor blocks in stable edge order.
+    #[inline]
+    pub fn successors(&self) -> Vec<BlockId> {
+        let mut successors = Vec::with_capacity(self.successor_count());
+        self.append_successors(&mut successors);
+        successors
+    }
+
+    /// Visit SSA values used directly by the terminator, excluding values
+    /// forwarded as successor block arguments.
+    #[inline]
+    pub fn for_each_direct_value(&self, mut visit: impl FnMut(ValueId)) {
+        match self {
+            Terminator::Branch { .. } | Terminator::StateDispatch { .. } => {}
+            Terminator::CondBranch { cond, .. } => visit(*cond),
+            Terminator::Switch { value, .. } => visit(*value),
+            Terminator::Return { values } => values.iter().copied().for_each(visit),
+            Terminator::Unreachable => {}
+        }
+    }
+
+    /// Visit every SSA value used by the terminator, including edge arguments.
+    #[inline]
+    pub fn for_each_value(&self, mut visit: impl FnMut(ValueId)) {
+        self.for_each_direct_value(&mut visit);
+        self.for_each_edge(|_, args| args.iter().copied().for_each(&mut visit));
+    }
+
+    /// Mutably visit every SSA value used by the terminator.
+    #[inline]
+    pub fn for_each_value_mut(&mut self, mut visit: impl FnMut(&mut ValueId)) {
+        match self {
+            Terminator::Branch { .. } | Terminator::StateDispatch { .. } => {}
+            Terminator::CondBranch { cond, .. } => visit(cond),
+            Terminator::Switch { value, .. } => visit(value),
+            Terminator::Return { values } => values.iter_mut().for_each(&mut visit),
+            Terminator::Unreachable => {}
+        }
+        self.for_each_edge_mut(|_, args| args.iter_mut().for_each(&mut visit));
+    }
+
+    /// Return whether any explicit CFG edge targets `target`.
+    #[inline]
+    pub fn has_successor(&self, target: BlockId) -> bool {
+        match self {
+            Terminator::Branch {
+                target: successor, ..
+            } => *successor == target,
+            Terminator::CondBranch {
+                then_block,
+                else_block,
+                ..
+            } => *then_block == target || *else_block == target,
+            Terminator::Switch { cases, default, .. }
+            | Terminator::StateDispatch { cases, default, .. } => {
+                cases.iter().any(|(_, successor, _)| *successor == target) || *default == target
+            }
+            Terminator::Return { .. } | Terminator::Unreachable => false,
+        }
+    }
+
+    /// Return the values forwarded by the first edge to `target`.
+    ///
+    /// Callers that need to process every duplicate-target edge must use
+    /// [`Self::for_each_edge`] instead.
+    #[inline]
+    pub fn first_edge_args_to(&self, target: BlockId) -> Option<&[ValueId]> {
+        match self {
+            Terminator::Branch {
+                target: edge_target,
+                args,
+            } => (*edge_target == target).then_some(args),
+            Terminator::CondBranch {
+                then_block,
+                then_args,
+                else_block,
+                else_args,
+                ..
+            } => {
+                if *then_block == target {
+                    Some(then_args)
+                } else if *else_block == target {
+                    Some(else_args)
+                } else {
+                    None
+                }
+            }
+            Terminator::Switch {
+                cases,
+                default,
+                default_args,
+                ..
+            }
+            | Terminator::StateDispatch {
+                cases,
+                default,
+                default_args,
+            } => cases
+                .iter()
+                .find_map(|(_, edge_target, args)| {
+                    (*edge_target == target).then_some(args.as_slice())
+                })
+                .or_else(|| (*default == target).then_some(default_args.as_slice())),
+            Terminator::Return { .. } | Terminator::Unreachable => None,
+        }
+    }
+}
+
 impl std::fmt::Display for BlockId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "bb{}", self.0)
@@ -172,5 +379,114 @@ mod tests {
         };
 
         assert!(matches!(block.terminator, Terminator::CondBranch { .. }));
+    }
+
+    #[test]
+    fn terminator_edge_projection_covers_every_variant() {
+        let variants = [
+            (
+                Terminator::Branch {
+                    target: BlockId(1),
+                    args: vec![ValueId(10)],
+                },
+                vec![BlockId(1)],
+            ),
+            (
+                Terminator::CondBranch {
+                    cond: ValueId(11),
+                    then_block: BlockId(2),
+                    then_args: vec![ValueId(12)],
+                    else_block: BlockId(3),
+                    else_args: vec![ValueId(13)],
+                },
+                vec![BlockId(2), BlockId(3)],
+            ),
+            (
+                Terminator::Switch {
+                    value: ValueId(14),
+                    cases: vec![(0, BlockId(4), vec![ValueId(15)])],
+                    default: BlockId(5),
+                    default_args: vec![ValueId(16)],
+                },
+                vec![BlockId(4), BlockId(5)],
+            ),
+            (
+                Terminator::StateDispatch {
+                    cases: vec![(1, BlockId(6), vec![ValueId(17)])],
+                    default: BlockId(7),
+                    default_args: vec![ValueId(18)],
+                },
+                vec![BlockId(6), BlockId(7)],
+            ),
+            (
+                Terminator::Return {
+                    values: vec![ValueId(19)],
+                },
+                vec![],
+            ),
+            (Terminator::Unreachable, vec![]),
+        ];
+
+        for (terminator, expected) in variants {
+            assert_eq!(terminator.successors(), expected);
+            assert_eq!(terminator.successor_count(), expected.len());
+            for target in expected {
+                assert!(terminator.has_successor(target));
+                assert!(terminator.first_edge_args_to(target).is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn terminator_value_and_mutable_edge_visitors_cover_every_variant() {
+        let mut state_dispatch = Terminator::StateDispatch {
+            cases: vec![(1, BlockId(4), vec![ValueId(20)])],
+            default: BlockId(5),
+            default_args: vec![ValueId(21)],
+        };
+        state_dispatch.for_each_edge_mut(|target, args| {
+            target.0 += 10;
+            args.push(ValueId(22));
+        });
+        assert_eq!(state_dispatch.successors(), vec![BlockId(14), BlockId(15)]);
+
+        let variants = [
+            Terminator::Branch {
+                target: BlockId(1),
+                args: vec![ValueId(1)],
+            },
+            Terminator::CondBranch {
+                cond: ValueId(2),
+                then_block: BlockId(2),
+                then_args: vec![ValueId(3)],
+                else_block: BlockId(3),
+                else_args: vec![ValueId(4)],
+            },
+            Terminator::Switch {
+                value: ValueId(5),
+                cases: vec![(0, BlockId(4), vec![ValueId(6)])],
+                default: BlockId(5),
+                default_args: vec![ValueId(7)],
+            },
+            state_dispatch,
+            Terminator::Return {
+                values: vec![ValueId(8)],
+            },
+            Terminator::Unreachable,
+        ];
+        let expected_direct = [
+            vec![],
+            vec![ValueId(2)],
+            vec![ValueId(5)],
+            vec![],
+            vec![ValueId(8)],
+            vec![],
+        ];
+
+        for (terminator, expected) in variants.iter().zip(expected_direct) {
+            let mut direct = Vec::new();
+            terminator.for_each_direct_value(|value| direct.push(value));
+            assert_eq!(direct, expected);
+        }
     }
 }

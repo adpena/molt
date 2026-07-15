@@ -50,7 +50,10 @@ pub(crate) fn find_loop_guard(
                 }
                 cur = *target;
             }
-            _ => return None,
+            Terminator::Switch { .. }
+            | Terminator::StateDispatch { .. }
+            | Terminator::Return { .. }
+            | Terminator::Unreachable => return None,
         }
     }
     None

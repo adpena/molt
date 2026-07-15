@@ -177,18 +177,7 @@ pub(super) fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<u
         if *bid == body {
             continue;
         }
-        let targets_header = match &block.terminator {
-            Terminator::Branch { target, .. } => *target == header,
-            Terminator::CondBranch {
-                then_block,
-                else_block,
-                ..
-            } => *then_block == header || *else_block == header,
-            Terminator::Switch { cases, default, .. } => {
-                cases.iter().any(|(_, b, _)| *b == header) || *default == header
-            }
-            _ => false,
-        };
+        let targets_header = block.terminator.has_successor(header);
         if !targets_header {
             continue;
         }
@@ -218,18 +207,7 @@ pub(super) fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<u
         if *bid == guard || !reachable.contains(bid) {
             continue;
         }
-        let targets_exit = match &block.terminator {
-            Terminator::Branch { target, .. } => *target == exit,
-            Terminator::CondBranch {
-                then_block,
-                else_block,
-                ..
-            } => *then_block == exit || *else_block == exit,
-            Terminator::Switch { cases, default, .. } => {
-                cases.iter().any(|(_, b, _)| *b == exit) || *default == exit
-            }
-            _ => false,
-        };
+        let targets_exit = block.terminator.has_successor(exit);
         if targets_exit {
             return Err(Refusal::ExitHasOtherPreds);
         }
@@ -647,24 +625,11 @@ pub(super) fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<u
             args.clear();
             args.extend(stray_args.iter().copied());
         };
-        match &mut block.terminator {
-            Terminator::Branch { target, args } if *target == header => retarget(args),
-            Terminator::CondBranch {
-                then_block,
-                then_args,
-                else_block,
-                else_args,
-                ..
-            } => {
-                if *then_block == header {
-                    retarget(then_args);
-                }
-                if *else_block == header {
-                    retarget(else_args);
-                }
+        block.terminator.for_each_edge_mut(|target, args| {
+            if *target == header {
+                retarget(args);
             }
-            _ => {}
-        }
+        });
     }
 
     // 5. Guard: brk = And(cond, Not(of)); retarget the exit edge to the

@@ -13,7 +13,6 @@ use molt_tir::tir::values::ValueId;
 use std::collections::{HashMap, HashSet};
 use wasm_encoder::ValType;
 
-pub(super) use cfg::lir_terminator_successors;
 pub(super) use repr::lir_repr_to_val;
 
 pub(super) struct LirLowerCtx<'a> {

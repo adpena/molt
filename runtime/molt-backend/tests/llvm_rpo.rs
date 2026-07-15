@@ -11,7 +11,7 @@
 
 #![cfg(feature = "llvm")]
 
-use molt_backend::llvm_backend::lowering::{append_terminator_successors, compute_function_rpo};
+use molt_backend::llvm_backend::lowering::compute_function_rpo;
 use molt_backend::tir::blocks::{BlockId, Terminator, TirBlock};
 use molt_backend::tir::function::TirFunction;
 use molt_backend::tir::ops::{AttrValue, Dialect, OpCode, TirOp};
@@ -312,65 +312,6 @@ fn llvm_rpo_deeply_chained_cfg_does_not_overflow_stack() {
             "deep chain RPO must be entry, b1, b2, ... in order"
         );
     }
-}
-
-#[test]
-fn llvm_rpo_terminator_successor_helper_preserves_order() {
-    // The order in which `append_terminator_successors` records successors
-    // is part of the algorithm's contract: it determines tie-breaking when
-    // multiple valid RPOs exist. Pin it explicitly.
-    let mut buf = Vec::new();
-
-    buf.clear();
-    append_terminator_successors(
-        &Terminator::Branch {
-            target: BlockId(7),
-            args: vec![],
-        },
-        &mut buf,
-    );
-    assert_eq!(buf, vec![BlockId(7)]);
-
-    buf.clear();
-    append_terminator_successors(
-        &Terminator::CondBranch {
-            cond: ValueId(0),
-            then_block: BlockId(11),
-            then_args: vec![],
-            else_block: BlockId(13),
-            else_args: vec![],
-        },
-        &mut buf,
-    );
-    assert_eq!(
-        buf,
-        vec![BlockId(11), BlockId(13)],
-        "then must precede else"
-    );
-
-    buf.clear();
-    append_terminator_successors(
-        &Terminator::Switch {
-            value: ValueId(0),
-            cases: vec![(0, BlockId(20), vec![]), (1, BlockId(21), vec![])],
-            default: BlockId(22),
-            default_args: vec![],
-        },
-        &mut buf,
-    );
-    assert_eq!(
-        buf,
-        vec![BlockId(20), BlockId(21), BlockId(22)],
-        "switch cases in declaration order, then default"
-    );
-
-    buf.clear();
-    append_terminator_successors(&Terminator::Return { values: vec![] }, &mut buf);
-    assert!(buf.is_empty(), "Return has no successors");
-
-    buf.clear();
-    append_terminator_successors(&Terminator::Unreachable, &mut buf);
-    assert!(buf.is_empty(), "Unreachable has no successors");
 }
 
 #[test]

@@ -93,6 +93,70 @@ pub enum LirTerminator {
     Unreachable,
 }
 
+impl LirTerminator {
+    /// Visit every explicit LIR CFG edge in stable order.
+    ///
+    /// This mirrors the TIR `Terminator` structural projection and keeps LIR
+    /// verification and WASM lowering on one exhaustive authority.
+    #[inline]
+    pub fn for_each_edge(&self, mut visit: impl FnMut(BlockId, &[ValueId])) {
+        match self {
+            LirTerminator::Branch { target, args } => visit(*target, args),
+            LirTerminator::CondBranch {
+                then_block,
+                then_args,
+                else_block,
+                else_args,
+                ..
+            } => {
+                visit(*then_block, then_args);
+                visit(*else_block, else_args);
+            }
+            LirTerminator::Switch {
+                cases,
+                default,
+                default_args,
+                ..
+            }
+            | LirTerminator::StateDispatch {
+                cases,
+                default,
+                default_args,
+            } => {
+                for (_, target, args) in cases {
+                    visit(*target, args);
+                }
+                visit(*default, default_args);
+            }
+            LirTerminator::Return { .. } | LirTerminator::Unreachable => {}
+        }
+    }
+
+    #[inline]
+    pub fn append_successors(&self, out: &mut Vec<BlockId>) {
+        self.for_each_edge(|target, _| out.push(target));
+    }
+
+    #[inline]
+    pub fn successor_count(&self) -> usize {
+        match self {
+            LirTerminator::Branch { .. } => 1,
+            LirTerminator::CondBranch { .. } => 2,
+            LirTerminator::Switch { cases, .. } | LirTerminator::StateDispatch { cases, .. } => {
+                cases.len() + 1
+            }
+            LirTerminator::Return { .. } | LirTerminator::Unreachable => 0,
+        }
+    }
+
+    #[inline]
+    pub fn successors(&self) -> Vec<BlockId> {
+        let mut successors = Vec::with_capacity(self.successor_count());
+        self.append_successors(&mut successors);
+        successors
+    }
+}
+
 /// A basic block in representation-aware SSA form.
 #[derive(Debug, Clone)]
 pub struct LirBlock {
@@ -139,5 +203,52 @@ mod tests {
         assert!(!LirRepr::I64.is_runtime_reference_word());
         assert!(!LirRepr::F64.is_runtime_reference_word());
         assert!(!LirRepr::Bool1.is_runtime_reference_word());
+    }
+
+    #[test]
+    fn lir_terminator_edge_projection_covers_every_variant() {
+        let variants = [
+            (
+                LirTerminator::Branch {
+                    target: BlockId(1),
+                    args: vec![ValueId(1)],
+                },
+                vec![BlockId(1)],
+            ),
+            (
+                LirTerminator::CondBranch {
+                    cond: ValueId(2),
+                    then_block: BlockId(2),
+                    then_args: vec![],
+                    else_block: BlockId(3),
+                    else_args: vec![],
+                },
+                vec![BlockId(2), BlockId(3)],
+            ),
+            (
+                LirTerminator::Switch {
+                    value: ValueId(3),
+                    cases: vec![(0, BlockId(4), vec![])],
+                    default: BlockId(5),
+                    default_args: vec![],
+                },
+                vec![BlockId(4), BlockId(5)],
+            ),
+            (
+                LirTerminator::StateDispatch {
+                    cases: vec![(1, BlockId(6), vec![])],
+                    default: BlockId(7),
+                    default_args: vec![],
+                },
+                vec![BlockId(6), BlockId(7)],
+            ),
+            (LirTerminator::Return { values: vec![] }, vec![]),
+            (LirTerminator::Unreachable, vec![]),
+        ];
+
+        for (terminator, expected) in variants {
+            assert_eq!(terminator.successors(), expected);
+            assert_eq!(terminator.successor_count(), expected.len());
+        }
     }
 }

@@ -180,18 +180,14 @@ pub(super) fn propagate_guard_types(
             }
 
             // Also check terminator operands.
-            match &block.terminator {
-                Terminator::CondBranch { cond, .. } if *cond == guard.guarded_value => {
-                    proven_types
-                        .entry(guard.guarded_value)
-                        .or_insert_with(|| guard.proven_type.clone());
-                }
-                Terminator::Return { values } if values.contains(&guard.guarded_value) => {
-                    proven_types
-                        .entry(guard.guarded_value)
-                        .or_insert_with(|| guard.proven_type.clone());
-                }
-                _ => {}
+            let mut terminator_uses_guarded_value = false;
+            block.terminator.for_each_direct_value(|value| {
+                terminator_uses_guarded_value |= value == guard.guarded_value;
+            });
+            if terminator_uses_guarded_value {
+                proven_types
+                    .entry(guard.guarded_value)
+                    .or_insert_with(|| guard.proven_type.clone());
             }
         }
 

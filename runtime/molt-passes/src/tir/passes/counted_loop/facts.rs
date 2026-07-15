@@ -51,42 +51,5 @@ pub(super) fn block_loops_back_to(func: &TirFunction, block: BlockId, header: Bl
 /// The argument list `term` passes to `target` along whichever edge reaches it,
 /// or `None` if `term` does not branch to `target`.
 pub(super) fn branch_args_to(term: &Terminator, target: BlockId) -> Option<&[ValueId]> {
-    match term {
-        Terminator::Branch { target: t, args } if *t == target => Some(args.as_slice()),
-        Terminator::CondBranch {
-            then_block,
-            then_args,
-            else_block,
-            else_args,
-            ..
-        } => {
-            if *then_block == target {
-                Some(then_args.as_slice())
-            } else if *else_block == target {
-                Some(else_args.as_slice())
-            } else {
-                None
-            }
-        }
-        Terminator::Switch {
-            cases,
-            default,
-            default_args,
-            ..
-        }
-        | Terminator::StateDispatch {
-            cases,
-            default,
-            default_args,
-        } => {
-            if *default == target {
-                Some(default_args.as_slice())
-            } else {
-                cases
-                    .iter()
-                    .find_map(|(_, b, args)| (*b == target).then_some(args.as_slice()))
-            }
-        }
-        _ => None,
-    }
+    term.first_edge_args_to(target)
 }

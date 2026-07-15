@@ -22,7 +22,16 @@ pub(super) fn emit_lir_terminator(
             emit_lir_return(ctx, values, return_abi);
         }
         LirTerminator::Unreachable => ctx.instructions.push(Instruction::Unreachable),
-        _ => ctx.instructions.push(Instruction::Unreachable),
+        LirTerminator::Branch { .. }
+        | LirTerminator::CondBranch { .. }
+        | LirTerminator::Switch { .. }
+        | LirTerminator::StateDispatch { .. } => {
+            panic!(
+                "branching terminator reached single-block LIRâ†’WASM emission for '{}'; \
+                 the CFG must use multiblock emission",
+                ctx.func.name
+            );
+        }
     }
 }
 

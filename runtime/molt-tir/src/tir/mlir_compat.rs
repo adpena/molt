@@ -160,11 +160,11 @@ pub fn validate_mlir_compat(func: &TirFunction) -> Result<(), Vec<String>> {
                 }
             }
         }
-        for target in terminator_targets(&block.terminator) {
+        block.terminator.for_each_edge(|target, _| {
             if !func.blocks.contains_key(&target) {
                 errors.push(format!("^bb{}: target ^bb{} missing", bid.0, target.0));
             }
-        }
+        });
     }
     if errors.is_empty() {
         Ok(())
@@ -183,23 +183,6 @@ def Molt_CallOp : Molt_Op<"call"> { let arguments = (ins StrAttr:$callee, Variad
 def MoltGpu_LaunchOp : MoltGpu_Op<"launch"> { let regions = (region SizedRegion<1>:$body); }
 def MoltGpu_ThreadIdOp : MoltGpu_Op<"thread_id", [Pure]> { let results = (outs I64:$id); }
 "#.to_string()
-}
-
-fn terminator_targets(term: &Terminator) -> Vec<BlockId> {
-    match term {
-        Terminator::Branch { target, .. } => vec![*target],
-        Terminator::CondBranch {
-            then_block,
-            else_block,
-            ..
-        } => vec![*then_block, *else_block],
-        Terminator::Switch { cases, default, .. } => {
-            let mut t: Vec<BlockId> = cases.iter().map(|(_, b, _)| *b).collect();
-            t.push(*default);
-            t
-        }
-        _ => vec![],
-    }
 }
 
 fn mlir_type(ty: &TirType) -> &'static str {

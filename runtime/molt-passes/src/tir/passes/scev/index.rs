@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::tir::analysis::LoopForestResult;
-use crate::tir::blocks::{BlockId, Terminator};
+use crate::tir::blocks::BlockId;
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, OpCode};
 use crate::tir::values::ValueId;
@@ -109,41 +109,11 @@ pub(super) fn collect_header_incoming(
     let mut edges = Vec::new();
     for (&bid, block) in &func.blocks {
         let is_back = body.contains(&bid);
-        match &block.terminator {
-            Terminator::Branch { target, args } if *target == header => {
-                edges.push((bid, args.clone(), is_back));
+        block.terminator.for_each_edge(|target, args| {
+            if target == header {
+                edges.push((bid, args.to_vec(), is_back));
             }
-            Terminator::CondBranch {
-                then_block,
-                then_args,
-                else_block,
-                else_args,
-                ..
-            } => {
-                if *then_block == header {
-                    edges.push((bid, then_args.clone(), is_back));
-                }
-                if *else_block == header {
-                    edges.push((bid, else_args.clone(), is_back));
-                }
-            }
-            Terminator::Switch {
-                cases,
-                default,
-                default_args,
-                ..
-            } => {
-                for (_, tgt, args) in cases {
-                    if *tgt == header {
-                        edges.push((bid, args.clone(), is_back));
-                    }
-                }
-                if *default == header {
-                    edges.push((bid, default_args.clone(), is_back));
-                }
-            }
-            _ => {}
-        }
+        });
     }
     HeaderIncoming { edges }
 }

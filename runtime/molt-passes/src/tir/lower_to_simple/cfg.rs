@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::tir::blocks::{BlockId, Terminator, TirBlock};
+use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
 
 pub(super) fn collect_guard_raise_path_blocks(func: &TirFunction, start: BlockId) -> Vec<BlockId> {
@@ -51,7 +51,7 @@ pub(super) fn reverse_postorder(
             // Push successors in reverse order for correct DFS.
             let succs = match &block.terminator {
                 Terminator::StateDispatch { default, .. } => vec![*default],
-                _ => successors_of(block),
+                _ => block.terminator.successors(),
             };
             for succ in succs.into_iter().rev() {
                 if !visited.contains(&succ) {
@@ -133,30 +133,10 @@ pub(super) fn successor_reaches_header(
             continue;
         }
         if let Some(blk) = func.blocks.get(&b) {
-            for succ in successors_of(blk) {
+            for succ in blk.terminator.successors() {
                 stack.push(succ);
             }
         }
     }
     false
-}
-
-pub(super) fn successors_of(block: &TirBlock) -> Vec<BlockId> {
-    match &block.terminator {
-        Terminator::Branch { target, .. } => vec![*target],
-        Terminator::CondBranch {
-            then_block,
-            else_block,
-            ..
-        } => vec![*then_block, *else_block],
-        Terminator::Switch { cases, default, .. }
-        | Terminator::StateDispatch { cases, default, .. } => {
-            let mut succs = vec![*default];
-            for (_, target, _) in cases {
-                succs.push(*target);
-            }
-            succs
-        }
-        Terminator::Return { .. } | Terminator::Unreachable => vec![],
-    }
 }
