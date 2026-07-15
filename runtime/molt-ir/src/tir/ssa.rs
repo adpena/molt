@@ -502,22 +502,7 @@ impl<'a> SsaContext<'a> {
                     }
                 }
             };
-            match terminator {
-                Terminator::Branch { target, args } => {
-                    fix_args(args, target.0 as usize);
-                }
-                Terminator::CondBranch {
-                    then_block,
-                    then_args,
-                    else_block,
-                    else_args,
-                    ..
-                } => {
-                    fix_args(then_args, then_block.0 as usize);
-                    fix_args(else_args, else_block.0 as usize);
-                }
-                _ => {}
-            }
+            terminator.for_each_edge_mut(|target, args| fix_args(args, target.0 as usize));
         }
 
         // Fill unreachable blocks (not visited during dom-tree walk) by
@@ -1588,52 +1573,19 @@ mod tests {
             output.blocks.iter().map(|b| (b.id, b)).collect();
 
         for block in &output.blocks {
-            match &block.terminator {
-                Terminator::Branch { target, args } => {
-                    if let Some(target_block) = block_map.get(target) {
-                        assert_eq!(
-                            args.len(),
-                            target_block.args.len(),
-                            "Branch from {} to {} passes {} args but target expects {}",
-                            block.id,
-                            target,
-                            args.len(),
-                            target_block.args.len()
-                        );
-                    }
+            block.terminator.for_each_edge(|target, args| {
+                if let Some(target_block) = block_map.get(&target) {
+                    assert_eq!(
+                        args.len(),
+                        target_block.args.len(),
+                        "edge from {} to {} passes {} args but target expects {}",
+                        block.id,
+                        target,
+                        args.len(),
+                        target_block.args.len()
+                    );
                 }
-                Terminator::CondBranch {
-                    then_block,
-                    then_args,
-                    else_block,
-                    else_args,
-                    ..
-                } => {
-                    if let Some(tb) = block_map.get(then_block) {
-                        assert_eq!(
-                            then_args.len(),
-                            tb.args.len(),
-                            "CondBranch then from {} to {} passes {} args but target expects {}",
-                            block.id,
-                            then_block,
-                            then_args.len(),
-                            tb.args.len()
-                        );
-                    }
-                    if let Some(eb) = block_map.get(else_block) {
-                        assert_eq!(
-                            else_args.len(),
-                            eb.args.len(),
-                            "CondBranch else from {} to {} passes {} args but target expects {}",
-                            block.id,
-                            else_block,
-                            else_args.len(),
-                            eb.args.len()
-                        );
-                    }
-                }
-                _ => {}
-            }
+            });
         }
     }
 
@@ -2017,14 +1969,12 @@ mod tests {
             .and_then(|op| op.results.first().copied())
             .expect("SSA should materialize a shared undef None value");
 
-        let has_undef_branch_arg = output.blocks.iter().any(|block| match &block.terminator {
-            Terminator::Branch { args, .. } => args.contains(&undef_vid),
-            Terminator::CondBranch {
-                then_args,
-                else_args,
-                ..
-            } => then_args.contains(&undef_vid) || else_args.contains(&undef_vid),
-            _ => false,
+        let has_undef_branch_arg = output.blocks.iter().any(|block| {
+            let mut found = false;
+            block
+                .terminator
+                .for_each_edge(|_, args| found |= args.contains(&undef_vid));
+            found
         });
         assert!(
             has_undef_branch_arg,

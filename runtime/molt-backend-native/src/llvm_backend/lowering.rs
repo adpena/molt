@@ -551,19 +551,10 @@ pub fn try_lower_tir_to_llvm_with_pgo<'ctx>(
     //     becomes the real LLVM entry and immediately jumps to the TIR entry.
     {
         let entry_id = func.entry_block;
-        let entry_has_predecessors = func.blocks.values().any(|blk| match &blk.terminator {
-            Terminator::Branch { target, .. } => *target == entry_id,
-            Terminator::CondBranch {
-                then_block,
-                else_block,
-                ..
-            } => *then_block == entry_id || *else_block == entry_id,
-            Terminator::Switch { cases, default, .. }
-            | Terminator::StateDispatch { cases, default, .. } => {
-                *default == entry_id || cases.iter().any(|(_, t, _)| *t == entry_id)
-            }
-            _ => false,
-        });
+        let entry_has_predecessors = func
+            .blocks
+            .values()
+            .any(|block| block.terminator.has_successor(entry_id));
         if entry_has_predecessors {
             let old_entry_bb = lowering.block_map[&entry_id];
             let trampoline_bb = backend
@@ -719,39 +710,6 @@ pub fn declare_tir_function<'ctx>(
     llvm_fn
 }
 
-/// Append the successor block ids of `term` to `out`, preserving the order
-/// in which they appear in the terminator (then-before-else for conditional
-/// branches; case-list order followed by default for switches).
-///
-/// This is the single source of truth for "what does this terminator branch
-/// to" within the LLVM lowering — both RPO traversal and any future analyses
-/// route through here.
-///
-/// Public so integration tests (under `runtime/molt-backend/tests/`) can
-/// exercise it without going through an inkwell context.
-#[cfg(feature = "llvm")]
-pub fn append_terminator_successors(term: &Terminator, out: &mut Vec<BlockId>) {
-    match term {
-        Terminator::Branch { target, .. } => out.push(*target),
-        Terminator::CondBranch {
-            then_block,
-            else_block,
-            ..
-        } => {
-            out.push(*then_block);
-            out.push(*else_block);
-        }
-        Terminator::Switch { cases, default, .. }
-        | Terminator::StateDispatch { cases, default, .. } => {
-            for (_, bid, _) in cases {
-                out.push(*bid);
-            }
-            out.push(*default);
-        }
-        Terminator::Return { .. } | Terminator::Unreachable => {}
-    }
-}
-
 /// Compute a reverse-post-order (RPO) traversal of `func`'s CFG starting
 /// from its entry block.
 ///
@@ -845,7 +803,7 @@ pub fn compute_function_rpo(func: &TirFunction) -> Vec<BlockId> {
                 // keeps its natural layout, mirroring the runtime expectation
                 // that the exceptional path is the unlikely one.
                 succ_buf.clear();
-                append_terminator_successors(&block.terminator, &mut succ_buf);
+                block.terminator.append_successors(&mut succ_buf);
                 succ_buf.extend(exception_successors(block, &label_to_block));
 
                 // Push successors in reverse so the *first* successor is

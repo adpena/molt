@@ -53,7 +53,11 @@ pub(crate) fn recognize_counted_loop_with_loop_forest(
             (*target, cb)
         }
         Terminator::CondBranch { .. } => (header, header_block),
-        _ => {
+        Terminator::Branch { .. }
+        | Terminator::Switch { .. }
+        | Terminator::StateDispatch { .. }
+        | Terminator::Return { .. }
+        | Terminator::Unreachable => {
             trace!("header terminator not Branch/CondBranch");
             return None;
         }

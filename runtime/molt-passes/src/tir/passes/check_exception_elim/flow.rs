@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::tir::blocks::{BlockId, Terminator, TirBlock};
+use crate::tir::blocks::{BlockId, TirBlock};
 use crate::tir::dominators;
 use crate::tir::function::TirFunction;
 use crate::tir::ops::AttrValue;
@@ -8,25 +8,6 @@ use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
 use super::classify::{const_int_values, op_clears_pending_exception, op_may_raise};
-
-fn terminator_successors(term: &Terminator) -> Vec<BlockId> {
-    match term {
-        Terminator::Branch { target, .. } => vec![*target],
-        Terminator::CondBranch {
-            then_block,
-            else_block,
-            ..
-        } => vec![*then_block, *else_block],
-        Terminator::Switch { cases, default, .. }
-        | Terminator::StateDispatch { cases, default, .. } => {
-            let mut successors = Vec::with_capacity(cases.len() + 1);
-            successors.push(*default);
-            successors.extend(cases.iter().map(|(_, target, _)| *target));
-            successors
-        }
-        Terminator::Return { .. } | Terminator::Unreachable => Vec::new(),
-    }
-}
 
 fn exception_target_blocks(func: &TirFunction) -> HashSet<BlockId> {
     let label_to_block: HashMap<i64, BlockId> = func
@@ -104,7 +85,7 @@ pub(super) fn compute_block_entry_pending(func: &TirFunction) -> HashMap<BlockId
             if !exits_pending {
                 continue;
             }
-            for succ in terminator_successors(&block.terminator) {
+            for succ in dominators::terminator_successors(&block.terminator) {
                 if func.blocks.contains_key(&succ) {
                     next.insert(succ, true);
                 }

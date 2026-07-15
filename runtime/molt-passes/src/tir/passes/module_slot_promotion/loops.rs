@@ -6,12 +6,11 @@ use std::collections::{HashMap, HashSet};
 
 use crate::tir::blocks::BlockId;
 use crate::tir::dominators::{
-    CfgEdgePolicy, collect_loop_blocks, dominates, reachable_blocks_with,
+    CfgEdgePolicy, collect_loop_blocks, dominates, reachable_blocks_with, terminator_successors,
 };
 use crate::tir::function::TirFunction;
 
 use super::DebugLog;
-use super::terminators::terminator_successors;
 
 pub(super) struct LoopInfo {
     pub(super) header: BlockId,

@@ -249,20 +249,11 @@ fn detect_cloned_back_edge(
     cloned: &HashSet<BlockId>,
 ) -> (Option<BlockId>, Option<BlockId>) {
     let succs = |b: BlockId| -> Vec<BlockId> {
-        match caller.blocks.get(&b).map(|blk| &blk.terminator) {
-            Some(Terminator::Branch { target, .. }) => vec![*target],
-            Some(Terminator::CondBranch {
-                then_block,
-                else_block,
-                ..
-            }) => vec![*then_block, *else_block],
-            Some(Terminator::Switch { cases, default, .. }) => {
-                let mut v: Vec<BlockId> = cases.iter().map(|(_, t, _)| *t).collect();
-                v.push(*default);
-                v
-            }
-            _ => Vec::new(),
-        }
+        caller
+            .blocks
+            .get(&b)
+            .map(|block| block.terminator.successors())
+            .unwrap_or_default()
     };
     // Iterative DFS tracking the current path stack (ancestors).
     let mut visited: HashSet<BlockId> = HashSet::new();
@@ -315,58 +306,20 @@ fn caller_value_ty(t: Option<TirType>) -> TirType {
 
 /// True if `block`'s terminator targets `target`.
 fn block_targets(caller: &TirFunction, block: BlockId, target: BlockId) -> bool {
-    match caller.blocks.get(&block).map(|b| &b.terminator) {
-        Some(Terminator::Branch { target: t, .. }) => *t == target,
-        Some(Terminator::CondBranch {
-            then_block,
-            else_block,
-            ..
-        }) => *then_block == target || *else_block == target,
-        Some(Terminator::Switch { cases, default, .. }) => {
-            *default == target || cases.iter().any(|(_, t, _)| *t == target)
-        }
-        _ => false,
-    }
+    caller
+        .blocks
+        .get(&block)
+        .is_some_and(|block| block.terminator.has_successor(target))
 }
 
 /// Append `extra` args to `pred`'s branch terminator edge that targets `header`.
 fn append_branch_args(caller: &mut TirFunction, pred: BlockId, header: BlockId, extra: &[ValueId]) {
     let block = caller.blocks.get_mut(&pred).unwrap();
-    match &mut block.terminator {
-        Terminator::Branch { target, args } if *target == header => {
+    block.terminator.for_each_edge_mut(|target, args| {
+        if *target == header {
             args.extend_from_slice(extra);
         }
-        Terminator::CondBranch {
-            then_block,
-            then_args,
-            else_block,
-            else_args,
-            ..
-        } => {
-            if *then_block == header {
-                then_args.extend_from_slice(extra);
-            }
-            if *else_block == header {
-                else_args.extend_from_slice(extra);
-            }
-        }
-        Terminator::Switch {
-            cases,
-            default,
-            default_args,
-            ..
-        } => {
-            if *default == header {
-                default_args.extend_from_slice(extra);
-            }
-            for (_, t, a) in cases.iter_mut() {
-                if *t == header {
-                    a.extend_from_slice(extra);
-                }
-            }
-        }
-        _ => {}
-    }
+    });
 }
 
 /// Materialize a `ConstInt(0)` in the caller (for the `Index(pair, 0)` element
@@ -550,46 +503,12 @@ fn rewire_consumer_header_edges(
 /// args from this edge; slot args are threaded separately at the header).
 fn retarget_edges(caller: &mut TirFunction, block: BlockId, from: BlockId, to: BlockId) {
     if let Some(b) = caller.blocks.get_mut(&block) {
-        match &mut b.terminator {
-            Terminator::Branch { target, args } if *target == from => {
+        b.terminator.for_each_edge_mut(|target, args| {
+            if *target == from {
                 *target = to;
                 args.clear();
             }
-            Terminator::CondBranch {
-                then_block,
-                then_args,
-                else_block,
-                else_args,
-                ..
-            } => {
-                if *then_block == from {
-                    *then_block = to;
-                    then_args.clear();
-                }
-                if *else_block == from {
-                    *else_block = to;
-                    else_args.clear();
-                }
-            }
-            Terminator::Switch {
-                cases,
-                default,
-                default_args,
-                ..
-            } => {
-                if *default == from {
-                    *default = to;
-                    default_args.clear();
-                }
-                for (_, t, a) in cases.iter_mut() {
-                    if *t == from {
-                        *t = to;
-                        a.clear();
-                    }
-                }
-            }
-            _ => {}
-        }
+        });
     }
 }
 
@@ -606,20 +525,11 @@ fn reachable_avoiding(
     let mut stack = vec![start];
     seen.insert(start);
     while let Some(b) = stack.pop() {
-        let succs: Vec<BlockId> = match caller.blocks.get(&b).map(|blk| &blk.terminator) {
-            Some(Terminator::Branch { target, .. }) => vec![*target],
-            Some(Terminator::CondBranch {
-                then_block,
-                else_block,
-                ..
-            }) => vec![*then_block, *else_block],
-            Some(Terminator::Switch { cases, default, .. }) => {
-                let mut v: Vec<BlockId> = cases.iter().map(|(_, t, _)| *t).collect();
-                v.push(*default);
-                v
-            }
-            _ => Vec::new(),
-        };
+        let succs = caller
+            .blocks
+            .get(&b)
+            .map(|block| block.terminator.successors())
+            .unwrap_or_default();
         for s in succs {
             if barrier.contains(&s) {
                 continue;

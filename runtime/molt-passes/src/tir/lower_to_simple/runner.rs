@@ -9,9 +9,7 @@ use crate::tir::op_kinds_generated::{
 };
 use crate::tir::ops::{AttrValue, OpCode};
 
-use super::cfg::{
-    collect_guard_raise_path_blocks, reverse_postorder, successor_reaches_header, successors_of,
-};
+use super::cfg::{collect_guard_raise_path_blocks, reverse_postorder, successor_reaches_header};
 use super::cleanup::{
     close_try_regions_before_handler_labels, eliminate_dead_labels, missing_label_references,
     validate_labels, validate_structured_if_markers,
@@ -234,7 +232,7 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
     let all_predecessors: HashMap<BlockId, Vec<BlockId>> = {
         let mut preds: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
         for (pred_bid, block) in &func.blocks {
-            for succ in successors_of(block) {
+            for succ in block.terminator.successors() {
                 preds.entry(succ).or_default().push(*pred_bid);
             }
             for op in &block.ops {
@@ -394,7 +392,10 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
                         }
                         cond_bid = *target;
                     }
-                    _ => break, // Return/Unreachable — give up
+                    Terminator::Switch { .. }
+                    | Terminator::StateDispatch { .. }
+                    | Terminator::Return { .. }
+                    | Terminator::Unreachable => break,
                 }
             }
         }
@@ -503,7 +504,7 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
                     continue;
                 }
                 if let Some(blk) = func.blocks.get(&b) {
-                    for succ in successors_of(blk) {
+                    for succ in blk.terminator.successors() {
                         stack.push(succ);
                     }
                 }
@@ -642,7 +643,7 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
     let mut if_inlined_blocks: HashSet<BlockId> = HashSet::new();
     let mut predecessors: HashMap<BlockId, HashSet<BlockId>> = HashMap::new();
     for (pred_bid, block) in &func.blocks {
-        for succ in successors_of(block) {
+        for succ in block.terminator.successors() {
             predecessors.entry(succ).or_default().insert(*pred_bid);
         }
     }
@@ -726,14 +727,18 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
         let then_target = match &then_blk.terminator {
             Terminator::Branch { target, .. } => Some(*target),
             Terminator::Return { .. } | Terminator::Unreachable => None,
-            _ => {
+            Terminator::CondBranch { .. }
+            | Terminator::Switch { .. }
+            | Terminator::StateDispatch { .. } => {
                 continue;
             }
         };
         let else_target = match &else_blk.terminator {
             Terminator::Branch { target, .. } => Some(*target),
             Terminator::Return { .. } | Terminator::Unreachable => None,
-            _ => {
+            Terminator::CondBranch { .. }
+            | Terminator::Switch { .. }
+            | Terminator::StateDispatch { .. } => {
                 continue;
             }
         };

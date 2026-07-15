@@ -2,27 +2,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::tir::blocks::{BlockId, Terminator};
+use crate::tir::blocks::BlockId;
 use crate::tir::dominators;
 use crate::tir::function::TirFunction;
-
-fn terminator_successors(term: &Terminator) -> Vec<BlockId> {
-    match term {
-        Terminator::Branch { target, .. } => vec![*target],
-        Terminator::CondBranch {
-            then_block,
-            else_block,
-            ..
-        } => vec![*then_block, *else_block],
-        Terminator::Switch { cases, default, .. }
-        | Terminator::StateDispatch { cases, default, .. } => {
-            let mut successors = vec![*default];
-            successors.extend(cases.iter().map(|(_, target, _)| *target));
-            successors
-        }
-        Terminator::Return { .. } | Terminator::Unreachable => vec![],
-    }
-}
 
 /// Collect the blocks that must survive a block-removing pass.
 ///
@@ -52,7 +34,7 @@ pub(super) fn metadata_preserving_reachable_blocks(func: &TirFunction) -> HashSe
         let Some(block) = func.blocks.get(&id) else {
             continue;
         };
-        stack.extend(terminator_successors(&block.terminator));
+        stack.extend(dominators::terminator_successors(&block.terminator));
         stack.extend(dominators::exception_successors(block, &label_to_block));
     }
 

@@ -1,4 +1,4 @@
-use super::super::lir_context::{LirLowerCtx, lir_terminator_successors};
+use super::super::lir_context::LirLowerCtx;
 use super::super::lir_control::{
     LirReturnAbi, emit_lir_terminator, emit_lir_terminator_multiblock,
 };
@@ -44,7 +44,7 @@ fn compute_back_edge_targets(ctx: &LirLowerCtx, rpo: &[BlockId]) -> HashMap<Bloc
     let mut targets = HashMap::new();
     for (src_idx, &bid) in rpo.iter().enumerate() {
         if let Some(block) = ctx.func.blocks.get(&bid) {
-            for succ in lir_terminator_successors(&block.terminator) {
+            for succ in block.terminator.successors() {
                 if let Some(&tgt_idx) = ctx.block_index.get(&succ)
                     && tgt_idx <= src_idx
                 {

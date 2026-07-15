@@ -607,7 +607,13 @@ def _top_level_named_variants(sa, block: str, arm_pat: str, enum_name: str) -> s
                 in_pattern = True
                 i += 1
                 continue
-            if in_pattern and block.startswith(arm_pat, i):
+            # `Terminator::` must start at an identifier boundary: without
+            # this guard, `LirTerminator::` is misread as the raw `Terminator`
+            # domain and corrupts the per-domain backlog count.
+            identifier_boundary = i == 0 or not (
+                block[i - 1].isalnum() or block[i - 1] == "_"
+            )
+            if in_pattern and identifier_boundary and block.startswith(arm_pat, i):
                 j = i + plen
                 m_end = j
                 while m_end < n and (block[m_end].isalnum() or block[m_end] == "_"):

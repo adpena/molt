@@ -225,6 +225,14 @@ def test_single_variant_guard_is_not_flagged():
     assert findings == [], f"single-variant guard wrongly flagged: {findings}"
 
 
+def test_longer_enum_name_does_not_alias_closed_domain():
+    """`LirTerminator::` is a distinct enum and must not be counted as the raw
+    `Terminator` domain merely because its spelling has the same suffix."""
+    rust = _silent_default_match("LirTerminator")
+    findings = _scan(rust, "Terminator", _TERM_VARIANTS)
+    assert findings == [], f"longer enum name aliased Terminator: {findings}"
+
+
 def test_exhaustive_no_wildcard_match_is_not_flagged():
     """A match with no wildcard is rustc-enforced exhaustive — trusted (the
     discovery firewall: the parser cannot manufacture a pass rustc would fail)."""
