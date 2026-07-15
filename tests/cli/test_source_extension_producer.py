@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,6 +16,7 @@ from molt.cli.extension_wheel import _write_extension_wheel
 from molt.scientific_stack_versions import (
     ScientificExtensionSet,
     ScientificExtensionSpec,
+    scientific_extension_set,
 )
 
 
@@ -241,7 +244,12 @@ def test_meson_installed_python_is_complete_package_authority(tmp_path: Path) ->
     ):
         path = source / relative
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f"# {relative}\n", encoding="utf-8")
+        content = (
+            f'ROOT = r"{source}"\n'
+            if relative == "scipy/__config__.py"
+            else f"# {relative}\n"
+        )
+        path.write_text(content, encoding="utf-8")
         installed[str(path)] = f"C:/prefix/Lib/site-packages/{relative}"
     unrelated = source / "array_api_extra/tests/__init__.py"
     unrelated.parent.mkdir(parents=True)
@@ -249,23 +257,42 @@ def test_meson_installed_python_is_complete_package_authority(tmp_path: Path) ->
     installed[str(unrelated)] = (
         "C:/prefix/Lib/site-packages/array_api_extra/tests/__init__.py"
     )
+    generated_header = build / "scipy/_lib/include/scipy/generated_api.h"
+    generated_header.parent.mkdir(parents=True)
+    generated_header.write_text(
+        f'#define BUILD_ROOT "{build}"\n', encoding="utf-8"
+    )
+    installed[str(generated_header)] = (
+        "C:/prefix/Lib/site-packages/scipy/_lib/include/scipy/generated_api.h"
+    )
     intro = build / "meson-info" / "intro-installed.json"
     intro.parent.mkdir(parents=True)
     intro.write_text(json.dumps(installed), encoding="utf-8")
 
-    staged = producer._stage_installed_python_files(
+    staged = producer._stage_installed_package_files(
         intro_installed=intro,
         source_root=source,
         build_root=build,
         package="scipy",
         publish_root=publish,
+        location_roots=((source, "@source"), (build, "@build")),
+        required_installed_files=(
+            "scipy/__config__.py",
+            "scipy/__init__.py",
+            "scipy/version.py",
+        ),
     )
 
-    assert len(staged) == 4
+    assert len(staged) == 5
     assert (publish / "scipy/version.py").read_text(encoding="utf-8") == (
         "# scipy/version.py\n"
     )
-    assert (publish / "scipy/__config__.py").is_file()
+    assert (publish / "scipy/__config__.py").read_text(encoding="utf-8") == (
+        'ROOT = r"@source"\n'
+    )
+    assert (
+        publish / "scipy/_lib/include/scipy/generated_api.h"
+    ).read_text(encoding="utf-8") == '#define BUILD_ROOT "@build"\n'
     assert not (publish / "array_api_extra").exists()
 
 
@@ -288,12 +315,18 @@ def test_meson_installed_python_rejects_old_handwritten_config_gap(
     with pytest.raises(
         producer.SourceExtensionProducerError, match=r"scipy/__config__\.py"
     ):
-        producer._stage_installed_python_files(
+        producer._stage_installed_package_files(
             intro_installed=intro,
             source_root=source,
             build_root=build,
             package="scipy",
             publish_root=publish,
+            location_roots=((source, "@source"), (build, "@build")),
+            required_installed_files=(
+                "scipy/__config__.py",
+                "scipy/__init__.py",
+                "scipy/version.py",
+            ),
         )
 
 
@@ -328,6 +361,8 @@ def test_build_extension_routes_real_meson_authority_deterministically(
         target_name="_nd_image",
         python_exports=("scipy",),
         capabilities=(),
+        provided_capsules=(),
+        exclude_linked_static_libraries=(),
         target="wasm",
         abi_tier="cpython-abi",
         tool_commands={"ld": ("/tools/wasm-ld",)},
@@ -485,7 +520,7 @@ def test_source_build_environment_missing_distribution_is_fail_closed(
         producer._ensure_source_build_environment(tmp_path)
 
 
-def test_meson_setup_uses_active_interpreter_module(
+def test_meson_setup_uses_typed_driver(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls: list[tuple[str, ...]] = []
@@ -507,6 +542,10 @@ def test_meson_setup_uses_active_interpreter_module(
             tmp_path / "metadata/build-tools.cross",
         ),
         setup_args=("-Dblas=none",),
+        driver=producer._SourceMesonDriver(
+            command=(sys.executable, "-m", "mesonbuild.mesonmain"),
+            manifest={"kind": "build-environment"},
+        ),
     )
 
     assert calls == [
@@ -522,6 +561,91 @@ def test_meson_setup_uses_active_interpreter_module(
             "--cross-file",
             str(tmp_path / "metadata/build-tools.cross"),
             "-Dblas=none",
+        )
+    ]
+
+
+def test_upstream_vendored_meson_is_the_driver_authority(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    driver = source / "vendor/meson.py"
+    driver.parent.mkdir(parents=True)
+    driver.write_text("# upstream meson\n", encoding="utf-8")
+    (source / "pyproject.toml").write_text(
+        "[tool.meson-python]\nmeson = 'vendor/meson.py'\n",
+        encoding="utf-8",
+    )
+
+    resolved = producer._source_meson_driver(source)
+
+    assert resolved.command == (sys.executable, str(driver.resolve()))
+    assert resolved.manifest_payload() == {
+        "kind": "source-vendored",
+        "path": "vendor/meson.py",
+        "sha256": hashlib.sha256(driver.read_bytes()).hexdigest(),
+    }
+
+
+def test_generated_input_materialization_uses_one_upstream_meson_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source"
+    build = tmp_path / "build"
+    source.mkdir()
+    build.mkdir()
+    version = build / "numpy/version.py"
+    generated_c = build / "numpy/_core/loops.c"
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(
+        producer,
+        "_missing_installed_generated_inputs",
+        lambda **_kwargs: {version},
+    )
+    monkeypatch.setattr(
+        producer,
+        "_missing_extension_generated_inputs",
+        lambda **_kwargs: {generated_c},
+    )
+
+    def run_process(argv, *, cwd):
+        assert cwd == source
+        calls.append(tuple(argv))
+        version.parent.mkdir(parents=True)
+        generated_c.parent.mkdir(parents=True)
+        version.write_text("version = '2.5.1'\n", encoding="utf-8")
+        generated_c.write_text("int generated;\n", encoding="utf-8")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(producer, "_run_process", run_process)
+    backend = producer._SourceNinjaDriver(
+        command=("ninja",),
+        manifest={"distribution": "ninja"},
+    )
+
+    materialized = producer._materialize_generated_inputs(
+        backend=backend,
+        source_root=source,
+        build_root=build,
+        intro_targets=build / "meson-info/intro-targets.json",
+        intro_installed=build / "meson-info/intro-installed.json",
+        extension_set=ScientificExtensionSet(
+            package="numpy",
+            name="pact-witness",
+            seal_name="numpy-witness",
+            meson_setup_args=(),
+            use_pkg_config=False,
+            required_installed_files=(),
+            extensions=(),
+        ),
+    )
+
+    assert materialized == (generated_c, version)
+    assert calls == [
+        (
+            "ninja",
+            "-C",
+            str(build),
+            "numpy/_core/loops.c",
+            "numpy/version.py",
         )
     ]
 
@@ -691,6 +815,8 @@ def test_complete_set_validator_rejects_duplicate_module_sidecar(
         name="pact-witness",
         seal_name="pact_scipy_witness",
         meson_setup_args=(),
+        use_pkg_config=True,
+        required_installed_files=(),
         extensions=tuple(
             ScientificExtensionSpec(
                 module=module,
@@ -703,11 +829,17 @@ def test_complete_set_validator_rejects_duplicate_module_sidecar(
     )
     set_manifest = {
         "target_metadata": _write_target_metadata(publish),
+        "installed_package_files": [],
         "extensions": [
             {
                 "module": spec.module,
                 "target": spec.target,
+                "python_exports": list(spec.python_exports),
                 "capabilities": list(spec.capabilities),
+                "provided_capsules": list(spec.provided_capsules),
+                "exclude_linked_static_libraries": list(
+                    spec.exclude_linked_static_libraries
+                ),
                 "artifact_sha256": hashlib.sha256(
                     publish.joinpath(*spec.module.split("."))
                     .with_suffix(".molt.wasm")
@@ -726,7 +858,7 @@ def test_complete_set_validator_rejects_duplicate_module_sidecar(
     )
     set_manifest["extensions"][0]["target"] = "wrong-target"
     with pytest.raises(
-        producer.SourceExtensionProducerError, match="module/target/capability"
+        producer.SourceExtensionProducerError, match="typed extension contracts"
     ):
         producer._validate_complete_publish_root(
             publish_root=publish,
@@ -957,3 +1089,153 @@ def test_stage_build_metadata_recomputes_canonical_leaf_and_identity_digests(
         staged["target/source-extension-target-metadata.json"].read_text()
     ) == canonical
     assert "stale" not in json.dumps(canonical)
+
+
+def test_recover_and_prune_producer_transactions_removes_whole_abandoned_family(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destination = tmp_path / "canonical-seal"
+    abandoned = [
+        tmp_path / ".canonical-seal.produce-alpha",
+        tmp_path / ".canonical-seal.produce-beta",
+    ]
+    unrelated = tmp_path / ".other-seal.produce-preserve"
+    for root in (*abandoned, unrelated):
+        (root / "package-store").mkdir(parents=True)
+        (root / "evidence.txt").write_text("fixture\n", encoding="utf-8")
+    recovered: list[Path] = []
+    monkeypatch.setattr(
+        producer,
+        "recover_source_package_seal_commits",
+        lambda root: recovered.append(root) or (),
+    )
+
+    producer._recover_and_prune_producer_transactions(destination)
+
+    assert recovered == [root / "package-store" for root in abandoned]
+    assert not any(root.exists() for root in abandoned)
+    assert unrelated.is_dir()
+
+
+def test_recover_and_prune_restores_retired_destination_without_commit(
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / "canonical-seal"
+    abandoned = tmp_path / ".canonical-seal.produce-interrupted"
+    retired = abandoned / "retired-destination"
+    retired.mkdir(parents=True)
+    (retired / "legacy.txt").write_text("preserved\n", encoding="utf-8")
+
+    producer._recover_and_prune_producer_transactions(destination)
+
+    assert (destination / "legacy.txt").read_text(encoding="utf-8") == "preserved\n"
+    assert not abandoned.exists()
+
+
+def test_retire_replaceable_extension_destination_requires_exact_typed_module_family(
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / "legacy"
+    transaction = tmp_path / "transaction"
+    extension_set = scientific_extension_set("numpy", "pact-witness")
+    for extension in extension_set.extensions:
+        package = destination.joinpath(*extension.module.split(".")[:-1])
+        package.mkdir(parents=True, exist_ok=True)
+        artifact = package / f"{extension.target}.molt.wasm"
+        artifact.write_bytes(b"\x00asm" + extension.target.encode())
+        artifact.with_name(artifact.name + ".extension_manifest.json").write_text(
+            json.dumps(
+                {
+                    "module": extension.module,
+                    "extension": artifact.name,
+                    "extension_sha256": hashlib.sha256(
+                        artifact.read_bytes()
+                    ).hexdigest(),
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    retired = producer._retire_replaceable_extension_destination(
+        destination,
+        transaction_root=transaction,
+        extension_set=extension_set,
+        set_manifest={"source_head": "fixture"},
+    )
+
+    assert retired == transaction / "retired-destination"
+    assert retired.is_dir()
+    assert not destination.exists()
+
+
+def test_retire_replaceable_canonical_seal_allows_same_identity_schema_migration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destination = tmp_path / "canonical"
+    payload_root = destination / "files"
+    transaction = tmp_path / "transaction"
+    extension_set = scientific_extension_set("numpy", "pact-witness")
+    extensions: list[dict[str, object]] = []
+    for extension in extension_set.extensions:
+        package = payload_root.joinpath(*extension.module.split(".")[:-1])
+        package.mkdir(parents=True, exist_ok=True)
+        artifact = package / f"{extension.target}.molt.wasm"
+        artifact.write_bytes(b"\x00asm" + extension.target.encode())
+        artifact.with_name(artifact.name + ".extension_manifest.json").write_text(
+            json.dumps(
+                {
+                    "module": extension.module,
+                    "extension": artifact.name,
+                    "extension_sha256": hashlib.sha256(
+                        artifact.read_bytes()
+                    ).hexdigest(),
+                }
+            ),
+            encoding="utf-8",
+        )
+        extensions.append(
+            {
+                "module": extension.module,
+                "target": extension.target,
+                "python_exports": list(extension.python_exports),
+                "capabilities": list(extension.capabilities),
+                "provided_capsules": list(extension.provided_capsules),
+                "exclude_linked_static_libraries": list(
+                    extension.exclude_linked_static_libraries
+                ),
+            }
+        )
+    identity = {
+        "package": "numpy",
+        "name": "pact-witness",
+        "seal_name": extension_set.seal_name,
+        "source_head": "same-source",
+    }
+    (payload_root / "extension_set_manifest.json").write_text(
+        json.dumps(
+            {
+                **identity,
+                "installed_python_files": ["numpy/__init__.py"],
+                "extensions": extensions,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        producer,
+        "verify_source_package_seal",
+        lambda _root: SimpleNamespace(payload_root=payload_root),
+    )
+
+    retired = producer._retire_replaceable_extension_destination(
+        destination,
+        transaction_root=transaction,
+        extension_set=extension_set,
+        set_manifest=identity,
+    )
+
+    assert retired == transaction / "retired-destination"
+    assert retired.is_dir()
+    assert not destination.exists()

@@ -93,6 +93,17 @@ def test_location_canonicalization_is_path_boundary_aware(tmp_path: Path) -> Non
     assert canonical["sibling"] == (sibling / "module.py").as_posix()
 
 
+def test_location_canonicalization_rewrites_quoted_generated_config_path(
+    tmp_path: Path,
+) -> None:
+    interpreter = tmp_path / "ephemeral-env"
+    config = f'"path": r"{interpreter}"'
+
+    canonical = _canonicalize_locations(config, ((interpreter, "@python"),))
+
+    assert canonical == '"path": r"@python"'
+
+
 def test_location_canonicalization_rejects_collapsed_keys(tmp_path: Path) -> None:
     build = tmp_path / "build"
     with pytest.raises(ValueError, match="collapses distinct metadata keys"):

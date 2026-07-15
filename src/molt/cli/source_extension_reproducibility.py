@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -76,14 +77,23 @@ def _canonicalize_location_string(
     value: str,
     location_roots: Sequence[tuple[Path | None, str]],
 ) -> str:
+    return _canonicalize_location_string_ordered(
+        value, _ordered_location_roots(location_roots)
+    )
+
+
+def _canonicalize_location_string_ordered(
+    value: str,
+    ordered_roots: Sequence[tuple[Path, str]],
+) -> str:
     canonical = value.replace("\\", "/")
-    for root, token in _ordered_location_roots(location_roots):
+    for root, token in ordered_roots:
         root_text = root.as_posix().rstrip("/")
         if not root_text:
             raise ValueError("filesystem root cannot be a location identity authority")
         flags = re.IGNORECASE if root.drive else 0
         canonical = re.sub(
-            re.escape(root_text) + r"(?=$|[/=])",
+            re.escape(root_text) + r'''(?=$|[/=;,\s'"\)\]\}])''',
             lambda _match: token,
             canonical,
             flags=flags,
@@ -96,32 +106,54 @@ def _canonicalize_locations(
     location_roots: Sequence[tuple[Path | None, str]],
     source_paths: Mapping[Path, str] | None = None,
 ) -> Any:
-    if isinstance(value, str):
-        candidate = Path(value).expanduser()
-        if candidate.is_absolute() and source_paths is not None:
-            replacement = source_paths.get(candidate.resolve())
-            if replacement is not None:
-                return replacement
-        return _canonicalize_location_string(value, location_roots)
-    if isinstance(value, list):
-        return [
-            _canonicalize_locations(item, location_roots, source_paths)
-            for item in value
-        ]
-    if isinstance(value, dict):
-        canonical: dict[str, Any] = {}
-        for raw_key, item in value.items():
-            key = _canonicalize_location_string(str(raw_key), location_roots)
-            if key in canonical:
-                raise ValueError(
-                    "location canonicalization collapses distinct metadata keys: "
-                    f"{raw_key!r} -> {key!r}"
+    ordered_roots = _ordered_location_roots(location_roots)
+    resolved_source_paths: dict[str, str] | None = None
+    if source_paths is not None:
+        resolved_source_paths = {}
+        for path, replacement in source_paths.items():
+            for candidate in (path.expanduser(), path.resolve()):
+                key = os.path.normcase(os.path.normpath(os.fspath(candidate)))
+                previous = resolved_source_paths.setdefault(key, replacement)
+                if previous != replacement:
+                    raise ValueError(
+                        "source-path canonicalization has conflicting identities: "
+                        f"{candidate} -> {previous!r} and {replacement!r}"
+                    )
+
+    def canonicalize(item: Any) -> Any:
+        if isinstance(item, str):
+            if resolved_source_paths is not None:
+                expanded = os.path.expanduser(item)
+                candidate = (
+                    os.path.normcase(os.path.normpath(expanded))
+                    if os.path.isabs(expanded)
+                    else None
                 )
-            canonical[key] = _canonicalize_locations(
-                item, location_roots, source_paths
-            )
-        return canonical
-    return value
+            else:
+                candidate = None
+            if candidate is not None:
+                replacement = resolved_source_paths.get(candidate)
+                if replacement is not None:
+                    return replacement
+            return _canonicalize_location_string_ordered(item, ordered_roots)
+        if isinstance(item, list):
+            return [canonicalize(child) for child in item]
+        if isinstance(item, dict):
+            canonical: dict[str, Any] = {}
+            for raw_key, child in item.items():
+                key = _canonicalize_location_string_ordered(
+                    str(raw_key), ordered_roots
+                )
+                if key in canonical:
+                    raise ValueError(
+                        "location canonicalization collapses distinct metadata keys: "
+                        f"{raw_key!r} -> {key!r}"
+                    )
+                canonical[key] = canonicalize(child)
+            return canonical
+        return item
+
+    return canonicalize(value)
 
 
 def _canonicalize_meson_metadata(
