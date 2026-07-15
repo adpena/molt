@@ -6,6 +6,18 @@ exact command and git snapshot, writes guarded logs, enforces proof DAG
 dependencies, and projects each noted or linked run into a deterministic marimo
 notebook for collaborative inspection.
 
+The executable is intentionally only a stable source-checkout entrypoint. The
+canonical implementation lives in `tools/proof_queue_pkg/`: `state` owns the
+SQLite schema, paths, rows, notes, DAG, and serialized mutex facts; `custody`
+owns process identity and queue-owned process control; `scheduling` owns atomic
+admission and leases; `diagnostics` classifies logs; `evidence` owns notebook
+and JSON projections; `policy` owns command/toolchain admission; `runner` owns
+guarded execution; `commands` orchestrates CLI operations; and `pact` owns the
+named scientific witness lanes. Pact imports are lazy so status/help and normal
+queue work do not load NumPy/SciPy witness tooling. New behavior belongs in its
+owning module; `tools/proof_queue.py` must not become a compatibility facade or
+re-export internal implementation symbols.
+
 ## When To Use It
 
 Use the queue for Cargo builds, WASM/browser proofs, benchmark lanes,
@@ -483,7 +495,8 @@ uv run --active --project . --python 3.12 python tools\proof_queue.py diagnose R
 
 `status` also prints the first diagnostic for recent failed rows. If a repeated
 failure only shows `unclassified-failed-proof`, add a deterministic diagnosis
-rule to `tools/proof_queue.py` before that pattern becomes tribal knowledge.
+rule to `tools/proof_queue_pkg/diagnostics.py` before that pattern becomes tribal
+knowledge.
 `audit` also reports `audit-weak-proof-metadata` for rows that fell back to
 generic resource/contention authority, have no scopes, or carry suspicious
 reasons from broken shell quoting. Treat those rows as weak evidence and rerun
