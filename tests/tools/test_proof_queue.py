@@ -15,6 +15,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from molt.cli.file_hashing import _sha256_file
+from molt.cli.source_build_environment import canonical_source_marker_environment
 from molt.cli.source_package_seal import SourcePackageInput, stage_source_package_seal
 from molt.scientific_stack_versions import (
     resolve_scientific_stack,
@@ -185,12 +187,12 @@ def _insert_blocked_dependency_fixture(
 
 
 def test_proof_queue_session_id_is_contention_key_scoped() -> None:
-    assert state._proof_session_id(
+    assert state._proof_session_id("wasm", "wasm-build") == state._proof_session_id(
         "wasm", "wasm-build"
-    ) == state._proof_session_id("wasm", "wasm-build")
-    assert state._proof_session_id(
-        "wasm", "wasm-build"
-    ) != state._proof_session_id("wasm", "wasm-browser")
+    )
+    assert state._proof_session_id("wasm", "wasm-build") != state._proof_session_id(
+        "wasm", "wasm-browser"
+    )
 
 
 def test_proof_queue_pid_alive_detects_current_process() -> None:
@@ -391,9 +393,7 @@ def test_proof_queue_proof_command_help_does_not_require_delimiter(
 
 def test_proof_queue_help_detection_ignores_metadata_values_and_command_args() -> None:
     assert cli._proof_command_help_requested(["exec", "--help"])
-    assert cli._proof_command_help_requested(
-        ["exec", "--id", "help-smoke", "-h"]
-    )
+    assert cli._proof_command_help_requested(["exec", "--id", "help-smoke", "-h"])
     assert not cli._proof_command_help_requested(
         ["exec", "--note", "--help", "--", sys.executable]
     )
@@ -572,9 +572,7 @@ def test_proof_queue_rejects_invalid_memory_guard_poll_override() -> None:
             {"MOLT_MEMORY_GUARD_POLL_SEC": "not-a-number"}
         )
     with pytest.raises(ValueError, match="MOLT_MEMORY_GUARD_POLL_SEC"):
-        custody._proof_queue_memory_guard_poll_sec(
-            {"MOLT_MEMORY_GUARD_POLL_SEC": "0"}
-        )
+        custody._proof_queue_memory_guard_poll_sec({"MOLT_MEMORY_GUARD_POLL_SEC": "0"})
 
 
 def test_proof_queue_exec_rejects_invalid_memory_guard_poll_before_detach(
@@ -1008,9 +1006,7 @@ def test_proof_queue_status_shows_active_log_phase(
         log_path=log_path,
         summary_json=tmp_path / "active.memory_guard.json",
     )
-    state._update_run(
-        conn, "active-run", status="running", started_at=state._utc_now()
-    )
+    state._update_run(conn, "active-run", status="running", started_at=state._utc_now())
 
     assert (
         cli.main(
@@ -1072,9 +1068,7 @@ def test_proof_queue_status_shows_active_pytest_current_test(
         log_path=log_path,
         summary_json=summary_path,
     )
-    state._update_run(
-        conn, "active-run", status="running", started_at=state._utc_now()
-    )
+    state._update_run(conn, "active-run", status="running", started_at=state._utc_now())
 
     assert (
         cli.main(
@@ -1133,9 +1127,7 @@ def test_proof_queue_status_hides_pytest_current_for_non_pytest_rows(
         log_path=log_path,
         summary_json=summary_path,
     )
-    state._update_run(
-        conn, "active-run", status="running", started_at=state._utc_now()
-    )
+    state._update_run(conn, "active-run", status="running", started_at=state._utc_now())
 
     assert (
         cli.main(
@@ -1210,9 +1202,7 @@ def test_proof_queue_diagnoses_running_pytest_missing_current_test_file(
         log_path=log_path,
         summary_json=summary_path,
     )
-    state._update_run(
-        conn, "active-run", status="running", started_at=state._utc_now()
-    )
+    state._update_run(conn, "active-run", status="running", started_at=state._utc_now())
 
     assert (
         cli.main(
@@ -1366,9 +1356,7 @@ def test_proof_queue_diagnoses_running_pytest_progress_without_current_marker(
         log_path=log_path,
         summary_json=summary_path,
     )
-    state._update_run(
-        conn, "active-run", status="running", started_at=state._utc_now()
-    )
+    state._update_run(conn, "active-run", status="running", started_at=state._utc_now())
 
     assert (
         cli.main(
@@ -1440,9 +1428,7 @@ def test_proof_queue_prioritizes_running_pytest_failure_progress(
         log_path=log_path,
         summary_json=summary_path,
     )
-    state._update_run(
-        conn, "active-run", status="running", started_at=state._utc_now()
-    )
+    state._update_run(conn, "active-run", status="running", started_at=state._utc_now())
 
     assert (
         cli.main(
@@ -1508,7 +1494,9 @@ def test_proof_queue_diagnoses_running_nested_guard_without_work_child(
         "source-recompiled external native packages use package/native artifact custody\n",
         encoding="utf-8",
     )
-    stale = time.time() - diagnostics_module.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
+    stale = (
+        time.time() - diagnostics_module.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
+    )
     os.utime(log_path, (stale, stale))
     summary_path.write_text(
         json.dumps(
@@ -1525,9 +1513,7 @@ def test_proof_queue_diagnoses_running_nested_guard_without_work_child(
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr(
-        custody, "_pid_alive", lambda pid: pid in {child_pid, 99_001}
-    )
+    monkeypatch.setattr(custody, "_pid_alive", lambda pid: pid in {child_pid, 99_001})
     monkeypatch.setattr(memory_guard, "sample_processes", lambda: {})
     monkeypatch.setattr(memory_guard, "descendant_pids", lambda samples, pid: set())
     conn = state._connect(db)
@@ -1594,7 +1580,9 @@ def test_proof_queue_diagnoses_stale_running_log_with_live_work_child(
         "memory_guard_command='python tools/memory_guard.py -- cargo test'\n",
         encoding="utf-8",
     )
-    stale = time.time() - diagnostics_module.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
+    stale = (
+        time.time() - diagnostics_module.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
+    )
     os.utime(log_path, (stale, stale))
     summary_path.write_text(
         json.dumps(
@@ -1734,7 +1722,9 @@ def test_proof_queue_diagnoses_stale_running_launch_summary(
         " done\n",
         encoding="utf-8",
     )
-    stale = time.time() - diagnostics_module.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
+    stale = (
+        time.time() - diagnostics_module.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
+    )
     os.utime(log_path, (stale, stale))
     summary_path.write_text(
         json.dumps(
@@ -2067,7 +2057,9 @@ def test_proof_queue_prune_stale_preserves_live_launch_summary_only_row(
         "proof_queue run_id=active-run\n done\n",
         encoding="utf-8",
     )
-    stale = time.time() - diagnostics_module.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
+    stale = (
+        time.time() - diagnostics_module.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
+    )
     os.utime(log_path, (stale, stale))
     summary_path.write_text(
         json.dumps(
@@ -2157,7 +2149,9 @@ def test_proof_queue_prune_stale_reclaims_launch_summary_after_guard_exit(
         "proof_queue run_id=active-run\n done\n",
         encoding="utf-8",
     )
-    stale = time.time() - diagnostics_module.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
+    stale = (
+        time.time() - diagnostics_module.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
+    )
     os.utime(log_path, (stale, stale))
     summary_path.write_text(
         json.dumps(
@@ -2231,7 +2225,9 @@ def test_proof_queue_prune_stale_terminalizes_dead_nested_guard_child(
         "memory_guard_command='python tools/memory_guard.py -- pytest tests'\n",
         encoding="utf-8",
     )
-    stale = time.time() - diagnostics_module.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
+    stale = (
+        time.time() - diagnostics_module.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
+    )
     os.utime(log_path, (stale, stale))
     summary_path.write_text(
         json.dumps(
@@ -2314,7 +2310,9 @@ def test_proof_queue_prune_stale_preserves_live_windows_child_runner_missing(
         "dx-build prime: still running elapsed=208s timeout=unbounded pid=18956\n",
         encoding="utf-8",
     )
-    stale = time.time() - diagnostics_module.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
+    stale = (
+        time.time() - diagnostics_module.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
+    )
     os.utime(log_path, (stale, stale))
     summary_path.write_text(
         json.dumps(
@@ -5653,9 +5651,7 @@ def test_proof_queue_diagnoses_rust_test_failure_before_cargo_error_line(
         ),
         encoding="utf-8",
     )
-    state._update_run(
-        conn, "rust-test-failed-run", status="failed", returncode=101
-    )
+    state._update_run(conn, "rust-test-failed-run", status="failed", returncode=101)
 
     assert (
         cli.main(
@@ -5739,9 +5735,7 @@ def test_proof_queue_diagnoses_nested_guarded_exec_orphan_cleanup(
         ),
         encoding="utf-8",
     )
-    state._update_run(
-        conn, "nested-guarded-exec-run", status="passed", returncode=0
-    )
+    state._update_run(conn, "nested-guarded-exec-run", status="passed", returncode=0)
 
     assert (
         cli.main(
@@ -6658,9 +6652,7 @@ def test_proof_queue_diagnoses_embedded_python_import_missing(
         "\\nModuleNotFoundError: No module named 'packaging.specifiers'\",\n",
         encoding="utf-8",
     )
-    state._update_run(
-        conn, "dx-build-missing-import", status="failed", returncode=1
-    )
+    state._update_run(conn, "dx-build-missing-import", status="failed", returncode=1)
 
     assert (
         cli.main(
@@ -6782,9 +6774,7 @@ def test_proof_queue_diagnoses_source_extension_build_plan_missing(
         'C:\\repo\\numpy\\tmp\\pact_numpy_multiarray\\intro-targets.json"]}\n',
         encoding="utf-8",
     )
-    state._update_run(
-        conn, "source-extension-plan", status="failed", returncode=2
-    )
+    state._update_run(conn, "source-extension-plan", status="failed", returncode=2)
 
     assert (
         cli.main(
@@ -6849,9 +6839,7 @@ def test_proof_queue_diagnoses_source_extension_compile_header_missing(
         '1 error generated."]}\n',
         encoding="utf-8",
     )
-    state._update_run(
-        conn, "source-extension-header", status="failed", returncode=2
-    )
+    state._update_run(conn, "source-extension-header", status="failed", returncode=2)
 
     assert (
         cli.main(
@@ -6914,9 +6902,7 @@ def test_proof_queue_diagnoses_source_extension_cython_regeneration_failed(
         "attribute 'is_builtin_type'\"]}\n",
         encoding="utf-8",
     )
-    state._update_run(
-        conn, "source-extension-cython", status="failed", returncode=2
-    )
+    state._update_run(conn, "source-extension-cython", status="failed", returncode=2)
 
     assert (
         cli.main(
@@ -7422,9 +7408,7 @@ def test_proof_queue_diagnoses_pytest_import_error(
         ),
         encoding="utf-8",
     )
-    state._update_run(
-        conn, "pytest-import-error-run", status="failed", returncode=1
-    )
+    state._update_run(conn, "pytest-import-error-run", status="failed", returncode=1)
 
     assert (
         cli.main(
@@ -8908,9 +8892,7 @@ def test_proof_queue_pact_witness_acceptance_allows_diagnostic_env(
     spec = json.loads(capsys.readouterr().out)
     assert spec["env_overrides"]["MOLT_TRACE_CAPI"] == "1"
     assert spec["env_overrides"]["MOLT_TRACE_IMPORT_STAGE"] == "1"
-    assert set(spec["locked_env"]) == set(
-        pact._PACT_WITNESS_ACCEPTANCE_LOCKED_ENV
-    )
+    assert set(spec["locked_env"]) == set(pact._PACT_WITNESS_ACCEPTANCE_LOCKED_ENV)
     assert not db.exists()
 
 
@@ -9122,35 +9104,48 @@ def test_proof_queue_native_molt_run_rejects_outside_repo(tmp_path: Path) -> Non
         pact._native_molt_run_spec(str(outside), repo_root=tmp_path)
 
 
-def _write_current_numpy_seal_manifest(root: Path, source_root: Path) -> None:
-    source_rel = Path("numpy/_core/src/multiarray/npy_static_data.c")
-    source_path = source_root / source_rel
-    source_path.parent.mkdir(parents=True, exist_ok=True)
-    source_path.write_text(
-        'IMPORT_GLOBAL("numpy._core._exceptions", NULL);\n',
-        encoding="utf-8",
+def _publish_scientific_fixture_payload(
+    payload_root: Path,
+    destination: Path,
+    transaction_root: Path,
+) -> None:
+    if transaction_root.exists():
+        shutil.rmtree(transaction_root)
+    seal = stage_source_package_seal(
+        transaction_root,
+        [
+            SourcePackageInput(
+                path,
+                path.relative_to(payload_root).as_posix(),
+                "fixture",
+            )
+            for path in sorted(payload_root.rglob("*"))
+            if path.is_file()
+        ],
     )
-    root.mkdir(parents=True, exist_ok=True)
-    (root / "numpy").mkdir()
-    (root / "numpy/version.py").write_text('version = "2.5.1"\n', encoding="utf-8")
-    (root / "extension_manifest.json").write_text(
-        json.dumps(
-            {
-                "module": "numpy._core._multiarray_umath",
-                "runtime_python_import_modules": ["numpy._core._exceptions"],
-                "source_plan": {"source_root": str(source_root)},
-                "object_closure": {
-                    "objects": [{"source": source_rel.as_posix()}],
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
+    if destination.exists():
+        shutil.rmtree(destination)
+    shutil.copytree(seal.root, destination)
+    shutil.rmtree(transaction_root)
 
 
-def _write_current_scipy_seal(
+def _reseal_scientific_fixture(destination: Path) -> None:
+    payload_root = destination / "files"
+    temporary_payload = destination.parent / f".{destination.name}.reseal-payload"
+    transaction_root = destination.parent / f".{destination.name}.reseal-transaction"
+    if temporary_payload.exists():
+        shutil.rmtree(temporary_payload)
+    shutil.copytree(payload_root, temporary_payload)
+    _publish_scientific_fixture_payload(
+        temporary_payload, destination, transaction_root
+    )
+    shutil.rmtree(temporary_payload)
+
+
+def _write_current_scientific_seal(
     root: Path,
     *,
+    package: str = "scipy",
     missing_module: str | None = None,
     exports_override: dict[str, list[str]] | None = None,
 ) -> None:
@@ -9161,11 +9156,11 @@ def _write_current_scipy_seal(
         shutil.rmtree(root)
     if transaction_root.exists():
         shutil.rmtree(transaction_root)
-    extension_set = scientific_extension_set("scipy", "pact-witness")
+    extension_set = scientific_extension_set(package, "pact-witness")
     stack = resolve_scientific_stack()
     current_abi = pact._default_molt_c_api_version(state.ROOT)
     current_abi_tag = f"molt_abi{current_abi.split('.', 1)[0]}"
-    set_extensions: list[dict[str, str]] = []
+    set_extensions: list[dict[str, object]] = []
     for extension in extension_set.extensions:
         artifact_name = f"{extension.target}.molt.wasm"
         artifact_bytes = b"\x00asm" + extension.target.encode("utf-8")
@@ -9174,6 +9169,11 @@ def _write_current_scipy_seal(
         source_bytes = f"/* {extension.module} */\n".encode()
         source_sha256 = hashlib.sha256(source_bytes).hexdigest()
         init_symbol = f"PyInit_{extension.module.rsplit('.', 1)[-1]}"
+        package_dir = root.joinpath(*extension.module.split(".")[:-1])
+        source_path = root.joinpath(
+            "provenance", "compiled-inputs", *extension.module.split("."), "source.c"
+        )
+        source_reference = os.path.relpath(source_path, package_dir).replace(os.sep, "/")
         object_closure: dict[str, object] = {
             "schema_version": 1,
             "root_symbol": init_symbol,
@@ -9181,7 +9181,7 @@ def _write_current_scipy_seal(
             "runtime_symbols": [],
             "objects": [
                 {
-                    "source": f"sources/{extension.target}.c",
+                    "source": source_reference,
                     "object": "0.o",
                     "source_sha256": source_sha256,
                     "object_sha256": "2" * 64,
@@ -9191,7 +9191,7 @@ def _write_current_scipy_seal(
                         "@llvm-bin/clang",
                         "--target=wasm32-wasip1",
                         "-c",
-                        f"sources/{extension.target}.c",
+                        source_reference,
                     ],
                     "symbol_command": ["@llvm-bin/llvm-nm"],
                     "dependencies": [],
@@ -9205,7 +9205,12 @@ def _write_current_scipy_seal(
             {
                 "module": extension.module,
                 "target": extension.target,
+                "python_exports": list(extension.python_exports),
                 "capabilities": list(extension.capabilities),
+                "provided_capsules": list(extension.provided_capsules),
+                "exclude_linked_static_libraries": list(
+                    extension.exclude_linked_static_libraries
+                ),
                 "artifact_sha256": artifact_sha256,
                 "wheel_sha256": wheel_sha256,
                 "object_closure_sha256": closure_sha256,
@@ -9213,12 +9218,18 @@ def _write_current_scipy_seal(
         )
         if extension.module == missing_module:
             continue
-        package_dir = root.joinpath(*extension.module.split(".")[:-1])
         package_dir.mkdir(parents=True, exist_ok=True)
-        source_path = package_dir / "sources" / f"{extension.target}.c"
         source_path.parent.mkdir(parents=True, exist_ok=True)
         source_path.write_bytes(source_bytes)
         (package_dir / artifact_name).write_bytes(artifact_bytes)
+        wheel_path = root.joinpath(
+            "provenance",
+            "wheels",
+            *extension.module.split("."),
+            f"{extension.target}.whl",
+        )
+        wheel_path.parent.mkdir(parents=True, exist_ok=True)
+        wheel_path.write_bytes(f"wheel:{extension.target}".encode())
         manifest_path = package_dir / f"{artifact_name}.extension_manifest.json"
         manifest_path.write_text(
             json.dumps(
@@ -9226,6 +9237,9 @@ def _write_current_scipy_seal(
                     "module": extension.module,
                     "extension": artifact_name,
                     "extension_sha256": artifact_sha256,
+                    "wheel": os.path.relpath(wheel_path, package_dir).replace(
+                        os.sep, "/"
+                    ),
                     "wheel_sha256": wheel_sha256,
                     "molt_c_api_version": current_abi,
                     "abi_tag": current_abi_tag,
@@ -9241,16 +9255,15 @@ def _write_current_scipy_seal(
                     "python_exports": (exports_override or {}).get(
                         extension.module, list(extension.python_exports)
                     ),
+                    "provided_capsules": list(extension.provided_capsules),
                 }
             ),
             encoding="utf-8",
         )
-    installed_python_files = [
-        "scipy/__init__.py",
-        "scipy/version.py",
-        "scipy/__config__.py",
-    ]
-    for relative in installed_python_files:
+    installed_package_files = sorted(
+        {*extension_set.required_installed_files, f"{package}/_fixture_extra.py"}
+    )
+    for relative in installed_package_files:
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(f"# {relative}\n", encoding="utf-8")
@@ -9292,8 +9305,8 @@ def _write_current_scipy_seal(
             },
         },
         "digests": {
-            "python_pc_sha256": pact._sha256_file(python_pc),
-            "meson_cross_sha256": pact._sha256_file(meson_cross),
+            "python_pc_sha256": _sha256_file(python_pc),
+            "meson_cross_sha256": _sha256_file(meson_cross),
         },
     }
     target_metadata["digest"] = hashlib.sha256(
@@ -9306,22 +9319,53 @@ def _write_current_scipy_seal(
     (target_root / "source-extension-target-metadata.json").write_text(
         json.dumps(target_metadata), encoding="utf-8"
     )
+    meson_metadata_root = root / "provenance/metadata/meson"
+    meson_metadata_root.mkdir(parents=True, exist_ok=True)
+    intro_targets = meson_metadata_root / "intro-targets.json"
+    compile_commands = meson_metadata_root / "compile-commands.json"
+    intro_installed = meson_metadata_root / "intro-installed.json"
+    intro_targets.write_text("[]\n", encoding="utf-8")
+    compile_commands.write_text("[]\n", encoding="utf-8")
+    intro_installed.write_text("{}\n", encoding="utf-8")
+    config_tool_cross = meson_metadata_root / "build-config-tools.cross"
+    if extension_set.use_pkg_config:
+        config_tool_cross.write_text("[binaries]\n", encoding="utf-8")
     (root / "extension_set_manifest.json").write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "kind": "molt-source-extension-set",
-                "package": "scipy",
+                "package": package,
                 "name": "pact-witness",
-                "seal_name": "pact_scipy_witness",
-                "source_head": stack.scipy_repo_ref,
+                "seal_name": extension_set.seal_name,
+                "source_head": {
+                    "numpy": stack.numpy_repo_ref,
+                    "scipy": stack.scipy_repo_ref,
+                }[package],
+                "submodules": [],
                 "target": "wasm",
                 "target_triple": "wasm32-wasip1",
                 "abi_tier": "cpython-abi",
                 "target_metadata": target_metadata,
                 "build_environment": {
-                    "python_executable": sys.executable,
+                    "python": {
+                        "implementation": sys.implementation.name,
+                        "version": (
+                            f"{sys.version_info.major}.{sys.version_info.minor}."
+                            f"{sys.version_info.micro}"
+                        ),
+                        "executable": Path(sys.executable).name,
+                    },
                     "requirements": [
+                        "meson>=1.5",
+                        "Cython>=3.0",
+                        "pybind11>=2.13.2",
+                        "pythran>=0.14.0",
+                        "numpy>=2.0.0",
+                        'ninja; python_version < "3"',
+                    ],
+                    "marker_environment": canonical_source_marker_environment(),
+                    "active_requirements": [
                         "meson>=1.5",
                         "Cython>=3.0",
                         "pybind11>=2.13.2",
@@ -9357,67 +9401,77 @@ def _write_current_scipy_seal(
                     ],
                 },
                 "meson": {
-                    "build_root": str(root / "meson-build"),
+                    "driver": {
+                        "kind": "build-environment",
+                        "module": "mesonbuild.mesonmain",
+                        "distribution": "meson",
+                        "version": "1.9.0",
+                    },
+                    "backend": {
+                        "distribution": "ninja",
+                        "version": "1.13.0",
+                        "path": "ninja.exe",
+                        "sha256": "b" * 64,
+                    },
+                    "build_root": "@build",
                     "setup_args": list(extension_set.meson_setup_args),
-                    "intro_targets_sha256": "3" * 64,
-                    "compile_commands_sha256": "4" * 64,
-                    "intro_installed_sha256": "5" * 64,
-                    "config_tool_cross_sha256": "6" * 64,
-                    "config_tools": [
-                        {
-                            "name": "numpy-config",
-                            "path": "C:/tools/numpy-config.exe",
-                            "distribution": "numpy",
-                            "version": "2.5.1",
-                            "sha256": "7" * 64,
-                        },
-                        {
-                            "name": "pkg-config",
-                            "path": "C:/tools/pkg-config.exe",
-                            "distribution": "pkgconf",
-                            "version": "3.0.1.post0",
-                            "sha256": "8" * 64,
-                        },
-                        {
-                            "name": "pybind11-config",
-                            "path": "C:/tools/pybind11-config.exe",
-                            "distribution": "pybind11",
-                            "version": "3.0.4",
-                            "sha256": "9" * 64,
-                        },
-                        {
-                            "name": "pythran-config",
-                            "path": "C:/tools/pythran-config.exe",
-                            "distribution": "pythran",
-                            "version": "0.18.1",
-                            "sha256": "a" * 64,
-                        },
-                    ],
-                    "pkg_config_requirement": pact.MOLT_PKGCONF_REQUIREMENT,
+                    "intro_targets_sha256": _sha256_file(intro_targets),
+                    "compile_commands_sha256": _sha256_file(compile_commands),
+                    "intro_installed_sha256": _sha256_file(intro_installed),
+                    "config_tool_cross_sha256": (
+                        _sha256_file(config_tool_cross)
+                        if extension_set.use_pkg_config
+                        else None
+                    ),
+                    "config_tools": (
+                        [
+                            {
+                                "name": "numpy-config",
+                                "path": "numpy-config.exe",
+                                "distribution": "numpy",
+                                "version": "2.5.1",
+                                "sha256": "7" * 64,
+                            },
+                            {
+                                "name": "pkg-config",
+                                "path": "pkg-config.exe",
+                                "distribution": "pkgconf",
+                                "version": "3.0.1.post0",
+                                "sha256": "8" * 64,
+                            },
+                            {
+                                "name": "pybind11-config",
+                                "path": "pybind11-config.exe",
+                                "distribution": "pybind11",
+                                "version": "3.0.4",
+                                "sha256": "9" * 64,
+                            },
+                            {
+                                "name": "pythran-config",
+                                "path": "pythran-config.exe",
+                                "distribution": "pythran",
+                                "version": "0.18.1",
+                                "sha256": "a" * 64,
+                            },
+                        ]
+                        if extension_set.use_pkg_config
+                        else []
+                    ),
+                    "pkg_config_requirement": (
+                        pact.MOLT_PKGCONF_REQUIREMENT
+                        if extension_set.use_pkg_config
+                        else None
+                    ),
+                    "generated_inputs": [],
                 },
-                "installed_python_files": installed_python_files,
+                "installed_package_files": installed_package_files,
                 "extensions": set_extensions,
             }
         ),
         encoding="utf-8",
     )
-    seal = stage_source_package_seal(
-        transaction_root,
-        [
-            SourcePackageInput(
-                path,
-                path.relative_to(root).as_posix(),
-                "fixture",
-            )
-            for path in sorted(root.rglob("*"))
-            if path.is_file()
-        ],
-    )
-    if destination.exists():
-        shutil.rmtree(destination)
-    shutil.copytree(seal.root, destination)
+    _publish_scientific_fixture_payload(root, destination, transaction_root)
     shutil.rmtree(root)
-    shutil.rmtree(transaction_root)
 
 
 def test_proof_queue_r6_target_version_parity_print_spec(
@@ -9490,8 +9544,8 @@ def test_proof_queue_pact_witness_acceptance_admits_staged_native_roots(
         root.mkdir(parents=True)
     for root in legacy_roots:
         root.mkdir(parents=True)
-    _write_current_numpy_seal_manifest(expected_seals[0], tmp_path / "numpy-source")
-    _write_current_scipy_seal(expected_seals[1])
+    _write_current_scientific_seal(expected_seals[0], package="numpy")
+    _write_current_scientific_seal(expected_seals[1])
     for root in legacy_roots[:4]:
         (root / "extension_manifest.json").write_text("{}", encoding="utf-8")
 
@@ -9500,10 +9554,10 @@ def test_proof_queue_pact_witness_acceptance_admits_staged_native_roots(
 
     assert env["MOLT_EXTERNAL_STATIC_PACKAGES"] == "numpy scipy"
     assert env["MOLT_MODULE_ROOTS"].split(os.pathsep) == [
-        str(expected_seals[0].resolve()),
+        str((expected_seals[0] / "files").resolve()),
         str((expected_seals[1] / "files").resolve()),
     ]
-    assert any("canonical four-extension SciPy seals" in note for note in spec["notes"])
+    assert any("canonical scientific extension seals" in note for note in spec["notes"])
 
 
 def test_proof_queue_pact_witness_acceptance_fails_when_canonical_scipy_is_absent(
@@ -9514,7 +9568,7 @@ def test_proof_queue_pact_witness_acceptance_fails_when_canonical_scipy_is_absen
         tmp_path
         / "artifacts/package-seals/numpy/2.5.1/pact_numpy_multiarray_sealed_for_witness"
     )
-    _write_current_numpy_seal_manifest(durable_numpy, tmp_path / "numpy-source")
+    _write_current_scientific_seal(durable_numpy, package="numpy")
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
 
     with pytest.raises(ValueError, match="canonical SciPy witness seal is absent"):
@@ -9530,8 +9584,8 @@ def test_proof_queue_pact_witness_acceptance_rejects_incomplete_scipy_set(
         / "artifacts/package-seals/numpy/2.5.1/pact_numpy_multiarray_sealed_for_witness"
     )
     durable_scipy = tmp_path / "artifacts/package-seals/scipy/1.18.0/pact_scipy_witness"
-    _write_current_numpy_seal_manifest(durable_numpy, tmp_path / "numpy-source")
-    _write_current_scipy_seal(
+    _write_current_scientific_seal(durable_numpy, package="numpy")
+    _write_current_scientific_seal(
         durable_scipy, missing_module="scipy.ndimage._rank_filter_1d"
     )
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
@@ -9549,8 +9603,8 @@ def test_proof_queue_pact_witness_acceptance_rejects_scipy_export_drift(
         / "artifacts/package-seals/numpy/2.5.1/pact_numpy_multiarray_sealed_for_witness"
     )
     durable_scipy = tmp_path / "artifacts/package-seals/scipy/1.18.0/pact_scipy_witness"
-    _write_current_numpy_seal_manifest(durable_numpy, tmp_path / "numpy-source")
-    _write_current_scipy_seal(
+    _write_current_scientific_seal(durable_numpy, package="numpy")
+    _write_current_scientific_seal(
         durable_scipy,
         exports_override={"scipy.ndimage._nd_image": ["scipy.ndimage"]},
     )
@@ -9589,7 +9643,7 @@ def test_proof_queue_rejects_scipy_seal_contract_drift(
     tmp_path: Path, field: str, value: object, problem: str
 ) -> None:
     root = tmp_path / "pact_scipy_witness"
-    _write_current_scipy_seal(root)
+    _write_current_scientific_seal(root)
     extension_set = scientific_extension_set("scipy", "pact-witness")
     extension = extension_set.extensions[0]
     manifest_path = pact._scientific_extension_manifest_path(
@@ -9598,8 +9652,9 @@ def test_proof_queue_rejects_scipy_seal_contract_drift(
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest[field] = value
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    _reseal_scientific_fixture(root)
 
-    problems = pact._pact_scipy_witness_seal_problems(root, extension_set)
+    problems = pact._scientific_extension_set_seal_problems(root, extension_set)
 
     assert any(problem in item for item in problems), problems
 
@@ -9608,7 +9663,7 @@ def test_proof_queue_requires_explicit_scipy_determinism_attestation(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "pact_scipy_witness"
-    _write_current_scipy_seal(root)
+    _write_current_scientific_seal(root)
     extension_set = scientific_extension_set("scipy", "pact-witness")
     extension = extension_set.extensions[0]
     manifest_path = pact._scientific_extension_manifest_path(
@@ -9617,8 +9672,9 @@ def test_proof_queue_requires_explicit_scipy_determinism_attestation(
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     del manifest["deterministic"]
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    _reseal_scientific_fixture(root)
 
-    problems = pact._pact_scipy_witness_seal_problems(root, extension_set)
+    problems = pact._scientific_extension_set_seal_problems(root, extension_set)
 
     assert any("deterministic must be true" in item for item in problems), problems
 
@@ -9635,7 +9691,7 @@ def test_proof_queue_rejects_scipy_object_closure_identity_drift(
     tmp_path: Path, field: str, value: object, problem: str
 ) -> None:
     root = tmp_path / "pact_scipy_witness"
-    _write_current_scipy_seal(root)
+    _write_current_scientific_seal(root)
     extension_set = scientific_extension_set("scipy", "pact-witness")
     extension = extension_set.extensions[0]
     manifest_path = pact._scientific_extension_manifest_path(
@@ -9644,8 +9700,9 @@ def test_proof_queue_rejects_scipy_object_closure_identity_drift(
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["object_closure"][field] = value
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    _reseal_scientific_fixture(root)
 
-    problems = pact._pact_scipy_witness_seal_problems(root, extension_set)
+    problems = pact._scientific_extension_set_seal_problems(root, extension_set)
 
     assert any(problem in item for item in problems), problems
 
@@ -9653,7 +9710,7 @@ def test_proof_queue_rejects_scipy_object_closure_identity_drift(
 @pytest.mark.parametrize(
     ("field", "value", "problem"),
     [
-        ("schema_version", 2, "schema_version must be 1"),
+        ("schema_version", 1, "schema_version must be 2"),
         ("kind", "legacy-set", "kind must be 'molt-source-extension-set'"),
         ("source_head", "stale", "source_head must be"),
         ("target_triple", "host", "target_triple must be 'wasm32-wasip1'"),
@@ -9663,13 +9720,14 @@ def test_proof_queue_rejects_scipy_set_manifest_identity_drift(
     tmp_path: Path, field: str, value: object, problem: str
 ) -> None:
     root = tmp_path / "pact_scipy_witness"
-    _write_current_scipy_seal(root)
+    _write_current_scientific_seal(root)
     set_manifest_path = root / "files" / "extension_set_manifest.json"
     manifest = json.loads(set_manifest_path.read_text(encoding="utf-8"))
     manifest[field] = value
     set_manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    _reseal_scientific_fixture(root)
 
-    problems = pact._pact_scipy_witness_seal_problems(
+    problems = pact._scientific_extension_set_seal_problems(
         root, scientific_extension_set("scipy", "pact-witness")
     )
 
@@ -9684,16 +9742,32 @@ def test_proof_queue_rejects_scipy_set_manifest_identity_drift(
         "wheel_checksum",
         "closure_checksum",
         "meson_digest",
+        "meson_metadata_bytes",
         "config_tool_cross",
         "config_tool_set",
+        "config_tools_invalid",
         "pkg_config_requirement",
         "installed_python",
         "installed_python_on_disk",
+        "installed_declared_on_disk",
+        "installed_path_escape",
+        "installed_unexpected_file",
+        "wheel_bytes",
+        "wheel_missing",
+        "top_level_extra",
+        "extension_extra",
+        "submodule_invalid",
+        "backend_sha256",
+        "target_tool_sha256",
         "build_requirements",
+        "build_marker_environment",
+        "build_active_requirements",
         "build_resolved",
         "build_resolved_shape",
         "build_resolved_order",
         "build_resolved_missing",
+        "build_resolved_distribution",
+        "build_resolved_version",
         "missing_manifest",
     ],
 )
@@ -9701,12 +9775,12 @@ def test_proof_queue_rejects_scipy_set_manifest_transaction_drift(
     tmp_path: Path, mutation: str
 ) -> None:
     root = tmp_path / "pact_scipy_witness"
-    _write_current_scipy_seal(root)
+    _write_current_scientific_seal(root)
     set_manifest_path = root / "files" / "extension_set_manifest.json"
     manifest = json.loads(set_manifest_path.read_text(encoding="utf-8"))
     if mutation == "ordered_set":
         manifest["extensions"] = list(reversed(manifest["extensions"]))
-        expected = "ordered module/target/capability set drift"
+        expected = "ordered typed extension contract drift"
     elif mutation == "artifact_checksum":
         manifest["extensions"][0]["artifact_sha256"] = "0" * 64
         expected = "artifact_sha256 differs from sidecar"
@@ -9719,24 +9793,77 @@ def test_proof_queue_rejects_scipy_set_manifest_transaction_drift(
     elif mutation == "meson_digest":
         manifest["meson"]["intro_targets_sha256"] = ""
         expected = "meson.intro_targets_sha256 is not a SHA-256 digest"
+    elif mutation == "meson_metadata_bytes":
+        (root / "files/provenance/metadata/meson/intro-targets.json").write_text(
+            '[{"drift":true}]\n', encoding="utf-8"
+        )
+        expected = "meson.intro_targets_sha256 mismatch"
     elif mutation == "config_tool_cross":
         manifest["meson"]["config_tool_cross_sha256"] = ""
         expected = "meson.config_tool_cross_sha256 is not a SHA-256 digest"
     elif mutation == "config_tool_set":
         manifest["meson"]["config_tools"].pop()
         expected = "Meson config tool set/order drift"
+    elif mutation == "config_tools_invalid":
+        manifest["meson"]["config_tools"] = None
+        expected = "Meson config_tools are invalid"
     elif mutation == "pkg_config_requirement":
         manifest["meson"]["pkg_config_requirement"] = "pkgconf==0"
         expected = "Meson pkg-config requirement drift"
     elif mutation == "installed_python":
-        manifest["installed_python_files"].remove("scipy/__config__.py")
-        expected = "missing installed Python files: scipy/__config__.py"
+        manifest["installed_package_files"].remove("scipy/__config__.py")
+        expected = "missing installed package files: scipy/__config__.py"
     elif mutation == "installed_python_on_disk":
         (root / "files/scipy/__config__.py").unlink()
-        expected = "installed Python files absent on disk: scipy/__config__.py"
+        expected = "installed package files absent on disk: scipy/__config__.py"
+    elif mutation == "installed_declared_on_disk":
+        (root / "files/scipy/_fixture_extra.py").unlink()
+        expected = "installed package files absent on disk: scipy/_fixture_extra.py"
+    elif mutation == "installed_path_escape":
+        manifest["installed_package_files"][0] = "../escape.py"
+        manifest["installed_package_files"].sort()
+        expected = "installed_package_files contain non-canonical paths"
+    elif mutation == "installed_unexpected_file":
+        unexpected = root / "files/scipy/rogue.py"
+        unexpected.parent.mkdir(parents=True, exist_ok=True)
+        unexpected.write_text("# rogue\n", encoding="utf-8")
+        expected = "undeclared installed package files"
+    elif mutation in {"wheel_bytes", "wheel_missing"}:
+        extension = scientific_extension_set("scipy", "pact-witness").extensions[0]
+        sidecar_path = pact._scientific_extension_manifest_path(
+            root / "files", extension.module, extension.target
+        )
+        sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        wheel_path = (sidecar_path.parent / sidecar["wheel"]).resolve()
+        if mutation == "wheel_bytes":
+            wheel_path.write_bytes(b"drifted wheel")
+        else:
+            wheel_path.unlink()
+        expected = "wheel is not sealed or checksummed"
+    elif mutation == "top_level_extra":
+        manifest["legacy"] = True
+        expected = "top-level shape is invalid"
+    elif mutation == "extension_extra":
+        manifest["extensions"][0]["legacy"] = True
+        expected = "extension shape is invalid"
+    elif mutation == "submodule_invalid":
+        manifest["submodules"] = [{"path": "../escape", "commit": "0" * 40}]
+        expected = "submodule path is invalid"
+    elif mutation == "backend_sha256":
+        manifest["meson"]["backend"]["sha256"] = "z" * 64
+        expected = "backend sha256 is invalid"
+    elif mutation == "target_tool_sha256":
+        manifest["target_metadata"]["toolchain"]["tools"]["cc"]["sha256"] = "z" * 64
+        expected = "target c identity is invalid"
     elif mutation == "build_requirements":
         manifest["build_environment"]["requirements"] = []
         expected = "build requirements are invalid"
+    elif mutation == "build_marker_environment":
+        del manifest["build_environment"]["marker_environment"]["sys_platform"]
+        expected = "marker environment is invalid"
+    elif mutation == "build_active_requirements":
+        manifest["build_environment"]["active_requirements"].pop()
+        expected = "active requirements do not match"
     elif mutation == "build_resolved":
         manifest["build_environment"]["resolved"] = []
         expected = "resolved requirements are empty"
@@ -9749,13 +9876,20 @@ def test_proof_queue_rejects_scipy_set_manifest_transaction_drift(
     elif mutation == "build_resolved_missing":
         manifest["build_environment"]["resolved"].pop()
         expected = "do not exactly cover the source requirement authority"
+    elif mutation == "build_resolved_distribution":
+        manifest["build_environment"]["resolved"][0]["distribution"] = "wrong"
+        expected = "resolved distribution does not satisfy"
+    elif mutation == "build_resolved_version":
+        manifest["build_environment"]["resolved"][0]["version"] = "0"
+        expected = "resolved version does not satisfy"
     else:
         set_manifest_path.unlink()
         expected = "missing or unreadable extension-set manifest"
     if mutation != "missing_manifest":
         set_manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    _reseal_scientific_fixture(root)
 
-    problems = pact._pact_scipy_witness_seal_problems(
+    problems = pact._scientific_extension_set_seal_problems(
         root, scientific_extension_set("scipy", "pact-witness")
     )
 
@@ -9770,15 +9904,15 @@ def test_proof_queue_pact_witness_roots_accept_artifact_specific_manifests(
         tmp_path
         / "artifacts/package-seals/numpy/2.5.1/pact_numpy_multiarray_sealed_for_witness"
     )
-    _write_current_numpy_seal_manifest(durable_numpy, tmp_path / "numpy-source")
+    _write_current_scientific_seal(durable_numpy, package="numpy")
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
     artifact_root = tmp_path / "artifacts/package-seals/scipy/1.18.0/pact_scipy_witness"
-    _write_current_scipy_seal(artifact_root)
+    _write_current_scientific_seal(artifact_root)
 
     roots = pact._pact_witness_native_roots(repo_root=tmp_path)
 
     assert roots == [
-        durable_numpy.resolve(),
+        (durable_numpy / "files").resolve(),
         (artifact_root / "files").resolve(),
     ]
 
@@ -9935,9 +10069,7 @@ def test_prune_stale_reclaims_running_row_past_age_ceiling(
         started_at=started_at,
         guard_identity=custody._process_identity(live_pid),
     )
-    assert custody._guard_process_live(
-        live_pid, custody._process_identity(live_pid)
-    )
+    assert custody._guard_process_live(live_pid, custody._process_identity(live_pid))
 
     assert (
         cli.main(
@@ -10050,9 +10182,7 @@ def test_update_run_retries_terminal_write_when_database_locked(
         log_path=tmp_path / "lock.log",
         summary_json=tmp_path / "lock.memory_guard.json",
     )
-    state._update_run(
-        conn, "lock-run", status="running", started_at=state._utc_now()
-    )
+    state._update_run(conn, "lock-run", status="running", started_at=state._utc_now())
 
     # A writer that holds the lock for the first 3 commit attempts, then
     # releases it. Without retry the first locked commit strands the row.
@@ -10338,9 +10468,7 @@ def test_proof_queue_audit_treats_queued_rows_as_wait_list(
             author="codex",
         )
         if status != "queued":
-            state._update_run(
-                conn, run_id, status=status, started_at=state._utc_now()
-            )
+            state._update_run(conn, run_id, status=status, started_at=state._utc_now())
 
     assert (
         cli.main(
@@ -10498,9 +10626,7 @@ def test_queue_terminal_transition_frees_contention_key(tmp_path: Path) -> None:
         is None
     )
     # queued -> running (same row, still non-terminal) must be allowed.
-    state._update_run(
-        conn, "cycle-run", status="running", started_at=state._utc_now()
-    )
+    state._update_run(conn, "cycle-run", status="running", started_at=state._utc_now())
     # running -> passed (terminal) frees the key.
     state._update_run(
         conn,

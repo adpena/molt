@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import subprocess
 import sys
 import zipfile
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -259,9 +259,7 @@ def test_meson_installed_python_is_complete_package_authority(tmp_path: Path) ->
     )
     generated_header = build / "scipy/_lib/include/scipy/generated_api.h"
     generated_header.parent.mkdir(parents=True)
-    generated_header.write_text(
-        f'#define BUILD_ROOT "{build}"\n', encoding="utf-8"
-    )
+    generated_header.write_text(f'#define BUILD_ROOT "{build}"\n', encoding="utf-8")
     installed[str(generated_header)] = (
         "C:/prefix/Lib/site-packages/scipy/_lib/include/scipy/generated_api.h"
     )
@@ -290,9 +288,9 @@ def test_meson_installed_python_is_complete_package_authority(tmp_path: Path) ->
     assert (publish / "scipy/__config__.py").read_text(encoding="utf-8") == (
         'ROOT = r"@source"\n'
     )
-    assert (
-        publish / "scipy/_lib/include/scipy/generated_api.h"
-    ).read_text(encoding="utf-8") == '#define BUILD_ROOT "@build"\n'
+    assert (publish / "scipy/_lib/include/scipy/generated_api.h").read_text(
+        encoding="utf-8"
+    ) == '#define BUILD_ROOT "@build"\n'
     assert not (publish / "array_api_extra").exists()
 
 
@@ -340,6 +338,10 @@ def test_build_extension_routes_real_meson_authority_deterministically(
     output = tmp_path / "transaction" / "module"
     calls: list[dict[str, object]] = []
     expected = object()
+    backend = producer._SourceNinjaDriver(
+        command=(sys.executable, "-m", "ninja"),
+        manifest={"distribution": "ninja"},
+    )
     monkeypatch.setattr(
         producer.commands,
         "extension_build",
@@ -366,6 +368,7 @@ def test_build_extension_routes_real_meson_authority_deterministically(
         target="wasm",
         abi_tier="cpython-abi",
         tool_commands={"ld": ("/tools/wasm-ld",)},
+        backend=backend,
     )
 
     assert actual is expected
@@ -378,6 +381,7 @@ def test_build_extension_routes_real_meson_authority_deterministically(
     assert calls[0]["python_export"] == ["scipy"]
     assert calls[0]["capabilities"] == []
     assert calls[0]["tool_commands"] == {"ld": ("/tools/wasm-ld",)}
+    assert calls[0]["source_plan_ninja_command"] == backend.command
 
 
 def test_transactional_wheel_bytes_must_match_manifest(
@@ -453,13 +457,17 @@ def test_source_build_environment_noop_records_exact_resolutions(
     environment = producer._ensure_source_build_environment(tmp_path)
 
     assert environment.manifest_payload() == {
-        "python_executable": (
-            f"{producer.sys.implementation.name}-"
-            f"{producer.sys.version_info.major}.{producer.sys.version_info.minor}."
-            f"{producer.sys.version_info.micro}/"
-            f"{Path(producer.sys.executable).name}"
-        ),
+        "python": {
+            "implementation": producer.sys.implementation.name,
+            "version": (
+                f"{producer.sys.version_info.major}.{producer.sys.version_info.minor}."
+                f"{producer.sys.version_info.micro}"
+            ),
+            "executable": Path(producer.sys.executable).name,
+        },
         "requirements": list(requirements),
+        "marker_environment": producer.canonical_source_marker_environment(),
+        "active_requirements": ["meson>=1.5", "Cython>=3.0"],
         "resolved": [
             {
                 "requirement": "meson>=1.5",
@@ -650,6 +658,80 @@ def test_generated_input_materialization_uses_one_upstream_meson_command(
     ]
 
 
+def test_cython_generated_input_uses_standalone_regeneration_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    build = tmp_path / "build"
+    build.mkdir()
+    generated_c = build / "scipy/ndimage/_ni_label.pyd.p/_ni_label.c"
+    pyx = tmp_path / "source/scipy/ndimage/src/_ni_label.pyx"
+    pyx.parent.mkdir(parents=True)
+    pyx.write_text("cdef int value\n", encoding="utf-8")
+    intro_targets = build / "meson-info/intro-targets.json"
+    intro_targets.parent.mkdir(parents=True)
+    intro_targets.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "_ni_label",
+                    "name": "_ni_label",
+                    "type": "shared module",
+                    "filename": [str(build / "scipy/ndimage/_ni_label.pyd")],
+                    "target_sources": [
+                        {
+                            "generated_sources": [str(generated_c)],
+                        }
+                    ],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        producer,
+        "_load_ninja_build_all_inputs",
+        lambda _root: {generated_c.resolve(): (pyx.resolve(),)},
+    )
+    backend = producer._SourceNinjaDriver(
+        command=(sys.executable, "-m", "ninja"),
+        manifest={"distribution": "ninja"},
+    )
+
+    def generated_c_pyx_from_ninja(**kwargs):
+        assert tuple(kwargs["ninja_command"]) == backend.command
+        return pyx, None
+
+    monkeypatch.setattr(
+        producer._source_extension_cython,
+        "generated_c_pyx_from_ninja",
+        generated_c_pyx_from_ninja,
+    )
+
+    missing = producer._missing_extension_generated_inputs(
+        backend=backend,
+        build_root=build,
+        intro_targets=intro_targets,
+        extension_set=ScientificExtensionSet(
+            package="scipy",
+            name="pact-witness",
+            seal_name="scipy-witness",
+            meson_setup_args=(),
+            use_pkg_config=False,
+            required_installed_files=(),
+            extensions=(
+                ScientificExtensionSpec(
+                    module="scipy.ndimage._ni_label",
+                    target="_ni_label",
+                    python_exports=("scipy.ndimage._ni_label",),
+                    capabilities=(),
+                ),
+            ),
+        ),
+    )
+
+    assert missing == set()
+
+
 def test_meson_pkg_config_is_pinned_and_attested(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -686,9 +768,7 @@ def test_meson_pkg_config_is_pinned_and_attested(
 def test_meson_pkg_config_missing_does_not_install_into_active_interpreter(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(
-        producer, "_installed_build_requirement", lambda *_args: None
-    )
+    monkeypatch.setattr(producer, "_installed_build_requirement", lambda *_args: None)
     monkeypatch.setattr(
         producer,
         "_run_process",
@@ -750,6 +830,13 @@ def test_recursive_submodule_verification_rejects_incomplete_pinned_tree(
     def run_process(argv, *, cwd):
         assert cwd == tmp_path
         calls.append(tuple(argv))
+        if "foreach" in argv:
+            return subprocess.CompletedProcess(
+                args=list(argv),
+                returncode=0,
+                stdout=f"subprojects/boost_math/math\t{'d' * 40}\n",
+                stderr="",
+            )
         if "status" in argv:
             return subprocess.CompletedProcess(
                 args=list(argv),
@@ -771,6 +858,49 @@ def test_recursive_submodule_verification_rejects_incomplete_pinned_tree(
         "status",
         "--porcelain=v1",
         "--untracked-files=no",
+    )
+
+
+def test_recursive_submodule_attestation_is_canonical_path_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for relative in ("z/submodule", "a/submodule"):
+        (tmp_path / relative).mkdir(parents=True)
+
+    def run_process(argv, *, cwd):
+        assert cwd == tmp_path
+        if "foreach" in argv:
+            return subprocess.CompletedProcess(
+                args=list(argv),
+                returncode=0,
+                stdout=(
+                    f"z/submodule\t{'0' * 40}\n"
+                    f"a/submodule\t{'f' * 40}\n"
+                ),
+                stderr="",
+            )
+        if "submodule" in argv:
+            return subprocess.CompletedProcess(
+                args=list(argv),
+                returncode=0,
+                stdout=(
+                    f" {'0' * 40} z/submodule (heads/main)\n"
+                    f" {'f' * 40} a/submodule (heads/main)\n"
+                ),
+                stderr="",
+            )
+        return subprocess.CompletedProcess(
+            args=list(argv), returncode=0, stdout="", stderr=""
+        )
+
+    monkeypatch.setattr(producer, "_run_process", run_process)
+
+    assert tuple(
+        item.manifest_payload()
+        for item in producer._verify_recursive_submodules(tmp_path)
+    ) == (
+        {"path": "a/submodule", "commit": "f" * 40},
+        {"path": "z/submodule", "commit": "0" * 40},
     )
 
 
@@ -849,7 +979,7 @@ def test_complete_set_validator_rejects_duplicate_module_sidecar(
                 "object_closure_sha256": f"closure-{spec.module}",
             }
             for spec in extension_set.extensions
-        ]
+        ],
     }
     producer._validate_complete_publish_root(
         publish_root=publish,
@@ -1000,7 +1130,9 @@ def test_extension_staging_rewrites_all_inputs_into_relocatable_seal_payload(
     ]
     assert str(tmp_path) not in json.dumps(staged_manifest)
     for item in staged_manifest["object_closure"]["objects"]:
-        staged_source = (staged.artifact_manifest_path.parent / item["source"]).resolve()
+        staged_source = (
+            staged.artifact_manifest_path.parent / item["source"]
+        ).resolve()
         assert staged_source.is_file()
         assert staged_source.is_relative_to(
             (publish / "provenance/compiled-inputs").resolve()
@@ -1016,13 +1148,11 @@ def test_extension_staging_rewrites_all_inputs_into_relocatable_seal_payload(
         assert embedded["extension"] == "scipy/ndimage/_nd_image.molt.wasm"
         assert str(tmp_path) not in json.dumps(embedded)
         assert embedded["extension_sha256"] == staged_manifest["extension_sha256"]
-        assert embedded["object_closure"]["objects"][0]["source"].startswith(
-            "@source/"
+        assert embedded["object_closure"]["objects"][0]["source"].startswith("@source/")
+        assert embedded["object_closure"]["objects"][1]["source"].startswith("@build/")
+        assert all(
+            info.date_time == (1980, 1, 1, 0, 0, 0) for info in archive.infolist()
         )
-        assert embedded["object_closure"]["objects"][1]["source"].startswith(
-            "@build/"
-        )
-        assert all(info.date_time == (1980, 1, 1, 0, 0, 0) for info in archive.infolist())
     assert staged_manifest["object_closure"]["closure_sha256"] == (
         staged.object_closure_sha256
     )
@@ -1036,9 +1166,7 @@ def test_stage_build_metadata_recomputes_canonical_leaf_and_identity_digests(
     metadata_root = transaction / "target-metadata"
     pkgconfig = metadata_root / "pkgconfig"
     pkgconfig.mkdir(parents=True)
-    (pkgconfig / "python3.pc").write_text(
-        f"prefix={transaction}\n", encoding="utf-8"
-    )
+    (pkgconfig / "python3.pc").write_text(f"prefix={transaction}\n", encoding="utf-8")
     (metadata_root / "meson.cross").write_text(
         f"sys_root = '{transaction}'\n", encoding="utf-8"
     )
@@ -1082,12 +1210,16 @@ def test_stage_build_metadata_recomputes_canonical_leaf_and_identity_digests(
     }
     identity = dict(canonical)
     digest = identity.pop("digest")
-    assert digest == hashlib.sha256(
-        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-    assert json.loads(
-        staged["target/source-extension-target-metadata.json"].read_text()
-    ) == canonical
+    assert (
+        digest
+        == hashlib.sha256(
+            json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    )
+    assert (
+        json.loads(staged["target/source-extension-target-metadata.json"].read_text())
+        == canonical
+    )
     assert "stale" not in json.dumps(canonical)
 
 
@@ -1133,12 +1265,12 @@ def test_recover_and_prune_restores_retired_destination_without_commit(
     assert not abandoned.exists()
 
 
-def test_retire_replaceable_extension_destination_requires_exact_typed_module_family(
+def test_retire_replaceable_extension_destination_rejects_non_atomic_legacy_tree(
     tmp_path: Path,
 ) -> None:
     destination = tmp_path / "legacy"
     transaction = tmp_path / "transaction"
-    extension_set = scientific_extension_set("numpy", "pact-witness")
+    extension_set = scientific_extension_set("scipy", "pact-witness")
     for extension in extension_set.extensions:
         package = destination.joinpath(*extension.module.split(".")[:-1])
         package.mkdir(parents=True, exist_ok=True)
@@ -1152,82 +1284,116 @@ def test_retire_replaceable_extension_destination_requires_exact_typed_module_fa
                     "extension_sha256": hashlib.sha256(
                         artifact.read_bytes()
                     ).hexdigest(),
+                    "source_plan": {"target_selector": extension.target},
+                    "python_exports": list(extension.python_exports),
+                    "capabilities": list(extension.capabilities),
+                    "provided_capsules": list(extension.provided_capsules),
                 }
             ),
             encoding="utf-8",
         )
 
-    retired = producer._retire_replaceable_extension_destination(
-        destination,
-        transaction_root=transaction,
-        extension_set=extension_set,
-        set_manifest={"source_head": "fixture"},
-    )
+    with pytest.raises(
+        producer.SourceExtensionProducerError,
+        match="unverified non-atomic destination",
+    ):
+        producer._retire_replaceable_extension_destination(
+            destination,
+            transaction_root=transaction,
+            extension_set=extension_set,
+            set_manifest={"source_head": "fixture"},
+        )
 
-    assert retired == transaction / "retired-destination"
-    assert retired.is_dir()
-    assert not destination.exists()
+    assert destination.is_dir()
+    assert not transaction.exists()
 
 
-def test_retire_replaceable_canonical_seal_allows_same_identity_schema_migration(
+def test_retire_replaceable_canonical_v2_seal_requires_exact_contract(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     destination = tmp_path / "canonical"
-    payload_root = destination / "files"
     transaction = tmp_path / "transaction"
-    extension_set = scientific_extension_set("numpy", "pact-witness")
+    extension_set = scientific_extension_set("scipy", "pact-witness")
     extensions: list[dict[str, object]] = []
+    inputs: list[producer.SourcePackageInput] = []
     for extension in extension_set.extensions:
-        package = payload_root.joinpath(*extension.module.split(".")[:-1])
+        package = tmp_path.joinpath("source", *extension.module.split(".")[:-1])
         package.mkdir(parents=True, exist_ok=True)
         artifact = package / f"{extension.target}.molt.wasm"
         artifact.write_bytes(b"\x00asm" + extension.target.encode())
-        artifact.with_name(artifact.name + ".extension_manifest.json").write_text(
+        artifact_sha256 = hashlib.sha256(artifact.read_bytes()).hexdigest()
+        sidecar = artifact.with_name(artifact.name + ".extension_manifest.json")
+        sidecar.write_text(
             json.dumps(
                 {
                     "module": extension.module,
                     "extension": artifact.name,
-                    "extension_sha256": hashlib.sha256(
-                        artifact.read_bytes()
-                    ).hexdigest(),
+                    "extension_sha256": artifact_sha256,
+                    "source_plan": {"target_selector": extension.target},
+                    "python_exports": list(extension.python_exports),
+                    "capabilities": list(extension.capabilities),
+                    "provided_capsules": list(extension.provided_capsules),
                 }
             ),
             encoding="utf-8",
+        )
+        relative_root = Path(*extension.module.split(".")[:-1])
+        inputs.extend(
+            (
+                producer.SourcePackageInput(
+                    source=artifact,
+                    relative_path=(relative_root / artifact.name).as_posix(),
+                    role="artifact",
+                ),
+                producer.SourcePackageInput(
+                    source=sidecar,
+                    relative_path=(relative_root / sidecar.name).as_posix(),
+                    role="manifest",
+                ),
+            )
         )
         extensions.append(
             {
                 "module": extension.module,
                 "target": extension.target,
-                "python_exports": list(extension.python_exports),
                 "capabilities": list(extension.capabilities),
-                "provided_capsules": list(extension.provided_capsules),
                 "exclude_linked_static_libraries": list(
                     extension.exclude_linked_static_libraries
                 ),
             }
         )
     identity = {
-        "package": "numpy",
+        "schema_version": 2,
+        "kind": "molt-source-extension-set",
+        "package": "scipy",
         "name": "pact-witness",
         "seal_name": extension_set.seal_name,
         "source_head": "same-source",
+        "target": "wasm",
+        "target_triple": "wasm32-wasip1",
+        "abi_tier": "cpython-abi",
     }
-    (payload_root / "extension_set_manifest.json").write_text(
+    set_manifest_path = tmp_path / "source/extension_set_manifest.json"
+    set_manifest_path.write_text(
         json.dumps(
             {
                 **identity,
-                "installed_python_files": ["numpy/__init__.py"],
                 "extensions": extensions,
             }
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr(
-        producer,
-        "verify_source_package_seal",
-        lambda _root: SimpleNamespace(payload_root=payload_root),
+    inputs.append(
+        producer.SourcePackageInput(
+            source=set_manifest_path,
+            relative_path="extension_set_manifest.json",
+            role="manifest",
+        )
     )
+    seal = producer.stage_source_package_seal(
+        tmp_path / "package-store", inputs
+    )
+    shutil.copytree(seal.root, destination)
 
     retired = producer._retire_replaceable_extension_destination(
         destination,

@@ -29,7 +29,6 @@ import json
 import os
 import re
 import shlex
-import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -800,32 +799,21 @@ def _standalone_cython_generator_args(
     return tuple(retained), None
 
 
-def generated_c_pyx_from_ninja(
+def _query_ninja_generator_commands(
     *,
-    generated_c: Path,
+    ninja_command: Sequence[str],
     build_root: Path,
-) -> tuple[Path | None, str | None]:
-    """Resolve the unique real ``.pyx`` input for a Ninja-generated C unit."""
-    root = build_root.resolve()
-    ninja_path = root / "build.ninja"
-    if not ninja_path.is_file():
-        return None, None
-    try:
-        relative_output = generated_c.resolve().relative_to(root)
-    except ValueError:
-        return None, f"generated Cython output is outside its Ninja root: {generated_c}"
-    ninja = shutil.which("ninja")
-    if ninja is None:
-        return None, (
-            f"Meson build graph {ninja_path} owns {generated_c}, but Ninja is "
-            "unavailable for the read-only generator-command query"
-        )
+    relative_output: Path,
+) -> tuple[str | None, str | None]:
+    command = tuple(str(item) for item in ninja_command if str(item))
+    if not command:
+        return None, "canonical Ninja command is empty"
     try:
         query = subprocess.run(
             [
-                ninja,
+                *command,
                 "-C",
-                str(root),
+                str(build_root),
                 "-t",
                 "commands",
                 relative_output.as_posix(),
@@ -838,15 +826,41 @@ def generated_c_pyx_from_ninja(
             check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        return None, f"failed to query Cython generator metadata {ninja_path}: {exc}"
+        return None, f"failed to query Ninja generator metadata: {exc}"
     if query.returncode != 0:
         detail = (query.stderr or query.stdout or "").strip()
+        return None, detail or f"exit code {query.returncode}"
+    return query.stdout, None
+
+
+def generated_c_pyx_from_ninja(
+    *,
+    generated_c: Path,
+    build_root: Path,
+    ninja_command: Sequence[str] = (),
+) -> tuple[Path | None, str | None]:
+    """Resolve the unique real ``.pyx`` input for a Ninja-generated C unit."""
+    root = build_root.resolve()
+    ninja_path = root / "build.ninja"
+    if not ninja_path.is_file():
+        return None, None
+    try:
+        relative_output = generated_c.resolve().relative_to(root)
+    except ValueError:
+        return None, f"generated Cython output is outside its Ninja root: {generated_c}"
+    stdout, query_error = _query_ninja_generator_commands(
+        ninja_command=(ninja_command or (sys.executable, "-m", "ninja")),
+        build_root=root,
+        relative_output=relative_output,
+    )
+    if query_error is not None:
         return None, (
             f"Ninja could not expand the generator command for {generated_c}: "
-            f"{detail or f'exit code {query.returncode}'}"
+            f"{query_error}"
         )
+    assert stdout is not None
     commands: list[tuple[Path, ...]] = []
-    for command in query.stdout.splitlines():
+    for command in stdout.splitlines():
         tokens = _split_generator_command(command)
         if tokens is None:
             continue
@@ -880,6 +894,7 @@ def _cython_generator_args_from_ninja(
     pyx_path: Path,
     original_c: Path,
     package_roots: Sequence[Path],
+    ninja_command: Sequence[str],
 ) -> tuple[tuple[str, ...] | None, str | None]:
     """Recover exact upstream directives from Ninja's expanded command query.
 
@@ -909,40 +924,20 @@ def _cython_generator_args_from_ninja(
             + ", ".join(str(path) for _root, path in owners)
         )
     build_root, ninja_path = owners[0]
-    ninja = shutil.which("ninja")
-    if ninja is None:
-        return None, (
-            f"Meson build graph {ninja_path} owns {original}, but Ninja is "
-            "unavailable for the read-only generator-command query"
-        )
     relative_output = original.relative_to(build_root)
-    try:
-        query = subprocess.run(
-            [
-                ninja,
-                "-C",
-                str(build_root),
-                "-t",
-                "commands",
-                relative_output.as_posix(),
-            ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=30,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        return None, f"failed to query Cython generator metadata {ninja_path}: {exc}"
-    if query.returncode != 0:
-        detail = (query.stderr or query.stdout or "").strip()
+    stdout, query_error = _query_ninja_generator_commands(
+        ninja_command=(ninja_command or (sys.executable, "-m", "ninja")),
+        build_root=build_root,
+        relative_output=relative_output,
+    )
+    if query_error is not None:
         return None, (
             f"Ninja could not expand the generator command for {original}: "
-            f"{detail or f'exit code {query.returncode}'}"
+            f"{query_error}"
         )
+    assert stdout is not None
     matching_commands: list[list[str]] = []
-    for command in query.stdout.splitlines():
+    for command in stdout.splitlines():
         tokens = _split_generator_command(command)
         if tokens is None or _cython_command_argument_start(tokens) is None:
             continue
@@ -987,6 +982,7 @@ def regenerate_cython_c_standalone(
     cython_version: str,
     python_exe: str | None = None,
     package_roots: Sequence[Path] = (),
+    ninja_command: Sequence[str] = (),
 ) -> tuple[CythonRegeneration | None, str | None]:
     """Run ``cython -3`` STANDALONE for ``pyx_path`` into ``out_dir``.
 
@@ -1024,6 +1020,7 @@ def regenerate_cython_c_standalone(
         pyx_path=pyx_path,
         original_c=original_c,
         package_roots=package_roots,
+        ninja_command=ninja_command,
     )
     if generator_error is not None:
         return None, (
