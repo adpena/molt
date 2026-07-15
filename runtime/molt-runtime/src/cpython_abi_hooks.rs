@@ -4873,7 +4873,10 @@ mod tests {
         assert_eq!(unsafe { (*flags).ob_refcnt }, 2);
         unsafe { molt_cpython_abi::api::refcount::Py_DECREF(flags) };
         assert_eq!(unsafe { (*flags).ob_refcnt }, 1);
-        assert!(molt_cpython_abi::bridge::GLOBAL_BRIDGE.release_pyobj(flags));
+        assert_eq!(
+            molt_cpython_abi::bridge::GLOBAL_BRIDGE.release_pyobj(flags),
+            molt_cpython_abi::bridge::PyObjRelease::ManagedViewRetired
+        );
 
         with_gil(|_py| {
             let flags_ptr = MoltObject::from_bits(expected_flags_bits)

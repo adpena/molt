@@ -4,7 +4,7 @@
 #![allow(non_snake_case)]
 
 use molt_cpython_abi::abi_types::*;
-use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+use molt_cpython_abi::bridge::{GLOBAL_BRIDGE, PyObjRelease};
 use std::{f64::consts::PI, hint::black_box, ptr, sync::Arc, thread, time::Instant};
 
 use molt_lang_obj_model::MoltObject;
@@ -265,7 +265,10 @@ fn test_bridge_borrowed_lookup_materializes_cache_anchor() {
             .map(|identity| identity.as_handle()),
         Some(bits)
     );
-    assert!(GLOBAL_BRIDGE.release_pyobj(py));
+    assert_eq!(
+        GLOBAL_BRIDGE.release_pyobj(py),
+        PyObjRelease::ManagedViewRetired
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -279,7 +282,10 @@ fn test_release_pyobj_removes_mapping() {
     let py = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
     assert!(GLOBAL_BRIDGE.pyobj_to_handle(py).is_some());
 
-    assert!(GLOBAL_BRIDGE.release_pyobj(py));
+    assert_eq!(
+        GLOBAL_BRIDGE.release_pyobj(py),
+        PyObjRelease::ManagedViewRetired
+    );
     assert!(GLOBAL_BRIDGE.pyobj_to_handle(py).is_none());
 }
 
