@@ -10,7 +10,6 @@ SimpleTIRGenerator MRO at runtime.
 from __future__ import annotations
 
 import ast
-
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -30,12 +29,14 @@ from molt.frontend._types import (
     _function_is_instance_method,
     _next_ic_index,
 )
-from molt.frontend.visitors.class_method_compilation import (
-    ClassMethodCompilationMixin,
-)
+from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
+from molt.frontend.diagnostics import FrontendRejection
 from molt.frontend.sema import (
     c3_merge,
     function_contains_yield,
+)
+from molt.frontend.visitors.class_method_compilation import (
+    ClassMethodCompilationMixin,
 )
 
 if TYPE_CHECKING:
@@ -433,8 +434,9 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             for deco in node.decorator_list:
                 if isinstance(deco, ast.Name) and deco.id == "dataclass":
                     if dataclass_opts is not None:
-                        raise NotImplementedError(
-                            "Multiple dataclass decorators are not supported"
+                        raise FrontendRejection(
+                            Diagnostic.SYNTAX_FORM,
+                            "Multiple dataclass decorators are not supported",
                         )
                     dataclass_opts = {
                         "init": True,
@@ -456,8 +458,9 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                     and deco.attr == "dataclass"
                 ):
                     if dataclass_opts is not None:
-                        raise NotImplementedError(
-                            "Multiple dataclass decorators are not supported"
+                        raise FrontendRejection(
+                            Diagnostic.SYNTAX_FORM,
+                            "Multiple dataclass decorators are not supported",
                         )
                     dataclass_opts = {
                         "init": True,
@@ -478,8 +481,9 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                     and deco.func.id == "dataclass"
                 ):
                     if dataclass_opts is not None:
-                        raise NotImplementedError(
-                            "Multiple dataclass decorators are not supported"
+                        raise FrontendRejection(
+                            Diagnostic.SYNTAX_FORM,
+                            "Multiple dataclass decorators are not supported",
                         )
                     dataclass_opts = {
                         "init": True,
@@ -522,7 +526,8 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                                     resolved = True
                             if resolved:
                                 continue
-                            raise NotImplementedError(
+                            raise FrontendRejection(
+                                Diagnostic.SYNTAX_FORM,
                                 "dataclass **kwargs spread: cannot resolve '"
                                 + (
                                     kw.value.id
@@ -530,7 +535,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                                     else "?"
                                 )
                                 + "' at compile time. Define it as a module-level "
-                                + "constant dict (e.g., OPTS = {'slots': True})"
+                                + "constant dict (e.g., OPTS = {'slots': True})",
                             )
                         if kw.arg not in _DATACLASS_VALID_OPTS:
                             # Unknown option — skip it (CPython would raise TypeError
@@ -545,8 +550,9 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                         if not isinstance(kw.value, ast.Constant) or not isinstance(
                             kw.value.value, bool
                         ):
-                            raise NotImplementedError(
-                                f"dataclass {kw.arg} must be a boolean literal"
+                            raise FrontendRejection(
+                                Diagnostic.OPERAND_VALUE,
+                                f"dataclass {kw.arg} must be a boolean literal",
                             )
                         dataclass_opts[kw.arg] = kw.value.value
                     continue
@@ -558,8 +564,9 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                     and deco.func.attr == "dataclass"
                 ):
                     if dataclass_opts is not None:
-                        raise NotImplementedError(
-                            "Multiple dataclass decorators are not supported"
+                        raise FrontendRejection(
+                            Diagnostic.SYNTAX_FORM,
+                            "Multiple dataclass decorators are not supported",
                         )
                     dataclass_opts = {
                         "init": True,
@@ -601,7 +608,8 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                                     resolved = True
                             if resolved:
                                 continue
-                            raise NotImplementedError(
+                            raise FrontendRejection(
+                                Diagnostic.SYNTAX_FORM,
                                 "dataclass **kwargs spread: cannot resolve '"
                                 + (
                                     kw.value.id
@@ -609,7 +617,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                                     else "?"
                                 )
                                 + "' at compile time. Define it as a module-level "
-                                + "constant dict (e.g., OPTS = {'slots': True})"
+                                + "constant dict (e.g., OPTS = {'slots': True})",
                             )
                         if (
                             isinstance(kw.value, ast.Constant)
@@ -620,8 +628,9 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                         if not isinstance(kw.value, ast.Constant) or not isinstance(
                             kw.value.value, bool
                         ):
-                            raise NotImplementedError(
-                                f"dataclass {kw.arg} must be a boolean literal"
+                            raise FrontendRejection(
+                                Diagnostic.OPERAND_VALUE,
+                                f"dataclass {kw.arg} must be a boolean literal",
                             )
                         dataclass_opts[kw.arg] = kw.value.value
                     continue
@@ -637,7 +646,9 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             for deco in other_decorators:
                 decorator_val = self.visit(deco)
                 if decorator_val is None:
-                    raise NotImplementedError("Unsupported class decorator")
+                    raise FrontendRejection(
+                        Diagnostic.SYNTAX_FORM, "Unsupported class decorator"
+                    )
                 decorator_vals.append(decorator_val)
 
         type_param_vals, type_param_map = self._emit_type_params_values(
@@ -678,7 +689,10 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 finally:
                     self.in_annotation = prev_base_in_annotation
                 if base_val is None:
-                    raise NotImplementedError("Base class must be defined before use")
+                    raise FrontendRejection(
+                        Diagnostic.TYPE_FORM,
+                        "Base class must be defined before use",
+                    )
                 base_vals.append(base_val)
                 base_name = base_expr_name(base_expr)
                 base_name_lookup.append(base_name)
@@ -755,7 +769,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         }
         if len(base_names) != len(set(base_names)):
             dup = next(name for name in base_names if base_names.count(name) > 1)
-            raise NotImplementedError(f"Duplicate base class {dup}")
+            raise FrontendRejection(Diagnostic.TYPE_FORM, f"Duplicate base class {dup}")
 
         dynamic = dynamic_build or len(base_names) > 1
         if any(
@@ -1170,12 +1184,18 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 if kw.arg is None:
                     splat_val = self.visit(kw.value)
                     if splat_val is None:
-                        raise NotImplementedError("Unsupported class **kwargs value")
+                        raise FrontendRejection(
+                            Diagnostic.OPERAND_VALUE,
+                            "Unsupported class **kwargs value",
+                        )
                     dynamic_kw_splats.append(splat_val)
                     continue
                 kw_val = self.visit(kw.value)
                 if kw_val is None:
-                    raise NotImplementedError("Unsupported class keyword value")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE,
+                        "Unsupported class keyword value",
+                    )
                 dynamic_kw_pairs.append((kw.arg, kw_val))
 
             if has_explicit_bases:
@@ -1188,7 +1208,9 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 dynamic_bases_tuple = empty_tuple
 
             if dynamic_bases_tuple is None:
-                raise NotImplementedError("Unsupported class bases")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE, "Unsupported class bases"
+                )
             types_bootstrap_func = self._emit_intrinsic_function("molt_types_bootstrap")
             types_bootstrap = self._emit_call_bound_or_func(types_bootstrap_func, [])
             resolve_key = MoltValue(self.next_var(), type_hint="str")
@@ -1428,9 +1450,10 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                     self.visit_ClassDef(item)
                     nested_val = self.locals.get(item.name)
                     if nested_val is None:
-                        raise NotImplementedError(
+                        raise FrontendRejection(
+                            Diagnostic.INTERNAL_INVARIANT,
                             "Nested class lowering produced no bound value for "
-                            f"'{item.name}'"
+                            f"'{item.name}'",
                         )
                     bind_class_name(item.name, nested_val)
                     continue
@@ -1447,7 +1470,10 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                         )
                         update_kind = update_info.get("property_update")
                         if update_kind is None:
-                            raise NotImplementedError("Property update kind missing")
+                            raise FrontendRejection(
+                                Diagnostic.INTERNAL_INVARIANT,
+                                "Property update kind missing",
+                            )
                         prop_val = class_scope.get(item.name)
                         if prop_val is None:
                             exc_val = self._emit_exception_new(
@@ -1544,8 +1570,9 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                                 for deco in item.decorator_list[1:]:
                                     decorator_val = self.visit(deco)
                                     if decorator_val is None:
-                                        raise NotImplementedError(
-                                            "Unsupported method decorator"
+                                        raise FrontendRejection(
+                                            Diagnostic.SYNTAX_FORM,
+                                            "Unsupported method decorator",
                                         )
                                     method_decorator_vals.append(decorator_val)
                                 decorated = method_attr
@@ -1599,8 +1626,9 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                                 for deco in item.decorator_list:
                                     decorator_val = self.visit(deco)
                                     if decorator_val is None:
-                                        raise NotImplementedError(
-                                            "Unsupported method decorator"
+                                        raise FrontendRejection(
+                                            Diagnostic.SYNTAX_FORM,
+                                            "Unsupported method decorator",
                                         )
                                     method_decorator_vals.append(decorator_val)
                                 decorated = method_attr
@@ -1705,14 +1733,20 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                     ):
                         continue
                     if self.visit(item.value) is None:
-                        raise NotImplementedError("Unsupported class body expression")
+                        raise FrontendRejection(
+                            Diagnostic.OPERAND_VALUE,
+                            "Unsupported class body expression",
+                        )
                     continue
                 if isinstance(item, ast.Assign) and all(
                     isinstance(t, ast.Name) for t in item.targets
                 ):
                     val = self.visit(item.value)
                     if val is None:
-                        raise NotImplementedError("Unsupported class body assignment")
+                        raise FrontendRejection(
+                            Diagnostic.OPERAND_VALUE,
+                            "Unsupported class body assignment",
+                        )
                     for target in item.targets:
                         assert isinstance(target, ast.Name)
                         bind_class_name(target.id, val)
@@ -1736,7 +1770,10 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                         continue
                     val = self.visit(item.value)
                     if val is None:
-                        raise NotImplementedError("Unsupported class body assignment")
+                        raise FrontendRejection(
+                            Diagnostic.OPERAND_VALUE,
+                            "Unsupported class body assignment",
+                        )
                     bind_class_name(item.target.id, val)
                     continue
                 if isinstance(item, ast.Pass):
@@ -1866,7 +1903,9 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 or dynamic_bases_tuple is None
                 or dynamic_namespace is None
             ):
-                raise NotImplementedError("Unsupported dynamic class build")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE, "Unsupported dynamic class build"
+                )
             if classdictcell_key is not None:
                 self.emit(
                     MoltOp(

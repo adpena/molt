@@ -4,19 +4,20 @@ from __future__ import annotations
 
 import ast
 import sys
-
 from typing import (
     TYPE_CHECKING,
 )
 
 from molt.frontend._types import (
+    _MOLT_CLOSURE_PARAM,
+    _MOLT_LOCALS_CACHE,
     BUILTIN_TYPE_TAGS,
     FormatParseState,
     MoltOp,
     MoltValue,
-    _MOLT_CLOSURE_PARAM,
-    _MOLT_LOCALS_CACHE,
 )
+from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
+from molt.frontend.diagnostics import FrontendRejection
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -248,7 +249,10 @@ class CallRuntimeHelperMixin(_MixinBase):
             if all_resolved:
                 node.keywords = expanded
         if node.args:
-            raise NotImplementedError("field does not support positional arguments")
+            raise FrontendRejection(
+                Diagnostic.CALL_SIGNATURE,
+                "field does not support positional arguments",
+            )
         func_val = self._emit_module_attr_get_on(module_name, "field")
         callargs = self._emit_call_args_builder(node)
         res = MoltValue(self.next_var(), type_hint="Any")
@@ -410,7 +414,9 @@ class CallRuntimeHelperMixin(_MixinBase):
             for _, expr, _ in items:
                 val = self.visit(expr)
                 if val is None:
-                    raise NotImplementedError("Unsupported call argument")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE, "Unsupported call argument"
+                    )
                 values.append(val)
         else:
             yield_flags = [self._expr_may_yield(expr) for _, expr, _ in items]
@@ -418,14 +424,20 @@ class CallRuntimeHelperMixin(_MixinBase):
                 for _, expr, _ in items:
                     val = self.visit(expr)
                     if val is None:
-                        raise NotImplementedError("Unsupported call argument")
+                        raise FrontendRejection(
+                            Diagnostic.OPERAND_VALUE,
+                            "Unsupported call argument",
+                        )
                     values.append(val)
             else:
                 spills: list[tuple[int, int, str]] = []
                 for idx, (_, expr, _) in enumerate(items):
                     val = self.visit(expr)
                     if val is None:
-                        raise NotImplementedError("Unsupported call argument")
+                        raise FrontendRejection(
+                            Diagnostic.OPERAND_VALUE,
+                            "Unsupported call argument",
+                        )
                     values.append(val)
                     if any(yield_flags[idx + 1 :]):
                         slot = self._spill_async_value(
@@ -452,7 +464,9 @@ class CallRuntimeHelperMixin(_MixinBase):
                 )
             elif kind == "kw":
                 if name is None:
-                    raise NotImplementedError("Keyword name is missing")
+                    raise FrontendRejection(
+                        Diagnostic.INTERNAL_INVARIANT, "Keyword name is missing"
+                    )
                 key_val = MoltValue(self.next_var(), type_hint="str")
                 self.emit(MoltOp(kind="CONST_STR", args=[name], result=key_val))
                 res = MoltValue(self.next_var(), type_hint="None")
@@ -473,7 +487,9 @@ class CallRuntimeHelperMixin(_MixinBase):
                     )
                 )
             else:
-                raise NotImplementedError("Unknown call argument kind")
+                raise FrontendRejection(
+                    Diagnostic.INTERNAL_INVARIANT, "Unknown call argument kind"
+                )
         return callargs
 
     def _emit_print_call_args_builder(self, node: ast.Call) -> tuple[MoltValue, bool]:
@@ -513,7 +529,10 @@ class CallRuntimeHelperMixin(_MixinBase):
                         val = MoltValue(self.next_var(), type_hint="None")
                         self.emit(MoltOp(kind="CONST_NONE", args=[], result=val))
                     else:
-                        raise NotImplementedError("Unsupported call argument")
+                        raise FrontendRejection(
+                            Diagnostic.OPERAND_VALUE,
+                            "Unsupported call argument",
+                        )
                 values.append(val)
         else:
             yield_flags = [self._expr_may_yield(expr) for _, expr, _ in items]
@@ -536,7 +555,10 @@ class CallRuntimeHelperMixin(_MixinBase):
                             val = MoltValue(self.next_var(), type_hint="None")
                             self.emit(MoltOp(kind="CONST_NONE", args=[], result=val))
                         else:
-                            raise NotImplementedError("Unsupported call argument")
+                            raise FrontendRejection(
+                                Diagnostic.OPERAND_VALUE,
+                                "Unsupported call argument",
+                            )
                     values.append(val)
             else:
                 spills: list[tuple[int, int, str]] = []
@@ -558,7 +580,10 @@ class CallRuntimeHelperMixin(_MixinBase):
                             val = MoltValue(self.next_var(), type_hint="None")
                             self.emit(MoltOp(kind="CONST_NONE", args=[], result=val))
                         else:
-                            raise NotImplementedError("Unsupported call argument")
+                            raise FrontendRejection(
+                                Diagnostic.OPERAND_VALUE,
+                                "Unsupported call argument",
+                            )
                     values.append(val)
                     if any(yield_flags[idx + 1 :]):
                         slot = self._spill_async_value(
@@ -585,7 +610,9 @@ class CallRuntimeHelperMixin(_MixinBase):
                 )
             elif kind == "kw":
                 if name is None:
-                    raise NotImplementedError("Keyword name is missing")
+                    raise FrontendRejection(
+                        Diagnostic.INTERNAL_INVARIANT, "Keyword name is missing"
+                    )
                 key_val = MoltValue(self.next_var(), type_hint="str")
                 self.emit(MoltOp(kind="CONST_STR", args=[name], result=key_val))
                 res = MoltValue(self.next_var(), type_hint="None")
@@ -606,7 +633,9 @@ class CallRuntimeHelperMixin(_MixinBase):
                     )
                 )
             else:
-                raise NotImplementedError("Unknown call argument kind")
+                raise FrontendRejection(
+                    Diagnostic.INTERNAL_INVARIANT, "Unknown call argument kind"
+                )
         return callargs, saw_name_error
 
     def _emit_tuple_from_iter(self, iterable: MoltValue) -> MoltValue:
@@ -716,16 +745,22 @@ class CallRuntimeHelperMixin(_MixinBase):
         for arg in node.args:
             value = self.visit(arg)
             if value is None:
-                raise NotImplementedError("Unsupported format argument")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE, "Unsupported format argument"
+                )
             args.append(value)
         kwargs: dict[str, MoltValue] = {}
         for keyword in node.keywords:
             value = self.visit(keyword.value)
             if value is None:
-                raise NotImplementedError("Unsupported format argument")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE, "Unsupported format argument"
+                )
             key = keyword.arg
             if key is None:
-                raise NotImplementedError("Unsupported format argument")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE, "Unsupported format argument"
+                )
             kwargs[key] = value
         return self._emit_format_tokens(tokens, args, kwargs)
 

@@ -12,6 +12,8 @@ import ast
 from typing import TYPE_CHECKING
 
 from molt.frontend._types import MoltOp, MoltValue
+from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
+from molt.frontend.diagnostics import FrontendRejection
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -841,7 +843,10 @@ class LoopLoweringMixin(_MixinBase):
         if break_val is None and break_name in self.module_global_mutations:
             break_val = self._emit_module_attr_get(break_name)
         if break_val is None:
-            raise NotImplementedError("for-else break flag not initialized")
+            raise FrontendRejection(
+                Diagnostic.INTERNAL_INVARIANT,
+                "for-else break flag not initialized",
+            )
         should_run = self._emit_not(break_val)
         self.emit(MoltOp(kind="IF", args=[should_run], result=MoltValue("none")))
         self._visit_block(orelse)

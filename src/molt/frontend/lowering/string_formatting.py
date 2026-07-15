@@ -20,6 +20,8 @@ from molt.frontend._types import (
     MoltOp,
     MoltValue,
 )
+from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
+from molt.frontend.diagnostics import FrontendRejection
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -255,8 +257,9 @@ class StringFormattingMixin(_MixinBase):
                 if isinstance(item, ast.FormattedValue):
                     value = self.visit(item.value)
                     if value is None:
-                        raise NotImplementedError(
-                            "Unsupported f-string format spec value"
+                        raise FrontendRejection(
+                            Diagnostic.SYNTAX_FORM,
+                            "Unsupported f-string format spec value",
                         )
                     if item.conversion != -1:
                         if item.conversion == ord("r"):
@@ -266,8 +269,9 @@ class StringFormattingMixin(_MixinBase):
                         elif item.conversion == ord("a"):
                             value = self._emit_ascii_from_obj(value)
                         else:
-                            raise NotImplementedError(
-                                "Formatted value conversion not supported"
+                            raise FrontendRejection(
+                                Diagnostic.OPERAND_VALUE,
+                                "Formatted value conversion not supported",
                             )
                     if item.format_spec is None:
                         parts.append(self._emit_string_format(value, ""))
@@ -275,11 +279,16 @@ class StringFormattingMixin(_MixinBase):
                         spec_val = self._emit_format_spec_value(item.format_spec)
                         parts.append(self._emit_string_format_value(value, spec_val))
                     continue
-                raise NotImplementedError("Unsupported f-string format spec segment")
+                raise FrontendRejection(
+                    Diagnostic.SYNTAX_FORM,
+                    "Unsupported f-string format spec segment",
+                )
             return self._emit_string_join(parts)
         spec_val = self.visit(node)
         if spec_val is None:
-            raise NotImplementedError("Unsupported f-string format spec")
+            raise FrontendRejection(
+                Diagnostic.SYNTAX_FORM, "Unsupported f-string format spec"
+            )
         return self._emit_str_from_obj(spec_val)
 
     def _emit_template_interpolation(self, node: Any) -> MoltValue:
@@ -292,7 +301,10 @@ class StringFormattingMixin(_MixinBase):
         """
         value = self.visit(node.value)
         if value is None:
-            raise NotImplementedError("Unsupported t-string interpolation value")
+            raise FrontendRejection(
+                Diagnostic.SYNTAX_FORM,
+                "Unsupported t-string interpolation value",
+            )
         # expression — the literal source text of the interpolated expression.
         expression_text = node.str if node.str is not None else ""
         expression_val = MoltValue(self.next_var(), type_hint="str")
@@ -314,7 +326,10 @@ class StringFormattingMixin(_MixinBase):
                 )
             )
         else:
-            raise NotImplementedError("Unsupported t-string interpolation conversion")
+            raise FrontendRejection(
+                Diagnostic.SYNTAX_FORM,
+                "Unsupported t-string interpolation conversion",
+            )
         # format_spec — rendered to str via shared f-string format-spec helper.
         if node.format_spec is None:
             format_spec_val = MoltValue(self.next_var(), type_hint="str")

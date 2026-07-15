@@ -10,7 +10,6 @@ SimpleTIRGenerator MRO via self.<method>.
 from __future__ import annotations
 
 import ast
-
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -18,14 +17,16 @@ from typing import (
 )
 
 from molt.frontend._types import (
+    _INLINE_INT_MAX,
+    _INLINE_INT_MIN,
     BUILTIN_EXCEPTION_NAMES,
     BUILTIN_FUNC_SPECS,
     BUILTIN_TYPE_TAGS,
     MoltOp,
     MoltValue,
-    _INLINE_INT_MAX,
-    _INLINE_INT_MIN,
 )
+from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
+from molt.frontend.diagnostics import FrontendRejection
 from molt.frontend.lowering.op_kinds_generated import BINOP_OP_KIND
 from molt.frontend.sema import FunctionKind
 
@@ -54,7 +55,9 @@ class ExpressionVisitorMixin(_MixinBase):
                 self.emit(MoltOp(kind="CONST_STR", args=[self.module_name], result=res))
                 return res
             if node.id in self.nonlocal_decls and node.id not in self.free_vars:
-                raise NotImplementedError("nonlocal binding not found")
+                raise FrontendRejection(
+                    Diagnostic.SYNTAX_FORM, "nonlocal binding not found"
+                )
             if node.id in self.free_vars:
                 free_val = self._emit_free_var_load(node.id)
                 if free_val is not None:
@@ -200,12 +203,18 @@ class ExpressionVisitorMixin(_MixinBase):
                 self.emit(MoltOp(kind="CONST", args=[fill_int], result=fill_res))
                 count_res = self.visit(count_node)
                 if count_res is None:
-                    raise NotImplementedError("Unsupported list repeat count")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE,
+                        "Unsupported list repeat count",
+                    )
                 return self._emit_list_int_filled(count_res, fill_res)
 
         left = self.visit(node.left)
         if left is None:
-            raise NotImplementedError("Unsupported binary operator left operand")
+            raise FrontendRejection(
+                Diagnostic.SYNTAX_FORM,
+                "Unsupported binary operator left operand",
+            )
         left_slot: int | None = None
         if self.is_async() and self._expr_may_yield(node.right):
             left_slot = self._spill_async_value(
@@ -213,7 +222,10 @@ class ExpressionVisitorMixin(_MixinBase):
             )
         right = self.visit(node.right)
         if right is None:
-            raise NotImplementedError("Unsupported binary operator right operand")
+            raise FrontendRejection(
+                Diagnostic.SYNTAX_FORM,
+                "Unsupported binary operator right operand",
+            )
         if left_slot is not None:
             left = self._reload_async_value(left_slot, left.type_hint)
         res_type = "Unknown"
@@ -399,8 +411,9 @@ class ExpressionVisitorMixin(_MixinBase):
                     elif item.conversion == ord("a"):
                         value = self._emit_ascii_from_obj(value)
                     else:
-                        raise NotImplementedError(
-                            "Formatted value conversion not supported"
+                        raise FrontendRejection(
+                            Diagnostic.OPERAND_VALUE,
+                            "Formatted value conversion not supported",
                         )
                 if item.format_spec is None:
                     if item.conversion != -1:
@@ -411,7 +424,9 @@ class ExpressionVisitorMixin(_MixinBase):
                 spec_val = self._emit_format_spec_value(item.format_spec)
                 parts.append(self._emit_string_format_value(value, spec_val))
                 continue
-            raise NotImplementedError("Unsupported f-string segment")
+            raise FrontendRejection(
+                Diagnostic.SYNTAX_FORM, "Unsupported f-string segment"
+            )
         return self._emit_string_join(parts)
 
     def visit_TemplateStr(self, node: Any) -> Any:
@@ -440,7 +455,9 @@ class ExpressionVisitorMixin(_MixinBase):
             ):
                 positional_vals.append(self._emit_template_interpolation(item))
                 continue
-            raise NotImplementedError("Unsupported t-string segment")
+            raise FrontendRejection(
+                Diagnostic.SYNTAX_FORM, "Unsupported t-string segment"
+            )
         template_class = self._emit_module_attr_get_on("string.templatelib", "Template")
         callargs = MoltValue(self.next_var(), type_hint="callargs")
         self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=callargs))
@@ -471,7 +488,10 @@ class ExpressionVisitorMixin(_MixinBase):
                 if isinstance(elt, ast.Starred):
                     val = self.visit(elt.value)
                     if val is None:
-                        raise NotImplementedError("Unsupported list unpacking value")
+                        raise FrontendRejection(
+                            Diagnostic.SYNTAX_FORM,
+                            "Unsupported list unpacking value",
+                        )
                     self.emit(
                         MoltOp(
                             kind="LIST_EXTEND",
@@ -482,7 +502,9 @@ class ExpressionVisitorMixin(_MixinBase):
                 else:
                     val = self.visit(elt)
                     if val is None:
-                        raise NotImplementedError("Unsupported list element")
+                        raise FrontendRejection(
+                            Diagnostic.OPERAND_VALUE, "Unsupported list element"
+                        )
                     self.emit(
                         MoltOp(
                             kind="LIST_APPEND",
@@ -513,7 +535,10 @@ class ExpressionVisitorMixin(_MixinBase):
                 if isinstance(elt, ast.Starred):
                     val = self.visit(elt.value)
                     if val is None:
-                        raise NotImplementedError("Unsupported tuple unpacking value")
+                        raise FrontendRejection(
+                            Diagnostic.SYNTAX_FORM,
+                            "Unsupported tuple unpacking value",
+                        )
                     self.emit(
                         MoltOp(
                             kind="LIST_EXTEND",
@@ -524,7 +549,10 @@ class ExpressionVisitorMixin(_MixinBase):
                 else:
                     val = self.visit(elt)
                     if val is None:
-                        raise NotImplementedError("Unsupported tuple element")
+                        raise FrontendRejection(
+                            Diagnostic.OPERAND_VALUE,
+                            "Unsupported tuple element",
+                        )
                     self.emit(
                         MoltOp(
                             kind="LIST_APPEND",
@@ -557,7 +585,10 @@ class ExpressionVisitorMixin(_MixinBase):
                 if isinstance(elt, ast.Starred):
                     val = self.visit(elt.value)
                     if val is None:
-                        raise NotImplementedError("Unsupported set unpacking value")
+                        raise FrontendRejection(
+                            Diagnostic.SYNTAX_FORM,
+                            "Unsupported set unpacking value",
+                        )
                     self.emit(
                         MoltOp(
                             kind="SET_UPDATE",
@@ -568,7 +599,9 @@ class ExpressionVisitorMixin(_MixinBase):
                 else:
                     val = self.visit(elt)
                     if val is None:
-                        raise NotImplementedError("Unsupported set element")
+                        raise FrontendRejection(
+                            Diagnostic.OPERAND_VALUE, "Unsupported set element"
+                        )
                     self.emit(
                         MoltOp(
                             kind="SET_ADD",
@@ -599,7 +632,10 @@ class ExpressionVisitorMixin(_MixinBase):
                 if key is None:
                     mapping = self.visit(value)
                     if mapping is None:
-                        raise NotImplementedError("Unsupported dict unpacking value")
+                        raise FrontendRejection(
+                            Diagnostic.SYNTAX_FORM,
+                            "Unsupported dict unpacking value",
+                        )
                     self.emit(
                         MoltOp(
                             kind="DICT_UPDATE",
@@ -611,7 +647,9 @@ class ExpressionVisitorMixin(_MixinBase):
                 key_val = self.visit(key)
                 val_val = self.visit(value)
                 if key_val is None or val_val is None:
-                    raise NotImplementedError("Unsupported dict entry")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE, "Unsupported dict entry"
+                    )
                 self.emit(
                     MoltOp(
                         kind="STORE_INDEX",
@@ -632,8 +670,9 @@ class ExpressionVisitorMixin(_MixinBase):
                     if k2 is None:
                         mapping = self.visit(v2)
                         if mapping is None:
-                            raise NotImplementedError(
-                                "Unsupported dict unpacking value"
+                            raise FrontendRejection(
+                                Diagnostic.SYNTAX_FORM,
+                                "Unsupported dict unpacking value",
                             )
                         self.emit(
                             MoltOp(
@@ -646,7 +685,10 @@ class ExpressionVisitorMixin(_MixinBase):
                         key_val = self.visit(k2)
                         val_val = self.visit(v2)
                         if key_val is None or val_val is None:
-                            raise NotImplementedError("Unsupported dict entry")
+                            raise FrontendRejection(
+                                Diagnostic.OPERAND_VALUE,
+                                "Unsupported dict entry",
+                            )
                         self.emit(
                             MoltOp(
                                 kind="STORE_INDEX",
@@ -735,8 +777,9 @@ class ExpressionVisitorMixin(_MixinBase):
             spec = self._intrinsic_handle_class_spec_for_value(target)
             if spec is not None and spec.getitem_intrinsic is not None:
                 if index_val is None:
-                    raise NotImplementedError(
-                        "Unsupported intrinsic-backed class index"
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE,
+                        "Unsupported intrinsic-backed class index",
                     )
                 return self._emit_intrinsic_handle_class_call(
                     target,
@@ -767,7 +810,7 @@ class ExpressionVisitorMixin(_MixinBase):
         else:
             step = self.visit(node.step)
         if start is None or stop is None or step is None:
-            raise NotImplementedError("Unsupported slice element")
+            raise FrontendRejection(Diagnostic.SYNTAX_FORM, "Unsupported slice element")
         res = MoltValue(self.next_var(), type_hint="slice")
         self.emit(MoltOp(kind="SLICE_NEW", args=[start, stop, step], result=res))
         return res
@@ -786,16 +829,24 @@ class ExpressionVisitorMixin(_MixinBase):
     def visit_NamedExpr(self, node: ast.NamedExpr) -> Any:
         value_node = self.visit(node.value)
         if value_node is None:
-            raise NotImplementedError("Unsupported assignment expression value")
+            raise FrontendRejection(
+                Diagnostic.SYNTAX_FORM,
+                "Unsupported assignment expression value",
+            )
         if not isinstance(node.target, ast.Name):
-            raise NotImplementedError("Unsupported assignment expression target")
+            raise FrontendRejection(
+                Diagnostic.SYNTAX_FORM,
+                "Unsupported assignment expression target",
+            )
         self._emit_assign_target(node.target, value_node, node.value)
         return value_node
 
     def visit_Compare(self, node: ast.Compare) -> Any:
         left = self.visit(node.left)
         if left is None:
-            raise NotImplementedError("Unsupported compare left operand")
+            raise FrontendRejection(
+                Diagnostic.OPERAND_VALUE, "Unsupported compare left operand"
+            )
         comp_yields = [self._expr_may_yield(comp) for comp in node.comparators]
         left_slot: int | None = None
         if self.is_async() and comp_yields[0]:
@@ -804,7 +855,9 @@ class ExpressionVisitorMixin(_MixinBase):
             )
         right = self.visit(node.comparators[0])
         if right is None:
-            raise NotImplementedError("Unsupported compare right operand")
+            raise FrontendRejection(
+                Diagnostic.OPERAND_VALUE, "Unsupported compare right operand"
+            )
         if left_slot is not None:
             left = self._reload_async_value(left_slot, left.type_hint)
         if len(node.ops) == 1:
@@ -838,7 +891,10 @@ class ExpressionVisitorMixin(_MixinBase):
             self.emit(MoltOp(kind="INDEX", args=[prev_cell, idx], result=prev_val))
             right_val = self.visit(comparator)
             if right_val is None:
-                raise NotImplementedError("Unsupported compare right operand")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE,
+                    "Unsupported compare right operand",
+                )
             idx_val = idx
             if (
                 self.is_async()
@@ -877,7 +933,9 @@ class ExpressionVisitorMixin(_MixinBase):
     def visit_UnaryOp(self, node: ast.UnaryOp) -> Any:
         operand = self.visit(node.operand)
         if operand is None:
-            raise NotImplementedError("Unsupported unary operand")
+            raise FrontendRejection(
+                Diagnostic.OPERAND_VALUE, "Unsupported unary operand"
+            )
         if isinstance(node.op, ast.UAdd):
             type_hint = (
                 "int"
@@ -908,18 +966,23 @@ class ExpressionVisitorMixin(_MixinBase):
             res = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="INVERT", args=[operand], result=res))
             return res
-        raise NotImplementedError("Unary operator not supported")
+        raise FrontendRejection(Diagnostic.SYNTAX_FORM, "Unary operator not supported")
 
     def visit_IfExp(self, node: ast.IfExp) -> Any:
         cond = self.visit(node.test)
         if cond is None:
-            raise NotImplementedError("Unsupported if expression condition")
+            raise FrontendRejection(
+                Diagnostic.OPERAND_VALUE, "Unsupported if expression condition"
+            )
         use_phi = self.enable_phi and not self.is_async()
         if use_phi:
             self.emit(MoltOp(kind="IF", args=[cond], result=MoltValue("none")))
             true_val = self.visit(node.body)
             if true_val is None:
-                raise NotImplementedError("Unsupported if expression true branch")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE,
+                    "Unsupported if expression true branch",
+                )
             # Ensure an explicit op in the true branch so the backend sees a
             # definition local to this branch (otherwise the PHI references a
             # variable defined before the IF, and the backend can't tell which
@@ -929,7 +992,10 @@ class ExpressionVisitorMixin(_MixinBase):
             self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
             false_val = self.visit(node.orelse)
             if false_val is None:
-                raise NotImplementedError("Unsupported if expression false branch")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE,
+                    "Unsupported if expression false branch",
+                )
             false_alias = MoltValue(self.next_var(), type_hint=false_val.type_hint)
             self.emit(
                 MoltOp(kind="IDENTITY_ALIAS", args=[false_val], result=false_alias)
@@ -961,7 +1027,10 @@ class ExpressionVisitorMixin(_MixinBase):
             self.emit(MoltOp(kind="IF", args=[cond], result=MoltValue("none")))
             true_val = self.visit(node.body)
             if true_val is None:
-                raise NotImplementedError("Unsupported if expression true branch")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE,
+                    "Unsupported if expression true branch",
+                )
             self.emit(
                 MoltOp(
                     kind="STORE_CLOSURE",
@@ -972,7 +1041,10 @@ class ExpressionVisitorMixin(_MixinBase):
             self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
             false_val = self.visit(node.orelse)
             if false_val is None:
-                raise NotImplementedError("Unsupported if expression false branch")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE,
+                    "Unsupported if expression false branch",
+                )
             self.emit(
                 MoltOp(
                     kind="STORE_CLOSURE",
@@ -994,12 +1066,18 @@ class ExpressionVisitorMixin(_MixinBase):
         self.emit(MoltOp(kind="IF", args=[cond], result=MoltValue("none")))
         true_val = self.visit(node.body)
         if true_val is None:
-            raise NotImplementedError("Unsupported if expression true branch")
+            raise FrontendRejection(
+                Diagnostic.OPERAND_VALUE,
+                "Unsupported if expression true branch",
+            )
         self.emit(MoltOp(kind="COPY", args=[true_val], result=new_result))
         self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
         false_val = self.visit(node.orelse)
         if false_val is None:
-            raise NotImplementedError("Unsupported if expression false branch")
+            raise FrontendRejection(
+                Diagnostic.OPERAND_VALUE,
+                "Unsupported if expression false branch",
+            )
         self.emit(MoltOp(kind="COPY", args=[false_val], result=new_result))
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         if true_val.type_hint == false_val.type_hint:
@@ -1008,10 +1086,14 @@ class ExpressionVisitorMixin(_MixinBase):
 
     def visit_BoolOp(self, node: ast.BoolOp) -> Any:
         if not node.values:
-            raise NotImplementedError("Empty bool op is not supported")
+            raise FrontendRejection(
+                Diagnostic.INTERNAL_INVARIANT, "Empty bool op is not supported"
+            )
         result = self.visit(node.values[0])
         if result is None:
-            raise NotImplementedError("Unsupported bool op operand")
+            raise FrontendRejection(
+                Diagnostic.OPERAND_VALUE, "Unsupported bool op operand"
+            )
         use_phi = self.enable_phi and not self.is_async()
         for value in node.values[1:]:
             if isinstance(node.op, ast.And):
@@ -1022,7 +1104,10 @@ class ExpressionVisitorMixin(_MixinBase):
                     )
                     right = self.visit(value)
                     if right is None:
-                        raise NotImplementedError("Unsupported bool op operand")
+                        raise FrontendRejection(
+                            Diagnostic.OPERAND_VALUE,
+                            "Unsupported bool op operand",
+                        )
                     new_result_true = MoltValue(self.next_var(), type_hint="Any")
                     self.emit(
                         MoltOp(kind="AND", args=[result, right], result=new_result_true)
@@ -1069,7 +1154,10 @@ class ExpressionVisitorMixin(_MixinBase):
                         )
                         right = self.visit(value)
                         if right is None:
-                            raise NotImplementedError("Unsupported bool op operand")
+                            raise FrontendRejection(
+                                Diagnostic.OPERAND_VALUE,
+                                "Unsupported bool op operand",
+                            )
                         and_val = MoltValue(self.next_var(), type_hint="Any")
                         self.emit(
                             MoltOp(kind="AND", args=[result, right], result=and_val)
@@ -1114,7 +1202,10 @@ class ExpressionVisitorMixin(_MixinBase):
                         )
                         right = self.visit(value)
                         if right is None:
-                            raise NotImplementedError("Unsupported bool op operand")
+                            raise FrontendRejection(
+                                Diagnostic.OPERAND_VALUE,
+                                "Unsupported bool op operand",
+                            )
                         self.emit(
                             MoltOp(kind="AND", args=[result, right], result=new_result)
                         )
@@ -1136,7 +1227,10 @@ class ExpressionVisitorMixin(_MixinBase):
                     self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
                     right = self.visit(value)
                     if right is None:
-                        raise NotImplementedError("Unsupported bool op operand")
+                        raise FrontendRejection(
+                            Diagnostic.OPERAND_VALUE,
+                            "Unsupported bool op operand",
+                        )
                     new_result_false = MoltValue(self.next_var(), type_hint="Any")
                     self.emit(
                         MoltOp(kind="OR", args=[result, right], result=new_result_false)
@@ -1166,7 +1260,10 @@ class ExpressionVisitorMixin(_MixinBase):
                         )
                         right = self.visit(value)
                         if right is None:
-                            raise NotImplementedError("Unsupported bool op operand")
+                            raise FrontendRejection(
+                                Diagnostic.OPERAND_VALUE,
+                                "Unsupported bool op operand",
+                            )
                         self.emit(
                             MoltOp(kind="OR", args=[result, right], result=new_result)
                         )
@@ -1216,7 +1313,10 @@ class ExpressionVisitorMixin(_MixinBase):
                         )
                         right = self.visit(value)
                         if right is None:
-                            raise NotImplementedError("Unsupported bool op operand")
+                            raise FrontendRejection(
+                                Diagnostic.OPERAND_VALUE,
+                                "Unsupported bool op operand",
+                            )
                         or_val = MoltValue(self.next_var(), type_hint="Any")
                         self.emit(
                             MoltOp(kind="OR", args=[result, right], result=or_val)
@@ -1251,5 +1351,7 @@ class ExpressionVisitorMixin(_MixinBase):
                         )
                         result = new_result
             else:
-                raise NotImplementedError("Unsupported boolean operator")
+                raise FrontendRejection(
+                    Diagnostic.SYNTAX_FORM, "Unsupported boolean operator"
+                )
         return result

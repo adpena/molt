@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -13,6 +12,8 @@ from molt.frontend._types import (
     MoltOp,
     MoltValue,
 )
+from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
+from molt.frontend.diagnostics import FrontendRejection
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -33,7 +34,9 @@ class CallNamedBuiltinConstructorDispatchMixin(_MixinBase):
             if node.keywords or len(node.args) > 1:
                 callee = self.visit(node.func)
                 if callee is None:
-                    raise NotImplementedError("Unsupported call target")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_TARGET, "Unsupported call target"
+                    )
                 return self._emit_dynamic_call(node, callee, True)
             if not node.args:
                 res = MoltValue(self.next_var(), type_hint="list")
@@ -48,13 +51,17 @@ class CallNamedBuiltinConstructorDispatchMixin(_MixinBase):
                 return self._emit_list_from_iter(range_obj)
             iterable = self.visit(node.args[0])
             if iterable is None:
-                raise NotImplementedError("Unsupported list input")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE, "Unsupported list input"
+                )
             return self._emit_list_from_iter(iterable)
         if func_id == "tuple":
             if node.keywords or len(node.args) > 1:
                 callee = self.visit(node.func)
                 if callee is None:
-                    raise NotImplementedError("Unsupported call target")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_TARGET, "Unsupported call target"
+                    )
                 return self._emit_dynamic_call(node, callee, True)
             if not node.args:
                 res = MoltValue(self.next_var(), type_hint="tuple")
@@ -67,7 +74,9 @@ class CallNamedBuiltinConstructorDispatchMixin(_MixinBase):
                 return self._emit_tuple_from_iter(range_obj)
             iterable = self.visit(node.args[0])
             if iterable is None:
-                raise NotImplementedError("Unsupported tuple input")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE, "Unsupported tuple input"
+                )
             if iterable.type_hint == "tuple":
                 return iterable
             if iterable.type_hint == "list":
@@ -84,7 +93,9 @@ class CallNamedBuiltinConstructorDispatchMixin(_MixinBase):
                 # arguments at runtime, so route through CALL_BIND.
                 callee = self.visit(node.func)
                 if callee is None:
-                    raise NotImplementedError("Unsupported call target")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_TARGET, "Unsupported call target"
+                    )
                 return self._emit_dynamic_call(node, callee, True)
             res = MoltValue(self.next_var(), type_hint="dict")
             if not node.args:
@@ -92,13 +103,18 @@ class CallNamedBuiltinConstructorDispatchMixin(_MixinBase):
             else:
                 iterable = self.visit(node.args[0])
                 if iterable is None:
-                    raise NotImplementedError("Unsupported dict input")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE, "Unsupported dict input"
+                    )
                 self.emit(MoltOp(kind="DICT_FROM_OBJ", args=[iterable], result=res))
             for kw in node.keywords:
                 if kw.arg is None:
                     mapping = self.visit(kw.value)
                     if mapping is None:
-                        raise NotImplementedError("Unsupported dict ** input")
+                        raise FrontendRejection(
+                            Diagnostic.OPERAND_VALUE,
+                            "Unsupported dict ** input",
+                        )
                     self.emit(
                         MoltOp(
                             kind="DICT_UPDATE_KWSTAR",
@@ -111,7 +127,10 @@ class CallNamedBuiltinConstructorDispatchMixin(_MixinBase):
                     self.emit(MoltOp(kind="CONST_STR", args=[kw.arg], result=key))
                     val = self.visit(kw.value)
                     if val is None:
-                        raise NotImplementedError("Unsupported dict kw value")
+                        raise FrontendRejection(
+                            Diagnostic.OPERAND_VALUE,
+                            "Unsupported dict kw value",
+                        )
                     self.emit(
                         MoltOp(
                             kind="STORE_INDEX",
@@ -124,7 +143,9 @@ class CallNamedBuiltinConstructorDispatchMixin(_MixinBase):
             if node.keywords or len(node.args) > 1:
                 callee = self.visit(node.func)
                 if callee is None:
-                    raise NotImplementedError("Unsupported call target")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_TARGET, "Unsupported call target"
+                    )
                 return self._emit_dynamic_call(node, callee, True)
             if not node.args:
                 res = MoltValue(self.next_var(), type_hint="float")
@@ -132,7 +153,9 @@ class CallNamedBuiltinConstructorDispatchMixin(_MixinBase):
                 return res
             value = self.visit(node.args[0])
             if value is None:
-                raise NotImplementedError("Unsupported float input")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE, "Unsupported float input"
+                )
             res = MoltValue(self.next_var(), type_hint="float")
             self.emit(MoltOp(kind="FLOAT_FROM_OBJ", args=[value], result=res))
             return res
@@ -140,7 +163,9 @@ class CallNamedBuiltinConstructorDispatchMixin(_MixinBase):
             if any(kw.arg is None for kw in node.keywords) or len(node.args) > 2:
                 callee = self.visit(node.func)
                 if callee is None:
-                    raise NotImplementedError("Unsupported call target")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_TARGET, "Unsupported call target"
+                    )
                 return self._emit_dynamic_call(node, callee, True)
             kw_real = 0
             kw_imag = 0
@@ -162,34 +187,55 @@ class CallNamedBuiltinConstructorDispatchMixin(_MixinBase):
             ):
                 callee = self.visit(node.func)
                 if callee is None:
-                    raise NotImplementedError("Unsupported call target")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_TARGET, "Unsupported call target"
+                    )
                 return self._emit_dynamic_call(node, callee, True)
             real_val: MoltValue | None = None
             imag_val: MoltValue | None = None
             if node.args:
                 real_val = self.visit(node.args[0])
                 if real_val is None:
-                    raise NotImplementedError("Unsupported complex real input")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE,
+                        "Unsupported complex real input",
+                    )
             if len(node.args) == 2:
                 imag_val = self.visit(node.args[1])
                 if imag_val is None:
-                    raise NotImplementedError("Unsupported complex imag input")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE,
+                        "Unsupported complex imag input",
+                    )
             for kw in node.keywords:
                 if kw.arg == "real":
                     if real_val is not None:
-                        raise NotImplementedError("complex() real specified twice")
+                        raise FrontendRejection(
+                            Diagnostic.CALL_SIGNATURE,
+                            "complex() real specified twice",
+                        )
                     real_val = self.visit(kw.value)
                     if real_val is None:
-                        raise NotImplementedError("Unsupported complex real input")
+                        raise FrontendRejection(
+                            Diagnostic.OPERAND_VALUE,
+                            "Unsupported complex real input",
+                        )
                 elif kw.arg == "imag":
                     if imag_val is not None:
-                        raise NotImplementedError("complex() imag specified twice")
+                        raise FrontendRejection(
+                            Diagnostic.CALL_SIGNATURE,
+                            "complex() imag specified twice",
+                        )
                     imag_val = self.visit(kw.value)
                     if imag_val is None:
-                        raise NotImplementedError("Unsupported complex imag input")
+                        raise FrontendRejection(
+                            Diagnostic.OPERAND_VALUE,
+                            "Unsupported complex imag input",
+                        )
                 else:
-                    raise NotImplementedError(
-                        "complex only supports real/imag keywords"
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "complex only supports real/imag keywords",
                     )
             if real_val is None:
                 real_val = MoltValue(self.next_var(), type_hint="float")
@@ -213,7 +259,9 @@ class CallNamedBuiltinConstructorDispatchMixin(_MixinBase):
             return res
         if func_id == "int":
             if len(node.args) > 2:
-                raise NotImplementedError("int expects 0-2 arguments")
+                raise FrontendRejection(
+                    Diagnostic.CALL_SIGNATURE, "int expects 0-2 arguments"
+                )
             value: MoltValue | None = None
             base_val: MoltValue | None = None
             has_base_flag = False
@@ -228,17 +276,23 @@ class CallNamedBuiltinConstructorDispatchMixin(_MixinBase):
                 else:
                     value = self.visit(node.args[0])
                 if value is None:
-                    raise NotImplementedError("Unsupported int input")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE, "Unsupported int input"
+                    )
             if len(node.args) == 2:
                 base_val = self.visit(node.args[1])
                 if base_val is None:
-                    raise NotImplementedError("Unsupported int base")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE, "Unsupported int base"
+                    )
                 has_base_flag = True
             for keyword in node.keywords:
                 if keyword.arg is None:
                     callee = self.visit(node.func)
                     if callee is None:
-                        raise NotImplementedError("Unsupported call target")
+                        raise FrontendRejection(
+                            Diagnostic.CALL_TARGET, "Unsupported call target"
+                        )
                     return self._emit_dynamic_call(node, callee, True)
                 if keyword.arg == "base":
                     if has_base_flag:
@@ -248,7 +302,9 @@ class CallNamedBuiltinConstructorDispatchMixin(_MixinBase):
                         )
                     base_val = self.visit(keyword.value)
                     if base_val is None:
-                        raise NotImplementedError("Unsupported int base")
+                        raise FrontendRejection(
+                            Diagnostic.OPERAND_VALUE, "Unsupported int base"
+                        )
                     has_base_flag = True
                 else:
                     return self._emit_type_error_value(
@@ -279,13 +335,19 @@ class CallNamedBuiltinConstructorDispatchMixin(_MixinBase):
             return res
         if func_id == "pow":
             if node.keywords:
-                raise NotImplementedError("pow does not support keywords")
+                raise FrontendRejection(
+                    Diagnostic.CALL_SIGNATURE, "pow does not support keywords"
+                )
             if len(node.args) not in (2, 3):
-                raise NotImplementedError("pow expects 2 or 3 arguments")
+                raise FrontendRejection(
+                    Diagnostic.CALL_SIGNATURE, "pow expects 2 or 3 arguments"
+                )
             base = self.visit(node.args[0])
             exp = self.visit(node.args[1])
             if base is None or exp is None:
-                raise NotImplementedError("Unsupported pow inputs")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE, "Unsupported pow inputs"
+                )
             if len(node.args) == 2:
                 if "complex" in {base.type_hint, exp.type_hint}:
                     res_type = "complex"
@@ -298,7 +360,9 @@ class CallNamedBuiltinConstructorDispatchMixin(_MixinBase):
                 return res
             mod = self.visit(node.args[2])
             if mod is None:
-                raise NotImplementedError("Unsupported pow mod input")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE, "Unsupported pow mod input"
+                )
             int_like = {"int", "bool"}
             res_type = (
                 "int"
@@ -316,16 +380,22 @@ class CallNamedBuiltinConstructorDispatchMixin(_MixinBase):
             if node.keywords:
                 callee = self.visit(node.func)
                 if callee is None:
-                    raise NotImplementedError("Unsupported call target")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_TARGET, "Unsupported call target"
+                    )
                 return self._emit_dynamic_call(node, callee, True)
             if len(node.args) not in (1, 2):
                 callee = self.visit(node.func)
                 if callee is None:
-                    raise NotImplementedError("Unsupported call target")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_TARGET, "Unsupported call target"
+                    )
                 return self._emit_dynamic_call(node, callee, True)
             value = self.visit(node.args[0])
             if value is None:
-                raise NotImplementedError("Unsupported round input")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE, "Unsupported round input"
+                )
             if len(node.args) == 2:
                 ndigits = self.visit(node.args[1])
                 if ndigits is None:
@@ -356,7 +426,9 @@ class CallNamedBuiltinConstructorDispatchMixin(_MixinBase):
             if node.keywords or len(node.args) > 1:
                 callee = self.visit(node.func)
                 if callee is None:
-                    raise NotImplementedError("Unsupported call target")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_TARGET, "Unsupported call target"
+                    )
                 return self._emit_dynamic_call(node, callee, True)
             if not node.args:
                 res = MoltValue(self.next_var(), type_hint="set")
@@ -369,13 +441,17 @@ class CallNamedBuiltinConstructorDispatchMixin(_MixinBase):
                 return self._emit_set_from_iter(range_obj)
             iterable = self.visit(node.args[0])
             if iterable is None:
-                raise NotImplementedError("Unsupported set input")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE, "Unsupported set input"
+                )
             return self._emit_set_from_iter(iterable)
         if func_id == "frozenset":
             if node.keywords or len(node.args) > 1:
                 callee = self.visit(node.func)
                 if callee is None:
-                    raise NotImplementedError("Unsupported call target")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_TARGET, "Unsupported call target"
+                    )
                 return self._emit_dynamic_call(node, callee, True)
             if not node.args:
                 res = MoltValue(self.next_var(), type_hint="frozenset")
@@ -388,16 +464,22 @@ class CallNamedBuiltinConstructorDispatchMixin(_MixinBase):
                 return self._emit_frozenset_from_iter(range_obj)
             iterable = self.visit(node.args[0])
             if iterable is None:
-                raise NotImplementedError("Unsupported frozenset input")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE, "Unsupported frozenset input"
+                )
             return self._emit_frozenset_from_iter(iterable)
             return self._emit_tuple_from_iter(iterable)
         if func_id == "bytes":
             if any(kw.arg is None for kw in node.keywords):
-                raise NotImplementedError("bytes does not support **kwargs")
+                raise FrontendRejection(
+                    Diagnostic.CALL_SIGNATURE, "bytes does not support **kwargs"
+                )
             if len(node.args) > 3:
                 callee = self.visit(node.func)
                 if callee is None:
-                    raise NotImplementedError("Unsupported call target")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_TARGET, "Unsupported call target"
+                    )
                 return self._emit_dynamic_call(node, callee, True)
             source_expr = node.args[0] if node.args else None
             encoding_expr = node.args[1] if len(node.args) > 1 else None
@@ -441,22 +523,32 @@ class CallNamedBuiltinConstructorDispatchMixin(_MixinBase):
             else:
                 source_val = self.visit(source_expr)
                 if source_val is None:
-                    raise NotImplementedError("Unsupported bytes input")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE, "Unsupported bytes input"
+                    )
             if has_encoding:
                 if encoding_expr is None:
-                    raise NotImplementedError("Unsupported bytes encoding")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE, "Unsupported bytes encoding"
+                    )
                 encoding_val = self.visit(encoding_expr)
                 if encoding_val is None:
-                    raise NotImplementedError("Unsupported bytes encoding")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE, "Unsupported bytes encoding"
+                    )
             else:
                 encoding_val = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=encoding_val))
             if has_errors:
                 if errors_expr is None:
-                    raise NotImplementedError("Unsupported bytes errors")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE, "Unsupported bytes errors"
+                    )
                 errors_val = self.visit(errors_expr)
                 if errors_val is None:
-                    raise NotImplementedError("Unsupported bytes errors")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE, "Unsupported bytes errors"
+                    )
             else:
                 errors_val = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=errors_val))
@@ -474,11 +566,16 @@ class CallNamedBuiltinConstructorDispatchMixin(_MixinBase):
             return res
         if func_id == "bytearray":
             if any(kw.arg is None for kw in node.keywords):
-                raise NotImplementedError("bytearray does not support **kwargs")
+                raise FrontendRejection(
+                    Diagnostic.CALL_SIGNATURE,
+                    "bytearray does not support **kwargs",
+                )
             if len(node.args) > 3:
                 callee = self.visit(node.func)
                 if callee is None:
-                    raise NotImplementedError("Unsupported call target")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_TARGET, "Unsupported call target"
+                    )
                 return self._emit_dynamic_call(node, callee, True)
             source_expr = node.args[0] if node.args else None
             encoding_expr = node.args[1] if len(node.args) > 1 else None
@@ -526,22 +623,34 @@ class CallNamedBuiltinConstructorDispatchMixin(_MixinBase):
                 source_len_hint = self._const_int_from_expr(source_expr)
                 source_val = self.visit(source_expr)
                 if source_val is None:
-                    raise NotImplementedError("Unsupported bytearray input")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE, "Unsupported bytearray input"
+                    )
             if has_encoding:
                 if encoding_expr is None:
-                    raise NotImplementedError("Unsupported bytearray encoding")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE,
+                        "Unsupported bytearray encoding",
+                    )
                 encoding_val = self.visit(encoding_expr)
                 if encoding_val is None:
-                    raise NotImplementedError("Unsupported bytearray encoding")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE,
+                        "Unsupported bytearray encoding",
+                    )
             else:
                 encoding_val = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=encoding_val))
             if has_errors:
                 if errors_expr is None:
-                    raise NotImplementedError("Unsupported bytearray errors")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE, "Unsupported bytearray errors"
+                    )
                 errors_val = self.visit(errors_expr)
                 if errors_val is None:
-                    raise NotImplementedError("Unsupported bytearray errors")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE, "Unsupported bytearray errors"
+                    )
             else:
                 errors_val = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=errors_val))
@@ -571,7 +680,9 @@ class CallNamedBuiltinConstructorDispatchMixin(_MixinBase):
             return res
         if func_id == "memoryview":
             if len(node.args) != 1:
-                raise NotImplementedError("memoryview expects 1 argument")
+                raise FrontendRejection(
+                    Diagnostic.CALL_SIGNATURE, "memoryview expects 1 argument"
+                )
             arg = self.visit(node.args[0])
             res = MoltValue(self.next_var(), type_hint="memoryview")
             self.emit(MoltOp(kind="MEMORYVIEW_NEW", args=[arg], result=res))

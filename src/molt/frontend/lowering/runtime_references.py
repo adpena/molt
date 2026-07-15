@@ -14,9 +14,6 @@ from typing import TYPE_CHECKING, Sequence
 from molt.frontend._types import (
     _INLINE_INT_MAX,
     _INLINE_INT_MIN,
-    _canonical_intrinsic_runtime_name,
-    _intrinsic_arity_exact,
-    _intrinsic_defaults_exact,
     BUILTIN_EXCEPTION_NAMES,
     BUILTIN_FUNC_SPECS,
     BUILTIN_TYPE_TAGS,
@@ -24,7 +21,12 @@ from molt.frontend._types import (
     IntrinsicHandleClassConstructorSpec,
     MoltOp,
     MoltValue,
+    _canonical_intrinsic_runtime_name,
+    _intrinsic_arity_exact,
+    _intrinsic_defaults_exact,
 )
+from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
+from molt.frontend.diagnostics import FrontendRejection
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -85,7 +87,10 @@ class RuntimeReferenceMixin(_MixinBase):
             res = MoltValue(self.next_var(), type_hint="bytes")
             self.emit(MoltOp(kind="CONST_BYTES", args=[value], result=res))
             return res
-        raise NotImplementedError(f"Unsupported default literal: {value!r}")
+        raise FrontendRejection(
+            Diagnostic.OPERAND_VALUE,
+            f"Unsupported default literal: {value!r}",
+        )
 
     def _emit_intrinsic_function(self, runtime_name: str) -> MoltValue:
         arity = _intrinsic_arity_exact(runtime_name)

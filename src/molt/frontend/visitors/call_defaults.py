@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-
 from collections.abc import Callable
 from typing import (
     TYPE_CHECKING,
@@ -14,6 +13,8 @@ from molt.frontend._types import (
     MoltOp,
     MoltValue,
 )
+from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
+from molt.frontend.diagnostics import FrontendRejection
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -202,12 +203,11 @@ class CallDefaultsMixin(_MixinBase):
         pristine_guard: MoltValue | None = None
         if needs_tuple or needs_kwdefaults:
             if func_obj is None:
-                raise self.compat.unsupported(
-                    node,
+                raise FrontendRejection(
+                    Diagnostic.CALL_DEFAULTS,
                     f"call to {call_name} with non-constant defaults",
-                    impact="medium",
-                    alternative="pass explicit arguments",
-                    detail="only literal defaults are supported for direct calls",
+                    "pass explicit arguments",
+                    "only literal defaults are supported for direct calls",
                 )
         if func_obj is not None:
             if needs_tuple_live:
@@ -235,7 +235,10 @@ class CallDefaultsMixin(_MixinBase):
                 missing_val = self._emit_missing_value()
             key_name = spec.get("name")
             if not isinstance(key_name, str):
-                raise NotImplementedError("Invalid kwonly default spec name")
+                raise FrontendRejection(
+                    Diagnostic.CALL_SIGNATURE,
+                    "Invalid kwonly default spec name",
+                )
             key_val = MoltValue(self.next_var(), type_hint="str")
             self.emit(MoltOp(kind="CONST_STR", args=[key_name], result=key_val))
             res = MoltValue(self.next_var(), type_hint="Any")
@@ -288,22 +291,20 @@ class CallDefaultsMixin(_MixinBase):
                 continue
             if spec.get("kwonly", False):
                 if kwdefaults_dict is None:
-                    raise self.compat.unsupported(
-                        node,
+                    raise FrontendRejection(
+                        Diagnostic.CALL_DEFAULTS,
                         f"call to {call_name} with non-constant defaults",
-                        impact="medium",
-                        alternative="pass explicit arguments",
-                        detail="only literal defaults are supported for direct calls",
+                        "pass explicit arguments",
+                        "only literal defaults are supported for direct calls",
                     )
                 args.append(_live_kwonly_default(spec))
                 continue
             if defaults_tuple is None:
-                raise self.compat.unsupported(
-                    node,
+                raise FrontendRejection(
+                    Diagnostic.CALL_DEFAULTS,
                     f"call to {call_name} with non-constant defaults",
-                    impact="medium",
-                    alternative="pass explicit arguments",
-                    detail="only literal defaults are supported for direct calls",
+                    "pass explicit arguments",
+                    "only literal defaults are supported for direct calls",
                 )
             args.append(_live_positional_default(offset))
         return args
