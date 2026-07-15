@@ -8,24 +8,6 @@ use crate::tir::values::ValueId;
 /// CheckException logic, not by liveness propagation — at this analysis layer a
 /// value live across a potentially-throwing op is captured by ordinary
 /// straight-line liveness (the op is just another op in the block).
-fn terminator_successors(term: &Terminator) -> Vec<BlockId> {
-    match term {
-        Terminator::Branch { target, .. } => vec![*target],
-        Terminator::CondBranch {
-            then_block,
-            else_block,
-            ..
-        } => vec![*then_block, *else_block],
-        Terminator::Switch { cases, default, .. }
-        | Terminator::StateDispatch { cases, default, .. } => {
-            let mut out: Vec<BlockId> = cases.iter().map(|(_, b, _)| *b).collect();
-            out.push(*default);
-            out
-        }
-        Terminator::Return { .. } | Terminator::Unreachable => vec![],
-    }
-}
-
 /// The values `term` *uses* directly (the condition of a CondBranch, the switch
 /// value, and Return values) — NOT the branch args, which are handled by the
 /// successor block-arg propagation in [`live_out_of`].
@@ -46,49 +28,13 @@ pub(super) fn terminator_direct_uses(term: &Terminator) -> Vec<ValueId> {
 /// by arg position). Returns the args delivered specifically to successor `succ`
 /// on the matching edge.
 fn edge_args_to(term: &Terminator, succ: BlockId) -> Vec<ValueId> {
-    match term {
-        Terminator::Branch { target, args } if *target == succ => args.clone(),
-        Terminator::CondBranch {
-            then_block,
-            then_args,
-            else_block,
-            else_args,
-            ..
-        } => {
-            let mut out = Vec::new();
-            if *then_block == succ {
-                out.extend(then_args.iter().copied());
-            }
-            if *else_block == succ {
-                out.extend(else_args.iter().copied());
-            }
-            out
+    let mut out = Vec::new();
+    term.for_each_edge(|target, args| {
+        if target == succ {
+            out.extend_from_slice(args);
         }
-        Terminator::Switch {
-            cases,
-            default,
-            default_args,
-            ..
-        }
-        | Terminator::StateDispatch {
-            cases,
-            default,
-            default_args,
-            ..
-        } => {
-            let mut out = Vec::new();
-            for (_, b, args) in cases {
-                if *b == succ {
-                    out.extend(args.iter().copied());
-                }
-            }
-            if *default == succ {
-                out.extend(default_args.iter().copied());
-            }
-            out
-        }
-        _ => vec![],
-    }
+    });
+    out
 }
 
 /// Compute LiveOut[B] from the current LiveIn of B's successors.
@@ -108,7 +54,7 @@ pub(super) fn live_out_of(
     keepalive_roots: &dyn Fn(ValueId) -> Vec<ValueId>,
 ) -> HashSet<ValueId> {
     let mut out = HashSet::new();
-    for succ in terminator_successors(&block.terminator) {
+    for succ in crate::tir::dominators::terminator_successors(&block.terminator) {
         if let Some(succ_in) = live_in.get(&succ) {
             let succ_args = block_args.get(&succ);
             for &v in succ_in {

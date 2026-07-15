@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::tir::analysis::{AnalysisManager, LoopForest, PredMap};
-use crate::tir::blocks::{BlockId, Terminator};
+use crate::tir::blocks::BlockId;
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::types::TirType;
@@ -107,25 +107,10 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                     Some(b) => b,
                     None => return false,
                 };
-                match &pred_block.terminator {
-                    Terminator::Branch { args, .. } => args.get(pos).copied(),
-                    Terminator::CondBranch {
-                        then_args,
-                        else_args,
-                        then_block,
-                        else_block,
-                        ..
-                    } => {
-                        if *then_block == bid {
-                            then_args.get(pos).copied()
-                        } else if *else_block == bid {
-                            else_args.get(pos).copied()
-                        } else {
-                            None
-                        }
-                    }
-                    _ => None,
-                }
+                pred_block
+                    .terminator
+                    .first_edge_args_to(bid)
+                    .and_then(|args| args.get(pos).copied())
             } else {
                 Some(guarded) // Not a block arg — use directly
             };
@@ -235,25 +220,10 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             let arg_pos = orig_block.args.iter().position(|a| a.id == guarded);
             let source_value = if let Some(pos) = arg_pos {
                 let pred_block = &func.blocks[&pred_id];
-                match &pred_block.terminator {
-                    Terminator::Branch { args, .. } => args.get(pos).copied(),
-                    Terminator::CondBranch {
-                        then_args,
-                        else_args,
-                        then_block,
-                        else_block,
-                        ..
-                    } => {
-                        if *then_block == orig_bid {
-                            then_args.get(pos).copied()
-                        } else if *else_block == orig_bid {
-                            else_args.get(pos).copied()
-                        } else {
-                            None
-                        }
-                    }
-                    _ => None,
-                }
+                pred_block
+                    .terminator
+                    .first_edge_args_to(orig_bid)
+                    .and_then(|args| args.get(pos).copied())
             } else {
                 Some(guarded)
             };

@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
-use crate::tir::dominators::{CfgEdgePolicy, build_pred_map_with};
+use crate::tir::dominators::{CfgEdgePolicy, build_pred_map_with, terminator_successors};
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{ModuleSlotAccessRole, opcode_module_slot_access_role_table};
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
@@ -18,8 +18,7 @@ use super::PromotionStats;
 use super::gates::is_marker_passthrough;
 use super::loops::LoopInfo;
 use super::terminators::{
-    append_args_on_edges_to, edge_args, retarget_edge, rewrite_terminator_values,
-    terminator_successors, terminator_uses,
+    append_args_on_edges_to, edge_args, retarget_edge, rewrite_terminator_values, terminator_uses,
 };
 
 /// A const-named module-attr access inside (or before) a loop.

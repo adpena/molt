@@ -69,7 +69,11 @@ pub(super) fn loop_gate(
         Terminator::Branch { target, args } if args.is_empty() => {
             structured_terminal_loop_gate(func, header, cond_block_id, cond_block, *target)
         }
-        _ => None,
+        Terminator::Branch { .. }
+        | Terminator::Switch { .. }
+        | Terminator::StateDispatch { .. }
+        | Terminator::Return { .. }
+        | Terminator::Unreachable => None,
     }
 }
 

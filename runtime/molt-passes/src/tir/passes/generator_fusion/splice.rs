@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use super::super::super::blocks::{BlockId, Terminator};
+use super::super::super::blocks::BlockId;
 use super::super::super::function::TirFunction;
 use super::super::super::op_kinds_generated::opcode_generator_fusion_poll_role_table;
 use super::super::super::ops::{OpCode, TirOp};
@@ -87,18 +87,8 @@ pub(in crate::tir::passes::generator_fusion) fn apply_fusion(
     // The block the body loops back to (the continue target) is the carried-phi
     // header in the function-scope shape.
     if let Some(body) = caller.blocks.get(&candidate.body_block) {
-        match &body.terminator {
-            Terminator::Branch { target, .. } => consumer_region.push(*target),
-            Terminator::CondBranch {
-                then_block,
-                else_block,
-                ..
-            } => {
-                consumer_region.push(*then_block);
-                consumer_region.push(*else_block);
-            }
-            _ => {}
-        }
+        body.terminator
+            .for_each_edge(|target, _| consumer_region.push(target));
     }
     for b in consumer_region {
         if caller

@@ -4,7 +4,7 @@ use super::super::value_range::ValueRange;
 use super::PassStats;
 use super::safety::is_hoistable;
 use crate::tir::analysis::{AnalysisManager, DefMap, LoopForest};
-use crate::tir::blocks::{BlockId, Terminator};
+use crate::tir::blocks::BlockId;
 use crate::tir::function::TirFunction;
 use crate::tir::values::ValueId;
 /// Find the preheader block for a loop header.
@@ -17,16 +17,7 @@ fn find_preheader(
 ) -> Option<BlockId> {
     let mut preds: Vec<BlockId> = Vec::new();
     for (&bid, block) in &func.blocks {
-        let targets = match &block.terminator {
-            Terminator::Branch { target, .. } => vec![*target],
-            Terminator::CondBranch {
-                then_block,
-                else_block,
-                ..
-            } => vec![*then_block, *else_block],
-            _ => vec![],
-        };
-        if targets.contains(&header_bid) && !loop_blocks.contains(&bid) {
+        if block.terminator.has_successor(header_bid) && !loop_blocks.contains(&bid) {
             preds.push(bid);
         }
     }
@@ -127,23 +118,9 @@ pub(super) fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats
     // These participate in phi resolution and must not be hoisted.
     let mut phi_values: HashSet<ValueId> = HashSet::new();
     for block in func.blocks.values() {
-        match &block.terminator {
-            Terminator::Branch { args, .. } => {
-                for v in args {
-                    phi_values.insert(*v);
-                }
-            }
-            Terminator::CondBranch {
-                then_args,
-                else_args,
-                ..
-            } => {
-                for v in then_args.iter().chain(else_args.iter()) {
-                    phi_values.insert(*v);
-                }
-            }
-            _ => {}
-        }
+        block
+            .terminator
+            .for_each_edge(|_, args| phi_values.extend(args.iter().copied()));
     }
 
     // Index the precomputed loop block sets by header for cheap lookup.

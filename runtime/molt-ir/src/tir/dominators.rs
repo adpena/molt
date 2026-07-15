@@ -18,22 +18,9 @@ use super::ops::{AttrValue, OpCode};
 
 /// Collect successor BlockIds from a terminator.
 pub fn terminator_successors(term: &Terminator) -> Vec<BlockId> {
-    match term {
-        Terminator::Branch { target, .. } => vec![*target],
-        Terminator::CondBranch {
-            then_block,
-            else_block,
-            ..
-        } => vec![*then_block, *else_block],
-        Terminator::Switch { cases, default, .. }
-        | Terminator::StateDispatch { cases, default, .. } => {
-            let mut targets: Vec<BlockId> = cases.iter().map(|(_, t, _)| *t).collect();
-            targets.push(*default);
-            targets.dedup();
-            targets
-        }
-        Terminator::Return { .. } | Terminator::Unreachable => vec![],
-    }
+    let mut targets = term.successors();
+    targets.dedup();
+    targets
 }
 
 /// Map each exception-handler label id to the `BlockId` that owns it.

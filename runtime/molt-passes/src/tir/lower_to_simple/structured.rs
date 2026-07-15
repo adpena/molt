@@ -8,7 +8,7 @@ use crate::tir::ops::{AttrValue, OpCode};
 use crate::tir::simple_value_names::value_var;
 use crate::tir::values::ValueId;
 
-use super::cfg::{collect_guard_raise_path_blocks, successors_of};
+use super::cfg::collect_guard_raise_path_blocks;
 use super::op_lowering::lower_op_many;
 use super::op_utils::{annotate_lowered_op, attr_int};
 
@@ -140,7 +140,10 @@ pub(super) fn emit_structured_loop_region(
                             break;
                         }
                     }
-                    _ => break,
+                    Terminator::Switch { .. }
+                    | Terminator::StateDispatch { .. }
+                    | Terminator::Return { .. }
+                    | Terminator::Unreachable => break,
                 };
                 if next == region.cond_block {
                     break;
@@ -324,10 +327,11 @@ pub(super) fn emit_structured_loop_region(
                             }
                         }
                     }
-                    _ => {
-                        // Other terminators for non-last blocks (unexpected
-                        // but handle gracefully).
-                    }
+                    Terminator::CondBranch { .. }
+                    | Terminator::Switch { .. }
+                    | Terminator::StateDispatch { .. }
+                    | Terminator::Return { .. }
+                    | Terminator::Unreachable => {}
                 }
             }
         }
@@ -456,7 +460,7 @@ pub(super) fn emit_structured_loop_region(
                             inner_consumed.insert(raise_bid);
                             // Follow raise path successors
                             if let Some(rblk) = func.blocks.get(&raise_bid) {
-                                for succ in successors_of(rblk) {
+                                for succ in rblk.terminator.successors() {
                                     inner_consumed.insert(succ);
                                 }
                             }
@@ -467,7 +471,10 @@ pub(super) fn emit_structured_loop_region(
                             inner_consumed.insert(cont_bid);
                             cur = cont_bid;
                         }
-                        _ => break,
+                        Terminator::Switch { .. }
+                        | Terminator::StateDispatch { .. }
+                        | Terminator::Return { .. }
+                        | Terminator::Unreachable => break,
                     }
                 }
             }

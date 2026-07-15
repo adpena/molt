@@ -71,7 +71,10 @@ pub(super) fn find_fusable_chains(
             let loop_body_block = match &func.blocks[&for_block].terminator {
                 Terminator::CondBranch { then_block, .. } => *then_block,
                 Terminator::Branch { target, .. } => *target,
-                _ => continue,
+                Terminator::Switch { .. }
+                | Terminator::StateDispatch { .. }
+                | Terminator::Return { .. }
+                | Terminator::Unreachable => continue,
             };
 
             // Check purity of the loop body.

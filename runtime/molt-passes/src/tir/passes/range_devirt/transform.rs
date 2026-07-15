@@ -64,26 +64,11 @@ pub(super) fn apply_transform(
     }
 
     if let Some(block) = func.blocks.get_mut(&c.setup_block) {
-        match &mut block.terminator {
-            Terminator::Branch { args, target } if *target == c.header_block => {
+        block.terminator.for_each_edge_mut(|target, args| {
+            if *target == c.header_block {
                 args.push(start_val);
             }
-            Terminator::CondBranch {
-                then_block,
-                then_args,
-                else_block,
-                else_args,
-                ..
-            } => {
-                if *then_block == c.header_block {
-                    then_args.push(start_val);
-                }
-                if *else_block == c.header_block {
-                    else_args.push(start_val);
-                }
-            }
-            _ => {}
-        }
+        });
     }
 
     let ind_var = c.elem_val;
@@ -129,15 +114,7 @@ pub(super) fn apply_transform(
             if bid == c.header_block {
                 continue;
             }
-            let branches_to_header = match &block.terminator {
-                Terminator::Branch { target, .. } => *target == c.header_block,
-                Terminator::CondBranch {
-                    then_block,
-                    else_block,
-                    ..
-                } => *then_block == c.header_block || *else_block == c.header_block,
-                _ => false,
-            };
+            let branches_to_header = block.terminator.has_successor(c.header_block);
             if branches_to_header {
                 result.push(bid);
             }
@@ -172,26 +149,11 @@ pub(super) fn apply_transform(
             block.ops.push(add_op);
             stats.ops_added += 1;
 
-            match &mut block.terminator {
-                Terminator::Branch { target, args } if *target == c.header_block => {
+            block.terminator.for_each_edge_mut(|target, args| {
+                if *target == c.header_block {
                     args.push(next_val);
                 }
-                Terminator::CondBranch {
-                    then_block,
-                    then_args,
-                    else_block,
-                    else_args,
-                    ..
-                } => {
-                    if *then_block == c.header_block {
-                        then_args.push(next_val);
-                    }
-                    if *else_block == c.header_block {
-                        else_args.push(next_val);
-                    }
-                }
-                _ => {}
-            }
+            });
         }
     }
 

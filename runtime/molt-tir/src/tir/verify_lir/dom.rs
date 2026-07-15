@@ -5,7 +5,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::super::blocks::BlockId;
-use super::super::lir::{LirBlock, LirFunction, LirTerminator};
+use super::super::lir::{LirBlock, LirFunction};
 use super::super::ops::AttrValue;
 use super::DominatorInfo;
 
@@ -23,7 +23,7 @@ fn compute_dominators(func: &LirFunction) -> HashMap<BlockId, Option<BlockId>> {
     }
     let label_to_block = exception_label_to_block(func);
     for (bid, block) in &func.blocks {
-        for succ in terminator_successors(&block.terminator) {
+        for succ in block.terminator.successors() {
             pred.entry(succ).or_default().push(*bid);
         }
         for succ in exception_successors(block, &label_to_block) {
@@ -163,7 +163,7 @@ fn bfs_order(func: &LirFunction) -> Vec<BlockId> {
     while let Some(bid) = queue.pop_front() {
         order.push(bid);
         if let Some(block) = func.blocks.get(&bid) {
-            for succ in terminator_successors(&block.terminator) {
+            for succ in block.terminator.successors() {
                 if visited.insert(succ) {
                     queue.push_back(succ);
                 }
@@ -177,24 +177,6 @@ fn bfs_order(func: &LirFunction) -> Vec<BlockId> {
     }
 
     order
-}
-
-fn terminator_successors(terminator: &LirTerminator) -> Vec<BlockId> {
-    match terminator {
-        LirTerminator::Branch { target, .. } => vec![*target],
-        LirTerminator::CondBranch {
-            then_block,
-            else_block,
-            ..
-        } => vec![*then_block, *else_block],
-        LirTerminator::Switch { cases, default, .. }
-        | LirTerminator::StateDispatch { cases, default, .. } => {
-            let mut targets = cases.iter().map(|(_, block, _)| *block).collect::<Vec<_>>();
-            targets.push(*default);
-            targets
-        }
-        LirTerminator::Return { .. } | LirTerminator::Unreachable => Vec::new(),
-    }
 }
 
 /// Build the inverse of `LirFunction::label_id_map` for resolving exception
