@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -13,6 +12,8 @@ from molt.frontend._types import (
     MoltOp,
     MoltValue,
 )
+from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
+from molt.frontend.diagnostics import FrontendRejection
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -33,7 +34,9 @@ class CallNamedBuiltinScalarDispatchMixin(_MixinBase):
             if node.keywords or len(node.args) != 1:
                 callee = self.visit(node.func)
                 if callee is None:
-                    raise NotImplementedError("Unsupported call target")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_TARGET, "Unsupported call target"
+                    )
                 return self._emit_dynamic_call(node, callee, True)
             arg = self.visit(node.args[0])
             res = MoltValue(self.next_var(), type_hint="type")
@@ -41,44 +44,50 @@ class CallNamedBuiltinScalarDispatchMixin(_MixinBase):
             return res
         if func_id == "isinstance":
             if len(node.args) != 2:
-                raise NotImplementedError("isinstance expects 2 arguments")
+                raise FrontendRejection(
+                    Diagnostic.CALL_SIGNATURE, "isinstance expects 2 arguments"
+                )
             obj = self.visit(node.args[0])
             clsinfo = self.visit(node.args[1])
             if obj is None or clsinfo is None:
-                raise NotImplementedError("Unsupported isinstance arguments")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE, "Unsupported isinstance arguments"
+                )
             res = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="ISINSTANCE", args=[obj, clsinfo], result=res))
             return res
         if func_id == "issubclass":
             if len(node.args) != 2:
-                raise NotImplementedError("issubclass expects 2 arguments")
+                raise FrontendRejection(
+                    Diagnostic.CALL_SIGNATURE, "issubclass expects 2 arguments"
+                )
             sub = self.visit(node.args[0])
             clsinfo = self.visit(node.args[1])
             if sub is None or clsinfo is None:
-                raise NotImplementedError("Unsupported issubclass arguments")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE, "Unsupported issubclass arguments"
+                )
             res = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="ISSUBCLASS", args=[sub, clsinfo], result=res))
             return res
         if func_id == "object":
             if node.args:
-                raise NotImplementedError("object expects 0 arguments")
+                raise FrontendRejection(
+                    Diagnostic.CALL_SIGNATURE, "object expects 0 arguments"
+                )
             res = MoltValue(self.next_var(), type_hint="object")
             self.emit(MoltOp(kind="OBJECT_NEW", args=[], result=res))
             return res
         if func_id == "len":
             if node.keywords:
-                raise NotImplementedError("len does not support keywords")
-            if len(node.args) != 1:
-                from molt.compat import CompatibilityIssue
-
-                issue = CompatibilityIssue(
-                    feature="len() argument count",
-                    tier="unsupported",
-                    impact="high",
-                    location=f"line {node.lineno}",
-                    detail=f"len() takes exactly one argument ({len(node.args)} given)",
+                raise FrontendRejection(
+                    Diagnostic.CALL_SIGNATURE, "len does not support keywords"
                 )
-                raise NotImplementedError(issue.format_error())
+            if len(node.args) != 1:
+                raise FrontendRejection(
+                    Diagnostic.CALL_SIGNATURE,
+                    f"len() takes exactly one argument ({len(node.args)} given)",
+                )
             # Constant-fold len() on string/bytes literals and
             # list/tuple literals with all-constant elements.
             raw_arg = node.args[0]
@@ -111,10 +120,14 @@ class CallNamedBuiltinScalarDispatchMixin(_MixinBase):
             return res
         if func_id == "id":
             if node.keywords or len(node.args) != 1:
-                raise NotImplementedError("id expects 1 argument")
+                raise FrontendRejection(
+                    Diagnostic.CALL_SIGNATURE, "id expects 1 argument"
+                )
             arg = self.visit(node.args[0])
             if arg is None:
-                raise NotImplementedError("Unsupported id argument")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE, "Unsupported id argument"
+                )
             res = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="ID", args=[arg], result=res))
             return res
@@ -122,7 +135,9 @@ class CallNamedBuiltinScalarDispatchMixin(_MixinBase):
             if node.keywords or len(node.args) > 1:
                 callee = self.visit(node.func)
                 if callee is None:
-                    raise NotImplementedError("Unsupported call target")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_TARGET, "Unsupported call target"
+                    )
                 return self._emit_dynamic_call(node, callee, True)
             if not node.args:
                 res = MoltValue(self.next_var(), type_hint="bool")
@@ -130,13 +145,17 @@ class CallNamedBuiltinScalarDispatchMixin(_MixinBase):
                 return res
             arg = self.visit(node.args[0])
             if arg is None:
-                raise NotImplementedError("Unsupported bool argument")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE, "Unsupported bool argument"
+                )
             res = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="BOOL", args=[arg], result=res))
             return res
         if func_id == "ord":
             if node.keywords or len(node.args) != 1:
-                raise NotImplementedError("ord expects 1 argument")
+                raise FrontendRejection(
+                    Diagnostic.CALL_SIGNATURE, "ord expects 1 argument"
+                )
             raw_arg = node.args[0]
             if isinstance(raw_arg, ast.Subscript) and not isinstance(
                 raw_arg.slice, ast.Slice
@@ -144,38 +163,55 @@ class CallNamedBuiltinScalarDispatchMixin(_MixinBase):
                 target = self.visit(raw_arg.value)
                 index_val = self.visit(raw_arg.slice)
                 if target is None or index_val is None:
-                    raise NotImplementedError("Unsupported ord subscript argument")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE,
+                        "Unsupported ord subscript argument",
+                    )
                 res = MoltValue(self.next_var(), type_hint="int")
                 self.emit(MoltOp(kind="ORD_AT", args=[target, index_val], result=res))
                 return res
             arg = self.visit(node.args[0])
             if arg is None:
-                raise NotImplementedError("Unsupported ord argument")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE, "Unsupported ord argument"
+                )
             res = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="ORD", args=[arg], result=res))
             return res
         if func_id == "chr":
             if node.keywords or len(node.args) != 1:
-                raise NotImplementedError("chr expects 1 argument")
+                raise FrontendRejection(
+                    Diagnostic.CALL_SIGNATURE, "chr expects 1 argument"
+                )
             arg = self.visit(node.args[0])
             if arg is None:
-                raise NotImplementedError("Unsupported chr argument")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE, "Unsupported chr argument"
+                )
             res = MoltValue(self.next_var(), type_hint="str")
             self.emit(MoltOp(kind="CHR", args=[arg], result=res))
             return res
         if func_id == "repr":
             if node.keywords or len(node.args) != 1:
-                raise NotImplementedError("repr expects 1 argument")
+                raise FrontendRejection(
+                    Diagnostic.CALL_SIGNATURE, "repr expects 1 argument"
+                )
             arg = self.visit(node.args[0])
             if arg is None:
-                raise NotImplementedError("Unsupported repr argument")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE, "Unsupported repr argument"
+                )
             return self._emit_repr_from_obj(arg)
         if func_id == "callable":
             if node.keywords or len(node.args) != 1:
-                raise NotImplementedError("callable expects 1 argument")
+                raise FrontendRejection(
+                    Diagnostic.CALL_SIGNATURE, "callable expects 1 argument"
+                )
             arg = self.visit(node.args[0])
             if arg is None:
-                raise NotImplementedError("Unsupported callable argument")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE, "Unsupported callable argument"
+                )
             res = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="IS_CALLABLE", args=[arg], result=res))
             return res
@@ -201,7 +237,9 @@ class CallNamedBuiltinScalarDispatchMixin(_MixinBase):
             if has_unsupported_kw or has_star_kw or len(node.args) > 3:
                 callee = self.visit(node.func)
                 if callee is None:
-                    raise NotImplementedError("Unsupported call target")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_TARGET, "Unsupported call target"
+                    )
                 return self._emit_dynamic_call(node, callee, True)
             # str(bytes_obj, encoding[, errors]) — decode bytes to str
             # Fall through to dynamic call which the runtime handles via
@@ -210,7 +248,9 @@ class CallNamedBuiltinScalarDispatchMixin(_MixinBase):
             if has_encoding:
                 callee = self.visit(node.func)
                 if callee is None:
-                    raise NotImplementedError("Unsupported call target")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_TARGET, "Unsupported call target"
+                    )
                 return self._emit_dynamic_call(node, callee, True)
             # str() → ''
             if not node.args and kw_object is None:

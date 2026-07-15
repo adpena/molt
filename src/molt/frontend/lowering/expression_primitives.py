@@ -12,6 +12,8 @@ import ast
 from typing import TYPE_CHECKING
 
 from molt.frontend._types import MoltOp, MoltValue
+from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
+from molt.frontend.diagnostics import FrontendRejection
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -31,7 +33,9 @@ class ExpressionPrimitivesMixin(_MixinBase):
             for expr in exprs:
                 val = self.visit(expr)
                 if val is None:
-                    raise NotImplementedError("Unsupported expression")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE, "Unsupported expression"
+                    )
                 values.append(val)
             return values
         yield_flags = [self._expr_may_yield(expr) for expr in exprs]
@@ -40,7 +44,9 @@ class ExpressionPrimitivesMixin(_MixinBase):
             for expr in exprs:
                 val = self.visit(expr)
                 if val is None:
-                    raise NotImplementedError("Unsupported expression")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE, "Unsupported expression"
+                    )
                 values.append(val)
             return values
         values = []
@@ -48,7 +54,9 @@ class ExpressionPrimitivesMixin(_MixinBase):
         for idx, expr in enumerate(exprs):
             val = self.visit(expr)
             if val is None:
-                raise NotImplementedError("Unsupported expression")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE, "Unsupported expression"
+                )
             values.append(val)
             if any(yield_flags[idx + 1 :]):
                 slot = self._spill_async_value(
@@ -117,7 +125,9 @@ class ExpressionPrimitivesMixin(_MixinBase):
         if isinstance(op, ast.NotIn):
             in_val = self._emit_contains(right, left)
             return self._emit_not(in_val)
-        raise NotImplementedError("Comparison operator not supported")
+        raise FrontendRejection(
+            Diagnostic.SYNTAX_FORM, "Comparison operator not supported"
+        )
 
     def _parse_molt_buffer_call(
         self, node: ast.Call, name: str

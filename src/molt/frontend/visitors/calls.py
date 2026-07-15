@@ -9,6 +9,8 @@ from __future__ import annotations
 import ast
 from typing import TYPE_CHECKING, Any
 
+from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
+from molt.frontend.diagnostics import FrontendRejection
 from molt.frontend.visitors.call_defaults import CallDefaultsMixin
 from molt.frontend.visitors.call_dispatch_attribute import CallAttributeDispatchMixin
 from molt.frontend.visitors.call_dispatch_common import CALL_NOT_HANDLED
@@ -83,5 +85,5 @@ class CallVisitorMixin(
 
         callee = self.visit(node.func)
         if callee is None:
-            raise NotImplementedError("Unsupported call target")
+            raise FrontendRejection(Diagnostic.CALL_TARGET, "Unsupported call target")
         return self._emit_dynamic_call(node, callee, needs_bind)

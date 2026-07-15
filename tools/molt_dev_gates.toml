@@ -200,6 +200,23 @@ gates = [
   "python3 tools/audit_op_kinds.py --check",
 ]
 
+# --- Frontend diagnostic authority --------------------------------------
+[[rule]]
+name = "frontend-diagnostics"
+description = "Typed frontend rejection codes, generated metadata, and structural no-stub invariant."
+globs = [
+  "tools/gen_frontend_diagnostics.py",
+  "src/molt/frontend/frontend_diagnostics.toml",
+  "src/molt/frontend/frontend_diagnostics_generated.py",
+  "src/molt/frontend/diagnostics.py",
+  "src/molt/frontend/**/*.py",
+  "tests/test_frontend_diagnostics.py",
+]
+gates = [
+  "python3 tools/gen_frontend_diagnostics.py --check",
+  "python3 -m pytest -q tests/test_frontend_diagnostics.py",
+]
+
 # --- WASM ABI registry (generated import/export surface authority) -------
 [[rule]]
 name = "wasm-abi-registry"

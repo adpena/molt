@@ -28,6 +28,9 @@ this file is the human/agent-readable index of the whole tool surface.
 - `tools/check_ratio_direction.py` — no raw `t/t` ratio outside the signed authority.
 - `tools/check_perf_freshness.py` — no stale/unstamped perf doc with citable numbers.
 - `tools/audit_op_kinds.py` / `tools/gen_op_kinds.py --check` — op-kind authority + drift.
+- `tools/gen_frontend_diagnostics.py --check` — generated frontend rejection
+  codes and the structural gate forbidding direct compiler `NotImplementedError`,
+  direct `compat.unsupported`, untyped rejection construction, and unused codes.
 - `tools/check_generator_manifest.py --check` — the semantic-fact-plane meta-gate
   (doc 59): every generated authority is registered in `tools/generator_manifest.toml`
   + `--check`-gated, no orphan `@generated` files, and no NEW silent-default `match`

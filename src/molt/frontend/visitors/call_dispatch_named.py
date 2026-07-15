@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -12,13 +11,15 @@ from typing import (
 from molt.frontend._types import (
     BUILTIN_FUNC_SPECS,
     BUILTIN_TYPE_TAGS,
-    MOLT_DIRECT_CALLS,
     MOLT_DIRECT_CALL_BIND_ALWAYS,
+    MOLT_DIRECT_CALLS,
     MOLT_REEXPORT_FUNCTIONS,
     MoltOp,
     MoltValue,
     _intrinsic_arity_exact,
 )
+from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
+from molt.frontend.diagnostics import FrontendRejection
 from molt.frontend.sema import (
     FunctionKind,
 )
@@ -134,7 +135,10 @@ class CallNamedDispatchMixin(_MixinBase):
             args.append(arg_val)
         class_val = self.visit(node.func)
         if class_val is None:
-            raise NotImplementedError("Unsupported exception class call target")
+            raise FrontendRejection(
+                Diagnostic.CALL_TARGET,
+                "Unsupported exception class call target",
+            )
         return self._emit_exception_new_from_class(class_val, args)
 
     def _try_emit_imported_classlike_call_bind(
@@ -151,7 +155,10 @@ class CallNamedDispatchMixin(_MixinBase):
             return CALL_NOT_HANDLED
         callee = self.visit(node.func)
         if callee is None:
-            raise NotImplementedError("Unsupported imported class-like call target")
+            raise FrontendRejection(
+                Diagnostic.CALL_TARGET,
+                "Unsupported imported class-like call target",
+            )
         res = MoltValue(self.next_var(), type_hint="Any")
         callargs = self._emit_call_args_builder(node)
         self.emit(MoltOp(kind="CALL_BIND", args=[callee, callargs], result=res))
@@ -233,7 +240,9 @@ class CallNamedDispatchMixin(_MixinBase):
         if visible_import_authorized:
             callee = self.visit(node.func)
             if callee is None:
-                raise NotImplementedError("Unsupported call target")
+                raise FrontendRejection(
+                    Diagnostic.CALL_TARGET, "Unsupported call target"
+                )
             res = MoltValue(self.next_var(), type_hint="Any")
             callargs = self._emit_call_args_builder(node)
             self.emit(
@@ -397,10 +406,12 @@ class CallNamedDispatchMixin(_MixinBase):
                 self.current_func_name == "molt_main"
                 and func_id in self.module_global_mutations
             ):
-                guarded_native = self._try_emit_guarded_module_global_native_callable_import(
-                    node,
-                    func_id=func_id,
-                    imported_from=imported_from,
+                guarded_native = (
+                    self._try_emit_guarded_module_global_native_callable_import(
+                        node,
+                        func_id=func_id,
+                        imported_from=imported_from,
+                    )
                 )
                 if guarded_native is not CALL_NOT_HANDLED:
                     return guarded_native
@@ -476,7 +487,10 @@ class CallNamedDispatchMixin(_MixinBase):
             if func_id == "abs" and len(node.args) == 1 and not node.keywords:
                 value = self.visit(node.args[0])
                 if value is None:
-                    raise NotImplementedError("abs expects a lowerable operand")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "abs expects a lowerable operand",
+                    )
                 if value.type_hint in {"bool", "int"}:
                     result_hint = "int"
                 elif value.type_hint == "float":
@@ -510,7 +524,10 @@ class CallNamedDispatchMixin(_MixinBase):
                     return self._emit_locals_dict()
                 obj = self.visit(node.args[0])
                 if obj is None:
-                    raise NotImplementedError("vars expects a simple object")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "vars expects a simple object",
+                    )
                 callee = self._emit_builtin_function("vars")
                 res = MoltValue(self.next_var(), type_hint="dict")
                 self.emit(MoltOp(kind="CALL_FUNC", args=[callee, obj], result=res))
@@ -545,18 +562,26 @@ class CallNamedDispatchMixin(_MixinBase):
                     return res
                 obj = self.visit(node.args[0])
                 if obj is None:
-                    raise NotImplementedError("dir expects a simple object")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE, "dir expects a simple object"
+                    )
                 callee = self._emit_builtin_function("dir")
                 res = MoltValue(self.next_var(), type_hint="list")
                 self.emit(MoltOp(kind="CALL_FUNC", args=[callee, obj], result=res))
                 return res
             if func_id == "getattr":
                 if len(node.args) not in {2, 3} or node.keywords:
-                    raise NotImplementedError("getattr expects 2 or 3 arguments")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "getattr expects 2 or 3 arguments",
+                    )
                 obj = self.visit(node.args[0])
                 name = self.visit(node.args[1])
                 if obj is None or name is None:
-                    raise NotImplementedError("getattr expects object and name")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "getattr expects object and name",
+                    )
                 res_hint = "Any"
                 name_lit = None
                 if isinstance(node.args[1], ast.Constant) and isinstance(
@@ -644,12 +669,17 @@ class CallNamedDispatchMixin(_MixinBase):
                 return res
             if func_id == "setattr":
                 if len(node.args) != 3 or node.keywords:
-                    raise NotImplementedError("setattr expects 3 arguments")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE, "setattr expects 3 arguments"
+                    )
                 obj = self.visit(node.args[0])
                 name = self.visit(node.args[1])
                 val = self.visit(node.args[2])
                 if obj is None or name is None or val is None:
-                    raise NotImplementedError("setattr expects object, name, value")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "setattr expects object, name, value",
+                    )
                 attr_name = None
                 if isinstance(node.args[1], ast.Constant) and isinstance(
                     node.args[1].value, str
@@ -739,11 +769,16 @@ class CallNamedDispatchMixin(_MixinBase):
                 return res
             if func_id == "delattr":
                 if len(node.args) != 2 or node.keywords:
-                    raise NotImplementedError("delattr expects 2 arguments")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE, "delattr expects 2 arguments"
+                    )
                 obj = self.visit(node.args[0])
                 name = self.visit(node.args[1])
                 if obj is None or name is None:
-                    raise NotImplementedError("delattr expects object and name")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "delattr expects object and name",
+                    )
                 if isinstance(node.args[1], ast.Constant) and isinstance(
                     node.args[1].value, str
                 ):
@@ -785,11 +820,16 @@ class CallNamedDispatchMixin(_MixinBase):
                 return res
             if func_id == "hasattr":
                 if len(node.args) != 2 or node.keywords:
-                    raise NotImplementedError("hasattr expects 2 arguments")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE, "hasattr expects 2 arguments"
+                    )
                 obj = self.visit(node.args[0])
                 name = self.visit(node.args[1])
                 if obj is None or name is None:
-                    raise NotImplementedError("hasattr expects object and name")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "hasattr expects object and name",
+                    )
                 res = MoltValue(self.next_var(), type_hint="bool")
                 self.emit(
                     MoltOp(
@@ -801,7 +841,10 @@ class CallNamedDispatchMixin(_MixinBase):
                 return res
             if func_id == "super":
                 if node.keywords:
-                    raise NotImplementedError("super does not support keywords")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "super does not support keywords",
+                    )
                 if len(node.args) == 0:
                     # Zero-arg ``super()`` reads the class object from the
                     # implicit ``__class__`` closure cell (filled with the
@@ -830,7 +873,10 @@ class CallNamedDispatchMixin(_MixinBase):
                                 self.current_method_first_param
                             )
                         if obj is None:
-                            raise NotImplementedError("super() missing method receiver")
+                            raise FrontendRejection(
+                                Diagnostic.CALL_SIGNATURE,
+                                "super() missing method receiver",
+                            )
                         super_hint = (
                             f"super:{self.current_class}"
                             if self.current_class is not None
@@ -856,7 +902,10 @@ class CallNamedDispatchMixin(_MixinBase):
                     type_val = self.visit(node.args[0])
                     obj_val = self.visit(node.args[1])
                     if type_val is None or obj_val is None:
-                        raise NotImplementedError("super expects type and object")
+                        raise FrontendRejection(
+                            Diagnostic.CALL_SIGNATURE,
+                            "super expects type and object",
+                        )
                     super_hint = "super"
                     if isinstance(node.args[0], ast.Name):
                         super_hint = f"super:{node.args[0].id}"
@@ -865,28 +914,45 @@ class CallNamedDispatchMixin(_MixinBase):
                         MoltOp(kind="SUPER_NEW", args=[type_val, obj_val], result=res)
                     )
                     return res
-                raise NotImplementedError("super expects 0 or 2 arguments")
+                raise FrontendRejection(
+                    Diagnostic.CALL_SIGNATURE, "super expects 0 or 2 arguments"
+                )
             if func_id == "classmethod":
                 if len(node.args) != 1 or node.keywords:
-                    raise NotImplementedError("classmethod expects 1 argument")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "classmethod expects 1 argument",
+                    )
                 func_val = self.visit(node.args[0])
                 if func_val is None:
-                    raise NotImplementedError("classmethod expects a function")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "classmethod expects a function",
+                    )
                 res = MoltValue(self.next_var(), type_hint="classmethod")
                 self.emit(MoltOp(kind="CLASSMETHOD_NEW", args=[func_val], result=res))
                 return res
             if func_id == "staticmethod":
                 if len(node.args) != 1 or node.keywords:
-                    raise NotImplementedError("staticmethod expects 1 argument")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "staticmethod expects 1 argument",
+                    )
                 func_val = self.visit(node.args[0])
                 if func_val is None:
-                    raise NotImplementedError("staticmethod expects a function")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "staticmethod expects a function",
+                    )
                 res = MoltValue(self.next_var(), type_hint="staticmethod")
                 self.emit(MoltOp(kind="STATICMETHOD_NEW", args=[func_val], result=res))
                 return res
             if func_id == "property":
                 if any(kw.arg is None for kw in node.keywords):
-                    raise NotImplementedError("property does not support **kwargs")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "property does not support **kwargs",
+                    )
                 if len(node.args) > 4:
                     return self._emit_type_error_value(
                         "property expected at most 4 arguments", "property"
@@ -935,21 +1001,30 @@ class CallNamedDispatchMixin(_MixinBase):
                 else:
                     getter = self.visit(getter_expr)
                     if getter is None:
-                        raise NotImplementedError("property expects a getter")
+                        raise FrontendRejection(
+                            Diagnostic.CALL_SIGNATURE,
+                            "property expects a getter",
+                        )
                 if setter_expr is None:
                     setter = MoltValue(self.next_var(), type_hint="None")
                     self.emit(MoltOp(kind="CONST_NONE", args=[], result=setter))
                 else:
                     setter = self.visit(setter_expr)
                     if setter is None:
-                        raise NotImplementedError("property setter unsupported")
+                        raise FrontendRejection(
+                            Diagnostic.UNSUPPORTED_FEATURE,
+                            "property setter unsupported",
+                        )
                 if deleter_expr is None:
                     deleter = MoltValue(self.next_var(), type_hint="None")
                     self.emit(MoltOp(kind="CONST_NONE", args=[], result=deleter))
                 else:
                     deleter = self.visit(deleter_expr)
                     if deleter is None:
-                        raise NotImplementedError("property deleter unsupported")
+                        raise FrontendRejection(
+                            Diagnostic.UNSUPPORTED_FEATURE,
+                            "property deleter unsupported",
+                        )
                 res = MoltValue(self.next_var(), type_hint="property")
                 self.emit(
                     MoltOp(
@@ -961,7 +1036,10 @@ class CallNamedDispatchMixin(_MixinBase):
                 if doc_expr is not None:
                     doc_val = self.visit(doc_expr)
                     if doc_val is None:
-                        raise NotImplementedError("property doc unsupported")
+                        raise FrontendRejection(
+                            Diagnostic.UNSUPPORTED_FEATURE,
+                            "property doc unsupported",
+                        )
                     self.emit(
                         MoltOp(
                             kind="SETATTR_GENERIC_OBJ",
@@ -974,7 +1052,10 @@ class CallNamedDispatchMixin(_MixinBase):
                 return self._emit_open_call(node)
             if func_id == "nullcontext":
                 if len(node.args) > 1:
-                    raise NotImplementedError("nullcontext expects 0 or 1 argument")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "nullcontext expects 0 or 1 argument",
+                    )
                 if node.args:
                     payload = self.visit(node.args[0])
                 else:
@@ -983,7 +1064,9 @@ class CallNamedDispatchMixin(_MixinBase):
                 return self._emit_nullcontext(payload)
             if func_id == "closing":
                 if len(node.args) != 1:
-                    raise NotImplementedError("closing expects 1 argument")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE, "closing expects 1 argument"
+                    )
                 payload = self.visit(node.args[0])
                 return self._emit_closing(payload)
             if func_id == "print":
@@ -1023,7 +1106,10 @@ class CallNamedDispatchMixin(_MixinBase):
                             arg = MoltValue(self.next_var(), type_hint="None")
                             self.emit(MoltOp(kind="CONST_NONE", args=[], result=arg))
                         else:
-                            raise NotImplementedError("Unsupported call argument")
+                            raise FrontendRejection(
+                                Diagnostic.OPERAND_VALUE,
+                                "Unsupported call argument",
+                            )
                     args.append(arg)
                 if saw_name_error:
                     return None
@@ -1047,14 +1133,16 @@ class CallNamedDispatchMixin(_MixinBase):
                 return None
             elif func_id == "molt_cancel_token_new":
                 if node.keywords or len(node.args) > 1:
-                    raise NotImplementedError(
-                        "molt_cancel_token_new expects 0 or 1 argument"
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "molt_cancel_token_new expects 0 or 1 argument",
                     )
                 if node.args:
                     parent = self.visit(node.args[0])
                     if parent is None:
-                        raise NotImplementedError(
-                            "Unsupported parent in molt_cancel_token_new"
+                        raise FrontendRejection(
+                            Diagnostic.OPERAND_VALUE,
+                            "Unsupported parent in molt_cancel_token_new",
                         )
                 else:
                     parent = MoltValue(self.next_var(), type_hint="None")
@@ -1064,8 +1152,9 @@ class CallNamedDispatchMixin(_MixinBase):
                 return res
             elif func_id == "molt_cancel_token_clone":
                 if node.keywords or len(node.args) != 1:
-                    raise NotImplementedError(
-                        "molt_cancel_token_clone expects 1 argument"
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "molt_cancel_token_clone expects 1 argument",
                     )
                 token = self.visit(node.args[0])
                 res = MoltValue(self.next_var(), type_hint="None")
@@ -1073,8 +1162,9 @@ class CallNamedDispatchMixin(_MixinBase):
                 return res
             elif func_id == "molt_cancel_token_drop":
                 if node.keywords or len(node.args) != 1:
-                    raise NotImplementedError(
-                        "molt_cancel_token_drop expects 1 argument"
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "molt_cancel_token_drop expects 1 argument",
                     )
                 token = self.visit(node.args[0])
                 res = MoltValue(self.next_var(), type_hint="None")
@@ -1082,8 +1172,9 @@ class CallNamedDispatchMixin(_MixinBase):
                 return res
             elif func_id == "molt_cancel_token_cancel":
                 if node.keywords or len(node.args) != 1:
-                    raise NotImplementedError(
-                        "molt_cancel_token_cancel expects 1 argument"
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "molt_cancel_token_cancel expects 1 argument",
                     )
                 token = self.visit(node.args[0])
                 res = MoltValue(self.next_var(), type_hint="None")
@@ -1091,22 +1182,31 @@ class CallNamedDispatchMixin(_MixinBase):
                 return res
             elif func_id == "molt_future_cancel":
                 if node.keywords or len(node.args) != 1:
-                    raise NotImplementedError("molt_future_cancel expects 1 argument")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "molt_future_cancel expects 1 argument",
+                    )
                 future = self.visit(node.args[0])
                 if future is None:
-                    raise NotImplementedError("Unsupported future")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE, "Unsupported future"
+                    )
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="FUTURE_CANCEL", args=[future], result=res))
                 return res
             elif func_id == "molt_future_cancel_msg":
                 if node.keywords or len(node.args) != 2:
-                    raise NotImplementedError(
-                        "molt_future_cancel_msg expects 2 arguments"
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "molt_future_cancel_msg expects 2 arguments",
                     )
                 future = self.visit(node.args[0])
                 msg = self.visit(node.args[1])
                 if future is None or msg is None:
-                    raise NotImplementedError("Unsupported future cancel message")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE,
+                        "Unsupported future cancel message",
+                    )
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(
                     MoltOp(kind="FUTURE_CANCEL_MSG", args=[future, msg], result=res)
@@ -1114,30 +1214,41 @@ class CallNamedDispatchMixin(_MixinBase):
                 return res
             elif func_id == "molt_future_cancel_clear":
                 if node.keywords or len(node.args) != 1:
-                    raise NotImplementedError(
-                        "molt_future_cancel_clear expects 1 argument"
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "molt_future_cancel_clear expects 1 argument",
                     )
                 future = self.visit(node.args[0])
                 if future is None:
-                    raise NotImplementedError("Unsupported future cancel clear")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE,
+                        "Unsupported future cancel clear",
+                    )
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="FUTURE_CANCEL_CLEAR", args=[future], result=res))
                 return res
             elif func_id == "molt_promise_new":
                 if node.keywords or node.args:
-                    raise NotImplementedError("molt_promise_new expects no arguments")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "molt_promise_new expects no arguments",
+                    )
                 res = MoltValue(self.next_var(), type_hint="Future")
                 self.emit(MoltOp(kind="PROMISE_NEW", args=[], result=res))
                 return res
             elif func_id == "molt_promise_set_result":
                 if node.keywords or len(node.args) != 2:
-                    raise NotImplementedError(
-                        "molt_promise_set_result expects 2 arguments"
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "molt_promise_set_result expects 2 arguments",
                     )
                 future = self.visit(node.args[0])
                 result = self.visit(node.args[1])
                 if future is None or result is None:
-                    raise NotImplementedError("Unsupported promise set result")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE,
+                        "Unsupported promise set result",
+                    )
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(
                     MoltOp(kind="PROMISE_SET_RESULT", args=[future, result], result=res)
@@ -1145,13 +1256,17 @@ class CallNamedDispatchMixin(_MixinBase):
                 return res
             elif func_id == "molt_promise_set_exception":
                 if node.keywords or len(node.args) != 2:
-                    raise NotImplementedError(
-                        "molt_promise_set_exception expects 2 arguments"
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "molt_promise_set_exception expects 2 arguments",
                     )
                 future = self.visit(node.args[0])
                 exc = self.visit(node.args[1])
                 if future is None or exc is None:
-                    raise NotImplementedError("Unsupported promise set exception")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE,
+                        "Unsupported promise set exception",
+                    )
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(
                     MoltOp(kind="PROMISE_SET_EXCEPTION", args=[future, exc], result=res)
@@ -1159,13 +1274,17 @@ class CallNamedDispatchMixin(_MixinBase):
                 return res
             elif func_id == "molt_task_register_token_owned":
                 if node.keywords or len(node.args) != 2:
-                    raise NotImplementedError(
-                        "molt_task_register_token_owned expects 2 arguments"
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "molt_task_register_token_owned expects 2 arguments",
                     )
                 task = self.visit(node.args[0])
                 token = self.visit(node.args[1])
                 if task is None or token is None:
-                    raise NotImplementedError("Unsupported task token registration")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE,
+                        "Unsupported task token registration",
+                    )
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(
                     MoltOp(
@@ -1177,8 +1296,9 @@ class CallNamedDispatchMixin(_MixinBase):
                 return res
             elif func_id == "molt_cancel_token_is_cancelled":
                 if node.keywords or len(node.args) != 1:
-                    raise NotImplementedError(
-                        "molt_cancel_token_is_cancelled expects 1 argument"
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "molt_cancel_token_is_cancelled expects 1 argument",
                     )
                 token = self.visit(node.args[0])
                 res = MoltValue(self.next_var(), type_hint="bool")
@@ -1188,8 +1308,9 @@ class CallNamedDispatchMixin(_MixinBase):
                 return res
             elif func_id == "molt_cancel_token_set_current":
                 if node.keywords or len(node.args) != 1:
-                    raise NotImplementedError(
-                        "molt_cancel_token_set_current expects 1 argument"
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "molt_cancel_token_set_current expects 1 argument",
                     )
                 token = self.visit(node.args[0])
                 res = MoltValue(self.next_var(), type_hint="int")
@@ -1199,29 +1320,37 @@ class CallNamedDispatchMixin(_MixinBase):
                 return res
             elif func_id == "molt_cancel_token_get_current":
                 if node.keywords or node.args:
-                    raise NotImplementedError(
-                        "molt_cancel_token_get_current expects no arguments"
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "molt_cancel_token_get_current expects no arguments",
                     )
                 res = MoltValue(self.next_var(), type_hint="int")
                 self.emit(MoltOp(kind="CANCEL_TOKEN_GET_CURRENT", args=[], result=res))
                 return res
             elif func_id == "molt_cancelled":
                 if node.keywords or node.args:
-                    raise NotImplementedError("molt_cancelled expects no arguments")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "molt_cancelled expects no arguments",
+                    )
                 res = MoltValue(self.next_var(), type_hint="bool")
                 self.emit(MoltOp(kind="CANCELLED", args=[], result=res))
                 return res
             elif func_id == "molt_cancel_current":
                 if node.keywords or node.args:
-                    raise NotImplementedError(
-                        "molt_cancel_current expects no arguments"
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "molt_cancel_current expects no arguments",
                     )
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="CANCEL_CURRENT", args=[], result=res))
                 return res
             elif func_id == "molt_block_on":
                 if node.keywords or len(node.args) != 1:
-                    raise NotImplementedError("molt_block_on expects 1 argument")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "molt_block_on expects 1 argument",
+                    )
                 arg = self.visit(node.args[0])
                 res = MoltValue(self.next_var(), type_hint="Any")
                 self.emit(MoltOp(kind="ASYNC_BLOCK_ON", args=[arg], result=res))
@@ -1229,28 +1358,34 @@ class CallNamedDispatchMixin(_MixinBase):
                 return res
             elif func_id == "molt_asyncgen_shutdown":
                 if node.keywords or node.args:
-                    raise NotImplementedError(
-                        "molt_asyncgen_shutdown expects no arguments"
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "molt_asyncgen_shutdown expects no arguments",
                     )
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="ASYNCGEN_SHUTDOWN", args=[], result=res))
                 return res
             elif func_id == "molt_async_sleep":
                 if node.keywords or len(node.args) > 2:
-                    raise NotImplementedError("molt_async_sleep expects 0-2 arguments")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "molt_async_sleep expects 0-2 arguments",
+                    )
                 args = []
                 if node.args:
                     delay_val = self.visit(node.args[0])
                     if delay_val is None:
-                        raise NotImplementedError(
-                            "Unsupported delay in molt_async_sleep"
+                        raise FrontendRejection(
+                            Diagnostic.OPERAND_VALUE,
+                            "Unsupported delay in molt_async_sleep",
                         )
                     args.append(delay_val)
                 if len(node.args) == 2:
                     result_val = self.visit(node.args[1])
                     if result_val is None:
-                        raise NotImplementedError(
-                            "Unsupported result in molt_async_sleep"
+                        raise FrontendRejection(
+                            Diagnostic.OPERAND_VALUE,
+                            "Unsupported result in molt_async_sleep",
                         )
                     args.append(result_val)
                 res = MoltValue(self.next_var(), type_hint="Future")
@@ -1264,12 +1399,18 @@ class CallNamedDispatchMixin(_MixinBase):
                 return res
             elif func_id == "molt_thread_submit":
                 if node.keywords or len(node.args) != 3:
-                    raise NotImplementedError("molt_thread_submit expects 3 arguments")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "molt_thread_submit expects 3 arguments",
+                    )
                 callable_val = self.visit(node.args[0])
                 args_val = self.visit(node.args[1])
                 kwargs_val = self.visit(node.args[2])
                 if callable_val is None or args_val is None or kwargs_val is None:
-                    raise NotImplementedError("Unsupported thread submit arguments")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE,
+                        "Unsupported thread submit arguments",
+                    )
                 res = MoltValue(self.next_var(), type_hint="Future")
                 self.emit(
                     MoltOp(
@@ -1281,13 +1422,22 @@ class CallNamedDispatchMixin(_MixinBase):
                 return res
             elif func_id == "molt_chan_new":
                 if node.keywords:
-                    raise NotImplementedError("molt_chan_new does not support keywords")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "molt_chan_new does not support keywords",
+                    )
                 if len(node.args) > 1:
-                    raise NotImplementedError("molt_chan_new expects 0 or 1 argument")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "molt_chan_new expects 0 or 1 argument",
+                    )
                 if node.args:
                     capacity = self.visit(node.args[0])
                     if capacity is None:
-                        raise NotImplementedError("Unsupported channel capacity")
+                        raise FrontendRejection(
+                            Diagnostic.OPERAND_VALUE,
+                            "Unsupported channel capacity",
+                        )
                 else:
                     capacity = MoltValue(self.next_var(), type_hint="int")
                     self.emit(MoltOp(kind="CONST", args=[0], result=capacity))
@@ -1455,10 +1605,15 @@ class CallNamedDispatchMixin(_MixinBase):
                 return res
             elif func_id == "molt_chan_drop":
                 if node.keywords or len(node.args) != 1:
-                    raise NotImplementedError("molt_chan_drop expects 1 argument")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "molt_chan_drop expects 1 argument",
+                    )
                 chan = self.visit(node.args[0])
                 if chan is None:
-                    raise NotImplementedError("Unsupported channel handle")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE, "Unsupported channel handle"
+                    )
                 self.emit(
                     MoltOp(kind="CHAN_DROP", args=[chan], result=MoltValue("none"))
                 )
@@ -2121,7 +2276,9 @@ class CallNamedDispatchMixin(_MixinBase):
                 else:
                     callee = func_obj or self.visit(node.func)
                     if callee is None:
-                        raise NotImplementedError("Unsupported call target")
+                        raise FrontendRejection(
+                            Diagnostic.CALL_TARGET, "Unsupported call target"
+                        )
                     self.emit(
                         MoltOp(
                             kind="CALL_GUARDED",
@@ -2135,7 +2292,9 @@ class CallNamedDispatchMixin(_MixinBase):
             if target_info is not None and func_id in self.locals:
                 callee = self.visit(node.func)
                 if callee is None:
-                    raise NotImplementedError("Unsupported call target")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_TARGET, "Unsupported call target"
+                    )
                 if needs_bind:
                     res = MoltValue(self.next_var(), type_hint="Any")
                     callargs = self._emit_call_args_builder(node)
@@ -2288,7 +2447,9 @@ class CallNamedDispatchMixin(_MixinBase):
             }:
                 callee = self.visit(node.func)
                 if callee is None:
-                    raise NotImplementedError("Unsupported call target")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_TARGET, "Unsupported call target"
+                    )
                 res = MoltValue(self.next_var(), type_hint="Any")
                 callargs = self._emit_call_args_builder(node)
                 self.emit(
@@ -2328,7 +2489,9 @@ class CallNamedDispatchMixin(_MixinBase):
                 )
                 callee = self.visit(node.func)
                 if callee is None:
-                    raise NotImplementedError("Unsupported call target")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_TARGET, "Unsupported call target"
+                    )
                 res = MoltValue(self.next_var(), type_hint="Any")
                 if needs_bind:
                     callargs = self._emit_call_args_builder(node)
@@ -2346,11 +2509,10 @@ class CallNamedDispatchMixin(_MixinBase):
                     )
                 return res
 
-            raise self.compat.unsupported(
-                node,
+            raise FrontendRejection(
+                Diagnostic.IMPORT_RESOLUTION,
                 f"call to non-allowlisted function '{func_id}'",
-                impact="high",
-                alternative=alternative,
-                detail=detail,
+                alternative,
+                detail,
             )
         return CALL_NOT_HANDLED

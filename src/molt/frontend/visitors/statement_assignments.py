@@ -8,7 +8,6 @@ file.
 from __future__ import annotations
 
 import ast
-
 from typing import TYPE_CHECKING, cast
 
 from molt.frontend._types import (
@@ -16,6 +15,8 @@ from molt.frontend._types import (
     MoltValue,
     _canonical_intrinsic_runtime_name,
 )
+from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
+from molt.frontend.diagnostics import FrontendRejection
 from molt.frontend.lowering.op_kinds_generated import AUGASSIGN_OP_KIND
 
 if TYPE_CHECKING:
@@ -30,7 +31,10 @@ else:
 class AssignmentStatementVisitorMixin(_MixinBase):
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         if not isinstance(node.target, (ast.Name, ast.Attribute)):
-            raise NotImplementedError("Only simple annotated assignments are supported")
+            raise FrontendRejection(
+                Diagnostic.SYNTAX_FORM,
+                "Only simple annotated assignments are supported",
+            )
         if node.value is not None:
             self._maybe_record_module_overrides([node.target], node.value)
         hint = None
@@ -294,7 +298,9 @@ class AssignmentStatementVisitorMixin(_MixinBase):
             if isinstance(target, ast.Attribute):
                 obj = self.visit(target.value)
                 if obj is None:
-                    raise NotImplementedError("del expects attribute owner")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE, "del expects attribute owner"
+                    )
                 exact_class = None
                 if isinstance(target.value, ast.Name):
                     exact_class = self.exact_locals.get(target.value.id)
@@ -323,7 +329,9 @@ class AssignmentStatementVisitorMixin(_MixinBase):
             if isinstance(target, ast.Subscript):
                 target_obj = self.visit(target.value)
                 if target_obj is None:
-                    raise NotImplementedError("del expects subscript owner")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE, "del expects subscript owner"
+                    )
                 target_name = (
                     target.value.id if isinstance(target.value, ast.Name) else None
                 )
@@ -370,8 +378,9 @@ class AssignmentStatementVisitorMixin(_MixinBase):
                     )
                 )
                 return
-            raise NotImplementedError(
-                "del only supports name, attribute, or subscript deletion"
+            raise FrontendRejection(
+                Diagnostic.SYNTAX_FORM,
+                "del only supports name, attribute, or subscript deletion",
             )
 
         for target in node.targets:
@@ -391,9 +400,15 @@ class AssignmentStatementVisitorMixin(_MixinBase):
                 current = self.visit(load_node)
                 value_node = self.visit(node.value)
             if current is None:
-                raise NotImplementedError("Unsupported augmented assignment target")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE,
+                    "Unsupported augmented assignment target",
+                )
             if value_node is None:
-                raise NotImplementedError("Unsupported augmented assignment value")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE,
+                    "Unsupported augmented assignment value",
+                )
             res = MoltValue(self.next_var(), type_hint=current.type_hint)
             self.emit(MoltOp(kind=op_kind, args=[current, value_node], result=res))
             # Class-body augmented assignment binds back into the class
@@ -422,7 +437,10 @@ class AssignmentStatementVisitorMixin(_MixinBase):
         if isinstance(node.target, ast.Attribute):
             obj = self.visit(node.target.value)
             if obj is None:
-                raise NotImplementedError("Unsupported augmented assignment target")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE,
+                    "Unsupported augmented assignment target",
+                )
             obj_name = None
             exact_class = None
             if isinstance(node.target.value, ast.Name):
@@ -442,9 +460,15 @@ class AssignmentStatementVisitorMixin(_MixinBase):
             else:
                 value_node = self.visit(node.value)
             if value_node is None:
-                raise NotImplementedError("Unsupported augmented assignment value")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE,
+                    "Unsupported augmented assignment value",
+                )
             if current is None:
-                raise NotImplementedError("Unsupported augmented assignment target")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE,
+                    "Unsupported augmented assignment target",
+                )
             res = MoltValue(self.next_var(), type_hint=current.type_hint)
             self.emit(MoltOp(kind=op_kind, args=[current, value_node], result=res))
             self._emit_attribute_store(
@@ -459,7 +483,10 @@ class AssignmentStatementVisitorMixin(_MixinBase):
         if isinstance(node.target, ast.Subscript):
             target_obj = self.visit(node.target.value)
             if target_obj is None:
-                raise NotImplementedError("Unsupported augmented assignment target")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE,
+                    "Unsupported augmented assignment target",
+                )
             if isinstance(node.target.slice, ast.Slice):
                 slice_node = node.target.slice
                 if slice_node.lower is None:
@@ -478,7 +505,10 @@ class AssignmentStatementVisitorMixin(_MixinBase):
                 else:
                     step = self.visit(slice_node.step)
                 if start is None or end is None or step is None:
-                    raise NotImplementedError("Unsupported slice augmented assignment")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE,
+                        "Unsupported slice augmented assignment",
+                    )
                 res_type = "Any"
                 if target_obj.type_hint in {
                     "bytes",
@@ -550,7 +580,10 @@ class AssignmentStatementVisitorMixin(_MixinBase):
                 else:
                     value_node = self.visit(node.value)
                 if value_node is None:
-                    raise NotImplementedError("Unsupported augmented assignment value")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE,
+                        "Unsupported augmented assignment value",
+                    )
                 res = MoltValue(self.next_var(), type_hint=current.type_hint)
                 self.emit(MoltOp(kind=op_kind, args=[current, value_node], result=res))
                 if slice_obj is None:
@@ -572,7 +605,10 @@ class AssignmentStatementVisitorMixin(_MixinBase):
                 return None
             index_val = self.visit(node.target.slice)
             if index_val is None:
-                raise NotImplementedError("Unsupported augmented assignment target")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE,
+                    "Unsupported augmented assignment target",
+                )
             current = MoltValue(self.next_var(), type_hint="Any")
             self.emit(
                 MoltOp(
@@ -598,7 +634,10 @@ class AssignmentStatementVisitorMixin(_MixinBase):
             else:
                 value_node = self.visit(node.value)
             if value_node is None:
-                raise NotImplementedError("Unsupported augmented assignment value")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE,
+                    "Unsupported augmented assignment value",
+                )
             res = MoltValue(self.next_var(), type_hint=current.type_hint)
             self.emit(MoltOp(kind=op_kind, args=[current, value_node], result=res))
             self.emit(
@@ -609,19 +648,24 @@ class AssignmentStatementVisitorMixin(_MixinBase):
                 )
             )
             return None
-        raise NotImplementedError("Unsupported augmented assignment target")
+        raise FrontendRejection(
+            Diagnostic.OPERAND_VALUE, "Unsupported augmented assignment target"
+        )
 
     def _emit_unpack_assign(
         self, target: ast.Tuple | ast.List, value_node: MoltValue | None
     ) -> None:
         if value_node is None:
-            raise NotImplementedError("Unsupported unpack assignment value")
+            raise FrontendRejection(
+                Diagnostic.OPERAND_VALUE, "Unsupported unpack assignment value"
+            )
         star_index: int | None = None
         for idx, elt in enumerate(target.elts):
             if isinstance(elt, ast.Starred):
                 if star_index is not None:
-                    raise NotImplementedError(
-                        "Multiple starred assignment is not supported"
+                    raise FrontendRejection(
+                        Diagnostic.SYNTAX_FORM,
+                        "Multiple starred assignment is not supported",
                     )
                 star_index = idx
         seq_val: MoltValue | None = None
@@ -751,7 +795,9 @@ class AssignmentStatementVisitorMixin(_MixinBase):
             self._emit_unpack_assign(target, value_node)
             return
         if value_node is None:
-            raise NotImplementedError("Unsupported assignment value")
+            raise FrontendRejection(
+                Diagnostic.OPERAND_VALUE, "Unsupported assignment value"
+            )
         if isinstance(target, ast.Attribute):
             self._record_imported_module_attr_mutation(target)
             obj = self.visit(target.value)
@@ -835,7 +881,10 @@ class AssignmentStatementVisitorMixin(_MixinBase):
             )
             if isinstance(target.slice, ast.Slice):
                 if target_obj is None:
-                    raise NotImplementedError("Unsupported slice assignment target")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE,
+                        "Unsupported slice assignment target",
+                    )
                 if target_obj.type_hint == "bytearray":
                     self._invalidate_bytearray_len_hint(target_name, target_obj)
                 if target.slice.lower is None:
@@ -878,7 +927,9 @@ class AssignmentStatementVisitorMixin(_MixinBase):
                 )
             )
             return
-        raise NotImplementedError("Unsupported assignment target")
+        raise FrontendRejection(
+            Diagnostic.OPERAND_VALUE, "Unsupported assignment target"
+        )
 
     def _emit_delete_name(self, name: str, *, allow_missing: bool = False) -> None:
         class_scope = self._active_class_ns_scope(name)
@@ -936,7 +987,9 @@ class AssignmentStatementVisitorMixin(_MixinBase):
             old_val = self._emit_free_var_load(name, guard_unbound=not allow_missing)
             missing = self._emit_missing_value()
             if not self._emit_free_var_store(name, missing):
-                raise NotImplementedError("nonlocal binding not found")
+                raise FrontendRejection(
+                    Diagnostic.SYNTAX_FORM, "nonlocal binding not found"
+                )
             self._emit_drop_owned_value(old_val)
             return
         # Only box for closure-captured variables; non-closure locals use the
@@ -980,6 +1033,7 @@ class AssignmentStatementVisitorMixin(_MixinBase):
         try:
             return AUGASSIGN_OP_KIND[type(op).__name__]
         except KeyError:
-            raise NotImplementedError(
-                f"Unsupported augmented assignment operator: {type(op).__name__}"
+            raise FrontendRejection(
+                Diagnostic.SYNTAX_FORM,
+                f"Unsupported augmented assignment operator: {type(op).__name__}",
             ) from None

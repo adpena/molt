@@ -12,13 +12,15 @@ import ast
 from typing import TYPE_CHECKING, Sequence
 
 from molt.frontend._types import (
-    MoltOp,
-    MoltValue,
-    _ClassNsScope,
     _MOLT_CLOSURE_PARAM,
     _MOLT_LOCALS_CACHE,
     _STATIC_MODULE_CLASS_BINDING_EFFECT_PROOF,
+    MoltOp,
+    MoltValue,
+    _ClassNsScope,
 )
+from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
+from molt.frontend.diagnostics import FrontendRejection
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -764,7 +766,9 @@ class LocalBindingMixin(_MixinBase):
         ):
             self._emit_module_attr_set_on(self.module_obj, name, value)
         if name in self.nonlocal_decls and name not in self.free_vars:
-            raise NotImplementedError("nonlocal binding not found")
+            raise FrontendRejection(
+                Diagnostic.SYNTAX_FORM, "nonlocal binding not found"
+            )
         if name in self.free_vars or name in self.nonlocal_decls:
             if self._emit_free_var_store(name, value):
                 return

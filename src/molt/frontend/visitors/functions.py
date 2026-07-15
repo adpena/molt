@@ -8,17 +8,18 @@ visit_Lambda, and visit_Return. Async function/generator visitor methods live in
 from __future__ import annotations
 
 import ast
-
 from typing import TYPE_CHECKING
 
 from molt.frontend._types import (
-    FuncInfo,
+    _MOLT_CLOSURE_PARAM,
     GEN_CLOSED_OFFSET,
     GEN_CONTROL_SIZE,
+    FuncInfo,
     MoltOp,
     MoltValue,
-    _MOLT_CLOSURE_PARAM,
 )
+from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
+from molt.frontend.diagnostics import FrontendRejection
 from molt.frontend.sema import (
     FunctionKind,
     expression_contains_yield,
@@ -422,7 +423,9 @@ class FunctionVisitorMixin(_MixinBase):
                 for deco in reversed(node.decorator_list):
                     decorator_val = self.visit(deco)
                     if decorator_val is None:
-                        raise NotImplementedError("Unsupported decorator")
+                        raise FrontendRejection(
+                            Diagnostic.SYNTAX_FORM, "Unsupported decorator"
+                        )
                     res = MoltValue(self.next_var(), type_hint="Any")
                     self.emit(
                         MoltOp(
@@ -719,7 +722,9 @@ class FunctionVisitorMixin(_MixinBase):
             for deco in reversed(node.decorator_list):
                 decorator_val = self.visit(deco)
                 if decorator_val is None:
-                    raise NotImplementedError("Unsupported decorator")
+                    raise FrontendRejection(
+                        Diagnostic.SYNTAX_FORM, "Unsupported decorator"
+                    )
                 res = MoltValue(self.next_var(), type_hint="Any")
                 self.emit(
                     MoltOp(

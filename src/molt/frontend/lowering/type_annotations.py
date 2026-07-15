@@ -16,6 +16,8 @@ from molt.frontend._types import (
     MoltValue,
     normalize_type_hint,
 )
+from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
+from molt.frontend.diagnostics import FrontendRejection
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -307,7 +309,9 @@ class TypeAnnotationMixin(_MixinBase):
         try:
             return ast.unparse(node)
         except Exception as exc:
-            raise NotImplementedError("Unsupported annotation expression") from exc
+            raise FrontendRejection(
+                Diagnostic.TYPE_FORM, "Unsupported annotation expression"
+            ) from exc
 
     def _emit_annotation_value(
         self, node: ast.expr, *, stringize: bool | None = None
@@ -325,7 +329,9 @@ class TypeAnnotationMixin(_MixinBase):
         finally:
             self.in_annotation = prev_in_annotation
         if val is None:
-            raise NotImplementedError("Unsupported annotation expression")
+            raise FrontendRejection(
+                Diagnostic.TYPE_FORM, "Unsupported annotation expression"
+            )
         return val
 
     def _annotation_exec_name(self, owner: str) -> str:
@@ -512,8 +518,9 @@ class TypeAnnotationMixin(_MixinBase):
                 values.append(res)
                 mapping[param.name] = res
                 continue
-            raise NotImplementedError(
-                f"Unsupported type parameter: {type(param).__name__}"
+            raise FrontendRejection(
+                Diagnostic.TYPE_FORM,
+                f"Unsupported type parameter: {type(param).__name__}",
             )
         return values, mapping
 

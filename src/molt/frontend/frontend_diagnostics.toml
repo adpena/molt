@@ -1,0 +1,75 @@
+schema_version = 1
+
+# Frontend lowering rejections are compile-time capability diagnostics, not
+# executable stubs.  This table is the authority for their stable codes and
+# compatibility-policy metadata across every visitor and lowering mixin.
+
+[[diagnostic]]
+name = "call_target"
+code = "MOLT-FE001"
+title = "call target cannot be lowered"
+tier = "bridge"
+impact = "high"
+
+[[diagnostic]]
+name = "call_signature"
+code = "MOLT-FE002"
+title = "call signature is outside the lowered contract"
+tier = "bridge"
+impact = "high"
+
+[[diagnostic]]
+name = "operand_value"
+code = "MOLT-FE003"
+title = "operand or value cannot be lowered"
+tier = "bridge"
+impact = "high"
+
+[[diagnostic]]
+name = "type_form"
+code = "MOLT-FE004"
+title = "type form cannot be lowered"
+tier = "bridge"
+impact = "high"
+
+[[diagnostic]]
+name = "syntax_form"
+code = "MOLT-FE005"
+title = "syntax form cannot be lowered"
+tier = "bridge"
+impact = "high"
+
+[[diagnostic]]
+name = "control_flow"
+code = "MOLT-FE006"
+title = "control-flow form cannot be lowered"
+tier = "bridge"
+impact = "high"
+
+[[diagnostic]]
+name = "import_resolution"
+code = "MOLT-FE007"
+title = "imported symbol cannot be resolved for lowering"
+tier = "bridge"
+impact = "high"
+
+[[diagnostic]]
+name = "internal_invariant"
+code = "MOLT-FE008"
+title = "frontend lowering invariant failed"
+tier = "unsupported"
+impact = "high"
+
+[[diagnostic]]
+name = "unsupported_feature"
+code = "MOLT-FE009"
+title = "frontend capability is not implemented"
+tier = "bridge"
+impact = "high"
+
+[[diagnostic]]
+name = "call_defaults"
+code = "MOLT-FE010"
+title = "dynamic call defaults require explicit arguments"
+tier = "bridge"
+impact = "medium"

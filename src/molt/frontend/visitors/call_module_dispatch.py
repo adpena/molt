@@ -3,12 +3,30 @@
 from __future__ import annotations
 
 import ast
-
 from typing import (
     TYPE_CHECKING,
     Any,
 )
 
+from molt.frontend._types import (
+    GEN_CONTROL_SIZE,
+    INTRINSIC_HANDLE_CLASS_CONSTRUCTORS,
+    MOLT_DIRECT_CALLS,
+    MOLT_REEXPORT_FUNCTIONS,
+    STDLIB_DIRECT_CALL_MODULES,
+    MoltOp,
+    MoltValue,
+    _intrinsic_arity_exact,
+)
+from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
+from molt.frontend.diagnostics import FrontendRejection
+from molt.frontend.sema import (
+    FunctionKind,
+    normalize_function_kind,
+    parse_stateful_function_type_hint,
+    stateful_function_frame_plan,
+    stateful_function_result_type_hint,
+)
 from molt.native_callable_abi import (
     NATIVE_CALLABLE_ABI_FORWARD_F32_V1,
     NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1,
@@ -16,23 +34,6 @@ from molt.native_callable_abi import (
     native_callable_fixed_arity,
     native_callable_uses_callargs,
     normalize_native_callable_abi,
-)
-from molt.frontend._types import (
-    GEN_CONTROL_SIZE,
-    INTRINSIC_HANDLE_CLASS_CONSTRUCTORS,
-    MOLT_DIRECT_CALLS,
-    MOLT_REEXPORT_FUNCTIONS,
-    MoltOp,
-    MoltValue,
-    STDLIB_DIRECT_CALL_MODULES,
-    _intrinsic_arity_exact,
-)
-from molt.frontend.sema import (
-    FunctionKind,
-    normalize_function_kind,
-    parse_stateful_function_type_hint,
-    stateful_function_frame_plan,
-    stateful_function_result_type_hint,
 )
 
 if TYPE_CHECKING:
@@ -104,7 +105,7 @@ class CallModuleDispatchMixin(_MixinBase):
     ) -> MoltValue:
         callee = self.visit(node.func)
         if callee is None:
-            raise NotImplementedError("Unsupported call target")
+            raise FrontendRejection(Diagnostic.CALL_TARGET, "Unsupported call target")
         callargs = self._emit_call_args_builder(node)
         res = MoltValue(self.next_var(), type_hint=result_hint)
         self.emit(MoltOp(kind="CALL_BIND", args=[callee, callargs], result=res))
@@ -135,18 +136,17 @@ class CallModuleDispatchMixin(_MixinBase):
         node: ast.Call,
     ) -> None:
         qualified_name = f"{target_module}.{attr_name}"
-        raise self.compat.unsupported(
-            node,
+        raise FrontendRejection(
+            Diagnostic.IMPORT_RESOLUTION,
             f"native Python export '{qualified_name}' has no callable ABI metadata",
-            impact="high",
-            alternative=(
+            (
                 "declare callable_exports metadata with binding and abi in the "
                 "native artifact manifest"
             ),
-            detail=(
-                "python_exports grants import visibility only; native package "
-                "calls must route through callable_exports instead of CALL_BIND "
-                "or synthesized module__function symbols"
+            (
+                "python_exports grants import visibility only; native package calls "
+                "must route through callable_exports instead of CALL_BIND or "
+                "synthesized module__function symbols"
             ),
         )
 
@@ -166,38 +166,38 @@ class CallModuleDispatchMixin(_MixinBase):
         symbol = spec.get("symbol")
         normalized_abi = normalize_native_callable_abi(abi)
         if binding not in {"module_attr", "direct_symbol"} or normalized_abi is None:
-            raise self.compat.unsupported(
-                node,
+            raise FrontendRejection(
+                Diagnostic.IMPORT_RESOLUTION,
                 f"native callable export '{qualified_name}' has incomplete ABI metadata",
-                impact="high",
-                alternative="declare binding and a supported abi in the native artifact manifest",
-                detail=(
-                    "native callable exports must fail closed before lowering; "
-                    f"known ABI tokens: {native_callable_abi_choices()}"
+                "declare binding and a supported abi in the native artifact manifest",
+                (
+                    "native callable exports must fail closed before lowering; known "
+                    f"ABI tokens: {native_callable_abi_choices()}"
                 ),
             )
         if binding == "module_attr" and normalized_abi in {
             NATIVE_CALLABLE_ABI_FORWARD_F32_V1,
             NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1,
         }:
-            raise self.compat.unsupported(
-                node,
+            raise FrontendRejection(
+                Diagnostic.IMPORT_RESOLUTION,
                 f"native callable export '{qualified_name}' uses module_attr direct-symbol ABI",
-                impact="high",
-                alternative="use direct_symbol for memory-buffer or extension-init native callables, or an object-call ABI for module attributes",
-                detail=(
-                    "module_attr dispatch calls a loaded module attribute through "
-                    "Molt value handles; pointer, byte-buffer, and PyInit ABIs require an "
+                (
+                    "use direct_symbol for memory-buffer or extension-init native "
+                    "callables, or an object-call ABI for module attributes"
+                ),
+                (
+                    "module_attr dispatch calls a loaded module attribute through Molt "
+                    "value handles; pointer, byte-buffer, and PyInit ABIs require an "
                     "addressable direct native symbol"
                 ),
             )
         if binding == "direct_symbol" and not isinstance(symbol, str):
-            raise self.compat.unsupported(
-                node,
+            raise FrontendRejection(
+                Diagnostic.IMPORT_RESOLUTION,
                 f"native callable export '{qualified_name}' is missing a direct symbol",
-                impact="high",
-                alternative="declare symbol for direct_symbol native exports",
-                detail="direct native symbols cannot be invented as Python call targets",
+                "declare symbol for direct_symbol native exports",
+                "direct native symbols cannot be invented as Python call targets",
             )
         metadata: dict[str, Any] = {
             "native_callable_export": qualified_name,
@@ -228,24 +228,19 @@ class CallModuleDispatchMixin(_MixinBase):
             return res
 
         if node.keywords or any(isinstance(arg, ast.Starred) for arg in node.args):
-            raise self.compat.unsupported(
-                node,
+            raise FrontendRejection(
+                Diagnostic.CALL_SIGNATURE,
                 f"native callable export '{qualified_name}' with dynamic call arguments",
-                impact="high",
-                alternative="call the export with positional arguments supported by its ABI",
-                detail="native callable ABI dispatch does not lower keyword, *args, or **kwargs packing",
+                "call the export with positional arguments supported by its ABI",
+                "native callable ABI dispatch does not lower keyword, *args, or **kwargs packing",
             )
         fixed_arity = native_callable_fixed_arity(normalized_abi)
         if fixed_arity is not None and len(node.args) != fixed_arity:
-            raise self.compat.unsupported(
-                node,
+            raise FrontendRejection(
+                Diagnostic.CALL_SIGNATURE,
                 f"native callable export '{qualified_name}' has invalid ABI payload arity",
-                impact="high",
-                alternative=f"call the export with {fixed_arity} positional ABI payload argument(s)",
-                detail=(
-                    f"{normalized_abi} expects {fixed_arity} ABI payload "
-                    f"argument(s), got {len(node.args)}"
-                ),
+                f"call the export with {fixed_arity} positional ABI payload argument(s)",
+                f"{normalized_abi} expects {fixed_arity} ABI payload argument(s), got {len(node.args)}",
             )
 
         args = self._emit_call_args(node.args)
@@ -588,13 +583,17 @@ class CallModuleDispatchMixin(_MixinBase):
 
         class_ref = self.visit(node.func)
         if class_ref is None:
-            raise NotImplementedError("Unsupported intrinsic-backed class target")
+            raise FrontendRejection(
+                Diagnostic.OPERAND_VALUE,
+                "Unsupported intrinsic-backed class target",
+            )
         runtime_args = []
         if node.args:
             iterable = self.visit(node.args[0])
             if iterable is None:
-                raise NotImplementedError(
-                    "Unsupported intrinsic-backed class constructor argument"
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE,
+                    "Unsupported intrinsic-backed class constructor argument",
                 )
             runtime_args.append(iterable)
 

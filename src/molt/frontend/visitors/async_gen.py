@@ -10,13 +10,13 @@ from __future__ import annotations
 
 import ast
 import bisect
-
 from typing import (
     TYPE_CHECKING,
     Any,
 )
 
 from molt.frontend._types import (
+    _MOLT_CLOSURE_PARAM,
     GEN_CLOSED_OFFSET,
     GEN_CONTROL_SIZE,
     GEN_SEND_OFFSET,
@@ -24,8 +24,9 @@ from molt.frontend._types import (
     GEN_YIELD_FROM_OFFSET,
     MoltOp,
     MoltValue,
-    _MOLT_CLOSURE_PARAM,
 )
+from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
+from molt.frontend.diagnostics import FrontendRejection
 from molt.frontend.sema import (
     FunctionKind,
     async_generator_contains_return_value,
@@ -384,7 +385,9 @@ class AsyncGenVisitorMixin(_MixinBase):
                 for deco in reversed(node.decorator_list):
                     decorator_val = self.visit(deco)
                     if decorator_val is None:
-                        raise NotImplementedError("Unsupported decorator")
+                        raise FrontendRejection(
+                            Diagnostic.SYNTAX_FORM, "Unsupported decorator"
+                        )
                     res_val = MoltValue(self.next_var(), type_hint="Any")
                     self.emit(
                         MoltOp(
@@ -666,7 +669,9 @@ class AsyncGenVisitorMixin(_MixinBase):
             for deco in reversed(node.decorator_list):
                 decorator_val = self.visit(deco)
                 if decorator_val is None:
-                    raise NotImplementedError("Unsupported decorator")
+                    raise FrontendRejection(
+                        Diagnostic.SYNTAX_FORM, "Unsupported decorator"
+                    )
                 res = MoltValue(self.next_var(), type_hint="Any")
                 self.emit(
                     MoltOp(
@@ -686,7 +691,10 @@ class AsyncGenVisitorMixin(_MixinBase):
 
     def visit_AsyncWith(self, node: ast.AsyncWith) -> None:
         if not self.is_async():
-            raise NotImplementedError("async with is only supported in async functions")
+            raise FrontendRejection(
+                Diagnostic.CONTROL_FLOW,
+                "async with is only supported in async functions",
+            )
         if len(node.items) != 1:
             nested = ast.AsyncWith(
                 items=node.items[1:],
@@ -857,10 +865,16 @@ class AsyncGenVisitorMixin(_MixinBase):
 
     def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
         if not self.is_async():
-            raise NotImplementedError("async for is only supported in async functions")
+            raise FrontendRejection(
+                Diagnostic.CONTROL_FLOW,
+                "async for is only supported in async functions",
+            )
         iterable = self.visit(node.iter)
         if iterable is None:
-            raise NotImplementedError("Unsupported iterable in async for loop")
+            raise FrontendRejection(
+                Diagnostic.OPERAND_VALUE,
+                "Unsupported iterable in async for loop",
+            )
         iter_obj = self._emit_aiter(iterable)
         iter_slot = self._async_local_offset(
             f"__async_for_iter_{len(self.async_locals)}"
@@ -962,10 +976,15 @@ class AsyncGenVisitorMixin(_MixinBase):
             and node.value.func.id == "anext"
         ):
             if node.value.keywords or len(node.value.args) not in (1, 2):
-                raise NotImplementedError("anext expects 1 or 2 positional arguments")
+                raise FrontendRejection(
+                    Diagnostic.CALL_SIGNATURE,
+                    "anext expects 1 or 2 positional arguments",
+                )
             iter_obj = self.visit(node.value.args[0])
             if iter_obj is None:
-                raise NotImplementedError("Unsupported iterator in anext()")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE, "Unsupported iterator in anext()"
+                )
             has_default = len(node.value.args) == 2
             default_val = self.visit(node.value.args[1]) if has_default else None
             return self._emit_await_anext(
@@ -1090,7 +1109,9 @@ class AsyncGenVisitorMixin(_MixinBase):
 
     def visit_Yield(self, node: ast.Yield) -> Any:
         if not self.in_generator:
-            raise NotImplementedError("yield outside of generator")
+            raise FrontendRejection(
+                Diagnostic.CONTROL_FLOW, "yield outside of generator"
+            )
         if node.value is None:
             value = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=value))
@@ -1153,10 +1174,14 @@ class AsyncGenVisitorMixin(_MixinBase):
 
     def visit_YieldFrom(self, node: ast.YieldFrom) -> Any:
         if not self.in_generator:
-            raise NotImplementedError("yield from outside of generator")
+            raise FrontendRejection(
+                Diagnostic.CONTROL_FLOW, "yield from outside of generator"
+            )
         iterable = self.visit(node.value)
         if iterable is None:
-            raise NotImplementedError("yield from operand unsupported")
+            raise FrontendRejection(
+                Diagnostic.OPERAND_VALUE, "yield from operand unsupported"
+            )
         iter_obj = MoltValue(self.next_var(), type_hint="iter")
         self.emit(MoltOp(kind="ITER_NEW", args=[iterable], result=iter_obj))
         is_gen = MoltValue(self.next_var(), type_hint="bool")
@@ -1398,29 +1423,37 @@ class AsyncGenVisitorMixin(_MixinBase):
         delay_expr: ast.expr | None = None
         result_expr: ast.expr | None = None
         if len(args) > 2:
-            raise NotImplementedError("asyncio.sleep expects 0-2 arguments")
+            raise FrontendRejection(
+                Diagnostic.CALL_SIGNATURE, "asyncio.sleep expects 0-2 arguments"
+            )
         if args:
             delay_expr = args[0]
             if len(args) == 2:
                 result_expr = args[1]
         for keyword in keywords:
             if keyword.arg is None:
-                raise NotImplementedError("asyncio.sleep does not support **kwargs")
+                raise FrontendRejection(
+                    Diagnostic.CALL_SIGNATURE,
+                    "asyncio.sleep does not support **kwargs",
+                )
             if keyword.arg == "delay":
                 if delay_expr is not None:
-                    raise NotImplementedError(
-                        "asyncio.sleep got multiple values for delay"
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE,
+                        "asyncio.sleep got multiple values for delay",
                     )
                 delay_expr = keyword.value
             elif keyword.arg == "result":
                 if result_expr is not None:
-                    raise NotImplementedError(
-                        "asyncio.sleep got multiple values for result"
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE,
+                        "asyncio.sleep got multiple values for result",
                     )
                 result_expr = keyword.value
             else:
-                raise NotImplementedError(
-                    f"asyncio.sleep got unexpected keyword {keyword.arg}"
+                raise FrontendRejection(
+                    Diagnostic.CALL_SIGNATURE,
+                    f"asyncio.sleep got unexpected keyword {keyword.arg}",
                 )
         if delay_expr is None:
             delay_val = MoltValue(self.next_var(), type_hint="float")
@@ -1428,12 +1461,18 @@ class AsyncGenVisitorMixin(_MixinBase):
         else:
             delay_val = self.visit(delay_expr)
             if delay_val is None:
-                raise NotImplementedError("Unsupported delay in asyncio.sleep")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE,
+                    "Unsupported delay in asyncio.sleep",
+                )
         call_args = [delay_val]
         if result_expr is not None:
             result_val = self.visit(result_expr)
             if result_val is None:
-                raise NotImplementedError("Unsupported result in asyncio.sleep")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE,
+                    "Unsupported result in asyncio.sleep",
+                )
             call_args.append(result_val)
         res = MoltValue(self.next_var(), type_hint="Future")
         self.emit(
@@ -1983,7 +2022,9 @@ class AsyncGenVisitorMixin(_MixinBase):
         self, awaitable: MoltValue, *, raise_pending: bool = True
     ) -> MoltValue:
         if not self.is_async():
-            raise NotImplementedError("await outside async function")
+            raise FrontendRejection(
+                Diagnostic.CONTROL_FLOW, "await outside async function"
+            )
         awaitable_slot = self._async_local_offset(
             f"__await_future_{len(self.async_locals)}"
         )

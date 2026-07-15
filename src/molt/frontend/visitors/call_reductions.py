@@ -8,13 +8,14 @@ surface: full-consumption reducers (``sum``) and short-circuit reducers
 from __future__ import annotations
 
 import ast
-
 from typing import (
     TYPE_CHECKING,
     cast,
 )
 
 from molt.frontend._types import MoltOp, MoltValue
+from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
+from molt.frontend.diagnostics import FrontendRejection
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -194,7 +195,10 @@ class CallReductionMixin(_MixinBase):
                 self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
             value = self.visit(genexpr.elt)
             if value is None:
-                raise NotImplementedError("Unsupported sum generator expression")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE,
+                    "Unsupported sum generator expression",
+                )
 
             # Accumulator result type, relative to an int-0 seed: a float element
             # -> float; an int/bool element -> int; otherwise dynamic (Any).
@@ -468,7 +472,10 @@ class CallReductionMixin(_MixinBase):
             finally:
                 self.range_loop_stack.pop()
             if value is None:
-                raise NotImplementedError("Unsupported sum generator expression")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE,
+                    "Unsupported sum generator expression",
+                )
 
             # Accumulator result type, relative to an int-0 seed.
             int_seed_probe = MoltValue("", type_hint="int")
@@ -806,14 +813,18 @@ class CallReductionMixin(_MixinBase):
 
         iterable = self.visit(node.args[0])
         if iterable is None:
-            raise NotImplementedError("Unsupported sum iterable")
+            raise FrontendRejection(
+                Diagnostic.OPERAND_VALUE, "Unsupported sum iterable"
+            )
         if start_expr is None:
             start_val = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="CONST", args=[0], result=start_val))
         else:
             start_val = self.visit(start_expr)
             if start_val is None:
-                raise NotImplementedError("Unsupported sum start value")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE, "Unsupported sum start value"
+                )
         callee = self._emit_builtin_function(func_id)
         res = MoltValue(self.next_var(), type_hint="Any")
         self.emit(

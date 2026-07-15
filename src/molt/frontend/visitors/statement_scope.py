@@ -8,7 +8,6 @@ separate under-ceiling mixins.
 from __future__ import annotations
 
 import ast
-
 from typing import TYPE_CHECKING
 
 from molt.compiler_analysis import native_support_slice as _native_support_slice
@@ -17,6 +16,8 @@ from molt.frontend._types import (
     MoltOp,
     MoltValue,
 )
+from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
+from molt.frontend.diagnostics import FrontendRejection
 from molt.frontend.sema import normalize_function_kind
 
 if TYPE_CHECKING:
@@ -270,15 +271,14 @@ class StatementScopeVisitorMixin(_MixinBase):
             node, roots
         )
         if missing:
-            raise self.compat.unsupported(
-                node,
+            raise FrontendRejection(
+                Diagnostic.IMPORT_RESOLUTION,
                 "native support callable export missing provider function",
-                impact="high",
-                alternative=(
-                    "declare provider_module only for upstream support source "
-                    "modules that define the exported callable"
+                (
+                    "declare provider_module only for upstream support source modules "
+                    "that define the exported callable"
                 ),
-                detail=(f"{self.module_name} does not define: {', '.join(missing)}"),
+                f"{self.module_name} does not define: {', '.join(missing)}",
             )
         return pruned
 
@@ -534,18 +534,28 @@ class StatementScopeVisitorMixin(_MixinBase):
 
     def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
         if self.current_func_name == "molt_main":
-            raise NotImplementedError("nonlocal declarations at module scope")
+            raise FrontendRejection(
+                Diagnostic.SYNTAX_FORM, "nonlocal declarations at module scope"
+            )
         for name in node.names:
             if name in self.global_decls:
-                raise NotImplementedError("nonlocal conflicts with global declaration")
+                raise FrontendRejection(
+                    Diagnostic.SYNTAX_FORM,
+                    "nonlocal conflicts with global declaration",
+                )
         self.nonlocal_decls.update(node.names)
         return None
 
     def visit_TypeAlias(self, node: ast.TypeAlias) -> None:
         if self.current_func_name != "molt_main":
-            raise NotImplementedError("Type aliases are only supported at module scope")
+            raise FrontendRejection(
+                Diagnostic.TYPE_FORM,
+                "Type aliases are only supported at module scope",
+            )
         if not isinstance(node.name, ast.Name):
-            raise NotImplementedError("Unsupported type alias target")
+            raise FrontendRejection(
+                Diagnostic.TYPE_FORM, "Unsupported type alias target"
+            )
         # Eagerly load typing._molt_type_alias before evaluating the alias
         # value.  This forces the typing module to be initialized prior to
         # any annotation expression evaluation, ensuring consistent runtime
@@ -646,10 +656,11 @@ class StatementScopeVisitorMixin(_MixinBase):
         else:
             transaction_level = 0
         if module_name is None:
-            raise self.compat.unsupported(
-                node,
+            raise FrontendRejection(
+                Diagnostic.IMPORT_RESOLUTION,
                 "relative import missing module name",
-                detail="from . import ...",
+                None,
+                "from . import ...",
             )
         if module_name == "__future__":
             for alias in node.names:
@@ -734,16 +745,18 @@ class StatementScopeVisitorMixin(_MixinBase):
         for alias in node.names:
             if alias.name == "*":
                 if self.current_func_name != "molt_main":
-                    raise self.compat.unsupported(
-                        node,
+                    raise FrontendRejection(
+                        Diagnostic.IMPORT_RESOLUTION,
                         "import * only allowed at module level",
-                        detail="from ... import *",
+                        None,
+                        "from ... import *",
                     )
                 if self.module_obj is None:
-                    raise self.compat.unsupported(
-                        node,
+                    raise FrontendRejection(
+                        Diagnostic.IMPORT_RESOLUTION,
                         "import * requires module scope",
-                        detail="module object missing",
+                        None,
+                        "module object missing",
                     )
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(

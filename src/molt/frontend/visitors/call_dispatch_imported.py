@@ -3,18 +3,19 @@
 from __future__ import annotations
 
 import ast
-
 from typing import (
     TYPE_CHECKING,
     Any,
 )
 
 from molt.frontend._types import (
-    MOLT_DIRECT_CALLS,
     MOLT_DIRECT_CALL_BIND_ALWAYS,
+    MOLT_DIRECT_CALLS,
     MoltOp,
     MoltValue,
 )
+from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
+from molt.frontend.diagnostics import FrontendRejection
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -101,7 +102,9 @@ class CallImportedAttributeDispatchMixin(_MixinBase):
                         return lowered_imported_call
                     callee = self.visit(node.func)
                     if callee is None:
-                        raise NotImplementedError("Unsupported call target")
+                        raise FrontendRejection(
+                            Diagnostic.CALL_TARGET, "Unsupported call target"
+                        )
                     res_hint = func_id if func_id in self.classes else "Any"
                     res = MoltValue(self.next_var(), type_hint=res_hint)
                     callargs = self._emit_call_args_builder(node)
@@ -138,7 +141,10 @@ class CallImportedAttributeDispatchMixin(_MixinBase):
                         )
                         callee = self.visit(node.func)
                         if callee is None:
-                            raise NotImplementedError("Unsupported call target")
+                            raise FrontendRejection(
+                                Diagnostic.CALL_TARGET,
+                                "Unsupported call target",
+                            )
                         res = MoltValue(self.next_var(), type_hint="Any")
                         if needs_bind:
                             callargs = self._emit_call_args_builder(node)
@@ -160,11 +166,10 @@ class CallImportedAttributeDispatchMixin(_MixinBase):
                                 )
                             )
                         return res
-                    raise self.compat.unsupported(
-                        node,
+                    raise FrontendRejection(
+                        Diagnostic.IMPORT_RESOLUTION,
                         f"call to non-allowlisted function '{func_id}'",
-                        impact="high",
-                        alternative=alternative,
-                        detail=detail,
+                        alternative,
+                        detail,
                     )
         return CALL_NOT_HANDLED
