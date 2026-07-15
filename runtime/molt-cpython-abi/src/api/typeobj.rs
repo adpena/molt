@@ -3860,6 +3860,9 @@ mod class2_decode_tests {
         );
         assert_eq!(BOOL_CALLS.load(Ordering::SeqCst), 1);
 
-        assert!(!crate::bridge::GLOBAL_BRIDGE.release_pyobj(&raw mut obj));
+        assert_eq!(
+            crate::bridge::GLOBAL_BRIDGE.release_pyobj(&raw mut obj),
+            crate::bridge::PyObjRelease::Untracked
+        );
     }
 }
