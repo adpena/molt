@@ -11,16 +11,58 @@ scipy = "1.18.0"
 cpython = "3.12"
 numpy_repo_ref = "5e1d03ffac5f2c0a9c39bfcaa9fc853b2b83151e"
 scipy_repo_ref = "54ef5423f2e4376230ec3bfda6912a07a50958e3"
-numpy_seal_root_candidates = [
-  "tmp/pact_numpy_multiarray_sealed_for_witness",
-  "tmp/pact_numpy_multiarray_sealed_axiserror",
-  "tmp/worktrees/pact-collab/tmp/pact_numpy_multiarray_molt_ext_wasm_cpython_abi",
+[[verified.extension_sets]]
+package = "numpy"
+name = "pact-witness"
+seal_name = "pact_numpy_multiarray_sealed_for_witness"
+use_pkg_config = false
+required_installed_files = [
+  "numpy/__config__.py",
+  "numpy/__init__.py",
+  "numpy/_core/include/numpy/__multiarray_api.h",
+  "numpy/_core/include/numpy/__ufunc_api.h",
+  "numpy/_core/include/numpy/_numpyconfig.h",
+  "numpy/_core/include/numpy/arrayobject.h",
+  "numpy/_core/include/numpy/numpyconfig.h",
+  "numpy/version.py",
 ]
+meson_setup_args = [
+  "-Dblas=none",
+  "-Dlapack=none",
+  "-Dallow-noblas=true",
+  "-Ddisable-optimization=false",
+  "--buildtype=release",
+]
+
+[[verified.extension_sets.extensions]]
+module = "numpy._core._multiarray_umath"
+target = "_multiarray_umath"
+python_exports = ["numpy"]
+capabilities = ["fs.read"]
+provided_capsules = [
+  "numpy.core._multiarray_umath._ARRAY_API",
+  "numpy.core._multiarray_umath._UFUNC_API",
+]
+exclude_linked_static_libraries = []
+
+[[verified.extension_sets.extensions]]
+module = "numpy.linalg._umath_linalg"
+target = "_umath_linalg"
+python_exports = ["numpy.linalg._umath_linalg"]
+capabilities = ["fs.read"]
+provided_capsules = []
+exclude_linked_static_libraries = ["npymath"]
 
 [[verified.extension_sets]]
 package = "scipy"
 name = "pact-witness"
 seal_name = "pact_scipy_witness"
+use_pkg_config = true
+required_installed_files = [
+  "scipy/__config__.py",
+  "scipy/__init__.py",
+  "scipy/version.py",
+]
 meson_setup_args = [
   "-Dblas=none",
   "-Dlapack=none",

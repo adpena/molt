@@ -1,5 +1,5 @@
 {
-  "total": 273,
+  "total": 269,
   "note": "encoding-unsafe call sites keyed file::rule; each count is monotonic non-increasing (burn down to zero, never up). See tools/encoding_gate.py.",
   "by_site": {
     "src/molt/backend_daemon_custody.py::subprocess-text-no-encoding": 1,
@@ -51,7 +51,6 @@
     "tools/benchmark_luau_vs_cpython.py::open-no-encoding": 2,
     "tools/bootstrap_llvm.py::subprocess-text-no-encoding": 3,
     "tools/build_graph_audit.py::subprocess-text-no-encoding": 1,
-    "tools/build_numpy_umath_linalg_wasm.py::subprocess-text-no-encoding": 1,
     "tools/calib_daemon.py::open-no-encoding": 3,
     "tools/call_fact_coverage.py::read_text-no-encoding": 4,
     "tools/call_fact_coverage.py::write_text-no-encoding": 1,
@@ -130,7 +129,6 @@
     "tools/nightly_test_suite.py::read_text-no-encoding": 2,
     "tools/nightly_test_suite.py::write_text-no-encoding": 2,
     "tools/output_startup_size_audit.py::write_text-no-encoding": 1,
-    "tools/pact_witness_numpy_generated_modules.py::subprocess-text-no-encoding": 1,
     "tools/perf_authority.py::subprocess-text-no-encoding": 2,
     "tools/perf_calibration.py::subprocess-text-no-encoding": 3,
     "tools/perf_regression.py::read_text-no-encoding": 1,
@@ -139,7 +137,6 @@
     "tools/profile.py::subprocess-text-no-encoding": 1,
     "tools/profile.py::write_text-no-encoding": 2,
     "tools/proof_queue.py::subprocess-text-no-encoding": 1,
-    "tools/regen_numpy_multiarray_meson_wasm.py::subprocess-text-no-encoding": 2,
     "tools/release/build_bundle.py::write_text-no-encoding": 1,
     "tools/release/release_manifest.py::read_text-no-encoding": 1,
     "tools/release/release_manifest.py::write_text-no-encoding": 1,

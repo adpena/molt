@@ -48,12 +48,28 @@ scipy = "{verified_scipy}"
 cpython = "{verified_cpython}"
 numpy_repo_ref = "numpy-ref"
 scipy_repo_ref = "scipy-ref"
-numpy_seal_root_candidates = ["tmp/numpy-seal"]
+[[verified.extension_sets]]
+package = "numpy"
+name = "pact-witness"
+seal_name = "pact_numpy_multiarray_sealed_for_witness"
+use_pkg_config = false
+required_installed_files = ["numpy/__config__.py", "numpy/__init__.py", "numpy/version.py"]
+meson_setup_args = ["-Dblas=none", "-Dlapack=none"]
+
+[[verified.extension_sets.extensions]]
+module = "numpy._core._multiarray_umath"
+target = "_multiarray_umath"
+python_exports = ["numpy"]
+capabilities = ["fs.read"]
+provided_capsules = ["numpy.core._multiarray_umath._ARRAY_API"]
+exclude_linked_static_libraries = []
 
 [[verified.extension_sets]]
 package = "scipy"
 name = "pact-witness"
 seal_name = "pact_scipy_witness"
+use_pkg_config = true
+required_installed_files = ["scipy/__config__.py", "scipy/__init__.py", "scipy/version.py"]
 meson_setup_args = ["-Dblas=none", "-Dlapack=none"]
 
 [[verified.extension_sets.extensions]]
@@ -61,6 +77,8 @@ module = "scipy.ndimage._nd_image"
 target = "_nd_image"
 python_exports = ["scipy"]
 capabilities = []
+provided_capsules = []
+exclude_linked_static_libraries = []
 ''',
         encoding="utf-8",
     )
@@ -189,8 +207,8 @@ def test_schema_v3_rejects_legacy_scipy_root_fields(tmp_path: Path) -> None:
     text = config.read_text(encoding="utf-8")
     config.write_text(
         text.replace(
-            'numpy_seal_root_candidates = ["tmp/numpy-seal"]\n',
-            'numpy_seal_root_candidates = ["tmp/numpy-seal"]\n'
+            'scipy_repo_ref = "scipy-ref"\n',
+            'scipy_repo_ref = "scipy-ref"\n'
             'scipy_additional_seal_roots = ["tmp/legacy"]\n',
         ),
         encoding="utf-8",

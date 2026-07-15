@@ -18,7 +18,10 @@ from molt.cli.llvm_wasi_tools import (
     resolve_llvm_wasi_tool_family,
 )
 from molt.cli.native_toolchain import _zig_target_query
-from molt.cli.wasm_toolchain import resolve_wasi_sysroot as _resolve_wasi_sysroot
+from molt.cli.wasm_toolchain import (
+    resolve_wasi_sysroot as _resolve_wasi_sysroot,
+    wasm_compiler_builtins_archive,
+)
 from molt.scientific_stack_versions import (
     resolve_scientific_stack,
     verify_cpython_abi_headers,
@@ -494,6 +497,8 @@ def _meson_cross_text(
     target_triple: str,
     pkg_config_dir: Path,
     toolchain: _SourceExtensionWasmToolchain,
+    compiler_builtins: Path,
+    include_dirs: tuple[Path, ...],
 ) -> str:
     commands = _source_extension_c_commands(
         toolchain=toolchain,
@@ -513,6 +518,12 @@ def _meson_cross_text(
         "\n"
         "[built-in options]\n"
         f"pkg_config_path = {_meson_array([_pc_path(pkg_config_dir)])}\n"
+        f"c_args = {_meson_array(tuple(f'-I{_pc_path(path)}' for path in include_dirs))}\n"
+        f"cpp_args = {_meson_array(tuple(f'-I{_pc_path(path)}' for path in include_dirs))}\n"
+        "c_link_args = "
+        f"{_meson_array(('-nodefaultlibs', '-lc', _pc_path(compiler_builtins)))}\n"
+        "cpp_link_args = "
+        f"{_meson_array(('-nodefaultlibs', '-lc', '-lc++', '-lc++abi', _pc_path(compiler_builtins)))}\n"
         "\n"
         "[host_machine]\n"
         "system = 'wasi'\n"
@@ -566,6 +577,12 @@ def _materialize_source_extension_target_metadata(
         toolchain=toolchain,
         target_triple=resolved_target,
     )
+    compiler_builtins = wasm_compiler_builtins_archive(resolved_target)
+    if compiler_builtins is None or not compiler_builtins.is_file():
+        return None, [
+            "source-extension target metadata requires the target Rust "
+            "compiler-builtins archive for Meson configure links"
+        ]
     pkg_config_dir.mkdir(parents=True, exist_ok=True)
     python_pc.write_text(
         _python_pc_text(
@@ -579,6 +596,8 @@ def _materialize_source_extension_target_metadata(
             target_triple=resolved_target,
             pkg_config_dir=pkg_config_dir,
             toolchain=toolchain,
+            compiler_builtins=compiler_builtins,
+            include_dirs=include_dirs,
         ),
         encoding="utf-8",
     )
@@ -604,6 +623,12 @@ def _materialize_source_extension_target_metadata(
             if toolchain.wasi_sysroot is not None
             else None,
             "detail": toolchain.detail,
+            "link_probe_archives": {
+                "compiler_builtins": {
+                    "path": str(compiler_builtins.resolve()),
+                    "sha256": _sha256_file(compiler_builtins),
+                }
+            },
         },
         "meson_cross_properties": meson_cross_properties,
         "paths": {
