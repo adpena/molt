@@ -540,11 +540,9 @@ pub extern "C" fn PyTuple_SetItem(tuple: u64, index: isize, item: u64) -> i32 {
                 let _ = raise_exception::<u64>(_py, "IndexError", "tuple index out of range");
                 return -1;
             }
-            let Some(old) = crate::object::seq_access::replace_unique_item_owned(
-                ptr,
-                index as usize,
-                item,
-            ) else {
+            let Some(old) =
+                crate::object::seq_access::replace_unique_item_owned(ptr, index as usize, item)
+            else {
                 dec_ref_bits(_py, item);
                 let _ = raise_exception::<u64>(
                     _py,

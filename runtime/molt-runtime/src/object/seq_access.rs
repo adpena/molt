@@ -5,8 +5,8 @@
 //! pinned reads, while mutable lists use the stable backing lock, a pinned
 //! item, or a resource-accounted owned snapshot.
 
-use crate::*;
 use crate::object::{HEADER_FLAG_CONTAINS_REFS, HEADER_FLAG_HAS_ABI_VIEW};
+use crate::*;
 
 pub(crate) struct PinnedSequenceSnapshot<'a, 'py> {
     py: &'a PyToken<'py>,
@@ -162,29 +162,33 @@ pub(crate) unsafe fn snapshot_concat<'a, 'py>(
         let lhs_values = unsafe { crate::object::layout::seq_vec_ptr(lhs) };
         let rhs_values = unsafe { crate::object::layout::seq_vec_ptr(rhs) };
         if lhs_values == rhs_values {
-        let guard = unsafe { crate::object::backing::tracked_vec_mutation_lock(lhs_values) };
-        let live = unsafe { (&*lhs_values).as_slice() };
-        let values = copy(live, live);
-        drop(guard);
-        values
+            let guard = unsafe { crate::object::backing::tracked_vec_mutation_lock(lhs_values) };
+            let live = unsafe { (&*lhs_values).as_slice() };
+            let values = copy(live, live);
+            drop(guard);
+            values
         } else if (lhs_values as usize) < (rhs_values as usize) {
-        let lhs_guard = unsafe { crate::object::backing::tracked_vec_mutation_lock(lhs_values) };
-        let rhs_guard = unsafe { crate::object::backing::tracked_vec_mutation_lock(rhs_values) };
-        let values = copy(unsafe { (&*lhs_values).as_slice() }, unsafe {
-            (&*rhs_values).as_slice()
-        });
-        drop(rhs_guard);
-        drop(lhs_guard);
-        values
-    } else {
-        let rhs_guard = unsafe { crate::object::backing::tracked_vec_mutation_lock(rhs_values) };
-        let lhs_guard = unsafe { crate::object::backing::tracked_vec_mutation_lock(lhs_values) };
-        let values = copy(unsafe { (&*lhs_values).as_slice() }, unsafe {
-            (&*rhs_values).as_slice()
-        });
-        drop(lhs_guard);
-        drop(rhs_guard);
-        values
+            let lhs_guard =
+                unsafe { crate::object::backing::tracked_vec_mutation_lock(lhs_values) };
+            let rhs_guard =
+                unsafe { crate::object::backing::tracked_vec_mutation_lock(rhs_values) };
+            let values = copy(unsafe { (&*lhs_values).as_slice() }, unsafe {
+                (&*rhs_values).as_slice()
+            });
+            drop(rhs_guard);
+            drop(lhs_guard);
+            values
+        } else {
+            let rhs_guard =
+                unsafe { crate::object::backing::tracked_vec_mutation_lock(rhs_values) };
+            let lhs_guard =
+                unsafe { crate::object::backing::tracked_vec_mutation_lock(lhs_values) };
+            let values = copy(unsafe { (&*lhs_values).as_slice() }, unsafe {
+                (&*rhs_values).as_slice()
+            });
+            drop(lhs_guard);
+            drop(rhs_guard);
+            values
         }
     };
     let Some(values) = values else {
@@ -206,11 +210,11 @@ pub(crate) unsafe fn pin_item<'a, 'py>(
         return None;
     }
     let pin = |items: &[u64]| {
-            let bits = items.get(index).copied();
-            if let Some(bits) = bits {
-                inc_ref_bits(py, bits);
-            }
-            bits
+        let bits = items.get(index).copied();
+        if let Some(bits) = bits {
+            inc_ref_bits(py, bits);
+        }
+        bits
     };
     let bits = if unsafe { object_type_id(ptr) } == TYPE_ID_TUPLE {
         pin(unsafe { tuple_slice(ptr) })
@@ -425,7 +429,12 @@ pub(crate) unsafe fn replace_unique_item(
         return None;
     }
     let header = unsafe { header_from_obj_ptr(ptr) };
-    if unsafe { (*header).ref_count.load(std::sync::atomic::Ordering::Acquire) } != 1 {
+    if unsafe {
+        (*header)
+            .ref_count
+            .load(std::sync::atomic::Ordering::Acquire)
+    } != 1
+    {
         return None;
     }
     let items = unsafe { tuple_slice_mut(ptr) };
@@ -448,7 +457,12 @@ pub(crate) unsafe fn replace_unique_item_owned(
         return None;
     }
     let header = unsafe { header_from_obj_ptr(ptr) };
-    if unsafe { (*header).ref_count.load(std::sync::atomic::Ordering::Acquire) } != 1 {
+    if unsafe {
+        (*header)
+            .ref_count
+            .load(std::sync::atomic::Ordering::Acquire)
+    } != 1
+    {
         return None;
     }
     let items = unsafe { tuple_slice_mut(ptr) };
@@ -469,7 +483,11 @@ pub(crate) unsafe fn replace_unique_pair(
         return None;
     }
     let header = unsafe { header_from_obj_ptr(ptr) };
-    if unsafe { (*header).ref_count.load(std::sync::atomic::Ordering::Acquire) } != 1
+    if unsafe {
+        (*header)
+            .ref_count
+            .load(std::sync::atomic::Ordering::Acquire)
+    } != 1
         || unsafe { (*header).flags } & HEADER_FLAG_HAS_ABI_VIEW != 0
     {
         return None;
@@ -483,11 +501,7 @@ pub(crate) unsafe fn replace_unique_pair(
     let old_first = std::mem::replace(&mut items[0], first_bits);
     let old_second = std::mem::replace(&mut items[1], second_bits);
     unsafe {
-        adjust_tuple_contains_refs(
-            ptr,
-            &[old_first, old_second],
-            &[first_bits, second_bits],
-        )
+        adjust_tuple_contains_refs(ptr, &[old_first, old_second], &[first_bits, second_bits])
     };
     Some((old_first, old_second))
 }

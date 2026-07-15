@@ -1,6 +1,6 @@
 //! Sequence API — PyList_*, PyTuple_*.
 
-use crate::abi_types::{Py_ssize_t, PyObject, PyTupleObject};
+use crate::abi_types::{Py_ssize_t, PyListObject, PyObject, PyTupleObject};
 #[allow(unused_imports)]
 use crate::abi_types::{PyList_Type, PyTuple_Type};
 use crate::bridge::GLOBAL_BRIDGE;
@@ -25,6 +25,91 @@ fn resolve_native_list(op: *mut PyObject) -> Option<u64> {
         Some(bits.bits())
     } else {
         None
+    }
+}
+
+/// A stable list-layout read transaction. Both bridge-managed lists and ABI
+/// list subclasses expose the truthful `PyListObject` prefix. Managed views
+/// are committed once, and the runtime GIL remains pinned for the transaction;
+/// this is the single boundary to evolve into per-object critical sections for
+/// a free-threaded runtime.
+pub(crate) struct ListRead {
+    object: *mut PyListObject,
+    _runtime_gil: crate::hooks::RuntimeGilGuard,
+}
+
+impl ListRead {
+    pub(crate) unsafe fn acquire(op: *mut PyObject) -> Option<Self> {
+        unsafe { Self::acquire_with_completeness(op, true) }
+    }
+
+    unsafe fn acquire_len(op: *mut PyObject) -> Option<Self> {
+        unsafe { Self::acquire_with_completeness(op, false) }
+    }
+
+    unsafe fn acquire_with_completeness(op: *mut PyObject, require_complete: bool) -> Option<Self> {
+        if op.is_null() {
+            unsafe { crate::api::errors::PyErr_BadInternalCall() };
+            return None;
+        }
+        let runtime_gil = crate::hooks::RuntimeGilGuard::ensure();
+        if let Some(bits) = resolve_native_list(op) {
+            let committed = if require_complete {
+                GLOBAL_BRIDGE.commit_list_view(bits)
+            } else {
+                GLOBAL_BRIDGE.commit_list_view_partial(bits)
+            };
+            if !committed {
+                return None;
+            }
+        } else if unsafe { PyList_Check(op) } == 0 {
+            unsafe { crate::api::errors::PyErr_BadInternalCall() };
+            return None;
+        }
+        let object = op.cast::<PyListObject>();
+        let len = unsafe { (*object).ob_base.ob_size };
+        if len < 0 || (len > 0 && unsafe { (*object).ob_item }.is_null()) {
+            unsafe {
+                crate::api::errors::PyErr_SetString(
+                    (&raw mut crate::abi_types::PyExc_SystemError).cast::<PyObject>(),
+                    c"invalid PyListObject layout".as_ptr(),
+                );
+            }
+            return None;
+        }
+        Some(Self {
+            object,
+            _runtime_gil: runtime_gil,
+        })
+    }
+
+    #[inline]
+    pub(crate) unsafe fn len(&self) -> usize {
+        unsafe { (*self.object).ob_base.ob_size as usize }
+    }
+
+    #[inline]
+    pub(crate) unsafe fn item(&self, index: usize) -> *mut PyObject {
+        let len = unsafe { self.len() };
+        if index >= len {
+            unsafe {
+                crate::api::errors::PyErr_SetString(
+                    (&raw mut crate::abi_types::PyExc_IndexError).cast::<PyObject>(),
+                    c"list index out of range".as_ptr(),
+                );
+            }
+            return ptr::null_mut();
+        }
+        let item = unsafe { *(*self.object).ob_item.add(index) };
+        if item.is_null() {
+            unsafe {
+                crate::api::errors::PyErr_SetString(
+                    (&raw mut crate::abi_types::PyExc_SystemError).cast::<PyObject>(),
+                    c"PyListObject contains an uninitialized item".as_ptr(),
+                );
+            }
+        }
+        item
     }
 }
 
@@ -134,17 +219,12 @@ pub unsafe extern "C" fn PyList_GET_ITEM(op: *mut PyObject, i: Py_ssize_t) -> *m
     if op.is_null() || i < 0 {
         return ptr::null_mut();
     }
-    let bridge = &*GLOBAL_BRIDGE;
-    let bits = match bridge.molt_handle_for_pyobj(op) {
-        Some(b) => b.bits(),
-        None => return ptr::null_mut(),
-    };
-    if !bridge.commit_list_view_partial(bits) {
+    let list = op.cast::<PyListObject>();
+    let len = unsafe { (*list).ob_base.ob_size };
+    if i >= len || unsafe { (*list).ob_item }.is_null() {
         return ptr::null_mut();
     }
-    bridge
-        .list_view_item_pointer(bits, i as usize)
-        .unwrap_or(ptr::null_mut())
+    unsafe { *(*list).ob_item.add(i as usize) }
 }
 
 #[unsafe(no_mangle)]
@@ -153,51 +233,19 @@ pub unsafe extern "C" fn PyList_GetItem(op: *mut PyObject, i: Py_ssize_t) -> *mu
     // IndexError "list index out of range"; success → borrowed ref. The prior
     // delegation to GET_ITEM returned bare NULLs with no exception on both
     // error classes (silent-sentinel row).
-    let bits = match resolve_native_list(op) {
-        Some(b) => b,
-        None => {
-            unsafe { crate::api::errors::PyErr_BadInternalCall() };
-            return ptr::null_mut();
-        }
+    let Some(read) = (unsafe { ListRead::acquire(op) }) else {
+        return ptr::null_mut();
     };
-    if !GLOBAL_BRIDGE.commit_list_view_partial(bits) {
+    if i < 0 {
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_IndexError).cast::<PyObject>(),
+                c"list index out of range".as_ptr(),
+            );
+        }
         return ptr::null_mut();
     }
-    if i >= 0 {
-        match GLOBAL_BRIDGE.list_view_item_initialized(bits, i as usize) {
-            Some(true) => {
-                if let Some(pointer) = GLOBAL_BRIDGE.list_view_item_pointer(bits, i as usize) {
-                    return pointer;
-                }
-                unsafe {
-                    crate::api::errors::PyErr_SetString(
-                        (&raw mut crate::abi_types::PyExc_SystemError)
-                            .cast::<crate::abi_types::PyObject>(),
-                        c"PyList_GetItem: initialized projection has no object".as_ptr(),
-                    );
-                }
-                return ptr::null_mut();
-            }
-            Some(false) => {
-                unsafe {
-                    crate::api::errors::PyErr_SetString(
-                        (&raw mut crate::abi_types::PyExc_SystemError)
-                            .cast::<crate::abi_types::PyObject>(),
-                        c"PyList_GetItem: uninitialized list item".as_ptr(),
-                    );
-                }
-                return ptr::null_mut();
-            }
-            None => {}
-        }
-    }
-    unsafe {
-        crate::api::errors::PyErr_SetString(
-            (&raw mut crate::abi_types::PyExc_IndexError).cast::<crate::abi_types::PyObject>(),
-            c"list index out of range".as_ptr(),
-        );
-    }
-    ptr::null_mut()
+    unsafe { read.item(i as usize) }
 }
 
 #[unsafe(no_mangle)]
@@ -337,33 +385,129 @@ pub unsafe extern "C" fn PyList_SetItem(
     0
 }
 
+/// Exact-size list publication transaction. The builder owns the destination
+/// until every slot is initialized, so every failure retires the partial list
+/// exactly once.
+struct ExactListBuilder {
+    list: *mut PyObject,
+    next: Py_ssize_t,
+    size: Py_ssize_t,
+}
+
+impl ExactListBuilder {
+    unsafe fn new(size: Py_ssize_t) -> Option<Self> {
+        let list = unsafe { PyList_New(size) };
+        (!list.is_null()).then_some(Self {
+            list,
+            next: 0,
+            size,
+        })
+    }
+
+    unsafe fn push_owned(&mut self, item: *mut PyObject) -> bool {
+        if item.is_null() || self.next >= self.size {
+            unsafe { crate::api::refcount::Py_XDECREF(item) };
+            if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+                unsafe {
+                    crate::api::errors::PyErr_SetString(
+                        (&raw mut crate::abi_types::PyExc_SystemError).cast::<PyObject>(),
+                        c"invalid exact-list publication".as_ptr(),
+                    );
+                }
+            }
+            return false;
+        }
+        if unsafe { PyList_SetItem(self.list, self.next, item) } != 0 {
+            return false;
+        }
+        self.next += 1;
+        true
+    }
+
+    unsafe fn push_borrowed(&mut self, item: *mut PyObject) -> bool {
+        if item.is_null() {
+            if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+                unsafe {
+                    crate::api::errors::PyErr_SetString(
+                        (&raw mut crate::abi_types::PyExc_SystemError).cast::<PyObject>(),
+                        c"NULL borrowed item in exact-list publication".as_ptr(),
+                    );
+                }
+            }
+            return false;
+        }
+        unsafe { crate::api::refcount::Py_INCREF(item) };
+        unsafe { self.push_owned(item) }
+    }
+
+    unsafe fn finish(mut self) -> *mut PyObject {
+        if self.next != self.size {
+            unsafe {
+                crate::api::errors::PyErr_SetString(
+                    (&raw mut crate::abi_types::PyExc_SystemError).cast::<PyObject>(),
+                    c"incomplete exact-list publication".as_ptr(),
+                );
+            }
+            return ptr::null_mut();
+        }
+        std::mem::replace(&mut self.list, ptr::null_mut())
+    }
+}
+
+impl Drop for ExactListBuilder {
+    fn drop(&mut self) {
+        unsafe { crate::api::refcount::Py_XDECREF(self.list) };
+    }
+}
+
+pub(crate) unsafe fn list_from_borrowed_indexed<F>(
+    size: Py_ssize_t,
+    mut item_at: F,
+) -> *mut PyObject
+where
+    F: FnMut(Py_ssize_t) -> *mut PyObject,
+{
+    let Some(mut builder) = (unsafe { ExactListBuilder::new(size) }) else {
+        return ptr::null_mut();
+    };
+    for index in 0..size {
+        if !unsafe { builder.push_borrowed(item_at(index)) } {
+            return ptr::null_mut();
+        }
+    }
+    unsafe { builder.finish() }
+}
+
+pub(crate) unsafe fn list_from_owned_indexed<F>(size: Py_ssize_t, mut item_at: F) -> *mut PyObject
+where
+    F: FnMut(Py_ssize_t) -> *mut PyObject,
+{
+    let Some(mut builder) = (unsafe { ExactListBuilder::new(size) }) else {
+        return ptr::null_mut();
+    };
+    for index in 0..size {
+        if !unsafe { builder.push_owned(item_at(index)) } {
+            return ptr::null_mut();
+        }
+    }
+    unsafe { builder.finish() }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyList_GET_SIZE(op: *mut PyObject) -> Py_ssize_t {
     if op.is_null() {
         return 0;
     }
-    let bridge = &*GLOBAL_BRIDGE;
-    let bits = match bridge.molt_handle_for_pyobj(op) {
-        Some(b) => b.bits(),
-        None => return 0,
-    };
-    let h = hooks_or_stubs();
-    unsafe { (h.list_len)(bits) as Py_ssize_t }
+    unsafe { (*op.cast::<PyListObject>()).ob_base.ob_size }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyList_Size(op: *mut PyObject) -> Py_ssize_t {
     // CPython: `if (!PyList_Check(op)) { PyErr_BadInternalCall(); return -1; }`.
-    match resolve_native_list(op) {
-        Some(bits) => {
-            let h = hooks_or_stubs();
-            unsafe { (h.list_len)(bits) as Py_ssize_t }
-        }
-        None => {
-            unsafe { crate::api::errors::PyErr_BadInternalCall() };
-            -1
-        }
-    }
+    let Some(read) = (unsafe { ListRead::acquire_len(op) }) else {
+        return -1;
+    };
+    unsafe { read.len() as Py_ssize_t }
 }
 
 #[unsafe(no_mangle)]
@@ -427,6 +571,40 @@ pub(crate) unsafe fn tuple_items_ptr(tuple: *mut PyTupleObject) -> *mut *mut PyO
     unsafe { std::ptr::addr_of_mut!((*tuple).ob_item).cast() }
 }
 
+unsafe fn native_tuple_new(size: Py_ssize_t) -> *mut PyObject {
+    unsafe { crate::api::memory::molt_object_alloc(&raw mut crate::abi_types::PyTuple_Type, size) }
+}
+
+/// Build the physical positional-argument tuple used by native C call slots.
+/// This authority is independent of managed-runtime tuple hooks, which is
+/// essential while reporting an error from a missing or failed hook itself.
+/// Items are borrowed and the returned exact tuple owns one reference each.
+pub(crate) unsafe fn native_call_args(items: &[*mut PyObject]) -> *mut PyObject {
+    let Ok(size) = Py_ssize_t::try_from(items.len()) else {
+        unsafe { crate::api::errors::PyErr_NoMemory() };
+        return ptr::null_mut();
+    };
+    let tuple = unsafe { native_tuple_new(size) };
+    if tuple.is_null() {
+        return ptr::null_mut();
+    }
+    let tuple_layout = tuple.cast::<PyTupleObject>();
+    for (index, &item) in items.iter().enumerate() {
+        if item.is_null() {
+            unsafe {
+                crate::api::refcount::Py_DECREF(tuple);
+                crate::api::errors::PyErr_BadInternalCall();
+            }
+            return ptr::null_mut();
+        }
+        unsafe {
+            crate::api::refcount::Py_INCREF(item);
+            *tuple_items_ptr(tuple_layout).add(index) = item;
+        }
+    }
+    tuple
+}
+
 /// Deallocate a genuine foreign tuple subclass. Exact builtin tuples are
 /// runtime-backed managed views and are retired by the bridge before `tp_dealloc`
 /// dispatch; only subclass storage allocated by its type reaches this function.
@@ -457,9 +635,14 @@ pub unsafe extern "C" fn PyTuple_New(size: Py_ssize_t) -> *mut PyObject {
         unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return ptr::null_mut();
     }
+    if !crate::hooks::managed_tuple_construction_available() {
+        return unsafe { native_tuple_new(size) };
+    }
     let bits = unsafe { (hooks_or_stubs().alloc_tuple)(size as usize) };
     if bits == 0 {
-        if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+        if !crate::api::errors::transfer_runtime_pending_to_current()
+            && unsafe { crate::api::errors::PyErr_Occurred() }.is_null()
+        {
             unsafe { crate::api::errors::PyErr_NoMemory() };
         }
         return ptr::null_mut();
@@ -794,9 +977,9 @@ pub unsafe extern "C" fn PyTuple_SetItem(
         }
         return -1;
     }
-    let Some(prepared) = (unsafe {
-        bridge.prepare_tuple_value(tuple_bits, i as usize, val_bits, v)
-    }) else {
+    let Some(prepared) =
+        (unsafe { bridge.prepare_tuple_value(tuple_bits, i as usize, val_bits, v) })
+    else {
         if owned_local {
             unsafe { (h.dec_ref)(val_bits) };
         }
@@ -1343,33 +1526,13 @@ pub unsafe extern "C" fn PyList_GetSlice(
     ilow: Py_ssize_t,
     ihigh: Py_ssize_t,
 ) -> *mut PyObject {
-    if op.is_null() {
+    let Some(read) = (unsafe { ListRead::acquire(op) }) else {
         return ptr::null_mut();
-    }
-    let bridge = &*GLOBAL_BRIDGE;
-    let bits = match bridge.molt_handle_for_pyobj(op) {
-        Some(b) => b.bits(),
-        None => return ptr::null_mut(),
     };
-    if !bridge.commit_list_view(bits) {
-        return ptr::null_mut();
-    }
-    let h = hooks_or_stubs();
-    let len = unsafe { (h.list_len)(bits) } as Py_ssize_t;
+    let len = unsafe { read.len() as Py_ssize_t };
     let low = ilow.max(0).min(len);
     let high = ihigh.max(low).min(len);
-    let new_list = unsafe { PyList_New(0) };
-    if new_list.is_null() {
-        return ptr::null_mut();
-    }
-    for i in low..high {
-        let item = unsafe { PyList_GetItem(op, i) };
-        if item.is_null() || unsafe { PyList_Append(new_list, item) } != 0 {
-            unsafe { crate::api::refcount::Py_DECREF(new_list) };
-            return ptr::null_mut();
-        }
-    }
-    new_list
+    unsafe { list_from_borrowed_indexed(high - low, |index| read.item((low + index) as usize)) }
 }
 
 /// Real slice assignment/deletion (CPython `list_ass_slice`): replaces

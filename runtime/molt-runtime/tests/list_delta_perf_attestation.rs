@@ -20,14 +20,14 @@ use molt_cpython_abi::api::sequences::{
     PyTuple_GetSlice, PyTuple_New, PyTuple_SetItem,
 };
 use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
-use molt_cpython_abi::hooks::{hooks, DecodedHandleResult};
+use molt_cpython_abi::hooks::{DecodedHandleResult, hooks};
 use molt_cpython_abi::l7_attestation::{
-    calibrate_timed_iterations, enforce_current_thread_affinity, normalized_affinity_mask,
-    summarize_samples, CALIBRATION_TARGET_NS, MINIMUM_SAMPLE_NS, SAMPLE_COUNT,
+    CALIBRATION_TARGET_NS, MINIMUM_SAMPLE_NS, SAMPLE_COUNT, calibrate_timed_iterations,
+    enforce_current_thread_affinity, normalized_affinity_mask, summarize_samples,
 };
 use molt_obj_model::MoltObject;
 use molt_runtime::attestation_probe;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::hint::black_box;
 use std::time::Instant;
 

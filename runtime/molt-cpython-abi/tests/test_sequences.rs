@@ -372,10 +372,13 @@ fn test_tuple_setitem_rejects_shared_tuple() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_tuple_size_null_returns_zero() {
+fn test_tuple_size_null_is_bad_internal_call() {
     init();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let size = unsafe { molt_cpython_abi::api::sequences::PyTuple_Size(ptr::null_mut()) };
-    assert_eq!(size, 0);
+    assert_eq!(size, -1);
+    assert!(!unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 }
 
 #[test]

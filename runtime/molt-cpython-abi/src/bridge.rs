@@ -548,7 +548,6 @@ impl TupleAllocation {
     fn items_mut(&mut self) -> &mut [*mut PyObject] {
         unsafe { std::slice::from_raw_parts_mut(self.items_ptr(), self.len) }
     }
-
 }
 
 impl Drop for TupleAllocation {
@@ -1754,11 +1753,7 @@ impl ObjectBridge {
         })
     }
 
-    pub fn tuple_view_item_pointer(
-        &self,
-        bits: AbiHandle,
-        index: usize,
-    ) -> Option<*mut PyObject> {
+    pub fn tuple_view_item_pointer(&self, bits: AbiHandle, index: usize) -> Option<*mut PyObject> {
         let handle = self.handle_shard(bits).lock();
         let entry = handle.to_py.get(&bits)?;
         let ManagedView::Tuple { allocation } = &entry.view else {
@@ -4614,8 +4609,13 @@ mod bridge_handle_tests {
             thread::spawn(move || {
                 barrier.wait();
                 for iteration in 0..10_000usize {
-                    let value = ((thread_index * 10_000 + iteration) % 1_000_000) as i64;
-                    let bits = MoltObject::from_int(value).bits();
+                    // Exercise canonical managed views, not scalar carriers.
+                    // Numeric carriers have their own deallocator/provenance
+                    // authority and are deliberately not released through
+                    // `release_pyobj`.
+                    let ordinal = thread_index * 10_000 + iteration + 1;
+                    let address = 0x1_0000usize + ordinal * 16;
+                    let bits = MoltObject::from_ptr(address as *mut u8).bits();
                     let ptr = unsafe { bridge.owned_handle_to_pyobj(bits) };
                     assert_eq!(
                         bridge.pyobj_to_handle(ptr).map(BridgeIdentity::as_handle),

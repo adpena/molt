@@ -2712,17 +2712,16 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             // type arm. This is the tuple analogue of exception field detach:
             // no reentrant lookup sees a terminal tuple and no child view loses
             // both ownership domains out of order.
-            let mut retired_tuple_view = if type_id == TYPE_ID_TUPLE
-                && (terminal_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0
-            {
-                Some(
-                    molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                        .retire_tuple_view_deferred(MoltObject::from_ptr(ptr).bits())
-                        .unwrap_or_else(|| std::process::abort()),
-                )
-            } else {
-                None
-            };
+            let mut retired_tuple_view =
+                if type_id == TYPE_ID_TUPLE && (terminal_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0 {
+                    Some(
+                        molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                            .retire_tuple_view_deferred(MoltObject::from_ptr(ptr).bits())
+                            .unwrap_or_else(|| std::process::abort()),
+                    )
+                } else {
+                    None
+                };
             if type_id == TYPE_ID_EXCEPTION && (terminal_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0 {
                 molt_cpython_abi::bridge::GLOBAL_BRIDGE
                     .clear_exception_view_fields(MoltObject::from_ptr(ptr).bits());
