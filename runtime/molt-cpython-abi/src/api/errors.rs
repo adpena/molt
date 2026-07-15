@@ -183,6 +183,27 @@ impl OwnedCError {
 
 thread_local! {
     static CURRENT_EXC: std::cell::RefCell<Option<OwnedCError>> = const { std::cell::RefCell::new(None) };
+    static NORMALIZING_EXCEPTION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+struct ExceptionNormalizationGuard;
+
+impl ExceptionNormalizationGuard {
+    fn enter() -> Option<Self> {
+        NORMALIZING_EXCEPTION.with(|active| {
+            if active.replace(true) {
+                None
+            } else {
+                Some(Self)
+            }
+        })
+    }
+}
+
+impl Drop for ExceptionNormalizationGuard {
+    fn drop(&mut self) {
+        NORMALIZING_EXCEPTION.with(|active| active.set(false));
+    }
 }
 
 fn replace_current_error(state: Option<OwnedCError>) {
@@ -343,15 +364,13 @@ unsafe fn normalize_owned_error(mut error: OwnedCError) -> Option<OwnedCError> {
                 unsafe { (hooks.dec_ref)(value_bits) };
                 return None;
             }
-            let set_result = unsafe {
-                (hooks.tuple_set)(args_bits, 0, value_bits, error.value)
-            };
+            let set_result = unsafe { (hooks.tuple_set)(args_bits, 0, value_bits, error.value) };
             match set_result.decode() {
                 crate::hooks::DecodedHandleResult::Ok(old_bits) if old_bits != 0 => unsafe {
                     (hooks.dec_ref)(old_bits)
                 },
                 crate::hooks::DecodedHandleResult::Ok(_)
-                | crate::hooks::DecodedHandleResult::Missing => {},
+                | crate::hooks::DecodedHandleResult::Missing => {}
                 crate::hooks::DecodedHandleResult::Error => {
                     unsafe {
                         (hooks.dec_ref)(args_bits);
@@ -436,12 +455,23 @@ unsafe fn normalize_owned_error(mut error: OwnedCError) -> Option<OwnedCError> {
     {
         unsafe { crate::api::refcount::Py_INCREF(old_value) };
         old_value
-    } else if old_value.is_null() || std::ptr::eq(old_value, &raw mut crate::abi_types::Py_None) {
-        unsafe { crate::api::object::PyObject_CallNoArgs(error.exc_type) }
-    } else if unsafe { crate::api::sequences::PyTuple_Check(old_value) } != 0 {
-        unsafe { crate::api::object::PyObject_Call(error.exc_type, old_value, ptr::null_mut()) }
     } else {
-        unsafe { crate::api::object::PyObject_CallOneArg(error.exc_type, old_value) }
+        let args =
+            if old_value.is_null() || std::ptr::eq(old_value, &raw mut crate::abi_types::Py_None) {
+                unsafe { crate::api::sequences::native_call_args(&[]) }
+            } else if unsafe { crate::api::sequences::PyTuple_Check(old_value) } != 0 {
+                unsafe { crate::api::refcount::Py_INCREF(old_value) };
+                old_value
+            } else {
+                unsafe { crate::api::sequences::native_call_args(&[old_value]) }
+            };
+        if args.is_null() {
+            return None;
+        }
+        let normalized =
+            unsafe { crate::api::object::PyObject_Call(error.exc_type, args, ptr::null_mut()) };
+        unsafe { crate::api::refcount::Py_DECREF(args) };
+        normalized
     };
     if normalized.is_null() {
         return None;
@@ -466,11 +496,31 @@ unsafe fn normalize_owned_error(mut error: OwnedCError) -> Option<OwnedCError> {
 }
 
 unsafe fn normalize_and_replace(error: OwnedCError) {
+    // Error construction may itself fail. Suppress nested normalization and
+    // let the outer transaction retain its original exact error triple; this
+    // prevents MemoryError/SystemError reporting from recursively allocating
+    // until stack exhaustion.
+    let Some(_normalization) = ExceptionNormalizationGuard::enter() else {
+        return;
+    };
+    unsafe {
+        crate::api::refcount::Py_XINCREF(error.exc_type);
+        crate::api::refcount::Py_XINCREF(error.value);
+        crate::api::refcount::Py_XINCREF(error.traceback);
+    }
+    let fallback = OwnedCError {
+        exc_type: error.exc_type,
+        value: error.value,
+        traceback: error.traceback,
+    };
     replace_current_error(None);
     if let Some(error) = unsafe { normalize_owned_error(error) } {
+        drop(fallback);
         replace_current_error(Some(error));
     } else if current_exc_type_ptr().is_none() {
-        unsafe { install_normalization_failure() };
+        replace_current_error(Some(fallback));
+    } else {
+        drop(fallback);
     }
 }
 

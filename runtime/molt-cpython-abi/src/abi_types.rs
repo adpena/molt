@@ -2949,7 +2949,7 @@ mod tuple_type_shell_tests {
             );
             assert_eq!(
                 (*ty).tp_dealloc.map(|slot| slot as usize),
-                Some(crate::api::sequences::molt_tuple_subtype_dealloc as usize)
+                Some(crate::api::sequences::molt_tuple_subtype_dealloc as *const () as usize,)
             );
             assert!((*ty).tp_hash.is_some());
             assert!((*ty).tp_traverse.is_some());

@@ -309,7 +309,9 @@ fn setitem_oob_sets_indexerror_and_releases_stolen_ref() {
     unsafe { errors::PyErr_Clear() };
 
     let list = unsafe { sequences::PyList_New(1) };
-    let item = unsafe { numbers::PyLong_FromLong(7) };
+    // Use a mortal, non-small integer. Small-int carriers are immortal by
+    // design and therefore cannot prove that the stolen reference is released.
+    let item = unsafe { numbers::PyLong_FromLong(1000) };
     // Proxy starts at refcount 1 (the caller's reference, which SetItem steals).
     assert_eq!(unsafe { (*item).ob_refcnt }, 1);
 

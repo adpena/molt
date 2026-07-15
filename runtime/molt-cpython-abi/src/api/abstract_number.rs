@@ -148,7 +148,7 @@ type TernaryFunc =
     unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut PyObject) -> *mut PyObject;
 
 #[derive(Clone, Copy)]
-enum BinarySlot {
+pub(crate) enum BinarySlot {
     Add,
     Subtract,
     Multiply,
@@ -165,7 +165,7 @@ enum BinarySlot {
 }
 
 #[derive(Clone, Copy)]
-enum InPlaceSlot {
+pub(crate) enum InPlaceSlot {
     Add,
     Subtract,
     Multiply,
@@ -236,11 +236,11 @@ unsafe fn inplace_slot(o: *mut PyObject, slot: InPlaceSlot) -> *mut c_void {
     }
 }
 
-fn is_not_implemented(result: *mut PyObject) -> bool {
+pub(crate) fn is_not_implemented(result: *mut PyObject) -> bool {
     ptr::eq(result, &raw mut crate::abi_types::Py_NotImplementedSentinel)
 }
 
-unsafe fn discard_not_implemented(result: *mut PyObject) {
+pub(crate) unsafe fn discard_not_implemented(result: *mut PyObject) {
     unsafe { crate::api::refcount::Py_DECREF(result) };
 }
 
@@ -269,7 +269,7 @@ unsafe fn call_binary_func(
     unsafe { func(o1, o2) }
 }
 
-unsafe fn foreign_binary_op1(
+pub(crate) unsafe fn foreign_binary_op1(
     slot: BinarySlot,
     o1: *mut PyObject,
     o2: *mut PyObject,
@@ -308,7 +308,9 @@ unsafe fn foreign_binary_op1(
         }
         unsafe { discard_not_implemented(result) };
     }
-    &raw mut crate::abi_types::Py_NotImplementedSentinel
+    let result = &raw mut crate::abi_types::Py_NotImplementedSentinel;
+    unsafe { crate::api::refcount::Py_INCREF(result) };
+    result
 }
 
 unsafe fn foreign_binary_op(
@@ -319,9 +321,31 @@ unsafe fn foreign_binary_op(
 ) -> *mut PyObject {
     let result = unsafe { foreign_binary_op1(slot, o1, o2) };
     if is_not_implemented(result) {
+        unsafe { discard_not_implemented(result) };
         return unsafe { binop_type_error(o1, o2, op_name) };
     }
     result
+}
+
+/// CPython `BINARY_IOP1`: try the left operand's in-place numeric slot, then
+/// the canonical reflected-aware binary dispatch. `PySequence_InPlace*` shares
+/// this authority with `PyNumber_InPlace*`; callers own the returned reference,
+/// including the `NotImplemented` sentinel.
+pub(crate) unsafe fn foreign_binary_iop1(
+    inplace: InPlaceSlot,
+    binary: BinarySlot,
+    o1: *mut PyObject,
+    o2: *mut PyObject,
+) -> *mut PyObject {
+    let slot = unsafe { inplace_slot(o1, inplace) };
+    if !slot.is_null() {
+        let result = unsafe { call_binary_func(slot, o1, o2) };
+        if result.is_null() || !is_not_implemented(result) {
+            return result;
+        }
+        unsafe { discard_not_implemented(result) };
+    }
+    unsafe { foreign_binary_op1(binary, o1, o2) }
 }
 
 unsafe fn power_slot(o: *mut PyObject) -> *mut c_void {
@@ -418,15 +442,12 @@ unsafe fn inplace_binary_op(
     let Some((p1, p2)) = (unsafe { protocol_pair(o1, o2) }) else {
         return ptr::null_mut();
     };
-    let slot = unsafe { inplace_slot(p1.ptr, inplace) };
-    if !slot.is_null() {
-        let result = unsafe { call_binary_func(slot, p1.ptr, p2.ptr) };
-        if result.is_null() || !is_not_implemented(result) {
-            return result;
-        }
+    let result = unsafe { foreign_binary_iop1(inplace, binary, p1.ptr, p2.ptr) };
+    if is_not_implemented(result) {
         unsafe { discard_not_implemented(result) };
+        return unsafe { binop_type_error(p1.ptr, p2.ptr, op_name) };
     }
-    unsafe { foreign_binary_op(binary, op_name, p1.ptr, p2.ptr) }
+    result
 }
 
 /// Dispatch a binary numeric op through the runtime authority.

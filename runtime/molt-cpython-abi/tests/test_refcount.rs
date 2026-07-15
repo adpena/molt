@@ -22,7 +22,7 @@ fn init() {
 #[test]
 fn test_incref_increments_refcount() {
     init();
-    let bits = MoltObject::from_int(42).bits();
+    let bits = MoltObject::from_int(1042).bits();
     let py = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
     assert!(!py.is_null());
 
@@ -41,7 +41,7 @@ fn test_incref_increments_refcount() {
 #[test]
 fn test_decref_decrements_refcount() {
     init();
-    let bits = MoltObject::from_int(99).bits();
+    let bits = MoltObject::from_int(1099).bits();
     let py = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
     assert!(!py.is_null());
 
@@ -109,7 +109,7 @@ fn test_xdecref_null_is_noop() {
 #[test]
 fn test_xincref_on_valid_object() {
     init();
-    let bits = MoltObject::from_int(123).bits();
+    let bits = MoltObject::from_int(1123).bits();
     let py = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
     let rc_before = unsafe { (*py).ob_refcnt };
     unsafe { molt_cpython_abi::api::refcount::Py_XINCREF(py) };

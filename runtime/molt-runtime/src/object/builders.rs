@@ -1108,11 +1108,7 @@ pub(crate) fn alloc_list(_py: &PyToken<'_>, elems: &[u64]) -> *mut u8 {
     alloc_list_with_capacity(_py, elems, cap)
 }
 
-fn alloc_tuple_exact(
-    _py: &PyToken<'_>,
-    elems: &[u64],
-    owned: bool,
-) -> *mut u8 {
+fn alloc_tuple_exact(_py: &PyToken<'_>, elems: &[u64], owned: bool) -> *mut u8 {
     let Some(total) = crate::object::layout::TupleStorage::object_size(elems.len()) else {
         return std::ptr::null_mut();
     };
@@ -1144,10 +1140,7 @@ fn alloc_tuple_exact(
 /// Allocate a fixed-length tuple whose slots begin as the invalid zero
 /// construction sentinel. This is the
 /// construction-only authority for `PyTuple_New`; later writes cannot grow it.
-pub(crate) fn alloc_tuple_uninitialized(
-    _py: &PyToken<'_>,
-    len: usize,
-) -> *mut u8 {
+pub(crate) fn alloc_tuple_uninitialized(_py: &PyToken<'_>, len: usize) -> *mut u8 {
     if len == 0 {
         return alloc_tuple(_py, &[]);
     }

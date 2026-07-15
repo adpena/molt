@@ -445,7 +445,9 @@ fn test_object_length_hint_uses_default_for_unknown_object() {
 #[test]
 fn test_object_self_iter_returns_new_reference_to_same_object() {
     let _guard = init();
-    let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(42) };
+    // A mortal carrier proves the new-reference increment; cached small ints
+    // are immortal and intentionally ignore INCREF.
+    let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1000) };
     let initial_refcnt = unsafe { (*py).ob_refcnt };
     let iter = unsafe { molt_cpython_abi::api::object::PyObject_SelfIter(py) };
     assert_eq!(iter, py);

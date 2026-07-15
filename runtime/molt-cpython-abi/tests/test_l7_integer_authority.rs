@@ -948,7 +948,9 @@ fn bool_public_names_are_pointer_aliases_of_sole_canonical_storage() {
 fn number_conversions_preserve_exact_carriers_and_normalize_bool() {
     let _guard = TEST_LOCK.lock().unwrap();
     init();
-    let integer = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(7) };
+    // A mortal carrier is required to prove the new-reference increment;
+    // cached small integers are immortal and intentionally ignore INCREF.
+    let integer = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1000) };
     let before = unsafe { (*integer).ob_refcnt };
     let same_integer = unsafe { molt_cpython_abi::api::abstract_number::PyNumber_Long(integer) };
     assert_eq!(same_integer, integer);

@@ -2421,7 +2421,7 @@ pub(crate) unsafe fn molt_tuple_bits_from_c_tuple(args: *mut PyObject) -> Option
                 (h.dec_ref)(old_bits)
             },
             crate::hooks::DecodedHandleResult::Ok(_)
-            | crate::hooks::DecodedHandleResult::Missing => {},
+            | crate::hooks::DecodedHandleResult::Missing => {}
             crate::hooks::DecodedHandleResult::Error => {
                 for bits in item_bits.drain(..) {
                     unsafe { (h.dec_ref)(bits) };
@@ -2459,10 +2459,7 @@ pub unsafe extern "C" fn PyObject_CallObject(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_CallNoArgs(callable: *mut PyObject) -> *mut PyObject {
-    let empty_tuple = unsafe { crate::api::sequences::PyTuple_New(0) };
-    let result = unsafe { PyObject_Call(callable, empty_tuple, ptr::null_mut()) };
-    unsafe { crate::api::refcount::Py_DECREF(empty_tuple) };
-    result
+    unsafe { PyObject_Vectorcall(callable, ptr::null_mut(), 0, ptr::null_mut()) }
 }
 
 #[unsafe(no_mangle)]
@@ -2473,21 +2470,8 @@ pub unsafe extern "C" fn PyObject_CallOneArg(
     if callable.is_null() || arg.is_null() {
         return ptr::null_mut();
     }
-    let tuple = unsafe { crate::api::sequences::PyTuple_New(1) };
-    if tuple.is_null() {
-        return ptr::null_mut();
-    }
-    unsafe { crate::api::refcount::Py_INCREF(arg) };
-    if unsafe { crate::api::sequences::PyTuple_SetItem(tuple, 0, arg) } != 0 {
-        unsafe {
-            crate::api::refcount::Py_DECREF(arg);
-            crate::api::refcount::Py_DECREF(tuple);
-        }
-        return ptr::null_mut();
-    }
-    let result = unsafe { PyObject_Call(callable, tuple, ptr::null_mut()) };
-    unsafe { crate::api::refcount::Py_DECREF(tuple) };
-    result
+    let mut arg = arg;
+    unsafe { PyObject_Vectorcall(callable, &raw mut arg, 1, ptr::null_mut()) }
 }
 
 #[unsafe(no_mangle)]
@@ -2637,27 +2621,12 @@ unsafe fn tuple_from_vectorcall_args(args: *mut *mut PyObject, nargs: isize) -> 
     if nargs < 0 || (nargs > 0 && args.is_null()) {
         return ptr::null_mut();
     }
-    let tuple = unsafe { crate::api::sequences::PyTuple_New(nargs) };
-    if tuple.is_null() {
-        return ptr::null_mut();
-    }
-    for index in 0..nargs {
-        let arg = unsafe { *args.add(index as usize) };
-        if arg.is_null() {
-            unsafe { crate::api::refcount::Py_DECREF(tuple) };
-            return ptr::null_mut();
-        }
-        unsafe { crate::api::refcount::Py_INCREF(arg) };
-        let rc = unsafe { crate::api::sequences::PyTuple_SetItem(tuple, index, arg) };
-        if rc != 0 {
-            unsafe {
-                crate::api::refcount::Py_DECREF(arg);
-                crate::api::refcount::Py_DECREF(tuple);
-            }
-            return ptr::null_mut();
-        }
-    }
-    tuple
+    let items = if nargs == 0 {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(args, nargs as usize) }
+    };
+    unsafe { crate::api::sequences::native_call_args(items) }
 }
 
 /// Read a callable's `vectorcallfunc`, mirroring CPython 3.12
