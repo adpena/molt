@@ -17,7 +17,6 @@ from molt.cli.target_python import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
-NUMPY_WITNESS_SEAL_NAME = "pact_numpy_multiarray_sealed_for_witness"
 DEFAULT_CONFIG_PATH = ROOT / "config" / "scientific_stack_versions.toml"
 CONFIG_ENV = "MOLT_SCIENTIFIC_STACK_CONFIG"
 _PUBLIC_VERSION_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)+$")
@@ -29,6 +28,8 @@ class ScientificExtensionSpec:
     target: str
     python_exports: tuple[str, ...]
     capabilities: tuple[str, ...]
+    provided_capsules: tuple[str, ...] = ()
+    exclude_linked_static_libraries: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,8 @@ class ScientificExtensionSet:
     name: str
     seal_name: str
     meson_setup_args: tuple[str, ...]
+    use_pkg_config: bool
+    required_installed_files: tuple[str, ...]
     extensions: tuple[ScientificExtensionSpec, ...]
 
 
@@ -47,7 +50,6 @@ class ScientificStackVersion:
     cpython: str
     numpy_repo_ref: str
     scipy_repo_ref: str
-    numpy_seal_root_candidates: tuple[str, ...]
     extension_sets: tuple[ScientificExtensionSet, ...]
 
     @property
@@ -110,6 +112,12 @@ def _capability_tuple(value: Any, *, field: str, path: Path) -> tuple[str, ...]:
     return capabilities
 
 
+def _boolean(value: Any, *, field: str, path: Path) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{path}: {field} must be a boolean")
+    return value
+
+
 def _extension_sets(
     value: Any, *, field: str, path: Path
 ) -> tuple[ScientificExtensionSet, ...]:
@@ -161,6 +169,16 @@ def _extension_sets(
                 field=f"{extension_field}.capabilities",
                 path=path,
             )
+            provided_capsules = _capability_tuple(
+                raw_extension.get("provided_capsules", []),
+                field=f"{extension_field}.provided_capsules",
+                path=path,
+            )
+            exclude_linked_static_libraries = _capability_tuple(
+                raw_extension.get("exclude_linked_static_libraries", []),
+                field=f"{extension_field}.exclude_linked_static_libraries",
+                path=path,
+            )
             if module in seen_modules:
                 raise ValueError(f"{path}: duplicate extension module {module}")
             if target in seen_targets:
@@ -173,6 +191,10 @@ def _extension_sets(
                     target=target,
                     python_exports=python_exports,
                     capabilities=capabilities,
+                    provided_capsules=provided_capsules,
+                    exclude_linked_static_libraries=(
+                        exclude_linked_static_libraries
+                    ),
                 )
             )
         sets.append(
@@ -187,6 +209,16 @@ def _extension_sets(
                 meson_setup_args=_string_tuple(
                     raw_set.get("meson_setup_args"),
                     field=f"{set_field}.meson_setup_args",
+                    path=path,
+                ),
+                use_pkg_config=_boolean(
+                    raw_set.get("use_pkg_config"),
+                    field=f"{set_field}.use_pkg_config",
+                    path=path,
+                ),
+                required_installed_files=_capability_tuple(
+                    raw_set.get("required_installed_files"),
+                    field=f"{set_field}.required_installed_files",
                     path=path,
                 ),
                 extensions=tuple(extensions),
@@ -226,6 +258,7 @@ def load_verified_support_matrix(
         if not isinstance(raw, dict):
             raise ValueError(f"{path}: verified[{index}] must be a table")
         removed_fields = {
+            "numpy_seal_root_candidates",
             "scipy_primary_seal_root_candidates",
             "scipy_additional_seal_roots",
         }.intersection(raw)
@@ -253,11 +286,6 @@ def load_verified_support_matrix(
             scipy_repo_ref=_string(
                 raw.get("scipy_repo_ref"),
                 field=f"verified[{index}].scipy_repo_ref",
-                path=path,
-            ),
-            numpy_seal_root_candidates=_string_tuple(
-                raw.get("numpy_seal_root_candidates"),
-                field=f"verified[{index}].numpy_seal_root_candidates",
                 path=path,
             ),
             extension_sets=_extension_sets(
@@ -328,10 +356,11 @@ def numpy_witness_seal_root(
     artifact_root: Path | None = None,
 ) -> Path:
     selected = resolve_scientific_stack() if stack is None else stack
-    root = (
-        scientific_artifact_root() if artifact_root is None else artifact_root.resolve()
+    return scientific_extension_set_root(
+        scientific_extension_set("numpy", "pact-witness", stack=selected),
+        stack=selected,
+        artifact_root=artifact_root,
     )
-    return root / "package-seals" / "numpy" / selected.numpy / NUMPY_WITNESS_SEAL_NAME
 
 
 def scientific_extension_set(

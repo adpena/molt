@@ -444,20 +444,6 @@ _BUILD_CRUTCH_ALLOWLIST = frozenset(
         "src/molt/cli/source_extension_cython.py",
         "src/molt/cli/source_extension_producer.py",
         "src/molt/cli/source_extension_toolchain.py",
-        # The remaining NumPy witness closure adapter mirrors the package's OWN
-        # upstream pure-Python subtree and generated modules into its legacy
-        # seal. It authors no Molt-owned source-plan/config/header overlay.
-        # SciPy uses the generic atomic source-extension producer above.
-        "tools/pact_witness_numpy_python_closure.py",
-        # Pact-witness numpy _umath_linalg (linalg) WASM producer. It consumes
-        # numpy's OWN upstream Meson intro-targets/compile_commands (produced by
-        # regen_numpy_multiarray_meson_wasm.py) and invokes the GENERIC
-        # `molt extension build` CLI -- it authors no Molt-owned source-plan/
-        # config/header overlay. Its docstring merely describes the npymath
-        # exclusion, which is a GENERIC, gated `molt extension build
-        # --source-plan-exclude-linked-static-library` feature (source_extensions
-        # .py, itself allowlisted above), not a package-specific crutch.
-        "tools/build_numpy_umath_linalg_wasm.py",
     }
 )
 

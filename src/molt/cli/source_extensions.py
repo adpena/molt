@@ -853,8 +853,8 @@ def _resolve_ninja_build_path(raw_path: str, *, build_root: Path) -> Path:
     return path.resolve()
 
 
-def _load_ninja_build_explicit_inputs(
-    build_root: Path,
+def _load_ninja_build_inputs(
+    build_root: Path, *, include_implicit: bool
 ) -> dict[Path, tuple[Path, ...]]:
     edges: dict[Path, tuple[Path, ...]] = {}
     for line in _ninja_logical_lines(build_root / "build.ninja"):
@@ -871,6 +871,8 @@ def _load_ninja_build_explicit_inputs(
         raw_inputs: list[str] = []
         for word in rule_and_inputs[1:]:
             if word in {"|", "||"}:
+                if include_implicit:
+                    continue
                 break
             raw_inputs.append(word)
         inputs = tuple(
@@ -881,6 +883,20 @@ def _load_ninja_build_explicit_inputs(
             output = _resolve_ninja_build_path(output_word, build_root=build_root)
             edges[output] = inputs
     return edges
+
+
+def _load_ninja_build_explicit_inputs(
+    build_root: Path,
+) -> dict[Path, tuple[Path, ...]]:
+    return _load_ninja_build_inputs(build_root, include_implicit=False)
+
+
+def _load_ninja_build_all_inputs(
+    build_root: Path,
+) -> dict[Path, tuple[Path, ...]]:
+    """Return explicit, implicit, and order-only Ninja dependency edges."""
+
+    return _load_ninja_build_inputs(build_root, include_implicit=True)
 
 
 def _meson_linked_static_library_targets(

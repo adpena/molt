@@ -22,6 +22,7 @@ from packaging.version import InvalidVersion
 from molt.cli import commands
 from molt.cli.atomic_io import (
     _atomic_copy_file,
+    _atomic_write_bytes,
     _atomic_write_json,
     _atomic_write_text,
     _remove_file_or_tree,
@@ -37,8 +38,14 @@ from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import fail as _fail
 from molt.cli.output import json_payload as _json_payload
 from molt.cli.source_extensions import (
+    _MESON_EXTENSION_TARGET_TYPES,
+    _load_ninja_build_all_inputs,
     _load_meson_intro_targets_source_extension_plan,
+    _meson_linked_static_library_targets,
+    _meson_target_filename_names,
+    _meson_target_output_paths,
 )
+from molt.cli.build_locks import _acquire_file_lock, _release_file_lock
 from molt.cli.source_extension_reproducibility import (
     _canonical_extension_manifest_for_wheel,
     _canonicalize_location_string,
@@ -70,9 +77,19 @@ from molt.scientific_stack_versions import (
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_REQUIRED_INSTALLED_PYTHON_FILES = {
-    "numpy": ("numpy/__init__.py", "numpy/version.py", "numpy/__config__.py"),
-    "scipy": ("scipy/__init__.py", "scipy/version.py", "scipy/__config__.py"),
+_GENERATED_INPUT_SUFFIXES = {
+    ".c",
+    ".cc",
+    ".cpp",
+    ".cxx",
+    ".h",
+    ".hh",
+    ".hpp",
+    ".hxx",
+    ".inc",
+    ".pxd",
+    ".py",
+    ".pyi",
 }
 
 
@@ -142,6 +159,24 @@ class _SourceBuildConfigTool:
             "version": self.version,
             "sha256": _sha256_file(self.path),
         }
+
+
+@dataclass(frozen=True)
+class _SourceMesonDriver:
+    command: tuple[str, ...]
+    manifest: Mapping[str, str]
+
+    def manifest_payload(self) -> dict[str, str]:
+        return dict(self.manifest)
+
+
+@dataclass(frozen=True)
+class _SourceNinjaDriver:
+    command: tuple[str, ...]
+    manifest: Mapping[str, str]
+
+    def manifest_payload(self) -> dict[str, str]:
+        return dict(self.manifest)
 
 
 def _run_process(argv: Sequence[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -481,11 +516,10 @@ def _run_meson_setup(
     build_root: Path,
     meson_cross_files: Sequence[Path],
     setup_args: Sequence[str],
+    driver: _SourceMesonDriver,
 ) -> None:
     argv: list[str] = [
-        sys.executable,
-        "-m",
-        "mesonbuild.mesonmain",
+        *driver.command,
         "setup",
         str(build_root),
         str(source_root),
@@ -499,6 +533,100 @@ def _run_meson_setup(
         raise SourceExtensionProducerError(
             f"upstream Meson setup failed ({result.returncode}): {detail}"
         )
+
+
+def _source_meson_driver(source_root: Path) -> _SourceMesonDriver:
+    pyproject_path = source_root / "pyproject.toml"
+    try:
+        payload = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+        raise SourceExtensionProducerError(
+            f"failed to read upstream Meson authority from {pyproject_path}: {exc}"
+        ) from exc
+    tool = payload.get("tool")
+    meson_python = tool.get("meson-python") if isinstance(tool, Mapping) else None
+    raw_driver = meson_python.get("meson") if isinstance(meson_python, Mapping) else None
+    if raw_driver is not None:
+        if not isinstance(raw_driver, str) or not raw_driver.strip():
+            raise SourceExtensionProducerError(
+                f"{pyproject_path}: tool.meson-python.meson must be a relative path"
+            )
+        relative = Path(raw_driver.strip())
+        if relative.is_absolute() or ".." in relative.parts:
+            raise SourceExtensionProducerError(
+                f"{pyproject_path}: tool.meson-python.meson escapes source custody"
+            )
+        driver = (source_root / relative).resolve()
+        if not driver.is_relative_to(source_root.resolve()) or not driver.is_file():
+            raise SourceExtensionProducerError(
+                f"upstream-declared Meson driver is absent: {driver}"
+            )
+        return _SourceMesonDriver(
+            command=(sys.executable, str(driver)),
+            manifest={
+                "kind": "source-vendored",
+                "path": relative.as_posix(),
+                "sha256": _sha256_file(driver),
+            },
+        )
+    try:
+        meson_version = importlib_metadata.version("meson")
+    except importlib_metadata.PackageNotFoundError as exc:
+        raise SourceExtensionProducerError(
+            "source build environment has no Meson distribution and upstream did "
+            "not declare tool.meson-python.meson"
+        ) from exc
+    return _SourceMesonDriver(
+        command=(sys.executable, "-m", "mesonbuild.mesonmain"),
+        manifest={
+            "kind": "build-environment",
+            "module": "mesonbuild.mesonmain",
+            "distribution": "meson",
+            "version": meson_version,
+        },
+    )
+
+
+def _source_ninja_driver(source_root: Path) -> _SourceNinjaDriver:
+    try:
+        distribution = importlib_metadata.distribution("ninja")
+    except importlib_metadata.PackageNotFoundError as exc:
+        raise SourceExtensionProducerError(
+            "source build environment has no Ninja backend distribution"
+        ) from exc
+    binaries = tuple(
+        path.resolve()
+        for item in (distribution.files or ())
+        if Path(str(item)).name.lower() == "ninja.exe"
+        and (path := Path(distribution.locate_file(item))).is_file()
+    )
+    if len(binaries) != 1:
+        raise SourceExtensionProducerError(
+            f"Ninja distribution owns {len(binaries)} executable payloads"
+        )
+    path = binaries[0]
+    command = (sys.executable, "-m", "ninja")
+    result = _run_process((*command, "--version"), cwd=source_root)
+    version = result.stdout.strip()
+    if result.returncode != 0 or not version:
+        detail = (result.stderr or result.stdout).strip()
+        raise SourceExtensionProducerError(
+            f"Ninja backend cannot attest its version: {detail}"
+        )
+    distribution_name = distribution.metadata.get("Name")
+    return _SourceNinjaDriver(
+        command=command,
+        manifest={
+            "distribution": (
+                distribution_name.strip()
+                if isinstance(distribution_name, str) and distribution_name.strip()
+                else "ninja"
+            ),
+            "version": version,
+            "path": path.name,
+            "sha256": _sha256_file(path),
+        },
+    )
 
 
 def _require_real_meson_metadata(build_root: Path) -> tuple[Path, Path, Path]:
@@ -546,13 +674,15 @@ def _installed_package_relative_path(
     return relative
 
 
-def _stage_installed_python_files(
+def _stage_installed_package_files(
     *,
     intro_installed: Path,
     source_root: Path,
     build_root: Path,
     package: str,
     publish_root: Path,
+    location_roots: Sequence[tuple[Path, str]],
+    required_installed_files: Sequence[str],
 ) -> tuple[Path, ...]:
     try:
         payload = json.loads(intro_installed.read_text(encoding="utf-8"))
@@ -575,10 +705,15 @@ def _stage_installed_python_files(
                 "to path strings"
             )
         raw_source_path = Path(raw_source)
-        if (
-            raw_source_path.suffix not in {".py", ".pyi"}
-            and raw_source_path.name != "py.typed"
-        ):
+        relative = _installed_package_relative_path(raw_destination, package=package)
+        if relative is None:
+            continue
+        is_python_support = (
+            raw_source_path.suffix in {".py", ".pyi"}
+            or raw_source_path.name == "py.typed"
+        )
+        is_installed_include = "include" in relative.parts
+        if not is_python_support and not is_installed_include:
             continue
         source = _installed_source_path(
             raw_source, source_root=source_root, build_root=build_root
@@ -587,21 +722,30 @@ def _stage_installed_python_files(
             raise SourceExtensionProducerError(
                 f"Meson installed source is missing: {source}"
             )
-        relative = _installed_package_relative_path(raw_destination, package=package)
-        if relative is None:
-            continue
+        try:
+            raw_bytes = source.read_bytes()
+        except OSError as exc:
+            raise SourceExtensionProducerError(
+                f"cannot read installed package source {source}: {exc}"
+            ) from exc
+        try:
+            canonical_bytes = _canonicalize_location_string(
+                raw_bytes.decode("utf-8"), location_roots
+            ).encode("utf-8")
+        except UnicodeError:
+            canonical_bytes = raw_bytes
         previous = staged_by_relative.get(relative)
         if previous is not None:
-            if _sha256_file(previous) != _sha256_file(source):
+            if (publish_root / relative).read_bytes() != canonical_bytes:
                 raise SourceExtensionProducerError(
-                    f"Meson installs different Python files to the same path: {relative}"
+                    f"Meson installs different package files to the same path: {relative}"
                 )
             continue
         destination = publish_root / relative
-        _atomic_copy_file(source, destination)
+        _atomic_write_bytes(destination, canonical_bytes)
         staged_by_relative[relative] = source
 
-    required = _REQUIRED_INSTALLED_PYTHON_FILES.get(package, ())
+    required = tuple(required_installed_files)
     missing = [item for item in required if Path(item) not in staged_by_relative]
     if missing:
         raise SourceExtensionProducerError(
@@ -817,6 +961,7 @@ def _audit_extension_output(
     target: str,
     python_exports: Sequence[str],
     capabilities: Sequence[str],
+    provided_capsules: Sequence[str],
 ) -> _ProducedExtension:
     manifest_path = output_root / "extension_manifest.json"
     try:
@@ -879,6 +1024,13 @@ def _audit_extension_output(
         raise SourceExtensionProducerError(
             f"built extension {module} python exports differ from configured exact "
             f"custody: expected {sorted(python_exports)}, got {sorted(actual_exports)}"
+        )
+    actual_capsules = manifest.get("provided_capsules")
+    if actual_capsules != list(provided_capsules):
+        raise SourceExtensionProducerError(
+            f"built extension {module} capsule ownership differs from configured "
+            f"exact custody: expected {list(provided_capsules)}, "
+            f"got {actual_capsules!r}"
         )
     init_symbol = f"PyInit_{module.rsplit('.', 1)[-1]}"
     closure = manifest.get("object_closure")
@@ -968,6 +1120,8 @@ def _build_extension(
     target_name: str,
     python_exports: Sequence[str],
     capabilities: Sequence[str],
+    provided_capsules: Sequence[str],
+    exclude_linked_static_libraries: Sequence[str],
     target: str,
     abi_tier: str,
     tool_commands: Mapping[str, Sequence[str]],
@@ -980,6 +1134,7 @@ def _build_extension(
             out_dir=str(output_root),
             module=module,
             capabilities=list(capabilities),
+            provided_capsules=list(provided_capsules),
             python_export=list(python_exports),
             deterministic=True,
             target=target,
@@ -988,6 +1143,9 @@ def _build_extension(
             source_plan_source_root=str(source_root),
             source_plan_build_root=str(build_root),
             source_plan_compile_commands=str(compile_commands),
+            source_plan_exclude_linked_static_libraries=list(
+                exclude_linked_static_libraries
+            ),
             abi_tier=abi_tier,
             tool_commands=tool_commands,
             json_output=False,
@@ -1004,6 +1162,7 @@ def _build_extension(
         target=target_name,
         python_exports=python_exports,
         capabilities=capabilities,
+        provided_capsules=provided_capsules,
     )
 
 
@@ -1025,6 +1184,9 @@ def _preflight_extension_set_plans(
             source_root=source_root,
             build_root=build_root,
             compile_commands=compile_commands,
+            exclude_linked_static_libraries=(
+                spec.exclude_linked_static_libraries
+            ),
         )
         if plan is None or errors:
             detail = "; ".join(errors) if errors else "no source plan"
@@ -1567,8 +1729,43 @@ def _validate_complete_publish_root(
                 f"extension-set target metadata {command_role} identity is invalid"
             )
 
+    installed_files = set_manifest.get("installed_package_files")
+    if (
+        not isinstance(installed_files, list)
+        or not all(isinstance(item, str) and item for item in installed_files)
+        or installed_files != sorted(set(installed_files))
+    ):
+        raise SourceExtensionProducerError(
+            "extension-set installed package inventory is invalid"
+        )
+    missing_required = sorted(
+        set(extension_set.required_installed_files) - set(installed_files)
+    )
+    if missing_required:
+        raise SourceExtensionProducerError(
+            "extension-set installed package inventory is missing configured files: "
+            + ", ".join(missing_required)
+        )
+    missing_installed = [
+        relative
+        for relative in installed_files
+        if not (publish_root / relative).is_file()
+    ]
+    if missing_installed:
+        raise SourceExtensionProducerError(
+            "extension-set installed package files are absent on disk: "
+            + ", ".join(missing_installed)
+        )
+
     configured_contracts = tuple(
-        (spec.module, spec.target, spec.capabilities)
+        (
+            spec.module,
+            spec.target,
+            spec.python_exports,
+            spec.capabilities,
+            spec.provided_capsules,
+            spec.exclude_linked_static_libraries,
+        )
         for spec in extension_set.extensions
     )
     raw_extensions = set_manifest.get("extensions")
@@ -1576,8 +1773,17 @@ def _validate_complete_publish_root(
         isinstance(item, Mapping)
         and isinstance(item.get("module"), str)
         and isinstance(item.get("target"), str)
+        and isinstance(item.get("python_exports"), list)
         and isinstance(item.get("capabilities"), list)
+        and isinstance(item.get("provided_capsules"), list)
+        and isinstance(item.get("exclude_linked_static_libraries"), list)
+        and all(isinstance(value, str) for value in item["python_exports"])
         and all(isinstance(value, str) for value in item["capabilities"])
+        and all(isinstance(value, str) for value in item["provided_capsules"])
+        and all(
+            isinstance(value, str)
+            for value in item["exclude_linked_static_libraries"]
+        )
         for item in raw_extensions
     ):
         raise SourceExtensionProducerError(
@@ -1587,13 +1793,16 @@ def _validate_complete_publish_root(
         (
             str(item["module"]),
             str(item["target"]),
+            tuple(item["python_exports"]),
             tuple(item["capabilities"]),
+            tuple(item["provided_capsules"]),
+            tuple(item["exclude_linked_static_libraries"]),
         )
         for item in raw_extensions
     )
     if manifest_contracts != configured_contracts:
         raise SourceExtensionProducerError(
-            "extension-set manifest module/target/capability contracts differ from "
+            "extension-set manifest typed extension contracts differ from "
             f"configured complete set: expected {configured_contracts}, "
             f"got {manifest_contracts}"
         )
@@ -1702,6 +1911,355 @@ def _validate_complete_publish_root(
             )
 
 
+def _missing_installed_generated_inputs(
+    *,
+    intro_installed: Path,
+    source_root: Path,
+    build_root: Path,
+) -> set[Path]:
+    try:
+        payload = json.loads(intro_installed.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise SourceExtensionProducerError(
+            f"failed to read Meson installed-file introspection {intro_installed}: {exc}"
+        ) from exc
+    if not isinstance(payload, Mapping):
+        raise SourceExtensionProducerError(
+            f"Meson installed-file introspection must be an object: {intro_installed}"
+        )
+    missing: set[Path] = set()
+    for raw_source in payload:
+        if not isinstance(raw_source, str):
+            raise SourceExtensionProducerError(
+                "Meson installed-file introspection source keys must be strings"
+            )
+        source = _installed_source_path(
+            raw_source, source_root=source_root, build_root=build_root
+        )
+        if (
+            not source.is_file()
+            and source.suffix.lower() in _GENERATED_INPUT_SUFFIXES
+            and source.is_relative_to(build_root.resolve())
+        ):
+            missing.add(source)
+    return missing
+
+
+def _missing_extension_generated_inputs(
+    *,
+    build_root: Path,
+    intro_targets: Path,
+    extension_set: ScientificExtensionSet,
+) -> set[Path]:
+    try:
+        payload = json.loads(intro_targets.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise SourceExtensionProducerError(
+            f"failed to read Meson target introspection {intro_targets}: {exc}"
+        ) from exc
+    if not isinstance(payload, list):
+        raise SourceExtensionProducerError(
+            f"Meson target introspection must be an array: {intro_targets}"
+        )
+    missing: set[Path] = set()
+    ninja_inputs = _load_ninja_build_all_inputs(build_root)
+
+    def target_names(target: Mapping[str, Any]) -> set[str]:
+        names = {
+            str(target.get("id", "")),
+            str(target.get("name", "")),
+        }
+        names.update(_meson_target_filename_names(target.get("filename")))
+        return names
+
+    def excluded_target(
+        target: Mapping[str, Any], excluded_libraries: Sequence[str]
+    ) -> bool:
+        normalized_exclusions = {
+            Path(name).name.lower().removeprefix("lib").removesuffix(".a")
+            for name in excluded_libraries
+        }
+        normalized_names = {
+            Path(name).name.lower().removeprefix("lib").removesuffix(".a")
+            for name in target_names(target)
+        }
+        return bool(normalized_exclusions.intersection(normalized_names))
+
+    for spec in extension_set.extensions:
+        matches = [
+            target
+            for target in payload
+            if isinstance(target, Mapping)
+            and str(target.get("type", "")).strip()
+            in _MESON_EXTENSION_TARGET_TYPES
+            and spec.target in target_names(target)
+        ]
+        if len(matches) != 1:
+            raise SourceExtensionProducerError(
+                f"Meson target selector {spec.target!r} for {spec.module} matched "
+                f"{len(matches)} extension targets"
+            )
+        primary = matches[0]
+        linked = _meson_linked_static_library_targets(
+            primary_target=primary,
+            payload=payload,
+            build_root=build_root,
+        )
+        excluded = tuple(
+            target
+            for target in linked
+            if excluded_target(target, spec.exclude_linked_static_libraries)
+        )
+        targets = (primary, *(target for target in linked if target not in excluded))
+        excluded_outputs = {
+            output
+            for target in excluded
+            for output in _meson_target_output_paths(
+                target.get("filename"), build_root=build_root
+            )
+        }
+        for target in targets:
+            groups = target.get("target_sources")
+            if not isinstance(groups, list):
+                continue
+            for group in groups:
+                generated = (
+                    group.get("generated_sources")
+                    if isinstance(group, Mapping)
+                    else None
+                )
+                if not isinstance(generated, list):
+                    continue
+                for raw_path in generated:
+                    if not isinstance(raw_path, str):
+                        raise SourceExtensionProducerError(
+                            f"Meson target {target.get('name')!r} has a non-string "
+                            "generated source"
+                        )
+                    path = Path(raw_path).expanduser()
+                    if not path.is_absolute():
+                        path = build_root / path
+                    path = path.resolve()
+                    if not path.is_file():
+                        missing.add(path)
+        queue = [
+            output
+            for target in targets
+            for output in _meson_target_output_paths(
+                target.get("filename"), build_root=build_root
+            )
+        ]
+        seen: set[Path] = set()
+        while queue:
+            output = queue.pop()
+            if output in seen or output in excluded_outputs:
+                continue
+            seen.add(output)
+            for dependency in ninja_inputs.get(output, ()):
+                if dependency in excluded_outputs:
+                    continue
+                if dependency in ninja_inputs:
+                    queue.append(dependency)
+                if (
+                    not dependency.is_file()
+                    and dependency.suffix.lower() in _GENERATED_INPUT_SUFFIXES
+                    and dependency in ninja_inputs
+                ):
+                    missing.add(dependency)
+    return {
+        path.resolve()
+        for path in missing
+        if path.resolve().is_relative_to(build_root.resolve())
+    }
+
+
+def _materialize_generated_inputs(
+    *,
+    backend: _SourceNinjaDriver,
+    source_root: Path,
+    build_root: Path,
+    intro_targets: Path,
+    intro_installed: Path,
+    extension_set: ScientificExtensionSet,
+) -> tuple[Path, ...]:
+    missing = _missing_installed_generated_inputs(
+        intro_installed=intro_installed,
+        source_root=source_root,
+        build_root=build_root,
+    )
+    missing.update(
+        _missing_extension_generated_inputs(
+            build_root=build_root,
+            intro_targets=intro_targets,
+            extension_set=extension_set,
+        )
+    )
+    if not missing:
+        return ()
+    relative_targets = tuple(
+        sorted(path.relative_to(build_root.resolve()).as_posix() for path in missing)
+    )
+    result = _run_process(
+        (*backend.command, "-C", str(build_root), *relative_targets),
+        cwd=source_root,
+    )
+    if result.returncode != 0:
+        detail = "\n".join(
+            part.strip() for part in (result.stdout, result.stderr) if part.strip()
+        )
+        raise SourceExtensionProducerError(
+            "upstream Meson generator materialization failed "
+            f"({result.returncode}): {detail}"
+        )
+    still_missing = [path for path in sorted(missing) if not path.is_file()]
+    if still_missing:
+        raise SourceExtensionProducerError(
+            "upstream Meson reported successful generator materialization but "
+            "outputs remain absent: " + ", ".join(str(path) for path in still_missing)
+        )
+    return tuple(sorted(missing))
+
+
+def _recover_and_prune_producer_transactions(destination: Path) -> None:
+    """Recover durable publication commits, then remove abandoned build state."""
+
+    for prior in sorted(destination.parent.glob(f".{destination.name}.produce-*")):
+        recover_source_package_seal_commits(prior / "package-store")
+        retired = prior / "retired-destination"
+        if retired.exists():
+            if destination.exists():
+                _remove_file_or_tree(retired)
+            else:
+                os.replace(retired, destination)
+        _remove_file_or_tree(prior)
+
+
+def _retire_replaceable_extension_destination(
+    destination: Path,
+    *,
+    transaction_root: Path,
+    extension_set: ScientificExtensionSet,
+    set_manifest: Mapping[str, Any],
+) -> Path | None:
+    """Move the same typed extension authority aside for crash-safe replacement."""
+
+    if not destination.exists():
+        return None
+    try:
+        existing = verify_source_package_seal(destination)
+    except (OSError, SourcePackageSealVerificationError):
+        existing = None
+    else:
+        existing_manifest_path = existing.payload_root / "extension_set_manifest.json"
+        try:
+            existing_manifest = json.loads(
+                existing_manifest_path.read_text(encoding="utf-8")
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise SourceExtensionProducerError(
+                f"cannot validate existing extension-set identity: {exc}"
+            ) from exc
+        if not isinstance(existing_manifest, Mapping):
+            raise SourceExtensionProducerError(
+                "existing extension-set manifest is not an object"
+            )
+        identity_fields = ("package", "name", "seal_name", "source_head")
+        drift = [
+            field
+            for field in identity_fields
+            if existing_manifest.get(field) != set_manifest.get(field)
+        ]
+        if drift:
+            raise SourceExtensionProducerError(
+                "refusing to replace a canonical seal owned by another source "
+                "identity; mismatched fields: " + ", ".join(drift)
+            )
+        expected_contracts = tuple(
+            (
+                spec.module,
+                spec.target,
+                spec.python_exports,
+                spec.capabilities,
+                spec.provided_capsules,
+                spec.exclude_linked_static_libraries,
+            )
+            for spec in extension_set.extensions
+        )
+        raw_extensions = existing_manifest.get("extensions")
+        actual_contracts = (
+            tuple(
+                (
+                    item.get("module"),
+                    item.get("target"),
+                    tuple(item.get("python_exports") or ()),
+                    tuple(item.get("capabilities") or ()),
+                    tuple(item.get("provided_capsules") or ()),
+                    tuple(item.get("exclude_linked_static_libraries") or ()),
+                )
+                for item in raw_extensions
+                if isinstance(item, Mapping)
+            )
+            if isinstance(raw_extensions, list)
+            else ()
+        )
+        if actual_contracts != expected_contracts:
+            raise SourceExtensionProducerError(
+                "refusing to replace a canonical seal with different typed "
+                "extension contracts"
+            )
+    if not destination.is_dir() or destination.is_symlink():
+        raise SourceExtensionProducerError(
+            f"refusing to replace non-directory legacy destination: {destination}"
+        )
+    manifests: dict[str, Mapping[str, Any]] = {}
+    manifest_root = existing.payload_root if existing is not None else destination
+    for path in sorted(manifest_root.glob("**/*.molt.wasm.extension_manifest.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise SourceExtensionProducerError(
+                f"cannot validate legacy extension manifest {path}: {exc}"
+            ) from exc
+        module = payload.get("module") if isinstance(payload, Mapping) else None
+        extension = payload.get("extension") if isinstance(payload, Mapping) else None
+        expected_sha256 = (
+            payload.get("extension_sha256")
+            if isinstance(payload, Mapping)
+            else None
+        )
+        artifact = path.parent / str(extension)
+        if not (
+            isinstance(module, str)
+            and isinstance(extension, str)
+            and isinstance(expected_sha256, str)
+            and len(expected_sha256) == 64
+            and artifact.is_file()
+            and _sha256_file(artifact) == expected_sha256
+        ):
+            raise SourceExtensionProducerError(
+                f"legacy extension manifest or artifact is invalid: {path}"
+            )
+        if module in manifests:
+            raise SourceExtensionProducerError(
+                f"legacy destination contains duplicate module custody: {module}"
+            )
+        manifests[module] = payload
+    expected_modules = {extension.module for extension in extension_set.extensions}
+    if set(manifests) != expected_modules:
+        raise SourceExtensionProducerError(
+            "refusing to replace unrecognized non-atomic destination; expected "
+            f"legacy modules {sorted(expected_modules)}, found {sorted(manifests)}"
+        )
+    retired = transaction_root / "retired-destination"
+    if retired.exists():
+        raise SourceExtensionProducerError(
+            f"producer transaction already owns a retired destination: {retired}"
+        )
+    transaction_root.mkdir(parents=True, exist_ok=True)
+    os.replace(destination, retired)
+    return retired
+
+
 def produce_source_extension_set(
     *,
     package: str,
@@ -1715,6 +2273,7 @@ def produce_source_extension_set(
     source_root = Path(source).expanduser().resolve()
     resolved_build_root = Path(build_root).expanduser().resolve()
     transaction_root: Path | None = None
+    producer_lock = None
     published = False
     try:
         if not source_root.is_dir():
@@ -1724,33 +2283,42 @@ def produce_source_extension_set(
         extension_set = scientific_extension_set(package, module_set)
         destination = scientific_extension_set_root(extension_set)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        for prior in sorted(
-            destination.parent.glob(f".{destination.name}.produce-*")
-        ):
-            store = prior / "package-store"
-            with contextlib.suppress(
-                OSError,
-                SourcePackageSealError,
-                SourcePackageSealVerificationError,
-            ):
-                recover_source_package_seal_commits(store)
+        lock_path = destination.parent / f".{destination.name}.producer.lock"
+        producer_lock = _acquire_file_lock(
+            lock_path,
+            timeout_s=300.0,
+            timeout_message=(
+                "timed out waiting for the canonical extension-set producer "
+                f"lock {lock_path}; another producer owns {destination}"
+            ),
+        )
+        _recover_and_prune_producer_transactions(destination)
         verify_source_checkout(package, source_root)
         _provision_recursive_submodules(source_root)
         submodules = _verify_recursive_submodules(source_root)
         verify_cpython_abi_headers(repo_root=_REPO_ROOT)
         build_environment = _ensure_source_build_environment(source_root)
-        pkg_config_tool = _ensure_meson_pkg_config(source_root)
+        meson_driver = _source_meson_driver(source_root)
+        ninja_driver = _source_ninja_driver(source_root)
         discovered_config_tools = _source_build_config_tools(build_environment)
-        if any(tool.name == pkg_config_tool.name for tool in discovered_config_tools):
-            raise SourceExtensionProducerError(
-                "upstream build requirements duplicate Molt's pkg-config tool authority"
+        if extension_set.use_pkg_config:
+            pkg_config_tool = _ensure_meson_pkg_config(source_root)
+            if any(
+                tool.name == pkg_config_tool.name
+                for tool in discovered_config_tools
+            ):
+                raise SourceExtensionProducerError(
+                    "upstream build requirements duplicate Molt's pkg-config "
+                    "tool authority"
+                )
+            build_config_tools = tuple(
+                sorted(
+                    (*discovered_config_tools, pkg_config_tool),
+                    key=lambda item: item.name,
+                )
             )
-        build_config_tools = tuple(
-            sorted(
-                (*discovered_config_tools, pkg_config_tool),
-                key=lambda item: item.name,
-            )
-        )
+        else:
+            build_config_tools = discovered_config_tools
         _require_fresh_build_root(resolved_build_root)
 
         transaction_root = Path(
@@ -1785,9 +2353,18 @@ def produce_source_extension_set(
             build_root=resolved_build_root,
             meson_cross_files=meson_cross_files,
             setup_args=extension_set.meson_setup_args,
+            driver=meson_driver,
         )
         intro_targets, compile_commands, intro_installed = _require_real_meson_metadata(
             resolved_build_root
+        )
+        generated_inputs = _materialize_generated_inputs(
+            backend=ninja_driver,
+            source_root=source_root,
+            build_root=resolved_build_root,
+            intro_targets=intro_targets,
+            intro_installed=intro_installed,
+            extension_set=extension_set,
         )
         location_roots = _producer_location_roots(
             source_root=source_root,
@@ -1806,12 +2383,14 @@ def produce_source_extension_set(
             target_metadata_payload=metadata.payload,
             location_roots=location_roots,
         )
-        installed_files = _stage_installed_python_files(
+        installed_files = _stage_installed_package_files(
             intro_installed=intro_installed,
             source_root=source_root,
             build_root=resolved_build_root,
             package=extension_set.package,
             publish_root=publish_root,
+            location_roots=location_roots,
+            required_installed_files=extension_set.required_installed_files,
         )
         _preflight_extension_set_plans(
             source_root=source_root,
@@ -1834,6 +2413,10 @@ def produce_source_extension_set(
                 target_name=spec.target,
                 python_exports=spec.python_exports,
                 capabilities=spec.capabilities,
+                provided_capsules=spec.provided_capsules,
+                exclude_linked_static_libraries=(
+                    spec.exclude_linked_static_libraries
+                ),
                 target=target,
                 abi_tier=abi_tier,
                 tool_commands=tool_commands,
@@ -1859,6 +2442,8 @@ def produce_source_extension_set(
             "abi_tier": abi_tier,
             "build_environment": build_environment.manifest_payload(),
             "meson": {
+                "driver": meson_driver.manifest_payload(),
+                "backend": ninja_driver.manifest_payload(),
                 "build_root": "@build",
                 "setup_args": list(extension_set.meson_setup_args),
                 "intro_targets_sha256": _sha256_file(
@@ -1878,23 +2463,39 @@ def produce_source_extension_set(
                 "config_tools": [
                     tool.manifest_payload() for tool in build_config_tools
                 ],
-                "pkg_config_requirement": MOLT_PKGCONF_REQUIREMENT,
+                "pkg_config_requirement": (
+                    MOLT_PKGCONF_REQUIREMENT
+                    if extension_set.use_pkg_config
+                    else None
+                ),
+                "generated_inputs": [
+                    path.relative_to(resolved_build_root).as_posix()
+                    for path in generated_inputs
+                ],
             },
             "target_metadata": canonical_target_metadata,
-            "installed_python_files": [
-                str(path.relative_to(publish_root)).replace("\\", "/")
-                for path in installed_files
+            "installed_package_files": [
+                relative
+                for relative in sorted(
+                    str(path.relative_to(publish_root)).replace("\\", "/")
+                    for path in installed_files
+                )
             ],
             "extensions": [
                 {
-                    "module": item.module,
-                    "target": item.target,
-                    "capabilities": list(item.capabilities),
+                    "module": spec.module,
+                    "target": spec.target,
+                    "python_exports": list(spec.python_exports),
+                    "capabilities": list(spec.capabilities),
+                    "provided_capsules": list(spec.provided_capsules),
+                    "exclude_linked_static_libraries": list(
+                        spec.exclude_linked_static_libraries
+                    ),
                     "artifact_sha256": item.artifact_sha256,
                     "wheel_sha256": item.wheel_sha256,
                     "object_closure_sha256": item.object_closure_sha256,
                 }
-                for item in produced
+                for spec, item in zip(extension_set.extensions, produced, strict=True)
             ],
         }
         _atomic_write_json(
@@ -1921,6 +2522,12 @@ def produce_source_extension_set(
             ],
         )
         verify_source_package_seal(seal.root, expected_sha256=seal.seal_sha256)
+        _retire_replaceable_extension_destination(
+            destination,
+            transaction_root=transaction_root,
+            extension_set=extension_set,
+            set_manifest=set_manifest,
+        )
         commit = prepare_source_package_seal_commit(
             package_store,
             seal,
@@ -1939,7 +2546,7 @@ def produce_source_extension_set(
             "module_root": str(published_seal.payload_root),
             "seal_sha256": published_seal.seal_sha256,
             "modules": [item.module for item in produced],
-            "installed_python_file_count": len(installed_files),
+            "installed_package_file_count": len(installed_files),
             "target": metadata.target_triple,
             "abi_tier": abi_tier,
         }
@@ -1957,6 +2564,7 @@ def produce_source_extension_set(
         SourceExtensionProducerError,
         SourcePackageSealError,
         SourcePackageSealVerificationError,
+        RuntimeError,
         ValueError,
     ) as exc:
         detail = str(exc)
@@ -1967,3 +2575,5 @@ def produce_source_extension_set(
         if published and transaction_root is not None and transaction_root.exists():
             with contextlib.suppress(OSError):
                 _remove_file_or_tree(transaction_root)
+        if producer_lock is not None:
+            _release_file_lock(producer_lock)

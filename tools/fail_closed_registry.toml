@@ -84,20 +84,6 @@ fail_open_backend_dispatch = 2
 # clone may land quietly.
 # ===========================================================================
 
-[[site]]
-id = "B1_numpy_multiarray_package_specific_regen_helper"
-class = "ecosystem_build_crutch"
-file = "tools/regen_numpy_multiarray_meson_wasm.py"
-anchor = "regen_numpy_multiarray_meson_wasm.py"
-resolution_row = "task#73.2"
-justification = """
-A NumPy-specific regen script drives Meson/ninja/introspection for one extension
-instead of delegating to a generic package-build-system custody primitive. It
-uses NumPy's own Meson, so it is not package semantics baked into Molt, but the
-package-specific lane must be retired into the R73.2 auto-provision/source-plan
-authority before this class reaches zero.
-"""
-
 # ===========================================================================
 # fail_open_stub (Scan B) — ABI exports that ship a plausible wrong / placeholder
 # answer instead of failing closed.
