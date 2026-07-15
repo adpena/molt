@@ -1,5 +1,6 @@
 import argparse
-from tools import proof_queue as pq
+
+from tools.proof_queue_pkg import runner, scheduling
 
 
 def test_queue_submission_refuses_expensive_wasm_below_l1(tmp_path):
@@ -9,7 +10,7 @@ def test_queue_submission_refuses_expensive_wasm_below_l1(tmp_path):
         notebooks_root=str(tmp_path / "notebooks"),
         repo_root=str(tmp_path),
     )
-    rc, run_id = pq._queue_one(
+    rc, run_id = runner._queue_one(
         args,
         logical_id="witness-lane",
         reason="teeth",
@@ -25,7 +26,7 @@ def test_queue_submission_refuses_expensive_wasm_below_l1(tmp_path):
 
 def test_queue_submission_allows_wasm_at_l1(tmp_path):
     (tmp_path / ".git").mkdir()
-    pq.lane_maturity.write_registry(
+    scheduling.lane_maturity.write_registry(
         tmp_path,
         {
             "witness-lane": {
@@ -41,7 +42,7 @@ def test_queue_submission_allows_wasm_at_l1(tmp_path):
         notebooks_root=str(tmp_path / "notebooks"),
         repo_root=str(tmp_path),
     )
-    rc, run_id = pq._queue_one(
+    rc, run_id = runner._queue_one(
         args,
         logical_id="witness-lane",
         reason="teeth",

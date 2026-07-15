@@ -8,17 +8,21 @@ import sqlite3
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 from types import SimpleNamespace
 
 import pytest
 
-import tools.proof_queue as proof_queue
 from molt.cli.source_package_seal import SourcePackageInput, stage_source_package_seal
 from molt.scientific_stack_versions import (
     resolve_scientific_stack,
     scientific_extension_set,
 )
+from tools.proof_queue_pkg import cli, custody, pact, policy, runner, scheduling, state
+from tools.proof_queue_pkg import diagnostics as diagnostics_module
+from tools.proof_queue_pkg import evidence as evidence_module
 
 _TEST_GIT_SNAPSHOT = {
     "available": True,
@@ -33,6 +37,33 @@ _REAL_GIT_SNAPSHOT_TESTS = {
 }
 
 
+def test_status_keeps_pact_authority_out_of_the_hot_import_path(tmp_path: Path) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+    notebooks = tmp_path / "notebooks"
+    script = f"""
+import sys
+from tools.proof_queue_pkg import cli
+assert 'tools.proof_queue_pkg.pact' not in sys.modules
+rc = cli.main([
+    '--db', {str(db)!r},
+    '--logs-root', {str(logs)!r},
+    '--notebooks-root', {str(notebooks)!r},
+    'status',
+])
+assert rc == 0
+assert 'tools.proof_queue_pkg.pact' not in sys.modules
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=state.ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+
+
 @pytest.fixture(autouse=True)
 def _proof_queue_unit_git_snapshot(
     request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
@@ -42,13 +73,13 @@ def _proof_queue_unit_git_snapshot(
     # otherwise a developer's shared .molt registry can reject a synthetic WASM
     # row before mutex, preflight, or detached-runner behavior is exercised.
     monkeypatch.setattr(
-        proof_queue,
+        scheduling,
         "_lane_maturity_admission",
         lambda **_kwargs: SimpleNamespace(allow=True, reason="admitted"),
     )
     if request.node.name in _REAL_GIT_SNAPSHOT_TESTS:
         return
-    monkeypatch.setattr(proof_queue, "_git_snapshot", lambda cwd: _TEST_GIT_SNAPSHOT)
+    monkeypatch.setattr(state, "_git_snapshot", lambda cwd: _TEST_GIT_SNAPSHOT)
 
 
 def _rows(db: Path) -> list[sqlite3.Row]:
@@ -66,16 +97,16 @@ def test_proof_queue_non_wasm_exec_does_not_load_wasm_toolchain(
     def reject_wasm_toolchain_load():
         raise AssertionError("non-WASM queue commands must stay import-light")
 
-    monkeypatch.setattr(proof_queue, "_load_wasm_toolchain", reject_wasm_toolchain_load)
+    monkeypatch.setattr(policy, "_load_wasm_toolchain", reject_wasm_toolchain_load)
 
-    rc = proof_queue.main(
+    rc = cli.main(
         [
             "--db",
             str(db),
             "--logs-root",
             str(logs),
             "--repo-root",
-            str(proof_queue.ROOT),
+            str(state.ROOT),
             "exec",
             "--id",
             "python-import-light",
@@ -116,18 +147,18 @@ def _insert_blocked_dependency_fixture(
     *,
     contention_key: str = "python:blocked-slot",
 ) -> None:
-    conn = proof_queue._connect(db)
+    conn = state._connect(db)
     for run_id, status, key in (
         ("failed-parent", "failed", "python:failed-parent"),
         ("blocked-child", "queued", contention_key),
     ):
-        proof_queue._insert_run(
+        scheduling._insert_run(
             conn,
             run_id=run_id,
             logical_id=run_id,
             reason="prove blocked dependency reconciliation",
             command=[sys.executable, "-c", "print('blocked')"],
-            cwd=proof_queue.ROOT,
+            cwd=state.ROOT,
             resource_family="python",
             contention_key=key,
             scopes=["tools/proof_queue.py"],
@@ -142,9 +173,9 @@ def _insert_blocked_dependency_fixture(
         )
         values: dict[str, object] = {"status": status}
         if status != "queued":
-            values["finished_at"] = proof_queue._utc_now()
-        proof_queue._update_run(conn, run_id, **values)
-    proof_queue._insert_edge(
+            values["finished_at"] = state._utc_now()
+        state._update_run(conn, run_id, **values)
+    state._insert_edge(
         conn,
         parent_run_id="failed-parent",
         child_run_id="blocked-child",
@@ -154,17 +185,17 @@ def _insert_blocked_dependency_fixture(
 
 
 def test_proof_queue_session_id_is_contention_key_scoped() -> None:
-    assert proof_queue._proof_session_id(
+    assert state._proof_session_id(
         "wasm", "wasm-build"
-    ) == proof_queue._proof_session_id("wasm", "wasm-build")
-    assert proof_queue._proof_session_id(
+    ) == state._proof_session_id("wasm", "wasm-build")
+    assert state._proof_session_id(
         "wasm", "wasm-build"
-    ) != proof_queue._proof_session_id("wasm", "wasm-browser")
+    ) != state._proof_session_id("wasm", "wasm-browser")
 
 
 def test_proof_queue_pid_alive_detects_current_process() -> None:
-    assert proof_queue._pid_alive(os.getpid())
-    assert not proof_queue._pid_alive(0)
+    assert custody._pid_alive(os.getpid())
+    assert not custody._pid_alive(0)
 
 
 def test_proof_queue_git_snapshot_ignores_generated_wasm_checksums(
@@ -204,13 +235,13 @@ def test_proof_queue_git_snapshot_ignores_generated_wasm_checksums(
     (tmp_path / "wasm" / "molt_runtime_reloc.wasm.wasm-release.sha256").write_text(
         "new\n", encoding="utf-8"
     )
-    snapshot = proof_queue._git_snapshot(tmp_path)
+    snapshot = state._git_snapshot(tmp_path)
     assert snapshot["dirty"] is False
     assert snapshot["status"] == []
     assert snapshot["ignored_status_count"] == 2
 
     (tmp_path / "src" / "app.py").write_text("print('changed')\n", encoding="utf-8")
-    snapshot = proof_queue._git_snapshot(tmp_path)
+    snapshot = state._git_snapshot(tmp_path)
     assert snapshot["dirty"] is True
     assert any("src/app.py" in line for line in snapshot["status"])
 
@@ -240,7 +271,7 @@ def test_proof_queue_git_snapshot_expands_untracked_directories(
     (split_dir / "mod.rs").write_text("mod child;\n", encoding="utf-8")
     (split_dir / "child.rs").write_text("fn child() {}\n", encoding="utf-8")
 
-    snapshot = proof_queue._git_snapshot(tmp_path)
+    snapshot = state._git_snapshot(tmp_path)
 
     assert snapshot["dirty"] is True
     assert "?? src/split/" not in snapshot["status"]
@@ -256,7 +287,7 @@ def test_proof_queue_exec_records_passed_run(
     notebooks = tmp_path / "notebooks"
     monkeypatch.setenv("MOLT_MEMORY_GUARD_POLL_SEC", "0.1")
 
-    rc = proof_queue.main(
+    rc = cli.main(
         [
             "--db",
             str(db),
@@ -265,7 +296,7 @@ def test_proof_queue_exec_records_passed_run(
             "--notebooks-root",
             str(notebooks),
             "--repo-root",
-            str(proof_queue.ROOT),
+            str(state.ROOT),
             "exec",
             "--id",
             "queue-smoke",
@@ -315,14 +346,14 @@ def test_proof_queue_exec_requires_command_delimiter(tmp_path: Path) -> None:
     logs = tmp_path / "runs"
 
     with pytest.raises(SystemExit, match="requires `--` before the proof command"):
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(logs),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "exec",
                 "--id",
                 "missing-delimiter",
@@ -350,7 +381,7 @@ def test_proof_queue_proof_command_help_does_not_require_delimiter(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     with pytest.raises(SystemExit) as exc:
-        proof_queue.main([subcommand, "--help"])
+        cli.main([subcommand, "--help"])
 
     assert exc.value.code == 0
     captured = capsys.readouterr()
@@ -359,17 +390,17 @@ def test_proof_queue_proof_command_help_does_not_require_delimiter(
 
 
 def test_proof_queue_help_detection_ignores_metadata_values_and_command_args() -> None:
-    assert proof_queue._proof_command_help_requested(["exec", "--help"])
-    assert proof_queue._proof_command_help_requested(
+    assert cli._proof_command_help_requested(["exec", "--help"])
+    assert cli._proof_command_help_requested(
         ["exec", "--id", "help-smoke", "-h"]
     )
-    assert not proof_queue._proof_command_help_requested(
+    assert not cli._proof_command_help_requested(
         ["exec", "--note", "--help", "--", sys.executable]
     )
-    assert not proof_queue._proof_command_help_requested(
+    assert not cli._proof_command_help_requested(
         ["exec", "--note=--help", "--", sys.executable]
     )
-    assert not proof_queue._proof_command_help_requested(["exec", "--", "--help"])
+    assert not cli._proof_command_help_requested(["exec", "--", "--help"])
 
 
 def test_proof_queue_exec_preserves_command_help_after_delimiter(
@@ -379,14 +410,14 @@ def test_proof_queue_exec_preserves_command_help_after_delimiter(
     logs = tmp_path / "runs"
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(logs),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "exec",
                 "--id",
                 "command-help",
@@ -423,14 +454,14 @@ def test_proof_queue_exec_rejects_removed_wait_flag(tmp_path: Path) -> None:
     logs = tmp_path / "runs"
 
     with pytest.raises(SystemExit):
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(logs),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "exec",
                 "--id",
                 "removed-wait",
@@ -458,14 +489,14 @@ def test_proof_queue_exec_rejects_pre_delimiter_residue(
     logs = tmp_path / "runs"
 
     with pytest.raises(SystemExit, match="stray positional argument"):
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(logs),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "exec",
                 "--id",
                 "bad-shell-quote",
@@ -495,14 +526,14 @@ def test_proof_queue_exec_honors_explicit_memory_guard_poll_override(
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
 
-    rc = proof_queue.main(
+    rc = cli.main(
         [
             "--db",
             str(db),
             "--logs-root",
             str(logs),
             "--repo-root",
-            str(proof_queue.ROOT),
+            str(state.ROOT),
             "exec",
             "--id",
             "queue-poll-override",
@@ -537,11 +568,11 @@ def test_proof_queue_exec_honors_explicit_memory_guard_poll_override(
 
 def test_proof_queue_rejects_invalid_memory_guard_poll_override() -> None:
     with pytest.raises(ValueError, match="MOLT_MEMORY_GUARD_POLL_SEC"):
-        proof_queue._proof_queue_memory_guard_poll_sec(
+        custody._proof_queue_memory_guard_poll_sec(
             {"MOLT_MEMORY_GUARD_POLL_SEC": "not-a-number"}
         )
     with pytest.raises(ValueError, match="MOLT_MEMORY_GUARD_POLL_SEC"):
-        proof_queue._proof_queue_memory_guard_poll_sec(
+        custody._proof_queue_memory_guard_poll_sec(
             {"MOLT_MEMORY_GUARD_POLL_SEC": "0"}
         )
 
@@ -558,16 +589,16 @@ def test_proof_queue_exec_rejects_invalid_memory_guard_poll_before_detach(
         launched.append(run_id)
         return 4242, tmp_path / "runner.log"
 
-    monkeypatch.setattr(proof_queue, "_launch_detached_runner", fake_launch)
+    monkeypatch.setattr(custody, "_launch_detached_runner", fake_launch)
 
-    rc = proof_queue.main(
+    rc = cli.main(
         [
             "--db",
             str(db),
             "--logs-root",
             str(logs),
             "--repo-root",
-            str(proof_queue.ROOT),
+            str(state.ROOT),
             "exec",
             "--id",
             "bad-poll",
@@ -617,10 +648,10 @@ def test_proof_queue_evidence_accepts_positional_run_id(
         "--notebooks-root",
         str(notebooks),
         "--repo-root",
-        str(proof_queue.ROOT),
+        str(state.ROOT),
     ]
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 *base_args,
                 "exec",
@@ -645,19 +676,19 @@ def test_proof_queue_evidence_accepts_positional_run_id(
     run_id = _rows(db)[0]["run_id"]
 
     capsys.readouterr()
-    assert proof_queue.main([*base_args, "evidence", run_id]) == 0
+    assert cli.main([*base_args, "evidence", run_id]) == 0
     positional_payload = json.loads(capsys.readouterr().out)
     assert [item["run_id"] for item in positional_payload] == [run_id]
 
-    assert proof_queue.main([*base_args, "evidence", "--run-id", run_id]) == 0
+    assert cli.main([*base_args, "evidence", "--run-id", run_id]) == 0
     flag_payload = json.loads(capsys.readouterr().out)
     assert [item["run_id"] for item in flag_payload] == [run_id]
 
     with pytest.raises(SystemExit, match="unknown proof run id"):
-        proof_queue.main([*base_args, "evidence", "not-a-run-id"])
+        cli.main([*base_args, "evidence", "not-a-run-id"])
 
     with pytest.raises(SystemExit, match="positional and --run-id disagree"):
-        proof_queue.main([*base_args, "evidence", run_id, "--run-id", "not-a-run-id"])
+        cli.main([*base_args, "evidence", run_id, "--run-id", "not-a-run-id"])
 
 
 def test_proof_queue_projection_failure_is_nonfatal_observability(
@@ -672,16 +703,16 @@ def test_proof_queue_projection_failure_is_nonfatal_observability(
     def fail_notebook(*_args: object, **_kwargs: object) -> Path:
         raise RuntimeError("notebook projection exploded")
 
-    monkeypatch.setattr(proof_queue, "_write_marimo_notebook", fail_notebook)
+    monkeypatch.setattr(evidence_module, "_write_marimo_notebook", fail_notebook)
 
-    rc = proof_queue.main(
+    rc = cli.main(
         [
             "--db",
             str(db),
             "--logs-root",
             str(logs),
             "--repo-root",
-            str(proof_queue.ROOT),
+            str(state.ROOT),
             "exec",
             "--id",
             "projection-warning",
@@ -717,14 +748,14 @@ def test_proof_queue_projection_failure_is_nonfatal_observability(
 
     capsys.readouterr()
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(logs),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "evidence",
                 "--run-id",
                 rows[0]["run_id"],
@@ -750,16 +781,16 @@ def test_proof_queue_submission_metadata_failure_is_terminal(
     def fail_insert_note(*_args: object, **_kwargs: object) -> int:
         raise RuntimeError("note insert exploded")
 
-    monkeypatch.setattr(proof_queue, "_insert_note", fail_insert_note)
+    monkeypatch.setattr(state, "_insert_note", fail_insert_note)
 
-    rc = proof_queue.main(
+    rc = cli.main(
         [
             "--db",
             str(db),
             "--logs-root",
             str(logs),
             "--repo-root",
-            str(proof_queue.ROOT),
+            str(state.ROOT),
             "exec",
             "--id",
             "metadata-crash",
@@ -794,14 +825,14 @@ def test_proof_queue_submission_metadata_failure_is_terminal(
 
     capsys.readouterr()
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(logs),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "evidence",
                 "--run-id",
                 rows[0]["run_id"],
@@ -814,14 +845,14 @@ def test_proof_queue_submission_metadata_failure_is_terminal(
     assert signals[0] == "queue-preexecution-failure"
     assert "queue-infra-warning" not in signals
 
-    rc = proof_queue.main(
+    rc = cli.main(
         [
             "--db",
             str(db),
             "--logs-root",
             str(logs),
             "--repo-root",
-            str(proof_queue.ROOT),
+            str(state.ROOT),
             "exec",
             "--id",
             "metadata-followup",
@@ -845,35 +876,35 @@ def test_proof_queue_submission_metadata_failure_is_terminal(
 
 def test_proof_queue_refuses_duplicate_active_contention_key(tmp_path: Path) -> None:
     db = tmp_path / "proof_queue.sqlite3"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="active-run",
         logical_id="active",
         reason="already running",
         command=[sys.executable, "-c", "print('active')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python",
         contention_key="python:shared",
         scopes=[],
         log_path=tmp_path / "active.log",
         summary_json=tmp_path / "active.memory_guard.json",
     )
-    proof_queue._update_run(
+    state._update_run(
         conn,
         "active-run",
         status="running",
-        started_at=proof_queue._utc_now(),
+        started_at=state._utc_now(),
     )
 
-    rc = proof_queue.main(
+    rc = cli.main(
         [
             "--db",
             str(db),
             "--logs-root",
             str(tmp_path / "runs"),
             "--repo-root",
-            str(proof_queue.ROOT),
+            str(state.ROOT),
             "exec",
             "--id",
             "blocked",
@@ -898,35 +929,35 @@ def test_proof_queue_refuses_concurrent_compiler_build_resource_mutex(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="active-pact",
         logical_id="active-pact",
         reason="browser witness already building runtime",
         command=[sys.executable, "tools/pact_witness_acceptance.py"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="wasm-browser",
         contention_key="wasm:pact-witness",
         scopes=[],
         log_path=tmp_path / "active-pact.log",
         summary_json=tmp_path / "active-pact.memory_guard.json",
     )
-    proof_queue._update_run(
+    state._update_run(
         conn,
         "active-pact",
         status="running",
-        started_at=proof_queue._utc_now(),
+        started_at=state._utc_now(),
     )
 
-    rc = proof_queue.main(
+    rc = cli.main(
         [
             "--db",
             str(db),
             "--logs-root",
             str(tmp_path / "runs"),
             "--repo-root",
-            str(proof_queue.ROOT),
+            str(state.ROOT),
             "exec",
             "--id",
             "r4a-probe",
@@ -963,33 +994,33 @@ def test_proof_queue_status_shows_active_log_phase(
         "Runtime wasm build: still running elapsed=120s timeout=unbounded pid=123\n",
         encoding="utf-8",
     )
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="active-run",
         logical_id="active",
         reason="show active phase",
         command=[sys.executable, "-c", "print('active')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="wasm",
         contention_key="wasm-build",
         scopes=[],
         log_path=log_path,
         summary_json=tmp_path / "active.memory_guard.json",
     )
-    proof_queue._update_run(
-        conn, "active-run", status="running", started_at=proof_queue._utc_now()
+    state._update_run(
+        conn, "active-run", status="running", started_at=state._utc_now()
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "status",
                 "--recent",
                 "0",
@@ -1027,33 +1058,33 @@ def test_proof_queue_status_shows_active_pytest_current_test(
         ),
         encoding="utf-8",
     )
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="active-run",
         logical_id="active",
         reason="show active pytest phase",
         command=[sys.executable, "-m", "pytest", "tests/test_molt_dev.py"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python-tests",
         contention_key="molt-dev",
         scopes=[],
         log_path=log_path,
         summary_json=summary_path,
     )
-    proof_queue._update_run(
-        conn, "active-run", status="running", started_at=proof_queue._utc_now()
+    state._update_run(
+        conn, "active-run", status="running", started_at=state._utc_now()
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "status",
                 "--recent",
                 "0",
@@ -1088,33 +1119,33 @@ def test_proof_queue_status_hides_pytest_current_for_non_pytest_rows(
         ),
         encoding="utf-8",
     )
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="active-run",
         logical_id="active",
         reason="show non-pytest rows do not inherit pytest custody noise",
         command=[sys.executable, "tests/molt_diff.py", "--jobs", "1"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python",
         contention_key="python:r6",
         scopes=[],
         log_path=log_path,
         summary_json=summary_path,
     )
-    proof_queue._update_run(
-        conn, "active-run", status="running", started_at=proof_queue._utc_now()
+    state._update_run(
+        conn, "active-run", status="running", started_at=state._utc_now()
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "status",
                 "--recent",
                 "0",
@@ -1139,7 +1170,7 @@ def test_proof_queue_diagnoses_running_pytest_missing_current_test_file(
     log_path.write_text("proof_queue run_id=active-run\n", encoding="utf-8")
     stale = (
         time.time()
-        - proof_queue.RUNNING_PYTEST_CURRENT_TEST_MISSING_STALE_SECONDS
+        - diagnostics_module.RUNNING_PYTEST_CURRENT_TEST_MISSING_STALE_SECONDS
         - 5.0
     )
     os.utime(log_path, (stale, stale))
@@ -1151,7 +1182,7 @@ def test_proof_queue_diagnoses_running_pytest_missing_current_test_file(
                     "pid": 3210,
                     "command": [
                         sys.executable,
-                        str(proof_queue.ROOT / "tools" / "memory_guard.py"),
+                        str(state.ROOT / "tools" / "memory_guard.py"),
                     ],
                 },
                 "repro": {"host": {"platform": "win32"}},
@@ -1165,33 +1196,33 @@ def test_proof_queue_diagnoses_running_pytest_missing_current_test_file(
         ),
         encoding="utf-8",
     )
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="active-run",
         logical_id="active",
         reason="diagnose quiet pytest startup",
         command=[sys.executable, "-m", "pytest", "tests/test_molt_dev.py"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python-tests",
         contention_key="molt-dev",
         scopes=["tools/proof_queue.py"],
         log_path=log_path,
         summary_json=summary_path,
     )
-    proof_queue._update_run(
-        conn, "active-run", status="running", started_at=proof_queue._utc_now()
+    state._update_run(
+        conn, "active-run", status="running", started_at=state._utc_now()
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "diagnose",
                 "active-run",
             ]
@@ -1217,7 +1248,7 @@ def test_proof_queue_audit_warns_on_running_pytest_missing_current_test_file(
     log_path.write_text("proof_queue run_id=active-run\n", encoding="utf-8")
     stale = (
         time.time()
-        - proof_queue.RUNNING_PYTEST_CURRENT_TEST_MISSING_STALE_SECONDS
+        - diagnostics_module.RUNNING_PYTEST_CURRENT_TEST_MISSING_STALE_SECONDS
         - 5.0
     )
     os.utime(log_path, (stale, stale))
@@ -1229,7 +1260,7 @@ def test_proof_queue_audit_warns_on_running_pytest_missing_current_test_file(
                     "pid": 3210,
                     "command": [
                         sys.executable,
-                        str(proof_queue.ROOT / "tools" / "memory_guard.py"),
+                        str(state.ROOT / "tools" / "memory_guard.py"),
                     ],
                 },
                 "repro": {"host": {"platform": "win32"}},
@@ -1243,44 +1274,44 @@ def test_proof_queue_audit_warns_on_running_pytest_missing_current_test_file(
         ),
         encoding="utf-8",
     )
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="active-run",
         logical_id="active",
         reason="audit quiet pytest startup",
         command=[sys.executable, "-m", "pytest", "tests/test_molt_dev.py"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python-tests",
         contention_key="molt-dev",
         scopes=["tools/proof_queue.py"],
         log_path=log_path,
         summary_json=summary_path,
     )
-    proof_queue._insert_note(
+    state._insert_note(
         conn,
         run_id="active-run",
         body="test: audit must surface current-test custody opacity",
         kind="submission",
         author="codex",
     )
-    proof_queue._update_run(
+    state._update_run(
         conn,
         "active-run",
         status="running",
-        started_at=proof_queue._utc_now(),
+        started_at=state._utc_now(),
         guard_pid=os.getpid(),
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "audit",
                 "--no-notebook-check",
             ]
@@ -1303,7 +1334,7 @@ def test_proof_queue_diagnoses_running_pytest_progress_without_current_marker(
     log_path.write_text("proof_queue run_id=active-run\n.\n", encoding="utf-8")
     stale = (
         time.time()
-        - proof_queue.RUNNING_PYTEST_CURRENT_TEST_MISSING_STALE_SECONDS
+        - diagnostics_module.RUNNING_PYTEST_CURRENT_TEST_MISSING_STALE_SECONDS
         - 5.0
     )
     os.utime(log_path, (stale, stale))
@@ -1321,33 +1352,33 @@ def test_proof_queue_diagnoses_running_pytest_progress_without_current_marker(
         ),
         encoding="utf-8",
     )
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="active-run",
         logical_id="active",
         reason="diagnose pytest progress without current marker",
         command=[sys.executable, "-m", "pytest", "tests/tools/test_proof_queue.py"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python-tests",
         contention_key="proof-queue",
         scopes=["tools/proof_queue.py"],
         log_path=log_path,
         summary_json=summary_path,
     )
-    proof_queue._update_run(
-        conn, "active-run", status="running", started_at=proof_queue._utc_now()
+    state._update_run(
+        conn, "active-run", status="running", started_at=state._utc_now()
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "diagnose",
                 "active-run",
             ]
@@ -1377,7 +1408,7 @@ def test_proof_queue_prioritizes_running_pytest_failure_progress(
     )
     stale = (
         time.time()
-        - proof_queue.RUNNING_PYTEST_CURRENT_TEST_MISSING_STALE_SECONDS
+        - diagnostics_module.RUNNING_PYTEST_CURRENT_TEST_MISSING_STALE_SECONDS
         - 5.0
     )
     os.utime(log_path, (stale, stale))
@@ -1395,33 +1426,33 @@ def test_proof_queue_prioritizes_running_pytest_failure_progress(
         ),
         encoding="utf-8",
     )
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="active-run",
         logical_id="active",
         reason="diagnose pytest failure progress before final report",
         command=[sys.executable, "-m", "pytest", "tests/tools/test_proof_queue.py"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python-tests",
         contention_key="proof-queue",
         scopes=["tools/proof_queue.py"],
         log_path=log_path,
         summary_json=summary_path,
     )
-    proof_queue._update_run(
-        conn, "active-run", status="running", started_at=proof_queue._utc_now()
+    state._update_run(
+        conn, "active-run", status="running", started_at=state._utc_now()
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "status",
                 "--recent",
                 "0",
@@ -1435,14 +1466,14 @@ def test_proof_queue_prioritizes_running_pytest_failure_progress(
     assert "diagnosis=running-pytest-current-test-missing [infra]" not in status_out
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "diagnose",
                 "active-run",
             ]
@@ -1477,7 +1508,7 @@ def test_proof_queue_diagnoses_running_nested_guard_without_work_child(
         "source-recompiled external native packages use package/native artifact custody\n",
         encoding="utf-8",
     )
-    stale = time.time() - proof_queue.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
+    stale = time.time() - diagnostics_module.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
     os.utime(log_path, (stale, stale))
     summary_path.write_text(
         json.dumps(
@@ -1487,7 +1518,7 @@ def test_proof_queue_diagnoses_running_nested_guard_without_work_child(
                     "pid": child_pid,
                     "command": [
                         sys.executable,
-                        str(proof_queue.ROOT / "tools" / "memory_guard.py"),
+                        str(state.ROOT / "tools" / "memory_guard.py"),
                     ],
                 },
             }
@@ -1495,41 +1526,41 @@ def test_proof_queue_diagnoses_running_nested_guard_without_work_child(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        proof_queue, "_pid_alive", lambda pid: pid in {child_pid, 99_001}
+        custody, "_pid_alive", lambda pid: pid in {child_pid, 99_001}
     )
     monkeypatch.setattr(memory_guard, "sample_processes", lambda: {})
     monkeypatch.setattr(memory_guard, "descendant_pids", lambda samples, pid: set())
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="active-run",
         logical_id="active",
         reason="prove stale nested guard diagnosis",
         command=[sys.executable, "-c", "print('active')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="wasm",
         contention_key="wasm-build",
         scopes=["tools/proof_queue.py"],
         log_path=log_path,
         summary_json=summary_path,
     )
-    proof_queue._update_run(
+    state._update_run(
         conn,
         "active-run",
         status="running",
         guard_pid=99_001,
-        started_at=proof_queue._utc_now(),
+        started_at=state._utc_now(),
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "diagnose",
                 "active-run",
             ]
@@ -1563,7 +1594,7 @@ def test_proof_queue_diagnoses_stale_running_log_with_live_work_child(
         "memory_guard_command='python tools/memory_guard.py -- cargo test'\n",
         encoding="utf-8",
     )
-    stale = time.time() - proof_queue.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
+    stale = time.time() - diagnostics_module.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
     os.utime(log_path, (stale, stale))
     summary_path.write_text(
         json.dumps(
@@ -1573,14 +1604,14 @@ def test_proof_queue_diagnoses_stale_running_log_with_live_work_child(
                     "pid": child_pid,
                     "command": [
                         sys.executable,
-                        str(proof_queue.ROOT / "tools" / "memory_guard.py"),
+                        str(state.ROOT / "tools" / "memory_guard.py"),
                     ],
                 },
             }
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr(proof_queue, "_pid_alive", lambda pid: pid == child_pid)
+    monkeypatch.setattr(custody, "_pid_alive", lambda pid: pid == child_pid)
     monkeypatch.setattr(
         memory_guard,
         "sample_processes",
@@ -1616,37 +1647,37 @@ def test_proof_queue_diagnoses_stale_running_log_with_live_work_child(
         "descendant_pids",
         lambda samples, pid: {conhost_pid, work_pid, compile_pid, linker_pid, 432_104},
     )
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="active-run",
         logical_id="active",
         reason="prove stale live-child diagnosis",
         command=[sys.executable, "-c", "print('active')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="rust",
         contention_key="cargo-molt-runtime",
         scopes=["tools/proof_queue.py"],
         log_path=log_path,
         summary_json=summary_path,
     )
-    proof_queue._update_run(
+    state._update_run(
         conn,
         "active-run",
         status="running",
         guard_pid=99_001,
-        started_at=proof_queue._utc_now(),
+        started_at=state._utc_now(),
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "diagnose",
                 "active-run",
             ]
@@ -1665,14 +1696,14 @@ def test_proof_queue_diagnoses_stale_running_log_with_live_work_child(
     assert "Do not prune or interrupt" in out
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "status",
                 "--recent",
                 "0",
@@ -1703,7 +1734,7 @@ def test_proof_queue_diagnoses_stale_running_launch_summary(
         " done\n",
         encoding="utf-8",
     )
-    stale = time.time() - proof_queue.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
+    stale = time.time() - diagnostics_module.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
     os.utime(log_path, (stale, stale))
     summary_path.write_text(
         json.dumps(
@@ -1716,37 +1747,37 @@ def test_proof_queue_diagnoses_stale_running_launch_summary(
         ),
         encoding="utf-8",
     )
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="active-run",
         logical_id="active",
         reason="prove stale launch summary diagnosis",
         command=[sys.executable, "-c", "print('active')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="wasm",
         contention_key="wasm-build",
         scopes=["tools/proof_queue.py"],
         log_path=log_path,
         summary_json=summary_path,
     )
-    proof_queue._update_run(
+    state._update_run(
         conn,
         "active-run",
         status="running",
         guard_pid=99_001,
-        started_at=proof_queue._utc_now(),
+        started_at=state._utc_now(),
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "diagnose",
                 "active-run",
             ]
@@ -1784,35 +1815,35 @@ def test_proof_queue_diagnoses_terminal_row_with_unfinished_guard_summary(
                     "pid": 22_068,
                     "command": [
                         sys.executable,
-                        str(proof_queue.ROOT / "tools" / "memory_guard.py"),
+                        str(state.ROOT / "tools" / "memory_guard.py"),
                     ],
                 },
             }
         ),
         encoding="utf-8",
     )
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="failed-run",
         logical_id="failed",
         reason="prove terminal unfinished guard summaries are classified",
         command=[sys.executable, "-c", "print('failed')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python",
         contention_key="python-proof",
         scopes=["tools/proof_queue.py"],
         log_path=log_path,
         summary_json=summary_path,
     )
-    proof_queue._insert_note(
+    state._insert_note(
         conn,
         run_id="failed-run",
         body="test: terminal memory_guard summary must not collapse to unclassified",
         kind="submission",
         author="codex",
     )
-    proof_queue._update_run(
+    state._update_run(
         conn,
         "failed-run",
         status="failed",
@@ -1821,14 +1852,14 @@ def test_proof_queue_diagnoses_terminal_row_with_unfinished_guard_summary(
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "diagnose",
                 "failed-run",
             ]
@@ -1851,14 +1882,14 @@ def test_proof_queue_diagnoses_terminal_row_with_unfinished_guard_summary(
     assert "unclassified-failed-proof" not in out
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "audit",
                 "--no-notebook-check",
             ]
@@ -1899,35 +1930,35 @@ def test_proof_queue_diagnoses_worker_exit_without_final_summary(
                     "pid": 40_132,
                     "command": [
                         sys.executable,
-                        str(proof_queue.ROOT / "tools" / "memory_guard.py"),
+                        str(state.ROOT / "tools" / "memory_guard.py"),
                     ],
                 },
             }
         ),
         encoding="utf-8",
     )
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="failed-run",
         logical_id="failed",
         reason="prove wrapper-terminalized memory_guard worker exits are classified",
         command=[sys.executable, "-c", "print('failed')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python",
         contention_key="python-proof",
         scopes=["tools/proof_queue.py", "tools/memory_guard.py"],
         log_path=log_path,
         summary_json=summary_path,
     )
-    proof_queue._insert_note(
+    state._insert_note(
         conn,
         run_id="failed-run",
         body="test: wrapper-terminalized memory_guard worker exit must classify",
         kind="submission",
         author="codex",
     )
-    proof_queue._update_run(
+    state._update_run(
         conn,
         "failed-run",
         status="failed",
@@ -1936,14 +1967,14 @@ def test_proof_queue_diagnoses_worker_exit_without_final_summary(
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "diagnose",
                 "failed-run",
             ]
@@ -1981,38 +2012,38 @@ def test_proof_queue_audit_treats_pruned_stale_incomplete_summary_as_warning(
         ),
         encoding="utf-8",
     )
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="stale-run",
         logical_id="stale",
         reason="prove pruned stale rows remain visible without failing audit",
         command=[sys.executable, "-c", "print('stale')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python",
         contention_key="python-proof",
         scopes=["tools/proof_queue.py"],
         log_path=log_path,
         summary_json=summary_path,
     )
-    proof_queue._insert_note(
+    state._insert_note(
         conn,
         run_id="stale-run",
         body="test: stale row intentionally pruned after custody loss",
         kind="finding",
         author="codex",
     )
-    proof_queue._update_run(conn, "stale-run", status="stale")
+    state._update_run(conn, "stale-run", status="stale")
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "audit",
                 "--no-notebook-check",
             ]
@@ -2036,7 +2067,7 @@ def test_proof_queue_prune_stale_preserves_live_launch_summary_only_row(
         "proof_queue run_id=active-run\n done\n",
         encoding="utf-8",
     )
-    stale = time.time() - proof_queue.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
+    stale = time.time() - diagnostics_module.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
     os.utime(log_path, (stale, stale))
     summary_path.write_text(
         json.dumps(
@@ -2048,38 +2079,38 @@ def test_proof_queue_prune_stale_preserves_live_launch_summary_only_row(
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr(proof_queue, "_pid_alive", lambda pid: pid == 99_001)
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    monkeypatch.setattr(custody, "_pid_alive", lambda pid: pid == 99_001)
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="active-run",
         logical_id="active",
         reason="prove launch-summary-only rows are diagnostic, not terminal",
         command=[sys.executable, "-c", "print('active')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="wasm",
         contention_key="wasm-build",
         scopes=["tools/proof_queue.py"],
         log_path=log_path,
         summary_json=summary_path,
     )
-    proof_queue._update_run(
+    state._update_run(
         conn,
         "active-run",
         status="running",
         guard_pid=99_001,
-        started_at=proof_queue._utc_now(),
+        started_at=state._utc_now(),
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "prune-stale",
             ]
         )
@@ -2095,14 +2126,14 @@ def test_proof_queue_prune_stale_preserves_live_launch_summary_only_row(
     assert row["returncode"] is None
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "diagnose",
                 "active-run",
             ]
@@ -2126,7 +2157,7 @@ def test_proof_queue_prune_stale_reclaims_launch_summary_after_guard_exit(
         "proof_queue run_id=active-run\n done\n",
         encoding="utf-8",
     )
-    stale = time.time() - proof_queue.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
+    stale = time.time() - diagnostics_module.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
     os.utime(log_path, (stale, stale))
     summary_path.write_text(
         json.dumps(
@@ -2138,38 +2169,38 @@ def test_proof_queue_prune_stale_reclaims_launch_summary_after_guard_exit(
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr(proof_queue, "_pid_alive", lambda pid: False)
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    monkeypatch.setattr(custody, "_pid_alive", lambda pid: False)
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="active-run",
         logical_id="active",
         reason="prove dead guard launch-summary rows are reclaimable",
         command=[sys.executable, "-c", "print('active')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="wasm",
         contention_key="wasm-build",
         scopes=["tools/proof_queue.py"],
         log_path=log_path,
         summary_json=summary_path,
     )
-    proof_queue._update_run(
+    state._update_run(
         conn,
         "active-run",
         status="running",
         guard_pid=99_001,
-        started_at=proof_queue._utc_now(),
+        started_at=state._utc_now(),
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "prune-stale",
             ]
         )
@@ -2182,7 +2213,7 @@ def test_proof_queue_prune_stale_reclaims_launch_summary_after_guard_exit(
     assert "pruned=1" in out
     row = _rows(db)[0]
     assert row["status"] == "stale"
-    assert row["returncode"] == proof_queue.PROOF_QUEUE_STALE_EXIT_CODE
+    assert row["returncode"] == custody.PROOF_QUEUE_STALE_EXIT_CODE
 
 
 def test_proof_queue_prune_stale_terminalizes_dead_nested_guard_child(
@@ -2200,7 +2231,7 @@ def test_proof_queue_prune_stale_terminalizes_dead_nested_guard_child(
         "memory_guard_command='python tools/memory_guard.py -- pytest tests'\n",
         encoding="utf-8",
     )
-    stale = time.time() - proof_queue.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
+    stale = time.time() - diagnostics_module.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
     os.utime(log_path, (stale, stale))
     summary_path.write_text(
         json.dumps(
@@ -2211,45 +2242,45 @@ def test_proof_queue_prune_stale_terminalizes_dead_nested_guard_child(
                     "pid": child_pid,
                     "command": [
                         sys.executable,
-                        str(proof_queue.ROOT / "tools" / "memory_guard.py"),
+                        str(state.ROOT / "tools" / "memory_guard.py"),
                     ],
                 },
             }
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr(proof_queue, "_pid_alive", lambda pid: pid == guard_pid)
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    monkeypatch.setattr(custody, "_pid_alive", lambda pid: pid == guard_pid)
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="active-run",
         logical_id="active",
         reason="prove prune terminalizes dead nested guard child",
         command=[sys.executable, "-c", "print('active')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python-tests",
         contention_key="proof-queue-dx",
         scopes=["tools/proof_queue.py"],
         log_path=log_path,
         summary_json=summary_path,
     )
-    proof_queue._update_run(
+    state._update_run(
         conn,
         "active-run",
         status="running",
         guard_pid=guard_pid,
-        started_at=proof_queue._utc_now(),
+        started_at=state._utc_now(),
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "prune-stale",
                 "--run-id",
                 "active-run",
@@ -2265,7 +2296,7 @@ def test_proof_queue_prune_stale_terminalizes_dead_nested_guard_child(
     assert "pruned=1" in out
     row = _rows(db)[0]
     assert row["status"] == "stale"
-    assert row["returncode"] == proof_queue.PROOF_QUEUE_STALE_EXIT_CODE
+    assert row["returncode"] == custody.PROOF_QUEUE_STALE_EXIT_CODE
 
 
 def test_proof_queue_prune_stale_preserves_live_windows_child_runner_missing(
@@ -2283,7 +2314,7 @@ def test_proof_queue_prune_stale_preserves_live_windows_child_runner_missing(
         "dx-build prime: still running elapsed=208s timeout=unbounded pid=18956\n",
         encoding="utf-8",
     )
-    stale = time.time() - proof_queue.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
+    stale = time.time() - diagnostics_module.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
     os.utime(log_path, (stale, stale))
     summary_path.write_text(
         json.dumps(
@@ -2295,45 +2326,45 @@ def test_proof_queue_prune_stale_preserves_live_windows_child_runner_missing(
                     "pid": child_pid,
                     "command": [
                         sys.executable,
-                        str(proof_queue.ROOT / "tools" / "memory_guard.py"),
+                        str(state.ROOT / "tools" / "memory_guard.py"),
                     ],
                 },
             }
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr(proof_queue, "_pid_alive", lambda pid: pid == guard_pid)
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    monkeypatch.setattr(custody, "_pid_alive", lambda pid: pid == guard_pid)
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="active-run",
         logical_id="active",
         reason="prove live Windows child-runner loss is diagnostic only",
         command=[sys.executable, "-c", "print('active')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="rust",
         contention_key="e2-build-wallclock",
         scopes=["tools/proof_queue.py"],
         log_path=log_path,
         summary_json=summary_path,
     )
-    proof_queue._update_run(
+    state._update_run(
         conn,
         "active-run",
         status="running",
         guard_pid=guard_pid,
-        started_at=proof_queue._utc_now(),
+        started_at=state._utc_now(),
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "prune-stale",
                 "--run-id",
                 "active-run",
@@ -2350,14 +2381,14 @@ def test_proof_queue_prune_stale_preserves_live_windows_child_runner_missing(
     assert row["returncode"] is None
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "diagnose",
                 "active-run",
             ]
@@ -2401,7 +2432,7 @@ def test_proof_queue_run_self_terminalizes_dead_nested_guard_child(
                             "pid": child_pid,
                             "command": [
                                 sys.executable,
-                                str(proof_queue.ROOT / "tools" / "memory_guard.py"),
+                                str(state.ROOT / "tools" / "memory_guard.py"),
                             ],
                         },
                     }
@@ -2429,9 +2460,9 @@ def test_proof_queue_run_self_terminalizes_dead_nested_guard_child(
             self.killed = True
             self.returncode = 9
 
-    monkeypatch.setattr(proof_queue.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(custody.subprocess, "Popen", FakePopen)
     monkeypatch.setattr(
-        proof_queue,
+        state,
         "_git_snapshot",
         lambda cwd: {
             "available": True,
@@ -2440,23 +2471,25 @@ def test_proof_queue_run_self_terminalizes_dead_nested_guard_child(
             "status": [],
         },
     )
-    monkeypatch.setattr(proof_queue, "_pid_alive", lambda pid: pid == guard_pid)
-    monkeypatch.setattr(proof_queue, "PROOF_QUEUE_ACTIVE_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(custody, "_pid_alive", lambda pid: pid == guard_pid)
+    monkeypatch.setattr(custody, "PROOF_QUEUE_ACTIVE_POLL_SECONDS", 0.01)
     monkeypatch.setattr(
-        proof_queue,
+        custody,
         "PROOF_QUEUE_STALE_TERMINATE_GRACE_SECONDS",
         0.01,
     )
-    monkeypatch.setattr(proof_queue, "RUNNING_CHILD_MISSING_STALE_LOG_SECONDS", 0.0)
+    monkeypatch.setattr(
+        diagnostics_module, "RUNNING_CHILD_MISSING_STALE_LOG_SECONDS", 0.0
+    )
 
-    rc = proof_queue.main(
+    rc = cli.main(
         [
             "--db",
             str(db),
             "--logs-root",
             str(logs),
             "--repo-root",
-            str(proof_queue.ROOT),
+            str(state.ROOT),
             "exec",
             "--id",
             "self-stale",
@@ -2475,13 +2508,13 @@ def test_proof_queue_run_self_terminalizes_dead_nested_guard_child(
         ]
     )
 
-    assert rc == proof_queue.PROOF_QUEUE_STALE_EXIT_CODE
+    assert rc == custody.PROOF_QUEUE_STALE_EXIT_CODE
     out = capsys.readouterr().out
     assert "stale " in out
-    assert f"rc={proof_queue.PROOF_QUEUE_STALE_EXIT_CODE}" in out
+    assert f"rc={custody.PROOF_QUEUE_STALE_EXIT_CODE}" in out
     rows = _rows(db)
     assert rows[0]["status"] == "stale"
-    assert rows[0]["returncode"] == proof_queue.PROOF_QUEUE_STALE_EXIT_CODE
+    assert rows[0]["returncode"] == custody.PROOF_QUEUE_STALE_EXIT_CODE
     assert popen_instances
     fake_proc = popen_instances[0]
     assert fake_proc.terminated
@@ -2492,7 +2525,7 @@ def test_proof_queue_run_self_terminalizes_dead_nested_guard_child(
     assert f"child_pid={child_pid}" in log_text
     assert (
         f"proof_queue finished status=stale "
-        f"exit_code={proof_queue.PROOF_QUEUE_STALE_EXIT_CODE}" in log_text
+        f"exit_code={custody.PROOF_QUEUE_STALE_EXIT_CODE}" in log_text
     )
 
 
@@ -2528,7 +2561,7 @@ def test_proof_queue_run_does_not_self_terminalize_windows_child_runner_missing(
                             "pid": child_pid,
                             "command": [
                                 sys.executable,
-                                str(proof_queue.ROOT / "tools" / "memory_guard.py"),
+                                str(state.ROOT / "tools" / "memory_guard.py"),
                             ],
                         },
                     }
@@ -2554,9 +2587,9 @@ def test_proof_queue_run_does_not_self_terminalize_windows_child_runner_missing(
             self.terminated = True
             self.returncode = 15
 
-    monkeypatch.setattr(proof_queue.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(custody.subprocess, "Popen", FakePopen)
     monkeypatch.setattr(
-        proof_queue,
+        state,
         "_git_snapshot",
         lambda cwd: {
             "available": True,
@@ -2565,18 +2598,20 @@ def test_proof_queue_run_does_not_self_terminalize_windows_child_runner_missing(
             "status": [],
         },
     )
-    monkeypatch.setattr(proof_queue, "_pid_alive", lambda pid: pid == guard_pid)
-    monkeypatch.setattr(proof_queue, "PROOF_QUEUE_ACTIVE_POLL_SECONDS", 0.01)
-    monkeypatch.setattr(proof_queue, "RUNNING_CHILD_MISSING_STALE_LOG_SECONDS", 0.0)
+    monkeypatch.setattr(custody, "_pid_alive", lambda pid: pid == guard_pid)
+    monkeypatch.setattr(custody, "PROOF_QUEUE_ACTIVE_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(
+        diagnostics_module, "RUNNING_CHILD_MISSING_STALE_LOG_SECONDS", 0.0
+    )
 
-    rc = proof_queue.main(
+    rc = cli.main(
         [
             "--db",
             str(db),
             "--logs-root",
             str(logs),
             "--repo-root",
-            str(proof_queue.ROOT),
+            str(state.ROOT),
             "exec",
             "--id",
             "windows-child-runner",
@@ -2663,9 +2698,9 @@ def test_proof_queue_run_does_not_self_terminalize_launch_summary_only(
             self.terminated = True
             self.returncode = 15
 
-    monkeypatch.setattr(proof_queue.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(custody.subprocess, "Popen", FakePopen)
     monkeypatch.setattr(
-        proof_queue,
+        state,
         "_git_snapshot",
         lambda cwd: {
             "available": True,
@@ -2674,18 +2709,20 @@ def test_proof_queue_run_does_not_self_terminalize_launch_summary_only(
             "status": [],
         },
     )
-    monkeypatch.setattr(proof_queue, "_pid_alive", lambda pid: pid == guard_pid)
-    monkeypatch.setattr(proof_queue, "PROOF_QUEUE_ACTIVE_POLL_SECONDS", 0.01)
-    monkeypatch.setattr(proof_queue, "RUNNING_CHILD_MISSING_STALE_LOG_SECONDS", 0.0)
+    monkeypatch.setattr(custody, "_pid_alive", lambda pid: pid == guard_pid)
+    monkeypatch.setattr(custody, "PROOF_QUEUE_ACTIVE_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(
+        diagnostics_module, "RUNNING_CHILD_MISSING_STALE_LOG_SECONDS", 0.0
+    )
 
-    rc = proof_queue.main(
+    rc = cli.main(
         [
             "--db",
             str(db),
             "--logs-root",
             str(logs),
             "--repo-root",
-            str(proof_queue.ROOT),
+            str(state.ROOT),
             "exec",
             "--id",
             "launch-summary-only",
@@ -2726,9 +2763,9 @@ def test_proof_queue_prune_stale_run_id_preserves_unselected_active_rows(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     stale_mtime = (
-        time.time() - proof_queue.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
+        time.time() - diagnostics_module.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
     )
-    conn = proof_queue._connect(db)
+    conn = state._connect(db)
     for run_id, guard_pid in (("target-run", 99_001), ("sibling-run", 99_002)):
         log_path = tmp_path / f"{run_id}.log"
         summary_path = tmp_path / f"{run_id}.memory_guard.json"
@@ -2744,13 +2781,13 @@ def test_proof_queue_prune_stale_run_id_preserves_unselected_active_rows(
             ),
             encoding="utf-8",
         )
-        proof_queue._insert_run(
+        scheduling._insert_run(
             conn,
             run_id=run_id,
             logical_id=run_id,
             reason="prove targeted stale pruning",
             command=[sys.executable, "-c", "print('active')"],
-            cwd=proof_queue.ROOT,
+            cwd=state.ROOT,
             resource_family="python-tests",
             # Distinct keys per run: at most one RUNNING row may share a
             # contention key, and this test needs both concurrently running to
@@ -2760,27 +2797,27 @@ def test_proof_queue_prune_stale_run_id_preserves_unselected_active_rows(
             log_path=log_path,
             summary_json=summary_path,
         )
-        proof_queue._update_run(
+        state._update_run(
             conn,
             run_id,
             status="running",
             guard_pid=guard_pid,
-            started_at=proof_queue._utc_now(),
+            started_at=state._utc_now(),
         )
     # The selected target's guard has exited; the unselected sibling still owns
     # live custody. This keeps the test focused on --run-id scoping now that a
     # launch-summary-only diagnostic is not terminal while its guard is live.
-    monkeypatch.setattr(proof_queue, "_pid_alive", lambda pid: pid == 99_002)
+    monkeypatch.setattr(custody, "_pid_alive", lambda pid: pid == 99_002)
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "prune-stale",
                 "--run-id",
                 "target-run",
@@ -2799,7 +2836,7 @@ def test_proof_queue_prune_stale_run_id_preserves_unselected_active_rows(
     rows = {row["run_id"]: row for row in _rows(db)}
     statuses = {run_id: row["status"] for run_id, row in rows.items()}
     assert statuses == {"target-run": "stale", "sibling-run": "running"}
-    assert rows["target-run"]["returncode"] == proof_queue.PROOF_QUEUE_STALE_EXIT_CODE
+    assert rows["target-run"]["returncode"] == custody.PROOF_QUEUE_STALE_EXIT_CODE
     assert rows["sibling-run"]["returncode"] is None
 
 
@@ -2826,31 +2863,31 @@ def test_proof_queue_prune_stale_run_id_canonicalizes_selected_stale_row(
         ),
         encoding="utf-8",
     )
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="stale-run",
         logical_id="stale",
         reason="prove selected stale rows get canonical return codes",
         command=[sys.executable, "-c", "print('stale')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python-tests",
         contention_key="proof-queue-dx",
         scopes=["tools/proof_queue.py"],
         log_path=log_path,
         summary_json=summary_path,
     )
-    proof_queue._update_run(conn, "stale-run", status="stale")
+    state._update_run(conn, "stale-run", status="stale")
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "prune-stale",
                 "--run-id",
                 "stale-run",
@@ -2862,11 +2899,11 @@ def test_proof_queue_prune_stale_run_id_canonicalizes_selected_stale_row(
     out = capsys.readouterr().out
     assert "stale stale-run" in out
     assert "memory-guard-summary-incomplete" in out
-    assert f"returncode={proof_queue.PROOF_QUEUE_STALE_EXIT_CODE}" in out
+    assert f"returncode={custody.PROOF_QUEUE_STALE_EXIT_CODE}" in out
     assert "pruned=1" in out
     row = _rows(db)[0]
     assert row["status"] == "stale"
-    assert row["returncode"] == proof_queue.PROOF_QUEUE_STALE_EXIT_CODE
+    assert row["returncode"] == custody.PROOF_QUEUE_STALE_EXIT_CODE
 
 
 def test_proof_queue_wasm_rows_ensure_rust_target_before_run(
@@ -2891,16 +2928,16 @@ def test_proof_queue_wasm_rows_ensure_rust_target_before_run(
         ),
         ensure_rustup_target=fake_ensure,
     )
-    monkeypatch.setattr(proof_queue, "_load_wasm_toolchain", lambda: fake_toolchain)
+    monkeypatch.setattr(policy, "_load_wasm_toolchain", lambda: fake_toolchain)
 
-    rc = proof_queue.main(
+    rc = cli.main(
         [
             "--db",
             str(db),
             "--logs-root",
             str(logs),
             "--repo-root",
-            str(proof_queue.ROOT),
+            str(state.ROOT),
             "exec",
             "--id",
             "wasm-preflight",
@@ -2918,8 +2955,8 @@ def test_proof_queue_wasm_rows_ensure_rust_target_before_run(
     )
 
     assert rc == 0
-    assert calls == [(target, proof_queue.ROOT) for target in required_targets]
-    assert ("wasm32-wasip1", proof_queue.ROOT) in calls
+    assert calls == [(target, state.ROOT) for target in required_targets]
+    assert ("wasm32-wasip1", state.ROOT) in calls
     rows = _rows(db)
     assert rows[0]["status"] == "passed"
     assert "ran" in Path(rows[0]["log_path"]).read_text(encoding="utf-8")
@@ -2946,16 +2983,16 @@ def test_proof_queue_wasm_preflight_fails_before_command(
         ),
         ensure_rustup_target=fake_ensure,
     )
-    monkeypatch.setattr(proof_queue, "_load_wasm_toolchain", lambda: fake_toolchain)
+    monkeypatch.setattr(policy, "_load_wasm_toolchain", lambda: fake_toolchain)
 
-    rc = proof_queue.main(
+    rc = cli.main(
         [
             "--db",
             str(db),
             "--logs-root",
             str(logs),
             "--repo-root",
-            str(proof_queue.ROOT),
+            str(state.ROOT),
             "exec",
             "--id",
             "wasm-preflight-fail",
@@ -2985,15 +3022,15 @@ def test_proof_queue_wasm_preflight_fails_before_command(
 def test_proof_queue_run_id_executes_only_selected_queued_row(tmp_path: Path) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
-    conn = proof_queue._connect(db)
+    conn = state._connect(db)
     for run_id, marker in (("queued-a", "A"), ("queued-b", "B")):
-        proof_queue._insert_run(
+        scheduling._insert_run(
             conn,
             run_id=run_id,
             logical_id=run_id,
             reason=f"run {marker}",
             command=[sys.executable, "-c", f"print('{marker}')"],
-            cwd=proof_queue.ROOT,
+            cwd=state.ROOT,
             resource_family="python",
             contention_key=f"python:{marker}",
             scopes=[],
@@ -3001,14 +3038,14 @@ def test_proof_queue_run_id_executes_only_selected_queued_row(tmp_path: Path) ->
             summary_json=logs / f"{run_id}.memory_guard.json",
         )
 
-    rc = proof_queue.main(
+    rc = cli.main(
         [
             "--db",
             str(db),
             "--logs-root",
             str(logs),
             "--repo-root",
-            str(proof_queue.ROOT),
+            str(state.ROOT),
             "run",
             "--run-id",
             "queued-b",
@@ -3025,36 +3062,36 @@ def test_proof_queue_run_id_executes_only_selected_queued_row(tmp_path: Path) ->
 def test_proof_queue_run_id_executes_selected_dispatched_row(tmp_path: Path) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
-    conn = proof_queue._connect(db)
+    conn = state._connect(db)
     for run_id, marker in (("queued-a", "A"), ("dispatched-b", "B")):
-        proof_queue._insert_run(
+        scheduling._insert_run(
             conn,
             run_id=run_id,
             logical_id=run_id,
             reason=f"run {marker}",
             command=[sys.executable, "-c", f"print('{marker}')"],
-            cwd=proof_queue.ROOT,
+            cwd=state.ROOT,
             resource_family="python",
             contention_key=f"python:{marker}",
             scopes=[],
             log_path=logs / f"{run_id}.log",
             summary_json=logs / f"{run_id}.memory_guard.json",
         )
-    proof_queue._update_run(
+    state._update_run(
         conn,
         "dispatched-b",
         status="dispatched",
-        started_at=proof_queue._utc_now(),
+        started_at=state._utc_now(),
     )
 
-    rc = proof_queue.main(
+    rc = cli.main(
         [
             "--db",
             str(db),
             "--logs-root",
             str(logs),
             "--repo-root",
-            str(proof_queue.ROOT),
+            str(state.ROOT),
             "run",
             "--run-id",
             "dispatched-b",
@@ -3075,15 +3112,15 @@ def test_proof_queue_run_id_can_detach_existing_queued_row(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
-    conn = proof_queue._connect(db)
+    conn = state._connect(db)
     for run_id, marker in (("queued-a", "A"), ("queued-b", "B")):
-        proof_queue._insert_run(
+        scheduling._insert_run(
             conn,
             run_id=run_id,
             logical_id=run_id,
             reason=f"run {marker}",
             command=[sys.executable, "-c", f"print('{marker}')"],
-            cwd=proof_queue.ROOT,
+            cwd=state.ROOT,
             resource_family="python",
             contention_key=f"python:{marker}",
             scopes=[],
@@ -3097,16 +3134,16 @@ def test_proof_queue_run_id_can_detach_existing_queued_row(
         launched["timeout"] = timeout
         return 12345, logs / f"{run_id}.runner.log"
 
-    monkeypatch.setattr(proof_queue, "_launch_detached_runner", fake_launch)
+    monkeypatch.setattr(custody, "_launch_detached_runner", fake_launch)
 
-    rc = proof_queue.main(
+    rc = cli.main(
         [
             "--db",
             str(db),
             "--logs-root",
             str(logs),
             "--repo-root",
-            str(proof_queue.ROOT),
+            str(state.ROOT),
             "run",
             "--run-id",
             "queued-b",
@@ -3135,20 +3172,20 @@ def test_proof_queue_run_detach_respects_queue_size_and_contention_keys(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
-    conn = proof_queue._connect(db)
+    conn = state._connect(db)
     for run_id, key in (
         ("queued-a", "python:a"),
         ("queued-a-duplicate", "python:a"),
         ("queued-b", "python:b"),
         ("queued-c", "python:c"),
     ):
-        proof_queue._insert_run(
+        scheduling._insert_run(
             conn,
             run_id=run_id,
             logical_id=run_id,
             reason=run_id,
             command=[sys.executable, "-c", f"print({run_id!r})"],
-            cwd=proof_queue.ROOT,
+            cwd=state.ROOT,
             resource_family="python",
             contention_key=key,
             scopes=[],
@@ -3162,16 +3199,16 @@ def test_proof_queue_run_detach_respects_queue_size_and_contention_keys(
         launched.append(run_id)
         return 12345, logs / f"{run_id}.runner.log"
 
-    monkeypatch.setattr(proof_queue, "_launch_detached_runner", fake_launch)
+    monkeypatch.setattr(custody, "_launch_detached_runner", fake_launch)
 
-    rc = proof_queue.main(
+    rc = cli.main(
         [
             "--db",
             str(db),
             "--logs-root",
             str(logs),
             "--repo-root",
-            str(proof_queue.ROOT),
+            str(state.ROOT),
             "run",
             "--detach",
             "--queue-size",
@@ -3195,20 +3232,20 @@ def test_proof_queue_run_detach_serializes_compiler_build_resource_mutex(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
-    conn = proof_queue._connect(db)
+    conn = state._connect(db)
     for run_id, resource_family, key in (
         ("queued-wasm", "wasm-browser", "wasm:pact-witness"),
         ("queued-native", "native-build", "native:molt-runtime"),
         ("queued-rust", "rust", "cargo:molt-runtime"),
         ("queued-python", "python", "python:light"),
     ):
-        proof_queue._insert_run(
+        scheduling._insert_run(
             conn,
             run_id=run_id,
             logical_id=run_id,
             reason=run_id,
             command=[sys.executable, "-c", f"print({run_id!r})"],
-            cwd=proof_queue.ROOT,
+            cwd=state.ROOT,
             resource_family=resource_family,
             contention_key=key,
             scopes=[],
@@ -3222,16 +3259,16 @@ def test_proof_queue_run_detach_serializes_compiler_build_resource_mutex(
         launched.append(run_id)
         return 12345, logs / f"{run_id}.runner.log"
 
-    monkeypatch.setattr(proof_queue, "_launch_detached_runner", fake_launch)
+    monkeypatch.setattr(custody, "_launch_detached_runner", fake_launch)
 
-    rc = proof_queue.main(
+    rc = cli.main(
         [
             "--db",
             str(db),
             "--logs-root",
             str(logs),
             "--repo-root",
-            str(proof_queue.ROOT),
+            str(state.ROOT),
             "run",
             "--detach",
             "--queue-size",
@@ -3257,15 +3294,15 @@ def test_proof_queue_run_jobs_alias_limits_detached_rows(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
-    conn = proof_queue._connect(db)
+    conn = state._connect(db)
     for run_id in ("queued-a", "queued-b", "queued-c"):
-        proof_queue._insert_run(
+        scheduling._insert_run(
             conn,
             run_id=run_id,
             logical_id=run_id,
             reason=run_id,
             command=[sys.executable, "-c", f"print({run_id!r})"],
-            cwd=proof_queue.ROOT,
+            cwd=state.ROOT,
             resource_family="python",
             contention_key=f"python:{run_id}",
             scopes=[],
@@ -3279,16 +3316,16 @@ def test_proof_queue_run_jobs_alias_limits_detached_rows(
         launched.append(run_id)
         return 12345, logs / f"{run_id}.runner.log"
 
-    monkeypatch.setattr(proof_queue, "_launch_detached_runner", fake_launch)
+    monkeypatch.setattr(custody, "_launch_detached_runner", fake_launch)
 
-    rc = proof_queue.main(
+    rc = cli.main(
         [
             "--db",
             str(db),
             "--logs-root",
             str(logs),
             "--repo-root",
-            str(proof_queue.ROOT),
+            str(state.ROOT),
             "run",
             "--detach",
             "--queue-size",
@@ -3312,34 +3349,34 @@ def test_proof_queue_run_detach_counts_existing_active_rows(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="already-running",
         logical_id="already-running",
         reason="already running",
         command=[sys.executable, "-c", "print('running')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python",
         contention_key="python:running",
         scopes=[],
         log_path=logs / "already-running.log",
         summary_json=logs / "already-running.memory_guard.json",
     )
-    proof_queue._update_run(
+    state._update_run(
         conn,
         "already-running",
         status="running",
-        started_at=proof_queue._utc_now(),
+        started_at=state._utc_now(),
     )
     for run_id in ("queued-a", "queued-b"):
-        proof_queue._insert_run(
+        scheduling._insert_run(
             conn,
             run_id=run_id,
             logical_id=run_id,
             reason=run_id,
             command=[sys.executable, "-c", f"print({run_id!r})"],
-            cwd=proof_queue.ROOT,
+            cwd=state.ROOT,
             resource_family="python",
             contention_key=f"python:{run_id}",
             scopes=[],
@@ -3353,16 +3390,16 @@ def test_proof_queue_run_detach_counts_existing_active_rows(
         launched.append(run_id)
         return 12345, logs / f"{run_id}.runner.log"
 
-    monkeypatch.setattr(proof_queue, "_launch_detached_runner", fake_launch)
+    monkeypatch.setattr(custody, "_launch_detached_runner", fake_launch)
 
-    rc = proof_queue.main(
+    rc = cli.main(
         [
             "--db",
             str(db),
             "--logs-root",
             str(logs),
             "--repo-root",
-            str(proof_queue.ROOT),
+            str(state.ROOT),
             "run",
             "--detach",
             "--queue-size",
@@ -3385,33 +3422,33 @@ def test_proof_queue_run_detach_does_not_launch_when_capacity_full(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="already-dispatched",
         logical_id="already-dispatched",
         reason="already dispatched",
         command=[sys.executable, "-c", "print('dispatched')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python",
         contention_key="python:active",
         scopes=[],
         log_path=logs / "already-dispatched.log",
         summary_json=logs / "already-dispatched.memory_guard.json",
     )
-    proof_queue._update_run(
+    state._update_run(
         conn,
         "already-dispatched",
         status="dispatched",
-        started_at=proof_queue._utc_now(),
+        started_at=state._utc_now(),
     )
-    proof_queue._insert_run(
+    scheduling._insert_run(
         conn,
         run_id="queued-a",
         logical_id="queued-a",
         reason="queued-a",
         command=[sys.executable, "-c", "print('queued')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python",
         contention_key="python:queued-a",
         scopes=[],
@@ -3419,19 +3456,19 @@ def test_proof_queue_run_detach_does_not_launch_when_capacity_full(
         summary_json=logs / "queued-a.memory_guard.json",
     )
     monkeypatch.setattr(
-        proof_queue,
+        custody,
         "_launch_detached_runner",
         lambda *args, **kwargs: pytest.fail("capacity-full queue must not launch"),
     )
 
-    rc = proof_queue.main(
+    rc = cli.main(
         [
             "--db",
             str(db),
             "--logs-root",
             str(logs),
             "--repo-root",
-            str(proof_queue.ROOT),
+            str(state.ROOT),
             "run",
             "--detach",
             "--queue-size",
@@ -3453,41 +3490,41 @@ def test_proof_queue_exec_detach_obeys_queue_size_env(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="already-running",
         logical_id="already-running",
         reason="already running",
         command=[sys.executable, "-c", "print('running')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python",
         contention_key="python:active",
         scopes=[],
         log_path=logs / "already-running.log",
         summary_json=logs / "already-running.memory_guard.json",
     )
-    proof_queue._update_run(
+    state._update_run(
         conn,
         "already-running",
         status="running",
-        started_at=proof_queue._utc_now(),
+        started_at=state._utc_now(),
     )
-    monkeypatch.setenv(proof_queue.PROOF_QUEUE_SIZE_ENV, "1")
+    monkeypatch.setenv(state.PROOF_QUEUE_SIZE_ENV, "1")
     monkeypatch.setattr(
-        proof_queue,
+        custody,
         "_launch_detached_runner",
         lambda *args, **kwargs: pytest.fail("env capacity must block detach launch"),
     )
 
-    rc = proof_queue.main(
+    rc = cli.main(
         [
             "--db",
             str(db),
             "--logs-root",
             str(logs),
             "--repo-root",
-            str(proof_queue.ROOT),
+            str(state.ROOT),
             "exec",
             "--id",
             "blocked-detach",
@@ -3518,16 +3555,16 @@ def test_proof_queue_exec_detach_obeys_queue_size_env(
 def test_proof_queue_rejects_invalid_queue_size_env(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv(proof_queue.PROOF_QUEUE_SIZE_ENV, "0")
-    with pytest.raises(SystemExit, match=proof_queue.PROOF_QUEUE_SIZE_ENV):
-        proof_queue.main(
+    monkeypatch.setenv(state.PROOF_QUEUE_SIZE_ENV, "0")
+    with pytest.raises(SystemExit, match=state.PROOF_QUEUE_SIZE_ENV):
+        cli.main(
             [
                 "--db",
                 str(tmp_path / "proof_queue.sqlite3"),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "run",
                 "--detach",
             ]
@@ -3539,7 +3576,7 @@ def test_proof_queue_defaults_uv_link_mode_to_copy(
 ) -> None:
     monkeypatch.delenv("UV_LINK_MODE", raising=False)
 
-    proof_queue._normalize_queue_process_environment()
+    custody._normalize_queue_process_environment()
 
     assert os.environ["UV_LINK_MODE"] == "copy"
 
@@ -3549,7 +3586,7 @@ def test_proof_queue_preserves_operator_uv_link_mode(
 ) -> None:
     monkeypatch.setenv("UV_LINK_MODE", "hardlink")
 
-    proof_queue._normalize_queue_process_environment()
+    custody._normalize_queue_process_environment()
 
     assert os.environ["UV_LINK_MODE"] == "hardlink"
 
@@ -3559,36 +3596,36 @@ def test_proof_queue_prune_stale_preserves_fresh_dispatched_row(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="just-dispatched",
         logical_id="just-dispatched",
         reason="dispatch grace",
         command=[sys.executable, "-c", "print('dispatch')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python",
         contention_key="python:dispatch",
         scopes=[],
         log_path=logs / "just-dispatched.log",
         summary_json=logs / "just-dispatched.memory_guard.json",
     )
-    proof_queue._update_run(
+    state._update_run(
         conn,
         "just-dispatched",
         status="dispatched",
-        started_at=proof_queue._utc_now(),
+        started_at=state._utc_now(),
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(logs),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "prune-stale",
                 "--run-id",
                 "just-dispatched",
@@ -3605,21 +3642,21 @@ def test_proof_queue_prune_stale_reclaims_expired_dispatched_row(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="expired-dispatch",
         logical_id="expired-dispatch",
         reason="expired dispatch",
         command=[sys.executable, "-c", "print('dispatch')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python",
         contention_key="python:dispatch",
         scopes=[],
         log_path=logs / "expired-dispatch.log",
         summary_json=logs / "expired-dispatch.memory_guard.json",
     )
-    proof_queue._update_run(
+    state._update_run(
         conn,
         "expired-dispatch",
         status="dispatched",
@@ -3627,14 +3664,14 @@ def test_proof_queue_prune_stale_reclaims_expired_dispatched_row(
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(logs),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "prune-stale",
                 "--run-id",
                 "expired-dispatch",
@@ -3644,7 +3681,7 @@ def test_proof_queue_prune_stale_reclaims_expired_dispatched_row(
     )
     row = _rows(db)[0]
     assert row["status"] == "stale"
-    assert row["returncode"] == proof_queue.PROOF_QUEUE_STALE_EXIT_CODE
+    assert row["returncode"] == custody.PROOF_QUEUE_STALE_EXIT_CODE
     out = capsys.readouterr().out
     assert "dispatch-handoff-expired" in out
     assert str(logs / "expired-dispatch.runner.log") in out
@@ -3663,16 +3700,16 @@ def test_proof_queue_named_lane_can_detach_runner(
         launched["timeout"] = timeout
         return 12345, logs / f"{run_id}.runner.log"
 
-    monkeypatch.setattr(proof_queue, "_launch_detached_runner", fake_launch)
+    monkeypatch.setattr(custody, "_launch_detached_runner", fake_launch)
 
-    rc = proof_queue.main(
+    rc = cli.main(
         [
             "--db",
             str(db),
             "--logs-root",
             str(logs),
             "--repo-root",
-            str(proof_queue.ROOT),
+            str(state.ROOT),
             "pact-witness-oracle",
             "--timeout",
             "42",
@@ -3702,16 +3739,16 @@ def test_proof_queue_exec_detach_requires_submission_note(
         del args, run_id, timeout
         raise AssertionError("note-less detached row must not launch")
 
-    monkeypatch.setattr(proof_queue, "_launch_detached_runner", fail_launch)
+    monkeypatch.setattr(custody, "_launch_detached_runner", fail_launch)
 
-    rc = proof_queue.main(
+    rc = cli.main(
         [
             "--db",
             str(db),
             "--logs-root",
             str(logs),
             "--repo-root",
-            str(proof_queue.ROOT),
+            str(state.ROOT),
             "exec",
             "--id",
             "missing-note-detach",
@@ -3750,16 +3787,16 @@ def test_proof_queue_named_lane_can_queue_without_runner(
         del args, run_id, timeout
         raise AssertionError("--queue-only must not launch a detached runner")
 
-    monkeypatch.setattr(proof_queue, "_launch_detached_runner", fail_launch)
+    monkeypatch.setattr(custody, "_launch_detached_runner", fail_launch)
 
-    rc = proof_queue.main(
+    rc = cli.main(
         [
             "--db",
             str(db),
             "--logs-root",
             str(logs),
             "--repo-root",
-            str(proof_queue.ROOT),
+            str(state.ROOT),
             "r6-target-version-parity",
             "--python-version",
             "3.12",
@@ -3793,14 +3830,14 @@ def test_proof_queue_named_lane_rejects_queue_only_with_detach(
     logs = tmp_path / "runs"
 
     with pytest.raises(SystemExit) as exc:
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(logs),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "r6-target-version-parity",
                 "--queue-only",
                 "--detach",
@@ -3817,14 +3854,14 @@ def test_proof_queue_queued_missing_log_is_not_running_evidence(
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(logs),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "r6-target-version-parity",
                 "--queue-only",
             ]
@@ -3834,19 +3871,19 @@ def test_proof_queue_queued_missing_log_is_not_running_evidence(
     row = _rows(db)[0]
     Path(row["log_path"]).unlink()
 
-    assert proof_queue._active_log_status(row) == [
+    assert diagnostics_module._active_log_status(row) == [
         f"  log={Path(row['log_path'])} (queued; proof command not launched yet)"
     ]
     capsys.readouterr()
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(logs),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "audit",
                 "--json",
                 "--no-notebook-check",
@@ -3871,20 +3908,20 @@ def test_proof_queue_windows_launchers_hide_console(
         def __init__(self, _command: list[str], **kwargs: object) -> None:
             captured.append(kwargs)
 
-    monkeypatch.setattr(proof_queue, "_queue_process_spawn_is_windows", lambda: True)
+    monkeypatch.setattr(custody, "_queue_process_spawn_is_windows", lambda: True)
     monkeypatch.setattr(
-        proof_queue.subprocess,
+        custody.subprocess,
         "CREATE_NEW_PROCESS_GROUP",
         0x00000200,
         raising=False,
     )
     monkeypatch.setattr(
-        proof_queue.subprocess,
+        custody.subprocess,
         "CREATE_NO_WINDOW",
         0x08000000,
         raising=False,
     )
-    monkeypatch.setattr(proof_queue.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(custody.subprocess, "Popen", FakePopen)
 
     args = SimpleNamespace(
         db=tmp_path / "proof_queue.sqlite3",
@@ -3893,10 +3930,10 @@ def test_proof_queue_windows_launchers_hide_console(
         repo_root=tmp_path,
     )
 
-    proof_queue._launch_detached_runner(args, run_id="hidden-runner", timeout=1.0)
+    custody._launch_detached_runner(args, run_id="hidden-runner", timeout=1.0)
 
     assert captured[0]["creationflags"] == 0x08000200
-    assert proof_queue._queued_command_process_kwargs() == {"creationflags": 0x08000200}
+    assert custody._queued_command_process_kwargs() == {"creationflags": 0x08000200}
 
 
 def test_proof_queue_posix_detached_runner_uses_new_session(
@@ -3910,8 +3947,8 @@ def test_proof_queue_posix_detached_runner_uses_new_session(
         def __init__(self, _command: list[str], **kwargs: object) -> None:
             captured.append(kwargs)
 
-    monkeypatch.setattr(proof_queue, "_queue_process_spawn_is_windows", lambda: False)
-    monkeypatch.setattr(proof_queue.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(custody, "_queue_process_spawn_is_windows", lambda: False)
+    monkeypatch.setattr(custody.subprocess, "Popen", FakePopen)
 
     args = SimpleNamespace(
         db=tmp_path / "proof_queue.sqlite3",
@@ -3920,11 +3957,11 @@ def test_proof_queue_posix_detached_runner_uses_new_session(
         repo_root=tmp_path,
     )
 
-    proof_queue._launch_detached_runner(args, run_id="posix-runner", timeout=1.0)
+    custody._launch_detached_runner(args, run_id="posix-runner", timeout=1.0)
 
     assert captured[0]["start_new_session"] is True
     assert "creationflags" not in captured[0]
-    assert proof_queue._queued_command_process_kwargs() == {}
+    assert custody._queued_command_process_kwargs() == {}
 
 
 def test_proof_queue_rejects_uv_run_without_active_project_python(
@@ -3933,14 +3970,14 @@ def test_proof_queue_rejects_uv_run_without_active_project_python(
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
 
-    rc = proof_queue.main(
+    rc = cli.main(
         [
             "--db",
             str(db),
             "--logs-root",
             str(logs),
             "--repo-root",
-            str(proof_queue.ROOT),
+            str(state.ROOT),
             "exec",
             "--id",
             "bad-uv",
@@ -3975,14 +4012,14 @@ def test_proof_queue_rejects_raw_cargo_exec(
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
 
-    rc = proof_queue.main(
+    rc = cli.main(
         [
             "--db",
             str(db),
             "--logs-root",
             str(logs),
             "--repo-root",
-            str(proof_queue.ROOT),
+            str(state.ROOT),
             "exec",
             "--id",
             "raw-cargo",
@@ -4011,14 +4048,14 @@ def test_proof_queue_rejects_raw_cargo_exec(
     assert "proof_queue.py cargo" in log_text
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(logs),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "audit",
                 "--no-notebook-check",
             ]
@@ -4042,16 +4079,16 @@ def test_proof_queue_cargo_lane_records_guarded_uv_envelope(
         launched["timeout"] = timeout
         return 4242, tmp_path / "runner.log"
 
-    monkeypatch.setattr(proof_queue, "_launch_detached_runner", fake_launch)
+    monkeypatch.setattr(custody, "_launch_detached_runner", fake_launch)
 
-    rc = proof_queue.main(
+    rc = cli.main(
         [
             "--db",
             str(db),
             "--logs-root",
             str(logs),
             "--repo-root",
-            str(proof_queue.ROOT),
+            str(state.ROOT),
             "cargo",
             "--id",
             "runtime-focused-proof",
@@ -4109,14 +4146,14 @@ def test_proof_queue_cargo_rejects_pre_delimiter_residue(tmp_path: Path) -> None
     logs = tmp_path / "runs"
 
     with pytest.raises(SystemExit, match="stray positional argument"):
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(logs),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "cargo",
                 "--id",
                 "bad-cargo-shell-quote",
@@ -4144,14 +4181,14 @@ def test_proof_queue_cargo_requires_command_delimiter(tmp_path: Path) -> None:
     logs = tmp_path / "runs"
 
     with pytest.raises(SystemExit, match="requires `--` before the proof command"):
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(logs),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "cargo",
                 "--id",
                 "missing-cargo-delimiter",
@@ -4179,16 +4216,16 @@ def test_proof_queue_cargo_lane_rejects_cold_single_lib_test(
         launched.append(run_id)
         return 4242, tmp_path / "runner.log"
 
-    monkeypatch.setattr(proof_queue, "_launch_detached_runner", fake_launch)
+    monkeypatch.setattr(custody, "_launch_detached_runner", fake_launch)
 
-    rc = proof_queue.main(
+    rc = cli.main(
         [
             "--db",
             str(db),
             "--logs-root",
             str(logs),
             "--repo-root",
-            str(proof_queue.ROOT),
+            str(state.ROOT),
             "cargo",
             "--id",
             "cold-single-lib-test",
@@ -4235,16 +4272,16 @@ def test_proof_queue_cargo_lane_allows_explicit_warm_single_test(
         launched["timeout"] = timeout
         return 4242, tmp_path / "runner.log"
 
-    monkeypatch.setattr(proof_queue, "_launch_detached_runner", fake_launch)
+    monkeypatch.setattr(custody, "_launch_detached_runner", fake_launch)
 
-    rc = proof_queue.main(
+    rc = cli.main(
         [
             "--db",
             str(db),
             "--logs-root",
             str(logs),
             "--repo-root",
-            str(proof_queue.ROOT),
+            str(state.ROOT),
             "cargo",
             "--id",
             "warm-single-lib-test",
@@ -4303,14 +4340,14 @@ def test_proof_queue_submit_run_executes_queued_row_in_place(tmp_path: Path) -> 
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(logs),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "submit",
                 str(dsl),
             ]
@@ -4324,14 +4361,14 @@ def test_proof_queue_submit_run_executes_queued_row_in_place(tmp_path: Path) -> 
     assert "env_overrides=" in queued_log_text
     assert "No proof command has launched for this queued row." in queued_log_text
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(logs),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "run",
                 "--timeout",
                 "30",
@@ -4370,7 +4407,7 @@ def test_proof_queue_submit_records_initial_notes_and_marimo_projection(
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
@@ -4379,7 +4416,7 @@ def test_proof_queue_submit_records_initial_notes_and_marimo_projection(
                 "--notebooks-root",
                 str(notebooks),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "submit",
                 str(dsl),
             ]
@@ -4436,7 +4473,7 @@ def test_proof_queue_submit_records_dag_edges_and_runs_ready_order(
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
@@ -4445,7 +4482,7 @@ def test_proof_queue_submit_records_dag_edges_and_runs_ready_order(
                 "--notebooks-root",
                 str(notebooks),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "submit",
                 str(dsl),
             ]
@@ -4464,7 +4501,7 @@ def test_proof_queue_submit_records_dag_edges_and_runs_ready_order(
     assert edges[0]["note"] == "Child narrows the parent proof result."
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
@@ -4473,7 +4510,7 @@ def test_proof_queue_submit_records_dag_edges_and_runs_ready_order(
                 "--notebooks-root",
                 str(notebooks),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "run",
                 "--timeout",
                 "30",
@@ -4490,7 +4527,7 @@ def test_proof_queue_submit_records_dag_edges_and_runs_ready_order(
     assert child["status"] == "queued"
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
@@ -4499,7 +4536,7 @@ def test_proof_queue_submit_records_dag_edges_and_runs_ready_order(
                 "--notebooks-root",
                 str(notebooks),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "run",
                 "--timeout",
                 "30",
@@ -4521,15 +4558,15 @@ def test_proof_queue_blocked_dependency_writes_evidence_without_missing_log_debt
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
     notebooks = tmp_path / "notebooks"
-    conn = proof_queue._connect(db)
+    conn = state._connect(db)
     for run_id, status in (("failed-parent", "failed"), ("blocked-child", "queued")):
-        proof_queue._insert_run(
+        scheduling._insert_run(
             conn,
             run_id=run_id,
             logical_id=run_id,
             reason="prove blocked dependency evidence",
             command=[sys.executable, "-c", "print('blocked')"],
-            cwd=proof_queue.ROOT,
+            cwd=state.ROOT,
             resource_family="python",
             contention_key=f"python:{run_id}",
             scopes=["tools/proof_queue.py"],
@@ -4542,15 +4579,15 @@ def test_proof_queue_blocked_dependency_writes_evidence_without_missing_log_debt
             log_path=logs / f"{run_id}.log",
             summary_json=logs / f"{run_id}.memory_guard.json",
         )
-        proof_queue._update_run(conn, run_id, status=status)
-    proof_queue._insert_note(
+        state._update_run(conn, run_id, status=status)
+    state._insert_note(
         conn,
         run_id="blocked-child",
         body="test: blocked dependency must leave evidence",
         kind="submission",
         author="codex",
     )
-    proof_queue._insert_edge(
+    state._insert_edge(
         conn,
         parent_run_id="failed-parent",
         child_run_id="blocked-child",
@@ -4559,7 +4596,7 @@ def test_proof_queue_blocked_dependency_writes_evidence_without_missing_log_debt
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
@@ -4568,7 +4605,7 @@ def test_proof_queue_blocked_dependency_writes_evidence_without_missing_log_debt
                 "--notebooks-root",
                 str(notebooks),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "run",
             ]
         )
@@ -4580,14 +4617,14 @@ def test_proof_queue_blocked_dependency_writes_evidence_without_missing_log_debt
     capsys.readouterr()
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(logs),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "evidence",
                 "--run-id",
                 "blocked-child",
@@ -4602,14 +4639,14 @@ def test_proof_queue_blocked_dependency_writes_evidence_without_missing_log_debt
     ]
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(logs),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "audit",
                 "--no-notebook-check",
             ]
@@ -4631,7 +4668,7 @@ def test_proof_queue_status_reconciles_blocked_queued_dependency(
     _insert_blocked_dependency_fixture(db, logs)
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
@@ -4640,7 +4677,7 @@ def test_proof_queue_status_reconciles_blocked_queued_dependency(
                 "--notebooks-root",
                 str(notebooks),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "status",
                 "--recent",
                 "5",
@@ -4674,10 +4711,10 @@ def test_proof_queue_submission_reconciles_blocked_dependency_before_contention(
         db=db,
         logs_root=logs,
         notebooks_root=notebooks,
-        repo_root=proof_queue.ROOT,
+        repo_root=state.ROOT,
     )
 
-    rc, run_id = proof_queue._queue_one(
+    rc, run_id = runner._queue_one(
         args,
         logical_id="new-proof",
         reason="prove freed contention after dependency reconciliation",
@@ -4704,15 +4741,15 @@ def test_proof_queue_lineage_edges_do_not_gate_execution(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
-    conn = proof_queue._connect(db)
+    conn = state._connect(db)
     for run_id, status in (("failed-parent", "failed"), ("rerun-child", "queued")):
-        proof_queue._insert_run(
+        scheduling._insert_run(
             conn,
             run_id=run_id,
             logical_id=run_id,
             reason="prove lineage edges never gate",
             command=[sys.executable, "-c", "print('rerun')"],
-            cwd=proof_queue.ROOT,
+            cwd=state.ROOT,
             resource_family="python",
             contention_key=f"python:{run_id}",
             scopes=["tools/proof_queue.py"],
@@ -4725,12 +4762,12 @@ def test_proof_queue_lineage_edges_do_not_gate_execution(
             log_path=logs / f"{run_id}.log",
             summary_json=logs / f"{run_id}.memory_guard.json",
         )
-        proof_queue._update_run(conn, run_id, status=status)
+        state._update_run(conn, run_id, status=status)
     # A rerun's parent is failed or stale by definition: lineage kinds
     # preserve provenance and must never gate scheduling (PROOF_QUEUE.md:
     # "depends_on is the scheduling edge; the others preserve lineage").
     for kind in ("reruns", "supersedes", "compares", "derives_from"):
-        proof_queue._insert_edge(
+        state._insert_edge(
             conn,
             parent_run_id="failed-parent",
             child_run_id="rerun-child",
@@ -4738,20 +4775,20 @@ def test_proof_queue_lineage_edges_do_not_gate_execution(
             note=f"lineage edge {kind}",
         )
 
-    state, blockers = proof_queue._dependency_state(conn, "rerun-child")
+    dependency_state, blockers = scheduling._dependency_state(conn, "rerun-child")
 
-    assert state == "ready"
+    assert dependency_state == "ready"
     assert blockers == []
 
-    proof_queue._insert_edge(
+    state._insert_edge(
         conn,
         parent_run_id="failed-parent",
         child_run_id="rerun-child",
         kind="depends_on",
         note="scheduling edge still gates",
     )
-    state, blockers = proof_queue._dependency_state(conn, "rerun-child")
-    assert state == "blocked"
+    dependency_state, blockers = scheduling._dependency_state(conn, "rerun-child")
+    assert dependency_state == "blocked"
     assert [row["kind"] for row in blockers] == ["depends_on"]
 
 
@@ -4760,14 +4797,14 @@ def test_proof_queue_lineage_edges_accept_external_parent_ids(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="local-child",
         logical_id="local-child",
         reason="prove external lineage parent contract",
         command=[sys.executable, "-c", "print('child')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python",
         contention_key="python:local-child",
         scopes=["tools/proof_queue.py"],
@@ -4786,23 +4823,23 @@ def test_proof_queue_lineage_edges_accept_external_parent_ids(
     assert "parent_run_id" not in fk_columns
     assert "child_run_id" in fk_columns
 
-    proof_queue._insert_edge(
+    state._insert_edge(
         conn,
         parent_run_id="external-worktree-parent",
         child_run_id="local-child",
         kind="supersedes",
         note="external queue DB lineage",
     )
-    edges = proof_queue._edges_for_run_ids(conn, ["local-child"])
+    edges = state._edges_for_run_ids(conn, ["local-child"])
     parents = edges["local-child"]["parents"]
     assert len(parents) == 1
     assert parents[0]["parent_run_id"] == "external-worktree-parent"
     assert parents[0]["parent_status"] is None
     assert parents[0]["kind"] == "supersedes"
-    assert proof_queue._dependency_state(conn, "local-child") == ("ready", [])
+    assert scheduling._dependency_state(conn, "local-child") == ("ready", [])
 
     with pytest.raises(SystemExit, match="unknown parent proof run"):
-        proof_queue._insert_edge(
+        state._insert_edge(
             conn,
             parent_run_id="external-worktree-parent",
             child_run_id="local-child",
@@ -4864,7 +4901,7 @@ def test_proof_queue_migrates_edge_parent_fk_to_external_lineage(
         "failed",
         1,
         "[]",
-        str(proof_queue.ROOT),
+        str(state.ROOT),
         "python",
         "python:parent",
         "[]",
@@ -4880,7 +4917,7 @@ def test_proof_queue_migrates_edge_parent_fk_to_external_lineage(
         "queued",
         None,
         "[]",
-        str(proof_queue.ROOT),
+        str(state.ROOT),
         "python",
         "python:child",
         "[]",
@@ -4915,7 +4952,7 @@ def test_proof_queue_migrates_edge_parent_fk_to_external_lineage(
     legacy.commit()
     legacy.close()
 
-    conn = proof_queue._connect(db)
+    conn = state._connect(db)
 
     fk_columns = {
         row[3] for row in conn.execute("PRAGMA foreign_key_list(proof_run_edges)")
@@ -4938,10 +4975,10 @@ def test_proof_queue_submission_allows_external_lineage_parent(
         db=db,
         logs_root=logs,
         notebooks_root=tmp_path / "notebooks",
-        repo_root=proof_queue.ROOT,
+        repo_root=state.ROOT,
     )
 
-    rc, run_id = proof_queue._queue_one(
+    rc, run_id = runner._queue_one(
         args,
         logical_id="external-lineage-child",
         reason="prove queued external lineage parent",
@@ -4958,15 +4995,15 @@ def test_proof_queue_submission_allows_external_lineage_parent(
 
     assert rc == 0
     assert run_id is not None
-    conn = proof_queue._connect(db)
-    edges = proof_queue._edges_for_run_ids(conn, [run_id])
+    conn = state._connect(db)
+    edges = state._edges_for_run_ids(conn, [run_id])
     assert edges[run_id]["parents"][0]["parent_run_id"] == "other-worktree-run"
     assert edges[run_id]["parents"][0]["parent_status"] is None
     row = next(row for row in _rows(db) if row["run_id"] == run_id)
     assert row["status"] == "queued"
 
     with pytest.raises(SystemExit, match="unknown parent proof run"):
-        proof_queue._queue_one(
+        runner._queue_one(
             args,
             logical_id="external-scheduling-child",
             reason="prove scheduling parents still fail closed",
@@ -4986,14 +5023,14 @@ def test_proof_queue_appends_notes_and_exports_evidence(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     notebooks = tmp_path / "notebooks"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="noted-run",
         logical_id="noted",
         reason="prove append-only notes",
         command=[sys.executable, "-c", "print('noted')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python",
         contention_key="python:noted",
         scopes=["tools/proof_queue.py"],
@@ -5008,7 +5045,7 @@ def test_proof_queue_appends_notes_and_exports_evidence(
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
@@ -5017,7 +5054,7 @@ def test_proof_queue_appends_notes_and_exports_evidence(
                 "--notebooks-root",
                 str(notebooks),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "note",
                 "noted-run",
                 "--kind",
@@ -5041,14 +5078,14 @@ def test_proof_queue_appends_notes_and_exports_evidence(
 
     capsys.readouterr()
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "evidence",
                 "--run-id",
                 "noted-run",
@@ -5069,14 +5106,14 @@ def test_proof_queue_note_projection_failure_preserves_note(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     log_path = tmp_path / "noted-warning.log"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="noted-warning-run",
         logical_id="noted-warning",
         reason="prove note survives notebook projection failure",
         command=[sys.executable, "-c", "print('noted')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python",
         contention_key="python:noted-warning",
         scopes=["tools/proof_queue.py"],
@@ -5093,17 +5130,17 @@ def test_proof_queue_note_projection_failure_preserves_note(
     def fail_notebook(*_args: object, **_kwargs: object) -> Path:
         raise RuntimeError("note notebook exploded")
 
-    monkeypatch.setattr(proof_queue, "_write_marimo_notebook", fail_notebook)
+    monkeypatch.setattr(evidence_module, "_write_marimo_notebook", fail_notebook)
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "note",
                 "noted-warning-run",
                 "--kind",
@@ -5135,14 +5172,14 @@ def test_proof_queue_diagnoses_runtime_wasm_missing_required_exports(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     log_path = tmp_path / "failed.log"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="failed-run",
         logical_id="pact-witness-acceptance",
         reason="prove runtime export obligation diagnosis",
         command=[sys.executable, "-c", "print('fail')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="wasm",
         contention_key="wasm:pact-witness",
         scopes=["tools/proof_queue.py"],
@@ -5163,17 +5200,17 @@ def test_proof_queue_diagnoses_runtime_wasm_missing_required_exports(
         "Runtime wasm build failed\n",
         encoding="utf-8",
     )
-    proof_queue._update_run(conn, "failed-run", status="failed", returncode=1)
+    state._update_run(conn, "failed-run", status="failed", returncode=1)
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "evidence",
                 "failed-run",
             ]
@@ -5193,14 +5230,14 @@ def test_proof_queue_diagnoses_runtime_export_authority_unknown_name(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     log_path = tmp_path / "failed.log"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="failed-run",
         logical_id="pact-witness-acceptance",
         reason="prove export authority unknown-name diagnosis",
         command=[sys.executable, "-c", "print('fail')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="wasm",
         contention_key="wasm:pact-witness",
         scopes=["tools/proof_queue.py"],
@@ -5217,17 +5254,17 @@ def test_proof_queue_diagnoses_runtime_export_authority_unknown_name(
         "ValueError: unknown WASM runtime import/export name: PyObject_Init\n",
         encoding="utf-8",
     )
-    proof_queue._update_run(conn, "failed-run", status="failed", returncode=1)
+    state._update_run(conn, "failed-run", status="failed", returncode=1)
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "evidence",
                 "failed-run",
             ]
@@ -5247,14 +5284,14 @@ def test_proof_queue_diagnoses_failed_static_module_exec(
     db = tmp_path / "proof_queue.sqlite3"
     notebooks = tmp_path / "notebooks"
     log_path = tmp_path / "failed.log"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="failed-run",
         logical_id="pact-witness-acceptance",
         reason="prove deterministic diagnosis",
         command=[sys.executable, "-c", "print('fail')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="wasm",
         contention_key="wasm:pact-witness",
         scopes=["tools/proof_queue.py"],
@@ -5273,17 +5310,17 @@ def test_proof_queue_diagnoses_failed_static_module_exec(
         f"diagnostic_json={tmp_path / 'static_extension_init_failure.json'}\n",
         encoding="utf-8",
     )
-    proof_queue._update_run(conn, "failed-run", status="failed", returncode=1)
+    state._update_run(conn, "failed-run", status="failed", returncode=1)
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "evidence",
                 "--run-id",
                 "failed-run",
@@ -5300,7 +5337,7 @@ def test_proof_queue_diagnoses_failed_static_module_exec(
     ]
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
@@ -5309,7 +5346,7 @@ def test_proof_queue_diagnoses_failed_static_module_exec(
                 "--notebooks-root",
                 str(notebooks),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "diagnose",
                 "failed-run",
                 "--append-note",
@@ -5335,14 +5372,14 @@ def test_proof_queue_diagnoses_numpy_wrapped_static_module_exec(
     db = tmp_path / "proof_queue.sqlite3"
     log_path = tmp_path / "failed.log"
     diagnostic = tmp_path / "static_extension_init_failure.json"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="failed-run",
         logical_id="pact-witness-acceptance",
         reason="prove NumPy wrapped module-exec diagnosis",
         command=[sys.executable, "-c", "print('fail')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="wasm-browser",
         contention_key="wasm:pact-witness",
         scopes=["tools/proof_queue.py"],
@@ -5366,17 +5403,17 @@ def test_proof_queue_diagnoses_numpy_wrapped_static_module_exec(
         "returned non-zero exit status 1.\n",
         encoding="utf-8",
     )
-    proof_queue._update_run(conn, "failed-run", status="failed", returncode=1)
+    state._update_run(conn, "failed-run", status="failed", returncode=1)
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "evidence",
                 "--run-id",
                 "failed-run",
@@ -5398,14 +5435,14 @@ def test_proof_queue_diagnoses_pact_witness_fixture_missing(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     log_path = tmp_path / "pact-fixture-missing.log"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="pact-fixture-missing-run",
         logical_id="pact-witness-acceptance",
         reason="prove missing Pact fixture diagnosis",
         command=[sys.executable, "tools/pact_witness_acceptance.py"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="wasm-browser",
         contention_key="wasm:pact-witness",
         scopes=["tools/pact_witness_acceptance.py"],
@@ -5424,7 +5461,7 @@ def test_proof_queue_diagnoses_pact_witness_fixture_missing(
         "missing Pact fixture: collab/pact/pact_witness_kernel/lstar_sample.npz\n",
         encoding="utf-8",
     )
-    proof_queue._update_run(
+    state._update_run(
         conn,
         "pact-fixture-missing-run",
         status="failed",
@@ -5432,14 +5469,14 @@ def test_proof_queue_diagnoses_pact_witness_fixture_missing(
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "evidence",
                 "--run-id",
                 "pact-fixture-missing-run",
@@ -5464,14 +5501,14 @@ def test_proof_queue_diagnoses_rust_compile_error_and_guard_orphan_cleanup(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     log_path = tmp_path / "rust-failed.log"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="rust-failed-run",
         logical_id="rust-failed",
         reason="prove Rust compiler diagnostics",
         command=["cargo", "test", "-p", "molt-runtime"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="rust",
         contention_key="rust:molt-runtime",
         scopes=["runtime/molt-runtime/src/cpython_abi_hooks.rs"],
@@ -5484,7 +5521,7 @@ def test_proof_queue_diagnoses_rust_compile_error_and_guard_orphan_cleanup(
         log_path=log_path,
         summary_json=tmp_path / "rust-failed.memory_guard.json",
     )
-    proof_queue._insert_note(
+    state._insert_note(
         conn,
         run_id="rust-failed-run",
         body="test: capture rustc and memory guard signals",
@@ -5502,17 +5539,17 @@ def test_proof_queue_diagnoses_rust_compile_error_and_guard_orphan_cleanup(
         ),
         encoding="utf-8",
     )
-    proof_queue._update_run(conn, "rust-failed-run", status="failed", returncode=101)
+    state._update_run(conn, "rust-failed-run", status="failed", returncode=101)
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "evidence",
                 "--run-id",
                 "rust-failed-run",
@@ -5533,14 +5570,14 @@ def test_proof_queue_diagnoses_rust_compile_error_and_guard_orphan_cleanup(
     assert orphan_diagnostic["artifacts"] == [quarantine_receipt]
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "audit",
                 "--json",
                 "--no-notebook-check",
@@ -5562,8 +5599,8 @@ def test_proof_queue_diagnoses_rust_test_failure_before_cargo_error_line(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     log_path = tmp_path / "rust-test-failed.log"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="rust-test-failed-run",
         logical_id="r3b-boxed-nonscalar-alias-regressions-warm-20260705",
@@ -5576,7 +5613,7 @@ def test_proof_queue_diagnoses_rust_test_failure_before_cargo_error_line(
             "representation_plan::tests::",
             "--lib",
         ],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="cargo",
         contention_key="cargo:molt-tir",
         scopes=["runtime/molt-tir/src/representation_plan/tests.rs"],
@@ -5589,7 +5626,7 @@ def test_proof_queue_diagnoses_rust_test_failure_before_cargo_error_line(
         log_path=log_path,
         summary_json=tmp_path / "rust-test-failed.memory_guard.json",
     )
-    proof_queue._insert_note(
+    state._insert_note(
         conn,
         run_id="rust-test-failed-run",
         body="test: cargo test assertion failure must not masquerade as rustc",
@@ -5616,19 +5653,19 @@ def test_proof_queue_diagnoses_rust_test_failure_before_cargo_error_line(
         ),
         encoding="utf-8",
     )
-    proof_queue._update_run(
+    state._update_run(
         conn, "rust-test-failed-run", status="failed", returncode=101
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "evidence",
                 "--run-id",
                 "rust-test-failed-run",
@@ -5657,14 +5694,14 @@ def test_proof_queue_diagnoses_nested_guarded_exec_orphan_cleanup(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     log_path = tmp_path / "nested-guarded-exec.log"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="nested-guarded-exec-run",
         logical_id="nested-guarded-exec",
         reason="prove nested guarded_exec orphan cleanup diagnosis",
         command=["cargo", "test", "-p", "molt-passes", "--lib"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="rust",
         contention_key="rust:molt-passes",
         scopes=["runtime/molt-passes/src/representation_facts.rs"],
@@ -5677,7 +5714,7 @@ def test_proof_queue_diagnoses_nested_guarded_exec_orphan_cleanup(
         log_path=log_path,
         summary_json=tmp_path / "nested-guarded-exec.memory_guard.json",
     )
-    proof_queue._insert_note(
+    state._insert_note(
         conn,
         run_id="nested-guarded-exec-run",
         body="test: nested guarded_exec orphan cleanup remains distinct",
@@ -5702,19 +5739,19 @@ def test_proof_queue_diagnoses_nested_guarded_exec_orphan_cleanup(
         ),
         encoding="utf-8",
     )
-    proof_queue._update_run(
+    state._update_run(
         conn, "nested-guarded-exec-run", status="passed", returncode=0
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "evidence",
                 "--run-id",
                 "nested-guarded-exec-run",
@@ -5730,14 +5767,14 @@ def test_proof_queue_diagnoses_nested_guarded_exec_orphan_cleanup(
     assert diagnostics[0]["artifacts"] == [receipt]
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "audit",
                 "--json",
                 "--no-notebook-check",
@@ -5761,8 +5798,8 @@ def test_proof_queue_diagnoses_memory_guard_timeout_before_orphan_cleanup(
     log_path = tmp_path / "timeout.log"
     summary_path = tmp_path / "timeout.memory_guard.json"
     nodeid = "tests/tools/test_proof_queue.py::test_generic_timeout_context"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="timeout-run",
         logical_id="generic-timeout-recheck",
@@ -5773,7 +5810,7 @@ def test_proof_queue_diagnoses_memory_guard_timeout_before_orphan_cleanup(
             "pytest",
             "tests/tools/test_proof_queue.py",
         ],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python-tests",
         contention_key="python-tests",
         scopes=["tools/proof_queue.py"],
@@ -5786,7 +5823,7 @@ def test_proof_queue_diagnoses_memory_guard_timeout_before_orphan_cleanup(
         log_path=log_path,
         summary_json=summary_path,
     )
-    proof_queue._insert_note(
+    state._insert_note(
         conn,
         run_id="timeout-run",
         body="test: timeout must be primary queue evidence",
@@ -5824,17 +5861,17 @@ def test_proof_queue_diagnoses_memory_guard_timeout_before_orphan_cleanup(
         ),
         encoding="utf-8",
     )
-    proof_queue._update_run(conn, "timeout-run", status="failed", returncode=124)
+    state._update_run(conn, "timeout-run", status="failed", returncode=124)
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "evidence",
                 "--run-id",
                 "timeout-run",
@@ -5868,8 +5905,8 @@ def test_proof_queue_routes_native_import_bootstrap_timeout_to_r1_owner(
         "tests/test_native_import_bootstrap_regressions.py::"
         "test_native_package_entry_direct_import_and_from_import_bindings_are_resolved"
     )
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="native-import-timeout-run",
         logical_id="native-import-bootstrap-regressions-full",
@@ -5880,7 +5917,7 @@ def test_proof_queue_routes_native_import_bootstrap_timeout_to_r1_owner(
             "pytest",
             "tests/test_native_import_bootstrap_regressions.py",
         ],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python-tests",
         contention_key="native-import-regression",
         scopes=["tests/test_native_import_bootstrap_regressions.py"],
@@ -5917,19 +5954,19 @@ def test_proof_queue_routes_native_import_bootstrap_timeout_to_r1_owner(
         ),
         encoding="utf-8",
     )
-    proof_queue._update_run(
+    state._update_run(
         conn, "native-import-timeout-run", status="failed", returncode=124
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "evidence",
                 "--run-id",
                 "native-import-timeout-run",
@@ -5952,14 +5989,14 @@ def test_proof_queue_routes_native_import_bootstrap_timeout_to_r1_owner(
     assert "memory-guard-timeout" not in {item["signal_id"] for item in diagnostics}
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "audit",
                 "--no-notebook-check",
             ]
@@ -5974,14 +6011,14 @@ def test_proof_queue_routes_native_import_bootstrap_timeout_to_r1_owner(
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "status",
                 "--recent",
                 "1",
@@ -5999,14 +6036,14 @@ def test_proof_queue_diagnoses_pytest_assertion_failure(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     log_path = tmp_path / "pytest-failed.log"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="pytest-failed-run",
         logical_id="pytest-failed",
         reason="prove pytest diagnostics",
         command=[sys.executable, "-m", "pytest", "tests/test_wasm_link_validation.py"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python",
         contention_key="python:pytest-failed",
         scopes=["tests/test_wasm_link_validation.py"],
@@ -6019,7 +6056,7 @@ def test_proof_queue_diagnoses_pytest_assertion_failure(
         log_path=log_path,
         summary_json=tmp_path / "pytest-failed.memory_guard.json",
     )
-    proof_queue._insert_note(
+    state._insert_note(
         conn,
         run_id="pytest-failed-run",
         body="test: capture pytest assertion diagnostics",
@@ -6036,17 +6073,17 @@ def test_proof_queue_diagnoses_pytest_assertion_failure(
         ),
         encoding="utf-8",
     )
-    proof_queue._update_run(conn, "pytest-failed-run", status="failed", returncode=1)
+    state._update_run(conn, "pytest-failed-run", status="failed", returncode=1)
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "evidence",
                 "--run-id",
                 "pytest-failed-run",
@@ -6072,8 +6109,8 @@ def test_proof_queue_routes_native_import_bootstrap_pytest_failure_to_r1_owner(
         "tests/test_native_import_bootstrap_regressions.py::"
         "test_native_imported_module_dunder_getattr_handles_missing_attr"
     )
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="native-import-bootstrap-run",
         logical_id="indirect-call-trampoline-fix-e2e-shard",
@@ -6084,7 +6121,7 @@ def test_proof_queue_routes_native_import_bootstrap_pytest_failure_to_r1_owner(
             "pytest",
             "tests/test_native_import_bootstrap_regressions.py",
         ],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python-tests",
         contention_key="native-import-regression",
         scopes=["tests/test_native_import_bootstrap_regressions.py"],
@@ -6107,19 +6144,19 @@ def test_proof_queue_routes_native_import_bootstrap_pytest_failure_to_r1_owner(
         ),
         encoding="utf-8",
     )
-    proof_queue._update_run(
+    state._update_run(
         conn, "native-import-bootstrap-run", status="failed", returncode=1
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "evidence",
                 "--run-id",
                 "native-import-bootstrap-run",
@@ -6145,8 +6182,8 @@ def test_proof_queue_diagnoses_cold_single_cargo_proof_policy_refusal(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     log_path = tmp_path / "cold-single-cargo.log"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="cold-single-cargo-run",
         logical_id="indirect-call-trampoline-fix-runtime-call-shard",
@@ -6171,7 +6208,7 @@ def test_proof_queue_diagnoses_cold_single_cargo_proof_policy_refusal(
             "--lib",
             "call",
         ],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="cargo",
         contention_key="cargo:molt-runtime",
         scopes=["tools/proof_queue.py"],
@@ -6184,7 +6221,7 @@ def test_proof_queue_diagnoses_cold_single_cargo_proof_policy_refusal(
         log_path=log_path,
         summary_json=tmp_path / "cold-single-cargo.memory_guard.json",
     )
-    proof_queue._insert_note(
+    state._insert_note(
         conn,
         run_id="cold-single-cargo-run",
         body="test: cold single-test Cargo policy refusal must be classified",
@@ -6196,7 +6233,7 @@ def test_proof_queue_diagnoses_cold_single_cargo_proof_policy_refusal(
         "('call' under --lib). Batch the relevant crate shard in one compile.\n",
         encoding="utf-8",
     )
-    proof_queue._update_run(
+    state._update_run(
         conn,
         "cold-single-cargo-run",
         status="failed",
@@ -6204,14 +6241,14 @@ def test_proof_queue_diagnoses_cold_single_cargo_proof_policy_refusal(
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "evidence",
                 "--run-id",
                 "cold-single-cargo-run",
@@ -6232,14 +6269,14 @@ def test_proof_queue_diagnoses_molt_runtime_invalid_object_header(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     log_path = tmp_path / "molt-runtime-invalid-header.log"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="molt-runtime-invalid-header-run",
         logical_id="native-module-dunder-cleanup-trace",
         reason="prove Molt runtime fatal diagnostics",
         command=[str(tmp_path / "compiled-native-binary")],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python-tests",
         contention_key="native-import-regression",
         scopes=["runtime/molt-runtime/src/builtins/modules.rs"],
@@ -6252,7 +6289,7 @@ def test_proof_queue_diagnoses_molt_runtime_invalid_object_header(
         log_path=log_path,
         summary_json=tmp_path / "molt-runtime-invalid-header.memory_guard.json",
     )
-    proof_queue._insert_note(
+    state._insert_note(
         conn,
         run_id="molt-runtime-invalid-header-run",
         body="test: runtime fatal must be classified before generic pytest failure",
@@ -6274,7 +6311,7 @@ def test_proof_queue_diagnoses_molt_runtime_invalid_object_header(
         ),
         encoding="utf-8",
     )
-    proof_queue._update_run(
+    state._update_run(
         conn,
         "molt-runtime-invalid-header-run",
         status="failed",
@@ -6282,14 +6319,14 @@ def test_proof_queue_diagnoses_molt_runtime_invalid_object_header(
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "evidence",
                 "--run-id",
                 "molt-runtime-invalid-header-run",
@@ -6315,8 +6352,8 @@ def test_proof_queue_diagnoses_perf_scoreboard_not_quiescent(
     db = tmp_path / "proof_queue.sqlite3"
     log_path = tmp_path / "perf-scoreboard-not-quiescent.log"
     summary_json = tmp_path / "perf-scoreboard-not-quiescent.memory_guard.json"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="perf-scoreboard-not-quiescent-run",
         logical_id="c4-current-perf-scoreboard",
@@ -6333,7 +6370,7 @@ def test_proof_queue_diagnoses_perf_scoreboard_not_quiescent(
             "tools\\perf_scoreboard.py",
             "--require-quiescent",
         ],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="perf",
         contention_key="c4-current-perf-scoreboard",
         scopes=["tools/perf_scoreboard.py"],
@@ -6367,7 +6404,7 @@ def test_proof_queue_diagnoses_perf_scoreboard_not_quiescent(
         ),
         encoding="utf-8",
     )
-    proof_queue._update_run(
+    state._update_run(
         conn,
         "perf-scoreboard-not-quiescent-run",
         status="failed",
@@ -6375,14 +6412,14 @@ def test_proof_queue_diagnoses_perf_scoreboard_not_quiescent(
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "evidence",
                 "--run-id",
                 "perf-scoreboard-not-quiescent-run",
@@ -6410,14 +6447,14 @@ def test_proof_queue_diagnoses_runtime_wasm_rust_target_missing(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     log_path = tmp_path / "runtime-wasm-rust-target.log"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="runtime-wasm-rust-target-run",
         logical_id="pact-witness-acceptance",
         reason="prove missing wasm Rust target diagnosis",
         command=[sys.executable, "tools/pact_witness_acceptance.py"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="wasm-browser",
         contention_key="wasm:pact",
         scopes=["tools/pact_witness_acceptance.py"],
@@ -6430,7 +6467,7 @@ def test_proof_queue_diagnoses_runtime_wasm_rust_target_missing(
         log_path=log_path,
         summary_json=tmp_path / "runtime-wasm-rust-target.memory_guard.json",
     )
-    proof_queue._insert_note(
+    state._insert_note(
         conn,
         run_id="runtime-wasm-rust-target-run",
         body="test: missing Rust target must surface as actionable audit DX",
@@ -6446,19 +6483,19 @@ def test_proof_queue_diagnoses_runtime_wasm_rust_target_missing(
         "'build']' returned non-zero exit status 2.\n",
         encoding="utf-8",
     )
-    proof_queue._update_run(
+    state._update_run(
         conn, "runtime-wasm-rust-target-run", status="failed", returncode=1
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "evidence",
                 "--run-id",
                 "runtime-wasm-rust-target-run",
@@ -6484,14 +6521,14 @@ def test_proof_queue_diagnoses_runtime_wasm_rust_target_missing(
     }
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "audit",
                 "--no-notebook-check",
             ]
@@ -6520,16 +6557,16 @@ def test_proof_queue_diagnoses_wasm_toolchain_contract_import_missing(
     def fail_toolchain_import():
         raise ModuleNotFoundError("No module named 'packaging.specifiers'")
 
-    monkeypatch.setattr(proof_queue, "_load_wasm_toolchain", fail_toolchain_import)
+    monkeypatch.setattr(policy, "_load_wasm_toolchain", fail_toolchain_import)
 
-    rc = proof_queue.main(
+    rc = cli.main(
         [
             "--db",
             str(db),
             "--logs-root",
             str(logs),
             "--repo-root",
-            str(proof_queue.ROOT),
+            str(state.ROOT),
             "exec",
             "--id",
             "wasm-contract-import-missing-run",
@@ -6560,14 +6597,14 @@ def test_proof_queue_diagnoses_wasm_toolchain_contract_import_missing(
     capsys.readouterr()
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "evidence",
                 "--run-id",
                 run_id,
@@ -6596,14 +6633,14 @@ def test_proof_queue_diagnoses_embedded_python_import_missing(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     log_path = tmp_path / "dx-build-missing-import.log"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="dx-build-missing-import",
         logical_id="e2-build-wallclock",
         reason="prove build timer missing import diagnosis",
         command=[sys.executable, "tools/dx_build_timer.py"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="native-build",
         contention_key="compiler-build-resource",
         scopes=["E2-BUILD-WALLCLOCK"],
@@ -6621,19 +6658,19 @@ def test_proof_queue_diagnoses_embedded_python_import_missing(
         "\\nModuleNotFoundError: No module named 'packaging.specifiers'\",\n",
         encoding="utf-8",
     )
-    proof_queue._update_run(
+    state._update_run(
         conn, "dx-build-missing-import", status="failed", returncode=1
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "evidence",
                 "--run-id",
                 "dx-build-missing-import",
@@ -6657,14 +6694,14 @@ def test_proof_queue_diagnoses_source_extension_nm_missing(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     log_path = tmp_path / "source-extension-nm.log"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="source-extension-nm",
         logical_id="e1-numpy-multiarray-rebuild",
         reason="prove source-extension nm custody diagnosis",
         command=[sys.executable, "-m", "molt", "extension", "build"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="wasm",
         contention_key="compiler-build-resource",
         scopes=["src/molt/cli/source_extensions.py"],
@@ -6683,17 +6720,17 @@ def test_proof_queue_diagnoses_source_extension_nm_missing(
         "canonical LLVM/WASI nm authority is unavailable\n",
         encoding="utf-8",
     )
-    proof_queue._update_run(conn, "source-extension-nm", status="failed", returncode=2)
+    state._update_run(conn, "source-extension-nm", status="failed", returncode=2)
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "evidence",
                 "--run-id",
                 "source-extension-nm",
@@ -6718,14 +6755,14 @@ def test_proof_queue_diagnoses_source_extension_build_plan_missing(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     log_path = tmp_path / "source-extension-plan.log"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="source-extension-plan",
         logical_id="e1-numpy-multiarray-rebuild",
         reason="prove source-extension source-plan path diagnosis",
         command=[sys.executable, "-m", "molt", "extension", "build"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="wasm-source-extension",
         contention_key="wasm:pact-seal-regen",
         scopes=["src/molt/cli/source_extensions.py"],
@@ -6745,19 +6782,19 @@ def test_proof_queue_diagnoses_source_extension_build_plan_missing(
         'C:\\repo\\numpy\\tmp\\pact_numpy_multiarray\\intro-targets.json"]}\n',
         encoding="utf-8",
     )
-    proof_queue._update_run(
+    state._update_run(
         conn, "source-extension-plan", status="failed", returncode=2
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "evidence",
                 "--run-id",
                 "source-extension-plan",
@@ -6783,14 +6820,14 @@ def test_proof_queue_diagnoses_source_extension_compile_header_missing(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     log_path = tmp_path / "source-extension-header.log"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="source-extension-header",
         logical_id="e1-scipy-ndimage-rebuild",
         reason="prove source-extension missing generated header diagnosis",
         command=[sys.executable, "-m", "molt", "extension", "build"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="wasm-source-extension",
         contention_key="wasm:pact-seal-regen",
         scopes=["src/molt/cli/source_extensions.py"],
@@ -6812,19 +6849,19 @@ def test_proof_queue_diagnoses_source_extension_compile_header_missing(
         '1 error generated."]}\n',
         encoding="utf-8",
     )
-    proof_queue._update_run(
+    state._update_run(
         conn, "source-extension-header", status="failed", returncode=2
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "evidence",
                 "--run-id",
                 "source-extension-header",
@@ -6850,14 +6887,14 @@ def test_proof_queue_diagnoses_source_extension_cython_regeneration_failed(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     log_path = tmp_path / "source-extension-cython.log"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="source-extension-cython",
         logical_id="e1-scipy-ni-label-rebuild",
         reason="prove source-extension Cython regeneration diagnosis",
         command=[sys.executable, "-m", "molt", "extension", "build"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="wasm-source-extension",
         contention_key="wasm:pact-seal-regen",
         scopes=["src/molt/cli/source_extensions.py"],
@@ -6877,19 +6914,19 @@ def test_proof_queue_diagnoses_source_extension_cython_regeneration_failed(
         "attribute 'is_builtin_type'\"]}\n",
         encoding="utf-8",
     )
-    proof_queue._update_run(
+    state._update_run(
         conn, "source-extension-cython", status="failed", returncode=2
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "evidence",
                 "--run-id",
                 "source-extension-cython",
@@ -6918,14 +6955,14 @@ def test_proof_queue_diagnoses_source_extension_cimport_header_mismatch(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     log_path = tmp_path / "source-extension-cimport-header.log"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="source-extension-cimport-header",
         logical_id="e1-scipy-ni-label-rebuild",
         reason="prove source-extension cimport/header custody diagnosis",
         command=[sys.executable, "-m", "molt", "extension", "build"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="wasm-source-extension",
         contention_key="wasm:pact-seal-regen",
         scopes=["src/molt/cli/source_extension_cython.py"],
@@ -6949,19 +6986,19 @@ def test_proof_queue_diagnoses_source_extension_cimport_header_mismatch(
         'support implicit function declarations"]}\n',
         encoding="utf-8",
     )
-    proof_queue._update_run(
+    state._update_run(
         conn, "source-extension-cimport-header", status="failed", returncode=2
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "evidence",
                 "--run-id",
                 "source-extension-cimport-header",
@@ -6987,14 +7024,14 @@ def test_proof_queue_diagnoses_source_extension_cpython_abi_declaration_missing(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     log_path = tmp_path / "source-extension-cpython-abi-decl.log"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="source-extension-cpython-abi-decl",
         logical_id="e1-scipy-ni-label-rebuild",
         reason="prove source-extension cpython abi declaration diagnosis",
         command=[sys.executable, "-m", "molt", "extension", "build"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="wasm-source-extension",
         contention_key="wasm:pact-seal-regen",
         scopes=["src/molt/cli/source_extension_cython.py"],
@@ -7017,19 +7054,19 @@ def test_proof_queue_diagnoses_source_extension_cpython_abi_declaration_missing(
         "'PyTraceBack_Here' declared here\"]}\n",
         encoding="utf-8",
     )
-    proof_queue._update_run(
+    state._update_run(
         conn, "source-extension-cpython-abi-decl", status="failed", returncode=2
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "evidence",
                 "--run-id",
                 "source-extension-cpython-abi-decl",
@@ -7058,14 +7095,14 @@ def test_proof_queue_diagnoses_cpython_abi_pymod_gil_slot_token_mismatch(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     log_path = tmp_path / "pymod-gil-slot.log"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="pymod-gil-slot",
         logical_id="e1-scipy-ndimage-rebuild",
         reason="prove cpython abi PyModuleDef slot token diagnosis",
         command=[sys.executable, "-m", "molt", "extension", "build"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="wasm-source-extension",
         contention_key="wasm:pact-seal-regen",
         scopes=["runtime/molt-cpython-abi/include/Python.h"],
@@ -7094,17 +7131,17 @@ def test_proof_queue_diagnoses_cpython_abi_pymod_gil_slot_token_mismatch(
         '      |                                              ^"]}\n',
         encoding="utf-8",
     )
-    proof_queue._update_run(conn, "pymod-gil-slot", status="failed", returncode=2)
+    state._update_run(conn, "pymod-gil-slot", status="failed", returncode=2)
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "evidence",
                 "--run-id",
                 "pymod-gil-slot",
@@ -7130,14 +7167,14 @@ def test_proof_queue_diagnoses_source_lease_contamination(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     log_path = tmp_path / "source-lease.log"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="source-lease-run",
         logical_id="source-lease",
         reason="prove source lease contamination diagnosis",
         command=[sys.executable, "tests/molt_diff.py", "case.py"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python",
         contention_key="python:source-lease",
         scopes=["src/molt/stdlib/sys.py"],
@@ -7157,17 +7194,17 @@ def test_proof_queue_diagnoses_source_lease_contamination(
         "proof_queue finished status=failed exit_code=1 elapsed=17.0s\n",
         encoding="utf-8",
     )
-    proof_queue._update_run(conn, "source-lease-run", status="failed", returncode=1)
+    state._update_run(conn, "source-lease-run", status="failed", returncode=1)
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "evidence",
                 "--run-id",
                 "source-lease-run",
@@ -7191,14 +7228,14 @@ def test_proof_queue_diagnoses_partial_module_publication(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     log_path = tmp_path / "partial-module-publication.log"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="partial-module-publication-run",
         logical_id="partial-module-publication",
         reason="prove partial module publication diagnosis",
         command=[sys.executable, "tests/molt_diff.py", "case.py"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python",
         contention_key="python:partial-module-publication",
         scopes=["runtime/molt-runtime/src/builtins/module_table.rs"],
@@ -7221,19 +7258,19 @@ def test_proof_queue_diagnoses_partial_module_publication(
         '(circular import during module allocation)\\n"\n',
         encoding="utf-8",
     )
-    proof_queue._update_run(
+    state._update_run(
         conn, "partial-module-publication-run", status="failed", returncode=1
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "evidence",
                 "--run-id",
                 "partial-module-publication-run",
@@ -7270,8 +7307,8 @@ def test_proof_queue_diagnoses_molt_diff_stdout_mismatch(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     log_path = tmp_path / "molt-diff-stdout.log"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="molt-diff-stdout-run",
         logical_id="molt-diff-stdout",
@@ -7283,7 +7320,7 @@ def test_proof_queue_diagnoses_molt_diff_stdout_mismatch(
             "1",
             "tests/differential/stdlib/sys_encoding_basic.py",
         ],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python",
         contention_key="python:r6-sys-stat-py312",
         scopes=[
@@ -7311,17 +7348,17 @@ def test_proof_queue_diagnoses_molt_diff_stdout_mismatch(
         "proof_queue finished status=failed exit_code=1 elapsed=365.719s\n",
         encoding="utf-8",
     )
-    proof_queue._update_run(conn, "molt-diff-stdout-run", status="failed", returncode=1)
+    state._update_run(conn, "molt-diff-stdout-run", status="failed", returncode=1)
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "evidence",
                 "--run-id",
                 "molt-diff-stdout-run",
@@ -7348,14 +7385,14 @@ def test_proof_queue_diagnoses_pytest_import_error(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     log_path = tmp_path / "pytest-import-error.log"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="pytest-import-error-run",
         logical_id="pytest-import-error",
         reason="prove pytest import diagnostics",
         command=[sys.executable, "-m", "pytest", "tests/test_molt_dev.py"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python",
         contention_key="python:pytest-import-error",
         scopes=["tests/test_molt_dev.py"],
@@ -7368,7 +7405,7 @@ def test_proof_queue_diagnoses_pytest_import_error(
         log_path=log_path,
         summary_json=tmp_path / "pytest-import-error.memory_guard.json",
     )
-    proof_queue._insert_note(
+    state._insert_note(
         conn,
         run_id="pytest-import-error-run",
         body="test: capture pytest import diagnostics",
@@ -7385,19 +7422,19 @@ def test_proof_queue_diagnoses_pytest_import_error(
         ),
         encoding="utf-8",
     )
-    proof_queue._update_run(
+    state._update_run(
         conn, "pytest-import-error-run", status="failed", returncode=1
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "evidence",
                 "--run-id",
                 "pytest-import-error-run",
@@ -7416,7 +7453,7 @@ def test_proof_queue_diagnoses_external_native_and_profile_refusals(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
-    conn = proof_queue._connect(db)
+    conn = state._connect(db)
     cases = [
         (
             "native-artifact",
@@ -7443,13 +7480,13 @@ def test_proof_queue_diagnoses_external_native_and_profile_refusals(
     ]
     for run_id, log_text, _signal_id in cases:
         log_path = tmp_path / f"{run_id}.log"
-        proof_queue._insert_run(
+        scheduling._insert_run(
             conn,
             run_id=run_id,
             logical_id="pact-witness-acceptance",
             reason="prove external native diagnostics",
             command=[sys.executable, "-c", "raise SystemExit(2)"],
-            cwd=proof_queue.ROOT,
+            cwd=state.ROOT,
             resource_family="wasm-browser",
             contention_key=f"wasm:{run_id}",
             scopes=["src/molt/cli/external_native.py"],
@@ -7462,7 +7499,7 @@ def test_proof_queue_diagnoses_external_native_and_profile_refusals(
             log_path=log_path,
             summary_json=tmp_path / f"{run_id}.memory_guard.json",
         )
-        proof_queue._insert_note(
+        state._insert_note(
             conn,
             run_id=run_id,
             body="test: classify recurring Pact build refusal",
@@ -7470,17 +7507,17 @@ def test_proof_queue_diagnoses_external_native_and_profile_refusals(
             author="codex",
         )
         log_path.write_text(log_text + "\n", encoding="utf-8")
-        proof_queue._update_run(conn, run_id, status="failed", returncode=2)
+        state._update_run(conn, run_id, status="failed", returncode=2)
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "evidence",
                 "--limit",
                 "3",
@@ -7504,14 +7541,14 @@ def test_proof_queue_diagnoses_external_native_runtime_import_custody(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     log_path = tmp_path / "runtime-import-custody.log"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="runtime-import-custody",
         logical_id="pact-witness-acceptance",
         reason="prove stale NumPy seal runtime import custody diagnostics",
         command=[sys.executable, "-c", "raise SystemExit(2)"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="wasm-browser",
         contention_key="wasm:pact-witness",
         scopes=["src/molt/cli/external_native.py"],
@@ -7535,7 +7572,7 @@ def test_proof_queue_diagnoses_external_native_runtime_import_custody(
         "tmp/worktrees/pact-collab/deleted/npy_static_data.c does not exist\n",
         encoding="utf-8",
     )
-    proof_queue._update_run(
+    state._update_run(
         conn,
         "runtime-import-custody",
         status="failed",
@@ -7543,14 +7580,14 @@ def test_proof_queue_diagnoses_external_native_runtime_import_custody(
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "evidence",
                 "--run-id",
                 "runtime-import-custody",
@@ -7575,14 +7612,14 @@ def test_proof_queue_diagnoses_external_native_abi_link_surface_gap(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     log_path = tmp_path / "abi-link-surface.log"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="abi-link-surface",
         logical_id="pact-witness-acceptance",
         reason="prove generated ABI link surface diagnostics",
         command=[sys.executable, "-c", "raise SystemExit(2)"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="wasm-browser",
         contention_key="wasm:pact-witness",
         scopes=["src/molt/cli/external_native.py"],
@@ -7595,7 +7632,7 @@ def test_proof_queue_diagnoses_external_native_abi_link_surface_gap(
         log_path=log_path,
         summary_json=tmp_path / "abi-link-surface.memory_guard.json",
     )
-    proof_queue._insert_note(
+    state._insert_note(
         conn,
         run_id="abi-link-surface",
         body="test: classify generated WASM ABI link import surface gaps",
@@ -7611,17 +7648,17 @@ def test_proof_queue_diagnoses_external_native_abi_link_surface_gap(
         "ABI/link import surface\n",
         encoding="utf-8",
     )
-    proof_queue._update_run(conn, "abi-link-surface", status="failed", returncode=2)
+    state._update_run(conn, "abi-link-surface", status="failed", returncode=2)
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "evidence",
                 "--run-id",
                 "abi-link-surface",
@@ -7643,14 +7680,14 @@ def test_proof_queue_audit_distinguishes_classified_product_failure(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     log_path = tmp_path / "classified.log"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="classified-run",
         logical_id="pact-witness-acceptance",
         reason="prove classified product failure is not queue debt",
         command=[sys.executable, "-c", "raise SystemExit(1)"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="wasm",
         contention_key="wasm:pact-witness",
         scopes=["collab/pact/"],
@@ -7663,7 +7700,7 @@ def test_proof_queue_audit_distinguishes_classified_product_failure(
         log_path=log_path,
         summary_json=tmp_path / "classified.memory_guard.json",
     )
-    proof_queue._insert_note(
+    state._insert_note(
         conn,
         run_id="classified-run",
         body="finding: product failure is classified",
@@ -7674,17 +7711,17 @@ def test_proof_queue_audit_distinguishes_classified_product_failure(
         "ImportError: _nd_image: static-link PyModuleDef Py_mod_exec slot returned non-zero\n",
         encoding="utf-8",
     )
-    proof_queue._update_run(conn, "classified-run", status="failed", returncode=1)
+    state._update_run(conn, "classified-run", status="failed", returncode=1)
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "audit",
                 "--no-notebook-check",
             ]
@@ -7701,14 +7738,14 @@ def test_proof_queue_audit_flags_weak_metadata(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     log_path = tmp_path / "weak-metadata.log"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="weak-metadata-run",
         logical_id="bad-shell-quote",
         reason='"Prove',
         command=[sys.executable, "-c", "print('passed with weak metadata')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="generic",
         contention_key="generic:default",
         scopes=[],
@@ -7722,7 +7759,7 @@ def test_proof_queue_audit_flags_weak_metadata(
         summary_json=tmp_path / "weak-metadata.memory_guard.json",
     )
     log_path.write_text("passed with weak metadata\n", encoding="utf-8")
-    proof_queue._update_run(
+    state._update_run(
         conn,
         "weak-metadata-run",
         status="passed",
@@ -7730,14 +7767,14 @@ def test_proof_queue_audit_flags_weak_metadata(
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "audit",
                 "--no-notebook-check",
                 "--max-issues",
@@ -7758,16 +7795,16 @@ def test_proof_queue_audit_surfaces_product_frontier_before_warning_noise(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
-    conn = proof_queue._connect(db)
+    conn = state._connect(db)
     product_log = tmp_path / "frontier.log"
     warning_log = tmp_path / "guard-warning.log"
-    proof_queue._insert_run(
+    scheduling._insert_run(
         conn,
         run_id="frontier-run",
         logical_id="pact-witness-acceptance",
         reason="prove audit product frontier",
         command=[sys.executable, "-c", "raise SystemExit(2)"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="wasm-browser",
         contention_key="wasm:pact-witness",
         scopes=["collab/pact/"],
@@ -7780,7 +7817,7 @@ def test_proof_queue_audit_surfaces_product_frontier_before_warning_noise(
         log_path=product_log,
         summary_json=tmp_path / "frontier.memory_guard.json",
     )
-    proof_queue._insert_note(
+    state._insert_note(
         conn,
         run_id="frontier-run",
         body="test: product frontier must be visible before warning noise",
@@ -7794,15 +7831,15 @@ def test_proof_queue_audit_surfaces_product_frontier_before_warning_noise(
         "ABI/link import surface\n",
         encoding="utf-8",
     )
-    proof_queue._update_run(conn, "frontier-run", status="failed", returncode=2)
+    state._update_run(conn, "frontier-run", status="failed", returncode=2)
 
-    proof_queue._insert_run(
+    scheduling._insert_run(
         conn,
         run_id="guard-warning-run",
         logical_id="guard-warning",
         reason="prove audit warning noise does not hide frontier",
         command=[sys.executable, "-c", "print('ok')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python",
         contention_key="python:guard-warning",
         scopes=["tools/proof_queue.py"],
@@ -7815,7 +7852,7 @@ def test_proof_queue_audit_surfaces_product_frontier_before_warning_noise(
         log_path=warning_log,
         summary_json=tmp_path / "guard-warning.memory_guard.json",
     )
-    proof_queue._insert_note(
+    state._insert_note(
         conn,
         run_id="guard-warning-run",
         body="test: warning remains visible but secondary",
@@ -7827,17 +7864,17 @@ def test_proof_queue_audit_surfaces_product_frontier_before_warning_noise(
         "killed_at=2026-07-02T00:00:00Z elapsed=1.00s\n",
         encoding="utf-8",
     )
-    proof_queue._update_run(conn, "guard-warning-run", status="passed", returncode=0)
+    state._update_run(conn, "guard-warning-run", status="passed", returncode=0)
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "audit",
                 "--no-notebook-check",
             ]
@@ -7854,16 +7891,16 @@ def test_proof_queue_audit_errors_only_hides_warning_rows_not_errors(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
-    conn = proof_queue._connect(db)
+    conn = state._connect(db)
 
     error_log = tmp_path / "error.log"
-    proof_queue._insert_run(
+    scheduling._insert_run(
         conn,
         run_id="error-run",
         logical_id="error-run",
         reason="prove audit errors-only still surfaces errors",
         command=[sys.executable, "-c", "raise SystemExit(1)"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python",
         contention_key="python:error-run",
         scopes=["tools/proof_queue.py"],
@@ -7876,7 +7913,7 @@ def test_proof_queue_audit_errors_only_hides_warning_rows_not_errors(
         log_path=error_log,
         summary_json=tmp_path / "error.memory_guard.json",
     )
-    proof_queue._insert_note(
+    state._insert_note(
         conn,
         run_id="error-run",
         body="test: unclassified errors stay visible under errors-only",
@@ -7884,16 +7921,16 @@ def test_proof_queue_audit_errors_only_hides_warning_rows_not_errors(
         author="codex",
     )
     error_log.write_text("mystery failure without a diagnostic\n", encoding="utf-8")
-    proof_queue._update_run(conn, "error-run", status="failed", returncode=1)
+    state._update_run(conn, "error-run", status="failed", returncode=1)
 
     warning_log = tmp_path / "warning.log"
-    proof_queue._insert_run(
+    scheduling._insert_run(
         conn,
         run_id="warning-run",
         logical_id="warning-run",
         reason="prove audit errors-only filters warning rows",
         command=[sys.executable, "-c", "print('ok')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python",
         contention_key="python:warning-run",
         scopes=["tools/proof_queue.py"],
@@ -7906,7 +7943,7 @@ def test_proof_queue_audit_errors_only_hides_warning_rows_not_errors(
         log_path=warning_log,
         summary_json=tmp_path / "warning.memory_guard.json",
     )
-    proof_queue._insert_note(
+    state._insert_note(
         conn,
         run_id="warning-run",
         body="test: warning rows are optional human noise",
@@ -7918,17 +7955,17 @@ def test_proof_queue_audit_errors_only_hides_warning_rows_not_errors(
         "killed_at=2026-07-02T00:00:00Z elapsed=1.00s\n",
         encoding="utf-8",
     )
-    proof_queue._update_run(conn, "warning-run", status="passed", returncode=0)
+    state._update_run(conn, "warning-run", status="passed", returncode=0)
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "audit",
                 "--no-notebook-check",
                 "--errors-only",
@@ -7947,20 +7984,20 @@ def test_proof_queue_audit_omits_superseded_frontier_failures(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
-    conn = proof_queue._connect(db)
+    conn = state._connect(db)
     for run_id, status in (
         ("stale-failure", "failed"),
         ("rerun-child", "passed"),
         ("current-failure", "failed"),
     ):
         log_path = tmp_path / f"{run_id}.log"
-        proof_queue._insert_run(
+        scheduling._insert_run(
             conn,
             run_id=run_id,
             logical_id="pact-witness-acceptance",
             reason="prove superseded frontier filtering",
             command=[sys.executable, "-c", "raise SystemExit(1)"],
-            cwd=proof_queue.ROOT,
+            cwd=state.ROOT,
             resource_family="wasm-browser",
             contention_key=f"wasm:{run_id}",
             scopes=["tools/proof_queue.py"],
@@ -7973,7 +8010,7 @@ def test_proof_queue_audit_omits_superseded_frontier_failures(
             log_path=log_path,
             summary_json=tmp_path / f"{run_id}.memory_guard.json",
         )
-        proof_queue._insert_note(
+        state._insert_note(
             conn,
             run_id=run_id,
             body="test: frontier filtering has explicit run context",
@@ -7987,13 +8024,13 @@ def test_proof_queue_audit_omits_superseded_frontier_failures(
             "ABI/link import surface\n",
             encoding="utf-8",
         )
-        proof_queue._update_run(
+        state._update_run(
             conn,
             run_id,
             status=status,
             returncode=0 if status == "passed" else 1,
         )
-    proof_queue._insert_edge(
+    state._insert_edge(
         conn,
         parent_run_id="stale-failure",
         child_run_id="rerun-child",
@@ -8003,14 +8040,14 @@ def test_proof_queue_audit_omits_superseded_frontier_failures(
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "audit",
                 "--no-notebook-check",
             ]
@@ -8026,19 +8063,19 @@ def test_proof_queue_audit_omits_superseded_queue_debt_by_default(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
-    conn = proof_queue._connect(db)
+    conn = state._connect(db)
     for run_id, status in (
         ("stale-timeout", "failed"),
         ("rerun-child", "passed"),
     ):
         log_path = tmp_path / f"{run_id}.log"
-        proof_queue._insert_run(
+        scheduling._insert_run(
             conn,
             run_id=run_id,
             logical_id="memory-guard-dx",
             reason="prove superseded queue debt filtering",
             command=[sys.executable, "-c", "print('proof')"],
-            cwd=proof_queue.ROOT,
+            cwd=state.ROOT,
             resource_family="python-tests",
             contention_key=f"python:{run_id}",
             scopes=["tools/proof_queue.py"],
@@ -8051,7 +8088,7 @@ def test_proof_queue_audit_omits_superseded_queue_debt_by_default(
             log_path=log_path,
             summary_json=tmp_path / f"{run_id}.memory_guard.json",
         )
-        proof_queue._insert_note(
+        state._insert_note(
             conn,
             run_id=run_id,
             body="test: superseded queue debt remains archaeology, not current health",
@@ -8067,13 +8104,13 @@ def test_proof_queue_audit_omits_superseded_queue_debt_by_default(
             else "ok\n",
             encoding="utf-8",
         )
-        proof_queue._update_run(
+        state._update_run(
             conn,
             run_id,
             status=status,
             returncode=0 if status == "passed" else 124,
         )
-    proof_queue._insert_edge(
+    state._insert_edge(
         conn,
         parent_run_id="stale-timeout",
         child_run_id="rerun-child",
@@ -8083,14 +8120,14 @@ def test_proof_queue_audit_omits_superseded_queue_debt_by_default(
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "audit",
                 "--no-notebook-check",
             ]
@@ -8104,14 +8141,14 @@ def test_proof_queue_audit_omits_superseded_queue_debt_by_default(
     assert "run=stale-timeout" not in output
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "audit",
                 "--all",
                 "--no-notebook-check",
@@ -8138,7 +8175,7 @@ def test_proof_queue_audit_only_retires_explicit_live_superseding_children(
     )
     for kind, child_status in cases:
         db = tmp_path / f"{kind}-{child_status}.sqlite3"
-        conn = proof_queue._connect(db)
+        conn = state._connect(db)
         parent_run_id = f"stale-timeout-{kind}-{child_status}"
         child_run_id = f"child-{kind}-{child_status}"
         for run_id, status in (
@@ -8146,13 +8183,13 @@ def test_proof_queue_audit_only_retires_explicit_live_superseding_children(
             (child_run_id, child_status),
         ):
             log_path = tmp_path / f"{run_id}.log"
-            proof_queue._insert_run(
+            scheduling._insert_run(
                 conn,
                 run_id=run_id,
                 logical_id="memory-guard-dx",
                 reason="prove audit retirement stays narrow",
                 command=[sys.executable, "-c", "print('proof')"],
-                cwd=proof_queue.ROOT,
+                cwd=state.ROOT,
                 resource_family="python-tests",
                 contention_key=f"python:{run_id}",
                 scopes=["tools/proof_queue.py"],
@@ -8165,7 +8202,7 @@ def test_proof_queue_audit_only_retires_explicit_live_superseding_children(
                 log_path=log_path,
                 summary_json=tmp_path / f"{run_id}.memory_guard.json",
             )
-            proof_queue._insert_note(
+            state._insert_note(
                 conn,
                 run_id=run_id,
                 body="test: audit must not over-retire queue debt",
@@ -8181,13 +8218,13 @@ def test_proof_queue_audit_only_retires_explicit_live_superseding_children(
                 else "ok\n",
                 encoding="utf-8",
             )
-            proof_queue._update_run(
+            state._update_run(
                 conn,
                 run_id,
                 status=status,
                 returncode=124 if status == "failed" else 0,
             )
-        proof_queue._insert_edge(
+        state._insert_edge(
             conn,
             parent_run_id=parent_run_id,
             child_run_id=child_run_id,
@@ -8197,14 +8234,14 @@ def test_proof_queue_audit_only_retires_explicit_live_superseding_children(
         )
 
         assert (
-            proof_queue.main(
+            cli.main(
                 [
                     "--db",
                     str(db),
                     "--logs-root",
                     str(tmp_path / "runs"),
                     "--repo-root",
-                    str(proof_queue.ROOT),
+                    str(state.ROOT),
                     "audit",
                     "--no-notebook-check",
                 ]
@@ -8223,14 +8260,14 @@ def test_proof_queue_audit_fails_on_unclassified_failure(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     log_path = tmp_path / "mystery.log"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="mystery-run",
         logical_id="mystery",
         reason="prove queue audit catches unclassified rows",
         command=[sys.executable, "-c", "raise SystemExit(1)"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python",
         contention_key="python:mystery",
         scopes=["tools/proof_queue.py"],
@@ -8243,7 +8280,7 @@ def test_proof_queue_audit_fails_on_unclassified_failure(
         log_path=log_path,
         summary_json=tmp_path / "mystery.memory_guard.json",
     )
-    proof_queue._insert_note(
+    state._insert_note(
         conn,
         run_id="mystery-run",
         body="test: unclassified failure must be queue debt",
@@ -8251,17 +8288,17 @@ def test_proof_queue_audit_fails_on_unclassified_failure(
         author="codex",
     )
     log_path.write_text("mystery failure with no known diagnostic\n", encoding="utf-8")
-    proof_queue._update_run(conn, "mystery-run", status="failed", returncode=1)
+    state._update_run(conn, "mystery-run", status="failed", returncode=1)
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "audit",
                 "--no-notebook-check",
             ]
@@ -8277,17 +8314,17 @@ def test_proof_queue_audit_caps_human_issue_output(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
-    conn = proof_queue._connect(db)
+    conn = state._connect(db)
     for index in range(3):
         run_id = f"mystery-run-{index}"
         log_path = tmp_path / f"{run_id}.log"
-        proof_queue._insert_run(
+        scheduling._insert_run(
             conn,
             run_id=run_id,
             logical_id="mystery",
             reason="prove capped audit output",
             command=[sys.executable, "-c", "raise SystemExit(1)"],
-            cwd=proof_queue.ROOT,
+            cwd=state.ROOT,
             resource_family="python",
             contention_key=f"python:mystery:{index}",
             scopes=["tools/proof_queue.py"],
@@ -8300,7 +8337,7 @@ def test_proof_queue_audit_caps_human_issue_output(
             log_path=log_path,
             summary_json=tmp_path / f"{run_id}.memory_guard.json",
         )
-        proof_queue._insert_note(
+        state._insert_note(
             conn,
             run_id=run_id,
             body="test: unclassified failure must remain visible",
@@ -8310,17 +8347,17 @@ def test_proof_queue_audit_caps_human_issue_output(
         log_path.write_text(
             "mystery failure with no known diagnostic\n", encoding="utf-8"
         )
-        proof_queue._update_run(conn, run_id, status="failed", returncode=1)
+        state._update_run(conn, run_id, status="failed", returncode=1)
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "audit",
                 "--no-notebook-check",
                 "--max-issues",
@@ -8340,15 +8377,15 @@ def test_proof_queue_links_runs_and_exports_dag_evidence(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     notebooks = tmp_path / "notebooks"
-    conn = proof_queue._connect(db)
+    conn = state._connect(db)
     for run_id in ("parent-run", "child-run"):
-        proof_queue._insert_run(
+        scheduling._insert_run(
             conn,
             run_id=run_id,
             logical_id=run_id,
             reason="prove DAG link",
             command=[sys.executable, "-c", "print('dag')"],
-            cwd=proof_queue.ROOT,
+            cwd=state.ROOT,
             resource_family="python",
             contention_key=f"python:{run_id}",
             scopes=["tools/proof_queue.py"],
@@ -8363,7 +8400,7 @@ def test_proof_queue_links_runs_and_exports_dag_evidence(
         )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
@@ -8372,7 +8409,7 @@ def test_proof_queue_links_runs_and_exports_dag_evidence(
                 "--notebooks-root",
                 str(notebooks),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "link",
                 "child-run",
                 "--parent",
@@ -8398,14 +8435,14 @@ def test_proof_queue_links_runs_and_exports_dag_evidence(
 
     capsys.readouterr()
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "evidence",
                 "--run-id",
                 "child-run",
@@ -8422,15 +8459,15 @@ def test_proof_queue_link_projection_failure_preserves_edge(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
-    conn = proof_queue._connect(db)
+    conn = state._connect(db)
     for run_id in ("parent-warning-run", "child-warning-run"):
-        proof_queue._insert_run(
+        scheduling._insert_run(
             conn,
             run_id=run_id,
             logical_id=run_id,
             reason="prove DAG link survives notebook projection failure",
             command=[sys.executable, "-c", "print('dag')"],
-            cwd=proof_queue.ROOT,
+            cwd=state.ROOT,
             resource_family="python",
             contention_key=f"python:{run_id}",
             scopes=["tools/proof_queue.py"],
@@ -8447,17 +8484,17 @@ def test_proof_queue_link_projection_failure_preserves_edge(
     def fail_notebook(*_args: object, **_kwargs: object) -> Path:
         raise RuntimeError("link notebook exploded")
 
-    monkeypatch.setattr(proof_queue, "_write_marimo_notebook", fail_notebook)
+    monkeypatch.setattr(evidence_module, "_write_marimo_notebook", fail_notebook)
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "link",
                 "child-warning-run",
                 "--parent",
@@ -8486,14 +8523,14 @@ def test_proof_queue_link_projection_failure_preserves_edge(
 
 def test_proof_queue_rejects_unknown_note_kind(tmp_path: Path) -> None:
     db = tmp_path / "proof_queue.sqlite3"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="kind-run",
         logical_id="kind",
         reason="prove note kind vocabulary",
         command=[sys.executable, "-c", "print('kind')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python",
         contention_key="python:kind",
         scopes=["tools/proof_queue.py"],
@@ -8508,7 +8545,7 @@ def test_proof_queue_rejects_unknown_note_kind(tmp_path: Path) -> None:
     )
 
     with pytest.raises(SystemExit, match="unknown proof note kind"):
-        proof_queue._insert_note(
+        state._insert_note(
             conn,
             run_id="kind-run",
             author="codex",
@@ -8524,7 +8561,7 @@ def test_proof_queue_rejects_unknown_note_kind(tmp_path: Path) -> None:
             """,
             (
                 "kind-run",
-                proof_queue._utc_now(),
+                state._utc_now(),
                 "codex",
                 "blocker",
                 "raw sqlite path should fail closed",
@@ -8534,14 +8571,14 @@ def test_proof_queue_rejects_unknown_note_kind(tmp_path: Path) -> None:
 
 def test_proof_queue_notes_are_database_append_only(tmp_path: Path) -> None:
     db = tmp_path / "proof_queue.sqlite3"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="append-only-run",
         logical_id="append-only",
         reason="prove immutable notes table",
         command=[sys.executable, "-c", "print('append-only')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python",
         contention_key="python:append-only",
         scopes=["tools/proof_queue.py"],
@@ -8554,7 +8591,7 @@ def test_proof_queue_notes_are_database_append_only(tmp_path: Path) -> None:
         log_path=tmp_path / "append-only.log",
         summary_json=tmp_path / "append-only.memory_guard.json",
     )
-    proof_queue._insert_note(
+    state._insert_note(
         conn,
         run_id="append-only-run",
         author="codex",
@@ -8573,15 +8610,15 @@ def test_proof_queue_notes_are_database_append_only(tmp_path: Path) -> None:
 
 def test_proof_queue_edges_are_append_only_and_acyclic(tmp_path: Path) -> None:
     db = tmp_path / "proof_queue.sqlite3"
-    conn = proof_queue._connect(db)
+    conn = state._connect(db)
     for run_id in ("a-run", "b-run"):
-        proof_queue._insert_run(
+        scheduling._insert_run(
             conn,
             run_id=run_id,
             logical_id=run_id,
             reason="prove DAG guard",
             command=[sys.executable, "-c", "print('dag')"],
-            cwd=proof_queue.ROOT,
+            cwd=state.ROOT,
             resource_family="python",
             contention_key=f"python:{run_id}",
             scopes=["tools/proof_queue.py"],
@@ -8594,7 +8631,7 @@ def test_proof_queue_edges_are_append_only_and_acyclic(tmp_path: Path) -> None:
             log_path=tmp_path / f"{run_id}.log",
             summary_json=tmp_path / f"{run_id}.memory_guard.json",
         )
-    proof_queue._insert_edge(
+    state._insert_edge(
         conn,
         parent_run_id="a-run",
         child_run_id="b-run",
@@ -8603,7 +8640,7 @@ def test_proof_queue_edges_are_append_only_and_acyclic(tmp_path: Path) -> None:
     )
 
     with pytest.raises(SystemExit, match="would create a cycle"):
-        proof_queue._insert_edge(
+        state._insert_edge(
             conn,
             parent_run_id="b-run",
             child_run_id="a-run",
@@ -8611,7 +8648,7 @@ def test_proof_queue_edges_are_append_only_and_acyclic(tmp_path: Path) -> None:
         )
 
     with pytest.raises(SystemExit, match="unknown proof edge kind"):
-        proof_queue._insert_edge(
+        state._insert_edge(
             conn,
             parent_run_id="a-run",
             child_run_id="b-run",
@@ -8650,14 +8687,14 @@ def test_proof_queue_submit_rejects_uv_run_without_active_project_python(
     )
 
     with pytest.raises(SystemExit, match="refuses `uv run`"):
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(logs),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "submit",
                 str(dsl),
             ]
@@ -8689,14 +8726,14 @@ def test_proof_queue_submit_rejects_invalid_memory_guard_poll_env(
     )
 
     with pytest.raises(SystemExit, match="bad-poll-dsl.*MOLT_MEMORY_GUARD_POLL_SEC"):
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(logs),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "submit",
                 str(dsl),
             ]
@@ -8707,8 +8744,8 @@ def test_proof_queue_submit_rejects_invalid_memory_guard_poll_env(
 def test_proof_queue_pact_witness_acceptance_is_queue_native(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(proof_queue, "_pact_witness_env_overrides", lambda _root: {})
-    spec = proof_queue._pact_witness_acceptance_spec()
+    monkeypatch.setattr(pact, "_pact_witness_env_overrides", lambda _root: {})
+    spec = pact._pact_witness_acceptance_spec()
 
     assert spec["logical_id"] == "pact-witness-acceptance"
     assert spec["resource_family"] == "wasm-browser"
@@ -8738,7 +8775,7 @@ def test_proof_queue_pact_witness_acceptance_is_queue_native(
     assert "tmp/pact_witness_acceptance_queue" in command
     assert "tools/pact_witness_acceptance.py" in spec["scopes"]
     assert spec["env_overrides"]["MOLT_WITNESS_EXPECTED_REPO_ROOT"] == str(
-        proof_queue.ROOT.resolve()
+        state.ROOT.resolve()
     )
     assert spec["env_overrides"]["MOLT_WITNESS_EXPECTED_GIT_HEAD"]
     assert "collab/pact/pact_witness_kernel/make_fixture.py" in spec["scopes"]
@@ -8747,7 +8784,7 @@ def test_proof_queue_pact_witness_acceptance_is_queue_native(
         "regenerates the fixture/reference oracle" in note for note in spec["notes"]
     )
     assert any("candidate_outputs.npz" in note for note in spec["notes"])
-    assert proof_queue._proof_command_policy_error(command) is None
+    assert policy._proof_command_policy_error(command) is None
 
 
 def test_proof_queue_named_spec_locked_environment_authority_is_generic(
@@ -8761,7 +8798,7 @@ def test_proof_queue_named_spec_locked_environment_authority_is_generic(
     args = SimpleNamespace(env=["locked_input=user"], print_spec=True)
 
     with pytest.raises(SystemExit) as exc:
-        proof_queue._run_named_spec(args, spec)
+        pact._run_named_spec(args, spec)
 
     assert exc.value.code == (
         "named proof 'generic-locked-environment' rejects --env overrides for "
@@ -8779,12 +8816,12 @@ def test_proof_queue_named_spec_requires_launch_value_for_every_locked_name() ->
     args = SimpleNamespace(env=[], print_spec=True)
 
     with pytest.raises(SystemExit, match="without canonical launch values"):
-        proof_queue._run_named_spec(args, spec)
+        pact._run_named_spec(args, spec)
 
 
 @pytest.mark.parametrize(
     "name",
-    proof_queue._PACT_WITNESS_ACCEPTANCE_LOCKED_ENV,
+    pact._PACT_WITNESS_ACCEPTANCE_LOCKED_ENV,
 )
 def test_proof_queue_pact_witness_acceptance_rejects_locked_env_before_print_spec(
     name: str,
@@ -8794,14 +8831,14 @@ def test_proof_queue_pact_witness_acceptance_rejects_locked_env_before_print_spe
     db = tmp_path / "proof_queue.sqlite3"
 
     with pytest.raises(SystemExit) as exc:
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "pact-witness-acceptance",
                 "--env",
                 f"{name}=user-value",
@@ -8823,14 +8860,14 @@ def test_proof_queue_pact_witness_acceptance_rejects_locked_env_before_queue(
     db = tmp_path / "proof_queue.sqlite3"
 
     with pytest.raises(SystemExit, match="MOLT_MODULE_ROOTS"):
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "pact-witness-acceptance",
                 "--env",
                 "molt_module_roots=user-root",
@@ -8847,17 +8884,17 @@ def test_proof_queue_pact_witness_acceptance_allows_diagnostic_env(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
-    monkeypatch.setattr(proof_queue, "_pact_witness_native_roots", lambda _root: [])
+    monkeypatch.setattr(pact, "_pact_witness_native_roots", lambda _root: [])
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "pact-witness-acceptance",
                 "--env",
                 "MOLT_TRACE_CAPI=1",
@@ -8872,7 +8909,7 @@ def test_proof_queue_pact_witness_acceptance_allows_diagnostic_env(
     assert spec["env_overrides"]["MOLT_TRACE_CAPI"] == "1"
     assert spec["env_overrides"]["MOLT_TRACE_IMPORT_STAGE"] == "1"
     assert set(spec["locked_env"]) == set(
-        proof_queue._PACT_WITNESS_ACCEPTANCE_LOCKED_ENV
+        pact._PACT_WITNESS_ACCEPTANCE_LOCKED_ENV
     )
     assert not db.exists()
 
@@ -8887,17 +8924,17 @@ def test_proof_queue_pact_witness_acceptance_scrubs_ambient_input_redirects(
     monkeypatch.setenv(
         "MOLT_EXTERNAL_ARTIFACT_ROOTS", str(tmp_path / "other-artifacts")
     )
-    monkeypatch.setattr(proof_queue, "_pact_witness_native_roots", lambda _root: [])
+    monkeypatch.setattr(pact, "_pact_witness_native_roots", lambda _root: [])
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(tmp_path / "proof_queue.sqlite3"),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "pact-witness-acceptance",
                 "--print-spec",
             ]
@@ -8906,7 +8943,7 @@ def test_proof_queue_pact_witness_acceptance_scrubs_ambient_input_redirects(
     )
 
     spec = json.loads(capsys.readouterr().out)
-    canonical = proof_queue._pact_canonical_input_environment(proof_queue.ROOT)
+    canonical = pact._pact_canonical_input_environment(state.ROOT)
     for name, value in canonical.items():
         assert spec["env_overrides"][name] == value
     assert str(tmp_path) not in json.dumps(spec["env_overrides"])
@@ -8917,14 +8954,14 @@ def test_proof_queue_prune_stale_explicitly_cancels_selected_queued_row(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="abandoned-queued-run",
         logical_id="abandoned",
         reason="prove explicit queued cancellation",
         command=[sys.executable, "-c", "print('never launched')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python-tests",
         contention_key="proof-queue-dx-abandoned",
         scopes=["tools/proof_queue.py"],
@@ -8933,12 +8970,12 @@ def test_proof_queue_prune_stale_explicitly_cancels_selected_queued_row(
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "prune-stale",
                 "--run-id",
                 "abandoned-queued-run",
@@ -8952,11 +8989,11 @@ def test_proof_queue_prune_stale_explicitly_cancels_selected_queued_row(
     assert "pruned=1" in output
     row = _rows(db)[0]
     assert row["status"] == "stale"
-    assert row["returncode"] == proof_queue.PROOF_QUEUE_STALE_EXIT_CODE
+    assert row["returncode"] == custody.PROOF_QUEUE_STALE_EXIT_CODE
 
 
 def test_proof_queue_r6_target_version_parity_is_queue_native() -> None:
-    spec = proof_queue._r6_target_version_parity_spec("3.12")
+    spec = pact._r6_target_version_parity_spec("3.12")
 
     assert spec["logical_id"] == "r6-target-version-parity-py312"
     assert spec["resource_family"] == "python"
@@ -8987,11 +9024,11 @@ def test_proof_queue_r6_target_version_parity_is_queue_native() -> None:
     )
     assert any("Selected R6 fixtures:" in note for note in spec["notes"])
     assert any("missing target interpreters" in note for note in spec["notes"])
-    assert proof_queue._proof_command_policy_error(command) is None
+    assert policy._proof_command_policy_error(command) is None
 
 
 def test_proof_queue_r6_target_version_parity_can_select_fixture_subset() -> None:
-    spec = proof_queue._r6_target_version_parity_spec(
+    spec = pact._r6_target_version_parity_spec(
         "3.12",
         fixtures=[
             "removed_stdlib_modules_version_gate",
@@ -9026,7 +9063,7 @@ def test_proof_queue_r6_target_version_parity_can_select_fixture_subset() -> Non
 
 def test_proof_queue_r6_target_version_parity_rejects_unknown_fixture() -> None:
     with pytest.raises(SystemExit) as exc:
-        proof_queue._r6_target_version_parity_spec(
+        pact._r6_target_version_parity_spec(
             "3.12",
             fixtures=["queue_shutdown_version_gate.py", "not_a_fixture"],
         )
@@ -9036,7 +9073,7 @@ def test_proof_queue_r6_target_version_parity_rejects_unknown_fixture() -> None:
 
 
 def test_proof_queue_r6_target_version_parity_uses_target_tag() -> None:
-    spec = proof_queue._r6_target_version_parity_spec("3.13")
+    spec = pact._r6_target_version_parity_spec("3.13")
     command = list(spec["command"])
 
     assert spec["logical_id"] == "r6-target-version-parity-py313"
@@ -9049,7 +9086,7 @@ def test_proof_queue_native_molt_run_is_queue_native(tmp_path: Path) -> None:
     entry.parent.mkdir()
     entry.write_text("print('ok')\n", encoding="utf-8")
 
-    spec = proof_queue._native_molt_run_spec(
+    spec = pact._native_molt_run_spec(
         "tmp/probe.py",
         script_args=["--", "--flag"],
         repo_root=tmp_path,
@@ -9074,7 +9111,7 @@ def test_proof_queue_native_molt_run_is_queue_native(tmp_path: Path) -> None:
     assert command[-1] == "--flag"
     assert spec["scopes"] == ["tmp/probe.py"]
     assert any("foreground Codex control plane" in note for note in spec["notes"])
-    assert proof_queue._proof_command_policy_error(command) is None
+    assert policy._proof_command_policy_error(command) is None
 
 
 def test_proof_queue_native_molt_run_rejects_outside_repo(tmp_path: Path) -> None:
@@ -9082,7 +9119,7 @@ def test_proof_queue_native_molt_run_rejects_outside_repo(tmp_path: Path) -> Non
     outside.write_text("print('outside')\n", encoding="utf-8")
 
     with pytest.raises(SystemExit, match="must live under repo root"):
-        proof_queue._native_molt_run_spec(str(outside), repo_root=tmp_path)
+        pact._native_molt_run_spec(str(outside), repo_root=tmp_path)
 
 
 def _write_current_numpy_seal_manifest(root: Path, source_root: Path) -> None:
@@ -9126,7 +9163,7 @@ def _write_current_scipy_seal(
         shutil.rmtree(transaction_root)
     extension_set = scientific_extension_set("scipy", "pact-witness")
     stack = resolve_scientific_stack()
-    current_abi = proof_queue._default_molt_c_api_version(proof_queue.ROOT)
+    current_abi = pact._default_molt_c_api_version(state.ROOT)
     current_abi_tag = f"molt_abi{current_abi.split('.', 1)[0]}"
     set_extensions: list[dict[str, str]] = []
     for extension in extension_set.extensions:
@@ -9161,7 +9198,7 @@ def _write_current_scipy_seal(
                 }
             ],
         }
-        closure_sha256 = proof_queue._pact_object_closure_digest(object_closure)
+        closure_sha256 = pact._pact_object_closure_digest(object_closure)
         assert closure_sha256 is not None
         object_closure["closure_sha256"] = closure_sha256
         set_extensions.append(
@@ -9255,8 +9292,8 @@ def _write_current_scipy_seal(
             },
         },
         "digests": {
-            "python_pc_sha256": proof_queue._sha256_file(python_pc),
-            "meson_cross_sha256": proof_queue._sha256_file(meson_cross),
+            "python_pc_sha256": pact._sha256_file(python_pc),
+            "meson_cross_sha256": pact._sha256_file(meson_cross),
         },
     }
     target_metadata["digest"] = hashlib.sha256(
@@ -9356,7 +9393,7 @@ def _write_current_scipy_seal(
                             "sha256": "a" * 64,
                         },
                     ],
-                    "pkg_config_requirement": proof_queue.MOLT_PKGCONF_REQUIREMENT,
+                    "pkg_config_requirement": pact.MOLT_PKGCONF_REQUIREMENT,
                 },
                 "installed_python_files": installed_python_files,
                 "extensions": set_extensions,
@@ -9389,14 +9426,14 @@ def test_proof_queue_r6_target_version_parity_print_spec(
     db = tmp_path / "proof_queue.sqlite3"
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "r6-target-version-parity",
                 "--python-version",
                 "3.13",
@@ -9426,11 +9463,11 @@ def test_proof_queue_pact_witness_acceptance_admits_staged_native_roots(
 ) -> None:
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
     monkeypatch.setattr(
-        proof_queue,
+        pact,
         "_pact_canonical_input_environment",
         lambda _root: {
-            proof_queue.SCIENTIFIC_STACK_CONFIG_ENV: str(
-                proof_queue.ROOT / "config/scientific_stack_versions.toml"
+            pact.SCIENTIFIC_STACK_CONFIG_ENV: str(
+                state.ROOT / "config/scientific_stack_versions.toml"
             ),
             "MOLT_EXT_ROOT": str(tmp_path / "artifacts"),
             "MOLT_EXTERNAL_ARTIFACT_ROOTS": str(tmp_path / "artifacts"),
@@ -9458,7 +9495,7 @@ def test_proof_queue_pact_witness_acceptance_admits_staged_native_roots(
     for root in legacy_roots[:4]:
         (root / "extension_manifest.json").write_text("{}", encoding="utf-8")
 
-    spec = proof_queue._pact_witness_acceptance_spec(repo_root=tmp_path)
+    spec = pact._pact_witness_acceptance_spec(repo_root=tmp_path)
     env = spec["env_overrides"]
 
     assert env["MOLT_EXTERNAL_STATIC_PACKAGES"] == "numpy scipy"
@@ -9481,7 +9518,7 @@ def test_proof_queue_pact_witness_acceptance_fails_when_canonical_scipy_is_absen
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
 
     with pytest.raises(ValueError, match="canonical SciPy witness seal is absent"):
-        proof_queue._pact_witness_native_roots(repo_root=tmp_path)
+        pact._pact_witness_native_roots(repo_root=tmp_path)
 
 
 def test_proof_queue_pact_witness_acceptance_rejects_incomplete_scipy_set(
@@ -9500,7 +9537,7 @@ def test_proof_queue_pact_witness_acceptance_rejects_incomplete_scipy_set(
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
 
     with pytest.raises(ValueError, match=r"absent or incomplete.*_rank_filter_1d"):
-        proof_queue._pact_witness_native_roots(repo_root=tmp_path)
+        pact._pact_witness_native_roots(repo_root=tmp_path)
 
 
 def test_proof_queue_pact_witness_acceptance_rejects_scipy_export_drift(
@@ -9520,7 +9557,7 @@ def test_proof_queue_pact_witness_acceptance_rejects_scipy_export_drift(
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
 
     with pytest.raises(ValueError, match="absent or incomplete"):
-        proof_queue._pact_witness_native_roots(repo_root=tmp_path)
+        pact._pact_witness_native_roots(repo_root=tmp_path)
 
 
 @pytest.mark.parametrize(
@@ -9555,14 +9592,14 @@ def test_proof_queue_rejects_scipy_seal_contract_drift(
     _write_current_scipy_seal(root)
     extension_set = scientific_extension_set("scipy", "pact-witness")
     extension = extension_set.extensions[0]
-    manifest_path = proof_queue._scientific_extension_manifest_path(
+    manifest_path = pact._scientific_extension_manifest_path(
         root / "files", extension.module, extension.target
     )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest[field] = value
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
-    problems = proof_queue._pact_scipy_witness_seal_problems(root, extension_set)
+    problems = pact._pact_scipy_witness_seal_problems(root, extension_set)
 
     assert any(problem in item for item in problems), problems
 
@@ -9574,14 +9611,14 @@ def test_proof_queue_requires_explicit_scipy_determinism_attestation(
     _write_current_scipy_seal(root)
     extension_set = scientific_extension_set("scipy", "pact-witness")
     extension = extension_set.extensions[0]
-    manifest_path = proof_queue._scientific_extension_manifest_path(
+    manifest_path = pact._scientific_extension_manifest_path(
         root / "files", extension.module, extension.target
     )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     del manifest["deterministic"]
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
-    problems = proof_queue._pact_scipy_witness_seal_problems(root, extension_set)
+    problems = pact._pact_scipy_witness_seal_problems(root, extension_set)
 
     assert any("deterministic must be true" in item for item in problems), problems
 
@@ -9601,14 +9638,14 @@ def test_proof_queue_rejects_scipy_object_closure_identity_drift(
     _write_current_scipy_seal(root)
     extension_set = scientific_extension_set("scipy", "pact-witness")
     extension = extension_set.extensions[0]
-    manifest_path = proof_queue._scientific_extension_manifest_path(
+    manifest_path = pact._scientific_extension_manifest_path(
         root / "files", extension.module, extension.target
     )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["object_closure"][field] = value
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
-    problems = proof_queue._pact_scipy_witness_seal_problems(root, extension_set)
+    problems = pact._pact_scipy_witness_seal_problems(root, extension_set)
 
     assert any(problem in item for item in problems), problems
 
@@ -9632,7 +9669,7 @@ def test_proof_queue_rejects_scipy_set_manifest_identity_drift(
     manifest[field] = value
     set_manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
-    problems = proof_queue._pact_scipy_witness_seal_problems(
+    problems = pact._pact_scipy_witness_seal_problems(
         root, scientific_extension_set("scipy", "pact-witness")
     )
 
@@ -9718,7 +9755,7 @@ def test_proof_queue_rejects_scipy_set_manifest_transaction_drift(
     if mutation != "missing_manifest":
         set_manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
-    problems = proof_queue._pact_scipy_witness_seal_problems(
+    problems = pact._pact_scipy_witness_seal_problems(
         root, scientific_extension_set("scipy", "pact-witness")
     )
 
@@ -9738,7 +9775,7 @@ def test_proof_queue_pact_witness_roots_accept_artifact_specific_manifests(
     artifact_root = tmp_path / "artifacts/package-seals/scipy/1.18.0/pact_scipy_witness"
     _write_current_scipy_seal(artifact_root)
 
-    roots = proof_queue._pact_witness_native_roots(repo_root=tmp_path)
+    roots = pact._pact_witness_native_roots(repo_root=tmp_path)
 
     assert roots == [
         durable_numpy.resolve(),
@@ -9747,7 +9784,7 @@ def test_proof_queue_pact_witness_roots_accept_artifact_specific_manifests(
 
 
 def test_proof_queue_pact_witness_oracle_regenerates_parity_fixture() -> None:
-    spec = proof_queue._pact_witness_oracle_spec()
+    spec = pact._pact_witness_oracle_spec()
 
     assert spec["logical_id"] == "pact-witness-oracle-parity"
     assert spec["resource_family"] == "wasm-browser"
@@ -9768,7 +9805,7 @@ def test_proof_queue_pact_witness_oracle_regenerates_parity_fixture() -> None:
     assert stack.scipy_requirement in command
     assert command[-2:] == ["python", "tools/pact_witness_oracle.py"]
     assert "collab/pact/pact_witness_kernel/make_fixture.py" in spec["scopes"]
-    assert proof_queue._proof_command_policy_error(command) is None
+    assert policy._proof_command_policy_error(command) is None
 
 
 # ---------------------------------------------------------------------------
@@ -9791,29 +9828,29 @@ def _insert_running_row(
     ``guard_identity`` defaults to whatever ``_update_run`` captures for the
     live ``guard_pid``; pass an explicit value (including None) to override.
     """
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id=run_id,
         logical_id="active",
         reason="lifecycle regression",
         command=[sys.executable, "-c", "print('active')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python",
         contention_key=contention_key,
         scopes=["tools/proof_queue.py"],
         log_path=tmp_path / f"{run_id}.log",
         summary_json=tmp_path / f"{run_id}.memory_guard.json",
     )
-    proof_queue._update_run(
+    state._update_run(
         conn,
         run_id,
         status="running",
-        started_at=started_at or proof_queue._utc_now(),
+        started_at=started_at or state._utc_now(),
         guard_pid=guard_pid,
     )
     if guard_identity != "__auto__":
-        proof_queue._update_run(conn, run_id, guard_identity=guard_identity)
+        state._update_run(conn, run_id, guard_identity=guard_identity)
 
 
 def test_prune_stale_reclaims_running_row_when_guard_pid_reused(
@@ -9830,9 +9867,9 @@ def test_prune_stale_reclaims_running_row_when_guard_pid_reused(
     """
     db = tmp_path / "proof_queue.sqlite3"
     live_pid = os.getpid()
-    monkeypatch.setattr(proof_queue, "_pid_alive", lambda pid: int(pid) == live_pid)
+    monkeypatch.setattr(custody, "_pid_alive", lambda pid: int(pid) == live_pid)
     monkeypatch.setattr(
-        proof_queue,
+        custody,
         "_process_identity",
         lambda pid: f"{os.name}:{int(pid)}:live" if int(pid) == live_pid else None,
     )
@@ -9846,17 +9883,17 @@ def test_prune_stale_reclaims_running_row_when_guard_pid_reused(
         guard_identity=f"{os.name}:{live_pid}:dead",
     )
     # The PID is genuinely alive (it is our own process); only identity differs.
-    assert proof_queue._pid_alive(live_pid)
+    assert custody._pid_alive(live_pid)
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "prune-stale",
             ]
         )
@@ -9868,7 +9905,7 @@ def test_prune_stale_reclaims_running_row_when_guard_pid_reused(
     assert "reused-guard-pid" in out
     row = _rows(db)[0]
     assert row["status"] == "stale"
-    assert row["returncode"] == proof_queue.PROOF_QUEUE_STALE_EXIT_CODE
+    assert row["returncode"] == custody.PROOF_QUEUE_STALE_EXIT_CODE
 
 
 def test_prune_stale_reclaims_running_row_past_age_ceiling(
@@ -9884,9 +9921,9 @@ def test_prune_stale_reclaims_running_row_past_age_ceiling(
     """
     db = tmp_path / "proof_queue.sqlite3"
     live_pid = os.getpid()
-    _dt = proof_queue.dt
+    _dt = state.dt
     ancient_dt = _dt.datetime.now(_dt.UTC).replace(microsecond=0) - _dt.timedelta(
-        seconds=proof_queue.PROOF_QUEUE_RUNNING_AGE_CEILING_SECONDS + 60.0
+        seconds=custody.PROOF_QUEUE_RUNNING_AGE_CEILING_SECONDS + 60.0
     )
     started_at = ancient_dt.isoformat()
     # Identity matches the live PID, so this is NOT a reuse case: the only
@@ -9896,21 +9933,21 @@ def test_prune_stale_reclaims_running_row_past_age_ceiling(
         tmp_path,
         guard_pid=live_pid,
         started_at=started_at,
-        guard_identity=proof_queue._process_identity(live_pid),
+        guard_identity=custody._process_identity(live_pid),
     )
-    assert proof_queue._guard_process_live(
-        live_pid, proof_queue._process_identity(live_pid)
+    assert custody._guard_process_live(
+        live_pid, custody._process_identity(live_pid)
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "prune-stale",
             ]
         )
@@ -9935,18 +9972,18 @@ def test_prune_stale_keeps_fresh_running_row_with_matching_identity(
         db,
         tmp_path,
         guard_pid=live_pid,
-        guard_identity=proof_queue._process_identity(live_pid),
+        guard_identity=custody._process_identity(live_pid),
     )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "prune-stale",
             ]
         )
@@ -9999,33 +10036,33 @@ def test_update_run_retries_terminal_write_when_database_locked(
     locked commit and then persist the terminal status.
     """
     db = tmp_path / "proof_queue.sqlite3"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="lock-run",
         logical_id="active",
         reason="lock regression",
         command=[sys.executable, "-c", "print('active')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python",
         contention_key="python:lock",
         scopes=["tools/proof_queue.py"],
         log_path=tmp_path / "lock.log",
         summary_json=tmp_path / "lock.memory_guard.json",
     )
-    proof_queue._update_run(
-        conn, "lock-run", status="running", started_at=proof_queue._utc_now()
+    state._update_run(
+        conn, "lock-run", status="running", started_at=state._utc_now()
     )
 
     # A writer that holds the lock for the first 3 commit attempts, then
     # releases it. Without retry the first locked commit strands the row.
     flaky = _LockingCommitConnection(conn, fail_times=3)
-    proof_queue._update_run(
+    state._update_run(
         flaky,  # type: ignore[arg-type]
         "lock-run",
         status="passed",
         returncode=0,
-        finished_at=proof_queue._utc_now(),
+        finished_at=state._utc_now(),
         elapsed_s=1.0,
     )
 
@@ -10042,14 +10079,14 @@ def test_update_run_reraises_persistent_database_lock(
 ) -> None:
     """A lock that never clears still surfaces rather than silently vanishing."""
     db = tmp_path / "proof_queue.sqlite3"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
+    conn = state._connect(db)
+    scheduling._insert_run(
         conn,
         run_id="stuck-run",
         logical_id="active",
         reason="persistent lock",
         command=[sys.executable, "-c", "print('active')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python",
         contention_key="python:stuck",
         scopes=["tools/proof_queue.py"],
@@ -10057,28 +10094,28 @@ def test_update_run_reraises_persistent_database_lock(
         summary_json=tmp_path / "stuck.memory_guard.json",
     )
     monkeypatch.setattr(
-        proof_queue,
+        state,
         "PROOF_QUEUE_LOCKED_WRITE_RETRY_SLEEP_SECONDS",
         0.0,
     )
     # fail_times far larger than the retry budget => the lock never clears.
     flaky = _LockingCommitConnection(conn, fail_times=10_000)
     with pytest.raises(sqlite3.OperationalError, match="database is locked"):
-        proof_queue._update_run(
+        state._update_run(
             flaky,  # type: ignore[arg-type]
             "stuck-run",
             status="running",
         )
     # Exactly the bounded retry budget was attempted, then it surfaced.
-    assert flaky.commit_calls == proof_queue.PROOF_QUEUE_LOCKED_WRITE_RETRIES
+    assert flaky.commit_calls == state.PROOF_QUEUE_LOCKED_WRITE_RETRIES
 
 
 def test_connect_sets_busy_timeout(tmp_path: Path) -> None:
     """Defect 2: every connection must set a non-default busy timeout."""
     db = tmp_path / "proof_queue.sqlite3"
-    conn = proof_queue._connect(db)
+    conn = state._connect(db)
     (value,) = conn.execute("PRAGMA busy_timeout").fetchone()
-    assert value == proof_queue.PROOF_QUEUE_SQLITE_BUSY_TIMEOUT_MS
+    assert value == state.PROOF_QUEUE_SQLITE_BUSY_TIMEOUT_MS
     assert value >= 30_000
 
 
@@ -10093,15 +10130,15 @@ def test_contention_key_admits_only_one_running_run(tmp_path: Path) -> None:
     chains), so only the running->running collision is rejected.
     """
     db = tmp_path / "proof_queue.sqlite3"
-    conn = proof_queue._connect(db)
+    conn = state._connect(db)
     for run_id in ("first-active", "second-active"):
-        proof_queue._insert_run(
+        scheduling._insert_run(
             conn,
             run_id=run_id,
             logical_id=run_id,
             reason="admission",
             command=[sys.executable, "-c", "print('x')"],
-            cwd=proof_queue.ROOT,
+            cwd=state.ROOT,
             resource_family="rust",
             contention_key="cargo:shared-target",
             scopes=[],
@@ -10113,14 +10150,14 @@ def test_contention_key_admits_only_one_running_run(tmp_path: Path) -> None:
     assert len(queued) == 2
 
     # The first run transitions to 'running'.
-    proof_queue._update_run(
-        conn, "first-active", status="running", started_at=proof_queue._utc_now()
+    state._update_run(
+        conn, "first-active", status="running", started_at=state._utc_now()
     )
     # A second concurrent transition to 'running' for the same key must be
     # rejected by the DB itself, independent of any application-level check.
     with pytest.raises(sqlite3.IntegrityError):
-        proof_queue._update_run(
-            conn, "second-active", status="running", started_at=proof_queue._utc_now()
+        state._update_run(
+            conn, "second-active", status="running", started_at=state._utc_now()
         )
 
     running = [r for r in _rows(db) if r["status"] == "running"]
@@ -10133,18 +10170,18 @@ def test_compiler_build_resource_mutex_admits_only_one_launched_run(
 ) -> None:
     """Different heavy contention keys still share one compiler-build slot."""
     db = tmp_path / "proof_queue.sqlite3"
-    conn = proof_queue._connect(db)
+    conn = state._connect(db)
     for run_id, resource_family, contention_key in (
         ("wasm-active", "wasm-browser", "wasm:pact-witness"),
         ("native-active", "native-build", "native:runtime-build"),
     ):
-        proof_queue._insert_run(
+        scheduling._insert_run(
             conn,
             run_id=run_id,
             logical_id=run_id,
             reason="compiler build admission",
             command=[sys.executable, "-c", "print('x')"],
-            cwd=proof_queue.ROOT,
+            cwd=state.ROOT,
             resource_family=resource_family,
             contention_key=contention_key,
             scopes=[],
@@ -10156,19 +10193,66 @@ def test_compiler_build_resource_mutex_admits_only_one_launched_run(
     assert rows["wasm-active"]["resource_mutex_key"] == "compiler-build-resource"
     assert rows["native-active"]["resource_mutex_key"] == "compiler-build-resource"
 
-    proof_queue._update_run(
-        conn, "wasm-active", status="running", started_at=proof_queue._utc_now()
+    state._update_run(
+        conn, "wasm-active", status="running", started_at=state._utc_now()
     )
     with pytest.raises(sqlite3.IntegrityError):
-        proof_queue._update_run(
+        state._update_run(
             conn,
             "native-active",
             status="dispatched",
-            started_at=proof_queue._utc_now(),
+            started_at=state._utc_now(),
         )
 
     active = [row for row in _rows(db) if row["status"] in {"dispatched", "running"}]
     assert [row["run_id"] for row in active] == ["wasm-active"]
+
+
+def test_concurrent_detached_claims_serialize_one_compiler_build_lease(
+    tmp_path: Path,
+) -> None:
+    """Independent schedulers race through SQLite; exactly one owns custody."""
+    db = tmp_path / "proof_queue.sqlite3"
+    seed = state._connect(db)
+    for run_id, resource_family, contention_key in (
+        ("native-racer", "native-build", "native:race"),
+        ("wasm-racer", "wasm-browser", "wasm:race"),
+    ):
+        scheduling._insert_run(
+            seed,
+            run_id=run_id,
+            logical_id=run_id,
+            reason="concurrent compiler lease proof",
+            command=[sys.executable, "-c", "print('race')"],
+            cwd=state.ROOT,
+            resource_family=resource_family,
+            contention_key=contention_key,
+            scopes=[],
+            log_path=tmp_path / f"{run_id}.log",
+            summary_json=tmp_path / f"{run_id}.memory_guard.json",
+        )
+    seed.close()
+
+    start = Barrier(2)
+
+    def claim(run_id: str) -> tuple[str, bool, str | None]:
+        conn = state._connect(db)
+        try:
+            start.wait(timeout=5.0)
+            row, reason = runner._claim_detached_run(conn, run_id, queue_size=2)
+            return run_id, row is not None, reason
+        finally:
+            conn.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(claim, ("native-racer", "wasm-racer")))
+
+    assert sum(claimed for _, claimed, _ in results) == 1
+    loser_reason = next(reason for _, claimed, reason in results if not claimed)
+    assert loser_reason is not None
+    assert "resource mutex 'compiler-build-resource'" in loser_reason
+    statuses = {row["run_id"]: row["status"] for row in _rows(db)}
+    assert sorted(statuses.values()) == ["dispatched", "queued"]
 
 
 def test_admit_run_allows_multiple_queued_rows_per_contention_key(
@@ -10176,15 +10260,15 @@ def test_admit_run_allows_multiple_queued_rows_per_contention_key(
 ) -> None:
     """Queued rows are wait-list state; launch claim owns resource custody."""
     db = tmp_path / "proof_queue.sqlite3"
-    conn = proof_queue._connect(db)
+    conn = state._connect(db)
     assert (
-        proof_queue._admit_run(
+        scheduling._admit_run(
             conn,
             run_id="gate-first",
             logical_id="first",
             reason="first",
             command=[sys.executable, "-c", "print('first')"],
-            cwd=proof_queue.ROOT,
+            cwd=state.ROOT,
             resource_family="rust",
             contention_key="cargo:gate",
             scopes=[],
@@ -10194,13 +10278,13 @@ def test_admit_run_allows_multiple_queued_rows_per_contention_key(
         is None
     )
     assert (
-        proof_queue._admit_run(
+        scheduling._admit_run(
             conn,
             run_id="gate-second",
             logical_id="second",
             reason="second",
             command=[sys.executable, "-c", "print('second')"],
-            cwd=proof_queue.ROOT,
+            cwd=state.ROOT,
             resource_family="rust",
             contention_key="cargo:gate",
             scopes=[],
@@ -10219,7 +10303,7 @@ def test_proof_queue_audit_treats_queued_rows_as_wait_list(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
-    conn = proof_queue._connect(db)
+    conn = state._connect(db)
     for run_id, status in (
         ("gate-first", "queued"),
         ("gate-second", "queued"),
@@ -10227,13 +10311,13 @@ def test_proof_queue_audit_treats_queued_rows_as_wait_list(
     ):
         log_path = tmp_path / f"{run_id}.log"
         log_path.write_text("queued wait-list row\n", encoding="utf-8")
-        proof_queue._insert_run(
+        scheduling._insert_run(
             conn,
             run_id=run_id,
             logical_id=run_id,
             reason="prove queued rows do not own active contention custody",
             command=[sys.executable, "-c", "print('proof')"],
-            cwd=proof_queue.ROOT,
+            cwd=state.ROOT,
             resource_family="wasm-browser",
             contention_key="wasm:pact-witness",
             scopes=["tools/proof_queue.py"],
@@ -10246,7 +10330,7 @@ def test_proof_queue_audit_treats_queued_rows_as_wait_list(
             log_path=log_path,
             summary_json=tmp_path / f"{run_id}.memory_guard.json",
         )
-        proof_queue._insert_note(
+        state._insert_note(
             conn,
             run_id=run_id,
             body="test: queued rows are wait-list state, not resource custody",
@@ -10254,19 +10338,19 @@ def test_proof_queue_audit_treats_queued_rows_as_wait_list(
             author="codex",
         )
         if status != "queued":
-            proof_queue._update_run(
-                conn, run_id, status=status, started_at=proof_queue._utc_now()
+            state._update_run(
+                conn, run_id, status=status, started_at=state._utc_now()
             )
 
     assert (
-        proof_queue.main(
+        cli.main(
             [
                 "--db",
                 str(db),
                 "--logs-root",
                 str(tmp_path / "runs"),
                 "--repo-root",
-                str(proof_queue.ROOT),
+                str(state.ROOT),
                 "audit",
                 "--no-notebook-check",
             ]
@@ -10280,27 +10364,27 @@ def test_proof_queue_audit_treats_queued_rows_as_wait_list(
 
 def test_detached_claim_serializes_contention_key(tmp_path: Path) -> None:
     db = tmp_path / "proof_queue.sqlite3"
-    conn = proof_queue._connect(db)
-    proof_queue._admit_run(
+    conn = state._connect(db)
+    scheduling._admit_run(
         conn,
         run_id="gate-first",
         logical_id="first",
         reason="first",
         command=[sys.executable, "-c", "print('first')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="rust",
         contention_key="cargo:gate",
         scopes=[],
         log_path=tmp_path / "gate-first.log",
         summary_json=tmp_path / "gate-first.memory_guard.json",
     )
-    proof_queue._admit_run(
+    scheduling._admit_run(
         conn,
         run_id="gate-second",
         logical_id="second",
         reason="second",
         command=[sys.executable, "-c", "print('second')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="rust",
         contention_key="cargo:gate",
         scopes=[],
@@ -10308,10 +10392,10 @@ def test_detached_claim_serializes_contention_key(tmp_path: Path) -> None:
         summary_json=tmp_path / "gate-second.memory_guard.json",
     )
 
-    claimed, reason = proof_queue._claim_detached_run(conn, "gate-first", queue_size=2)
+    claimed, reason = runner._claim_detached_run(conn, "gate-first", queue_size=2)
     assert claimed is not None
     assert reason is None
-    blocked, reason = proof_queue._claim_detached_run(conn, "gate-second", queue_size=2)
+    blocked, reason = runner._claim_detached_run(conn, "gate-second", queue_size=2)
     assert blocked is None
     assert reason is not None
     assert "contention key 'cargo:gate' already has active run(s)" in reason
@@ -10325,40 +10409,40 @@ def test_detached_claim_serializes_compiler_build_resource_mutex(
     tmp_path: Path,
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
-    conn = proof_queue._connect(db)
-    proof_queue._admit_run(
+    conn = state._connect(db)
+    scheduling._admit_run(
         conn,
         run_id="native-build-first",
         logical_id="native",
         reason="native build",
         command=[sys.executable, "-c", "print('native')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="native-build",
         contention_key="native:molt-run",
         scopes=[],
         log_path=tmp_path / "native.log",
         summary_json=tmp_path / "native.memory_guard.json",
     )
-    proof_queue._admit_run(
+    scheduling._admit_run(
         conn,
         run_id="wasm-browser-second",
         logical_id="wasm",
         reason="wasm browser build",
         command=[sys.executable, "-c", "print('wasm')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="wasm-browser",
         contention_key="wasm:pact",
         scopes=[],
         log_path=tmp_path / "wasm.log",
         summary_json=tmp_path / "wasm.memory_guard.json",
     )
-    proof_queue._admit_run(
+    scheduling._admit_run(
         conn,
         run_id="python-third",
         logical_id="python",
         reason="light python proof",
         command=[sys.executable, "-c", "print('python')"],
-        cwd=proof_queue.ROOT,
+        cwd=state.ROOT,
         resource_family="python",
         contention_key="python:light",
         scopes=[],
@@ -10366,20 +10450,20 @@ def test_detached_claim_serializes_compiler_build_resource_mutex(
         summary_json=tmp_path / "python.memory_guard.json",
     )
 
-    claimed, reason = proof_queue._claim_detached_run(
+    claimed, reason = runner._claim_detached_run(
         conn, "native-build-first", queue_size=3
     )
     assert claimed is not None
     assert reason is None
 
-    blocked, reason = proof_queue._claim_detached_run(
+    blocked, reason = runner._claim_detached_run(
         conn, "wasm-browser-second", queue_size=3
     )
     assert blocked is None
     assert reason is not None
     assert "resource mutex 'compiler-build-resource'" in reason
 
-    light, reason = proof_queue._claim_detached_run(conn, "python-third", queue_size=3)
+    light, reason = runner._claim_detached_run(conn, "python-third", queue_size=3)
     assert light is not None
     assert reason is None
 
@@ -10396,15 +10480,15 @@ def test_queue_terminal_transition_frees_contention_key(tmp_path: Path) -> None:
     once terminal a fresh admission for the same key succeeds.
     """
     db = tmp_path / "proof_queue.sqlite3"
-    conn = proof_queue._connect(db)
+    conn = state._connect(db)
     assert (
-        proof_queue._admit_run(
+        scheduling._admit_run(
             conn,
             run_id="cycle-run",
             logical_id="cycle",
             reason="cycle",
             command=[sys.executable, "-c", "print('cycle')"],
-            cwd=proof_queue.ROOT,
+            cwd=state.ROOT,
             resource_family="python",
             contention_key="python:cycle",
             scopes=[],
@@ -10414,26 +10498,26 @@ def test_queue_terminal_transition_frees_contention_key(tmp_path: Path) -> None:
         is None
     )
     # queued -> running (same row, still non-terminal) must be allowed.
-    proof_queue._update_run(
-        conn, "cycle-run", status="running", started_at=proof_queue._utc_now()
+    state._update_run(
+        conn, "cycle-run", status="running", started_at=state._utc_now()
     )
     # running -> passed (terminal) frees the key.
-    proof_queue._update_run(
+    state._update_run(
         conn,
         "cycle-run",
         status="passed",
         returncode=0,
-        finished_at=proof_queue._utc_now(),
+        finished_at=state._utc_now(),
     )
     # A fresh admission for the same key now succeeds.
     assert (
-        proof_queue._admit_run(
+        scheduling._admit_run(
             conn,
             run_id="cycle-run-2",
             logical_id="cycle",
             reason="cycle again",
             command=[sys.executable, "-c", "print('cycle2')"],
-            cwd=proof_queue.ROOT,
+            cwd=state.ROOT,
             resource_family="python",
             contention_key="python:cycle",
             scopes=[],

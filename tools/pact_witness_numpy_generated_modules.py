@@ -69,7 +69,7 @@ _NUMPY_SOURCE_REL = "bench/friends/repos/numpy_off_the_shelf"
 # Witness NumPy package roots that must carry the generated modules. Each entry
 # is a directory that (when it exists) contains a ``numpy/`` package the witness
 # stages/resolves from. Mirrors the numpy roots selected by
-# tools/proof_queue.py::_pact_witness_native_roots.
+# tools/proof_queue_pkg/pact.py::_pact_witness_native_roots.
 _WITNESS_NUMPY_PACKAGE_PARENTS = (
     "tmp/pact_numpy_multiarray_sealed_for_witness",
     "tmp/pact_numpy_multiarray_sealed_axiserror",
