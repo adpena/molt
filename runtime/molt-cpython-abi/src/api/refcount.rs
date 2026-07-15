@@ -22,24 +22,23 @@ pub unsafe extern "C" fn Py_INCREF(op: *mut PyObject) {
     if op.is_null() {
         return;
     }
-    let managed_bits = crate::bridge::GLOBAL_BRIDGE.managed_handle_for_pyobj(op);
-    // Managed `ob_refcnt` and bridge lifecycle state are one transaction. Pin
-    // the runtime before touching either; foreign C objects retain CPython's
-    // caller-held-GIL contract and pay no Molt guard cost.
-    let _runtime_gil = managed_bits.map(|_| crate::hooks::RuntimeGilGuard::ensure());
-    if let Some(bits) = managed_bits {
+    // Acquire the execution token before identity lookup. Publication,
+    // retirement, and the managed header mutation are one transaction even
+    // for a future free-threaded caller.
+    let _runtime_gil = crate::hooks::RuntimeGilGuard::ensure();
+    if let Some(bits) = unsafe { crate::bridge::GLOBAL_BRIDGE.managed_incref_pyobj(op) } {
         if unsafe { (crate::hooks::hooks_or_stubs().try_mark_abi_view)(bits, 1) } == 0 {
             eprintln!("molt fatal: Py_INCREF attempted after managed object terminal death");
             std::process::abort();
         }
+        return;
     }
-    // Immortal check via the single authority (mirrors CPython _Py_IsImmortal):
-    // a static singleton is never incremented.
     unsafe {
         let rc = (*op).ob_refcnt;
-        if !crate::abi_types::is_immortal_refcnt(rc) {
-            (*op).ob_refcnt = rc.wrapping_add(1);
+        if crate::abi_types::is_immortal_refcnt(rc) {
+            return;
         }
+        (*op).ob_refcnt = rc.wrapping_add(1);
     }
 }
 
@@ -52,9 +51,18 @@ pub unsafe extern "C" fn Py_DECREF(op: *mut PyObject) {
     if op.is_null() {
         return;
     }
-    let managed_bits = crate::bridge::GLOBAL_BRIDGE.managed_handle_for_pyobj(op);
-    let _runtime_gil = managed_bits.map(|_| crate::hooks::RuntimeGilGuard::ensure());
+    let _runtime_gil = crate::hooks::RuntimeGilGuard::ensure();
     unsafe {
+        match crate::bridge::GLOBAL_BRIDGE.managed_decref_pyobj(op) {
+            crate::bridge::ManagedDecref::Immortal
+            | crate::bridge::ManagedDecref::Alive
+            | crate::bridge::ManagedDecref::RetiredInline => return,
+            crate::bridge::ManagedDecref::ReleaseRuntimeHold(bits) => {
+                (crate::hooks::hooks_or_stubs().dec_ref)(bits);
+                return;
+            }
+            crate::bridge::ManagedDecref::NotManaged => {}
+        }
         let rc = (*op).ob_refcnt;
         if crate::abi_types::is_immortal_refcnt(rc) {
             return; // immortal singleton — permanent no-op, never freed
@@ -65,14 +73,10 @@ pub unsafe extern "C" fn Py_DECREF(op: *mut PyObject) {
         let new_rc = rc - 1;
         (*op).ob_refcnt = new_rc;
         if new_rc == 0 {
-            if let Some(bits) = managed_bits {
-                if crate::bridge::GLOBAL_BRIDGE.c_ref_zero(bits) {
-                    (crate::hooks::hooks_or_stubs().dec_ref)(bits);
-                }
-                return;
-            }
-            let released_registered_object = crate::bridge::GLOBAL_BRIDGE.release_pyobj(op);
-            if !released_registered_object {
+            if crate::bridge::GLOBAL_BRIDGE
+                .release_pyobj(op)
+                .requires_type_dealloc()
+            {
                 let tp = (*op).ob_type;
                 if !tp.is_null()
                     && let Some(dealloc) = (*tp).tp_dealloc
@@ -98,14 +102,19 @@ pub unsafe extern "C" fn _Py_Dealloc(op: *mut PyObject) {
     if op.is_null() {
         return;
     }
+    let _runtime_gil = crate::hooks::RuntimeGilGuard::ensure();
     let managed_bits = crate::bridge::GLOBAL_BRIDGE.managed_handle_for_pyobj(op);
-    let _runtime_gil = managed_bits.map(|_| crate::hooks::RuntimeGilGuard::ensure());
     unsafe {
         if let Some(bits) = managed_bits {
-            if crate::bridge::GLOBAL_BRIDGE.c_ref_zero(bits) {
+            if crate::bridge::GLOBAL_BRIDGE.c_ref_zero(bits)
+                == crate::bridge::CRefZero::ReleaseRuntimeHold
+            {
                 (crate::hooks::hooks_or_stubs().dec_ref)(bits);
             }
-        } else if !crate::bridge::GLOBAL_BRIDGE.release_pyobj(op) {
+        } else if crate::bridge::GLOBAL_BRIDGE
+            .release_pyobj(op)
+            .requires_type_dealloc()
+        {
             let tp = (*op).ob_type;
             if !tp.is_null()
                 && let Some(dealloc) = (*tp).tp_dealloc

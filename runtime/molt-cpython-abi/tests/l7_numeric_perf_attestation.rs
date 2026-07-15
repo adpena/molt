@@ -16,7 +16,7 @@ use molt_cpython_abi::api::numbers::{
     PyFloat_Pack2, PyFloat_Pack4, PyLong_FromLong, PyLong_FromString,
 };
 use molt_cpython_abi::api::refcount::Py_DECREF;
-use molt_cpython_abi::bridge::{GLOBAL_BRIDGE, molt_capi_pyobj_to_handle};
+use molt_cpython_abi::bridge::{GLOBAL_BRIDGE, PyObjRelease, molt_capi_pyobj_to_handle};
 use molt_cpython_abi::hooks::{INT_BYTES_OK, OwnedHandleResult, STUB_HOOKS};
 use molt_cpython_abi::l7_attestation::{
     CALIBRATION_TARGET_NS, MINIMUM_SAMPLE_NS, SAMPLE_COUNT, calibrate_timed_iterations,
@@ -621,7 +621,10 @@ fn bridge_cases() -> Vec<CaseResult> {
     );
     let cold_preflight = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(cold_preflight_bits) };
     assert!(!cold_preflight.is_null());
-    assert!(GLOBAL_BRIDGE.release_pyobj(cold_preflight));
+    assert_eq!(
+        GLOBAL_BRIDGE.release_pyobj(cold_preflight),
+        PyObjRelease::ManagedViewRetired
+    );
 
     let scalar_decode = measure_case(
         "bridge.canonical_scalar_decode",
@@ -659,7 +662,11 @@ fn bridge_cases() -> Vec<CaseResult> {
             let bits = heap_bits[(index + 1) % heap_bits.len()];
             let proxy = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
             black_box(proxy);
-            u64::from(!proxy.is_null() && black_box(GLOBAL_BRIDGE.release_pyobj(proxy)))
+            u64::from(
+                !proxy.is_null()
+                    && black_box(GLOBAL_BRIDGE.release_pyobj(proxy))
+                        == PyObjRelease::ManagedViewRetired,
+            )
         },
     );
 

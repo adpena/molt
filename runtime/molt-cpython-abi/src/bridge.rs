@@ -636,38 +636,43 @@ thread_local! {
     /// A distinct nested exception must still publish its complete physical
     /// `PyBaseExceptionObject`; a thread-global depth bit left those nested
     /// views permanently initialized with null fields.
-    static EXCEPTION_SYNC_STACK: RefCell<ExceptionSyncStack> = const {
-        RefCell::new(ExceptionSyncStack::new())
+    static EXCEPTION_SYNC_STACK: RefCell<ReentrantHandleStack> = const {
+        RefCell::new(ReentrantHandleStack::new())
     };
-    static LIST_SYNC_STACK: RefCell<ExceptionSyncStack> = const {
-        RefCell::new(ExceptionSyncStack::new())
+    static LIST_SYNC_STACK: RefCell<ReentrantHandleStack> = const {
+        RefCell::new(ReentrantHandleStack::new())
+    };
+    /// Only the building owner may observe its recursive projection skeleton;
+    /// the inline stack keeps the common publication path allocation-free.
+    static PUBLICATION_BUILD_STACK: RefCell<ReentrantHandleStack> = const {
+        RefCell::new(ReentrantHandleStack::new())
     };
 }
 
-const EXCEPTION_SYNC_INLINE_DEPTH: usize = 8;
+const REENTRANT_HANDLE_INLINE_DEPTH: usize = 8;
 
-struct ExceptionSyncStack {
-    inline: [AbiHandle; EXCEPTION_SYNC_INLINE_DEPTH],
+struct ReentrantHandleStack {
+    inline: [AbiHandle; REENTRANT_HANDLE_INLINE_DEPTH],
     depth: usize,
     overflow: Vec<AbiHandle>,
 }
 
-impl ExceptionSyncStack {
+impl ReentrantHandleStack {
     const fn new() -> Self {
         Self {
-            inline: [0; EXCEPTION_SYNC_INLINE_DEPTH],
+            inline: [0; REENTRANT_HANDLE_INLINE_DEPTH],
             depth: 0,
             overflow: Vec::new(),
         }
     }
 
     fn contains(&self, bits: AbiHandle) -> bool {
-        self.inline[..self.depth.min(EXCEPTION_SYNC_INLINE_DEPTH)].contains(&bits)
+        self.inline[..self.depth.min(REENTRANT_HANDLE_INLINE_DEPTH)].contains(&bits)
             || self.overflow.contains(&bits)
     }
 
     fn push(&mut self, bits: AbiHandle) {
-        if self.depth < EXCEPTION_SYNC_INLINE_DEPTH {
+        if self.depth < REENTRANT_HANDLE_INLINE_DEPTH {
             self.inline[self.depth] = bits;
         } else {
             self.overflow.push(bits);
@@ -678,7 +683,7 @@ impl ExceptionSyncStack {
     fn pop(&mut self) -> Option<AbiHandle> {
         let next_depth = self.depth.checked_sub(1)?;
         self.depth = next_depth;
-        if next_depth < EXCEPTION_SYNC_INLINE_DEPTH {
+        if next_depth < REENTRANT_HANDLE_INLINE_DEPTH {
             Some(std::mem::replace(&mut self.inline[next_depth], 0))
         } else {
             self.overflow.pop()
@@ -769,7 +774,41 @@ struct BridgeEntry {
     /// NUL and the payload length excludes it. Dropping the bridge entry drops
     /// this cache, matching the `str` object's C-visible lifetime.
     utf8: Option<Box<[u8]>>,
+    publication: PublicationState,
     lifecycle: BridgeLifecycle,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PublicationState {
+    Building { owner: std::thread::ThreadId },
+    Ready,
+    Retiring,
+}
+
+struct PublicationBuildGuard {
+    bits: AbiHandle,
+}
+
+impl PublicationBuildGuard {
+    fn enter(bits: AbiHandle) -> Self {
+        PUBLICATION_BUILD_STACK.with(|stack| stack.borrow_mut().push(bits));
+        Self { bits }
+    }
+}
+
+impl Drop for PublicationBuildGuard {
+    fn drop(&mut self) {
+        PUBLICATION_BUILD_STACK.with(|stack| {
+            let popped = stack.borrow_mut().pop();
+            debug_assert_eq!(popped, Some(self.bits));
+        });
+    }
+}
+
+#[inline]
+fn is_publication_owner(bits: AbiHandle, owner: &std::thread::ThreadId) -> bool {
+    *owner == std::thread::current().id()
+        && PUBLICATION_BUILD_STACK.with(|stack| stack.borrow().contains(bits))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -853,6 +892,44 @@ struct HandleShard {
     raw_py: HashMap<AbiHandle, usize>,
 }
 
+/// Storage authority selected when a C-visible object reaches its release
+/// boundary.  This is deliberately not a boolean: managed views, registered
+/// direct objects, numeric carriers, immortal statics, and unknown foreign
+/// objects have distinct destruction obligations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PyObjRelease {
+    ManagedViewRetired,
+    DirectViewUnregistered,
+    NumericCarrier,
+    StaticImmortal,
+    Untracked,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ManagedDecref {
+    NotManaged,
+    Immortal,
+    Alive,
+    RetiredInline,
+    ReleaseRuntimeHold(AbiHandle),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CRefZero {
+    ViewRetained,
+    ReleaseRuntimeHold,
+}
+
+impl PyObjRelease {
+    #[inline]
+    pub const fn requires_type_dealloc(self) -> bool {
+        matches!(
+            self,
+            Self::DirectViewUnregistered | Self::NumericCarrier | Self::Untracked
+        )
+    }
+}
+
 /// Sharded global bridge state. Address-keyed identity maps and handle-keyed
 /// value maps have distinct lock ranks. Every operation needing both ranks
 /// acquires the address shard first and the handle shard second.
@@ -860,6 +937,7 @@ pub struct ObjectBridge {
     address_shards: Box<[Mutex<AddressShard>]>,
     foreign_ready: Box<[Condvar]>,
     handle_shards: Box<[Mutex<HandleShard>]>,
+    publication_ready: Box<[Condvar]>,
     shard_mask: usize,
 }
 
@@ -1073,11 +1151,16 @@ impl ObjectBridge {
             .map(|_| Condvar::new())
             .collect::<Vec<_>>()
             .into_boxed_slice();
+        let publication_ready = (0..shard_count)
+            .map(|_| Condvar::new())
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
 
         Self {
             address_shards,
             foreign_ready,
             handle_shards,
+            publication_ready,
             shard_mask: shard_count - 1,
         }
     }
@@ -1299,6 +1382,9 @@ impl ObjectBridge {
             view,
             bits,
             utf8: None,
+            publication: PublicationState::Building {
+                owner: std::thread::current().id(),
+            },
             lifecycle: if internal_c_ref {
                 BridgeLifecycle::RuntimeOwned
             } else {
@@ -1309,184 +1395,171 @@ impl ObjectBridge {
         Some((entry, raw_ptr))
     }
 
-    unsafe fn existing_pyobj(
-        handle: &HandleShard,
-        bits: AbiHandle,
-        increment: bool,
-    ) -> Option<*mut PyObject> {
-        if let Some(entry) = handle.to_py.get(&bits) {
-            let ptr = entry.view.py_obj();
-            if increment {
-                unsafe { Self::increment_pyobj_ref(ptr) };
+    unsafe fn published_pyobj(&self, bits: AbiHandle, increment: bool) -> Option<*mut PyObject> {
+        let index = self.handle_shard_index(bits);
+        let mut handle = self.handle_shards[index].lock();
+        loop {
+            if let Some(entry) = handle.to_py.get(&bits) {
+                match &entry.publication {
+                    PublicationState::Ready => {
+                        let ptr = entry.view.py_obj();
+                        if increment {
+                            unsafe { Self::increment_pyobj_ref(ptr) };
+                        }
+                        return Some(ptr);
+                    }
+                    PublicationState::Building { owner } if is_publication_owner(bits, owner) => {
+                        let ptr = entry.view.py_obj();
+                        if increment {
+                            unsafe { Self::increment_pyobj_ref(ptr) };
+                        }
+                        return Some(ptr);
+                    }
+                    PublicationState::Building { .. } | PublicationState::Retiring => {
+                        self.publication_ready[index].wait(&mut handle);
+                        continue;
+                    }
+                }
             }
-            return Some(ptr);
-        }
-        if let Some(addr) = handle.raw_py.get(&bits).copied() {
-            let ptr = core::ptr::with_exposed_provenance_mut::<PyObject>(addr);
-            if increment {
-                unsafe { Self::increment_pyobj_ref(ptr) };
+            if let Some(addr) = handle.raw_py.get(&bits).copied() {
+                let ptr = core::ptr::with_exposed_provenance_mut::<PyObject>(addr);
+                if increment {
+                    unsafe { Self::increment_pyobj_ref(ptr) };
+                }
+                return Some(ptr);
             }
-            return Some(ptr);
+            return None;
         }
-        None
+    }
+
+    fn finish_publication(&self, bits: AbiHandle) {
+        let index = self.handle_shard_index(bits);
+        let mut handle = self.handle_shards[index].lock();
+        let Some(entry) = handle.to_py.get_mut(&bits) else {
+            eprintln!("molt fatal: ABI publication vanished before commit");
+            std::process::abort();
+        };
+        match &entry.publication {
+            PublicationState::Building { owner } if is_publication_owner(bits, owner) => {
+                entry.publication = PublicationState::Ready;
+            }
+            state => {
+                eprintln!("molt fatal: invalid ABI publication commit state: {state:?}");
+                std::process::abort();
+            }
+        }
+        self.publication_ready[index].notify_all();
+    }
+
+    unsafe fn handle_to_pyobj_impl(&self, bits: AbiHandle, owned: bool) -> *mut PyObject {
+        // Pin before any shard lock.  Runtime ownership, physical projection
+        // population, and publication state form one bridge transaction.
+        let _runtime_gil = crate::hooks::RuntimeGilGuard::ensure();
+        if let Some(ptr) = Self::singleton_pyobj(bits) {
+            return ptr;
+        }
+        loop {
+            if let Some(ptr) = unsafe { self.published_pyobj(bits, owned) } {
+                if owned {
+                    unsafe { (crate::hooks::hooks_or_stubs().dec_ref)(bits) };
+                }
+                return ptr;
+            }
+
+            // A borrowed crossing must manufacture the stable runtime hold;
+            // an owned crossing transfers its incoming hold to the view.
+            if !owned {
+                unsafe { (crate::hooks::hooks_or_stubs().inc_ref)(bits) };
+            }
+            let has_non_view_runtime_owner = if owned {
+                (unsafe { (crate::hooks::hooks_or_stubs().ref_count)(bits) }) > 1
+            } else {
+                true
+            };
+            let initial_refs = if owned {
+                1 + isize::from(has_non_view_runtime_owner)
+            } else {
+                1
+            };
+            let Some((entry, raw_ptr)) =
+                (unsafe { self.build_pyobj_entry(bits, initial_refs, has_non_view_runtime_owner) })
+            else {
+                let _ = crate::api::errors::transfer_runtime_pending_to_current();
+                let pending = crate::api::errors::take_current_error();
+                unsafe { (crate::hooks::hooks_or_stubs().dec_ref)(bits) };
+                drop(crate::api::errors::take_current_error());
+                if let Some(pending) = pending {
+                    crate::api::errors::restore_current_error_exact(pending);
+                }
+                unsafe {
+                    ensure_result_error(c"managed runtime handle could not build an ABI view")
+                };
+                return std::ptr::null_mut();
+            };
+            let addr = raw_ptr.addr();
+            let build_guard = PublicationBuildGuard::enter(bits);
+            let (mut address, mut handle) = self.lock_address_then_handle(addr, bits);
+            if handle.to_py.contains_key(&bits) || handle.raw_py.contains_key(&bits) {
+                drop(handle);
+                drop(address);
+                drop(build_guard);
+                if !owned {
+                    unsafe { (crate::hooks::hooks_or_stubs().dec_ref)(bits) };
+                }
+                continue;
+            }
+            if address.from_py.try_reserve(1).is_err() || handle.to_py.try_reserve(1).is_err() {
+                drop(handle);
+                drop(address);
+                drop(build_guard);
+                unsafe { (crate::hooks::hooks_or_stubs().dec_ref)(bits) };
+                unsafe { crate::api::errors::PyErr_NoMemory() };
+                return std::ptr::null_mut();
+            }
+            if unsafe { (crate::hooks::hooks_or_stubs().try_mark_abi_view)(bits, 1) } == 0 {
+                drop(handle);
+                drop(address);
+                drop(build_guard);
+                unsafe { (crate::hooks::hooks_or_stubs().dec_ref)(bits) };
+                unsafe {
+                    crate::api::errors::PyErr_SetString(
+                        (&raw mut crate::abi_types::PyExc_RuntimeError).cast::<PyObject>(),
+                        c"cannot publish ABI view for deallocating object".as_ptr(),
+                    )
+                };
+                return std::ptr::null_mut();
+            }
+            address.from_py.insert(addr, bits);
+            handle.to_py.insert(bits, entry);
+            drop(handle);
+            drop(address);
+
+            if !self.refresh_tuple_view(bits)
+                || !self.refresh_list_view(bits)
+                || !self.refresh_exception_view(bits)
+            {
+                self.remove_managed_view(bits, addr);
+                drop(build_guard);
+                unsafe { (crate::hooks::hooks_or_stubs().dec_ref)(bits) };
+                unsafe {
+                    ensure_result_error(c"managed runtime handle could not populate an ABI view")
+                };
+                return std::ptr::null_mut();
+            }
+            self.finish_publication(bits);
+            drop(build_guard);
+            return raw_ptr;
+        }
     }
 
     /// Translate a Molt handle to a new-reference `PyObject*`.
     pub unsafe fn owned_handle_to_pyobj(&self, bits: AbiHandle) -> *mut PyObject {
-        // Pin before any shard lock: publishing/removing a canonical view
-        // mutates the runtime header and class/exception snapshots borrow
-        // runtime-owned edges for the duration of this transaction.
-        let _runtime_gil = crate::hooks::RuntimeGilGuard::ensure();
-        if let Some(ptr) = Self::singleton_pyobj(bits) {
-            return ptr;
-        }
-        {
-            let handle = self.handle_shard(bits).lock();
-            if let Some(ptr) = unsafe { Self::existing_pyobj(&handle, bits, true) } {
-                drop(handle);
-                unsafe { (crate::hooks::hooks_or_stubs().dec_ref)(bits) };
-                return ptr;
-            }
-        }
-        let has_non_view_runtime_owner =
-            unsafe { (crate::hooks::hooks_or_stubs().ref_count)(bits) } > 1;
-        let Some((entry, raw_ptr)) = (unsafe {
-            self.build_pyobj_entry(
-                bits,
-                1 + isize::from(has_non_view_runtime_owner),
-                has_non_view_runtime_owner,
-            )
-        }) else {
-            let _ = crate::api::errors::transfer_runtime_pending_to_current();
-            let pending = crate::api::errors::take_current_error();
-            unsafe {
-                let hooks = crate::hooks::hooks_or_stubs();
-                (hooks.dec_ref)(bits);
-            }
-            drop(crate::api::errors::take_current_error());
-            if let Some(pending) = pending {
-                crate::api::errors::restore_current_error_exact(pending);
-            }
-            unsafe { ensure_result_error(c"managed runtime handle could not build an ABI view") };
-            return std::ptr::null_mut();
-        };
-        let addr = raw_ptr.addr();
-        let (mut address, mut handle) = self.lock_address_then_handle(addr, bits);
-        if let Some(ptr) = unsafe { Self::existing_pyobj(&handle, bits, true) } {
-            drop(handle);
-            drop(address);
-            unsafe { (crate::hooks::hooks_or_stubs().dec_ref)(bits) };
-            return ptr;
-        }
-        if address.from_py.try_reserve(1).is_err() || handle.to_py.try_reserve(1).is_err() {
-            drop(handle);
-            drop(address);
-            unsafe { (crate::hooks::hooks_or_stubs().dec_ref)(bits) };
-            unsafe { crate::api::errors::PyErr_NoMemory() };
-            return std::ptr::null_mut();
-        }
-        if unsafe { (crate::hooks::hooks_or_stubs().try_mark_abi_view)(bits, 1) } == 0 {
-            drop(handle);
-            drop(address);
-            unsafe { (crate::hooks::hooks_or_stubs().dec_ref)(bits) };
-            unsafe {
-                crate::api::errors::PyErr_SetString(
-                    (&raw mut crate::abi_types::PyExc_RuntimeError).cast::<PyObject>(),
-                    c"cannot publish ABI view for deallocating object".as_ptr(),
-                )
-            };
-            return std::ptr::null_mut();
-        }
-        address.from_py.insert(addr, bits);
-        handle.to_py.insert(bits, entry);
-        drop(handle);
-        drop(address);
-        if !self.refresh_tuple_view(bits)
-            || !self.refresh_list_view(bits)
-            || !self.refresh_exception_view(bits)
-        {
-            self.remove_managed_view(bits, addr);
-            unsafe { (crate::hooks::hooks_or_stubs().dec_ref)(bits) };
-            unsafe {
-                ensure_result_error(c"managed runtime handle could not populate an ABI view")
-            };
-            return std::ptr::null_mut();
-        }
-        raw_ptr
+        unsafe { self.handle_to_pyobj_impl(bits, true) }
     }
 
     /// Translate a Molt handle to a borrowed `PyObject*`.
     pub unsafe fn handle_to_borrowed_pyobj(&self, bits: AbiHandle) -> *mut PyObject {
-        let _runtime_gil = crate::hooks::RuntimeGilGuard::ensure();
-        if let Some(ptr) = Self::singleton_pyobj(bits) {
-            return ptr;
-        }
-        {
-            let handle = self.handle_shard(bits).lock();
-            if let Some(ptr) = unsafe { Self::existing_pyobj(&handle, bits, false) } {
-                return ptr;
-            }
-        }
-        // The canonical view owns one runtime hold. Its initial C refcount is
-        // the runtime-owner bias that makes every borrowed PyObject ABI-valid.
-        unsafe { (crate::hooks::hooks_or_stubs().inc_ref)(bits) };
-        let Some((entry, raw_ptr)) = (unsafe { self.build_pyobj_entry(bits, 1, true) }) else {
-            let _ = crate::api::errors::transfer_runtime_pending_to_current();
-            let pending = crate::api::errors::take_current_error();
-            unsafe {
-                let hooks = crate::hooks::hooks_or_stubs();
-                (hooks.dec_ref)(bits);
-            }
-            drop(crate::api::errors::take_current_error());
-            if let Some(pending) = pending {
-                crate::api::errors::restore_current_error_exact(pending);
-            }
-            unsafe { ensure_result_error(c"managed runtime handle could not build an ABI view") };
-            return std::ptr::null_mut();
-        };
-        let addr = raw_ptr.addr();
-        let (mut address, mut handle) = self.lock_address_then_handle(addr, bits);
-        if let Some(ptr) = unsafe { Self::existing_pyobj(&handle, bits, false) } {
-            drop(handle);
-            drop(address);
-            unsafe { (crate::hooks::hooks_or_stubs().dec_ref)(bits) };
-            return ptr;
-        }
-        if address.from_py.try_reserve(1).is_err() || handle.to_py.try_reserve(1).is_err() {
-            drop(handle);
-            drop(address);
-            unsafe { (crate::hooks::hooks_or_stubs().dec_ref)(bits) };
-            unsafe { crate::api::errors::PyErr_NoMemory() };
-            return std::ptr::null_mut();
-        }
-        if unsafe { (crate::hooks::hooks_or_stubs().try_mark_abi_view)(bits, 1) } == 0 {
-            drop(handle);
-            drop(address);
-            unsafe { (crate::hooks::hooks_or_stubs().dec_ref)(bits) };
-            unsafe {
-                crate::api::errors::PyErr_SetString(
-                    (&raw mut crate::abi_types::PyExc_RuntimeError).cast::<PyObject>(),
-                    c"cannot publish ABI view for deallocating object".as_ptr(),
-                )
-            };
-            return std::ptr::null_mut();
-        }
-        address.from_py.insert(addr, bits);
-        handle.to_py.insert(bits, entry);
-        drop(handle);
-        drop(address);
-        if !self.refresh_tuple_view(bits)
-            || !self.refresh_list_view(bits)
-            || !self.refresh_exception_view(bits)
-        {
-            self.remove_managed_view(bits, addr);
-            unsafe { (crate::hooks::hooks_or_stubs().dec_ref)(bits) };
-            unsafe {
-                ensure_result_error(c"managed runtime handle could not populate an ABI view")
-            };
-            return std::ptr::null_mut();
-        }
-        raw_ptr
+        unsafe { self.handle_to_pyobj_impl(bits, false) }
     }
 
     pub unsafe fn owned_result_to_pyobj(
@@ -1608,13 +1681,43 @@ impl ObjectBridge {
             return Some(BridgeIdentity(bits));
         }
         let addr = ptr.addr();
-        let address = self.address_shard(addr).lock();
-        address
-            .numeric_carriers
-            .get(&addr)
-            .and_then(|record| record.bits)
-            .or_else(|| address.from_py.get(&addr).copied())
-            .map(BridgeIdentity)
+        loop {
+            let address = self.address_shard(addr).lock();
+            if let Some(bits) = address
+                .numeric_carriers
+                .get(&addr)
+                .and_then(|record| record.bits)
+            {
+                return Some(BridgeIdentity(bits));
+            }
+            let bits = address.from_py.get(&addr).copied()?;
+            let index = self.handle_shard_index(bits);
+            let mut handle = self.handle_shards[index].lock();
+            let visible = handle.raw_py.get(&bits).copied() == Some(addr)
+                || handle.to_py.get(&bits).is_some_and(|entry| {
+                    entry.view.py_obj().addr() == addr
+                        && (matches!(entry.publication, PublicationState::Ready)
+                            || matches!(
+                                &entry.publication,
+                                PublicationState::Building { owner }
+                                    if is_publication_owner(bits, owner)
+                            ))
+                });
+            if visible {
+                return Some(BridgeIdentity(bits));
+            }
+            let waiting = handle.to_py.get(&bits).is_some_and(|entry| {
+                matches!(
+                    entry.publication,
+                    PublicationState::Building { .. } | PublicationState::Retiring
+                )
+            });
+            drop(address);
+            if !waiting {
+                return None;
+            }
+            self.publication_ready[index].wait(&mut handle);
+        }
     }
 
     pub fn unicode_utf8_cache(&self, bits: AbiHandle, bytes: &[u8]) -> Option<(*const u8, usize)> {
@@ -2977,18 +3080,11 @@ impl ObjectBridge {
         if ptr.is_null() {
             return false;
         }
-        if pyobj_to_handle_static(ptr) == Some(bits) {
+        if self.pyobj_to_handle(ptr).map(BridgeIdentity::as_handle) == Some(bits) {
             return true;
         }
         let address = self.address_shard(ptr.addr()).lock();
-        address
-            .numeric_carriers
-            .get(&ptr.addr())
-            .and_then(|record| record.bits)
-            == Some(bits)
-            || address.direct_molt_py.get(&ptr.addr()).copied() == Some(bits)
-            || address.from_py.get(&ptr.addr()).copied() == Some(bits)
-            || address.foreign.get(&ptr.addr()).copied() == Some(bits)
+        address.foreign.get(&ptr.addr()).copied() == Some(bits)
     }
 
     pub fn molt_handle_for_pyobj(&self, ptr: *mut PyObject) -> Option<MoltValueHandle> {
@@ -3007,12 +3103,8 @@ impl ObjectBridge {
         if let Some(bits) = address.direct_molt_py.get(&addr).copied() {
             return Some(MoltValueHandle(bits));
         }
-        let bits = address.from_py.get(&addr).copied()?;
-        let handle = self.handle_shard(bits).lock();
-        if handle.raw_py.contains_key(&bits) {
-            return None;
-        }
-        Some(MoltValueHandle(bits))
+        drop(address);
+        self.managed_handle_for_pyobj(ptr).map(MoltValueHandle)
     }
 
     /// Resolve a C object for semantic runtime observation. Unlike the raw
@@ -3037,17 +3129,28 @@ impl ObjectBridge {
             return None;
         }
         let addr = ptr.addr();
-        let bits = self
-            .address_shard(addr)
-            .lock()
-            .from_py
-            .get(&addr)
-            .copied()?;
-        self.handle_shard(bits)
-            .lock()
-            .to_py
-            .contains_key(&bits)
-            .then_some(bits)
+        loop {
+            let address = self.address_shard(addr).lock();
+            let bits = address.from_py.get(&addr).copied()?;
+            let index = self.handle_shard_index(bits);
+            let mut handle = self.handle_shards[index].lock();
+            let Some(entry) = handle.to_py.get(&bits) else {
+                return None;
+            };
+            if entry.view.py_obj().addr() != addr {
+                return None;
+            }
+            match &entry.publication {
+                PublicationState::Ready => return Some(bits),
+                PublicationState::Building { owner } if is_publication_owner(bits, owner) => {
+                    return Some(bits);
+                }
+                PublicationState::Building { .. } | PublicationState::Retiring => {
+                    drop(address);
+                    self.publication_ready[index].wait(&mut handle);
+                }
+            }
+        }
     }
 
     pub unsafe fn molt_value_for_pyobj(&self, ptr: *mut PyObject) -> Option<u64> {
@@ -3283,39 +3386,167 @@ impl ObjectBridge {
             .remove(&ptr.addr())
     }
 
-    pub fn release_pyobj(&self, ptr: *mut PyObject) -> bool {
+    /// Increment a canonical managed view while holding both identity ranks.
+    /// The caller must hold the runtime execution token; the bridge lock makes
+    /// the C header update linearizable with publication and retirement.
+    pub unsafe fn managed_incref_pyobj(&self, ptr: *mut PyObject) -> Option<AbiHandle> {
         let addr = ptr.addr();
-        let mut address = self.address_shard(addr).lock();
-        if address.numeric_carriers.contains_key(&addr) {
-            return false;
+        loop {
+            let address = self.address_shard(addr).lock();
+            let bits = address.from_py.get(&addr).copied()?;
+            let index = self.handle_shard_index(bits);
+            let mut handle = self.handle_shards[index].lock();
+            let entry = handle.to_py.get_mut(&bits)?;
+            match &entry.publication {
+                PublicationState::Ready => {}
+                PublicationState::Building { owner } if is_publication_owner(bits, owner) => {}
+                PublicationState::Building { .. } | PublicationState::Retiring => {
+                    drop(address);
+                    self.publication_ready[index].wait(&mut handle);
+                    continue;
+                }
+            }
+            if entry.view.py_obj() != ptr {
+                return None;
+            }
+            let refs = unsafe { (*ptr).ob_refcnt };
+            let Some(incremented) = checked_c_ref_increment(refs) else {
+                abort_refcount_invariant("managed Py_INCREF", refs, entry.lifecycle);
+            };
+            unsafe { (*ptr).ob_refcnt = incremented };
+            return Some(bits);
         }
-        let Some(bits) = address.from_py.get(&addr).copied() else {
-            return false;
-        };
-        let mut handle = self.handle_shard(bits).lock();
-        address.direct_molt_py.remove(&addr);
-        address.from_py.remove(&addr);
-        let released = if handle.raw_py.remove(&bits).is_some() {
-            None
-        } else {
-            handle.to_py.remove(&bits)
-        };
-        drop(handle);
-        drop(address);
-        if let Some(entry) = released {
+    }
+
+    /// Decrement a canonical managed view as one identity/refcount/lifecycle
+    /// transaction.  Heap terminal release remains owned by the runtime;
+    /// immediate values retire synchronously because they have no finalizer.
+    pub unsafe fn managed_decref_pyobj(&self, ptr: *mut PyObject) -> ManagedDecref {
+        let addr = ptr.addr();
+        loop {
+            let mut address = self.address_shard(addr).lock();
+            let Some(bits) = address.from_py.get(&addr).copied() else {
+                return ManagedDecref::NotManaged;
+            };
+            let index = self.handle_shard_index(bits);
+            let mut handle = self.handle_shards[index].lock();
+            let Some(entry) = handle.to_py.get_mut(&bits) else {
+                return ManagedDecref::NotManaged;
+            };
+            match &entry.publication {
+                PublicationState::Ready => {}
+                PublicationState::Building { owner } if is_publication_owner(bits, owner) => {}
+                PublicationState::Building { .. } | PublicationState::Retiring => {
+                    drop(address);
+                    self.publication_ready[index].wait(&mut handle);
+                    continue;
+                }
+            }
+            if entry.view.py_obj() != ptr {
+                return ManagedDecref::NotManaged;
+            }
+            let refs = unsafe { (*ptr).ob_refcnt };
+            if crate::abi_types::is_immortal_refcnt(refs) {
+                return ManagedDecref::Immortal;
+            }
+            if refs <= 0 {
+                return ManagedDecref::Alive;
+            }
+            let remaining = refs - 1;
+            unsafe { (*ptr).ob_refcnt = remaining };
+            if remaining != 0 {
+                return ManagedDecref::Alive;
+            }
+            if entry.lifecycle == BridgeLifecycle::FinalizingPin {
+                unsafe { (*ptr).ob_refcnt = 1 };
+                return ManagedDecref::Alive;
+            }
+            if MoltObject::from_bits(bits).as_ptr().is_none() {
+                entry.publication = PublicationState::Retiring;
+                address.from_py.remove(&addr);
+                address.direct_molt_py.remove(&addr);
+                let entry = handle
+                    .to_py
+                    .remove(&bits)
+                    .expect("inline managed view disappeared during decref");
+                self.publication_ready[index].notify_all();
+                drop(handle);
+                drop(address);
+                release_bridge_entry(entry);
+                return ManagedDecref::RetiredInline;
+            }
+            let runtime_refs = unsafe { (crate::hooks::hooks_or_stubs().ref_count)(bits) };
+            if runtime_refs > 1 {
+                unsafe { (*ptr).ob_refcnt = 1 };
+                entry.lifecycle = BridgeLifecycle::RuntimeOwned;
+                return ManagedDecref::Alive;
+            }
+            return ManagedDecref::ReleaseRuntimeHold(bits);
+        }
+    }
+
+    pub fn release_pyobj(&self, ptr: *mut PyObject) -> PyObjRelease {
+        if ptr.is_null() {
+            return PyObjRelease::Untracked;
+        }
+        if pyobj_to_handle_static(ptr).is_some() {
+            return PyObjRelease::StaticImmortal;
+        }
+        let addr = ptr.addr();
+        loop {
+            let mut address = self.address_shard(addr).lock();
+            if address.numeric_carriers.contains_key(&addr) {
+                return PyObjRelease::NumericCarrier;
+            }
+            let Some(bits) = address.from_py.get(&addr).copied() else {
+                return PyObjRelease::Untracked;
+            };
+            let index = self.handle_shard_index(bits);
+            let mut handle = self.handle_shards[index].lock();
+            if handle.raw_py.remove(&bits).is_some() {
+                address.direct_molt_py.remove(&addr);
+                address.from_py.remove(&addr);
+                return PyObjRelease::DirectViewUnregistered;
+            }
+            let Some(entry) = handle.to_py.get_mut(&bits) else {
+                return PyObjRelease::Untracked;
+            };
+            match &entry.publication {
+                PublicationState::Ready => entry.publication = PublicationState::Retiring,
+                PublicationState::Building { owner } if is_publication_owner(bits, owner) => {
+                    entry.publication = PublicationState::Retiring;
+                }
+                PublicationState::Building { .. } | PublicationState::Retiring => {
+                    drop(address);
+                    self.publication_ready[index].wait(&mut handle);
+                    continue;
+                }
+            }
+            address.direct_molt_py.remove(&addr);
+            address.from_py.remove(&addr);
+            let entry = handle
+                .to_py
+                .remove(&bits)
+                .expect("managed publication disappeared during retirement");
+            self.publication_ready[index].notify_all();
+            drop(handle);
+            drop(address);
             release_bridge_entry(entry);
             unsafe { (crate::hooks::hooks_or_stubs().dec_ref)(bits) };
-            true
-        } else {
-            false
+            return PyObjRelease::ManagedViewRetired;
         }
     }
 
     fn remove_managed_view(&self, bits: AbiHandle, addr: usize) -> bool {
+        let index = self.handle_shard_index(bits);
         let (mut address, mut handle) = self.lock_address_then_handle(addr, bits);
         address.from_py.remove(&addr);
         address.direct_molt_py.remove(&addr);
+        if let Some(entry) = handle.to_py.get_mut(&bits) {
+            entry.publication = PublicationState::Retiring;
+        }
         let entry = handle.to_py.remove(&bits);
+        self.publication_ready[index].notify_all();
         drop(handle);
         drop(address);
         if let Some(entry) = entry {
@@ -3342,7 +3573,9 @@ impl ObjectBridge {
         let (mut address, mut handle) = self.lock_address_then_handle(addr, bits);
         address.from_py.remove(&addr);
         address.direct_molt_py.remove(&addr);
+        handle.to_py.get_mut(&bits)?.publication = PublicationState::Retiring;
         let entry = handle.to_py.remove(&bits)?;
+        self.publication_ready[self.handle_shard_index(bits)].notify_all();
         drop(handle);
         drop(address);
         Some(RetiredTupleView { entry: Some(entry) })
@@ -3587,35 +3820,35 @@ impl ObjectBridge {
     /// canonical view attached and tell `_Py_Dealloc` to release its runtime
     /// hold: the runtime terminal path owns finalization and retires identity
     /// only after the resurrection window closes.
-    pub fn c_ref_zero(&self, bits: AbiHandle) -> bool {
+    pub fn c_ref_zero(&self, bits: AbiHandle) -> CRefZero {
         if MoltObject::from_bits(bits).as_ptr().is_none() {
             let addr = {
                 let handle = self.handle_shard(bits).lock();
                 let Some(entry) = handle.to_py.get(&bits) else {
-                    return false;
+                    return CRefZero::ViewRetained;
                 };
                 entry.view.py_obj().addr()
             };
             self.remove_managed_view(bits, addr);
-            return false;
+            return CRefZero::ViewRetained;
         }
         let runtime_refs = unsafe { (crate::hooks::hooks_or_stubs().ref_count)(bits) };
         {
             let mut handle = self.handle_shard(bits).lock();
             let Some(entry) = handle.to_py.get_mut(&bits) else {
-                return false;
+                return CRefZero::ViewRetained;
             };
             if entry.lifecycle == BridgeLifecycle::FinalizingPin {
                 unsafe { (*entry.view.py_obj()).ob_refcnt = 1 };
-                return false;
+                return CRefZero::ViewRetained;
             }
             if runtime_refs > 1 {
                 unsafe { (*entry.view.py_obj()).ob_refcnt = 1 };
                 entry.lifecycle = BridgeLifecycle::RuntimeOwned;
-                return false;
+                return CRefZero::ViewRetained;
             }
         }
-        true
+        CRefZero::ReleaseRuntimeHold
     }
 
     fn classify_handle(bits: AbiHandle) -> MoltTypeTag {
@@ -4372,17 +4605,17 @@ mod bridge_handle_tests {
     }
 
     #[test]
-    fn exception_sync_stack_keeps_common_depth_inline() {
-        let mut stack = ExceptionSyncStack::new();
+    fn reentrant_handle_stack_keeps_common_depth_inline() {
+        let mut stack = ReentrantHandleStack::new();
         assert_eq!(stack.overflow.capacity(), 0);
-        for bits in 1..=EXCEPTION_SYNC_INLINE_DEPTH as u64 {
+        for bits in 1..=REENTRANT_HANDLE_INLINE_DEPTH as u64 {
             stack.push(bits);
         }
-        assert_eq!(stack.depth, EXCEPTION_SYNC_INLINE_DEPTH);
+        assert_eq!(stack.depth, REENTRANT_HANDLE_INLINE_DEPTH);
         assert_eq!(stack.overflow.capacity(), 0);
-        stack.push((EXCEPTION_SYNC_INLINE_DEPTH + 1) as u64);
+        stack.push((REENTRANT_HANDLE_INLINE_DEPTH + 1) as u64);
         assert!(stack.overflow.capacity() > 0);
-        for expected in (1..=(EXCEPTION_SYNC_INLINE_DEPTH + 1) as u64).rev() {
+        for expected in (1..=(REENTRANT_HANDLE_INLINE_DEPTH + 1) as u64).rev() {
             assert_eq!(stack.pop(), Some(expected));
         }
         assert_eq!(stack.pop(), None);
@@ -4594,7 +4827,7 @@ mod bridge_handle_tests {
     }
 
     #[test]
-    fn concurrent_crossing_and_release_preserve_bidirectional_identity() {
+    fn disjoint_crossing_and_release_preserve_bidirectional_identity() {
         init_tag_table();
         let bridge = Arc::new(ObjectBridge::new());
         let thread_count = thread::available_parallelism()
@@ -4608,20 +4841,22 @@ mod bridge_handle_tests {
             let done_tx = done_tx.clone();
             thread::spawn(move || {
                 barrier.wait();
-                for iteration in 0..10_000usize {
-                    // Exercise canonical managed views, not scalar carriers.
-                    // Numeric carriers have their own deallocator/provenance
-                    // authority and are deliberately not released through
-                    // `release_pyobj`.
-                    let ordinal = thread_index * 10_000 + iteration + 1;
+                for iteration in 0..2_000usize {
+                    let ordinal = thread_index * 2_000 + iteration + 1;
                     let address = 0x1_0000usize + ordinal * 16;
-                    let bits = MoltObject::from_ptr(address as *mut u8).bits();
-                    let ptr = unsafe { bridge.owned_handle_to_pyobj(bits) };
-                    assert_eq!(
-                        bridge.pyobj_to_handle(ptr).map(BridgeIdentity::as_handle),
-                        Some(bits)
-                    );
-                    assert!(bridge.release_pyobj(ptr));
+                    let heap_bits = MoltObject::from_ptr(address as *mut u8).bits();
+                    let value = 1_000 + (thread_index * 2_000 + iteration) as i64;
+                    let numeric_bits = MoltObject::from_int(value).bits();
+                    // Exercise both heap-handle and non-small numeric managed
+                    // views through the one publication/release authority.
+                    for bits in [heap_bits, numeric_bits] {
+                        let ptr = unsafe { bridge.owned_handle_to_pyobj(bits) };
+                        assert_eq!(
+                            bridge.pyobj_to_handle(ptr).map(BridgeIdentity::as_handle),
+                            Some(bits)
+                        );
+                        assert_eq!(bridge.release_pyobj(ptr), PyObjRelease::ManagedViewRetired);
+                    }
                 }
                 done_tx.send(()).expect("crossing stress receiver dropped");
             });
@@ -4631,5 +4866,197 @@ mod bridge_handle_tests {
                 .recv_timeout(Duration::from_secs(20))
                 .expect("concurrent bridge crossing deadlocked");
         }
+    }
+
+    #[test]
+    fn small_int_crossings_are_stateless_immortal_and_deterministic() {
+        init_tag_table();
+        let bridge = ObjectBridge::new();
+        for value in -5..=256 {
+            let bits = MoltObject::from_int(value).bits();
+            let first = unsafe { bridge.owned_handle_to_pyobj(bits) };
+            let second = unsafe { bridge.handle_to_borrowed_pyobj(bits) };
+            assert_eq!(first, second);
+            assert!(unsafe { crate::abi_types::is_immortal_refcnt((*first).ob_refcnt) });
+            assert_eq!(
+                bridge.pyobj_to_handle(first).map(BridgeIdentity::as_handle),
+                Some(bits)
+            );
+            assert_eq!(bridge.release_pyobj(first), PyObjRelease::StaticImmortal);
+        }
+        assert!(
+            bridge
+                .address_shards
+                .iter()
+                .all(|shard| shard.lock().from_py.is_empty())
+        );
+        assert!(
+            bridge
+                .handle_shards
+                .iter()
+                .all(|shard| shard.lock().to_py.is_empty())
+        );
+    }
+
+    #[test]
+    fn same_handle_crossing_publishes_one_ready_pointer() {
+        init_tag_table();
+        let bridge = Arc::new(ObjectBridge::new());
+        let bits = MoltObject::from_int(20_000).bits();
+        let workers = 8;
+        let barrier = Arc::new(Barrier::new(workers));
+        let (tx, rx) = mpsc::channel();
+        for _ in 0..workers {
+            let bridge = Arc::clone(&bridge);
+            let barrier = Arc::clone(&barrier);
+            let tx = tx.clone();
+            thread::spawn(move || {
+                barrier.wait();
+                let ptr = unsafe { bridge.handle_to_borrowed_pyobj(bits) };
+                tx.send(ptr.addr()).expect("same-handle receiver dropped");
+            });
+        }
+        let pointers = (0..workers)
+            .map(|_| rx.recv_timeout(Duration::from_secs(5)).unwrap())
+            .collect::<Vec<_>>();
+        assert!(pointers.iter().all(|ptr| *ptr == pointers[0]));
+        let handle = bridge.handle_shard(bits).lock();
+        assert!(matches!(
+            handle.to_py.get(&bits).map(|entry| &entry.publication),
+            Some(PublicationState::Ready)
+        ));
+        drop(handle);
+        let ptr = core::ptr::with_exposed_provenance_mut::<PyObject>(pointers[0]);
+        assert_eq!(bridge.release_pyobj(ptr), PyObjRelease::ManagedViewRetired);
+    }
+
+    fn install_building_view(
+        bridge: &ObjectBridge,
+        bits: AbiHandle,
+    ) -> (*mut PyObject, PublicationBuildGuard) {
+        let (entry, ptr) = unsafe { bridge.build_pyobj_entry(bits, 1, false) }.unwrap();
+        let guard = PublicationBuildGuard::enter(bits);
+        let (mut address, mut handle) = bridge.lock_address_then_handle(ptr.addr(), bits);
+        address.from_py.insert(ptr.addr(), bits);
+        handle.to_py.insert(bits, entry);
+        (ptr, guard)
+    }
+
+    #[test]
+    fn building_publication_blocks_other_threads_until_ready() {
+        init_tag_table();
+        let bridge = Arc::new(ObjectBridge::new());
+        let bits = MoltObject::from_int(30_000).bits();
+        let (ptr, guard) = install_building_view(&bridge, bits);
+        // The owner may re-enter to materialize recursive projections.
+        assert_eq!(
+            bridge.pyobj_to_handle(ptr).map(BridgeIdentity::as_handle),
+            Some(bits)
+        );
+        let (tx, rx) = mpsc::channel();
+        let waiter = Arc::clone(&bridge);
+        let addr = ptr.addr();
+        thread::spawn(move || {
+            let ptr = core::ptr::with_exposed_provenance_mut::<PyObject>(addr);
+            tx.send(waiter.pyobj_to_handle(ptr).map(BridgeIdentity::as_handle))
+                .unwrap();
+        });
+        assert!(rx.recv_timeout(Duration::from_millis(50)).is_err());
+        bridge.finish_publication(bits);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), Some(bits));
+        drop(guard);
+        assert_eq!(bridge.release_pyobj(ptr), PyObjRelease::ManagedViewRetired);
+    }
+
+    #[test]
+    fn publication_rollback_wakes_waiters_and_removes_both_directions() {
+        init_tag_table();
+        let bridge = Arc::new(ObjectBridge::new());
+        let bits = MoltObject::from_int(40_000).bits();
+        let (ptr, guard) = install_building_view(&bridge, bits);
+        let (tx, rx) = mpsc::channel();
+        let waiter = Arc::clone(&bridge);
+        let addr = ptr.addr();
+        thread::spawn(move || {
+            let ptr = core::ptr::with_exposed_provenance_mut::<PyObject>(addr);
+            tx.send(waiter.pyobj_to_handle(ptr).map(BridgeIdentity::as_handle))
+                .unwrap();
+        });
+        assert!(rx.recv_timeout(Duration::from_millis(50)).is_err());
+        assert!(bridge.remove_managed_view(bits, addr));
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), None);
+        drop(guard);
+        assert!(
+            !bridge
+                .address_shard(addr)
+                .lock()
+                .from_py
+                .contains_key(&addr)
+        );
+        assert!(!bridge.handle_shard(bits).lock().to_py.contains_key(&bits));
+    }
+
+    #[test]
+    fn release_waits_for_building_projection_before_retirement() {
+        init_tag_table();
+        let bridge = Arc::new(ObjectBridge::new());
+        let bits = MoltObject::from_int(45_000).bits();
+        let (ptr, guard) = install_building_view(&bridge, bits);
+        let (tx, rx) = mpsc::channel();
+        let releaser = Arc::clone(&bridge);
+        let addr = ptr.addr();
+        thread::spawn(move || {
+            let ptr = core::ptr::with_exposed_provenance_mut::<PyObject>(addr);
+            tx.send(releaser.release_pyobj(ptr)).unwrap();
+        });
+        assert!(rx.recv_timeout(Duration::from_millis(50)).is_err());
+        bridge.finish_publication(bits);
+        drop(guard);
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            PyObjRelease::ManagedViewRetired
+        );
+        assert!(
+            !bridge
+                .address_shard(addr)
+                .lock()
+                .from_py
+                .contains_key(&addr)
+        );
+        assert!(!bridge.handle_shard(bits).lock().to_py.contains_key(&bits));
+    }
+
+    #[test]
+    fn managed_incref_decref_race_is_linearized_by_bridge_lock() {
+        init_tag_table();
+        let bridge = Arc::new(ObjectBridge::new());
+        let bits = MoltObject::from_int(50_000).bits();
+        let ptr = unsafe { bridge.owned_handle_to_pyobj(bits) };
+        let addr = ptr.addr();
+        let workers = 8;
+        let barrier = Arc::new(Barrier::new(workers));
+        let (tx, rx) = mpsc::channel();
+        for _ in 0..workers {
+            let bridge = Arc::clone(&bridge);
+            let barrier = Arc::clone(&barrier);
+            let tx = tx.clone();
+            thread::spawn(move || {
+                let ptr = core::ptr::with_exposed_provenance_mut::<PyObject>(addr);
+                barrier.wait();
+                for _ in 0..5_000 {
+                    assert_eq!(unsafe { bridge.managed_incref_pyobj(ptr) }, Some(bits));
+                    assert_eq!(
+                        unsafe { bridge.managed_decref_pyobj(ptr) },
+                        ManagedDecref::Alive
+                    );
+                }
+                tx.send(()).unwrap();
+            });
+        }
+        for _ in 0..workers {
+            rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        }
+        assert_eq!(unsafe { (*ptr).ob_refcnt }, 1);
+        assert_eq!(bridge.release_pyobj(ptr), PyObjRelease::ManagedViewRetired);
     }
 }
