@@ -103,6 +103,17 @@ closed_domains = ["OpCode", "Terminator"]
 discovery_only = false
 
 [[generator]]
+tool = "tools/gen_frontend_diagnostics.py"
+outputs = ["src/molt/frontend/frontend_diagnostics_generated.py"]
+source = "src/molt/frontend/frontend_diagnostics.toml + src/molt/frontend/**/*.py"
+check_mode = true
+check_command = "tools/gen_frontend_diagnostics.py --check"
+idempotent = true
+sync_test = "tests/test_frontend_diagnostics.py"
+closed_domains = []
+discovery_only = false
+
+[[generator]]
 tool = "tools/gen_wasm_abi.py"
 outputs = [
   "runtime/molt-backend-wasm/src/wasm_abi_generated/bulk_memory_ops.rs",

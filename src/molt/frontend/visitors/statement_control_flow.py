@@ -8,16 +8,17 @@ AsyncGenVisitorMixin.
 from __future__ import annotations
 
 import ast
-
 from typing import TYPE_CHECKING
 
+from molt.compiler_analysis.static_truth import static_if_live_branch
 from molt.frontend._types import (
     ActiveException,
     MoltOp,
     MoltValue,
     TryScope,
 )
-from molt.compiler_analysis.static_truth import static_if_live_branch
+from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
+from molt.frontend.diagnostics import FrontendRejection
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -310,7 +311,10 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
             a_val = self.locals.get(a_name) or self.globals.get(a_name)
             b_val = self.locals.get(b_name) or self.globals.get(b_name)
             if a_val is None or b_val is None:
-                raise NotImplementedError("Matmul operands must be simple locals")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE,
+                    "Matmul operands must be simple locals",
+                )
             a_hint = self.boxed_local_hints.get(a_name, a_val.type_hint)
             b_hint = self.boxed_local_hints.get(b_name, b_val.type_hint)
             if a_hint == "buffer2d" and b_hint == "buffer2d":
@@ -326,7 +330,10 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
                 return None
         target_names = self._collect_target_names(node.target)
         if not target_names:
-            raise NotImplementedError("Only name/tuple/list for targets are supported")
+            raise FrontendRejection(
+                Diagnostic.SYNTAX_FORM,
+                "Only name/tuple/list for targets are supported",
+            )
         for name in target_names:
             self.exact_locals.pop(name, None)
         assigned = self._collect_assigned_names(node.body)
@@ -425,8 +432,9 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
                             if start_expr is not None:
                                 start_val = self.visit(start_expr)
                                 if start_val is None:
-                                    raise NotImplementedError(
-                                        "Unsupported range start for vector reduction"
+                                    raise FrontendRejection(
+                                        Diagnostic.OPERAND_VALUE,
+                                        "Unsupported range start for vector reduction",
                                     )
                                 args.append(start_val)
                             self.emit(MoltOp(kind=vec_kind, args=args, result=pair))
@@ -573,7 +581,9 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
         if iterable is None:
             iterable = self.visit(node.iter)
         if iterable is None:
-            raise NotImplementedError("Unsupported iterable in for loop")
+            raise FrontendRejection(
+                Diagnostic.OPERAND_VALUE, "Unsupported iterable in for loop"
+            )
         # Vector reductions elide the per-iteration loop-target binding; in a
         # class body that target must persist into the namespace.  (P0 #50.)
         _skip_vec = self.is_async() or bool(self._class_ns_stack)
@@ -707,7 +717,10 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
                 container_name, start, stop, fill = bytearray_fill
                 container = self._load_local_value(container_name)
                 if container is None:
-                    raise NotImplementedError("bytearray fill target not initialized")
+                    raise FrontendRejection(
+                        Diagnostic.INTERNAL_INVARIANT,
+                        "bytearray fill target not initialized",
+                    )
                 start_val = MoltValue(self.next_var(), type_hint="int")
                 self.emit(MoltOp(kind="CONST", args=[start], result=start_val))
                 stop_val = MoltValue(self.next_var(), type_hint="int")

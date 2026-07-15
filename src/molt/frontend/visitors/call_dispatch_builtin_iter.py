@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -14,6 +13,8 @@ from molt.frontend._types import (
     MoltOp,
     MoltValue,
 )
+from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
+from molt.frontend.diagnostics import FrontendRejection
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -35,7 +36,10 @@ class CallNamedBuiltinIterDispatchMixin(_MixinBase):
                 for keyword in node.keywords:
                     val = self.visit(keyword.value)
                     if val is None:
-                        raise NotImplementedError("Unsupported range keyword")
+                        raise FrontendRejection(
+                            Diagnostic.OPERAND_VALUE,
+                            "Unsupported range keyword",
+                        )
                 return self._emit_type_error_value(
                     "range() takes no keyword arguments", "range"
                 )
@@ -43,7 +47,9 @@ class CallNamedBuiltinIterDispatchMixin(_MixinBase):
             if range_args is None:
                 callee = self.visit(node.func)
                 if callee is None:
-                    raise NotImplementedError("Unsupported call target")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_TARGET, "Unsupported call target"
+                    )
                 return self._emit_dynamic_call(node, callee, True)
             start, stop, step, _lowerable = range_args
             res = MoltValue(self.next_var(), type_hint="range")
@@ -51,18 +57,27 @@ class CallNamedBuiltinIterDispatchMixin(_MixinBase):
             return res
         if func_id == "enumerate":
             if len(node.args) > 2:
-                raise NotImplementedError("enumerate expects 1 or 2 arguments")
+                raise FrontendRejection(
+                    Diagnostic.CALL_SIGNATURE,
+                    "enumerate expects 1 or 2 arguments",
+                )
             if node.keywords:
                 for keyword in node.keywords:
                     if keyword.arg is None:
-                        raise NotImplementedError("enumerate does not support **kwargs")
+                        raise FrontendRejection(
+                            Diagnostic.CALL_SIGNATURE,
+                            "enumerate does not support **kwargs",
+                        )
                     if keyword.arg != "start":
-                        raise NotImplementedError(
-                            f"enumerate got unexpected keyword {keyword.arg}"
+                        raise FrontendRejection(
+                            Diagnostic.CALL_SIGNATURE,
+                            f"enumerate got unexpected keyword {keyword.arg}",
                         )
             iterable = self.visit(node.args[0]) if node.args else None
             if iterable is None:
-                raise NotImplementedError("Unsupported enumerate iterable")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE, "Unsupported enumerate iterable"
+                )
             start_val = None
             has_start = False
             if len(node.args) == 2:
@@ -71,8 +86,9 @@ class CallNamedBuiltinIterDispatchMixin(_MixinBase):
             for keyword in node.keywords:
                 if keyword.arg == "start":
                     if has_start:
-                        raise NotImplementedError(
-                            "enumerate got multiple values for start"
+                        raise FrontendRejection(
+                            Diagnostic.OPERAND_VALUE,
+                            "enumerate got multiple values for start",
                         )
                     start_val = self.visit(keyword.value)
                     has_start = True
@@ -92,7 +108,9 @@ class CallNamedBuiltinIterDispatchMixin(_MixinBase):
             return res
         if func_id == "slice":
             if len(node.args) not in (1, 2, 3):
-                raise NotImplementedError("slice expects 1-3 arguments")
+                raise FrontendRejection(
+                    Diagnostic.CALL_SIGNATURE, "slice expects 1-3 arguments"
+                )
             if len(node.args) == 1:
                 start = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=start))
@@ -113,21 +131,33 @@ class CallNamedBuiltinIterDispatchMixin(_MixinBase):
             return res
         if func_id == "aiter":
             if len(node.args) != 1:
-                raise NotImplementedError("aiter expects 1 argument")
+                raise FrontendRejection(
+                    Diagnostic.CALL_SIGNATURE, "aiter expects 1 argument"
+                )
             iterable = self.visit(node.args[0])
             if iterable is None:
-                raise NotImplementedError("Unsupported iterable in aiter()")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE, "Unsupported iterable in aiter()"
+                )
             return self._emit_aiter(iterable)
         if func_id == "anext":
             if node.keywords or len(node.args) not in (1, 2):
-                raise NotImplementedError("anext expects 1 or 2 positional arguments")
+                raise FrontendRejection(
+                    Diagnostic.CALL_SIGNATURE,
+                    "anext expects 1 or 2 positional arguments",
+                )
             iter_obj = self.visit(node.args[0])
             if iter_obj is None:
-                raise NotImplementedError("Unsupported iterator in anext()")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE, "Unsupported iterator in anext()"
+                )
             if len(node.args) == 2:
                 default_val = self.visit(node.args[1])
                 if default_val is None:
-                    raise NotImplementedError("Unsupported default in anext()")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE,
+                        "Unsupported default in anext()",
+                    )
                 placeholder = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=placeholder))
                 res = MoltValue(self.next_var(), type_hint="Future")
@@ -238,8 +268,9 @@ class CallNamedBuiltinIterDispatchMixin(_MixinBase):
                 for expr in node.args:
                     arg_val = self.visit(expr)
                     if arg_val is None:
-                        raise NotImplementedError(
-                            f"Unsupported {func_id} positional argument"
+                        raise FrontendRejection(
+                            Diagnostic.CALL_SIGNATURE,
+                            f"Unsupported {func_id} positional argument",
                         )
                     arg_vals.append(arg_val)
                 args_tuple = MoltValue(self.next_var(), type_hint="tuple")
@@ -297,12 +328,17 @@ class CallNamedBuiltinIterDispatchMixin(_MixinBase):
             res = MoltValue(self.next_var(), type_hint="Any")
             iterable = self.visit(node.args[0])
             if iterable is None:
-                raise NotImplementedError("Unsupported sorted iterable")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE, "Unsupported sorted iterable"
+                )
             # Emit key argument (default: None)
             if key_expr is not None:
                 key_val = self.visit(key_expr)
                 if key_val is None:
-                    raise NotImplementedError("Unsupported sorted key expression")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE,
+                        "Unsupported sorted key expression",
+                    )
             else:
                 key_val = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=key_val))
@@ -310,7 +346,10 @@ class CallNamedBuiltinIterDispatchMixin(_MixinBase):
             if reverse_expr is not None:
                 reverse_val = self.visit(reverse_expr)
                 if reverse_val is None:
-                    raise NotImplementedError("Unsupported sorted reverse expression")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE,
+                        "Unsupported sorted reverse expression",
+                    )
             else:
                 reverse_val = MoltValue(self.next_var(), type_hint="bool")
                 self.emit(MoltOp(kind="CONST_BOOL", args=[False], result=reverse_val))
@@ -330,13 +369,18 @@ class CallNamedBuiltinIterDispatchMixin(_MixinBase):
             if len(node.args) == 1:
                 iterable = self.visit(node.args[0])
                 if iterable is None:
-                    raise NotImplementedError("Unsupported iterable in iter()")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE,
+                        "Unsupported iterable in iter()",
+                    )
                 return self._emit_iter_new(iterable)
             if len(node.args) == 2:
                 callable_val = self.visit(node.args[0])
                 sentinel_val = self.visit(node.args[1])
                 if callable_val is None or sentinel_val is None:
-                    raise NotImplementedError("Unsupported iter() arguments")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE, "Unsupported iter() arguments"
+                    )
                 callee = MoltValue(self.next_var(), type_hint="function")
                 self.emit(
                     MoltOp(

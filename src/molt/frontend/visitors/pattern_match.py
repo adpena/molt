@@ -9,7 +9,6 @@ references resolve through the SimpleTIRGenerator MRO at runtime.
 from __future__ import annotations
 
 import ast
-
 from typing import (
     TYPE_CHECKING,
     Callable,
@@ -19,6 +18,8 @@ from molt.frontend._types import (
     MoltOp,
     MoltValue,
 )
+from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
+from molt.frontend.diagnostics import FrontendRejection
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -356,7 +357,9 @@ class PatternMatchMixin(_MixinBase):
             self.emit(MoltOp(kind="IF", args=[current], result=MoltValue("none")))
             key_val = self.visit(key_expr)
             if key_val is None:
-                raise NotImplementedError("Unsupported mapping pattern key")
+                raise FrontendRejection(
+                    Diagnostic.SYNTAX_FORM, "Unsupported mapping pattern key"
+                )
             self._store_local_value(key_name, key_val)
             missing = self._emit_missing_value()
             item_val = MoltValue(self.next_var(), type_hint="Any")
@@ -417,7 +420,9 @@ class PatternMatchMixin(_MixinBase):
         def compute_isinstance() -> MoltValue:
             cls_val = self.visit(pattern.cls)
             if cls_val is None:
-                raise NotImplementedError("Unsupported class pattern type")
+                raise FrontendRejection(
+                    Diagnostic.SYNTAX_FORM, "Unsupported class pattern type"
+                )
             self._store_local_value(class_name, cls_val)
             res = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="ISINSTANCE", args=[subject, cls_val], result=res))
@@ -692,7 +697,10 @@ class PatternMatchMixin(_MixinBase):
             def compute_value() -> MoltValue:
                 value = self.visit(pattern.value)
                 if value is None:
-                    raise NotImplementedError("Unsupported match value pattern")
+                    raise FrontendRejection(
+                        Diagnostic.SYNTAX_FORM,
+                        "Unsupported match value pattern",
+                    )
                 res = MoltValue(self.next_var(), type_hint="bool")
                 self.emit(MoltOp(kind="EQ", args=[subject, value], result=res))
                 return res
@@ -743,7 +751,7 @@ class PatternMatchMixin(_MixinBase):
                 pattern.name, subject, match_cell, match_idx, capture_map
             )
             return
-        raise NotImplementedError("Unsupported match pattern")
+        raise FrontendRejection(Diagnostic.SYNTAX_FORM, "Unsupported match pattern")
 
     def _raise_syntax_error(self, msg: str, node: ast.AST) -> None:
         """Raise SyntaxError with CPython-compatible line/column info."""
@@ -765,7 +773,7 @@ class PatternMatchMixin(_MixinBase):
     def visit_Match(self, node: ast.Match) -> None:
         subject = self.visit(node.subject)
         if subject is None:
-            raise NotImplementedError("Unsupported match subject")
+            raise FrontendRejection(Diagnostic.SYNTAX_FORM, "Unsupported match subject")
         subject_name = f"__molt_match_subject_{self.next_label()}"
         self._store_local_value(subject_name, subject)
         subject_val = self._load_local_value_unchecked(subject_name) or subject
@@ -824,7 +832,9 @@ class PatternMatchMixin(_MixinBase):
             if case.guard is not None:
                 guard_val = self.visit(case.guard)
                 if guard_val is None:
-                    raise NotImplementedError("Unsupported match guard")
+                    raise FrontendRejection(
+                        Diagnostic.SYNTAX_FORM, "Unsupported match guard"
+                    )
                 self.emit(MoltOp(kind="IF", args=[guard_val], result=MoltValue("none")))
                 self._visit_block(case.body)
                 done_true = MoltValue(self.next_var(), type_hint="bool")

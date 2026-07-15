@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -14,6 +13,8 @@ from molt.frontend._types import (
     MoltOp,
     MoltValue,
 )
+from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
+from molt.frontend.diagnostics import FrontendRejection
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -55,9 +56,7 @@ class CallAttributeDispatchMixin(_MixinBase):
             return ".".join((imported_target, *receiver_parts[1:]))
         return None
 
-    def _try_emit_dotted_imported_native_callable(
-        self, node: ast.Call
-    ) -> Any:
+    def _try_emit_dotted_imported_native_callable(self, node: ast.Call) -> Any:
         if not isinstance(node.func, ast.Attribute):
             return CALL_NOT_HANDLED
         parts = self._dotted_attribute_parts(node.func)
@@ -104,7 +103,10 @@ class CallAttributeDispatchMixin(_MixinBase):
                 and node.func.attr == "nullcontext"
             ):
                 if len(node.args) > 1:
-                    raise NotImplementedError("nullcontext expects 0 or 1 argument")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "nullcontext expects 0 or 1 argument",
+                    )
                 if node.args:
                     payload = self.visit(node.args[0])
                 else:
@@ -117,7 +119,9 @@ class CallAttributeDispatchMixin(_MixinBase):
                 and node.func.attr == "closing"
             ):
                 if len(node.args) != 1:
-                    raise NotImplementedError("closing expects 1 argument")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE, "closing expects 1 argument"
+                    )
                 payload = self.visit(node.args[0])
                 return self._emit_closing(payload)
             if (
@@ -126,10 +130,15 @@ class CallAttributeDispatchMixin(_MixinBase):
                 and node.func.attr == "trunc"
             ):
                 if len(node.args) != 1:
-                    raise NotImplementedError("math.trunc expects 1 argument")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "math.trunc expects 1 argument",
+                    )
                 value = self.visit(node.args[0])
                 if value is None:
-                    raise NotImplementedError("Unsupported math.trunc input")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE, "Unsupported math.trunc input"
+                    )
                 res = MoltValue(self.next_var(), type_hint="int")
                 self.emit(MoltOp(kind="TRUNC", args=[value], result=res))
                 return res
@@ -172,8 +181,9 @@ class CallAttributeDispatchMixin(_MixinBase):
             ):
                 if node.func.attr == "new":
                     if len(node.args) not in (2, 3):
-                        raise NotImplementedError(
-                            "molt_buffer.new expects 2 or 3 arguments"
+                        raise FrontendRejection(
+                            Diagnostic.CALL_SIGNATURE,
+                            "molt_buffer.new expects 2 or 3 arguments",
                         )
                     rows = self.visit(node.args[0])
                     cols = self.visit(node.args[1])
@@ -189,7 +199,10 @@ class CallAttributeDispatchMixin(_MixinBase):
                     return res
                 if node.func.attr == "get":
                     if len(node.args) != 3:
-                        raise NotImplementedError("molt_buffer.get expects 3 arguments")
+                        raise FrontendRejection(
+                            Diagnostic.CALL_SIGNATURE,
+                            "molt_buffer.get expects 3 arguments",
+                        )
                     buf = self.visit(node.args[0])
                     row = self.visit(node.args[1])
                     col = self.visit(node.args[2])
@@ -200,7 +213,10 @@ class CallAttributeDispatchMixin(_MixinBase):
                     return res
                 if node.func.attr == "set":
                     if len(node.args) != 4:
-                        raise NotImplementedError("molt_buffer.set expects 4 arguments")
+                        raise FrontendRejection(
+                            Diagnostic.CALL_SIGNATURE,
+                            "molt_buffer.set expects 4 arguments",
+                        )
                     buf = self.visit(node.args[0])
                     row = self.visit(node.args[1])
                     col = self.visit(node.args[2])
@@ -214,8 +230,9 @@ class CallAttributeDispatchMixin(_MixinBase):
                     return res
                 if node.func.attr == "matmul":
                     if len(node.args) != 2:
-                        raise NotImplementedError(
-                            "molt_buffer.matmul expects 2 arguments"
+                        raise FrontendRejection(
+                            Diagnostic.CALL_SIGNATURE,
+                            "molt_buffer.matmul expects 2 arguments",
                         )
                     lhs = self.visit(node.args[0])
                     rhs = self.visit(node.args[1])
@@ -257,7 +274,10 @@ class CallAttributeDispatchMixin(_MixinBase):
             if receiver.type_hint == "generator":
                 if method == "send":
                     if len(node.args) != 1:
-                        raise NotImplementedError("generator.send expects 1 argument")
+                        raise FrontendRejection(
+                            Diagnostic.CALL_SIGNATURE,
+                            "generator.send expects 1 argument",
+                        )
                     arg = self.visit(node.args[0])
                     pair = MoltValue(self.next_var(), type_hint="tuple")
                     self.emit(
@@ -277,17 +297,22 @@ class CallAttributeDispatchMixin(_MixinBase):
                     return value
                 if method == "throw":
                     if len(node.args) not in {1, 2, 3}:
-                        raise NotImplementedError(
-                            "generator.throw expects 1 to 3 arguments"
+                        raise FrontendRejection(
+                            Diagnostic.CALL_SIGNATURE,
+                            "generator.throw expects 1 to 3 arguments",
                         )
                     exc_type = self.visit(node.args[0])
                     if exc_type is None:
-                        raise NotImplementedError("generator.throw expects exception")
+                        raise FrontendRejection(
+                            Diagnostic.CALL_SIGNATURE,
+                            "generator.throw expects exception",
+                        )
                     if len(node.args) > 1:
                         value = self.visit(node.args[1])
                         if value is None:
-                            raise NotImplementedError(
-                                "generator.throw expects exception value"
+                            raise FrontendRejection(
+                                Diagnostic.CALL_SIGNATURE,
+                                "generator.throw expects exception value",
                             )
                         callargs = MoltValue(self.next_var(), type_hint="callargs")
                         self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=callargs))
@@ -309,8 +334,9 @@ class CallAttributeDispatchMixin(_MixinBase):
                         if len(node.args) == 3:
                             tb_val = self.visit(node.args[2])
                             if tb_val is None:
-                                raise NotImplementedError(
-                                    "generator.throw expects traceback value"
+                                raise FrontendRejection(
+                                    Diagnostic.CALL_SIGNATURE,
+                                    "generator.throw expects traceback value",
                                 )
                             self.emit(
                                 MoltOp(
@@ -329,7 +355,10 @@ class CallAttributeDispatchMixin(_MixinBase):
                     return res
                 if method == "close":
                     if node.args:
-                        raise NotImplementedError("generator.close expects 0 arguments")
+                        raise FrontendRejection(
+                            Diagnostic.CALL_SIGNATURE,
+                            "generator.close expects 0 arguments",
+                        )
                     res = MoltValue(self.next_var(), type_hint="None")
                     self.emit(MoltOp(kind="GEN_CLOSE", args=[receiver], result=res))
                     return res
@@ -364,7 +393,9 @@ class CallAttributeDispatchMixin(_MixinBase):
             ):
                 callee = load_attr_callee()
                 if callee is None:
-                    raise NotImplementedError("Unsupported call target")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_TARGET, "Unsupported call target"
+                    )
                 callargs = self._emit_call_args_builder(node)
                 res = MoltValue(self.next_var(), type_hint="Any")
                 self.emit(
@@ -379,7 +410,9 @@ class CallAttributeDispatchMixin(_MixinBase):
                 if class_name is None and receiver.type_hint not in self.classes:
                     callee = load_attr_callee()
                     if callee is None:
-                        raise NotImplementedError("Unsupported call target")
+                        raise FrontendRejection(
+                            Diagnostic.CALL_TARGET, "Unsupported call target"
+                        )
                     callargs = self._emit_call_args_builder(node)
                     res = MoltValue(self.next_var(), type_hint="Any")
                     self.emit(
@@ -401,7 +434,10 @@ class CallAttributeDispatchMixin(_MixinBase):
                     if class_name is None and receiver.type_hint in self.classes:
                         class_name = receiver.type_hint
                     if class_name is None:
-                        raise NotImplementedError("Unsupported classmethod call")
+                        raise FrontendRejection(
+                            Diagnostic.OPERAND_VALUE,
+                            "Unsupported classmethod call",
+                        )
                     class_ref = (
                         receiver
                         if isinstance(node.func.value, ast.Name)
@@ -481,7 +517,10 @@ class CallAttributeDispatchMixin(_MixinBase):
                         if args is None:
                             callee = load_attr_callee()
                             if callee is None:
-                                raise NotImplementedError("Unsupported call target")
+                                raise FrontendRejection(
+                                    Diagnostic.CALL_TARGET,
+                                    "Unsupported call target",
+                                )
                             callargs = self._emit_call_args_builder(node)
                             res = MoltValue(self.next_var(), type_hint="Any")
                             self.emit(
@@ -555,21 +594,29 @@ class CallAttributeDispatchMixin(_MixinBase):
                     return res
             if method == "add" and receiver.type_hint == "set":
                 if len(node.args) != 1:
-                    raise NotImplementedError("set.add expects 1 argument")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE, "set.add expects 1 argument"
+                    )
                 arg = self.visit(node.args[0])
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="SET_ADD", args=[receiver, arg], result=res))
                 return res
             if method == "discard" and receiver.type_hint == "set":
                 if len(node.args) != 1:
-                    raise NotImplementedError("set.discard expects 1 argument")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "set.discard expects 1 argument",
+                    )
                 arg = self.visit(node.args[0])
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="SET_DISCARD", args=[receiver, arg], result=res))
                 return res
             if method == "remove" and receiver.type_hint == "set":
                 if len(node.args) != 1:
-                    raise NotImplementedError("set.remove expects 1 argument")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "set.remove expects 1 argument",
+                    )
                 arg = self.visit(node.args[0])
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="SET_REMOVE", args=[receiver, arg], result=res))
@@ -587,12 +634,16 @@ class CallAttributeDispatchMixin(_MixinBase):
             ):
                 if method == "symmetric_difference":
                     if len(node.args) != 1:
-                        raise NotImplementedError(
-                            "set.symmetric_difference expects 1 argument"
+                        raise FrontendRejection(
+                            Diagnostic.CALL_SIGNATURE,
+                            "set.symmetric_difference expects 1 argument",
                         )
                     other = self.visit(node.args[0])
                     if other is None:
-                        raise NotImplementedError("Unsupported set operation input")
+                        raise FrontendRejection(
+                            Diagnostic.OPERAND_VALUE,
+                            "Unsupported set operation input",
+                        )
                     if other.type_hint not in {"set", "frozenset"}:
                         other = self._emit_set_from_iter(other)
                     op_kind = "BIT_XOR"
@@ -608,7 +659,10 @@ class CallAttributeDispatchMixin(_MixinBase):
                     for arg in node.args:
                         other = self.visit(arg)
                         if other is None:
-                            raise NotImplementedError("Unsupported set operation input")
+                            raise FrontendRejection(
+                                Diagnostic.OPERAND_VALUE,
+                                "Unsupported set operation input",
+                            )
                         if other.type_hint in {"set", "frozenset"}:
                             self.emit(
                                 MoltOp(
@@ -626,7 +680,10 @@ class CallAttributeDispatchMixin(_MixinBase):
                 for arg in node.args:
                     other = self.visit(arg)
                     if other is None:
-                        raise NotImplementedError("Unsupported set operation input")
+                        raise FrontendRejection(
+                            Diagnostic.OPERAND_VALUE,
+                            "Unsupported set operation input",
+                        )
                     if other.type_hint not in {"set", "frozenset"}:
                         # intersection probes the receiver (bare unhashable
                         # context); difference inserts into a result set
@@ -656,8 +713,9 @@ class CallAttributeDispatchMixin(_MixinBase):
                 receiver, recv_slot = self._maybe_spill_receiver(receiver, node.args)
                 if method == "symmetric_difference_update":
                     if len(node.args) != 1:
-                        raise NotImplementedError(
-                            "set.symmetric_difference_update expects 1 argument"
+                        raise FrontendRejection(
+                            Diagnostic.CALL_SIGNATURE,
+                            "set.symmetric_difference_update expects 1 argument",
                         )
                 if len(node.args) == 0:
                     res = MoltValue(self.next_var(), type_hint="None")
@@ -673,7 +731,10 @@ class CallAttributeDispatchMixin(_MixinBase):
                 for arg in node.args:
                     other = self.visit(arg)
                     if other is None:
-                        raise NotImplementedError("Unsupported set operation input")
+                        raise FrontendRejection(
+                            Diagnostic.OPERAND_VALUE,
+                            "Unsupported set operation input",
+                        )
                     if recv_slot is not None:
                         receiver = self._reload_async_value(
                             recv_slot, receiver.type_hint
@@ -694,11 +755,16 @@ class CallAttributeDispatchMixin(_MixinBase):
                 return res
             if method == "append" and receiver.type_hint == "list":
                 if len(node.args) != 1:
-                    raise NotImplementedError("list.append expects 1 argument")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "list.append expects 1 argument",
+                    )
                 receiver, recv_slot = self._maybe_spill_receiver(receiver, node.args)
                 arg = self.visit(node.args[0])
                 if arg is None:
-                    raise NotImplementedError("list.append expects a value")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE, "list.append expects a value"
+                    )
                 if recv_slot is not None:
                     receiver = self._reload_async_value(recv_slot, receiver.type_hint)
                 self._record_list_element_write(receiver, obj_name, arg.type_hint)
@@ -707,11 +773,17 @@ class CallAttributeDispatchMixin(_MixinBase):
                 return res
             if method == "extend" and receiver.type_hint == "list":
                 if len(node.args) != 1:
-                    raise NotImplementedError("list.extend expects 1 argument")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "list.extend expects 1 argument",
+                    )
                 receiver, recv_slot = self._maybe_spill_receiver(receiver, node.args)
                 other = self.visit(node.args[0])
                 if other is None:
-                    raise NotImplementedError("list.extend expects an iterable")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "list.extend expects an iterable",
+                    )
                 if recv_slot is not None:
                     receiver = self._reload_async_value(recv_slot, receiver.type_hint)
                 self._record_list_element_write(
@@ -726,12 +798,18 @@ class CallAttributeDispatchMixin(_MixinBase):
                 return res
             if method == "insert" and receiver.type_hint == "list":
                 if len(node.args) != 2:
-                    raise NotImplementedError("list.insert expects 2 arguments")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "list.insert expects 2 arguments",
+                    )
                 receiver, recv_slot = self._maybe_spill_receiver(receiver, node.args)
                 idx = self.visit(node.args[0])
                 val = self.visit(node.args[1])
                 if idx is None or val is None:
-                    raise NotImplementedError("list.insert expects index and value")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "list.insert expects index and value",
+                    )
                 if recv_slot is not None:
                     receiver = self._reload_async_value(recv_slot, receiver.type_hint)
                 self._record_list_element_write(receiver, obj_name, val.type_hint)
@@ -742,7 +820,10 @@ class CallAttributeDispatchMixin(_MixinBase):
                 return res
             if method == "remove" and receiver.type_hint == "list":
                 if len(node.args) != 1:
-                    raise NotImplementedError("list.remove expects 1 argument")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "list.remove expects 1 argument",
+                    )
                 receiver, recv_slot = self._maybe_spill_receiver(receiver, node.args)
                 val = self.visit(node.args[0])
                 if recv_slot is not None:
@@ -752,47 +833,69 @@ class CallAttributeDispatchMixin(_MixinBase):
                 return res
             if method == "clear" and receiver.type_hint == "list":
                 if node.args or node.keywords:
-                    raise NotImplementedError("list.clear expects 0 arguments")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "list.clear expects 0 arguments",
+                    )
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="LIST_CLEAR", args=[receiver], result=res))
                 return res
             if method == "copy" and receiver.type_hint == "list":
                 if node.args or node.keywords:
-                    raise NotImplementedError("list.copy expects 0 arguments")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "list.copy expects 0 arguments",
+                    )
                 res = MoltValue(self.next_var(), type_hint="list")
                 self.emit(MoltOp(kind="LIST_COPY", args=[receiver], result=res))
                 return res
             if method == "reverse" and receiver.type_hint == "list":
                 if node.args or node.keywords:
-                    raise NotImplementedError("list.reverse expects 0 arguments")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "list.reverse expects 0 arguments",
+                    )
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="LIST_REVERSE", args=[receiver], result=res))
                 return res
             if method == "count" and receiver.type_hint == "list":
                 if len(node.args) != 1:
-                    raise NotImplementedError("list.count expects 1 argument")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "list.count expects 1 argument",
+                    )
                 val = self.visit(node.args[0])
                 res = MoltValue(self.next_var(), type_hint="int")
                 self.emit(MoltOp(kind="LIST_COUNT", args=[receiver, val], result=res))
                 return res
             if method == "index" and receiver.type_hint == "list":
                 if len(node.args) not in (1, 2, 3):
-                    raise NotImplementedError("list.index expects 1 to 3 arguments")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "list.index expects 1 to 3 arguments",
+                    )
                 val = self.visit(node.args[0])
                 start = None
                 end = None
                 if len(node.args) >= 2:
                     start = self.visit(node.args[1])
                     if start is None:
-                        raise NotImplementedError("Unsupported list.index start")
+                        raise FrontendRejection(
+                            Diagnostic.OPERAND_VALUE,
+                            "Unsupported list.index start",
+                        )
                 if len(node.args) == 3:
                     end = self.visit(node.args[2])
                     if end is None:
-                        raise NotImplementedError("Unsupported list.index end")
+                        raise FrontendRejection(
+                            Diagnostic.OPERAND_VALUE,
+                            "Unsupported list.index end",
+                        )
                 for keyword in node.keywords:
                     if keyword.arg is None:
-                        raise NotImplementedError(
-                            "list.index does not support **kwargs"
+                        raise FrontendRejection(
+                            Diagnostic.CALL_SIGNATURE,
+                            "list.index does not support **kwargs",
                         )
                     if keyword.arg == "start":
                         if start is not None:
@@ -802,7 +905,10 @@ class CallAttributeDispatchMixin(_MixinBase):
                             )
                         start = self.visit(keyword.value)
                         if start is None:
-                            raise NotImplementedError("Unsupported list.index start")
+                            raise FrontendRejection(
+                                Diagnostic.OPERAND_VALUE,
+                                "Unsupported list.index start",
+                            )
                     elif keyword.arg == "end":
                         if end is not None:
                             return self._emit_type_error_value(
@@ -811,7 +917,10 @@ class CallAttributeDispatchMixin(_MixinBase):
                             )
                         end = self.visit(keyword.value)
                         if end is None:
-                            raise NotImplementedError("Unsupported list.index end")
+                            raise FrontendRejection(
+                                Diagnostic.OPERAND_VALUE,
+                                "Unsupported list.index end",
+                            )
                     else:
                         return self._emit_type_error_value(
                             "list.index() got an unexpected keyword argument "
@@ -845,7 +954,10 @@ class CallAttributeDispatchMixin(_MixinBase):
                 attr_node.value, receiver, "dict"
             ):
                 if len(node.args) not in (1, 2):
-                    raise NotImplementedError("dict.pop expects 1 or 2 arguments")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "dict.pop expects 1 or 2 arguments",
+                    )
                 key = self.visit(node.args[0])
                 if len(node.args) == 2:
                     default = self.visit(node.args[1])
@@ -872,13 +984,18 @@ class CallAttributeDispatchMixin(_MixinBase):
                 return res
             if method == "pop" and receiver.type_hint == "set":
                 if node.args:
-                    raise NotImplementedError("set.pop expects 0 arguments")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE, "set.pop expects 0 arguments"
+                    )
                 res = MoltValue(self.next_var(), type_hint="Any")
                 self.emit(MoltOp(kind="SET_POP", args=[receiver], result=res))
                 return res
             if method == "pop" and receiver.type_hint == "list":
                 if len(node.args) > 1:
-                    raise NotImplementedError("list.pop expects 0 or 1 argument")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "list.pop expects 0 or 1 argument",
+                    )
                 if node.args:
                     idx = self.visit(node.args[0])
                 else:
@@ -891,7 +1008,10 @@ class CallAttributeDispatchMixin(_MixinBase):
                 attr_node.value, receiver, "dict"
             ):
                 if len(node.args) not in (1, 2):
-                    raise NotImplementedError("dict.get expects 1 or 2 arguments")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "dict.get expects 1 or 2 arguments",
+                    )
                 key = self.visit(node.args[0])
                 if len(node.args) == 2:
                     default = self.visit(node.args[1])
@@ -912,8 +1032,9 @@ class CallAttributeDispatchMixin(_MixinBase):
                 attr_node.value, receiver, "dict"
             ):
                 if node.keywords or len(node.args) not in (1, 2):
-                    raise NotImplementedError(
-                        "dict.setdefault expects 1 or 2 arguments"
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "dict.setdefault expects 1 or 2 arguments",
                     )
                 key = self.visit(node.args[0])
                 if (
@@ -964,7 +1085,10 @@ class CallAttributeDispatchMixin(_MixinBase):
                 if node.args:
                     other = self.visit(node.args[0])
                     if other is None:
-                        raise NotImplementedError("Unsupported dict.update input")
+                        raise FrontendRejection(
+                            Diagnostic.OPERAND_VALUE,
+                            "Unsupported dict.update input",
+                        )
                     self.emit(
                         MoltOp(
                             kind="DICT_UPDATE",
@@ -976,8 +1100,9 @@ class CallAttributeDispatchMixin(_MixinBase):
                     if kw.arg is None:
                         mapping = self.visit(kw.value)
                         if mapping is None:
-                            raise NotImplementedError(
-                                "Unsupported dict.update ** input"
+                            raise FrontendRejection(
+                                Diagnostic.OPERAND_VALUE,
+                                "Unsupported dict.update ** input",
                             )
                         self.emit(
                             MoltOp(
@@ -991,8 +1116,9 @@ class CallAttributeDispatchMixin(_MixinBase):
                         self.emit(MoltOp(kind="CONST_STR", args=[kw.arg], result=key))
                         val = self.visit(kw.value)
                         if val is None:
-                            raise NotImplementedError(
-                                "Unsupported dict.update kw value"
+                            raise FrontendRejection(
+                                Diagnostic.OPERAND_VALUE,
+                                "Unsupported dict.update kw value",
                             )
                         self.emit(
                             MoltOp(
@@ -1007,7 +1133,10 @@ class CallAttributeDispatchMixin(_MixinBase):
                 attr_node.value, receiver, "dict"
             ):
                 if node.args or node.keywords:
-                    raise NotImplementedError("dict.clear expects 0 arguments")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "dict.clear expects 0 arguments",
+                    )
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="DICT_CLEAR", args=[receiver], result=res))
                 return res
@@ -1015,7 +1144,10 @@ class CallAttributeDispatchMixin(_MixinBase):
                 attr_node.value, receiver, "dict"
             ):
                 if node.args or node.keywords:
-                    raise NotImplementedError("dict.copy expects 0 arguments")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "dict.copy expects 0 arguments",
+                    )
                 res = MoltValue(self.next_var(), type_hint="dict")
                 self.emit(MoltOp(kind="DICT_COPY", args=[receiver], result=res))
                 return res
@@ -1023,7 +1155,10 @@ class CallAttributeDispatchMixin(_MixinBase):
                 attr_node.value, receiver, "dict"
             ):
                 if node.args or node.keywords:
-                    raise NotImplementedError("dict.popitem expects 0 arguments")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "dict.popitem expects 0 arguments",
+                    )
                 res = MoltValue(self.next_var(), type_hint="tuple")
                 self.emit(MoltOp(kind="DICT_POPITEM", args=[receiver], result=res))
                 return res
@@ -1047,7 +1182,10 @@ class CallAttributeDispatchMixin(_MixinBase):
                 return res
             if method == "read" and receiver.type_hint.startswith("file"):
                 if len(node.args) > 1:
-                    raise NotImplementedError("file.read expects 0 or 1 argument")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "file.read expects 0 or 1 argument",
+                    )
                 if node.args:
                     size_val = self.visit(node.args[0])
                 else:
@@ -1066,26 +1204,38 @@ class CallAttributeDispatchMixin(_MixinBase):
                 return res
             if method == "write" and receiver.type_hint.startswith("file"):
                 if len(node.args) != 1:
-                    raise NotImplementedError("file.write expects 1 argument")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "file.write expects 1 argument",
+                    )
                 data = self.visit(node.args[0])
                 res = MoltValue(self.next_var(), type_hint="int")
                 self.emit(MoltOp(kind="FILE_WRITE", args=[receiver, data], result=res))
                 return res
             if method == "close" and receiver.type_hint.startswith("file"):
                 if node.args:
-                    raise NotImplementedError("file.close expects 0 arguments")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "file.close expects 0 arguments",
+                    )
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="FILE_CLOSE", args=[receiver], result=res))
                 return res
             if method == "flush" and receiver.type_hint.startswith("file"):
                 if node.args:
-                    raise NotImplementedError("file.flush expects 0 arguments")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "file.flush expects 0 arguments",
+                    )
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="FILE_FLUSH", args=[receiver], result=res))
                 return res
             if method == "count" and receiver.type_hint == "tuple":
                 if len(node.args) != 1:
-                    raise NotImplementedError("tuple.count expects 1 argument")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "tuple.count expects 1 argument",
+                    )
                 val = self.visit(node.args[0])
                 res = MoltValue(self.next_var(), type_hint="int")
                 self.emit(MoltOp(kind="TUPLE_COUNT", args=[receiver, val], result=res))
@@ -1100,7 +1250,9 @@ class CallAttributeDispatchMixin(_MixinBase):
                     return res
             if method == "tobytes" and receiver.type_hint == "memoryview":
                 if node.args:
-                    raise NotImplementedError("tobytes expects 0 arguments")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE, "tobytes expects 0 arguments"
+                    )
                 res = MoltValue(self.next_var(), type_hint="bytes")
                 self.emit(
                     MoltOp(kind="MEMORYVIEW_TOBYTES", args=[receiver], result=res)
@@ -1166,8 +1318,9 @@ class CallAttributeDispatchMixin(_MixinBase):
                             else:
                                 start = self.visit(start_node)
                                 if start is None:
-                                    raise NotImplementedError(
-                                        "Unsupported count start argument"
+                                    raise FrontendRejection(
+                                        Diagnostic.OPERAND_VALUE,
+                                        "Unsupported count start argument",
                                     )
                             if end_node is None:
                                 end = MoltValue(self.next_var(), type_hint="None")
@@ -1177,8 +1330,9 @@ class CallAttributeDispatchMixin(_MixinBase):
                             else:
                                 end = self.visit(end_node)
                                 if end is None:
-                                    raise NotImplementedError(
-                                        "Unsupported count end argument"
+                                    raise FrontendRejection(
+                                        Diagnostic.OPERAND_VALUE,
+                                        "Unsupported count end argument",
                                     )
                             has_end = MoltValue(self.next_var(), type_hint="bool")
                             self.emit(
@@ -1233,8 +1387,9 @@ class CallAttributeDispatchMixin(_MixinBase):
                             else:
                                 start = self.visit(start_node)
                                 if start is None:
-                                    raise NotImplementedError(
-                                        "Unsupported count start argument"
+                                    raise FrontendRejection(
+                                        Diagnostic.OPERAND_VALUE,
+                                        "Unsupported count start argument",
                                     )
                             if end_node is None:
                                 end = MoltValue(self.next_var(), type_hint="None")
@@ -1244,8 +1399,9 @@ class CallAttributeDispatchMixin(_MixinBase):
                             else:
                                 end = self.visit(end_node)
                                 if end is None:
-                                    raise NotImplementedError(
-                                        "Unsupported count end argument"
+                                    raise FrontendRejection(
+                                        Diagnostic.OPERAND_VALUE,
+                                        "Unsupported count end argument",
                                     )
                             has_end = MoltValue(self.next_var(), type_hint="bool")
                             self.emit(
@@ -1285,7 +1441,10 @@ class CallAttributeDispatchMixin(_MixinBase):
                             return res
             if method == "startswith":
                 if len(node.args) not in (1, 2, 3):
-                    raise NotImplementedError("startswith expects 1-3 arguments")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "startswith expects 1-3 arguments",
+                    )
                 needle = self.visit(node.args[0])
                 res = MoltValue(self.next_var(), type_hint="bool")
                 if receiver.type_hint == "str":
@@ -1392,7 +1551,10 @@ class CallAttributeDispatchMixin(_MixinBase):
                     return res
             if method == "endswith":
                 if len(node.args) not in (1, 2, 3):
-                    raise NotImplementedError("endswith expects 1-3 arguments")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "endswith expects 1-3 arguments",
+                    )
                 needle = self.visit(node.args[0])
                 res = MoltValue(self.next_var(), type_hint="bool")
                 if receiver.type_hint == "str":
@@ -1510,7 +1672,9 @@ class CallAttributeDispatchMixin(_MixinBase):
                     return res
             if method == "split":
                 if len(node.args) > 2:
-                    raise NotImplementedError("split expects 0-2 arguments")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE, "split expects 0-2 arguments"
+                    )
                 # Support keyword args: split(sep=',') and split(sep=',', maxsplit=2)
                 kw_sep = next(
                     (kw.value for kw in node.keywords if kw.arg == "sep"), None
@@ -1586,19 +1750,26 @@ class CallAttributeDispatchMixin(_MixinBase):
                     return res
             if method == "lower" and receiver.type_hint == "str":
                 if node.args:
-                    raise NotImplementedError("lower expects 0 arguments")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE, "lower expects 0 arguments"
+                    )
                 res = MoltValue(self.next_var(), type_hint="str")
                 self.emit(MoltOp(kind="STRING_LOWER", args=[receiver], result=res))
                 return res
             if method == "upper" and receiver.type_hint == "str":
                 if node.args:
-                    raise NotImplementedError("upper expects 0 arguments")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE, "upper expects 0 arguments"
+                    )
                 res = MoltValue(self.next_var(), type_hint="str")
                 self.emit(MoltOp(kind="STRING_UPPER", args=[receiver], result=res))
                 return res
             if method == "capitalize" and receiver.type_hint == "str":
                 if node.args:
-                    raise NotImplementedError("capitalize expects 0 arguments")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "capitalize expects 0 arguments",
+                    )
                 res = MoltValue(self.next_var(), type_hint="str")
                 self.emit(MoltOp(kind="STRING_CAPITALIZE", args=[receiver], result=res))
                 return res
@@ -1608,7 +1779,10 @@ class CallAttributeDispatchMixin(_MixinBase):
                 "bytearray",
             }:
                 if len(node.args) > 1:
-                    raise NotImplementedError("strip expects 0 or 1 arguments")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "strip expects 0 or 1 arguments",
+                    )
                 if node.args:
                     chars = self.visit(node.args[0])
                 else:
@@ -1626,7 +1800,10 @@ class CallAttributeDispatchMixin(_MixinBase):
                 "bytearray",
             }:
                 if len(node.args) > 1:
-                    raise NotImplementedError("lstrip expects 0 or 1 arguments")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "lstrip expects 0 or 1 arguments",
+                    )
                 if node.args:
                     chars = self.visit(node.args[0])
                 else:
@@ -1644,7 +1821,10 @@ class CallAttributeDispatchMixin(_MixinBase):
                 "bytearray",
             }:
                 if len(node.args) > 1:
-                    raise NotImplementedError("rstrip expects 0 or 1 arguments")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE,
+                        "rstrip expects 0 or 1 arguments",
+                    )
                 if node.args:
                     chars = self.visit(node.args[0])
                 else:
@@ -1718,7 +1898,9 @@ class CallAttributeDispatchMixin(_MixinBase):
                                     return res
             if method == "find" and receiver.type_hint in {"str", "bytes", "bytearray"}:
                 if len(node.args) not in (1, 2, 3):
-                    raise NotImplementedError("find expects 1-3 arguments")
+                    raise FrontendRejection(
+                        Diagnostic.CALL_SIGNATURE, "find expects 1-3 arguments"
+                    )
                 needle = self.visit(node.args[0])
                 res = MoltValue(self.next_var(), type_hint="int")
                 if receiver.type_hint == "bytes":

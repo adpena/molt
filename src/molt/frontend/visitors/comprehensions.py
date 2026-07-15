@@ -11,7 +11,6 @@ remain on sibling mixins and resolve through the MRO via ``self.<method>``.
 from __future__ import annotations
 
 import ast
-
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -26,6 +25,8 @@ from molt.frontend._types import (
     MoltOp,
     MoltValue,
 )
+from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
+from molt.frontend.diagnostics import FrontendRejection
 from molt.frontend.sema import FunctionKind, stateful_function_frame_plan
 
 if TYPE_CHECKING:
@@ -62,7 +63,9 @@ class ComprehensionMixin(_MixinBase):
         genexp = ast.GeneratorExp(elt=node.elt, generators=node.generators)
         gen_val = self.visit(genexp)
         if gen_val is None:
-            raise NotImplementedError("Unsupported list comprehension")
+            raise FrontendRejection(
+                Diagnostic.SYNTAX_FORM, "Unsupported list comprehension"
+            )
         if async_needed:
             return self._emit_list_from_aiter(gen_val)
         return self._emit_list_from_iter(gen_val)
@@ -78,7 +81,9 @@ class ComprehensionMixin(_MixinBase):
         genexp = ast.GeneratorExp(elt=node.elt, generators=node.generators)
         gen_val = self.visit(genexp)
         if gen_val is None:
-            raise NotImplementedError("Unsupported set comprehension")
+            raise FrontendRejection(
+                Diagnostic.SYNTAX_FORM, "Unsupported set comprehension"
+            )
         if async_needed:
             return self._emit_set_from_aiter(gen_val)
         return self._emit_set_from_iter(gen_val)
@@ -97,7 +102,9 @@ class ComprehensionMixin(_MixinBase):
         genexp = ast.GeneratorExp(elt=pair, generators=node.generators)
         gen_val = self.visit(genexp)
         if gen_val is None:
-            raise NotImplementedError("Unsupported dict comprehension")
+            raise FrontendRejection(
+                Diagnostic.SYNTAX_FORM, "Unsupported dict comprehension"
+            )
         res = MoltValue(self.next_var(), type_hint="dict")
         self.emit(MoltOp(kind="DICT_NEW", args=[], result=res))
         if async_needed:
@@ -305,7 +312,10 @@ class ComprehensionMixin(_MixinBase):
         comp = node.generators[0]
         parsed = self._parse_range_call(comp.iter)
         if parsed is None:
-            raise NotImplementedError("Unsupported range in list comprehension")
+            raise FrontendRejection(
+                Diagnostic.SYNTAX_FORM,
+                "Unsupported range in list comprehension",
+            )
         start, stop, step, _ = parsed
         range_obj = self._emit_range_obj_from_args(start, stop, step)
         count = MoltValue(self.next_var(), type_hint="int")
@@ -320,14 +330,20 @@ class ComprehensionMixin(_MixinBase):
         comp = node.generators[0]
         parsed = self._parse_range_call(comp.iter)
         if parsed is None:
-            raise NotImplementedError("Unsupported range in list comprehension")
+            raise FrontendRejection(
+                Diagnostic.SYNTAX_FORM,
+                "Unsupported range in list comprehension",
+            )
         start, stop, step, _ = parsed
         range_obj = self._emit_range_obj_from_args(start, stop, step)
         count = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="LEN", args=[range_obj], result=count))
         fill = self.visit(fill_node)
         if fill is None:
-            raise NotImplementedError("Unsupported list comprehension fill value")
+            raise FrontendRejection(
+                Diagnostic.SYNTAX_FORM,
+                "Unsupported list comprehension fill value",
+            )
         elem_hint = fill.type_hint if isinstance(fill, MoltValue) else None
         return self._emit_list_filled(count, fill, elem_hint)
 
@@ -363,7 +379,10 @@ class ComprehensionMixin(_MixinBase):
 
     def _emit_list_from_aiter(self, iterable: MoltValue) -> MoltValue:
         if not self.is_async():
-            raise NotImplementedError("async list comprehension outside async context")
+            raise FrontendRejection(
+                Diagnostic.SYNTAX_FORM,
+                "async list comprehension outside async context",
+            )
         res = MoltValue(self.next_var(), type_hint="list")
         self.emit(MoltOp(kind="LIST_NEW", args=[], result=res))
         res_slot = self._async_local_offset(
@@ -493,7 +512,10 @@ class ComprehensionMixin(_MixinBase):
 
     def _emit_set_from_aiter(self, iterable: MoltValue) -> MoltValue:
         if not self.is_async():
-            raise NotImplementedError("async set comprehension outside async context")
+            raise FrontendRejection(
+                Diagnostic.SYNTAX_FORM,
+                "async set comprehension outside async context",
+            )
         res = MoltValue(self.next_var(), type_hint="set")
         self.emit(MoltOp(kind="SET_NEW", args=[], result=res))
         res_slot = self._async_local_offset(
@@ -644,7 +666,10 @@ class ComprehensionMixin(_MixinBase):
         self, target: MoltValue, iterable: MoltValue
     ) -> MoltValue:
         if not self.is_async():
-            raise NotImplementedError("async dict comprehension outside async context")
+            raise FrontendRejection(
+                Diagnostic.SYNTAX_FORM,
+                "async dict comprehension outside async context",
+            )
         target_slot = self._async_local_offset(
             f"__async_dict_comp_target_{len(self.async_locals)}"
         )
@@ -868,7 +893,10 @@ class ComprehensionMixin(_MixinBase):
             tuple_target_names = [cast(ast.Name, e).id for e in comp.target.elts]
             target_name = f"{temp_prefix}_{self.next_var()}"
             return target_name, tuple_target_names
-        raise NotImplementedError("Only simple comprehension targets supported")
+        raise FrontendRejection(
+            Diagnostic.SYNTAX_FORM,
+            "Only simple comprehension targets supported",
+        )
 
     def _emit_inline_simple_comp(
         self,
@@ -1072,7 +1100,10 @@ class ComprehensionMixin(_MixinBase):
         for expr in exprs:
             value = self.visit(expr)
             if value is None:
-                raise NotImplementedError("Unsupported comprehension expression")
+                raise FrontendRejection(
+                    Diagnostic.SYNTAX_FORM,
+                    "Unsupported comprehension expression",
+                )
             values.append(cast(MoltValue, value))
         emit_result_values(res, values)
         # Restore the previous binding (if any). When this comprehension

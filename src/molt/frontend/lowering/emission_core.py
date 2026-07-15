@@ -18,6 +18,7 @@ from molt.frontend._types import (
     MoltOp,
     MoltValue,
 )
+from molt.frontend.diagnostics import FrontendRejection, raise_compatibility_error
 from molt.frontend.lowering.op_kinds_generated import (
     CHECK_EXCEPTION_SKIP_KINDS,
     RAISING_KIND_NAMES,
@@ -57,13 +58,8 @@ class EmissionCoreMixin(_MixinBase):
             return super().visit(node)
         except CompatibilityError:
             raise
-        except NotImplementedError as exc:
-            raise self.compat.unsupported(
-                node,
-                feature=str(exc),
-                tier="bridge",
-                impact="high",
-            ) from exc
+        except FrontendRejection as rejection:
+            raise_compatibility_error(self.compat, node, rejection)
 
     def next_var(self) -> str:
         name = f"v{self.var_count}"

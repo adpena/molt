@@ -13,6 +13,8 @@ import ast
 from typing import TYPE_CHECKING, Sequence
 
 from molt.frontend._types import MoltOp, MoltValue
+from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
+from molt.frontend.diagnostics import FrontendRejection
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -370,7 +372,7 @@ class ImportLoweringMixin(_MixinBase):
                 self._emit_module_attr_set_on(parent_val, part, current_val)
             parent_val = current_val
         if current_val is None:
-            raise NotImplementedError("Invalid module name")
+            raise FrontendRejection(Diagnostic.IMPORT_RESOLUTION, "Invalid module name")
         return current_val
 
     def _emit_module_import_from_value(

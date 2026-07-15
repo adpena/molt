@@ -87,6 +87,8 @@ jobs:
         run: uv run python3 tools/gen_stringprep_tables.py --check
       - name: Check frontend Protocol shim is in sync
         run: uv run python3 tools/gen_protocol.py --check
+      - name: Check frontend diagnostics registry is in sync
+        run: uv run python3 tools/gen_frontend_diagnostics.py --check
       - name: Check Luau support matrix doc is in sync
         run: uv run python3 tools/gen_luau_support_matrix.py --check
       - name: Check differential lane manifests are in sync

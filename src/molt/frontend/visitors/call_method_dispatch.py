@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-
 from typing import (
     TYPE_CHECKING,
 )
@@ -16,6 +15,8 @@ from molt.frontend._types import (
     MoltValue,
     _InlineSuperFoldRequired,
 )
+from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
+from molt.frontend.diagnostics import FrontendRejection
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -156,7 +157,9 @@ class CallMethodDispatchMixin(_MixinBase):
             for expr in args:
                 arg = self.visit(expr)
                 if arg is None:
-                    raise NotImplementedError("Unsupported call argument")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE, "Unsupported call argument"
+                    )
                 values.append(arg)
             return values
         yield_flags = [self._expr_may_yield(expr) for expr in args]
@@ -165,7 +168,9 @@ class CallMethodDispatchMixin(_MixinBase):
             for expr in args:
                 arg = self.visit(expr)
                 if arg is None:
-                    raise NotImplementedError("Unsupported call argument")
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE, "Unsupported call argument"
+                    )
                 values.append(arg)
             return values
         values = []
@@ -173,7 +178,9 @@ class CallMethodDispatchMixin(_MixinBase):
         for idx, expr in enumerate(args):
             arg = self.visit(expr)
             if arg is None:
-                raise NotImplementedError("Unsupported call argument")
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE, "Unsupported call argument"
+                )
             values.append(arg)
             if any(yield_flags[idx + 1 :]):
                 slot = self._spill_async_value(
