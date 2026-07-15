@@ -1789,6 +1789,7 @@ def extension_build(
     source_plan_build_root: str | None = None,
     source_plan_compile_commands: str | None = None,
     source_plan_exclude_linked_static_libraries: list[str] | None = None,
+    source_plan_ninja_command: Sequence[str] | None = None,
     abi_tier: str | None = None,
     tool_commands: Mapping[str, Sequence[str]] | None = None,
     json_output: bool = False,
@@ -2555,6 +2556,7 @@ def extension_build(
                                 loaded_source_plan.source_root,
                                 loaded_source_plan.build_root,
                             ),
+                            ninja_command=tuple(source_plan_ninja_command or ()),
                         )
                     )
                     if regen_error is not None:

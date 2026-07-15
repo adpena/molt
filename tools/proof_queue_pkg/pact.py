@@ -11,14 +11,15 @@ from pathlib import Path
 from typing import Mapping, Sequence
 
 from molt.cli.extension_manifest import _default_molt_c_api_version
-from molt.cli.file_hashing import _sha256_file
 from molt.cli.source_extension_toolchain import (
     MOLT_PKGCONF_REQUIREMENT,
 )
 from molt.cli.source_package_seal import (
     SourcePackageSealVerificationError,
+    validate_source_package_relative_path,
     verify_source_package_seal,
 )
+from molt.cli.source_build_environment import source_build_environment_problems
 from molt.dx import select_external_artifact_root
 from molt.scientific_stack_versions import (
     CONFIG_ENV as SCIENTIFIC_STACK_CONFIG_ENV,
@@ -26,71 +27,11 @@ from molt.scientific_stack_versions import (
 from molt.scientific_stack_versions import (
     ScientificExtensionSet,
     ScientificStackVersion,
-    attest_numpy_witness_seal,
-    numpy_witness_seal_root,
     resolve_scientific_stack,
     scientific_extension_set,
-    scipy_witness_seal_root,
+    scientific_extension_set_root,
 )
 from tools.proof_queue_pkg import policy, runner, state
-
-
-def _pact_manifest_source_plan_roots(
-    manifest: Mapping[str, object],
-) -> tuple[Path, ...]:
-    source_plan = manifest.get("source_plan")
-    if not isinstance(source_plan, Mapping):
-        return ()
-    roots: list[Path] = []
-    for field_name in ("source_root", "build_root"):
-        value = source_plan.get(field_name)
-        if isinstance(value, str) and value.strip():
-            roots.append(Path(value).expanduser())
-    return tuple(roots)
-
-
-
-def _pact_manifest_object_sources_resolve(
-    manifest: Mapping[str, object],
-) -> bool:
-    object_closure = manifest.get("object_closure")
-    if not isinstance(object_closure, Mapping):
-        return True
-    objects = object_closure.get("objects")
-    if not isinstance(objects, list):
-        return True
-    roots = _pact_manifest_source_plan_roots(manifest)
-    for item in objects:
-        if not isinstance(item, Mapping):
-            continue
-        source = item.get("source")
-        if not isinstance(source, str) or not source.strip():
-            continue
-        source_path = Path(source).expanduser()
-        if source_path.is_absolute():
-            return False
-        if roots and not any((root / source_path).is_file() for root in roots):
-            return False
-    return True
-
-
-
-def _pact_numpy_multiarray_seal_root_is_current(root: Path) -> bool:
-    try:
-        attest_numpy_witness_seal(root)
-    except ValueError:
-        return False
-    manifest = policy._load_json_mapping(root / "extension_manifest.json")
-    if manifest is None:
-        return False
-    runtime_imports = manifest.get("runtime_python_import_modules")
-    if not (
-        isinstance(runtime_imports, list)
-        and any(isinstance(item, str) and item.strip() for item in runtime_imports)
-    ):
-        return False
-    return _pact_manifest_object_sources_resolve(manifest)
-
 
 
 def _scientific_extension_manifest_path(root: Path, module: str, target: str) -> Path:
@@ -98,6 +39,18 @@ def _scientific_extension_manifest_path(root: Path, module: str, target: str) ->
         *module.split(".")[:-1], f"{target}.molt.wasm.extension_manifest.json"
     )
 
+
+def _sealed_inventory_digest(
+    path: Path,
+    *,
+    payload_root: Path,
+    inventory_sha256: Mapping[str, str],
+) -> str | None:
+    try:
+        relative = path.resolve().relative_to(payload_root).as_posix()
+    except (OSError, ValueError):
+        return None
+    return inventory_sha256.get(relative)
 
 
 def _pact_object_closure_digest(object_closure: Mapping[str, object]) -> str | None:
@@ -137,15 +90,21 @@ def _pact_object_closure_digest(object_closure: Mapping[str, object]) -> str | N
             return None
         if "compile_command" in item:
             compile_command = item.get("compile_command")
-            if not isinstance(compile_command, list) or not compile_command or not all(
-                isinstance(value, str) and value for value in compile_command
+            if (
+                not isinstance(compile_command, list)
+                or not compile_command
+                or not all(
+                    isinstance(value, str) and value for value in compile_command
+                )
             ):
                 return None
             digest_item["compile_command"] = compile_command
         if "symbol_command" in item:
             symbol_command = item.get("symbol_command")
-            if not isinstance(symbol_command, list) or not symbol_command or not all(
-                isinstance(value, str) and value for value in symbol_command
+            if (
+                not isinstance(symbol_command, list)
+                or not symbol_command
+                or not all(isinstance(value, str) and value for value in symbol_command)
             ):
                 return None
             digest_item["symbol_command"] = symbol_command
@@ -161,7 +120,9 @@ def _pact_object_closure_digest(object_closure: Mapping[str, object]) -> str | N
                 for dependency in dependencies
             ):
                 return None
-            digest_item["dependencies"] = [dict(dependency) for dependency in dependencies]
+            digest_item["dependencies"] = [
+                dict(dependency) for dependency in dependencies
+            ]
         digest_objects.append(digest_item)
     payload = {
         "schema_version": 1,
@@ -173,26 +134,48 @@ def _pact_object_closure_digest(object_closure: Mapping[str, object]) -> str | N
     return hashlib.sha256(encoded).hexdigest()
 
 
-
-def _pact_scipy_extension_set_manifest_problems(
+def _scientific_extension_set_manifest_problems(
     root: Path,
     extension_set: ScientificExtensionSet,
     *,
     stack: ScientificStackVersion,
     sidecars: Mapping[str, Mapping[str, object]],
+    inventory_sha256: Mapping[str, str],
 ) -> list[str]:
     path = root / "extension_set_manifest.json"
     manifest = policy._load_json_mapping(path)
     if manifest is None:
         return [f"missing or unreadable extension-set manifest {path}"]
     problems: list[str] = []
+    expected_manifest_fields = {
+        "schema_version",
+        "kind",
+        "package",
+        "name",
+        "seal_name",
+        "source_head",
+        "submodules",
+        "target",
+        "target_triple",
+        "abi_tier",
+        "build_environment",
+        "meson",
+        "target_metadata",
+        "installed_package_files",
+        "extensions",
+    }
+    if set(manifest) != expected_manifest_fields:
+        problems.append("extension-set manifest top-level shape is invalid")
     expected_scalars: dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "molt-source-extension-set",
         "package": extension_set.package,
         "name": extension_set.name,
         "seal_name": extension_set.seal_name,
-        "source_head": stack.scipy_repo_ref,
+        "source_head": {
+            "numpy": stack.numpy_repo_ref,
+            "scipy": stack.scipy_repo_ref,
+        }[extension_set.package],
         "target": "wasm",
         "target_triple": "wasm32-wasip1",
         "abi_tier": "cpython-abi",
@@ -200,6 +183,34 @@ def _pact_scipy_extension_set_manifest_problems(
     for field, expected in expected_scalars.items():
         if manifest.get(field) != expected:
             problems.append(f"extension-set manifest {field} must be {expected!r}")
+    submodules = manifest.get("submodules")
+    if not isinstance(submodules, list) or not all(
+        isinstance(item, Mapping) and set(item) == {"path", "commit"}
+        for item in submodules
+    ):
+        problems.append("extension-set manifest submodules are invalid")
+    else:
+        paths = [item.get("path") for item in submodules]
+        if not all(isinstance(path, str) and path for path in paths):
+            problems.append("extension-set manifest submodule path is invalid")
+        elif paths != sorted(set(paths)):
+            problems.append("extension-set manifest submodules are not sorted unique")
+        for item in submodules:
+            path = item.get("path")
+            commit = item.get("commit")
+            if (
+                not isinstance(commit, str)
+                or len(commit) != 40
+                or any(character not in "0123456789abcdef" for character in commit)
+            ):
+                problems.append("extension-set manifest submodule identity is invalid")
+                continue
+            try:
+                validate_source_package_relative_path(
+                    path, field="extension-set submodule path"
+                )
+            except SourcePackageSealVerificationError:
+                problems.append("extension-set manifest submodule path is invalid")
     target_metadata = manifest.get("target_metadata")
     if not isinstance(target_metadata, Mapping):
         problems.append("extension-set manifest target_metadata is missing")
@@ -231,17 +242,16 @@ def _pact_scipy_extension_set_manifest_problems(
             "python_pc_sha256": (
                 root / "provenance/metadata/target/pkgconfig/python3.pc"
             ),
-            "meson_cross_sha256": (
-                root / "provenance/metadata/target/meson.cross"
-            ),
+            "meson_cross_sha256": (root / "provenance/metadata/target/meson.cross"),
         }
         if not isinstance(target_digests, Mapping):
             problems.append("extension-set target_metadata digests are missing")
         else:
             for digest_name, target_file in target_files.items():
-                if (
-                    not target_file.is_file()
-                    or target_digests.get(digest_name) != _sha256_file(target_file)
+                if target_digests.get(digest_name) != _sealed_inventory_digest(
+                    target_file,
+                    payload_root=root,
+                    inventory_sha256=inventory_sha256,
                 ):
                     problems.append(
                         f"extension-set target_metadata {digest_name} mismatch"
@@ -277,6 +287,10 @@ def _pact_scipy_extension_set_manifest_problems(
                     and isinstance(identity.get("path"), str)
                     and isinstance(identity.get("sha256"), str)
                     and len(str(identity.get("sha256"))) == 64
+                    and all(
+                        character in "0123456789abcdef"
+                        for character in str(identity.get("sha256"))
+                    )
                     and isinstance(command, list)
                     and command
                     and command[0] == identity["command"][0]
@@ -285,75 +299,11 @@ def _pact_scipy_extension_set_manifest_problems(
                         f"extension-set target {command_role} identity is invalid"
                     )
     build_environment = manifest.get("build_environment")
-    if not isinstance(build_environment, Mapping) or set(build_environment) != {
-        "python_executable",
-        "requirements",
-        "resolved",
-    }:
-        problems.append("extension-set manifest build_environment shape is invalid")
-    else:
-        python_executable = build_environment.get("python_executable")
-        requirements = build_environment.get("requirements")
-        resolved = build_environment.get("resolved")
-        if not isinstance(python_executable, str) or not python_executable:
-            problems.append("extension-set manifest build Python executable is empty")
-        if (
-            not isinstance(requirements, list)
-            or not requirements
-            or not all(isinstance(item, str) and item for item in requirements)
-        ):
-            problems.append("extension-set manifest build requirements are invalid")
-        if not isinstance(resolved, list) or not resolved:
-            problems.append("extension-set manifest resolved requirements are empty")
-        elif isinstance(requirements, list):
-            requirement_positions = {
-                requirement: index
-                for index, requirement in enumerate(requirements)
-                if isinstance(requirement, str)
-            }
-            resolved_positions: list[int] = []
-            resolved_requirements: list[str] = []
-            seen_requirements: set[str] = set()
-            for item in resolved:
-                if not isinstance(item, Mapping) or set(item) != {
-                    "requirement",
-                    "distribution",
-                    "version",
-                }:
-                    problems.append(
-                        "extension-set manifest resolved requirement shape is invalid"
-                    )
-                    continue
-                if not all(
-                    isinstance(item.get(field), str) and item.get(field)
-                    for field in ("requirement", "distribution", "version")
-                ):
-                    problems.append(
-                        "extension-set manifest resolved requirement values are invalid"
-                    )
-                    continue
-                requirement = str(item["requirement"])
-                position = requirement_positions.get(requirement)
-                if position is None or requirement in seen_requirements:
-                    problems.append(
-                        "extension-set manifest resolved requirements do not match "
-                        "the original requirement authority"
-                    )
-                    continue
-                seen_requirements.add(requirement)
-                resolved_positions.append(position)
-                resolved_requirements.append(requirement)
-            if resolved_positions != sorted(resolved_positions):
-                problems.append(
-                    "extension-set manifest resolved requirements are out of source order"
-                )
-            if resolved_requirements != requirements:
-                problems.append(
-                    "extension-set manifest resolved requirements do not exactly "
-                    "cover the source requirement authority"
-                )
+    problems.extend(source_build_environment_problems(build_environment))
     meson = manifest.get("meson")
     expected_meson_fields = {
+        "driver",
+        "backend",
         "build_root",
         "setup_args",
         "intro_targets_sha256",
@@ -362,21 +312,71 @@ def _pact_scipy_extension_set_manifest_problems(
         "config_tool_cross_sha256",
         "config_tools",
         "pkg_config_requirement",
+        "generated_inputs",
     }
     if not isinstance(meson, Mapping) or set(meson) != expected_meson_fields:
         problems.append("extension-set manifest meson metadata is missing")
     else:
         build_root = meson.get("build_root")
-        if not isinstance(build_root, str) or not build_root:
-            problems.append("extension-set manifest meson.build_root is empty")
+        if build_root != "@build":
+            problems.append("extension-set manifest meson.build_root must be '@build'")
+        driver = meson.get("driver")
+        valid_driver = False
+        if isinstance(driver, Mapping) and driver.get("kind") == "source-vendored":
+            raw_path = driver.get("path")
+            sha256 = driver.get("sha256")
+            try:
+                canonical_path = validate_source_package_relative_path(
+                    raw_path, field="extension-set Meson driver path"
+                )
+            except SourcePackageSealVerificationError:
+                canonical_path = None
+            valid_driver = (
+                set(driver) == {"kind", "path", "sha256"}
+                and canonical_path == raw_path
+                and isinstance(sha256, str)
+                and len(sha256) == 64
+                and all(character in "0123456789abcdef" for character in sha256)
+            )
+        elif isinstance(driver, Mapping) and driver.get("kind") == "build-environment":
+            valid_driver = (
+                set(driver) == {"kind", "module", "distribution", "version"}
+                and driver.get("module") == "mesonbuild.mesonmain"
+                and driver.get("distribution") == "meson"
+                and isinstance(driver.get("version"), str)
+                and bool(driver.get("version"))
+            )
+        if not valid_driver:
+            problems.append("extension-set manifest Meson driver identity is invalid")
+        backend = meson.get("backend")
+        if not (
+            isinstance(backend, Mapping)
+            and set(backend) == {"distribution", "version", "path", "sha256"}
+            and all(
+                isinstance(backend.get(field), str) and backend.get(field)
+                for field in ("distribution", "version", "path", "sha256")
+            )
+        ):
+            problems.append("extension-set manifest Meson backend identity is invalid")
+        elif len(str(backend["sha256"])) != 64 or any(
+            character not in "0123456789abcdef" for character in str(backend["sha256"])
+        ):
+            problems.append("extension-set manifest Meson backend sha256 is invalid")
+        elif Path(str(backend["path"])).name != str(backend["path"]) or any(
+            separator in str(backend["path"]) for separator in ("/", "\\")
+        ):
+            problems.append("extension-set manifest Meson backend path is not portable")
         if tuple(meson.get("setup_args") or ()) != extension_set.meson_setup_args:
             problems.append("extension-set manifest Meson setup_args drift")
-        for field in (
-            "intro_targets_sha256",
-            "compile_commands_sha256",
-            "intro_installed_sha256",
-            "config_tool_cross_sha256",
-        ):
+        meson_digest_paths = {
+            "intro_targets_sha256": root
+            / "provenance/metadata/meson/intro-targets.json",
+            "compile_commands_sha256": root
+            / "provenance/metadata/meson/compile-commands.json",
+            "intro_installed_sha256": root
+            / "provenance/metadata/meson/intro-installed.json",
+        }
+        for field, sealed_path in meson_digest_paths.items():
             value = meson.get(field)
             if (
                 not isinstance(value, str)
@@ -386,8 +386,24 @@ def _pact_scipy_extension_set_manifest_problems(
                 problems.append(
                     f"extension-set manifest meson.{field} is not a SHA-256 digest"
                 )
-        if meson.get("pkg_config_requirement") != MOLT_PKGCONF_REQUIREMENT:
+            elif value != _sealed_inventory_digest(
+                sealed_path,
+                payload_root=root,
+                inventory_sha256=inventory_sha256,
+            ):
+                problems.append(f"extension-set manifest meson.{field} mismatch")
+        expected_pkg_config = (
+            MOLT_PKGCONF_REQUIREMENT if extension_set.use_pkg_config else None
+        )
+        if meson.get("pkg_config_requirement") != expected_pkg_config:
             problems.append("extension-set manifest Meson pkg-config requirement drift")
+        generated_inputs = meson.get("generated_inputs")
+        if not (
+            isinstance(generated_inputs, list)
+            and all(isinstance(item, str) and item for item in generated_inputs)
+            and generated_inputs == sorted(set(generated_inputs))
+        ):
+            problems.append("extension-set manifest Meson generated_inputs are invalid")
         config_tools = meson.get("config_tools")
         expected_config_tool_distributions = {
             "numpy-config": "numpy",
@@ -395,13 +411,17 @@ def _pact_scipy_extension_set_manifest_problems(
             "pybind11-config": "pybind11",
             "pythran-config": "pythran",
         }
+        expected_names = (
+            tuple(sorted(expected_config_tool_distributions))
+            if extension_set.use_pkg_config
+            else ()
+        )
         if not isinstance(config_tools, list) or not all(
             isinstance(item, Mapping) for item in config_tools
         ):
             problems.append("extension-set manifest Meson config_tools are invalid")
         else:
             actual_names = tuple(item.get("name") for item in config_tools)
-            expected_names = tuple(sorted(expected_config_tool_distributions))
             if actual_names != expected_names:
                 problems.append(
                     "extension-set manifest Meson config tool set/order drift"
@@ -434,6 +454,13 @@ def _pact_scipy_extension_set_manifest_problems(
                     problems.append(
                         "extension-set manifest Meson config tool sha256 is invalid"
                     )
+                path = str(item.get("path", ""))
+                if Path(path).name != path or any(
+                    separator in path for separator in ("/", "\\")
+                ):
+                    problems.append(
+                        "extension-set manifest Meson config tool path is not portable"
+                    )
                 name = str(item["name"])
                 expected_distribution = expected_config_tool_distributions.get(name)
                 if (
@@ -452,34 +479,114 @@ def _pact_scipy_extension_set_manifest_problems(
                     problems.append(
                         "extension-set manifest Meson pkg-config version drift"
                     )
-    installed_files = manifest.get("installed_python_files")
-    required_installed = {
-        "scipy/__init__.py",
-        "scipy/version.py",
-        "scipy/__config__.py",
-    }
+        config_tool_cross_sha256 = meson.get("config_tool_cross_sha256")
+        if expected_names:
+            if not (
+                isinstance(config_tool_cross_sha256, str)
+                and len(config_tool_cross_sha256) == 64
+                and all(
+                    character in "0123456789abcdef"
+                    for character in config_tool_cross_sha256
+                )
+            ):
+                problems.append(
+                    "extension-set manifest meson.config_tool_cross_sha256 "
+                    "is not a SHA-256 digest"
+                )
+            elif config_tool_cross_sha256 != _sealed_inventory_digest(
+                root / "provenance/metadata/meson/build-config-tools.cross",
+                payload_root=root,
+                inventory_sha256=inventory_sha256,
+            ):
+                problems.append(
+                    "extension-set manifest meson.config_tool_cross_sha256 mismatch"
+                )
+        elif config_tool_cross_sha256 is not None:
+            problems.append(
+                "extension-set manifest meson.config_tool_cross_sha256 must be null "
+                "without config tools"
+            )
+    installed_files = manifest.get("installed_package_files")
+    required_installed = set(extension_set.required_installed_files)
     if not isinstance(installed_files, list) or not all(
         isinstance(item, str) and item for item in installed_files
     ):
-        problems.append("extension-set manifest installed_python_files is invalid")
+        problems.append("extension-set manifest installed_package_files is invalid")
     else:
+        if installed_files != sorted(set(installed_files)):
+            problems.append(
+                "extension-set manifest installed_package_files are not sorted unique"
+            )
         missing_installed = sorted(required_installed - set(installed_files))
         if missing_installed:
             problems.append(
-                "extension-set manifest missing installed Python files: "
+                "extension-set manifest missing installed package files: "
                 + ", ".join(missing_installed)
             )
+        invalid_installed: list[str] = []
+        for item in installed_files:
+            try:
+                validate_source_package_relative_path(
+                    item, field="extension-set installed_package_files entry"
+                )
+            except SourcePackageSealVerificationError:
+                invalid_installed.append(item)
+        invalid_installed.sort()
+        if invalid_installed:
+            problems.append(
+                "extension-set manifest installed_package_files contain "
+                "non-canonical paths: " + ", ".join(invalid_installed)
+            )
+        invalid_set = set(invalid_installed)
         missing_on_disk = sorted(
-            item for item in required_installed if not (root / item).is_file()
+            item
+            for item in installed_files
+            if item not in invalid_set and item not in inventory_sha256
         )
         if missing_on_disk:
             problems.append(
-                "extension-set installed Python files absent on disk: "
+                "extension-set installed package files absent on disk: "
                 + ", ".join(missing_on_disk)
+            )
+        extension_paths: set[str] = set()
+        for extension in extension_set.extensions:
+            package_root = Path(*extension.module.split(".")[:-1])
+            artifact = package_root / f"{extension.target}.molt.wasm"
+            extension_paths.add(artifact.as_posix())
+            extension_paths.add(
+                artifact.with_name(
+                    artifact.name + ".extension_manifest.json"
+                ).as_posix()
+            )
+        package_prefix = f"{extension_set.package}/"
+        sealed_package_files = {
+            relative
+            for relative in inventory_sha256
+            if relative.startswith(package_prefix) and relative not in extension_paths
+        }
+        declared_package_files = set(installed_files) - invalid_set
+        unexpected_installed = sorted(sealed_package_files - declared_package_files)
+        undeclared_installed = sorted(declared_package_files - sealed_package_files)
+        if unexpected_installed:
+            problems.append(
+                "extension-set seal contains undeclared installed package files: "
+                + ", ".join(unexpected_installed)
+            )
+        if undeclared_installed:
+            problems.append(
+                "extension-set manifest declares non-package installed files: "
+                + ", ".join(undeclared_installed)
             )
     raw_extensions = manifest.get("extensions")
     expected_contracts = tuple(
-        (extension.module, extension.target, extension.capabilities)
+        (
+            extension.module,
+            extension.target,
+            extension.python_exports,
+            extension.capabilities,
+            extension.provided_capsules,
+            extension.exclude_linked_static_libraries,
+        )
         for extension in extension_set.extensions
     )
     if not isinstance(raw_extensions, list) or not all(
@@ -487,23 +594,49 @@ def _pact_scipy_extension_set_manifest_problems(
     ):
         problems.append("extension-set manifest extensions is invalid")
         return problems
-    actual_contracts: list[tuple[object, object, tuple[str, ...]]] = []
+    actual_contracts: list[
+        tuple[
+            object,
+            object,
+            tuple[str, ...],
+            tuple[str, ...],
+            tuple[str, ...],
+            tuple[str, ...],
+        ]
+    ] = []
     for item in raw_extensions:
-        capabilities = item.get("capabilities")
-        if not isinstance(capabilities, list) or not all(
-            isinstance(value, str) for value in capabilities
+        if set(item) != {
+            "module",
+            "target",
+            "python_exports",
+            "capabilities",
+            "provided_capsules",
+            "exclude_linked_static_libraries",
+            "artifact_sha256",
+            "wheel_sha256",
+            "object_closure_sha256",
+        }:
+            problems.append("extension-set manifest extension shape is invalid")
+        normalized_lists: list[tuple[str, ...]] = []
+        for field in (
+            "python_exports",
+            "capabilities",
+            "provided_capsules",
+            "exclude_linked_static_libraries",
         ):
-            problems.append("extension-set manifest extension capabilities are invalid")
-            normalized_capabilities: tuple[str, ...] = ()
-        else:
-            normalized_capabilities = tuple(capabilities)
+            values = item.get(field)
+            if not isinstance(values, list) or not all(
+                isinstance(value, str) and value for value in values
+            ):
+                problems.append(f"extension-set manifest extension {field} is invalid")
+                normalized_lists.append(())
+            else:
+                normalized_lists.append(tuple(values))
         actual_contracts.append(
-            (item.get("module"), item.get("target"), normalized_capabilities)
+            (item.get("module"), item.get("target"), *normalized_lists)
         )
     if tuple(actual_contracts) != expected_contracts:
-        problems.append(
-            "extension-set manifest ordered module/target/capability set drift"
-        )
+        problems.append("extension-set manifest ordered typed extension contract drift")
     for raw_extension in raw_extensions:
         module = raw_extension.get("module")
         if not isinstance(module, str):
@@ -531,23 +664,22 @@ def _pact_scipy_extension_set_manifest_problems(
     return problems
 
 
-
-def _pact_scipy_witness_seal_problems(
+def _scientific_extension_set_seal_validation(
     root: Path,
     extension_set: ScientificExtensionSet,
     stack: ScientificStackVersion | None = None,
-) -> list[str]:
+) -> tuple[list[str], Path | None]:
     selected = resolve_scientific_stack() if stack is None else stack
     problems: list[str] = []
     try:
         verified_seal = verify_source_package_seal(root)
     except (OSError, SourcePackageSealVerificationError) as exc:
-        problems.append(f"source-package seal verification failed: {exc}")
-        payload_root = root / "files"
-        if not payload_root.is_dir():
-            return problems
-    else:
-        payload_root = verified_seal.payload_root
+        return [f"source-package seal verification failed: {exc}"], None
+    payload_root = verified_seal.payload_root.resolve()
+    verified_payload_root = payload_root
+    inventory_sha256 = {
+        entry.relative_path: entry.sha256 for entry in verified_seal.files
+    }
     expected_manifests = {
         _scientific_extension_manifest_path(
             payload_root, extension.module, extension.target
@@ -555,24 +687,26 @@ def _pact_scipy_witness_seal_problems(
         for extension in extension_set.extensions
     }
     actual_manifests = {
-        manifest.resolve()
-        for manifest in payload_root.glob("**/*.molt.wasm.extension_manifest.json")
-        if manifest.is_file()
+        (payload_root / relative).resolve()
+        for relative in inventory_sha256
+        if relative.endswith(".molt.wasm.extension_manifest.json")
     }
     for missing in sorted(expected_manifests.keys() - actual_manifests):
         problems.append(
             "missing "
             f"{expected_manifests[missing]} manifest "
-            f"{missing.relative_to(payload_root.resolve())}"
+            f"{missing.relative_to(payload_root)}"
         )
     for unexpected in sorted(actual_manifests - expected_manifests.keys()):
         problems.append(
-            "unexpected SciPy extension manifest "
-            f"{unexpected.relative_to(payload_root.resolve())}"
+            f"unexpected {extension_set.package} extension manifest "
+            f"{unexpected.relative_to(payload_root)}"
         )
     current_abi = _default_molt_c_api_version(state.ROOT)
     current_abi_tag = f"molt_abi{current_abi.split('.', 1)[0]}"
-    set_manifest = policy._load_json_mapping(payload_root / "extension_set_manifest.json")
+    set_manifest = policy._load_json_mapping(
+        payload_root / "extension_set_manifest.json"
+    )
     set_target_metadata = (
         set_manifest.get("target_metadata")
         if isinstance(set_manifest, Mapping)
@@ -636,23 +770,54 @@ def _pact_scipy_witness_seal_problems(
             problems.append(f"{extension.module}: invalid python_exports")
         elif tuple(raw_exports) != extension.python_exports:
             problems.append(f"{extension.module}: python_exports drift")
+        if manifest.get("provided_capsules") != list(extension.provided_capsules):
+            problems.append(f"{extension.module}: provided_capsules drift")
         artifact = manifest.get("extension")
         expected_artifact = f"{extension.target}.molt.wasm"
+        artifact_path = manifest_path.parent / expected_artifact
+        actual_artifact_sha256 = _sealed_inventory_digest(
+            artifact_path,
+            payload_root=payload_root,
+            inventory_sha256=inventory_sha256,
+        )
         if (
             not isinstance(artifact, str)
             or artifact != expected_artifact
-            or not (manifest_path.parent / artifact).is_file()
+            or actual_artifact_sha256 is None
         ):
             problems.append(f"{extension.module}: extension artifact is missing")
         else:
-            artifact_path = manifest_path.parent / artifact
             artifact_sha256 = manifest.get("extension_sha256")
-            try:
-                actual_sha256 = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
-            except OSError:
-                actual_sha256 = ""
-            if not isinstance(artifact_sha256, str) or actual_sha256 != artifact_sha256:
+            if (
+                not isinstance(artifact_sha256, str)
+                or actual_artifact_sha256 != artifact_sha256
+            ):
                 problems.append(f"{extension.module}: extension_sha256 mismatch")
+        wheel = manifest.get("wheel")
+        wheel_sha256 = manifest.get("wheel_sha256")
+        wheel_path = (
+            (manifest_path.parent / wheel).resolve()
+            if isinstance(wheel, str) and not Path(wheel).is_absolute()
+            else None
+        )
+        actual_wheel_sha256 = (
+            _sealed_inventory_digest(
+                wheel_path,
+                payload_root=payload_root,
+                inventory_sha256=inventory_sha256,
+            )
+            if wheel_path is not None
+            else None
+        )
+        if (
+            not isinstance(wheel_sha256, str)
+            or len(wheel_sha256) != 64
+            or any(
+                character not in "0123456789abcdef" for character in wheel_sha256
+            )
+            or actual_wheel_sha256 != wheel_sha256
+        ):
+            problems.append(f"{extension.module}: wheel is not sealed or checksummed")
         object_closure = manifest.get("object_closure")
         if not isinstance(object_closure, Mapping):
             problems.append(f"{extension.module}: object_closure is missing")
@@ -672,15 +837,24 @@ def _pact_scipy_witness_seal_problems(
             elif all(isinstance(item, Mapping) for item in objects):
                 for object_index, item in enumerate(objects):
                     compile_command = item.get("compile_command")
-                    if not isinstance(compile_command, list) or not compile_command or not all(
-                        isinstance(value, str) and value for value in compile_command
+                    if (
+                        not isinstance(compile_command, list)
+                        or not compile_command
+                        or not all(
+                            isinstance(value, str) and value
+                            for value in compile_command
+                        )
                     ):
                         problems.append(
                             f"{extension.module}: object_closure compile command is invalid"
                         )
                     symbol_command = item.get("symbol_command")
-                    if not isinstance(symbol_command, list) or not symbol_command or not all(
-                        isinstance(value, str) and value for value in symbol_command
+                    if (
+                        not isinstance(symbol_command, list)
+                        or not symbol_command
+                        or not all(
+                            isinstance(value, str) and value for value in symbol_command
+                        )
                     ):
                         problems.append(
                             f"{extension.module}: object_closure symbol command is invalid"
@@ -720,9 +894,12 @@ def _pact_scipy_witness_seal_problems(
                     source_path = (manifest_path.parent / source).resolve()
                     if (
                         Path(source).is_absolute()
-                        or not source_path.is_relative_to(payload_root.resolve())
-                        or not source_path.is_file()
-                        or _sha256_file(source_path) != source_sha256
+                        or _sealed_inventory_digest(
+                            source_path,
+                            payload_root=payload_root,
+                            inventory_sha256=inventory_sha256,
+                        )
+                        != source_sha256
                     ):
                         problems.append(
                             f"{extension.module}: object_closure source[{object_index}] "
@@ -752,9 +929,12 @@ def _pact_scipy_witness_seal_problems(
                         dependency_path = (manifest_path.parent / raw_path).resolve()
                         if (
                             Path(raw_path).is_absolute()
-                            or not dependency_path.is_relative_to(payload_root.resolve())
-                            or not dependency_path.is_file()
-                            or _sha256_file(dependency_path) != expected_sha256
+                            or _sealed_inventory_digest(
+                                dependency_path,
+                                payload_root=payload_root,
+                                inventory_sha256=inventory_sha256,
+                            )
+                            != expected_sha256
                         ):
                             problems.append(
                                 f"{extension.module}: object_closure dependency"
@@ -770,53 +950,48 @@ def _pact_scipy_witness_seal_problems(
             ):
                 problems.append(f"{extension.module}: object_closure checksum mismatch")
     problems.extend(
-        _pact_scipy_extension_set_manifest_problems(
+        _scientific_extension_set_manifest_problems(
             payload_root,
             extension_set,
             stack=selected,
             sidecars=sidecars,
+            inventory_sha256=inventory_sha256,
         )
     )
-    return problems
+    return problems, verified_payload_root
 
 
-
-def _pact_scipy_witness_seal_root_is_complete(
-    root: Path, extension_set: ScientificExtensionSet
-) -> bool:
-    return not _pact_scipy_witness_seal_problems(root, extension_set)
-
+def _scientific_extension_set_seal_problems(
+    root: Path,
+    extension_set: ScientificExtensionSet,
+    stack: ScientificStackVersion | None = None,
+) -> list[str]:
+    return _scientific_extension_set_seal_validation(root, extension_set, stack)[0]
 
 
 def _pact_witness_native_roots(repo_root: Path = state.ROOT) -> list[Path]:
     del repo_root
     stack = resolve_scientific_stack()
-    durable_numpy_root = numpy_witness_seal_root(stack=stack)
-    if not (
-        durable_numpy_root.exists()
-        and _pact_numpy_multiarray_seal_root_is_current(durable_numpy_root)
-    ):
-        raise ValueError(
-            "no attested NumPy witness seal matches configured version "
-            f"{stack.numpy}; expected durable root {durable_numpy_root}. "
-            "Run tools/provision_numpy_witness_seal.py with a genuine matching seal."
+    roots: list[Path] = []
+    for package, display_name in (("numpy", "NumPy"), ("scipy", "SciPy")):
+        extension_set = scientific_extension_set(package, "pact-witness", stack=stack)
+        durable_root = scientific_extension_set_root(extension_set, stack=stack)
+        problems, verified_payload_root = (
+            _scientific_extension_set_seal_validation(
+                durable_root, extension_set, stack
+            )
+            if durable_root.exists()
+            else (["canonical root does not exist"], None)
         )
-    scipy_set = scientific_extension_set("scipy", "pact-witness", stack=stack)
-    durable_scipy_root = scipy_witness_seal_root(stack=stack)
-    scipy_problems = (
-        _pact_scipy_witness_seal_problems(durable_scipy_root, scipy_set, stack)
-        if durable_scipy_root.exists()
-        else ["canonical root does not exist"]
-    )
-    if scipy_problems:
-        raise ValueError(
-            "canonical SciPy witness seal is absent or incomplete; expected "
-            f"{durable_scipy_root} with exactly the configured extension set: "
-            + "; ".join(scipy_problems)
-        )
-    verified_scipy = verify_source_package_seal(durable_scipy_root)
-    return [durable_numpy_root.resolve(), verified_scipy.payload_root.resolve()]
-
+        if problems:
+            raise ValueError(
+                f"canonical {display_name} witness seal is absent or incomplete; "
+                f"expected {durable_root} with exactly the configured extension set: "
+                + "; ".join(problems)
+            )
+        assert verified_payload_root is not None
+        roots.append(verified_payload_root)
+    return roots
 
 
 def _pact_witness_env_overrides(repo_root: Path = state.ROOT) -> dict[str, str]:
@@ -841,7 +1016,6 @@ def _pact_witness_env_overrides(repo_root: Path = state.ROOT) -> dict[str, str]:
     return env
 
 
-
 _PACT_WITNESS_ACCEPTANCE_LOGICAL_ID = "pact-witness-acceptance"
 
 _PACT_WITNESS_ACCEPTANCE_LOCKED_ENV = (
@@ -855,7 +1029,6 @@ _PACT_WITNESS_ACCEPTANCE_LOCKED_ENV = (
     "PYTHONUTF8",
     "PYTHONIOENCODING",
 )
-
 
 
 def _pact_canonical_input_environment(repo_root: Path) -> dict[str, str]:
@@ -887,7 +1060,6 @@ def _pact_canonical_input_environment(repo_root: Path) -> dict[str, str]:
     }
 
 
-
 @contextlib.contextmanager
 def _temporary_environment(overrides: Mapping[str, str]):
     previous = {name: os.environ.get(name) for name in overrides}
@@ -900,7 +1072,6 @@ def _temporary_environment(overrides: Mapping[str, str]):
                 os.environ.pop(name, None)
             else:
                 os.environ[name] = value
-
 
 
 def _pact_witness_acceptance_spec(
@@ -951,7 +1122,7 @@ def _pact_witness_acceptance_spec(
         "locked_env": _PACT_WITNESS_ACCEPTANCE_LOCKED_ENV,
         "notes": [
             "Named Pact acceptance requires the version-keyed durable NumPy "
-            "and canonical four-extension SciPy seals, builds field_solve.py, "
+            "and canonical scientific extension seals, builds field_solve.py, "
             "regenerates the fixture/reference oracle in the run directory, "
             "runs the WASM artifact to produce candidate_outputs.npz, and "
             "executes check_parity.py; --env remains available for diagnostics "
@@ -959,7 +1130,6 @@ def _pact_witness_acceptance_spec(
         ],
         "timeout": timeout if timeout is not None else 1800.0,
     }
-
 
 
 def _pact_witness_oracle_spec(timeout: float | None = None) -> dict[str, object]:
@@ -987,7 +1157,6 @@ def _pact_witness_oracle_spec(timeout: float | None = None) -> dict[str, object]
     }
 
 
-
 _R6_TARGET_VERSION_PARITY_FILES = (
     "tests/differential/stdlib/sys_metadata_intrinsics.py",
     "tests/differential/stdlib/sys_stat_version_gate.py",
@@ -995,7 +1164,6 @@ _R6_TARGET_VERSION_PARITY_FILES = (
     "tests/differential/stdlib/queue_shutdown_version_gate.py",
     "tests/differential/stdlib/removed_stdlib_modules_version_gate.py",
 )
-
 
 
 def _normalize_r6_target_version_fixtures(
@@ -1030,7 +1198,6 @@ def _normalize_r6_target_version_fixtures(
     return selected
 
 
-
 def _r6_target_version_fixture_suffix(fixtures: Sequence[str]) -> str:
     if tuple(fixtures) == _R6_TARGET_VERSION_PARITY_FILES:
         return ""
@@ -1040,7 +1207,6 @@ def _r6_target_version_fixture_suffix(fixtures: Sequence[str]) -> str:
         return suffix
     digest = hashlib.sha256("|".join(fixtures).encode("utf-8")).hexdigest()[:10]
     return f"{stems[0]}-plus-{len(stems) - 1}-{digest}"
-
 
 
 def _r6_target_version_parity_spec(
@@ -1097,7 +1263,6 @@ def _r6_target_version_parity_spec(
     }
 
 
-
 def _native_molt_run_spec(
     entry: str,
     *,
@@ -1151,7 +1316,6 @@ def _native_molt_run_spec(
         ],
         "timeout": timeout if timeout is not None else 900.0,
     }
-
 
 
 def _run_named_spec(args: argparse.Namespace, spec: dict[str, object]) -> int:
@@ -1229,7 +1393,6 @@ def _run_named_spec(args: argparse.Namespace, spec: dict[str, object]) -> int:
     )
 
 
-
 def _cmd_pact_witness_acceptance(args: argparse.Namespace) -> int:
     # Admission must precede seal/config resolution so a forbidden override
     # cannot redirect spec construction or turn a policy refusal into a producer
@@ -1244,10 +1407,8 @@ def _cmd_pact_witness_acceptance(args: argparse.Namespace) -> int:
     )
 
 
-
 def _cmd_pact_witness_oracle(args: argparse.Namespace) -> int:
     return _run_named_spec(args, _pact_witness_oracle_spec(args.timeout))
-
 
 
 def _cmd_r6_target_version_parity(args: argparse.Namespace) -> int:
@@ -1259,7 +1420,6 @@ def _cmd_r6_target_version_parity(args: argparse.Namespace) -> int:
             args.fixture,
         ),
     )
-
 
 
 def _cmd_native_molt_run(args: argparse.Namespace) -> int:
