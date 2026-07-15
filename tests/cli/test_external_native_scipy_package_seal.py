@@ -9,7 +9,8 @@ import shutil
 
 import pytest
 
-import tools.proof_queue as proof_queue
+from tools.proof_queue_pkg import pact
+
 from molt.cli.extension_manifest import _default_molt_c_api_version
 from molt.cli.external_native import _resolve_external_package_native_artifact_plan
 from molt.cli.source_package_seal import SourcePackageInput, stage_source_package_seal
@@ -160,7 +161,7 @@ def test_each_missing_scipy_extension_fails_canonical_seal_completeness(
     _stage_canonical_scipy_root(root, omit=missing)
     extension_set = scientific_extension_set("scipy", "pact-witness")
 
-    problems = proof_queue._pact_scipy_witness_seal_problems(root, extension_set)
+    problems = pact._pact_scipy_witness_seal_problems(root, extension_set)
 
     assert any(missing in problem for problem in problems), problems
 
@@ -176,7 +177,7 @@ def test_extra_scipy_extension_manifest_fails_exact_set_completeness(
     )
     unexpected.write_text("{}", encoding="utf-8")
 
-    problems = proof_queue._pact_scipy_witness_seal_problems(
+    problems = pact._pact_scipy_witness_seal_problems(
         root, scientific_extension_set("scipy", "pact-witness")
     )
 

@@ -3,7 +3,7 @@
 
 The pact Kernel A witness acceptance lane links source-recompiled NumPy
 ``.molt.wasm`` static-link artifacts through sealed extension roots under
-``tmp/`` (see ``tools/proof_queue.py::_pact_witness_native_roots``). Those roots
+``tmp/`` (see ``tools/proof_queue_pkg/pact.py::_pact_witness_native_roots``). Those roots
 are gitignored, ephemeral build artifacts. Their extension manifests record the
 ``molt_c_api_version`` / ``abi_tag`` of the runtime they were produced against.
 
@@ -94,7 +94,7 @@ import pact_witness_numpy_python_closure as _numpy_python_closure  # noqa: E402
 
 
 # The witness sealed roots, relative to the repo root. These mirror the primary
-# candidates selected by tools/proof_queue.py::_pact_witness_native_roots. Only
+# candidates selected by tools/proof_queue_pkg/pact.py::_pact_witness_native_roots. Only
 # roots that exist on disk are regenerated; missing roots are reported so a
 # partial staging environment fails closed rather than silently skipping.
 _DEFAULT_WITNESS_ROOTS: tuple[str, ...] = (

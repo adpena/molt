@@ -173,12 +173,13 @@ def test_unsupported_selection_fails_honestly_early(
     ):
         resolve_scientific_stack()
 
-    proof_queue = _load_tool("proof_queue")
-    monkeypatch.setattr(proof_queue, "_pact_witness_env_overrides", lambda _root: {})
-    spec = proof_queue._pact_witness_acceptance_spec()
+    from tools.proof_queue_pkg import pact, state
+
+    monkeypatch.setattr(pact, "_pact_witness_env_overrides", lambda _root: {})
+    spec = pact._pact_witness_acceptance_spec()
     assert "numpy==2.5.1" in spec["command"]
     assert spec["env_overrides"][CONFIG_ENV] == str(
-        proof_queue.ROOT / "config/scientific_stack_versions.toml"
+        state.ROOT / "config/scientific_stack_versions.toml"
     )
 
 
@@ -291,8 +292,9 @@ def test_config_only_version_change_propagates_to_consumers(
     )
     monkeypatch.setenv(CONFIG_ENV, str(config))
 
-    proof_queue = _load_tool("proof_queue_config_propagation", filename="proof_queue")
-    command = proof_queue._pact_witness_oracle_spec()["command"]
+    from tools.proof_queue_pkg import pact
+
+    command = pact._pact_witness_oracle_spec()["command"]
     assert "numpy==9.9.9" in command
     assert "scipy==8.8.8" in command
 
