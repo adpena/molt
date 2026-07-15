@@ -16,10 +16,11 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from packaging.requirements import InvalidRequirement, Requirement
+from packaging.requirements import Requirement
 from packaging.version import InvalidVersion
 
 from molt.cli import commands
+from molt.cli import source_extension_cython as _source_extension_cython
 from molt.cli.atomic_io import (
     _atomic_copy_file,
     _atomic_write_bytes,
@@ -45,6 +46,11 @@ from molt.cli.source_extensions import (
     _meson_target_filename_names,
     _meson_target_output_paths,
 )
+from molt.cli.source_build_environment import (
+    SourceBuildEnvironmentError,
+    active_source_build_requirements,
+    canonical_source_marker_environment,
+)
 from molt.cli.build_locks import _acquire_file_lock, _release_file_lock
 from molt.cli.source_extension_reproducibility import (
     _canonical_extension_manifest_for_wheel,
@@ -65,6 +71,7 @@ from molt.cli.source_package_seal import (
     prepare_source_package_seal_commit,
     recover_source_package_seal_commits,
     stage_source_package_seal,
+    validate_source_package_relative_path,
     verify_source_package_seal,
 )
 from molt.scientific_stack_versions import (
@@ -130,16 +137,23 @@ class _ResolvedBuildRequirement:
 class _SourceBuildEnvironment:
     python_executable: str
     requirements: tuple[str, ...]
+    marker_environment: Mapping[str, str]
+    active_requirements: tuple[str, ...]
     resolved: tuple[_ResolvedBuildRequirement, ...]
 
     def manifest_payload(self) -> dict[str, Any]:
         return {
-            "python_executable": (
-                f"{sys.implementation.name}-"
-                f"{sys.version_info.major}.{sys.version_info.minor}."
-                f"{sys.version_info.micro}/{Path(self.python_executable).name}"
-            ),
+            "python": {
+                "implementation": sys.implementation.name,
+                "version": (
+                    f"{sys.version_info.major}.{sys.version_info.minor}."
+                    f"{sys.version_info.micro}"
+                ),
+                "executable": Path(self.python_executable).name,
+            },
             "requirements": list(self.requirements),
+            "marker_environment": dict(self.marker_environment),
+            "active_requirements": list(self.active_requirements),
             "resolved": [item.manifest_payload() for item in self.resolved],
         }
 
@@ -179,6 +193,15 @@ class _SourceNinjaDriver:
         return dict(self.manifest)
 
 
+@dataclass(frozen=True)
+class _SourceSubmoduleIdentity:
+    path: str
+    commit: str
+
+    def manifest_payload(self) -> dict[str, str]:
+        return {"path": self.path, "commit": self.commit}
+
+
 def _run_process(argv: Sequence[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         list(argv),
@@ -191,7 +214,9 @@ def _run_process(argv: Sequence[str], *, cwd: Path) -> subprocess.CompletedProce
     )
 
 
-def _verify_recursive_submodules(source_root: Path) -> tuple[str, ...]:
+def _verify_recursive_submodules(
+    source_root: Path,
+) -> tuple[_SourceSubmoduleIdentity, ...]:
     result = _run_process(
         (
             "git",
@@ -211,24 +236,62 @@ def _verify_recursive_submodules(source_root: Path) -> tuple[str, ...]:
             f"failed to verify recursive submodules for {source_root}: "
             f"{detail or f'returncode={result.returncode}'}"
         )
-    raw_rows = tuple(
-        line.rstrip() for line in result.stdout.splitlines() if line.strip()
-    )
+    raw_rows = tuple(line for line in result.stdout.splitlines() if line.strip())
     invalid = [row.strip() for row in raw_rows if row[0] in {"-", "+", "U"}]
     if invalid:
         raise SourceExtensionProducerError(
             "source checkout has missing, unpinned, or conflicted recursive "
             "submodules: " + "; ".join(invalid)
         )
-    rows = tuple(row.strip() for row in raw_rows)
-    dirty: list[str] = []
-    for row in rows:
-        fields = row.split()
-        if len(fields) < 2:
+    identities = _run_process(
+        (
+            "git",
+            "-c",
+            "core.longpaths=true",
+            "-C",
+            str(source_root),
+            "submodule",
+            "foreach",
+            "--recursive",
+            "--quiet",
+            'printf "%s\\t%s\\n" "$displaypath" "$(git rev-parse HEAD)"',
+        ),
+        cwd=source_root,
+    )
+    if identities.returncode != 0:
+        detail = (identities.stderr or identities.stdout).strip()
+        raise SourceExtensionProducerError(
+            "failed to attest recursive submodule identities: "
+            f"{detail or f'returncode={identities.returncode}'}"
+        )
+    parsed: list[_SourceSubmoduleIdentity] = []
+    seen_paths: set[str] = set()
+    for row in identities.stdout.splitlines():
+        fields = row.split("\t")
+        if len(fields) != 2:
             raise SourceExtensionProducerError(
-                f"cannot parse recursive submodule status row: {row!r}"
+                f"cannot parse recursive submodule identity row: {row!r}"
             )
-        submodule_path = source_root / fields[1]
+        try:
+            path = validate_source_package_relative_path(
+                fields[0], field="recursive submodule path"
+            )
+        except SourcePackageSealVerificationError as exc:
+            raise SourceExtensionProducerError(str(exc)) from exc
+        commit = fields[1]
+        if (
+            path in seen_paths
+            or len(commit) != 40
+            or any(character not in "0123456789abcdef" for character in commit)
+        ):
+            raise SourceExtensionProducerError(
+                f"invalid or duplicate recursive submodule identity: {row!r}"
+            )
+        seen_paths.add(path)
+        parsed.append(_SourceSubmoduleIdentity(path=path, commit=commit))
+    dirty: list[str] = []
+    for identity in parsed:
+        submodule_path = source_root / identity.path
         tracked = _run_process(
             (
                 "git",
@@ -243,7 +306,7 @@ def _verify_recursive_submodules(source_root: Path) -> tuple[str, ...]:
             cwd=source_root,
         )
         if tracked.returncode == 0 and tracked.stdout.strip():
-            dirty.append(fields[1])
+            dirty.append(identity.path)
         elif tracked.returncode != 0:
             detail = (tracked.stderr or tracked.stdout).strip()
             raise SourceExtensionProducerError(
@@ -255,7 +318,7 @@ def _verify_recursive_submodules(source_root: Path) -> tuple[str, ...]:
             "source checkout has modified or incomplete pinned submodule "
             "worktrees: " + ", ".join(dirty)
         )
-    return rows
+    return tuple(sorted(parsed, key=lambda identity: identity.path))
 
 
 def _provision_recursive_submodules(source_root: Path) -> None:
@@ -310,7 +373,11 @@ def _require_fresh_build_root(build_root: Path) -> None:
 
 def _source_build_requirements(
     source_root: Path,
-) -> tuple[tuple[str, ...], tuple[tuple[str, Requirement], ...]]:
+) -> tuple[
+    tuple[str, ...],
+    Mapping[str, str],
+    tuple[tuple[str, Requirement], ...],
+]:
     pyproject_path = source_root / "pyproject.toml"
     try:
         payload = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
@@ -334,27 +401,17 @@ def _source_build_requirements(
             f"{pyproject_path}"
         )
     originals = tuple(item.strip() for item in raw_requirements)
-    active: list[tuple[str, Requirement]] = []
-    for raw in originals:
-        try:
-            requirement = Requirement(raw)
-        except InvalidRequirement as exc:
-            raise SourceExtensionProducerError(
-                f"invalid source build requirement {raw!r}: {exc}"
-            ) from exc
-        if requirement.url is not None:
-            raise SourceExtensionProducerError(
-                "source build requirements with direct URLs cannot be revalidated "
-                f"from installed distribution metadata: {raw!r}"
-            )
-        if requirement.marker is None or requirement.marker.evaluate():
-            active.append((raw, requirement))
+    marker_environment = canonical_source_marker_environment()
+    try:
+        active = active_source_build_requirements(originals, marker_environment)
+    except SourceBuildEnvironmentError as exc:
+        raise SourceExtensionProducerError(str(exc)) from exc
     if not active:
         raise SourceExtensionProducerError(
             "source [build-system].requires has no requirements active for the "
             "current interpreter"
         )
-    return originals, tuple(active)
+    return originals, marker_environment, active
 
 
 def _installed_build_requirement(
@@ -390,7 +447,7 @@ def _installed_build_requirement(
 
 
 def _ensure_source_build_environment(source_root: Path) -> _SourceBuildEnvironment:
-    originals, active = _source_build_requirements(source_root)
+    originals, marker_environment, active = _source_build_requirements(source_root)
     unsatisfied = [
         raw
         for raw, requirement in active
@@ -410,6 +467,8 @@ def _ensure_source_build_environment(source_root: Path) -> _SourceBuildEnvironme
     return _SourceBuildEnvironment(
         python_executable=sys.executable,
         requirements=originals,
+        marker_environment=marker_environment,
+        active_requirements=tuple(raw for raw, _requirement in active),
         resolved=tuple(resolved),
     )
 
@@ -545,7 +604,9 @@ def _source_meson_driver(source_root: Path) -> _SourceMesonDriver:
         ) from exc
     tool = payload.get("tool")
     meson_python = tool.get("meson-python") if isinstance(tool, Mapping) else None
-    raw_driver = meson_python.get("meson") if isinstance(meson_python, Mapping) else None
+    raw_driver = (
+        meson_python.get("meson") if isinstance(meson_python, Mapping) else None
+    )
     if raw_driver is not None:
         if not isinstance(raw_driver, str) or not raw_driver.strip():
             raise SourceExtensionProducerError(
@@ -835,8 +896,7 @@ def _object_closure_digest(
         raw_dependencies = item.get("dependencies")
         if not isinstance(raw_dependencies, list):
             raise SourceExtensionProducerError(
-                f"extension object_closure.objects[{index}].dependencies "
-                "must be a list"
+                f"extension object_closure.objects[{index}].dependencies must be a list"
             )
         dependencies: list[dict[str, str]] = []
         for dependency_index, raw_dependency in enumerate(raw_dependencies):
@@ -1091,9 +1151,7 @@ def _audit_extension_output(
     wheel_sha256 = _audit_declared_wheel(
         manifest, output_root=output_root, module=module
     )
-    wheel_path = _declared_wheel_path(
-        manifest, output_root=output_root, module=module
-    )
+    wheel_path = _declared_wheel_path(manifest, output_root=output_root, module=module)
     return _ProducedExtension(
         module=module,
         target=target,
@@ -1125,6 +1183,7 @@ def _build_extension(
     target: str,
     abi_tier: str,
     tool_commands: Mapping[str, Sequence[str]],
+    backend: _SourceNinjaDriver,
 ) -> _ProducedExtension:
     stdout = io.StringIO()
     stderr = io.StringIO()
@@ -1148,6 +1207,7 @@ def _build_extension(
             ),
             abi_tier=abi_tier,
             tool_commands=tool_commands,
+            source_plan_ninja_command=backend.command,
             json_output=False,
             verbose=False,
         )
@@ -1184,9 +1244,7 @@ def _preflight_extension_set_plans(
             source_root=source_root,
             build_root=build_root,
             compile_commands=compile_commands,
-            exclude_linked_static_libraries=(
-                spec.exclude_linked_static_libraries
-            ),
+            exclude_linked_static_libraries=(spec.exclude_linked_static_libraries),
         )
         if plan is None or errors:
             detail = "; ".join(errors) if errors else "no source plan"
@@ -1274,9 +1332,7 @@ def _stage_extension(
     relative_artifact = produced.artifact_path.relative_to(produced.output_root)
     destination = publish_root / relative_artifact
     _atomic_copy_file(produced.artifact_path, destination)
-    sidecar_path = destination.with_name(
-        destination.name + ".extension_manifest.json"
-    )
+    sidecar_path = destination.with_name(destination.name + ".extension_manifest.json")
     try:
         raw_manifest = json.loads(
             produced.artifact_manifest_path.read_text(encoding="utf-8")
@@ -1286,7 +1342,9 @@ def _stage_extension(
             f"failed to reload audited extension manifest: {exc}"
         ) from exc
     if not isinstance(raw_manifest, dict):
-        raise SourceExtensionProducerError("audited extension manifest is not an object")
+        raise SourceExtensionProducerError(
+            "audited extension manifest is not an object"
+        )
 
     raw_source_plan = raw_manifest.get("source_plan")
     raw_plan_path = (
@@ -1327,9 +1385,7 @@ def _stage_extension(
         / produced.wheel_path.name
     )
     wheel_destination = publish_root / wheel_relative
-    manifest["wheel"] = _relative_manifest_path(
-        wheel_destination, sidecar_path.parent
-    )
+    manifest["wheel"] = _relative_manifest_path(wheel_destination, sidecar_path.parent)
 
     raw_source_plan = manifest.get("source_plan")
     if isinstance(raw_source_plan, dict):
@@ -1513,9 +1569,7 @@ def _stage_build_metadata(
         location_roots,
     )
     if not isinstance(canonical_target_metadata, dict):
-        raise SourceExtensionProducerError(
-            "canonical target metadata is not an object"
-        )
+        raise SourceExtensionProducerError("canonical target metadata is not an object")
     python_pc = staged.get("target/pkgconfig/python3.pc")
     meson_cross = staged.get("target/meson.cross")
     if python_pc is None or meson_cross is None:
@@ -1565,11 +1619,11 @@ def _source_package_input_role(relative: Path) -> str:
     return "package-data"
 
 
-def _target_tool_commands(metadata_payload: Mapping[str, Any]) -> dict[str, tuple[str, ...]]:
+def _target_tool_commands(
+    metadata_payload: Mapping[str, Any],
+) -> dict[str, tuple[str, ...]]:
     toolchain = metadata_payload.get("toolchain")
-    raw_commands = (
-        toolchain.get("commands") if isinstance(toolchain, Mapping) else None
-    )
+    raw_commands = toolchain.get("commands") if isinstance(toolchain, Mapping) else None
     if not isinstance(raw_commands, Mapping):
         raise SourceExtensionProducerError(
             "target metadata has no materialized LLVM/WASI command family"
@@ -1578,8 +1632,10 @@ def _target_tool_commands(metadata_payload: Mapping[str, Any]) -> dict[str, tupl
     commands: dict[str, tuple[str, ...]] = {}
     for command_role in required_roles:
         raw_command = raw_commands.get(command_role)
-        if not isinstance(raw_command, list) or not raw_command or not all(
-            isinstance(item, str) and item for item in raw_command
+        if (
+            not isinstance(raw_command, list)
+            or not raw_command
+            or not all(isinstance(item, str) and item for item in raw_command)
         ):
             raise SourceExtensionProducerError(
                 f"target metadata is missing materialized {command_role} command"
@@ -1676,9 +1732,7 @@ def _validate_complete_publish_root(
         "python_pc_sha256": (
             publish_root / "provenance/metadata/target/pkgconfig/python3.pc"
         ),
-        "meson_cross_sha256": (
-            publish_root / "provenance/metadata/target/meson.cross"
-        ),
+        "meson_cross_sha256": (publish_root / "provenance/metadata/target/meson.cross"),
     }
     for digest_name, target_file in target_files.items():
         if not target_file.is_file() or target_digests.get(digest_name) != _sha256_file(
@@ -1749,7 +1803,13 @@ def _validate_complete_publish_root(
     missing_installed = [
         relative
         for relative in installed_files
-        if not (publish_root / relative).is_file()
+        if not (
+            publish_root
+            / validate_source_package_relative_path(
+                relative,
+                field="extension-set installed_package_files entry",
+            )
+        ).is_file()
     ]
     if missing_installed:
         raise SourceExtensionProducerError(
@@ -1781,8 +1841,7 @@ def _validate_complete_publish_root(
         and all(isinstance(value, str) for value in item["capabilities"])
         and all(isinstance(value, str) for value in item["provided_capsules"])
         and all(
-            isinstance(value, str)
-            for value in item["exclude_linked_static_libraries"]
+            isinstance(value, str) for value in item["exclude_linked_static_libraries"]
         )
         for item in raw_extensions
     ):
@@ -1872,7 +1931,9 @@ def _validate_complete_publish_root(
                     f"extension-set manifest {field_name} differs from sidecar for "
                     f"{spec.module}"
                 )
-        closure_objects = closure.get("objects") if isinstance(closure, Mapping) else None
+        closure_objects = (
+            closure.get("objects") if isinstance(closure, Mapping) else None
+        )
         if not isinstance(closure_objects, list):
             raise SourceExtensionProducerError(
                 f"extension sidecar object closure is invalid for {spec.module}"
@@ -1947,6 +2008,7 @@ def _missing_installed_generated_inputs(
 
 def _missing_extension_generated_inputs(
     *,
+    backend: _SourceNinjaDriver,
     build_root: Path,
     intro_targets: Path,
     extension_set: ScientificExtensionSet,
@@ -1963,6 +2025,23 @@ def _missing_extension_generated_inputs(
         )
     missing: set[Path] = set()
     ninja_inputs = _load_ninja_build_all_inputs(build_root)
+
+    def standalone_regenerable(path: Path) -> bool:
+        if path.suffix.lower() not in {".c", ".cc", ".cpp", ".cxx"}:
+            return False
+        if not any(
+            dependency.suffix.lower() == ".pyx" and dependency.is_file()
+            for dependency in ninja_inputs.get(path.resolve(), ())
+        ):
+            return False
+        pyx_input, error = _source_extension_cython.generated_c_pyx_from_ninja(
+            generated_c=path,
+            build_root=build_root,
+            ninja_command=backend.command,
+        )
+        if error is not None:
+            raise SourceExtensionProducerError(error)
+        return pyx_input is not None
 
     def target_names(target: Mapping[str, Any]) -> set[str]:
         names = {
@@ -1990,8 +2069,7 @@ def _missing_extension_generated_inputs(
             target
             for target in payload
             if isinstance(target, Mapping)
-            and str(target.get("type", "")).strip()
-            in _MESON_EXTENSION_TARGET_TYPES
+            and str(target.get("type", "")).strip() in _MESON_EXTENSION_TARGET_TYPES
             and spec.target in target_names(target)
         ]
         if len(matches) != 1:
@@ -2040,7 +2118,7 @@ def _missing_extension_generated_inputs(
                     if not path.is_absolute():
                         path = build_root / path
                     path = path.resolve()
-                    if not path.is_file():
+                    if not path.is_file() and not standalone_regenerable(path):
                         missing.add(path)
         queue = [
             output
@@ -2064,6 +2142,7 @@ def _missing_extension_generated_inputs(
                     not dependency.is_file()
                     and dependency.suffix.lower() in _GENERATED_INPUT_SUFFIXES
                     and dependency in ninja_inputs
+                    and not standalone_regenerable(dependency)
                 ):
                     missing.add(dependency)
     return {
@@ -2089,6 +2168,7 @@ def _materialize_generated_inputs(
     )
     missing.update(
         _missing_extension_generated_inputs(
+            backend=backend,
             build_root=build_root,
             intro_targets=intro_targets,
             extension_set=extension_set,
@@ -2147,97 +2227,84 @@ def _retire_replaceable_extension_destination(
         return None
     try:
         existing = verify_source_package_seal(destination)
-    except (OSError, SourcePackageSealVerificationError):
-        existing = None
-    else:
-        existing_manifest_path = existing.payload_root / "extension_set_manifest.json"
-        try:
-            existing_manifest = json.loads(
-                existing_manifest_path.read_text(encoding="utf-8")
-            )
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise SourceExtensionProducerError(
-                f"cannot validate existing extension-set identity: {exc}"
-            ) from exc
-        if not isinstance(existing_manifest, Mapping):
-            raise SourceExtensionProducerError(
-                "existing extension-set manifest is not an object"
-            )
-        identity_fields = ("package", "name", "seal_name", "source_head")
-        drift = [
-            field
-            for field in identity_fields
-            if existing_manifest.get(field) != set_manifest.get(field)
-        ]
-        if drift:
-            raise SourceExtensionProducerError(
-                "refusing to replace a canonical seal owned by another source "
-                "identity; mismatched fields: " + ", ".join(drift)
-            )
-        expected_contracts = tuple(
-            (
-                spec.module,
-                spec.target,
-                spec.python_exports,
-                spec.capabilities,
-                spec.provided_capsules,
-                spec.exclude_linked_static_libraries,
-            )
-            for spec in extension_set.extensions
-        )
-        raw_extensions = existing_manifest.get("extensions")
-        actual_contracts = (
-            tuple(
-                (
-                    item.get("module"),
-                    item.get("target"),
-                    tuple(item.get("python_exports") or ()),
-                    tuple(item.get("capabilities") or ()),
-                    tuple(item.get("provided_capsules") or ()),
-                    tuple(item.get("exclude_linked_static_libraries") or ()),
-                )
-                for item in raw_extensions
-                if isinstance(item, Mapping)
-            )
-            if isinstance(raw_extensions, list)
-            else ()
-        )
-        if actual_contracts != expected_contracts:
-            raise SourceExtensionProducerError(
-                "refusing to replace a canonical seal with different typed "
-                "extension contracts"
-            )
-    if not destination.is_dir() or destination.is_symlink():
+    except (OSError, SourcePackageSealVerificationError) as exc:
         raise SourceExtensionProducerError(
-            f"refusing to replace non-directory legacy destination: {destination}"
+            f"refusing to replace an unverified non-atomic destination: {exc}"
+        ) from exc
+    existing_manifest_path = existing.payload_root / "extension_set_manifest.json"
+    try:
+        existing_manifest = json.loads(
+            existing_manifest_path.read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise SourceExtensionProducerError(
+            f"cannot validate existing extension-set identity: {exc}"
+        ) from exc
+    if not isinstance(existing_manifest, Mapping):
+        raise SourceExtensionProducerError(
+            "existing extension-set manifest is not an object"
+        )
+    identity_fields = (
+        "schema_version",
+        "kind",
+        "package",
+        "name",
+        "seal_name",
+        "source_head",
+        "target",
+        "target_triple",
+        "abi_tier",
+    )
+    drift = [
+        field
+        for field in identity_fields
+        if existing_manifest.get(field) != set_manifest.get(field)
+    ]
+    if drift:
+        raise SourceExtensionProducerError(
+            "refusing to replace a canonical seal owned by another source "
+            "identity; mismatched fields: " + ", ".join(drift)
         )
     manifests: dict[str, Mapping[str, Any]] = {}
-    manifest_root = existing.payload_root if existing is not None else destination
+    manifest_root = existing.payload_root
+    inventory_sha256 = {
+        entry.relative_path: entry.sha256 for entry in existing.files
+    }
     for path in sorted(manifest_root.glob("**/*.molt.wasm.extension_manifest.json")):
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise SourceExtensionProducerError(
-                f"cannot validate legacy extension manifest {path}: {exc}"
+                f"cannot validate existing extension manifest {path}: {exc}"
             ) from exc
         module = payload.get("module") if isinstance(payload, Mapping) else None
         extension = payload.get("extension") if isinstance(payload, Mapping) else None
         expected_sha256 = (
-            payload.get("extension_sha256")
-            if isinstance(payload, Mapping)
-            else None
+            payload.get("extension_sha256") if isinstance(payload, Mapping) else None
         )
-        artifact = path.parent / str(extension)
+        try:
+            relative_extension = validate_source_package_relative_path(
+                extension, field=f"existing extension artifact in {path}"
+            )
+        except SourcePackageSealVerificationError as exc:
+            raise SourceExtensionProducerError(str(exc)) from exc
+        expected_extension = path.name.removesuffix(".extension_manifest.json")
+        artifact = (path.parent / relative_extension).resolve()
+        try:
+            artifact_relative = artifact.relative_to(manifest_root.resolve()).as_posix()
+        except ValueError:
+            artifact_relative = ""
         if not (
             isinstance(module, str)
             and isinstance(extension, str)
             and isinstance(expected_sha256, str)
             and len(expected_sha256) == 64
-            and artifact.is_file()
-            and _sha256_file(artifact) == expected_sha256
+            and all(character in "0123456789abcdef" for character in expected_sha256)
+            and relative_extension == expected_extension
+            and inventory_sha256.get(artifact_relative) == expected_sha256
         ):
             raise SourceExtensionProducerError(
-                f"legacy extension manifest or artifact is invalid: {path}"
+                f"existing extension manifest or artifact is invalid: {path}"
             )
         if module in manifests:
             raise SourceExtensionProducerError(
@@ -2247,8 +2314,59 @@ def _retire_replaceable_extension_destination(
     expected_modules = {extension.module for extension in extension_set.extensions}
     if set(manifests) != expected_modules:
         raise SourceExtensionProducerError(
-            "refusing to replace unrecognized non-atomic destination; expected "
-            f"legacy modules {sorted(expected_modules)}, found {sorted(manifests)}"
+            "refusing to replace an extension set with a different module family; "
+            f"expected {sorted(expected_modules)}, found {sorted(manifests)}"
+        )
+    raw_extensions = existing_manifest.get("extensions")
+    if not isinstance(raw_extensions, list) or not all(
+        isinstance(item, Mapping) for item in raw_extensions
+    ):
+        raise SourceExtensionProducerError(
+            "existing extension-set manifest extensions must be an object array"
+        )
+    set_entries: dict[str, Mapping[str, Any]] = {}
+    for item in raw_extensions:
+        module = item.get("module")
+        if not isinstance(module, str) or not module or module in set_entries:
+            raise SourceExtensionProducerError(
+                "existing extension-set manifest has missing or duplicate module custody"
+            )
+        set_entries[module] = item
+    expected_contracts = tuple(
+        (
+            spec.module,
+            spec.target,
+            spec.python_exports,
+            spec.capabilities,
+            spec.provided_capsules,
+            spec.exclude_linked_static_libraries,
+        )
+        for spec in extension_set.extensions
+    )
+    actual_contracts: list[tuple[object, ...]] = []
+    for spec in extension_set.extensions:
+        manifest = manifests[spec.module]
+        source_plan = manifest.get("source_plan")
+        set_entry = set_entries.get(spec.module, {})
+        excluded = set_entry.get("exclude_linked_static_libraries")
+        actual_contracts.append(
+            (
+                manifest.get("module"),
+                (
+                    source_plan.get("target_selector")
+                    if isinstance(source_plan, Mapping)
+                    else None
+                ),
+                tuple(manifest.get("python_exports") or ()),
+                tuple(manifest.get("capabilities") or ()),
+                tuple(manifest.get("provided_capsules") or ()),
+                tuple(excluded or ()),
+            )
+        )
+    if tuple(actual_contracts) != expected_contracts:
+        raise SourceExtensionProducerError(
+            "refusing to replace a canonical seal with different typed "
+            "extension contracts"
         )
     retired = transaction_root / "retired-destination"
     if retired.exists():
@@ -2304,8 +2422,7 @@ def produce_source_extension_set(
         if extension_set.use_pkg_config:
             pkg_config_tool = _ensure_meson_pkg_config(source_root)
             if any(
-                tool.name == pkg_config_tool.name
-                for tool in discovered_config_tools
+                tool.name == pkg_config_tool.name for tool in discovered_config_tools
             ):
                 raise SourceExtensionProducerError(
                     "upstream build requirements duplicate Molt's pkg-config "
@@ -2414,12 +2531,11 @@ def produce_source_extension_set(
                 python_exports=spec.python_exports,
                 capabilities=spec.capabilities,
                 provided_capsules=spec.provided_capsules,
-                exclude_linked_static_libraries=(
-                    spec.exclude_linked_static_libraries
-                ),
+                exclude_linked_static_libraries=(spec.exclude_linked_static_libraries),
                 target=target,
                 abi_tier=abi_tier,
                 tool_commands=tool_commands,
+                backend=ninja_driver,
             )
             result = _stage_extension(
                 result,
@@ -2430,13 +2546,13 @@ def produce_source_extension_set(
             produced.append(result)
 
         set_manifest = {
-            "schema_version": 1,
+            "schema_version": 2,
             "kind": "molt-source-extension-set",
             "package": extension_set.package,
             "name": extension_set.name,
             "seal_name": extension_set.seal_name,
             "source_head": _git_head(source_root),
-            "submodules": list(submodules),
+            "submodules": [item.manifest_payload() for item in submodules],
             "target": target,
             "target_triple": metadata.target_triple,
             "abi_tier": abi_tier,
@@ -2446,9 +2562,7 @@ def produce_source_extension_set(
                 "backend": ninja_driver.manifest_payload(),
                 "build_root": "@build",
                 "setup_args": list(extension_set.meson_setup_args),
-                "intro_targets_sha256": _sha256_file(
-                    staged_metadata["intro_targets"]
-                ),
+                "intro_targets_sha256": _sha256_file(staged_metadata["intro_targets"]),
                 "compile_commands_sha256": _sha256_file(
                     staged_metadata["compile_commands"]
                 ),
@@ -2464,9 +2578,7 @@ def produce_source_extension_set(
                     tool.manifest_payload() for tool in build_config_tools
                 ],
                 "pkg_config_requirement": (
-                    MOLT_PKGCONF_REQUIREMENT
-                    if extension_set.use_pkg_config
-                    else None
+                    MOLT_PKGCONF_REQUIREMENT if extension_set.use_pkg_config else None
                 ),
                 "generated_inputs": [
                     path.relative_to(resolved_build_root).as_posix()

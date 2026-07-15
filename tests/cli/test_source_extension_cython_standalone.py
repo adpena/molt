@@ -450,12 +450,14 @@ def test_regeneration_replays_real_ninja_cython_directives(
         ]
     )
     generation_calls: list[list[str]] = []
+    query_calls: list[list[str]] = []
 
     def fake_run(
         argv: list[str],
         **_kwargs: object,
     ) -> subprocess.CompletedProcess[str]:
         if "commands" in argv:
+            query_calls.append(argv)
             return subprocess.CompletedProcess(argv, 0, ninja_command + "\n", "")
         generation_calls.append(argv)
         output = Path(argv[argv.index("-o") + 1])
@@ -466,7 +468,6 @@ def test_regeneration_replays_real_ninja_cython_directives(
         )
         return subprocess.CompletedProcess(argv, 0, "", "")
 
-    monkeypatch.setattr(cython_authority.shutil, "which", lambda _name: "/tools/ninja")
     monkeypatch.setattr(cython_authority.subprocess, "run", fake_run)
     regeneration, error = cython_authority.regenerate_cython_c_standalone(
         pyx_path=pyx,
@@ -476,11 +477,13 @@ def test_regeneration_replays_real_ninja_cython_directives(
         cython_version="test",
         python_exe=sys.executable,
         package_roots=(source_root, build_root),
+        ninja_command=(sys.executable, "-m", "ninja"),
     )
 
     assert error is None, error
     assert regeneration is not None
     assert generation_calls == [list(regeneration.cython_argv)]
+    assert query_calls[0][:3] == [sys.executable, "-m", "ninja"]
     argv = regeneration.cython_argv
     assert argv[:3] == (sys.executable, "-m", "cython")
     assert argv[3:7] == (
@@ -530,7 +533,6 @@ def test_ninja_command_strips_separate_shared_and_replaced_paths(
             "scipy._cyutility",
         ]
     )
-    monkeypatch.setattr(cython_authority.shutil, "which", lambda _name: "/tools/ninja")
     monkeypatch.setattr(
         cython_authority.subprocess,
         "run",
@@ -543,6 +545,7 @@ def test_ninja_command_strips_separate_shared_and_replaced_paths(
         pyx_path=pyx,
         original_c=original_c,
         package_roots=(source_root, build_root),
+        ninja_command=(sys.executable, "-m", "ninja"),
     )
 
     assert error is None, error
@@ -564,7 +567,6 @@ def test_ninja_generator_command_ambiguity_fails_closed(
     command = subprocess.list2cmdline(
         ["/tools/cython", "-3", str(pyx), "-o", str(original_c)]
     )
-    monkeypatch.setattr(cython_authority.shutil, "which", lambda _name: "/tools/ninja")
     monkeypatch.setattr(
         cython_authority.subprocess,
         "run",
@@ -577,6 +579,7 @@ def test_ninja_generator_command_ambiguity_fails_closed(
         pyx_path=pyx,
         original_c=original_c,
         package_roots=(source_root, build_root),
+        ninja_command=(sys.executable, "-m", "ninja"),
     )
 
     assert args is None

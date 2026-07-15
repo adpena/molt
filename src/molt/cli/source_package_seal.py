@@ -154,7 +154,7 @@ def _validate_sha256(value: object, *, field: str) -> str:
     return value
 
 
-def _validate_relative_path(value: object, *, field: str) -> str:
+def validate_source_package_relative_path(value: object, *, field: str) -> str:
     if not isinstance(value, str) or not value:
         raise SourcePackageSealVerificationError(
             f"{field} must be a non-empty root-relative POSIX path"
@@ -230,7 +230,7 @@ def _parse_inventory(payload: object) -> tuple[SealFileInventoryEntry, ...]:
                 f"seal manifest files[{index}] has an invalid shape"
             )
         raw_entry = cast(dict[str, object], raw)
-        relative_path = _validate_relative_path(
+        relative_path = validate_source_package_relative_path(
             raw_entry["path"], field=f"files[{index}].path"
         )
         portable_path = relative_path.casefold()
@@ -478,7 +478,7 @@ def stage_source_package_seal(
                 f"inputs[{index}] must be a SourcePackageInput"
             )
         try:
-            relative_path = _validate_relative_path(
+            relative_path = validate_source_package_relative_path(
                 item.relative_path, field=f"inputs[{index}].relative_path"
             )
             role = _validate_role(item.role)
@@ -621,7 +621,7 @@ def load_source_package_seal_commit(
     )
     if commit_id != expected_commit_id:
         raise SourcePackageSealVerificationError("commit identity mismatch")
-    candidate_relative = _validate_relative_path(
+    candidate_relative = validate_source_package_relative_path(
         document["candidate"], field="commit.candidate"
     )
     expected_candidate = f"commit-candidates/{commit_id}"
@@ -705,8 +705,7 @@ def prepare_source_package_seal_commit(
     destination.parent.mkdir(parents=True, exist_ok=True)
     different_windows_volume = (
         os.name == "nt"
-        and transaction_root.anchor.casefold()
-        != destination.parent.anchor.casefold()
+        and transaction_root.anchor.casefold() != destination.parent.anchor.casefold()
     )
     if (
         different_windows_volume
