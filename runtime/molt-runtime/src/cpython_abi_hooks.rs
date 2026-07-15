@@ -1347,12 +1347,7 @@ unsafe extern "C" fn hook_try_mark_abi_view(bits: u64, present: c_int) -> c_int 
         return 1;
     };
     let type_id = unsafe { object_type_id(ptr) };
-    if present != 0
-        && matches!(
-            type_id,
-            TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL
-        )
-    {
+    if present != 0 && matches!(type_id, TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL) {
         // A published PyListObject requires one stable generic storage
         // authority. Compact int/bool representations cannot retain an ABI
         // view because later promotion would otherwise replace their backing
@@ -5691,12 +5686,7 @@ mod tests {
                 Some(false)
             );
 
-            hook_tuple_set(
-                int_bits,
-                0,
-                MoltObject::from_int(7).bits(),
-                ptr::null_mut(),
-            );
+            hook_tuple_set(int_bits, 0, MoltObject::from_int(7).bits(), ptr::null_mut());
             assert_eq!(borrowed_bits(hook_tuple_item(int_bits, 0)), None);
             dec_ref_bits(&_py, bool_bits);
             dec_ref_bits(&_py, int_bits);
@@ -6052,6 +6042,144 @@ mod tests {
             ] {
                 molt_cpython_abi::api::refcount::Py_DECREF(pointer);
             }
+        }
+        let _ = crate::molt_exception_clear();
+    }
+
+    #[test]
+    fn list_read_and_exact_publication_share_one_cpython_authority() {
+        let _guard = cpython_abi_test_guard();
+        register_cpython_hooks();
+        let _ = crate::molt_exception_clear();
+
+        use molt_cpython_abi::abi_types::{
+            PyList_Type, PyListObject, PyObject, PyTypeObject, PyVarObject,
+        };
+        use molt_cpython_abi::api::abstract_sequence::{
+            PySequence_Concat, PySequence_List, PySequence_Repeat,
+        };
+        use molt_cpython_abi::api::sequences::{
+            PyList_Append, PyList_Check, PyList_CheckExact, PyList_GET_ITEM, PyList_GET_SIZE,
+            PyList_GetItem, PyList_GetSlice, PyList_New, PyList_Size,
+        };
+
+        let first = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1000) };
+        let second = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(2000) };
+        let list = unsafe { PyList_New(0) };
+        assert!(!first.is_null() && !second.is_null() && !list.is_null());
+        assert_eq!(unsafe { PyList_Append(list, first) }, 0);
+        assert_eq!(unsafe { PyList_Append(list, second) }, 0);
+
+        let assert_exact_list = |value: *mut PyObject, expected: &[*mut PyObject]| {
+            assert!(!value.is_null());
+            assert_ne!(unsafe { PyList_CheckExact(value) }, 0);
+            assert_eq!(unsafe { PyList_Size(value) }, expected.len() as isize);
+            assert_eq!(unsafe { PyList_GET_SIZE(value) }, expected.len() as isize);
+            for (index, &item) in expected.iter().enumerate() {
+                assert_eq!(unsafe { PyList_GetItem(value, index as isize) }, item);
+                assert_eq!(unsafe { PyList_GET_ITEM(value, index as isize) }, item);
+            }
+        };
+
+        let baseline_first = unsafe { (*first).ob_refcnt };
+        let baseline_second = unsafe { (*second).ob_refcnt };
+        let full = unsafe { PyList_GetSlice(list, 0, isize::MAX) };
+        let tail = unsafe { PyList_GetSlice(list, 1, isize::MAX) };
+        let negative = unsafe { PyList_GetSlice(list, -5, -1) };
+        let reversed_bounds = unsafe { PyList_GetSlice(list, 1, 0) };
+        assert_exact_list(full, &[first, second]);
+        assert_exact_list(tail, &[second]);
+        assert_exact_list(negative, &[]);
+        assert_exact_list(reversed_bounds, &[]);
+        assert_ne!(full, list, "a full list C slice must be a fresh base list");
+
+        let repeated_once = unsafe { PySequence_Repeat(list, 1) };
+        let repeated_zero = unsafe { PySequence_Repeat(list, 0) };
+        let repeated_negative = unsafe { PySequence_Repeat(list, -7) };
+        assert_exact_list(repeated_once, &[first, second]);
+        assert_exact_list(repeated_zero, &[]);
+        assert_exact_list(repeated_negative, &[]);
+        assert_ne!(
+            repeated_once, list,
+            "list repetition by one must not reuse the source"
+        );
+
+        let copied = unsafe { PySequence_List(list) };
+        assert_exact_list(copied, &[first, second]);
+        assert_ne!(copied, list, "PySequence_List always returns a fresh list");
+
+        let mut subtype: PyTypeObject = unsafe { std::mem::zeroed() };
+        subtype.tp_base = &raw mut PyList_Type;
+        let mut subclass_items = [first, second];
+        let mut subclass = PyListObject {
+            ob_base: PyVarObject {
+                ob_base: PyObject {
+                    ob_refcnt: 1,
+                    ob_type: &raw mut subtype,
+                },
+                ob_size: 2,
+            },
+            ob_item: subclass_items.as_mut_ptr(),
+            allocated: 2,
+        };
+        let subclass = (&raw mut subclass).cast::<PyObject>();
+        assert_ne!(unsafe { PyList_Check(subclass) }, 0);
+        assert_eq!(unsafe { PyList_Size(subclass) }, 2);
+        assert_eq!(unsafe { PyList_GET_SIZE(subclass) }, 2);
+        assert_eq!(unsafe { PyList_GetItem(subclass, 0) }, first);
+        assert_eq!(unsafe { PyList_GET_ITEM(subclass, 1) }, second);
+
+        let subclass_slice = unsafe { PyList_GetSlice(subclass, 0, 2) };
+        let subclass_concat = unsafe { PySequence_Concat(list, subclass) };
+        assert_exact_list(subclass_slice, &[first, second]);
+        assert_exact_list(subclass_concat, &[first, second, first, second]);
+
+        let mut overflow_subclass = PyListObject {
+            ob_base: PyVarObject {
+                ob_base: PyObject {
+                    ob_refcnt: 1,
+                    ob_type: &raw mut subtype,
+                },
+                ob_size: isize::MAX,
+            },
+            ob_item: subclass_items.as_mut_ptr(),
+            allocated: isize::MAX,
+        };
+        let overflow_subclass = (&raw mut overflow_subclass).cast::<PyObject>();
+        assert!(unsafe { PySequence_Concat(list, overflow_subclass) }.is_null());
+        assert_eq!(
+            unsafe {
+                molt_cpython_abi::api::errors::PyErr_ExceptionMatches(
+                    (&raw mut molt_cpython_abi::abi_types::PyExc_MemoryError).cast::<PyObject>(),
+                )
+            },
+            1
+        );
+        unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+        let _ = crate::molt_exception_clear();
+
+        unsafe {
+            for value in [
+                subclass_concat,
+                subclass_slice,
+                copied,
+                repeated_negative,
+                repeated_zero,
+                repeated_once,
+                reversed_bounds,
+                negative,
+                tail,
+                full,
+            ] {
+                molt_cpython_abi::api::refcount::Py_DECREF(value);
+            }
+        }
+        assert_eq!(unsafe { (*first).ob_refcnt }, baseline_first);
+        assert_eq!(unsafe { (*second).ob_refcnt }, baseline_second);
+        unsafe {
+            molt_cpython_abi::api::refcount::Py_DECREF(list);
+            molt_cpython_abi::api::refcount::Py_DECREF(first);
+            molt_cpython_abi::api::refcount::Py_DECREF(second);
         }
         let _ = crate::molt_exception_clear();
     }

@@ -26,6 +26,81 @@ type BinaryFunc = unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> *mut PyO
 type SsizeObjArgProc = unsafe extern "C" fn(*mut PyObject, Py_ssize_t, *mut PyObject) -> c_int;
 type ObjObjProc = unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> c_int;
 
+#[derive(Clone, Copy)]
+enum SequenceNumericMode {
+    Regular,
+    InPlace,
+}
+
+/// CPython's numeric-slot fallback for sequence concatenation. The numeric
+/// dispatcher is shared with `PyNumber_*`, including reflected-subtype priority
+/// and exact `NotImplemented` ownership. `None` means every slot declined.
+unsafe fn sequence_add_numeric_fallback(
+    mode: SequenceNumericMode,
+    left: *mut PyObject,
+    right: *mut PyObject,
+) -> Option<*mut PyObject> {
+    use crate::api::abstract_number::{BinarySlot, InPlaceSlot};
+    let result = match mode {
+        SequenceNumericMode::Regular => unsafe {
+            crate::api::abstract_number::foreign_binary_op1(BinarySlot::Add, left, right)
+        },
+        SequenceNumericMode::InPlace => unsafe {
+            crate::api::abstract_number::foreign_binary_iop1(
+                InPlaceSlot::Add,
+                BinarySlot::Add,
+                left,
+                right,
+            )
+        },
+    };
+    if crate::api::abstract_number::is_not_implemented(result) {
+        unsafe { crate::api::abstract_number::discard_not_implemented(result) };
+        None
+    } else {
+        Some(result)
+    }
+}
+
+/// CPython's numeric-slot fallback for sequence repetition. The temporary
+/// count carrier owns exactly one reference, and the returned result follows
+/// the same `Some(NULL-with-error)` / `None-all-declined` contract as concat.
+unsafe fn sequence_multiply_numeric_fallback(
+    mode: SequenceNumericMode,
+    object: *mut PyObject,
+    count: Py_ssize_t,
+) -> Option<*mut PyObject> {
+    use crate::api::abstract_number::{BinarySlot, InPlaceSlot};
+    let count_object = unsafe { crate::api::numbers::PyLong_FromSsize_t(count) };
+    if count_object.is_null() {
+        return Some(ptr::null_mut());
+    }
+    let result = match mode {
+        SequenceNumericMode::Regular => unsafe {
+            crate::api::abstract_number::foreign_binary_op1(
+                BinarySlot::Multiply,
+                object,
+                count_object,
+            )
+        },
+        SequenceNumericMode::InPlace => unsafe {
+            crate::api::abstract_number::foreign_binary_iop1(
+                InPlaceSlot::Multiply,
+                BinarySlot::Multiply,
+                object,
+                count_object,
+            )
+        },
+    };
+    unsafe { crate::api::refcount::Py_DECREF(count_object) };
+    if crate::api::abstract_number::is_not_implemented(result) {
+        unsafe { crate::api::abstract_number::discard_not_implemented(result) };
+        None
+    } else {
+        Some(result)
+    }
+}
+
 /// Helper: resolve a PyObject to its Molt bits.
 fn resolve_bits(op: *mut PyObject) -> Option<u64> {
     if op.is_null() {
@@ -215,6 +290,18 @@ fn checked_py_ssize(length: usize) -> Option<Py_ssize_t> {
         None
     } else {
         Some(length as Py_ssize_t)
+    }
+}
+
+/// Consume a materialized pointer snapshot into the canonical exact-size list
+/// publisher. Every snapshot pointer is already an owned reference, so this
+/// path transfers it directly without redundant reference-count traffic.
+unsafe fn list_from_materialized_pointers(mut items: MaterializedPointers) -> *mut PyObject {
+    let Some(size) = checked_py_ssize(items.len()) else {
+        return ptr::null_mut();
+    };
+    unsafe {
+        crate::api::sequences::list_from_owned_indexed(size, |index| items.take(index as usize))
     }
 }
 
@@ -425,9 +512,8 @@ pub unsafe extern "C" fn PySequence_GetItem(o: *mut PyObject, i: Py_ssize_t) -> 
             // traffic, and gives the iterator path a second ownership model.
             // PyTuple_GetItem reads the physical slot; PySequence_GetItem owns
             // the one required new reference.
-            let pointer = unsafe {
-                crate::api::sequences::PyTuple_GetItem(o, actual_i as Py_ssize_t)
-            };
+            let pointer =
+                unsafe { crate::api::sequences::PyTuple_GetItem(o, actual_i as Py_ssize_t) };
             if pointer.is_null() {
                 return ptr::null_mut();
             }
@@ -795,9 +881,7 @@ unsafe fn exact_sequence_search(
         if item.is_null() {
             return Some(-1);
         }
-        let equal = unsafe {
-            crate::api::typeobj::PyObject_RichCompareBool(item, value, PY_EQ)
-        };
+        let equal = unsafe { crate::api::typeobj::PyObject_RichCompareBool(item, value, PY_EQ) };
         if equal < 0 {
             return Some(-1);
         }
@@ -906,7 +990,7 @@ pub unsafe extern "C" fn PySequence_Concat(s1: *mut PyObject, s2: *mut PyObject)
 
         if tag1 == tag_list() {
             // CPython list_concat: the right operand must be a list.
-            if tag2 != Some(tag_list()) {
+            if unsafe { crate::api::sequences::PyList_Check(s2) } == 0 {
                 unsafe {
                     set_type_error(format!(
                         "can only concatenate list (not \"{}\") to list",
@@ -915,32 +999,31 @@ pub unsafe extern "C" fn PySequence_Concat(s1: *mut PyObject, s2: *mut PyObject)
                 }
                 return ptr::null_mut();
             }
-            let bits2 = bits2.unwrap();
-            let new_list = unsafe { crate::api::sequences::PyList_New(0) };
-            if new_list.is_null() {
+            let Some(left) = (unsafe { crate::api::sequences::ListRead::acquire(s1) }) else {
                 return ptr::null_mut();
-            }
-            let len1 = unsafe { (h.list_len)(bits1) };
-            for i in 0..len1 {
-                let item = unsafe { crate::api::sequences::PyList_GetItem(s1, i as Py_ssize_t) };
-                if item.is_null()
-                    || unsafe { crate::api::sequences::PyList_Append(new_list, item) } != 0
-                {
-                    unsafe { crate::api::refcount::Py_DECREF(new_list) };
-                    return ptr::null_mut();
-                }
-            }
-            let len2 = unsafe { (h.list_len)(bits2) };
-            for i in 0..len2 {
-                let item = unsafe { crate::api::sequences::PyList_GetItem(s2, i as Py_ssize_t) };
-                if item.is_null()
-                    || unsafe { crate::api::sequences::PyList_Append(new_list, item) } != 0
-                {
-                    unsafe { crate::api::refcount::Py_DECREF(new_list) };
-                    return ptr::null_mut();
-                }
-            }
-            return new_list;
+            };
+            let Some(right) = (unsafe { crate::api::sequences::ListRead::acquire(s2) }) else {
+                return ptr::null_mut();
+            };
+            let len1 = unsafe { left.len() };
+            let len2 = unsafe { right.len() };
+            let Some(total) = len1.checked_add(len2) else {
+                unsafe { crate::api::errors::PyErr_NoMemory() };
+                return ptr::null_mut();
+            };
+            let Some(total) = checked_py_ssize(total) else {
+                return ptr::null_mut();
+            };
+            return unsafe {
+                crate::api::sequences::list_from_borrowed_indexed(total, |index| {
+                    let index = index as usize;
+                    if index < len1 {
+                        left.item(index)
+                    } else {
+                        right.item(index - len1)
+                    }
+                })
+            };
         }
         if tag1 == tag_tuple() {
             // CPython tuple_concat: the right operand must be a tuple.
@@ -956,15 +1039,11 @@ pub unsafe extern "C" fn PySequence_Concat(s1: *mut PyObject, s2: *mut PyObject)
             let bits2 = bits2.unwrap();
             let len1 = unsafe { (h.tuple_len)(bits1) };
             let len2 = unsafe { (h.tuple_len)(bits2) };
-            if len1 == 0
-                && unsafe { crate::api::sequences::PyTuple_CheckExact(s2) } != 0
-            {
+            if len1 == 0 && unsafe { crate::api::sequences::PyTuple_CheckExact(s2) } != 0 {
                 unsafe { crate::api::refcount::Py_INCREF(s2) };
                 return s2;
             }
-            if len2 == 0
-                && unsafe { crate::api::sequences::PyTuple_CheckExact(s1) } != 0
-            {
+            if len2 == 0 && unsafe { crate::api::sequences::PyTuple_CheckExact(s1) } != 0 {
                 unsafe { crate::api::refcount::Py_INCREF(s1) };
                 return s1;
             }
@@ -1059,7 +1138,9 @@ pub unsafe extern "C" fn PySequence_Concat(s1: *mut PyObject, s2: *mut PyObject)
             return ptr::null_mut();
         }
     }
-    // Foreign tier: sq_concat.
+    // Foreign tier: sq_concat, then the shared reflected-aware nb_add
+    // authority for user classes that expose sequence identity via sq_item but
+    // implement concatenation only through __add__.
     if let Some(m) = unsafe { seq_methods(s1) } {
         let sq_concat = unsafe { (*m).sq_concat };
         if !sq_concat.is_null() {
@@ -1067,6 +1148,13 @@ pub unsafe extern "C" fn PySequence_Concat(s1: *mut PyObject, s2: *mut PyObject)
                 unsafe { std::mem::transmute::<*mut c_void, BinaryFunc>(sq_concat) };
             return unsafe { f(s1, s2) };
         }
+    }
+    if unsafe { PySequence_Check(s1) } != 0
+        && unsafe { PySequence_Check(s2) } != 0
+        && let Some(result) =
+            unsafe { sequence_add_numeric_fallback(SequenceNumericMode::Regular, s1, s2) }
+    {
+        return result;
     }
     unsafe {
         set_type_error(format!("'{}' object can't be concatenated", type_name(s1)));
@@ -1086,23 +1174,28 @@ pub unsafe extern "C" fn PySequence_Repeat(o: *mut PyObject, count: Py_ssize_t) 
         let tag = classify(bits);
 
         if tag == tag_list() {
-            let len = unsafe { (h.list_len)(bits) };
-            let new_list = unsafe { crate::api::sequences::PyList_New(0) };
-            if new_list.is_null() {
+            let Some(read) = (unsafe { crate::api::sequences::ListRead::acquire(o) }) else {
                 return ptr::null_mut();
-            }
-            for _ in 0..reps {
-                for i in 0..len {
-                    let item = unsafe { crate::api::sequences::PyList_GetItem(o, i as Py_ssize_t) };
-                    if item.is_null()
-                        || unsafe { crate::api::sequences::PyList_Append(new_list, item) } != 0
-                    {
-                        unsafe { crate::api::refcount::Py_DECREF(new_list) };
-                        return ptr::null_mut();
+            };
+            let len = unsafe { read.len() };
+            let Some(total) = len.checked_mul(reps) else {
+                unsafe { crate::api::errors::PyErr_NoMemory() };
+                return ptr::null_mut();
+            };
+            let Some(total) = checked_py_ssize(total) else {
+                return ptr::null_mut();
+            };
+            let mut source_index = 0;
+            return unsafe {
+                crate::api::sequences::list_from_borrowed_indexed(total, |_index| {
+                    let item = read.item(source_index);
+                    source_index += 1;
+                    if source_index == len {
+                        source_index = 0;
                     }
-                }
-            }
-            return new_list;
+                    item
+                })
+            };
         }
         if tag == tag_tuple() {
             let len = unsafe { (h.tuple_len)(bits) };
@@ -1167,7 +1260,8 @@ pub unsafe extern "C" fn PySequence_Repeat(o: *mut PyObject, count: Py_ssize_t) 
             return ptr::null_mut();
         }
     }
-    // Foreign tier: sq_repeat.
+    // Foreign tier: sq_repeat, then the shared nb_multiply authority for user
+    // sequence classes that implement only __mul__.
     if let Some(m) = unsafe { seq_methods(o) } {
         let sq_repeat = unsafe { (*m).sq_repeat };
         if !sq_repeat.is_null() {
@@ -1175,6 +1269,12 @@ pub unsafe extern "C" fn PySequence_Repeat(o: *mut PyObject, count: Py_ssize_t) 
                 unsafe { std::mem::transmute::<*mut c_void, SsizeArgFunc>(sq_repeat) };
             return unsafe { f(o, count) };
         }
+    }
+    if unsafe { PySequence_Check(o) } != 0
+        && let Some(result) =
+            unsafe { sequence_multiply_numeric_fallback(SequenceNumericMode::Regular, o, count) }
+    {
+        return result;
     }
     unsafe { set_type_error(format!("'{}' object can't be repeated", type_name(o))) };
     ptr::null_mut()
@@ -1190,24 +1290,10 @@ pub unsafe extern "C" fn PySequence_List(o: *mut PyObject) -> *mut PyObject {
         unsafe { set_null_error() };
         return ptr::null_mut();
     }
-    let Some(mut items) = (unsafe { materialize_iterable_pointers(o, None) }) else {
+    let Some(items) = (unsafe { materialize_iterable_pointers(o, None) }) else {
         return ptr::null_mut();
     };
-    let Some(list_len) = checked_py_ssize(items.len()) else {
-        return ptr::null_mut();
-    };
-    let list = unsafe { crate::api::sequences::PyList_New(list_len) };
-    if list.is_null() {
-        return ptr::null_mut();
-    }
-    for index in 0..items.len() {
-        let item = items.take(index);
-        if unsafe { crate::api::sequences::PyList_SetItem(list, index as Py_ssize_t, item) } != 0 {
-            unsafe { crate::api::refcount::Py_DECREF(list) };
-            return ptr::null_mut();
-        }
-    }
-    list
+    unsafe { list_from_materialized_pointers(items) }
 }
 
 #[unsafe(no_mangle)]
@@ -1383,25 +1469,10 @@ pub unsafe extern "C" fn PySequence_Fast(
         unsafe { crate::api::refcount::Py_INCREF(o) };
         return o;
     }
-    let Some(mut items) = (unsafe { materialize_iterable_pointers(o, Some(msg)) }) else {
+    let Some(items) = (unsafe { materialize_iterable_pointers(o, Some(msg)) }) else {
         return ptr::null_mut();
     };
-    let Some(list_len) = checked_py_ssize(items.len()) else {
-        return ptr::null_mut();
-    };
-    let list = unsafe { crate::api::sequences::PyList_New(list_len) };
-    if list.is_null() {
-        return ptr::null_mut();
-    }
-    for index in 0..items.len() {
-        let item = items.take(index);
-        if unsafe { crate::api::sequences::PyList_SetItem(list, index as Py_ssize_t, item) } != 0
-        {
-            unsafe { crate::api::refcount::Py_DECREF(list) };
-            return ptr::null_mut();
-        }
-    }
-    list
+    unsafe { list_from_materialized_pointers(items) }
 }
 
 #[unsafe(no_mangle)]
@@ -1467,15 +1538,29 @@ pub unsafe extern "C" fn PySequence_InPlaceConcat(
         }
         return o1;
     }
-    // Foreign tier: sq_inplace_concat, then sq_concat.
+    // Foreign tier: sq_inplace_concat, then sq_concat, then the shared
+    // nb_inplace_add -> reflected-aware nb_add authority.
     if let Some(m) = unsafe { seq_methods(o1) } {
         let slot = unsafe { (*m).sq_inplace_concat };
         if !slot.is_null() {
             let f: BinaryFunc = unsafe { std::mem::transmute::<*mut c_void, BinaryFunc>(slot) };
             return unsafe { f(o1, o2) };
         }
+        let slot = unsafe { (*m).sq_concat };
+        if !slot.is_null() {
+            let f: BinaryFunc = unsafe { std::mem::transmute::<*mut c_void, BinaryFunc>(slot) };
+            return unsafe { f(o1, o2) };
+        }
     }
-    unsafe { PySequence_Concat(o1, o2) }
+    if unsafe { PySequence_Check(o1) } != 0
+        && unsafe { PySequence_Check(o2) } != 0
+        && let Some(result) =
+            unsafe { sequence_add_numeric_fallback(SequenceNumericMode::InPlace, o1, o2) }
+    {
+        return result;
+    }
+    unsafe { set_type_error(format!("'{}' object can't be concatenated", type_name(o1))) };
+    ptr::null_mut()
 }
 
 #[unsafe(no_mangle)]
@@ -1524,6 +1609,18 @@ pub unsafe extern "C" fn PySequence_InPlaceRepeat(
             let f: SsizeArgFunc = unsafe { std::mem::transmute::<*mut c_void, SsizeArgFunc>(slot) };
             return unsafe { f(o, count) };
         }
+        let slot = unsafe { (*m).sq_repeat };
+        if !slot.is_null() {
+            let f: SsizeArgFunc = unsafe { std::mem::transmute::<*mut c_void, SsizeArgFunc>(slot) };
+            return unsafe { f(o, count) };
+        }
     }
-    unsafe { PySequence_Repeat(o, count) }
+    if unsafe { PySequence_Check(o) } != 0
+        && let Some(result) =
+            unsafe { sequence_multiply_numeric_fallback(SequenceNumericMode::InPlace, o, count) }
+    {
+        return result;
+    }
+    unsafe { set_type_error(format!("'{}' object can't be repeated", type_name(o))) };
+    ptr::null_mut()
 }

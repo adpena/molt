@@ -743,6 +743,40 @@ pub fn hooks() -> Option<&'static RuntimeHooks> {
     RUNTIME_HOOKS.get()
 }
 
+/// Whether the registered runtime owns managed tuple construction. Before
+/// runtime initialization (and in intentionally partial ABI fixtures), exact
+/// C tuples use their native `PyTupleObject` allocation authority instead.
+#[inline]
+pub(crate) fn managed_tuple_construction_available() -> bool {
+    hooks().is_some_and(|runtime| {
+        !std::ptr::fn_addr_eq(
+            runtime.alloc_tuple,
+            stub_alloc_tuple as unsafe extern "C" fn(usize) -> u64,
+        ) && !std::ptr::fn_addr_eq(
+            runtime.tuple_set,
+            stub_tuple_set
+                as unsafe extern "C" fn(
+                    u64,
+                    usize,
+                    u64,
+                    *mut crate::abi_types::PyObject,
+                ) -> OwnedHandleResult,
+        ) && !std::ptr::fn_addr_eq(
+            runtime.tuple_len,
+            stub_tuple_len as unsafe extern "C" fn(u64) -> usize,
+        ) && !std::ptr::fn_addr_eq(
+            runtime.tuple_item,
+            stub_tuple_item as unsafe extern "C" fn(u64, usize) -> BorrowedHandleResult,
+        ) && !std::ptr::fn_addr_eq(
+            runtime.ref_count,
+            stub_ref_count as unsafe extern "C" fn(u64) -> usize,
+        ) && !std::ptr::fn_addr_eq(
+            runtime.classify_heap,
+            stub_classify_heap as unsafe extern "C" fn(u64) -> u8,
+        )
+    })
+}
+
 // ─── No-op stubs for pre-init or test use ────────────────────────────────────
 
 unsafe extern "C" fn stub_alloc_str(_data: *const u8, _len: usize) -> u64 {

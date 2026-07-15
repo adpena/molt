@@ -22,6 +22,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 // mutated inside the one sequential `#[test]`, so no cross-test race.
 static LIST_LEN: AtomicUsize = AtomicUsize::new(0);
 
+#[repr(align(16))]
+struct ListBacking(u8);
+
+static mut EMPTY_LIST_BACKING: ListBacking = ListBacking(0);
+static mut NONEMPTY_LIST_BACKING: ListBacking = ListBacking(0);
+
 unsafe extern "C" fn list_classify(_bits: u64) -> u8 {
     MoltTypeTag::List as u8
 }
@@ -46,10 +52,18 @@ fn init_hooks() {
     }
 }
 
-fn native_list() -> *mut PyObject {
-    // A genuine is_ptr handle -> classify_heap reports List for it.
-    let backing: Box<u8> = Box::new(0);
-    let bits = MoltObject::from_ptr(Box::into_raw(backing)).bits();
+fn native_list(nonempty: bool) -> *mut PyObject {
+    // Genuine, stable, aligned pointer handles whose storage outlives the
+    // process-global bridge. Each projected list is an immutable runtime
+    // snapshot; runtime mutations use the bridge publication authority.
+    let backing = unsafe {
+        if nonempty {
+            &raw mut NONEMPTY_LIST_BACKING.0
+        } else {
+            &raw mut EMPTY_LIST_BACKING.0
+        }
+    };
+    let bits = MoltObject::from_ptr(backing).bits();
     unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) }
 }
 
@@ -57,23 +71,25 @@ fn native_list() -> *mut PyObject {
 fn native_container_truthiness_size_and_seqiter() {
     init_hooks();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
-    let list = native_list();
 
     // ── Empty native list is FALSY (the headline `bool([]) == 1` divergence) ──
     LIST_LEN.store(0, Ordering::SeqCst);
+    let empty = native_list(false);
     assert_eq!(
-        unsafe { PyObject_IsTrue(list) },
+        unsafe { PyObject_IsTrue(empty) },
         0,
         "bool([]) must be 0 — an empty native list is falsy"
     );
     assert_eq!(
-        unsafe { PyObject_Size(list) },
+        unsafe { PyObject_Size(empty) },
         0,
         "len([]) must be 0 via the native length authority"
     );
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(empty) };
 
     // ── Non-empty native list is truthy, and Size reports its length ──
     LIST_LEN.store(3, Ordering::SeqCst);
+    let list = native_list(true);
     assert_eq!(
         unsafe { PyObject_IsTrue(list) },
         1,
@@ -101,4 +117,5 @@ fn native_container_truthiness_size_and_seqiter() {
         "end-of-iteration must leave NO pending exception (IndexError cleared)"
     );
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(it) };
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(list) };
 }
