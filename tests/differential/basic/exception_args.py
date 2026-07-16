@@ -47,12 +47,35 @@ def _raise_non_exception():
         print("non-exc", type(exc).__name__, str(exc))
 
 
+def _constructor_calling_convention():
+    for cls in (Exception, OSError, ValueError):
+        try:
+            cls(unexpected=1)
+        except TypeError as exc:
+            print("keyword-rejected", cls.__name__, str(exc))
+
+    class CustomNew(Exception):
+        def __new__(cls, *args, **kwargs):
+            return super().__new__(cls)
+
+    value = CustomNew(1, 2)
+    print("custom-new-inherited-init", value.args)
+
+    class KeywordInit(Exception):
+        def __init__(self, *, value):
+            self.value = value
+
+    value = KeywordInit(value=7)
+    print("inherited-new-custom-init", value.value, value.args)
+
+
 def main():
     _report("instance", _raise_instance)
     _report("class", _raise_class)
     _report("call", _raise_call)
     _report_direct_instance()
     _raise_non_exception()
+    _constructor_calling_convention()
 
 
 if __name__ == "__main__":

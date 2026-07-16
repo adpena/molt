@@ -807,7 +807,7 @@ pub unsafe extern "C" fn molt_lock_acquire(
         } else if lock.try_acquire() {
             true
         } else {
-            let _release = GilReleaseGuard::new();
+            let _release = GilReleaseGuard::suspend();
             lock.acquire(timeout)
         };
         MoltObject::from_bool(acquired).bits()
@@ -886,7 +886,7 @@ pub unsafe extern "C" fn molt_rlock_acquire(
         } else if lock.try_acquire() {
             true
         } else {
-            let _release = GilReleaseGuard::new();
+            let _release = GilReleaseGuard::suspend();
             lock.acquire(timeout)
         };
         MoltObject::from_bool(acquired).bits()
@@ -999,7 +999,7 @@ pub unsafe extern "C" fn molt_condition_wait(handle_bits: u64, timeout_bits: u64
             Err(bits) => return bits,
         };
         let ok = {
-            let _release = GilReleaseGuard::new();
+            let _release = GilReleaseGuard::suspend();
             condition.wait(timeout)
         };
         MoltObject::from_bool(ok).bits()
@@ -1193,7 +1193,7 @@ pub unsafe extern "C" fn molt_event_wait(handle_bits: u64, timeout_bits: u64) ->
             Err(bits) => return bits,
         };
         let ok = {
-            let _release = GilReleaseGuard::new();
+            let _release = GilReleaseGuard::suspend();
             event.wait(timeout)
         };
         MoltObject::from_bool(ok).bits()
@@ -1254,7 +1254,7 @@ pub unsafe extern "C" fn molt_semaphore_acquire(
             Err(bits) => return bits,
         };
         let ok = {
-            let _release = GilReleaseGuard::new();
+            let _release = GilReleaseGuard::suspend();
             sem.acquire(blocking, timeout)
         };
         MoltObject::from_bool(ok).bits()
@@ -1333,7 +1333,7 @@ pub unsafe extern "C" fn molt_barrier_wait(handle_bits: u64, timeout_bits: u64) 
             Err(bits) => return bits,
         };
         let out = {
-            let _release = GilReleaseGuard::new();
+            let _release = GilReleaseGuard::suspend();
             barrier.wait(timeout)
         };
         match out {

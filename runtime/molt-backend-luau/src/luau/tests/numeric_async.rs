@@ -27,9 +27,7 @@ fn test_compile_checked_lowers_checked_add_helper() {
         profile: None,
     };
     let mut backend = LuauBackend::new();
-    let source = backend
-        .compile_checked(&ir)
-        .expect("checked_add should lower without stub markers");
+    let source = backend.compile(&ir);
 
     assert!(source.contains("local function molt_checked_i64_add"));
     assert!(source.contains("return a + b, false"));
@@ -64,9 +62,7 @@ fn test_compile_checked_lowers_checked_mul_helper() {
         profile: None,
     };
     let mut backend = LuauBackend::new();
-    let source = backend
-        .compile_checked(&ir)
-        .expect("checked_mul should lower without stub markers");
+    let source = backend.compile(&ir);
 
     assert!(source.contains("local function molt_checked_i64_mul"));
     assert!(source.contains("if p >= 9007199254740992 or p <= -9007199254740992"));
@@ -114,9 +110,7 @@ fn test_compile_checked_lowers_zero_division_guards() {
         profile: None,
     };
     let mut backend = LuauBackend::new();
-    let source = backend
-        .compile_checked(&ir)
-        .expect("division ops should lower with Python zero-division guards");
+    let source = backend.compile(&ir);
 
     assert!(source.contains("__msg=\"division by zero\""));
     assert!(source.contains("__msg=\"integer modulo by zero\""));
@@ -163,9 +157,7 @@ fn test_compile_checked_lowers_pow_mod_square_multiply_loop() {
         profile: None,
     };
     let mut backend = LuauBackend::new();
-    let source = backend
-        .compile_checked(&ir)
-        .expect("pow_mod should lower without stub markers");
+    let source = backend.compile(&ir);
 
     assert!(source.contains("local result; do local __b, __e, __m = base % modulus, exp, modulus"));
     assert!(source.contains("while __e > 0 do"));
@@ -222,9 +214,7 @@ fn test_compile_checked_lowers_vector_reduction_kernels() {
         profile: None,
     };
     let mut backend = LuauBackend::new();
-    let source = backend
-        .compile_checked(&ir)
-        .expect("vector reductions should lower without stub markers");
+    let source = backend.compile(&ir);
 
     assert!(source.contains("local sum_result\n\tdo"));
     assert!(source.contains("local acc = 0"));
@@ -277,9 +267,7 @@ fn test_compile_checked_lowers_intarray_from_seq_dense_integer_table() {
         profile: None,
     };
     let mut backend = LuauBackend::new();
-    let source = backend
-        .compile_checked(&ir)
-        .expect("intarray_from_seq should lower to a dense Luau integer table");
+    let source = backend.compile(&ir);
     assert!(
         source.contains("local arr\n")
             && source.contains("\tdo\n")
@@ -400,9 +388,7 @@ fn test_compile_checked_lowers_fused_dict_kernels() {
         profile: None,
     };
     let mut backend = LuauBackend::new();
-    let source = backend
-        .compile_checked(&ir)
-        .expect("fused dict kernels should lower without unsupported markers");
+    let source = backend.compile(&ir);
 
     assert!(source.contains("local function molt_string_split_ws_dict_inc"));
     assert!(source.contains("local function molt_string_split_sep_dict_inc"));
@@ -483,9 +469,7 @@ fn test_compile_checked_lowers_labeled_branch_ops() {
         profile: None,
     };
     let mut backend = LuauBackend::new();
-    let source = backend
-        .compile_checked(&ir)
-        .expect("labeled branch ops should lower without unsupported markers");
+    let source = backend.compile(&ir);
 
     assert!(source.contains("br_if_test = function()"));
     assert!(source.contains("branch_test = function()"));
@@ -507,7 +491,6 @@ fn test_compile_via_ir_rejects_unsupported_output() {
             ops: vec![OpIR {
                 kind: "unknown_luau_op".to_string(),
                 out: Some("v0".to_string()),
-                args: Some(vec!["v1".to_string(), "v2".to_string()]),
                 ..OpIR::default()
             }],
         }],
@@ -517,24 +500,16 @@ fn test_compile_via_ir_rejects_unsupported_output() {
     let err = backend
         .compile_via_ir(&ir)
         .expect_err("preview/IR path must reject unsupported output");
-    // Fail-closed authority is the emit-time `unsupported_ops` accumulator, not
-    // the downstream `-- [unsupported op:` text scan. The accumulator check
-    // fires first and names the op + backend.
     assert!(
-        err.contains("refuses to emit fail-open codegen"),
-        "error must come from the fail-closed accumulator, got: {err}"
-    );
-    assert!(
-        err.contains("`unknown_luau_op` (luau backend)"),
-        "diagnostic must name the unsupported op kind + backend, got: {err}"
+        err.contains("rejected before source generation")
+            && err.contains("`unknown_luau_op`")
+            && err.contains("unclassified"),
+        "diagnostic must name the unclassified op at pre-source admission, got: {err}"
     );
 }
 
-/// The fail-closed accumulator is the authority, independent of the emitted
-/// text. An unsupported op with NO output emits only a `-- [unsupported op:]`
-/// comment (never a `local x = nil` value line), yet is still recorded and the
-/// build fails closed. Proves the gate does not rely on the `local x = nil`
-/// text ever appearing.
+/// Unsupported sink operations fail at the same Result boundary as operations
+/// with outputs; neither path emits a substitute value.
 #[test]
 fn test_compile_via_ir_fails_closed_without_emitted_value_line() {
     let ir = SimpleIR {
@@ -545,7 +520,7 @@ fn test_compile_via_ir_fails_closed_without_emitted_value_line() {
             source_file: None,
             is_extern: false,
             ops: vec![OpIR {
-                // No `out` → catch-all emits only a comment, never `local x = nil`.
+                // No `out`: dispatch still records the unsupported operation.
                 kind: "molt_synthetic_unsupported_sink_probe".to_string(),
                 ..OpIR::default()
             }],
@@ -557,12 +532,60 @@ fn test_compile_via_ir_fails_closed_without_emitted_value_line() {
         .compile_via_ir(&ir)
         .expect_err("an unsupported op with no output must still fail closed");
     assert!(
-        err.contains("refuses to emit fail-open codegen"),
+        err.contains("rejected before source generation") && err.contains("unclassified"),
         "got: {err}"
     );
     assert!(
-        err.contains("`molt_synthetic_unsupported_sink_probe` (luau backend)"),
+        err.contains("`molt_synthetic_unsupported_sink_probe`"),
         "got: {err}"
+    );
+}
+
+#[test]
+fn test_compile_checked_rejects_malformed_callable_family_without_nil_values() {
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_main".to_string(),
+            params: vec![],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops: vec![
+                OpIR {
+                    kind: "call".to_string(),
+                    out: Some("call_result".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "func_new".to_string(),
+                    out: Some("function".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "builtin_func".to_string(),
+                    s_value: Some("molt_open_builtin".to_string()),
+                    out: Some("builtin".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "call_bind".to_string(),
+                    out: Some("bound_result".to_string()),
+                    ..OpIR::default()
+                },
+            ],
+        }],
+        profile: None,
+    };
+
+    let mut backend = LuauBackend::new();
+    let err = backend
+        .compile_checked(&ir)
+        .expect_err("malformed callable IR must fail before source publication");
+    assert!(
+        err.contains("rejected before source generation")
+            && err.contains("`call`")
+            && err.contains("structured catchable Python exceptions"),
+        "malformed callable family must fail at its first semantic violation: {err}"
     );
 }
 
@@ -585,9 +608,7 @@ fn test_compile_checked_lowers_matmul_dunder_dispatch() {
         profile: None,
     };
     let mut backend = LuauBackend::new();
-    let source = backend
-        .compile_checked(&ir)
-        .expect("matmul should lower through Luau dunder helper");
+    let source = backend.compile(&ir);
     assert!(
         source.contains("local function molt_matmul")
             && source.contains("local v0 = molt_matmul(v1, v2)")
@@ -627,9 +648,7 @@ fn test_compile_checked_lowers_matmul_not_implemented_reflection() {
         profile: None,
     };
     let mut backend = LuauBackend::new();
-    let source = backend
-        .compile_checked(&ir)
-        .expect("NotImplemented-aware matmul should lower without markers");
+    let source = backend.compile(&ir);
     assert!(
         source.contains("local molt_not_implemented = {__molt_not_implemented = true}")
             && source.contains("local not_impl = molt_not_implemented")
@@ -661,9 +680,7 @@ fn test_compile_checked_lowers_inplace_matmul_dunder_dispatch() {
         profile: None,
     };
     let mut backend = LuauBackend::new();
-    let source = backend
-        .compile_checked(&ir)
-        .expect("inplace matmul should lower through Luau dunder helper");
+    let source = backend.compile(&ir);
     assert!(
         source.contains("local function molt_inplace_matmul")
             && source.contains("local v0 = molt_inplace_matmul(lhs, rhs)")
@@ -697,10 +714,12 @@ fn test_compile_checked_rejects_async_marker() {
     let mut backend = LuauBackend::new();
     let err = backend
         .compile_checked(&ir)
-        .expect_err("compile_checked must reject async stub markers");
+        .expect_err("compile_checked must reject unsupported async operations");
     assert!(
-        err.contains("semantic stub marker"),
-        "error should mention semantic stub marker, got: {err}"
+        err.contains("rejected before source generation")
+            && err.contains("`spawn`")
+            && err.contains("unclassified"),
+        "error should come from generated pre-source admission, got: {err}"
     );
 }
 
@@ -737,9 +756,7 @@ fn test_compile_checked_lowers_call_async_poll_target_directly() {
         profile: None,
     };
     let mut backend = LuauBackend::new();
-    let source = backend
-        .compile_checked(&ir)
-        .expect("call_async with a known poll target should lower directly");
+    let source = backend.compile(&ir);
 
     assert!(
         source.contains("local awaited = poll_target(payload)"),
@@ -777,9 +794,7 @@ fn test_compile_checked_lowers_is_native_awaitable_target_fact() {
         profile: None,
     };
     let mut backend = LuauBackend::new();
-    let source = backend
-        .compile_checked(&ir)
-        .expect("is_native_awaitable should lower as a Luau target fact");
+    let source = backend.compile(&ir);
     assert!(
         source.contains("local is_native = false"),
         "Luau has no native Molt poll-function objects, got:\n{source}"
@@ -811,10 +826,12 @@ fn test_compile_checked_rejects_file_marker() {
     let mut backend = LuauBackend::new();
     let err = backend
         .compile_checked(&ir)
-        .expect_err("compile_checked must reject file stub markers");
+        .expect_err("compile_checked must reject unsupported file operations");
     assert!(
-        err.contains("semantic stub marker"),
-        "error should mention semantic stub marker, got: {err}"
+        err.contains("rejected before source generation")
+            && err.contains("`file_open`")
+            && err.contains("host filesystem"),
+        "error should come from generated pre-source admission, got: {err}"
     );
 }
 
@@ -838,9 +855,11 @@ fn test_compile_checked_rejects_context_marker() {
     let mut backend = LuauBackend::new();
     let err = backend
         .compile_checked(&ir)
-        .expect_err("compile_checked must reject context stub markers");
+        .expect_err("compile_checked must reject unsupported context operations");
     assert!(
-        err.contains("semantic stub marker"),
-        "error should mention semantic stub marker, got: {err}"
+        err.contains("rejected before source generation")
+            && err.contains("`context_enter`")
+            && err.contains("unclassified"),
+        "error should come from generated pre-source admission, got: {err}"
     );
 }

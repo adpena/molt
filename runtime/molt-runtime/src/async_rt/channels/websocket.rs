@@ -256,24 +256,6 @@ fn classify_host_send_result(rc: i32) -> HostSendOutcome {
     }
 }
 
-#[cfg(test)]
-mod host_send_result_tests {
-    use super::{HostSendOutcome, classify_host_send_result};
-
-    #[test]
-    fn websocket_host_send_errors_never_masquerade_as_closed() {
-        assert_eq!(classify_host_send_result(0), HostSendOutcome::Sent);
-        assert_eq!(
-            classify_host_send_result(-libc::EWOULDBLOCK),
-            HostSendOutcome::Pending
-        );
-        assert_eq!(
-            classify_host_send_result(-libc::ECONNRESET),
-            HostSendOutcome::Error(-libc::ECONNRESET)
-        );
-    }
-}
-
 #[cfg(target_arch = "wasm32")]
 extern "C" fn ws_send_host_hook(ctx: *mut u8, data_ptr: *const u8, len: usize) -> i64 {
     if ctx.is_null() {
@@ -583,7 +565,7 @@ fn ws_connect_native(url_ptr: *const u8, url_len: usize) -> *mut u8 {
         return std::ptr::null_mut();
     }
     let (mut socket, _) = {
-        let _release = GilReleaseGuard::new();
+        let _release = GilReleaseGuard::suspend();
         match connect(url_str) {
             Ok(val) => val,
             Err(_) => return std::ptr::null_mut(),
@@ -1568,4 +1550,22 @@ pub unsafe extern "C" fn molt_ws_drop(ws_bits: u64) {
         }
         ws_ref_dec(_py, ws_ptr as *mut MoltWebSocket);
     })
+}
+
+#[cfg(test)]
+mod host_send_result_tests {
+    use super::{HostSendOutcome, classify_host_send_result};
+
+    #[test]
+    fn websocket_host_send_errors_never_masquerade_as_closed() {
+        assert_eq!(classify_host_send_result(0), HostSendOutcome::Sent);
+        assert_eq!(
+            classify_host_send_result(-libc::EWOULDBLOCK),
+            HostSendOutcome::Pending
+        );
+        assert_eq!(
+            classify_host_send_result(-libc::ECONNRESET),
+            HostSendOutcome::Error(-libc::ECONNRESET)
+        );
+    }
 }

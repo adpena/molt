@@ -557,7 +557,7 @@ pub(super) fn eval_tcl_without_gil(
     }
 
     let rc = {
-        let _gil_release = GilReleaseGuard::new();
+        let _gil_release = GilReleaseGuard::suspend();
         unsafe { (api.eval_objv)(interp, objv.len() as c_int, objv.as_ptr(), 0) }
     };
 
@@ -649,7 +649,7 @@ pub(super) fn run_tcl_command_with_ctx(
 
     // Phase 3 (GIL released): evaluate. No molt runtime calls in this window.
     let rc = {
-        let _gil_release = GilReleaseGuard::new();
+        let _gil_release = GilReleaseGuard::suspend();
         unsafe { (api.eval_objv)(interp, objv.len() as c_int, objv.as_ptr(), 0) }
     };
 
@@ -722,7 +722,7 @@ pub(super) fn take_pending_tcl_callbacks(
         ];
 
         let interp = interp_addr as *mut c_void;
-        let _gil_release = GilReleaseGuard::new();
+        let _gil_release = GilReleaseGuard::suspend();
 
         // Read current value
         let mut get_objv = Vec::with_capacity(get_parts.len());
@@ -878,7 +878,7 @@ pub(super) fn pump_tcl_events(py: &PyToken, handle: i64, flags: i32) -> Result<b
     };
 
     let event_handled = {
-        let _gil_release = GilReleaseGuard::new();
+        let _gil_release = GilReleaseGuard::suspend();
         unsafe { do_one_event_fn(flags as c_int) != 0 }
     };
 

@@ -329,6 +329,31 @@ _CLASSIFIER_SETS = (
     "classifier_transparent_alias",
     "classifier_no_heap_move",
 )
+_SIMPLEIR_INTEGER_SEMANTIC_FACT_SETS = (
+    "simpleir_dynamic_add_semantics_kinds",
+    "simpleir_dynamic_numeric_semantics_kinds",
+    "simpleir_dynamic_true_div_semantics_kinds",
+    "simpleir_dynamic_divmod_semantics_kinds",
+    "simpleir_dynamic_power_semantics_kinds",
+    "simpleir_dynamic_unary_numeric_semantics_kinds",
+    "simpleir_integer_only_semantics_kinds",
+    "simpleir_integer_producer_semantics_kinds",
+)
+_SIMPLEIR_RUNTIME_SEMANTIC_FACT_SETS = (
+    "simpleir_identity_semantics_kinds",
+    "simpleir_tuple_semantics_kinds",
+    "simpleir_exception_semantics_kinds",
+    "simpleir_deterministic_lifetime_semantics_kinds",
+    "simpleir_format_protocol_semantics_kinds",
+    "simpleir_iterable_protocol_semantics_kinds",
+    "simpleir_object_model_semantics_kinds",
+    "simpleir_truthiness_semantics_kinds",
+    "simpleir_comparison_semantics_kinds",
+    "simpleir_fallible_protocol_semantics_kinds",
+    "simpleir_async_runtime_semantics_kinds",
+    "simpleir_unstructured_control_semantics_kinds",
+    "simpleir_host_capability_semantics_kinds",
+)
 _PASS_DELTA_FACT_FIELDS = (
     ("pass_delta_box_opcodes", "box_op"),
     ("pass_delta_unbox_opcodes", "unbox_op"),
@@ -466,6 +491,8 @@ __all__ = (
     "_SCCP_CONSTANT_SEED_RULES",
     "_SCEV_EXPR_RULES",
     "_SIMPLEIR_CONTROL_FACT_FIELDS",
+    "_SIMPLEIR_INTEGER_SEMANTIC_FACT_SETS",
+    "_SIMPLEIR_RUNTIME_SEMANTIC_FACT_SETS",
     "_SROA_CONST_IMMEDIATE_RULES",
     "_SSA_S_VALUE_ATTR_KEYS",
     "_STRENGTH_REDUCTION_RULES",

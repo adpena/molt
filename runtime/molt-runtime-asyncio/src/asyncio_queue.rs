@@ -248,10 +248,9 @@ unsafe extern "C" fn asyncio_queue_state_clear(ptr: *mut u8) {
     if ptr.is_null() {
         return;
     }
-    let py = PyToken::new();
-    unsafe {
-        (&*(ptr as *mut AsyncioQueueRuntimeState)).clear(&py);
-    }
+    molt_runtime_core::with_core_gil!(py, unsafe {
+        (&*(ptr as *mut AsyncioQueueRuntimeState)).clear(py);
+    });
 }
 
 unsafe extern "C" fn asyncio_queue_state_drop(ptr: *mut u8) {

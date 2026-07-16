@@ -37,6 +37,65 @@ pub fn bridge_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
     crate::molt_call_bind(call_bits, builder_bits)
 }
 
+/// Snapshot a live sequence through the runtime's single pinned-export
+/// authority. Every returned handle and the bridge buffer are owned by the
+/// guard, exactly matching the out-of-tree satellite contract.
+///
+/// # Safety
+///
+/// `ptr` must identify a live Molt list or tuple for this call.
+pub unsafe fn seq_snapshot(ptr: *mut u8) -> OwnedBridgeHandleSnapshot {
+    let mut out_ptr = std::ptr::null();
+    let mut out_len = 0usize;
+    let exported = crate::with_gil_entry_nopanic!(py, {
+        unsafe { crate::seq_snapshot_bridge::export(py, ptr, &mut out_ptr, &mut out_len) }
+    });
+    if exported == 0 {
+        out_ptr = std::ptr::null();
+        out_len = 0;
+    }
+    unsafe { bridge_owned_handle_snapshot(out_ptr, out_len) }
+}
+
+/// # Safety
+///
+/// `ptr` must identify a live sequence and the caller must hold GIL custody.
+pub unsafe fn seq_read_len(ptr: *mut u8) -> usize {
+    crate::gil_assert();
+    unsafe { crate::object::seq_access::len(ptr) }
+}
+
+/// Borrow one sequence item for immediate use under the caller's GIL custody.
+///
+/// # Safety
+///
+/// `ptr` must identify a live sequence for the duration of the borrow.
+pub unsafe fn seq_read_item_gil_borrowed(ptr: *mut u8, index: usize) -> Option<u64> {
+    crate::gil_assert();
+    let mut out = 0;
+    if unsafe { crate::object::seq_access::read_item_gil_borrowed(ptr, index, &mut out) } != 0 {
+        Some(out)
+    } else {
+        None
+    }
+}
+
+/// Return one owned sequence item.
+///
+/// # Safety
+///
+/// `ptr` must identify a live sequence. The caller assumes the returned
+/// reference and must publish or release it exactly once.
+pub unsafe fn seq_read_item_owned(ptr: *mut u8, index: usize) -> Option<u64> {
+    crate::gil_assert();
+    let mut out = 0;
+    if crate::object::seq_access::read_item_owned(ptr, index, &mut out) != 0 {
+        Some(out)
+    } else {
+        None
+    }
+}
+
 pub fn alloc_instance_for_class(_py: &CoreGilToken, class_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {

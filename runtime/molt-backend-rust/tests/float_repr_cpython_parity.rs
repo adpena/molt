@@ -60,7 +60,9 @@ fn emitted_format_float_block() -> String {
         }],
         profile: None,
     };
-    let src = backend.compile(&ir);
+    let src = backend
+        .compile_checked(&ir)
+        .expect("float repr corpus must be fully supported");
     let begin = src
         .find("// --- BEGIN CPython-exact repr(float)")
         .expect("emitted prelude must contain the ported float formatter");

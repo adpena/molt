@@ -143,16 +143,16 @@ fn builtin_func_bits(_py: &PyToken<'_>, slot: &AtomicU64, fn_ptr: u64, arity: u6
             unsafe {
                 let builtin_bits = builtin_classes(_py).builtin_function_or_method;
                 let old_bits = object_class_bits(ptr);
-                if old_bits != builtin_bits {
-                    if !crate::object::object_init_class_edge_unpublished(
+                if old_bits != builtin_bits
+                    && !crate::object::object_init_class_edge_unpublished(
                         _py,
                         ptr,
                         builtin_bits,
                         ClassEdgeOwnership::Owned,
-                    ) {
-                        dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-                        return MoltObject::none().bits();
-                    }
+                    )
+                {
+                    dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                    return MoltObject::none().bits();
                 }
             }
             MoltObject::from_ptr(ptr).bits()
@@ -191,16 +191,16 @@ fn types_class(_py: &PyToken<'_>, slot: &AtomicU64, name: &str, layout_size: i64
         let class_bits = MoltObject::from_ptr(class_ptr).bits();
         let builtins = builtin_classes(_py);
         unsafe {
-            if let Some(ptr) = obj_from_bits(class_bits).as_ptr() {
-                if !crate::object::object_init_class_edge_unpublished(
+            if let Some(ptr) = obj_from_bits(class_bits).as_ptr()
+                && !crate::object::object_init_class_edge_unpublished(
                     _py,
                     ptr,
                     builtins.type_obj,
                     ClassEdgeOwnership::Owned,
-                ) {
-                    dec_ref_bits(_py, class_bits);
-                    return MoltObject::none().bits();
-                }
+                )
+            {
+                dec_ref_bits(_py, class_bits);
+                return MoltObject::none().bits();
             }
         }
         let _ = molt_class_set_base(class_bits, builtins.object);

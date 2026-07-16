@@ -293,6 +293,461 @@ pub fn simpleir_kind_is_cfg_or_ssa_consumed(kind: &str) -> bool {
     )
 }
 
+/// Python integer semantic role for a SimpleIR wire spelling.
+/// Generated from op_kinds.toml so string-dispatch backends apply target
+/// policy to one shared operation taxonomy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SimpleIrIntegerSemantics {
+    None,
+    DynamicAdd,
+    DynamicNumeric,
+    DynamicTrueDiv,
+    DynamicDivmod,
+    DynamicPower,
+    DynamicUnaryNumeric,
+    IntegerOnly,
+    IntegerProducer,
+}
+
+impl SimpleIrIntegerSemantics {
+    /// Whether integer operands make this operation produce an integer result.
+    /// True division and power are deliberately excluded: `/` is float-valued,
+    /// while integer `pow` can produce float/complex depending on exponent semantics.
+    pub const fn integer_result_when_operands_integer(self) -> bool {
+        matches!(
+            self,
+            Self::DynamicAdd
+                | Self::DynamicNumeric
+                | Self::DynamicDivmod
+                | Self::DynamicUnaryNumeric
+        )
+    }
+
+    /// Whether the operation's result is unconditionally integer-valued.
+    pub const fn integer_only_result(self) -> bool {
+        matches!(self, Self::IntegerOnly)
+    }
+
+    /// Integer arithmetic lanes eligible for representation-plan dispatch.
+    /// True division and power stay out because their result domains are not
+    /// uniformly integer even when their operands are.
+    pub const fn prefers_integer_runtime_lane(self) -> bool {
+        self.integer_result_when_operands_integer() || self.integer_only_result()
+    }
+}
+
+#[inline]
+pub fn simpleir_integer_semantics_table(kind: &str) -> SimpleIrIntegerSemantics {
+    match kind {
+        "add" | "inplace_add" | "binop_add" => SimpleIrIntegerSemantics::DynamicAdd,
+        "sub" | "inplace_sub" | "binop_sub" | "mul" | "inplace_mul" | "binop_mul" => {
+            SimpleIrIntegerSemantics::DynamicNumeric
+        }
+        "div" | "true_div" => SimpleIrIntegerSemantics::DynamicTrueDiv,
+        "floor_div" | "floordiv" | "inplace_floordiv" | "binop_floor_div" | "mod" | "modulo"
+        | "mod_" | "inplace_mod" | "binop_mod" => SimpleIrIntegerSemantics::DynamicDivmod,
+        "pow" | "binop_pow" => SimpleIrIntegerSemantics::DynamicPower,
+        "neg" | "unary_neg" | "pos" | "unary_pos" | "abs" | "builtin_abs" => {
+            SimpleIrIntegerSemantics::DynamicUnaryNumeric
+        }
+        "band" | "bit_and" | "inplace_bit_and" | "bor" | "bit_or" | "inplace_bit_or" | "bxor"
+        | "bit_xor" | "inplace_bit_xor" | "bit_not" | "invert" | "unary_invert" | "lshift"
+        | "shl" | "inplace_lshift" | "rshift" | "shr" | "inplace_rshift" => {
+            SimpleIrIntegerSemantics::IntegerOnly
+        }
+        "const"
+        | "const_int"
+        | "const_bigint"
+        | "box_from_raw_int"
+        | "unbox_to_raw_int"
+        | "checked_add"
+        | "checked_mul"
+        | "loop_index_start"
+        | "loop_index_next"
+        | "int"
+        | "cast_int"
+        | "builtin_int"
+        | "int_from_obj"
+        | "int_from_str_of_obj"
+        | "sum"
+        | "builtin_sum"
+        | "range"
+        | "builtin_range"
+        | "range_new"
+        | "for_range"
+        | "enumerate" => SimpleIrIntegerSemantics::IntegerProducer,
+        _ => SimpleIrIntegerSemantics::None,
+    }
+}
+
+/// Composable runtime/object-model requirements for a SimpleIR spelling.
+/// Multiple bits may be set; enabling one target capability never masks
+/// another unmet semantic requirement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SimpleIrRuntimeRequirements(u16);
+
+impl SimpleIrRuntimeRequirements {
+    pub const NONE: Self = Self(0);
+    pub const IDENTITY: Self = Self(1 << 0);
+    pub const TUPLE: Self = Self(1 << 1);
+    pub const EXCEPTION: Self = Self(1 << 2);
+    pub const DETERMINISTIC_LIFETIME: Self = Self(1 << 3);
+    pub const FORMAT_PROTOCOL: Self = Self(1 << 4);
+    pub const ITERABLE_PROTOCOL: Self = Self(1 << 5);
+    pub const OBJECT_MODEL: Self = Self(1 << 6);
+    pub const TRUTHINESS: Self = Self(1 << 7);
+    pub const COMPARISON: Self = Self(1 << 8);
+    pub const FALLIBLE_PROTOCOL: Self = Self(1 << 9);
+    pub const ASYNC_RUNTIME: Self = Self(1 << 10);
+    pub const UNSTRUCTURED_CONTROL: Self = Self(1 << 11);
+    pub const HOST_CAPABILITY: Self = Self(1 << 12);
+    pub const fn contains(self, requirement: Self) -> bool {
+        self.0 & requirement.0 != 0
+    }
+}
+
+/// Return `None` only for an unclassified spelling. Registered kinds
+/// with no special requirements return `Some(NONE)`.
+#[inline]
+pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntimeRequirements> {
+    match kind {
+        "ABS"
+        | "BYTEARRAY_FILL_RANGE"
+        | "CHECK_EXCEPTION"
+        | "CONST_ELLIPSIS"
+        | "CONST_NOT_IMPLEMENTED"
+        | "CONST_STR"
+        | "CONTAINS"
+        | "DELATTR"
+        | "DELATTR_NAME"
+        | "DICT_CLEAR"
+        | "DICT_POP"
+        | "DICT_POPITEM"
+        | "DICT_SET"
+        | "DICT_SETDEFAULT"
+        | "DICT_SPLIT_COUNT_INT_INC"
+        | "DICT_STR_INT_INC"
+        | "DICT_UPDATE"
+        | "DICT_UPDATE_KWSTAR"
+        | "DICT_UPDATE_MISSING"
+        | "EXCEPTION_MATCH_BUILTIN"
+        | "GETATTR"
+        | "GETATTR_GENERIC_OBJ"
+        | "GETATTR_GENERIC_PTR"
+        | "GETATTR_NAME"
+        | "GETATTR_NAME_DEFAULT"
+        | "GETATTR_SPECIAL_OBJ"
+        | "GUARDED_GETATTR"
+        | "GUARDED_SETATTR"
+        | "GUARDED_SETATTR_INIT"
+        | "GUARD_DICT_SHAPE"
+        | "GUARD_LAYOUT"
+        | "GUARD_TAG"
+        | "GUARD_TYPE"
+        | "HASATTR_NAME"
+        | "INPLACE_DIV"
+        | "INPLACE_FLOORDIV"
+        | "INPLACE_LSHIFT"
+        | "INPLACE_MATMUL"
+        | "INPLACE_MOD"
+        | "INPLACE_POW"
+        | "INPLACE_RSHIFT"
+        | "INVERT"
+        | "ISINSTANCE"
+        | "LEN"
+        | "LIST_APPEND"
+        | "LIST_CLEAR"
+        | "LIST_EXTEND"
+        | "LIST_INSERT"
+        | "LIST_POP"
+        | "LIST_REMOVE"
+        | "LIST_REVERSE"
+        | "LOAD_VAR"
+        | "MISSING"
+        | "MODULE_GET_ATTR"
+        | "PHI"
+        | "RAISE_CAUSE"
+        | "RERAISE"
+        | "SETATTR"
+        | "SETATTR_GENERIC_OBJ"
+        | "SETATTR_GENERIC_PTR"
+        | "SETATTR_INIT"
+        | "SETATTR_NAME"
+        | "SET_INDEX"
+        | "STORE_VAR"
+        | "TRY_END"
+        | "TRY_START"
+        | "TYPE_OF"
+        | "add"
+        | "async_for_end"
+        | "async_for_start"
+        | "bit_and"
+        | "bit_not"
+        | "bit_or"
+        | "bit_xor"
+        | "box"
+        | "box_from_raw_int"
+        | "build_set"
+        | "build_slice"
+        | "build_tuple"
+        | "call_builtin"
+        | "call_method_ic"
+        | "call_super_method_ic"
+        | "checked_add"
+        | "checked_mul"
+        | "const"
+        | "const_bigint"
+        | "const_bool"
+        | "const_float"
+        | "const_int"
+        | "const_str"
+        | "copy"
+        | "copy_var"
+        | "del_attr"
+        | "del_boundary"
+        | "delete_var"
+        | "div"
+        | "else"
+        | "end_if"
+        | "exception_pending"
+        | "floor_div"
+        | "floordiv"
+        | "for_iter_end"
+        | "for_iter_start"
+        | "free"
+        | "function_defaults_version"
+        | "get_iter"
+        | "gpu_barrier"
+        | "gpu_block_dim"
+        | "gpu_block_id"
+        | "gpu_grid_dim"
+        | "gpu_thread_id"
+        | "import"
+        | "import_from"
+        | "import_name"
+        | "index_set"
+        | "inplace_add"
+        | "inplace_mul"
+        | "inplace_sub"
+        | "load"
+        | "load_const"
+        | "load_var"
+        | "loop_break"
+        | "loop_continue"
+        | "loop_end"
+        | "loop_index_end"
+        | "loop_index_next"
+        | "loop_index_start"
+        | "loop_start"
+        | "lshift"
+        | "mod"
+        | "mul"
+        | "neg"
+        | "nop"
+        | "object_new_bound"
+        | "object_new_bound_stack"
+        | "phi"
+        | "pos"
+        | "pow"
+        | "range_new"
+        | "ret"
+        | "ret_void"
+        | "return"
+        | "rshift"
+        | "shl"
+        | "shr"
+        | "stack_alloc"
+        | "state_block_end"
+        | "state_block_start"
+        | "store"
+        | "store_init"
+        | "store_var"
+        | "string_eq"
+        | "sub"
+        | "type_guard"
+        | "unbox"
+        | "unbox_to_raw_int"
+        | "warn_stderr"
+        | "while_end"
+        | "while_start"
+        | "yield"
+        | "yield_from" => Some(SimpleIrRuntimeRequirements(0)),
+        "is" | "is_not" => Some(SimpleIrRuntimeRequirements(1)),
+        "tuple_new" => Some(SimpleIrRuntimeRequirements(2)),
+        "check_exception"
+        | "except_end"
+        | "except_start"
+        | "exception_active"
+        | "exception_class"
+        | "exception_clear"
+        | "exception_context_set"
+        | "exception_finally_pending_observer"
+        | "exception_kind"
+        | "exception_last"
+        | "exception_last_pending"
+        | "exception_match_builtin"
+        | "exception_message"
+        | "exception_new"
+        | "exception_new_builtin"
+        | "exception_new_builtin_empty"
+        | "exception_new_builtin_one"
+        | "exception_new_from_class"
+        | "exception_pop"
+        | "exception_push"
+        | "exception_set_cause"
+        | "exception_set_last"
+        | "exception_set_value"
+        | "exception_stack_clear"
+        | "exception_stack_depth"
+        | "exception_stack_enter"
+        | "exception_stack_exit"
+        | "exception_stack_set_depth"
+        | "exceptiongroup_combine"
+        | "exceptiongroup_match"
+        | "finally_end"
+        | "finally_start"
+        | "loop_break_if_exception"
+        | "raise"
+        | "reraise"
+        | "try_end"
+        | "try_start" => Some(SimpleIrRuntimeRequirements(4)),
+        "borrow"
+        | "dec_ref"
+        | "drop_inserted"
+        | "exception_region_drops_inserted"
+        | "inc_ref"
+        | "release" => Some(SimpleIrRuntimeRequirements(8)),
+        "format_string" | "string_format" => Some(SimpleIrRuntimeRequirements(16)),
+        "for_iter" | "iter_next" | "iter_next_unboxed" | "list_fill_new" | "string_join"
+        | "unpack_sequence" => Some(SimpleIrRuntimeRequirements(32)),
+        "all"
+        | "alloc"
+        | "alloc_class"
+        | "alloc_class_static"
+        | "alloc_class_trusted"
+        | "alloc_instance"
+        | "alloc_task"
+        | "any"
+        | "bound_method_new"
+        | "build_dict"
+        | "build_list"
+        | "builtin_all"
+        | "builtin_any"
+        | "builtin_reversed"
+        | "builtin_sorted"
+        | "builtin_type"
+        | "class_apply_set_name"
+        | "class_layout_field_count"
+        | "class_layout_slot_count"
+        | "class_layout_version"
+        | "class_merge_layout"
+        | "class_new"
+        | "class_set_base"
+        | "class_set_layout_version"
+        | "closure_load"
+        | "closure_store"
+        | "const_bytes"
+        | "const_none"
+        | "del_attr_generic_obj"
+        | "del_attr_generic_ptr"
+        | "del_attr_name"
+        | "del_index"
+        | "dict_get"
+        | "dict_new"
+        | "dict_popitem"
+        | "dict_set"
+        | "dict_update"
+        | "dict_update_kwstar"
+        | "dict_update_missing"
+        | "get_attr"
+        | "get_attr_generic_obj"
+        | "get_attr_generic_ptr"
+        | "get_attr_name"
+        | "get_attr_name_default"
+        | "get_item"
+        | "guarded_field_get"
+        | "guarded_field_init"
+        | "guarded_field_set"
+        | "index"
+        | "init_instance"
+        | "instance_get_field"
+        | "instance_has_field"
+        | "instance_set_field"
+        | "list_append"
+        | "list_clear"
+        | "list_copy"
+        | "list_count"
+        | "list_extend"
+        | "list_index"
+        | "list_index_range"
+        | "list_insert"
+        | "list_new"
+        | "list_pop"
+        | "list_remove"
+        | "list_repeat_range"
+        | "list_reverse"
+        | "load_attr"
+        | "module_cache_del"
+        | "module_cache_get"
+        | "module_cache_set"
+        | "module_del_global"
+        | "module_del_global_if_present"
+        | "module_get_attr"
+        | "module_get_global"
+        | "module_get_name"
+        | "module_import"
+        | "module_import_from"
+        | "module_load_cached"
+        | "module_new"
+        | "module_set_attr"
+        | "object_new"
+        | "object_set_class"
+        | "reversed"
+        | "set_attr"
+        | "set_attr_generic_obj"
+        | "set_attr_generic_ptr"
+        | "set_attr_name"
+        | "set_item"
+        | "sorted"
+        | "store_attr"
+        | "store_index"
+        | "store_subscript"
+        | "subscript"
+        | "zip" => Some(SimpleIrRuntimeRequirements(64)),
+        "_m_and"
+        | "and"
+        | "bool"
+        | "br_if"
+        | "branch_false"
+        | "branch_true"
+        | "builtin_bool"
+        | "cast_bool"
+        | "if"
+        | "if_not"
+        | "loop_break_if_false"
+        | "loop_break_if_true"
+        | "not"
+        | "or"
+        | "unary_not" => Some(SimpleIrRuntimeRequirements(128)),
+        "cmp_eq" | "cmp_ge" | "cmp_gt" | "cmp_le" | "cmp_lt" | "cmp_ne" | "contains" | "eq"
+        | "ge" | "gt" | "in" | "le" | "lt" | "ne" | "not_in" => {
+            Some(SimpleIrRuntimeRequirements(256))
+        }
+        "ascii_from_obj" | "builtin_float" | "builtin_func" | "builtin_len" | "builtin_print"
+        | "builtin_str" | "call" | "call_bind" | "call_func" | "call_function" | "call_guarded"
+        | "call_indirect" | "call_internal" | "call_method" | "cast_float" | "cast_str" | "chr"
+        | "float" | "float_from_obj" | "len" | "ord" | "ord_at" | "print" | "repr_from_obj"
+        | "str" | "str_from_obj" => Some(SimpleIrRuntimeRequirements(512)),
+        "chan_recv_yield" | "chan_send_yield" | "state_label" | "state_switch"
+        | "state_transition" | "state_yield" => Some(SimpleIrRuntimeRequirements(1024)),
+        "goto" | "jump" | "label" => Some(SimpleIrRuntimeRequirements(2048)),
+        "file_close" | "file_flush" | "file_open" | "file_read" | "file_write" | "invoke_ffi" => {
+            Some(SimpleIrRuntimeRequirements(4096))
+        }
+        _ => None,
+    }
+}
+
 /// Map a SimpleIR `kind` string to its first-class TIR `OpCode`, or
 /// `None` when the kind has no first-class opcode (the caller lifts it to
 /// `OpCode::Copy{_original_kind}`). Mirrors the `|`-grouped arms in the

@@ -162,16 +162,14 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                     if ndim == 0 {
                         if let Some(tup_ptr) = key.as_ptr()
                             && object_type_id(tup_ptr) == TYPE_ID_TUPLE
-                        {
-                            if crate::object::seq_access::with_immutable_tuple_slice(
+                            && crate::object::seq_access::with_immutable_tuple_slice(
                                 tup_ptr,
                                 |elems| elems.is_empty(),
                             )
                             .unwrap_or(false)
-                            {
-                                let val = memoryview_read_scalar_at(_py, data.cast_const(), 0, fmt);
-                                return val.unwrap_or_else(|| MoltObject::none().bits());
-                            }
+                        {
+                            let val = memoryview_read_scalar_at(_py, data.cast_const(), 0, fmt);
+                            return val.unwrap_or_else(|| MoltObject::none().bits());
                         }
                         return raise_exception::<_>(
                             _py,
@@ -1260,19 +1258,17 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                     if ndim == 0 {
                         if let Some(tup_ptr) = key.as_ptr()
                             && object_type_id(tup_ptr) == TYPE_ID_TUPLE
-                        {
-                            if crate::object::seq_access::with_immutable_tuple_slice(
+                            && crate::object::seq_access::with_immutable_tuple_slice(
                                 tup_ptr,
                                 |elems| elems.is_empty(),
                             )
                             .unwrap_or(false)
-                            {
-                                let ok = memoryview_write_scalar_at(_py, data, 0, fmt, val_bits);
-                                if ok.is_none() {
-                                    return MoltObject::none().bits();
-                                }
-                                return obj_bits;
+                        {
+                            let ok = memoryview_write_scalar_at(_py, data, 0, fmt, val_bits);
+                            if ok.is_none() {
+                                return MoltObject::none().bits();
                             }
+                            return obj_bits;
                         }
                         return raise_exception::<_>(
                             _py,

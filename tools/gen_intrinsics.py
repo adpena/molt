@@ -20,6 +20,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tools.wasm_abi_gen.intrinsic_availability import (  # noqa: E402
+    load_intrinsic_availability,
+    longest_prefix_value,
+)
+
 MANIFEST = ROOT / "runtime/molt-runtime/src/intrinsics/manifest.pyi"
 CATEGORIES_TOML = ROOT / "runtime/molt-runtime/src/intrinsics/categories.toml"
 OUT_PYI = ROOT / "src/molt/_intrinsics.pyi"
@@ -591,33 +596,60 @@ def _load_categories() -> tuple[
 
 def _load_runtime_feature_gates_from_categories() -> list[tuple[str, str]]:
     """Return symbol-prefix feature gates declared in categories.toml."""
-    raw = CATEGORIES_TOML.read_bytes()
-    data = tomllib.loads(raw.decode())
-    gates: list[tuple[str, str]] = []
-    for _mod_name, mod_data in data.get("stdlib", {}).items():
-        feature = mod_data.get("feature")
-        if not isinstance(feature, str) or not feature:
-            continue
-        raw_prefixes = mod_data.get("feature_prefixes", mod_data.get("prefixes", []))
-        for prefix in raw_prefixes:
-            gates.append((f"molt_{prefix}", feature))
-    return gates
+    return list(load_intrinsic_availability(CATEGORIES_TOML).feature_gates)
+
+
+def _load_runtime_target_arch_exclusions_from_categories() -> list[
+    tuple[str, tuple[str, ...]]
+]:
+    """Return symbol-prefix target-architecture exclusions from categories.toml."""
+    return list(load_intrinsic_availability(CATEGORIES_TOML).target_arch_exclusions)
+
+
+def _load_runtime_feature_target_arch_exclusions_from_categories() -> list[
+    tuple[str, tuple[str, ...]]
+]:
+    """Return Cargo features wholly unavailable on target architectures."""
+    return list(
+        load_intrinsic_availability(CATEGORIES_TOML).feature_target_arch_exclusions
+    )
 
 
 _SYMBOL_FEATURE_GATES: list[tuple[str, str]] = (
     _load_runtime_feature_gates_from_categories()
 )
+_SYMBOL_TARGET_ARCH_EXCLUSIONS: list[tuple[str, tuple[str, ...]]] = (
+    _load_runtime_target_arch_exclusions_from_categories()
+)
+_FEATURE_TARGET_ARCH_EXCLUSIONS: list[tuple[str, tuple[str, ...]]] = (
+    _load_runtime_feature_target_arch_exclusions_from_categories()
+)
 
 
 def _feature_gate_for_symbol(symbol: str) -> str | None:
     """Return the Cargo feature gate for *symbol*, if categories declare one."""
-    best: tuple[int, str] | None = None
-    for prefix, feature in _SYMBOL_FEATURE_GATES:
-        if symbol.startswith(prefix):
-            prefix_len = len(prefix)
-            if best is None or prefix_len > best[0]:
-                best = (prefix_len, feature)
-    return best[1] if best is not None else None
+    return longest_prefix_value(symbol, tuple(_SYMBOL_FEATURE_GATES))
+
+
+def _target_arch_exclusions_for_symbol(symbol: str) -> tuple[str, ...]:
+    """Return target architectures where *symbol* has no runtime definition."""
+    return longest_prefix_value(symbol, tuple(_SYMBOL_TARGET_ARCH_EXCLUSIONS)) or ()
+
+
+def _cfg_gate_for_symbol(symbol: str) -> str | None:
+    """Return the complete Rust cfg predicate controlling *symbol* resolution."""
+    predicates: list[str] = []
+    if feature := _feature_gate_for_symbol(symbol):
+        predicates.append(f'feature = "{feature}"')
+    predicates.extend(
+        f'not(target_arch = "{arch}")'
+        for arch in _target_arch_exclusions_for_symbol(symbol)
+    )
+    if not predicates:
+        return None
+    if len(predicates) == 1:
+        return predicates[0]
+    return f"all({', '.join(predicates)})"
 
 
 # Additional prefix-to-module mapping for modules NOT yet in categories.toml.
@@ -937,7 +969,7 @@ def _write_leaf_resolver_module(
 def _write_leaf_facade_resolver_module(
     mod_name: str,
     leaf: dict[str, object],
-    feature: str,
+    cfg_gate: str,
 ) -> None:
     crate_path = str(leaf["crate_path"])
     resolver_path = str(
@@ -948,14 +980,14 @@ def _write_leaf_facade_resolver_module(
     lines.append("#[inline(never)]\n")
     lines.append("#[cold]\n")
     lines.append("pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {\n")
-    lines.append(f'    #[cfg(feature = "{feature}")]\n')
+    lines.append(f"    #[cfg({cfg_gate})]\n")
     lines.append("    {\n")
     lines.append(f"        {resolver_path}::resolve_symbol_with(\n")
     lines.append("            symbol,\n")
     lines.append("            crate::builtins::functions::runtime_fn_addr,\n")
     lines.append("        )\n")
     lines.append("    }\n")
-    lines.append(f'    #[cfg(not(feature = "{feature}"))]\n')
+    lines.append(f"    #[cfg(not({cfg_gate}))]\n")
     lines.append("    {\n")
     lines.append("        let _ = symbol;\n")
     lines.append("        None\n")
@@ -1002,6 +1034,22 @@ def _leaf_resolver_feature_gate(mod_name: str, symbols: list[str]) -> str:
     )
 
 
+def _leaf_resolver_cfg_gate(mod_name: str, symbols: list[str]) -> str:
+    gates = {_cfg_gate_for_symbol(sym) for sym in symbols}
+    if len(gates) == 1 and None not in gates:
+        gate = next(iter(gates))
+        assert gate is not None
+        return gate
+    rendered = ", ".join(
+        "<none>" if gate is None else gate
+        for gate in sorted(gates, key=lambda value: "" if value is None else value)
+    )
+    raise RuntimeError(
+        f"leaf resolver {mod_name!r} must map to one runtime cfg gate; "
+        f"found: {rendered or '<empty>'}"
+    )
+
+
 def _write_resolver_modules(
     module_symbols: OrderedDict[str, list[str]],
 ) -> None:
@@ -1032,9 +1080,9 @@ def _write_resolver_modules(
     for mod_name, symbols in module_symbols.items():
         leaf = LEAF_RESOLVER_REGISTRIES.get(mod_name)
         if leaf is not None:
-            feature = _leaf_resolver_feature_gate(mod_name, symbols)
+            cfg_gate = _leaf_resolver_cfg_gate(mod_name, symbols)
             _write_leaf_resolver_module(mod_name, symbols, leaf)
-            _write_leaf_facade_resolver_module(mod_name, leaf, feature)
+            _write_leaf_facade_resolver_module(mod_name, leaf, cfg_gate)
             module_index = leaf.get("module_index")
             if isinstance(module_index, Path):
                 output = leaf["output"]
@@ -1050,10 +1098,10 @@ def _write_resolver_modules(
         lines.append("#[inline(never)]\n")
         lines.append("#[cold]\n")
 
-        # Collect feature gates, preserving symbol order.
+        # Collect complete feature/target gates, preserving symbol order.
         gated: dict[str | None, list[str]] = {}
         for sym in symbols:
-            gate = _feature_gate_for_symbol(sym)
+            gate = _cfg_gate_for_symbol(sym)
             gated.setdefault(gate, []).append(sym)
 
         lines.append("pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {\n")
@@ -1061,7 +1109,7 @@ def _write_resolver_modules(
         for gate, syms in gated.items():
             for sym in syms:
                 if gate:
-                    lines.append(f'        #[cfg(feature = "{gate}")]\n')
+                    lines.append(f"        #[cfg({gate})]\n")
                 _append_resolver_arm(lines, sym)
         lines.append("        _ => None,\n")
         lines.append("    }\n")
@@ -1157,7 +1205,7 @@ def _write_runtime_feature_gates_py() -> None:
     )
     lines: list[str] = []
     lines.append(
-        '"""Generated runtime intrinsic symbol-prefix feature gates.\n\n'
+        '"""Generated runtime intrinsic feature and target-availability gates.\n\n'
         "Source authorities:\n"
         "- runtime/molt-runtime/src/intrinsics/categories.toml owns "
         "symbol-prefix feature attribution.\n"
@@ -1171,6 +1219,22 @@ def _write_runtime_feature_gates_py() -> None:
     for prefix, feature in _SYMBOL_FEATURE_GATES:
         lines.append(f'    ("{prefix}", "{feature}"),\n')
     lines.append(")\n\n")
+    lines.append(
+        "RUNTIME_TARGET_ARCH_EXCLUSIONS: tuple[tuple[str, tuple[str, ...]], ...] = (\n"
+    )
+    for prefix, arches in _SYMBOL_TARGET_ARCH_EXCLUSIONS:
+        rendered = ", ".join(f'"{arch}"' for arch in arches)
+        if len(arches) == 1:
+            rendered += ","
+        lines.append(f'    ("{prefix}", ({rendered})),\n')
+    lines.append(")\n\n")
+    lines.append(
+        "RUNTIME_FEATURE_TARGET_ARCH_EXCLUSIONS: dict[str, frozenset[str]] = {\n"
+    )
+    for feature, arches in _FEATURE_TARGET_ARCH_EXCLUSIONS:
+        rendered = ", ".join(f'"{arch}"' for arch in arches)
+        lines.append(f'    "{feature}": frozenset({{{rendered}}}),\n')
+    lines.append("}\n\n")
     lines.append("LINK_AFFECTING_FEATURES: frozenset[str] = frozenset(\n")
     lines.append("    {\n")
     for feature in link_affecting:
@@ -1186,6 +1250,50 @@ def _write_runtime_feature_gates_py() -> None:
     lines.append("            if best is None or prefix_len > best[0]:\n")
     lines.append("                best = (prefix_len, feature)\n")
     lines.append("    return best[1] if best is not None else None\n\n\n")
+    lines.append(
+        "def target_arch_from_triple(target_triple: str | None) -> str | None:\n"
+    )
+    lines.append('    """Return the Rust target architecture component."""\n')
+    lines.append("    if target_triple is None:\n")
+    lines.append("        return None\n")
+    lines.append('    return target_triple.split("-", 1)[0]\n\n\n')
+    lines.append(
+        "def unsupported_target_arches_for_symbol(symbol: str) -> tuple[str, ...]:\n"
+    )
+    lines.append('    """Return architectures where *symbol* has no provider."""\n')
+    lines.append("    best: tuple[int, tuple[str, ...]] | None = None\n")
+    lines.append("    for prefix, arches in RUNTIME_TARGET_ARCH_EXCLUSIONS:\n")
+    lines.append("        if symbol.startswith(prefix):\n")
+    lines.append("            prefix_len = len(prefix)\n")
+    lines.append("            if best is None or prefix_len > best[0]:\n")
+    lines.append("                best = (prefix_len, arches)\n")
+    lines.append("    return best[1] if best is not None else ()\n\n\n")
+    lines.append(
+        "def runtime_symbol_available_on_target(\n"
+        "    symbol: str, *, target_triple: str | None\n"
+        ") -> bool:\n"
+    )
+    lines.append('    """Whether *symbol* has a provider for *target_triple*."""\n')
+    lines.append("    arch = target_arch_from_triple(target_triple)\n")
+    lines.append(
+        "    return arch is None or arch not in unsupported_target_arches_for_symbol(symbol)\n\n\n"
+    )
+    lines.append(
+        "def link_affecting_features_unsupported_on_target(\n"
+        "    target_triple: str | None,\n"
+        ") -> frozenset[str]:\n"
+    )
+    lines.append('    """Features with no provider on *target_triple*."""\n')
+    lines.append("    arch = target_arch_from_triple(target_triple)\n")
+    lines.append("    if arch is None:\n")
+    lines.append("        return frozenset()\n")
+    lines.append("    return frozenset(\n")
+    lines.append("        feature\n")
+    lines.append(
+        "        for feature, arches in RUNTIME_FEATURE_TARGET_ARCH_EXCLUSIONS.items()\n"
+    )
+    lines.append("        if arch in arches and feature in LINK_AFFECTING_FEATURES\n")
+    lines.append("    )\n\n\n")
     lines.append(
         "def link_affecting_feature_gate_for_symbol(symbol: str) -> str | None:\n"
     )

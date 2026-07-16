@@ -50,74 +50,21 @@ impl RustBackend {
     }
 
     pub(super) fn emit_op_int(&mut self, op: &OpIR) {
-        let out = || out_var(op);
-        let declare = |out_name: &str, rhs: &str, hoisted: &BTreeSet<String>| -> String {
-            if hoisted.contains(out_name) {
-                format!("{out_name} = {rhs};")
-            } else {
-                format!("let mut {out_name}: MoltValue = {rhs};")
-            }
-        };
-
-        let o = out();
-        let a = arg0(op);
-        self.emit_line(&declare(
-            &o,
-            &format!("MoltValue::Int(molt_int(&{a}))"),
-            &self.hoisted_vars.clone(),
-        ));
+        self.emit_unsupported_op(op, "int() requires arbitrary-precision integer storage");
     }
 
     pub(super) fn emit_op_int_from_obj(&mut self, op: &OpIR) {
-        let out = || out_var(op);
-        let declare = |out_name: &str, rhs: &str, hoisted: &BTreeSet<String>| -> String {
-            if hoisted.contains(out_name) {
-                format!("{out_name} = {rhs};")
-            } else {
-                format!("let mut {out_name}: MoltValue = {rhs};")
-            }
-        };
-
-        let o = out();
-        let a = arg0(op);
-        self.emit_line(&declare(
-            &o,
-            &format!("MoltValue::Int(molt_int(&{a}))"),
-            &self.hoisted_vars.clone(),
-        ));
+        self.emit_unsupported_op(
+            op,
+            "object-to-int conversion requires arbitrary-precision integer storage",
+        );
     }
 
     pub(super) fn emit_op_int_from_str_of_obj(&mut self, op: &OpIR) {
-        let out = || out_var(op);
-        let declare = |out_name: &str, rhs: &str, hoisted: &BTreeSet<String>| -> String {
-            if hoisted.contains(out_name) {
-                format!("{out_name} = {rhs};")
-            } else {
-                format!("let mut {out_name}: MoltValue = {rhs};")
-            }
-        };
-
-        let o = out();
-        let args = op.args.as_deref().unwrap_or(&[]);
-        let a = args
-            .first()
-            .map(|s| rust_value(s))
-            .unwrap_or_else(|| "MoltValue::None".to_string());
-        let base = args
-            .get(1)
-            .map(|s| rust_value(s))
-            .unwrap_or_else(|| "MoltValue::None".to_string());
-        let has_base = args
-            .get(2)
-            .map(|s| rust_value(s))
-            .unwrap_or_else(|| "MoltValue::Bool(false)".to_string());
-        self.emit_line(&declare(
-                    &o,
-                    &format!(
-                        "{{ let __s = molt_str(&{a}); if molt_bool(&{has_base}) {{ let __base = molt_int(&{base}); MoltValue::Int(if (2..=36).contains(&__base) {{ i64::from_str_radix(__s.trim(), __base as u32).unwrap_or(0) }} else {{ 0 }}) }} else {{ MoltValue::Int(molt_int(&MoltValue::Str(__s))) }} }}"
-                    ),
-                    &self.hoisted_vars.clone(),
-                ));
+        self.emit_unsupported_op(
+            op,
+            "string-to-int conversion requires arbitrary-precision integer storage",
+        );
     }
 
     pub(super) fn emit_op_float(&mut self, op: &OpIR) {
@@ -472,7 +419,7 @@ impl RustBackend {
                 &self.hoisted_vars.clone(),
             ));
         } else {
-            self.emit_line(&declare(&o, "MoltValue::None", &self.hoisted_vars.clone()));
+            self.emit_unsupported_op(op, "get_attr_name requires object and attribute");
         }
     }
 
@@ -501,7 +448,7 @@ impl RustBackend {
                 &self.hoisted_vars.clone(),
             ));
         } else {
-            self.emit_line(&declare(&o, "MoltValue::None", &self.hoisted_vars.clone()));
+            self.emit_unsupported_op(op, "get_attr_name_default requires object and attribute");
         }
     }
 
@@ -527,28 +474,10 @@ impl RustBackend {
     }
 
     pub(super) fn emit_op_enumerate(&mut self, op: &OpIR) {
-        let out = || out_var(op);
-        let declare = |out_name: &str, rhs: &str, hoisted: &BTreeSet<String>| -> String {
-            if hoisted.contains(out_name) {
-                format!("{out_name} = {rhs};")
-            } else {
-                format!("let mut {out_name}: MoltValue = {rhs};")
-            }
-        };
-
-        let o = out();
-        let a = arg0(op);
-        let start = op
-            .args
-            .as_ref()
-            .and_then(|a| a.get(1))
-            .map(|s| rust_ident(s))
-            .unwrap_or_else(|| "MoltValue::Int(0)".to_string());
-        self.emit_line(&declare(
-            &o,
-            &format!("molt_enumerate(&{a}, molt_int(&{start}))"),
-            &self.hoisted_vars.clone(),
-        ));
+        self.emit_unsupported_op(
+            op,
+            "enumerate() requires arbitrary-precision integer index storage",
+        );
     }
 
     pub(super) fn emit_op_zip(&mut self, op: &OpIR) {
@@ -609,22 +538,10 @@ impl RustBackend {
     }
 
     pub(super) fn emit_op_sum(&mut self, op: &OpIR) {
-        let out = || out_var(op);
-        let declare = |out_name: &str, rhs: &str, hoisted: &BTreeSet<String>| -> String {
-            if hoisted.contains(out_name) {
-                format!("{out_name} = {rhs};")
-            } else {
-                format!("let mut {out_name}: MoltValue = {rhs};")
-            }
-        };
-
-        let o = out();
-        let a = arg0(op);
-        self.emit_line(&declare(
-            &o,
-            &format!("molt_sum(&{a})"),
-            &self.hoisted_vars.clone(),
-        ));
+        self.emit_unsupported_op(
+            op,
+            "sum() requires arbitrary-precision integer accumulation",
+        );
     }
 
     pub(super) fn emit_op_any(&mut self, op: &OpIR) {
@@ -666,38 +583,6 @@ impl RustBackend {
     }
 
     pub(super) fn emit_op_range(&mut self, op: &OpIR) {
-        let out = || out_var(op);
-        let declare = |out_name: &str, rhs: &str, hoisted: &BTreeSet<String>| -> String {
-            if hoisted.contains(out_name) {
-                format!("{out_name} = {rhs};")
-            } else {
-                format!("let mut {out_name}: MoltValue = {rhs};")
-            }
-        };
-
-        let o = out();
-        let args = op.args.as_deref().unwrap_or(&[]);
-        let (start, stop, step) = match args.len() {
-            1 => (
-                "MoltValue::Int(0)".to_string(),
-                rust_ident(&args[0]),
-                "MoltValue::Int(1)".to_string(),
-            ),
-            2 => (
-                rust_ident(&args[0]),
-                rust_ident(&args[1]),
-                "MoltValue::Int(1)".to_string(),
-            ),
-            _ => (
-                rust_ident(&args[0]),
-                rust_ident(&args[1]),
-                rust_ident(&args[2]),
-            ),
-        };
-        self.emit_line(&declare(
-            &o,
-            &format!("molt_range(molt_int(&{start}), molt_int(&{stop}), molt_int(&{step}))"),
-            &self.hoisted_vars.clone(),
-        ));
+        self.emit_unsupported_op(op, "range() requires arbitrary-precision integer storage");
     }
 }

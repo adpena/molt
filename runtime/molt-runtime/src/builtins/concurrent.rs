@@ -145,7 +145,7 @@ pub(crate) fn concurrent_clear_runtime_state(
         }
         workers.extend(pool._workers);
     }
-    let _release = GilReleaseGuard::new();
+    let _release = GilReleaseGuard::suspend();
     for worker in workers {
         let _ = worker.join();
     }
@@ -345,7 +345,7 @@ pub extern "C" fn molt_concurrent_threadpool_shutdown(
             }
             if wait {
                 // Join workers — release GIL while waiting.
-                let _release = GilReleaseGuard::new();
+                let _release = GilReleaseGuard::suspend();
                 for handle in pool._workers {
                     let _ = handle.join();
                 }
@@ -401,7 +401,7 @@ pub extern "C" fn molt_concurrent_future_result(handle_bits: u64, timeout_bits: 
             if obj.is_none() { None } else { to_f64(obj) }
         };
         {
-            let _release = GilReleaseGuard::new();
+            let _release = GilReleaseGuard::suspend();
             if wait_for_future(&future, timeout).is_err() {
                 return raise_exception::<u64>(
                     _py,
@@ -444,7 +444,7 @@ pub extern "C" fn molt_concurrent_future_exception(handle_bits: u64, timeout_bit
             if obj.is_none() { None } else { to_f64(obj) }
         };
         {
-            let _release = GilReleaseGuard::new();
+            let _release = GilReleaseGuard::suspend();
             if wait_for_future(&future, timeout).is_err() {
                 return raise_exception::<u64>(
                     _py,
@@ -624,7 +624,7 @@ pub extern "C" fn molt_concurrent_as_completed(futures_bits: u64, timeout_bits: 
         let mut pending: Vec<i64> = future_ids;
 
         {
-            let _release = GilReleaseGuard::new();
+            let _release = GilReleaseGuard::suspend();
             while !pending.is_empty() {
                 if deadline.is_some_and(|dl| Instant::now() >= dl) {
                     break;
@@ -708,7 +708,7 @@ pub extern "C" fn molt_concurrent_wait(
         let not_done_ids: Vec<i64>;
 
         {
-            let _release = GilReleaseGuard::new();
+            let _release = GilReleaseGuard::suspend();
             loop {
                 let all_done = future_ids.iter().all(|id| {
                     futures_registry

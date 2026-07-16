@@ -206,7 +206,6 @@ def test_cli_validate_check_json_reports_canonical_matrix() -> None:
     assert "luau-runner-available" in names
     assert "luau-ord-at-parity" in names
     assert "luau-rust-regressions" in names
-    assert "luau-lowering-regressions" in names
     assert "conformance-smoke" in names
     assert "bench-smoke" in names
     cli_command_step = next(
@@ -265,14 +264,6 @@ def test_cli_validate_check_json_reports_canonical_matrix() -> None:
     assert "luau-backend" in luau_rust_step["cmd"]
     assert "--lib" in luau_rust_step["cmd"]
     assert "luau::tests::" in luau_rust_step["cmd"]
-    luau_lowering_step = next(
-        entry for entry in steps if entry["name"] == "luau-lowering-regressions"
-    )
-    assert luau_lowering_step["memory_guard_prefix"] == "MOLT_TEST_SUITE"
-    assert "molt-backend-luau" in luau_lowering_step["cmd"]
-    assert "luau-backend" in luau_lowering_step["cmd"]
-    assert "--lib" in luau_lowering_step["cmd"]
-    assert "luau_lower::tests::" in luau_lowering_step["cmd"]
 
 
 def test_cli_validate_custody_proof_suite_reports_only_custody_step() -> None:
@@ -313,7 +304,6 @@ def test_cli_validate_luau_backend_filter_reports_guarded_luau_steps() -> None:
         "luau-runner-available",
         "luau-ord-at-parity",
         "luau-rust-regressions",
-        "luau-lowering-regressions",
     }
     assert all(entry["memory_guard_prefix"] == "MOLT_TEST_SUITE" for entry in steps)
     assert all("luau" in entry["backends"] for entry in steps)

@@ -1201,49 +1201,6 @@ pub(super) fn is_cold_module_chunk_function(name: &str) -> bool {
     name.contains("__molt_module_chunk_")
 }
 
-pub(super) fn integer_arithmetic_result_op(kind: &str) -> bool {
-    matches!(
-        kind,
-        "add"
-            | "inplace_add"
-            | "sub"
-            | "inplace_sub"
-            | "mul"
-            | "inplace_mul"
-            | "floordiv"
-            | "inplace_floordiv"
-            | "mod"
-            | "mod_"
-            | "inplace_mod"
-    )
-}
-
-pub(super) fn integer_only_result_op(kind: &str) -> bool {
-    matches!(
-        kind,
-        "bit_and"
-            | "inplace_bit_and"
-            | "bit_or"
-            | "inplace_bit_or"
-            | "bit_xor"
-            | "inplace_bit_xor"
-            | "bitand"
-            | "bitor"
-            | "bitxor"
-            | "lshift"
-            | "inplace_lshift"
-            | "rshift"
-            | "inplace_rshift"
-            | "shl"
-            | "shr"
-            | "neg"
-            | "pos"
-            | "abs"
-            | "builtin_abs"
-            | "invert"
-    )
-}
-
 pub(super) fn simple_op_produces_non_scalar_value(kind: &str) -> bool {
     matches!(
         kind,

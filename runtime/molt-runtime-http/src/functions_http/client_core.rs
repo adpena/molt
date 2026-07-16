@@ -2062,7 +2062,7 @@ pub(super) fn urllib_http_send_request(
     let request = urllib_http_build_request_bytes(req, request_target, host_header);
     let mut raw = Vec::new();
     {
-        let _release = crate::bridge::GilReleaseGuard::new();
+        let _release = crate::bridge::GilReleaseGuard::suspend();
         let mut stream = TcpStream::connect((req.host.as_str(), req.port))?;
         if let Some(timeout) = req.timeout {
             let timeout = Duration::from_secs_f64(timeout);

@@ -1,7 +1,10 @@
 use super::*;
 
 impl LuauBackend {
-    pub fn compile(&mut self, ir: &SimpleIR) -> String {
+    /// Emit source into a private buffer. Public callers must enter through
+    /// `compile_checked`, which owns the Result contract and never publishes a
+    /// partial program.
+    pub(super) fn emit_source(&mut self, ir: &SimpleIR) -> String {
         // Reset the fail-closed accumulator for this compilation so a reused
         // backend instance does not carry unsupported-op records across runs.
         self.unsupported_ops.clear();
@@ -70,6 +73,11 @@ impl LuauBackend {
         std::mem::take(&mut self.output)
     }
 
+    #[cfg(test)]
+    pub(super) fn compile(&mut self, ir: &SimpleIR) -> String {
+        self.emit_source(ir)
+    }
+
     /// Compile via the IR pipeline with validation and performance review.
     ///
     /// This path is intentionally fail-closed: preview/IR-pipeline builds must
@@ -82,15 +90,16 @@ impl LuauBackend {
     /// otherwise silently emit syntactically valid but semantically incomplete
     /// Luau.
     pub fn compile_checked(&mut self, ir: &SimpleIR) -> Result<String, String> {
-        let source = self.compile(ir);
-        // Fail-closed authority: the dispatch catch-all records every op it
-        // could not lower into `self.unsupported_ops` at emit time, so the
-        // rejection here does NOT depend on `validate_luau_source` finding the
-        // `-- [unsupported op:` marker text. An unsupported op therefore cannot
-        // slip a fabricated `nil` past the gate by lacking that exact marker.
-        // `validate_luau_source` is retained for the other preview-blocker
-        // markers (e.g. control-flow `error("[unsupported op: ...]")` stubs and
-        // block-structure checks) it already owns.
+        molt_tir::target_admission::validate_target_contract(
+            ir,
+            "luau",
+            molt_tir::target_admission::NumericTargetCapabilities::FIXED_WIDTH_FLOAT_ONLY,
+            molt_tir::target_admission::RuntimeTargetCapabilities::NONE,
+        )?;
+        let source = self.emit_source(ir);
+        // Dispatch failures emit no source and this Result boundary never
+        // publishes a partial program. Source validation separately owns
+        // malformed control-flow diagnostics and block structure.
         if !self.unsupported_ops.is_empty() {
             return Err(format!(
                 "luau backend refuses to emit fail-open codegen for unsupported op(s): {} \
@@ -285,11 +294,11 @@ impl LuauBackend {
             ),
             (
                 "molt_int",
-                "local function molt_int(x: any): number\n\treturn math.floor(tonumber(x) or 0)\nend\n",
+                "local function molt_int(x: any): number\n\tlocal value = tonumber(x)\n\tif value == nil then error({__type=\"ValueError\", __msg=\"invalid literal for int()\"}) end\n\treturn math.floor(value)\nend\n",
             ),
             (
                 "molt_float",
-                "local function molt_float(x: any): number\n\treturn tonumber(x) or 0.0\nend\n",
+                "local function molt_float(x: any): number\n\tlocal value = tonumber(x)\n\tif value == nil then error({__type=\"ValueError\", __msg=\"could not convert string to float\"}) end\n\treturn value\nend\n",
             ),
             (
                 "molt_str",
@@ -428,6 +437,14 @@ impl LuauBackend {
                 "local function molt_ord(ch: any): number\n\tif type(ch) ~= \"string\" then error({__type=\"TypeError\", __msg=\"ord() expected string of length 1, but \" .. type(ch) .. \" found\"}) end\n\tlocal len = molt_str_codepoint_len(ch)\n\tif len ~= 1 then error({__type=\"TypeError\", __msg=\"ord() expected a character, but string of length \" .. tostring(len) .. \" found\"}) end\n\tlocal code = utf8.codepoint(ch, 1)\n\tif code == nil then error({__type=\"UnicodeDecodeError\", __msg=\"invalid UTF-8 string\"}) end\n\treturn code\nend\n",
             ),
             (
+                "molt_call_checked",
+                "local function molt_call_checked(callable: any, ...): any\n\tif type(callable) ~= \"function\" then error({__type=\"TypeError\", __msg=\"object is not callable\"}) end\n\treturn callable(...)\nend\n",
+            ),
+            (
+                "molt_get_attr_checked",
+                "local function molt_get_attr_checked(obj: any, attr: any): any\n\tlocal value = molt_get_attr(obj, attr)\n\tif value == nil then error({__type=\"AttributeError\", __msg=tostring(attr)}) end\n\treturn value\nend\n",
+            ),
+            (
                 // CheckedAdd's Luau lowering (docs/design/foundation/
                 // 15_luau-checkedadd-plan.md): Luau numbers are f64 — `+`
                 // never wraps i64, it rounds — so the i64-overflow flag is
@@ -484,6 +501,7 @@ impl LuauBackend {
         let needs_matmul_group = used_call("molt_matmul") || used_call("molt_inplace_matmul");
         let needs_not_implemented = used("molt_not_implemented") || needs_matmul_group;
         let needs_get_attr = used_call("molt_get_attr")
+            || used_call("molt_get_attr_checked")
             || used_call("molt_get_attr_default")
             || used_call("molt_has_attr")
             || used_call("molt_set_attr")
@@ -673,9 +691,9 @@ impl LuauBackend {
             self.output.push_str(concat!(
                 "local molt_os = {\n",
                 "\tgetcwd = function() return \".\" end,\n",
-                "\tgetenv = function(k: string) return nil end,\n",
+                "\tgetenv = function(_k: string) error({__type=\"RuntimeError\", __msg=\"os.getenv is unavailable in the Luau backend\"}) end,\n",
                 "\tpath = { join = function(...) local a = {...} return table.concat(a, \"/\") end,\n",
-                "\t\texists = function() return false end, sep = \"/\" },\n",
+                "\t\texists = function(_path: string) error({__type=\"RuntimeError\", __msg=\"os.path.exists is unavailable in the Luau backend\"}) end, sep = \"/\" },\n",
                 "}\n\n",
             ));
             self.output

@@ -376,7 +376,7 @@ fn test_call_method_list_count_and_index_use_collection_authority() {
         "typed list count/index must not use generic method lookup, got:\n{output}"
     );
     assert!(
-        output.contains("molt_get_attr(xs, \"custom\")") && !output.contains("xs:custom"),
+        output.contains("molt_get_attr_checked(xs, \"custom\")") && !output.contains("xs:custom"),
         "unknown typed list methods must fall through to generic method lookup, got:\n{output}"
     );
 }

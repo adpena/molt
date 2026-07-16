@@ -549,7 +549,7 @@ fn read_unsigned(bytes: &[u8], endian: StructEndian, size: usize) -> Result<u128
     Ok(val)
 }
 
-fn f16_from_f64(val: f64) -> Result<u16, ()> {
+fn f16_from_f64(val: f64) -> Result<u16, molt_obj_model::float_bits::FloatNarrowError> {
     molt_obj_model::float_bits::f64_to_f16_bits(val)
 }
 
@@ -1137,7 +1137,9 @@ pub extern "C" fn molt_struct_pack(format_bits: u64, values_bits: u64) -> u64 {
                             2 => {
                                 let bits = match f16_from_f64(val) {
                                     Ok(bits) => bits,
-                                    Err(()) => {
+                                    Err(
+                                        molt_obj_model::float_bits::FloatNarrowError::FiniteOverflow,
+                                    ) => {
                                         return raise_exception::<u64>(
                                             _py,
                                             "OverflowError",
@@ -1154,7 +1156,9 @@ pub extern "C" fn molt_struct_pack(format_bits: u64, values_bits: u64) -> u64 {
                             4 => {
                                 let bits = match molt_obj_model::float_bits::f64_to_f32_bits(val) {
                                     Ok(bits) => bits,
-                                    Err(()) => {
+                                    Err(
+                                        molt_obj_model::float_bits::FloatNarrowError::FiniteOverflow,
+                                    ) => {
                                         return raise_exception::<u64>(
                                             _py,
                                             "OverflowError",

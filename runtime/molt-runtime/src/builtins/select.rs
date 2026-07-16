@@ -556,7 +556,7 @@ fn poll_masks_batch(
     }
 
     let rc = {
-        let _release = GilReleaseGuard::new();
+        let _release = GilReleaseGuard::suspend();
         unsafe {
             libc::poll(
                 pollfds.as_mut_ptr(),
@@ -1162,7 +1162,7 @@ pub extern "C" fn molt_select_selector_poll(handle_bits: u64, timeout_bits: u64)
             {
                 #[cfg(not(target_arch = "wasm32"))]
                 {
-                    let _release = GilReleaseGuard::new();
+                    let _release = GilReleaseGuard::suspend();
                     thread::sleep(Duration::from_secs_f64(timeout));
                 }
                 // On WASM there is no real fd polling and sleeping would freeze the

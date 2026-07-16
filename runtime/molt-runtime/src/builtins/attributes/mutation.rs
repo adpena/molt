@@ -341,18 +341,14 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                     return MoltObject::none().bits() as i64;
                 }
                 if name == "__notes__" {
-                    let result = exception_replace_field_bits(
+                    let _ = exception_replace_field_bits(
                         _py,
                         MoltObject::from_ptr(obj_ptr).bits(),
                         ExceptionFieldSlot::Notes,
                         val_bits,
                     );
                     dec_ref_bits(_py, attr_bits);
-                    return if result.is_ok() {
-                        MoltObject::none().bits() as i64
-                    } else {
-                        MoltObject::none().bits() as i64
-                    };
+                    return MoltObject::none().bits() as i64;
                 }
                 if name == "__dict__" {
                     let val_obj = obj_from_bits(val_bits);
@@ -1038,18 +1034,13 @@ pub(crate) unsafe fn del_attr_ptr(
                 return MoltObject::none().bits() as i64;
             }
             if attr_name == "__notes__" {
-                return if exception_replace_field_bits(
+                let _ = exception_replace_field_bits(
                     _py,
                     MoltObject::from_ptr(obj_ptr).bits(),
                     ExceptionFieldSlot::Notes,
                     MoltObject::none().bits(),
-                )
-                .is_ok()
-                {
-                    MoltObject::none().bits() as i64
-                } else {
-                    MoltObject::none().bits() as i64
-                };
+                );
+                return MoltObject::none().bits() as i64;
             }
             let dict_bits = exception_dict_bits(obj_ptr);
             if !obj_from_bits(dict_bits).is_none()

@@ -12,7 +12,7 @@ use super::{
     mark_cleanup_root_once, materialize_label_block, preanalyze_function_ir, protect_cleanup_names,
     switch_to_block_materialized, switch_to_block_with_rebind,
 };
-use crate::repr::ScalarKind;
+use crate::repr::{ContainerStorageKind, ScalarKind};
 use crate::{FunctionIR, OpIR, SimpleBackend, SimpleIR};
 use cranelift_codegen::isa::CallConv;
 use cranelift_codegen::{

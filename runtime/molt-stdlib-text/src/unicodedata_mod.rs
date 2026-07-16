@@ -1161,5 +1161,5 @@ pub extern "C" fn molt_unicodedata_east_asian_width(ch_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_unicodedata_unidata_version() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, { alloc_str(_py, UNIDATA_VERSION) })
+    molt_runtime_core::with_core_gil!(_py, alloc_str(_py, UNIDATA_VERSION))
 }

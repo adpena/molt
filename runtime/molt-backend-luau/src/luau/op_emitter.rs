@@ -60,21 +60,12 @@ impl LuauBackend {
         }
     }
 
-    fn emit_unsupported_op(&mut self, op: &OpIR) {
-        // Fail-closed authority: record the unsupported op the moment the
-        // dispatch catch-all fires. `compile_checked` reads this list, so an
-        // unsupported op can never slip a fabricated `nil` past the gate by
-        // lacking the exact `-- [unsupported op:` marker string in the text.
+    pub(super) fn emit_unsupported_op(&mut self, op: &OpIR) {
+        // The dispatch records failure, but deliberately emits no source.
+        // `emit_source` is private and `compile_checked` rejects this record,
+        // so no caller can observe either a partial program or a fabricated
+        // value for an unsupported operation.
         self.unsupported_ops
             .push(format!("`{}` (luau backend)", op.kind));
-        if let Some(ref out_name) = op.out {
-            let out = sanitize_ident(out_name);
-            self.emit_line(&format!(
-                "local {out} = nil -- [unsupported op: {}]",
-                op.kind
-            ));
-        } else {
-            self.emit_line(&format!("-- [unsupported op: {}]", op.kind));
-        }
     }
 }

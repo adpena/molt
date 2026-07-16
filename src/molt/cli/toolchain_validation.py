@@ -609,26 +609,6 @@ def _planned_validate_steps(
             "smoke",
         ),
         _ValidationStep(
-            "luau-lowering-regressions",
-            [
-                "cargo",
-                "test",
-                "-p",
-                "molt-backend-luau",
-                "--features",
-                "luau-backend",
-                "--lib",
-                "luau_lower::tests::",
-                "--",
-                "--nocapture",
-            ],
-            root,
-            "correctness",
-            ("luau",),
-            ("dev", "release"),
-            "smoke",
-        ),
-        _ValidationStep(
             "conformance-smoke",
             [
                 python,

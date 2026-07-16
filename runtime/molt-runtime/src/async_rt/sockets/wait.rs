@@ -75,7 +75,7 @@ pub(crate) fn socket_wait_ready_poll(
         revents: 0,
     };
     let rc = {
-        let _release = crate::concurrency::GilReleaseGuard::new();
+        let _release = crate::concurrency::GilReleaseGuard::suspend();
         unsafe { libc::poll(&mut poll_fd, 1, timeout_ms) }
     };
     if rc < 0 {

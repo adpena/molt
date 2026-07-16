@@ -22,6 +22,42 @@
 #include <string.h>
 #include <wchar.h>
 
+/*
+ * FILE is target-libc-owned and intentionally opaque to Rust.  Keep all FILE
+ * operations in the C translation unit compiled against the target headers so
+ * PyObject_Print has the same provider on native, WASI, and freestanding wasm.
+ */
+int molt_capi_write_string(const char *text, FILE *stream) {
+    const size_t length = strlen(text);
+    if (length == 0) {
+        return 0;
+    }
+    return fwrite(text, 1, length, stream) == length ? 0 : EOF;
+}
+
+/*
+ * CPython's PyMem/PyObject allocation API is interoperable with extension C
+ * code, so allocation and release must use one target-C allocator.  Keeping
+ * these calls in the same target-compiled provider as FILE and errno also
+ * prevents wasm32-unknown-unknown's Rust allocator from creating pointers that
+ * a statically linked WASI extension later passes to a different free().
+ */
+void *molt_capi_malloc(size_t size) {
+    return malloc(size == 0 ? 1 : size);
+}
+
+void *molt_capi_calloc(size_t size) {
+    return calloc(1, size == 0 ? 1 : size);
+}
+
+void *molt_capi_realloc(void *ptr, size_t size) {
+    return realloc(ptr, size == 0 ? 1 : size);
+}
+
+void molt_capi_free(void *ptr) {
+    free(ptr);
+}
+
 /* Forward declarations for Rust-implemented helpers. */
 typedef ptrdiff_t Py_ssize_t;
 typedef struct _typeobject PyTypeObject;

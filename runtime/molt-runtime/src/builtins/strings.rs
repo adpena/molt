@@ -44,19 +44,6 @@ pub(crate) fn bytes_rfind_impl(hay_bytes: &[u8], needle_bytes: &[u8]) -> i64 {
         .unwrap_or(-1)
 }
 
-#[cfg(test)]
-mod search_tests {
-    use super::bytes_rfind_impl;
-
-    #[test]
-    fn reverse_search_preserves_empty_single_and_overlapping_semantics() {
-        assert_eq!(bytes_rfind_impl(b"ababab", b""), 6);
-        assert_eq!(bytes_rfind_impl(b"ababab", b"b"), 5);
-        assert_eq!(bytes_rfind_impl(b"ababab", b"abab"), 2);
-        assert_eq!(bytes_rfind_impl(b"ababab", b"xyz"), -1);
-    }
-}
-
 pub(crate) fn bytes_count_impl(hay_bytes: &[u8], needle_bytes: &[u8]) -> i64 {
     if needle_bytes.is_empty() {
         return hay_bytes.len() as i64 + 1;
@@ -2049,5 +2036,18 @@ pub unsafe extern "C" fn molt_bytes_from_bytes(
             write_bits_out(out, bits);
             0
         })
+    }
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::bytes_rfind_impl;
+
+    #[test]
+    fn reverse_search_preserves_empty_single_and_overlapping_semantics() {
+        assert_eq!(bytes_rfind_impl(b"ababab", b""), 6);
+        assert_eq!(bytes_rfind_impl(b"ababab", b"b"), 5);
+        assert_eq!(bytes_rfind_impl(b"ababab", b"abab"), 2);
+        assert_eq!(bytes_rfind_impl(b"ababab", b"xyz"), -1);
     }
 }

@@ -47,6 +47,9 @@ static GLOBAL: attestation_probe::CountingMiMalloc = attestation_probe::Counting
 #[cfg(test)]
 pub(crate) static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+#[cfg(test)]
+mod test_support;
+
 // Direct-link test and fuzz builds do not have compiler-emitted isolate
 // entrypoints. Provide fallback symbols for those harnesses only while
 // production binaries keep using generated symbols.
@@ -438,8 +441,9 @@ pub(crate) use crate::builtins::attr::{
 pub use crate::builtins::attributes::*;
 pub use crate::builtins::callable::*;
 pub(crate) use crate::builtins::classes::{
-    BuiltinClasses, builtin_classes, builtin_classes_if_initialized, builtin_classes_shutdown,
-    builtin_type_bits, class_name_for_error, is_builtin_class_bits, molt_builtin_class_lookup,
+    BuiltinClasses, builtin_classes, builtin_classes_break_cycles, builtin_classes_if_initialized,
+    builtin_classes_shutdown, builtin_type_bits, class_name_for_error, is_builtin_class_bits,
+    molt_builtin_class_lookup,
 };
 pub use crate::builtins::codecs::*;
 pub use crate::builtins::codecs_ext::*;
@@ -469,10 +473,10 @@ pub use crate::builtins::copy_mod::*;
 pub use crate::builtins::dbm_dumb::*;
 pub use crate::builtins::enum_ext::*;
 pub(crate) use crate::builtins::exceptions::{
-    ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, EXCEPTION_STACK, ExceptionSentinel,
-    GENERATOR_EXCEPTION_STACKS, GENERATOR_RAISE, TASK_RAISE_ACTIVE, alloc_exception,
-    alloc_exception_from_class_bits, clear_exception, clear_exception_state,
-    clear_exception_type_cache, exception_args_bits, exception_args_from_iterable,
+    ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, CURRENT_EXCEPTION_PENDING, EXCEPTION_STACK,
+    ExceptionSentinel, GENERATOR_EXCEPTION_STACKS, GENERATOR_RAISE, TASK_RAISE_ACTIVE,
+    alloc_exception, alloc_exception_from_class_bits, clear_exception, clear_exception_type_cache,
+    clear_thread_exception_for_teardown, exception_args_bits, exception_args_from_iterable,
     exception_args_is_lazy_single, exception_args_payload_bits, exception_cause_bits,
     exception_clear_reason_set, exception_context_align_depth, exception_context_bits,
     exception_context_fallback_pop, exception_context_fallback_push, exception_detach_owned_edges,
@@ -488,12 +492,12 @@ pub(crate) use crate::builtins::exceptions::{
     exceptions_clear_runtime_state, format_exception, format_exception_message,
     format_exception_with_traceback, generator_exception_stack_drop,
     generator_exception_stack_store, generator_exception_stack_take, generator_raise_active,
-    global_last_exception_bits_noinc, handle_system_exit, molt_exception_active,
-    molt_exception_clear, molt_exception_kind, molt_exception_last, molt_exception_pending,
-    molt_exception_set_last, molt_raise, molt_unraisable_hook_args_is_exact, raise_exception,
-    raise_key_error_with_key, raise_not_iterable, raise_unicode_decode_error,
-    raise_unicode_encode_error, raise_unsupported_inplace, record_exception, set_generator_raise,
-    set_task_raise_active, task_exception_baseline_drop, task_exception_baseline_store,
+    handle_system_exit, molt_exception_active, molt_exception_clear, molt_exception_kind,
+    molt_exception_last, molt_exception_pending, molt_exception_set_last, molt_raise,
+    molt_unraisable_hook_args_is_exact, raise_exception, raise_key_error_with_key,
+    raise_not_iterable, raise_unicode_decode_error, raise_unicode_encode_error,
+    raise_unsupported_inplace, record_exception, set_generator_raise, set_task_raise_active,
+    sync_current_exception_pending, task_exception_baseline_drop, task_exception_baseline_store,
     task_exception_baseline_take, task_exception_depth_drop, task_exception_depth_store,
     task_exception_depth_take, task_exception_handler_stack_drop,
     task_exception_handler_stack_store, task_exception_handler_stack_take,
@@ -553,7 +557,7 @@ pub use crate::builtins::select::*;
 pub use crate::builtins::shutil::*;
 pub use crate::builtins::signal_ext::*;
 pub use crate::builtins::sitebuiltins::*;
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", not(target_arch = "wasm32")))]
 pub use crate::builtins::sqlite3::*;
 pub use crate::builtins::ssl::*;
 pub use crate::builtins::string_ext::*;

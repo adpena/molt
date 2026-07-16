@@ -12,7 +12,6 @@ use super::common::{
 };
 use crate::bridge::inc_ref_bits;
 use molt_runtime_core::prelude::{MoltObject, PyToken};
-#[cfg(test)]
 use std::collections::HashMap;
 
 pub(in crate::tk) fn handle_panedwindow_widget_path_command(
@@ -265,10 +264,17 @@ fn panedwindow_insert_child(widget: &mut TkWidgetState, index: usize, child: Str
 }
 
 fn panedwindow_forget_child(py: &PyToken, widget: &mut TkWidgetState, child: &str) {
-    widget.pane_children.retain(|existing| existing != child);
-    if let Some(mut options) = widget.pane_child_options.remove(child) {
+    if let Some(mut options) = panedwindow_remove_child(widget, child) {
         clear_value_map_refs(py, &mut options);
     }
+}
+
+fn panedwindow_remove_child(
+    widget: &mut TkWidgetState,
+    child: &str,
+) -> Option<HashMap<String, u64>> {
+    widget.pane_children.retain(|existing| existing != child);
+    widget.pane_child_options.remove(child)
 }
 
 fn panedwindow_apply_pane_options(
@@ -311,16 +317,16 @@ mod tests {
 
     #[test]
     fn panedwindow_forget_removes_child_and_option_authority() {
-        let py = PyToken::new();
         let mut widget = panedwindow_widget();
         panedwindow_add_child(&mut widget, ".a".to_string());
         widget
             .pane_child_options
             .insert(".a".to_string(), HashMap::new());
 
-        panedwindow_forget_child(&py, &mut widget, ".a");
+        let removed = panedwindow_remove_child(&mut widget, ".a");
 
         assert!(widget.pane_children.is_empty());
         assert!(!widget.pane_child_options.contains_key(".a"));
+        assert_eq!(removed, Some(HashMap::new()));
     }
 }

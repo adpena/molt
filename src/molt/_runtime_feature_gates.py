@@ -1,4 +1,4 @@
-"""Generated runtime intrinsic symbol-prefix feature gates.
+"""Generated runtime intrinsic feature and target-availability gates.
 
 Source authorities:
 - runtime/molt-runtime/src/intrinsics/categories.toml owns symbol-prefix feature attribution.
@@ -131,6 +131,14 @@ RUNTIME_FEATURE_GATES: tuple[tuple[str, str], ...] = (
     ("molt_gpu_prim_", "molt_gpu_primitives"),
 )
 
+RUNTIME_TARGET_ARCH_EXCLUSIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("molt_sqlite3_", ("wasm32",)),
+)
+
+RUNTIME_FEATURE_TARGET_ARCH_EXCLUSIONS: dict[str, frozenset[str]] = {
+    "sqlite": frozenset({"wasm32"}),
+}
+
 LINK_AFFECTING_FEATURES: frozenset[str] = frozenset(
     {
         "molt_gpu_primitives",
@@ -172,6 +180,46 @@ def feature_gate_for_symbol(symbol: str) -> str | None:
             if best is None or prefix_len > best[0]:
                 best = (prefix_len, feature)
     return best[1] if best is not None else None
+
+
+def target_arch_from_triple(target_triple: str | None) -> str | None:
+    """Return the Rust target architecture component."""
+    if target_triple is None:
+        return None
+    return target_triple.split("-", 1)[0]
+
+
+def unsupported_target_arches_for_symbol(symbol: str) -> tuple[str, ...]:
+    """Return architectures where *symbol* has no provider."""
+    best: tuple[int, tuple[str, ...]] | None = None
+    for prefix, arches in RUNTIME_TARGET_ARCH_EXCLUSIONS:
+        if symbol.startswith(prefix):
+            prefix_len = len(prefix)
+            if best is None or prefix_len > best[0]:
+                best = (prefix_len, arches)
+    return best[1] if best is not None else ()
+
+
+def runtime_symbol_available_on_target(
+    symbol: str, *, target_triple: str | None
+) -> bool:
+    """Whether *symbol* has a provider for *target_triple*."""
+    arch = target_arch_from_triple(target_triple)
+    return arch is None or arch not in unsupported_target_arches_for_symbol(symbol)
+
+
+def link_affecting_features_unsupported_on_target(
+    target_triple: str | None,
+) -> frozenset[str]:
+    """Features with no provider on *target_triple*."""
+    arch = target_arch_from_triple(target_triple)
+    if arch is None:
+        return frozenset()
+    return frozenset(
+        feature
+        for feature, arches in RUNTIME_FEATURE_TARGET_ARCH_EXCLUSIONS.items()
+        if arch in arches and feature in LINK_AFFECTING_FEATURES
+    )
 
 
 def link_affecting_feature_gate_for_symbol(symbol: str) -> str | None:

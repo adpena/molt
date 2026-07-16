@@ -11,6 +11,8 @@ from __future__ import annotations
 import tomllib
 
 import molt.cli as cli
+import pytest
+from molt.cli import backend_ir as BACKEND_IR
 from molt.cli import required_features as RF
 from molt.cli import runtime_features as RUNTIME_FEATURES
 from molt._runtime_feature_gates import (
@@ -70,6 +72,7 @@ def _refusal_for_reached_symbols(
         _functions_reaching(*symbols),
         profile_name=profile,
         profile_features=profile_features,
+        target_triple=target_triple,
     )
 
 
@@ -168,6 +171,15 @@ def test_micro_profile_refuses_reached_ast_callable_loudly() -> None:
     )
     assert message is not None
     assert "stdlib_ast" in message
+    assert "--stdlib-profile full" in message
+    assert (
+        _refusal_for_reached_symbols(
+            "molt_ast_parse", profile="full", target_triple=None
+        )
+        is None
+    )
+    assert message is not None
+    assert "stdlib_ast" in message
     assert "molt_ast_parse" in message
     assert "'micro'" in message
     assert "--stdlib-profile full" in message
@@ -227,7 +239,8 @@ def test_wasm_full_excludes_sqlite_and_refuses_reached_sqlite() -> None:
         "molt_sqlite3_connect", profile="full", target_triple="wasm32-wasip1"
     )
     assert message is not None
-    assert "sqlite" in message
+    assert "has no runtime provider" in message
+    assert "wasm32" in message
     assert "molt_sqlite3_connect" in message
 
 
@@ -450,12 +463,52 @@ def test_full_remedy_for_reached_ast_refusal_is_truthful() -> None:
     message = _refusal_for_reached_symbols(
         "molt_ast_parse", profile="micro", target_triple=None
     )
-    assert message is not None
-    assert "stdlib_ast" in message
-    assert "--stdlib-profile full" in message
+
+
+@pytest.mark.parametrize(
+    "target_triple",
+    ("x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"),
+)
+def test_backend_reachability_uses_resolved_cross_native_target_triple(
+    monkeypatch: pytest.MonkeyPatch,
+    target_triple: str,
+) -> None:
+    observed: list[tuple[str, str | None]] = []
+
+    def profile_features(
+        _profile: str, *, target_triple: str | None
+    ) -> tuple[str, ...]:
+        observed.append(("profile", target_triple))
+        return ()
+
+    def refusal(
+        _functions: object,
+        *,
+        profile_name: str,
+        profile_features: frozenset[str],
+        target_triple: str | None,
+    ) -> None:
+        del profile_name, profile_features
+        observed.append(("refusal", target_triple))
+
+    monkeypatch.setattr(
+        BACKEND_IR._runtime_features,
+        "_runtime_builtin_features_for_profile",
+        profile_features,
+    )
+    monkeypatch.setattr(
+        BACKEND_IR._required_features,
+        "reachability_profile_feature_refusal",
+        refusal,
+    )
+
     assert (
-        _refusal_for_reached_symbols(
-            "molt_ast_parse", profile="full", target_triple=None
+        BACKEND_IR._reachability_feature_refusal(
+            {"functions": []},
+            stdlib_profile="full",
+            target="native",
+            target_triple=target_triple,
         )
         is None
     )
+    assert observed == [("profile", target_triple), ("refusal", target_triple)]

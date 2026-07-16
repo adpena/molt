@@ -1,6 +1,6 @@
 {
   "critical_hand_classifications": 0.0,
-  "debt_markers_total": 342.0,
+  "debt_markers_total": 338.0,
   "duplicate_authorities": 0.0,
   "hand_classified_matches": 0.0,
   "handset_classifications": 0.0,
@@ -12,6 +12,6 @@
   "python_stub_surfaces_total": 391.0,
   "repr_name_scalar_authority_violations": 0.0,
   "rust_backend_lowering_gaps_total": 0.0,
-  "rust_stub_surfaces_total": 45.0,
+  "rust_stub_surfaces_total": 43.0,
   "undecomposed_god_files": 0.0
 }

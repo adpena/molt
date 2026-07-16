@@ -2241,7 +2241,7 @@ pub extern "C" fn molt_time_sleep(secs_bits: u64) -> u64 {
             }
         };
         if !duration.is_zero() {
-            let _release = GilReleaseGuard::new();
+            let _release = GilReleaseGuard::suspend();
             std::thread::sleep(duration);
         }
         MoltObject::none().bits()

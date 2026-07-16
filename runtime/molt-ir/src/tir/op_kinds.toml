@@ -288,6 +288,135 @@ pass_delta_exception_event_opcodes = [
 pass_delta_type_guard_opcodes = ["TypeGuard"]
 pass_delta_heap_alloc_opcodes = ["Alloc", "ObjectNewBound", "ObjectNewBoundStack"]
 
+# SimpleIR Python-integer semantic roles. String-dispatch backends consume the
+# generated role table instead of maintaining target-local op-name families.
+# Dynamic roles may be admitted only when canonical representation facts prove
+# that integer dispatch is impossible; integer-only and producer roles require
+# an arbitrary-precision integer value authority.
+simpleir_dynamic_add_semantics_kinds = [
+    "add",
+    "inplace_add",
+    "binop_add",
+]
+simpleir_dynamic_numeric_semantics_kinds = [
+    "sub", "inplace_sub", "binop_sub",
+    "mul", "inplace_mul", "binop_mul",
+]
+simpleir_dynamic_true_div_semantics_kinds = [
+    "div", "true_div",
+]
+simpleir_dynamic_divmod_semantics_kinds = [
+    "floor_div", "floordiv", "inplace_floordiv", "binop_floor_div",
+    "mod", "modulo", "mod_", "inplace_mod", "binop_mod",
+]
+simpleir_dynamic_power_semantics_kinds = [
+    "pow", "binop_pow",
+]
+simpleir_dynamic_unary_numeric_semantics_kinds = [
+    "neg", "unary_neg", "pos", "unary_pos", "abs", "builtin_abs",
+]
+simpleir_integer_only_semantics_kinds = [
+    "band", "bit_and", "inplace_bit_and",
+    "bor", "bit_or", "inplace_bit_or",
+    "bxor", "bit_xor", "inplace_bit_xor",
+    "bit_not", "invert", "unary_invert",
+    "lshift", "shl", "inplace_lshift",
+    "rshift", "shr", "inplace_rshift",
+]
+simpleir_integer_producer_semantics_kinds = [
+    "const", "const_int", "const_bigint",
+    "box_from_raw_int", "unbox_to_raw_int", "checked_add", "checked_mul",
+    "loop_index_start", "loop_index_next",
+    "int", "cast_int", "builtin_int",
+    "int_from_obj", "int_from_str_of_obj",
+    "sum", "builtin_sum",
+    "range", "builtin_range", "range_new", "for_range",
+    "enumerate",
+]
+
+# Runtime/object-model semantic roles used for target admission. These are
+# target-neutral requirements; backends advertise only capabilities they can
+# prove CPython-exact before source generation.
+simpleir_identity_semantics_kinds = ["is", "is_not"]
+simpleir_tuple_semantics_kinds = ["tuple_new"]
+simpleir_exception_semantics_kinds = [
+    "raise", "reraise", "check_exception", "loop_break_if_exception",
+    "try_start", "try_end", "except_start", "except_end", "finally_start", "finally_end",
+    "exception_push", "exception_pop", "exception_clear", "exception_active",
+    "exception_stack_clear", "exception_stack_enter", "exception_stack_exit",
+    "exception_stack_set_depth", "exception_stack_depth",
+    "exception_set_last", "exception_set_value", "exception_set_cause", "exception_context_set",
+    "exception_last", "exception_last_pending", "exception_finally_pending_observer",
+    "exception_new", "exception_new_builtin", "exception_new_from_class",
+    "exception_new_builtin_empty", "exception_new_builtin_one",
+    "exception_match_builtin", "exception_kind", "exception_class", "exception_message",
+    "exceptiongroup_match", "exceptiongroup_combine",
+]
+simpleir_deterministic_lifetime_semantics_kinds = [
+    "inc_ref", "dec_ref", "borrow", "release", "drop_inserted",
+    "exception_region_drops_inserted",
+]
+simpleir_format_protocol_semantics_kinds = ["format_string", "string_format"]
+simpleir_iterable_protocol_semantics_kinds = [
+    "string_join", "unpack_sequence", "list_fill_new",
+    "for_iter", "iter_next", "iter_next_unboxed",
+]
+simpleir_object_model_semantics_kinds = [
+    "const_none", "const_bytes",
+    "closure_load", "closure_store",
+    "guarded_field_get", "guarded_field_init", "guarded_field_set",
+    "module_del_global", "module_del_global_if_present",
+    "build_list", "list_new", "alloc", "alloc_task", "build_dict", "dict_new",
+    "list_append", "list_pop", "list_extend", "list_insert", "list_remove",
+    "list_clear", "list_copy", "list_reverse", "list_count", "list_index",
+    "list_index_range", "list_repeat_range",
+    "get_item", "subscript", "index", "dict_get",
+    "set_item", "store_subscript", "store_index", "dict_set", "del_index",
+    "dict_update", "dict_update_missing", "dict_update_kwstar", "dict_popitem",
+    "get_attr", "load_attr", "get_attr_name", "get_attr_name_default",
+    "get_attr_generic_obj", "get_attr_generic_ptr",
+    "set_attr", "store_attr", "set_attr_name", "set_attr_generic_obj", "set_attr_generic_ptr",
+    "del_attr_name", "del_attr_generic_obj", "del_attr_generic_ptr",
+    "zip", "sorted", "builtin_sorted", "reversed", "builtin_reversed",
+    "any", "builtin_any", "all", "builtin_all",
+    "module_new", "module_cache_get", "module_load_cached", "module_cache_set",
+    "module_cache_del", "module_import", "module_get_attr", "module_import_from",
+    "module_get_name", "module_get_global", "module_set_attr",
+    "class_new", "object_new", "builtin_type", "bound_method_new",
+    "alloc_class_static", "alloc_class_trusted", "alloc_class", "alloc_instance",
+    "init_instance", "instance_set_field", "instance_get_field", "instance_has_field",
+    "object_set_class", "class_set_base", "class_set_layout_version",
+    "class_merge_layout", "class_apply_set_name", "class_layout_version",
+    "class_layout_field_count", "class_layout_slot_count",
+]
+simpleir_truthiness_semantics_kinds = [
+    "bool", "cast_bool", "builtin_bool", "not", "unary_not", "and", "_m_and", "or",
+    "if", "if_not", "br_if", "branch_true", "branch_false", "loop_break_if_true",
+    "loop_break_if_false",
+]
+simpleir_comparison_semantics_kinds = [
+    "eq", "cmp_eq", "ne", "cmp_ne", "lt", "cmp_lt", "le", "cmp_le",
+    "gt", "cmp_gt", "ge", "cmp_ge", "in", "not_in", "contains",
+]
+simpleir_fallible_protocol_semantics_kinds = [
+    "call", "call_func", "call_internal", "call_method", "call_bind", "call_indirect",
+    "call_function", "call_guarded", "builtin_func",
+    "len", "builtin_len", "float", "cast_float", "builtin_float", "float_from_obj",
+    "str", "cast_str", "builtin_str", "str_from_obj", "repr_from_obj", "ascii_from_obj",
+    "chr", "ord", "ord_at", "print", "builtin_print",
+]
+simpleir_async_runtime_semantics_kinds = [
+    "chan_recv_yield", "chan_send_yield",
+    "state_label", "state_switch", "state_transition", "state_yield",
+]
+simpleir_unstructured_control_semantics_kinds = [
+    "goto", "jump", "label",
+]
+simpleir_host_capability_semantics_kinds = [
+    "file_open", "file_read", "file_write", "file_close", "file_flush",
+    "invoke_ffi",
+]
+
 # ===========================================================================
 # Call graph / CallFacts opcode and kind roles.
 #

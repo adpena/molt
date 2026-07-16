@@ -24,6 +24,12 @@ from wasm_abi_gen.paths import (
     ROOT,
     RUNTIME_ROOT,
 )
+from wasm_abi_gen.intrinsic_availability import (
+    IntrinsicAvailability,
+    load_intrinsic_availability,
+    longest_prefix_value,
+    symbol_available_on_target_arch,
+)
 
 WASM_VAL_TYPES = {
     "i32": "I32",
@@ -272,7 +278,9 @@ def _no_mangle_macro_names(masked: str) -> set[str]:
     return names
 
 
-def _record_cpython_abi_export_kind(kinds: dict[str, str], name: str, kind: str) -> None:
+def _record_cpython_abi_export_kind(
+    kinds: dict[str, str], name: str, kind: str
+) -> None:
     previous = kinds.get(name)
     if previous is not None and previous != kind:
         raise WasmAbiManifestError(
@@ -457,39 +465,49 @@ def _intrinsic_manifest_names() -> set[str]:
 
 
 @lru_cache(maxsize=1)
+def _load_runtime_availability_from_categories() -> IntrinsicAvailability:
+    try:
+        return load_intrinsic_availability(INTRINSIC_CATEGORIES)
+    except (TypeError, tomllib.TOMLDecodeError) as exc:
+        raise WasmAbiManifestError(
+            f"invalid intrinsic target availability: {exc}"
+        ) from exc
+
+
 def _load_runtime_feature_gates_from_categories() -> tuple[tuple[str, str], ...]:
-    raw = INTRINSIC_CATEGORIES.read_bytes()
-    data = tomllib.loads(raw.decode())
-    gates: list[tuple[str, str]] = []
-    for _mod_name, mod_data in data.get("stdlib", {}).items():
-        feature = mod_data.get("feature")
-        if not isinstance(feature, str) or not feature:
-            continue
-        raw_prefixes = mod_data.get("feature_prefixes", mod_data.get("prefixes", []))
-        if not isinstance(raw_prefixes, list):
-            raise WasmAbiManifestError(
-                "intrinsic categories feature_prefixes/prefixes must be lists"
-            )
-        for prefix in raw_prefixes:
-            if not isinstance(prefix, str) or not prefix:
-                raise WasmAbiManifestError(
-                    "intrinsic categories feature prefixes must be non-empty strings"
-                )
-            gates.append((f"molt_{prefix}", feature))
-    return tuple(gates)
+    return _load_runtime_availability_from_categories().feature_gates
 
 
 def _runtime_feature_gate_for_symbol(
     symbol: str,
     gates: list[tuple[str, str]],
 ) -> str | None:
-    best: tuple[int, str] | None = None
-    for prefix, feature in gates:
-        if symbol.startswith(prefix):
-            prefix_len = len(prefix)
-            if best is None or prefix_len > best[0]:
-                best = (prefix_len, feature)
-    return best[1] if best is not None else None
+    return longest_prefix_value(symbol, tuple(gates))
+
+
+def _runtime_symbol_available_on_wasm(symbol: str) -> bool:
+    return symbol_available_on_target_arch(
+        symbol,
+        "wasm32",
+        _load_runtime_availability_from_categories().target_arch_exclusions,
+    )
+
+
+def _remove_target_unavailable_wasm_imports(imports: list[dict]) -> None:
+    """Delete imports whose runtime definitions do not exist on wasm32.
+
+    The WASM ABI artifacts are provider manifests, not a catalogue of symbols
+    available on other targets. Advertising an unsupplied symbol defers a
+    deterministic target error into an undefined import at link or runtime.
+    """
+    imports[:] = [
+        entry
+        for entry in imports
+        if (
+            (export_name := runtime_export_name(entry)) is None
+            or _runtime_symbol_available_on_wasm(export_name)
+        )
+    ]
 
 
 def runtime_export_name(entry: dict) -> str | None:
@@ -960,8 +978,7 @@ def _validate_witness_frontier_reserved_callables(
     missing = sorted(required_set - reserved_names)
     if missing:
         raise WasmAbiManifestError(
-            "witness-frontier runtime callables are not reserved: "
-            + ", ".join(missing)
+            "witness-frontier runtime callables are not reserved: " + ", ".join(missing)
         )
 
 
@@ -1401,6 +1418,7 @@ def validate_loaded_manifest(
             non_runtime_callable_intrinsics,
         )
     )
+    _remove_target_unavailable_wasm_imports(imports)
     _annotate_runtime_callable_features(
         imports,
         reject_existing=reject_manual_runtime_features,

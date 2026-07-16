@@ -30,17 +30,17 @@ pub(crate) fn builtin_func_bits(
             (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_IMMORTAL;
             let builtin_bits = builtin_classes(_py).builtin_function_or_method;
             let old_bits = object_class_bits(ptr);
-            if old_bits != builtin_bits {
-                if !crate::object::object_init_class_edge_unpublished(
+            if old_bits != builtin_bits
+                && !crate::object::object_init_class_edge_unpublished(
                     _py,
                     ptr,
                     builtin_bits,
                     ClassEdgeOwnership::Owned,
-                ) {
-                    (*header_from_obj_ptr(ptr)).flags &= !crate::object::HEADER_FLAG_IMMORTAL;
-                    dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-                    return MoltObject::none().bits();
-                }
+                )
+            {
+                (*header_from_obj_ptr(ptr)).flags &= !crate::object::HEADER_FLAG_IMMORTAL;
+                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                return MoltObject::none().bits();
             }
         }
         MoltObject::from_ptr(ptr).bits()
@@ -82,17 +82,17 @@ pub(crate) fn builtin_func_bits_with_bind_kind(
             crate::call::bind::refresh_function_requires_binder_flag(_py, ptr);
             let builtin_bits = builtin_classes(_py).builtin_function_or_method;
             let old_bits = object_class_bits(ptr);
-            if old_bits != builtin_bits {
-                if !crate::object::object_init_class_edge_unpublished(
+            if old_bits != builtin_bits
+                && !crate::object::object_init_class_edge_unpublished(
                     _py,
                     ptr,
                     builtin_bits,
                     ClassEdgeOwnership::Owned,
-                ) {
-                    (*header_from_obj_ptr(ptr)).flags &= !crate::object::HEADER_FLAG_IMMORTAL;
-                    dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-                    return MoltObject::none().bits();
-                }
+                )
+            {
+                (*header_from_obj_ptr(ptr)).flags &= !crate::object::HEADER_FLAG_IMMORTAL;
+                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                return MoltObject::none().bits();
             }
         }
         MoltObject::from_ptr(ptr).bits()
@@ -130,17 +130,17 @@ pub(crate) fn builtin_func_bits_with_defaults_tuple(
             }
             let builtin_bits = builtin_classes(_py).builtin_function_or_method;
             let old_bits = object_class_bits(ptr);
-            if old_bits != builtin_bits {
-                if !crate::object::object_init_class_edge_unpublished(
+            if old_bits != builtin_bits
+                && !crate::object::object_init_class_edge_unpublished(
                     _py,
                     ptr,
                     builtin_bits,
                     ClassEdgeOwnership::Owned,
-                ) {
-                    (*header_from_obj_ptr(ptr)).flags &= !crate::object::HEADER_FLAG_IMMORTAL;
-                    dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-                    return MoltObject::none().bits();
-                }
+                )
+            {
+                (*header_from_obj_ptr(ptr)).flags &= !crate::object::HEADER_FLAG_IMMORTAL;
+                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                return MoltObject::none().bits();
             }
         }
         MoltObject::from_ptr(ptr).bits()
@@ -161,16 +161,16 @@ pub(crate) fn builtin_classmethod_bits(
         unsafe {
             let builtin_bits = builtin_classes(_py).builtin_function_or_method;
             let old_bits = object_class_bits(func_ptr);
-            if old_bits != builtin_bits {
-                if !crate::object::object_init_class_edge_unpublished(
+            if old_bits != builtin_bits
+                && !crate::object::object_init_class_edge_unpublished(
                     _py,
                     func_ptr,
                     builtin_bits,
                     ClassEdgeOwnership::Owned,
-                ) {
-                    dec_ref_bits(_py, MoltObject::from_ptr(func_ptr).bits());
-                    return MoltObject::none().bits();
-                }
+                )
+            {
+                dec_ref_bits(_py, MoltObject::from_ptr(func_ptr).bits());
+                return MoltObject::none().bits();
             }
         }
         let func_bits = MoltObject::from_ptr(func_ptr).bits();
@@ -211,17 +211,17 @@ pub(crate) fn builtin_classmethod_bits_with_defaults_tuple(
             }
             let builtin_bits = builtin_classes(_py).builtin_function_or_method;
             let old_bits = object_class_bits(func_ptr);
-            if old_bits != builtin_bits {
-                if !crate::object::object_init_class_edge_unpublished(
+            if old_bits != builtin_bits
+                && !crate::object::object_init_class_edge_unpublished(
                     _py,
                     func_ptr,
                     builtin_bits,
                     ClassEdgeOwnership::Owned,
-                ) {
-                    (*header_from_obj_ptr(func_ptr)).flags &= !crate::object::HEADER_FLAG_IMMORTAL;
-                    dec_ref_bits(_py, MoltObject::from_ptr(func_ptr).bits());
-                    return MoltObject::none().bits();
-                }
+                )
+            {
+                (*header_from_obj_ptr(func_ptr)).flags &= !crate::object::HEADER_FLAG_IMMORTAL;
+                dec_ref_bits(_py, MoltObject::from_ptr(func_ptr).bits());
+                return MoltObject::none().bits();
             }
         }
         let func_bits = MoltObject::from_ptr(func_ptr).bits();

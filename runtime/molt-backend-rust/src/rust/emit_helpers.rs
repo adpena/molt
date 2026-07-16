@@ -63,17 +63,6 @@ pub(super) fn args2(op: &OpIR) -> (String, String) {
     (a, b)
 }
 
-pub(super) fn rust_stub_marker(op: &OpIR, reason: impl Into<String>) -> String {
-    let mut detail = format!("MOLT_STUB: {}: {}", op.kind, reason.into());
-    if let Some(out) = op.out.as_deref().filter(|out| !out.is_empty()) {
-        detail.push_str(&format!(" -> `{out}`"));
-    }
-    if let Some(args) = op.args.as_ref().filter(|args| !args.is_empty()) {
-        detail.push_str(&format!(" args=({})", args.join(", ")));
-    }
-    detail
-}
-
 pub(super) fn rust_string_literal(s: &str) -> String {
     let escaped = s
         .replace('\\', "\\\\")

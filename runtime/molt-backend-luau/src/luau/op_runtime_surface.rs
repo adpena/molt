@@ -5,23 +5,27 @@ impl LuauBackend {
         match op.kind.as_str() {
             "context_null" | "context_enter" | "context_exit" | "context_closing"
             | "context_unwind" | "context_unwind_to" => {
-                if let Some(ref out_name) = op.out {
-                    let out = sanitize_ident(out_name);
-                    self.emit_line(&format!("local {out} = nil -- [context: {}]", op.kind));
-                }
+                self.emit_unsupported_op(op);
             }
             "context_depth" => {
-                let out = self.out_var(op);
-                self.emit_line(&format!("local {out} = 0"));
+                self.emit_unsupported_op(op);
             }
             "state_yield" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
-                if let Some(val) = args.first() {
-                    self.emit_line(&format!("coroutine.yield({})", sanitize_ident(val)));
-                }
                 if let Some(ref out_name) = op.out {
                     let out = sanitize_ident(out_name);
-                    self.emit_line(&format!("local {out} = nil -- [async: state_yield]"));
+                    if let Some(val) = args.first() {
+                        self.emit_line(&format!(
+                            "local {out} = coroutine.yield({})",
+                            sanitize_ident(val)
+                        ));
+                    } else {
+                        self.emit_line(&format!("local {out} = coroutine.yield()"));
+                    }
+                } else if let Some(val) = args.first() {
+                    self.emit_line(&format!("coroutine.yield({})", sanitize_ident(val)));
+                } else {
+                    self.emit_line("coroutine.yield()");
                 }
             }
             "state_switch"
@@ -47,10 +51,7 @@ impl LuauBackend {
             | "promise_set_exception"
             | "thread_submit"
             | "task_register_token_owned" => {
-                if let Some(ref out_name) = op.out {
-                    let out = sanitize_ident(out_name);
-                    self.emit_line(&format!("local {out} = nil -- [async: {}]", op.kind));
-                }
+                self.emit_unsupported_op(op);
             }
             "is_native_awaitable" => {
                 if let Some(ref out_name) = op.out {
@@ -59,10 +60,7 @@ impl LuauBackend {
                 }
             }
             "file_open" | "file_read" | "file_write" | "file_close" | "file_flush" => {
-                if let Some(ref out_name) = op.out {
-                    let out = sanitize_ident(out_name);
-                    self.emit_line(&format!("local {out} = nil -- [file: {}]", op.kind));
-                }
+                self.emit_unsupported_op(op);
             }
             "getargv" => {
                 if let Some(ref out_name) = op.out {
@@ -105,10 +103,7 @@ impl LuauBackend {
             | "asyncgen_locals_register"
             | "gen_locals_register"
             | "function_closure_bits" => {
-                if let Some(ref out_name) = op.out {
-                    let out = sanitize_ident(out_name);
-                    self.emit_line(&format!("local {out} = nil -- [internal: {}]", op.kind));
-                }
+                self.emit_unsupported_op(op);
             }
             "code_slot_set" | "code_slots_init" | "frame_locals_set" => {
                 if let Some(ref out_name) = op.out
@@ -128,10 +123,7 @@ impl LuauBackend {
             }
             "line" => {}
             "json_parse" | "msgpack_parse" | "cbor_parse" => {
-                if let Some(ref out_name) = op.out {
-                    let out = sanitize_ident(out_name);
-                    self.emit_line(&format!("local {out} = nil -- [{}]", op.kind));
-                }
+                self.emit_unsupported_op(op);
             }
             "invoke_ffi" => {
                 let diagnostic =
@@ -144,10 +136,7 @@ impl LuauBackend {
                 }
             }
             "memoryview_new" | "memoryview_tobytes" | "memoryview_cast" | "complex_from_obj" => {
-                if let Some(ref out_name) = op.out {
-                    let out = sanitize_ident(out_name);
-                    self.emit_line(&format!("local {out} = nil -- [{}]", op.kind));
-                }
+                self.emit_unsupported_op(op);
             }
             "bytearray_fill_range" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
@@ -159,6 +148,8 @@ impl LuauBackend {
                     self.emit_line(&format!(
                         "do local __ba = {bytearray}; local __start = {start}; local __stop = {stop}; local __byte = {value}; if __byte < 0 or __byte > 255 then error({{__type=\"ValueError\", __msg=\"byte must be in range(0, 256)\"}}) end; if __start < 0 or __stop < __start or __stop > #__ba then error({{__type=\"IndexError\", __msg=\"bytearray fill range out of range\"}}) end; {bytearray} = string.sub(__ba, 1, __start) .. string.rep(string.char(__byte), __stop - __start) .. string.sub(__ba, __stop + 1) end"
                     ));
+                } else {
+                    self.emit_unsupported_op(op);
                 }
             }
             _ => return false,

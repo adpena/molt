@@ -18,8 +18,6 @@ use crate::builtins::functions::{
     WASM_POLL_SLOT_MAX_OFFSET, wasm_poll_table_slot_from_symbol_name,
 };
 
-use super::scheduler::CURRENT_TASK;
-
 #[cfg(target_arch = "wasm32")]
 #[inline]
 fn wasm_poll_slot(symbol_name: &str) -> u64 {
@@ -569,11 +567,8 @@ pub(crate) unsafe fn poll_future_with_task_stack(
 ) -> i64 {
     unsafe {
         let debug_task = std::env::var("MOLT_DEBUG_CURRENT_TASK").as_deref() == Ok("1");
-        let prev_task = CURRENT_TASK.with(|cell| {
-            let prev = cell.get();
-            cell.set(task_ptr);
-            prev
-        });
+        let task_scope = crate::CurrentTaskScope::enter(_py, task_ptr);
+        let prev_task = task_scope.previous();
         if debug_task && prev_task.is_null() {
             eprintln!(
                 "molt task trace: prev_task=null set task=0x{:x}",
@@ -635,7 +630,7 @@ pub(crate) unsafe fn poll_future_with_task_stack(
                 task_ptr as usize
             );
         }
-        CURRENT_TASK.with(|cell| cell.set(prev_task));
+        drop(task_scope);
         res
     }
 }

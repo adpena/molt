@@ -46,16 +46,16 @@ pub(crate) use cancellation::{
 
 #[allow(unused_imports)]
 pub(crate) use scheduler::{
-    AsyncHangProbe, CURRENT_TASK, MoltScheduler, MoltTask, SleepQueue, async_trace_enabled,
-    asyncgen_registry, await_waiter_clear, await_waiter_register, await_waiters,
-    block_on_wait_spec, current_task_key, current_task_ptr, fn_ptr_code_get, fn_ptr_code_set,
-    instant_from_monotonic_secs, molt_asyncio_child_watcher_add, molt_asyncio_child_watcher_clear,
-    molt_asyncio_child_watcher_pop, molt_asyncio_child_watcher_remove, molt_asyncio_enter_task,
-    molt_asyncio_event_loop_get, molt_asyncio_event_loop_get_current,
-    molt_asyncio_event_loop_policy_get, molt_asyncio_event_loop_policy_set,
-    molt_asyncio_event_loop_set, molt_asyncio_event_waiters_cleanup_token,
-    molt_asyncio_event_waiters_register, molt_asyncio_event_waiters_unregister,
-    molt_asyncio_leave_task, molt_asyncio_register_task,
+    AsyncHangProbe, CURRENT_TASK, CurrentTaskScope, MoltScheduler, MoltTask, SleepQueue,
+    async_trace_enabled, asyncgen_registry, await_waiter_clear, await_waiter_register,
+    await_waiters, block_on_wait_spec, current_task_key, current_task_ptr, fn_ptr_code_get,
+    fn_ptr_code_set, instant_from_monotonic_secs, molt_asyncio_child_watcher_add,
+    molt_asyncio_child_watcher_clear, molt_asyncio_child_watcher_pop,
+    molt_asyncio_child_watcher_remove, molt_asyncio_enter_task, molt_asyncio_event_loop_get,
+    molt_asyncio_event_loop_get_current, molt_asyncio_event_loop_policy_get,
+    molt_asyncio_event_loop_policy_set, molt_asyncio_event_loop_set,
+    molt_asyncio_event_waiters_cleanup_token, molt_asyncio_event_waiters_register,
+    molt_asyncio_event_waiters_unregister, molt_asyncio_leave_task, molt_asyncio_register_task,
     molt_asyncio_require_child_watcher_support, molt_asyncio_require_ssl_transport_support,
     molt_asyncio_require_unix_socket_support, molt_asyncio_running_loop_get,
     molt_asyncio_running_loop_set, molt_asyncio_ssl_transport_orchestrate,
@@ -65,10 +65,10 @@ pub(crate) use scheduler::{
     molt_asyncio_task_registry_live_set, molt_asyncio_task_registry_move,
     molt_asyncio_task_registry_pop, molt_asyncio_task_registry_set,
     molt_asyncio_task_registry_values, molt_asyncio_unregister_task, molt_block_on, molt_spawn,
-    monotonic_now_nanos, monotonic_now_secs, record_async_poll, task_exception_depths,
-    task_exception_handler_stacks, task_exception_stacks, task_last_exceptions, task_mark_done,
-    task_result_drop, task_result_get, task_result_store, task_waiting_on, task_waiting_on_future,
-    wake_await_waiters, wake_task_ptr,
+    monotonic_now_nanos, monotonic_now_secs, record_async_poll, replace_current_task,
+    task_exception_depths, task_exception_handler_stacks, task_exception_stacks,
+    task_last_exceptions, task_mark_done, task_result_drop, task_result_get, task_result_store,
+    task_waiting_on, task_waiting_on_future, wake_await_waiters, wake_task_ptr,
 };
 
 #[cfg(not(target_arch = "wasm32"))]

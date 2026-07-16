@@ -83,13 +83,11 @@ fn exception_group_collect_exceptions(
         unsafe {
             let type_id = object_type_id(ptr);
             if type_id == TYPE_ID_TUPLE || type_id == TYPE_ID_LIST {
-                let Some(elems) = crate::object::seq_access::snapshot(
+                let elems = crate::object::seq_access::snapshot(
                     _py,
                     ptr,
                     "sequence snapshot allocation failed",
-                ) else {
-                    return None;
-                };
+                )?;
                 if elems.is_empty() {
                     let _ = raise_exception::<u64>(
                         _py,
@@ -577,11 +575,11 @@ fn exception_group_split_node(
                 }),
             ));
         }
-        let Some(elems) =
-            crate::object::seq_access::snapshot(_py, ex_ptr, "sequence snapshot allocation failed")
-        else {
-            return None;
-        };
+        let elems = crate::object::seq_access::snapshot(
+            _py,
+            ex_ptr,
+            "sequence snapshot allocation failed",
+        )?;
         let mut match_items: Vec<ExceptionGroupItem> = Vec::new();
         let mut rest_items: Vec<ExceptionGroupItem> = Vec::new();
         for &item_bits in elems.iter() {

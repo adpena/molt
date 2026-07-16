@@ -21,12 +21,15 @@ pub(super) unsafe fn bind_builtin_call(
         let callable_bits = Some(MoltObject::from_ptr(func_ptr).bits());
         if callable_matches_runtime_symbol(
             callable_bits,
-            fn_addr!(crate::builtins::exceptions::molt_exception_init),
-        ) || callable_matches_runtime_symbol(
-            callable_bits,
             fn_addr!(crate::builtins::exceptions::molt_exception_new_bound),
         ) {
-            return bind_builtin_exception_args(_py, args);
+            return bind_builtin_exception_args(_py, args, true);
+        }
+        if callable_matches_runtime_symbol(
+            callable_bits,
+            fn_addr!(crate::builtins::exceptions::molt_exception_init),
+        ) {
+            return bind_builtin_exception_args(_py, args, false);
         }
         if callable_matches_runtime_symbol(callable_bits, fn_addr!(molt_object_init))
             || callable_matches_runtime_symbol(callable_bits, fn_addr!(molt_object_init_subclass))
@@ -414,46 +417,35 @@ pub(super) unsafe fn bind_builtin_call(
     }
 }
 
-unsafe fn bind_builtin_exception_args(_py: &PyToken<'_>, args: &CallArgs) -> Option<Vec<u64>> {
-    unsafe {
-        if args.pos.is_empty() {
-            return raise_exception::<_>(_py, "TypeError", "missing required arguments");
-        }
-        if !args.kw_names.is_empty() {
-            let head = args.pos[0];
-            let head_obj = obj_from_bits(head);
-            let Some(head_ptr) = head_obj.as_ptr() else {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "keywords are not supported for this builtin",
-                );
-            };
-            let allow_kw = match object_type_id(head_ptr) {
-                TYPE_ID_TYPE => true,
-                TYPE_ID_EXCEPTION => {
-                    let oserror_bits = exception_type_bits_from_name(_py, "OSError");
-                    issubclass_bits(object_class_bits(head_ptr), oserror_bits)
-                }
-                _ => false,
-            };
-            if !allow_kw {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "keywords are not supported for this builtin",
-                );
-            }
-        }
-        let head = args.pos[0];
-        let rest = &args.pos[1..];
-        let tuple_ptr = alloc_tuple(_py, rest);
-        if tuple_ptr.is_null() {
-            return None;
-        }
-        let tuple_bits = MoltObject::from_ptr(tuple_ptr).bits();
-        Some(vec![head, tuple_bits])
+fn bind_builtin_exception_args(
+    _py: &PyToken<'_>,
+    args: &CallArgs,
+    allow_keywords: bool,
+) -> Option<Vec<u64>> {
+    if args.pos.is_empty() {
+        return raise_exception::<_>(_py, "TypeError", "missing required arguments");
     }
+    if !allow_keywords && !args.kw_names.is_empty() {
+        let head = obj_from_bits(args.pos[0]);
+        let class_name = if head
+            .as_ptr()
+            .is_some_and(|ptr| unsafe { object_type_id(ptr) } == TYPE_ID_TYPE)
+        {
+            class_name_for_error(args.pos[0])
+        } else {
+            type_name(_py, head).into_owned()
+        };
+        let msg = format!("{class_name}() takes no keyword arguments");
+        return raise_exception::<_>(_py, "TypeError", &msg);
+    }
+    let head = args.pos[0];
+    let rest = &args.pos[1..];
+    let tuple_ptr = alloc_tuple(_py, rest);
+    if tuple_ptr.is_null() {
+        return None;
+    }
+    let tuple_bits = MoltObject::from_ptr(tuple_ptr).bits();
+    Some(vec![head, tuple_bits])
 }
 
 unsafe fn bind_builtin_int_new(_py: &PyToken<'_>, args: &CallArgs) -> Option<Vec<u64>> {

@@ -938,7 +938,7 @@ pub extern "C" fn molt_logging_config_listen(port_bits: u64, verify_bits: u64) -
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_config_stop_listening() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, { MoltObject::none().bits() })
+    molt_runtime_core::with_core_gil!(_py, MoltObject::none().bits())
 }
 
 #[unsafe(no_mangle)]

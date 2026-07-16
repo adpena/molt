@@ -3,18 +3,18 @@ use crate::builtins::exceptions::molt_exception_last_pending;
 use crate::{
     MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_EXCEPTION, TYPE_ID_TYPE, attr_name_bits_from_bytes,
     call_callable0, call_callable1, call_callable3, class_dict_bits, class_mro_pinned,
-    clear_exception, clear_exception_state, contextlib_async_exitstack_enter_context_poll_fn_addr,
+    clear_exception, contextlib_async_exitstack_enter_context_poll_fn_addr,
     contextlib_async_exitstack_exit_poll_fn_addr, contextlib_asyncgen_enter_poll_fn_addr,
     contextlib_asyncgen_exit_poll_fn_addr, dec_ref_bits, dict_get_in_place,
     exception_materialize_traceback_bits, exception_pending, exception_stack_pop,
     exception_stack_push, exception_type_bits_from_name, has_capability, header_from_obj_ptr,
     inc_ref_bits, is_missing_bits, is_truthy, issubclass_bits, missing_bits, molt_call_bind,
-    molt_callargs_expand_kwstar, molt_callargs_expand_star, molt_callargs_new,
-    molt_exception_clear, molt_future_new, molt_future_poll, molt_getattr_builtin,
-    molt_inspect_getasyncgenstate, molt_inspect_isawaitable, molt_is_callable, molt_issubclass,
-    molt_object_setattr, molt_raise, obj_from_bits, object_class_bits, object_type_id,
-    opaque_handle_bits, path_from_bits, pending_bits_i64, ptr_from_bits, raise_exception,
-    release_ptr, resolve_ptr, string_obj_to_owned, type_of_bits,
+    molt_callargs_expand_kwstar, molt_callargs_expand_star, molt_callargs_new, molt_future_new,
+    molt_future_poll, molt_getattr_builtin, molt_inspect_getasyncgenstate,
+    molt_inspect_isawaitable, molt_is_callable, molt_issubclass, molt_object_setattr, molt_raise,
+    obj_from_bits, object_class_bits, object_type_id, opaque_handle_bits, path_from_bits,
+    pending_bits_i64, ptr_from_bits, raise_exception, release_ptr, resolve_ptr,
+    string_obj_to_owned, type_of_bits,
 };
 
 const ASYNCGEN_ENTER_SLOT_AGEN: usize = 0;
@@ -417,17 +417,10 @@ fn call_with_star_kwargs(
 }
 
 fn contextlib_clear_pending_exception_state(_py: &PyToken<'_>) {
-    // Drain pending exception markers before dispatching cleanup callbacks.
-    // This keeps __exit__ dispatch deterministic in exceptional control flow.
-    for _ in 0..4 {
-        if exception_pending(_py) {
-            molt_exception_clear();
-        }
-        clear_exception_state(_py);
-        if !exception_pending(_py) {
-            break;
-        }
+    if exception_pending(_py) {
+        clear_exception(_py);
     }
+    debug_assert!(!exception_pending(_py));
 }
 
 unsafe fn payload_slot(payload_ptr: *mut u64, idx: usize) -> u64 {

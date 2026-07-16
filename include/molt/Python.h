@@ -131,6 +131,7 @@ typedef struct {
     double imag;
 } Py_complex;
 #include "_numeric_scalar_abi.h"
+#include "_gil_state_abi.h"
 
 /* Source transport treats type objects as opaque identities. Numeric scalar
  * type identities are the canonical linked ABI symbols declared below. */
@@ -140,7 +141,6 @@ struct _typeobject {
 typedef struct {
     PyTypeObject ht_type;
 } PyHeapTypeObject;
-typedef int PyGILState_STATE;
 typedef uint32_t Py_UCS4;
 typedef struct {
     void *buf;
@@ -218,13 +218,24 @@ typedef struct {
 #define _MOLT_PYBUF_F_CONTIGUOUS_BIT 0x0040
 #define _MOLT_PYBUF_ANY_CONTIGUOUS_BIT 0x0080
 
-typedef struct _molt_pythreadstate {
-    int _molt_reserved;
-} PyThreadState;
-
 typedef struct _molt_pyinterpreterstate {
     int _molt_reserved;
 } PyInterpreterState;
+
+typedef struct _molt_pyerr_stackitem {
+    PyObject *exc_type;
+    PyObject *exc_value;
+    PyObject *exc_traceback;
+    struct _molt_pyerr_stackitem *previous_item;
+} _PyErr_StackItem;
+
+typedef struct _molt_pythreadstate {
+    PyInterpreterState *interp;
+    PyObject *current_exception;
+    _PyErr_StackItem *exc_info;
+    _PyErr_StackItem exc_state;
+    int _molt_reserved;
+} PyThreadState;
 
 typedef void (*PyCapsule_Destructor)(PyObject *);
 
@@ -580,8 +591,6 @@ static inline void PyGILState_Release(PyGILState_STATE state);
 
 #define PyOS_snprintf snprintf
 
-#define PyGILState_LOCKED 0
-#define PyGILState_UNLOCKED 1
 #define NOWAIT_LOCK 0
 #define WAIT_LOCK 1
 

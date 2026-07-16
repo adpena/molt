@@ -229,6 +229,9 @@ pub(crate) unsafe fn locked_len(ptr: *mut u8) -> usize {
     if ptr.is_null() {
         return 0;
     }
+    if unsafe { object_type_id(ptr) } == TYPE_ID_TUPLE {
+        return unsafe { tuple_slice(ptr).len() };
+    }
     unsafe { with_locked_sequence_slice(ptr, |items| items.len()) }
 }
 
@@ -277,12 +280,6 @@ pub(crate) unsafe fn pin_tuple<'a, 'py>(
 
 #[inline]
 pub(crate) unsafe fn len(ptr: *mut u8) -> usize {
-    if ptr.is_null() {
-        return 0;
-    }
-    if unsafe { object_type_id(ptr) } == TYPE_ID_TUPLE {
-        return unsafe { with_immutable_tuple_slice(ptr, |items| items.len()).unwrap_or(0) };
-    }
     unsafe { locked_len(ptr) }
 }
 

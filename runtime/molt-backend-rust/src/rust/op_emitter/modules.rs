@@ -223,10 +223,10 @@ impl RustBackend {
         let o = out();
         let args = op.args.as_deref().unwrap_or(&[]);
         if let Some(attr_str) = op.s_value.as_deref().filter(|s| !s.is_empty()) {
-            let module = args
-                .first()
-                .map(|name| rust_value(name))
-                .unwrap_or_else(|| "MoltValue::None".to_string());
+            let Some(module) = args.first().map(|name| rust_value(name)) else {
+                self.emit_unsupported_op(op, "module_get_attr requires a module object");
+                return;
+            };
             self.emit_line(&declare(
                 &o,
                 &format!(
@@ -244,7 +244,7 @@ impl RustBackend {
                 &self.hoisted_vars.clone(),
             ));
         } else {
-            self.emit_line(&declare(&o, "MoltValue::None", &self.hoisted_vars.clone()));
+            self.emit_unsupported_op(op, "module_get_attr requires module and attribute");
         }
     }
 
@@ -260,6 +260,8 @@ impl RustBackend {
                 ));
                 self.emit_alias_writeback(&module);
             }
+        } else {
+            self.emit_unsupported_op(op, "module_set_attr requires module, attribute, and value");
         }
     }
 }

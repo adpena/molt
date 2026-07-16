@@ -684,10 +684,7 @@ typedef struct _ts {
     int _molt_reserved;
 } PyThreadState;
 
-typedef enum {
-    PyGILState_LOCKED,
-    PyGILState_UNLOCKED
-} PyGILState_STATE;
+#include "../../../include/molt/_gil_state_abi.h"
 
 typedef struct {
     PyObject_HEAD

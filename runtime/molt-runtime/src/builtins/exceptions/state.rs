@@ -1,6 +1,8 @@
-use crate::{PyToken, runtime_state};
+use crate::{GilGuard, MoltObject, PyToken, dec_ref_bits, runtime_state};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+#[cfg(test)]
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Mutex, OnceLock};
 
@@ -16,6 +18,14 @@ pub(crate) struct ExceptionContextFallback {
 }
 
 thread_local! {
+    /// CPython-compatible pending exception for the current native thread.
+    /// Async task execution uses the task-keyed runtime map instead; the
+    /// thread slot is the sole authority whenever no task is active.
+    pub(crate) static THREAD_LAST_EXCEPTION: ThreadExceptionState = const { ThreadExceptionState::new() };
+    /// Inline fast byte for the active execution context. It mirrors the
+    /// thread slot outside async execution and the active task's suspended
+    /// slot while a task is installed on this native thread.
+    pub(crate) static CURRENT_EXCEPTION_PENDING: Cell<bool> = const { Cell::new(false) };
     pub(crate) static EXCEPTION_STACK: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
     pub(crate) static EXCEPTION_STACK_BASELINE: Cell<usize> = const { Cell::new(0) };
     pub(crate) static ACTIVE_EXCEPTION_STACK: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
@@ -24,6 +34,78 @@ thread_local! {
         RefCell::new(HashMap::new());
     pub(crate) static GENERATOR_RAISE: Cell<bool> = const { Cell::new(false) };
     pub(crate) static TASK_RAISE_ACTIVE: Cell<bool> = const { Cell::new(false) };
+}
+
+pub(crate) struct ThreadExceptionState {
+    slot: Cell<*mut u8>,
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+pub(super) struct ThreadExceptionDropTestGate {
+    pub(super) owner: std::thread::ThreadId,
+    pub(super) entered: std::sync::mpsc::Sender<()>,
+    pub(super) release: Arc<std::sync::Barrier>,
+    pub(super) completion: std::sync::mpsc::Sender<()>,
+}
+
+#[cfg(test)]
+pub(super) static THREAD_EXCEPTION_DROP_TEST_GATE: Mutex<Option<ThreadExceptionDropTestGate>> =
+    Mutex::new(None);
+
+impl ThreadExceptionState {
+    const fn new() -> Self {
+        Self {
+            slot: Cell::new(std::ptr::null_mut()),
+        }
+    }
+
+    pub(crate) fn get(&self) -> *mut u8 {
+        self.slot.get()
+    }
+
+    pub(crate) fn set(&self, ptr: *mut u8) {
+        self.slot.set(ptr);
+    }
+
+    pub(crate) fn replace(&self, ptr: *mut u8) -> *mut u8 {
+        self.slot.replace(ptr)
+    }
+}
+
+impl Drop for ThreadExceptionState {
+    fn drop(&mut self) {
+        let ptr = self.slot.replace(std::ptr::null_mut());
+        if ptr.is_null() {
+            return;
+        }
+        let gil = GilGuard::new();
+        #[cfg(test)]
+        let test_completion = {
+            let gate = { THREAD_EXCEPTION_DROP_TEST_GATE.lock().unwrap().clone() };
+            if let Some(gate) = gate
+                && gate.owner == std::thread::current().id()
+            {
+                gate.entered.send(()).unwrap();
+                gate.release.wait();
+                Some(gate.completion)
+            } else {
+                None
+            }
+        };
+        // Liveness must be validated only after acquiring the same GIL that
+        // shutdown holds through unpublication and free. A pre-lock check can
+        // race with shutdown and turn this DECREF into a use-after-free.
+        if crate::state::runtime_state::runtime_state_for_gil().is_none() {
+            return;
+        }
+        let py = gil.token();
+        dec_ref_bits(&py, MoltObject::from_ptr(ptr).bits());
+        #[cfg(test)]
+        if let Some(completion) = test_completion {
+            completion.send(()).unwrap();
+        }
+    }
 }
 
 const EXCEPTIONS_OBJECT_SLOT_COUNT: usize = 27;

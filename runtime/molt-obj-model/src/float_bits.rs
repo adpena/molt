@@ -1,5 +1,11 @@
 //! Shared IEEE-754 binary16 conversion authority.
 
+/// Failure to represent a finite source value in a narrower IEEE format.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FloatNarrowError {
+    FiniteOverflow,
+}
+
 #[inline]
 fn round_shift_ties_even(value: u64, shift: u32) -> u64 {
     if shift == 0 {
@@ -20,7 +26,7 @@ fn round_shift_ties_even(value: u64, shift: u32) -> u64 {
 
 /// Convert f64 directly to IEEE binary16, with one ties-to-even rounding step.
 /// NaNs are canonicalized to the signed quiet payload used by CPython.
-pub fn f64_to_f16_bits(value: f64) -> Result<u16, ()> {
+pub fn f64_to_f16_bits(value: f64) -> Result<u16, FloatNarrowError> {
     let raw = value.to_bits();
     let sign = ((raw >> 48) & 0x8000) as u16;
     let exponent = ((raw >> 52) & 0x7ff) as i32;
@@ -34,7 +40,7 @@ pub fn f64_to_f16_bits(value: f64) -> Result<u16, ()> {
     let unbiased = exponent - 1023;
     let significand = (1u64 << 52) | fraction;
     if unbiased > 15 {
-        return Err(());
+        return Err(FloatNarrowError::FiniteOverflow);
     }
     let magnitude = if unbiased >= -14 {
         let mut rounded = round_shift_ties_even(significand, 42);
@@ -44,7 +50,7 @@ pub fn f64_to_f16_bits(value: f64) -> Result<u16, ()> {
             half_exp += 1;
         }
         if half_exp >= 31 {
-            return Err(());
+            return Err(FloatNarrowError::FiniteOverflow);
         }
         ((half_exp as u16) << 10) | ((rounded as u16) & 0x03ff)
     } else if unbiased < -25 {
@@ -76,10 +82,10 @@ pub fn f16_bits_to_f64(bits: u16) -> f64 {
 
 /// Narrow f64 to IEEE binary32, rejecting the finite-to-infinity overflow
 /// used by both CPython `struct 'f'` and `PyFloat_Pack4`.
-pub fn f64_to_f32_bits(value: f64) -> Result<u32, ()> {
+pub fn f64_to_f32_bits(value: f64) -> Result<u32, FloatNarrowError> {
     let narrowed = value as f32;
     if narrowed.is_infinite() && value.is_finite() {
-        Err(())
+        Err(FloatNarrowError::FiniteOverflow)
     } else {
         Ok(narrowed.to_bits())
     }

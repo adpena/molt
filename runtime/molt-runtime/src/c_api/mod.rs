@@ -634,7 +634,7 @@ fn callargs_builder_for_call(
                 return none_bits();
             };
             pos_snapshot = snapshot;
-            &*pos_snapshot
+            &pos_snapshot
         }
     };
 

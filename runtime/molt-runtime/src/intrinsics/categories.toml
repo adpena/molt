@@ -146,6 +146,10 @@ prefixes = ["lock_"]
 prefixes = ["sqlite_", "sqlite3_", "db_"]
 feature = "sqlite"
 feature_prefixes = ["sqlite3_"]
+# The in-process sqlite provider links a native amalgamation. WASM keeps the
+# host database channel (`db_`) but must not resolve native sqlite entrypoints.
+unsupported_target_arches = ["wasm32"]
+target_prefixes = ["sqlite3_"]
 [stdlib.crypto]
 prefixes = [
     "hash_",

@@ -1959,21 +1959,19 @@ unsafe fn runpy_restore_sys_argv0_swap(_py: &PyToken<'_>, state: &mut Option<Run
             Ok(Some(argv_bits)) => {
                 if let Some(argv_ptr) = obj_from_bits(argv_bits).as_ptr()
                     && object_type_id(argv_ptr) == TYPE_ID_LIST
+                    && crate::object::seq_access::locked_len(argv_ptr) != 0
+                    && let Some(current) = crate::object::seq_access::pin_item(_py, argv_ptr, 0)
                 {
-                    if crate::object::seq_access::locked_len(argv_ptr) != 0
-                        && let Some(current) = crate::object::seq_access::pin_item(_py, argv_ptr, 0)
-                    {
-                        let current_bits = current.bits();
-                        drop(current);
-                        if current_bits != state.previous_arg0_bits {
-                            let index = 0usize;
-                            let _ = crate::object::list_mutation::replace_indices(
-                                _py,
-                                argv_ptr,
-                                std::slice::from_ref(&index),
-                                std::slice::from_ref(&state.previous_arg0_bits),
-                            );
-                        }
+                    let current_bits = current.bits();
+                    drop(current);
+                    if current_bits != state.previous_arg0_bits {
+                        let index = 0usize;
+                        let _ = crate::object::list_mutation::replace_indices(
+                            _py,
+                            argv_ptr,
+                            std::slice::from_ref(&index),
+                            std::slice::from_ref(&state.previous_arg0_bits),
+                        );
                     }
                 }
                 dec_ref_bits(_py, argv_bits);

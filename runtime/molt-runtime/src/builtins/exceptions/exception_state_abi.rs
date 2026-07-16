@@ -1,16 +1,11 @@
 use super::*;
 
 pub(super) fn exception_last_public_bits(_py: &PyToken<'_>) -> u64 {
-    // Fast path: if neither the global nor task pending flag is set,
+    // Fast path: if neither the current-thread nor task pending flag is set,
     // there is no live exception — return None immediately.  This
     // keeps `exception_last` in sync with the inline `check_exception`
     // flag byte that the Cranelift backend uses.
-    let state = runtime_state(_py);
-    let task_pending = state
-        .task_last_exception_pending
-        .load(AtomicOrdering::Relaxed);
-    let global_pending = state.last_exception_pending.load(AtomicOrdering::Acquire);
-    if !task_pending && !global_pending {
+    if !CURRENT_EXCEPTION_PENDING.with(|pending| pending.get()) {
         if let Some(bits) = exception_context_active_bits() {
             inc_ref_bits(_py, bits);
             return bits;
@@ -20,18 +15,10 @@ pub(super) fn exception_last_public_bits(_py: &PyToken<'_>) -> u64 {
     let debug_flow = debug_exception_flow();
     if let Some(task_key) = current_task_key() {
         let ptr = {
-            let mut guard = task_last_exceptions(_py).lock().unwrap();
+            let guard = task_last_exceptions(_py).lock().unwrap();
             match guard.get(&task_key).copied() {
                 Some(ptr) if exception_slot_is_valid(ptr) => Some(ptr),
-                Some(_) => {
-                    guard.remove(&task_key);
-                    if guard.is_empty() {
-                        runtime_state(_py)
-                            .task_last_exception_pending
-                            .store(false, AtomicOrdering::Relaxed);
-                    }
-                    None
-                }
+                Some(_) => panic!("owned task exception slot must reference a live exception"),
                 None => None,
             }
         };
@@ -45,9 +32,7 @@ pub(super) fn exception_last_public_bits(_py: &PyToken<'_>) -> u64 {
                     return active_bits;
                 }
                 exception_context_set(_py, bits);
-                runtime_state(_py)
-                    .task_last_exception_pending
-                    .store(false, AtomicOrdering::Relaxed);
+                clear_exception(_py);
             }
             if debug_flow {
                 let kind_bits = unsafe { exception_kind_bits(ptr.0) };
@@ -65,8 +50,10 @@ pub(super) fn exception_last_public_bits(_py: &PyToken<'_>) -> u64 {
             inc_ref_bits(_py, bits);
             return bits;
         }
+        CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(false));
+        return MoltObject::none().bits();
     }
-    let ptr = global_last_exception_pending_slot(_py);
+    let ptr = thread_last_exception_pending_slot();
     if let Some(ptr) = ptr {
         let bits = MoltObject::from_ptr(ptr.0).bits();
         if exception_handler_active() {
@@ -77,9 +64,7 @@ pub(super) fn exception_last_public_bits(_py: &PyToken<'_>) -> u64 {
                 return active_bits;
             }
             exception_context_set(_py, bits);
-            state
-                .last_exception_pending
-                .store(false, AtomicOrdering::Release);
+            clear_exception(_py);
         }
         if debug_flow {
             let kind_bits = unsafe { exception_kind_bits(ptr.0) };
@@ -104,12 +89,7 @@ pub(super) fn exception_last_public_bits(_py: &PyToken<'_>) -> u64 {
 }
 
 pub(super) fn exception_last_pending_bits(_py: &PyToken<'_>) -> u64 {
-    let state = runtime_state(_py);
-    let task_pending = state
-        .task_last_exception_pending
-        .load(AtomicOrdering::Relaxed);
-    let global_pending = state.last_exception_pending.load(AtomicOrdering::Acquire);
-    if !task_pending && !global_pending {
+    if !CURRENT_EXCEPTION_PENDING.with(|pending| pending.get()) {
         if debug_exception_flow() {
             eprintln!("molt exc last_pending task=0x0 kind=none");
         }
@@ -117,22 +97,12 @@ pub(super) fn exception_last_pending_bits(_py: &PyToken<'_>) -> u64 {
     }
 
     let debug_flow = debug_exception_flow();
-    if let Some(task_key) = current_task_key()
-        && task_pending
-    {
+    if let Some(task_key) = current_task_key() {
         let ptr = {
-            let mut guard = task_last_exceptions(_py).lock().unwrap();
+            let guard = task_last_exceptions(_py).lock().unwrap();
             match guard.get(&task_key).copied() {
                 Some(ptr) if exception_slot_is_valid(ptr) => Some(ptr),
-                Some(_) => {
-                    guard.remove(&task_key);
-                    if guard.is_empty() {
-                        state
-                            .task_last_exception_pending
-                            .store(false, AtomicOrdering::Relaxed);
-                    }
-                    None
-                }
+                Some(_) => panic!("owned task exception slot must reference a live exception"),
                 None => None,
             }
         };
@@ -150,9 +120,11 @@ pub(super) fn exception_last_pending_bits(_py: &PyToken<'_>) -> u64 {
             inc_ref_bits(_py, bits);
             return bits;
         }
+        CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(false));
+        return MoltObject::none().bits();
     }
 
-    if let Some(ptr) = global_last_exception_pending_slot(_py) {
+    if let Some(ptr) = thread_last_exception_pending_slot() {
         let bits = MoltObject::from_ptr(ptr.0).bits();
         if debug_flow {
             let kind_bits = unsafe { exception_kind_bits(ptr.0) };
@@ -398,31 +370,14 @@ pub extern "C" fn molt_exception_pending_fast() -> u64 {
     crate::with_gil_entry_nopanic!(_py, { if exception_pending(_py) { 1 } else { 0 } })
 }
 
-/// Returns a pointer to the `last_exception_pending` AtomicBool byte.
+/// Returns a pointer to the current thread's pending-exception byte.
 /// The native Cranelift backend uses this to inline the exception check
 /// as a single byte load + branch, avoiding the full function call
 /// overhead of `molt_exception_pending_fast` on the happy path.
 ///
-/// Returns null if the runtime is not initialized.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_pending_flag_ptr() -> u64 {
-    let Some(state) = crate::state::runtime_state::runtime_state_for_gil() else {
-        return 0;
-    };
-    state.last_exception_pending.as_ptr() as u64
-}
-
-/// Returns a pointer to the `task_last_exception_pending` AtomicBool byte,
-/// or null (0) if no async task is active.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_task_exception_pending_flag_ptr() -> u64 {
-    let Some(state) = crate::state::runtime_state::runtime_state_for_gil() else {
-        return 0;
-    };
-    if current_task_key().is_none() {
-        return 0;
-    }
-    state.task_last_exception_pending.as_ptr() as u64
+    CURRENT_EXCEPTION_PENDING.with(|pending| pending.as_ptr() as u64)
 }
 
 #[unsafe(no_mangle)]

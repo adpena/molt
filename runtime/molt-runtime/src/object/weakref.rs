@@ -62,7 +62,7 @@ pub(crate) fn object_supports_weakrefs(_py: &PyToken<'_>, target_bits: u64) -> b
         && !crate::is_builtin_class_bits(_py, class_bits)
     {
         return unsafe { crate::builtins::attr::class_slots_info(_py, class_ptr) }
-            .map_or(true, |info| info.allows_weakref);
+            .is_none_or(|info| info.allows_weakref);
     }
     if type_id == crate::TYPE_ID_BOUND_METHOD {
         let func_bits = unsafe { crate::bound_method_func_bits(target_ptr) };
@@ -878,7 +878,8 @@ pub extern "C" fn molt_weakref_get(weak_bits: u64) -> u64 {
             return raise_exception::<_>(_py, "TypeError", "weakref must be an object");
         };
         let weak_slot = PtrSlot(weak_ptr);
-        let target_bits = {
+
+        {
             let registry = runtime_state(_py).weakrefs.lock().unwrap();
             let Some(target_ptr) = weakref_resolve_target_ptr(&registry, weak_slot) else {
                 return MoltObject::none().bits();
@@ -886,8 +887,7 @@ pub extern "C" fn molt_weakref_get(weak_bits: u64) -> u64 {
             let target_bits = MoltObject::from_ptr(target_ptr).bits();
             inc_ref_bits(_py, target_bits);
             target_bits
-        };
-        target_bits
+        }
     })
 }
 
@@ -898,7 +898,8 @@ pub extern "C" fn molt_weakref_callback(weak_bits: u64) -> u64 {
             return raise_exception::<_>(_py, "TypeError", "weakref must be an object");
         };
         let weak_slot = PtrSlot(weak_ptr);
-        let callback_bits = {
+
+        {
             let registry = runtime_state(_py).weakrefs.lock().unwrap();
             if weakref_resolve_target_ptr(&registry, weak_slot).is_none() {
                 return MoltObject::none().bits();
@@ -912,8 +913,7 @@ pub extern "C" fn molt_weakref_callback(weak_bits: u64) -> u64 {
             let callback_bits = entry.callback_bits;
             inc_ref_bits(_py, callback_bits);
             callback_bits
-        };
-        callback_bits
+        }
     })
 }
 
@@ -924,7 +924,8 @@ pub extern "C" fn molt_weakref_peek(weak_bits: u64) -> u64 {
             return raise_exception::<_>(_py, "TypeError", "weakref must be an object");
         };
         let weak_slot = PtrSlot(weak_ptr);
-        let target_bits = {
+
+        {
             let registry = runtime_state(_py).weakrefs.lock().unwrap();
             let Some(entry) = registry.by_ref.get(&weak_slot) else {
                 return MoltObject::none().bits();
@@ -935,8 +936,7 @@ pub extern "C" fn molt_weakref_peek(weak_bits: u64) -> u64 {
             let target_bits = MoltObject::from_ptr(entry.target.0).bits();
             inc_ref_bits(_py, target_bits);
             target_bits
-        };
-        target_bits
+        }
     })
 }
 

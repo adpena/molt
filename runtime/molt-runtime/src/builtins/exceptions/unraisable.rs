@@ -28,9 +28,11 @@ fn try_join_text(parts: &[&str]) -> Option<String> {
     Some(out)
 }
 
-struct RaisedSnapshot {
-    task: Option<(PtrSlot, u64)>,
-    global: Option<u64>,
+#[derive(Copy, Clone)]
+enum RaisedSnapshot {
+    None,
+    Thread(u64),
+    Task(PtrSlot, u64),
 }
 
 struct HandledSnapshot {
@@ -38,48 +40,114 @@ struct HandledSnapshot {
     fallback: Vec<ExceptionContextFallback>,
 }
 
+thread_local! {
+    /// Ownership escrow for the only restoration case that cannot complete
+    /// synchronously: same-thread code holding a handled-stack `RefMut` across
+    /// transaction completion. The next unraisable boundary restores this
+    /// snapshot before it detaches any state of its own.
+    static DEFERRED_UNRAISABLE_HANDLED: std::cell::RefCell<Option<HandledSnapshot>> = const { std::cell::RefCell::new(None) };
+}
+
 /// A transaction is required at every unraisable boundary. It preserves the
 /// complete raised and handled channels while arbitrary reporting hooks run.
-struct UnraisableTransaction {
-    raised: RaisedSnapshot,
-    handled: HandledSnapshot,
+struct UnraisableTransaction<'a, 'py> {
+    py: &'a PyToken<'py>,
+    raised: Option<RaisedSnapshot>,
+    handled: Option<HandledSnapshot>,
+    reporting: Option<RaisedSnapshot>,
+    armed: bool,
 }
 
 fn take_raised(_py: &PyToken<'_>) -> RaisedSnapshot {
-    let state = runtime_state(_py);
-    let task = current_task_key().and_then(|key| {
-        if !state
-            .task_last_exception_pending
-            .load(AtomicOrdering::Relaxed)
-        {
-            return None;
+    let raised = if let Some(key) = current_task_key() {
+        let mut guard = task_last_exceptions(_py)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match guard.get(&key).copied() {
+            None => RaisedSnapshot::None,
+            Some(slot) => {
+                assert!(
+                    exception_slot_is_valid(slot),
+                    "owned task exception slot must reference a live exception"
+                );
+                let removed = guard
+                    .remove(&key)
+                    .expect("validated task exception slot must remain present");
+                RaisedSnapshot::Task(key, MoltObject::from_ptr(removed.0).bits())
+            }
         }
-        let mut guard = task_last_exceptions(_py).lock().unwrap();
-        let removed = guard.remove(&key);
-        if guard.is_empty() {
-            state
-                .task_last_exception_pending
-                .store(false, AtomicOrdering::Relaxed);
-        }
-        drop(guard);
-        removed
-            .filter(|slot| exception_slot_is_valid(*slot))
-            .map(|slot| (key, MoltObject::from_ptr(slot.0).bits()))
-    });
-    let global = if state.last_exception_pending.load(AtomicOrdering::Acquire) {
-        global_last_exception_take(_py)
-            .filter(|slot| exception_slot_is_valid(*slot))
-            .map(|slot| MoltObject::from_ptr(slot.0).bits())
     } else {
-        None
+        match thread_last_exception_raw_slot() {
+            None => RaisedSnapshot::None,
+            Some(slot) => {
+                assert!(
+                    exception_slot_is_valid(slot),
+                    "owned thread exception slot must reference a live exception"
+                );
+                let removed = thread_last_exception_take()
+                    .expect("validated thread exception slot must remain present");
+                RaisedSnapshot::Thread(MoltObject::from_ptr(removed.0).bits())
+            }
+        }
     };
-    RaisedSnapshot { task, global }
+    CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(false));
+    raised
+}
+
+fn flush_deferred_handled(_py: &PyToken<'_>) -> bool {
+    let Some(mut deferred) = DEFERRED_UNRAISABLE_HANDLED.with(|slot| slot.borrow_mut().take())
+    else {
+        return true;
+    };
+    let restored = ACTIVE_EXCEPTION_STACK.with(|active| {
+        ACTIVE_EXCEPTION_FALLBACK.with(|fallback| {
+            let (Ok(mut active), Ok(mut fallback)) =
+                (active.try_borrow_mut(), fallback.try_borrow_mut())
+            else {
+                return None;
+            };
+            let old_active = std::mem::replace(&mut *active, std::mem::take(&mut deferred.active));
+            let old_fallback =
+                std::mem::replace(&mut *fallback, std::mem::take(&mut deferred.fallback));
+            Some((old_active, old_fallback))
+        })
+    });
+    let Some((old_active, old_fallback)) = restored else {
+        DEFERRED_UNRAISABLE_HANDLED.with(|slot| {
+            let old = slot.borrow_mut().replace(deferred);
+            assert!(old.is_none(), "multiple deferred unraisable snapshots");
+        });
+        return false;
+    };
+    release_stack(_py, old_active);
+    release_fallback_stack(_py, old_fallback);
+    true
+}
+
+fn defer_handled(saved: HandledSnapshot) {
+    DEFERRED_UNRAISABLE_HANDLED.with(|slot| {
+        let old = slot.borrow_mut().replace(saved);
+        assert!(old.is_none(), "multiple deferred unraisable snapshots");
+    });
 }
 
 fn take_handled(_py: &PyToken<'_>) -> HandledSnapshot {
-    let active = ACTIVE_EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
-    let fallback = ACTIVE_EXCEPTION_FALLBACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
-    HandledSnapshot { active, fallback }
+    assert!(
+        flush_deferred_handled(_py),
+        "deferred unraisable handled state remains borrowed"
+    );
+    // Acquire both borrows before detaching either channel. If reentrant code
+    // already holds one borrow, no strong edge has moved when this panics.
+    ACTIVE_EXCEPTION_STACK.with(|active| {
+        ACTIVE_EXCEPTION_FALLBACK.with(|fallback| {
+            let mut active = active.borrow_mut();
+            let mut fallback = fallback.borrow_mut();
+            HandledSnapshot {
+                active: std::mem::take(&mut *active),
+                fallback: std::mem::take(&mut *fallback),
+            }
+        })
+    })
 }
 
 fn release_stack(_py: &PyToken<'_>, stack: Vec<u64>) {
@@ -98,119 +166,250 @@ fn release_fallback_stack(_py: &PyToken<'_>, stack: Vec<ExceptionContextFallback
     }
 }
 
-fn restore_handled(_py: &PyToken<'_>, saved: HandledSnapshot) {
-    let old_active = ACTIVE_EXCEPTION_STACK
-        .with(|stack| std::mem::replace(&mut *stack.borrow_mut(), saved.active));
-    let old_fallback = ACTIVE_EXCEPTION_FALLBACK
-        .with(|stack| std::mem::replace(&mut *stack.borrow_mut(), saved.fallback));
-    release_stack(_py, old_active);
-    release_fallback_stack(_py, old_fallback);
+/// Resolve the detached handled channels. `true` means they were restored;
+/// `false` means an outstanding reentrant TLS borrow required ownership to be
+/// escrowed for exact restoration at the next unraisable boundary.
+fn resolve_handled(_py: &PyToken<'_>, saved: &mut Option<HandledSnapshot>) -> bool {
+    let Some(saved_ref) = saved.as_mut() else {
+        return true;
+    };
+    let restored = ACTIVE_EXCEPTION_STACK.with(|active| {
+        ACTIVE_EXCEPTION_FALLBACK.with(|fallback| {
+            let (Ok(mut active), Ok(mut fallback)) =
+                (active.try_borrow_mut(), fallback.try_borrow_mut())
+            else {
+                return None;
+            };
+            let old_active = std::mem::replace(&mut *active, std::mem::take(&mut saved_ref.active));
+            let old_fallback =
+                std::mem::replace(&mut *fallback, std::mem::take(&mut saved_ref.fallback));
+            Some((old_active, old_fallback))
+        })
+    });
+    match restored {
+        Some((old_active, old_fallback)) => {
+            // Both saved vectors are published before the transaction drops
+            // its ownership marker.
+            *saved = None;
+            release_stack(_py, old_active);
+            release_fallback_stack(_py, old_fallback);
+            true
+        }
+        None => {
+            // A borrow held across transaction completion is a caller
+            // invariant breach. Preserve the exact stacks in thread-local
+            // escrow before failing the caller closed; never discard state.
+            let saved = saved.take().expect("handled transaction remains armed");
+            defer_handled(saved);
+            false
+        }
+    }
 }
 
-fn restore_raised(_py: &PyToken<'_>, saved: RaisedSnapshot) {
-    if let Some(bits) = saved.global {
-        if let Some(ptr) = obj_from_bits(bits).as_ptr() {
-            let old = runtime_state(_py)
-                .last_exception
-                .swap(ptr, AtomicOrdering::AcqRel);
-            runtime_state(_py)
-                .last_exception_pending
-                .store(true, AtomicOrdering::Release);
-            if !old.is_null() && old != ptr {
-                dec_ref_bits(_py, MoltObject::from_ptr(old).bits());
+fn release_raised(_py: &PyToken<'_>, saved: &mut Option<RaisedSnapshot>) {
+    let Some(saved) = saved.take() else {
+        return;
+    };
+    match saved {
+        RaisedSnapshot::Thread(bits) | RaisedSnapshot::Task(_, bits)
+            if !obj_from_bits(bits).is_none() =>
+        {
+            dec_ref_bits(_py, bits);
+        }
+        RaisedSnapshot::None | RaisedSnapshot::Thread(_) | RaisedSnapshot::Task(_, _) => {}
+    }
+}
+
+fn resolve_raised(_py: &PyToken<'_>, saved: &mut Option<RaisedSnapshot>) {
+    let Some(saved_snapshot) = *saved else {
+        return;
+    };
+    match saved_snapshot {
+        RaisedSnapshot::None => {}
+        RaisedSnapshot::Thread(bits) => {
+            if let Some(ptr) = obj_from_bits(bits).as_ptr() {
+                let old = THREAD_LAST_EXCEPTION.with(|slot| slot.replace(ptr));
+                // Publication transfers the saved strong edge to TLS.
+                *saved = None;
+                if current_task_key().is_none() {
+                    CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(true));
+                }
+                if !old.is_null() && old != ptr {
+                    dec_ref_bits(_py, MoltObject::from_ptr(old).bits());
+                }
+            }
+        }
+        RaisedSnapshot::Task(key, bits) => {
+            if let Some(ptr) = obj_from_bits(bits).as_ptr() {
+                let mut guard = task_last_exceptions(_py)
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let old = guard.insert(key, PtrSlot(ptr));
+                drop(guard);
+                // Map publication transfers the saved strong edge.
+                *saved = None;
+                if current_task_key() == Some(key) {
+                    CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(true));
+                }
+                if let Some(old) = old
+                    && old.0 != ptr
+                {
+                    dec_ref_bits(_py, MoltObject::from_ptr(old.0).bits());
+                }
             }
         }
     }
-    if let Some((key, bits)) = saved.task {
-        if let Some(ptr) = obj_from_bits(bits).as_ptr() {
-            let old = task_last_exceptions(_py)
-                .lock()
-                .unwrap()
-                .insert(key, PtrSlot(ptr));
-            runtime_state(_py)
-                .task_last_exception_pending
-                .store(true, AtomicOrdering::Relaxed);
-            if let Some(old) = old
-                && old.0 != ptr
-            {
-                dec_ref_bits(_py, MoltObject::from_ptr(old.0).bits());
-            }
-        }
+    // None or an invalid non-object carries no strong edge.
+    if saved.is_some() {
+        *saved = None;
     }
 }
 
 fn discard_current_raised(_py: &PyToken<'_>) {
-    clear_exception(_py);
-    clear_exception_state(_py);
+    // Use the transaction's poison-tolerant detach path rather than the public
+    // clear helper: unraisable cleanup must remain available after a task-map
+    // panic poisoned its mutex.
+    let mut raised = Some(take_raised(_py));
+    release_raised(_py, &mut raised);
 }
 
-impl UnraisableTransaction {
-    fn begin(_py: &PyToken<'_>) -> Self {
-        let handled = take_handled(_py);
-        let raised = take_raised(_py);
-        Self { raised, handled }
+impl<'a, 'py> UnraisableTransaction<'a, 'py> {
+    fn begin(_py: &'a PyToken<'py>) -> Self {
+        // Arm before the first detach so unwinding any later acquisition
+        // restores or releases everything already removed from runtime state.
+        let mut transaction = Self {
+            py: _py,
+            raised: None,
+            handled: None,
+            reporting: None,
+            armed: true,
+        };
+        transaction.handled = Some(take_handled(_py));
+        transaction.raised = Some(take_raised(_py));
+        transaction
     }
 
-    fn finish_current(self, _py: &PyToken<'_>, context_bits: u64, err_msg: Option<&str>) {
-        let raised = take_raised(_py);
-        self.finish_raised(_py, raised, context_bits, err_msg);
+    fn resolve_original(&mut self) -> bool {
+        let handled_restored = resolve_handled(self.py, &mut self.handled);
+        resolve_raised(self.py, &mut self.raised);
+        handled_restored
+    }
+
+    fn finish_current(
+        mut self,
+        context_bits: u64,
+        err_msg: Option<&str>,
+    ) -> std::thread::Result<()> {
+        self.reporting = Some(take_raised(self.py));
+        self.finish_reporting(context_bits, err_msg, report_unraisable_exception)
     }
 
     fn finish_raised(
-        self,
-        _py: &PyToken<'_>,
+        mut self,
         raised: RaisedSnapshot,
         context_bits: u64,
         err_msg: Option<&str>,
-    ) {
-        match (raised.task, raised.global) {
-            (Some((_, task_bits)), Some(global_bits)) if task_bits == global_bits => {
-                report_unraisable_exception(_py, context_bits, task_bits, err_msg);
-                discard_current_raised(_py);
-                // Both raised channels owned one reference to the same object.
-                dec_ref_bits(_py, task_bits);
-                dec_ref_bits(_py, global_bits);
+    ) -> std::thread::Result<()> {
+        self.reporting = Some(raised);
+        self.finish_reporting(context_bits, err_msg, report_unraisable_exception)
+    }
+
+    fn finish_reporting(
+        mut self,
+        context_bits: u64,
+        err_msg: Option<&str>,
+        reporter: impl FnOnce(&PyToken<'_>, u64, u64, Option<&str>),
+    ) -> std::thread::Result<()> {
+        let report = match self.reporting.as_ref() {
+            Some(RaisedSnapshot::Thread(bits) | RaisedSnapshot::Task(_, bits)) => {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    reporter(self.py, context_bits, *bits, err_msg);
+                }))
             }
-            (Some((_, task_bits)), Some(global_bits)) => {
-                report_unraisable_exception(_py, context_bits, task_bits, err_msg);
-                discard_current_raised(_py);
-                report_unraisable_exception(
-                    _py,
-                    context_bits,
-                    global_bits,
-                    Some(
-                        "Invariant breach: distinct task and global exceptions at unraisable boundary",
-                    ),
-                );
-                discard_current_raised(_py);
-                dec_ref_bits(_py, task_bits);
-                dec_ref_bits(_py, global_bits);
-            }
-            (Some((_, bits)), None) | (None, Some(bits)) => {
-                report_unraisable_exception(_py, context_bits, bits, err_msg);
-                discard_current_raised(_py);
-                dec_ref_bits(_py, bits);
-            }
-            (None, None) => {}
-        }
-        restore_handled(_py, self.handled);
-        restore_raised(_py, self.raised);
+            Some(RaisedSnapshot::None) | None => Ok(()),
+        };
+        discard_current_raised(self.py);
+        release_raised(self.py, &mut self.reporting);
+        let handled_restored = self.resolve_original();
+        self.armed = false;
+        assert!(
+            handled_restored,
+            "unraisable transaction completed while handled exception TLS was borrowed"
+        );
+        report
     }
 
     fn report_captured(
-        self,
-        _py: &PyToken<'_>,
+        mut self,
         context_bits: u64,
         exc_bits: u64,
         err_msg: Option<&str>,
-    ) {
-        discard_current_raised(_py);
-        if !obj_from_bits(exc_bits).is_none() {
-            report_unraisable_exception(_py, context_bits, exc_bits, err_msg);
-            discard_current_raised(_py);
+    ) -> std::thread::Result<()> {
+        discard_current_raised(self.py);
+        let report = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if !obj_from_bits(exc_bits).is_none() {
+                report_unraisable_exception(self.py, context_bits, exc_bits, err_msg);
+            }
+        }));
+        discard_current_raised(self.py);
+        let handled_restored = self.resolve_original();
+        self.armed = false;
+        assert!(
+            handled_restored,
+            "unraisable transaction completed while handled exception TLS was borrowed"
+        );
+        report
+    }
+}
+
+impl Drop for UnraisableTransaction<'_, '_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
         }
-        restore_handled(_py, self.handled);
-        restore_raised(_py, self.raised);
+        if !std::thread::panicking() {
+            discard_current_raised(self.py);
+            release_raised(self.py, &mut self.reporting);
+            let handled_restored = resolve_handled(self.py, &mut self.handled);
+            resolve_raised(self.py, &mut self.raised);
+            self.armed = false;
+            assert!(
+                handled_restored,
+                "unraisable transaction dropped while handled exception TLS was borrowed"
+            );
+            return;
+        }
+
+        // A cleanup defect must never replace an active panic with a double
+        // panic. Each cleanup primitive consumes or publishes its Option-held
+        // ownership before any decref, so containment cannot create a second
+        // owner. Run the primitives independently so one defect cannot skip a
+        // different ownership channel.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            discard_current_raised(self.py);
+        }));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            release_raised(self.py, &mut self.reporting);
+        }));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = resolve_handled(self.py, &mut self.handled);
+        }));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            resolve_raised(self.py, &mut self.raised);
+        }));
+        // If an injected cleanup panic happened before a primitive consumed
+        // its slot, make one final ownership-resolution attempt. Handled state
+        // is escrowed for deferred restoration; raised edges are released.
+        if let Some(saved) = self.handled.take() {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                defer_handled(saved);
+            }));
+        }
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            release_raised(self.py, &mut self.reporting);
+            release_raised(self.py, &mut self.raised);
+        }));
+        self.armed = self.handled.is_some() || self.reporting.is_some() || self.raised.is_some();
     }
 }
 
@@ -222,10 +421,13 @@ pub(crate) fn run_unraisable<R>(
 ) -> R {
     let transaction = UnraisableTransaction::begin(_py);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
-    transaction.finish_current(_py, context_bits, err_msg);
+    let report = transaction.finish_current(context_bits, err_msg);
     match result {
-        Ok(result) => result,
         Err(payload) => std::panic::resume_unwind(payload),
+        Ok(result) => match report {
+            Ok(()) => result,
+            Err(payload) => std::panic::resume_unwind(payload),
+        },
     }
 }
 
@@ -237,7 +439,7 @@ pub(crate) fn run_unraisable_with_policy<R>(
     let transaction = UnraisableTransaction::begin(_py);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
     let raised = take_raised(_py);
-    let has_raised = raised.task.is_some() || raised.global.is_some();
+    let has_raised = !matches!(&raised, RaisedSnapshot::None);
     let policy_result = if has_raised {
         Some(std::panic::catch_unwind(std::panic::AssertUnwindSafe(
             policy,
@@ -250,7 +452,7 @@ pub(crate) fn run_unraisable_with_policy<R>(
         .and_then(|result| result.as_ref().ok())
         .map(|(context, message)| (*context, message.as_deref()))
         .unwrap_or((MoltObject::none().bits(), None));
-    transaction.finish_raised(_py, raised, context_bits, err_msg);
+    let report = transaction.finish_raised(raised, context_bits, err_msg);
     let output = match result {
         Ok(output) => output,
         Err(payload) => std::panic::resume_unwind(payload),
@@ -258,7 +460,10 @@ pub(crate) fn run_unraisable_with_policy<R>(
     if let Some(Err(payload)) = policy_result {
         std::panic::resume_unwind(payload);
     }
-    output
+    match report {
+        Ok(()) => output,
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
 }
 
 pub(crate) fn report_captured_unraisable(
@@ -267,7 +472,11 @@ pub(crate) fn report_captured_unraisable(
     exc_bits: u64,
     err_msg: Option<&str>,
 ) {
-    UnraisableTransaction::begin(_py).report_captured(_py, context_bits, exc_bits, err_msg);
+    if let Err(payload) =
+        UnraisableTransaction::begin(_py).report_captured(context_bits, exc_bits, err_msg)
+    {
+        std::panic::resume_unwind(payload);
+    }
 }
 
 fn sys_attr_bits(_py: &PyToken<'_>, name: &[u8]) -> u64 {
@@ -488,8 +697,7 @@ fn build_unraisable_args_class(_py: &PyToken<'_>) -> u64 {
 
     let none = MoltObject::none().bits();
     let mut match_args = [none; UNRAISABLE_FIELDS.len()];
-    let mut initialized = 0;
-    for (index, field) in UNRAISABLE_FIELDS.iter().enumerate() {
+    for (initialized, field) in UNRAISABLE_FIELDS.iter().enumerate() {
         let ptr = alloc_string(_py, field.as_bytes());
         if ptr.is_null() {
             for bits in &match_args[..initialized] {
@@ -497,8 +705,7 @@ fn build_unraisable_args_class(_py: &PyToken<'_>) -> u64 {
             }
             return discard_unraisable_args_class(_py, class_bits);
         }
-        match_args[index] = MoltObject::from_ptr(ptr).bits();
-        initialized += 1;
+        match_args[initialized] = MoltObject::from_ptr(ptr).bits();
     }
     let match_args_ptr = alloc_tuple(_py, &match_args);
     for bits in match_args {
@@ -994,6 +1201,20 @@ fn report_unraisable_exception(
 mod tests {
     use super::*;
 
+    fn ref_count(bits: u64) -> u32 {
+        let ptr = obj_from_bits(bits).as_ptr().expect("heap object");
+        unsafe {
+            (*header_from_obj_ptr(ptr))
+                .ref_count
+                .load(AtomicOrdering::Acquire)
+        }
+    }
+
+    fn pending_exception(_py: &PyToken<'_>, message: &str) -> u64 {
+        let _: u64 = raise_exception(_py, "RuntimeError", message);
+        exception_last_bits_noinc(_py).expect("pending exception")
+    }
+
     fn class_dict_value(_py: &PyToken<'_>, class_bits: u64, name: &str) -> u64 {
         let class_ptr = obj_from_bits(class_bits).as_ptr().expect("class pointer");
         let dict_bits = unsafe { class_dict_bits(class_ptr) };
@@ -1112,7 +1333,6 @@ mod tests {
                 "the hidden runtime type itself must be immutable"
             );
             clear_exception(_py);
-            clear_exception_state(_py);
             dec_ref_bits(_py, repr_name_bits);
 
             let source_ptr = alloc_tuple(_py, &fields);
@@ -1149,10 +1369,248 @@ mod tests {
                 "structured tuple fields are readonly"
             );
             clear_exception(_py);
-            clear_exception_state(_py);
             dec_ref_bits(_py, err_name_bits);
 
             dec_ref_bits(_py, args_bits);
+        });
+    }
+
+    #[test]
+    fn armed_transaction_restores_edges_when_the_body_unwinds() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry_nopanic!(_py, {
+            let original = pending_exception(_py, "outer");
+            inc_ref_bits(_py, original); // Test-owned observation edge.
+            let baseline = ref_count(original);
+
+            let unwind = crate::test_support::catch_expected_unwind(|| {
+                let _transaction = UnraisableTransaction::begin(_py);
+                assert!(!exception_pending(_py));
+                panic!("body panic");
+            });
+            assert!(unwind.is_err());
+            assert_eq!(exception_last_bits_noinc(_py), Some(original));
+            assert_eq!(ref_count(original), baseline);
+
+            clear_exception(_py);
+            dec_ref_bits(_py, original);
+        });
+    }
+
+    #[test]
+    fn begin_and_drop_recover_a_poisoned_task_exception_map_without_losing_ownership() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry_nopanic!(_py, {
+            let bits = pending_exception(_py, "task-owned");
+            inc_ref_bits(_py, bits);
+            let baseline = ref_count(bits);
+            let detached = take_raised(_py);
+            assert!(matches!(detached, RaisedSnapshot::Thread(value) if value == bits));
+            let task_ptr = obj_from_bits(bits).as_ptr().expect("task identity pointer");
+            let key = PtrSlot(task_ptr);
+            let map = task_last_exceptions(_py);
+
+            let poisoned = crate::test_support::catch_expected_unwind(|| {
+                let _lock = map.lock().unwrap();
+                panic!("poison task exception map");
+            });
+            assert!(poisoned.is_err() && map.is_poisoned());
+            map.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(key, PtrSlot(task_ptr));
+            crate::CURRENT_TASK.with(|slot| slot.set(task_ptr));
+            CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(true));
+
+            let transaction = UnraisableTransaction::begin(_py);
+            assert!(!CURRENT_EXCEPTION_PENDING.with(|pending| pending.get()));
+            drop(transaction);
+            assert_eq!(ref_count(bits), baseline);
+
+            let restored = {
+                let mut guard = map
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                assert_eq!(guard.get(&key).copied(), Some(PtrSlot(task_ptr)));
+                guard.remove(&key).expect("restored task exception edge")
+            };
+            crate::CURRENT_TASK.with(|slot| slot.set(std::ptr::null_mut()));
+            CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(false));
+            map.clear_poison();
+            dec_ref_bits(_py, MoltObject::from_ptr(restored.0).bits());
+            dec_ref_bits(_py, bits);
+        });
+    }
+
+    #[test]
+    fn reporter_panic_releases_report_edge_and_restores_original_exactly_once() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry_nopanic!(_py, {
+            let original = pending_exception(_py, "outer");
+            inc_ref_bits(_py, original);
+            let original_baseline = ref_count(original);
+            let mut transaction = UnraisableTransaction::begin(_py);
+
+            let reported = pending_exception(_py, "reported");
+            inc_ref_bits(_py, reported);
+            let reported_with_channel = ref_count(reported);
+            let raised = take_raised(_py);
+            transaction.reporting = Some(raised);
+            let report = crate::test_support::with_expected_panic(|| {
+                transaction.finish_reporting(
+                    MoltObject::none().bits(),
+                    None,
+                    |_py, _context, bits, _message| {
+                        assert_eq!(bits, reported);
+                        panic!("report panic");
+                    },
+                )
+            });
+
+            assert!(report.is_err());
+            assert_eq!(exception_last_bits_noinc(_py), Some(original));
+            assert_eq!(ref_count(original), original_baseline);
+            assert_eq!(ref_count(reported), reported_with_channel - 1);
+
+            clear_exception(_py);
+            dec_ref_bits(_py, original);
+            dec_ref_bits(_py, reported);
+            // `raised` was transferred into `finish_reporting`; this assertion
+            // ensures the test exercised an owned reporting edge.
+            assert!(matches!(
+                raised,
+                RaisedSnapshot::Thread(bits) if bits == reported
+            ));
+        });
+    }
+
+    #[test]
+    fn policy_panic_preserves_outer_exception_and_releases_inner_exception() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry_nopanic!(_py, {
+            let original = pending_exception(_py, "outer");
+            inc_ref_bits(_py, original);
+            let original_baseline = ref_count(original);
+            let reported = std::cell::Cell::new(0_u64);
+            let reported_baseline = std::cell::Cell::new(0_u32);
+
+            let unwind = crate::test_support::catch_expected_unwind(|| {
+                run_unraisable_with_policy(
+                    _py,
+                    || -> (u64, Option<String>) { panic!("policy panic") },
+                    || {
+                        let bits = pending_exception(_py, "inner");
+                        inc_ref_bits(_py, bits);
+                        reported.set(bits);
+                        reported_baseline.set(ref_count(bits));
+                    },
+                );
+            });
+            assert!(unwind.is_err());
+            assert_eq!(exception_last_bits_noinc(_py), Some(original));
+            assert_eq!(ref_count(original), original_baseline);
+            assert_eq!(
+                ref_count(reported.get()),
+                reported_baseline.get() - 1,
+                "the detached reporting channel owns exactly one reference"
+            );
+
+            clear_exception(_py);
+            dec_ref_bits(_py, original);
+            dec_ref_bits(_py, reported.get());
+        });
+    }
+
+    #[test]
+    fn reentrant_reporting_keeps_outer_transaction_edges_private() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry_nopanic!(_py, {
+            let original = pending_exception(_py, "outer");
+            inc_ref_bits(_py, original);
+            let original_baseline = ref_count(original);
+            let mut transaction = UnraisableTransaction::begin(_py);
+            let reported = pending_exception(_py, "reported");
+            inc_ref_bits(_py, reported);
+            let reported_with_channel = ref_count(reported);
+            let raised = take_raised(_py);
+            transaction.reporting = Some(raised);
+
+            let report =
+                transaction.finish_reporting(MoltObject::none().bits(), None, |_py, _, _, _| {
+                    run_unraisable(_py, MoltObject::none().bits(), None, || ());
+                });
+            assert!(report.is_ok());
+            assert_eq!(exception_last_bits_noinc(_py), Some(original));
+            assert_eq!(ref_count(original), original_baseline);
+            assert_eq!(ref_count(reported), reported_with_channel - 1);
+
+            clear_exception(_py);
+            dec_ref_bits(_py, original);
+            dec_ref_bits(_py, reported);
+            assert!(matches!(
+                raised,
+                RaisedSnapshot::Thread(bits) if bits == reported
+            ));
+        });
+    }
+
+    #[test]
+    fn impossible_reentrant_restore_defers_both_handled_edge_classes_and_fails_closed() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry_nopanic!(_py, {
+            let active_ptr = alloc_exception(_py, "RuntimeError", "active");
+            let fallback_ptr = alloc_exception(_py, "RuntimeError", "fallback");
+            assert!(!active_ptr.is_null() && !fallback_ptr.is_null());
+            let active = MoltObject::from_ptr(active_ptr).bits();
+            let fallback = MoltObject::from_ptr(fallback_ptr).bits();
+            inc_ref_bits(_py, active);
+            inc_ref_bits(_py, fallback);
+            ACTIVE_EXCEPTION_STACK.with(|stack| stack.borrow_mut().push(active));
+            ACTIVE_EXCEPTION_FALLBACK.with(|stack| {
+                stack.borrow_mut().push(ExceptionContextFallback {
+                    bits: fallback,
+                    owned: true,
+                });
+            });
+            let active_with_channel = ref_count(active);
+            let fallback_with_channel = ref_count(fallback);
+            let transaction = UnraisableTransaction::begin(_py);
+
+            let failure = crate::test_support::catch_expected_unwind(|| {
+                ACTIVE_EXCEPTION_STACK.with(|stack| {
+                    let _borrow = stack.borrow_mut();
+                    let _ = transaction.finish_raised(
+                        RaisedSnapshot::None,
+                        MoltObject::none().bits(),
+                        None,
+                    );
+                });
+            });
+            assert!(failure.is_err());
+            assert!(ACTIVE_EXCEPTION_STACK.with(|stack| stack.borrow().is_empty()));
+            assert!(ACTIVE_EXCEPTION_FALLBACK.with(|stack| stack.borrow().is_empty()));
+            assert_eq!(ref_count(active), active_with_channel);
+            assert_eq!(ref_count(fallback), fallback_with_channel);
+            assert!(
+                flush_deferred_handled(_py),
+                "state must restore once the reentrant borrow ends"
+            );
+            assert!(ACTIVE_EXCEPTION_STACK.with(|stack| stack.borrow().as_slice() == [active]));
+            assert!(ACTIVE_EXCEPTION_FALLBACK.with(|stack| {
+                let stack = stack.borrow();
+                stack.len() == 1 && stack[0].owned && stack[0].bits == fallback
+            }));
+
+            let active_saved =
+                ACTIVE_EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
+            let fallback_saved =
+                ACTIVE_EXCEPTION_FALLBACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
+            release_stack(_py, active_saved);
+            release_fallback_stack(_py, fallback_saved);
+            assert_eq!(ref_count(active), active_with_channel - 1);
+            assert_eq!(ref_count(fallback), fallback_with_channel - 1);
+
+            dec_ref_bits(_py, active);
+            dec_ref_bits(_py, fallback);
         });
     }
 

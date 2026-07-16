@@ -745,7 +745,7 @@ impl Drop for ListSyncGuard {
     }
 }
 
-fn release_bridge_entry(mut entry: Box<BridgeEntry>) {
+fn release_bridge_entry(mut entry: BridgeEntry) {
     let _runtime_gil = crate::hooks::RuntimeGilGuard::ensure();
     let _ = unsafe { (crate::hooks::hooks_or_stubs().try_mark_abi_view)(entry.bits, 0) };
     entry.view.release_owned_items();
@@ -762,7 +762,7 @@ pub struct RetiredTupleView {
 impl Drop for RetiredTupleView {
     fn drop(&mut self) {
         if let Some(entry) = self.entry.take() {
-            release_bridge_entry(entry);
+            release_bridge_entry(*entry);
         }
     }
 }
@@ -1285,7 +1285,10 @@ impl ObjectBridge {
         unsafe { (hooks.dec_ref)(bases_bits) };
         Some((name, base_bits))
     }
+}
 
+// Fallible physical-view construction prior to publication.
+impl ObjectBridge {
     unsafe fn build_pyobj_entry(
         &self,
         bits: AbiHandle,
@@ -1450,7 +1453,10 @@ impl ObjectBridge {
         }
         self.publication_ready[index].notify_all();
     }
+}
 
+// Canonical Molt-handle to CPython-view publication and result ownership.
+impl ObjectBridge {
     unsafe fn handle_to_pyobj_impl(&self, bits: AbiHandle, owned: bool) -> *mut PyObject {
         // Pin before any shard lock.  Runtime ownership, physical projection
         // population, and publication state form one bridge transaction.
@@ -1597,7 +1603,10 @@ impl ObjectBridge {
             }
         }
     }
+}
 
+// Borrowed/new-result projection ownership at the C ABI boundary.
+impl ObjectBridge {
     pub unsafe fn borrowed_result_to_borrowed_pyobj(
         &self,
         result: crate::hooks::BorrowedHandleResult,
@@ -1719,7 +1728,10 @@ impl ObjectBridge {
             self.publication_ready[index].wait(&mut handle);
         }
     }
+}
 
+// Physical tuple/list projection preparation and publication.
+impl ObjectBridge {
     pub fn unicode_utf8_cache(&self, bits: AbiHandle, bytes: &[u8]) -> Option<(*const u8, usize)> {
         let mut handle = self.handle_shard(bits).lock();
         let entry = handle.to_py.get_mut(&bits)?;
@@ -1970,7 +1982,10 @@ impl ObjectBridge {
             pointer: Some(pointer),
         })
     }
+}
 
+// Prepared list insert/set/projection transactions.
+impl ObjectBridge {
     /// Stage one physical projection edge plus capacity for an insertion.
     pub fn prepare_list_insert(
         &self,
@@ -2146,7 +2161,10 @@ impl ObjectBridge {
         };
         RetiredListProjection { pointers: old }
     }
+}
 
+// In-place list projection mutations that reuse already-prepared storage.
+impl ObjectBridge {
     /// Move a clean complete physical projection off the live list and publish
     /// an empty PyListObject without changing projection reference counts.
     /// The returned projection can be reordered and restored after arbitrary
@@ -2366,7 +2384,10 @@ impl ObjectBridge {
         }
         true
     }
+}
 
+// Direct list construction slots and stolen-reference publication.
+impl ObjectBridge {
     /// Put a freshly allocated list projection into CPython's construction
     /// state: logical size is retained, but every C-visible item slot is NULL.
     pub fn mark_list_view_uninitialized(&self, bits: AbiHandle) -> bool {
@@ -2474,17 +2495,20 @@ impl ObjectBridge {
     /// Reserve and publish projection-ledger ownership for the reference that
     /// PyList_SetItem will steal. This must happen before the runtime store so
     /// the subsequent physical publication is allocation-free.
-    pub fn prepare_list_set_stolen_ref(&self, pointer: *mut PyObject) -> bool {
+    pub unsafe fn prepare_list_set_stolen_ref(&self, pointer: *mut PyObject) -> bool {
         unsafe { self.projection_adopt_owned_ref(pointer) }
     }
 
     /// Roll back a prepared stolen-reference ledger edge when the runtime store
     /// fails before physical publication. The caller still owns the C
     /// reference, so this changes only ledger state and performs no DECREF.
-    pub fn cancel_list_set_stolen_ref(&self, pointer: *mut PyObject) {
+    pub unsafe fn cancel_list_set_stolen_ref(&self, pointer: *mut PyObject) {
         unsafe { self.projection_unadopt_owned_ref(pointer) };
     }
+}
 
+// C-written list projection validation, runtime commit, traversal, and clear.
+impl ObjectBridge {
     /// Commit direct stealing writes made through PyListObject.ob_item. Partial
     /// mode supports PyList_SetItem filling a construction list out of order;
     /// complete mode is required at every C-to-runtime observation boundary.
@@ -2612,8 +2636,7 @@ impl ObjectBridge {
                 rollback_displaced: None,
             });
         }
-        let mut adopted = 0usize;
-        for cell in &staged {
+        for (adopted, cell) in staged.iter().enumerate() {
             if !unsafe { self.projection_adopt_owned_ref(cell.pointer) } {
                 for rollback in staged.iter().take(adopted) {
                     unsafe { self.projection_unadopt_owned_ref(rollback.pointer) };
@@ -2623,7 +2646,6 @@ impl ObjectBridge {
                 }
                 return false;
             }
-            adopted += 1;
         }
         let mut apply_failed = false;
         for cell in &mut staged {
@@ -2717,7 +2739,10 @@ impl ObjectBridge {
         }
         true
     }
+}
 
+// Completed list projection commit wrappers, GC traversal, and clear.
+impl ObjectBridge {
     pub fn commit_list_view_partial(&self, bits: AbiHandle) -> bool {
         self.commit_list_view_inner(bits, false)
     }
@@ -2791,7 +2816,10 @@ impl ObjectBridge {
             unsafe { crate::api::refcount::Py_DECREF(pointer) };
         }
     }
+}
 
+// Physical exception projection refresh, GC traversal, direct-write commit, and clear.
+impl ObjectBridge {
     /// Pull the complete runtime exception state into its physical
     /// `PyBaseExceptionObject` in one publication.  The hook pins every field;
     /// conversion happens before the bridge lock and old C references are
@@ -2950,7 +2978,10 @@ impl ObjectBridge {
         }
         handles
     }
+}
 
+// Exception projection clear and C-written snapshot commit.
+impl ObjectBridge {
     /// Publish an empty physical exception projection, then release its six C
     /// ownership edges outside bridge locks. Runtime exception slots must be
     /// detached first so any decref-triggered callback observes one coherent
@@ -2990,28 +3021,63 @@ impl ObjectBridge {
         let Some(_sync) = ExceptionSyncGuard::enter(bits) else {
             return true;
         };
-        let fields = {
-            let handle = self.handle_shard(bits).lock();
-            let Some(entry) = handle.to_py.get(&bits) else {
-                return true;
-            };
-            let ManagedView::Exception(object) = &entry.view else {
-                return true;
-            };
-            unsafe {
-                let object = &*object.get();
-                let fields = [
-                    object.dict,
-                    object.args,
-                    object.notes,
-                    object.traceback,
-                    object.context,
-                    object.cause,
-                ];
-                for field in fields.into_iter().filter(|field| !field.is_null()) {
-                    crate::api::refcount::Py_INCREF(field);
+        let fields = loop {
+            let snapshot = {
+                let handle = self.handle_shard(bits).lock();
+                let Some(entry) = handle.to_py.get(&bits) else {
+                    return true;
+                };
+                let ManagedView::Exception(object) = &entry.view else {
+                    return true;
+                };
+                unsafe {
+                    let object = &*object.get();
+                    (
+                        [
+                            object.dict,
+                            object.args,
+                            object.notes,
+                            object.traceback,
+                            object.context,
+                            object.cause,
+                        ],
+                        object.suppress_context,
+                    )
                 }
-                (fields, object.suppress_context)
+            };
+            for field in snapshot.0.into_iter().filter(|field| !field.is_null()) {
+                unsafe { crate::api::refcount::Py_INCREF(field) };
+            }
+            let current = {
+                let handle = self.handle_shard(bits).lock();
+                handle.to_py.get(&bits).and_then(|entry| {
+                    let ManagedView::Exception(object) = &entry.view else {
+                        return None;
+                    };
+                    unsafe {
+                        let object = &*object.get();
+                        Some((
+                            [
+                                object.dict,
+                                object.args,
+                                object.notes,
+                                object.traceback,
+                                object.context,
+                                object.cause,
+                            ],
+                            object.suppress_context,
+                        ))
+                    }
+                })
+            };
+            if current == Some(snapshot) {
+                break snapshot;
+            }
+            for field in snapshot.0.into_iter().filter(|field| !field.is_null()) {
+                unsafe { crate::api::refcount::Py_DECREF(field) };
+            }
+            if current.is_none() {
+                return true;
             }
         };
         let (c_fields, suppress_context) = fields;
@@ -3068,14 +3134,15 @@ impl ObjectBridge {
         for field in c_fields.into_iter().filter(|field| !field.is_null()) {
             unsafe { crate::api::refcount::Py_DECREF(field) };
         }
-        if !committed {
-            if !crate::api::errors::transfer_runtime_pending_to_current() {
-                unsafe { ensure_result_error(c"managed exception snapshot commit failed") };
-            }
+        if !committed && !crate::api::errors::transfer_runtime_pending_to_current() {
+            unsafe { ensure_result_error(c"managed exception snapshot commit failed") };
         }
         committed
     }
+}
 
+// Bidirectional identity, foreign-wrapper custody, and static registration.
+impl ObjectBridge {
     fn pyobj_matches_handle(&self, ptr: *mut PyObject, bits: AbiHandle) -> bool {
         if ptr.is_null() {
             return false;
@@ -3134,9 +3201,7 @@ impl ObjectBridge {
             let bits = address.from_py.get(&addr).copied()?;
             let index = self.handle_shard_index(bits);
             let mut handle = self.handle_shards[index].lock();
-            let Some(entry) = handle.to_py.get(&bits) else {
-                return None;
-            };
+            let entry = handle.to_py.get(&bits)?;
             if entry.view.py_obj().addr() != addr {
                 return None;
             }
@@ -3301,7 +3366,10 @@ impl ObjectBridge {
             .numeric_carriers
             .insert(ptr.addr(), NumericCarrierRecord { bits, kind });
     }
+}
 
+// Projection-owned C-reference accounting and numeric carrier retirement.
+impl ObjectBridge {
     /// Add one C reference owned by a physical ABI projection. The separate
     /// ledger lets finalization distinguish graph edges traversed by cycle GC
     /// from external C roots that genuinely resurrect an object.
@@ -3385,7 +3453,10 @@ impl ObjectBridge {
             .numeric_carriers
             .remove(&ptr.addr())
     }
+}
 
+// Managed-view C-reference linearization, publication retirement, and view removal.
+impl ObjectBridge {
     /// Increment a canonical managed view while holding both identity ranks.
     /// The caller must hold the runtime execution token; the bridge lock makes
     /// the C header update linearizable with publication and retirement.
@@ -3410,6 +3481,9 @@ impl ObjectBridge {
                 return None;
             }
             let refs = unsafe { (*ptr).ob_refcnt };
+            if crate::abi_types::is_immortal_refcnt(refs) {
+                return Some(bits);
+            }
             let Some(incremented) = checked_c_ref_increment(refs) else {
                 abort_refcount_invariant("managed Py_INCREF", refs, entry.lifecycle);
             };
@@ -3472,7 +3546,7 @@ impl ObjectBridge {
                 self.publication_ready[index].notify_all();
                 drop(handle);
                 drop(address);
-                release_bridge_entry(entry);
+                release_bridge_entry(*entry);
                 return ManagedDecref::RetiredInline;
             }
             let runtime_refs = unsafe { (crate::hooks::hooks_or_stubs().ref_count)(bits) };
@@ -3531,7 +3605,7 @@ impl ObjectBridge {
             self.publication_ready[index].notify_all();
             drop(handle);
             drop(address);
-            release_bridge_entry(entry);
+            release_bridge_entry(*entry);
             unsafe { (crate::hooks::hooks_or_stubs().dec_ref)(bits) };
             return PyObjRelease::ManagedViewRetired;
         }
@@ -3550,7 +3624,7 @@ impl ObjectBridge {
         drop(handle);
         drop(address);
         if let Some(entry) = entry {
-            release_bridge_entry(entry);
+            release_bridge_entry(*entry);
             true
         } else {
             false
@@ -3588,9 +3662,7 @@ impl ObjectBridge {
     pub fn runtime_owner_dropped_to_view_hold(&self, bits: AbiHandle) -> Option<bool> {
         let addr = {
             let handle = self.handle_shard(bits).lock();
-            let Some(entry) = handle.to_py.get(&bits) else {
-                return None;
-            };
+            let entry = handle.to_py.get(&bits)?;
             entry.view.py_obj().addr()
         };
         let (address, mut handle) = self.lock_address_then_handle(addr, bits);
@@ -3619,7 +3691,10 @@ impl ObjectBridge {
         drop(address);
         Some(true)
     }
+}
 
+// Runtime-owner transitions, finalization pins, GC adjustments, and zero-ref classification.
+impl ObjectBridge {
     /// Resolve the runtime's last-reference transition while preserving the
     /// canonical view through finalization. Any still-attached runtime bias is
     /// detached first. `false` means direct C references retain the view hold;
@@ -3761,7 +3836,10 @@ impl ObjectBridge {
         }
         entry.lifecycle = BridgeLifecycle::RuntimeOwned;
     }
+}
 
+// Finalization completion, resurrection, GC roots, and zero-ref disposition.
+impl ObjectBridge {
     /// Adjustment from raw runtime refcount to cycle-GC external-root count.
     /// The runtime count includes the view's one strong hold, which is not an
     /// external root; direct C references are external roots and live only in
@@ -4588,9 +4666,6 @@ fn format_float_repr(f: f64) -> Option<Vec<u8>> {
 mod bridge_handle_tests {
     use super::*;
     use crate::abi_types::PyUnicode_Type;
-    use std::sync::{Arc, Barrier, mpsc};
-    use std::thread;
-    use std::time::Duration;
 
     #[test]
     fn lifecycle_refcount_arithmetic_rejects_corrupt_boundaries() {
@@ -4774,6 +4849,14 @@ mod bridge_handle_tests {
                 .contains_key(&w_bits)
         );
     }
+}
+
+#[cfg(test)]
+mod bridge_concurrency_tests {
+    use super::*;
+    use std::sync::{Arc, Barrier, mpsc};
+    use std::thread;
+    use std::time::Duration;
 
     #[test]
     fn stripe_count_and_hashes_follow_the_design() {
@@ -4897,6 +4980,14 @@ mod bridge_handle_tests {
                 .all(|shard| shard.lock().to_py.is_empty())
         );
     }
+}
+
+#[cfg(test)]
+mod bridge_publication_race_tests {
+    use super::*;
+    use std::sync::{Arc, Barrier, mpsc};
+    use std::thread;
+    use std::time::Duration;
 
     #[test]
     fn same_handle_crossing_publishes_one_ready_pointer() {
@@ -5057,6 +5148,25 @@ mod bridge_handle_tests {
             rx.recv_timeout(Duration::from_secs(10)).unwrap();
         }
         assert_eq!(unsafe { (*ptr).ob_refcnt }, 1);
+        assert_eq!(bridge.release_pyobj(ptr), PyObjRelease::ManagedViewRetired);
+    }
+
+    #[test]
+    fn managed_immortal_view_refcount_operations_are_noops() {
+        init_tag_table();
+        let bridge = ObjectBridge::new();
+        let bits = MoltObject::from_int(60_000).bits();
+        let ptr = unsafe { bridge.owned_handle_to_pyobj(bits) };
+        unsafe { (*ptr).ob_refcnt = crate::abi_types::IMMORTAL_REFCNT };
+        assert_eq!(unsafe { bridge.managed_incref_pyobj(ptr) }, Some(bits));
+        assert_eq!(
+            unsafe { bridge.managed_decref_pyobj(ptr) },
+            ManagedDecref::Immortal
+        );
+        assert_eq!(
+            unsafe { (*ptr).ob_refcnt },
+            crate::abi_types::IMMORTAL_REFCNT
+        );
         assert_eq!(bridge.release_pyobj(ptr), PyObjRelease::ManagedViewRetired);
     }
 }
