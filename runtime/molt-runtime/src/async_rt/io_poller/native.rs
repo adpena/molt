@@ -664,11 +664,11 @@ impl IoPoller {
                     break;
                 }
                 let timeout = deadline - now;
-                let _release = GilReleaseGuard::new();
+                let _release = GilReleaseGuard::suspend();
                 let (next, _) = waiter.condvar.wait_timeout(guard, timeout).unwrap();
                 guard = next;
             } else {
-                let _release = GilReleaseGuard::new();
+                let _release = GilReleaseGuard::suspend();
                 guard = waiter.condvar.wait(guard).unwrap();
             }
         }

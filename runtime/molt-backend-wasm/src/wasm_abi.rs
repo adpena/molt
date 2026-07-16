@@ -113,8 +113,8 @@ pub(crate) fn static_func_type_idx(params: &[ValType], results: &[ValType]) -> O
 mod tests {
     use super::{IMPORT_REGISTRY, STATIC_TYPE_COUNT, WasmRuntimeImport, emit_static_type_section};
     use crate::wasm_abi_generated::{
-        LirRuntimeCall, WasmObjectNewBoundPayload, op_loop_runtime_call,
-        wasm_object_new_bound_selection,
+        LirRuntimeCall, RUNTIME_CALLABLE_IMPORTS, WasmObjectNewBoundPayload, op_loop_runtime_call,
+        runtime_callable_import, wasm_object_new_bound_selection, wasm_runtime_import,
     };
     use wasm_encoder::{Module, TypeSection};
     use wasmparser::{CompositeInnerType, Parser, Payload};
@@ -161,6 +161,22 @@ mod tests {
             op_call.required_imports,
             [WasmRuntimeImport::ModuleCacheDel],
             "module_cache_del codegen must request its runtime import explicitly"
+        );
+    }
+
+    #[test]
+    fn target_unavailable_sqlite_is_not_advertised_by_wasm_abi() {
+        assert!(wasm_runtime_import("sqlite3_connect").is_none());
+        assert!(runtime_callable_import("molt_sqlite3_connect").is_none());
+        assert!(
+            IMPORT_REGISTRY
+                .iter()
+                .all(|spec| !spec.name.starts_with("sqlite3_"))
+        );
+        assert!(
+            RUNTIME_CALLABLE_IMPORTS
+                .iter()
+                .all(|spec| !spec.runtime_name.starts_with("molt_sqlite3_"))
         );
     }
 

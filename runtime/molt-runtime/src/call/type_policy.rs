@@ -124,6 +124,26 @@ mod tests {
     }
 
     #[test]
+    fn exception_builtin_methods_match_runtime_symbols() {
+        crate::with_gil_entry_nopanic!(_py, {
+            let new_bits = crate::builtins::exceptions::exception_method_bits(_py, "__new__");
+            let init_bits = crate::builtins::exceptions::exception_method_bits(_py, "__init__");
+            assert!(unsafe {
+                callable_matches_runtime_symbol(
+                    new_bits,
+                    fn_addr!(crate::builtins::exceptions::molt_exception_new_bound),
+                )
+            });
+            assert!(unsafe {
+                callable_matches_runtime_symbol(
+                    init_bits,
+                    fn_addr!(crate::builtins::exceptions::molt_exception_init),
+                )
+            });
+        });
+    }
+
+    #[test]
     fn constructor_policy_rejects_args_for_default_object_constructor() {
         crate::with_gil_entry_nopanic!(_py, {
             let new_bits = object_method_bits(_py, "__new__");

@@ -100,7 +100,7 @@ impl LuauBackend {
                     let base = sanitize_ident(&args[1]);
                     let has_base = sanitize_ident(&args[2]);
                     self.emit_line(&format!(
-                        "local {out} = if molt_bool({has_base}) then math.floor(tonumber(molt_str({val}), molt_int({base})) or 0) else molt_int(molt_str({val}))"
+                        "local {out} = if molt_bool({has_base}) then (function() local __value = tonumber(molt_str({val}), molt_int({base})); if __value == nil then error({{__type=\"ValueError\", __msg=\"invalid literal for int()\"}}) end; return math.floor(__value) end)() else molt_int(molt_str({val}))"
                     ));
                 }
             }

@@ -61,7 +61,7 @@ fn chan_send_blocking_impl(_py: &PyToken<'_>, chan: &MoltChannel, val: i64) -> i
     match chan.sender.try_send(val) {
         Ok(_) => ok_bits,
         Err(TrySendError::Full(_)) => {
-            let _release = GilReleaseGuard::new();
+            let _release = GilReleaseGuard::suspend();
             match chan.sender.send(val) {
                 Ok(_) => ok_bits,
                 Err(_) => {
@@ -82,7 +82,7 @@ fn chan_recv_blocking_impl(_py: &PyToken<'_>, chan: &MoltChannel) -> i64 {
     match chan.receiver.try_recv() {
         Ok(val) => val,
         Err(TryRecvError::Empty) => {
-            let _release = GilReleaseGuard::new();
+            let _release = GilReleaseGuard::suspend();
             match chan.receiver.recv() {
                 Ok(val) => val,
                 Err(_) => raise_exception::<i64>(_py, "RuntimeError", "channel recv failed"),

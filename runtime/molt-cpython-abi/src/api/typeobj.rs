@@ -68,9 +68,7 @@ unsafe fn acceptable_best_base(bases: *mut PyObject) -> *mut PyTypeObject {
             unsafe { reject_type_layout(c"type is not an acceptable base type") };
             return ptr::null_mut();
         }
-        if best.is_null() {
-            best = candidate;
-        } else if unsafe { PyType_IsSubtype(candidate, best) } != 0 {
+        if best.is_null() || unsafe { PyType_IsSubtype(candidate, best) } != 0 {
             best = candidate;
         } else if unsafe { PyType_IsSubtype(best, candidate) } == 0 {
             unsafe { reject_type_layout(c"multiple bases have incompatible physical layouts") };

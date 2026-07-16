@@ -242,18 +242,14 @@ rustpython-parser = { version = "0.4", default-features = false, features = ["lo
 glob = { version = "0.3", optional = true }
 tempfile = { version = "3", optional = true }
 
-# sqlite3 driver — molt-db re-exports rusqlite (bundled SQLite amalgamation).
-# Declared at the top-level [dependencies] table because Cargo's `dep:`
-# feature-gate syntax requires the dep to be visible without target
-# qualification. molt-db itself emits compile_error! when the `sqlite`
-# feature is enabled on wasm32, so the build still fails fast on
-# unsupported targets.
-molt-db = { package = "molt-db", path = "../molt-db", optional = true }
-
+# sqlite3 is a native provider. WASM keeps the host database channel surface
+# but does not link the bundled native SQLite amalgamation.
 [build-dependencies]
 cc = "1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+molt-db = { package = "molt-db", path = "../molt-db", optional = true }
+parking_lot = "0.12"
 mimalloc = { version = "0.1", default-features = false }
 xz2 = { version = "0.1", optional = true }
 simdutf = { version = "0.7", optional = true }

@@ -1809,13 +1809,11 @@ pub(crate) unsafe fn class_slots_info(_py: &PyToken<'_>, class_ptr: *mut u8) -> 
                         }
                     }
                     TYPE_ID_TUPLE | TYPE_ID_LIST => {
-                        let Some(slots) = crate::object::seq_access::snapshot(
+                        let slots = crate::object::seq_access::snapshot(
                             _py,
                             slots_ptr,
                             "sequence snapshot allocation failed",
-                        ) else {
-                            return None;
-                        };
+                        )?;
                         for slot_bits in slots.iter().copied() {
                             let slot_obj = obj_from_bits(slot_bits);
                             if obj_eq(_py, dict_obj, slot_obj) {

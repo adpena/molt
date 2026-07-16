@@ -1,5 +1,6 @@
 use std::env;
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 #[path = "../build_support/unicode_tables.rs"]
 mod unicode_tables;
@@ -26,6 +27,63 @@ fn resolve_build_python() -> String {
     }
 }
 
+fn c_macro_int(preprocessor_output: &str, name: &str) -> i32 {
+    let prefix = format!("#define {name} ");
+    let raw = preprocessor_output
+        .lines()
+        .find_map(|line| line.strip_prefix(&prefix))
+        .unwrap_or_else(|| panic!("target <errno.h> did not define {name}"))
+        .trim()
+        .trim_matches(['(', ')']);
+    raw.parse::<i32>()
+        .unwrap_or_else(|_| panic!("target <errno.h> defined non-integer {name}={raw:?}"))
+}
+
+fn emit_freestanding_errno_authority(build: &mut cc::Build, out_dir: &Path) {
+    let probe = out_dir.join("molt_freestanding_errno_probe.c");
+    fs::write(&probe, "#include <errno.h>\n").expect("write errno macro probe");
+    let output = build
+        .get_compiler()
+        .to_command()
+        .args(["-dM", "-E"])
+        .arg(&probe)
+        .output()
+        .expect("preprocess target errno macros");
+    if !output.status.success() {
+        panic!(
+            "target errno macro probe failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let macros = String::from_utf8(output.stdout).expect("target errno macros are UTF-8");
+    let edom = c_macro_int(&macros, "EDOM");
+    let erange = c_macro_int(&macros, "ERANGE");
+    fs::write(
+        out_dir.join("freestanding_errno.rs"),
+        format!(
+            "// @generated from the target C <errno.h>; do not edit.\n\
+             pub(crate) const C_EDOM: c_int = {edom};\n\
+             pub(crate) const C_ERANGE: c_int = {erange};\n"
+        ),
+    )
+    .expect("write freestanding errno constants");
+
+    // Compile the values back through the target C frontend. This prevents a
+    // host-only probe or parser regression from silently publishing constants
+    // that disagree with the C shim's target headers.
+    let assertion = out_dir.join("molt_freestanding_errno_assert.c");
+    fs::write(
+        &assertion,
+        format!(
+            "#include <errno.h>\n\
+             _Static_assert(EDOM == {edom}, \"EDOM generator drift\");\n\
+             _Static_assert(ERANGE == {erange}, \"ERANGE generator drift\");\n"
+        ),
+    )
+    .expect("write target errno assertions");
+    build.file(assertion);
+}
+
 fn main() {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let shim = manifest.join("shims/pyarg_variadic.c");
@@ -35,6 +93,7 @@ fn main() {
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+    let mut freestanding_libc_dir = None;
     unicode_tables::emit_cpython_abi_unicode_tables(&out_dir, &resolve_build_python());
 
     // Compile the C variadic shim into a static library.
@@ -54,20 +113,51 @@ fn main() {
 
     // -fno-semantic-interposition is useful on GCC/Linux but triggers a
     // warning on Apple clang; skip it on macOS.
-    if target_os != "macos" {
+    if target_os != "macos" && target_arch != "wasm32" {
         build.flag_if_supported("-fno-semantic-interposition");
     }
     if target_arch == "wasm32" {
-        let sysroot = wasi_sysroot::resolve_wasi_sysroot().unwrap_or_else(|| {
-            panic!(
-                "WASI sysroot not found: set MOLT_WASI_SYSROOT, WASI_SYSROOT, \
-                 WASI_SDK_PATH, WASI_SDK_PREFIX, or MOLT_TARGET_ROOT so \
-                 wasm32-wasip1 CPython ABI provider shims can compile."
-            )
-        });
-        build.flag(sysroot.sysroot_flag());
-        if let Some(include_dir) = sysroot.include_dir() {
-            build.include(include_dir);
+        match target_os.as_str() {
+            "wasi" => {
+                let sysroot = wasi_sysroot::resolve_wasi_sysroot().unwrap_or_else(|| {
+                    panic!(
+                        "WASI sysroot not found: set MOLT_WASI_SYSROOT, WASI_SYSROOT, \
+                         WASI_SDK_PATH, WASI_SDK_PREFIX, or MOLT_TARGET_ROOT so \
+                         wasm32-wasip1 CPython ABI provider shims can compile."
+                    )
+                });
+                build.flag(sysroot.sysroot_flag());
+                if let Some(include_dir) = sysroot.include_dir() {
+                    build.include(include_dir);
+                }
+            }
+            "unknown" => {
+                // CPython's C ABI cannot be split across Rust allocation and an
+                // extension's C allocation/FILE/errno provider. Freestanding
+                // runtime artifacts therefore use the canonical WASI libc as
+                // their one C-runtime provider; its syscall surface remains the
+                // generated, admitted host-import boundary in the final module.
+                let provider = wasi_sysroot::resolve_wasi_sysroot().unwrap_or_else(|| {
+                    panic!(
+                        "freestanding wasm C ABI provider not found: configure the canonical \
+                         WASI SDK sysroot via MOLT_WASI_SYSROOT, WASI_SYSROOT, \
+                         WASI_SDK_PATH, WASI_SDK_PREFIX, or MOLT_TARGET_ROOT"
+                    )
+                });
+                build.flag(provider.sysroot_flag());
+                if let Some(include_dir) = provider.include_dir() {
+                    build.include(include_dir);
+                }
+                freestanding_libc_dir = Some(provider.lib_dir("wasm32-wasip1"));
+                emit_freestanding_errno_authority(&mut build, &out_dir);
+            }
+            "emscripten" => {
+                // emcc owns its sysroot and CRT selection. Injecting WASI flags
+                // here creates a mixed FILE/allocator provider and is forbidden.
+            }
+            other => panic!(
+                "unsupported wasm32 CPython ABI target_os={other:?}; expected wasi, unknown, or emscripten"
+            ),
         }
     }
 
@@ -90,6 +180,17 @@ fn main() {
         build.cargo_metadata(false);
     }
     build.compile("molt_pyarg_shims");
+    if let Some(lib_dir) = freestanding_libc_dir {
+        let libc = lib_dir.join("libc.a");
+        if !libc.is_file() {
+            panic!(
+                "freestanding wasm C ABI provider is incomplete: {} is missing",
+                libc.display()
+            );
+        }
+        println!("cargo:rustc-link-search=native={}", lib_dir.display());
+        println!("cargo:rustc-link-lib=static=c");
+    }
     if owns_archive_link {
         println!("cargo:rustc-link-search=native={}", out_dir.display());
     }
@@ -126,6 +227,12 @@ fn main() {
         println!(
             "cargo:rerun-if-changed={}",
             abi_include.join("Python.h").display()
+        );
+        println!(
+            "cargo:rerun-if-changed={}",
+            manifest
+                .join("../../include/molt/_gil_state_abi.h")
+                .display()
         );
     }
 

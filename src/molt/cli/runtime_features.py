@@ -5,6 +5,9 @@ import os
 import tomllib
 from typing import Collection
 
+from molt._runtime_feature_gates import (
+    link_affecting_features_unsupported_on_target,
+)
 from molt.cli.capability_spec import _dedupe_preserve_order
 from molt.cli.compiler_metadata import _compiler_root
 from molt.cli.config_resolution import (
@@ -192,21 +195,19 @@ def profile_link_features(
     feature selection (``runtime_build``) read it, so they can no longer
     disagree with the Cargo chain.
 
-    The WASM stable-target exclusions (``_WASM_RUNTIME_STABLE_EXCLUDED_FEATURES``)
-    are subtracted for ``wasm32`` targets so the derived set matches the features
-    the WASM staticlib actually links.
+    Target-unavailable features are subtracted using the generated intrinsic
+    availability authority so the profile and provider manifest cannot drift.
     """
     effective_profile = profile or DEFAULT_STDLIB_PROFILE
     if effective_profile == AUTO_STDLIB_PROFILE:
         effective_profile = "full"
     cargo_feature = runtime_cargo_feature_for_profile(effective_profile)
     reached = _expand_cargo_feature(cargo_feature)
+    unavailable = link_affecting_features_unsupported_on_target(target_triple)
     if target_triple is not None and target_triple.startswith("wasm32"):
-        reached = frozenset(
-            feature
-            for feature in reached
-            if feature not in _WASM_RUNTIME_STABLE_EXCLUDED_FEATURES
-        )
+        unavailable = unavailable | _WASM_PROFILE_POLICY_EXCLUDED_FEATURES
+    if unavailable:
+        reached = reached.difference(unavailable)
     return reached
 
 
@@ -235,18 +236,17 @@ def runtime_stdlib_profile_for_required_features(
     return "full"
 
 
-_WASM_RUNTIME_STABLE_EXCLUDED_FEATURES = frozenset(
+_WASM_PROFILE_POLICY_EXCLUDED_FEATURES = frozenset(
     {
         "stdlib_tk",
         "stdlib_net",
-        # stdlib_ast is wasm-supported (pure-Rust rustpython-parser) and is
-        # genuinely reached by source-recompiled numpy's buffer-protocol
-        # dtype parsing, so it stays in the wasm ceiling; size-sensitive
-        # lanes trim it through profile selection, not a hard exclusion.
+        # unicode_names2 is target-capable but intentionally omitted from the
+        # stable WASM artifact for size. This is profile policy, unlike the
+        # generated provider-availability exclusion above.
         "stdlib_unicode_names",
-        "sqlite",
     }
 )
+
 
 _MICRO_BASE_RUNTIME_FEATURES: tuple[str, ...] = (
     "stdlib_asyncio",

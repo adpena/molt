@@ -1087,14 +1087,12 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                     let res_obj = obj_from_bits(res_bits);
                     if let Some(res_ptr) = res_obj.as_ptr()
                         && object_type_id(res_ptr) == TYPE_ID_TUPLE
+                        && let Some((_, done_bits)) = crate::object::seq_access::tuple_pair(res_ptr)
                     {
-                        if let Some((_, done_bits)) = crate::object::seq_access::tuple_pair(res_ptr)
-                        {
-                            let done = is_truthy(_py, obj_from_bits(done_bits));
-                            if done {
-                                let closed_bits = MoltObject::from_bool(true).bits();
-                                *(ptr.add(GEN_CLOSED_OFFSET) as *mut u64) = closed_bits;
-                            }
+                        let done = is_truthy(_py, obj_from_bits(done_bits));
+                        if done {
+                            let closed_bits = MoltObject::from_bool(true).bits();
+                            *(ptr.add(GEN_CLOSED_OFFSET) as *mut u64) = closed_bits;
                         }
                     }
                     return res_bits;
@@ -2275,19 +2273,18 @@ pub unsafe extern "C" fn molt_iter_next_dict_items(
             let pair_obj = obj_from_bits(pair_bits);
             if let Some(pair_ptr) = pair_obj.as_ptr()
                 && object_type_id(pair_ptr) == TYPE_ID_TUPLE
+                && let Some((kb, vb)) = crate::object::seq_access::tuple_pair(pair_ptr)
             {
-                if let Some((kb, vb)) = crate::object::seq_access::tuple_pair(pair_ptr) {
-                    if crate::object::refcount_opt::is_heap_ref(kb) {
-                        inc_ref_bits(_py, kb);
-                    }
-                    if crate::object::refcount_opt::is_heap_ref(vb) {
-                        inc_ref_bits(_py, vb);
-                    }
-                    *key_out = kb;
-                    *value_out = vb;
-                    dec_ref_bits(_py, pair_bits);
-                    return done_false;
+                if crate::object::refcount_opt::is_heap_ref(kb) {
+                    inc_ref_bits(_py, kb);
                 }
+                if crate::object::refcount_opt::is_heap_ref(vb) {
+                    inc_ref_bits(_py, vb);
+                }
+                *key_out = kb;
+                *value_out = vb;
+                dec_ref_bits(_py, pair_bits);
+                return done_false;
             }
             dec_ref_bits(_py, pair_bits);
             done_true

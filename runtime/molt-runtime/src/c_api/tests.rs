@@ -3627,9 +3627,9 @@ fn c_api_tuple_new_size_getitem_setitem() {
         assert_ne!(tuple, 0);
         assert_eq!(PyTuple_Size(tuple), 3);
 
-        // All slots default to None.
+        // CPython construction slots are NULL until PyTuple_SetItem fills them.
         let item0 = PyTuple_GetItem(tuple, 0);
-        assert!(obj_from_bits(item0).is_none());
+        assert_eq!(item0, 0);
 
         // SetItem steals the ref, so inc_ref the value first.
         let val = MoltObject::from_int(77).bits();

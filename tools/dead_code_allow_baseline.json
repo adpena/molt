@@ -58,14 +58,6 @@
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },
     {
-      "id": "runtime/molt-backend-luau/src/luau_lower.rs::allow_dead_code::1",
-      "path": "runtime/molt-backend-luau/src/luau_lower.rs",
-      "line": 81,
-      "kind": "allow_dead_code",
-      "owner": "compiler-runtime maintainers",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
       "id": "runtime/molt-backend-mlir/src/lower.rs::allow_dead_code::1",
       "path": "runtime/molt-backend-mlir/src/lower.rs",
       "line": 61,

@@ -193,6 +193,7 @@ pub struct RuntimeHooks {
     pub gil_release: unsafe extern "C" fn(),
     pub gil_restore: unsafe extern "C" fn(),
     pub gil_check: unsafe extern "C" fn() -> std::os::raw::c_int,
+    pub runtime_is_initialized: unsafe extern "C" fn() -> std::os::raw::c_int,
     // ── Allocation ────────────────────────────────────────────────────────────
     /// Allocate a UTF-8 string object. Returns handle bits, 0 on failure.
     pub alloc_str: unsafe extern "C" fn(data: *const u8, len: usize) -> u64,
@@ -627,7 +628,7 @@ pub struct RuntimeHooks {
 }
 
 pub const RUNTIME_HOOKS_ABI_MAGIC: u64 = 0x4d4f_4c54_484f_4f4b;
-pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 15;
+pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 16;
 
 /// Discriminants for [`RuntimeHooks::dict_op`]. Kept in sync with the match in
 /// the runtime hook implementation (`hook_dict_op`).
@@ -1137,7 +1138,10 @@ unsafe extern "C" fn stub_gil_leave(_state: std::os::raw::c_int) {}
 unsafe extern "C" fn stub_gil_release() {}
 unsafe extern "C" fn stub_gil_restore() {}
 unsafe extern "C" fn stub_gil_check() -> std::os::raw::c_int {
-    1
+    0
+}
+unsafe extern "C" fn stub_runtime_is_initialized() -> std::os::raw::c_int {
+    0
 }
 unsafe extern "C" fn stub_try_mark_abi_view(
     _bits: u64,
@@ -1234,6 +1238,7 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     gil_release: stub_gil_release,
     gil_restore: stub_gil_restore,
     gil_check: stub_gil_check,
+    runtime_is_initialized: stub_runtime_is_initialized,
     alloc_str: stub_alloc_str,
     alloc_bytes: stub_alloc_bytes,
     int_from_i64: stub_int_from_i64,

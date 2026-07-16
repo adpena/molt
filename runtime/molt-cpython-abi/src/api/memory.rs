@@ -11,28 +11,33 @@ use std::os::raw::{c_char, c_int};
 pub unsafe extern "C" fn PyMem_Malloc(size: usize) -> *mut c_void {
     // CPython obmalloc: `if (size == 0) size = 1;` so a 0-byte request returns a
     // unique non-NULL pointer a caller cannot mistake for allocation failure.
-    unsafe { libc::malloc(size.max(1)) }
+    unsafe { crate::platform::c_malloc(size) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyMem_Calloc(nelem: usize, elsize: usize) -> *mut c_void {
     // CPython: a 0-element/0-size request still returns a unique pointer.
-    if nelem == 0 || elsize == 0 {
-        return unsafe { libc::calloc(1, 1) };
-    }
-    unsafe { libc::calloc(nelem, elsize) }
+    let size = if nelem == 0 || elsize == 0 {
+        1
+    } else {
+        let Some(size) = nelem.checked_mul(elsize) else {
+            return std::ptr::null_mut();
+        };
+        size
+    };
+    unsafe { crate::platform::c_calloc(size) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyMem_Realloc(ptr: *mut c_void, new_size: usize) -> *mut c_void {
     // CPython: Realloc(p, 0) behaves like Realloc(p, 1) — it never frees `p`
     // and never returns NULL-on-success (realloc(p, 0) may do both in C).
-    unsafe { libc::realloc(ptr, new_size.max(1)) }
+    unsafe { crate::platform::c_realloc(ptr, new_size) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyMem_Free(ptr: *mut c_void) {
-    unsafe { libc::free(ptr) };
+    unsafe { crate::platform::c_free(ptr) };
 }
 
 #[unsafe(no_mangle)]
@@ -62,8 +67,9 @@ pub unsafe extern "C" fn PyObject_GC_Del(ptr: *mut c_void) {
 
 /// CPython `PyObject_Free` — release an object's memory. In CPython this is the
 /// non-GC object deallocator (`object`'s default `tp_free`); Molt routes it
-/// through the same `libc::free` path as `PyMem_Free`/`PyObject_GC_Del` (there
-/// is no separate obmalloc arena or GC tracking in the wasm runtime). Provided
+/// through the same cross-target allocation authority as
+/// `PyMem_Free`/`PyObject_GC_Del` (there is no separate obmalloc arena or GC
+/// tracking in the runtime). Provided
 /// so `PyType_Ready` can install CPython's `tp_free` default: a static
 /// C-extension type that leaves `tp_free` NULL (e.g. numpy's
 /// `PyBoundArrayMethod_Type`) inherits `object.tp_free == PyObject_Free`, and
@@ -76,7 +82,7 @@ pub unsafe extern "C" fn PyObject_Free(ptr: *mut c_void) {
 // CPython's `PyObject_Malloc`/`Calloc`/`Realloc` are the object-domain
 // allocator (`obmalloc`). Semantically they are `malloc`/`calloc`/`realloc`
 // with the same "0-size returns a unique non-NULL pointer" guarantee — Molt has
-// no separate obmalloc arena, so they route through the same libc path as
+// no separate obmalloc arena, so they route through the same allocation path as
 // `PyMem_*`/`PyObject_Free`. A C extension (numpy) that pairs `PyObject_Malloc`
 // with `PyObject_Free` must see a matched allocator, which this guarantees.
 #[unsafe(no_mangle)]

@@ -583,14 +583,19 @@ fn test_pyobject_type_null_sets_error_and_returns_null() {
 }
 
 #[test]
-fn test_pyeval_save_restore_thread_uses_singleton_thread_state() {
+fn test_detached_abi_does_not_fabricate_runtime_or_thread_state() {
     let _guard = init();
-    let tstate = unsafe { molt_cpython_abi::api::object::PyEval_SaveThread() };
-    assert!(!tstate.is_null());
-    assert!(std::ptr::eq(tstate, unsafe {
-        molt_cpython_abi::api::object::PyThreadState_Get()
-    }));
-    unsafe { molt_cpython_abi::api::object::PyEval_RestoreThread(tstate) };
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::object::Py_IsInitialized() },
+        0
+    );
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::object::PyGILState_Check() },
+        0
+    );
+    assert!(unsafe { molt_cpython_abi::api::object::_PyThreadState_UncheckedGet() }.is_null());
+    assert_eq!(molt_cpython_abi::api::object::PY_GIL_STATE_LOCKED, 0);
+    assert_eq!(molt_cpython_abi::api::object::PY_GIL_STATE_UNLOCKED, 1);
 }
 
 // Mask-proof regression for POISON Lane A #9 — PyThreadState_GetFrame theater.
@@ -600,28 +605,12 @@ fn test_pyeval_save_restore_thread_uses_singleton_thread_state() {
 // Pre-fix this returned a non-null synthetic frame (via PyFrame_New) → FAILS;
 // post-fix it returns NULL → PASSES.
 #[test]
-fn test_pythreadstate_getframe_returns_null_not_synthetic_frame() {
-    let _guard = init();
-    let tstate = unsafe { molt_cpython_abi::api::object::PyThreadState_Get() };
-    assert!(
-        !tstate.is_null(),
-        "a valid thread state is needed for the test"
-    );
-    let frame = unsafe { molt_cpython_abi::api::object::PyThreadState_GetFrame(tstate) };
-    assert!(
-        frame.is_null(),
-        "PyThreadState_GetFrame must return NULL (no CPython frame stack), \
-         never a fabricated empty frame read as the real execution frame"
-    );
-}
-
-#[test]
 fn test_gil_check_mutex_and_unstable_unique_refs() {
     let _guard = init();
 
     assert_eq!(
         unsafe { molt_cpython_abi::api::object::PyGILState_Check() },
-        1
+        0
     );
 
     let mut mutex = PyMutex { _bits: 0 };

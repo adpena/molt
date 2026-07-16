@@ -1798,7 +1798,7 @@ mod tests {
                 let out_bits = molt_typing_get_args(MoltObject::from_int(1).bits());
                 let out_ptr = maybe_ptr_from_bits(out_bits).expect("expected tagged tuple object");
                 assert_eq!(object_type_id(out_ptr), crate::TYPE_ID_TUPLE);
-                assert_eq!(crate::object::seq_access::locked_len(out_ptr), 0);
+                assert_eq!(crate::object::seq_access::len(out_ptr), 0);
                 dec_ref_bits(_py, out_bits);
             }
         });

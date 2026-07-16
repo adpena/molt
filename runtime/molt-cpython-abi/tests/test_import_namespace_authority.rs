@@ -125,15 +125,19 @@ fn store_dict_entry(dict: u64, key: u64, value: u64) -> bool {
         let Some(entries) = dicts.get_mut(&dict) else {
             return false;
         };
-        if entries.contains_key(&key) {
-            unsafe { inc_ref(value) };
-            entries.insert(key, value)
-        } else {
-            unsafe {
-                inc_ref(key);
-                inc_ref(value);
+        match entries.entry(key) {
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                unsafe { inc_ref(value) };
+                Some(entry.insert(value))
             }
-            entries.insert(key, value)
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                unsafe {
+                    inc_ref(key);
+                    inc_ref(value);
+                }
+                entry.insert(value);
+                None
+            }
         }
     };
     if let Some(previous) = previous {

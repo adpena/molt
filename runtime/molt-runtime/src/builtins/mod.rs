@@ -67,7 +67,7 @@ pub(crate) mod select;
 pub(crate) mod shutil;
 pub(crate) mod signal_ext;
 pub(crate) mod sitebuiltins;
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", not(target_arch = "wasm32")))]
 pub(crate) mod sqlite3;
 pub(crate) mod ssl;
 pub(crate) mod string_ext;

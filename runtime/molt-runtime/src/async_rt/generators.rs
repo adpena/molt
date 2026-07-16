@@ -693,36 +693,35 @@ unsafe fn generator_raise_from_pending(_py: &PyToken<'_>, ptr: *mut u8, exc_bits
         let mut converted = false;
         if let Some(exc_ptr) = obj_from_bits(exc_bits).as_ptr()
             && object_type_id(exc_ptr) == TYPE_ID_EXCEPTION
+            && exception_matches_type(_py, exc_ptr, "StopIteration")
         {
-            if exception_matches_type(_py, exc_ptr, "StopIteration") {
-                let rt_ptr = alloc_exception(_py, "RuntimeError", "generator raised StopIteration");
-                if !rt_ptr.is_null() {
-                    let rt_bits = MoltObject::from_ptr(rt_ptr).bits();
-                    let cause_slot = rt_ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64;
-                    let old_cause = *cause_slot;
-                    if old_cause != exc_bits {
-                        dec_ref_bits(_py, old_cause);
-                        inc_ref_bits(_py, exc_bits);
-                        *cause_slot = exc_bits;
-                    }
-                    let context_slot = rt_ptr.add(3 * std::mem::size_of::<u64>()) as *mut u64;
-                    let old_context = *context_slot;
-                    if old_context != exc_bits {
-                        dec_ref_bits(_py, old_context);
-                        inc_ref_bits(_py, exc_bits);
-                        *context_slot = exc_bits;
-                    }
-                    let suppress_bits = MoltObject::from_bool(true).bits();
-                    let suppress_slot = rt_ptr.add(4 * std::mem::size_of::<u64>()) as *mut u64;
-                    let old_suppress = *suppress_slot;
-                    if old_suppress != suppress_bits {
-                        dec_ref_bits(_py, old_suppress);
-                        inc_ref_bits(_py, suppress_bits);
-                        *suppress_slot = suppress_bits;
-                    }
-                    raise_bits = rt_bits;
-                    converted = true;
+            let rt_ptr = alloc_exception(_py, "RuntimeError", "generator raised StopIteration");
+            if !rt_ptr.is_null() {
+                let rt_bits = MoltObject::from_ptr(rt_ptr).bits();
+                let cause_slot = rt_ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64;
+                let old_cause = *cause_slot;
+                if old_cause != exc_bits {
+                    dec_ref_bits(_py, old_cause);
+                    inc_ref_bits(_py, exc_bits);
+                    *cause_slot = exc_bits;
                 }
+                let context_slot = rt_ptr.add(3 * std::mem::size_of::<u64>()) as *mut u64;
+                let old_context = *context_slot;
+                if old_context != exc_bits {
+                    dec_ref_bits(_py, old_context);
+                    inc_ref_bits(_py, exc_bits);
+                    *context_slot = exc_bits;
+                }
+                let suppress_bits = MoltObject::from_bool(true).bits();
+                let suppress_slot = rt_ptr.add(4 * std::mem::size_of::<u64>()) as *mut u64;
+                let old_suppress = *suppress_slot;
+                if old_suppress != suppress_bits {
+                    dec_ref_bits(_py, old_suppress);
+                    inc_ref_bits(_py, suppress_bits);
+                    *suppress_slot = suppress_bits;
+                }
+                raise_bits = rt_bits;
+                converted = true;
             }
         }
         generator_set_closed(_py, ptr, true);

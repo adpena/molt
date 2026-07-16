@@ -502,7 +502,9 @@ fn emit_op_corpus_source_snapshot() {
     let mut buf = String::new();
     for (name, ir) in corpus() {
         let mut backend = RustBackend::new();
-        let source = backend.compile(&ir);
+        let source = backend
+            .compile_checked(&ir)
+            .unwrap_or_else(|err| panic!("{name} must be fully supported: {err}"));
         buf.push_str(&format!("===== PROGRAM: {name} =====\n"));
         buf.push_str(&source);
         buf.push('\n');

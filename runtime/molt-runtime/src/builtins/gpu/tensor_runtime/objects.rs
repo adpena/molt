@@ -169,9 +169,7 @@ pub(super) fn parse_i64_sequence_arg(
     let decode = |elems: &[u64]| {
         let mut out = Vec::with_capacity(elems.len());
         for &elem_bits in elems {
-            let Some(value) = to_i64(obj_from_bits(elem_bits)) else {
-                return None;
-            };
+            let value = to_i64(obj_from_bits(elem_bits))?;
             out.push(value);
         }
         Some(out)

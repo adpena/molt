@@ -128,16 +128,16 @@ pub extern "C" fn molt_alloc_class(size_bits: u64, class_bits: u64) -> u64 {
             return MoltObject::none().bits();
         }
         unsafe {
-            if class_bits != 0 {
-                if !object_init_class_edge_unpublished(
+            if class_bits != 0
+                && !object_init_class_edge_unpublished(
                     _py,
                     obj_ptr,
                     class_bits,
                     ClassEdgeOwnership::Owned,
-                ) {
-                    dec_ref_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
-                    return MoltObject::none().bits();
-                }
+                )
+            {
+                dec_ref_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
+                return MoltObject::none().bits();
             }
         }
         MoltObject::from_ptr(obj_ptr).bits()
@@ -175,16 +175,16 @@ pub extern "C" fn molt_alloc_class_trusted(size_bits: u64, class_bits: u64) -> u
             return MoltObject::none().bits();
         }
         unsafe {
-            if class_bits != 0 {
-                if !object_init_class_edge_unpublished(
+            if class_bits != 0
+                && !object_init_class_edge_unpublished(
                     _py,
                     obj_ptr,
                     class_bits,
                     ClassEdgeOwnership::Owned,
-                ) {
-                    dec_ref_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
-                    return MoltObject::none().bits();
-                }
+                )
+            {
+                dec_ref_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
+                return MoltObject::none().bits();
             }
         }
         MoltObject::from_ptr(obj_ptr).bits()
@@ -222,16 +222,16 @@ pub extern "C" fn molt_alloc_class_static(size_bits: u64, class_bits: u64) -> u6
             return MoltObject::none().bits();
         }
         unsafe {
-            if class_bits != 0 {
-                if !object_init_class_edge_unpublished(
+            if class_bits != 0
+                && !object_init_class_edge_unpublished(
                     _py,
                     obj_ptr,
                     class_bits,
                     ClassEdgeOwnership::Owned,
-                ) {
-                    dec_ref_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
-                    return MoltObject::none().bits();
-                }
+                )
+            {
+                dec_ref_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
+                return MoltObject::none().bits();
             }
         }
         MoltObject::from_ptr(obj_ptr).bits()

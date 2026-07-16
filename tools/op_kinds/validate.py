@@ -50,6 +50,8 @@ from .schema import (
     _SCCP_CONSTANT_SEED_RULES,
     _SCEV_EXPR_RULES,
     _SIMPLEIR_CONTROL_FACT_FIELDS,
+    _SIMPLEIR_INTEGER_SEMANTIC_FACT_SETS,
+    _SIMPLEIR_RUNTIME_SEMANTIC_FACT_SETS,
     _SROA_CONST_IMMEDIATE_RULES,
     _SSA_S_VALUE_ATTR_KEYS,
     _STRENGTH_REDUCTION_RULES,
@@ -181,6 +183,32 @@ def load_table(table_path: Path = TABLE) -> dict:
             isinstance(x, str) for x in members
         ):
             raise OpKindTableError(f"{key} must be a list of strings")
+        if len(set(members)) != len(members):
+            raise OpKindTableError(f"{key} has duplicate members")
+
+    integer_semantic_members: dict[str, str] = {}
+    for key in _SIMPLEIR_INTEGER_SEMANTIC_FACT_SETS:
+        members = data.get(key, [])
+        if not isinstance(members, list) or not all(
+            isinstance(member, str) and member for member in members
+        ):
+            raise OpKindTableError(f"{key} must be a list of non-empty strings")
+        if len(set(members)) != len(members):
+            raise OpKindTableError(f"{key} has duplicate members")
+        for member in members:
+            prior = integer_semantic_members.setdefault(member, key)
+            if prior != key:
+                raise OpKindTableError(
+                    f"SimpleIR integer semantic kind {member!r} appears in both "
+                    f"{prior} and {key}"
+                )
+
+    for key in _SIMPLEIR_RUNTIME_SEMANTIC_FACT_SETS:
+        members = data.get(key, [])
+        if not isinstance(members, list) or not all(
+            isinstance(member, str) and member for member in members
+        ):
+            raise OpKindTableError(f"{key} must be a list of non-empty strings")
         if len(set(members)) != len(members):
             raise OpKindTableError(f"{key} has duplicate members")
 

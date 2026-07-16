@@ -1171,27 +1171,18 @@ pub unsafe extern "C" fn PyUnicode_AsUTF8AndSize(
 /// `PyMem_Malloc(size)` — allocate `size` bytes of memory.
 /// Returns a pointer to the allocated memory, or NULL on failure.
 pub unsafe extern "C" fn PyMem_Malloc(size: usize) -> *mut u8 {
-    if size == 0 {
-        // CPython returns a non-NULL pointer for size 0; allocate 1 byte.
-        return unsafe { libc::malloc(1) as *mut u8 };
-    }
-    unsafe { libc::malloc(size) as *mut u8 }
+    unsafe { molt_cpython_abi::api::memory::PyMem_Malloc(size).cast() }
 }
 
 /// `PyMem_Realloc(ptr, size)` — resize a previously allocated block.
 /// Returns a pointer to the reallocated memory, or NULL on failure.
 pub unsafe extern "C" fn PyMem_Realloc(ptr: *mut u8, size: usize) -> *mut u8 {
-    let actual_size = if size == 0 { 1 } else { size };
-    unsafe { libc::realloc(ptr as *mut libc::c_void, actual_size) as *mut u8 }
+    unsafe { molt_cpython_abi::api::memory::PyMem_Realloc(ptr.cast(), size).cast() }
 }
 
 /// `PyMem_Free(ptr)` — free memory allocated by `PyMem_Malloc` or `PyMem_Realloc`.
 pub unsafe extern "C" fn PyMem_Free(ptr: *mut u8) {
-    if !ptr.is_null() {
-        unsafe {
-            libc::free(ptr as *mut libc::c_void);
-        }
-    }
+    unsafe { molt_cpython_abi::api::memory::PyMem_Free(ptr.cast()) }
 }
 
 /// `PyObject_Malloc(size)` — allocate memory for an object.

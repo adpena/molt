@@ -2200,22 +2200,20 @@ unsafe extern "C" fn collections_runtime_state_clear(ptr: *mut u8) {
     if ptr.is_null() {
         return;
     }
-    let _py = CoreGilToken::new();
-    unsafe {
-        (&*(ptr as *const CollectionsRuntimeState)).clear(&_py);
-    }
+    molt_runtime_core::with_core_gil!(py, unsafe {
+        (&*(ptr as *const CollectionsRuntimeState)).clear(py);
+    });
 }
 
 unsafe extern "C" fn collections_runtime_state_drop(ptr: *mut u8) {
     if ptr.is_null() {
         return;
     }
-    let _py = CoreGilToken::new();
-    unsafe {
+    molt_runtime_core::with_core_gil!(py, unsafe {
         let state = Box::from_raw(ptr as *mut CollectionsRuntimeState);
-        state.clear(&_py);
+        state.clear(py);
         drop(state);
-    }
+    });
 }
 
 fn collections_state() -> &'static CollectionsRuntimeState {
@@ -2970,13 +2968,13 @@ fn counter_unary_op(_py: &CoreGilToken, handle_bits: u64, transform: fn(i64) -> 
 /// +c: keep only positive counts.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_counter_pos(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, { counter_unary_op(_py, handle_bits, |count| count) })
+    molt_runtime_core::with_core_gil!(_py, counter_unary_op(_py, handle_bits, |count| count))
 }
 
 /// -c: keep only counts that become positive after negation.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_counter_neg(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, { counter_unary_op(_py, handle_bits, |count| -count) })
+    molt_runtime_core::with_core_gil!(_py, counter_unary_op(_py, handle_bits, |count| -count))
 }
 
 // ─── Counter intrinsics: copy / clear / pop / drop ──────────────────────────

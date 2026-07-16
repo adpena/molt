@@ -43,11 +43,7 @@ impl RustBackend {
                 ));
             }
         } else if args.is_empty() {
-            if o == "_" || o == "none" {
-                self.emit_line("MoltValue::None;");
-            } else {
-                self.emit_line(&declare(&o, "MoltValue::None", &self.hoisted_vars.clone()));
-            }
+            self.emit_unsupported_op(op, "dynamic call requires a callable argument");
         } else {
             // Dynamic call: args[0] is the MoltValue::Func to invoke.
             let func_var = rust_ident(&args[0]);
@@ -185,7 +181,8 @@ impl RustBackend {
                 rust_ident(func)
             )
         } else {
-            "MoltValue::None".to_string()
+            self.emit_unsupported_op(op, "call_bind requires a callable argument");
+            return;
         };
         if o == "_" || o == "none" {
             self.emit_line(&format!("{rhs};"));
@@ -225,6 +222,8 @@ impl RustBackend {
             let val = rust_ident(&args[1]);
             self.emit_line(&format!("molt_list_append(&mut {list}, {val}.clone());"));
             self.emit_alias_writeback(&list);
+        } else {
+            self.emit_unsupported_op(op, "callargs_push_pos requires builder and value");
         }
     }
 
@@ -237,12 +236,16 @@ impl RustBackend {
                         "for __item in molt_iter_list(&{other}) {{ molt_list_append(&mut {list}, __item); }}"
                     ));
             self.emit_alias_writeback(&list);
+        } else {
+            self.emit_unsupported_op(op, "callargs_expand_star requires builder and iterable");
         }
     }
 
-    pub(super) fn emit_op_callargs_push_kw(&mut self, _op: &OpIR) {
-
-        // Keyword arguments are currently ignored in the Rust subset.
+    pub(super) fn emit_op_callargs_push_kw(&mut self, op: &OpIR) {
+        self.emit_unsupported_op(
+            op,
+            "keyword argument builders are not supported by the Rust backend",
+        );
     }
 
     pub(super) fn emit_op_func_new(&mut self, op: &OpIR) {
@@ -256,11 +259,13 @@ impl RustBackend {
         };
 
         let o = out();
-        let rhs = if let Some(ref fn_name) = op.s_value {
+        let Some(ref fn_name) = op.s_value else {
+            self.emit_unsupported_op(op, "func_new requires a static function target");
+            return;
+        };
+        let rhs = {
             let fn_ident = rust_ident(fn_name);
             format!("MoltValue::Func(Arc::new(move |args: &mut Vec<MoltValue>| {fn_ident}(args)))")
-        } else {
-            "MoltValue::None".to_string()
         };
         self.emit_line(&declare(&o, &rhs, &self.hoisted_vars.clone()));
     }
@@ -294,6 +299,8 @@ impl RustBackend {
                         ),
                         &self.hoisted_vars.clone(),
                     ));
+        } else {
+            self.emit_unsupported_op(op, "code_new requires its complete 9-argument schema");
         }
     }
 
@@ -308,6 +315,8 @@ impl RustBackend {
             let code = rust_ident(code);
             let code_id = op.value.unwrap_or(0);
             self.emit_line(&format!("molt_code_slot_set({code_id}, &{code});"));
+        } else {
+            self.emit_unsupported_op(op, "code_slot_set requires a code object");
         }
     }
 }

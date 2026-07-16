@@ -1434,19 +1434,19 @@ pub extern "C" fn molt_os_devnull() -> u64 {
 /// `os.curdir` → str  (".")
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_curdir() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, { str_bits(_py, ".") })
+    molt_runtime_core::with_core_gil!(_py, str_bits(_py, "."))
 }
 
 /// `os.pardir` → str  ("..")
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_pardir() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, { str_bits(_py, "..") })
+    molt_runtime_core::with_core_gil!(_py, str_bits(_py, ".."))
 }
 
 /// `os.extsep` → str  (".")
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_extsep() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, { str_bits(_py, ".") })
+    molt_runtime_core::with_core_gil!(_py, str_bits(_py, "."))
 }
 
 /// `os.altsep` → str | None  (None on POSIX, "/" on Windows)

@@ -934,19 +934,19 @@ pub extern "C" fn molt_function_set_builtin(func_bits: u64) -> u64 {
             }
             let builtin_bits = builtin_classes(_py).builtin_function_or_method;
             let old_bits = object_class_bits(func_ptr);
-            if old_bits != builtin_bits {
-                if !object_replace_class_edge(
+            if old_bits != builtin_bits
+                && !object_replace_class_edge(
                     _py,
                     func_ptr,
                     builtin_bits,
                     ClassEdgeOwnership::Owned,
-                ) {
-                    return raise_exception::<_>(
-                        _py,
-                        "TypeError",
-                        "function class metadata is immutable after publication",
-                    );
-                }
+                )
+            {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "function class metadata is immutable after publication",
+                );
             }
         }
         MoltObject::none().bits()
@@ -1518,16 +1518,16 @@ pub extern "C" fn molt_bound_method_new(func_bits: u64, self_bits: u64) -> u64 {
             if method_bits != 0 {
                 unsafe {
                     let old_bits = object_class_bits(ptr);
-                    if old_bits != method_bits {
-                        if !object_init_class_edge_unpublished(
+                    if old_bits != method_bits
+                        && !object_init_class_edge_unpublished(
                             _py,
                             ptr,
                             method_bits,
                             ClassEdgeOwnership::Owned,
-                        ) {
-                            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-                            return MoltObject::none().bits();
-                        }
+                        )
+                    {
+                        dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                        return MoltObject::none().bits();
                     }
                 }
             }

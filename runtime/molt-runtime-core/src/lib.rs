@@ -113,29 +113,24 @@ pub mod type_ids {
 }
 
 // ---------------------------------------------------------------------------
-// GIL token stub
+// GIL custody proof
 // ---------------------------------------------------------------------------
 
-/// Zero-sized GIL token. Proves the caller holds the GIL.
-///
-/// This is a stub — the real GIL implementation lives in `molt-runtime`.
-/// Extracted crates use this to satisfy API signatures without pulling in
-/// the full runtime.
-#[derive(Clone, Copy)]
-pub struct PyToken(());
+/// Zero-sized, thread-affine proof that the current thread holds the runtime GIL.
+pub struct PyToken(std::marker::PhantomData<std::rc::Rc<()>>);
 
 impl PyToken {
-    /// Create a new token. In the real runtime this would be gated by the
-    /// GIL; here it is unconditional so that extracted crates can compile.
+    /// Construct proof at an unsafe boundary that independently guarantees
+    /// current-thread GIL custody for the complete use of the returned token.
+    /// Normal callers enter through [`CoreGilGuard`] or a GIL-entry macro.
+    ///
+    /// # Safety
+    ///
+    /// The current thread must hold the runtime GIL, and the token must not be
+    /// used after that custody is released.
     #[inline(always)]
-    pub fn new() -> Self {
-        Self(())
-    }
-}
-
-impl Default for PyToken {
-    fn default() -> Self {
-        Self::new()
+    pub unsafe fn assume_gil_held() -> Self {
+        Self(std::marker::PhantomData)
     }
 }
 
@@ -146,19 +141,22 @@ impl Default for PyToken {
 /// The token preserves GIL depth so nested releases work correctly.
 pub struct GilReleaseGuard {
     token: u64,
+    _not_send_sync: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 
 impl GilReleaseGuard {
+    /// Suspend current-thread GIL custody until this guard is dropped.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the current thread does not hold the runtime GIL.
     #[inline]
-    pub fn new() -> Self {
+    pub fn suspend() -> Self {
         let token = unsafe { ffi::molt_gil_release_guard() };
-        Self { token }
-    }
-}
-
-impl Default for GilReleaseGuard {
-    fn default() -> Self {
-        Self::new()
+        Self {
+            token,
+            _not_send_sync: std::marker::PhantomData,
+        }
     }
 }
 
@@ -254,17 +252,17 @@ macro_rules! with_gil_entry_body {
     }};
 }
 
-/// Execute a body while "holding the GIL".
-///
-/// Stub implementation: binds a [`PyToken`] and runs the body immediately.
-/// The real version in `molt-runtime` actually acquires the GIL.
+/// Execute a body while holding the runtime GIL.
 ///
 /// The FFI panic contract (catch under `panic = "unwind"`, direct under
 /// `panic = "abort"`) is centralised in [`with_gil_entry_body!`].
 #[macro_export]
 macro_rules! with_gil_entry {
     ($py:ident, $body:expr) => {{
-        let __py_token = $crate::PyToken::new();
+        let __gil_guard = $crate::CoreGilGuard::new();
+        // SAFETY: the guard remains live across the complete macro body, and
+        // the non-Clone token is only exposed to that body by reference.
+        let __py_token = unsafe { __gil_guard.__token_unchecked() };
         let $py = &__py_token;
 
         $crate::with_gil_entry_body!(raise: |__msg| {
@@ -298,24 +296,42 @@ pub struct GilVtable {
     pub is_held: unsafe extern "C" fn() -> bool,
 }
 
-// SAFETY: The vtable is populated once at init time and then only read.
-// All function pointers are plain `extern "C"` fn pointers (Send + Sync).
-unsafe impl Send for GilVtable {}
-unsafe impl Sync for GilVtable {}
-
 static GIL_VTABLE: AtomicPtr<GilVtable> = AtomicPtr::new(std::ptr::null_mut());
 
-/// Initialize the GIL vtable. Called once by molt-runtime at startup.
-pub fn set_gil_vtable(vtable: &'static GilVtable) {
-    GIL_VTABLE.store(
-        vtable as *const GilVtable as *mut GilVtable,
-        Ordering::Release,
+fn install_gil_vtable(
+    slot: &AtomicPtr<GilVtable>,
+    vtable: &'static GilVtable,
+) -> Result<(), *mut GilVtable> {
+    let ptr = vtable as *const GilVtable as *mut GilVtable;
+    match slot.compare_exchange(
+        std::ptr::null_mut(),
+        ptr,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    ) {
+        Ok(_) => Ok(()),
+        Err(installed) if installed == ptr => Ok(()),
+        Err(installed) => Err(installed),
+    }
+}
+
+/// Publish the process-wide GIL authority before extracted runtime code runs.
+/// Re-publishing the same static table is idempotent; replacement is rejected.
+///
+/// # Safety
+///
+/// Every function pointer must remain valid for the process lifetime and must
+/// implement the encoded acquire/release custody contract.
+pub unsafe fn set_gil_vtable(vtable: &'static GilVtable) {
+    assert!(
+        install_gil_vtable(&GIL_VTABLE, vtable).is_ok(),
+        "attempted to replace the process GIL vtable authority"
     );
 }
 
 /// Acquire the GIL via the vtable. Panics if vtable not initialized.
 #[inline]
-pub fn core_gil_acquire() -> u64 {
+fn core_gil_acquire() -> u64 {
     let ptr = GIL_VTABLE.load(Ordering::Acquire);
     assert!(
         !ptr.is_null(),
@@ -326,16 +342,19 @@ pub fn core_gil_acquire() -> u64 {
 
 /// Release the GIL via the vtable.
 #[inline]
-pub fn core_gil_release(guard: u64) {
+fn core_gil_release(guard: u64) {
     let ptr = GIL_VTABLE.load(Ordering::Acquire);
-    if !ptr.is_null() {
-        unsafe { ((*ptr).release)(guard) }
-    }
+    assert!(
+        !ptr.is_null(),
+        "GIL vtable disappeared while encoded custody was live"
+    );
+    unsafe { ((*ptr).release)(guard) }
 }
 
 /// RAII guard for GIL acquisition, usable from any crate.
 pub struct CoreGilGuard {
     guard_token: u64,
+    _not_send_sync: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 
 impl CoreGilGuard {
@@ -343,12 +362,14 @@ impl CoreGilGuard {
     pub fn new() -> Self {
         Self {
             guard_token: core_gil_acquire(),
+            _not_send_sync: std::marker::PhantomData,
         }
     }
 
     #[inline]
-    pub fn token(&self) -> CoreGilToken {
-        PyToken::new()
+    #[doc(hidden)]
+    pub unsafe fn __token_unchecked(&self) -> CoreGilToken {
+        unsafe { PyToken::assume_gil_held() }
     }
 }
 
@@ -372,15 +393,46 @@ impl Drop for CoreGilGuard {
 /// `panic = "abort"`) is centralised in [`with_gil_entry_body!`].
 #[macro_export]
 macro_rules! with_core_gil {
-    ($py:ident, $body:block) => {{
-        let _gil_guard = $crate::CoreGilGuard::new();
-        let $py = _gil_guard.token();
-        let $py = &$py;
+    ($py:ident, $body:expr) => {{ $crate::with_gil_entry!($py, $body) }};
+}
 
-        $crate::with_gil_entry_body!(raise: |__msg| {
-            $crate::rt_raise_str("RuntimeError", __msg);
-        }, $body)
-    }};
+#[cfg(test)]
+mod gil_tests {
+    use super::{GilVtable, install_gil_vtable};
+    use std::sync::atomic::AtomicPtr;
+
+    unsafe extern "C" fn acquire_one() -> u64 {
+        1
+    }
+
+    unsafe extern "C" fn acquire_two() -> u64 {
+        2
+    }
+
+    unsafe extern "C" fn release(_: u64) {}
+
+    unsafe extern "C" fn held() -> bool {
+        true
+    }
+
+    static FIRST: GilVtable = GilVtable {
+        acquire: acquire_one,
+        release,
+        is_held: held,
+    };
+    static SECOND: GilVtable = GilVtable {
+        acquire: acquire_two,
+        release,
+        is_held: held,
+    };
+
+    #[test]
+    fn gil_vtable_is_single_assignment_and_idempotent_for_same_authority() {
+        let slot = AtomicPtr::new(std::ptr::null_mut());
+        assert!(install_gil_vtable(&slot, &FIRST).is_ok());
+        assert!(install_gil_vtable(&slot, &FIRST).is_ok());
+        assert!(install_gil_vtable(&slot, &SECOND).is_err());
+    }
 }
 
 // ---------------------------------------------------------------------------

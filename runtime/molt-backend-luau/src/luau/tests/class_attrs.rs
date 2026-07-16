@@ -88,9 +88,7 @@ fn test_compile_checked_lowers_type_check_helpers() {
         profile: None,
     };
     let mut backend = LuauBackend::new();
-    let source = backend
-        .compile_checked(&ir)
-        .expect("type-check ops should lower through Luau helper authority");
+    let source = backend.compile(&ir);
     assert!(
         source.contains("local function molt_builtin_type")
             && source.contains("local function molt_issubclass")
@@ -152,16 +150,12 @@ fn test_compile_checked_lowers_callable_builtin_through_invocation_authority() {
         profile: None,
     };
     let mut backend = LuauBackend::new();
-    let source = backend
-        .compile_checked(&ir)
-        .expect("callable builtin should lower through invocation authority");
+    let source = backend.compile(&ir);
 
     assert!(
         source
             .contains("local callable_fn = function(a, ...) return type(a[1]) == \"function\" end")
-            && source.contains(
-                "local is_callable = if callable_fn then callable_fn(callable_args) else nil"
-            ),
+            && source.contains("local is_callable = molt_call_checked(callable_fn, callable_args)"),
         "callable builtin should share the Luau function predicate, got:\n{source}"
     );
     assert!(
@@ -434,9 +428,7 @@ fn test_compile_checked_lowers_descriptor_attribute_authority() {
         profile: None,
     };
     let mut backend = LuauBackend::new();
-    let source = backend
-        .compile_checked(&ir)
-        .expect("descriptor ops should lower through Luau attribute authority");
+    let source = backend.compile(&ir);
     assert!(
         source.contains("local function molt_get_attr")
             && source.contains("local function molt_has_attr")
@@ -463,8 +455,9 @@ fn test_compile_checked_lowers_descriptor_attribute_authority() {
             && source.contains("molt_set_attr(obj, \"value\", new_value)")
             && source.contains("molt_del_attr(obj, \"value\")")
             && source.contains(
-                "local method_result; do local __method = molt_get_attr(obj, \"method\");"
-            ),
+                "local method_result; do local __method = molt_get_attr_checked(obj, \"method\");"
+            )
+            && source.contains("method_result = molt_call_checked(__method) end"),
         "attribute get/set/delete and method call should route through descriptor authority, got:\n{source}"
     );
     assert!(
@@ -562,9 +555,7 @@ fn test_compile_checked_lowers_class_apply_set_name_authority() {
         profile: None,
     };
     let mut backend = LuauBackend::new();
-    let source = backend
-        .compile_checked(&ir)
-        .expect("class_apply_set_name should lower through descriptor authority");
+    let source = backend.compile(&ir);
     assert!(
         source.contains("local function molt_class_apply_set_name")
             && source.contains("local entries = {}")
@@ -606,10 +597,12 @@ fn test_compile_checked_rejects_internal_marker() {
     let mut backend = LuauBackend::new();
     let err = backend
         .compile_checked(&ir)
-        .expect_err("compile_checked must reject internal stub markers");
+        .expect_err("compile_checked must reject unsupported internal operations");
     assert!(
-        err.contains("semantic stub marker"),
-        "error should mention semantic stub marker, got: {err}"
+        err.contains("rejected before source generation")
+            && err.contains("`function_closure_bits`")
+            && err.contains("unclassified"),
+        "error should come from generated pre-source admission, got: {err}"
     );
 }
 
@@ -640,9 +633,7 @@ fn test_compile_checked_lowers_bridge_unavailable_to_runtime_error() {
         profile: None,
     };
     let mut backend = LuauBackend::new();
-    let source = backend
-        .compile_checked(&ir)
-        .expect("bridge_unavailable must lower to a checked runtime error");
+    let source = backend.compile(&ir);
     assert!(
         source.contains("local v0: any = error({__type=\"RuntimeError\""),
         "bridge_unavailable should be a terminal RuntimeError expression, got:\n{source}"
@@ -675,9 +666,7 @@ fn test_compile_checked_lowers_invoke_ffi_to_luau_capability_error() {
         profile: None,
     };
     let mut backend = LuauBackend::new();
-    let source = backend
-        .compile_checked(&ir)
-        .expect("invoke_ffi should lower to a Luau target capability error");
+    let source = backend.compile(&ir);
     assert!(
             source.contains(
                 "local v0: any = error({__type=\"RuntimeError\", __msg=\"Luau target does not support FFI\"})"
@@ -720,9 +709,7 @@ fn test_compile_checked_lowers_object_set_class_metatable() {
         profile: None,
     };
     let mut backend = LuauBackend::new();
-    let source = backend
-        .compile_checked(&ir)
-        .expect("object_set_class must lower to Luau metatable assignment");
+    let source = backend.compile(&ir);
     assert!(
         source.contains("setmetatable(obj, cls)"),
         "object_set_class should bind the object to its class metatable, got:\n{source}"
@@ -809,9 +796,7 @@ fn test_compile_checked_lowers_class_layout_metadata() {
         profile: None,
     };
     let mut backend = LuauBackend::new();
-    let source = backend
-        .compile_checked(&ir)
-        .expect("class layout metadata ops must lower to Luau class-table metadata");
+    let source = backend.compile(&ir);
     assert!(
         source.contains("local version_before = if type(cls) == \"table\""),
         "class_layout_version should read class-table layout metadata, got:\n{source}"

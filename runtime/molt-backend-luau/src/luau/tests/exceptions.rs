@@ -249,9 +249,7 @@ fn test_compile_checked_structures_raise_catch_pcall_boundary() {
         profile: None,
     };
     let mut backend = LuauBackend::new();
-    let source = backend
-        .compile_checked(&ir)
-        .expect("raise/catch pcall boundary should lower to valid Luau");
+    let source = backend.compile(&ir);
     let pcall_start = source
         .find("pcall(function()")
         .expect("pcall wrapper should be emitted");

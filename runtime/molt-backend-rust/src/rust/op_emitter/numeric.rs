@@ -16,7 +16,7 @@ impl RustBackend {
         if self.op_prefers_integer_runtime_lane(op) {
             self.emit_line(&declare(
                 &o,
-                &format!("MoltValue::Int(molt_int(&{a}).wrapping_add(molt_int(&{b})))"),
+                &format!("MoltValue::Int(molt_int_add(molt_int(&{a}), molt_int(&{b})))"),
                 &self.hoisted_vars.clone(),
             ));
         } else {
@@ -43,7 +43,7 @@ impl RustBackend {
         if self.op_prefers_integer_runtime_lane(op) {
             self.emit_line(&declare(
                 &o,
-                &format!("MoltValue::Int(molt_int(&{a}).wrapping_sub(molt_int(&{b})))"),
+                &format!("MoltValue::Int(molt_int_sub(molt_int(&{a}), molt_int(&{b})))"),
                 &self.hoisted_vars.clone(),
             ));
         } else {
@@ -70,7 +70,7 @@ impl RustBackend {
         if self.op_prefers_integer_runtime_lane(op) {
             self.emit_line(&declare(
                 &o,
-                &format!("MoltValue::Int(molt_int(&{a}).wrapping_mul(molt_int(&{b})))"),
+                &format!("MoltValue::Int(molt_int_mul(molt_int(&{a}), molt_int(&{b})))"),
                 &self.hoisted_vars.clone(),
             ));
         } else {
@@ -468,6 +468,8 @@ impl RustBackend {
                 &format!("MoltValue::Bool(molt_in(&{value}, &{container}))"),
                 &self.hoisted_vars.clone(),
             ));
+        } else {
+            self.emit_unsupported_op(op, "membership comparison requires value and container");
         }
     }
 }

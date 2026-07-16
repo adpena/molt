@@ -16,6 +16,9 @@
 
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::{FunctionIR, SimpleIR};
+use molt_tir::target_admission::{
+    NumericTargetCapabilities, RuntimeTargetCapabilities, validate_target_contract,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
@@ -47,9 +50,6 @@ pub struct RustBackend {
     output: String,
     indent: usize,
     hoisted_vars: BTreeSet<String>,
-    /// When true, emit `use molt_rs::*;` instead of the inline MoltValue prelude.
-    /// The caller is responsible for adding `molt-rs` to `Cargo.toml`.
-    use_crate: bool,
     /// Tracks phi var → (frame_var, slot_var) from store_index ops inside loops.
     /// Used to emit a writeback when loop_index_next updates the phi var,
     /// so the locals frame stays coherent after the loop exits.
@@ -61,13 +61,9 @@ pub struct RustBackend {
     current_params: Vec<String>,
     current_is_main: bool,
     current_scalar_plan: Option<ScalarRepresentationPlan>,
-    /// Authoritative fail-closed record of op kinds the dispatch could not
-    /// lower. Populated by `emit_unsupported_op` at the moment the catch-all
-    /// fires, so the fail-closed check in `compile_checked` does NOT depend on
-    /// text-scanning the emitted output for a marker comment (a caller emitting
-    /// a value without the exact marker string, or a stray placeholder, would
-    /// otherwise slip a nil/`MoltValue::None` past the gate — the silent
-    /// wrong-codegen class this field closes).
+    /// Dispatch failures accumulated during private source assembly. The only
+    /// production compile entrypoint returns `Result` and rejects this set;
+    /// unsupported operations never emit a substitute value.
     unsupported_ops: Vec<String>,
 }
 
@@ -83,7 +79,6 @@ impl RustBackend {
             output: String::with_capacity(8192),
             indent: 0,
             hoisted_vars: BTreeSet::new(),
-            use_crate: false,
             phi_to_frame: BTreeMap::new(),
             aliases: BTreeMap::new(),
             current_params: Vec::new(),
@@ -93,16 +88,10 @@ impl RustBackend {
         }
     }
 
-    /// Build a backend that emits `use molt_rs::*;` instead of the inline prelude.
-    pub fn new_with_crate() -> Self {
-        Self {
-            use_crate: true,
-            ..Self::new()
-        }
-    }
-
-    /// Compile the given IR to a Rust source string.
-    pub fn compile(&mut self, ir: &SimpleIR) -> String {
+    /// Emit source into a private buffer. Public callers must enter through
+    /// `compile_checked`, which owns the Result contract and never publishes a
+    /// partial program.
+    fn emit_source(&mut self, ir: &SimpleIR) -> String {
         // Reset the fail-closed accumulator for this compilation so a reused
         // backend instance does not carry unsupported-op records across runs.
         self.unsupported_ops.clear();
@@ -126,13 +115,9 @@ impl RustBackend {
         let bodies = std::mem::take(&mut self.output);
         self.output = func_body;
 
-        // Phase 2: emit file header + conditional prelude (or crate import).
+        // Phase 2: emit the single canonical self-contained runtime prelude.
         self.emit_header();
-        if self.use_crate {
-            self.output.push_str("use molt_rs::*;\n\n");
-        } else {
-            self.emit_prelude_conditional(&bodies);
-        }
+        self.emit_prelude_conditional(&bodies);
 
         // Phase 3: combine prelude + function bodies.
         self.output.push_str(&bodies);
@@ -140,18 +125,23 @@ impl RustBackend {
         std::mem::take(&mut self.output)
     }
 
+    #[cfg(test)]
+    fn compile(&mut self, ir: &SimpleIR) -> String {
+        self.emit_source(ir)
+    }
+
     /// Compile and reject any op the dispatch could not lower.
     ///
-    /// Fail-closed authority: the decision is driven by
-    /// `self.unsupported_ops`, recorded by `emit_unsupported_op` at the moment
-    /// the dispatch catch-all fires — NOT by text-scanning the emitted source
-    /// for a marker comment. An unsupported op therefore cannot slip a
-    /// fabricated `MoltValue::None` past this gate by lacking the exact marker
-    /// string. The output text scan (`rust_stub_markers`) is retained as a
-    /// belt-and-suspenders check for legacy inline stub markers that predate
-    /// the accumulator, but the accumulator is the primary authority.
+    /// Dispatch records are the sole authority; unsupported operations emit no
+    /// source and this Result boundary never publishes a partial program.
     pub fn compile_checked(&mut self, ir: &SimpleIR) -> Result<String, String> {
-        let source = self.compile(ir);
+        validate_target_contract(
+            ir,
+            "rust",
+            NumericTargetCapabilities::FIXED_WIDTH_FLOAT_ONLY,
+            RuntimeTargetCapabilities::NONE,
+        )?;
+        let source = self.emit_source(ir);
         if !self.unsupported_ops.is_empty() {
             return Err(format!(
                 "rust backend refuses to emit fail-open codegen for unsupported op(s): {} \
@@ -159,15 +149,7 @@ impl RustBackend {
                 self.unsupported_ops.join(", ")
             ));
         }
-        let stubs = rust_stub_markers(&source);
-        if stubs.is_empty() {
-            Ok(source)
-        } else {
-            Err(format!(
-                "output contains unimplemented op stubs: {} -- use --target luau or native",
-                stubs.join(", ")
-            ))
-        }
+        Ok(source)
     }
 
     fn clear_alias(&mut self, var: &str) {
@@ -340,7 +322,9 @@ impl RustBackend {
             // Destructure params from args
             for (i, p) in func.params.iter().enumerate() {
                 let pname = rust_ident(p);
-                self.emit_line(&format!("let mut {pname}: MoltValue = args___.get({i}).cloned().unwrap_or(MoltValue::None);"));
+                self.emit_line(&format!(
+                    "let mut {pname}: MoltValue = args___.get({i}).cloned().unwrap_or_else(|| panic!(\"TypeError: missing required positional argument `{pname}`\"));"
+                ));
             }
         }
         self.indent += 1;
@@ -440,8 +424,10 @@ impl RustBackend {
                     self.emit_param_writeback();
                     self.emit_line(&format!("return {};", candidate.expr));
                 } else {
-                    self.emit_param_writeback();
-                    self.emit_line("return MoltValue::None; /* jump: no prior store */");
+                    self.unsupported_ops.push(format!(
+                        "`jump` (rust backend): function `{}` has no structurally valid return source",
+                        func.name
+                    ));
                 }
                 i += 1;
                 continue;
@@ -640,24 +626,6 @@ pub(crate) fn rust_ident(name: &str) -> String {
         }
         _ => s,
     }
-}
-
-fn rust_stub_markers(source: &str) -> Vec<String> {
-    let mut markers = BTreeSet::new();
-    for line in source.lines() {
-        let mut tail = line;
-        while let Some(start) = tail.find("/* MOLT_STUB:") {
-            let marker_start = start + "/* ".len();
-            let after_marker = &tail[marker_start..];
-            let marker_end = after_marker
-                .find(" */")
-                .or_else(|| after_marker.find("*/"))
-                .unwrap_or(after_marker.len());
-            markers.insert(after_marker[..marker_end].trim().to_string());
-            tail = &after_marker[marker_end..];
-        }
-    }
-    markers.into_iter().take(8).collect()
 }
 
 #[cfg(test)]

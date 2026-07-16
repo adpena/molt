@@ -553,11 +553,10 @@ touch)."
 
 ### 8.1 Exact partition
 - **`molt-backend-luau`:** current live home is
-  `runtime/molt-backend-luau/src/{luau.rs, luau_ir.rs, luau_lower.rs,
-  luau_json_prelude.luau, luau/**, luau_backend/**}`. Paths ->
-  `molt_lower::{tir::type_refine::refine_types, tir::target_info::*, tir::passes::*,
-  tir::lower_to_simple::*, tir::lower_from_simple::*, tir::drop_phase::*}` (the verified luau
-  surface -- ~7 items; NO NaN-box -> no molt-codegen-abi dep).
+  `runtime/molt-backend-luau/src/{luau.rs, luau_json_prelude.luau,
+  luau/**, luau_backend/**}`. It consumes the canonical `molt-ir` and
+  `molt-tir` surfaces directly. Parallel pre-SimpleIR lowering authorities are
+  forbidden.
 - **`molt-backend-rust`:** current live home is
   `runtime/molt-backend-rust/src/{rust.rs, rust/**}`. Path ->
   `molt_lower::representation_plan::ScalarRepresentationPlan` (the SOLE

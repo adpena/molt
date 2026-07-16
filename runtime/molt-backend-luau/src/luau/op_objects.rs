@@ -383,7 +383,7 @@ impl LuauBackend {
                         "local {out} = molt_module_get_name({module}, {name_var})"
                     ));
                 } else {
-                    self.emit_line(&format!("local {out} = nil"));
+                    self.emit_unsupported_op(op);
                 }
             }
             "module_get_attr" | "module_import_from" => {
@@ -402,11 +402,10 @@ impl LuauBackend {
                     let module = sanitize_ident(&args[0]);
                     let attr_var = sanitize_ident(&args[1]);
                     self.emit_line(&format!(
-                        "local {out} = if type({module}) == \"table\" then {module}[{attr_var}] else nil"
+                        "local {out} = if type({module}) == \"table\" then {module}[{attr_var}] else error({{__type=\"TypeError\", __msg=\"module attribute access expects module\"}})"
                     ));
-                } else if let Some(module) = args.first() {
-                    let module = sanitize_ident(module);
-                    self.emit_line(&format!("local {out} = {module}"));
+                } else {
+                    self.emit_unsupported_op(op);
                 }
             }
             "module_set_attr" => {
@@ -420,8 +419,10 @@ impl LuauBackend {
                     // Only emit for non-dunder attributes (user variables).
                     // Dunder metadata writes are unnecessary in Luau.
                     self.emit_line(&format!(
-                        "if type({module}) == \"table\" then {module}[{attr_name}] = {value} end"
+                        "if type({module}) ~= \"table\" then error({{__type=\"TypeError\", __msg=\"module attribute assignment expects module\"}}) end; {module}[{attr_name}] = {value}"
                     ));
+                } else {
+                    self.emit_unsupported_op(op);
                 }
             }
             "module_del_global" | "module_del_global_if_present" => {

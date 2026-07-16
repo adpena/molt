@@ -8,7 +8,7 @@ use crate::bridge::{GLOBAL_BRIDGE, ResolvedPyObject, resolve_pyobject, resolved_
 use crate::hooks::hooks_or_stubs;
 use molt_lang_obj_model::MoltObject;
 use molt_lang_obj_model::float_bits::{
-    f16_bits_to_f64, f32_bits_to_f64, f64_to_f16_bits, f64_to_f32_bits,
+    FloatNarrowError, f16_bits_to_f64, f32_bits_to_f64, f64_to_f16_bits, f64_to_f32_bits,
 };
 use molt_lang_obj_model::int_literal::{
     IntLiteralErrorKind, ScannedIntLiteral, scan_int_literal_with_limit,
@@ -579,7 +579,7 @@ unsafe fn layout_long_as_byte_array(
     let width = n.saturating_mul(8);
     if n != 0 {
         let out = unsafe { std::slice::from_raw_parts_mut(bytes, n) };
-        for output_index in 0..n {
+        for (output_index, output) in out.iter_mut().enumerate() {
             let low_index = if little_endian != 0 {
                 output_index
             } else {
@@ -597,7 +597,7 @@ unsafe fn layout_long_as_byte_array(
                 chunk |= (unsafe { layout_long_digit(op, digit_index + 1) } as u64)
                     << (PYLONG_BITS_IN_DIGIT - digit_shift);
             }
-            out[output_index] = chunk as u8;
+            *output = chunk as u8;
         }
         if sign < 0 {
             let mut carry = 1u16;
@@ -2249,7 +2249,7 @@ fn read_ordered<const N: usize>(data: *const c_char, little_endian: c_int) -> [u
 pub unsafe extern "C" fn PyFloat_Pack2(x: c_double, data: *mut c_char, le: c_int) -> c_int {
     let bits = match f64_to_f16_bits(x) {
         Ok(bits) => bits,
-        Err(()) => {
+        Err(FloatNarrowError::FiniteOverflow) => {
             unsafe {
                 crate::api::errors::PyErr_SetString(
                     (&raw mut crate::abi_types::PyExc_OverflowError)
@@ -2268,7 +2268,7 @@ pub unsafe extern "C" fn PyFloat_Pack2(x: c_double, data: *mut c_char, le: c_int
 pub unsafe extern "C" fn PyFloat_Pack4(x: c_double, data: *mut c_char, le: c_int) -> c_int {
     let bits = match f64_to_f32_bits(x) {
         Ok(bits) => bits,
-        Err(()) => {
+        Err(FloatNarrowError::FiniteOverflow) => {
             unsafe {
                 crate::api::errors::PyErr_SetString(
                     (&raw mut crate::abi_types::PyExc_OverflowError)
@@ -2402,10 +2402,8 @@ pub unsafe extern "C" fn PyFloat_AsDouble(op: *mut PyObject) -> c_double {
         let converted_handle = resolved_molt_handle(converted);
         let value = if let Some(bits) = converted_handle {
             bits.decode().as_float()
-        } else if let Some(value) = unsafe { layout_float_value(converted) } {
-            Some(value)
         } else {
-            None
+            unsafe { layout_float_value(converted) }
         };
         unsafe { crate::api::refcount::Py_DECREF(converted) };
         if let Some(v) = value {
@@ -2503,7 +2501,7 @@ pub unsafe extern "C" fn _Py_c_quot(a: Py_complex, b: Py_complex) -> Py_complex 
     let abs_imag = b.imag.abs();
     if abs_real >= abs_imag {
         if abs_real == 0.0 {
-            set_c_errno(libc::EDOM);
+            set_c_errno(crate::platform::C_EDOM);
             return Py_complex {
                 real: 0.0,
                 imag: 0.0,
@@ -2541,7 +2539,7 @@ pub unsafe extern "C" fn _Py_c_pow(a: Py_complex, b: Py_complex) -> Py_complex {
     }
     if a.real == 0.0 && a.imag == 0.0 {
         if b.imag != 0.0 || b.real < 0.0 {
-            set_c_errno(libc::EDOM);
+            set_c_errno(crate::platform::C_EDOM);
         }
         return Py_complex {
             real: 0.0,
@@ -2567,7 +2565,7 @@ pub unsafe extern "C" fn _Py_c_pow(a: Py_complex, b: Py_complex) -> Py_complex {
         && ((!result.real.is_finite() || !result.imag.is_finite())
             || (result.real == 0.0 && result.imag == 0.0 && len == 0.0))
     {
-        set_c_errno(libc::ERANGE);
+        set_c_errno(crate::platform::C_ERANGE);
     } else {
         set_c_errno(saved_errno);
     }
@@ -2588,7 +2586,11 @@ pub unsafe extern "C" fn _Py_c_abs(value: Py_complex) -> c_double {
         return f64::NAN;
     }
     let result = value.real.hypot(value.imag);
-    set_c_errno(if result.is_finite() { 0 } else { libc::ERANGE });
+    set_c_errno(if result.is_finite() {
+        0
+    } else {
+        crate::platform::C_ERANGE
+    });
     result
 }
 

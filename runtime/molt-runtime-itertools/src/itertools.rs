@@ -189,7 +189,7 @@ fn kwd_mark_bits(_py: &PyToken) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_kwd_mark() -> u64 {
-    with_core_gil!(_py, { kwd_mark_bits(_py) })
+    with_core_gil!(_py, kwd_mark_bits(_py))
 }
 
 fn iter_self_bits(_py: &PyToken) -> u64 {
@@ -1355,7 +1355,7 @@ pub extern "C" fn molt_itertools_islice_next(self_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_repeat(obj_bits: u64, times_bits: u64) -> u64 {
-    with_core_gil!(_py, { itertools_repeat_impl(_py, obj_bits, times_bits) })
+    with_core_gil!(_py, itertools_repeat_impl(_py, obj_bits, times_bits))
 }
 
 fn itertools_repeat_impl(_py: &PyToken, obj_bits: u64, times_bits: u64) -> u64 {
@@ -1387,12 +1387,12 @@ fn itertools_repeat_impl(_py: &PyToken, obj_bits: u64, times_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_repeat_new(_cls_bits: u64, obj_bits: u64, times_bits: u64) -> u64 {
-    with_core_gil!(_py, { itertools_repeat_impl(_py, obj_bits, times_bits) })
+    with_core_gil!(_py, itertools_repeat_impl(_py, obj_bits, times_bits))
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_repeat_type() -> u64 {
-    with_core_gil!(_py, { repeat_class(_py) })
+    with_core_gil!(_py, repeat_class(_py))
 }
 
 #[unsafe(no_mangle)]
@@ -2970,15 +2970,17 @@ pub extern "C" fn molt_itertools_tee_next(self_bits: u64) -> u64 {
     })
 }
 
-/// Public entry for dropping itertools instances.
-/// The `_py` parameter is ignored — GIL is acquired internally if needed.
-pub fn itertools_drop_instance<T>(_py: &T, ptr: *mut u8) -> bool {
-    itertools_drop_instance_impl(ptr)
-}
-
-fn itertools_drop_instance_impl(ptr: *mut u8) -> bool {
-    let _py = &PyToken::new();
-    itertools_drop_instance_inner(_py, ptr)
+/// Release an itertools instance from the runtime's canonical object-drop path.
+///
+/// # Safety
+///
+/// The current thread must hold the runtime GIL for this entire call.
+pub unsafe fn itertools_drop_instance<T>(_py: &T, ptr: *mut u8) -> bool {
+    // SAFETY: upheld by the object-drop boundary documented above. This avoids
+    // a redundant vtable acquisition while retaining an explicit proof token
+    // for every bridge operation below.
+    let py = unsafe { PyToken::assume_gil_held() };
+    itertools_drop_instance_inner(&py, ptr)
 }
 
 fn itertools_drop_instance_inner(_py: &PyToken, ptr: *mut u8) -> bool {

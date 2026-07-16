@@ -54,7 +54,11 @@ from molt._intrinsic_symbols import (
     INTRINSIC_SYMBOL_NAMES,
     intrinsic_runtime_symbol_name,
 )
-from molt._runtime_feature_gates import link_affecting_feature_gate_for_symbol
+from molt._runtime_feature_gates import (
+    link_affecting_feature_gate_for_symbol,
+    runtime_symbol_available_on_target,
+    unsupported_target_arches_for_symbol,
+)
 from molt.cli import function_references as _function_references
 
 _FUNCTION_REFERENCE_OP_KINDS = _function_references.FUNCTION_REFERENCE_OP_KINDS
@@ -174,6 +178,7 @@ def reachability_profile_feature_refusal(
     *,
     profile_name: str,
     profile_features: frozenset[str],
+    target_triple: str | None = None,
     extra_roots: Iterable[str] = (),
 ) -> str | None:
     """Truthful compile-time refusal when reached code needs an excluded feature.
@@ -191,9 +196,32 @@ def reachability_profile_feature_refusal(
     compile-time refusal, exactly the design's "no silent divergence / no raw
     link error" contract.
     """
-    by_feature = reached_intrinsic_symbols_by_feature(
-        functions, extra_roots=extra_roots
+    reached_symbols = reached_intrinsic_symbols(functions, extra_roots=extra_roots)
+    unavailable_symbols = sorted(
+        symbol
+        for symbol in reached_symbols
+        if not runtime_symbol_available_on_target(symbol, target_triple=target_triple)
     )
+    if unavailable_symbols:
+        arch = (
+            target_triple.split("-", 1)[0] if target_triple is not None else "unknown"
+        )
+        details = ", ".join(
+            f"{symbol} (unsupported on {', '.join(unsupported_target_arches_for_symbol(symbol))})"
+            for symbol in unavailable_symbols[:8]
+        )
+        suffix = "" if len(unavailable_symbols) <= 8 else ", ..."
+        return (
+            f"target {target_triple!r} (architecture {arch}) has no runtime provider "
+            f"for reached intrinsic symbols: {details}{suffix}; choose a supported "
+            "target or remove the reached operation"
+        )
+
+    by_feature: dict[str, set[str]] = {}
+    for symbol in reached_symbols:
+        feature = link_affecting_feature_gate_for_symbol(symbol)
+        if feature is not None:
+            by_feature.setdefault(feature, set()).add(symbol)
     blocked = {
         feature: symbols
         for feature, symbols in by_feature.items()

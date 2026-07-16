@@ -607,16 +607,12 @@ pub struct GilReleaseGuard {
 }
 
 impl GilReleaseGuard {
-    pub fn new() -> Self {
+    /// Suspend current-thread GIL custody until this guard is dropped.
+    /// Panics when called without current-thread GIL custody.
+    pub fn suspend() -> Self {
         Self {
             handle: unsafe { __molt_http_gil_release_new() },
         }
-    }
-}
-
-impl Default for GilReleaseGuard {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

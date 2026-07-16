@@ -1591,6 +1591,7 @@ def _reachability_feature_refusal(
     *,
     stdlib_profile: str | None,
     target: str,
+    target_triple: str | None = None,
 ) -> str | None:
     """Refuse when the reached SimpleIR needs a feature the profile excludes.
 
@@ -1607,7 +1608,12 @@ def _reachability_feature_refusal(
     if not isinstance(functions, list):
         return None
     is_wasm = target in {"wasm", "wasm-freestanding"} or target.startswith("wasm32")
-    target_triple = "wasm32-wasip1" if is_wasm else None
+    if target_triple is None and is_wasm:
+        target_triple = (
+            "wasm32-unknown-unknown"
+            if target == "wasm-freestanding"
+            else "wasm32-wasip1"
+        )
     # The ceiling is the SAME per-target available-feature authority the build
     # uses to select the staticlib (``_runtime_builtin_features_for_profile``):
     # the Cargo ladder plus explicit target exclusions. Using this keeps the
@@ -1622,6 +1628,7 @@ def _reachability_feature_refusal(
         functions,
         profile_name=stdlib_profile or DEFAULT_STDLIB_PROFILE,
         profile_features=profile_features,
+        target_triple=target_triple,
     )
 
 
@@ -1659,6 +1666,7 @@ def _prepare_backend_ir(
     target_python: TargetPythonVersion,
     stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
     target: str = "native",
+    target_triple: str | None = None,
     native_artifact_plan: _ExternalPackageNativeArtifactPlan = (
         _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
     ),
@@ -1898,6 +1906,7 @@ def _prepare_backend_ir(
         ir,
         stdlib_profile=stdlib_profile,
         target=target,
+        target_triple=target_triple,
     )
     if feature_refusal is not None:
         return None, fail(feature_refusal, json_output, command="build")

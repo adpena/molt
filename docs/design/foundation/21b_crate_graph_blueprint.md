@@ -87,8 +87,9 @@ depends on another, so it sits one level above llvm (NOT beside/grouped). Bigges
 `molt-codegen-abi` + `wasm-encoder`/`wasmparser`; ~20K. Seam: independent of every backend;
 the TIR→WASM lowering already lives in molt-lower, so the encoder is a clean consumer.
 
-**`molt-backend-luau`** — `luau.rs`, `luau_ir.rs`, `luau_lower.rs`; deps `molt-lower`; ~17K.
-Seam: fully self-contained, minimal lowering coupling — easiest clean extraction.
+**`molt-backend-luau`** — `luau.rs`, `luau/**`, and `luau_backend/**`; deps `molt-ir` +
+`molt-tir`. Seam: one SimpleIR-to-Luau authority with no parallel pre-SimpleIR
+lowering path.
 
 **`molt-backend-rust`** — `rust.rs` (+ opt `egraph_simplify.rs`); deps `molt-lower`; ~5K.
 Seam: smallest, zero cross-backend edges; a leaf consumer.

@@ -888,6 +888,22 @@ impl WeakContainerState {
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+
+    fn replace_live_aux(
+        &self,
+        id: WeakEntryId,
+        value_bits: u64,
+    ) -> Result<Option<u64>, WeakTableError> {
+        let mut table = self.write();
+        let Some(entry) = table.live_entry_mut(id) else {
+            return Ok(None);
+        };
+        entry.content_version = entry
+            .content_version
+            .checked_add(1)
+            .ok_or(WeakTableError::ContentVersionExhausted)?;
+        Ok(Some(std::mem::replace(&mut entry.aux_bits, value_bits)))
+    }
 }
 
 fn reserved_vec<T>(capacity: usize) -> Option<Vec<T>> {
@@ -1155,22 +1171,12 @@ pub extern "C" fn molt_weakcontainer_store_probe(
         match state.kind {
             WeakContainerKind::KeyDict => {
                 inc_ref_bits(_py, value_bits);
-                let old = match {
-                    let mut table = state.write();
-                    table.live_entry_mut(id).map(|entry| {
-                        let Some(next_version) = entry.content_version.checked_add(1) else {
-                            return Err(WeakTableError::ContentVersionExhausted);
-                        };
-                        entry.content_version = next_version;
-                        Ok(std::mem::replace(&mut entry.aux_bits, value_bits))
-                    })
-                } {
-                    Some(Ok(old)) => Some(old),
-                    Some(Err(error)) => {
+                let old = match state.replace_live_aux(id, value_bits) {
+                    Ok(old) => old,
+                    Err(error) => {
                         dec_ref_bits(_py, value_bits);
                         return raise_table_error(_py, error);
                     }
-                    None => None,
                 };
                 if let Some(old) = old {
                     dec_ref_bits(_py, old);
@@ -1296,22 +1302,12 @@ pub extern "C" fn molt_weakcontainer_store_commit(
             match state.kind {
                 WeakContainerKind::KeyDict => {
                     inc_ref_bits(_py, value_bits);
-                    let old = match {
-                        let mut table = state.write();
-                        table.live_entry_mut(id).map(|entry| {
-                            let Some(next_version) = entry.content_version.checked_add(1) else {
-                                return Err(WeakTableError::ContentVersionExhausted);
-                            };
-                            entry.content_version = next_version;
-                            Ok(std::mem::replace(&mut entry.aux_bits, value_bits))
-                        })
-                    } {
-                        Some(Ok(old)) => Some(old),
-                        Some(Err(error)) => {
+                    let old = match state.replace_live_aux(id, value_bits) {
+                        Ok(old) => old,
+                        Err(error) => {
                             dec_ref_bits(_py, value_bits);
                             return raise_table_error(_py, error);
                         }
-                        None => None,
                     };
                     if let Some(old) = old {
                         dec_ref_bits(_py, old);
@@ -1742,10 +1738,10 @@ pub(crate) fn weakcontainer_iter_next_value(
             (WeakContainerKind::Set, _) => referent,
             _ => None,
         };
-        if let Some(bits) = referent {
-            if value != Some(bits) {
-                dec_ref_bits(_py, bits);
-            }
+        if let Some(bits) = referent
+            && value != Some(bits)
+        {
+            dec_ref_bits(_py, bits);
         }
         dec_ref_bits(_py, weakref_bits);
         if !obj_from_bits(aux_bits).is_none() {
@@ -1953,11 +1949,11 @@ pub extern "C" fn molt_weakcontainer_dead(state_bits: u64, weakref_bits: u64) ->
         }
         // Manual callback parity: WeakValue only removes a genuinely dead,
         // still-current KeyedRef. WeakKey/WeakSet callbacks remove immediately.
-        if state.kind == WeakContainerKind::ValueDict {
-            if let Some(target_bits) = weakref_peek_owned(_py, weakref_bits) {
-                dec_ref_bits(_py, target_bits);
-                return MoltObject::none().bits();
-            }
+        if state.kind == WeakContainerKind::ValueDict
+            && let Some(target_bits) = weakref_peek_owned(_py, weakref_bits)
+        {
+            dec_ref_bits(_py, target_bits);
+            return MoltObject::none().bits();
         }
         {
             let detached = match state.write().target_dead(cookie.entry) {
@@ -2002,10 +1998,10 @@ pub(crate) unsafe fn weakcontainer_traverse(ptr: *mut u8, visit: &mut dyn FnMut(
         if let Some(child) = maybe_ptr_from_bits(entry.weakref_bits) {
             visit(child);
         }
-        if state.kind.owns_aux() {
-            if let Some(child) = maybe_ptr_from_bits(entry.aux_bits) {
-                visit(child);
-            }
+        if state.kind.owns_aux()
+            && let Some(child) = maybe_ptr_from_bits(entry.aux_bits)
+        {
+            visit(child);
         }
     }
 }
@@ -2189,8 +2185,10 @@ mod tests {
 
     #[test]
     fn identity_sentinels_never_collide_with_live_domains() {
-        assert!(MAX_STRUCTURAL_VERSION < WEAK_ITER_VERSION_FINISHED);
-        assert!(WEAK_ITER_VERSION_FINISHED < WEAK_ITER_VERSION_UNSTARTED);
+        const {
+            assert!(MAX_STRUCTURAL_VERSION < WEAK_ITER_VERSION_FINISHED);
+            assert!(WEAK_ITER_VERSION_FINISHED < WEAK_ITER_VERSION_UNSTARTED);
+        }
         assert_eq!(GENERATION_EXHAUSTED, u64::MAX);
         assert_eq!(SLOT_NONE, TABLE_TOMBSTONE);
         assert!(MAX_SLOT_COUNT <= u32::MAX as usize);
