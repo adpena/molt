@@ -1039,7 +1039,16 @@ def _pact_canonical_input_environment(repo_root: Path) -> dict[str, str]:
         raise SystemExit(
             f"named Pact proof is missing canonical stack config {config_path}"
         )
-    selection_env = {"MOLT_ALLOW_C_DRIVE_ARTIFACTS": "1"} if os.name == "nt" else {}
+    # Package seals are immutable named inputs, not scratch build capacity.
+    # Their custody root must not jump to a fallback volume merely because the
+    # primary volume crosses the build selector's transient free-space floor.
+    # Seal validation below supplies the fail-closed integrity boundary; the
+    # proof runner remains responsible for applying ordinary capacity policy to
+    # build outputs.  Keep ambient redirects scrubbed and select the first
+    # canonical platform root independent of current free space.
+    selection_env = {"MOLT_EXTERNAL_MIN_FREE_GB": "0"}
+    if os.name == "nt":
+        selection_env["MOLT_ALLOW_C_DRIVE_ARTIFACTS"] = "1"
     artifact_root = select_external_artifact_root(
         root,
         selection_env,
