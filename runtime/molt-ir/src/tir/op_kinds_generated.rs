@@ -1301,8 +1301,6 @@ pub fn copy_kind_is_explicit_transparent_alias_table(kind: &str) -> bool {
     matches!(
         kind,
         "alloc_class"
-            | "alloc_class_static"
-            | "alloc_class_trusted"
             | "anext"
             | "asyncgen_locals_register"
             | "asyncgen_new"

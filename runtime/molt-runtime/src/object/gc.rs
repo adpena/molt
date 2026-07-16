@@ -61,33 +61,24 @@
 //!
 //! The acyclic majority pays ZERO. A type that cannot transitively hold a reference
 //! cycle (int/float/bool/str/bytes/None and the runtime's leaf types) is GREEN: it is
-//! never registered in the tracked set, never scanned, never `clear`ed. Only the
-//! cycle-forming container types — user instances (`TYPE_ID_OBJECT`), exceptions,
-//! `dict`, `list`, `tuple`, and `set` — are tracked.
+//! never registered in the tracked set, never scanned, never `clear`ed. The
+//! generated heap-kind authority tracks every cycle-capable owner; exact dicts and
+//! tuples are dynamically projected with CPython-compatible timing.
 
-use std::collections::{HashMap, HashSet, hash_map::Entry};
+use std::collections::{HashMap, hash_map::Entry};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Mutex, MutexGuard, OnceLock, TryLockError};
 use std::time::Instant;
 
-use crate::builtins::exceptions::{
-    exception_detach_owned_edges, exception_release_detached_edges, exception_visit_owned_edges,
-};
-use crate::object::layout::{
-    iter_cached_tuple, iter_expected_version, iter_set_cached_tuple, iter_set_expected_version,
-    iter_set_target_bits, iter_target_bits, seq_vec_ptr,
-};
 use crate::object::{
     HEADER_FLAG_FINALIZER_RAN, HEADER_FLAG_GC_COLLECTING, HEADER_FLAG_GC_PINNED,
-    HEADER_FLAG_HAS_ABI_VIEW, PtrSlot, TYPE_ID_DICT, TYPE_ID_EXCEPTION, TYPE_ID_FROZENSET,
-    TYPE_ID_ITER, TYPE_ID_LIST, TYPE_ID_OBJECT, TYPE_ID_SET, TYPE_ID_TUPLE,
-    TYPE_ID_WEAK_CONTAINER_STATE, dec_ref_ptr, header_from_obj_ptr, instance_dict_bits,
-    object_class_bits, object_class_has_finalizer, object_type_id,
+    HEADER_FLAG_HAS_ABI_VIEW, PtrSlot, dec_ref_ptr, header_from_obj_ptr,
+    object_class_has_finalizer, object_type_id,
 };
 use crate::{
     GC_REGISTRY_LOCK_CONTENTION_COUNT, GC_REGISTRY_LOCK_WAIT_NS, GC_SNAPSHOT_ALLOC_FAILURE_COUNT,
     GC_TRACK_COUNT, GC_TRACKED_HIGH_WATER, GC_TRACKED_LIVE, GC_UNTRACK_COUNT, MoltObject, PyToken,
-    obj_from_bits, profile_enabled_unchecked, profile_hit_bytes_unchecked, profile_hit_unchecked,
+    profile_enabled_unchecked, profile_hit_bytes_unchecked, profile_hit_unchecked,
 };
 
 /// Side registry of live cycle-capable objects (CPython's gc-tracked
@@ -200,28 +191,73 @@ fn gc_trace_enabled() -> bool {
 /// (GREEN) is sound-conservative: a GREEN object provably cannot be part of a cycle,
 /// so it pays zero collector cost.
 ///
-/// Tracked (non-GREEN) set, v1: user instances, exceptions, and the resizable ref
-/// containers that are the canonical Python cycle formers. `tuple` is included because a tuple can
-/// hold a reference to a mutable container that points back (`l = []; t = (l,);
-/// l.append(t)`), exactly as CPython tracks tuples. All other ref-holding runtime
-/// types (function/code/bound-method/...) are conservatively GREEN in v1: a cycle
-/// routed exclusively through them is not collected (a documented v1 limitation,
-/// never a double-free — they are simply not `clear`ed), and extending coverage is a
-/// one-line addition to this match plus the `traverse`/`clear` authorities below.
+/// The generated heap-kind table classifies the complete ref-holding family. Fixed
+/// tracked kinds enter directly; exact dicts and tuples use CPython-compatible
+/// dynamic projection. The lifecycle handler owns exhaustive visit and clear
+/// dispatch, so adding a kind without both operations fails structural generation
+/// tests instead of silently creating a leak lane.
 #[inline]
 pub(crate) fn may_form_cycle(type_id: u32) -> bool {
-    matches!(
-        type_id,
-        TYPE_ID_OBJECT
-            | TYPE_ID_DICT
-            | TYPE_ID_LIST
-            | TYPE_ID_TUPLE
-            | TYPE_ID_SET
-            | TYPE_ID_FROZENSET
-            | TYPE_ID_ITER
-            | TYPE_ID_EXCEPTION
-            | TYPE_ID_WEAK_CONTAINER_STATE
+    !matches!(
+        super::heap_track_projection(type_id),
+        None | Some(super::HeapTrackProjection::Never)
     )
+}
+
+/// Re-evaluate an exact dict after its new contents have been fully published.
+/// Every dict mutation family calls this once per completed transaction. Tuples
+/// deliberately do not use this path: non-empty tuples start tracked and are
+/// only reprojected by the collector, matching CPython.
+pub(crate) unsafe fn gc_reproject_dict(py: &PyToken<'_>, ptr: *mut u8) {
+    if !unsafe { (*header_from_obj_ptr(ptr)).gc_is_published() } {
+        return;
+    }
+    if super::heap_track_projection(unsafe { object_type_id(ptr) })
+        != Some(super::HeapTrackProjection::DictDynamic)
+    {
+        return;
+    }
+    let should_track = unsafe { super::heap_lifecycle::projected_track_state(py, ptr) };
+    let shard_index = tracked_registry_shard_index(ptr);
+    let mut shard = lock_tracked_registry_shard(shard_index);
+    let slot = PtrSlot(ptr);
+    if should_track {
+        if let Entry::Vacant(entry) = shard.entries.entry(slot) {
+            let allocation_id = tracked_registry()
+                .next_allocation_id
+                .fetch_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |next| {
+                    next.checked_add(1)
+                })
+                .expect("GC allocation ordinal exhausted");
+            entry.insert(allocation_id);
+            profile_gc_track();
+        }
+    } else if shard.entries.remove(&slot).is_some() {
+        profile_gc_untrack(1);
+    }
+}
+
+unsafe fn reproject_immutable_tuples(
+    py: &PyToken<'_>,
+    mut candidates: Vec<*mut u8>,
+) -> Vec<*mut u8> {
+    candidates.retain(|&ptr| {
+        if super::heap_track_projection(unsafe { object_type_id(ptr) })
+            != Some(super::HeapTrackProjection::TupleDynamic)
+            || unsafe { super::heap_lifecycle::projected_track_state(py, ptr) }
+        {
+            return true;
+        }
+        unsafe {
+            gc_untrack(
+                ptr,
+                super::TYPE_ID_TUPLE,
+                GcUntrackReason::DynamicProjection,
+            )
+        };
+        false
+    });
+    candidates
 }
 
 /// Register a freshly-allocated object in the tracked set IFF it can form a cycle.
@@ -250,14 +286,33 @@ pub(crate) unsafe fn gc_track_if_cyclic(ptr: *mut u8, type_id: u32) {
     }
 }
 
+/// Release-publish a completely initialized heap payload to the collector.
+/// Constructors call this exactly once after every payload/class/sidecar edge is
+/// valid. Registry membership may precede publication, but snapshots never expose
+/// an unpublished entry.
+#[inline]
+pub(crate) unsafe fn gc_publish_initialized(py: &PyToken<'_>, ptr: *mut u8) {
+    unsafe { (*header_from_obj_ptr(ptr)).gc_publish_initialized() };
+    if super::heap_track_projection(unsafe { object_type_id(ptr) })
+        == Some(super::HeapTrackProjection::DictDynamic)
+    {
+        unsafe { gc_reproject_dict(py, ptr) };
+    }
+}
+
 /// Remove an object from the tracked set as it is freed. Called from the
 /// deallocator for every freed object; a no-op (cheap set miss) for GREEN types and
 /// untracked objects.
 ///
 /// # Safety
 /// `ptr` identifies the object being freed.
-#[inline]
-pub(crate) unsafe fn gc_untrack_on_free(ptr: *mut u8, type_id: u32) {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GcUntrackReason {
+    Deallocation,
+    DynamicProjection,
+}
+
+pub(crate) unsafe fn gc_untrack(ptr: *mut u8, type_id: u32, _reason: GcUntrackReason) {
     if !may_form_cycle(type_id) {
         return;
     }
@@ -318,12 +373,13 @@ fn snapshot_tracked_registry() -> Option<Vec<*mut u8>> {
         return None;
     }
     for shard in &shards {
-        entries.extend(
-            shard
-                .entries
-                .iter()
-                .map(|(slot, allocation_id)| (*allocation_id, slot.0)),
-        );
+        entries.extend(shard.entries.iter().filter_map(|(slot, allocation_id)| {
+            // Acquire pairs with constructor publication. A concurrent
+            // collector may observe registry insertion first, but never
+            // traverses a partially initialized payload.
+            unsafe { (*header_from_obj_ptr(slot.0)).gc_is_published() }
+                .then_some((*allocation_id, slot.0))
+        }));
     }
     drop(shards);
     entries.sort_unstable_by_key(|(allocation_id, _)| *allocation_id);
@@ -345,8 +401,8 @@ fn snapshot_tracked_registry() -> Option<Vec<*mut u8>> {
 /// source of truth for "what does this object reference". It enumerates EXACTLY the
 /// children that the deallocator's `dec_ref` cascade releases — the collector must
 /// see the same edges the deallocator frees, or it would leak (missed edge) or
-/// double-free (cleared an edge the dealloc also frees). The drift gate
-/// `gc_traverse_matches_dealloc` (unit test) pins this equivalence.
+/// double-free (cleared an edge the dealloc also frees). Generated exhaustive
+/// dispatch plus lifecycle edge-equivalence tests pin this contract.
 ///
 /// Primitive children (int/float/bool/None/str/bytes — anything that is not a heap
 /// pointer, or a GREEN leaf) are skipped: only TAG_PTR values reach `visit`.
@@ -355,148 +411,7 @@ fn snapshot_tracked_registry() -> Option<Vec<*mut u8>> {
 /// `ptr` must be a live object of a `may_form_cycle` type. The GIL is held (the
 /// `TYPE_ID_OBJECT` arm reads class metadata through the shared inline-field walker).
 pub(crate) unsafe fn molt_traverse(py: &PyToken<'_>, ptr: *mut u8, visit: &mut dyn FnMut(*mut u8)) {
-    unsafe {
-        let type_id = object_type_id(ptr);
-        let flags = (*header_from_obj_ptr(ptr)).load_synchronized_flags();
-        if (flags & super::HEADER_FLAG_IS_WEAKREF) != 0
-            && let Some(bits) = super::weakref::weakref_object_callback_bits(py, ptr)
-        {
-            if let Some(child) = obj_from_bits(bits).as_ptr() {
-                visit(child);
-            }
-            crate::dec_ref_bits(py, bits);
-        }
-        match type_id {
-            TYPE_ID_LIST => {
-                let Some(heap_edge_count) = crate::object::seq_access::tracked_heap_edge_count(ptr)
-                else {
-                    return;
-                };
-                #[cfg(debug_assertions)]
-                debug_assert_eq!(
-                    heap_edge_count,
-                    crate::object::seq_access::with_borrowed(ptr, |items| {
-                        items
-                            .iter()
-                            .copied()
-                            .filter(|bits| crate::object::refcount_opt::is_heap_ref(*bits))
-                            .count()
-                    }),
-                    "generic sequence heap-edge count drifted from canonical storage"
-                );
-                #[cfg(not(debug_assertions))]
-                let _ = heap_edge_count;
-                crate::object::seq_access::with_borrowed(ptr, |items| {
-                    for &bits in items {
-                        if let Some(child) = obj_from_bits(bits).as_ptr() {
-                            visit(child);
-                        }
-                    }
-                });
-                if (flags & HEADER_FLAG_HAS_ABI_VIEW) != 0 {
-                    let self_bits = MoltObject::from_ptr(ptr).bits();
-                    for child_bits in
-                        molt_cpython_abi::bridge::GLOBAL_BRIDGE.list_view_handles_for_gc(self_bits)
-                    {
-                        if let Some(child) = obj_from_bits(child_bits).as_ptr() {
-                            visit(child);
-                        }
-                    }
-                }
-            }
-            TYPE_ID_TUPLE => {
-                crate::object::seq_access::with_immutable_tuple_slice(ptr, |items| {
-                    for &bits in items {
-                        if let Some(child) = obj_from_bits(bits).as_ptr() {
-                            visit(child);
-                        }
-                    }
-                });
-            }
-            TYPE_ID_DICT => {
-                // `order` is the [key0, val0, key1, val1, ...] interleaved Vec, the
-                // SAME backing the dealloc cascade releases via
-                // `release_dealloc_tracked_bits_vec(dict_order_ptr)`.
-                let order_ptr = crate::builtins::containers::dict_order_ptr(ptr);
-                if order_ptr.is_null() {
-                    return;
-                }
-                for &bits in (*order_ptr).iter() {
-                    if let Some(child) = obj_from_bits(bits).as_ptr() {
-                        visit(child);
-                    }
-                }
-            }
-            TYPE_ID_SET | TYPE_ID_FROZENSET => {
-                let order_ptr = crate::builtins::containers::set_order_ptr(ptr);
-                if order_ptr.is_null() {
-                    return;
-                }
-                for &bits in (*order_ptr).iter() {
-                    if let Some(child) = obj_from_bits(bits).as_ptr() {
-                        visit(child);
-                    }
-                }
-            }
-            TYPE_ID_EXCEPTION => {
-                exception_visit_owned_edges(ptr, |bits| {
-                    if let Some(child) = obj_from_bits(bits).as_ptr() {
-                        visit(child);
-                    }
-                });
-                if (flags & HEADER_FLAG_HAS_ABI_VIEW) != 0 {
-                    let self_bits = MoltObject::from_ptr(ptr).bits();
-                    for child_bits in molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                        .exception_view_handles_for_gc(self_bits)
-                    {
-                        if let Some(child) = obj_from_bits(child_bits).as_ptr() {
-                            visit(child);
-                        }
-                    }
-                }
-            }
-            TYPE_ID_OBJECT => {
-                // Inline typed attribute fields (the `__slots__` / folded-attr
-                // storage) + the trailing `__dict__`. This mirrors the
-                // `TYPE_ID_OBJECT` dealloc arm: `dec_ref_object_inline_fields`
-                // (inline slots) + `instance_dict_bits` (__dict__). We do NOT
-                // traverse the class as a cycle edge here for the same reason CPython
-                // does not collect type objects in the common path — but we DO
-                // traverse the instance dict and inline fields, which is where user
-                // reference cycles live.
-                let class_bits = object_class_bits(ptr);
-                if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
-                    crate::builtins::attr::for_each_object_inline_field_ptr(
-                        py,
-                        ptr,
-                        class_ptr,
-                        &mut |_slot, val| {
-                            if let Some(child) = obj_from_bits(val).as_ptr() {
-                                visit(child);
-                            }
-                        },
-                    );
-                }
-                let dict_bits = instance_dict_bits(ptr);
-                if let Some(child) = obj_from_bits(dict_bits).as_ptr() {
-                    visit(child);
-                }
-            }
-            TYPE_ID_WEAK_CONTAINER_STATE => {
-                super::weak_container::weakcontainer_traverse(ptr, visit);
-            }
-            TYPE_ID_ITER => {
-                if let Some(child) = obj_from_bits(iter_target_bits(ptr)).as_ptr() {
-                    visit(child);
-                }
-                let cached = iter_cached_tuple(ptr);
-                if !cached.is_null() {
-                    visit(cached);
-                }
-            }
-            _ => {}
-        }
-    }
+    unsafe { super::heap_lifecycle::visit_owned_edges(py, ptr, visit) }
 }
 
 /// molt's `tp_clear`: drop every heap-pointer child reference IN PLACE, emptying the
@@ -509,147 +424,9 @@ pub(crate) unsafe fn molt_traverse(py: &PyToken<'_>, ptr: *mut u8, visit: &mut d
 ///
 /// # Safety
 /// `ptr` must be a live object of a `may_form_cycle` type.
+#[cfg(test)]
 pub(crate) unsafe fn molt_clear(py: &PyToken<'_>, ptr: *mut u8) {
-    unsafe {
-        let type_id = object_type_id(ptr);
-        let flags = (*header_from_obj_ptr(ptr)).load_synchronized_flags();
-        let weakref_registration = if (flags & super::HEADER_FLAG_IS_WEAKREF) != 0 {
-            super::weakref::weakref_object_detach(py, ptr)
-        } else {
-            None
-        };
-        super::weakref::weakref_object_release(py, weakref_registration);
-        match type_id {
-            TYPE_ID_LIST => {
-                let vec_ptr = seq_vec_ptr(ptr);
-                if vec_ptr.is_null() {
-                    return;
-                }
-                let mutation_guard = crate::object::backing::tracked_vec_mutation_lock(vec_ptr);
-                let detached = crate::object::backing::tracked_vec_take_contents(vec_ptr);
-                let clear_list_projection = (flags & HEADER_FLAG_HAS_ABI_VIEW) != 0;
-                (*header_from_obj_ptr(ptr)).fetch_and_flags(!super::HEADER_FLAG_CONTAINS_REFS);
-                crate::object::backing::tracked_vec_bump_mutation_epoch(vec_ptr);
-                drop(mutation_guard);
-                if clear_list_projection {
-                    // `clear_list_view` retires C edges and may run finalizers;
-                    // never retain the per-list mutation lock across it.
-                    molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                        .clear_list_view(MoltObject::from_ptr(ptr).bits());
-                }
-                for &bits in detached.iter() {
-                    crate::dec_ref_bits(py, bits);
-                }
-                drop(detached);
-            }
-            // CPython tuples have no tp_clear. Their immutable edges remain
-            // stable; a mutable peer (list, dict, set, or instance) breaks every
-            // collectable cycle in which a tuple participates.
-            TYPE_ID_TUPLE => {}
-            TYPE_ID_DICT => {
-                let order_ptr = crate::builtins::containers::dict_order_ptr(ptr);
-                let table_ptr = crate::builtins::containers::dict_table_ptr(ptr);
-                let hashes_ptr = crate::builtins::containers::dict_hashes_ptr(ptr);
-                let detached = if order_ptr.is_null() {
-                    Vec::new()
-                } else {
-                    std::mem::take(&mut *order_ptr)
-                };
-                // Publish one valid empty state before releasing any Python edge.
-                // A child finalizer may re-enter every dict operation.
-                if !table_ptr.is_null() {
-                    (*table_ptr).clear();
-                }
-                if !hashes_ptr.is_null() {
-                    (*hashes_ptr).clear();
-                }
-                for bits in detached {
-                    crate::dec_ref_bits(py, bits);
-                }
-            }
-            TYPE_ID_SET | TYPE_ID_FROZENSET => {
-                let order_ptr = crate::builtins::containers::set_order_ptr(ptr);
-                let table_ptr = crate::builtins::containers::set_table_ptr(ptr);
-                let hashes_ptr = crate::builtins::containers::set_hashes_ptr(ptr);
-                let detached = if order_ptr.is_null() {
-                    Vec::new()
-                } else {
-                    std::mem::take(&mut *order_ptr)
-                };
-                // Publish one valid empty state before releasing any Python edge.
-                // A child finalizer may re-enter membership/hash-table operations.
-                if !table_ptr.is_null() {
-                    (*table_ptr).clear();
-                }
-                if !hashes_ptr.is_null() {
-                    (*hashes_ptr).clear();
-                }
-                for bits in detached {
-                    crate::dec_ref_bits(py, bits);
-                }
-            }
-            TYPE_ID_EXCEPTION => {
-                let detached = exception_detach_owned_edges(ptr);
-                if (flags & HEADER_FLAG_HAS_ABI_VIEW) != 0 {
-                    molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                        .clear_exception_view_fields(MoltObject::from_ptr(ptr).bits());
-                }
-                exception_release_detached_edges(py, detached);
-            }
-            TYPE_ID_OBJECT => {
-                // Mirror the `TYPE_ID_OBJECT` dealloc child set: inline typed fields,
-                // then `__dict__`. `dec_ref_object_inline_fields` zeroes each slot
-                // BEFORE dec-ref (so a re-entrant access never sees a stale pointer).
-                // We do NOT drop the class reference here — `clear` breaks the cycle
-                // through DATA edges; the class is released by the normal dealloc when
-                // the instance is actually freed (clearing the class while the
-                // instance is still on the unreachable list would desync the dealloc
-                // arm and risk a double-decref of the class).
-                let class_bits = object_class_bits(ptr);
-                if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
-                    crate::builtins::attr::dec_ref_object_inline_fields(py, ptr, class_ptr);
-                }
-                let dict_ptr = crate::object::instance_dict_bits_ptr(ptr);
-                if !dict_ptr.is_null() {
-                    let dict_bits = *dict_ptr;
-                    if dict_bits != 0 && !obj_from_bits(dict_bits).is_none() {
-                        *dict_ptr = MoltObject::none().bits();
-                        crate::dec_ref_bits(py, dict_bits);
-                    }
-                }
-            }
-            TYPE_ID_WEAK_CONTAINER_STATE => {
-                super::weak_container::weakcontainer_clear_state(py, ptr);
-            }
-            TYPE_ID_ITER => {
-                let target_bits = iter_target_bits(ptr);
-                let cached = iter_cached_tuple(ptr);
-                iter_set_target_bits(ptr, MoltObject::none().bits());
-                iter_set_cached_tuple(ptr, std::ptr::null_mut());
-                if let Some(target_ptr) = obj_from_bits(target_bits).as_ptr()
-                    && object_type_id(target_ptr) == TYPE_ID_WEAK_CONTAINER_STATE
-                {
-                    let version = iter_expected_version(ptr);
-                    if version != super::weak_container::WEAK_ITER_VERSION_UNSTARTED
-                        && version != super::weak_container::WEAK_ITER_VERSION_FINISHED
-                    {
-                        super::weak_container::weakcontainer_iter_finish(py, target_ptr);
-                    }
-                    iter_set_expected_version(
-                        ptr,
-                        super::weak_container::WEAK_ITER_VERSION_FINISHED,
-                    );
-                }
-                if target_bits != 0 && !obj_from_bits(target_bits).is_none() {
-                    crate::dec_ref_bits(py, target_bits);
-                }
-                if !cached.is_null() {
-                    dec_ref_ptr(py, cached);
-                }
-            }
-            _ => {}
-        }
-    }
+    unsafe { super::heap_lifecycle::clear_cycle_edges(py, ptr) }
 }
 
 // ---------------------------------------------------------------------------
@@ -661,6 +438,40 @@ pub(crate) unsafe fn molt_clear(py: &PyToken<'_>, ptr: *mut u8) {
 /// `gc.garbage` is always empty under PEP 442).
 pub(crate) struct CollectStats {
     pub(crate) collected: usize,
+    pub(crate) status: GcCollectStatus,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GcCollectStatus {
+    Completed,
+    ReentrantNoop,
+    ResourceError(&'static str),
+    UnsupportedConcurrency,
+}
+
+impl CollectStats {
+    fn completed(collected: usize) -> Self {
+        Self {
+            collected,
+            status: GcCollectStatus::Completed,
+        }
+    }
+
+    fn failure(py: &PyToken<'_>, status: GcCollectStatus) -> Self {
+        let code = match status {
+            GcCollectStatus::Completed => 0,
+            GcCollectStatus::ReentrantNoop => 1,
+            GcCollectStatus::ResourceError(_) => 2,
+            GcCollectStatus::UnsupportedConcurrency => 3,
+        };
+        crate::runtime_state(py)
+            .gc_last_failure
+            .store(code, AtomicOrdering::Release);
+        Self {
+            collected: 0,
+            status,
+        }
+    }
 }
 
 #[inline]
@@ -675,10 +486,10 @@ unsafe fn header_refcount(ptr: *mut u8) -> u32 {
 unsafe fn effective_gc_refcount(ptr: *mut u8) -> isize {
     let mut raw = unsafe { header_refcount(ptr) } as isize;
     let header = unsafe { header_from_obj_ptr(ptr) };
-    if unsafe { (*header).load_synchronized_flags() } & HEADER_FLAG_GC_PINNED != 0 {
+    if unsafe { (*header).has_flag(HEADER_FLAG_GC_PINNED) } {
         raw -= 1;
     }
-    if unsafe { (*header).load_synchronized_flags() } & HEADER_FLAG_HAS_ABI_VIEW == 0 {
+    if !unsafe { (*header).has_flag(HEADER_FLAG_HAS_ABI_VIEW) } {
         return raw;
     }
     let bits = MoltObject::from_ptr(ptr).bits();
@@ -703,11 +514,41 @@ unsafe fn pin_unreachable(ptrs: &[*mut u8]) {
 unsafe fn release_unreachable_pins(py: &PyToken<'_>, ptrs: &[*mut u8]) {
     for &ptr in ptrs {
         let header = unsafe { header_from_obj_ptr(ptr) };
-        unsafe {
-            (*header).fetch_and_flags(!HEADER_FLAG_GC_PINNED);
-        }
+        unsafe { (*header).fetch_and_flags(!HEADER_FLAG_GC_PINNED) };
         unsafe { dec_ref_ptr(py, ptr) };
     }
+}
+
+unsafe fn release_index_pins(py: &PyToken<'_>, candidates: &[*mut u8], indices: &[usize]) {
+    for &index in indices {
+        let ptr = candidates[index];
+        let header = unsafe { header_from_obj_ptr(ptr) };
+        unsafe { (*header).fetch_and_flags(!HEADER_FLAG_GC_PINNED) };
+        unsafe { dec_ref_ptr(py, ptr) };
+    }
+}
+
+unsafe fn detach_requirements(
+    py: &PyToken<'_>,
+    candidates: &[*mut u8],
+    indices: &[usize],
+) -> (usize, usize) {
+    let mut edges = 0usize;
+    let mut resources = 0usize;
+    for &index in indices {
+        let ptr = candidates[index];
+        unsafe {
+            molt_traverse(py, ptr, &mut |_| {
+                edges = edges
+                    .checked_add(1)
+                    .unwrap_or_else(|| std::process::abort())
+            });
+            resources = resources
+                .checked_add(super::heap_lifecycle::detached_resource_count(ptr))
+                .unwrap_or_else(|| std::process::abort());
+        }
+    }
+    (edges, resources)
 }
 
 #[inline]
@@ -726,7 +567,7 @@ unsafe fn header_set_collecting(ptr: *mut u8, on: bool) {
 unsafe fn header_is_collecting(ptr: *mut u8) -> bool {
     unsafe {
         let header = header_from_obj_ptr(ptr);
-        ((*header).load_synchronized_flags() & HEADER_FLAG_GC_COLLECTING) != 0
+        (*header).has_flag(HEADER_FLAG_GC_COLLECTING)
     }
 }
 
@@ -744,71 +585,212 @@ fn addr_key(ptr: *mut u8) -> u64 {
 ///
 /// # Safety
 /// `candidates` are live tracked objects; the GIL is held.
-unsafe fn deduce_unreachable(py: &PyToken<'_>, candidates: Vec<*mut u8>) -> Vec<*mut u8> {
-    unsafe {
-        let mut gc_refs: HashMap<u64, isize> = HashMap::with_capacity(candidates.len());
+struct GcScratch {
+    candidates: Vec<*mut u8>,
+    index: HashMap<u64, usize>,
+    refs: Vec<isize>,
+    marks: Vec<u8>,
+    queue: Vec<usize>,
+    first_unreachable: Vec<usize>,
+    first_unreachable_ptrs: Vec<*mut u8>,
+    final_unreachable: Vec<usize>,
+}
 
-        // update_refs: gc_refs := refcount; mark COLLECTING.
-        for &ptr in &candidates {
-            let rc = effective_gc_refcount(ptr);
-            gc_refs.insert(addr_key(ptr), rc);
-            header_set_collecting(ptr, true);
-        }
-
-        // subtract_refs: for each candidate, traverse children; decrement gc_refs of
-        // each child that is itself COLLECTING (in the candidate set).
-        for &ptr in &candidates {
-            let gc_refs_ptr: *mut HashMap<u64, isize> = &mut gc_refs;
-            molt_traverse(py, ptr, &mut |child| {
-                if header_is_collecting(child)
-                    && let Some(slot) = (*gc_refs_ptr).get_mut(&addr_key(child))
-                {
-                    *slot -= 1;
-                }
-            });
+impl GcScratch {
+    fn try_new(candidates: Vec<*mut u8>) -> Option<Self> {
+        let len = candidates.len();
+        let mut index = HashMap::new();
+        index.try_reserve(len).ok()?;
+        for (candidate_index, &ptr) in candidates.iter().enumerate() {
+            index.insert(addr_key(ptr), candidate_index);
         }
 
-        // move_unreachable: BFS. Objects with gc_refs > 0 are roots; mark them and
-        // their transitive referents reachable. Remaining gc_refs == 0 objects are
-        // the unreachable cycle garbage. We model CPython's `visit_reachable`
-        // pull-back with a `reachable` set + a work queue; an object is reachable iff
-        // its key is in `reachable`.
-        let mut reachable: HashSet<u64> = HashSet::with_capacity(candidates.len());
-        let mut queue: Vec<*mut u8> = Vec::new();
-        for &ptr in &candidates {
-            let key = addr_key(ptr);
-            if gc_refs.get(&key).copied().unwrap_or(0) > 0 && reachable.insert(key) {
-                queue.push(ptr);
-            }
-        }
-        while let Some(ptr) = queue.pop() {
-            let reachable_ptr: *mut HashSet<u64> = &mut reachable;
-            let queue_ptr: *mut Vec<*mut u8> = &mut queue;
-            molt_traverse(py, ptr, &mut |child| {
-                if !header_is_collecting(child) {
-                    return; // not a candidate
-                }
-                let key = addr_key(child);
-                if (*reachable_ptr).insert(key) {
-                    (*queue_ptr).push(child);
-                }
-            });
-        }
-
-        // Partition: reachable objects clear COLLECTING; the rest are unreachable
-        // garbage (COLLECTING stays SET, so the weakref pass can detect a weakref
-        // object that is itself collecting). Insertion order of `candidates` is
-        // preserved for deterministic finalization order.
-        let mut unreachable: Vec<*mut u8> = Vec::new();
-        for &ptr in &candidates {
-            if reachable.contains(&addr_key(ptr)) {
-                header_set_collecting(ptr, false);
-            } else {
-                unreachable.push(ptr);
-            }
-        }
-        unreachable
+        let mut refs = Vec::new();
+        refs.try_reserve_exact(len).ok()?;
+        refs.resize(len, 0);
+        let mut marks = Vec::new();
+        marks.try_reserve_exact(len).ok()?;
+        marks.resize(len, 0);
+        let mut queue = Vec::new();
+        queue.try_reserve_exact(len).ok()?;
+        let mut first_unreachable = Vec::new();
+        first_unreachable.try_reserve_exact(len).ok()?;
+        let mut final_unreachable = Vec::new();
+        final_unreachable.try_reserve_exact(len).ok()?;
+        let mut first_unreachable_ptrs = Vec::new();
+        first_unreachable_ptrs.try_reserve_exact(len).ok()?;
+        Some(Self {
+            candidates,
+            index,
+            refs,
+            marks,
+            queue,
+            first_unreachable,
+            first_unreachable_ptrs,
+            final_unreachable,
+        })
     }
+}
+
+#[inline]
+fn scratch_push(storage: &mut Vec<usize>, value: usize) {
+    if storage.len() >= storage.capacity() {
+        std::process::abort();
+    }
+    storage.push(value);
+}
+
+unsafe fn deduce_subset(
+    py: &PyToken<'_>,
+    candidates: &[*mut u8],
+    index: &HashMap<u64, usize>,
+    refs: &mut [isize],
+    marks: &mut [u8],
+    queue: &mut Vec<usize>,
+    subset: Option<&[usize]>,
+    output: &mut Vec<usize>,
+) {
+    marks.fill(0);
+    queue.clear();
+    output.clear();
+
+    let mut initialize = |candidate_index: usize| {
+        let ptr = candidates[candidate_index];
+        refs[candidate_index] = unsafe { effective_gc_refcount(ptr) };
+        marks[candidate_index] = 1;
+        unsafe { header_set_collecting(ptr, true) };
+    };
+    if let Some(subset) = subset {
+        for &candidate_index in subset {
+            initialize(candidate_index);
+        }
+    } else {
+        for candidate_index in 0..candidates.len() {
+            initialize(candidate_index);
+        }
+    }
+
+    let mut subtract = |candidate_index: usize| unsafe {
+        molt_traverse(py, candidates[candidate_index], &mut |child| {
+            if let Some(&child_index) = index.get(&addr_key(child))
+                && marks[child_index] == 1
+            {
+                refs[child_index] -= 1;
+            }
+        });
+    };
+    if let Some(subset) = subset {
+        for &candidate_index in subset {
+            subtract(candidate_index);
+        }
+    } else {
+        for candidate_index in 0..candidates.len() {
+            subtract(candidate_index);
+        }
+    }
+
+    let mut seed = |candidate_index: usize| {
+        if refs[candidate_index] > 0 {
+            marks[candidate_index] = 2;
+            scratch_push(queue, candidate_index);
+        }
+    };
+    if let Some(subset) = subset {
+        for &candidate_index in subset {
+            seed(candidate_index);
+        }
+    } else {
+        for candidate_index in 0..candidates.len() {
+            seed(candidate_index);
+        }
+    }
+
+    while let Some(candidate_index) = queue.pop() {
+        unsafe {
+            molt_traverse(py, candidates[candidate_index], &mut |child| {
+                if let Some(&child_index) = index.get(&addr_key(child))
+                    && marks[child_index] == 1
+                {
+                    marks[child_index] = 2;
+                    scratch_push(queue, child_index);
+                }
+            });
+        }
+    }
+
+    let mut partition = |candidate_index: usize| {
+        if marks[candidate_index] == 2 {
+            unsafe { header_set_collecting(candidates[candidate_index], false) };
+        } else {
+            scratch_push(output, candidate_index);
+        }
+    };
+    if let Some(subset) = subset {
+        for &candidate_index in subset {
+            partition(candidate_index);
+        }
+    } else {
+        for candidate_index in 0..candidates.len() {
+            partition(candidate_index);
+        }
+    }
+}
+
+unsafe fn deduce_all(py: &PyToken<'_>, scratch: &mut GcScratch) {
+    let GcScratch {
+        candidates,
+        index,
+        refs,
+        marks,
+        queue,
+        first_unreachable,
+        first_unreachable_ptrs,
+        ..
+    } = scratch;
+    unsafe {
+        deduce_subset(
+            py,
+            candidates,
+            index,
+            refs,
+            marks,
+            queue,
+            None,
+            first_unreachable,
+        )
+    };
+    first_unreachable_ptrs.clear();
+    for &candidate_index in first_unreachable.iter() {
+        if first_unreachable_ptrs.len() >= first_unreachable_ptrs.capacity() {
+            std::process::abort();
+        }
+        first_unreachable_ptrs.push(candidates[candidate_index]);
+    }
+}
+
+unsafe fn deduce_after_finalizers(py: &PyToken<'_>, scratch: &mut GcScratch) {
+    let GcScratch {
+        candidates,
+        index,
+        refs,
+        marks,
+        queue,
+        first_unreachable,
+        first_unreachable_ptrs: _,
+        final_unreachable,
+    } = scratch;
+    unsafe {
+        deduce_subset(
+            py,
+            candidates,
+            index,
+            refs,
+            marks,
+            queue,
+            Some(first_unreachable.as_slice()),
+            final_unreachable,
+        )
+    };
 }
 
 /// The full cyclic collection. Stop-the-world under the GIL. Returns the number of
@@ -820,105 +802,147 @@ pub(crate) unsafe fn collect_cycles(py: &PyToken<'_>) -> CollectStats {
     unsafe {
         crate::gil_assert();
 
+        #[cfg(feature = "free-threaded")]
+        {
+            // Raw candidate traversal requires a runtime-owned stop-the-world
+            // epoch. Until the free-threaded scheduler exposes that guard, fail
+            // before snapshot/mutation instead of treating a GIL token as STW.
+            return CollectStats::failure(py, GcCollectStatus::UnsupportedConcurrency);
+        }
+
         // Reentrancy guard: a `__del__` run during finalization must not recursively
         // launch another collection (CPython sets `gcstate->collecting`).
-        if GC_RUNNING.swap(true, AtomicOrdering::AcqRel) {
-            return CollectStats { collected: 0 };
+        let gc_running = &crate::runtime_state(py).gc_running;
+        if gc_running.swap(true, AtomicOrdering::AcqRel) {
+            return CollectStats::failure(py, GcCollectStatus::ReentrantNoop);
         }
-        let _guard = GcRunningGuard;
+        let _guard = GcRunningGuard(gc_running);
+        crate::runtime_state(py)
+            .gc_last_failure
+            .store(0, AtomicOrdering::Release);
 
         // Snapshot the candidate set (a stable Vec; the registry mutex is released
         // before traversal so re-entrant dec_ref during finalize/clear can update it).
         let Some(candidates) = snapshot_tracked_registry() else {
-            return CollectStats { collected: 0 };
+            return CollectStats::failure(
+                py,
+                GcCollectStatus::ResourceError("tracked-registry snapshot allocation failed"),
+            );
         };
+        let candidates = reproject_immutable_tuples(py, candidates);
         if gc_trace_enabled() {
             eprintln!("molt gc: collect_cycles candidates={}", candidates.len());
         }
         if candidates.is_empty() {
-            return CollectStats { collected: 0 };
+            return CollectStats::completed(0);
         }
 
-        // STEP 1-3: deduce_unreachable → the cycle garbage.
-        let unreachable = deduce_unreachable(py, candidates);
+        let Some(mut scratch) = GcScratch::try_new(candidates) else {
+            profile_hit_unchecked(&GC_SNAPSHOT_ALLOC_FAILURE_COUNT);
+            return CollectStats::failure(
+                py,
+                GcCollectStatus::ResourceError("cycle-collector scratch allocation failed"),
+            );
+        };
+
+        // STEP 1-3: trial-deletion partition using one preallocated index/mark arena.
+        deduce_all(py, &mut scratch);
         if gc_trace_enabled() {
             eprintln!(
                 "molt gc: deduce_unreachable unreachable={}",
-                unreachable.len()
+                scratch.first_unreachable.len()
             );
         }
-        if unreachable.is_empty() {
-            return CollectStats { collected: 0 };
+        if scratch.first_unreachable.is_empty() {
+            return CollectStats::completed(0);
         }
-        // Pin the entire set before the first callback/finalizer. Arbitrary
-        // re-entry may release edges between later members; no raw candidate
-        // pointer may become dangling before the resurrection partition.
-        pin_unreachable(&unreachable);
 
-        // move_legacy_finalizers / move_legacy_finalizer_reachable: NO-OP (molt has no
-        // legacy tp_del; every __del__ is PEP-442 tp_finalize-class). gc.garbage stays
-        // empty. Their POSITION — before handle_weakrefs — is why weakref clearing runs
-        // next.
+        // Reserve the current detach high-water before any callback. Finalizers
+        // may grow a still-unreachable container; that case is revalidated
+        // fallibly before mutation and restores every pin on failure.
+        let (initial_edges, initial_resources) =
+            detach_requirements(py, &scratch.candidates, &scratch.first_unreachable);
+        let Some(mut detached) = super::heap_lifecycle::DetachedEdgeSink::try_with_capacities(
+            initial_edges,
+            initial_resources,
+        ) else {
+            for &ptr in &scratch.first_unreachable_ptrs {
+                header_set_collecting(ptr, false);
+            }
+            profile_hit_unchecked(&GC_SNAPSHOT_ALLOC_FAILURE_COUNT);
+            return CollectStats::failure(
+                py,
+                GcCollectStatus::ResourceError("detached-edge reservation failed"),
+            );
+        };
 
-        // STEP (handle_weakrefs): clear weakrefs into the unreachable set + fire the
-        // surviving callbacks, BEFORE any finalizer runs. STRICTLY precedes finalizers.
-        crate::object::weakref::weakref_handle_cycle_unreachable(py, &unreachable, |wr_ptr| {
-            header_is_collecting(wr_ptr)
-        });
+        // Pin the entire set before the first callback/finalizer.
+        pin_unreachable(&scratch.first_unreachable_ptrs);
 
-        // STEP (finalize_garbage): run each unreachable object's __del__ ONCE, in
-        // unreachable-list order. The finalizer may resurrect (re-root) an object.
-        for &ptr in &unreachable {
+        crate::object::weakref::weakref_handle_cycle_unreachable(
+            py,
+            &scratch.first_unreachable_ptrs,
+            |wr_ptr| header_is_collecting(wr_ptr),
+        );
+
+        for &ptr in &scratch.first_unreachable_ptrs {
             run_finalizer_once(py, ptr);
         }
 
-        // STEP (handle_resurrected_objects): re-run deduce_unreachable over the
-        // post-finalization set. Anything a __del__ resurrected (now reachable / rc
-        // explained by an external ref) leaves the collectable set. MANDATORY — frees
-        // only what is STILL unreachable, never a resurrected object.
-        //
-        // Clear COLLECTING on the current unreachable set first (deduce_unreachable
-        // re-marks from scratch). A weakref callback may have freed some members; the
-        // tracked-registry membership re-probe drops those.
-        for &ptr in &unreachable {
-            header_set_collecting(ptr, false);
+        // Reuse the exact same index, refs, mark, queue, and output storage.
+        // No allocation is permitted in the post-callback resurrection partition.
+        deduce_after_finalizers(py, &mut scratch);
+        if scratch.final_unreachable.is_empty() {
+            release_unreachable_pins(py, &scratch.first_unreachable_ptrs);
+            return CollectStats::completed(0);
         }
-        let still_tracked = unreachable.clone();
-        let final_unreachable = deduce_unreachable(py, still_tracked);
-        if final_unreachable.is_empty() {
-            release_unreachable_pins(py, &unreachable);
-            return CollectStats { collected: 0 };
-        }
-        let final_keys: HashSet<u64> = final_unreachable.iter().map(|ptr| addr_key(*ptr)).collect();
-        let resurrected: Vec<*mut u8> = unreachable
-            .iter()
-            .copied()
-            .filter(|ptr| !final_keys.contains(&addr_key(*ptr)))
-            .collect();
-        release_unreachable_pins(py, &resurrected);
 
-        // The final set is confirmed garbage. Count it as collected (CPython's
-        // `m += gc_list_size(&final_unreachable)`).
-        let collected = final_unreachable.len();
+        // Marks == 2 are resurrected/reachable after the second partition.
+        for &candidate_index in &scratch.first_unreachable {
+            if scratch.marks[candidate_index] == 2 {
+                let ptr = scratch.candidates[candidate_index];
+                let header = header_from_obj_ptr(ptr);
+                (*header).fetch_and_flags(!HEADER_FLAG_GC_PINNED);
+                dec_ref_ptr(py, ptr);
+            }
+        }
+
+        let collected = scratch.final_unreachable.len();
         if gc_trace_enabled() {
             eprintln!("molt gc: delete_garbage collected={collected}");
         }
 
-        // STEP (delete_garbage): clear each still-unreachable object IN PLACE. The
-        // dec_ref cascade collapses the cycle. The whole set has remained pinned since
-        // before weakref callbacks/finalizers; we clear all, then release the pins, letting RC drive
-        // each member to its real free through the normal dealloc cascade (which also
-        // `gc_untrack_on_free`s it). This is molt's analogue of CPython holding the
-        // gc_list as the pin across `delete_garbage`.
-        for &ptr in &final_unreachable {
-            header_set_collecting(ptr, false);
+        let (required_edges, required_resources) =
+            detach_requirements(py, &scratch.candidates, &scratch.final_unreachable);
+        if !detached.try_ensure_capacities(required_edges, required_resources) {
+            for &candidate_index in &scratch.final_unreachable {
+                header_set_collecting(scratch.candidates[candidate_index], false);
+            }
+            release_index_pins(py, &scratch.candidates, &scratch.final_unreachable);
+            profile_hit_unchecked(&GC_SNAPSHOT_ALLOC_FAILURE_COUNT);
+            return CollectStats::failure(
+                py,
+                GcCollectStatus::ResourceError("post-finalizer detached-edge reservation failed"),
+            );
         }
-        for &ptr in &final_unreachable {
-            molt_clear(py, ptr);
-        }
-        release_unreachable_pins(py, &final_unreachable);
 
-        CollectStats { collected }
+        for &candidate_index in &scratch.final_unreachable {
+            header_set_collecting(scratch.candidates[candidate_index], false);
+        }
+        for &candidate_index in &scratch.final_unreachable {
+            super::heap_lifecycle::clear_cycle_edges_with_sink(
+                py,
+                scratch.candidates[candidate_index],
+                &mut detached,
+            );
+        }
+        detached.release_all(py);
+        release_index_pins(py, &scratch.candidates, &scratch.final_unreachable);
+
+        crate::runtime_state(py)
+            .gc_last_failure
+            .store(0, AtomicOrdering::Release);
+        CollectStats::completed(collected)
     }
 }
 
@@ -934,11 +958,10 @@ pub(crate) unsafe fn collect_cycles(py: &PyToken<'_>) -> CollectStats {
 unsafe fn run_finalizer_once(py: &PyToken<'_>, ptr: *mut u8) {
     unsafe {
         let header = header_from_obj_ptr(ptr);
-        let flags = (*header).load_synchronized_flags();
         if !object_class_has_finalizer(ptr) {
             return;
         }
-        if (flags & HEADER_FLAG_FINALIZER_RAN) != 0 {
+        if (*header).has_flag(HEADER_FLAG_FINALIZER_RAN) {
             return;
         }
         crate::object::maybe_run_object_finalizer_for_cycle(py, ptr);
@@ -946,12 +969,10 @@ unsafe fn run_finalizer_once(py: &PyToken<'_>, ptr: *mut u8) {
 }
 
 /// Reentrancy flag for `collect_cycles` (CPython `gcstate->collecting`).
-static GC_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-struct GcRunningGuard;
+struct GcRunningGuard(&'static std::sync::atomic::AtomicBool);
 impl Drop for GcRunningGuard {
     fn drop(&mut self) {
-        GC_RUNNING.store(false, AtomicOrdering::Release);
+        self.0.store(false, AtomicOrdering::Release);
     }
 }
 
@@ -959,8 +980,11 @@ impl Drop for GcRunningGuard {
 mod tests {
     use super::*;
     use crate::DEALLOC_COUNT;
-    use crate::object::builders::alloc_list;
+    use crate::object::builders::{alloc_dict_with_pairs, alloc_list, alloc_tuple};
     use crate::object::dec_ref_bits;
+    use crate::object::{
+        TYPE_ID_DICT, TYPE_ID_EXCEPTION, TYPE_ID_LIST, TYPE_ID_OBJECT, TYPE_ID_SET, TYPE_ID_TUPLE,
+    };
     use std::sync::atomic::Ordering;
 
     #[test]
@@ -990,6 +1014,114 @@ mod tests {
         assert!(may_form_cycle(TYPE_ID_TUPLE));
         assert!(may_form_cycle(TYPE_ID_SET));
         assert!(may_form_cycle(TYPE_ID_EXCEPTION));
+    }
+
+    #[cfg(feature = "free-threaded")]
+    #[test]
+    fn free_threaded_collection_rejects_known_cycle_before_mutation() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            let left = alloc_list(_py, &[]);
+            let right = alloc_list(_py, &[]);
+            let left_bits = MoltObject::from_ptr(left).bits();
+            let right_bits = MoltObject::from_ptr(right).bits();
+            crate::molt_list_append(left_bits, right_bits);
+            crate::molt_list_append(right_bits, left_bits);
+
+            let left_before = unsafe { header_refcount(left) };
+            let right_before = unsafe { header_refcount(right) };
+            let outcome = unsafe { collect_cycles(_py) };
+            assert_eq!(outcome.status, GcCollectStatus::UnsupportedConcurrency);
+            assert_eq!(outcome.collected, 0);
+            assert_eq!(unsafe { header_refcount(left) }, left_before);
+            assert_eq!(unsafe { header_refcount(right) }, right_before);
+            assert!(unsafe { gc_is_tracked(left) && gc_is_tracked(right) });
+            assert_eq!(
+                crate::runtime_state(_py)
+                    .gc_last_failure
+                    .load(AtomicOrdering::Acquire),
+                3
+            );
+
+            // Retained stack roots make deterministic test cleanup safe even
+            // though the feature deliberately refuses cyclic collection.
+            unsafe { super::molt_clear(_py, left) };
+            unsafe { super::molt_clear(_py, right) };
+            dec_ref_bits(_py, left_bits);
+            dec_ref_bits(_py, right_bits);
+        });
+    }
+
+    #[test]
+    fn lifecycle_visit_is_side_effect_free_and_clear_is_idempotent() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            let left = alloc_list(_py, &[]);
+            let right = alloc_list(_py, &[]);
+            let left_bits = MoltObject::from_ptr(left).bits();
+            let right_bits = MoltObject::from_ptr(right).bits();
+            let owner = alloc_list(_py, &[left_bits, right_bits]);
+            assert!(!left.is_null() && !right.is_null() && !owner.is_null());
+
+            let before = unsafe { (header_refcount(left), header_refcount(right)) };
+            let mut visited = Vec::new();
+            unsafe {
+                super::molt_traverse(_py, owner, &mut |child| visited.push(child));
+            }
+            assert_eq!(visited, vec![left, right]);
+            assert_eq!(
+                unsafe { (header_refcount(left), header_refcount(right)) },
+                before,
+                "visit must not transiently INCREF/DECREF owned edges"
+            );
+
+            unsafe { super::molt_clear(_py, owner) };
+            assert_eq!(unsafe { header_refcount(left) }, before.0 - 1);
+            assert_eq!(unsafe { header_refcount(right) }, before.1 - 1);
+            let after_first_clear = unsafe { (header_refcount(left), header_refcount(right)) };
+            unsafe { super::molt_clear(_py, owner) };
+            assert_eq!(
+                unsafe { (header_refcount(left), header_refcount(right)) },
+                after_first_clear,
+                "a second clear must release no edge twice"
+            );
+
+            dec_ref_bits(_py, MoltObject::from_ptr(owner).bits());
+            dec_ref_bits(_py, left_bits);
+            dec_ref_bits(_py, right_bits);
+        });
+    }
+
+    #[test]
+    fn dynamic_dict_and_tuple_tracking_matches_cpython_timing() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            let empty_dict = alloc_dict_with_pairs(_py, &[]);
+            assert!(!unsafe { gc_is_tracked(empty_dict) });
+
+            let atomic_tuple = alloc_tuple(_py, &[MoltObject::from_int(1).bits()]);
+            assert!(unsafe { gc_is_tracked(atomic_tuple) });
+            let _ = unsafe { collect_cycles(_py) };
+            assert!(!unsafe { gc_is_tracked(atomic_tuple) });
+
+            let list = alloc_list(_py, &[]);
+            let list_bits = MoltObject::from_ptr(list).bits();
+            let container_tuple = alloc_tuple(_py, &[list_bits]);
+            assert!(unsafe { gc_is_tracked(container_tuple) });
+            let _ = unsafe { collect_cycles(_py) };
+            assert!(unsafe { gc_is_tracked(container_tuple) });
+
+            dec_ref_bits(_py, MoltObject::from_ptr(empty_dict).bits());
+            dec_ref_bits(_py, MoltObject::from_ptr(atomic_tuple).bits());
+            dec_ref_bits(_py, MoltObject::from_ptr(container_tuple).bits());
+            dec_ref_bits(_py, list_bits);
+        });
     }
 
     #[test]
@@ -1125,6 +1257,30 @@ mod tests {
                 !unsafe { gc_is_tracked(b_ptr) },
                 "list b must be untracked after reclamation"
             );
+        });
+    }
+
+    #[test]
+    fn collect_reclaims_cross_shape_list_tuple_cycle() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            let list = alloc_list(_py, &[]);
+            let list_bits = MoltObject::from_ptr(list).bits();
+            let tuple = alloc_tuple(_py, &[list_bits]);
+            let tuple_bits = MoltObject::from_ptr(tuple).bits();
+            crate::molt_list_append(list_bits, tuple_bits);
+
+            assert!(unsafe { gc_is_tracked(list) });
+            assert!(unsafe { gc_is_tracked(tuple) });
+            dec_ref_bits(_py, list_bits);
+            dec_ref_bits(_py, tuple_bits);
+
+            let stats = unsafe { collect_cycles(_py) };
+            assert_eq!(stats.collected, 2);
+            assert!(!unsafe { gc_is_tracked(list) });
+            assert!(!unsafe { gc_is_tracked(tuple) });
         });
     }
 

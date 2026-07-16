@@ -1,5 +1,48 @@
 use super::*;
 
+#[inline(always)]
+unsafe fn dict_commit_projection(_py: &PyToken<'_>, ptr: *mut u8) {
+    unsafe { crate::object::gc::gc_reproject_dict(_py, ptr) };
+}
+
+/// Retain, publish, reproject, then release. Destructor re-entry observes a
+/// complete old or new mapping, never a partially committed replacement.
+#[inline]
+unsafe fn dict_commit_value_replacement(
+    _py: &PyToken<'_>,
+    ptr: *mut u8,
+    value_slot: &mut u64,
+    new_bits: u64,
+) {
+    unsafe {
+        let old_bits = *value_slot;
+        if old_bits == new_bits {
+            return;
+        }
+        if crate::object::refcount_opt::is_heap_ref(new_bits) {
+            inc_ref_bits(_py, new_bits);
+            (*header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
+        }
+        *value_slot = new_bits;
+        dict_commit_projection(_py, ptr);
+        if crate::object::refcount_opt::is_heap_ref(old_bits) {
+            dec_ref_bits(_py, old_bits);
+        }
+    }
+}
+
+#[inline]
+unsafe fn dict_commit_insertion(_py: &PyToken<'_>, ptr: *mut u8, key_bits: u64, value_bits: u64) {
+    unsafe {
+        if crate::object::refcount_opt::is_heap_ref(key_bits)
+            || crate::object::refcount_opt::is_heap_ref(value_bits)
+        {
+            (*header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
+        }
+        dict_commit_projection(_py, ptr);
+    }
+}
+
 pub(crate) extern "C" fn dict_keys_method(self_bits: u64) -> i64 {
     molt_dict_keys(self_bits) as i64
 }
@@ -83,6 +126,7 @@ pub(crate) extern "C" fn dict_popitem_method(self_bits: u64) -> i64 {
                 (*header_from_obj_ptr(ptr))
                     .fetch_and_flags(!crate::object::HEADER_FLAG_CONTAINS_REFS);
             }
+            dict_commit_projection(_py, ptr);
             dec_ref_bits(_py, key_bits);
             dec_ref_bits(_py, val_bits);
             MoltObject::from_ptr(item_ptr).bits() as i64
@@ -339,9 +383,7 @@ pub(crate) unsafe fn dict_inc_prehashed_string_key_in_place(
                         sum_owned = true;
                     }
                     if current_bits != sum_bits {
-                        dec_ref_bits(_py, current_bits);
-                        inc_ref_bits(_py, sum_bits);
-                        order[val_idx] = sum_bits;
+                        dict_commit_value_replacement(_py, dict_ptr, &mut order[val_idx], sum_bits);
                     }
                     if sum_owned {
                         dec_ref_bits(_py, sum_bits);
@@ -374,6 +416,7 @@ pub(crate) unsafe fn dict_inc_prehashed_string_key_in_place(
         inc_ref_bits(_py, sum_bits);
         let entry_idx = order.len() / 2 - 1;
         dict_insert_entry_with_hash(_py, order, table, entry_idx, hash);
+        dict_commit_insertion(_py, dict_ptr, key_bits, sum_bits);
         profile_hit_unchecked(&DICT_STR_INT_PREHASH_MISS_COUNT);
         Some(!exception_pending(_py))
     }
@@ -487,9 +530,12 @@ unsafe fn dict_inc_with_string_token(
                                 sum_owned = true;
                             }
                             if current_bits != sum_bits {
-                                dec_ref_bits(_py, current_bits);
-                                inc_ref_bits(_py, sum_bits);
-                                order[val_idx] = sum_bits;
+                                dict_commit_value_replacement(
+                                    _py,
+                                    dict_ptr,
+                                    &mut order[val_idx],
+                                    sum_bits,
+                                );
                             }
                             if sum_owned {
                                 dec_ref_bits(_py, sum_bits);
@@ -558,6 +604,7 @@ unsafe fn dict_inc_with_string_token(
         inc_ref_bits(_py, sum_bits);
         let entry_idx = order.len() / 2 - 1;
         dict_insert_entry_with_hash(_py, order, table, entry_idx, hash);
+        dict_commit_insertion(_py, dict_ptr, key_bits, sum_bits);
         if sum_owned {
             dec_ref_bits(_py, sum_bits);
         }
@@ -661,6 +708,7 @@ unsafe fn dict_setdefault_empty_list_with_string_token(
         inc_ref_bits(_py, default_bits);
         let entry_idx = order.len() / 2 - 1;
         dict_insert_entry_with_hash(_py, order, table, entry_idx, hash);
+        dict_commit_insertion(_py, dict_ptr, key_bits, default_bits);
         if exception_pending(_py) {
             dec_ref_bits(_py, default_bits);
             dec_ref_bits(_py, key_bits);
@@ -2178,15 +2226,7 @@ pub(crate) unsafe fn dict_set_in_place(
             let val_idx = entry_idx * 2 + 1;
             let old_bits = order[val_idx];
             if old_bits != val_bits {
-                if crate::object::refcount_opt::is_heap_ref(val_bits) {
-                    inc_ref_bits(_py, val_bits);
-                    (*header_from_obj_ptr(ptr))
-                        .fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
-                }
-                order[val_idx] = val_bits;
-                if crate::object::refcount_opt::is_heap_ref(old_bits) {
-                    dec_ref_bits(_py, old_bits);
-                }
+                dict_commit_value_replacement(_py, ptr, &mut order[val_idx], val_bits);
             }
             return;
         }
@@ -2217,11 +2257,7 @@ pub(crate) unsafe fn dict_set_in_place(
         }
         let entry_idx = order.len() / 2 - 1;
         dict_insert_entry_with_hash(_py, order, table, entry_idx, hash);
-        if crate::object::refcount_opt::is_heap_ref(key_bits)
-            || crate::object::refcount_opt::is_heap_ref(val_bits)
-        {
-            (*header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
-        }
+        dict_commit_insertion(_py, ptr, key_bits, val_bits);
     }
 }
 
@@ -2261,17 +2297,7 @@ pub(crate) unsafe fn dict_set_inline_int_in_place(
                         let val_idx = entry_idx * 2 + 1;
                         let old_bits = order[val_idx];
                         if old_bits != val_bits {
-                            let old_obj = obj_from_bits(old_bits);
-                            let new_obj = obj_from_bits(val_bits);
-                            if new_obj.as_ptr().is_some() {
-                                inc_ref_bits(_py, val_bits);
-                                (*header_from_obj_ptr(ptr))
-                                    .fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
-                            }
-                            order[val_idx] = val_bits;
-                            if old_obj.as_ptr().is_some() {
-                                dec_ref_bits(_py, old_bits);
-                            }
+                            dict_commit_value_replacement(_py, ptr, &mut order[val_idx], val_bits);
                         }
                         return;
                     }
@@ -2305,6 +2331,7 @@ pub(crate) unsafe fn dict_set_inline_int_in_place(
         }
         let entry_idx = order.len() / 2 - 1;
         dict_insert_entry_with_hash(_py, order, table, entry_idx, hash);
+        dict_commit_insertion(_py, ptr, key_bits, val_bits);
     }
 }
 
@@ -2390,13 +2417,7 @@ pub(crate) unsafe fn dict_set_in_place_preserving_pending(
             let val_idx = entry_idx * 2 + 1;
             let old_bits = order[val_idx];
             if old_bits != val_bits {
-                inc_ref_bits(_py, val_bits);
-                order[val_idx] = val_bits;
-                if crate::object::refcount_opt::is_heap_ref(val_bits) {
-                    (*header_from_obj_ptr(ptr))
-                        .fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
-                }
-                dec_ref_bits(_py, old_bits);
+                dict_commit_value_replacement(_py, ptr, &mut order[val_idx], val_bits);
             }
             return;
         }
@@ -2442,11 +2463,7 @@ pub(crate) unsafe fn dict_set_in_place_preserving_pending(
         inc_ref_bits(_py, val_bits);
         let entry_idx = order.len() / 2 - 1;
         dict_insert_entry_with_hash(_py, order, table, entry_idx, hash);
-        if crate::object::refcount_opt::is_heap_ref(key_bits)
-            || crate::object::refcount_opt::is_heap_ref(val_bits)
-        {
-            (*header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
-        }
+        dict_commit_insertion(_py, ptr, key_bits, val_bits);
     }
 }
 
@@ -2802,6 +2819,7 @@ pub(crate) unsafe fn dict_del_in_place(_py: &PyToken<'_>, ptr: *mut u8, key_bits
         if order.is_empty() {
             (*header_from_obj_ptr(ptr)).fetch_and_flags(!crate::object::HEADER_FLAG_CONTAINS_REFS);
         }
+        dict_commit_projection(_py, ptr);
         for bits in removed {
             dec_ref_bits(_py, bits);
         }
@@ -2819,6 +2837,7 @@ pub(crate) unsafe fn dict_clear_in_place(_py: &PyToken<'_>, ptr: *mut u8) {
         let table = dict_table(ptr);
         table.clear();
         (*header_from_obj_ptr(ptr)).fetch_and_flags(!crate::object::HEADER_FLAG_CONTAINS_REFS);
+        dict_commit_projection(_py, ptr);
         for pair in removed.chunks_exact(2) {
             dec_ref_bits(_py, pair[0]);
             dec_ref_bits(_py, pair[1]);

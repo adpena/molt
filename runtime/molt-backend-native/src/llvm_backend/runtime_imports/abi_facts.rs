@@ -154,8 +154,7 @@ pub(crate) const CONSERVATIVE_RUNTIME_IMPORTS: &[RuntimeImportSignature] = &[
     // `molt_<kind>` fallback. `MOLT_RUNTIME_CALLABLE_SYMBOLS` proves only
     // active-profile availability; this table owns the boxed-call ABI.
     runtime_sig("molt_alloc_class", 2, RuntimeReturnAbi::I64),
-    runtime_sig("molt_alloc_class_static", 2, RuntimeReturnAbi::I64),
-    runtime_sig("molt_alloc_class_trusted", 2, RuntimeReturnAbi::I64),
+    runtime_sig("molt_object_publish_initialized", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_anext", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_asyncgen_locals_register", 3, RuntimeReturnAbi::I64),
     MOLT_ASYNCGEN_NEW,

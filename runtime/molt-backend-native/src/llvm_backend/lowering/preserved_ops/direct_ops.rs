@@ -178,7 +178,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 true
             }
             "gen_send" => {
-                if op.operands.len() != 2 {
+                if op.operands.len() != 3 {
                     return false;
                 }
                 let func = self.ensure_runtime_i64_fn("molt_generator_send", 2);

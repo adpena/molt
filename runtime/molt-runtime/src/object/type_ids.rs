@@ -1,59 +1,8 @@
-pub(crate) const TYPE_ID_STRING: u32 = 200;
-pub(crate) const TYPE_ID_OBJECT: u32 = molt_codegen_abi::TYPE_ID_OBJECT;
-pub(crate) const TYPE_ID_LIST: u32 = 201;
-pub(crate) const TYPE_ID_BYTES: u32 = 202;
-pub(crate) const TYPE_ID_LIST_BUILDER: u32 = 203;
-pub(crate) const TYPE_ID_DICT: u32 = 204;
-pub(crate) const TYPE_ID_DICT_BUILDER: u32 = 205;
-pub(crate) const TYPE_ID_TUPLE: u32 = 206;
-pub(crate) const TYPE_ID_DICT_KEYS_VIEW: u32 = 207;
-pub(crate) const TYPE_ID_DICT_VALUES_VIEW: u32 = 208;
-pub(crate) const TYPE_ID_DICT_ITEMS_VIEW: u32 = 209;
-pub(crate) const TYPE_ID_ITER: u32 = 210;
-pub(crate) const TYPE_ID_BYTEARRAY: u32 = 211;
-pub(crate) const TYPE_ID_RANGE: u32 = 212;
-pub(crate) const TYPE_ID_SLICE: u32 = 213;
-pub(crate) const TYPE_ID_EXCEPTION: u32 = 214;
-pub(crate) const TYPE_ID_DATACLASS: u32 = 215;
-pub(crate) const TYPE_ID_BUFFER2D: u32 = 216;
-pub(crate) const TYPE_ID_CONTEXT_MANAGER: u32 = 217;
-pub(crate) const TYPE_ID_FILE_HANDLE: u32 = 218;
-pub(crate) const TYPE_ID_MEMORYVIEW: u32 = 219;
-pub(crate) const TYPE_ID_INTARRAY: u32 = 220;
-pub(crate) const TYPE_ID_FUNCTION: u32 = molt_codegen_abi::TYPE_ID_FUNCTION;
-pub(crate) const TYPE_ID_BOUND_METHOD: u32 = 222;
-pub(crate) const TYPE_ID_MODULE: u32 = 223;
-pub(crate) const TYPE_ID_TYPE: u32 = molt_codegen_abi::TYPE_ID_TYPE;
-pub(crate) const TYPE_ID_GENERATOR: u32 = 225;
-pub(crate) const TYPE_ID_CLASSMETHOD: u32 = 226;
-pub(crate) const TYPE_ID_STATICMETHOD: u32 = 227;
-pub(crate) const TYPE_ID_PROPERTY: u32 = 228;
-pub(crate) const TYPE_ID_SUPER: u32 = 229;
-pub(crate) const TYPE_ID_SET: u32 = 230;
-pub(crate) const TYPE_ID_SET_BUILDER: u32 = 231;
-pub(crate) const TYPE_ID_FROZENSET: u32 = 232;
-pub(crate) const TYPE_ID_BIGINT: u32 = 233;
-pub(crate) const TYPE_ID_COMPLEX: u32 = 234;
-pub(crate) const TYPE_ID_ENUMERATE: u32 = 235;
-pub(crate) const TYPE_ID_CALLARGS: u32 = 236;
-pub(crate) const TYPE_ID_NOT_IMPLEMENTED: u32 = 237;
-pub(crate) const TYPE_ID_CALL_ITER: u32 = 238;
-pub(crate) const TYPE_ID_REVERSED: u32 = 239;
-pub(crate) const TYPE_ID_ZIP: u32 = 240;
-pub(crate) const TYPE_ID_MAP: u32 = 241;
-pub(crate) const TYPE_ID_FILTER: u32 = 242;
-pub(crate) const TYPE_ID_CODE: u32 = 243;
-pub(crate) const TYPE_ID_ELLIPSIS: u32 = 244;
-pub(crate) const TYPE_ID_GENERIC_ALIAS: u32 = 245;
-pub(crate) const TYPE_ID_ASYNC_GENERATOR: u32 = 246;
-pub(crate) const TYPE_ID_UNION: u32 = 247;
-pub(crate) const TYPE_ID_TRACEBACK_PAYLOAD: u32 = 251;
-pub(crate) const TYPE_ID_NATIVE_HANDLE: u32 = 252;
+pub(crate) use super::heap_kinds_generated::*;
 
 /// Lazy `glob.iglob(...)` iterator. Holds a boxed `GlobIterState` work-stack
 /// machine that streams matching paths one per `__next__` at bounded RSS
 /// (CPython-faithful `glob` algorithm, but incremental instead of eager).
-pub(crate) const TYPE_ID_GLOB_ITER: u32 = 253;
 
 /// First-class Molt wrapper around a genuine C-extension `PyObject*` that has
 /// crossed *into* compiled Python (a numpy static type, an extension instance,
@@ -61,9 +10,7 @@ pub(crate) const TYPE_ID_GLOB_ITER: u32 = 253;
 /// mutation, and calls route back through the object's own CPython type slots
 /// (`tp_getattro`/`tp_setattro`/`tp_call`) via the `molt-cpython-abi` bridge.
 /// See `object::foreign`.
-pub(crate) const TYPE_ID_FOREIGN: u32 = 254;
 /// Native storage authority owned by one weak-container wrapper.
-pub(crate) const TYPE_ID_WEAK_CONTAINER_STATE: u32 = 255;
 
 pub(crate) const TYPE_TAG_ANY: i64 = 0;
 pub(crate) const TYPE_TAG_INT: i64 = 1;
@@ -129,25 +76,14 @@ pub(crate) fn size_class_for(size: usize) -> u16 {
 
 /// Specialized list of raw i64 values — no NaN-boxing, no refcounting.
 /// Created when list elements are all known ints at compile time.
-pub(crate) const TYPE_ID_LIST_INT: u32 = 248;
 
 /// Specialized list of raw u8 bool values — 0 = False, 1 = True.
 /// 8x more cache-friendly than storing NaN-boxed bools in Vec<u64>.
 /// Created by `[True] * N` and `[False] * N` patterns.
-pub(crate) const TYPE_ID_LIST_BOOL: u32 = molt_codegen_abi::TYPE_ID_LIST_BOOL;
 
 /// Heap-allocated float (used for NaN values to preserve identity semantics).
 /// Non-NaN floats remain inline in the NaN-box; only NaN requires heap allocation
 /// so that each `float('nan')` call produces a unique pointer address.
-pub(crate) const TYPE_ID_FLOAT: u32 = 249;
-
-pub(crate) const MIN_HEAP_TYPE_ID: u32 = TYPE_ID_STRING;
-pub(crate) const MAX_HEAP_TYPE_ID: u32 = TYPE_ID_WEAK_CONTAINER_STATE;
-
-#[inline]
-pub(crate) fn is_valid_heap_type_id(type_id: u32) -> bool {
-    type_id == TYPE_ID_OBJECT || (MIN_HEAP_TYPE_ID..=MAX_HEAP_TYPE_ID).contains(&type_id)
-}
 
 #[cfg(test)]
 mod tests {

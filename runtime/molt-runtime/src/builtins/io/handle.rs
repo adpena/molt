@@ -172,12 +172,20 @@ pub(crate) fn file_handle_close_ptr(ptr: *mut u8) -> bool {
         return false;
     }
     unsafe {
-        let debug_close = std::env::var("MOLT_DEBUG_FILE_CLOSE").as_deref() == Ok("1");
         let handle_ptr = file_handle_ptr(ptr);
-        if handle_ptr.is_null() {
+        file_handle_close_detached(handle_ptr, ptr as usize)
+    }
+}
+
+pub(crate) unsafe fn file_handle_close_detached(
+    handle_ptr: *mut crate::object::MoltFileHandle,
+    identity: usize,
+) -> bool {
+    unsafe {
+        let debug_close = std::env::var("MOLT_DEBUG_FILE_CLOSE").as_deref() == Ok("1");
+        let Some(handle) = handle_ptr.as_mut() else {
             return false;
-        }
-        let handle = &mut *handle_ptr;
+        };
         if handle.closed {
             return false;
         }
@@ -191,7 +199,7 @@ pub(crate) fn file_handle_close_ptr(ptr: *mut u8) -> bool {
         if debug_close {
             eprintln!(
                 "molt file_handle_close ptr=0x{:x} closefd={} owns_fd={} had_backend={}",
-                ptr as usize, handle.closefd, handle.owns_fd, had_backend
+                identity, handle.closefd, handle.owns_fd, had_backend
             );
         }
         #[cfg(windows)]

@@ -513,3 +513,10 @@ pub(crate) unsafe fn release_tuple_edges(py: &PyToken<'_>, ptr: *mut u8, flags: 
         dec_ref_bits(py, bits);
     }
 }
+
+pub(crate) unsafe fn detach_tuple_edges(ptr: *mut u8, mut detach: impl FnMut(u64)) {
+    let none = MoltObject::none().bits();
+    for slot in unsafe { tuple_slice_mut(ptr) } {
+        detach(std::mem::replace(slot, none));
+    }
+}

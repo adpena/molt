@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
+from _weakref import ReferenceType, getweakrefcount, getweakrefs, ref
 
 # Avoid importing typing/abc during weakref bootstrap; these can recurse
 # through _weakrefset while this module is still initializing.
@@ -24,18 +25,9 @@ def _require_callable_intrinsic(name: str):
     return value
 
 
-_molt_weakref_register = _require_callable_intrinsic("molt_weakref_register")
-_molt_weakref_bind_reference_type = _require_callable_intrinsic(
-    "molt_weakref_bind_reference_type"
-)
 _molt_weakref_get = _require_callable_intrinsic("molt_weakref_get")
 _molt_weakref_callback = _require_callable_intrinsic("molt_weakref_callback")
 _molt_weakref_peek = _require_callable_intrinsic("molt_weakref_peek")
-_molt_weakref_find_nocallback = _require_callable_intrinsic(
-    "molt_weakref_find_nocallback"
-)
-_molt_weakref_refs = _require_callable_intrinsic("molt_weakref_refs")
-_molt_weakref_count = _require_callable_intrinsic("molt_weakref_count")
 _molt_weakref_finalize_track = _require_callable_intrinsic(
     "molt_weakref_finalize_track"
 )
@@ -71,86 +63,11 @@ _ITEMS = 3
 _MISSING = object()
 
 
-class _ReferenceTypeMeta(type):
-    def __call__(cls, obj, callback=None, *args, **kwargs):
-        # CPython caches callback-free exact weakref.ref objects. Keeping this
-        # in constructor authority means returning a cached object never reruns
-        # its public __init__ and therefore can never retarget its weak slot.
-        if cls is ReferenceType and callback is None:
-            cached = _molt_weakref_find_nocallback(obj)
-            if isinstance(cached, ReferenceType):
-                return cached
-        return super().__call__(obj, callback, *args, **kwargs)
-
-
-class ReferenceType(metaclass=_ReferenceTypeMeta):
-    __slots__ = ("_hash",)
-
-    def _initialize(
-        self,
-        obj: object,
-        callback: Callable[["ReferenceType"], object] | None = None,
-    ) -> bool:
-        if callback is not None and not callable(callback):
-            raise TypeError("weakref callback must be callable")
-        created = _molt_weakref_register(self, obj, callback)  # type: ignore[misc]
-        if created is False:
-            return False
-        self._hash: int | None = None
-        return True
-
-    def __init__(
-        self,
-        obj: object,
-        callback: Callable[["ReferenceType"], object] | None = None,
-    ) -> None:
-        self._initialize(obj, callback)
-
-    def __call__(self) -> object | None:
-        return _molt_weakref_get(self)  # type: ignore[misc]
-
-    @property
-    def __callback__(self) -> object | None:
-        callback = _molt_weakref_callback(self)  # type: ignore[misc]
-        if callback is None or callable(callback):
-            return callback
-        raise RuntimeError("weakref callback intrinsic returned invalid value")
-
-    def _peek_obj(self) -> object | None:
-        return _molt_weakref_peek(self)  # type: ignore[misc]
-
-    def __repr__(self) -> str:
-        obj = self()
-        if obj is None:
-            return f"<weakref at {hex(id(self))}; dead>"
-        return (
-            f"<weakref at {hex(id(self))}; to '{type(obj).__name__}' at {hex(id(obj))}>"
-        )
-
-    def __hash__(self) -> int:
-        if self._hash is not None:
-            return self._hash
-        obj = self._peek_obj()
-        if obj is None:
-            raise TypeError("weak object has gone away")
-        hashed = hash(obj)
-        self._hash = hashed
-        return hashed
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, ReferenceType):
-            return False
-        self_obj = self._peek_obj()
-        other_obj = other._peek_obj()
-        if self_obj is None or other_obj is None:
-            return self is other
-        return self_obj == other_obj
-
-
-_molt_weakref_bind_reference_type(ReferenceType)
-
 class KeyedRef(ReferenceType):
     __slots__ = ("key",)
+
+    def __new__(cls, obj, callback, key):
+        return ReferenceType.__new__(cls, obj, callback)
 
     def __init__(
         self,
@@ -158,27 +75,7 @@ class KeyedRef(ReferenceType):
         callback: Callable[[ReferenceType], object] | None,
         key: object,
     ) -> None:
-        if self._initialize(obj, callback):
-            self.key = key
-
-
-ref = ReferenceType
-
-
-def getweakrefcount(obj: object) -> int:
-    value = _molt_weakref_count(obj)
-    if not isinstance(value, int):
-        raise RuntimeError("weakref count intrinsic returned invalid value")
-    return int(value)
-
-
-def getweakrefs(obj: object) -> list[ReferenceType]:
-    refs = _molt_weakref_refs(obj)
-    if not isinstance(refs, list):
-        raise RuntimeError("weakref refs intrinsic returned invalid value")
-    if not all(isinstance(entry, ReferenceType) for entry in refs):
-        raise RuntimeError("weakref refs intrinsic returned invalid value")
-    return list(refs)
+        self.key = key
 
 
 class ProxyType:

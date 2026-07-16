@@ -1570,8 +1570,6 @@ classifier_inert_marker = [
 # separate precision set remains `classifier_no_heap_move`.
 classifier_transparent_alias = [
     "alloc_class",
-    "alloc_class_static",
-    "alloc_class_trusted",
     "anext",
     "asyncgen_locals_register",
     "asyncgen_new",

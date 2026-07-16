@@ -261,7 +261,7 @@ Molt implements monomorphic inline caches (ICs) for method dispatch. The IC syst
 
 ### Current State
 
-The backend has a rudimentary form of escape analysis: `elide_dead_struct_allocs` (lib.rs:480-543). This pass removes `alloc_class`/`alloc_class_trusted`/`alloc_class_static` operations where the allocated object is only used for `store`/`store_init`/`guarded_field_set`/`guarded_field_init`/`object_set_class` — i.e., it is initialized but never read or passed to another function.
+The backend has a rudimentary form of escape analysis: `elide_dead_struct_allocs` (lib.rs:480-543). This pass removes canonical `alloc_class` operations where the allocated object is only used for `store`/`store_init`/`guarded_field_set`/`guarded_field_init`/`object_set_class` — i.e., it is initialized but never read or passed to another function.
 
 This is a dead-allocation elimination, not true escape analysis. It only removes allocations whose fields are written but never read. Objects that are read but don't escape the function are still heap-allocated.
 

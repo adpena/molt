@@ -8,6 +8,7 @@
 
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
+use crate::object::heap_lifecycle::DetachedEdgeSink;
 use crate::object::layout::{
     iter_set_cached_tuple, iter_set_expected_version, iter_set_index, iter_set_projection,
 };
@@ -1033,6 +1034,33 @@ fn entry_slots_release(
     }
 }
 
+#[inline]
+fn entry_detach_owned_edges(
+    _py: &PyToken<'_>,
+    kind: WeakContainerKind,
+    entry: WeakEntry,
+    sink: &mut DetachedEdgeSink,
+) {
+    // Publish the reverse cookie empty before either of the entry's strong
+    // edges can run terminal code.
+    weakref_detach_container_cookie(_py, entry.weakref_bits);
+    sink.detach_if_heap(entry.weakref_bits);
+    if kind.owns_aux() {
+        sink.detach_if_heap(entry.aux_bits);
+    }
+}
+
+fn entry_slots_detach_owned_edges(
+    _py: &PyToken<'_>,
+    kind: WeakContainerKind,
+    entries: Vec<Option<WeakEntry>>,
+    sink: &mut DetachedEdgeSink,
+) {
+    for entry in entries.into_iter().flatten() {
+        entry_detach_owned_edges(_py, kind, entry, sink);
+    }
+}
+
 fn py_eq_checked(_py: &PyToken<'_>, lhs_bits: u64, rhs_bits: u64) -> Result<bool, u64> {
     if lhs_bits == rhs_bits {
         return Ok(true);
@@ -1617,6 +1645,30 @@ pub(crate) fn weakcontainer_iter_finish(_py: &PyToken<'_>, state_ptr: *mut u8) {
     }
 }
 
+pub(crate) fn weakcontainer_iter_finish_detach(
+    _py: &PyToken<'_>,
+    state_ptr: *mut u8,
+    sink: &mut DetachedEdgeSink,
+) {
+    let Some(state) = (unsafe { state_from_ptr(state_ptr) }) else {
+        return;
+    };
+    let drain = state
+        .write()
+        .finish_iterator()
+        .unwrap_or_else(|_| std::process::abort());
+    if drain {
+        loop {
+            let detached = state
+                .write()
+                .detach_next_pending(false)
+                .unwrap_or_else(|_| std::process::abort());
+            let Some(entry) = detached else { break };
+            entry_detach_owned_edges(_py, state.kind, entry, sink);
+        }
+    }
+}
+
 pub(crate) fn weakcontainer_iter_next_value(
     _py: &PyToken<'_>,
     state_ptr: *mut u8,
@@ -1987,6 +2039,69 @@ pub(crate) fn weakcontainer_target_dead(_py: &PyToken<'_>, cookie: WeakContainer
     }
 }
 
+pub(crate) fn weakcontainer_target_dead_detach(
+    _py: &PyToken<'_>,
+    cookie: WeakContainerCookie,
+    sink: &mut DetachedEdgeSink,
+) {
+    let Some(state_ptr) = maybe_ptr_from_bits(cookie.state_bits) else {
+        return;
+    };
+    let Some(state) = (unsafe { state_from_ptr(state_ptr) }) else {
+        return;
+    };
+    let detached = state
+        .write()
+        .target_dead(cookie.entry)
+        .unwrap_or_else(|_| std::process::abort());
+    if let Some(entry) = detached {
+        entry_detach_owned_edges(_py, state.kind, entry, sink);
+    }
+}
+
+pub(crate) fn weakcontainer_target_dead_detach_edge_count(cookie: WeakContainerCookie) -> usize {
+    let Some(state_ptr) = maybe_ptr_from_bits(cookie.state_bits) else {
+        return 0;
+    };
+    let Some(state) = (unsafe { state_from_ptr(state_ptr) }) else {
+        return 0;
+    };
+    let table = state.read();
+    if table.active_iterators != 0 {
+        return 0;
+    }
+    let Some(entry) = table.entry(cookie.entry) else {
+        return 0;
+    };
+    if entry.state != EntryState::Live {
+        return 0;
+    }
+    usize::from(maybe_ptr_from_bits(entry.weakref_bits).is_some())
+        + usize::from(state.kind.owns_aux() && maybe_ptr_from_bits(entry.aux_bits).is_some())
+}
+
+pub(crate) fn weakcontainer_iter_finish_detach_edge_count(state_ptr: *mut u8) -> usize {
+    let Some(state) = (unsafe { state_from_ptr(state_ptr) }) else {
+        return 0;
+    };
+    let table = state.read();
+    if table.active_iterators != 1 {
+        return 0;
+    }
+    table
+        .entries
+        .iter()
+        .filter_map(Option::as_ref)
+        .filter(|entry| entry.state == EntryState::PendingDead)
+        .map(|entry| {
+            usize::from(maybe_ptr_from_bits(entry.weakref_bits).is_some())
+                + usize::from(
+                    state.kind.owns_aux() && maybe_ptr_from_bits(entry.aux_bits).is_some(),
+                )
+        })
+        .sum()
+}
+
 pub(crate) unsafe fn weakcontainer_traverse(ptr: *mut u8, visit: &mut dyn FnMut(*mut u8)) {
     let Some(state) = (unsafe { state_from_ptr(ptr) }) else {
         return;
@@ -2019,8 +2134,27 @@ pub(crate) unsafe fn weakcontainer_clear_state(_py: &PyToken<'_>, ptr: *mut u8) 
     entry_slots_release(_py, state.kind, entries);
 }
 
+pub(crate) unsafe fn weakcontainer_detach_state(
+    _py: &PyToken<'_>,
+    ptr: *mut u8,
+    sink: &mut DetachedEdgeSink,
+) {
+    let Some(state) = (unsafe { state_from_ptr(ptr) }) else {
+        return;
+    };
+    let entries = state
+        .write()
+        .detach_all(false)
+        .unwrap_or_else(|_| std::process::abort());
+    entry_slots_detach_owned_edges(_py, state.kind, entries, sink);
+}
+
 pub(crate) unsafe fn weakcontainer_drop_state(_py: &PyToken<'_>, ptr: *mut u8) {
     unsafe { weakcontainer_clear_state(_py, ptr) };
+    unsafe { std::ptr::drop_in_place(ptr.cast::<WeakContainerState>()) };
+}
+
+pub(crate) unsafe fn weakcontainer_drop_detached_state(ptr: *mut u8) {
     unsafe { std::ptr::drop_in_place(ptr.cast::<WeakContainerState>()) };
 }
 

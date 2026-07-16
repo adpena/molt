@@ -56,7 +56,7 @@ impl RustBackend {
         }
     }
 
-    pub(super) fn emit_op_alloc_class_static(&mut self, op: &OpIR) {
+    pub(super) fn emit_op_alloc_class(&mut self, op: &OpIR) {
         self.emit_unsupported_op(
             op,
             format!(

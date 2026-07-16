@@ -221,7 +221,13 @@ pub extern "C" fn molt_functools_kwd_mark() -> u64 {
     })
 }
 
-fn functools_class(_py: &PyToken<'_>, slot: &AtomicU64, name: &str, layout_size: i64) -> u64 {
+fn functools_class(
+    _py: &PyToken<'_>,
+    slot: &AtomicU64,
+    name: &str,
+    layout_size: i64,
+    shape: crate::object::ObjectShapeId,
+) -> u64 {
     init_atomic_bits(_py, slot, || {
         let name_ptr = alloc_string(_py, name.as_bytes());
         if name_ptr.is_null() {
@@ -234,6 +240,10 @@ fn functools_class(_py: &PyToken<'_>, slot: &AtomicU64, name: &str, layout_size:
             return MoltObject::none().bits();
         }
         let class_bits = MoltObject::from_ptr(class_ptr).bits();
+        if !unsafe { crate::object::class_set_instance_shape_id(class_ptr, shape) } {
+            dec_ref_bits(_py, class_bits);
+            return MoltObject::none().bits();
+        }
         let builtins = builtin_classes(_py);
         unsafe {
             if let Some(ptr) = obj_from_bits(class_bits).as_ptr()
@@ -289,7 +299,13 @@ fn set_class_method(_py: &PyToken<'_>, class_bits: u64, name: &str, fn_bits: u64
 
 fn partial_class(_py: &PyToken<'_>) -> u64 {
     let functools = &crate::runtime_state(_py).functools;
-    let class_bits = functools_class(_py, &functools.partial_class, "partial", 32);
+    let class_bits = functools_class(
+        _py,
+        &functools.partial_class,
+        "partial",
+        32,
+        crate::object::ObjectShapeId::FunctoolsPartial,
+    );
     let call_bits = builtin_func_bits(
         _py,
         &functools.partial_call_fn,
@@ -357,7 +373,13 @@ fn partial_class(_py: &PyToken<'_>) -> u64 {
 
 fn cmpkey_class(_py: &PyToken<'_>) -> u64 {
     let functools = &crate::runtime_state(_py).functools;
-    let class_bits = functools_class(_py, &functools.cmpkey_class, "_CmpKey", 24);
+    let class_bits = functools_class(
+        _py,
+        &functools.cmpkey_class,
+        "_CmpKey",
+        24,
+        crate::object::ObjectShapeId::FunctoolsCmpKey,
+    );
     let lt_bits = builtin_func_bits(
         _py,
         &functools.cmpkey_lt_fn,
@@ -405,7 +427,13 @@ fn cmpkey_class(_py: &PyToken<'_>) -> u64 {
 
 fn lru_wrapper_class(_py: &PyToken<'_>) -> u64 {
     let functools = &crate::runtime_state(_py).functools;
-    let class_bits = functools_class(_py, &functools.lru_wrapper_class, "_lru_cache_wrapper", 64);
+    let class_bits = functools_class(
+        _py,
+        &functools.lru_wrapper_class,
+        "_lru_cache_wrapper",
+        64,
+        crate::object::ObjectShapeId::FunctoolsLruWrapper,
+    );
     let call_bits = builtin_func_bits(
         _py,
         &functools.lru_call_fn,
@@ -494,7 +522,13 @@ fn lru_wrapper_class(_py: &PyToken<'_>) -> u64 {
 
 fn lru_factory_class(_py: &PyToken<'_>) -> u64 {
     let functools = &crate::runtime_state(_py).functools;
-    let class_bits = functools_class(_py, &functools.lru_factory_class, "_LruCacheFactory", 24);
+    let class_bits = functools_class(
+        _py,
+        &functools.lru_factory_class,
+        "_LruCacheFactory",
+        24,
+        crate::object::ObjectShapeId::FunctoolsLruFactory,
+    );
     let call_bits = builtin_func_bits(
         _py,
         &functools.lru_factory_call_fn,
@@ -507,7 +541,13 @@ fn lru_factory_class(_py: &PyToken<'_>) -> u64 {
 
 fn cacheinfo_class(_py: &PyToken<'_>) -> u64 {
     let functools = &crate::runtime_state(_py).functools;
-    let class_bits = functools_class(_py, &functools.cacheinfo_class, "CacheInfo", 40);
+    let class_bits = functools_class(
+        _py,
+        &functools.cacheinfo_class,
+        "CacheInfo",
+        40,
+        crate::object::ObjectShapeId::FunctoolsCacheInfo,
+    );
     let iter_bits = builtin_func_bits(
         _py,
         &functools.cacheinfo_iter_fn,
@@ -2046,6 +2086,125 @@ pub(crate) fn functools_drop_instance(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
         return true;
     }
     false
+}
+
+pub(crate) unsafe fn functools_visit_owned_edges(
+    shape: crate::object::ObjectShapeId,
+    ptr: *mut u8,
+    mut visit: impl FnMut(u64),
+) {
+    use crate::object::ObjectShapeId;
+    unsafe {
+        match shape {
+            ObjectShapeId::FunctoolsPartial => {
+                visit(partial_func_bits(ptr));
+                visit(partial_args_bits(ptr));
+                visit(partial_kwargs_bits(ptr));
+            }
+            ObjectShapeId::FunctoolsCmpKey => {
+                visit(cmpkey_obj_bits(ptr));
+                visit(cmpkey_cmp_bits(ptr));
+            }
+            ObjectShapeId::FunctoolsLruWrapper => {
+                visit(lru_func_bits(ptr));
+                visit(lru_maxsize_bits(ptr));
+                visit(lru_typed_bits(ptr));
+                visit(lru_cache_bits(ptr));
+            }
+            ObjectShapeId::FunctoolsLruFactory => {
+                visit(lru_factory_maxsize_bits(ptr));
+                visit(lru_factory_typed_bits(ptr));
+            }
+            ObjectShapeId::FunctoolsCacheInfo => visit(cacheinfo_maxsize_bits(ptr)),
+            _ => unreachable!("non-functools object shape"),
+        }
+    }
+}
+
+pub(crate) unsafe fn functools_detach_owned_edges(
+    shape: crate::object::ObjectShapeId,
+    ptr: *mut u8,
+    mut detach: impl FnMut(u64),
+) {
+    use crate::object::ObjectShapeId;
+    let none = MoltObject::none().bits();
+    let mut detached = [none; 5];
+    let detached_len;
+    unsafe {
+        match shape {
+            ObjectShapeId::FunctoolsPartial => {
+                detached[..3].copy_from_slice(&[
+                    partial_func_bits(ptr),
+                    partial_args_bits(ptr),
+                    partial_kwargs_bits(ptr),
+                ]);
+                detached_len = 3;
+                partial_set_func_bits(ptr, none);
+                partial_set_args_bits(ptr, none);
+                partial_set_kwargs_bits(ptr, none);
+            }
+            ObjectShapeId::FunctoolsCmpKey => {
+                detached[..2].copy_from_slice(&[cmpkey_obj_bits(ptr), cmpkey_cmp_bits(ptr)]);
+                detached_len = 2;
+                cmpkey_set_obj_bits(ptr, none);
+                cmpkey_set_cmp_bits(ptr, none);
+            }
+            ObjectShapeId::FunctoolsLruWrapper => {
+                detached[..4].copy_from_slice(&[
+                    lru_func_bits(ptr),
+                    lru_maxsize_bits(ptr),
+                    lru_typed_bits(ptr),
+                    lru_cache_bits(ptr),
+                ]);
+                detached_len = 4;
+                lru_set_func_bits(ptr, none);
+                lru_set_maxsize_bits(ptr, none);
+                lru_set_typed_bits(ptr, none);
+                lru_set_cache_bits(ptr, none);
+                let order = lru_order_ptr(ptr);
+                if !order.is_null() {
+                    (*order).clear();
+                }
+            }
+            ObjectShapeId::FunctoolsLruFactory => {
+                detached[..2]
+                    .copy_from_slice(&[lru_factory_maxsize_bits(ptr), lru_factory_typed_bits(ptr)]);
+                detached_len = 2;
+                lru_factory_set_maxsize_bits(ptr, none);
+                lru_factory_set_typed_bits(ptr, none);
+            }
+            ObjectShapeId::FunctoolsCacheInfo => {
+                detached[0] = cacheinfo_maxsize_bits(ptr);
+                detached_len = 1;
+                cacheinfo_set_maxsize_bits(ptr, none);
+            }
+            _ => unreachable!("non-functools object shape"),
+        }
+    }
+    for bits in detached.into_iter().take(detached_len) {
+        detach(bits);
+    }
+}
+
+pub(crate) struct DetachedFunctoolsResource(*mut LruOrderState);
+
+pub(crate) unsafe fn functools_detach_typed_resources(
+    shape: crate::object::ObjectShapeId,
+    ptr: *mut u8,
+) -> DetachedFunctoolsResource {
+    if shape == crate::object::ObjectShapeId::FunctoolsLruWrapper {
+        let order = unsafe { lru_order_ptr(ptr) };
+        unsafe { lru_set_order_ptr(ptr, std::ptr::null_mut()) };
+        DetachedFunctoolsResource(order)
+    } else {
+        DetachedFunctoolsResource(std::ptr::null_mut())
+    }
+}
+
+pub(crate) fn functools_release_typed_resources(resource: DetachedFunctoolsResource) {
+    if !resource.0.is_null() {
+        unsafe { drop(Box::from_raw(resource.0)) };
+    }
 }
 
 // ─── singledispatch state ──────────────────────────────────────────────────

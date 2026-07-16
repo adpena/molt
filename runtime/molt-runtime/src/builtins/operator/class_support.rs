@@ -16,6 +16,7 @@ fn operator_class(
     layout_size: i64,
     call_slot: &AtomicU64,
     call_fn: u64,
+    shape: crate::object::ObjectShapeId,
 ) -> u64 {
     init_atomic_bits(_py, slot, || {
         let name_ptr = alloc_string(_py, name.as_bytes());
@@ -29,6 +30,10 @@ fn operator_class(
             return MoltObject::none().bits();
         }
         let class_bits = MoltObject::from_ptr(class_ptr).bits();
+        if !unsafe { crate::object::class_set_instance_shape_id(class_ptr, shape) } {
+            dec_ref_bits(_py, class_bits);
+            return MoltObject::none().bits();
+        }
         let builtins = builtin_classes(_py);
         unsafe {
             if let Some(ptr) = obj_from_bits(class_bits).as_ptr()
@@ -200,6 +205,7 @@ pub(super) fn itemgetter_class(_py: &PyToken<'_>) -> u64 {
         16,
         &operator.itemgetter_call,
         crate::molt_operator_itemgetter_call as *const () as usize as u64,
+        crate::object::ObjectShapeId::OperatorItemGetter,
     );
     let init_bits = builtin_func_bits(
         _py,
@@ -221,6 +227,7 @@ pub(super) fn attrgetter_class(_py: &PyToken<'_>) -> u64 {
         16,
         &operator.attrgetter_call,
         crate::molt_operator_attrgetter_call as *const () as usize as u64,
+        crate::object::ObjectShapeId::OperatorAttrGetter,
     );
     let init_bits = builtin_func_bits(
         _py,
@@ -242,6 +249,7 @@ pub(super) fn methodcaller_class(_py: &PyToken<'_>) -> u64 {
         32,
         &operator.methodcaller_call,
         crate::molt_operator_methodcaller_call as *const () as usize as u64,
+        crate::object::ObjectShapeId::OperatorMethodCaller,
     );
     let init_bits = builtin_func_bits(
         _py,

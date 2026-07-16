@@ -96,6 +96,7 @@ pub extern "C" fn molt_itertools_alloc_class(
     name_ptr: *const u8,
     name_len: usize,
     layout_size: i64,
+    shape_id: u16,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let name = unsafe {
@@ -112,6 +113,14 @@ pub extern "C" fn molt_itertools_alloc_class(
             return MoltObject::none().bits();
         }
         let class_bits = MoltObject::from_ptr(class_ptr).bits();
+        let Some(shape) = crate::object::ObjectShapeId::from_u16(shape_id) else {
+            dec_ref_bits(_py, class_bits);
+            return MoltObject::none().bits();
+        };
+        if !unsafe { crate::object::class_set_instance_shape_id(class_ptr, shape) } {
+            dec_ref_bits(_py, class_bits);
+            return MoltObject::none().bits();
+        }
         let builtins = builtin_classes(_py);
         unsafe {
             if let Some(ptr) = obj_from_bits(class_bits).as_ptr()

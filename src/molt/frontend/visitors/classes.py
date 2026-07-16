@@ -1963,7 +1963,9 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             class_val = MoltValue(self.next_var(), type_hint="type")
             self.emit(
                 MoltOp(
-                    kind="CALL_BIND", args=[dynamic_meta, callargs], result=class_val
+                    kind="CALL_BIND",
+                    args=[dynamic_meta, callargs],
+                    result=class_val,
                 )
             )
             if needs_classcell and classcell_val is not None:
@@ -2173,12 +2175,12 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                     MoltOp(kind="CONST_STR", args=["__molt_dataclass__"], result=dkey)
                 )
                 class_def_attrs.append((dkey, marker_val))
-            class_def_flags = 1 if base_vals else 0
             class_def_args: list[Any] = [name_val] + list(base_vals)
             for k, v in class_def_attrs:
                 class_def_args.append(k)
                 class_def_args.append(v)
             layout_version = self.classes[node.name].get("layout_version", 0)
+            class_def_flags = 1 if base_vals else 0
             class_def_meta = f"{len(base_vals)},{len(class_def_attrs)},{class_info['size']},{layout_version},{class_def_flags}"
             self.emit(
                 MoltOp(

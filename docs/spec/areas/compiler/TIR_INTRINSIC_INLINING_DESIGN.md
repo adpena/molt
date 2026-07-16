@@ -349,8 +349,6 @@ All 373 unique `molt_*` functions imported via `Linkage::Import`, organized by c
 |----------|-----------|------|-------|
 | `molt_alloc` | 1 | Moderate | Generic allocation |
 | `molt_alloc_class` | 1 | Moderate | |
-| `molt_alloc_class_trusted` | 1 | Moderate | |
-| `molt_alloc_class_static` | 1 | Low | |
 | `molt_object_new` | 1 | Moderate | |
 | `molt_object_set_class` | 1 | Low | |
 | `molt_object_field_set_ptr` | 1 | Yes | |

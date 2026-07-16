@@ -1116,8 +1116,8 @@ mod code_object_ownership_tests {
     use crate::object::header_from_obj_ptr;
     use crate::object::layout::code_set_signature_bits;
     use crate::{
-        alloc_function_obj, alloc_string, alloc_tuple, dec_ref_bits, function_set_code_bits,
-        inc_ref_bits, obj_from_bits,
+        alloc_bytes, alloc_function_obj, alloc_string, alloc_tuple, dec_ref_bits,
+        function_set_code_bits, inc_ref_bits, obj_from_bits,
     };
     use molt_obj_model::MoltObject;
     use std::sync::atomic::Ordering;
@@ -1158,9 +1158,15 @@ mod code_object_ownership_tests {
         crate::with_gil_entry_nopanic!(_py, {
             let filename_ptr = alloc_string(_py, b"<constructor-test>");
             let name_ptr = alloc_string(_py, b"<constructor-test-name>");
-            let linetable_ptr = alloc_string(_py, b"<constructor-test-linetable>");
-            let varnames_ptr = alloc_string(_py, b"<constructor-test-varnames>");
-            let names_ptr = alloc_string(_py, b"<constructor-test-names>");
+            let linetable_ptr = alloc_bytes(_py, b"constructor-test-linetable");
+            let varname_ptr = alloc_string(_py, b"constructor_test_varname");
+            let varname_bits = MoltObject::from_ptr(varname_ptr).bits();
+            let varnames_ptr = alloc_tuple(_py, &[varname_bits]);
+            dec_ref_bits(_py, varname_bits);
+            let referenced_name_ptr = alloc_string(_py, b"constructor_test_name");
+            let referenced_name_bits = MoltObject::from_ptr(referenced_name_ptr).bits();
+            let names_ptr = alloc_tuple(_py, &[referenced_name_bits]);
+            dec_ref_bits(_py, referenced_name_bits);
             let filename_bits = MoltObject::from_ptr(filename_ptr).bits();
             let name_bits = MoltObject::from_ptr(name_ptr).bits();
             let linetable_bits = MoltObject::from_ptr(linetable_ptr).bits();
@@ -1261,8 +1267,8 @@ mod code_object_ownership_tests {
             let kwonly_name_bits = MoltObject::from_ptr(kwonly_name_ptr).bits();
             let arg_names_ptr = alloc_tuple(_py, &[arg_name_bits]);
             let kwonly_names_ptr = alloc_tuple(_py, &[kwonly_name_bits]);
-            let vararg_marker_ptr = alloc_tuple(_py, &[MoltObject::from_int(41).bits()]);
-            let varkw_marker_ptr = alloc_tuple(_py, &[MoltObject::from_int(43).bits()]);
+            let vararg_marker_ptr = alloc_string(_py, b"args");
+            let varkw_marker_ptr = alloc_string(_py, b"kwargs");
             let arg_names_bits = MoltObject::from_ptr(arg_names_ptr).bits();
             let kwonly_names_bits = MoltObject::from_ptr(kwonly_names_ptr).bits();
             let vararg_marker_bits = MoltObject::from_ptr(vararg_marker_ptr).bits();
@@ -1312,18 +1318,21 @@ mod code_object_ownership_tests {
             let name_ptr = alloc_string(_py, b"<function-code-test-name>");
             let filename_bits = MoltObject::from_ptr(filename_ptr).bits();
             let name_bits = MoltObject::from_ptr(name_ptr).bits();
+            let empty_tuple_ptr = alloc_tuple(_py, &[]);
+            let empty_tuple_bits = MoltObject::from_ptr(empty_tuple_ptr).bits();
             let code_ptr = crate::alloc_code_obj(
                 _py,
                 filename_bits,
                 name_bits,
                 23,
                 MoltObject::none().bits(),
-                0,
-                0,
+                empty_tuple_bits,
+                empty_tuple_bits,
                 0,
                 0,
                 0,
             );
+            dec_ref_bits(_py, empty_tuple_bits);
             dec_ref_bits(_py, filename_bits);
             dec_ref_bits(_py, name_bits);
             let code_bits = MoltObject::from_ptr(code_ptr).bits();

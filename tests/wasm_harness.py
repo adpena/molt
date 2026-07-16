@@ -6596,24 +6596,7 @@ BASE_IMPORTS = """\
     }
     return objBits;
   },
-  alloc_class_trusted: (size, classBits) => {
-    const addr = allocRaw(size);
-    if (!addr) return boxNone();
-    const objBits = boxPtrAddr(addr);
-    if (classBits !== 0n) {
-      instanceClasses.set(ptrAddr(objBits), classBits);
-    }
-    return objBits;
-  },
-  alloc_class_static: (size, classBits) => {
-    const addr = allocRaw(size);
-    if (!addr) return boxNone();
-    const objBits = boxPtrAddr(addr);
-    if (classBits !== 0n) {
-      instanceClasses.set(ptrAddr(objBits), classBits);
-    }
-    return objBits;
-  },
+  object_publish_initialized: (objBits) => objBits,
   async_sleep: (delayBits, resultBits) => {
     if (!memory) return boxNone();
     let pollIdx = asyncSleepPollIdx;
@@ -13045,33 +13028,33 @@ BASE_IMPORTS = """\
       );
       return raiseException(exc);
     }
-    if (!isNone(linetableBits) && !getTuple(linetableBits)) {
+    if (!isNone(linetableBits) && !getBytes(linetableBits)) {
       const exc = exceptionNew(
         boxPtr({ type: 'str', value: 'TypeError' }),
         exceptionArgs(
-          boxPtr({ type: 'str', value: 'code linetable must be tuple or None' }),
+          boxPtr({ type: 'str', value: 'code linetable must be bytes or None' }),
         ),
       );
       return raiseException(exc);
     }
     if (isNone(varnamesBits)) {
       varnamesBits = tupleFromArray([]);
-    } else if (!getTuple(varnamesBits)) {
+    } else if (!getTuple(varnamesBits)?.every((bits) => getStrObj(bits) !== null)) {
       const exc = exceptionNew(
         boxPtr({ type: 'str', value: 'TypeError' }),
         exceptionArgs(
-          boxPtr({ type: 'str', value: 'code varnames must be tuple or None' }),
+          boxPtr({ type: 'str', value: 'code varnames must be a tuple of str or None' }),
         ),
       );
       return raiseException(exc);
     }
     if (isNone(namesBits)) {
       namesBits = tupleFromArray([]);
-    } else if (!getTuple(namesBits)) {
+    } else if (!getTuple(namesBits)?.every((bits) => getStrObj(bits) !== null)) {
       const exc = exceptionNew(
         boxPtr({ type: 'str', value: 'TypeError' }),
         exceptionArgs(
-          boxPtr({ type: 'str', value: 'code names must be tuple or None' }),
+          boxPtr({ type: 'str', value: 'code names must be a tuple of str or None' }),
         ),
       );
       return raiseException(exc);

@@ -479,12 +479,10 @@ name = "alloc_class"
 type = 3
 
 [[import]]
-name = "alloc_class_static"
-type = 3
-
-[[import]]
-name = "alloc_class_trusted"
-type = 3
+name = "object_publish_initialized"
+type = 2
+runtime_name = "molt_object_publish_initialized"
+callable_arity = 1
 
 [[import]]
 name = "arena_new"
@@ -4757,15 +4755,21 @@ runtime_name = "molt_weakcontainer_take"
 callable_arity = 4
 
 [[import]]
-name = "weakref_bind_reference_type"
-type = 2
-runtime_name = "molt_weakref_bind_reference_type"
-callable_arity = 1
-
-[[import]]
 name = "weakref_callback"
 type = 2
 runtime_name = "molt_weakref_callback"
+callable_arity = 1
+
+[[import]]
+name = "weakref_call"
+type = 2
+runtime_name = "molt_weakref_call"
+callable_arity = 1
+
+[[import]]
+name = "weakref_callback_get"
+type = 2
+runtime_name = "molt_weakref_callback_get"
 callable_arity = 1
 
 [[import]]
@@ -4799,6 +4803,24 @@ runtime_name = "molt_weakref_get"
 callable_arity = 1
 
 [[import]]
+name = "weakref_hash"
+type = 2
+runtime_name = "molt_weakref_hash"
+callable_arity = 1
+
+[[import]]
+name = "weakref_init"
+type = 5
+runtime_name = "molt_weakref_init"
+callable_arity = 3
+
+[[import]]
+name = "weakref_new"
+type = 5
+runtime_name = "molt_weakref_new"
+callable_arity = 3
+
+[[import]]
 name = "weakref_peek"
 type = 2
 runtime_name = "molt_weakref_peek"
@@ -4815,6 +4837,18 @@ name = "weakref_register"
 type = 5
 runtime_name = "molt_weakref_register"
 callable_arity = 3
+
+[[import]]
+name = "weakref_eq"
+type = 3
+runtime_name = "molt_weakref_eq"
+callable_arity = 2
+
+[[import]]
+name = "weakref_repr"
+type = 2
+runtime_name = "molt_weakref_repr"
+callable_arity = 1
 
 [[import]]
 name = "ws_close"
@@ -6160,36 +6194,7 @@ args = ["op_value_i64:alloc_class missing payload size", "local:0"]
 sink = "result_or_drop"
 required_imports = [
   "alloc_class",
-  "class_new",
-  "class_set_base",
-  "class_apply_set_name",
-  "class_layout_version",
-  "class_merge_layout",
-  "class_set_layout_version",
-]
-
-[[op_loop_runtime_call]]
-kind = "alloc_class_trusted"
-import_name = "alloc_class_trusted"
-args = ["op_value_i64:alloc_class_trusted missing payload size", "local:0"]
-sink = "result_or_drop"
-required_imports = [
-  "alloc_class_trusted",
-  "class_new",
-  "class_set_base",
-  "class_apply_set_name",
-  "class_layout_version",
-  "class_merge_layout",
-  "class_set_layout_version",
-]
-
-[[op_loop_runtime_call]]
-kind = "alloc_class_static"
-import_name = "alloc_class_static"
-args = ["op_value_i64:alloc_class_static missing payload size", "local:0"]
-sink = "result_or_drop"
-required_imports = [
-  "alloc_class_static",
+  "object_publish_initialized",
   "class_new",
   "class_set_base",
   "class_apply_set_name",

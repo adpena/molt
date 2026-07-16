@@ -291,6 +291,7 @@ pub(super) const FIXED_RUNTIME_IMPORTS: &[FixedRuntimeImportSpec] = &[
     void_ret(MOLT_INC_REF_OBJ.name, 1, ATTR_WILLRETURN),
     void_ret(MOLT_DEC_REF_OBJ.name, 1, ATTR_WILLRETURN),
     i64_ret("molt_alloc", 1, ATTR_WILLRETURN),
+    i64_ret("molt_object_publish_initialized", 1, ATTR_WILLRETURN),
     i64_ret("molt_get_attr_name", 2, ATTR_NONE),
     custom(
         "molt_get_attr_special",

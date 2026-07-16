@@ -2336,7 +2336,6 @@ pub unsafe extern "C" fn molt_guarded_class_def(
     if class_bits == none {
         return class_bits;
     }
-
     let bases_ptr = bases_ptr_bits as usize as *const u64;
     let attrs_ptr = attrs_ptr_bits as usize as *const u64;
     let nb = nbases as usize;
@@ -2345,7 +2344,7 @@ pub unsafe extern "C" fn molt_guarded_class_def(
     } else {
         Vec::new()
     };
-    if nb > 0 {
+    if (flags & 1) != 0 && nb > 0 {
         if nb == 1 {
             molt_class_set_base(class_bits, bases_vec[0]);
         } else {
@@ -2398,7 +2397,7 @@ pub unsafe extern "C" fn molt_guarded_class_def(
         }
     });
 
-    if (flags & 1) != 0 && nb > 0 {
+    if nb > 0 {
         let init_subclass_ok = crate::with_gil_entry_nopanic!(_py, {
             if debug_class_def {
                 let class_name = string_obj_to_owned(obj_from_bits(name_bits))

@@ -224,7 +224,7 @@ pub extern "C" fn molt_arena_alloc_object(arena: *mut ScopeArena, size_bits: u64
             let header = header_ptr as *mut MoltHeader;
             (*header).type_id = TYPE_ID_OBJECT;
             (*header).ref_count.store(1, AtomicOrdering::Relaxed);
-            MoltHeader::initialize_flags_before_publication(
+            MoltHeader::initialize_flags_gc_unpublished(
                 header,
                 HEADER_FLAG_ARENA | HEADER_FLAG_RAW_ALLOC,
             );

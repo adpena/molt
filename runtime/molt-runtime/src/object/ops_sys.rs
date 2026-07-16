@@ -1391,7 +1391,21 @@ pub extern "C" fn molt_gc_collect(generation_bits: u64) -> u64 {
         if generation < 0 {
             return raise_exception::<_>(_py, "ValueError", "generation must be non-negative");
         }
-        let collected = unsafe { crate::object::gc::collect_cycles(_py).collected } as i64;
+        let outcome = unsafe { crate::object::gc::collect_cycles(_py) };
+        let collected = match outcome.status {
+            crate::object::gc::GcCollectStatus::Completed
+            | crate::object::gc::GcCollectStatus::ReentrantNoop => outcome.collected as i64,
+            crate::object::gc::GcCollectStatus::ResourceError(message) => {
+                return raise_exception::<_>(_py, "MemoryError", message);
+            }
+            crate::object::gc::GcCollectStatus::UnsupportedConcurrency => {
+                return raise_exception::<_>(
+                    _py,
+                    "RuntimeError",
+                    "cyclic GC requires a free-threaded stop-the-world guard",
+                );
+            }
+        };
         let mut state = gc_state().lock().unwrap();
         state.count = (0, 0, 0);
         MoltObject::from_int(collected).bits()

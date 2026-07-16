@@ -101,13 +101,7 @@ const CONTAINER_TYPES: &[&str] = &[
 ];
 
 const BCE_SAFE_KINDS: &[&str] = &["index", "store_index"];
-const ARENA_ELIGIBLE_KINDS: &[&str] = &[
-    "alloc",
-    "alloc_class",
-    "alloc_class_static",
-    "alloc_class_trusted",
-    "object_new_bound",
-];
+const ARENA_ELIGIBLE_KINDS: &[&str] = &["alloc", "alloc_class", "object_new_bound"];
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct OpFieldSchema {
     pub family: &'static str,

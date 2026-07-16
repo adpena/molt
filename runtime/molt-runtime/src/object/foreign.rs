@@ -13,7 +13,7 @@
 //! `tp_setattro` / `tp_call`) via the `molt-cpython-abi` bridge. The wrapper
 //! holds ONE strong reference to the C object for its lifetime: the bridge
 //! `Py_INCREF`s at mint time (in `molt_value_for_pyobj`) and this module's
-//! `foreign_drop` calls back into the bridge to `Py_DECREF` + drop the identity
+//! `foreign_release` calls back into the bridge to `Py_DECREF` + drop the identity
 //! mapping when the Molt wrapper is collected.
 
 use crate::{PyToken, TYPE_ID_FOREIGN};
@@ -27,6 +27,13 @@ use super::{alloc_object, bits_from_ptr};
 ///
 /// Returns the wrapper's NaN-boxed handle bits, or 0 on allocation failure.
 pub(crate) fn foreign_new(_py: &PyToken<'_>, c_ptr: usize) -> u64 {
+    if unsafe { molt_cpython_abi::bridge::molt_foreign_object_is_gc_capable(c_ptr) } {
+        return crate::raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "GC-capable foreign objects require a cross-collector ownership contract",
+        );
+    }
     let total = std::mem::size_of::<crate::MoltHeader>() + std::mem::size_of::<usize>();
     let ptr = alloc_object(_py, total, TYPE_ID_FOREIGN);
     if ptr.is_null() {
@@ -50,8 +57,11 @@ pub(crate) unsafe fn foreign_ptr_from_obj(ptr: *mut u8) -> usize {
 /// Drop hook for a `TYPE_ID_FOREIGN` object: release the bridge identity mapping
 /// and the strong reference the wrapper held on the C object. Called from the
 /// object drop dispatch when the wrapper's Molt refcount reaches zero.
-pub(crate) fn foreign_drop(ptr: *mut u8) {
-    let c_ptr = unsafe { *(ptr as *const usize) };
+pub(crate) fn foreign_detach(ptr: *mut u8) -> usize {
+    unsafe { (ptr as *mut usize).replace(0) }
+}
+
+pub(crate) fn foreign_release(c_ptr: usize) {
     if c_ptr == 0 {
         return;
     }

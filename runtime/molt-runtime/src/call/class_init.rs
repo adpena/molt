@@ -204,13 +204,14 @@ unsafe fn class_layout_size(_py: &PyToken<'_>, class_ptr: *mut u8) -> usize {
 
 pub(crate) unsafe fn alloc_instance_for_class(_py: &PyToken<'_>, class_ptr: *mut u8) -> u64 {
     unsafe {
+        let type_id = crate::object::class_instance_type_id(class_ptr);
         let class_bits = MoltObject::from_ptr(class_ptr).bits();
         let size = class_layout_size(_py, class_ptr);
         let total_size = size + std::mem::size_of::<MoltHeader>();
         let obj_ptr = alloc_object_zeroed_with_aux(
             _py,
             total_size,
-            TYPE_ID_OBJECT,
+            type_id,
             ObjectAuxPreselection::ClassInline,
         );
         if obj_ptr.is_null() {
@@ -257,11 +258,12 @@ pub(crate) unsafe fn alloc_instance_for_class_sized(
              class_layout_size — frontend layout drift detected"
         );
         let class_bits = MoltObject::from_ptr(class_ptr).bits();
+        let type_id = crate::object::class_instance_type_id(class_ptr);
         let total_size = payload_size_bytes + std::mem::size_of::<MoltHeader>();
         let obj_ptr = alloc_object_zeroed_with_aux(
             _py,
             total_size,
-            TYPE_ID_OBJECT,
+            type_id,
             ObjectAuxPreselection::ClassInline,
         );
         if obj_ptr.is_null() {
@@ -297,12 +299,13 @@ pub(crate) unsafe fn alloc_instance_for_class_no_pool(
 ) -> u64 {
     unsafe {
         let class_bits = MoltObject::from_ptr(class_ptr).bits();
+        let type_id = crate::object::class_instance_type_id(class_ptr);
         let size = class_layout_size(_py, class_ptr);
         let total_size = size + std::mem::size_of::<MoltHeader>();
         let obj_ptr = alloc_object_zeroed_with_aux(
             _py,
             total_size,
-            TYPE_ID_OBJECT,
+            type_id,
             ObjectAuxPreselection::ClassInline,
         );
         if obj_ptr.is_null() {

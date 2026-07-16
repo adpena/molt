@@ -297,21 +297,47 @@ fn c_api_module_state_registry_remove_def(_py: &PyToken<'_>, def_key: usize) -> 
     Some(bits)
 }
 
-pub(crate) fn c_api_module_on_module_teardown(_py: &PyToken<'_>, module_ptr: *mut u8) {
+pub(crate) fn c_api_module_visit_owned_edge(
+    _py: &PyToken<'_>,
+    module_ptr: *mut u8,
+    mut visit: impl FnMut(u64),
+) {
     if module_ptr.is_null() {
         return;
+    }
+    let module_key = module_ptr_key(module_ptr);
+    let guard = c_api_module_state(_py);
+    let Some(def_key) = guard.state_registry.by_module.get(&module_key) else {
+        return;
+    };
+    let Some(&bits) = guard.state_registry.by_def.get(def_key) else {
+        return;
+    };
+    if obj_from_bits(bits)
+        .as_ptr()
+        .is_some_and(|ptr| ptr != module_ptr)
+    {
+        visit(bits);
+    }
+}
+
+pub(crate) fn c_api_module_detach_on_teardown(
+    _py: &PyToken<'_>,
+    module_ptr: *mut u8,
+) -> Option<u64> {
+    if module_ptr.is_null() {
+        return None;
     }
     let module_key = module_ptr_key(module_ptr);
     {
         let mut guard = c_api_module_state(_py);
         guard.metadata.remove(&module_key);
     }
-    if let Some(bits) = c_api_module_state_registry_remove_module(_py, module_key)
-        && let Some(bits_ptr) = obj_from_bits(bits).as_ptr()
-        && bits_ptr != module_ptr
-    {
-        dec_ref_bits(_py, bits);
-    }
+    c_api_module_state_registry_remove_module(_py, module_key).filter(|bits| {
+        obj_from_bits(*bits)
+            .as_ptr()
+            .is_some_and(|bits_ptr| bits_ptr != module_ptr)
+    })
 }
 
 #[inline]

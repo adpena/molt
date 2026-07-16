@@ -24,7 +24,6 @@ use crate::object::utf8_cache::{
     UTF8_CACHE_MAX_ENTRIES, UTF8_COUNT_CACHE_SHARDS, Utf8CacheStore, Utf8CountCacheStore,
     clear_utf8_count_tls,
 };
-use crate::object::weakref::weakref_clear_runtime_state;
 use crate::{
     ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, BLOCK_ON_TASK, CONTEXT_STACK,
     CURRENT_EXCEPTION_PENDING, CURRENT_TASK, CURRENT_TOKEN, DEFAULT_RECURSION_LIMIT,
@@ -154,7 +153,6 @@ pub(crate) fn runtime_teardown_for_process_exit(_py: &PyToken<'_>, state: &Runti
     trace_shutdown("process_exit_run_atexit_callbacks");
     crate::builtins::atexit::atexit_run_exitfuncs_teardown(_py);
     trace_shutdown("process_exit_clear_weakref_runtime_state");
-    weakref_clear_runtime_state(_py, state);
     trace_shutdown("process_exit_clear_signal_state");
     signal_clear_state(_py, state);
     trace_shutdown("process_exit_clear_contextvars_state");
@@ -258,7 +256,6 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     trace_shutdown("run_atexit_callbacks");
     crate::builtins::atexit::atexit_run_exitfuncs_teardown(_py);
     trace_shutdown("clear_weakref_runtime_state");
-    weakref_clear_runtime_state(_py, state);
     trace_shutdown("clear_signal_state");
     signal_clear_state(_py, state);
     trace_shutdown("clear_contextvars_state");
@@ -341,7 +338,7 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     trace_shutdown("clear_types_runtime_state");
     types_clear_runtime_state(_py, state);
     trace_shutdown("clear_builder_singletons");
-    clear_builder_singletons(_py);
+    clear_builder_singletons(_py, state);
     // Keep builtin classes alive until after cache + TLS teardown: releasing
     // them too early can trigger lock re-entry when later dec_ref paths perform
     // class attribute lookups during shutdown.

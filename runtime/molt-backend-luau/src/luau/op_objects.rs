@@ -449,7 +449,7 @@ impl LuauBackend {
             // ================================================================
             // Alloc / memory (table stubs)
             // ================================================================
-            "alloc_class" | "alloc_class_trusted" | "alloc_class_static" => {
+            "alloc_class" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(class_var) = args.first() {

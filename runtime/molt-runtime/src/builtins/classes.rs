@@ -11,9 +11,9 @@ use crate::object::{
 use crate::{
     BUILTIN_TAG_BASE_EXCEPTION, BUILTIN_TAG_CLASSMETHOD, BUILTIN_TAG_EXCEPTION, BUILTIN_TAG_OBJECT,
     BUILTIN_TAG_PROPERTY, BUILTIN_TAG_STATICMETHOD, BUILTIN_TAG_SUPER, BUILTIN_TAG_TYPE,
-    RuntimeState, TYPE_ID_DICT, TYPE_ID_TYPE, TYPE_TAG_BOOL, TYPE_TAG_BYTEARRAY, TYPE_TAG_BYTES,
-    TYPE_TAG_COMPLEX, TYPE_TAG_DICT, TYPE_TAG_FLOAT, TYPE_TAG_FROZENSET, TYPE_TAG_INT,
-    TYPE_TAG_LIST, TYPE_TAG_MEMORYVIEW, TYPE_TAG_NONE, TYPE_TAG_RANGE, TYPE_TAG_SET,
+    RuntimeState, TYPE_ID_DICT, TYPE_ID_TYPE, TYPE_ID_WEAKREF, TYPE_TAG_BOOL, TYPE_TAG_BYTEARRAY,
+    TYPE_TAG_BYTES, TYPE_TAG_COMPLEX, TYPE_TAG_DICT, TYPE_TAG_FLOAT, TYPE_TAG_FROZENSET,
+    TYPE_TAG_INT, TYPE_TAG_LIST, TYPE_TAG_MEMORYVIEW, TYPE_TAG_NONE, TYPE_TAG_RANGE, TYPE_TAG_SET,
     TYPE_TAG_SLICE, TYPE_TAG_STR, TYPE_TAG_TUPLE, alloc_class_obj, alloc_dict_with_pairs,
     alloc_string, alloc_tuple, attr_name_bits_from_bytes, class_break_cycles,
     class_bump_layout_version, class_dict_bits, class_name_bits, dec_ref_bits, dict_set_in_place,
@@ -101,10 +101,11 @@ pub(crate) struct BuiltinClasses {
     pub(crate) property: u64,
     pub(crate) generic_alias: u64,
     pub(crate) union_type: u64,
+    pub(crate) reference_type: u64,
 }
 
 impl BuiltinClasses {
-    fn anchors(&self) -> [u64; 77] {
+    fn anchors(&self) -> [u64; 78] {
         [
             self.object,
             self.type_obj,
@@ -183,6 +184,7 @@ impl BuiltinClasses {
             self.property,
             self.generic_alias,
             self.union_type,
+            self.reference_type,
         ]
     }
 
@@ -467,6 +469,7 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
     let property = make_builtin_class(_py, "property");
     let generic_alias = make_builtin_class(_py, "GenericAlias");
     let union_type = make_builtin_class(_py, union_type_class_name(_py));
+    let reference_type = make_builtin_class(_py, "ReferenceType");
 
     let all_classes = [
         object,
@@ -546,6 +549,7 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
         property,
         generic_alias,
         union_type,
+        reference_type,
     ];
     let valid = all_classes.iter().all(|&bits| {
         obj_from_bits(bits)
@@ -595,6 +599,14 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
     let _ = molt_class_set_base(tuple, object);
     let _ = molt_class_set_base(dict, object);
     init_dict_subclass_layout(_py, dict);
+    if let Some(dict_class_ptr) = obj_from_bits(dict).as_ptr() {
+        debug_assert!(unsafe {
+            crate::object::class_set_instance_shape_id(
+                dict_class_ptr,
+                crate::object::ObjectShapeId::DictSubclass,
+            )
+        });
+    }
     let _ = molt_class_set_base(dict_keys, object);
     let _ = molt_class_set_base(dict_items, object);
     let _ = molt_class_set_base(dict_values, object);
@@ -653,6 +665,11 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
     let _ = molt_class_set_base(property, object);
     let _ = molt_class_set_base(generic_alias, object);
     let _ = molt_class_set_base(union_type, object);
+    let _ = molt_class_set_base(reference_type, object);
+    let reference_ptr = obj_from_bits(reference_type)
+        .as_ptr()
+        .expect("validated ReferenceType class pointer");
+    assert!(unsafe { crate::object::class_set_instance_type_id(reference_ptr, TYPE_ID_WEAKREF) });
 
     for bits in [
         object,
@@ -716,6 +733,7 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
         property,
         generic_alias,
         union_type,
+        reference_type,
     ] {
         set_class_attr_string(_py, bits, b"__module__", "builtins");
         // Prevent inheriting `object.__text_signature__` across the builtins type graph.
@@ -739,6 +757,13 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
     set_class_attr_string(_py, float, b"__text_signature__", "(x=0, /)");
     set_class_attr_string(_py, list, b"__text_signature__", "(iterable=(), /)");
     set_class_attr_string(_py, tuple, b"__text_signature__", "(iterable=(), /)");
+    set_class_attr_string(_py, reference_type, b"__module__", "_weakref");
+    set_class_attr_string(
+        _py,
+        reference_type,
+        b"__text_signature__",
+        "(object, callback=None, /)",
+    );
 
     Some(BuiltinClasses {
         object,
@@ -818,6 +843,7 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
         property,
         generic_alias,
         union_type,
+        reference_type,
     })
 }
 
