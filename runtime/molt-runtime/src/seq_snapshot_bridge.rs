@@ -30,6 +30,19 @@ pub extern "C" fn molt_seq_read_item_owned(ptr: *mut u8, index: usize, out: *mut
     crate::object::seq_access::read_item_owned(ptr, index, out)
 }
 
+/// Export the canonical pinned sequence snapshot for every satellite runtime
+/// crate. This symbol is intentionally feature-independent: Tk, itertools,
+/// and future consumers must not acquire link custody from one another's
+/// optional feature bridge.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_seq_snapshot(
+    ptr: *mut u8,
+    out_ptr: *mut *const u64,
+    out_len: *mut usize,
+) -> i32 {
+    crate::with_gil_entry_nopanic!(py, { unsafe { export(py, ptr, out_ptr, out_len) } })
+}
+
 /// Export a stable, resource-accounted snapshot. The caller owns one reference
 /// to every returned handle and releases the buffer through the bridge
 /// allocator after releasing those references.
