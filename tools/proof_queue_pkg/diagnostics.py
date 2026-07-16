@@ -1249,6 +1249,12 @@ SOURCE_EXTENSION_CYTHON_REGENERATION_FAILED_RE = re.compile(
     r"(?P<error>[^\r\n\"]+)"
 )
 
+SOURCE_BUILD_ENVIRONMENT_CUSTODY_MISSING_RE = re.compile(
+    r"source build environment is not pre-provisioned from locked custody; "
+    r"the producer never mutates its active interpreter\. Missing or "
+    r"out-of-range requirements: (?P<requirements>[^\r\n]+)"
+)
+
 CPYTHON_ABI_PYMOD_GIL_SLOT_RE = re.compile(
     r"(?P<evidence>Failed compiling [^\r\n]+:[\s\S]*?"
     r"incompatible integer to pointer conversion[\s\S]*?"
@@ -1370,6 +1376,33 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
                     "queued lane; do not treat this row as product proof."
                 ),
                 scopes=("tools/proof_queue.py",),
+            )
+        )
+
+    match = SOURCE_BUILD_ENVIRONMENT_CUSTODY_MISSING_RE.search(log_tail)
+    if match is not None:
+        diagnostics.append(
+            _diagnostic(
+                signal_id="source-build-environment-custody-missing",
+                severity="infra",
+                summary=(
+                    "Source-extension production lacked the locked build "
+                    f"environment for {match.group('requirements').strip()}."
+                ),
+                evidence=match.group(0),
+                next_action=(
+                    "Rerun the typed extension produce-set command: Molt now "
+                    "provisions and attests the configured dependency group under "
+                    "canonical custody before re-executing there. Do not install "
+                    "these requirements into an ambient project interpreter."
+                ),
+                scopes=(
+                    "src/molt/cli/source_build_environment.py",
+                    "src/molt/cli/source_extension_producer.py",
+                    "pyproject.toml",
+                    "uv.lock",
+                ),
+                artifacts=(str(row["summary_json"]), str(row["log_path"])),
             )
         )
 
