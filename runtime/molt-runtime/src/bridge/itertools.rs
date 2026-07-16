@@ -105,47 +105,14 @@ pub fn alloc_instance_for_class(_py: &CoreGilToken, class_bits: u64) -> u64 {
     })
 }
 
-pub fn alloc_itertools_class(_py: &CoreGilToken, name: &str, layout_size: i64) -> u64 {
+pub fn alloc_itertools_class(
+    _py: &CoreGilToken,
+    name: &str,
+    layout_size: i64,
+    shape: ObjectShapeId,
+) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        let name_str_ptr = crate::alloc_string(py, name.as_bytes());
-        if name_str_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        let name_bits = MoltObject::from_ptr(name_str_ptr).bits();
-        let class_ptr = crate::alloc_class_obj(py, name_bits);
-        crate::dec_ref_bits(py, name_bits);
-        if class_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        let class_bits = MoltObject::from_ptr(class_ptr).bits();
-        let builtins = crate::builtin_classes(py);
-        unsafe {
-            if let Some(ptr) = obj_from_bits(class_bits).as_ptr() {
-                if !crate::object::object_init_class_edge_unpublished(
-                    py,
-                    ptr,
-                    builtins.type_obj,
-                    crate::ClassEdgeOwnership::Owned,
-                ) {
-                    crate::dec_ref_bits(py, class_bits);
-                    return MoltObject::none().bits();
-                }
-            }
-        }
-        let _ = crate::molt_class_set_base(class_bits, builtins.object);
-        let dict_bits = unsafe { crate::class_dict_bits(class_ptr) };
-        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-            && unsafe { crate::object_type_id(dict_ptr) } == crate::TYPE_ID_DICT
-        {
-            let layout_name = crate::intern_static_name(
-                py,
-                &crate::runtime_state(py).interned.molt_layout_size,
-                b"__molt_layout_size__",
-            );
-            let layout_bits = MoltObject::from_int(layout_size).bits();
-            unsafe { crate::dict_set_in_place(py, dict_ptr, layout_name, layout_bits) };
-        }
-        class_bits
+        crate::itertools_class::alloc_itertools_class(py, name, layout_size, shape)
     })
 }
 

@@ -119,6 +119,7 @@ mod http_bridge;
 mod ipaddress_bridge;
 #[cfg(feature = "stdlib_itertools")]
 mod itertools_bridge;
+mod itertools_class;
 #[cfg(feature = "stdlib_logging_ext")]
 mod logging_bridge;
 #[cfg(feature = "stdlib_math")]
