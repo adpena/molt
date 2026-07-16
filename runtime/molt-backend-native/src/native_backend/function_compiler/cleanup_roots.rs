@@ -7,7 +7,7 @@ pub(in crate::native_backend::function_compiler) fn next_check_exception_target(
 ) -> Option<i64> {
     ops.iter()
         .skip(op_idx + 1)
-        .find(|op| op.kind == "check_exception")
+        .find(|op| matches!(op.kind.as_str(), "check_exception" | "async_work_poll"))
         .and_then(|op| op.value)
 }
 

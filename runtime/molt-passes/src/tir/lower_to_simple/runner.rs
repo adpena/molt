@@ -1063,6 +1063,7 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
                     | "jump"
                     | "br_if"
                     | "check_exception"
+                    | "async_work_poll"
                     | "try_start"
                     | "try_end"
                     | "if"

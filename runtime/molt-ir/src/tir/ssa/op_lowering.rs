@@ -4,10 +4,10 @@ use crate::ir::OpIR;
 
 use super::super::call_targets::gpu_runtime_symbol_for_simple_kind;
 use super::super::op_kinds_generated::{
-    kind_to_opcode_table, opcode_ssa_s_value_attr_key_table,
+    kind_to_opcode_table, opcode_ssa_s_value_attr_key_table, simpleir_kind_is_async_work_poll,
     simpleir_kind_preserves_original_kind_for_ssa,
 };
-use super::super::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
+use super::super::ops::{ASYNC_WORK_POLL_ATTR, AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use super::super::types::TirType;
 use super::super::values::ValueId;
 use super::variables::{
@@ -230,6 +230,10 @@ impl<'a> SsaContext<'a> {
             }
         }
         let opcode = kind_to_opcode(&op.kind);
+
+        if simpleir_kind_is_async_work_poll(&op.kind) {
+            attrs.insert(ASYNC_WORK_POLL_ATTR.into(), AttrValue::Bool(true));
+        }
 
         if std::env::var("MOLT_TRACE_SSA_IMPORT").as_deref() == Ok("1") && opcode == OpCode::Import
         {

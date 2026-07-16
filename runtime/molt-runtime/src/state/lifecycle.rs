@@ -128,9 +128,20 @@ pub(crate) fn runtime_teardown_isolate(_py: &PyToken<'_>, state: &RuntimeState) 
     runtime_teardown_inner(_py, state, false);
 }
 
+fn finish_pending_calls_for_teardown(_py: &PyToken<'_>) {
+    crate::builtins::exceptions::run_unraisable(
+        _py,
+        MoltObject::none().bits(),
+        Some("Exception ignored while finishing pending calls at shutdown"),
+        molt_cpython_abi::api::pending_calls::finish_pending_calls_before_teardown,
+    );
+}
+
 pub(crate) fn runtime_teardown_for_process_exit(_py: &PyToken<'_>, state: &RuntimeState) {
     crate::gil_assert();
     trace_shutdown("process_exit_start");
+    trace_shutdown("process_exit_finish_pending_calls");
+    finish_pending_calls_for_teardown(_py);
     shutdown_started_runtime_workers(_py, state);
     trace_shutdown("process_exit_drain_process_registry");
     state.process_registry.drain_for_teardown();
@@ -232,6 +243,8 @@ fn shutdown_started_runtime_workers(_py: &PyToken<'_>, state: &RuntimeState) {
 fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: bool) {
     crate::gil_assert();
     trace_shutdown("start");
+    trace_shutdown("finish_pending_calls");
+    finish_pending_calls_for_teardown(_py);
     shutdown_started_runtime_workers(_py, state);
     trace_shutdown("drain_process_registry");
     state.process_registry.drain_for_teardown();

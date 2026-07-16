@@ -520,7 +520,11 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             ..OpIR::default()
         }),
         OpCode::CheckException => Some(OpIR {
-            kind: "check_exception".to_string(),
+            kind: if op.is_async_work_poll() {
+                "async_work_poll".to_string()
+            } else {
+                "check_exception".to_string()
+            },
             // Emit with None args (matching the original structured IR format).
             // The Cranelift backend manages live-value state implicitly from
             // the structured control flow context. Emitting the TIR operands

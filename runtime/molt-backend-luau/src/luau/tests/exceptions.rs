@@ -1,6 +1,61 @@
 use super::*;
 
 #[test]
+fn test_compile_checked_keeps_ordinary_programs_available() {
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_main".to_string(),
+            params: vec![],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops: vec![OpIR {
+                kind: "ret_void".to_string(),
+                ..OpIR::default()
+            }],
+        }],
+        profile: None,
+    };
+
+    let source = LuauBackend::new()
+        .compile_checked(&ir)
+        .expect("ordinary Luau programs must not require the native pending-call boundary");
+    assert!(source.contains("molt_main"));
+}
+
+#[test]
+fn test_compile_checked_rejects_async_work_poll_without_runtime_boundary() {
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "async_work_poll_test".to_string(),
+            params: vec![],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops: vec![OpIR {
+                kind: "async_work_poll".to_string(),
+                value: Some(0),
+                ..OpIR::default()
+            }],
+        }],
+        profile: None,
+    };
+
+    let mut backend = LuauBackend::new();
+    let err = backend
+        .compile_checked(&ir)
+        .expect_err("Luau must not erase the pending-call/eval-breaker poll");
+    assert!(
+        err.contains("async_work_poll"),
+        "diagnostic must name the op: {err}"
+    );
+    assert!(
+        err.contains("canonical pending-call/eval-breaker runtime boundary is unavailable"),
+        "diagnostic must name the missing target capability: {err}"
+    );
+}
+
+#[test]
 fn test_lower_try_to_pcall_basic() {
     let ops = vec![
         OpIR {

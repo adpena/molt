@@ -1,5 +1,6 @@
 mod support;
 
+mod async_work_poll;
 mod call_indirect_table;
 mod container_scalar;
 mod exception_eh;

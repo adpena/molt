@@ -517,6 +517,16 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
             passes::polyhedral::run(f, am, tti)
         }),
         // ── Cleanup ─────────────────────────────────────────────────
+        pass("async_work_poll", Cfg, |f, am, tti| {
+            if tti.supports_pending_call_eval_breaker_poll() {
+                passes::async_work_poll::run(f, am)
+            } else {
+                PassStats {
+                    name: "async_work_poll",
+                    ..Default::default()
+                }
+            }
+        }),
         pass("check_exception_elim", Cfg, |f, _am, _tti| {
             passes::check_exception_elim::run(f)
         }),
@@ -739,7 +749,7 @@ fn dump_tir_artifact(func: &TirFunction, phase: &str, stats: &[PassStats]) {
 mod tests {
     use super::*;
     use crate::tir::blocks::{LoopRole, Terminator, TirBlock};
-    use crate::tir::ops::{AttrDict, Dialect, OpCode, TirOp};
+    use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
     use crate::tir::types::TirType;
 
     /// The default pipeline must preserve the EXACT canonical pass order (28
@@ -778,11 +788,39 @@ mod tests {
                 "bce",
                 "vectorize",
                 "polyhedral",
+                "async_work_poll",
                 "check_exception_elim",
                 "overflow_peel",
                 "copy_prop",
                 "dce",
             ],
+        );
+    }
+
+    #[test]
+    fn luau_pipeline_does_not_inject_native_pending_call_polls() {
+        let mut func = TirFunction::new("luau_call".into(), vec![], TirType::None);
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        let mut attrs = AttrDict::new();
+        attrs.insert("s_value".into(), AttrValue::Str("external_call".into()));
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Call,
+            operands: vec![],
+            results: vec![],
+            attrs,
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        let stats = build_default_pipeline(TargetInfo::luau_release_fast()).run(&mut func);
+        assert_eq!(stats.len(), 28);
+        assert!(
+            func.blocks
+                .values()
+                .flat_map(|block| &block.ops)
+                .all(|op| !op.is_async_work_poll()),
+            "a target without the runtime observer must not receive compiler-created polls"
         );
     }
 
@@ -838,6 +876,7 @@ mod tests {
                 "type_guard_hoist",
                 "sccp",
                 "branchless_count",
+                "async_work_poll",
                 "check_exception_elim",
                 "overflow_peel",
                 "dce",

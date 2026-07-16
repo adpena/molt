@@ -77,7 +77,7 @@ fn emit_label(context: &mut ControlOpContext<'_>, func: &mut Function, op: &OpIR
     }
 }
 
-fn label_branch_depth(context: &ControlOpContext<'_>, target: i64, kind: &str) -> u32 {
+pub(super) fn label_branch_depth(context: &ControlOpContext<'_>, target: i64, kind: &str) -> u32 {
     context
         .label_depths
         .get(&target)

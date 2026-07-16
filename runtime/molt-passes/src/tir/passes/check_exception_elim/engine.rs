@@ -21,7 +21,8 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         for op in block.ops.drain(..) {
             match op.opcode {
                 OpCode::CheckException => {
-                    if pending_exception_possible {
+                    let async_work_poll = op.is_async_work_poll();
+                    if pending_exception_possible || async_work_poll {
                         pending_exception_possible = false;
                         new_ops.push(op);
                     } else {

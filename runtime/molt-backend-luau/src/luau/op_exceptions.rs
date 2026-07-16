@@ -74,6 +74,12 @@ impl LuauBackend {
             "check_exception" => {
                 // Luau exceptions unwind through error()/pcall instead of flag checks.
             }
+            "async_work_poll" => {
+                self.emit_unsupported_op_with_reason(
+                    op,
+                    "canonical pending-call/eval-breaker runtime boundary is unavailable",
+                );
+            }
             "loop_break_if_exception" => {}
             "exception_last" | "exception_last_pending" | "exception_finally_pending_observer" => {
                 let out = self.out_var(op);

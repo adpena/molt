@@ -83,6 +83,13 @@ fn luau_tir_module_pipeline_inlines_direct_local_calls() {
 
     assert_eq!(stats.functions, 2);
     assert!(
+        ir.functions
+            .iter()
+            .flat_map(|function| &function.ops)
+            .all(|op| op.kind != "async_work_poll"),
+        "Luau's target pipeline must not inject a native pending-call/eval-breaker boundary"
+    );
+    assert!(
         stats.module_changed >= 1,
         "direct call inlining must report at least one changed function"
     );

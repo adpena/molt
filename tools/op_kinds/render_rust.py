@@ -280,6 +280,19 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append(_render_call_opcode_roles(opcodes, data))
     out.append("\n")
 
+    async_work_poll_after = list(data.get("async_work_poll_after_opcodes", []))
+    out.append(
+        "/// Whether successful completion of this first-class opcode is a Python\n"
+        "/// asynchronous-work/eval-breaker observation point. Preserved Copy call\n"
+        "/// spellings use `simpleir_kind_is_call_graph_user_call`. EXHAUSTIVE over\n"
+        "/// OpCode so native and wasm cannot grow private call-return poll sets.\n"
+        "#[inline]\n"
+        "pub fn opcode_requires_async_work_poll_after_table(opcode: OpCode) -> bool {\n"
+        "    match opcode {\n"
+    )
+    out.append(_render_opcode_bool_arms(opcodes, async_work_poll_after))
+    out.append("    }\n}\n\n")
+
     out.append(
         "/// Fixed result count for opcodes whose arity is statically known.\n"
         "/// `None` means the opcode has a variable/context-dependent result count.\n"
@@ -904,7 +917,7 @@ def _render_simpleir_kind_bool_fn(fn_name: str, members: list[str], doc: str) ->
         "        kind,\n",
     ]
     lines.append(_render_matches_arm(members))
-    lines.append("    )\n}\n")
+    lines.append("    )\n}\n\n")
     return "".join(lines)
 
 
@@ -1114,6 +1127,17 @@ def _render_call_opcode_roles(opcodes: list[dict], data: dict) -> str:
         ]
     )
     lines.append(_render_matches_arm(data.get("call_graph_user_call_kinds", [])))
+    lines.append("    )\n}\n\n")
+    lines.extend(
+        [
+            "/// Whether this SimpleIR spelling is the generated async-work poll.\n",
+            "#[inline]\n",
+            "pub fn simpleir_kind_is_async_work_poll(kind: &str) -> bool {\n",
+            "    matches!(\n",
+            "        kind,\n",
+        ]
+    )
+    lines.append(_render_matches_arm(data.get("async_work_poll_kinds", [])))
     lines.append("    )\n}\n")
     return "".join(lines)
 
