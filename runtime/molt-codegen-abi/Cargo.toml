@@ -7,3 +7,7 @@ rust-version.workspace = true
 license = "Apache-2.0"
 
 [dependencies]
+
+[features]
+default = []
+free-threaded = []

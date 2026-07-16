@@ -232,8 +232,7 @@ pub(crate) fn clear_task_token(_py: &PyToken<'_>, task_ptr: *mut u8) {
     if !task_ptr.is_null() {
         unsafe {
             let header = task_ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
-            if ((*header).flags & HEADER_FLAG_SPAWN_RETAIN) != 0 {
-                (*header).flags &= !HEADER_FLAG_SPAWN_RETAIN;
+            if (*header).take_flags(HEADER_FLAG_SPAWN_RETAIN) != 0 {
                 dec_ref_bits(_py, MoltObject::from_ptr(task_ptr).bits());
                 spawned_task_dec();
             }
@@ -253,7 +252,7 @@ pub(crate) fn task_cancel_pending(task_ptr: *mut u8) -> bool {
     }
     unsafe {
         let header = header_from_obj_ptr(task_ptr);
-        ((*header).flags & HEADER_FLAG_CANCEL_PENDING) != 0
+        ((*header).load_flags() & HEADER_FLAG_CANCEL_PENDING) != 0
     }
 }
 
@@ -263,7 +262,7 @@ pub(crate) fn task_set_cancel_pending(task_ptr: *mut u8) {
     }
     unsafe {
         let header = header_from_obj_ptr(task_ptr);
-        (*header).flags |= HEADER_FLAG_CANCEL_PENDING;
+        (*header).fetch_or_flags(HEADER_FLAG_CANCEL_PENDING);
     }
 }
 
@@ -273,11 +272,7 @@ pub(crate) fn task_take_cancel_pending(task_ptr: *mut u8) -> bool {
     }
     unsafe {
         let header = header_from_obj_ptr(task_ptr);
-        let pending = ((*header).flags & HEADER_FLAG_CANCEL_PENDING) != 0;
-        if pending {
-            (*header).flags &= !HEADER_FLAG_CANCEL_PENDING;
-        }
-        pending
+        (*header).take_flags(HEADER_FLAG_CANCEL_PENDING) != 0
     }
 }
 
@@ -327,8 +322,8 @@ pub(crate) fn wake_tasks_for_cancelled_tokens(_py: &PyToken<'_>) {
     for task_ptr in wake_list {
         let should_wake = unsafe {
             let header = header_from_obj_ptr(task_ptr.0);
-            ((*header).flags & HEADER_FLAG_SPAWN_RETAIN) != 0
-                || ((*header).flags & HEADER_FLAG_BLOCK_ON) != 0
+            ((*header).load_flags() & HEADER_FLAG_SPAWN_RETAIN) != 0
+                || ((*header).load_flags() & HEADER_FLAG_BLOCK_ON) != 0
         };
         if should_wake {
             wake_task_ptr(_py, task_ptr.0);

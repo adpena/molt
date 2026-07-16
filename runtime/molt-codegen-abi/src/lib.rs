@@ -1,5 +1,12 @@
 #![no_std]
 
+#[cfg(all(
+    feature = "free-threaded",
+    not(target_arch = "wasm32"),
+    not(target_has_atomic = "32")
+))]
+compile_error!("Molt native free-threaded mode requires 32-bit atomic operations");
+
 #[cfg(test)]
 extern crate std;
 
@@ -126,6 +133,170 @@ pub const HEADER_CLASS_WORD_BITS_MASK: u64 = !HEADER_CLASS_WORD_TAG_MASK;
 pub const HEADER_FLAG_HAS_PTRS: u32 = 1;
 pub const HEADER_FLAG_IMMORTAL: u32 = 1 << 15;
 pub const HEADER_FLAG_CONTAINS_REFS: u32 = 1 << 19;
+/// Two-phase lifecycle publication bit. Objects remain invisible to collector
+/// snapshots until initialization clears this bit with Release ordering.
+pub const HEADER_FLAG_GC_UNPUBLISHED: u32 = 1 << 29;
+/// Compile-time authority consumed by runtime storage and generated native
+/// access. Cargo feature unification may enable this through any dependency;
+/// consumers must branch on this value rather than a crate-local feature.
+pub const MOLT_FLAGS_ATOMIC: bool =
+    cfg!(all(not(target_arch = "wasm32"), feature = "free-threaded"));
+
+/// ABI-stable header flag storage: a zero-overhead `Cell` in deterministic
+/// default GIL mode and on wasm32, and AtomicU32 only in explicit native
+/// `free-threaded` builds.
+/// Runtime helpers own semantic memory orderings; this type owns the target
+/// representation and primitive operations.
+#[cfg(all(not(target_arch = "wasm32"), feature = "free-threaded"))]
+#[repr(transparent)]
+pub struct MoltFlags(core::sync::atomic::AtomicU32);
+
+#[cfg(any(target_arch = "wasm32", not(feature = "free-threaded")))]
+#[repr(transparent)]
+pub struct MoltFlags(core::cell::Cell<u32>);
+
+impl MoltFlags {
+    #[inline(always)]
+    pub const fn new(value: u32) -> Self {
+        #[cfg(all(not(target_arch = "wasm32"), feature = "free-threaded"))]
+        {
+            Self(core::sync::atomic::AtomicU32::new(value))
+        }
+        #[cfg(any(target_arch = "wasm32", not(feature = "free-threaded")))]
+        {
+            Self(core::cell::Cell::new(value))
+        }
+    }
+
+    #[inline(always)]
+    pub const fn new_unpublished(value: u32) -> Self {
+        Self::new(value | HEADER_FLAG_GC_UNPUBLISHED)
+    }
+
+    #[inline(always)]
+    pub fn load(&self, order: core::sync::atomic::Ordering) -> u32 {
+        #[cfg(all(not(target_arch = "wasm32"), feature = "free-threaded"))]
+        {
+            self.0.load(order)
+        }
+        #[cfg(any(target_arch = "wasm32", not(feature = "free-threaded")))]
+        {
+            let _ = order;
+            self.0.get()
+        }
+    }
+
+    #[inline(always)]
+    pub fn store(&self, value: u32, order: core::sync::atomic::Ordering) {
+        #[cfg(all(not(target_arch = "wasm32"), feature = "free-threaded"))]
+        {
+            self.0.store(value, order);
+        }
+        #[cfg(any(target_arch = "wasm32", not(feature = "free-threaded")))]
+        {
+            let _ = order;
+            self.0.set(value);
+        }
+    }
+
+    #[inline(always)]
+    pub fn fetch_or(&self, value: u32, order: core::sync::atomic::Ordering) -> u32 {
+        #[cfg(all(not(target_arch = "wasm32"), feature = "free-threaded"))]
+        {
+            self.0.fetch_or(value, order)
+        }
+        #[cfg(any(target_arch = "wasm32", not(feature = "free-threaded")))]
+        {
+            let _ = order;
+            let previous = self.0.get();
+            self.0.set(previous | value);
+            previous
+        }
+    }
+
+    #[inline(always)]
+    pub fn fetch_and(&self, value: u32, order: core::sync::atomic::Ordering) -> u32 {
+        #[cfg(all(not(target_arch = "wasm32"), feature = "free-threaded"))]
+        {
+            self.0.fetch_and(value, order)
+        }
+        #[cfg(any(target_arch = "wasm32", not(feature = "free-threaded")))]
+        {
+            let _ = order;
+            let previous = self.0.get();
+            self.0.set(previous & value);
+            previous
+        }
+    }
+
+    #[inline(always)]
+    pub fn compare_exchange(
+        &self,
+        current: u32,
+        new: u32,
+        success: core::sync::atomic::Ordering,
+        failure: core::sync::atomic::Ordering,
+    ) -> Result<u32, u32> {
+        #[cfg(all(not(target_arch = "wasm32"), feature = "free-threaded"))]
+        {
+            self.0.compare_exchange(current, new, success, failure)
+        }
+        #[cfg(any(target_arch = "wasm32", not(feature = "free-threaded")))]
+        {
+            let _ = (success, failure);
+            let observed = self.0.get();
+            if observed == current {
+                self.0.set(new);
+                Ok(observed)
+            } else {
+                Err(observed)
+            }
+        }
+    }
+
+    /// Apply `(old | set) & !clear` as one coherent transition. The unchanged
+    /// fast path is a load only, avoiding a locked RMW for already-published
+    /// sticky facts; wasm lowers directly to Cell get/set.
+    #[inline(always)]
+    pub fn update(&self, set: u32, clear: u32) -> u32 {
+        let mut observed = self.load(core::sync::atomic::Ordering::Acquire);
+        loop {
+            let updated = (observed | set) & !clear;
+            if updated == observed {
+                return observed;
+            }
+            match self.compare_exchange(
+                observed,
+                updated,
+                core::sync::atomic::Ordering::AcqRel,
+                core::sync::atomic::Ordering::Acquire,
+            ) {
+                Ok(previous) => return previous,
+                Err(actual) => observed = actual,
+            }
+        }
+    }
+
+    /// Publish every initialized field to collectors and lock-free readers.
+    #[inline(always)]
+    pub fn publish_initialized(&self) {
+        let _ = self.fetch_and(
+            !HEADER_FLAG_GC_UNPUBLISHED,
+            core::sync::atomic::Ordering::Release,
+        );
+    }
+
+    /// Acquire the initialization publication before a collector reads edges.
+    #[inline(always)]
+    pub fn is_published(&self) -> bool {
+        self.load(core::sync::atomic::Ordering::Acquire) & HEADER_FLAG_GC_UNPUBLISHED == 0
+    }
+}
+
+const _: () = {
+    assert!(core::mem::size_of::<MoltFlags>() == core::mem::size_of::<u32>());
+    assert!(core::mem::align_of::<MoltFlags>() == core::mem::align_of::<u32>());
+};
 
 pub const TYPE_ID_OBJECT: u32 = 100;
 pub const TYPE_ID_FUNCTION: u32 = 221;
@@ -384,7 +555,16 @@ mod tests {
     }
 
     #[test]
-    fn header_aux_constants_match_the_packed_header_contract() {
+    fn header_fields_match_the_packed_header_contract() {
+        assert_eq!(core::mem::size_of::<MoltFlags>(), 4);
+        assert_eq!(core::mem::align_of::<MoltFlags>(), 4);
+        assert_eq!(
+            MOLT_FLAGS_ATOMIC,
+            cfg!(all(not(target_arch = "wasm32"), feature = "free-threaded"))
+        );
+        assert_eq!(HEADER_TYPE_ID_OFFSET, -HEADER_SIZE_BYTES);
+        assert_eq!(HEADER_REFCOUNT_OFFSET, -(HEADER_SIZE_BYTES - 4));
+        assert_eq!(HEADER_FLAGS_OFFSET, -(HEADER_SIZE_BYTES - 8));
         assert_eq!(HEADER_AUX_KIND_OFFSET, -(HEADER_SIZE_BYTES - 14));
         assert_eq!(HEADER_AUX_OFFSET, -(HEADER_SIZE_BYTES - 16));
         assert_eq!(HEADER_CLASS_WORD_BORROWED & HEADER_CLASS_WORD_TAG_MASK, 1);
@@ -397,6 +577,34 @@ mod tests {
                 HEADER_AUX_KIND_SIDECAR,
             ],
             [0, 1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn molt_flags_primitives_preserve_disjoint_bits() {
+        use core::sync::atomic::Ordering;
+
+        let flags = MoltFlags::new(HEADER_FLAG_HAS_PTRS);
+        assert_eq!(
+            flags.fetch_or(HEADER_FLAG_IMMORTAL, Ordering::AcqRel),
+            HEADER_FLAG_HAS_PTRS
+        );
+        assert_eq!(
+            flags.fetch_and(!HEADER_FLAG_HAS_PTRS, Ordering::AcqRel),
+            HEADER_FLAG_HAS_PTRS | HEADER_FLAG_IMMORTAL
+        );
+        assert_eq!(flags.load(Ordering::Acquire), HEADER_FLAG_IMMORTAL);
+    }
+
+    #[test]
+    fn two_phase_publication_is_explicit() {
+        let flags = MoltFlags::new_unpublished(HEADER_FLAG_HAS_PTRS);
+        assert!(!flags.is_published());
+        flags.publish_initialized();
+        assert!(flags.is_published());
+        assert_ne!(
+            flags.load(core::sync::atomic::Ordering::Acquire) & HEADER_FLAG_HAS_PTRS,
+            0
         );
     }
 

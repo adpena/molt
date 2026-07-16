@@ -1453,12 +1453,14 @@ unsafe extern "C" fn hook_try_mark_abi_view(bits: u64, present: c_int) -> c_int 
     let header = unsafe { header_from_obj_ptr(ptr) };
     unsafe {
         if present != 0 {
-            if ((*header).flags & crate::object::HEADER_FLAG_DEALLOCATING) != 0 {
+            if !(*header).try_set_flags_unless(
+                crate::object::HEADER_FLAG_HAS_ABI_VIEW,
+                crate::object::HEADER_FLAG_DEALLOCATING,
+            ) {
                 return 0;
             }
-            (*header).flags |= crate::object::HEADER_FLAG_HAS_ABI_VIEW;
         } else {
-            (*header).flags &= !crate::object::HEADER_FLAG_HAS_ABI_VIEW;
+            (*header).fetch_and_flags(!crate::object::HEADER_FLAG_HAS_ABI_VIEW);
         }
     }
     1
@@ -3609,7 +3611,8 @@ unsafe extern "C" fn hook_register_c_function(
             function_set_call_target_ptr(func_ptr, raw_trampoline);
             function_set_trampoline_ptr(func_ptr, fn_ptr_value);
             if dispatch_kind.is_variadic() {
-                (*header_from_obj_ptr(func_ptr)).flags |= HEADER_FLAG_FUNC_VARIADIC_TRAMPOLINE;
+                (*header_from_obj_ptr(func_ptr))
+                    .fetch_or_flags(HEADER_FLAG_FUNC_VARIADIC_TRAMPOLINE);
             }
 
             // Stash __name__ on the function dict so repr() and tracebacks
@@ -6156,7 +6159,7 @@ mod tests {
             Some(1)
         );
         assert_ne!(
-            unsafe { (*header_from_obj_ptr(list_ptr)).flags }
+            unsafe { (*header_from_obj_ptr(list_ptr)).load_flags() }
                 & crate::object::HEADER_FLAG_CONTAINS_REFS,
             0
         );
@@ -6170,7 +6173,7 @@ mod tests {
             Some(0)
         );
         assert_eq!(
-            unsafe { (*header_from_obj_ptr(list_ptr)).flags }
+            unsafe { (*header_from_obj_ptr(list_ptr)).load_flags() }
                 & crate::object::HEADER_FLAG_CONTAINS_REFS,
             0
         );
@@ -6685,7 +6688,7 @@ mod tests {
                 Some(1)
             );
             assert_ne!(
-                (*header_from_obj_ptr(ptr)).flags & crate::object::HEADER_FLAG_CONTAINS_REFS,
+                (*header_from_obj_ptr(ptr)).load_flags() & crate::object::HEADER_FLAG_CONTAINS_REFS,
                 0
             );
             let old = match hook_tuple_set(bits, 2, val, ptr::null_mut()).decode() {
@@ -6698,7 +6701,7 @@ mod tests {
                 Some(0)
             );
             assert_eq!(
-                (*header_from_obj_ptr(ptr)).flags & crate::object::HEADER_FLAG_CONTAINS_REFS,
+                (*header_from_obj_ptr(ptr)).load_flags() & crate::object::HEADER_FLAG_CONTAINS_REFS,
                 0
             );
             dec_ref_bits(&_py, heap_bits);

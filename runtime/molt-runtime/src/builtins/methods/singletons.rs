@@ -62,7 +62,7 @@ fn special_singleton_bits(_py: &PyToken<'_>, slot: &AtomicU64, type_id: u32) -> 
         return bits;
     };
     unsafe {
-        (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_IMMORTAL;
+        (*header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_IMMORTAL);
     }
     bits
 }
@@ -79,7 +79,10 @@ mod tests {
         unsafe {
             let header = header_from_obj_ptr(ptr);
             assert_eq!(object_type_id(ptr), type_id);
-            assert_ne!((*header).flags & crate::object::HEADER_FLAG_IMMORTAL, 0);
+            assert_ne!(
+                (*header).load_flags() & crate::object::HEADER_FLAG_IMMORTAL,
+                0
+            );
             let refcount = (*header).ref_count.load(AtomicOrdering::Acquire);
             dec_ref_bits(_py, bits);
             dec_ref_bits(_py, bits);

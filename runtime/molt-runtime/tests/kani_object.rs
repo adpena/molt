@@ -16,8 +16,9 @@ mod object_proofs {
         HEADER_ALLOC_ALIGN_BYTES, HEADER_AUX_KIND_CLASS_INLINE, HEADER_AUX_KIND_NONE,
         HEADER_AUX_KIND_OFFSET, HEADER_AUX_KIND_SIDECAR, HEADER_AUX_KIND_STATE_INLINE,
         HEADER_AUX_OFFSET, HEADER_CLASS_WORD_BITS_MASK, HEADER_CLASS_WORD_BORROWED,
-        HEADER_CLASS_WORD_TAG_MASK, HEADER_FLAG_HAS_PTRS, HEADER_FLAG_IMMORTAL, HEADER_SIZE_BYTES,
-        TYPE_ID_FUNCTION, TYPE_ID_OBJECT,
+        HEADER_CLASS_WORD_TAG_MASK, HEADER_FLAG_CONTAINS_REFS, HEADER_FLAG_GC_UNPUBLISHED,
+        HEADER_FLAG_HAS_PTRS, HEADER_FLAG_IMMORTAL, HEADER_SIZE_BYTES, TYPE_ID_FUNCTION,
+        TYPE_ID_OBJECT,
     };
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -53,6 +54,41 @@ mod object_proofs {
         }
     }
 
+    #[repr(transparent)]
+    struct MoltFlags {
+        inner: AtomicU32,
+    }
+
+    impl MoltFlags {
+        const fn new(value: u32) -> Self {
+            Self {
+                inner: AtomicU32::new(value),
+            }
+        }
+
+        fn load(&self, order: Ordering) -> u32 {
+            self.inner.load(order)
+        }
+
+        fn fetch_or(&self, value: u32, order: Ordering) -> u32 {
+            self.inner.fetch_or(value, order)
+        }
+
+        fn fetch_and(&self, value: u32, order: Ordering) -> u32 {
+            self.inner.fetch_and(value, order)
+        }
+
+        fn compare_exchange(
+            &self,
+            current: u32,
+            new: u32,
+            success: Ordering,
+            failure: Ordering,
+        ) -> Result<u32, u32> {
+            self.inner.compare_exchange(current, new, success, failure)
+        }
+    }
+
     // ---------------------------------------------------------------
     // Mirror of MoltHeader — must match the real #[repr(C)] layout.
     // ---------------------------------------------------------------
@@ -60,7 +96,7 @@ mod object_proofs {
     struct MoltHeader {
         type_id: u32,
         ref_count: MoltRefCount,
-        flags: u32,
+        flags: MoltFlags,
         size_class: u16,
         aux_kind: u16,
         aux: u64,
@@ -81,6 +117,18 @@ mod object_proofs {
     const HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN: u32 = 1 << 13;
     const HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED: u32 = 1 << 14;
     const HEADER_FLAG_FINALIZER_RAN: u32 = 1 << 16;
+    const HEADER_FLAG_INTERNED: u32 = 1 << 17;
+    const HEADER_FLAG_RAW_ALLOC: u32 = 1 << 20;
+    const HEADER_FLAG_ARENA: u32 = 1 << 21;
+    const HEADER_FLAG_CLASS_HAS_FINALIZER: u32 = 1 << 22;
+    const HEADER_FLAG_FUNC_REQUIRES_BINDER: u32 = 1 << 23;
+    const HEADER_FLAG_HAS_WEAKREF: u32 = 1 << 24;
+    const HEADER_FLAG_GC_COLLECTING: u32 = 1 << 25;
+    const HEADER_FLAG_FUNC_VARIADIC_TRAMPOLINE: u32 = 1 << 26;
+    const HEADER_FLAG_HAS_ABI_VIEW: u32 = 1 << 27;
+    const HEADER_FLAG_GC_PINNED: u32 = 1 << 28;
+    const HEADER_FLAG_DEALLOCATING: u32 = 1 << 30;
+    const HEADER_FLAG_IS_WEAKREF: u32 = 1 << 31;
 
     // Type IDs — must match the real constants in object/type_ids.rs.
     const TYPE_ID_STRING: u32 = 200;
@@ -185,7 +233,7 @@ mod object_proofs {
     ];
 
     /// All header flags as a static array for bit-independence checks.
-    const ALL_FLAGS: [u32; 16] = [
+    const ALL_FLAGS: [u32; 30] = [
         HEADER_FLAG_HAS_PTRS,
         HEADER_FLAG_GEN_RUNNING,
         HEADER_FLAG_GEN_STARTED,
@@ -202,6 +250,20 @@ mod object_proofs {
         HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED,
         HEADER_FLAG_IMMORTAL,
         HEADER_FLAG_FINALIZER_RAN,
+        HEADER_FLAG_INTERNED,
+        HEADER_FLAG_CONTAINS_REFS,
+        HEADER_FLAG_RAW_ALLOC,
+        HEADER_FLAG_ARENA,
+        HEADER_FLAG_CLASS_HAS_FINALIZER,
+        HEADER_FLAG_FUNC_REQUIRES_BINDER,
+        HEADER_FLAG_HAS_WEAKREF,
+        HEADER_FLAG_GC_COLLECTING,
+        HEADER_FLAG_FUNC_VARIADIC_TRAMPOLINE,
+        HEADER_FLAG_HAS_ABI_VIEW,
+        HEADER_FLAG_GC_PINNED,
+        HEADER_FLAG_GC_UNPUBLISHED,
+        HEADER_FLAG_DEALLOCATING,
+        HEADER_FLAG_IS_WEAKREF,
     ];
 
     const ALL_AUX_KINDS: [u16; 4] = [
@@ -265,7 +327,7 @@ mod object_proofs {
         let header = MoltHeader {
             type_id: 0xDEAD_BEEF,
             ref_count: MoltRefCount::new(0),
-            flags: 0,
+            flags: MoltFlags::new(0),
             size_class: 0,
             aux_kind: HEADER_AUX_KIND_NONE,
             aux: 0,
@@ -283,7 +345,7 @@ mod object_proofs {
         let header = MoltHeader {
             type_id: 0,
             ref_count: MoltRefCount::new(0x1234_5678),
-            flags: 0,
+            flags: MoltFlags::new(0),
             size_class: 0,
             aux_kind: HEADER_AUX_KIND_NONE,
             aux: 0,
@@ -301,13 +363,13 @@ mod object_proofs {
         let header = MoltHeader {
             type_id: 0,
             ref_count: MoltRefCount::new(0),
-            flags: 0,
+            flags: MoltFlags::new(0),
             size_class: 0,
             aux_kind: HEADER_AUX_KIND_NONE,
             aux: 0,
         };
         let base = &header as *const MoltHeader as *const u8;
-        let flags_ptr = &header.flags as *const u32 as *const u8;
+        let flags_ptr = &header.flags as *const MoltFlags as *const u8;
         let offset = flags_ptr as usize - base as usize;
         assert_eq!(offset, 8);
     }
@@ -319,7 +381,7 @@ mod object_proofs {
         let header = MoltHeader {
             type_id: 0,
             ref_count: MoltRefCount::new(0),
-            flags: 0,
+            flags: MoltFlags::new(0),
             size_class: 0,
             aux_kind: HEADER_AUX_KIND_CLASS_INLINE,
             aux: HEADER_CLASS_WORD_BORROWED,
@@ -345,7 +407,7 @@ mod object_proofs {
         let header = MoltHeader {
             type_id: 42,
             ref_count: MoltRefCount::new(1),
-            flags: 0,
+            flags: MoltFlags::new(0),
             size_class: 0,
             aux_kind: HEADER_AUX_KIND_NONE,
             aux: 0,
@@ -388,7 +450,7 @@ mod object_proofs {
 
     /// All header flags occupy distinct bit positions (no overlap).
     #[kani::proof]
-    #[kani::unwind(17)]
+    #[kani::unwind(31)]
     fn header_flags_are_independent() {
         let n = ALL_FLAGS.len();
         let mut i = 0;
@@ -437,6 +499,67 @@ mod object_proofs {
         assert_eq!(new_flags & !HEADER_FLAG_IMMORTAL, flags);
     }
 
+    /// Atomic disjoint-bit publication cannot clobber a sibling bit.
+    #[kani::proof]
+    #[kani::unwind(1)]
+    fn atomic_fetch_or_preserves_disjoint_bits() {
+        let initial: u32 = kani::any();
+        let flags = MoltFlags::new(initial);
+        let previous = flags.fetch_or(HEADER_FLAG_TASK_DONE, Ordering::AcqRel);
+        assert_eq!(previous, initial);
+        assert_eq!(
+            flags.load(Ordering::Acquire),
+            initial | HEADER_FLAG_TASK_DONE
+        );
+    }
+
+    /// Atomic consume clears only the selected bit and returns the old state.
+    #[kani::proof]
+    #[kani::unwind(1)]
+    fn atomic_fetch_and_consumes_one_flag() {
+        let initial: u32 = kani::any();
+        let flags = MoltFlags::new(initial);
+        let previous = flags.fetch_and(!HEADER_FLAG_CANCEL_PENDING, Ordering::AcqRel);
+        assert_eq!(previous, initial);
+        assert_eq!(
+            flags.load(Ordering::Acquire),
+            initial & !HEADER_FLAG_CANCEL_PENDING
+        );
+    }
+
+    /// A queued-to-running task transition publishes one coherent state word.
+    #[kani::proof]
+    #[kani::unwind(1)]
+    fn atomic_compare_exchange_publishes_coherent_task_transition() {
+        let siblings: u32 = kani::any();
+        kani::assume(siblings & (HEADER_FLAG_TASK_QUEUED | HEADER_FLAG_TASK_RUNNING) == 0);
+        let queued = siblings | HEADER_FLAG_TASK_QUEUED;
+        let running = siblings | HEADER_FLAG_TASK_RUNNING;
+        let flags = MoltFlags::new(queued);
+        assert_eq!(
+            flags.compare_exchange(queued, running, Ordering::AcqRel, Ordering::Acquire),
+            Ok(queued)
+        );
+        assert_eq!(flags.load(Ordering::Acquire), running);
+    }
+
+    /// Collector visibility is enabled only by the Release publication clear.
+    #[kani::proof]
+    #[kani::unwind(1)]
+    fn gc_publication_preserves_initialized_sibling_flags() {
+        let siblings: u32 = kani::any();
+        kani::assume(siblings & HEADER_FLAG_GC_UNPUBLISHED == 0);
+        let flags = MoltFlags::new(siblings | HEADER_FLAG_GC_UNPUBLISHED);
+        assert_ne!(
+            flags.load(Ordering::Acquire) & HEADER_FLAG_GC_UNPUBLISHED,
+            0
+        );
+        flags.fetch_and(!HEADER_FLAG_GC_UNPUBLISHED, Ordering::Release);
+        let published = flags.load(Ordering::Acquire);
+        assert_eq!(published & HEADER_FLAG_GC_UNPUBLISHED, 0);
+        assert_eq!(published, siblings);
+    }
+
     // ===============================================================
     // 4. IMMORTAL REFCOUNT SKIP MODEL
     // ===============================================================
@@ -449,14 +572,14 @@ mod object_proofs {
         let header = MoltHeader {
             type_id: TYPE_ID_OBJECT,
             ref_count: MoltRefCount::new(init_rc),
-            flags: HEADER_FLAG_IMMORTAL,
+            flags: MoltFlags::new(HEADER_FLAG_IMMORTAL),
             size_class: 0,
             aux_kind: HEADER_AUX_KIND_NONE,
             aux: 0,
         };
 
         // Model of inc_ref_ptr:
-        if (header.flags & HEADER_FLAG_IMMORTAL) != 0 {
+        if (header.flags.load(Ordering::Acquire) & HEADER_FLAG_IMMORTAL) != 0 {
             // Should not touch refcount — verify it is unchanged.
             assert_eq!(header.ref_count.load(Ordering::Relaxed), init_rc);
         }
@@ -470,14 +593,14 @@ mod object_proofs {
         let header = MoltHeader {
             type_id: TYPE_ID_OBJECT,
             ref_count: MoltRefCount::new(init_rc),
-            flags: HEADER_FLAG_IMMORTAL,
+            flags: MoltFlags::new(HEADER_FLAG_IMMORTAL),
             size_class: 0,
             aux_kind: HEADER_AUX_KIND_NONE,
             aux: 0,
         };
 
         // Model of dec_ref_ptr:
-        if (header.flags & HEADER_FLAG_IMMORTAL) != 0 {
+        if (header.flags.load(Ordering::Acquire) & HEADER_FLAG_IMMORTAL) != 0 {
             assert_eq!(header.ref_count.load(Ordering::Relaxed), init_rc);
         }
     }
@@ -492,14 +615,17 @@ mod object_proofs {
         let header = MoltHeader {
             type_id: TYPE_ID_STRING,
             ref_count: MoltRefCount::new(init_rc),
-            flags: 0,
+            flags: MoltFlags::new(0),
             size_class: 0,
             aux_kind: HEADER_AUX_KIND_NONE,
             aux: 0,
         };
 
         // Model: not immortal, so inc_ref adds 1, dec_ref subtracts 1.
-        assert_eq!(header.flags & HEADER_FLAG_IMMORTAL, 0);
+        assert_eq!(
+            header.flags.load(Ordering::Acquire) & HEADER_FLAG_IMMORTAL,
+            0
+        );
         header.ref_count.fetch_add(1, Ordering::Relaxed);
         assert_eq!(header.ref_count.load(Ordering::Relaxed), init_rc + 1);
         header.ref_count.fetch_sub(1, Ordering::AcqRel);
@@ -663,7 +789,7 @@ mod object_proofs {
         let header = MoltHeader {
             type_id: TYPE_ID_NOT_IMPLEMENTED,
             ref_count: MoltRefCount::new(init_rc),
-            flags: 0,
+            flags: MoltFlags::new(0),
             size_class: 0,
             aux_kind: HEADER_AUX_KIND_NONE,
             aux: 0,

@@ -224,10 +224,13 @@ pub extern "C" fn molt_arena_alloc_object(arena: *mut ScopeArena, size_bits: u64
             let header = header_ptr as *mut MoltHeader;
             (*header).type_id = TYPE_ID_OBJECT;
             (*header).ref_count.store(1, AtomicOrdering::Relaxed);
+            MoltHeader::initialize_flags_before_publication(
+                header,
+                HEADER_FLAG_ARENA | HEADER_FLAG_RAW_ALLOC,
+            );
             // size_class = 0 (oversized path) keeps drop logic generic; the
             // arena free path bypasses `std::alloc::dealloc` entirely.
             (*header).size_class = 0;
-            (*header).flags = HEADER_FLAG_ARENA | HEADER_FLAG_RAW_ALLOC;
             // The zeroed aux word/kind selects the immutable `None`
             // representation; raw arena objects never carry aux metadata.
             let obj_ptr = header_ptr.add(size_of::<MoltHeader>());
@@ -293,7 +296,7 @@ mod tests {
                     "fresh arena alloc should have refcount 1"
                 );
                 assert_ne!(
-                    (*header).flags & HEADER_FLAG_ARENA,
+                    (*header).load_flags() & HEADER_FLAG_ARENA,
                     0,
                     "HEADER_FLAG_ARENA must be set so dec_ref skips dealloc"
                 );

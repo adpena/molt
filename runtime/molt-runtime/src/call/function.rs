@@ -616,7 +616,7 @@ unsafe fn function_needs_task_trampoline(_py: &PyToken<'_>, func_bits: u64) -> b
 unsafe fn function_task_trampoline_cached(func_ptr: *mut u8) -> Option<bool> {
     unsafe {
         let header = header_from_obj_ptr(func_ptr);
-        let flags = (*header).flags;
+        let flags = (*header).load_flags();
         if (flags & HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN) == 0 {
             return None;
         }
@@ -626,7 +626,9 @@ unsafe fn function_task_trampoline_cached(func_ptr: *mut u8) -> Option<bool> {
 
 #[inline]
 pub(crate) unsafe fn function_has_variadic_trampoline(func_ptr: *mut u8) -> bool {
-    unsafe { ((*header_from_obj_ptr(func_ptr)).flags & HEADER_FLAG_FUNC_VARIADIC_TRAMPOLINE) != 0 }
+    unsafe {
+        ((*header_from_obj_ptr(func_ptr)).load_flags() & HEADER_FLAG_FUNC_VARIADIC_TRAMPOLINE) != 0
+    }
 }
 
 pub(crate) unsafe fn refresh_function_task_trampoline_cache(
@@ -636,13 +638,19 @@ pub(crate) unsafe fn refresh_function_task_trampoline_cache(
     unsafe {
         let needed = compute_function_task_trampoline_needed(_py, func_ptr);
         let header = header_from_obj_ptr(func_ptr);
-        let mut flags = (*header).flags | HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN;
-        if needed {
-            flags |= HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED;
-        } else {
-            flags &= !HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED;
-        }
-        (*header).flags = flags;
+        (*header).update_flags(
+            HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN
+                | if needed {
+                    HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED
+                } else {
+                    0
+                },
+            if needed {
+                0
+            } else {
+                HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED
+            },
+        );
         needed
     }
 }
