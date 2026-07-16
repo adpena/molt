@@ -363,6 +363,63 @@ def test_process_tree_tracker_keeps_reparented_new_session_child_after_seen() ->
     )
 
 
+def test_process_tree_tracker_stale_pid_cannot_admit_unrelated_child() -> None:
+    tracker = memory_guard.ProcessTreeTracker(100)
+    initial = {
+        100: memory_guard.ProcessSample(100, 1, 10, "guard", started_at_ns=1),
+        101: memory_guard.ProcessSample(101, 100, 20, "compiler", started_at_ns=2),
+    }
+    assert tracker.update(initial) == {100, 101}
+
+    # PID 101 has exited. A later unrelated process reports the stale number as
+    # its parent; an absent historical PID is not live custody authority.
+    reused_parent_edge = {
+        100: memory_guard.ProcessSample(100, 1, 10, "guard", started_at_ns=1),
+        900: memory_guard.ProcessSample(
+            900,
+            101,
+            500_000,
+            "NVIDIA Overlay.exe",
+            started_at_ns=99,
+        ),
+    }
+    assert tracker.update(reused_parent_edge) == {100}
+
+
+def test_windows_termination_refuses_ambiguous_process_fanout(monkeypatch) -> None:
+    root_pid = 100
+    samples = {
+        pid: memory_guard.ProcessSample(
+            pid,
+            root_pid if pid != root_pid else 1,
+            10,
+            f"process-{pid}",
+            started_at_ns=pid,
+        )
+        for pid in range(
+            root_pid,
+            root_pid + memory_guard.MAX_TERMINATION_PID_FANOUT + 1,
+        )
+    }
+    monkeypatch.setattr(memory_guard, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(
+        memory_guard,
+        "_terminate_pid_if_identity_action",
+        lambda *_args, **_kwargs: pytest.fail("ambiguous tree must not be signaled"),
+    )
+
+    report = memory_guard.terminate_watched_processes(
+        root_pid,
+        samples=samples,
+        watched=set(samples),
+        root_owned=True,
+    )
+
+    assert report.reason == "windows_pid_tree_ambiguous_fanout"
+    assert len(report.actions) == 1
+    assert report.actions[0].result == "skipped_ambiguous_fanout"
+
+
 def test_process_tree_tracker_does_not_absorb_root_ambient_process_group() -> None:
     tracker = memory_guard.ProcessTreeTracker(100)
     samples = {

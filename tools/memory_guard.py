@@ -166,6 +166,7 @@ from tools.memory_guard_core.process_custody import (  # noqa: E402
     GuardTerminationReport as GuardTerminationReport,
     GuardedChildProcess as GuardedChildProcess,
     GuardedLaunch as GuardedLaunch,
+    MAX_TERMINATION_PID_FANOUT as MAX_TERMINATION_PID_FANOUT,
     ProcessIdentity as ProcessIdentity,
     ProcessSample as ProcessSample,
     ProcessTreeTracker as ProcessTreeTracker,
