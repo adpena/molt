@@ -67,15 +67,21 @@ package's extension build requires, from the package's own build metadata
 (`pyproject`/`meson.build`/`setup.py`/Cython directives), with no manual env:
 - Every verified extension set declares one pinned project dependency group.
   Its producer environment is immutable and content-addressed by the group name
-  plus ordered requirements, full `uv.lock`, base Python, and uv identity under
-  canonical Molt custody. Provisioning is serialized, staged privately with
-  frozen-lock `uv sync`, resolution-validated, attested, and atomically
-  published. No ambient `.venv`, editable project install, or worktree path can
-  become build-environment authority.
+  plus ordered requirements, full `uv.lock`, base Python, uv identity, and the
+  provisioning-schema version under canonical Molt custody. Provisioning is
+  serialized and atomically records exact intent in sibling custody outside the
+  mutable environment directory. Frozen-lock `uv sync` runs at the final path so
+  uv's absolute Windows console launchers remain valid; validation then
+  atomically writes the complete in-environment attestation as the sole
+  publication point before removing the sibling record. Only that exact record
+  authorizes recovery of an unattested partial root; a complete root plus the
+  exact stale record is accepted and cleaned after a crash. No ambient `.venv`,
+  editable project install, or worktree path can become build-environment authority.
 - `molt extension produce-set` automatically provisions a missing address and
   re-executes the same typed request under its attested Python with the invoking
   worktree source as the only `PYTHONPATH` authority, safe-path mode enabled,
-  and ambient Python-home/user-site injection disabled. A stale published
+  ambient Python-home/user-site injection disabled, and the attested
+  `Scripts`/`bin` directory first on executable `PATH`. A stale published
   address fails closed; it is never mutated beneath a concurrent build.
 - Detect the build backend + generators (Cython version + flags incl.
   shared-utility vs standalone; f2py; meson/ninja; setuptools).

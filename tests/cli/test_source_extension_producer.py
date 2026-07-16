@@ -544,7 +544,7 @@ def _locked_environment_spec(
     root = tmp_path / "custody/environment"
     python = root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     custody: dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "environment_id": "a" * 64,
         "dependency_group": "source-build-numpy",
         "dependency_group_requirements": ["ninja==1.13.0"],
@@ -613,9 +613,22 @@ def test_source_build_environment_address_is_worktree_neutral(
 
     assert first_spec[:4] == second_spec[:4]
     assert "worktrees" not in str(first_spec[0])
+    custody = first_spec[3]
+    assert custody["schema_version"] == 2
+    address_payload = {key: custody[key] for key in custody if key != "environment_id"}
+    assert custody["environment_id"] == hashlib.sha256(
+        json.dumps(address_payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    old_address_payload = dict(address_payload)
+    old_address_payload["schema_version"] = 1
+    assert custody["environment_id"] != hashlib.sha256(
+        json.dumps(
+            old_address_payload, sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest()
 
 
-def test_source_build_environment_failed_sync_leaves_no_attestation(
+def test_source_build_environment_failed_sync_leaves_only_provisional_record(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     spec = _locked_environment_spec(tmp_path)
@@ -635,6 +648,164 @@ def test_source_build_environment_failed_sync_leaves_no_attestation(
         )
 
     assert not spec[2].exists()
+    provisioning_path = build_environment._provisioning_record_path(spec[0])
+    assert json.loads(provisioning_path.read_text(encoding="utf-8")) == (
+        build_environment._provisioning_record(spec[3])
+    )
+
+
+def test_source_build_environment_recovers_exact_provisional_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = _locked_environment_spec(tmp_path)
+    calls = 0
+    monkeypatch.setattr(build_environment, "_environment_spec", lambda *_args: spec)
+    distributions = [{"name": "ninja", "version": "1.13.0"}]
+    monkeypatch.setattr(
+        build_environment,
+        "_probe_environment_distributions",
+        lambda _python: distributions,
+    )
+
+    def run(argv, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return subprocess.CompletedProcess(argv, 7)
+        environment_root = Path(kwargs["env"]["UV_PROJECT_ENVIRONMENT"])
+        assert environment_root == spec[0]
+        environment_python = environment_root / (
+            "Scripts/python.exe" if os.name == "nt" else "bin/python"
+        )
+        environment_python.parent.mkdir(parents=True, exist_ok=True)
+        environment_python.write_bytes(b"python")
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(build_environment.subprocess, "run", run)
+
+    with pytest.raises(build_environment.SourceBuildEnvironmentError):
+        build_environment.provision_source_build_environment(
+            tmp_path, "source-build-numpy"
+        )
+    result = build_environment.provision_source_build_environment(
+        tmp_path, "source-build-numpy"
+    )
+
+    assert calls == 2
+    assert result.root == spec[0]
+    assert json.loads(spec[2].read_text(encoding="utf-8")) == {
+        **spec[3],
+        "installed_distributions": distributions,
+    }
+    assert not build_environment._provisioning_record_path(spec[0]).exists()
+
+
+@pytest.mark.parametrize(
+    "foreign_payload",
+    [None, {}, {"state": "provisioning"}, {"state": "provisioning", "custody": {}}],
+)
+def test_source_build_environment_rejects_foreign_unattested_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    foreign_payload: object,
+) -> None:
+    spec = _locked_environment_spec(tmp_path)
+    spec[0].mkdir(parents=True)
+    if foreign_payload is not None:
+        spec[2].write_text(json.dumps(foreign_payload), encoding="utf-8")
+    monkeypatch.setattr(build_environment, "_environment_spec", lambda *_args: spec)
+    monkeypatch.setattr(
+        build_environment.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("foreign root must never be mutated"),
+    )
+
+    with pytest.raises(
+        build_environment.SourceBuildEnvironmentError,
+        match="exact attestation or sibling provisioning record",
+    ):
+        build_environment.provision_source_build_environment(
+            tmp_path, "source-build-numpy"
+        )
+
+
+@pytest.mark.parametrize(
+    "foreign_payload",
+    [{}, {"state": "provisioning"}, {"state": "provisioning", "custody": {}}],
+)
+def test_source_build_environment_rejects_foreign_sibling_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    foreign_payload: object,
+) -> None:
+    spec = _locked_environment_spec(tmp_path)
+    provisioning_path = build_environment._provisioning_record_path(spec[0])
+    provisioning_path.parent.mkdir(parents=True)
+    provisioning_path.write_text(json.dumps(foreign_payload), encoding="utf-8")
+    monkeypatch.setattr(build_environment, "_environment_spec", lambda *_args: spec)
+
+    with pytest.raises(
+        build_environment.SourceBuildEnvironmentError,
+        match="foreign source-build provisioning record",
+    ):
+        build_environment.provision_source_build_environment(
+            tmp_path, "source-build-numpy"
+        )
+
+
+def test_source_build_environment_rejects_malformed_sibling_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = _locked_environment_spec(tmp_path)
+    provisioning_path = build_environment._provisioning_record_path(spec[0])
+    provisioning_path.parent.mkdir(parents=True)
+    provisioning_path.write_text("{not-json", encoding="utf-8")
+    monkeypatch.setattr(build_environment, "_environment_spec", lambda *_args: spec)
+
+    with pytest.raises(
+        build_environment.SourceBuildEnvironmentError,
+        match="malformed source-build provisioning record",
+    ):
+        build_environment.provision_source_build_environment(
+            tmp_path, "source-build-numpy"
+        )
+
+
+def test_complete_environment_cleans_exact_stale_sibling_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = _locked_environment_spec(tmp_path)
+    distributions = [{"name": "ninja", "version": "1.13.0"}]
+    spec[1].parent.mkdir(parents=True)
+    spec[1].write_bytes(b"python")
+    spec[2].write_text(
+        json.dumps({**spec[3], "installed_distributions": distributions}),
+        encoding="utf-8",
+    )
+    provisioning_path = build_environment._provisioning_record_path(spec[0])
+    provisioning_path.parent.mkdir(parents=True)
+    provisioning_path.write_text(
+        json.dumps(build_environment._provisioning_record(spec[3])),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(build_environment, "_environment_spec", lambda *_args: spec)
+    monkeypatch.setattr(
+        build_environment,
+        "_probe_environment_distributions",
+        lambda _python: distributions,
+    )
+    monkeypatch.setattr(
+        build_environment.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("complete root must not reprovision"),
+    )
+
+    result = build_environment.provision_source_build_environment(
+        tmp_path, "source-build-numpy"
+    )
+
+    assert result.root == spec[0]
+    assert not provisioning_path.exists()
 
 
 def test_concurrent_source_build_provision_runs_one_sync(
@@ -654,12 +825,17 @@ def test_concurrent_source_build_provision_runs_one_sync(
     def run(argv, **_kwargs):
         with calls_lock:
             calls.append(tuple(argv))
-        staging_root = Path(_kwargs["env"]["UV_PROJECT_ENVIRONMENT"])
-        staging_python = staging_root / (
+        environment_root = Path(_kwargs["env"]["UV_PROJECT_ENVIRONMENT"])
+        assert environment_root == spec[0]
+        environment_python = environment_root / (
             "Scripts/python.exe" if os.name == "nt" else "bin/python"
         )
-        staging_python.parent.mkdir(parents=True, exist_ok=True)
-        staging_python.write_bytes(b"python")
+        environment_python.parent.mkdir(parents=True, exist_ok=True)
+        environment_python.write_bytes(b"python")
+        launcher = environment_python.parent / (
+            "cython.exe" if os.name == "nt" else "cython"
+        )
+        launcher.write_text(f"#!{environment_python}\n", encoding="utf-8")
         return subprocess.CompletedProcess(argv, 0)
 
     monkeypatch.setattr(build_environment.subprocess, "run", run)
@@ -698,6 +874,9 @@ def test_concurrent_source_build_provision_runs_one_sync(
         **spec[3],
         "installed_distributions": distributions,
     }
+    launcher = spec[1].parent / ("cython.exe" if os.name == "nt" else "cython")
+    assert launcher.read_text(encoding="utf-8") == f"#!{spec[1]}\n"
+    assert ".provision-" not in launcher.read_text(encoding="utf-8")
 
 
 def test_source_build_provision_rejects_group_resolution_before_publication(
@@ -712,12 +891,12 @@ def test_source_build_provision_rejects_group_resolution_before_publication(
     )
 
     def run(argv, **kwargs):
-        staging_root = Path(kwargs["env"]["UV_PROJECT_ENVIRONMENT"])
-        staging_python = staging_root / (
+        environment_root = Path(kwargs["env"]["UV_PROJECT_ENVIRONMENT"])
+        environment_python = environment_root / (
             "Scripts/python.exe" if os.name == "nt" else "bin/python"
         )
-        staging_python.parent.mkdir(parents=True, exist_ok=True)
-        staging_python.write_bytes(b"python")
+        environment_python.parent.mkdir(parents=True, exist_ok=True)
+        environment_python.write_bytes(b"python")
         return subprocess.CompletedProcess(argv, 0)
 
     monkeypatch.setattr(build_environment.subprocess, "run", run)
@@ -730,8 +909,14 @@ def test_source_build_provision_rejects_group_resolution_before_publication(
             tmp_path, "source-build-numpy"
         )
 
-    assert not spec[0].exists()
     assert not spec[2].exists()
+    assert json.loads(
+        build_environment._provisioning_record_path(spec[0]).read_text(
+            encoding="utf-8"
+        )
+    ) == (
+        build_environment._provisioning_record(spec[3])
+    )
 
 
 def test_active_source_build_environment_rejects_mutated_ambient_content(
@@ -777,6 +962,19 @@ def test_source_build_reexec_uses_typed_args_and_invoking_worktree_src(
     monkeypatch.setattr(producer.subprocess, "run", run)
     monkeypatch.setenv("PYTHONPATH", r"D:\poison;C:\OneDrive\stale")
     monkeypatch.setenv("PYTHONHOME", r"D:\poison-python")
+    ambient_scripts = tmp_path / "ambient-scripts"
+    ambient_scripts.mkdir()
+    locked_scripts = environment.python_executable.parent
+    locked_scripts.mkdir(parents=True)
+    script_name = "cython.exe" if os.name == "nt" else "cython"
+    locked_cython = locked_scripts / script_name
+    ambient_cython = ambient_scripts / script_name
+    locked_cython.write_text("locked", encoding="utf-8")
+    ambient_cython.write_text("ambient", encoding="utf-8")
+    locked_cython.chmod(0o755)
+    ambient_cython.chmod(0o755)
+    inherited_path = os.pathsep.join((str(ambient_scripts), os.environ["PATH"]))
+    monkeypatch.setenv("PATH", inherited_path)
 
     result = producer._run_locked_source_extension_producer(
         environment,
@@ -821,6 +1019,47 @@ def test_source_build_reexec_uses_typed_args_and_invoking_worktree_src(
     assert "PYTHONHOME" not in child_environment
     assert child_environment["PYTHONNOUSERSITE"] == "1"
     assert child_environment["VIRTUAL_ENV"] == str(spec[0])
+    assert child_environment["PATH"] == os.pathsep.join(
+        (str(locked_scripts.resolve()), inherited_path)
+    )
+    resolved_cython = shutil.which("cython", path=child_environment["PATH"])
+    assert resolved_cython is not None
+    assert Path(resolved_cython).samefile(locked_cython)
+
+
+@pytest.mark.parametrize(
+    ("separator", "scripts", "inherited", "expected"),
+    [
+        (
+            ";",
+            r"C:\custody\environment\Scripts",
+            r"C:\Program Files\LLVM\bin;C:\Windows\System32",
+            r"C:\custody\environment\Scripts;C:\Program Files\LLVM\bin;"
+            r"C:\Windows\System32",
+        ),
+        (
+            ":",
+            "/custody/environment/bin",
+            "/opt/llvm/bin:/usr/bin",
+            "/custody/environment/bin:/opt/llvm/bin:/usr/bin",
+        ),
+    ],
+)
+def test_locked_console_tool_path_is_cross_platform_and_ordered(
+    separator: str,
+    scripts: str,
+    inherited: str,
+    expected: str,
+) -> None:
+    assert producer._locked_console_tool_path(
+        scripts, inherited, separator=separator
+    ) == expected
+
+
+def test_locked_console_tool_path_handles_absent_host_path(tmp_path: Path) -> None:
+    scripts = tmp_path / "environment/bin"
+    scripts.mkdir(parents=True)
+    assert producer._locked_console_tool_path(scripts, None) == str(scripts.resolve())
 
 
 def test_producer_never_accepts_ambient_environment_or_locks_before_reexec(

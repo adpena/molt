@@ -1255,6 +1255,12 @@ SOURCE_BUILD_ENVIRONMENT_CUSTODY_MISSING_RE = re.compile(
     r"out-of-range requirements: (?P<requirements>[^\r\n]+)"
 )
 
+SOURCE_BUILD_CONSOLE_SCRIPT_PATH_CUSTODY_RE = re.compile(
+    r"Unknown compiler\(s\): \[\['cython'\], \['cython3'\]\]"
+    r"[\s\S]{0,4096}?Running `cython -V` gave [^\r\n]{0,1024}?"
+    r"(?:WinError 2|No such file or directory)"
+)
+
 CPYTHON_ABI_PYMOD_GIL_SLOT_RE = re.compile(
     r"(?P<evidence>Failed compiling [^\r\n]+:[\s\S]*?"
     r"incompatible integer to pointer conversion[\s\S]*?"
@@ -1401,6 +1407,32 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
                     "src/molt/cli/source_extension_producer.py",
                     "pyproject.toml",
                     "uv.lock",
+                ),
+                artifacts=(str(row["summary_json"]), str(row["log_path"])),
+            )
+        )
+
+    match = SOURCE_BUILD_CONSOLE_SCRIPT_PATH_CUSTODY_RE.search(log_tail)
+    if match is not None:
+        diagnostics.append(
+            _diagnostic(
+                signal_id="source-build-console-script-path-custody",
+                severity="infra",
+                summary=(
+                    "Meson could not resolve the attested source-build "
+                    "environment's Cython console script."
+                ),
+                evidence=match.group(0),
+                next_action=(
+                    "Put the locked environment's Scripts/bin directory first "
+                    "in the producer child's executable PATH, then rerun with a "
+                    "fresh build root. Never install Cython into an ambient "
+                    "interpreter or pin an older version to mask PATH custody."
+                ),
+                scopes=(
+                    "src/molt/cli/source_extension_producer.py",
+                    "src/molt/cli/source_build_environment.py",
+                    "tests/cli/test_source_extension_producer.py",
                 ),
                 artifacts=(str(row["summary_json"]), str(row["log_path"])),
             )
