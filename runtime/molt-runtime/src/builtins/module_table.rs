@@ -902,7 +902,7 @@ fn wait_for_foreign_init(
     // Park briefly with the GIL released so the owner can finish; the state
     // machine loop re-examines on wake.
     {
-        let _release = crate::concurrency::GilReleaseGuard::new();
+        let _release = crate::concurrency::GilReleaseGuard::suspend();
         std::thread::sleep(std::time::Duration::from_micros(100));
     }
     table.blocking_on.lock().unwrap().remove(&self_tid);

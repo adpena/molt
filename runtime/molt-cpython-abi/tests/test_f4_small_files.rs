@@ -511,6 +511,22 @@ fn zero_size_allocations_return_unique_non_null() {
 }
 
 #[test]
+fn allocator_zeroes_preserves_and_rejects_size_overflow() {
+    install();
+    let ptr = unsafe { molt_cpython_abi::api::memory::PyMem_Calloc(4, 8) }.cast::<u8>();
+    assert!(!ptr.is_null());
+    assert!((0..32).all(|index| unsafe { *ptr.add(index) } == 0));
+    unsafe { *ptr.add(31) = 0xa5 };
+    let ptr = unsafe { molt_cpython_abi::api::memory::PyMem_Realloc(ptr.cast(), 64) }.cast::<u8>();
+    assert!(!ptr.is_null());
+    assert_eq!(unsafe { *ptr.add(31) }, 0xa5);
+    unsafe { molt_cpython_abi::api::memory::PyMem_Free(ptr.cast()) };
+
+    let overflow = unsafe { molt_cpython_abi::api::memory::PyMem_Calloc(usize::MAX, 2) };
+    assert!(overflow.is_null());
+}
+
+#[test]
 fn object_init_null_sets_memory_error() {
     install();
     unsafe { err_clear() };

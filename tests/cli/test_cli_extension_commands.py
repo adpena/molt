@@ -1337,6 +1337,7 @@ def test_extension_scan_numpy_surface_fails_closed_without_package_headers(
 
 def test_cpython_abi_variadic_shim_owns_variadic_exports() -> None:
     shim = (ROOT / "runtime/molt-cpython-abi/shims/pyarg_variadic.c").read_text()
+    platform = (ROOT / "runtime/molt-cpython-abi/src/platform.rs").read_text()
     build_rs = (ROOT / "runtime/molt-cpython-abi/build.rs").read_text()
     runtime_anchor = (
         ROOT / "runtime/molt-runtime/src/c_api/cpython_abi_wasm_exports.rs"
@@ -1381,6 +1382,19 @@ def test_cpython_abi_variadic_shim_owns_variadic_exports() -> None:
     assert "PyOS_snprintf(" in shim
     assert "PyOS_snprintf" in variadic_exports
     assert "vsnprintf(str, size, format, ap)" in shim
+    assert "int molt_capi_write_string(const char *text, FILE *stream)" in shim
+    assert "fwrite(text, 1, length, stream) == length ? 0 : EOF" in shim
+    assert "fn molt_capi_write_string(text: *const c_char, stream: *mut CFile)" in platform
+    assert "molt_capi_write_string(text, stream)" in platform
+    for operation in ("malloc", "calloc", "realloc", "free"):
+        assert f"molt_capi_{operation}" in shim
+        assert f"molt_capi_{operation}" in platform
+    assert "freestanding_alloc" not in platform
+    assert "std::alloc::" not in platform
+    assert 'freestanding_libc_dir = Some(provider.lib_dir("wasm32-wasip1"))' in build_rs
+    assert 'println!("cargo:rustc-link-lib=static=c")' in build_rs
+    assert "fputs(" not in shim
+    assert "let _ = (text, stream)" not in platform
 
 
 def test_cpython_abi_pyarg_format_parity_masks() -> None:

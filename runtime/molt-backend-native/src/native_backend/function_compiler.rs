@@ -500,7 +500,7 @@ impl SimpleBackend {
                 .map(parse_truthy_env)
                 .unwrap_or(false)
         });
-        let exc_global_flag_ptr_fn = if has_exc_handling && !inline_exc_disabled {
+        let exc_pending_flag_ptr_fn = if has_exc_handling && !inline_exc_disabled {
             Some(import_func_ref(
                 &mut self.module,
                 &mut self.import_ids,
@@ -513,20 +513,7 @@ impl SimpleBackend {
         } else {
             None
         };
-        let exc_task_flag_ptr_fn = if has_exc_handling && !inline_exc_disabled {
-            Some(import_func_ref(
-                &mut self.module,
-                &mut self.import_ids,
-                &mut builder,
-                &mut import_refs,
-                "molt_task_exception_pending_flag_ptr",
-                &[],
-                &[types::I64],
-            ))
-        } else {
-            None
-        };
-        let exc_flag_ptr_slot = if exc_global_flag_ptr_fn.is_some() {
+        let exc_flag_ptr_slot = if exc_pending_flag_ptr_fn.is_some() {
             Some(builder.create_sized_stack_slot(StackSlotData::new(
                 StackSlotKind::ExplicitSlot,
                 8,
@@ -663,18 +650,9 @@ impl SimpleBackend {
         // Fetch the exception flag pointer once in the entry block and keep
         // it in a stack slot so later check_exception sites can load it
         // without re-entering Cranelift SSA variable repair.
-        if let (Some(slot), Some(global_fn_ref), Some(task_fn_ref)) = (
-            exc_flag_ptr_slot,
-            exc_global_flag_ptr_fn,
-            exc_task_flag_ptr_fn,
-        ) {
-            let global_call = builder.ins().call(global_fn_ref, &[]);
-            let global_ptr = builder.inst_results(global_call)[0];
-            let task_call = builder.ins().call(task_fn_ref, &[]);
-            let task_ptr = builder.inst_results(task_call)[0];
-            let zero = builder.ins().iconst(types::I64, 0);
-            let has_task_flag = builder.ins().icmp(IntCC::NotEqual, task_ptr, zero);
-            let active_ptr = builder.ins().select(has_task_flag, task_ptr, global_ptr);
+        if let (Some(slot), Some(flag_fn_ref)) = (exc_flag_ptr_slot, exc_pending_flag_ptr_fn) {
+            let call = builder.ins().call(flag_fn_ref, &[]);
+            let active_ptr = builder.inst_results(call)[0];
             builder.ins().stack_store(active_ptr, slot, 0);
         }
 

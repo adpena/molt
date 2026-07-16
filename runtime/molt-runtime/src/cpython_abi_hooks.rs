@@ -3,8 +3,8 @@
 //! Each hook acquires the GIL internally via `with_gil` — re-entrant and safe
 //! whether called from within Molt's execution frame or from a bare C extension.
 
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
+use std::sync::{Condvar, Mutex};
 
 use std::ffi::CStr;
 use std::os::raw::c_int;
@@ -54,6 +54,7 @@ use crate::object::{
     HEADER_FLAG_FUNC_VARIADIC_TRAMPOLINE, bytes_data, bytes_len, dec_ref_bits, header_from_obj_ptr,
     inc_ref_bits, object_type_id, string_bytes, string_len,
 };
+use molt_cpython_abi::api::object::{PY_GIL_STATE_LOCKED, PY_GIL_STATE_UNLOCKED};
 
 // ─── Hook implementations ─────────────────────────────────────────────────
 
@@ -61,9 +62,22 @@ fn abi_buffer_view_from_runtime(view: crate::MoltBufferView) -> AbiMoltBufferVie
     unsafe { std::mem::transmute::<crate::MoltBufferView, AbiMoltBufferView>(view) }
 }
 
+#[derive(Clone, Copy)]
+struct AbiGilEnsureState {
+    depth: usize,
+    first_state: c_int,
+    encoded_lane: u64,
+}
+
 thread_local! {
-    static ABI_GIL_ENSURE_GUARDS: std::cell::RefCell<Vec<GilGuard>> = const { std::cell::RefCell::new(Vec::new()) };
-    static ABI_GIL_RELEASE_GUARDS: std::cell::RefCell<Vec<GilReleaseGuard>> = const { std::cell::RefCell::new(Vec::new()) };
+    static ABI_GIL_ENSURE_STATE: std::cell::Cell<AbiGilEnsureState> = const {
+        std::cell::Cell::new(AbiGilEnsureState {
+            depth: 0,
+            first_state: 0,
+            encoded_lane: 0,
+        })
+    };
+    static ABI_GIL_RELEASE_STATE: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
 }
 
 #[inline]
@@ -84,38 +98,112 @@ fn owned_result_from_pending(bits: u64) -> OwnedHandleResult {
     }
 }
 
-unsafe extern "C" fn hook_gil_ensure() -> c_int {
+fn gil_ensure_unit() -> c_int {
     let was_held = gil_owned_by_current_thread();
-    ABI_GIL_ENSURE_GUARDS.with(|guards| guards.borrow_mut().push(GilGuard::new()));
-    c_int::from(was_held)
+    let gil_state = if was_held {
+        PY_GIL_STATE_LOCKED
+    } else {
+        PY_GIL_STATE_UNLOCKED
+    };
+    let encoded_lane = GilGuard::new().into_encoded_lane();
+    ABI_GIL_ENSURE_STATE.with(|slot| {
+        let mut state = slot.get();
+        if state.depth == 0 {
+            state.first_state = gil_state;
+            state.encoded_lane = encoded_lane;
+        } else {
+            assert_eq!(
+                state.encoded_lane, encoded_lane,
+                "PyGILState_Ensure changed custody lane while nested"
+            );
+        }
+        state.depth = state
+            .depth
+            .checked_add(1)
+            .expect("PyGILState_Ensure nesting depth overflow");
+        slot.set(state);
+    });
+    gil_state
 }
 
-unsafe extern "C" fn hook_gil_leave(_state: c_int) {
-    ABI_GIL_ENSURE_GUARDS.with(|guards| {
-        let guard = guards
-            .borrow_mut()
-            .pop()
-            .expect("PyGILState_Release without matching PyGILState_Ensure");
-        drop(guard);
+fn gil_leave_unit(release_state: c_int) {
+    let encoded_lane = ABI_GIL_ENSURE_STATE.with(|slot| {
+        let mut state = slot.get();
+        assert!(
+            state.depth > 0,
+            "PyGILState_Release without matching PyGILState_Ensure"
+        );
+        let expected = if state.depth == 1 {
+            state.first_state
+        } else {
+            PY_GIL_STATE_LOCKED
+        };
+        assert_eq!(
+            release_state, expected,
+            "PyGILState_Release state does not match its Ensure"
+        );
+        let encoded_lane = state.encoded_lane;
+        state.depth -= 1;
+        if state.depth == 0 {
+            state.first_state = 0;
+            state.encoded_lane = 0;
+        }
+        slot.set(state);
+        encoded_lane
     });
+    // SAFETY: the scalar TLS state consumes exactly one unmatched lane unit
+    // created by `gil_ensure_unit` on this thread.
+    drop(unsafe { GilGuard::from_encoded_lane(encoded_lane) });
+}
+
+fn gil_save_thread() {
+    ABI_GIL_RELEASE_STATE.with(|slot| {
+        assert!(
+            slot.get().is_none(),
+            "nested PyEval_SaveThread is not a valid custody transition"
+        );
+    });
+    assert!(
+        gil_owned_by_current_thread(),
+        "PyEval_SaveThread requires current-thread GIL custody"
+    );
+    ABI_GIL_RELEASE_STATE.with(|slot| {
+        debug_assert!(slot.get().is_none());
+        slot.set(Some(GilReleaseGuard::suspend().into_encoded_state()));
+    });
+}
+
+fn gil_restore_thread() {
+    let encoded = ABI_GIL_RELEASE_STATE.with(|slot| {
+        slot.take()
+            .expect("PyEval_RestoreThread without matching PyEval_SaveThread")
+    });
+    // SAFETY: the single-slot state consumes its unmatched same-thread token.
+    drop(unsafe { GilReleaseGuard::from_encoded_state(encoded) });
+}
+
+unsafe extern "C" fn hook_gil_ensure() -> c_int {
+    gil_ensure_unit()
+}
+
+unsafe extern "C" fn hook_gil_leave(state: c_int) {
+    gil_leave_unit(state);
 }
 
 unsafe extern "C" fn hook_gil_release() {
-    ABI_GIL_RELEASE_GUARDS.with(|guards| guards.borrow_mut().push(GilReleaseGuard::new()));
+    gil_save_thread();
 }
 
 unsafe extern "C" fn hook_gil_restore() {
-    ABI_GIL_RELEASE_GUARDS.with(|guards| {
-        let guard = guards
-            .borrow_mut()
-            .pop()
-            .expect("PyEval_RestoreThread without matching PyEval_SaveThread");
-        drop(guard);
-    });
+    gil_restore_thread();
 }
 
 unsafe extern "C" fn hook_gil_check() -> c_int {
     c_int::from(gil_owned_by_current_thread())
+}
+
+unsafe extern "C" fn hook_runtime_is_initialized() -> c_int {
+    c_int::from(crate::state::runtime_state::runtime_is_initialized())
 }
 
 fn runtime_buffer_view_from_abi(view: AbiMoltBufferView) -> crate::MoltBufferView {
@@ -561,9 +649,11 @@ unsafe extern "C" fn hook_list_set(list_bits: u64, i: usize, val_bits: u64) -> O
         if unsafe { object_type_id(ptr) } != TYPE_ID_LIST {
             return OwnedHandleResult::error();
         }
-        unsafe { crate::object::list_mutation::replace_one_runtime_only(&_py, ptr, i, val_bits) }
-            .map(OwnedHandleResult::ok)
-            .unwrap_or_else(OwnedHandleResult::error)
+        unsafe {
+            crate::object::list_mutation::replace_one_transferring_displaced(&_py, ptr, i, val_bits)
+        }
+        .map(OwnedHandleResult::ok)
+        .unwrap_or_else(OwnedHandleResult::error)
     })
 }
 
@@ -3554,16 +3644,90 @@ unsafe extern "C" fn hook_register_c_function(
 
 // ─── Registration ─────────────────────────────────────────────────────────
 
-static HOOKS_REGISTERED: AtomicBool = AtomicBool::new(false);
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HookRegistrationState {
+    Uninitialized,
+    Initializing { owner: std::thread::ThreadId },
+    Ready,
+}
+
+static HOOK_REGISTRATION_STATE: Mutex<HookRegistrationState> =
+    Mutex::new(HookRegistrationState::Uninitialized);
+static HOOK_REGISTRATION_READY: Condvar = Condvar::new();
+
+struct HookRegistrationGuard {
+    owner: std::thread::ThreadId,
+    committed: bool,
+}
+
+impl HookRegistrationGuard {
+    fn begin() -> Option<Self> {
+        let owner = std::thread::current().id();
+        let mut state = HOOK_REGISTRATION_STATE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        loop {
+            match *state {
+                HookRegistrationState::Ready => return None,
+                HookRegistrationState::Initializing {
+                    owner: active_owner,
+                } if active_owner == owner => {
+                    return None;
+                }
+                HookRegistrationState::Initializing { .. } => {
+                    state = HOOK_REGISTRATION_READY
+                        .wait(state)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                }
+                HookRegistrationState::Uninitialized => {
+                    *state = HookRegistrationState::Initializing { owner };
+                    return Some(Self {
+                        owner,
+                        committed: false,
+                    });
+                }
+            }
+        }
+    }
+
+    fn commit(mut self) {
+        let mut state = HOOK_REGISTRATION_STATE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(
+            *state,
+            HookRegistrationState::Initializing { owner: self.owner },
+            "CPython hook registration lost publication ownership"
+        );
+        *state = HookRegistrationState::Ready;
+        self.committed = true;
+        HOOK_REGISTRATION_READY.notify_all();
+    }
+}
+
+impl Drop for HookRegistrationGuard {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        let mut state = HOOK_REGISTRATION_STATE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *state == (HookRegistrationState::Initializing { owner: self.owner }) {
+            *state = HookRegistrationState::Uninitialized;
+            HOOK_REGISTRATION_READY.notify_all();
+        }
+    }
+}
 
 /// Register the runtime hooks into `molt-lang-cpython-abi`.
 /// Idempotent — safe to call multiple times (only registers once).
 pub fn register_cpython_hooks() {
     molt_cpython_abi::bridge::molt_cpython_abi_init();
-    if HOOKS_REGISTERED.swap(true, Ordering::SeqCst) {
-        return;
-    }
     with_gil(|_py| {
+        let Some(registration) = HookRegistrationGuard::begin() else {
+            return;
+        };
         let builtins = crate::builtin_classes(&_py);
         for (class_bits, type_object) in [
             (
@@ -3695,111 +3859,115 @@ pub fn register_cpython_hooks() {
             )
         };
         assert!(traceback_bound, "failed to bind PyTraceBack_Type");
+        let hooks = RuntimeHooks {
+            abi_magic: molt_cpython_abi::hooks::RUNTIME_HOOKS_ABI_MAGIC,
+            abi_version: molt_cpython_abi::hooks::RUNTIME_HOOKS_ABI_VERSION,
+            struct_size: std::mem::size_of::<RuntimeHooks>() as u32,
+            gil_ensure: hook_gil_ensure,
+            gil_leave: hook_gil_leave,
+            gil_release: hook_gil_release,
+            gil_restore: hook_gil_restore,
+            gil_check: hook_gil_check,
+            runtime_is_initialized: hook_runtime_is_initialized,
+            alloc_str: hook_alloc_str,
+            alloc_bytes: hook_alloc_bytes,
+            int_from_i64: hook_int_from_i64,
+            int_from_u64: hook_int_from_u64,
+            int_as_i64: hook_int_as_i64,
+            int_as_i64_checked: hook_int_as_i64_checked,
+            int_as_u64_checked: hook_int_as_u64_checked,
+            int_as_u64_mask: hook_int_as_u64_mask,
+            int_from_digits: hook_int_from_digits,
+            int_from_f64_trunc: hook_int_from_f64_trunc,
+            int_sign: hook_int_sign,
+            int_signed_byte_width: hook_int_signed_byte_width,
+            int_from_bytes: hook_int_from_bytes,
+            int_to_bytes: hook_int_to_bytes,
+            int_num_bits: hook_int_num_bits,
+            int_max_str_digits: hook_int_max_str_digits,
+            complex_parts: hook_complex_parts,
+            complex_from_doubles: hook_complex_from_doubles,
+            alloc_list: hook_alloc_list,
+            alloc_list_presized: hook_alloc_list_presized,
+            list_append: hook_list_append,
+            list_len: hook_list_len,
+            list_item: hook_list_item,
+            list_set: hook_list_set,
+            list_insert: hook_list_insert,
+            list_sort: hook_list_sort,
+            list_reverse: hook_list_reverse,
+            list_set_slice: hook_list_set_slice,
+            alloc_tuple: hook_alloc_tuple,
+            tuple_set: hook_tuple_set,
+            tuple_len: hook_tuple_len,
+            tuple_item: hook_tuple_item,
+            alloc_dict: hook_alloc_dict,
+            dict_set: hook_dict_set,
+            dict_get: hook_dict_get,
+            dict_del: hook_dict_del,
+            dict_len: hook_dict_len,
+            dict_entry: hook_dict_entry,
+            str_data: hook_str_data,
+            bytes_data: hook_bytes_data,
+            buffer_acquire: hook_buffer_acquire,
+            buffer_release: hook_buffer_release,
+            object_get_attr: hook_object_get_attr,
+            object_set_attr: hook_object_set_attr,
+            object_format: hook_object_format,
+            float_repr: hook_float_repr,
+            sys_get_object_borrowed: hook_sys_get_object_borrowed,
+            eval_get_builtins_borrowed: hook_eval_get_builtins_borrowed,
+            classify_heap: hook_classify_heap,
+            object_hash: hook_object_hash,
+            inc_ref: hook_inc_ref,
+            dec_ref: hook_dec_ref,
+            ref_count: hook_ref_count,
+            try_mark_abi_view: hook_try_mark_abi_view,
+            alloc_module: hook_alloc_module,
+            module_get_dict_borrowed: hook_module_get_dict_borrowed,
+            import_add_module_borrowed: hook_import_add_module_borrowed,
+            module_set_attr: hook_module_set_attr,
+            module_capi_register: hook_module_capi_register,
+            module_capi_get_state: hook_module_capi_get_state,
+            module_state_add: hook_module_state_add,
+            module_state_find: hook_module_state_find,
+            module_state_remove: hook_module_state_remove,
+            register_c_function: hook_register_c_function,
+            import_module: hook_import_module,
+            exception_pending: hook_exception_pending,
+            number_binary_op: hook_number_binary_op,
+            number_unary_op: hook_number_unary_op,
+            number_power: hook_number_power,
+            dict_op: hook_dict_op,
+            set_op: hook_set_op,
+            set_new: hook_set_new,
+            set_size: hook_set_size,
+            set_contains: hook_set_contains,
+            set_add: hook_set_add,
+            set_discard: hook_set_discard,
+            object_dir: hook_object_dir,
+            object_call: hook_object_call,
+            foreign_new: hook_foreign_new,
+            report_unraisable: hook_report_unraisable,
+            normalize_exception: hook_normalize_exception,
+            exception_set_field: hook_exception_set_field,
+            exception_get_field: hook_exception_get_field,
+            exception_class_borrowed: hook_exception_class_borrowed,
+            exception_snapshot: hook_exception_snapshot,
+            exception_commit_snapshot: hook_exception_commit_snapshot,
+            type_is_subtype: hook_type_is_subtype,
+            take_pending_exception: hook_take_pending_exception,
+            handled_exception_get: hook_handled_exception_get,
+            handled_exception_set: hook_handled_exception_set,
+        };
+        // SAFETY: all fn pointers are valid for the process lifetime.
+        let installed = unsafe { molt_cpython_abi::try_set_runtime_hooks(hooks) };
+        assert!(
+            installed,
+            "CPython runtime hooks were registered by a second authority"
+        );
+        registration.commit();
     });
-    let hooks = RuntimeHooks {
-        abi_magic: molt_cpython_abi::hooks::RUNTIME_HOOKS_ABI_MAGIC,
-        abi_version: molt_cpython_abi::hooks::RUNTIME_HOOKS_ABI_VERSION,
-        struct_size: std::mem::size_of::<RuntimeHooks>() as u32,
-        gil_ensure: hook_gil_ensure,
-        gil_leave: hook_gil_leave,
-        gil_release: hook_gil_release,
-        gil_restore: hook_gil_restore,
-        gil_check: hook_gil_check,
-        alloc_str: hook_alloc_str,
-        alloc_bytes: hook_alloc_bytes,
-        int_from_i64: hook_int_from_i64,
-        int_from_u64: hook_int_from_u64,
-        int_as_i64: hook_int_as_i64,
-        int_as_i64_checked: hook_int_as_i64_checked,
-        int_as_u64_checked: hook_int_as_u64_checked,
-        int_as_u64_mask: hook_int_as_u64_mask,
-        int_from_digits: hook_int_from_digits,
-        int_from_f64_trunc: hook_int_from_f64_trunc,
-        int_sign: hook_int_sign,
-        int_signed_byte_width: hook_int_signed_byte_width,
-        int_from_bytes: hook_int_from_bytes,
-        int_to_bytes: hook_int_to_bytes,
-        int_num_bits: hook_int_num_bits,
-        int_max_str_digits: hook_int_max_str_digits,
-        complex_parts: hook_complex_parts,
-        complex_from_doubles: hook_complex_from_doubles,
-        alloc_list: hook_alloc_list,
-        alloc_list_presized: hook_alloc_list_presized,
-        list_append: hook_list_append,
-        list_len: hook_list_len,
-        list_item: hook_list_item,
-        list_set: hook_list_set,
-        list_insert: hook_list_insert,
-        list_sort: hook_list_sort,
-        list_reverse: hook_list_reverse,
-        list_set_slice: hook_list_set_slice,
-        alloc_tuple: hook_alloc_tuple,
-        tuple_set: hook_tuple_set,
-        tuple_len: hook_tuple_len,
-        tuple_item: hook_tuple_item,
-        alloc_dict: hook_alloc_dict,
-        dict_set: hook_dict_set,
-        dict_get: hook_dict_get,
-        dict_del: hook_dict_del,
-        dict_len: hook_dict_len,
-        dict_entry: hook_dict_entry,
-        str_data: hook_str_data,
-        bytes_data: hook_bytes_data,
-        buffer_acquire: hook_buffer_acquire,
-        buffer_release: hook_buffer_release,
-        object_get_attr: hook_object_get_attr,
-        object_set_attr: hook_object_set_attr,
-        object_format: hook_object_format,
-        float_repr: hook_float_repr,
-        sys_get_object_borrowed: hook_sys_get_object_borrowed,
-        eval_get_builtins_borrowed: hook_eval_get_builtins_borrowed,
-        classify_heap: hook_classify_heap,
-        object_hash: hook_object_hash,
-        inc_ref: hook_inc_ref,
-        dec_ref: hook_dec_ref,
-        ref_count: hook_ref_count,
-        try_mark_abi_view: hook_try_mark_abi_view,
-        alloc_module: hook_alloc_module,
-        module_get_dict_borrowed: hook_module_get_dict_borrowed,
-        import_add_module_borrowed: hook_import_add_module_borrowed,
-        module_set_attr: hook_module_set_attr,
-        module_capi_register: hook_module_capi_register,
-        module_capi_get_state: hook_module_capi_get_state,
-        module_state_add: hook_module_state_add,
-        module_state_find: hook_module_state_find,
-        module_state_remove: hook_module_state_remove,
-        register_c_function: hook_register_c_function,
-        import_module: hook_import_module,
-        exception_pending: hook_exception_pending,
-        number_binary_op: hook_number_binary_op,
-        number_unary_op: hook_number_unary_op,
-        number_power: hook_number_power,
-        dict_op: hook_dict_op,
-        set_op: hook_set_op,
-        set_new: hook_set_new,
-        set_size: hook_set_size,
-        set_contains: hook_set_contains,
-        set_add: hook_set_add,
-        set_discard: hook_set_discard,
-        object_dir: hook_object_dir,
-        object_call: hook_object_call,
-        foreign_new: hook_foreign_new,
-        report_unraisable: hook_report_unraisable,
-        normalize_exception: hook_normalize_exception,
-        exception_set_field: hook_exception_set_field,
-        exception_get_field: hook_exception_get_field,
-        exception_class_borrowed: hook_exception_class_borrowed,
-        exception_snapshot: hook_exception_snapshot,
-        exception_commit_snapshot: hook_exception_commit_snapshot,
-        type_is_subtype: hook_type_is_subtype,
-        take_pending_exception: hook_take_pending_exception,
-        handled_exception_get: hook_handled_exception_get,
-        handled_exception_set: hook_handled_exception_set,
-    };
-    // SAFETY: all fn pointers are valid for the process lifetime.
-    unsafe {
-        let _ = molt_cpython_abi::try_set_runtime_hooks(hooks);
-    }
 }
 
 #[cfg(test)]
@@ -4162,7 +4330,11 @@ mod tests {
             exc_value,
             &raw mut molt_cpython_abi::abi_types::Py_None
         ));
-        assert!(fetched_exception_args(exc_value).is_empty());
+        let args = fetched_exception_args(exc_value);
+        assert!(
+            args.is_empty(),
+            "expected zero exception args, got {args:?}"
+        );
         unsafe {
             molt_cpython_abi::api::refcount::Py_DECREF(exc_type);
             molt_cpython_abi::api::refcount::Py_DECREF(exc_value);
@@ -4375,6 +4547,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "process-global GIL custody stress; run as the sole selected test"]
     fn gil_custody_recursive_ensure_and_allow_threads_make_progress() {
         let _test_guard = cpython_abi_test_guard();
         register_cpython_hooks();
@@ -4384,6 +4557,8 @@ mod tests {
 
         let outer = unsafe { molt_cpython_abi::api::object::PyGILState_Ensure() };
         let inner = unsafe { molt_cpython_abi::api::object::PyGILState_Ensure() };
+        assert_eq!(outer, PY_GIL_STATE_LOCKED);
+        assert_eq!(inner, PY_GIL_STATE_LOCKED);
         assert_eq!(
             unsafe { molt_cpython_abi::api::object::PyGILState_Check() },
             1
@@ -4427,9 +4602,15 @@ mod tests {
                 started.fetch_add(1, AtomicOrdering::Release);
                 for _ in 0..ACQUISITIONS {
                     let state = unsafe { molt_cpython_abi::api::object::PyGILState_Ensure() };
-                    assert_eq!(state, 0, "fresh worker acquisition must report unlocked");
+                    assert_eq!(
+                        state, PY_GIL_STATE_UNLOCKED,
+                        "fresh worker acquisition must report unlocked"
+                    );
                     let recursive = unsafe { molt_cpython_abi::api::object::PyGILState_Ensure() };
-                    assert_eq!(recursive, 1, "recursive Ensure must report locked");
+                    assert_eq!(
+                        recursive, PY_GIL_STATE_LOCKED,
+                        "recursive Ensure must report locked"
+                    );
                     unsafe { molt_cpython_abi::api::object::PyGILState_Release(recursive) };
                     let now = active.fetch_add(1, AtomicOrdering::AcqRel) + 1;
                     max_active.fetch_max(now, AtomicOrdering::AcqRel);
@@ -4455,7 +4636,7 @@ mod tests {
         }
 
         {
-            let _release = GilReleaseGuard::new();
+            let _release = GilReleaseGuard::suspend();
             for worker in workers {
                 worker.join().expect("worker panicked");
             }
@@ -4470,6 +4651,195 @@ mod tests {
             "foreign-proxy mutation lost updates despite GIL custody"
         );
         crate::concurrency::gil::release_runtime_gil();
+    }
+
+    #[test]
+    fn gil_ensure_scalar_custody_is_nested_and_exact() {
+        let _test_guard = cpython_abi_test_guard();
+        assert!(!gil_owned_by_current_thread());
+
+        let outer = gil_ensure_unit();
+        assert_eq!(outer, PY_GIL_STATE_UNLOCKED);
+        let inner = gil_ensure_unit();
+        assert_eq!(inner, PY_GIL_STATE_LOCKED);
+        assert!(gil_owned_by_current_thread());
+
+        gil_leave_unit(inner);
+        assert!(gil_owned_by_current_thread());
+        gil_leave_unit(outer);
+        assert!(!gil_owned_by_current_thread());
+
+        assert!(
+            crate::test_support::catch_expected_unwind(|| gil_leave_unit(PY_GIL_STATE_LOCKED))
+                .is_err(),
+            "unmatched PyGILState_Release must fail closed"
+        );
+    }
+
+    #[test]
+    fn cpython_thread_state_is_stable_attached_and_save_restore_exact() {
+        let _test_guard = cpython_abi_test_guard();
+        assert_eq!(crate::state::runtime_state::molt_runtime_init(), 1);
+        register_cpython_hooks();
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::object::Py_IsInitialized() },
+            1
+        );
+
+        let ensure_state = unsafe { molt_cpython_abi::api::object::PyGILState_Ensure() };
+        let tstate = unsafe { molt_cpython_abi::api::object::PyThreadState_Get() };
+        assert!(!tstate.is_null());
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::object::_PyThreadState_UncheckedGet() },
+            tstate
+        );
+        let tstate_id = unsafe { molt_cpython_abi::api::object::PyThreadState_GetID(tstate) };
+        assert_ne!(tstate_id, 0);
+        let interp = unsafe { molt_cpython_abi::api::object::PyThreadState_GetInterpreter(tstate) };
+        assert!(!interp.is_null());
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::object::PyInterpreterState_GetID(interp) },
+            0
+        );
+        assert_eq!(
+            unsafe {
+                molt_cpython_abi::api::object::PyInterpreterState_GetIDFromThreadState(tstate)
+            },
+            0
+        );
+        assert!(unsafe { molt_cpython_abi::api::object::PyThreadState_GetFrame(tstate) }.is_null());
+
+        let saved = unsafe { molt_cpython_abi::api::object::PyEval_SaveThread() };
+        assert_eq!(saved, tstate);
+        assert!(unsafe { molt_cpython_abi::api::object::_PyThreadState_UncheckedGet() }.is_null());
+        unsafe { molt_cpython_abi::api::object::PyEval_RestoreThread(saved) };
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::object::PyThreadState_Get() },
+            tstate
+        );
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::object::PyThreadState_GetID(tstate) },
+            tstate_id
+        );
+        unsafe { molt_cpython_abi::api::object::PyGILState_Release(ensure_state) };
+        assert!(unsafe { molt_cpython_abi::api::object::_PyThreadState_UncheckedGet() }.is_null());
+    }
+
+    #[test]
+    fn cpython_gilstate_restores_preexisting_internal_custody_without_attachment_leak() {
+        let _test_guard = cpython_abi_test_guard();
+        assert_eq!(crate::state::runtime_state::molt_runtime_init(), 1);
+        register_cpython_hooks();
+
+        let internal = GilGuard::new();
+        assert!(unsafe { molt_cpython_abi::api::object::_PyThreadState_UncheckedGet() }.is_null());
+        let outer = unsafe { molt_cpython_abi::api::object::PyGILState_Ensure() };
+        let inner = unsafe { molt_cpython_abi::api::object::PyGILState_Ensure() };
+        assert_eq!(outer, PY_GIL_STATE_LOCKED);
+        assert_eq!(inner, PY_GIL_STATE_LOCKED);
+        assert!(!unsafe { molt_cpython_abi::api::object::_PyThreadState_UncheckedGet() }.is_null());
+        unsafe { molt_cpython_abi::api::object::PyGILState_Release(inner) };
+        assert!(!unsafe { molt_cpython_abi::api::object::_PyThreadState_UncheckedGet() }.is_null());
+        unsafe { molt_cpython_abi::api::object::PyGILState_Release(outer) };
+        assert!(unsafe { molt_cpython_abi::api::object::_PyThreadState_UncheckedGet() }.is_null());
+        assert!(gil_owned_by_current_thread());
+        drop(internal);
+    }
+
+    #[test]
+    fn cpython_thread_state_metadata_accepts_live_foreign_state_but_not_custody() {
+        let _test_guard = cpython_abi_test_guard();
+        assert_eq!(crate::state::runtime_state::molt_runtime_init(), 1);
+        register_cpython_hooks();
+
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let worker_release = Arc::clone(&release);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let state = unsafe { molt_cpython_abi::api::object::PyGILState_Ensure() };
+            let tstate = unsafe { molt_cpython_abi::api::object::PyThreadState_Get() };
+            let id = unsafe { molt_cpython_abi::api::object::PyThreadState_GetID(tstate) };
+            unsafe { molt_cpython_abi::api::object::PyGILState_Release(state) };
+            tx.send((tstate as usize, id)).unwrap();
+            worker_release.wait();
+        });
+
+        let (foreign, id) = rx.recv().unwrap();
+        let foreign = foreign as *mut molt_cpython_abi::abi_types::PyThreadState;
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::object::PyThreadState_GetID(foreign) },
+            id
+        );
+        let interp =
+            unsafe { molt_cpython_abi::api::object::PyThreadState_GetInterpreter(foreign) };
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::object::PyInterpreterState_GetID(interp) },
+            0
+        );
+        assert_eq!(
+            unsafe {
+                molt_cpython_abi::api::object::PyInterpreterState_GetIDFromThreadState(foreign)
+            },
+            0
+        );
+        assert!(
+            unsafe { molt_cpython_abi::api::object::PyThreadState_GetFrame(foreign) }.is_null()
+        );
+        release.wait();
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn save_thread_single_slot_rejects_nested_and_unmatched_transitions() {
+        let _test_guard = cpython_abi_test_guard();
+        assert!(
+            crate::test_support::catch_expected_unwind(gil_save_thread).is_err(),
+            "PyEval_SaveThread without GIL custody must fail closed"
+        );
+        let guard = GilGuard::new();
+        gil_save_thread();
+        assert!(!gil_owned_by_current_thread());
+        assert!(
+            crate::test_support::catch_expected_unwind(gil_save_thread).is_err(),
+            "nested PyEval_SaveThread must fail before changing custody"
+        );
+        gil_restore_thread();
+        assert!(gil_owned_by_current_thread());
+        assert!(
+            crate::test_support::catch_expected_unwind(gil_restore_thread).is_err(),
+            "unmatched PyEval_RestoreThread must fail closed"
+        );
+        drop(guard);
+    }
+
+    #[cfg(feature = "l7-attestation-probe")]
+    #[test]
+    fn cpython_abi_gil_custody_is_allocation_free_after_warmup() {
+        let _test_guard = cpython_abi_test_guard();
+        for _ in 0..64 {
+            let state = gil_ensure_unit();
+            gil_leave_unit(state);
+            let guard = GilGuard::new();
+            gil_save_thread();
+            gil_restore_thread();
+            drop(guard);
+        }
+
+        crate::attestation_probe::reset();
+        crate::attestation_probe::set_tracking(true);
+        for _ in 0..10_000 {
+            let state = gil_ensure_unit();
+            gil_leave_unit(state);
+            let guard = GilGuard::new();
+            gil_save_thread();
+            gil_restore_thread();
+            drop(guard);
+        }
+        crate::attestation_probe::set_tracking(false);
+
+        let observed = crate::attestation_probe::snapshot();
+        assert_eq!(observed.allocations, 0, "{observed:?}");
+        assert_eq!(observed.allocated_bytes, 0, "{observed:?}");
     }
 
     unsafe extern "C" fn gil_bench_noargs(

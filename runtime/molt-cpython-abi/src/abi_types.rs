@@ -487,8 +487,6 @@ unsafe impl Send for PyInterpreterState {}
 unsafe impl Sync for PyInterpreterState {}
 unsafe impl Send for _PyErr_StackItem {}
 unsafe impl Sync for _PyErr_StackItem {}
-unsafe impl Send for PyThreadState {}
-unsafe impl Sync for PyThreadState {}
 
 #[repr(C)]
 pub struct PyBaseExceptionObject {

@@ -743,6 +743,15 @@ pub(crate) const HEADER_AUX_KIND_NONE: u16 = molt_codegen_abi::HEADER_AUX_KIND_N
 pub(crate) const HEADER_AUX_KIND_CLASS_INLINE: u16 = molt_codegen_abi::HEADER_AUX_KIND_CLASS_INLINE;
 pub(crate) const HEADER_AUX_KIND_STATE_INLINE: u16 = molt_codegen_abi::HEADER_AUX_KIND_STATE_INLINE;
 pub(crate) const HEADER_AUX_KIND_SIDECAR: u16 = molt_codegen_abi::HEADER_AUX_KIND_SIDECAR;
+
+#[inline]
+const fn header_aux_storage_bytes(kind: u16) -> usize {
+    if kind == HEADER_AUX_KIND_SIDECAR {
+        aux_sidecar_size()
+    } else {
+        0
+    }
+}
 pub(crate) const HEADER_CLASS_WORD_BORROWED: u64 = molt_codegen_abi::HEADER_CLASS_WORD_BORROWED;
 pub(crate) const HEADER_CLASS_WORD_TAG_MASK: u64 = molt_codegen_abi::HEADER_CLASS_WORD_TAG_MASK;
 pub(crate) const HEADER_CLASS_WORD_BITS_MASK: u64 = molt_codegen_abi::HEADER_CLASS_WORD_BITS_MASK;
@@ -1256,9 +1265,7 @@ pub(crate) fn alloc_object_zeroed_with_aux(
             release_object_allocation_reservation(plan);
             return std::ptr::null_mut();
         }
-        let aux_bytes = (header_aux_snapshot(header).kind == HEADER_AUX_KIND_SIDECAR)
-            .then_some(aux_sidecar_size())
-            .unwrap_or(0);
+        let aux_bytes = header_aux_storage_bytes(header_aux_snapshot(header).kind);
         let tracked_bytes = plan.alloc_size.saturating_add(aux_bytes);
         profile_hit(_py, &ALLOC_COUNT);
         profile_hit_bytes(_py, &ALLOC_BYTES_TOTAL, tracked_bytes as u64);
@@ -1341,9 +1348,7 @@ pub(crate) fn alloc_object_with_aux(
             release_object_allocation_reservation(plan);
             return std::ptr::null_mut();
         }
-        let aux_bytes = (header_aux_snapshot(header).kind == HEADER_AUX_KIND_SIDECAR)
-            .then_some(aux_sidecar_size())
-            .unwrap_or(0);
+        let aux_bytes = header_aux_storage_bytes(header_aux_snapshot(header).kind);
         let tracked_bytes = plan.alloc_size.saturating_add(aux_bytes);
         profile_hit(_py, &ALLOC_COUNT);
         profile_hit_bytes(_py, &ALLOC_BYTES_TOTAL, tracked_bytes as u64);
@@ -1545,7 +1550,7 @@ fn class_word(bits: u64, ownership: ClassEdgeOwnership) -> u64 {
     if bits == 0 {
         0
     } else {
-        bits | u64::from(ownership == ClassEdgeOwnership::Borrowed) * HEADER_CLASS_WORD_BORROWED
+        bits | (u64::from(ownership == ClassEdgeOwnership::Borrowed) * HEADER_CLASS_WORD_BORROWED)
     }
 }
 
@@ -2419,11 +2424,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                 prev.saturating_sub(1)
             );
         }
-        let view_hold_is_final = if prev == 2
-            && (header_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0
-            && !(type_id == TYPE_ID_EXCEPTION
-                && crate::builtins::exceptions::exception_is_rooted(py, ptr))
-        {
+        let view_hold_is_final = if prev == 2 && (header_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0 {
             let bits = MoltObject::from_ptr(ptr).bits();
             match molt_cpython_abi::bridge::GLOBAL_BRIDGE.runtime_owner_dropped_to_view_hold(bits) {
                 Some(true) => {
@@ -2449,23 +2450,12 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             }
         }
         if prev == 1 || view_hold_is_final {
-            if type_id == TYPE_ID_EXCEPTION
-                && crate::builtins::exceptions::exception_is_rooted(py, ptr)
-            {
-                // Pending exception roots (last-exception slots / active exception stacks)
-                // must keep the object alive even if transient lowering bugs over-decref.
-                if trace_exception_rc() {
-                    eprintln!("EXC_RC_RESURRECT ptr=0x{:x} (rooted, rc 0→1)", ptr as usize);
-                }
-                (*header_ptr).ref_count.store(1, AtomicOrdering::Release);
-                return;
-            }
             if type_id == TYPE_ID_EXCEPTION && trace_exception_rc() {
                 eprintln!("EXC_RC_FREE ptr=0x{:x} (rc hit 0, freeing)", ptr as usize);
             }
             MoltRefCount::acquire_fence();
             // RC drop-insertion substrate (design 20): the rc=1→0 transition,
-            // past the immortal/rooted early-returns above. This is NOT yet a
+            // past the immortal and ABI-view early returns above. This is NOT yet a
             // confirmed deallocation: the finalize + weakref-clear revival window
             // below may run a `__del__` OR a weakref callback that RESURRECTS the
             // object (re-incrementing its refcount), in which case `dec_ref_ptr`
@@ -2479,11 +2469,8 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             // oversized exact size is immutable inside the sidecar.
             let object_bytes =
                 total_size_from_header_fields(header_size_class, header_aux.kind, header_aux.word);
-            let dealloc_bytes = object_bytes.saturating_add(
-                (header_aux.kind == HEADER_AUX_KIND_SIDECAR)
-                    .then_some(aux_sidecar_size())
-                    .unwrap_or(0),
-            ) as u64;
+            let dealloc_bytes =
+                object_bytes.saturating_add(header_aux_storage_bytes(header_aux.kind)) as u64;
             if debug_dec_ref_zero() {
                 eprintln!(
                     "molt dec_ref_zero ptr=0x{:x} type_id={}",
@@ -3370,6 +3357,8 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                         }
                     }
                     let _ = operator_drop_instance(py, ptr)
+                        // SAFETY: object destruction is serialized by `py` for
+                        // this complete drop dispatch.
                         || itertools_drop_instance(py, ptr)
                         || functools_drop_instance(py, ptr)
                         || types_drop_instance(py, ptr);

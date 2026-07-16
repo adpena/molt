@@ -99,7 +99,7 @@ impl LuauBackend {
                         sanitize_ident(exc)
                     ));
                 } else {
-                    self.emit_line(&format!("local {out} = false"));
+                    self.emit_unsupported_op(op);
                 }
             }
             "exception_kind" => {
@@ -109,7 +109,7 @@ impl LuauBackend {
                     let exc = sanitize_ident(exc_var);
                     self.emit_line(&format!("local {out} = molt_exception_kind({exc})"));
                 } else {
-                    self.emit_line(&format!("local {out} = nil"));
+                    self.emit_unsupported_op(op);
                 }
             }
             "exception_class" => {
@@ -119,7 +119,7 @@ impl LuauBackend {
                     let cls = sanitize_ident(class_var);
                     self.emit_line(&format!("local {out} = {cls}"));
                 } else {
-                    self.emit_line(&format!("local {out} = nil"));
+                    self.emit_unsupported_op(op);
                 }
             }
             "exception_message" => {
@@ -131,7 +131,7 @@ impl LuauBackend {
                         "local {out} = (type({exc}) == \"table\" and {exc}.__msg or tostring({exc}))"
                     ));
                 } else {
-                    self.emit_line(&format!("local {out} = nil -- [exception_message]"));
+                    self.emit_unsupported_op(op);
                 }
             }
             "exception_stack_depth" => {
@@ -139,8 +139,7 @@ impl LuauBackend {
                 self.emit_line(&format!("local {out} = 0"));
             }
             "exceptiongroup_match" | "exceptiongroup_combine" => {
-                let out = self.out_var(op);
-                self.emit_line(&format!("local {out} = nil -- [{}]", op.kind));
+                self.emit_unsupported_op(op);
             }
             _ => return false,
         }

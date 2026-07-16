@@ -242,7 +242,7 @@ impl MoltQueue {
                 None => None,
             };
             let ready = {
-                let _release = GilReleaseGuard::new();
+                let _release = GilReleaseGuard::suspend();
                 self.wait_not_full(wait_for)
             };
             if !ready {
@@ -497,7 +497,7 @@ pub unsafe extern "C" fn molt_queue_put(
             }
         } else {
             {
-                let _release = GilReleaseGuard::new();
+                let _release = GilReleaseGuard::suspend();
                 queue.put(item_bits, blocking, timeout)
             }
         };
@@ -526,7 +526,7 @@ pub unsafe extern "C" fn molt_queue_get(
             Err(bits) => return bits,
         };
         let out = {
-            let _release = GilReleaseGuard::new();
+            let _release = GilReleaseGuard::suspend();
             queue.get(blocking, timeout)
         };
         match out {
@@ -582,7 +582,7 @@ pub unsafe extern "C" fn molt_queue_join(handle_bits: u64) -> u64 {
             return raise_exception::<_>(_py, "TypeError", "invalid queue handle");
         };
         {
-            let _release = GilReleaseGuard::new();
+            let _release = GilReleaseGuard::suspend();
             queue.join();
         }
         MoltObject::none().bits()

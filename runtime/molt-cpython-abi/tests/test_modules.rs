@@ -561,6 +561,9 @@ unsafe extern "C" fn fake_gil_restore() {}
 unsafe extern "C" fn fake_gil_check() -> std::os::raw::c_int {
     1
 }
+unsafe extern "C" fn fake_runtime_is_initialized() -> std::os::raw::c_int {
+    1
+}
 
 const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     abi_magic: molt_cpython_abi::hooks::RUNTIME_HOOKS_ABI_MAGIC,
@@ -571,6 +574,7 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     gil_release: fake_gil_release,
     gil_restore: fake_gil_restore,
     gil_check: fake_gil_check,
+    runtime_is_initialized: fake_runtime_is_initialized,
     alloc_str: fake_alloc_str,
     alloc_bytes: fake_alloc_bytes,
     int_from_i64: fake_int_from_i64,

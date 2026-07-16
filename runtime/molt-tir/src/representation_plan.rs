@@ -6,6 +6,7 @@ use crate::tir::function::TirFunction;
 use crate::tir::lir::{LirRepr, LirValue};
 use crate::tir::lower_from_simple::lower_to_tir;
 use crate::tir::lower_to_lir::lower_function_to_lir_for_repr_fact_extraction;
+use crate::tir::op_kinds_generated::simpleir_integer_semantics_table;
 use crate::tir::ops::{AttrValue, TirOp};
 use crate::tir::simple_value_names::SimpleValueNames;
 use crate::tir::type_refine::refine_types;
@@ -20,10 +21,9 @@ mod indexed_facts;
 
 use indexed_facts::{
     FunctionFactIndex, IndexedFunctionFactIndex, PlanHashMap, PlanHashSet, alias_source_name,
-    container_constructor_result_ty, integer_arithmetic_result_op, integer_only_result_op,
-    is_cold_module_chunk_function, plan_hash_map, plan_hash_set, propagate_store_var_targets_in,
-    simple_op_produces_non_scalar_value, store_var_targets_all_sources_in,
-    tir_container_storage_facts,
+    container_constructor_result_ty, is_cold_module_chunk_function, plan_hash_map, plan_hash_set,
+    propagate_store_var_targets_in, simple_op_produces_non_scalar_value,
+    store_var_targets_all_sources_in, tir_container_storage_facts,
 };
 /// A typed representation fact for a name in the legacy SimpleIR namespace.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -573,39 +573,10 @@ impl ScalarRepresentationPlan {
     }
 
     pub fn op_prefers_integer_runtime_lane(&self, op: &OpIR) -> bool {
-        matches!(
-            op.kind.as_str(),
-            "add"
-                | "inplace_add"
-                | "sub"
-                | "inplace_sub"
-                | "mul"
-                | "inplace_mul"
-                | "floordiv"
-                | "inplace_floordiv"
-                | "mod"
-                | "mod_"
-                | "inplace_mod"
-                | "bit_and"
-                | "inplace_bit_and"
-                | "bit_or"
-                | "inplace_bit_or"
-                | "bit_xor"
-                | "inplace_bit_xor"
-                | "lshift"
-                | "inplace_lshift"
-                | "rshift"
-                | "inplace_rshift"
-                | "shl"
-                | "shr"
-                | "neg"
-                | "pos"
-                | "abs"
-                | "builtin_abs"
-                | "invert"
-        ) && op.args.as_ref().is_some_and(|args| {
-            !args.is_empty() && args.iter().all(|arg| self.name_is_integer_family(arg))
-        })
+        simpleir_integer_semantics_table(op.kind.as_str()).prefers_integer_runtime_lane()
+            && op.args.as_ref().is_some_and(|args| {
+                !args.is_empty() && args.iter().all(|arg| self.name_is_integer_family(arg))
+            })
     }
 
     pub fn op_index_key_is_integer_family(&self, op: &OpIR) -> bool {
@@ -832,9 +803,11 @@ impl ScalarRepresentationPlan {
                 }
                 let inserted = if let Some(source) = alias_source_name(op) {
                     self.integer_family_names.contains(source)
-                } else if integer_only_result_op(op.kind.as_str()) {
+                } else if simpleir_integer_semantics_table(op.kind.as_str()).integer_only_result() {
                     true
-                } else if integer_arithmetic_result_op(op.kind.as_str()) {
+                } else if simpleir_integer_semantics_table(op.kind.as_str())
+                    .integer_result_when_operands_integer()
+                {
                     op.args.as_ref().is_some_and(|args| {
                         !args.is_empty() && args.iter().all(|arg| self.name_is_integer_family(arg))
                     })
@@ -1485,13 +1458,7 @@ impl ScalarRepresentationPlan {
         self.infer_scalar_lane_with_overrides(op, ScalarKind::NoneValue, &BTreeSet::new())
     }
 
-    // `pub(crate)` for stable cross-CGU linkage. This is referenced from another
-    // codegen unit (a `pub(crate)` caller inlined into `luau_lower`) under the
-    // multi-CGU dev/debug profile; a private `fn` here gets ThinLTO-internalized
-    // (an `.llvm.<hash>` local symbol) and the cross-CGU reference then fails to
-    // link. Declaring the real (external) linkage requirement keeps the dev,
-    // release-fast, and debug profiles all linkable.
-    pub(crate) fn infer_scalar_lane_with_overrides(
+    fn infer_scalar_lane_with_overrides(
         &self,
         op: &OpIR,
         override_kind: ScalarKind,

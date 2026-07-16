@@ -15,10 +15,13 @@ use crate::abi_types::{
 use crate::bridge::{GLOBAL_BRIDGE, resolved_molt_handle};
 use crate::hooks::hooks_or_stubs;
 use molt_lang_obj_model::MoltObject;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::os::raw::{c_char, c_int};
 use std::ptr;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{LazyLock, Mutex};
 
 type VisitProc = unsafe extern "C" fn(*mut PyObject, *mut c_void) -> c_int;
 
@@ -878,7 +881,8 @@ pub unsafe extern "C" fn PyFrame_GetBack(frame: *mut PyFrameObject) -> *mut PyFr
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyThreadState_GetFrame(_tstate: *mut PyThreadState) -> *mut PyFrameObject {
+pub unsafe extern "C" fn PyThreadState_GetFrame(tstate: *mut PyThreadState) -> *mut PyFrameObject {
+    let _ = registered_thread_state(tstate, "PyThreadState_GetFrame");
     // CPython's PyThreadState_GetFrame returns a NEW reference to the thread's
     // currently-executing Python frame, or NULL when no frame is on the stack.
     // Molt's cpython-abi PyThreadState carries no CPython-style frame stack
@@ -1165,7 +1169,7 @@ unsafe fn len_slot_truthiness(o: *mut PyObject, slot: *mut c_void) -> c_int {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_Print(
     o: *mut PyObject,
-    fp: *mut libc::FILE,
+    fp: *mut crate::platform::CFile,
     flags: c_int,
 ) -> c_int {
     if fp.is_null() {
@@ -1173,7 +1177,7 @@ pub unsafe extern "C" fn PyObject_Print(
     }
     // CPython prints "<nil>" for a NULL object and returns 0.
     if o.is_null() {
-        let rc = unsafe { libc::fputs(c"<nil>".as_ptr(), fp) };
+        let rc = unsafe { crate::platform::write_c_string(c"<nil>".as_ptr(), fp) };
         return if rc < 0 { -1 } else { 0 };
     }
     // CPython `Objects/object.c PyObject_Print` selects `repr()` by default and
@@ -1194,7 +1198,7 @@ pub unsafe extern "C" fn PyObject_Print(
         unsafe { crate::api::refcount::Py_DECREF(rendered) };
         return -1;
     }
-    let rc = unsafe { libc::fputs(text, fp) };
+    let rc = unsafe { crate::platform::write_c_string(text, fp) };
     unsafe { crate::api::refcount::Py_DECREF(rendered) };
     if rc < 0 { -1 } else { 0 }
 }
@@ -3566,44 +3570,235 @@ pub unsafe extern "C" fn PyCFunction_GetFlags(op: *mut PyObject) -> c_int {
     }
 }
 
+pub const PY_GIL_STATE_LOCKED: c_int = 0;
+pub const PY_GIL_STATE_UNLOCKED: c_int = 1;
+
 static mut MOLT_INTERPRETER_STATE: PyInterpreterState = PyInterpreterState { _molt_reserved: 0 };
-static mut MOLT_ERR_STACK_ITEM: _PyErr_StackItem = _PyErr_StackItem {
-    exc_type: ptr::null_mut(),
-    exc_value: ptr::null_mut(),
-    exc_traceback: ptr::null_mut(),
-    previous_item: ptr::null_mut(),
-};
-static mut MOLT_THREAD_STATE: PyThreadState = PyThreadState {
-    interp: &raw mut MOLT_INTERPRETER_STATE,
-    current_exception: ptr::null_mut(),
-    exc_info: &raw mut MOLT_ERR_STACK_ITEM,
-    exc_state: _PyErr_StackItem {
-        exc_type: ptr::null_mut(),
-        exc_value: ptr::null_mut(),
-        exc_traceback: ptr::null_mut(),
-        previous_item: ptr::null_mut(),
-    },
-    _molt_reserved: 0,
-};
+static NEXT_THREAD_STATE_ID: AtomicU64 = AtomicU64::new(1);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ThreadStateRegistration {
+    owner: std::thread::ThreadId,
+    id: u64,
+}
+
+static THREAD_STATE_REGISTRY: LazyLock<Mutex<HashMap<usize, ThreadStateRegistration>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+struct ThreadStateRecord {
+    state: PyThreadState,
+    id: u64,
+    attached: bool,
+}
+
+impl ThreadStateRecord {
+    fn new() -> Box<Self> {
+        let id = NEXT_THREAD_STATE_ID
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .expect("PyThreadState ID space exhausted");
+        assert_ne!(id, 0, "PyThreadState IDs must be nonzero");
+        let mut record = Box::new(Self {
+            state: PyThreadState {
+                interp: &raw mut MOLT_INTERPRETER_STATE,
+                current_exception: ptr::null_mut(),
+                exc_info: ptr::null_mut(),
+                exc_state: _PyErr_StackItem {
+                    exc_type: ptr::null_mut(),
+                    exc_value: ptr::null_mut(),
+                    exc_traceback: ptr::null_mut(),
+                    previous_item: ptr::null_mut(),
+                },
+                _molt_reserved: 0,
+            },
+            id,
+            attached: false,
+        });
+        record.state.exc_info = &raw mut record.state.exc_state;
+        let ptr = (&raw mut record.state) as usize;
+        let previous = THREAD_STATE_REGISTRY.lock().unwrap().insert(
+            ptr,
+            ThreadStateRegistration {
+                owner: std::thread::current().id(),
+                id,
+            },
+        );
+        assert!(
+            previous.is_none(),
+            "PyThreadState pointer already registered"
+        );
+        record
+    }
+}
+
+impl Drop for ThreadStateRecord {
+    fn drop(&mut self) {
+        let ptr = (&raw mut self.state) as usize;
+        let removed = THREAD_STATE_REGISTRY.lock().unwrap().remove(&ptr);
+        assert_eq!(
+            removed,
+            Some(ThreadStateRegistration {
+                owner: std::thread::current().id(),
+                id: self.id,
+            })
+        );
+    }
+}
+
+thread_local! {
+    static MOLT_THREAD_STATE: RefCell<Option<Box<ThreadStateRecord>>> = const { RefCell::new(None) };
+    static GILSTATE_ATTACHMENT: Cell<(usize, bool)> = const { Cell::new((0, false)) };
+}
+
+fn ensure_current_thread_state() -> *mut PyThreadState {
+    MOLT_THREAD_STATE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let record = slot.get_or_insert_with(ThreadStateRecord::new);
+        &raw mut record.state
+    })
+}
+
+fn existing_current_thread_state() -> Option<*mut PyThreadState> {
+    MOLT_THREAD_STATE.with(|slot| {
+        slot.borrow_mut()
+            .as_deref_mut()
+            .map(|record| &raw mut record.state)
+    })
+}
+
+fn current_thread_state_attached() -> bool {
+    MOLT_THREAD_STATE.with(|slot| {
+        slot.borrow()
+            .as_deref()
+            .is_some_and(|record| record.attached)
+    })
+}
+
+fn set_current_thread_state_attached(attached: bool) {
+    MOLT_THREAD_STATE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let record = if attached {
+            slot.get_or_insert_with(ThreadStateRecord::new)
+        } else {
+            slot.as_deref_mut()
+                .expect("detaching a thread without PyThreadState")
+        };
+        record.attached = attached;
+    });
+}
+
+fn registered_thread_state(tstate: *mut PyThreadState, operation: &str) -> ThreadStateRegistration {
+    assert!(
+        !tstate.is_null(),
+        "{operation} requires non-null PyThreadState"
+    );
+    THREAD_STATE_REGISTRY
+        .lock()
+        .unwrap()
+        .get(&(tstate as usize))
+        .copied()
+        .unwrap_or_else(|| panic!("{operation} requires a live registered PyThreadState"))
+}
+
+fn assert_current_thread_state(tstate: *mut PyThreadState, operation: &str) {
+    let registration = registered_thread_state(tstate, operation);
+    assert_eq!(
+        registration.owner,
+        std::thread::current().id(),
+        "{operation} requires a PyThreadState owned by the current thread"
+    );
+    assert_eq!(
+        Some(tstate),
+        existing_current_thread_state(),
+        "{operation} requires the current thread's active PyThreadState"
+    );
+}
+
+fn begin_gilstate_attachment() {
+    GILSTATE_ATTACHMENT.with(|state| {
+        let (depth, initially_attached) = state.get();
+        if depth == 0 {
+            let was_attached = current_thread_state_attached();
+            set_current_thread_state_attached(true);
+            state.set((1, was_attached));
+        } else {
+            assert!(
+                current_thread_state_attached(),
+                "nested PyGILState_Ensure requires the outer attachment"
+            );
+            state.set((
+                depth.checked_add(1).expect("PyGILState nesting overflow"),
+                initially_attached,
+            ));
+        }
+    });
+}
+
+fn end_gilstate_attachment() {
+    GILSTATE_ATTACHMENT.with(|state| {
+        let (depth, initially_attached) = state.get();
+        assert_ne!(depth, 0, "PyGILState_Release without matching attachment");
+        if depth == 1 {
+            state.set((0, false));
+            if !initially_attached {
+                set_current_thread_state_attached(false);
+            }
+        } else {
+            state.set((depth - 1, initially_attached));
+        }
+    });
+}
+
+fn runtime_is_initialized() -> bool {
+    unsafe { (hooks_or_stubs().runtime_is_initialized)() != 0 }
+}
+
+fn assert_runtime_initialized(operation: &str) {
+    assert!(
+        runtime_is_initialized(),
+        "{operation} requires an initialized runtime"
+    );
+}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyThreadState_Get() -> *mut PyThreadState {
-    &raw mut MOLT_THREAD_STATE
+    assert_runtime_initialized("PyThreadState_Get");
+    assert_ne!(
+        unsafe { (hooks_or_stubs().gil_check)() },
+        0,
+        "PyThreadState_Get requires attached current-thread GIL custody"
+    );
+    let tstate = ensure_current_thread_state();
+    set_current_thread_state_attached(true);
+    tstate
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Py_IsInitialized() -> c_int {
-    1
+    c_int::from(runtime_is_initialized())
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyGILState_Ensure() -> c_int {
-    unsafe { (hooks_or_stubs().gil_ensure)() }
+    assert_runtime_initialized("PyGILState_Ensure");
+    let state = unsafe { (hooks_or_stubs().gil_ensure)() };
+    if !runtime_is_initialized() {
+        // A detached thread may have blocked behind the finalization owner.
+        // Revalidate after acquiring the GIL: otherwise it could wake after
+        // Shutdown and fabricate a successful attachment to a dead runtime.
+        unsafe { (hooks_or_stubs().gil_leave)(state) };
+        panic!("PyGILState_Ensure crossed runtime finalization");
+    }
+    begin_gilstate_attachment();
+    state
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyGILState_Release(state: c_int) {
-    unsafe { (hooks_or_stubs().gil_leave)(state) }
+    assert!(
+        current_thread_state_attached(),
+        "PyGILState_Release requires an attached PyThreadState"
+    );
+    unsafe { (hooks_or_stubs().gil_leave)(state) };
+    end_gilstate_attachment();
 }
 
 #[unsafe(no_mangle)]
@@ -3636,30 +3831,50 @@ pub unsafe extern "C" fn PyMutex_Unlock(mutex: *mut PyMutex) {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn _PyThreadState_UncheckedGet() -> *mut PyThreadState {
-    &raw mut MOLT_THREAD_STATE
+    if !runtime_is_initialized()
+        || unsafe { (hooks_or_stubs().gil_check)() } == 0
+        || !current_thread_state_attached()
+    {
+        return ptr::null_mut();
+    }
+    existing_current_thread_state().unwrap_or(ptr::null_mut())
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyEval_SaveThread() -> *mut PyThreadState {
+    let tstate = unsafe { PyThreadState_Get() };
     unsafe { (hooks_or_stubs().gil_release)() };
-    &raw mut MOLT_THREAD_STATE
+    set_current_thread_state_attached(false);
+    tstate
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyEval_RestoreThread(tstate: *mut PyThreadState) {
-    if tstate.is_null() {
-        return;
+    assert_runtime_initialized("PyEval_RestoreThread");
+    assert_current_thread_state(tstate, "PyEval_RestoreThread");
+    assert!(
+        !current_thread_state_attached(),
+        "PyEval_RestoreThread requires a detached PyThreadState"
+    );
+    unsafe { (hooks_or_stubs().gil_restore)() };
+    if !runtime_is_initialized() {
+        // As with Ensure, Restore can wait behind finalization. Release the
+        // reacquired custody before failing closed; never attach to Shutdown.
+        unsafe { (hooks_or_stubs().gil_release)() };
+        panic!("PyEval_RestoreThread crossed runtime finalization");
     }
-    unsafe { (hooks_or_stubs().gil_restore)() }
+    set_current_thread_state_attached(true);
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyInterpreterState_Get() -> *mut PyInterpreterState {
+    let _ = unsafe { PyThreadState_Get() };
     &raw mut MOLT_INTERPRETER_STATE
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyInterpreterState_Main() -> *mut PyInterpreterState {
+    assert_runtime_initialized("PyInterpreterState_Main");
     &raw mut MOLT_INTERPRETER_STATE
 }
 
@@ -3667,32 +3882,33 @@ pub unsafe extern "C" fn PyInterpreterState_Main() -> *mut PyInterpreterState {
 pub unsafe extern "C" fn PyThreadState_GetInterpreter(
     tstate: *mut PyThreadState,
 ) -> *mut PyInterpreterState {
-    if tstate.is_null() {
-        &raw mut MOLT_INTERPRETER_STATE
-    } else {
-        let interp = unsafe { (*tstate).interp };
-        if interp.is_null() {
-            &raw mut MOLT_INTERPRETER_STATE
-        } else {
-            interp
-        }
-    }
+    assert_runtime_initialized("PyThreadState_GetInterpreter");
+    let _ = registered_thread_state(tstate, "PyThreadState_GetInterpreter");
+    &raw mut MOLT_INTERPRETER_STATE
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyThreadState_GetID(_tstate: *mut PyThreadState) -> u64 {
-    1
+pub unsafe extern "C" fn PyThreadState_GetID(tstate: *mut PyThreadState) -> u64 {
+    assert_runtime_initialized("PyThreadState_GetID");
+    registered_thread_state(tstate, "PyThreadState_GetID").id
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyInterpreterState_GetID(_interp: *mut PyInterpreterState) -> i64 {
+pub unsafe extern "C" fn PyInterpreterState_GetID(interp: *mut PyInterpreterState) -> i64 {
+    assert_runtime_initialized("PyInterpreterState_GetID");
+    assert_eq!(
+        interp, &raw mut MOLT_INTERPRETER_STATE,
+        "PyInterpreterState_GetID requires the canonical interpreter"
+    );
     0
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyInterpreterState_GetIDFromThreadState(
-    _tstate: *mut PyThreadState,
+    tstate: *mut PyThreadState,
 ) -> i64 {
+    assert_runtime_initialized("PyInterpreterState_GetIDFromThreadState");
+    let _ = registered_thread_state(tstate, "PyInterpreterState_GetIDFromThreadState");
     0
 }
 
@@ -3843,6 +4059,69 @@ fn ascii_escape(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod thread_state_tests {
+    use super::*;
+    use std::sync::{Arc, Barrier};
+
+    #[test]
+    fn thread_state_identity_is_stable_and_self_linked() {
+        let first = ensure_current_thread_state();
+        let second = ensure_current_thread_state();
+        assert_eq!(first, second);
+        assert_ne!(registered_thread_state(first, "test thread state").id, 0);
+        assert_eq!(unsafe { (*first).exc_info }, unsafe {
+            &raw mut (*first).exc_state
+        });
+
+        set_current_thread_state_attached(true);
+        assert!(current_thread_state_attached());
+        set_current_thread_state_attached(false);
+        assert!(!current_thread_state_attached());
+        assert_eq!(existing_current_thread_state(), Some(first));
+    }
+
+    #[test]
+    fn thread_state_identity_and_custody_are_thread_local() {
+        let local = ensure_current_thread_state();
+        let local_id = registered_thread_state(local, "test local thread state").id;
+        let release = Arc::new(Barrier::new(2));
+        let worker_release = Arc::clone(&release);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let worker_state = ensure_current_thread_state();
+            let worker_id = registered_thread_state(worker_state, "test worker thread state").id;
+            tx.send((worker_state as usize, worker_id)).unwrap();
+            worker_release.wait();
+        });
+
+        let (worker_state, worker_id) = rx.recv().unwrap();
+        assert_ne!(worker_state, local as usize);
+        assert_ne!(worker_id, local_id);
+        assert_eq!(
+            registered_thread_state(
+                worker_state as *mut PyThreadState,
+                "cross-thread metadata tooth"
+            )
+            .id,
+            worker_id,
+            "read-only metadata accepts any live registered PyThreadState"
+        );
+        assert!(
+            std::panic::catch_unwind(|| {
+                assert_current_thread_state(
+                    worker_state as *mut PyThreadState,
+                    "cross-thread validation tooth",
+                );
+            })
+            .is_err(),
+            "a foreign thread's PyThreadState must never validate locally"
+        );
+        release.wait();
+        worker.join().unwrap();
+    }
 }
 
 #[cfg(test)]

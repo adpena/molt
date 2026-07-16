@@ -15,6 +15,9 @@
  */
 #include <Python.h>
 
+typedef char molt_gil_state_locked_abi[(PyGILState_LOCKED == 0) ? 1 : -1];
+typedef char molt_gil_state_unlocked_abi[(PyGILState_UNLOCKED == 1) ? 1 : -1];
+
 /* Keep the TU non-empty and warning-clean. */
 int molt_abi_layout_asserted(void);
 int molt_abi_layout_asserted(void) { return 0; }

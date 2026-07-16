@@ -374,13 +374,11 @@ pub(crate) fn pickle_apply_build(
     let mut slot_state_bits: Option<u64> = None;
     if let Some(state_ptr) = obj_from_bits(state_bits).as_ptr()
         && unsafe { object_type_id(state_ptr) } == TYPE_ID_TUPLE
-    {
-        if let Some((dict_bits, slots_bits)) =
+        && let Some((dict_bits, slots_bits)) =
             unsafe { crate::object::seq_access::tuple_pair(state_ptr) }
-        {
-            dict_state_bits = dict_bits;
-            slot_state_bits = Some(slots_bits);
-        }
+    {
+        dict_state_bits = dict_bits;
+        slot_state_bits = Some(slots_bits);
     }
     pickle_apply_dict_state(_py, inst_bits, dict_state_bits)?;
     if let Some(slot_bits) = slot_state_bits

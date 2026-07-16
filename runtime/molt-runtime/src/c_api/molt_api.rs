@@ -2068,11 +2068,7 @@ pub unsafe extern "C" fn molt_bytearray_as_ptr(
 pub extern "C" fn molt_gil_release_guard() -> u64 {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let guard = crate::concurrency::GilReleaseGuard::new();
-        let depth = guard.depth;
-        let had_runtime = guard.had_runtime_guard;
-        std::mem::forget(guard); // Don't drop — we'll reacquire manually
-        ((depth as u64) << 1) | (had_runtime as u64)
+        crate::concurrency::GilReleaseGuard::suspend().into_encoded_state()
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -2083,17 +2079,12 @@ pub extern "C" fn molt_gil_release_guard() -> u64 {
 
 /// Re-acquire the GIL using the token returned by `molt_gil_release_guard`.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_gil_reacquire_guard(token: u64) {
+pub unsafe extern "C" fn molt_gil_reacquire_guard(token: u64) {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let depth = (token >> 1) as usize;
-        let had_runtime = (token & 1) != 0;
-        // Reconstruct the guard and let it drop to re-acquire the GIL.
-        let guard = crate::concurrency::GilReleaseGuard {
-            depth,
-            had_runtime_guard: had_runtime,
-        };
-        drop(guard);
+        // SAFETY: this unsafe ABI requires the unmatched, same-thread token
+        // returned by `molt_gil_release_guard` and consumes it exactly once.
+        drop(unsafe { crate::concurrency::GilReleaseGuard::from_encoded_state(token) });
     }
     #[cfg(target_arch = "wasm32")]
     {

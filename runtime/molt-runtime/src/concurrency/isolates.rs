@@ -649,7 +649,7 @@ pub unsafe extern "C" fn molt_thread_join(handle_bits: u64, timeout_bits: u64) -
                 _ => Some(Duration::from_secs(0)),
             }
         };
-        let _release = crate::concurrency::GilReleaseGuard::new();
+        let _release = crate::concurrency::GilReleaseGuard::suspend();
         if handle.wait(timeout) {
             handle.join();
         }

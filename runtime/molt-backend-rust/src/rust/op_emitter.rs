@@ -1,6 +1,6 @@
 use super::emit_helpers::{
     arg0, args2, declare_molt_value, is_assignable_var, out_var, rust_clone, rust_slot_key,
-    rust_string_literal, rust_stub_marker, rust_value, var_ref,
+    rust_string_literal, rust_value, var_ref,
 };
 use super::runtime_surface::runtime_value_call_for_kind;
 use super::{RustBackend, rust_ident};
@@ -27,20 +27,12 @@ impl RustBackend {
 
     fn emit_unsupported_op(&mut self, op: &OpIR, reason: impl Into<String>) {
         let reason = reason.into();
-        // Fail-closed authority: record the unsupported op the moment the
-        // dispatch catch-all fires. `compile_checked` reads this list, so an
-        // unsupported op can never slip a fabricated `MoltValue::None` past the
-        // gate by lacking the exact stub-marker string in the emitted text.
+        // Record failure at dispatch and deliberately emit no source.
+        // `emit_source` is private and `compile_checked` rejects this record,
+        // so no caller can observe either a partial program or a fabricated
+        // value for an unsupported operation.
         self.unsupported_ops
             .push(format!("`{}` (rust backend): {reason}", op.kind));
-        let marker = rust_stub_marker(op, reason);
-        let o = out_var(op);
-        if is_assignable_var(&o) {
-            let rhs = format!("{{ /* {marker} */ MoltValue::None }}");
-            self.emit_line(&declare_molt_value(&o, &rhs, &self.hoisted_vars));
-        } else {
-            self.emit_line(&format!("/* {marker} */"));
-        }
     }
 
     pub(super) fn emit_op(&mut self, op: &OpIR) {
@@ -158,7 +150,7 @@ impl RustBackend {
             "ord" => self.emit_op_ord(op),
             "ord_at" => self.emit_op_ord_at(op),
             "abs" | "builtin_abs" => self.emit_op_abs(op),
-            "build_list" | "alloc" => self.emit_op_build_list(op),
+            "build_list" | "list_new" | "alloc" => self.emit_op_build_list(op),
             "build_dict" | "dict_new" => self.emit_op_build_dict(op),
             "list_append" => self.emit_op_list_append(op),
             "get_item" | "subscript" | "index" => self.emit_op_get_item(op),
@@ -227,7 +219,7 @@ impl RustBackend {
             "try_start" | "try_end" | "except_start" | "except_end" | "finally_start"
             | "finally_end" => self.emit_op_try_start(op),
             "format_string" | "string_format" => self.emit_op_format_string(op),
-            "tuple_new" | "list_new" => self.emit_op_tuple_new(op),
+            "tuple_new" => self.emit_op_tuple_new(op),
             "list_fill_new" => self.emit_op_list_fill_new(op),
             "unpack_sequence" => self.emit_op_unpack_sequence(op),
             "string_join" => self.emit_op_string_join(op),

@@ -14,6 +14,7 @@ pub mod ir_rewrites;
 pub mod passes;
 pub mod representation_plan;
 pub mod simpleir_debug;
+pub mod target_admission;
 pub mod tir;
 pub mod trampolines;
 

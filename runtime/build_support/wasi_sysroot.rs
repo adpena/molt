@@ -15,9 +15,6 @@ impl WasiSysroot {
         self.include_dir.as_deref()
     }
 
-    // Used by molt-runtime/build.rs; dead in the molt-cpython-abi build script
-    // that also `include!`s this shared module.
-    #[allow(dead_code)]
     pub fn lib_dir(&self, preferred_target: &str) -> PathBuf {
         self.lib_dir
             .clone()

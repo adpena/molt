@@ -593,16 +593,15 @@ pub extern "C" fn __molt_http_resolve_global_bits(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_http_gil_release_new() -> u64 {
-    let guard = Box::new(crate::concurrency::GilReleaseGuard::new());
-    Box::into_raw(guard) as u64
+    crate::concurrency::GilReleaseGuard::suspend().into_encoded_state()
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_gil_release_drop(handle: u64) {
+pub unsafe extern "C" fn __molt_http_gil_release_drop(handle: u64) {
     if handle != 0 {
-        unsafe {
-            let _ = Box::from_raw(handle as *mut crate::concurrency::GilReleaseGuard);
-        }
+        // SAFETY: the HTTP guard is !Send/!Sync and consumes its unmatched
+        // same-thread encoded custody exactly once.
+        drop(unsafe { crate::concurrency::GilReleaseGuard::from_encoded_state(handle) });
     }
 }
 

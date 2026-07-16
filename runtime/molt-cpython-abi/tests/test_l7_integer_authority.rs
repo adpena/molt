@@ -715,7 +715,7 @@ fn size_t_and_all_unsigned_converters_preserve_outputs_on_error() {
         unsafe {
             molt_cpython_abi::api::numbers::_PyLong_Size_t_Converter(
                 proxy(1),
-                (&raw mut out as *mut usize).cast::<c_void>(),
+                (&raw mut out).cast::<c_void>(),
             )
         },
         1

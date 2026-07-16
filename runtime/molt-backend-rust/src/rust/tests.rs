@@ -37,7 +37,7 @@ fn compile_keeps_annotation_functions_when_referenced() {
 }
 
 #[test]
-fn compile_int_from_str_of_obj_preserves_base_operand() {
+fn compile_int_from_str_of_obj_records_unsupported_integer_authority() {
     let mut backend = RustBackend::new();
     let ir = SimpleIR {
         functions: vec![FunctionIR {
@@ -72,9 +72,13 @@ fn compile_int_from_str_of_obj_preserves_base_operand() {
     };
 
     let source = backend.compile(&ir);
-    assert!(source.contains("molt_bool(&has_base)"));
-    assert!(source.contains("let __base = molt_int(&base);"));
-    assert!(source.contains("i64::from_str_radix(__s.trim(), __base as u32)"));
+    assert!(!source.contains("i64::from_str_radix"));
+    assert!(
+        backend
+            .unsupported_ops
+            .iter()
+            .any(|failure| failure.contains("int_from_str_of_obj"))
+    );
 }
 
 #[test]
@@ -104,7 +108,7 @@ fn compile_numeric_equality_does_not_fall_back_for_non_numeric_values() {
 }
 
 #[test]
-fn compile_rust_arithmetic_fast_path_ignores_transport_hints() {
+fn compile_checked_rejects_untyped_integer_capable_arithmetic_before_emission() {
     let mut backend = RustBackend::new();
     let mut add = OpIR {
         kind: "add".to_string(),
@@ -133,15 +137,20 @@ fn compile_rust_arithmetic_fast_path_ignores_transport_hints() {
         profile: None,
     };
 
-    let source = backend.compile(&ir);
-    assert!(source.contains("let mut sum: MoltValue = molt_add(lhs.clone(), rhs.clone());"));
-    assert!(!source.contains(
-        "let mut sum: MoltValue = MoltValue::Int(molt_int(&lhs).wrapping_add(molt_int(&rhs)))"
-    ));
+    let error = backend
+        .compile_checked(&ir)
+        .expect_err("transport hints cannot admit integer-capable Rust arithmetic");
+    assert!(error.contains("rejected before source generation"));
+    assert!(error.contains("lacks arbitrary-precision integers"));
+    assert!(backend.output.is_empty(), "admission must precede emission");
+    assert!(
+        backend.unsupported_ops.is_empty(),
+        "dispatch must not run after admission rejects"
+    );
 }
 
 #[test]
-fn compile_rust_arithmetic_fast_path_uses_typed_operands_without_transport_hints() {
+fn compile_checked_rejects_typed_integer_arithmetic_before_emission() {
     let mut backend = RustBackend::new();
     let ir = SimpleIR {
         functions: vec![FunctionIR {
@@ -167,11 +176,12 @@ fn compile_rust_arithmetic_fast_path_uses_typed_operands_without_transport_hints
         profile: None,
     };
 
-    let source = backend.compile(&ir);
-    assert!(source.contains(
-        "let mut sum: MoltValue = MoltValue::Int(molt_int(&lhs).wrapping_add(molt_int(&rhs)))"
-    ));
-    assert!(!source.contains("let mut sum: MoltValue = molt_add(lhs.clone(), rhs.clone());"));
+    let error = backend
+        .compile_checked(&ir)
+        .expect_err("i64 arithmetic is not Python arbitrary-precision arithmetic");
+    assert!(error.contains("rejected before source generation"));
+    assert!(error.contains("helper:op#0 `add`"));
+    assert!(backend.output.is_empty(), "admission must precede emission");
 }
 
 #[test]
@@ -250,9 +260,7 @@ fn compile_call_method_uses_s_value_method_name() {
         profile: None,
     };
 
-    let source = backend
-        .compile_checked(&ir)
-        .expect("call_method should lower from s_value without stub markers");
+    let source = backend.compile(&ir);
     assert!(source.contains("molt_list_append(&mut items, value.clone());"));
     assert!(!source.contains("MOLT_STUB: method"));
 }
@@ -284,18 +292,22 @@ fn compile_ord_at_emits_fused_helper() {
         profile: None,
     };
 
-    let source = backend
-        .compile_checked(&ir)
-        .expect("ord_at should lower without stub markers");
+    let source = backend.compile(&ir);
     assert!(source.contains("fn molt_ord_at(obj: &MoltValue, key: &MoltValue)"));
     assert!(source.contains("fn molt_get_item(obj: &MoltValue, key: &MoltValue)"));
+    assert!(source.contains("let normalized = if idx < 0 { len as i64 + idx } else { idx };"));
+    assert!(source.contains("normalized < 0 || normalized >= len as i64"));
+    assert!(source.contains("usize::try_from(idx).ok().and_then(|i| s.chars().nth(i))"));
+    assert!(!source.contains("chars: Vec<char>"));
+    assert!(!source.contains(".max(0) as usize"));
+    assert!(source.contains("panic!(\"KeyError: {}\", molt_repr_inner(key))"));
     assert!(source.contains("fn molt_ord(x: &MoltValue)"));
     assert!(source.contains("let mut code: MoltValue = molt_ord_at(&s, &i);"));
     assert!(!source.contains("MOLT_STUB"));
 }
 
 #[test]
-fn compile_code_slots_contains_and_ref_markers_without_stubs() {
+fn compile_checked_rejects_code_slots_exception_and_refcount_models() {
     let mut backend = RustBackend::new();
     let ir = SimpleIR {
         functions: vec![FunctionIR {
@@ -419,36 +431,20 @@ fn compile_code_slots_contains_and_ref_markers_without_stubs() {
         profile: None,
     };
 
-    let source = backend
+    let error = backend
         .compile_checked(&ir)
-        .expect("Rust source should lower code metadata, contains, and ref markers");
-    assert!(source.contains("fn molt_code_new("));
-    assert!(source.contains("fn molt_code_slots_init("));
-    assert!(source.contains("fn molt_code_slot_set("));
-    assert!(source.contains("molt_code_slots_init(4);"));
-    assert!(source.contains(
-        "let mut code: MoltValue = molt_code_new(&filename, &name, &firstlineno, &linetable, &varnames, &names, &argcount, &posonlyargcount, &kwonlyargcount);"
-    ));
-    assert!(source.contains("let mut owned_code: MoltValue = code.clone();"));
-    assert!(source.contains("molt_code_slot_set(2, &owned_code);"));
-    assert!(source.contains("fn molt_exception_stack_enter() -> MoltValue"));
-    assert!(source.contains("fn molt_trace_enter_slot(code_id: i64) -> MoltValue"));
-    assert!(source.contains("let mut exc_base: MoltValue = molt_exception_stack_enter();"));
-    assert!(source.contains("let mut exc_depth: MoltValue = molt_exception_stack_depth();"));
-    assert!(source.contains("molt_exception_stack_set_depth(&exc_depth);"));
-    assert!(source.contains("molt_exception_stack_exit(&exc_base);"));
-    assert!(source.contains("let mut last_exc: MoltValue = molt_exception_last();"));
-    assert!(source.contains("let mut pending_exc: MoltValue = molt_exception_last_pending();"));
+        .expect_err("Rust target lacks these Python runtime authorities");
     assert!(
-        source.contains(
-            "let mut present: MoltValue = MoltValue::Bool(molt_in(&needle, &container));"
-        )
+        error.contains("rejected before source generation")
+            && error.contains("code_slots_init")
+            && error.contains("unclassified"),
+        "the first unsupported semantic family must fail before emission: {error}"
     );
-    assert!(!source.contains("MOLT_STUB"));
+    assert!(backend.output.is_empty());
 }
 
 #[test]
-fn compile_checked_reports_stub_markers() {
+fn compile_checked_rejects_unsupported_dispatch() {
     let mut backend = RustBackend::new();
     let ir = SimpleIR {
         functions: vec![FunctionIR {
@@ -468,12 +464,10 @@ fn compile_checked_reports_stub_markers() {
 
     let err = backend
         .compile_checked(&ir)
-        .expect_err("unsupported ops should be rejected with marker details");
-    // Fail-closed authority is the emit-time accumulator, which names the op kind
-    // and backend and refuses to emit fail-open codegen.
+        .expect_err("unsupported ops must be rejected at the Result boundary");
     assert!(
-        err.contains("refuses to emit fail-open codegen"),
-        "error must come from the fail-closed accumulator, got: {err}"
+        err.contains("operation is unclassified in the generated runtime semantic authority"),
+        "error must come from generated pre-source admission, got: {err}"
     );
     assert!(
         err.contains("matmul"),
@@ -521,7 +515,7 @@ fn compile_boolean_short_circuit_omits_unused_if_parentheses() {
 }
 
 #[test]
-fn compile_unpack_sequence_lowers_outputs_instead_of_stub() {
+fn compile_unpack_sequence_records_unsupported_protocol_authority() {
     let mut backend = RustBackend::new();
     let ir = SimpleIR {
         functions: vec![FunctionIR {
@@ -558,15 +552,13 @@ fn compile_unpack_sequence_lowers_outputs_instead_of_stub() {
     };
 
     let source = backend.compile(&ir);
-    assert!(source.contains("fn molt_unpack_sequence("));
-    assert!(source.contains("fn molt_unpack_too_many_message("));
-    assert!(source.contains("fn molt_runtime_target_at_least("));
-    assert!(source.contains("cannot unpack non-iterable {} object"));
-    assert!(!source.contains("cannot unpack non-sequence"));
-    assert!(source.contains("let __unpack_seq"));
-    assert!(source.contains("let mut left: MoltValue = __unpack_seq[0].clone();"));
-    assert!(source.contains("let mut right: MoltValue = __unpack_seq[1].clone();"));
-    assert!(!source.contains("MOLT_STUB: unpack_sequence"));
+    assert!(!source.contains("fn molt_unpack_sequence("));
+    assert!(
+        backend
+            .unsupported_ops
+            .iter()
+            .any(|failure| failure.contains("unpack_sequence"))
+    );
 }
 
 #[test]
@@ -623,9 +615,7 @@ fn compile_module_cache_ops_lower_to_runtime_cache() {
         profile: None,
     };
 
-    let source = backend
-        .compile_checked(&ir)
-        .expect("module cache ops should lower without stub markers");
+    let source = backend.compile(&ir);
     assert!(source.contains("fn molt_module_cache_get("));
     assert!(source.contains("fn molt_module_cache_set("));
     assert!(source.contains("fn molt_module_cache_del("));
@@ -639,7 +629,7 @@ fn compile_module_cache_ops_lower_to_runtime_cache() {
 }
 
 #[test]
-fn compile_const_bigint_lowers_exact_i64_literal() {
+fn compile_checked_rejects_even_i64_sized_bigint_literals() {
     let mut backend = RustBackend::new();
     let ir = SimpleIR {
         functions: vec![FunctionIR {
@@ -664,14 +654,12 @@ fn compile_const_bigint_lowers_exact_i64_literal() {
         profile: None,
     };
 
-    let source = backend
+    let error = backend
         .compile_checked(&ir)
-        .expect("i64-sized bigint literal should lower exactly");
-    assert!(source.contains("let mut big: MoltValue = MoltValue::Int(2305843009213693951i64);"));
-    assert!(!source.contains("MOLT_STUB: const_bigint"));
-    assert!(
-        !source.contains("MoltValue::Int(\"2305843009213693951\".parse::<i64>().unwrap_or(0))")
-    );
+        .expect_err("value magnitude cannot shrink Python's bigint semantic domain");
+    assert!(error.contains("const_bigint"));
+    assert!(error.contains("canonical arbitrary-precision value authority"));
+    assert!(backend.output.is_empty());
 }
 
 #[test]
@@ -710,17 +698,12 @@ fn compile_checked_rejects_unrepresented_literal_values() {
     let err = backend
         .compile_checked(&ir)
         .expect_err("unsupported literal value representations must fail closed");
-    // The fail-closed accumulator (authority) names each unsupported op kind and
-    // carries its reason; it fires before the retained MOLT_STUB text scan.
     assert!(
-        err.contains("refuses to emit fail-open codegen"),
-        "error must come from the fail-closed accumulator, got: {err}"
+        err.contains("rejected before source generation"),
+        "got: {err}"
     );
     assert!(err.contains("const_bigint"), "got: {err}");
-    assert!(err.contains("bigint literal exceeds Rust backend i64 value representation"));
-    assert!(err.contains("const_bytes"), "got: {err}");
-    assert!(err.contains("bytes literals require a Rust backend bytes value representation"));
-    assert!(err.contains("const_ellipsis"), "got: {err}");
+    assert!(err.contains("canonical arbitrary-precision value authority"));
 }
 
 #[test]
@@ -823,9 +806,10 @@ fn jump_after_loop_does_not_capture_scoped_set_item_temps() {
         profile: None,
     };
 
-    let source = backend.compile(&ir);
-    assert!(!source.contains("return molt_get_item(&frame, &key);"));
-    assert!(source.contains("return MoltValue::None; /* jump: no prior store */"));
+    let _source = backend.compile(&ir);
+    let err = backend.unsupported_ops.join(", ");
+    assert!(err.contains("`jump` (rust backend)"), "got: {err}");
+    assert!(err.contains("helper"), "got: {err}");
 }
 
 #[test]
@@ -895,10 +879,8 @@ fn strip_dead_after_return_skips_top_level_jump_after_return() {
     assert_eq!(kinds, vec!["return_none"]);
 }
 
-/// Fail-closed authority: an op kind that no dispatch arm claims must fail the
-/// build through the `unsupported_ops` accumulator recorded at emit time — NOT
-/// merely through a text scan for the stub-marker comment. A synthetic unknown
-/// kind routes to `emit_op_other` → `emit_unsupported_op`, which records it.
+/// An op kind that no dispatch arm claims must fail at the Result boundary.
+/// The synthetic kind routes to `emit_op_other` and records a dispatch error.
 #[test]
 fn compile_checked_fails_closed_on_synthetically_unsupported_op() {
     let mut backend = RustBackend::new();
@@ -927,21 +909,15 @@ fn compile_checked_fails_closed_on_synthetically_unsupported_op() {
     let err = backend
         .compile_checked(&ir)
         .expect_err("a synthetically-unsupported op must fail the build closed");
-    assert!(
-        err.contains("refuses to emit fail-open codegen"),
-        "error must come from the fail-closed accumulator, got: {err}"
-    );
+    assert!(err.contains("unclassified"), "got: {err}");
     assert!(
         err.contains("molt_synthetic_unsupported_op_probe"),
         "diagnostic must name the unsupported op kind, got: {err}"
     );
 }
 
-/// The fail-closed accumulator is the authority, independent of the emitted
-/// text. Even when the catch-all's `out` is a non-assignable sink (so NO
-/// `MoltValue::None` value line is emitted), the op is still recorded and the
-/// build fails closed. This proves the gate does not rely on scanning for the
-/// `/* MOLT_STUB: */ MoltValue::None` string in the output.
+/// Unsupported sink operations fail at the same Result boundary as operations
+/// with outputs; neither path emits a substitute value.
 #[test]
 fn compile_checked_fails_closed_without_emitted_value_marker() {
     let mut backend = RustBackend::new();
@@ -950,8 +926,7 @@ fn compile_checked_fails_closed_without_emitted_value_marker() {
             name: "molt_main".to_string(),
             params: vec![],
             ops: vec![OpIR {
-                // No `out` → catch-all emits only a `/* ... */` comment, never a
-                // `MoltValue::None` value line — yet the op is still recorded.
+                // No `out`: dispatch still records the unsupported operation.
                 kind: "molt_synthetic_unsupported_sink_probe".to_string(),
                 ..OpIR::default()
             }],
@@ -965,12 +940,50 @@ fn compile_checked_fails_closed_without_emitted_value_marker() {
     let err = backend
         .compile_checked(&ir)
         .expect_err("an unsupported op with no output must still fail closed");
-    assert!(
-        err.contains("refuses to emit fail-open codegen"),
-        "got: {err}"
-    );
+    assert!(err.contains("unclassified"), "got: {err}");
     assert!(
         err.contains("molt_synthetic_unsupported_sink_probe"),
         "got: {err}"
+    );
+}
+
+#[test]
+fn compile_checked_rejects_malformed_callable_family_without_substitute_values() {
+    let mut backend = RustBackend::new();
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_main".to_string(),
+            params: vec![],
+            ops: vec![
+                OpIR {
+                    kind: "call".to_string(),
+                    out: Some("call_result".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "func_new".to_string(),
+                    out: Some("function".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "callargs_push_kw".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        }],
+        profile: None,
+    };
+
+    let err = backend
+        .compile_checked(&ir)
+        .expect_err("malformed callable IR must fail before source publication");
+    assert!(
+        err.contains("rejected before source generation")
+            && err.contains("`call`")
+            && err.contains("structured catchable Python exceptions"),
+        "malformed callable family must fail at its first semantic violation: {err}"
     );
 }

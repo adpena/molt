@@ -1,9 +1,3 @@
-macro_rules! fn_addr {
-    ($func:path) => {
-        $func as *const () as usize as u64
-    };
-}
-
 use crate::PyToken;
 use crate::builtins::frames::{
     frame_stack_top_info, frame_stack_trace_payload_bits, traceback_payload_is_lazy,
@@ -150,9 +144,10 @@ mod state;
 
 use internals::{exception_type_cache, module_cache};
 pub(crate) use state::{
-    ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, EXCEPTION_STACK, EXCEPTION_STACK_BASELINE,
-    ExceptionContextFallback, ExceptionsRuntimeState, GENERATOR_EXCEPTION_STACKS, GENERATOR_RAISE,
-    TASK_RAISE_ACTIVE, exception_clear_reason_set, internals,
+    ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, CURRENT_EXCEPTION_PENDING, EXCEPTION_STACK,
+    EXCEPTION_STACK_BASELINE, ExceptionContextFallback, ExceptionsRuntimeState,
+    GENERATOR_EXCEPTION_STACKS, GENERATOR_RAISE, TASK_RAISE_ACTIVE, THREAD_LAST_EXCEPTION,
+    exception_clear_reason_set, internals,
 };
 use state::{
     LAST_EXCEPTION_COL, STOPASYNC_BT_PRINTED, debug_exception_clear, debug_exception_flow,
@@ -1090,10 +1085,8 @@ fn exception_slot_is_valid(ptr: PtrSlot) -> bool {
 }
 
 #[inline]
-fn global_last_exception_raw_slot(_py: &PyToken<'_>) -> Option<PtrSlot> {
-    let ptr = runtime_state(_py)
-        .last_exception
-        .load(AtomicOrdering::Acquire);
+fn thread_last_exception_raw_slot() -> Option<PtrSlot> {
+    let ptr = THREAD_LAST_EXCEPTION.with(|slot| slot.get());
     if ptr.is_null() {
         None
     } else {
@@ -1102,57 +1095,30 @@ fn global_last_exception_raw_slot(_py: &PyToken<'_>) -> Option<PtrSlot> {
 }
 
 #[inline]
-fn global_last_exception_valid_slot(_py: &PyToken<'_>) -> Option<PtrSlot> {
-    let state = runtime_state(_py);
-    let ptr = state.last_exception.load(AtomicOrdering::Acquire);
+fn thread_last_exception_valid_slot() -> Option<PtrSlot> {
+    let ptr = THREAD_LAST_EXCEPTION.with(|slot| slot.get());
     if ptr.is_null() {
         return None;
     }
     let slot = PtrSlot(ptr);
-    if exception_slot_is_valid(slot) {
-        return Some(slot);
-    }
-    if state
-        .last_exception
-        .compare_exchange(
-            ptr,
-            std::ptr::null_mut(),
-            AtomicOrdering::AcqRel,
-            AtomicOrdering::Acquire,
-        )
-        .is_ok()
-    {
-        state
-            .last_exception_pending
-            .store(false, AtomicOrdering::Release);
-    }
-    None
+    assert!(
+        exception_slot_is_valid(slot),
+        "owned thread exception slot must reference a live exception"
+    );
+    Some(slot)
 }
 
 #[inline]
-fn global_last_exception_pending_slot(_py: &PyToken<'_>) -> Option<PtrSlot> {
-    let state = runtime_state(_py);
-    if !state.last_exception_pending.load(AtomicOrdering::Acquire) {
-        return None;
-    }
-    let slot = global_last_exception_valid_slot(_py);
-    if slot.is_none() {
-        state
-            .last_exception_pending
-            .store(false, AtomicOrdering::Release);
-    }
-    slot
+fn thread_last_exception_pending_slot() -> Option<PtrSlot> {
+    thread_last_exception_valid_slot()
 }
 
 #[inline]
-fn global_last_exception_take(_py: &PyToken<'_>) -> Option<PtrSlot> {
-    let state = runtime_state(_py);
-    let ptr = state
-        .last_exception
-        .swap(std::ptr::null_mut(), AtomicOrdering::AcqRel);
-    state
-        .last_exception_pending
-        .store(false, AtomicOrdering::Release);
+fn thread_last_exception_take() -> Option<PtrSlot> {
+    let ptr = THREAD_LAST_EXCEPTION.with(|slot| slot.replace(std::ptr::null_mut()));
+    if current_task_key().is_none() {
+        CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(false));
+    }
     if ptr.is_null() {
         None
     } else {
@@ -1161,77 +1127,67 @@ fn global_last_exception_take(_py: &PyToken<'_>) -> Option<PtrSlot> {
 }
 
 #[inline]
-fn global_last_exception_store_recorded(_py: &PyToken<'_>, ptr: *mut u8, reuse_existing_ref: bool) {
-    let state = runtime_state(_py);
+fn thread_last_exception_store_recorded(_py: &PyToken<'_>, ptr: *mut u8, reuse_existing_ref: bool) {
     if !reuse_existing_ref {
         let bits = MoltObject::from_ptr(ptr).bits();
         inc_ref_bits(_py, bits);
     }
-    state.last_exception.store(ptr, AtomicOrdering::Release);
-    state
-        .last_exception_pending
-        .store(true, AtomicOrdering::Release);
+    THREAD_LAST_EXCEPTION.with(|slot| slot.set(ptr));
+    CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(true));
 }
 
 #[inline]
-fn global_last_exception_replace_borrowed(_py: &PyToken<'_>, ptr: *mut u8, bits: u64) {
-    let state = runtime_state(_py);
-    let old = state.last_exception.load(AtomicOrdering::Acquire);
+fn thread_last_exception_replace_borrowed(_py: &PyToken<'_>, ptr: *mut u8, bits: u64) {
+    let old = THREAD_LAST_EXCEPTION.with(|slot| slot.get());
     if old == ptr {
-        state
-            .last_exception_pending
-            .store(true, AtomicOrdering::Release);
+        CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(true));
         return;
     }
     inc_ref_bits(_py, bits);
-    let old = state.last_exception.swap(ptr, AtomicOrdering::AcqRel);
-    state
-        .last_exception_pending
-        .store(true, AtomicOrdering::Release);
+    let old = THREAD_LAST_EXCEPTION.with(|slot| slot.replace(ptr));
+    CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(true));
     if !old.is_null() && old != ptr {
         let old_bits = MoltObject::from_ptr(old).bits();
         dec_ref_bits(_py, old_bits);
     }
 }
 
-pub(crate) fn global_last_exception_bits_noinc(_py: &PyToken<'_>) -> Option<u64> {
-    global_last_exception_raw_slot(_py).map(|ptr| MoltObject::from_ptr(ptr.0).bits())
+pub(crate) fn thread_last_exception_bits_noinc(_py: &PyToken<'_>) -> Option<u64> {
+    thread_last_exception_raw_slot().map(|ptr| MoltObject::from_ptr(ptr.0).bits())
+}
+
+/// Synchronize the inline pending byte whenever the scheduler changes the
+/// current execution context on this native thread.
+pub(crate) fn sync_current_exception_pending(_py: &PyToken<'_>, task_ptr: *mut u8) {
+    let pending = if task_ptr.is_null() {
+        thread_last_exception_raw_slot().is_some()
+    } else {
+        task_last_exceptions(_py)
+            .lock()
+            .unwrap()
+            .contains_key(&PtrSlot(task_ptr))
+    };
+    CURRENT_EXCEPTION_PENDING.with(|flag| flag.set(pending));
 }
 
 pub(crate) fn exception_pending(_py: &PyToken<'_>) -> bool {
-    let state = runtime_state(_py);
+    if !CURRENT_EXCEPTION_PENDING.with(|pending| pending.get()) {
+        return false;
+    }
     let debug_pending = debug_exception_pending();
     if let Some(task_key) = current_task_key() {
-        let pending_ptr = if state
-            .task_last_exception_pending
-            .load(AtomicOrdering::Relaxed)
-        {
-            let mut guard = task_last_exceptions(_py).lock().unwrap();
+        let pending_ptr = {
+            let guard = task_last_exceptions(_py).lock().unwrap();
             match guard.get(&task_key).copied() {
                 Some(ptr) if exception_slot_is_valid(ptr) => Some(ptr),
-                Some(_) => {
-                    guard.remove(&task_key);
-                    if guard.is_empty() {
-                        state
-                            .task_last_exception_pending
-                            .store(false, AtomicOrdering::Relaxed);
-                    }
-                    None
-                }
-                None => {
-                    if guard.is_empty() {
-                        state
-                            .task_last_exception_pending
-                            .store(false, AtomicOrdering::Relaxed);
-                    }
-                    None
-                }
+                Some(_) => panic!("owned task exception slot must reference a live exception"),
+                None => None,
             }
-        } else {
-            None
         };
-        let global_pending = global_last_exception_pending_slot(_py).is_some();
-        let pending = pending_ptr.is_some() || global_pending;
+        let pending = pending_ptr.is_some();
+        if !pending {
+            CURRENT_EXCEPTION_PENDING.with(|flag| flag.set(false));
+        }
         if debug_pending
             && pending
             && let Some(ptr) = pending_ptr
@@ -1246,10 +1202,13 @@ pub(crate) fn exception_pending(_py: &PyToken<'_>) -> bool {
         }
         return pending;
     }
-    let pending = global_last_exception_pending_slot(_py).is_some();
+    let pending = thread_last_exception_pending_slot().is_some();
+    if !pending {
+        CURRENT_EXCEPTION_PENDING.with(|flag| flag.set(false));
+    }
     if debug_pending
         && pending
-        && let Some(ptr) = global_last_exception_raw_slot(_py)
+        && let Some(ptr) = thread_last_exception_raw_slot()
     {
         let kind_bits = unsafe { exception_kind_bits(ptr.0) };
         let kind = string_obj_to_owned(obj_from_bits(kind_bits))
@@ -1259,71 +1218,34 @@ pub(crate) fn exception_pending(_py: &PyToken<'_>) -> bool {
     pending
 }
 
-pub(crate) fn exception_is_rooted(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
-    crate::gil_assert();
-    if ptr.is_null() {
-        return false;
-    }
-    let state = runtime_state(_py);
-    if state.last_exception.load(AtomicOrdering::Acquire) == ptr {
-        return true;
-    }
-    if task_last_exceptions(_py)
-        .lock()
-        .unwrap()
-        .values()
-        .any(|slot| slot.0 == ptr)
-    {
-        return true;
-    }
-    // Use try_with to avoid panicking when TLS is being destroyed
-    // (e.g., during ThreadLocalGuard::drop after an exception).
-    // If TLS is destroyed, conservatively treat the exception as rooted.
-    if ACTIVE_EXCEPTION_STACK
-        .try_with(|stack| {
-            let Ok(stack) = stack.try_borrow() else {
-                // If the stack is mutably borrowed, we are in exception-stack mutation and must
-                // conservatively keep exception objects alive.
-                return true;
-            };
-            stack
-                .iter()
-                .filter_map(|bits| obj_from_bits(*bits).as_ptr())
-                .any(|p| p == ptr)
-        })
-        .unwrap_or(true)
-    {
-        return true;
-    }
-    ACTIVE_EXCEPTION_FALLBACK
-        .try_with(|stack| {
-            let Ok(stack) = stack.try_borrow() else {
-                return true;
-            };
-            stack
-                .iter()
-                .filter_map(|entry| obj_from_bits(entry.bits).as_ptr())
-                .any(|p| p == ptr)
-        })
-        .unwrap_or(true)
-}
-
 pub(crate) fn exception_last_bits_noinc(_py: &PyToken<'_>) -> Option<u64> {
-    if let Some(task_key) = current_task_key()
-        && let Some(ptr) = task_last_exceptions(_py)
+    if let Some(task_key) = current_task_key() {
+        return task_last_exceptions(_py)
             .lock()
             .unwrap()
             .get(&task_key)
             .copied()
-    {
-        return Some(MoltObject::from_ptr(ptr.0).bits());
+            .map(|ptr| MoltObject::from_ptr(ptr.0).bits());
     }
-    global_last_exception_bits_noinc(_py)
+    thread_last_exception_bits_noinc(_py)
 }
 
-pub(crate) fn clear_exception_state(_py: &PyToken<'_>) {
+pub(crate) fn clear_thread_exception_for_teardown(_py: &PyToken<'_>) {
     crate::gil_assert();
-    let ptr = global_last_exception_take(_py);
+    let ptr = THREAD_LAST_EXCEPTION
+        .try_with(|slot| {
+            let ptr = slot.replace(std::ptr::null_mut());
+            if ptr.is_null() {
+                None
+            } else {
+                Some(PtrSlot(ptr))
+            }
+        })
+        .ok()
+        .flatten();
+    if current_task_key().is_none() {
+        let _ = CURRENT_EXCEPTION_PENDING.try_with(|pending| pending.set(false));
+    }
     if let Some(ptr) = ptr {
         let bits = MoltObject::from_ptr(ptr.0).bits();
         dec_ref_bits(_py, bits);
@@ -1796,17 +1718,13 @@ pub(crate) fn task_exception_baseline_drop(_py: &PyToken<'_>, ptr: *mut u8) {
 
 pub(crate) fn task_last_exception_drop(_py: &PyToken<'_>, ptr: *mut u8) {
     crate::gil_assert();
-    let state = runtime_state(_py);
-    let old_ptr = {
-        let mut guard = task_last_exceptions(_py).lock().unwrap();
-        let old = guard.remove(&PtrSlot(ptr));
-        if guard.is_empty() {
-            state
-                .task_last_exception_pending
-                .store(false, AtomicOrdering::Relaxed);
-        }
-        old
-    };
+    let old_ptr = task_last_exceptions(_py)
+        .lock()
+        .unwrap()
+        .remove(&PtrSlot(ptr));
+    if current_task_ptr() == ptr {
+        CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(false));
+    }
     if let Some(old_ptr) = old_ptr {
         let old_bits = MoltObject::from_ptr(old_ptr.0).bits();
         dec_ref_bits(_py, old_bits);
@@ -1851,7 +1769,6 @@ fn record_exception_with_caller_frame(_py: &PyToken<'_>, ptr: *mut u8, include_c
             .unwrap_or_else(|| "<unknown>".to_string());
         eprintln!("molt exc SET kind={} ptr=0x{:x}", kind, ptr as usize);
     }
-    let state = runtime_state(_py);
     let task_key = current_task_key();
     let mut prior_ptr = None;
     let mut context_bits: Option<u64> = None;
@@ -1888,12 +1805,8 @@ fn record_exception_with_caller_frame(_py: &PyToken<'_>, ptr: *mut u8, include_c
         if let Some(old_ptr) = guard.remove(&task_key) {
             prior_ptr = Some(old_ptr.0);
         }
-        if guard.is_empty() {
-            state
-                .task_last_exception_pending
-                .store(false, AtomicOrdering::Relaxed);
-        }
-    } else if let Some(old_ptr) = global_last_exception_take(_py) {
+        CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(false));
+    } else if let Some(old_ptr) = thread_last_exception_take() {
         prior_ptr = Some(old_ptr.0);
     }
     if let Some(old_ptr) = prior_ptr {
@@ -1994,21 +1907,22 @@ fn record_exception_with_caller_frame(_py: &PyToken<'_>, ptr: *mut u8, include_c
         }
     }
     if let Some(task_key) = task_key {
-        // Inc-ref for task exception slot (same rationale as global slot).
+        // The task slot owns one strong reference. Same-pointer rerecording
+        // reuses the detached slot edge exactly like the thread slot.
         let bits = MoltObject::from_ptr(ptr).bits();
-        inc_ref_bits(_py, bits);
+        if !same_ptr {
+            inc_ref_bits(_py, bits);
+        }
         task_last_exceptions(_py)
             .lock()
             .unwrap()
             .insert(task_key, PtrSlot(ptr));
-        state
-            .task_last_exception_pending
-            .store(true, AtomicOrdering::Relaxed);
+        CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(true));
     } else {
         // The global slot owns one strong reference. Re-recording the same
         // pointer reuses the reference removed from the slot above; new
         // pointers acquire a fresh slot reference.
-        global_last_exception_store_recorded(_py, ptr, same_ptr);
+        thread_last_exception_store_recorded(_py, ptr, same_ptr);
     }
     if debug_exceptions() {
         let debug_pending = debug_exception_pending();
@@ -2021,15 +1935,14 @@ fn record_exception_with_caller_frame(_py: &PyToken<'_>, ptr: *mut u8, include_c
             let mut out = String::new();
             if let Some(args_ptr) = args_obj.as_ptr() {
                 unsafe {
-                    if object_type_id(args_ptr) == TYPE_ID_TUPLE {
-                        if let Some(first) = crate::object::seq_access::with_immutable_tuple_slice(
+                    if object_type_id(args_ptr) == TYPE_ID_TUPLE
+                        && let Some(first) = crate::object::seq_access::with_immutable_tuple_slice(
                             args_ptr,
                             |elems| elems.first().copied(),
                         )
                         .flatten()
-                        {
-                            out = format_obj_str(_py, obj_from_bits(first));
-                        }
+                    {
+                        out = format_obj_str(_py, obj_from_bits(first));
                     }
                 }
             }
@@ -2076,25 +1989,16 @@ pub(crate) fn record_exception_owned(_py: &PyToken<'_>, ptr: *mut u8) {
 
 pub(crate) fn clear_exception(_py: &PyToken<'_>) {
     crate::gil_assert();
-    let state = runtime_state(_py);
     if let Some(task_key) = current_task_key() {
-        let old_ptr = {
-            let mut guard = task_last_exceptions(_py).lock().unwrap();
-            let old = guard.remove(&task_key);
-            if guard.is_empty() {
-                state
-                    .task_last_exception_pending
-                    .store(false, AtomicOrdering::Relaxed);
-            }
-            old
-        };
+        let old_ptr = task_last_exceptions(_py).lock().unwrap().remove(&task_key);
+        CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(false));
         if let Some(old_ptr) = old_ptr {
             let old_bits = MoltObject::from_ptr(old_ptr.0).bits();
             dec_ref_bits(_py, old_bits);
         }
         return;
     }
-    let old_ptr = global_last_exception_take(_py);
+    let old_ptr = thread_last_exception_take();
     if let Some(old_ptr) = old_ptr {
         let old_bits = MoltObject::from_ptr(old_ptr.0).bits();
         dec_ref_bits(_py, old_bits);
@@ -3483,7 +3387,6 @@ pub extern "C" fn molt_exception_set_last(exc_bits: u64) -> u64 {
         }
         let new_bits = MoltObject::from_ptr(ptr).bits();
         if let Some(task_key) = current_task_key() {
-            let state = runtime_state(_py);
             let old_ptr = {
                 let mut guard = task_last_exceptions(_py).lock().unwrap();
                 guard.insert(task_key, PtrSlot(ptr))
@@ -3497,11 +3400,9 @@ pub extern "C" fn molt_exception_set_last(exc_bits: u64) -> u64 {
             } else {
                 inc_ref_bits(_py, new_bits);
             }
-            state
-                .task_last_exception_pending
-                .store(true, AtomicOrdering::Relaxed);
+            CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(true));
         } else {
-            global_last_exception_replace_borrowed(_py, ptr, new_bits);
+            thread_last_exception_replace_borrowed(_py, ptr, new_bits);
         }
         MoltObject::none().bits()
     })
@@ -3944,5 +3845,270 @@ mod tests {
             }
             dec_ref_bits(_py, exc_bits);
         });
+    }
+
+    #[test]
+    fn execution_contexts_isolate_pending_exceptions_and_fast_flag() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry_nopanic!(_py, {
+            let task_a = Box::into_raw(Box::new(0_u8));
+            let task_b = Box::into_raw(Box::new(0_u8));
+            let thread_exc = alloc_exception(_py, "ValueError", "thread");
+            let task_a_exc = alloc_exception(_py, "TypeError", "task-a");
+            let task_b_exc = alloc_exception(_py, "RuntimeError", "task-b");
+            let thread_bits = MoltObject::from_ptr(thread_exc).bits();
+            let task_a_bits = MoltObject::from_ptr(task_a_exc).bits();
+            let task_b_bits = MoltObject::from_ptr(task_b_exc).bits();
+            let flag_ptr =
+                super::exception_state_abi::molt_exception_pending_flag_ptr() as *const bool;
+            assert!(!flag_ptr.is_null());
+
+            record_exception(_py, thread_exc);
+            assert!(exception_pending(_py));
+            assert!(unsafe { *flag_ptr });
+
+            let previous = crate::replace_current_task(_py, task_a);
+            assert!(previous.is_null());
+            assert!(
+                !exception_pending(_py),
+                "ambient thread error must be hidden"
+            );
+            assert!(!unsafe { *flag_ptr });
+            record_exception(_py, task_a_exc);
+
+            crate::replace_current_task(_py, task_b);
+            assert!(
+                !exception_pending(_py),
+                "task A error must be hidden from task B"
+            );
+            record_exception(_py, task_b_exc);
+
+            crate::replace_current_task(_py, task_a);
+            assert_eq!(exception_last_pending_bits(_py), task_a_bits);
+            dec_ref_bits(_py, task_a_bits);
+            clear_exception(_py);
+            assert!(!unsafe { *flag_ptr });
+
+            crate::replace_current_task(_py, task_b);
+            assert_eq!(exception_last_pending_bits(_py), task_b_bits);
+            dec_ref_bits(_py, task_b_bits);
+            clear_exception(_py);
+
+            crate::replace_current_task(_py, std::ptr::null_mut());
+            assert_eq!(exception_last_pending_bits(_py), thread_bits);
+            dec_ref_bits(_py, thread_bits);
+            clear_exception(_py);
+            assert!(!unsafe { *flag_ptr });
+
+            dec_ref_bits(_py, task_b_bits);
+            dec_ref_bits(_py, task_a_bits);
+            dec_ref_bits(_py, thread_bits);
+            unsafe {
+                drop(Box::from_raw(task_b));
+                drop(Box::from_raw(task_a));
+            }
+        });
+    }
+
+    #[test]
+    fn rerecording_same_exception_reuses_the_owned_slot_edge() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry_nopanic!(_py, {
+            let task = Box::into_raw(Box::new(0_u8));
+            let exc_ptr = alloc_exception(_py, "RuntimeError", "same-owner");
+            let exc_bits = MoltObject::from_ptr(exc_ptr).bits();
+            let refcount = || unsafe {
+                (*header_from_obj_ptr(exc_ptr))
+                    .ref_count
+                    .load(Ordering::Acquire)
+            };
+            let baseline = refcount();
+
+            record_exception(_py, exc_ptr);
+            assert_eq!(refcount(), baseline + 1);
+            record_exception(_py, exc_ptr);
+            assert_eq!(refcount(), baseline + 1);
+            clear_exception(_py);
+            assert_eq!(refcount(), baseline);
+
+            crate::replace_current_task(_py, task);
+            record_exception(_py, exc_ptr);
+            assert_eq!(refcount(), baseline + 1);
+            record_exception(_py, exc_ptr);
+            assert_eq!(refcount(), baseline + 1);
+            clear_exception(_py);
+            assert_eq!(refcount(), baseline);
+            crate::replace_current_task(_py, std::ptr::null_mut());
+
+            dec_ref_bits(_py, exc_bits);
+            unsafe { drop(Box::from_raw(task)) };
+        });
+    }
+
+    #[test]
+    fn worker_exit_releases_its_pending_exception_edge() {
+        // This is deliberately not serialized by TEST_MUTEX. The worker's TLS
+        // destructor reacquires runtime custody before consuming its owned
+        // exception edge, so holding an unrelated process-wide fixture lock
+        // across join would create a hidden lock lifetime and can deadlock a
+        // parallel test that is already exercising the GIL. The exception
+        // object and both refcount observations are protected by the GIL; TLS
+        // teardown is the authority being tested here.
+        let (exc_bits, baseline) = crate::with_gil_entry_nopanic!(_py, {
+            let exc_ptr = alloc_exception(_py, "RuntimeError", "worker-exit");
+            let bits = MoltObject::from_ptr(exc_ptr).bits();
+            let count = unsafe {
+                (*header_from_obj_ptr(exc_ptr))
+                    .ref_count
+                    .load(Ordering::Acquire)
+            };
+            (bits, count)
+        });
+
+        std::thread::spawn(move || {
+            crate::with_gil_entry_nopanic!(_py, {
+                let ptr = obj_from_bits(exc_bits).as_ptr().expect("live exception");
+                record_exception(_py, ptr);
+                assert_eq!(
+                    unsafe {
+                        (*header_from_obj_ptr(ptr))
+                            .ref_count
+                            .load(Ordering::Acquire)
+                    },
+                    baseline + 1
+                );
+            });
+        })
+        .join()
+        .expect("worker cleanup must complete");
+
+        crate::with_gil_entry_nopanic!(_py, {
+            let ptr = obj_from_bits(exc_bits)
+                .as_ptr()
+                .expect("main owner remains live");
+            assert_eq!(
+                unsafe {
+                    (*header_from_obj_ptr(ptr))
+                        .ref_count
+                        .load(Ordering::Acquire)
+                },
+                baseline,
+                "TLS teardown must consume the worker's pending-exception edge"
+            );
+            dec_ref_bits(_py, exc_bits);
+        });
+    }
+
+    #[test]
+    #[ignore = "permanently shuts down process-global runtime; run in isolation"]
+    fn tls_exception_destructor_excludes_concurrent_shutdown() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let exc_bits = crate::with_gil_entry_nopanic!(_py, {
+            MoltObject::from_ptr(alloc_exception(_py, "RuntimeError", "tls-shutdown")).bits()
+        });
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let (thread_id_tx, thread_id_rx) = std::sync::mpsc::channel();
+        let (proceed_tx, proceed_rx) = std::sync::mpsc::channel();
+        let (recorded_tx, recorded_rx) = std::sync::mpsc::channel();
+        let (exit_tx, exit_rx) = std::sync::mpsc::channel();
+        let (destructor_done_tx, destructor_done_rx) = std::sync::mpsc::channel();
+        let worker_exc_bits = exc_bits;
+        let worker = std::thread::spawn(move || {
+            thread_id_tx.send(std::thread::current().id()).unwrap();
+            proceed_rx.recv().unwrap();
+            crate::with_gil_entry_nopanic!(_py, {
+                let ptr = obj_from_bits(worker_exc_bits)
+                    .as_ptr()
+                    .expect("live exception");
+                record_exception(_py, ptr);
+            });
+            recorded_tx.send(()).unwrap();
+            exit_rx.recv().unwrap();
+        });
+        let worker_id = thread_id_rx.recv().unwrap();
+        *super::state::THREAD_EXCEPTION_DROP_TEST_GATE
+            .lock()
+            .unwrap() = Some(super::state::ThreadExceptionDropTestGate {
+            owner: worker_id,
+            entered: entered_tx,
+            release: std::sync::Arc::clone(&release),
+            completion: destructor_done_tx,
+        });
+
+        // Create the shutdown thread before the worker holds the GIL: Windows
+        // thread startup can itself enter runtime initialization.
+        let (shutdown_id_tx, shutdown_id_rx) = std::sync::mpsc::channel();
+        let (shutdown_proceed_tx, shutdown_proceed_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let (trace_tx, trace_rx) = std::sync::mpsc::channel();
+        let shutdown = std::thread::spawn(move || {
+            shutdown_id_tx.send(std::thread::current().id()).unwrap();
+            shutdown_proceed_rx.recv().unwrap();
+            done_tx
+                .send(crate::state::runtime_state::molt_runtime_shutdown())
+                .unwrap();
+        });
+        let shutdown_id = shutdown_id_rx.recv().unwrap();
+        *crate::state::lifecycle::THREAD_LOCAL_DROP_TEST_TRACE
+            .lock()
+            .unwrap() = Some((shutdown_id, trace_tx));
+
+        proceed_tx.send(()).unwrap();
+        recorded_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("worker recorded its pending exception");
+        crate::with_gil_entry_nopanic!(_py, {
+            dec_ref_bits(_py, exc_bits);
+        });
+        exit_tx.send(()).unwrap();
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("worker entered ThreadExceptionState::drop");
+
+        shutdown_proceed_tx.send(()).unwrap();
+        assert!(
+            done_rx
+                .recv_timeout(std::time::Duration::from_millis(50))
+                .is_err(),
+            "shutdown must wait while TLS destructor validates and decrefs under GIL"
+        );
+
+        release.wait();
+        destructor_done_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("target exception TLS destructor completed its DECREF");
+        assert_eq!(
+            done_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("shutdown completed after TLS destructor released the GIL"),
+            1
+        );
+        let mut trace = Vec::new();
+        while let Ok(stage) = trace_rx.recv_timeout(std::time::Duration::from_secs(2)) {
+            trace.push(stage);
+            if stage == "drained" || stage == "cleared" {
+                break;
+            }
+        }
+        assert_eq!(
+            trace,
+            vec![
+                "enter",
+                "gil_acquired",
+                "runtime_absent",
+                "gil_released",
+                "drained"
+            ],
+            "shutdown thread TLS cleanup stages"
+        );
+        shutdown.join().unwrap();
+        worker.join().unwrap();
+        *crate::state::lifecycle::THREAD_LOCAL_DROP_TEST_TRACE
+            .lock()
+            .unwrap() = None;
+        *super::state::THREAD_EXCEPTION_DROP_TEST_GATE
+            .lock()
+            .unwrap() = None;
     }
 }

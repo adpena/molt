@@ -39,6 +39,7 @@ use molt_obj_model::MoltObject;
 // Builtin exception tags (see the tag table in builtins/exceptions.rs:
 // 5 => ValueError, 6 => TypeError, 7 => RuntimeError).
 const TAG_VALUE_ERROR: u64 = 5;
+const TAG_TYPE_ERROR: u64 = 6;
 const TAG_RUNTIME_ERROR: u64 = 7;
 
 /// Serialize against every other test that shares the process-global
@@ -91,6 +92,12 @@ extern "C" fn ffi_raises_value_error() -> u64 {
     })
 }
 
+extern "C" fn ffi_raises_type_error() -> u64 {
+    crate::with_gil_entry!(_py, {
+        raise_exception::<u64>(_py, "TypeError", "thread-local python-level error")
+    })
+}
+
 /// The body panics, standing in for a genuine runtime invariant violation (the
 /// only legitimate source of a panic under the contract).  Under
 /// `panic = "unwind"` the catching macro converts it into a pending
@@ -137,6 +144,52 @@ fn python_level_error_is_catchable() {
     assert_eq!(molt_exception_pending(), 0);
 }
 
+#[test]
+fn pending_exceptions_are_isolated_between_native_threads() {
+    // This test exercises thread-local exception state and must remain safe
+    // under the default parallel harness. Do not hold TEST_MUTEX while
+    // acquiring the GIL: other tests legitimately enter those authorities in
+    // the opposite lifetime (GIL-protected work followed by serialized global
+    // assertions), and nesting them here would create a harness-only AB/BA
+    // deadlock. Runtime initialization is itself linearized.
+    assert_eq!(molt_runtime_init(), 1);
+    let _ = molt_exception_clear();
+    // Runtime initialization no longer leaves a hidden process-lifetime GIL
+    // owner. Hold one explicit custody unit and suspend exactly that unit while
+    // the worker threads exercise their independent exception channels.
+    let _runtime_gil = super::gil::GilGuard::new();
+    let _runtime_gil_release = super::gil::GilReleaseGuard::suspend();
+    let (a_ready_tx, a_ready_rx) = std::sync::mpsc::sync_channel(0);
+    let (b_done_tx, b_done_rx) = std::sync::mpsc::sync_channel(0);
+    let thread_a = std::thread::spawn(move || {
+        let expected = builtin_exc_type_bits(TAG_VALUE_ERROR);
+        let _ = ffi_raises_value_error();
+        a_ready_tx.send(()).expect("thread A must report its raise");
+        b_done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("thread B must clear its independent exception");
+        assert_eq!(molt_exception_pending(), 1);
+        assert_eq!(molt_err_matches(expected), 1);
+        let _ = molt_exception_clear();
+    });
+
+    a_ready_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("thread A must raise without blocking");
+    let thread_b = std::thread::spawn(move || {
+        let expected = builtin_exc_type_bits(TAG_TYPE_ERROR);
+        let _ = ffi_raises_type_error();
+        assert_eq!(molt_exception_pending(), 1);
+        assert_eq!(molt_err_matches(expected), 1);
+        let _ = molt_exception_clear();
+        assert_eq!(molt_exception_pending(), 0);
+        b_done_tx.send(()).expect("thread B must report completion");
+    });
+
+    thread_b.join().expect("type-error thread must complete");
+    thread_a.join().expect("value-error thread must complete");
+}
+
 /// Under `panic = "unwind"` (dev / dev-fast / release-fast — the CI profile),
 /// an invariant-violation panic inside a catching FFI body is converted into a
 /// catchable pending `RuntimeError` instead of crossing the `extern "C"`
@@ -148,12 +201,7 @@ fn invariant_panic_becomes_runtime_error_under_unwind() {
     let _guard = ContractGuard::new();
     let runtime_error_type = builtin_exc_type_bits(TAG_RUNTIME_ERROR);
 
-    // Silence the default panic hook for the duration of the deliberate panic
-    // so the test output stays clean (the panic is expected and caught).
-    let prev_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
-    let ret = ffi_panics();
-    std::panic::set_hook(prev_hook);
+    let ret = crate::test_support::with_expected_panic(|| ffi_panics());
 
     // On a caught panic the macro returns a zero-initialized sentinel; the
     // contract is that the *caller* checks the pending exception before using

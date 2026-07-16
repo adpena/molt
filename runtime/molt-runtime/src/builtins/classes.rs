@@ -1,4 +1,5 @@
 use crate::{GilGuard, PyToken};
+use std::sync::Mutex;
 use std::sync::atomic::Ordering as AtomicOrdering;
 
 use molt_obj_model::MoltObject;
@@ -7,7 +8,6 @@ use crate::object::ops_sys::runtime_target_minor;
 use crate::object::{
     ClassEdgeOwnership, object_clear_class_edge_unpublished, object_init_class_edge_unpublished,
 };
-use crate::state::runtime_state::runtime_state_lock;
 use crate::{
     BUILTIN_TAG_BASE_EXCEPTION, BUILTIN_TAG_CLASSMETHOD, BUILTIN_TAG_EXCEPTION, BUILTIN_TAG_OBJECT,
     BUILTIN_TAG_PROPERTY, BUILTIN_TAG_STATICMETHOD, BUILTIN_TAG_SUPER, BUILTIN_TAG_TYPE,
@@ -20,6 +20,8 @@ use crate::{
     inc_ref_bits, intern_static_name, molt_class_set_base, obj_from_bits, object_type_id,
     raise_exception, runtime_state, runtime_state_for_gil, string_obj_to_owned,
 };
+
+static BUILTIN_CLASSES_INIT_LOCK: Mutex<()> = Mutex::new(());
 
 pub(crate) struct BuiltinClasses {
     pub(crate) object: u64,
@@ -102,9 +104,8 @@ pub(crate) struct BuiltinClasses {
 }
 
 impl BuiltinClasses {
-    fn dec_ref_all(&self, _py: &PyToken<'_>) {
-        crate::gil_assert();
-        for bits in [
+    fn anchors(&self) -> [u64; 77] {
+        [
             self.object,
             self.type_obj,
             self.none_type,
@@ -182,14 +183,21 @@ impl BuiltinClasses {
             self.property,
             self.generic_alias,
             self.union_type,
-        ] {
+        ]
+    }
+
+    fn dec_ref_all(&self, _py: &PyToken<'_>) {
+        crate::gil_assert();
+        for (index, bits) in self.anchors().into_iter().enumerate() {
+            if let Some(ptr) = obj_from_bits(bits).as_ptr() {
+                assert!(
+                    crate::resolve_ptr(ptr.expose_provenance() as u64).is_some(),
+                    "builtin class anchor {index} was released before anchor teardown"
+                );
+            }
             dec_ref_bits(_py, bits);
         }
     }
-}
-
-impl Drop for BuiltinClasses {
-    fn drop(&mut self) {}
 }
 
 fn make_builtin_class(_py: &PyToken<'_>, name: &str) -> u64 {
@@ -367,10 +375,10 @@ fn release_failed_builtin_classes(_py: &PyToken<'_>, classes: &[u64]) {
         // Break every unpublished class edge first, including type's self
         // edge, so the subsequent external-reference release can terminate.
         for &bits in classes {
-            if let Some(ptr) = obj_from_bits(bits).as_ptr() {
-                if !object_clear_class_edge_unpublished(_py, ptr) {
-                    panic!("failed to clear an unpublished builtin class edge during rollback");
-                }
+            if let Some(ptr) = obj_from_bits(bits).as_ptr()
+                && !object_clear_class_edge_unpublished(_py, ptr)
+            {
+                panic!("failed to clear an unpublished builtin class edge during rollback");
             }
         }
     }
@@ -835,7 +843,7 @@ pub(crate) fn builtin_classes_if_initialized(_py: &PyToken<'_>) -> Option<&'stat
 fn init_builtin_classes() -> &'static BuiltinClasses {
     let gil = GilGuard::new();
     let py = gil.token();
-    let _guard = runtime_state_lock().lock().unwrap();
+    let _guard = BUILTIN_CLASSES_INIT_LOCK.lock().unwrap();
     let state = runtime_state(&py);
     let ptr = state.builtin_classes.load(AtomicOrdering::Acquire);
     if !ptr.is_null() {
@@ -849,183 +857,37 @@ fn init_builtin_classes() -> &'static BuiltinClasses {
     unsafe { &*ptr }
 }
 
-pub(crate) fn builtin_classes_shutdown(py: &PyToken<'_>, state: &RuntimeState) {
+pub(crate) fn builtin_classes_break_cycles(py: &PyToken<'_>, state: &RuntimeState) {
     let ptr = state.builtin_classes.load(AtomicOrdering::Acquire);
     if ptr.is_null() {
         return;
     }
     unsafe {
         let builtins = &*ptr;
-        for bits in [
-            builtins.object,
-            builtins.type_obj,
-            builtins.none_type,
-            builtins.not_implemented_type,
-            builtins.ellipsis_type,
-            builtins.base_exception,
-            builtins.exception,
-            builtins.base_exception_group,
-            builtins.exception_group,
-            builtins.int,
-            builtins.float,
-            builtins.complex,
-            builtins.bool,
-            builtins.str,
-            builtins.bytes,
-            builtins.bytearray,
-            builtins.list,
-            builtins.tuple,
-            builtins.dict,
-            builtins.dict_keys,
-            builtins.dict_items,
-            builtins.dict_values,
-            builtins.set,
-            builtins.frozenset,
-            builtins.range,
-            builtins.slice,
-            builtins.memoryview,
-            builtins.io_base,
-            builtins.raw_io_base,
-            builtins.buffered_io_base,
-            builtins.text_io_base,
-            builtins.file,
-            builtins.file_io,
-            builtins.buffered_reader,
-            builtins.buffered_writer,
-            builtins.buffered_random,
-            builtins.text_io_wrapper,
-            builtins.bytes_io,
-            builtins.string_io,
-            builtins.function,
-            builtins.coroutine,
-            builtins.generator,
-            builtins.async_generator,
-            builtins.iterator,
-            builtins.callable_iterator,
-            builtins.bytes_iterator,
-            builtins.bytearray_iterator,
-            builtins.dict_keyiterator,
-            builtins.dict_valueiterator,
-            builtins.dict_itemiterator,
-            builtins.dict_reversekeyiterator,
-            builtins.dict_reversevalueiterator,
-            builtins.dict_reverseitemiterator,
-            builtins.list_iterator,
-            builtins.list_reverseiterator,
-            builtins.range_iterator,
-            builtins.longrange_iterator,
-            builtins.set_iterator,
-            builtins.str_iterator,
-            builtins.str_ascii_iterator,
-            builtins.tuple_iterator,
-            builtins.enumerate,
-            builtins.reversed,
-            builtins.zip,
-            builtins.map,
-            builtins.filter,
-            builtins.builtin_function_or_method,
-            builtins.code,
-            builtins.frame,
-            builtins.traceback,
-            builtins.module,
-            builtins.super_type,
-            builtins.classmethod,
-            builtins.staticmethod,
-            builtins.property,
-            builtins.generic_alias,
-            builtins.union_type,
-        ] {
+        for bits in builtins.anchors() {
             class_break_cycles(py, bits);
         }
+    }
+}
+
+pub(crate) fn builtin_classes_shutdown(py: &PyToken<'_>, state: &RuntimeState) {
+    let ptr = state
+        .builtin_classes
+        .swap(std::ptr::null_mut(), AtomicOrdering::AcqRel);
+    if ptr.is_null() {
+        return;
+    }
+    unsafe {
+        let builtins = &*ptr;
         builtins.dec_ref_all(py);
     }
     unsafe {
         drop(Box::from_raw(ptr));
     }
-    state
-        .builtin_classes
-        .store(std::ptr::null_mut(), AtomicOrdering::Release);
 }
 
 pub(crate) fn is_builtin_class_bits(_py: &PyToken<'_>, bits: u64) -> bool {
-    let builtins = builtin_classes(_py);
-    bits == builtins.object
-        || bits == builtins.type_obj
-        || bits == builtins.none_type
-        || bits == builtins.not_implemented_type
-        || bits == builtins.ellipsis_type
-        || bits == builtins.base_exception
-        || bits == builtins.exception
-        || bits == builtins.base_exception_group
-        || bits == builtins.exception_group
-        || bits == builtins.int
-        || bits == builtins.float
-        || bits == builtins.complex
-        || bits == builtins.bool
-        || bits == builtins.str
-        || bits == builtins.bytes
-        || bits == builtins.bytearray
-        || bits == builtins.list
-        || bits == builtins.tuple
-        || bits == builtins.dict
-        || bits == builtins.dict_keys
-        || bits == builtins.dict_items
-        || bits == builtins.dict_values
-        || bits == builtins.set
-        || bits == builtins.frozenset
-        || bits == builtins.range
-        || bits == builtins.slice
-        || bits == builtins.memoryview
-        || bits == builtins.io_base
-        || bits == builtins.raw_io_base
-        || bits == builtins.buffered_io_base
-        || bits == builtins.text_io_base
-        || bits == builtins.file
-        || bits == builtins.file_io
-        || bits == builtins.buffered_reader
-        || bits == builtins.buffered_writer
-        || bits == builtins.buffered_random
-        || bits == builtins.text_io_wrapper
-        || bits == builtins.bytes_io
-        || bits == builtins.string_io
-        || bits == builtins.function
-        || bits == builtins.coroutine
-        || bits == builtins.generator
-        || bits == builtins.async_generator
-        || bits == builtins.iterator
-        || bits == builtins.callable_iterator
-        || bits == builtins.bytes_iterator
-        || bits == builtins.bytearray_iterator
-        || bits == builtins.dict_keyiterator
-        || bits == builtins.dict_valueiterator
-        || bits == builtins.dict_itemiterator
-        || bits == builtins.list_iterator
-        || bits == builtins.dict_reversekeyiterator
-        || bits == builtins.dict_reversevalueiterator
-        || bits == builtins.dict_reverseitemiterator
-        || bits == builtins.list_reverseiterator
-        || bits == builtins.range_iterator
-        || bits == builtins.longrange_iterator
-        || bits == builtins.set_iterator
-        || bits == builtins.str_iterator
-        || bits == builtins.str_ascii_iterator
-        || bits == builtins.tuple_iterator
-        || bits == builtins.enumerate
-        || bits == builtins.reversed
-        || bits == builtins.zip
-        || bits == builtins.map
-        || bits == builtins.filter
-        || bits == builtins.builtin_function_or_method
-        || bits == builtins.code
-        || bits == builtins.frame
-        || bits == builtins.traceback
-        || bits == builtins.module
-        || bits == builtins.super_type
-        || bits == builtins.classmethod
-        || bits == builtins.staticmethod
-        || bits == builtins.property
-        || bits == builtins.generic_alias
-        || bits == builtins.union_type
+    builtin_classes(_py).anchors().contains(&bits)
 }
 
 pub(crate) fn builtin_type_bits(_py: &PyToken<'_>, tag: i64) -> Option<u64> {

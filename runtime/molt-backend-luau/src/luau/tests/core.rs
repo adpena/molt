@@ -52,12 +52,10 @@ fn test_compile_checked_lowers_call_function_alias_without_shadowing_globals() {
         profile: None,
     };
     let mut backend = LuauBackend::new();
-    let source = backend
-        .compile_checked(&ir)
-        .expect("call_function alias should lower through invocation authority");
+    let source = backend.compile(&ir);
 
     assert!(
-        source.contains("if print then print(arg) end"),
+        source.contains("molt_call_checked(print, arg)"),
         "call_function should call its first operand as the callable, got:\n{source}"
     );
     assert!(
@@ -305,7 +303,7 @@ fn test_lower_iter_to_for_requires_exhaustion_break_condition() {
 }
 
 #[test]
-fn test_compile_checked_materializes_sys_target_version_module() {
+fn test_compile_checked_rejects_sys_bootstrap_without_object_model() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
             name: "molt_main".to_string(),
@@ -394,17 +392,16 @@ fn test_compile_checked_materializes_sys_target_version_module() {
         profile: None,
     };
 
-    let source = LuauBackend::new()
+    let error = LuauBackend::new()
         .compile_checked(&ir)
-        .expect("sys target-version bootstrap must be supported");
-    assert!(!source.contains("local function molt_sys_set_version_info(...) end"));
-    assert!(source.contains("local function molt_sys_set_version_info("));
-    assert!(source.contains("molt_module_cache[\"sys\"] ="));
-    assert!(source.contains("version_info = molt_sys_version_info"));
-    assert!(source.contains("version = molt_sys_version"));
-    assert!(source.contains("hexversion = molt_sys_hexversion"));
-    assert!(!source.contains("(molt_module_cache[sys_name] or {})"));
-    assert!(source.contains("local sys_module = molt_luau_import_module(sys_name)"));
+        .expect_err("sys bootstrap requires an exact object/module model");
+    assert!(
+        error.contains("rejected before source generation")
+            && (error.contains("arbitrary-precision value authority")
+                || error.contains("structured catchable Python exceptions")
+                || error.contains("Python aliasing, cycles")),
+        "sys bootstrap must fail at semantic admission, got: {error}"
+    );
 }
 
 #[test]
@@ -435,9 +432,7 @@ fn test_compile_checked_accepts_label_goto_comments() {
     // Labels and gotos emit as real Luau control flow, then the dead
     // goto/label stripping pass removes unreachable ones.  The key
     // correctness property is that they are NOT emitted as comments.
-    let source = backend
-        .compile_checked(&ir)
-        .expect("label/goto source should pass validation");
+    let source = backend.compile(&ir);
     assert!(
         !source.contains("-- ::label_0::"),
         "labels must not be comments"
@@ -483,9 +478,7 @@ fn test_compile_checked_lowers_store_var_and_load_var() {
         profile: None,
     };
     let mut backend = LuauBackend::new();
-    let source = backend
-        .compile_checked(&ir)
-        .expect("store_var/load_var should lower without stub markers");
+    let source = backend.compile(&ir);
     assert!(source.contains("\tlocal slot\n"));
     assert!(source.contains("\tslot = "));
     assert!(source.contains("return slot") || source.contains("local v1 = slot"));
@@ -529,9 +522,7 @@ fn test_compile_checked_lowers_missing_singleton() {
         profile: None,
     };
     let mut backend = LuauBackend::new();
-    let source = backend
-        .compile_checked(&ir)
-        .expect("missing sentinel should lower without stub markers");
+    let source = backend.compile(&ir);
 
     assert!(source.contains("local molt_missing_sentinel = {}"));
     assert!(source.contains("local first = molt_missing_sentinel"));
@@ -591,9 +582,7 @@ fn test_compile_checked_lowers_luau_process_target_facts() {
         profile: None,
     };
     let mut backend = LuauBackend::new();
-    let source = backend
-        .compile_checked(&ir)
-        .expect("process target facts should lower without stub markers");
+    let source = backend.compile(&ir);
 
     assert!(source.contains("local argv = {}"));
     assert!(source.contains("local executable = \"\""));
@@ -638,9 +627,7 @@ fn test_compile_checked_lowers_trace_markers_as_luau_noops() {
         profile: None,
     };
     let mut backend = LuauBackend::new();
-    let source = backend
-        .compile_checked(&ir)
-        .expect("trace markers should lower as Luau no-ops");
+    let source = backend.compile(&ir);
 
     assert!(
         source.contains("trace_marker_test"),
@@ -697,9 +684,7 @@ fn test_compile_checked_lowers_loop_exception_break_as_luau_noop() {
         profile: None,
     };
     let mut backend = LuauBackend::new();
-    let source = backend
-        .compile_checked(&ir)
-        .expect("exception-break markers should lower as Luau no-ops");
+    let source = backend.compile(&ir);
 
     assert!(
         source.contains("loop_exception_break_test"),
@@ -764,9 +749,7 @@ fn test_compile_checked_lowers_code_and_frame_metadata_as_luau_noops() {
         profile: None,
     };
     let mut backend = LuauBackend::new();
-    let source = backend
-        .compile_checked(&ir)
-        .expect("code/frame metadata should lower as Luau no-ops");
+    let source = backend.compile(&ir);
 
     assert!(
         source.contains("code_frame_metadata_test"),
@@ -832,9 +815,7 @@ fn test_compile_checked_accepts_shared_drop_artifacts_as_gc_noops() {
         profile: None,
     };
     let mut backend = LuauBackend::new();
-    let source = backend
-        .compile_checked(&ir)
-        .expect("shared drop artifacts should be explicit Luau GC no-ops");
+    let source = backend.compile(&ir);
     assert!(!source.contains("[unsupported op: drop_inserted]"));
     assert!(!source.contains("[unsupported op: exception_region_drops_inserted]"));
     assert!(!source.contains("[unsupported op: inc_ref]"));
@@ -880,9 +861,7 @@ fn test_compile_checked_lowers_shared_guard_tag_fact() {
         profile: None,
     };
     let mut backend = LuauBackend::new();
-    let source = backend
-        .compile_checked(&ir)
-        .expect("guard_tag should lower to the shared Luau guard helper");
+    let source = backend.compile(&ir);
     assert!(source.contains("local function molt_guard_type"));
     assert!(source.contains("molt_guard_type(value, int_tag)"));
     assert!(!source.contains("[unsupported op: guard_tag]"));
@@ -917,9 +896,7 @@ fn test_compile_checked_lowers_exception_stack_depth_to_value() {
         profile: None,
     };
     let mut backend = LuauBackend::new();
-    let source = backend
-        .compile_checked(&ir)
-        .expect("exception stack depth bookkeeping should lower");
+    let source = backend.compile(&ir);
     assert!(source.contains("\tlocal v0 = 0\n"));
     assert!(!source.contains("[exception_stack_depth]"));
 }
@@ -957,9 +934,7 @@ fn test_compile_checked_lowers_iter_next_unboxed() {
         profile: None,
     };
     let mut backend = LuauBackend::new();
-    let source = backend
-        .compile_checked(&ir)
-        .expect("iter_next_unboxed should lower without stub markers");
+    let source = backend.compile(&ir);
     assert!(source.contains("local __next_done = it()"));
     assert!(source.contains("local done = __next_done[2]"));
     assert!(source.contains("local value = __next_done[1]"));
@@ -967,31 +942,22 @@ fn test_compile_checked_lowers_iter_next_unboxed() {
 }
 
 #[test]
-fn test_luau_tir_roundtrip_raise_catch_closes_pcall_before_handler() {
+fn test_luau_tir_roundtrip_raise_catch_fails_closed_before_source() {
     let func: FunctionIR = serde_json::from_str(
             r#"{"name":"__main____raise_catch","ops":[{"kind":"trace_enter_slot","value":1},{"kind":"exception_stack_enter","out":"v107"},{"kind":"exception_stack_depth","out":"v108"},{"kind":"missing","out":"v109"},{"args":["v109"],"kind":"store_var","var":"caught"},{"kind":"check_exception","value":3},{"kind":"missing","out":"v110"},{"args":["v110"],"kind":"store_var","var":"i"},{"kind":"check_exception","value":3},{"args":["n"],"col_offset":4,"end_col_offset":14,"kind":"store_var","var":"n"},{"col_offset":4,"end_col_offset":14,"kind":"line","value":36},{"kind":"check_exception","value":3},{"kind":"const","out":"v111","value":0},{"args":["v111"],"col_offset":4,"end_col_offset":23,"kind":"store_var","var":"caught"},{"col_offset":4,"end_col_offset":23,"kind":"line","value":37},{"kind":"check_exception","value":3},{"kind":"const","out":"v112","value":0},{"kind":"const","out":"v113","value":1},{"args":["v112","n","v113"],"kind":"range_new","out":"v114"},{"kind":"check_exception","value":3},{"kind":"const","out":"v115","value":0},{"kind":"const","out":"v116","value":1},{"args":["v114"],"kind":"len","out":"v117"},{"kind":"check_exception","value":3},{"kind":"loop_start"},{"args":["v115"],"kind":"loop_index_start","out":"v118"},{"args":["v118","v117"],"fast_int":true,"kind":"lt","out":"v119"},{"kind":"check_exception","value":3},{"args":["v119"],"kind":"loop_break_if_false","type_hint":"bool"},{"args":["v114","v118"],"kind":"index","out":"v120"},{"kind":"check_exception","value":3},{"args":["v120"],"col_offset":8,"end_col_offset":23,"kind":"store_var","var":"i"},{"col_offset":8,"end_col_offset":23,"kind":"line","value":38},{"kind":"check_exception","value":3},{"kind":"exception_push","out":"none"},{"col_offset":12,"end_col_offset":31,"kind":"try_start","value":4},{"col_offset":12,"end_col_offset":31,"kind":"line","value":39},{"kind":"load_var","out":"v121","var":"i"},{"kind":"check_exception","value":4},{"args":["v121"],"kind":"exception_new_builtin_one","out":"v122","s_value":"ValueError","value":5},{"args":["v122"],"kind":"raise","out":"none"},{"kind":"jump","value":4},{"kind":"try_end","value":4},{"kind":"jump","value":6},{"kind":"label","value":4},{"kind":"exception_last_pending","out":"v123"},{"kind":"exception_clear","out":"none"},{"args":["v123"],"kind":"exception_match_builtin","out":"v124","s_value":"ValueError","value":5},{"args":["v124"],"kind":"if","type_hint":"bool"},{"kind":"exception_clear","out":"none"},{"args":["v123"],"col_offset":12,"end_col_offset":23,"kind":"exception_context_set","out":"none"},{"col_offset":12,"end_col_offset":23,"kind":"line","value":41},{"kind":"load_var","out":"v125","var":"caught"},{"kind":"const","out":"v126","value":1},{"args":["v125","v126"],"fast_int":true,"kind":"inplace_add","out":"v127"},{"args":["v127"],"kind":"store_var","var":"caught"},{"kind":"const_none","out":"v128"},{"args":["v128"],"kind":"exception_context_set","out":"none"},{"kind":"else"},{"args":["v123"],"kind":"raise","out":"none"},{"kind":"end_if"},{"kind":"jump","value":7},{"kind":"label","value":6},{"kind":"exception_pop","out":"none"},{"kind":"jump","value":8},{"kind":"label","value":7},{"kind":"exception_pop","out":"none"},{"kind":"check_exception","value":3},{"kind":"label","value":8},{"kind":"check_exception","value":3},{"args":["v118","v116"],"fast_int":true,"kind":"add","out":"v129"},{"kind":"check_exception","value":3},{"args":["v129"],"kind":"loop_index_next","out":"v118"},{"kind":"loop_continue"},{"col_offset":4,"end_col_offset":17,"kind":"loop_end"},{"col_offset":4,"end_col_offset":17,"kind":"line","value":42},{"kind":"load_var","out":"v130","var":"caught"},{"kind":"check_exception","value":3},{"args":["v108"],"kind":"exception_stack_set_depth","out":"none"},{"kind":"check_exception","value":3},{"args":["v108"],"kind":"exception_stack_set_depth","out":"none"},{"args":["v107"],"kind":"exception_stack_exit","out":"none"},{"kind":"trace_exit"},{"kind":"trace_exit"},{"kind":"ret","var":"v130"},{"kind":"label","value":3},{"args":["v108"],"kind":"exception_stack_set_depth","out":"none"},{"args":["v107"],"kind":"exception_stack_exit","out":"none"},{"kind":"trace_exit"},{"kind":"trace_exit"},{"kind":"ret_void"}],"param_types":["i64"],"params":["n"]}"#,
         )
         .expect("raise_catch frontend fixture should deserialize");
     let func = luau_tir_roundtrip_function(func);
     let mut backend = LuauBackend::new();
-    let source = backend
+    let error = backend
         .compile_checked(&SimpleIR {
             functions: vec![func],
             profile: None,
         })
-        .expect("TIR-roundtripped raise/catch should lower to Luau");
-    let pcall_start = source
-        .find("pcall(function()")
-        .expect("pcall wrapper should be emitted");
-    let after_pcall = &source[pcall_start..];
-    let pcall_end = after_pcall
-        .find("end)")
-        .unwrap_or_else(|| panic!("pcall wrapper must close before handler dispatch:\n{source}"));
-    let failure_dispatch = after_pcall
-        .find("__err_0")
-        .expect("handler dispatch should consume the pcall error value");
+        .expect_err("Luau has no certified structured Python exception model");
     assert!(
-        pcall_end < failure_dispatch,
-        "handler dispatch must remain outside the protected pcall body:\n{source}"
+        error.contains("SimpleIR validation failed")
+            || error.contains("rejected before source generation"),
+        "exception CFG must fail before source publication, got: {error}"
     );
 }

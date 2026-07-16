@@ -88,6 +88,23 @@ def test_ssl_intrinsic_abi_is_not_profile_gated() -> None:
     assert '#[cfg(feature = "stdlib_net")]' not in ssl_block
 
 
+def test_intrinsic_target_availability_is_toml_owned() -> None:
+    module = _load_gen_intrinsics_module()
+
+    assert module._target_arch_exclusions_for_symbol("molt_db_query_obj") == ()
+    assert module._target_arch_exclusions_for_symbol("molt_sqlite3_connect") == (
+        "wasm32",
+    )
+    assert module._cfg_gate_for_symbol("molt_sqlite3_connect") == (
+        'all(feature = "sqlite", not(target_arch = "wasm32"))'
+    )
+    assert module._FEATURE_TARGET_ARCH_EXCLUSIONS == [("sqlite", ("wasm32",))]
+
+    generated = (
+        ROOT
+        / "runtime/molt-runtime/src/intrinsics/generated_resolvers/sqlite_resolver.rs"
+    ).read_text()
+    assert '#[cfg(all(feature = "sqlite", not(target_arch = "wasm32")))]' in generated
 def test_runtime_feature_gates_are_generated_from_categories() -> None:
     module = _load_gen_intrinsics_module()
     gates_path = ROOT / "src/molt/_runtime_feature_gates.py"

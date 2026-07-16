@@ -1,7 +1,7 @@
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering as AtomicOrdering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::Instant;
 
@@ -29,7 +29,7 @@ use crate::builtins::sys_ext::SysRuntimeState;
 use crate::builtins::types::TypesRuntimeState;
 use crate::c_api::CApiModuleRuntimeState;
 use crate::call::bind::CallBindRuntimeState;
-use crate::concurrency::gil::{gil_held, hold_runtime_gil, release_runtime_gil};
+use crate::concurrency::gil::{gil_held, hold_runtime_gil};
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
 use crate::object::utf8_cache::{Utf8CacheStore, Utf8CountCacheStore, build_utf8_count_cache};
@@ -489,8 +489,6 @@ pub(crate) struct RuntimeState {
     pub(crate) runtime_static_names: RuntimeStaticNames,
     pub(crate) method_cache: MethodCache,
     pub(crate) special_cache: SpecialCache,
-    pub(crate) last_exception: AtomicPtr<u8>,
-    pub(crate) last_exception_pending: AtomicBool,
     pub(crate) module_cache: Mutex<HashMap<String, u64>>,
     /// Import-bedrock ModuleTable (design doc 69): dense per-ModuleId state
     /// machine + slots, one instance per isolate, sized from the installed
@@ -537,7 +535,6 @@ pub(crate) struct RuntimeState {
     pub(crate) task_exception_depths: Mutex<HashMap<PtrSlot, usize>>,
     pub(crate) task_exception_baselines: Mutex<HashMap<PtrSlot, usize>>,
     pub(crate) task_last_exceptions: Mutex<HashMap<PtrSlot, PtrSlot>>,
-    pub(crate) task_last_exception_pending: AtomicBool,
     pub(crate) task_results: Mutex<HashMap<PtrSlot, u64>>,
     pub(crate) attributes: AttributesRuntimeState,
     pub(crate) dict_subclass_storage: Mutex<HashMap<PtrSlot, u64>>,
@@ -593,8 +590,6 @@ impl RuntimeState {
             runtime_static_names: RuntimeStaticNames::new(),
             method_cache: MethodCache::new(),
             special_cache: SpecialCache::new(),
-            last_exception: AtomicPtr::new(std::ptr::null_mut()),
-            last_exception_pending: AtomicBool::new(false),
             module_cache: Mutex::new(HashMap::new()),
             #[cfg(not(target_arch = "wasm32"))]
             module_table: OnceLock::new(),
@@ -638,7 +633,6 @@ impl RuntimeState {
             task_exception_depths: Mutex::new(HashMap::new()),
             task_exception_baselines: Mutex::new(HashMap::new()),
             task_last_exceptions: Mutex::new(HashMap::new()),
-            task_last_exception_pending: AtomicBool::new(false),
             task_results: Mutex::new(HashMap::new()),
             attributes: AttributesRuntimeState::new(),
             dict_subclass_storage: Mutex::new(HashMap::new()),
@@ -782,55 +776,80 @@ fn clear_and_drop_extension_slots(slots: Vec<RuntimeExtensionStateSlot>) {
     }
 }
 
-pub(crate) fn runtime_state_lock() -> &'static Mutex<()> {
-    RUNTIME_STATE_LOCK.get_or_init(|| Mutex::new(()))
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RuntimeLifecyclePhase {
+    Uninitialized,
+    Initializing { owner: thread::ThreadId },
+    Ready { ptr: usize },
+    Finalizing { owner: thread::ThreadId, ptr: usize },
+    Shutdown,
 }
 
-#[allow(dead_code)]
-fn runtime_state_ptr() -> Option<*mut RuntimeState> {
-    let ptr = RUNTIME_STATE_PTR.load(AtomicOrdering::SeqCst);
+struct RuntimeLifecycle {
+    phase: Mutex<RuntimeLifecyclePhase>,
+    changed: Condvar,
+}
+
+impl RuntimeLifecycle {
+    fn new() -> Self {
+        Self {
+            phase: Mutex::new(RuntimeLifecyclePhase::Uninitialized),
+            changed: Condvar::new(),
+        }
+    }
+}
+
+fn runtime_lifecycle() -> &'static RuntimeLifecycle {
+    RUNTIME_LIFECYCLE.get_or_init(RuntimeLifecycle::new)
+}
+
+pub(crate) fn runtime_is_initialized() -> bool {
+    matches!(
+        *runtime_lifecycle().phase.lock().unwrap(),
+        RuntimeLifecyclePhase::Ready { .. } | RuntimeLifecyclePhase::Finalizing { .. }
+    )
+}
+
+#[inline(always)]
+fn runtime_ready_ptr() -> Option<*mut RuntimeState> {
+    let ptr = RUNTIME_READY_PTR.load(AtomicOrdering::Acquire);
     if ptr.is_null() { None } else { Some(ptr) }
 }
 
 pub(crate) fn runtime_state_for_gil() -> Option<&'static RuntimeState> {
-    if let Some(state) = runtime_state_tls() {
-        return Some(state);
+    if let Some(ptr) = runtime_ready_ptr() {
+        return runtime_state_tls().or_else(|| Some(unsafe { &*ptr }));
     }
-    let ptr = RUNTIME_STATE_PTR.load(AtomicOrdering::SeqCst);
-    if ptr.is_null() {
-        None
-    } else {
-        Some(unsafe { &*ptr })
+
+    // The initializing owner may recursively enter runtime code before the
+    // state is globally ready. Its private TLS pointer is the only permitted
+    // view of that unpublished state.
+    let lifecycle = runtime_lifecycle();
+    let phase = lifecycle.phase.lock().unwrap();
+    match *phase {
+        RuntimeLifecyclePhase::Ready { ptr } => Some(unsafe { &*(ptr as *mut RuntimeState) }),
+        RuntimeLifecyclePhase::Initializing { owner } if owner == thread::current().id() => {
+            runtime_state_tls()
+        }
+        RuntimeLifecyclePhase::Finalizing { owner, ptr } if owner == thread::current().id() => {
+            Some(unsafe { &*(ptr as *mut RuntimeState) })
+        }
+        _ => None,
     }
 }
 
 pub(crate) fn runtime_state(_py: &PyToken<'_>) -> &'static RuntimeState {
     let _ = _py;
     touch_tls_guard();
-    if let Some(state) = runtime_state_tls() {
+    if let Some(state) = runtime_state_for_gil() {
         return state;
     }
-    if let Some(ptr) = runtime_state_ptr() {
-        unsafe { &*ptr }
+    let _ = molt_runtime_init();
+    if let Some(state) = runtime_state_for_gil() {
+        state
     } else {
-        let _ = molt_runtime_init();
-        // After `molt_runtime_shutdown`, `molt_runtime_init` refuses to
-        // re-allocate (returns 0) so the pointer stays null.  Return a
-        // leaked sentinel to avoid panicking during process-exit teardown.
-        if let Some(ptr) = runtime_state_ptr() {
-            unsafe { &*ptr }
-        } else {
-            post_shutdown_sentinel()
-        }
+        panic!("runtime state requested after permanent shutdown")
     }
-}
-
-/// Returns a leaked, empty `RuntimeState` for use by straggler code that
-/// calls `runtime_state()` after `molt_runtime_shutdown` has completed.
-/// Allocated once and never freed (the OS reclaims it at process exit).
-fn post_shutdown_sentinel() -> &'static RuntimeState {
-    static SENTINEL: OnceLock<&'static RuntimeState> = OnceLock::new();
-    SENTINEL.get_or_init(|| Box::leak(Box::new(RuntimeState::new())))
 }
 
 // ---------------------------------------------------------------------------
@@ -839,17 +858,13 @@ fn post_shutdown_sentinel() -> &'static RuntimeState {
 // ---------------------------------------------------------------------------
 
 extern "C" fn __core_gil_acquire() -> u64 {
-    let guard = GilGuard::new();
-    // Leak the guard — it will be released by __core_gil_release
-    Box::into_raw(Box::new(guard)) as u64
+    GilGuard::new().into_encoded_lane()
 }
 
 extern "C" fn __core_gil_release(token: u64) {
-    if token != 0 {
-        unsafe {
-            drop(Box::from_raw(token as *mut GilGuard));
-        }
-    }
+    // SAFETY: the core guard is !Send/!Sync and calls release exactly once on
+    // the same thread with the unmatched token returned by acquire.
+    drop(unsafe { GilGuard::from_encoded_lane(token) });
 }
 
 extern "C" fn __core_gil_is_held() -> bool {
@@ -909,35 +924,55 @@ pub extern "C" fn molt_runtime_exit(code_bits: u64) -> u64 {
     };
     if !PROCESS_EXIT_FINALIZED.swap(true, AtomicOrdering::SeqCst) {
         let gil = GilGuard::new();
-        {
-            let _guard = runtime_state_lock().lock().unwrap();
-            let ptr = RUNTIME_STATE_PTR.load(AtomicOrdering::SeqCst);
-            if !ptr.is_null() {
-                let state = unsafe { &*ptr };
-                let py = gil.token();
-                crate::object::ops::profile_dump_with_gil(&py);
-                // RC drop-insertion substrate (design 20). Two distinct gates for
-                // two distinct properties:
-                //
-                // 1. Pre-teardown RUNAWAY guard. Runs here, while the full working
-                //    set is resident — a coarse peak-live/OOM canary at
-                //    EXPECTED_LIVE_OBJECTS (a reachable high-water-mark, not a leak;
-                //    teardown below reclaims every reachable acyclic graph).
-                crate::object::ops::assert_no_leak_at_exit(&py);
-                // Run the cyclic collector before module teardown so unreachable
-                // cycles are finalized and reclaimed in CPython's shutdown position.
-                unsafe {
-                    let _ = crate::object::gc::collect_cycles(&py);
+        let lifecycle = runtime_lifecycle();
+        let owner = thread::current().id();
+        let ptr = {
+            let mut phase = lifecycle.phase.lock().unwrap();
+            match *phase {
+                RuntimeLifecyclePhase::Ready { ptr } => {
+                    RUNTIME_READY_PTR.store(std::ptr::null_mut(), AtomicOrdering::Release);
+                    *phase = RuntimeLifecyclePhase::Finalizing { owner, ptr };
+                    lifecycle.changed.notify_all();
+                    Some(ptr as *mut RuntimeState)
                 }
-                runtime_teardown_for_process_exit(&py, state);
-                // 2. Post-teardown TRUE-LEAK gauge (ownership_lattice_phase0.md
-                //    §2.4). Teardown above has reclaimed every reachable acyclic
-                //    graph and the collector has reclaimed unreachable cycles, so the
-                //    only survivors now are the immortal floor + genuine leaks. GIL
-                //    still held; reads crate-static counters only, never touches
-                //    `state`.
-                crate::object::ops::assert_no_true_leak_post_teardown(&py);
+                _ => None,
             }
+        };
+        if let Some(ptr) = ptr {
+            let state = unsafe { &*ptr };
+            let py = gil.token();
+            crate::object::ops::profile_dump_with_gil(&py);
+            // RC drop-insertion substrate (design 20). Two distinct gates for
+            // two distinct properties:
+            //
+            // 1. Pre-teardown RUNAWAY guard. Runs here, while the full working
+            //    set is resident — a coarse peak-live/OOM canary at
+            //    EXPECTED_LIVE_OBJECTS (a reachable high-water-mark, not a leak;
+            //    teardown below reclaims every reachable acyclic graph).
+            crate::object::ops::assert_no_leak_at_exit(&py);
+            // Run the cyclic collector before module teardown so unreachable
+            // cycles are finalized and reclaimed in CPython's shutdown position.
+            unsafe {
+                let _ = crate::object::gc::collect_cycles(&py);
+            }
+            runtime_teardown_for_process_exit(&py, state);
+            // 2. Post-teardown TRUE-LEAK gauge (ownership_lattice_phase0.md
+            //    §2.4). Teardown above has reclaimed every reachable acyclic
+            //    graph and the collector has reclaimed unreachable cycles, so the
+            //    only survivors now are the immortal floor + genuine leaks. GIL
+            //    still held; reads crate-static counters only, never touches
+            //    `state`.
+            crate::object::ops::assert_no_true_leak_post_teardown(&py);
+            let mut phase = lifecycle.phase.lock().unwrap();
+            assert_eq!(
+                *phase,
+                RuntimeLifecyclePhase::Finalizing {
+                    owner,
+                    ptr: ptr as usize,
+                }
+            );
+            *phase = RuntimeLifecyclePhase::Shutdown;
+            lifecycle.changed.notify_all();
         }
         drop(gil);
     }
@@ -949,63 +984,18 @@ pub extern "C" fn molt_runtime_exit(code_bits: u64) -> u64 {
     unsafe { libc::_exit(code) }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_runtime_init() -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    ensure_wasm_ctors();
-    trace_runtime_init("enter");
-    super::metrics::init_profile_enabled_from_env();
-    touch_tls_guard();
-    #[cfg(not(target_arch = "wasm32"))]
-    ensure_debug_sigtrap_handler();
-    if !RUNTIME_STATE_PTR.load(AtomicOrdering::SeqCst).is_null() {
-        trace_runtime_init("already_initialized");
-        return 1;
-    }
-    if RUNTIME_SHUTDOWN_COMPLETE.load(AtomicOrdering::SeqCst) {
-        trace_runtime_init("shutdown_complete");
-        return 0;
-    }
-    let gil = GilGuard::new();
-    let _guard = runtime_state_lock().lock().unwrap();
-    if !RUNTIME_STATE_PTR.load(AtomicOrdering::SeqCst).is_null() {
-        trace_runtime_init("already_initialized");
-        return 1;
-    }
-    // After `molt_runtime_shutdown` has run, the process is exiting.
-    // During exit, Rust static/TLS destructors or C `atexit` handlers may
-    // indirectly call `runtime_state()` which auto-calls `molt_runtime_init`.
-    // Re-allocating a RuntimeState at this point is futile (the new state is
-    // immediately torn down again) and dangerous: the second teardown's
-    // `drop(Box::from_raw)` frees memory while mimalloc's global allocator
-    // may already be partially destroyed, causing a use-after-free segfault
-    // (exit code 245 on macOS / SIGSEGV on Linux).
-    if RUNTIME_SHUTDOWN_COMPLETE.load(AtomicOrdering::SeqCst) {
-        trace_runtime_init("shutdown_complete");
-        return 0;
-    }
-    let state = Box::new(RuntimeState::new());
-    let ptr = Box::into_raw(state);
-    RUNTIME_STATE_PTR.store(ptr, AtomicOrdering::SeqCst);
-    let state_ref = unsafe { &*ptr };
-    signal_runtime_state_publish(state_ref);
+fn initialize_runtime_state(gil: &GilGuard, state: &RuntimeState) {
     trace_runtime_init("state_allocated");
-    {
-        let py = gil.token();
-        runtime_reset_for_init(&py, state_ref);
-    }
+    runtime_reset_for_init(&gil.token(), state);
     trace_runtime_init("runtime_reset_for_init");
-    // Register synthetic _intrinsics module so stdlib .py files can import it
+
+    // Register synthetic _intrinsics module so stdlib .py files can import it.
     {
-        let py = crate::concurrency::GilGuard::new();
-        let tok = py.token();
-        crate::intrinsics::registry::register_intrinsics_module(&tok);
+        let nested = GilGuard::new();
+        crate::intrinsics::registry::register_intrinsics_module(&nested.token());
     }
     trace_runtime_init("intrinsics_registered");
-    hold_runtime_gil(gil);
 
-    // Initialize the serial crate vtable so all bridge functions dispatch
-    // through a single struct instead of 58 individual extern "C" symbols.
     #[cfg(feature = "stdlib_serial")]
     molt_runtime_serial::bridge::init_vtable();
     trace_runtime_init("serial_vtable");
@@ -1014,13 +1004,6 @@ pub extern "C" fn molt_runtime_init() -> u64 {
     molt_runtime_itertools::bridge::init_vtable();
     trace_runtime_init("itertools_vtable");
 
-    // Initialize the core GIL vtable so extracted crates can acquire the GIL
-    // via molt-runtime-core without depending on molt-runtime.
-    molt_runtime_core::set_gil_vtable(&CORE_GIL_VT);
-    trace_runtime_init("core_gil_vtable");
-
-    // Initialize resource limits, audit sink, and IO mode from environment
-    // variables set by the capability manifest.
     crate::object::ops_sys::molt_runtime_init_resources();
     trace_runtime_init("resources");
     crate::object::ops_sys::molt_runtime_init_audit();
@@ -1028,25 +1011,118 @@ pub extern "C" fn molt_runtime_init() -> u64 {
     crate::object::ops_sys::molt_runtime_init_io_mode();
     trace_runtime_init("io_mode");
 
-    // SECURITY: Eagerly load capabilities and trusted flag from environment
-    // BEFORE any user code runs.  Lazy loading (OnceLock::get_or_init) would
-    // allow a program to write MOLT_TRUSTED=1 to the process environment
-    // before the first capability check, escalating privileges.
+    // Freeze security-sensitive environment state before user code can run.
     {
-        let py = crate::concurrency::GilGuard::new();
-        let tok = py.token();
-        let _ = crate::is_trusted(&tok);
-        let _ = crate::has_capability(&tok, "_init");
+        let nested = GilGuard::new();
+        let py = nested.token();
+        let _ = crate::is_trusted(&py);
+        let _ = crate::has_capability(&py, "_init");
     }
     trace_runtime_init("capabilities");
 
-    // Phase-0 exact-survivor leak gauge: snapshot the immortal-survivor floor |S|
-    // NOW, at the bootstrap->user-code boundary, before user main allocates.
-    // assert_no_leak_at_exit subtracts this so a BOUNDED leak (not just a runaway)
-    // is caught under MOLT_LEAK_TOLERANCE exact mode (ownership_lattice_phase0.md).
+    // Publish the one CPython ABI hook table as part of the runtime
+    // initialization transaction. Lifecycle queries such as
+    // `Py_IsInitialized` must observe this lifecycle authority immediately
+    // after Ready publication; lazily installing the table on an unrelated ABI
+    // call leaves the detached stub as a second, false initialization authority.
+    crate::cpython_abi_hooks::register_cpython_hooks();
+    trace_runtime_init("cpython_abi_hooks");
+
     super::metrics::snapshot_live_floor();
-    trace_runtime_init("ok");
-    1
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_runtime_init() -> u64 {
+    #[cfg(target_arch = "wasm32")]
+    ensure_wasm_ctors();
+    // The GIL authority is process-lifetime state and must precede every
+    // extracted-crate init callback; RuntimeState publication remains later.
+    // SAFETY: `CORE_GIL_VT` is process-static and is the sole encoded GIL
+    // acquire/release authority for every extracted runtime crate.
+    unsafe { molt_runtime_core::set_gil_vtable(&CORE_GIL_VT) };
+    trace_runtime_init("enter");
+    super::metrics::init_profile_enabled_from_env();
+    touch_tls_guard();
+    #[cfg(not(target_arch = "wasm32"))]
+    ensure_debug_sigtrap_handler();
+    if runtime_ready_ptr().is_some() {
+        trace_runtime_init("already_initialized");
+        return 1;
+    }
+    let owner = thread::current().id();
+    loop {
+        let gil = GilGuard::new();
+        let lifecycle = runtime_lifecycle();
+        let mut phase = lifecycle.phase.lock().unwrap();
+        match *phase {
+            RuntimeLifecyclePhase::Ready { .. } => {
+                trace_runtime_init("already_initialized");
+                return 1;
+            }
+            RuntimeLifecyclePhase::Shutdown => {
+                trace_runtime_init("shutdown_complete");
+                return 0;
+            }
+            RuntimeLifecyclePhase::Finalizing { owner: active, .. } if active == owner => {
+                trace_runtime_init("recursive_finalizing");
+                return 0;
+            }
+            RuntimeLifecyclePhase::Finalizing { .. } => {
+                drop(phase);
+                drop(gil);
+                let mut phase = lifecycle.phase.lock().unwrap();
+                while matches!(*phase, RuntimeLifecyclePhase::Finalizing { .. }) {
+                    phase = lifecycle.changed.wait(phase).unwrap();
+                }
+                continue;
+            }
+            RuntimeLifecyclePhase::Initializing { owner: active } if active == owner => {
+                // Recursive initialization by the owner observes its private
+                // TLS state but does not publish it to other threads.
+                return u64::from(runtime_state_tls().is_some());
+            }
+            RuntimeLifecyclePhase::Initializing { .. } => {
+                drop(phase);
+                drop(gil);
+                let mut phase = lifecycle.phase.lock().unwrap();
+                while matches!(*phase, RuntimeLifecyclePhase::Initializing { .. }) {
+                    phase = lifecycle.changed.wait(phase).unwrap();
+                }
+                continue;
+            }
+            RuntimeLifecyclePhase::Uninitialized => {
+                *phase = RuntimeLifecyclePhase::Initializing { owner };
+            }
+        }
+        drop(phase);
+
+        // Initialization is a fail-closed publication transaction. No pointer
+        // becomes globally reachable until every initialization step succeeds.
+        // An invariant panic is intentionally not converted into a plausible
+        // retryable result: this extern-C boundary aborts rather than exposing
+        // unknown partial side effects to a second initialization attempt.
+        let mut state = Box::new(RuntimeState::new());
+        let state_ptr = (&mut *state) as *mut RuntimeState;
+        set_thread_runtime_state(state_ptr);
+        initialize_runtime_state(&gil, &state);
+
+        #[cfg(test)]
+        if let Some((entered, release)) = RUNTIME_INIT_TEST_GATE.lock().unwrap().clone() {
+            entered.wait();
+            release.wait();
+        }
+
+        let ptr = Box::into_raw(state);
+        signal_runtime_state_publish(unsafe { &*ptr });
+        let mut phase = lifecycle.phase.lock().unwrap();
+        assert_eq!(*phase, RuntimeLifecyclePhase::Initializing { owner });
+        *phase = RuntimeLifecyclePhase::Ready { ptr: ptr as usize };
+        RUNTIME_READY_PTR.store(ptr, AtomicOrdering::Release);
+        clear_thread_runtime_state();
+        lifecycle.changed.notify_all();
+        trace_runtime_init("ok");
+        return 1;
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -1060,42 +1136,92 @@ pub extern "C" fn molt_runtime_ensure_gil() {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_runtime_shutdown() -> u64 {
-    let _guard = runtime_state_lock().lock().unwrap();
-    let ptr = RUNTIME_STATE_PTR.load(AtomicOrdering::SeqCst);
-    if ptr.is_null() {
-        return 0;
-    }
-    let state = unsafe { &*ptr };
+    // Establish the canonical TLS destructor boundary before shutdown touches
+    // any other runtime TLS on this embedding thread.
+    touch_tls_guard();
     let gil = GilGuard::new();
+    let lifecycle = runtime_lifecycle();
+    let owner = thread::current().id();
+    let mut phase = lifecycle.phase.lock().unwrap();
+    let ptr = match *phase {
+        RuntimeLifecyclePhase::Ready { ptr } => ptr as *mut RuntimeState,
+        RuntimeLifecyclePhase::Finalizing { owner: active, .. } if active == owner => return 0,
+        RuntimeLifecyclePhase::Finalizing { .. } => {
+            drop(phase);
+            drop(gil);
+            let mut phase = lifecycle.phase.lock().unwrap();
+            while matches!(*phase, RuntimeLifecyclePhase::Finalizing { .. }) {
+                phase = lifecycle.changed.wait(phase).unwrap();
+            }
+            return 0;
+        }
+        RuntimeLifecyclePhase::Uninitialized
+        | RuntimeLifecyclePhase::Initializing { .. }
+        | RuntimeLifecyclePhase::Shutdown => return 0,
+    };
+    debug_assert_eq!(runtime_ready_ptr(), Some(ptr));
+    RUNTIME_READY_PTR.store(std::ptr::null_mut(), AtomicOrdering::Release);
+    *phase = RuntimeLifecyclePhase::Finalizing {
+        owner,
+        ptr: ptr as usize,
+    };
+    lifecycle.changed.notify_all();
+    drop(phase);
+
+    let state = unsafe { &*ptr };
     let py = gil.token();
     runtime_teardown(&py, state);
-    release_runtime_gil();
-    // Clear the TLS cache BEFORE nulling the global pointer and freeing the
-    // state.  Without this, `TLS_RUNTIME_STATE` holds a dangling pointer to
-    // the about-to-be-freed `RuntimeState`.  During process exit, Rust's TLS
-    // destructors (`ThreadLocalGuard::drop`) may still run and indirectly call
-    // `runtime_state()` — which would dereference the dangling pointer,
-    // causing a use-after-free crash (exit code 245 on macOS).
+    // Clear the teardown owner's private cache before freeing the state. The
+    // public ready projection was already unpublished at the Finalizing edge.
     clear_thread_runtime_state();
-    RUNTIME_STATE_PTR.store(std::ptr::null_mut(), AtomicOrdering::SeqCst);
-    // Mark shutdown as complete BEFORE freeing the state.  This prevents
-    // `molt_runtime_init` from re-allocating a RuntimeState during process
-    // exit (triggered by atexit handlers / TLS destructors calling
-    // `runtime_state()` which has auto-init logic).
-    RUNTIME_SHUTDOWN_COMPLETE.store(true, AtomicOrdering::SeqCst);
     unsafe {
         drop(Box::from_raw(ptr));
     }
-    drop(gil);
+    let mut phase = lifecycle.phase.lock().unwrap();
+    assert_eq!(
+        *phase,
+        RuntimeLifecyclePhase::Finalizing {
+            owner,
+            ptr: ptr as usize,
+        }
+    );
+    *phase = RuntimeLifecyclePhase::Shutdown;
+    lifecycle.changed.notify_all();
     1
 }
 
-static RUNTIME_STATE_PTR: AtomicPtr<RuntimeState> = AtomicPtr::new(std::ptr::null_mut());
-static RUNTIME_STATE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+/// Read-optimized projection of the canonical lifecycle phase. It is non-null
+/// exactly while the lifecycle is `Ready`.
+static RUNTIME_READY_PTR: AtomicPtr<RuntimeState> = AtomicPtr::new(std::ptr::null_mut());
+static RUNTIME_LIFECYCLE: OnceLock<RuntimeLifecycle> = OnceLock::new();
 static PROCESS_EXIT_FINALIZED: AtomicBool = AtomicBool::new(false);
-/// Set to `true` after `molt_runtime_shutdown` completes.  Prevents
-/// `molt_runtime_init` from re-allocating state during process exit.
-static RUNTIME_SHUTDOWN_COMPLETE: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+static RUNTIME_INIT_TEST_GATE: Mutex<Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>> =
+    Mutex::new(None);
+#[cfg(test)]
+struct RuntimeFinalizeAtexitTestHook {
+    results: std::sync::mpsc::Sender<(u64, u64)>,
+    entered: std::sync::mpsc::Sender<()>,
+    release: Arc<std::sync::Barrier>,
+}
+
+#[cfg(test)]
+static RUNTIME_FINALIZE_ATEXIT_TEST_HOOK: Mutex<Option<RuntimeFinalizeAtexitTestHook>> =
+    Mutex::new(None);
+
+#[cfg(test)]
+pub(crate) fn run_finalizing_atexit_test_hook() {
+    let hook = RUNTIME_FINALIZE_ATEXIT_TEST_HOOK.lock().unwrap().take();
+    if let Some(hook) = hook {
+        let recursive_init = molt_runtime_init();
+        let recursive_shutdown = molt_runtime_shutdown();
+        hook.results
+            .send((recursive_init, recursive_shutdown))
+            .unwrap();
+        hook.entered.send(()).unwrap();
+        hook.release.wait();
+    }
+}
 
 thread_local! {
     static TLS_RUNTIME_STATE: Cell<*mut RuntimeState> = const { Cell::new(std::ptr::null_mut()) };
@@ -1145,13 +1271,12 @@ pub(crate) fn clear_thread_runtime_state() {
 /// 3. The caller will immediately re-initialize via `molt_runtime_init()`.
 #[cfg(test)]
 pub(crate) fn molt_runtime_reset_for_testing() {
-    // Clear the permanent shutdown flag so `molt_runtime_init` will accept
-    // a new `RuntimeState` allocation.
-    RUNTIME_SHUTDOWN_COMPLETE.store(false, AtomicOrdering::SeqCst);
-
-    // Clear the global state pointer (should already be null after shutdown,
-    // but be defensive).
-    RUNTIME_STATE_PTR.store(std::ptr::null_mut(), AtomicOrdering::SeqCst);
+    RUNTIME_READY_PTR.store(std::ptr::null_mut(), AtomicOrdering::Release);
+    let lifecycle = runtime_lifecycle();
+    let mut phase = lifecycle.phase.lock().unwrap();
+    *phase = RuntimeLifecyclePhase::Uninitialized;
+    lifecycle.changed.notify_all();
+    drop(phase);
 
     // Clear the TLS cache so no stale pointer is returned by
     // `runtime_state_tls()`.
@@ -1292,5 +1417,171 @@ mod tests {
             assert_eq!(EXT_CLEAR_COUNT.load(Ordering::SeqCst), 1);
             assert_eq!(EXT_DROP_COUNT.load(Ordering::SeqCst), 1);
         });
+    }
+
+    #[test]
+    #[ignore = "mutates the process-global runtime lifecycle; run in isolation"]
+    fn finalizing_unpublishes_before_atexit_reentry_and_racing_entrants() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        if runtime_ready_ptr().is_some() {
+            assert_eq!(molt_runtime_shutdown(), 1);
+        }
+        molt_runtime_reset_for_testing();
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::object::Py_IsInitialized() },
+            0
+        );
+        assert_eq!(molt_runtime_init(), 1);
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::object::Py_IsInitialized() },
+            1
+        );
+
+        let (init_start_tx, init_start_rx) = std::sync::mpsc::channel();
+        let (init_prepared_tx, init_prepared_rx) = std::sync::mpsc::channel();
+        let (init_started_tx, init_started_rx) = std::sync::mpsc::channel();
+        let (init_done_tx, init_done_rx) = std::sync::mpsc::channel();
+        let init_entrant = std::thread::spawn(move || {
+            let gil = GilGuard::new();
+            let _ = runtime_state(&gil.token());
+            drop(gil);
+            init_prepared_tx.send(()).unwrap();
+            init_start_rx.recv().unwrap();
+            init_started_tx.send(()).unwrap();
+            init_done_tx.send(molt_runtime_init()).unwrap();
+        });
+        init_prepared_rx.recv().unwrap();
+
+        let (shutdown_start_tx, shutdown_start_rx) = std::sync::mpsc::channel();
+        let (shutdown_started_tx, shutdown_started_rx) = std::sync::mpsc::channel();
+        let (shutdown_done_tx, shutdown_done_rx) = std::sync::mpsc::channel();
+        let shutdown_entrant = std::thread::spawn(move || {
+            shutdown_start_rx.recv().unwrap();
+            shutdown_started_tx.send(()).unwrap();
+            shutdown_done_tx.send(molt_runtime_shutdown()).unwrap();
+        });
+
+        let (recursive_tx, recursive_rx) = std::sync::mpsc::channel();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let release = Arc::new(std::sync::Barrier::new(2));
+        *RUNTIME_FINALIZE_ATEXIT_TEST_HOOK.lock().unwrap() = Some(RuntimeFinalizeAtexitTestHook {
+            results: recursive_tx,
+            entered: entered_tx,
+            release: Arc::clone(&release),
+        });
+
+        let owner = std::thread::spawn(|| molt_runtime_shutdown());
+        entered_rx.recv().unwrap();
+        assert_eq!(recursive_rx.recv().unwrap(), (0, 0));
+        assert!(runtime_ready_ptr().is_none());
+        assert!(matches!(
+            *runtime_lifecycle().phase.lock().unwrap(),
+            RuntimeLifecyclePhase::Finalizing { .. }
+        ));
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::object::Py_IsInitialized() },
+            1
+        );
+
+        init_start_tx.send(()).unwrap();
+        shutdown_start_tx.send(()).unwrap();
+        init_started_rx.recv().unwrap();
+        shutdown_started_rx.recv().unwrap();
+        assert!(
+            init_done_rx
+                .recv_timeout(std::time::Duration::from_millis(50))
+                .is_err()
+        );
+        assert!(
+            shutdown_done_rx
+                .recv_timeout(std::time::Duration::from_millis(50))
+                .is_err()
+        );
+
+        release.wait();
+        assert_eq!(owner.join().unwrap(), 1);
+        assert_eq!(init_done_rx.recv().unwrap(), 0);
+        assert_eq!(shutdown_done_rx.recv().unwrap(), 0);
+        init_entrant.join().unwrap();
+        shutdown_entrant.join().unwrap();
+        assert!(matches!(
+            *runtime_lifecycle().phase.lock().unwrap(),
+            RuntimeLifecyclePhase::Shutdown
+        ));
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::object::Py_IsInitialized() },
+            0
+        );
+    }
+
+    #[cfg(feature = "l7-attestation-probe")]
+    #[test]
+    fn encoded_core_gil_entry_is_allocation_free_after_warmup() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        assert_eq!(molt_runtime_init(), 1);
+
+        for _ in 0..64 {
+            drop(molt_runtime_core::CoreGilGuard::new());
+        }
+        crate::attestation_probe::reset();
+        crate::attestation_probe::set_tracking(true);
+        for _ in 0..10_000 {
+            drop(molt_runtime_core::CoreGilGuard::new());
+        }
+        crate::attestation_probe::set_tracking(false);
+
+        let observed = crate::attestation_probe::snapshot();
+        assert_eq!(observed.allocations, 0, "{observed:?}");
+        assert_eq!(observed.allocated_bytes, 0, "{observed:?}");
+    }
+
+    #[test]
+    #[ignore = "mutates the process-global runtime lifecycle; run in isolation"]
+    fn concurrent_init_waits_for_ready_publication() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        if runtime_ready_ptr().is_some() {
+            assert_eq!(molt_runtime_shutdown(), 1);
+        }
+        molt_runtime_reset_for_testing();
+
+        let entered = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        *RUNTIME_INIT_TEST_GATE.lock().unwrap() =
+            Some((Arc::clone(&entered), Arc::clone(&release)));
+
+        let owner = std::thread::spawn(|| molt_runtime_init());
+        entered.wait();
+        assert!(runtime_ready_ptr().is_none());
+        assert!(matches!(
+            *runtime_lifecycle().phase.lock().unwrap(),
+            RuntimeLifecyclePhase::Initializing { .. }
+        ));
+
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            done_tx.send(molt_runtime_init()).unwrap();
+        });
+        started_rx.recv().unwrap();
+        assert!(
+            done_rx
+                .recv_timeout(std::time::Duration::from_millis(50))
+                .is_err(),
+            "a racing initializer must not observe unpublished state as ready"
+        );
+
+        release.wait();
+        assert_eq!(owner.join().unwrap(), 1);
+        assert_eq!(done_rx.recv().unwrap(), 1);
+        waiter.join().unwrap();
+        *RUNTIME_INIT_TEST_GATE.lock().unwrap() = None;
+
+        let ready = runtime_ready_ptr().expect("runtime published after complete init");
+        assert!(matches!(
+            *runtime_lifecycle().phase.lock().unwrap(),
+            RuntimeLifecyclePhase::Ready { ptr } if ptr == ready as usize
+        ));
+        assert_eq!(molt_runtime_shutdown(), 1);
     }
 }

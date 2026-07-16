@@ -588,21 +588,20 @@ pub(crate) unsafe fn append_owned_unpublished(ptr: *mut u8, item: u64) {
     drop(mutation_guard);
 }
 
-/// Runtime half of a direct CPython projection store. The bridge has already
-/// staged the physical ownership edge and publishes it immediately after this
-/// returns. Returning the displaced value transfers the list's old runtime
-/// edge to that bridge transaction for post-publication release.
-pub(crate) unsafe fn replace_one_runtime_only(
+/// Replace one runtime slot and transfer the displaced owned edge to the
+/// caller. This is the common primitive for an unpublished runtime-only store
+/// and the runtime half of a staged CPython projection store. When a view is
+/// published, the bridge has already staged the physical ownership edge and
+/// publishes it immediately after this returns; when no view exists, the
+/// caller simply releases the displaced edge after observing the result.
+pub(crate) unsafe fn replace_one_transferring_displaced(
     py: &PyToken<'_>,
     ptr: *mut u8,
     index: usize,
     item: u64,
 ) -> Option<u64> {
     crate::gil_assert();
-    if ptr.is_null()
-        || unsafe { object_type_id(ptr) } != TYPE_ID_LIST
-        || unsafe { (*header_from_obj_ptr(ptr)).flags } & HEADER_FLAG_HAS_ABI_VIEW == 0
-    {
+    if ptr.is_null() || unsafe { object_type_id(ptr) } != TYPE_ID_LIST {
         return None;
     }
     let base = unsafe { seq_vec_ptr(ptr) };

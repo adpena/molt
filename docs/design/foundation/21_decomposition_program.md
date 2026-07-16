@@ -145,7 +145,7 @@ Sibling frontend files are tiny (`cfg_analysis.py` 416, `tv_hooks.py` 260) — t
 |----------------|-------|-------------------|
 | `native_backend/function_compiler.rs` | 39,043 | `molt-backend-native` (split into families first, move #1) |
 | `runtime/molt-backend-wasm/src/wasm.rs` | 4,418 | extracted WASM facade in `molt-backend-wasm` |
-| `luau.rs` (+luau_ir 1,038 +luau_lower) | 12,278 (14,272 incl. ir/lower) | `molt-backend-luau` |
+| `luau.rs` + `luau/**` + `luau_backend/**` | one canonical SimpleIR-to-Luau pipeline | `molt-backend-luau` |
 | `llvm_backend/lowering.rs` | 10,656 | `molt-backend-native` (bundled w/ Cranelift) |
 | `tir/lower_to_simple.rs` | 7,274 | `molt-tir` |
 | `native_backend/simple_backend.rs` | 6,268 | `molt-backend-native` |
@@ -321,9 +321,9 @@ real Phase 2) and the per-pair drift is reconciled; see §3 Phase R.**
  molt-backend-    molt-backend-     molt-backend-       molt-backend-   molt-backend-
    native            wasm              luau                rust            (none more)
  (Cranelift +     (wasm.rs +        (luau.rs +          (rust.rs          [feature crates
-  LLVM):           wasm_abi +        luau_ir +           transpiler)       above are leaves]
-  native_backend/  lower_to_wasm)    luau_lower)         ~5K LOC
-  + llvm_backend/  ~21K LOC          ~14K LOC
+  LLVM):           wasm_abi +        luau/** +           transpiler)       above are leaves]
+  native_backend/  lower_to_wasm)    luau_backend/**)    ~5K LOC
+  + llvm_backend/  ~21K LOC          one pipeline
   ~58K LOC
         └──────────────┴──────────────────┴───────────────────┴───────────────┘
                                           │ (all re-exported through)

@@ -81,6 +81,10 @@ def _render_rs_unformatted(data: dict) -> str:
 
     out.append(_render_simpleir_control_facts(data))
     out.append("\n\n")
+    out.append(_render_simpleir_integer_semantics(data))
+    out.append("\n\n")
+    out.append(_render_simpleir_runtime_semantics(data))
+    out.append("\n\n")
 
     # -- kind_to_opcode table ------------------------------------------------
     out.append(
@@ -930,6 +934,131 @@ def _render_simpleir_control_facts(data: dict) -> str:
         )
     )
     return "".join(out)
+
+
+def _render_simpleir_integer_semantics(data: dict) -> str:
+    roles = (
+        ("simpleir_dynamic_add_semantics_kinds", "DynamicAdd"),
+        ("simpleir_dynamic_numeric_semantics_kinds", "DynamicNumeric"),
+        ("simpleir_dynamic_true_div_semantics_kinds", "DynamicTrueDiv"),
+        ("simpleir_dynamic_divmod_semantics_kinds", "DynamicDivmod"),
+        ("simpleir_dynamic_power_semantics_kinds", "DynamicPower"),
+        ("simpleir_dynamic_unary_numeric_semantics_kinds", "DynamicUnaryNumeric"),
+        ("simpleir_integer_only_semantics_kinds", "IntegerOnly"),
+        ("simpleir_integer_producer_semantics_kinds", "IntegerProducer"),
+    )
+    lines = [
+        "/// Python integer semantic role for a SimpleIR wire spelling.\n",
+        "/// Generated from op_kinds.toml so string-dispatch backends apply target\n",
+        "/// policy to one shared operation taxonomy.\n",
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+        "pub enum SimpleIrIntegerSemantics {\n",
+        "    None,\n",
+    ]
+    for _, variant in roles:
+        lines.append(f"    {variant},\n")
+    lines.extend(
+        [
+            "}\n\n",
+            "impl SimpleIrIntegerSemantics {\n",
+            "    /// Whether integer operands make this operation produce an integer result.\n",
+            "    /// True division and power are deliberately excluded: `/` is float-valued,\n",
+            "    /// while integer `pow` can produce float/complex depending on exponent semantics.\n",
+            "    pub const fn integer_result_when_operands_integer(self) -> bool {\n",
+            "        matches!(self, Self::DynamicAdd | Self::DynamicNumeric | Self::DynamicDivmod | Self::DynamicUnaryNumeric)\n",
+            "    }\n\n",
+            "    /// Whether the operation's result is unconditionally integer-valued.\n",
+            "    pub const fn integer_only_result(self) -> bool {\n",
+            "        matches!(self, Self::IntegerOnly)\n",
+            "    }\n\n",
+            "    /// Integer arithmetic lanes eligible for representation-plan dispatch.\n",
+            "    /// True division and power stay out because their result domains are not\n",
+            "    /// uniformly integer even when their operands are.\n",
+            "    pub const fn prefers_integer_runtime_lane(self) -> bool {\n",
+            "        self.integer_result_when_operands_integer() || self.integer_only_result()\n",
+            "    }\n",
+            "}\n\n",
+            "#[inline]\n",
+            "pub fn simpleir_integer_semantics_table(kind: &str) -> SimpleIrIntegerSemantics {\n",
+            "    match kind {\n",
+        ]
+    )
+    for key, variant in roles:
+        patterns = " | ".join(f'\"{member}\"' for member in data.get(key, []))
+        lines.append(f"        {patterns} => SimpleIrIntegerSemantics::{variant},\n")
+    lines.extend(
+        [
+            "        _ => SimpleIrIntegerSemantics::None,\n",
+            "    }\n",
+            "}\n",
+        ]
+    )
+    return "".join(lines)
+
+
+def _render_simpleir_runtime_semantics(data: dict) -> str:
+    roles = (
+        ("simpleir_identity_semantics_kinds", "IDENTITY"),
+        ("simpleir_tuple_semantics_kinds", "TUPLE"),
+        ("simpleir_exception_semantics_kinds", "EXCEPTION"),
+        ("simpleir_deterministic_lifetime_semantics_kinds", "DETERMINISTIC_LIFETIME"),
+        ("simpleir_format_protocol_semantics_kinds", "FORMAT_PROTOCOL"),
+        ("simpleir_iterable_protocol_semantics_kinds", "ITERABLE_PROTOCOL"),
+        ("simpleir_object_model_semantics_kinds", "OBJECT_MODEL"),
+        ("simpleir_truthiness_semantics_kinds", "TRUTHINESS"),
+        ("simpleir_comparison_semantics_kinds", "COMPARISON"),
+        ("simpleir_fallible_protocol_semantics_kinds", "FALLIBLE_PROTOCOL"),
+        ("simpleir_async_runtime_semantics_kinds", "ASYNC_RUNTIME"),
+        ("simpleir_unstructured_control_semantics_kinds", "UNSTRUCTURED_CONTROL"),
+        ("simpleir_host_capability_semantics_kinds", "HOST_CAPABILITY"),
+    )
+    registered = set()
+    for row in data.get("kind", []):
+        registered.add(row["canonical"])
+        registered.update(row.get("aliases", []))
+    for table in ("simpleir_control_kind", "frontend_effect_kind"):
+        registered.update(row["kind"] for row in data.get(table, []))
+    for key, _ in roles:
+        registered.update(data.get(key, []))
+
+    lines = [
+        "/// Composable runtime/object-model requirements for a SimpleIR spelling.\n",
+        "/// Multiple bits may be set; enabling one target capability never masks\n",
+        "/// another unmet semantic requirement.\n",
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+        "pub struct SimpleIrRuntimeRequirements(u16);\n\n",
+        "impl SimpleIrRuntimeRequirements {\n",
+        "    pub const NONE: Self = Self(0);\n",
+    ]
+    for bit, (_, constant) in enumerate(roles):
+        lines.append(f"    pub const {constant}: Self = Self(1 << {bit});\n")
+    lines.extend(
+        [
+            "    pub const fn contains(self, requirement: Self) -> bool {\n",
+            "        self.0 & requirement.0 != 0\n",
+            "    }\n",
+            "}\n\n",
+            "/// Return `None` only for an unclassified spelling. Registered kinds\n",
+            "/// with no special requirements return `Some(NONE)`.\n",
+            "#[inline]\n",
+            "pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntimeRequirements> {\n",
+            "    match kind {\n",
+        ]
+    )
+    requirements_by_kind = {kind: 0 for kind in registered}
+    for bit, (key, _) in enumerate(roles):
+        for kind in data.get(key, []):
+            requirements_by_kind[kind] = requirements_by_kind.get(kind, 0) | (1 << bit)
+    grouped: dict[int, list[str]] = {}
+    for kind, bits in requirements_by_kind.items():
+        grouped.setdefault(bits, []).append(kind)
+    for bits, kinds in sorted(grouped.items()):
+        patterns = " | ".join(f'\"{kind}\"' for kind in sorted(kinds))
+        lines.append(
+            f"        {patterns} => Some(SimpleIrRuntimeRequirements({bits})),\n"
+        )
+    lines.extend(["        _ => None,\n", "    }\n", "}\n"])
+    return "".join(lines)
 
 
 def _render_opcode_result_arity_arms(opcodes: list[dict]) -> str:

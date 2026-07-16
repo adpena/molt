@@ -39,7 +39,8 @@ impl RustBackend {
         } else if let Some(ref s) = op.s_value {
             format!("MoltValue::Str({}.to_string())", rust_string_literal(s))
         } else {
-            "MoltValue::None".to_string()
+            self.emit_unsupported_op(op, "constant has no literal payload");
+            return;
         };
         self.emit_line(&declare(&o, &rhs, &self.hoisted_vars.clone()));
     }
@@ -54,8 +55,11 @@ impl RustBackend {
             }
         };
 
+        let Some(f) = op.f_value else {
+            self.emit_unsupported_op(op, "float constant has no f_value payload");
+            return;
+        };
         let o = out();
-        let f = op.f_value.unwrap_or(0.0);
         let rhs = format!("MoltValue::Float({f:.17})");
         self.emit_line(&declare(&o, &rhs, &self.hoisted_vars.clone()));
     }
@@ -70,8 +74,11 @@ impl RustBackend {
             }
         };
 
+        let Some(s) = op.s_value.as_deref() else {
+            self.emit_unsupported_op(op, "string constant has no s_value payload");
+            return;
+        };
         let o = out();
-        let s = op.s_value.as_deref().unwrap_or("");
         let rhs = format!("MoltValue::Str({}.to_string())", rust_string_literal(s));
         self.emit_line(&declare(&o, &rhs, &self.hoisted_vars.clone()));
     }
@@ -86,8 +93,12 @@ impl RustBackend {
             }
         };
 
+        let Some(value) = op.value else {
+            self.emit_unsupported_op(op, "bool constant has no value payload");
+            return;
+        };
         let o = out();
-        let b = op.value.unwrap_or(0) != 0;
+        let b = value != 0;
         let rhs = format!("MoltValue::Bool({b})");
         self.emit_line(&declare(&o, &rhs, &self.hoisted_vars.clone()));
     }
@@ -123,8 +134,11 @@ impl RustBackend {
             }
         };
 
+        let Some(s) = op.s_value.as_deref() else {
+            self.emit_unsupported_op(op, "bigint constant has no decimal payload");
+            return;
+        };
         let o = out();
-        let s = op.s_value.as_deref().unwrap_or("0");
         if let Ok(value) = s.parse::<i64>() {
             let rhs = format!("MoltValue::Int({value}i64)");
             self.emit_line(&declare(&o, &rhs, &self.hoisted_vars.clone()));
@@ -247,7 +261,7 @@ impl RustBackend {
             ));
             self.note_indexed_alias(o, obj, alias_key);
         } else {
-            self.emit_line(&declare(&o, "MoltValue::None", &self.hoisted_vars.clone()));
+            self.emit_unsupported_op(op, "load requires a source object");
         }
     }
 
@@ -262,12 +276,14 @@ impl RustBackend {
         };
 
         let o = out();
-        let slot = op
-            .args
-            .as_ref()
-            .and_then(|a| a.first())
-            .map(|s| format!("__closure_{}", rust_ident(s)))
-            .unwrap_or_else(|| var_ref(op));
+        let slot = if let Some(slot) = op.args.as_ref().and_then(|a| a.first()) {
+            format!("__closure_{}", rust_ident(slot))
+        } else if op.var.as_deref().is_some_and(|name| !name.is_empty()) {
+            var_ref(op)
+        } else {
+            self.emit_unsupported_op(op, "closure_load requires a closure slot");
+            return;
+        };
         self.emit_line(&declare(
             &o,
             &format!("{slot}.clone()"),
@@ -283,7 +299,7 @@ impl RustBackend {
             self.emit_line(&format!("{v} = {s}.clone();"));
             self.note_alias(v, s);
         } else {
-            self.clear_alias(&v);
+            self.emit_unsupported_op(op, "store_local requires a source value");
         }
     }
 
@@ -297,6 +313,8 @@ impl RustBackend {
                 self.emit_line(&format!("molt_set_item(&mut {obj}, {slot_key}, {value});"));
                 self.emit_alias_writeback(&obj);
             }
+        } else {
+            self.emit_unsupported_op(op, "store requires destination object and value");
         }
     }
 
@@ -307,6 +325,8 @@ impl RustBackend {
             let slot = format!("__closure_{}", rust_ident(&args[0]));
             let src = rust_ident(&args[1]);
             self.emit_line(&format!("{slot} = {src}.clone();"));
+        } else {
+            self.emit_unsupported_op(op, "closure_store requires slot and source value");
         }
     }
 

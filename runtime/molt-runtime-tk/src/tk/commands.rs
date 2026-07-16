@@ -172,7 +172,7 @@ pub(super) fn handle_after_command(py: &PyToken, handle: i64, args: &[u64]) -> R
                 let _ = pump_tcl_events(py, handle, 0)?;
                 let _ = dispatch_next_pending_event(py, handle)?;
                 {
-                    let _gil_release = GilReleaseGuard::new();
+                    let _gil_release = GilReleaseGuard::suspend();
                     std::thread::sleep(Duration::from_micros(100));
                 }
                 remaining = remaining.saturating_sub(1);
@@ -325,7 +325,7 @@ where
             continue;
         }
         {
-            let _gil_release = GilReleaseGuard::new();
+            let _gil_release = GilReleaseGuard::suspend();
             std::thread::sleep(Duration::from_micros(100));
         }
     }

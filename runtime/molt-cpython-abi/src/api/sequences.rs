@@ -333,7 +333,7 @@ pub unsafe extern "C" fn PyList_SetItem(
             }
         },
     };
-    if !GLOBAL_BRIDGE.prepare_list_set_stolen_ref(v) {
+    if !unsafe { GLOBAL_BRIDGE.prepare_list_set_stolen_ref(v) } {
         if owned_local {
             unsafe { (hooks_or_stubs().dec_ref)(val_bits) };
         }
@@ -353,7 +353,7 @@ pub unsafe extern "C" fn PyList_SetItem(
         }
     };
     let Some(old_bits) = old_bits else {
-        GLOBAL_BRIDGE.cancel_list_set_stolen_ref(v);
+        unsafe { GLOBAL_BRIDGE.cancel_list_set_stolen_ref(v) };
         if owned_local {
             unsafe { (h.dec_ref)(val_bits) };
         }

@@ -447,12 +447,13 @@ molt_output/
   src/
     main.rs           # Entry point: fn main() { molt_main(); }
     lib.rs            # pub fn molt_main() + all transpiled functions
-    types.rs          # MoltValue enum + helpers (when not using molt-rs crate)
+    types.rs          # Generated program value/runtime surface
     error.rs          # MoltError enum
-  molt-rs/            # Optional: shared runtime crate (for multi-module projects)
-    Cargo.toml
-    src/lib.rs
 ```
+
+Generated projects are self-contained. A nested compatibility runtime crate is not
+an output mode; multi-module builds consume the same generated runtime surface and
+therefore cannot drift onto a second value authority.
 
 ### 9.2 Cargo.toml generation
 

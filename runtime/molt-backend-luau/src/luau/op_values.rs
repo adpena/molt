@@ -16,67 +16,77 @@ impl LuauBackend {
                     let escaped = escape_luau_string(s);
                     self.emit_line(&format!("local {out}: string = \"{escaped}\""));
                 } else {
-                    self.emit_line(&format!("local {out} = nil"));
+                    self.emit_unsupported_op(op);
                 }
             }
             "const_float" => {
-                let out = self.out_var(op);
-                let val = op.f_value.unwrap_or(0.0);
-                self.emit_line(&format!("local {out}: number = {val}"));
+                if let Some(val) = op.f_value {
+                    let out = self.out_var(op);
+                    self.emit_line(&format!("local {out}: number = {val}"));
+                } else {
+                    self.emit_unsupported_op(op);
+                }
             }
             "const_int" => {
-                let out = self.out_var(op);
-                let val = op.value.unwrap_or(0);
-                self.emit_line(&format!("local {out}: number = {val}"));
+                if let Some(val) = op.value {
+                    let out = self.out_var(op);
+                    self.emit_line(&format!("local {out}: number = {val}"));
+                } else {
+                    self.emit_unsupported_op(op);
+                }
             }
             "const_str" => {
-                let out = self.out_var(op);
-                let s = op.s_value.as_deref().unwrap_or("");
-                let escaped = escape_luau_string(s);
-                self.emit_line(&format!("local {out}: string = \"{escaped}\""));
+                if let Some(s) = op.s_value.as_deref() {
+                    let out = self.out_var(op);
+                    let escaped = escape_luau_string(s);
+                    self.emit_line(&format!("local {out}: string = \"{escaped}\""));
+                } else {
+                    self.emit_unsupported_op(op);
+                }
             }
             "const_bytes" => {
                 let out = self.out_var(op);
                 if let Some(ref bytes) = op.bytes {
                     let escaped: String = bytes.iter().map(|b| format!("\\x{b:02x}")).collect();
                     self.emit_line(&format!("local {out}: string = \"{escaped}\""));
-                } else {
-                    let s = op.s_value.as_deref().unwrap_or("");
+                } else if let Some(s) = op.s_value.as_deref() {
                     let escaped = escape_luau_string(s);
                     self.emit_line(&format!("local {out}: string = \"{escaped}\""));
+                } else {
+                    self.emit_unsupported_op(op);
                 }
             }
             "const_bool" | "bool_const" => {
-                let out = self.out_var(op);
-                let val = if op.value.unwrap_or(0) != 0 {
-                    "true"
+                if let Some(value) = op.value {
+                    let out = self.out_var(op);
+                    let val = if value != 0 { "true" } else { "false" };
+                    self.emit_line(&format!("local {out}: boolean = {val}"));
                 } else {
-                    "false"
-                };
-                self.emit_line(&format!("local {out}: boolean = {val}"));
+                    self.emit_unsupported_op(op);
+                }
             }
             "const_none" | "none_const" => {
                 let out = self.out_var(op);
                 self.emit_line(&format!("local {out} = nil"));
             }
             "string_const" => {
-                let out = self.out_var(op);
-                let s = op.s_value.as_deref().unwrap_or("");
-                let escaped = escape_luau_string(s);
-                self.emit_line(&format!("local {out}: string = \"{escaped}\""));
+                if let Some(s) = op.s_value.as_deref() {
+                    let out = self.out_var(op);
+                    let escaped = escape_luau_string(s);
+                    self.emit_line(&format!("local {out}: string = \"{escaped}\""));
+                } else {
+                    self.emit_unsupported_op(op);
+                }
             }
             "const_bigint" => {
-                let out = self.out_var(op);
-                let s = op.s_value.as_deref().unwrap_or("0");
-                self.emit_line(&format!("local {out} = tonumber(\"{s}\") or 0"));
+                self.emit_unsupported_op(op);
             }
             "const_not_implemented" => {
                 let out = self.out_var(op);
                 self.emit_line(&format!("local {out} = molt_not_implemented"));
             }
             "const_ellipsis" => {
-                let out = self.out_var(op);
-                self.emit_line(&format!("local {out} = nil -- {}", op.kind));
+                self.emit_unsupported_op(op);
             }
             "missing" => {
                 let out = self.out_var(op);

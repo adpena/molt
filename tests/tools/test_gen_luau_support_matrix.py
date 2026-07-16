@@ -109,35 +109,35 @@ def test_classifies_luau_op_arms_from_fixture() -> None:
 
     rows = {row.op: row for row in mod.collect_rows_from_text(source)}
 
-    assert rows["add"].status == "implemented-exact"
-    assert rows["inplace_add"].status == "implemented-exact"
-    assert rows["unsupported_fixture_op"].status == "compile-error"
-    assert rows["call_async"].status == "implemented-target-limited"
+    assert rows["add"].status == "implemented-target-limited"
+    assert rows["inplace_add"].status == "implemented-target-limited"
+    assert rows["unsupported_fixture_op"].status == "not-admitted"
+    assert rows["call_async"].status == "not-admitted"
     assert rows["spawn"].status == "not-admitted"
-    assert rows["br_if"].status == "implemented-exact"
-    assert "missing target labels fail closed" in rows["br_if"].note
-    assert rows["bridge_unavailable"].status == "implemented-exact"
-    assert rows["object_set_class"].status == "implemented-exact"
-    assert rows["class_set_layout_version"].status == "implemented-target-limited"
+    assert rows["br_if"].status == "not-admitted"
+    assert "target contract rejects" in rows["br_if"].note
+    assert rows["bridge_unavailable"].status == "not-admitted"
+    assert rows["object_set_class"].status == "not-admitted"
+    assert rows["class_set_layout_version"].status == "not-admitted"
     assert rows["class_apply_set_name"].status == "not-admitted"
-    assert rows["class_layout_version"].status == "implemented-target-limited"
-    assert rows["class_merge_layout"].status == "implemented-target-limited"
-    assert rows["classmethod_new"].status == "implemented-target-limited"
-    assert rows["staticmethod_new"].status == "implemented-target-limited"
-    assert rows["property_new"].status == "implemented-target-limited"
-    assert rows["call_method"].status == "implemented-target-limited"
-    assert rows["get_attr_generic_obj"].status == "implemented-target-limited"
-    assert rows["set_attr_generic_obj"].status == "implemented-target-limited"
-    assert rows["del_attr_generic_obj"].status == "implemented-target-limited"
-    assert rows["has_attr_name"].status == "implemented-target-limited"
-    assert rows["call_internal"].status == "implemented-exact"
+    assert rows["class_layout_version"].status == "not-admitted"
+    assert rows["class_merge_layout"].status == "not-admitted"
+    assert rows["classmethod_new"].status == "not-admitted"
+    assert rows["staticmethod_new"].status == "not-admitted"
+    assert rows["property_new"].status == "not-admitted"
+    assert rows["call_method"].status == "not-admitted"
+    assert rows["get_attr_generic_obj"].status == "not-admitted"
+    assert rows["set_attr_generic_obj"].status == "not-admitted"
+    assert rows["del_attr_generic_obj"].status == "not-admitted"
+    assert rows["has_attr_name"].status == "not-admitted"
+    assert rows["call_internal"].status == "not-admitted"
     assert "molt_abs_builtin" not in rows
-    assert rows["isinstance"].status == "implemented-target-limited"
-    assert rows["issubclass"].status == "implemented-target-limited"
-    assert rows["vec_sum_*"].status == "implemented-exact"
-    assert rows["vec_prod_*"].status == "implemented-exact"
-    assert rows["is"].status == "implemented-target-limited"
-    assert rows["getargv"].status == "implemented-target-limited"
+    assert rows["isinstance"].status == "not-admitted"
+    assert rows["issubclass"].status == "not-admitted"
+    assert rows["vec_sum_*"].status == "not-admitted"
+    assert rows["vec_prod_*"].status == "not-admitted"
+    assert rows["is"].status == "not-admitted"
+    assert rows["getargv"].status == "not-admitted"
 
 
 def test_check_mode_detects_stale_generated_output(tmp_path: Path) -> None:
@@ -170,7 +170,7 @@ def test_build_output_aggregates_decomposed_emitter_directory(tmp_path: Path) ->
         impl LuauBackend {
             pub(super) fn emit_alpha_op(&mut self, op: &OpIR) -> bool {
                 match op.kind.as_str() {
-                    "alpha_exact" => { self.emit_line("local out = 1"); }
+                    "const_none" => { self.emit_line("local out = nil"); }
                     _ => return false,
                 }
                 true
@@ -184,8 +184,8 @@ def test_build_output_aggregates_decomposed_emitter_directory(tmp_path: Path) ->
         impl LuauBackend {
             pub(super) fn emit_beta_op(&mut self, op: &OpIR) -> bool {
                 match op.kind.as_str() {
-                    "beta_rejected" => {
-                        self.emit_line("local out = nil -- [unsupported op: beta_rejected]");
+                    "const_bool" => {
+                        self.emit_line("local out = nil -- [unsupported op: const_bool]");
                     }
                     kind if kind.starts_with("vec_fixture_") => {
                         self.emit_line("local out = {acc, false} -- [vectorized: kind]");
@@ -218,7 +218,7 @@ def test_build_output_aggregates_decomposed_emitter_directory(tmp_path: Path) ->
     output = mod.build_output(source_dir)
 
     assert "**Source:**" in output
-    assert "`alpha_exact` | `implemented-exact`" in output
-    assert "`beta_rejected` | `compile-error`" in output
-    assert "`vec_fixture_*` | `implemented-exact`" in output
+    assert "`const_none` | `not-admitted`" in output
+    assert "`const_bool` | `compile-error`" in output
+    assert "`vec_fixture_*` | `not-admitted`" in output
     assert "ignored_test_only" not in output

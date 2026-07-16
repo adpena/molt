@@ -131,7 +131,7 @@ pub extern "C" fn molt_tk_mainloop(app_bits: u64) -> u64 {
             };
             if has_pending {
                 {
-                    let _gil_release = GilReleaseGuard::new();
+                    let _gil_release = GilReleaseGuard::suspend();
                     std::thread::sleep(Duration::from_micros(100));
                 }
                 continue;
@@ -184,7 +184,7 @@ pub extern "C" fn molt_tk_do_one_event(app_bits: u64, flags_bits: u64) -> u64 {
                     break;
                 }
                 {
-                    let _gil_release = GilReleaseGuard::new();
+                    let _gil_release = GilReleaseGuard::suspend();
                     std::thread::sleep(Duration::from_micros(100));
                 }
                 let progressed = match dispatch_next_pending_event(_py, handle) {

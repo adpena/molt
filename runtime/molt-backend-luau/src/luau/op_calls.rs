@@ -1,6 +1,14 @@
 use super::*;
 use std::collections::HashSet;
 
+fn checked_call_expr(callable: &str, args: &str) -> String {
+    if args.is_empty() {
+        format!("molt_call_checked({callable})")
+    } else {
+        format!("molt_call_checked({callable}, {args})")
+    }
+}
+
 impl LuauBackend {
     pub(super) fn emit_call_op(&mut self, op: &OpIR) -> bool {
         match op.kind.as_str() {
@@ -25,6 +33,8 @@ impl LuauBackend {
                     let callargs = sanitize_ident(&args[0]);
                     let value = sanitize_ident(&args[1]);
                     self.emit_line(&format!("rawset({callargs}, #{callargs} + 1, {value})"));
+                } else {
+                    self.emit_unsupported_op(op);
                 }
             }
             "callargs_expand_star" => {
@@ -35,6 +45,8 @@ impl LuauBackend {
                     self.emit_line(&format!(
                         "table.move({other}, 1, #{other}, #{callargs} + 1, {callargs})"
                     ));
+                } else {
+                    self.emit_unsupported_op(op);
                 }
             }
             "callargs_push_kw" => {
@@ -44,6 +56,8 @@ impl LuauBackend {
                     let key = sanitize_ident(&args[1]);
                     let value = sanitize_ident(&args[2]);
                     self.emit_line(&format!("{callargs}[{key}] = {value}"));
+                } else {
+                    self.emit_unsupported_op(op);
                 }
             }
             "callargs_expand_kwstar" => {
@@ -54,6 +68,8 @@ impl LuauBackend {
                     self.emit_line(&format!(
                         "for __k, __v in pairs({other}) do {callargs}[__k] = __v end"
                     ));
+                } else {
+                    self.emit_unsupported_op(op);
                 }
             }
 
@@ -63,11 +79,10 @@ impl LuauBackend {
             "func_new" | "func_new_closure" | "code_new" => {
                 if let Some(ref out_name) = op.out {
                     let out = sanitize_ident(out_name);
-                    let name = op
-                        .s_value
-                        .as_deref()
-                        .map(sanitize_ident)
-                        .unwrap_or_else(|| "nil".to_string());
+                    let Some(name) = op.s_value.as_deref().map(sanitize_ident) else {
+                        self.emit_unsupported_op(op);
+                        return true;
+                    };
                     self.emit_line(&format!("local {out} = {name}"));
                 }
             }
@@ -176,8 +191,14 @@ impl LuauBackend {
                         | "molt_function_set_defaults"
                         | "molt_open_builtin"
                         | "molt_aiter"
-                        | "molt_anext_builtin" => "nil",
-                        _ => "nil",
+                        | "molt_anext_builtin" => {
+                            self.emit_unsupported_op(op);
+                            return true;
+                        }
+                        _ => {
+                            self.emit_unsupported_op(op);
+                            return true;
+                        }
                     };
                     self.emit_line(&format!("local {out} = {mapped}"));
                 }
@@ -190,10 +211,10 @@ impl LuauBackend {
                     let method = sanitize_ident(&args[0]);
                     let obj = sanitize_ident(&args[1]);
                     self.emit_line(&format!(
-                        "local {out} = function(...) local __m = {method}; if __m then return __m({obj}, ...) end; return nil end"
+                        "local {out} = function(...) local __m = {method}; if type(__m) ~= \"function\" then error({{__type=\"TypeError\", __msg=\"object is not callable\"}}) end; return __m({obj}, ...) end"
                     ));
                 } else {
-                    self.emit_line(&format!("local {out} = nil -- bound_method missing args"));
+                    self.emit_unsupported_op(op);
                 }
             }
             // ================================================================
@@ -247,11 +268,14 @@ impl LuauBackend {
                             .map(|a| sanitize_ident(a))
                             .collect::<Vec<_>>()
                             .join(", ");
+                        let call = checked_call_expr(&func_ref, &call_args);
                         if op.out.is_some() {
-                            self.emit_line(&format!("local {out} = {func_ref}({call_args})"));
+                            self.emit_line(&format!("local {out} = {call}"));
                         } else {
-                            self.emit_line(&format!("{func_ref}({call_args})"));
+                            self.emit_line(&call);
                         }
+                    } else {
+                        self.emit_unsupported_op(op);
                     }
                 }
             }
@@ -272,6 +296,8 @@ impl LuauBackend {
                     } else {
                         self.emit_line(&format!("{func_name}({call_args})"));
                     }
+                } else {
+                    self.emit_unsupported_op(op);
                 }
             }
             "call_func" | "call_function" => {
@@ -283,14 +309,15 @@ impl LuauBackend {
                         .map(|a| sanitize_ident(a))
                         .collect::<Vec<_>>()
                         .join(", ");
+                    let call = checked_call_expr(&func_ref, &call_args);
                     if let Some(ref out_name) = op.out {
                         let out = sanitize_ident(out_name);
-                        self.emit_line(&format!(
-                            "local {out} = if {func_ref} then {func_ref}({call_args}) else nil"
-                        ));
+                        self.emit_line(&format!("local {out} = {call}"));
                     } else {
-                        self.emit_line(&format!("if {func_ref} then {func_ref}({call_args}) end"));
+                        self.emit_line(&call);
                     }
+                } else {
+                    self.emit_unsupported_op(op);
                 }
             }
             "call_method" => {
@@ -300,24 +327,30 @@ impl LuauBackend {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if !args.is_empty() {
                     let obj = sanitize_ident(&args[0]);
-                    let method_name = op.s_value.as_deref().unwrap_or("unknown");
+                    let Some(method_name) = op.s_value.as_deref() else {
+                        self.emit_unsupported_op(op);
+                        return true;
+                    };
                     let call_args = args[1..]
                         .iter()
                         .map(|a| sanitize_ident(a))
                         .collect::<Vec<_>>()
                         .join(", ");
+                    let method_call = checked_call_expr("__method", &call_args);
                     if let Some(ref out_name) = op.out {
                         let out = sanitize_ident(out_name);
                         let escaped = escape_luau_string(method_name);
                         self.emit_line(&format!(
-                            "local {out}; do local __method = molt_get_attr({obj}, \"{escaped}\"); {out} = if __method then __method({call_args}) else nil end end"
+                            "local {out}; do local __method = molt_get_attr_checked({obj}, \"{escaped}\"); {out} = {method_call} end"
                         ));
                     } else {
                         let escaped = escape_luau_string(method_name);
                         self.emit_line(&format!(
-                            "do local __method = molt_get_attr({obj}, \"{escaped}\"); if __method then __method({call_args}) end end"
+                            "do local __method = molt_get_attr_checked({obj}, \"{escaped}\"); {method_call} end"
                         ));
                     }
+                } else {
+                    self.emit_unsupported_op(op);
                 }
             }
             "call_async" => {
@@ -325,11 +358,10 @@ impl LuauBackend {
                 // already carries the concrete poll target in s_value. Execute
                 // that target directly for the admitted synchronous subset.
                 let args = op.args.as_deref().unwrap_or(&[]);
-                let func_ref = sanitize_ident(
-                    op.s_value
-                        .as_deref()
-                        .expect("call_async expects poll target in s_value"),
-                );
+                let Some(func_ref) = op.s_value.as_deref().map(sanitize_ident) else {
+                    self.emit_unsupported_op(op);
+                    return true;
+                };
                 let call_args = args
                     .iter()
                     .map(|a| sanitize_ident(a))
@@ -343,28 +375,7 @@ impl LuauBackend {
                 }
             }
             "block_on" | "spawn" => {
-                // Scheduler ownership is not represented in checked Luau yet.
-                let args = op.args.as_deref().unwrap_or(&[]);
-                if !args.is_empty() {
-                    let func_ref = sanitize_ident(&args[0]);
-                    let call_args = args[1..]
-                        .iter()
-                        .map(|a| sanitize_ident(a))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    if let Some(ref out_name) = op.out {
-                        let out = sanitize_ident(out_name);
-                        self.emit_line(&format!(
-                            "local {out} = {func_ref}({call_args}) -- [async: {}]",
-                            op.kind
-                        ));
-                    } else {
-                        self.emit_line(&format!("{func_ref}({call_args}) -- [async: {}]", op.kind));
-                    }
-                } else if let Some(ref out_name) = op.out {
-                    let out = sanitize_ident(out_name);
-                    self.emit_line(&format!("local {out} = nil -- [async: {}]", op.kind));
-                }
+                self.emit_unsupported_op(op);
             }
 
             // ================================================================
@@ -379,12 +390,15 @@ impl LuauBackend {
                         .map(|a| sanitize_ident(a))
                         .collect::<Vec<_>>()
                         .join(", ");
+                    let call = checked_call_expr(&func_ref, &call_args);
                     if let Some(ref out_name) = op.out {
                         let out = sanitize_ident(out_name);
-                        self.emit_line(&format!("local {out} = {func_ref}({call_args})"));
+                        self.emit_line(&format!("local {out} = {call}"));
                     } else {
-                        self.emit_line(&format!("{func_ref}({call_args})"));
+                        self.emit_line(&call);
                     }
+                } else {
+                    self.emit_unsupported_op(op);
                 }
             }
             "call_bind" => {
@@ -400,15 +414,20 @@ impl LuauBackend {
                     if let Some(ref out_name) = op.out {
                         let out = sanitize_ident(out_name);
                         self.emit_line(&format!(
-                            "local {out} = if {func} then {func}(table.unpack({args_tuple})) else nil"
+                            "local {out} = molt_call_checked({func}, table.unpack({args_tuple}))"
                         ));
                     } else {
                         self.emit_line(&format!(
-                            "if {func} then {func}(table.unpack({args_tuple})) end"
+                            "molt_call_checked({func}, table.unpack({args_tuple}))"
                         ));
                     }
                 } else if let Some(func) = args.first() {
-                    self.emit_line(&format!("local {out} = {}", sanitize_ident(func)));
+                    self.emit_line(&format!(
+                        "local {out} = molt_call_checked({})",
+                        sanitize_ident(func)
+                    ));
+                } else {
+                    self.emit_unsupported_op(op);
                 }
             }
             "is_callable" => {
@@ -416,6 +435,8 @@ impl LuauBackend {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(val) = args.first() {
                     self.emit_line(&format!("local {out} = ({})", luau_callable_expr(val)));
+                } else {
+                    self.emit_unsupported_op(op);
                 }
             }
 

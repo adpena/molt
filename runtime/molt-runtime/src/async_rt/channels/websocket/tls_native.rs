@@ -249,7 +249,7 @@ fn tls_client_wrap_stream_native(tcp: TcpStream, server_name: &str) -> *mut u8 {
         Err(_) => return std::ptr::null_mut(),
     };
     let stream = {
-        let _release = GilReleaseGuard::new();
+        let _release = GilReleaseGuard::suspend();
         let _ = tcp.set_nodelay(true);
         let conn = match ClientConnection::new(config, server_name) {
             Ok(value) => value,
@@ -281,7 +281,7 @@ fn tls_client_wrap_unix_stream_native(unix: UnixStream, server_name: &str) -> *m
         Err(_) => return std::ptr::null_mut(),
     };
     let stream = {
-        let _release = GilReleaseGuard::new();
+        let _release = GilReleaseGuard::suspend();
         let conn = match ClientConnection::new(config, server_name) {
             Ok(value) => value,
             Err(_) => return std::ptr::null_mut(),
@@ -305,7 +305,7 @@ pub(super) fn tls_client_connect_native(
     server_name: &str,
 ) -> Result<*mut u8, std::io::Error> {
     let tcp = {
-        let _release = GilReleaseGuard::new();
+        let _release = GilReleaseGuard::suspend();
         TcpStream::connect((host, port))?
     };
     let wrapped = tls_client_wrap_stream_native(tcp, server_name);
@@ -367,7 +367,7 @@ fn tls_server_load_config(certfile: &str, keyfile: &str) -> Result<Arc<ServerCon
 #[cfg(molt_has_net_io)]
 fn tls_server_wrap_stream_native(tcp: TcpStream, config: Arc<ServerConfig>) -> *mut u8 {
     let stream = {
-        let _release = GilReleaseGuard::new();
+        let _release = GilReleaseGuard::suspend();
         let _ = tcp.set_nodelay(true);
         let conn = match ServerConnection::new(config) {
             Ok(value) => value,
@@ -388,7 +388,7 @@ fn tls_server_wrap_stream_native(tcp: TcpStream, config: Arc<ServerConfig>) -> *
 #[cfg(all(molt_has_net_io, unix))]
 fn tls_server_wrap_unix_stream_native(unix: UnixStream, config: Arc<ServerConfig>) -> *mut u8 {
     let stream = {
-        let _release = GilReleaseGuard::new();
+        let _release = GilReleaseGuard::suspend();
         let conn = match ServerConnection::new(config) {
             Ok(value) => value,
             Err(_) => return std::ptr::null_mut(),

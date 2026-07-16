@@ -1957,6 +1957,10 @@ pub(crate) fn class_break_cycles(_py: &PyToken<'_>, bits: u64) {
         if !object_replace_class_edge(_py, ptr, 0, ClassEdgeOwnership::Owned) {
             return;
         }
+        // Detach scalar metadata before intern/name pools are drained. Class
+        // destruction happens much later, after those authorities are gone.
+        class_set_name_bits(_py, ptr, none_bits);
+        class_set_qualname_bits(_py, ptr, 0u64);
         class_set_annotations_bits(_py, ptr, 0u64);
         class_set_annotate_bits(_py, ptr, 0u64);
         let dict_bits = class_dict_bits(ptr);

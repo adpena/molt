@@ -63,12 +63,12 @@
 # (in the same arc that rips a site) — never raise it.
 [baseline]
 ecosystem_baked = 0
-ecosystem_build_crutch = 1
+ecosystem_build_crutch = 0
 ecosystem_reimplementation = 0
 fail_open_stub = 0
 duplicate_authority = 3
 todo_as_plan = 0
-fail_open_backend_dispatch = 2
+fail_open_backend_dispatch = 0
 
 # ===========================================================================
 # ecosystem_baked (Scan A) - package headers/config defined in-tree.
@@ -80,8 +80,8 @@ fail_open_backend_dispatch = 2
 # ===========================================================================
 # ecosystem_build_crutch (Scan F) - package-specific build/source-plan helpers.
 # Resolution: task#73.2 (generic auto toolchain and package-build-system custody).
-# Existing rows are debt only; this class may only shrink and no SciPy/pandas
-# clone may land quietly.
+# The zero baseline permanently rejects package-specific source-plan/build
+# clones; package prerequisites must flow through generic upstream custody.
 # ===========================================================================
 
 # ===========================================================================
@@ -204,38 +204,4 @@ and runtime/molt-cpython-abi/include/structmember.h (the ABI authority added by
 the header-custody arc 410ada3ad to make the cpython-abi tier self-complete) --
 two hand-synced copies of the CPython legacy T_*/READONLY aliases. Retire under
 task #10's remaining surface (generate/collapse to one authority).
-"""
-[[site]]
-id = "G1_luau_op_emitter_nil_unsupported"
-class = "fail_open_backend_dispatch"
-file = "runtime/molt-backend-luau/src/luau/op_emitter.rs"
-anchor = "local {out} = nil -- [unsupported op:"
-resolution_row = "task#backend-failclosed"
-justification = """
-LuauBackend::emit_unsupported_op is the dispatch catch-all for any op kind the
-luau backend does not lower. It emits `local <x> = nil -- [unsupported op: ...]`,
-fabricating a nil result. This is now fail-CLOSED: emit_unsupported_op records the
-op into self.unsupported_ops, and compile_checked/compile_via_ir reject a
-non-empty accumulator before returning any source, so the nil can never reach a
-checked build. The marker line is retained only as a readable in-source
-diagnostic; the accumulator is the authority. Row freezes this placeholder-emit
-surface against a NEW unregistered fail-open catch-all.
-"""
-
-[[site]]
-id = "G2_rust_op_emitter_none_stub"
-class = "fail_open_backend_dispatch"
-file = "runtime/molt-backend-rust/src/rust/op_emitter.rs"
-anchor = "/* {marker} */ MoltValue::None"
-resolution_row = "task#backend-failclosed"
-justification = """
-RustBackend::emit_unsupported_op is the dispatch catch-all (reached via
-emit_op_other and the runtime-gap arms) for any op kind the rust backend does not
-lower. It emits `{ /* MOLT_STUB: ... */ MoltValue::None }`, fabricating a None
-result. This is now fail-CLOSED: emit_unsupported_op records the op into
-self.unsupported_ops, and compile_checked rejects a non-empty accumulator before
-returning any source, so the None can never reach a checked build. The marker line
-is retained only as a readable in-source diagnostic; the accumulator is the
-authority. Row freezes this placeholder-emit surface against a NEW unregistered
-fail-open catch-all.
 """

@@ -12,5 +12,3 @@ pub use molt_ir::{FunctionIR, OpIR, SimpleIR, ir, repr};
 pub use molt_tir::{representation_plan, tir};
 
 pub mod luau;
-pub mod luau_ir;
-pub mod luau_lower;

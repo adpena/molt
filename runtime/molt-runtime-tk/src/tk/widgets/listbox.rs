@@ -620,6 +620,17 @@ fn listbox_reindex_item_options_after_delete(
     first: usize,
     end: usize,
 ) {
+    listbox_reindex_item_options_after_delete_with(widget, first, end, |options| {
+        clear_value_map_refs(py, options);
+    });
+}
+
+fn listbox_reindex_item_options_after_delete_with(
+    widget: &mut TkWidgetState,
+    first: usize,
+    end: usize,
+    mut clear_removed: impl FnMut(&mut HashMap<String, u64>),
+) {
     if first > end {
         return;
     }
@@ -646,7 +657,7 @@ fn listbox_reindex_item_options_after_delete(
             shifted.insert(index - removed_count, options);
             continue;
         }
-        clear_value_map_refs(py, &mut options);
+        clear_removed(&mut options);
     }
     widget.list_item_options = shifted;
     if let Some(active_index) = widget.list_active_index {
@@ -680,7 +691,6 @@ mod tests {
 
     #[test]
     fn listbox_state_reindexing_keeps_selection_active_and_options_coherent() {
-        let py = PyToken::new();
         let mut widget = listbox_with_len(6);
         widget.list_selection = HashSet::from([1, 3]);
         widget.list_active_index = Some(3);
@@ -700,7 +710,9 @@ mod tests {
         assert_eq!(sorted_indices(&widget.list_selection), vec![1, 2, 4, 5]);
 
         listbox_reindex_selection_after_delete(&mut widget, 2, 4, 3);
-        listbox_reindex_item_options_after_delete(&py, &mut widget, 2, 4);
+        listbox_reindex_item_options_after_delete_with(&mut widget, 2, 4, |removed| {
+            assert!(removed.is_empty());
+        });
 
         assert_eq!(sorted_indices(&widget.list_selection), vec![1, 2]);
         assert_eq!(widget.list_active_index, Some(2));

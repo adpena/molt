@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+import tomllib
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,83 +27,58 @@ STATUSES = {
     "implemented-exact",
     "implemented-target-limited",
     "compile-error",
-    "runtime-capability-error",
     "not-admitted",
 }
 
-TARGET_LIMITED_OPS = {
-    "const_bigint": "Luau numbers are IEEE-754 doubles; arbitrary precision is not represented.",
-    "is": "Non-None identity currently lowers through equality on Luau values.",
-    "is_not": "Non-None identity currently lowers through inequality on Luau values.",
-    "module_import": "Only known module bridges are materialized in Luau.",
-    "module_cache_get": "Only known module bridges are materialized in Luau.",
-    "module_get_global": "Dynamic module lookup depends on Luau module cache entries.",
-    "module_get_name": "Dynamic module lookup depends on Luau module cache entries.",
-    "module_get_attr": "Known module bridges are direct; unknown attrs return nil unless rejected by checked output.",
-    "object_new": "Modeled as Luau table object for the admitted subset.",
-    "module_new": "Modeled as Luau table object for the admitted subset.",
-    "builtin_type": "Modeled as named Luau type metadata for the admitted subset.",
-    "call_async": "Executes the known poll target directly for the admitted synchronous Luau subset.",
-    "class_new": "Modeled as Luau table/metatable object for the admitted subset.",
-    "class_apply_set_name": "__set_name__ hooks dispatch over Luau class-table snapshots for the admitted subset.",
-    "classmethod_new": "Modeled as Luau descriptor metadata for the admitted subset.",
-    "class_layout_version": "Modeled as Luau class-table layout metadata for the admitted subset.",
-    "class_merge_layout": "Maintains Luau class-table layout metadata for the admitted subset.",
-    "class_set_layout_version": "Modeled as Luau class-table layout metadata for the admitted subset.",
-    "code_slot_set": "Luau checked output does not materialize Molt Python code-object slot storage.",
-    "code_slots_init": "Luau checked output does not materialize Molt Python code-object slot storage.",
-    "call_method": "Uses descriptor-aware Luau table/metatable dispatch for the admitted subset.",
-    "alloc": "Modeled as Luau table allocation for the admitted subset.",
-    "alloc_task": "Generator/listcomp tasks use coroutine collection paths.",
-    "dataclass_new": "Modeled as Luau table object for the admitted subset.",
-    "dataclass_get": "Modeled as Luau field/index access for the admitted subset.",
-    "dataclass_set": "Modeled as Luau field assignment for the admitted subset.",
-    "dataclass_set_class": "Modeled as Luau field assignment for the admitted subset.",
-    "del_attr_generic_obj": "Uses descriptor-aware Luau table/metatable deletion for the admitted subset.",
-    "del_attr_generic_ptr": "Uses descriptor-aware Luau table/metatable deletion for the admitted subset.",
-    "del_attr_name": "Uses descriptor-aware Luau table/metatable deletion for the admitted subset.",
-    "get_attr_generic_obj": "Uses descriptor-aware Luau table/metatable lookup for the admitted subset.",
-    "get_attr_generic_ptr": "Uses descriptor-aware Luau table/metatable lookup for the admitted subset.",
-    "get_attr_name": "Uses descriptor-aware Luau table/metatable lookup for the admitted subset.",
-    "get_attr_name_default": "Uses descriptor-aware Luau table/metatable lookup for the admitted subset.",
-    "get_attr_special_obj": "Uses descriptor-aware Luau table/metatable lookup for the admitted subset.",
-    "getargv": "Luau has no process argv surface; materializes an empty argv list.",
-    "getframe": "Luau has no Python frame-object introspection surface; materializes None for fallback-aware stdlib paths.",
-    "frame_locals_set": "Luau checked output has no Python frame locals mirror; getframe materializes None.",
-    "has_attr_name": "Uses descriptor-aware Luau table/metatable lookup for the admitted subset.",
-    "id": "Uses string identity representation, not CPython object address identity.",
-    "intarray_from_seq": "Modeled as a copied dense Luau integer table for vector consumers.",
-    "is_native_awaitable": "Luau has no Molt native poll-function object representation; target values are non-native awaitables.",
-    "isinstance": "Uses Luau type metadata and metatable inheritance for the admitted subset.",
-    "issubclass": "Uses Luau type metadata and metatable inheritance for the admitted subset.",
-    "loop_break_if_exception": "Luau exceptions unwind with error(), so no sentinel-driven loop break is materialized.",
-    "property_new": "Modeled as Luau descriptor metadata for the admitted subset.",
-    "set_attr_generic_obj": "Uses descriptor-aware Luau table/metatable assignment for the admitted subset.",
-    "set_attr_generic_ptr": "Uses descriptor-aware Luau table/metatable assignment for the admitted subset.",
-    "set_attr_name": "Uses descriptor-aware Luau table/metatable assignment for the admitted subset.",
-    "staticmethod_new": "Modeled as Luau descriptor metadata for the admitted subset.",
-    "dict_popitem": "Luau table iteration order is not CPython insertion order.",
-    "set_pop": "Luau table iteration order is not CPython set pop order.",
-    "sys_executable": "Luau has no executable path surface; materializes an empty string.",
-    "trace_enter_slot": "Luau checked output does not materialize Molt tracing frame-stack state.",
-    "trace_exit": "Luau checked output does not materialize Molt tracing frame-stack state.",
-}
+_OP_KIND_TABLE = tomllib.loads(
+    (ROOT / "runtime" / "molt-ir" / "src" / "tir" / "op_kinds.toml").read_text(
+        encoding="utf-8"
+    )
+)
 
-CAPABILITY_OPS = {
-    "file_open": "Roblox/Luau filesystem capability is unavailable.",
-    "file_read": "Roblox/Luau filesystem capability is unavailable.",
-    "file_write": "Roblox/Luau filesystem capability is unavailable.",
-    "file_close": "Roblox/Luau filesystem capability is unavailable.",
-    "file_flush": "Roblox/Luau filesystem capability is unavailable.",
-    "invoke_ffi": "Roblox/Luau FFI capability is unavailable.",
-}
 
-IMPLEMENTED_WITH_MALFORMED_IR_ERRORS = {
-    "br_if": "Valid labeled conditional branch lowers to Luau goto; missing target labels fail closed.",
-    "branch": "Valid labeled conditional branch lowers to Luau goto; missing target labels fail closed.",
-    "branch_false": "Valid labeled false-branch lowers to Luau goto; missing target labels fail closed.",
-}
+def _kind_set(*keys: str) -> frozenset[str]:
+    return frozenset(
+        kind for key in keys for kind in _OP_KIND_TABLE.get(key, [])
+    )
 
+
+_PRE_SOURCE_NOT_ADMITTED = _kind_set(
+    "simpleir_dynamic_divmod_semantics_kinds",
+    "simpleir_dynamic_power_semantics_kinds",
+    "simpleir_integer_only_semantics_kinds",
+    "simpleir_integer_producer_semantics_kinds",
+    "simpleir_identity_semantics_kinds",
+    "simpleir_tuple_semantics_kinds",
+    "simpleir_exception_semantics_kinds",
+    "simpleir_deterministic_lifetime_semantics_kinds",
+    "simpleir_format_protocol_semantics_kinds",
+    "simpleir_iterable_protocol_semantics_kinds",
+    "simpleir_object_model_semantics_kinds",
+    "simpleir_truthiness_semantics_kinds",
+    "simpleir_comparison_semantics_kinds",
+    "simpleir_fallible_protocol_semantics_kinds",
+    "simpleir_async_runtime_semantics_kinds",
+    "simpleir_unstructured_control_semantics_kinds",
+    "simpleir_host_capability_semantics_kinds",
+)
+_PRE_SOURCE_TYPE_LIMITED = _kind_set(
+    "simpleir_dynamic_add_semantics_kinds",
+    "simpleir_dynamic_numeric_semantics_kinds",
+    "simpleir_dynamic_true_div_semantics_kinds",
+    "simpleir_dynamic_unary_numeric_semantics_kinds",
+)
+_REGISTERED_SIMPLEIR_KINDS = {
+    spelling
+    for row in _OP_KIND_TABLE.get("kind", [])
+    for spelling in (row["canonical"], *row.get("aliases", []))
+}
+for _table in ("simpleir_control_kind", "frontend_effect_kind"):
+    _REGISTERED_SIMPLEIR_KINDS.update(
+        row["kind"] for row in _OP_KIND_TABLE.get(_table, [])
+    )
+_REGISTERED_SIMPLEIR_KINDS.update(_PRE_SOURCE_NOT_ADMITTED)
+_REGISTERED_SIMPLEIR_KINDS.update(_PRE_SOURCE_TYPE_LIMITED)
 
 @dataclass(frozen=True)
 class Row:
@@ -314,19 +290,28 @@ def _iter_arms(match_text: str) -> list[tuple[list[str], str]]:
 
 
 def _classify(op: str, body: str) -> Row:
-    if op in IMPLEMENTED_WITH_MALFORMED_IR_ERRORS and "missing target label" in body:
-        return Row(op, "implemented-exact", IMPLEMENTED_WITH_MALFORMED_IR_ERRORS[op])
+    if op not in _REGISTERED_SIMPLEIR_KINDS:
+        return Row(
+            op,
+            "not-admitted",
+            "Operation is unclassified in the generated target-contract authority.",
+        )
+    if op in _PRE_SOURCE_NOT_ADMITTED:
+        return Row(
+            op,
+            "not-admitted",
+            "Shared generated target contract rejects this semantic family before source generation.",
+        )
+    if op in _PRE_SOURCE_TYPE_LIMITED:
+        return Row(
+            op,
+            "implemented-target-limited",
+            "Shared target contract admits only representation-proven non-integer scalar domains.",
+        )
     if "-- [unsupported op:" in body or 'error(\\"[unsupported op:' in body:
         return Row(
             op, "compile-error", "Checked Luau emission rejects unsupported markers."
         )
-    if op in CAPABILITY_OPS:
-        return Row(
-            op,
-            "runtime-capability-error",
-            CAPABILITY_OPS[op],
-        )
-
     semantic_markers = (
         "-- [async:",
         "-- [context:",
@@ -351,10 +336,11 @@ def _classify(op: str, body: str) -> Row:
                 "Checked Luau emission rejects semantic stub markers.",
             )
 
-    if op in TARGET_LIMITED_OPS:
-        return Row(op, "implemented-target-limited", TARGET_LIMITED_OPS[op])
-
-    return Row(op, "implemented-exact", "Lowered without checked-output stub markers.")
+    return Row(
+        op,
+        "implemented-exact",
+        "Lowered and outside every generated target-contract limitation.",
+    )
 
 
 def collect_rows_from_text(text: str) -> list[Row]:
@@ -419,7 +405,6 @@ def _render(rows: list[Row], source: Path) -> str:
             "- `implemented-exact`: emitted without known Luau target limitation or checked-output stub marker.",
             "- `implemented-target-limited`: emitted for an admitted subset with an explicit Luau/Python semantic limit.",
             "- `compile-error`: checked Luau emission rejects this unsupported operation.",
-            "- `runtime-capability-error`: operation requires a target capability unavailable in Roblox/Luau.",
             "- `not-admitted`: current lowering is intentionally rejected by checked Luau emission.",
             "",
         ]

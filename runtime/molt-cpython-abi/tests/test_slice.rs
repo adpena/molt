@@ -11,7 +11,7 @@ fn init() {
 
 #[test]
 fn test_slice_new_owns_start_stop_and_normalizes_null_step() {
-    let _guard = init();
+    init();
     // Mortal carriers prove that the slice owns start/stop references. Cached
     // small integers are immortal and intentionally ignore INCREF.
     let start = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1002) };
@@ -42,7 +42,7 @@ fn test_slice_new_owns_start_stop_and_normalizes_null_step() {
 
 #[test]
 fn test_slice_get_indices_ex_positive_step() {
-    let _guard = init();
+    init();
     let start = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1) };
     let stop = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(6) };
     let step = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(2) };
@@ -77,7 +77,7 @@ fn test_slice_get_indices_ex_positive_step() {
 
 #[test]
 fn test_slice_get_indices_ex_negative_step_defaults() {
-    let _guard = init();
+    init();
     let step = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(-1) };
     let slice = unsafe {
         molt_cpython_abi::api::slice::PySlice_New(&raw mut Py_None, &raw mut Py_None, step)

@@ -26,19 +26,36 @@ use crate::object::utf8_cache::{
 };
 use crate::object::weakref::weakref_clear_runtime_state;
 use crate::{
-    ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, BLOCK_ON_TASK, CONTEXT_STACK, CURRENT_TASK,
-    CURRENT_TOKEN, DEFAULT_RECURSION_LIMIT, EXCEPTION_STACK, FRAME_STACK,
-    GENERATOR_EXCEPTION_STACKS, GENERATOR_RAISE, GIL_DEPTH, GilReleaseGuard, MoltObject,
-    NEXT_CANCEL_TOKEN_ID, PARSE_ARENA, RECURSION_DEPTH, RECURSION_LIMIT, TASK_RAISE_ACTIVE,
-    TRACE_FRAME_PUSH_STACK, TYPE_ID_DICT, TYPE_ID_FILE_HANDLE, TYPE_ID_MODULE, alloc_string,
-    builtin_classes_shutdown, call_callable0, clear_exception, clear_exception_state,
-    clear_exception_type_cache, dec_ref_bits, default_cancel_tokens, dict_clear_in_place_shutdown,
-    dict_get_in_place, exception_pending, exceptions_clear_runtime_state, inc_ref_bits,
-    intern_static_name, module_dict_bits, molt_file_flush, molt_get_attr_name, obj_from_bits,
-    object_type_id, reset_ptr_registry, runtime_state,
+    ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, BLOCK_ON_TASK, CONTEXT_STACK,
+    CURRENT_EXCEPTION_PENDING, CURRENT_TASK, CURRENT_TOKEN, DEFAULT_RECURSION_LIMIT,
+    EXCEPTION_STACK, FRAME_STACK, GENERATOR_EXCEPTION_STACKS, GENERATOR_RAISE, GIL_DEPTH, GilGuard,
+    GilReleaseGuard, MoltObject, NEXT_CANCEL_TOKEN_ID, PARSE_ARENA, RECURSION_DEPTH,
+    RECURSION_LIMIT, TASK_RAISE_ACTIVE, TRACE_FRAME_PUSH_STACK, TYPE_ID_DICT, TYPE_ID_FILE_HANDLE,
+    TYPE_ID_MODULE, alloc_string, builtin_classes_break_cycles, builtin_classes_shutdown,
+    call_callable0, clear_exception, clear_exception_type_cache,
+    clear_thread_exception_for_teardown, dec_ref_bits, default_cancel_tokens,
+    dict_clear_in_place_shutdown, dict_get_in_place, exception_pending,
+    exceptions_clear_runtime_state, inc_ref_bits, intern_static_name, module_dict_bits,
+    molt_file_flush, molt_get_attr_name, obj_from_bits, object_type_id, reset_ptr_registry,
+    runtime_state,
 };
 use std::sync::OnceLock;
 use std::sync::atomic::Ordering as AtomicOrdering;
+
+#[cfg(test)]
+pub(crate) static THREAD_LOCAL_DROP_TEST_TRACE: std::sync::Mutex<
+    Option<(std::thread::ThreadId, std::sync::mpsc::Sender<&'static str>)>,
+> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+fn trace_thread_local_drop(stage: &'static str) {
+    let trace = { THREAD_LOCAL_DROP_TEST_TRACE.lock().unwrap().clone() };
+    if let Some((owner, sender)) = trace
+        && owner == std::thread::current().id()
+    {
+        let _ = sender.send(stage);
+    }
+}
 
 use super::{
     RuntimeState, cache::clear_atomic_slots, cache::clear_method_cache,
@@ -62,8 +79,10 @@ impl ThreadLocalGuard {
 
 impl Drop for ThreadLocalGuard {
     fn drop(&mut self) {
+        #[cfg(test)]
+        trace_thread_local_drop("enter");
         // After `molt_runtime_shutdown` the RuntimeState has been freed and
-        // both `RUNTIME_STATE_PTR` and `TLS_RUNTIME_STATE` are null.
+        // both the ready-state publication and `TLS_RUNTIME_STATE` are null.
         // Attempting GIL acquisition + cleanup here would either:
         //   (a) dereference a dangling TLS pointer (use-after-free), or
         //   (b) trigger `molt_runtime_init` to re-allocate a new RuntimeState
@@ -75,13 +94,23 @@ impl Drop for ThreadLocalGuard {
         // global allocator (mimalloc) is still alive. If we leave them for
         // Rust's TLS destructor phase, deallocation can race with mimalloc's
         // own thread-local cleanup (registered via pthread_key_create).
+        let gil = GilGuard::new();
+        #[cfg(test)]
+        trace_thread_local_drop("gil_acquired");
         if crate::state::runtime_state::runtime_state_for_gil().is_none() {
+            #[cfg(test)]
+            trace_thread_local_drop("runtime_absent");
+            drop(gil);
+            #[cfg(test)]
+            trace_thread_local_drop("gil_released");
             drain_heap_tls();
+            #[cfg(test)]
+            trace_thread_local_drop("drained");
             return;
         }
-        crate::with_gil_entry_nopanic!(_py, {
-            clear_thread_local_state(_py);
-        });
+        clear_thread_local_state(&gil.token());
+        #[cfg(test)]
+        trace_thread_local_drop("cleared");
     }
 }
 
@@ -120,8 +149,8 @@ pub(crate) fn runtime_teardown_for_process_exit(_py: &PyToken<'_>, state: &Runti
         trace_shutdown("process_exit_clear_asyncio_queue_state");
         asyncio_queue_clear_state(_py);
     }
-    trace_shutdown("process_exit_clear_exception_state");
-    clear_exception_state(_py);
+    trace_shutdown("process_exit_clear_thread_exception");
+    clear_thread_exception_for_teardown(_py);
     trace_shutdown("process_exit_run_atexit_callbacks");
     crate::builtins::atexit::atexit_run_exitfuncs_teardown(_py);
     trace_shutdown("process_exit_clear_weakref_runtime_state");
@@ -176,7 +205,7 @@ fn shutdown_started_runtime_workers(_py: &PyToken<'_>, state: &RuntimeState) {
 
     if scheduler_started || sleep_queue_started || io_poller_started || thread_pool_started {
         trace_shutdown("workers_shutdown_start");
-        let _release = GilReleaseGuard::new();
+        let _release = GilReleaseGuard::suspend();
         if scheduler_started {
             trace_shutdown("scheduler_shutdown_start");
             state.scheduler().shutdown();
@@ -224,8 +253,8 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
         trace_shutdown("clear_asyncio_queue_state");
         asyncio_queue_clear_state(_py);
     }
-    trace_shutdown("clear_exception_state");
-    clear_exception_state(_py);
+    trace_shutdown("clear_thread_exception");
+    clear_thread_exception_for_teardown(_py);
     trace_shutdown("run_atexit_callbacks");
     crate::builtins::atexit::atexit_run_exitfuncs_teardown(_py);
     trace_shutdown("clear_weakref_runtime_state");
@@ -246,6 +275,11 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     c_api_module_clear_state(_py, state);
     trace_shutdown("clear_runtime_extension_states");
     runtime_extension_states_clear_and_drop(state);
+    // Break class graph cycles while bases, MROs, dicts, interned names, and
+    // type caches are still valid. The anchor refs remain live until the final
+    // release phase after all consumers have drained.
+    trace_shutdown("builtin_classes_break_cycles");
+    builtin_classes_break_cycles(_py, state);
     trace_shutdown("clear_module_cache");
     clear_module_cache(_py, state);
     trace_shutdown("clear_modules_runtime_state");
@@ -426,6 +460,8 @@ fn clear_async_hang_probe(state: &RuntimeState) {
 
 fn clear_thread_local_state(_py: &PyToken<'_>) {
     crate::gil_assert();
+    clear_thread_exception_for_teardown(_py);
+    let _ = CURRENT_EXCEPTION_PENDING.try_with(|pending| pending.set(false));
     let _ = CONTEXT_STACK.try_with(|stack| {
         let mut stack = stack.borrow_mut();
         let old = std::mem::take(&mut *stack);
@@ -488,12 +524,12 @@ fn clear_thread_local_state(_py: &PyToken<'_>) {
     let _ = TASK_RAISE_ACTIVE.try_with(|flag| flag.set(false));
     let _ = BLOCK_ON_TASK.try_with(|cell| cell.set(std::ptr::null_mut()));
     let _ = CURRENT_TASK.try_with(|cell| cell.set(std::ptr::null_mut()));
+    let _ = CURRENT_EXCEPTION_PENDING.try_with(|pending| pending.set(false));
     let _ = CURRENT_TOKEN.try_with(|cell| cell.set(1));
     let _ = PARSE_ARENA.try_with(|arena| arena.borrow_mut().clear());
     clear_attr_tls_caches(_py);
     clear_const_data_literal_caches(_py);
     clear_utf8_count_tls();
-    let _ = GIL_DEPTH.try_with(|depth| depth.set(0));
 }
 
 fn clear_code_slots(_py: &PyToken<'_>, state: &RuntimeState) {
@@ -551,9 +587,7 @@ fn clear_task_state(_py: &PyToken<'_>, state: &RuntimeState) {
         let old = std::mem::take(&mut *guard);
         old.into_values().map(|ptr| ptr.0).collect::<Vec<_>>()
     };
-    state
-        .task_last_exception_pending
-        .store(false, AtomicOrdering::Relaxed);
+    let _ = CURRENT_EXCEPTION_PENDING.try_with(|pending| pending.set(false));
     for ptr in pointers {
         let bits = MoltObject::from_ptr(ptr).bits();
         dec_ref_bits(_py, bits);
@@ -834,47 +868,18 @@ fn clear_utf8_caches(state: &RuntimeState) {
     }
 }
 
-/// Drain all heap-backed thread-local storage.  Called from
-/// `ThreadLocalGuard::drop` after `molt_runtime_shutdown` has already
-/// completed, so we cannot acquire the GIL or touch `RuntimeState`.
-/// The only goal is to release heap memory while the global allocator
-/// is still alive, preventing a crash during Rust's TLS destructor phase.
+/// Drain the heap-backed TLS anchors initialized before `TLS_GUARD`.
+///
+/// Every other TLS key is initialized after the guard and therefore has
+/// already run its destructor when this function executes. Calling `try_with`
+/// on those keys here would initialize fresh TLS during TLS destruction,
+/// creating a second destructor wave and potentially stranding thread exit.
 fn drain_heap_tls() {
     // Replace the parse arena with an empty state whose outer Vec has zero
     // capacity, so the TLS destructor has nothing to deallocate.
     let _ = PARSE_ARENA.try_with(|arena| {
         let mut arena = arena.borrow_mut();
         arena.drain();
-    });
-    // Drain remaining heap-backed TLS variables.  `clear_thread_local_state`
-    // already ran during `runtime_teardown`, but if the process exited
-    // abnormally (e.g., mid-repr, mid-exception) some of these may still
-    // hold heap allocations.  Replacing them with zero-capacity containers
-    // ensures their TLS destructors won't invoke the (possibly dead)
-    // allocator.
-    let _ = CONTEXT_STACK.try_with(|s| {
-        let _ = std::mem::take(&mut *s.borrow_mut());
-    });
-    let _ = FRAME_STACK.try_with(|s| {
-        let _ = std::mem::take(&mut *s.borrow_mut());
-    });
-    let _ = TRACE_FRAME_PUSH_STACK.try_with(|s| {
-        let _ = std::mem::take(&mut *s.borrow_mut());
-    });
-    let _ = ACTIVE_EXCEPTION_STACK.try_with(|s| {
-        let _ = std::mem::take(&mut *s.borrow_mut());
-    });
-    let _ = ACTIVE_EXCEPTION_FALLBACK.try_with(|s| {
-        let _ = std::mem::take(&mut *s.borrow_mut());
-    });
-    let _ = GENERATOR_EXCEPTION_STACKS.try_with(|s| {
-        let _ = std::mem::take(&mut *s.borrow_mut());
-    });
-    let _ = EXCEPTION_STACK.try_with(|s| {
-        let _ = std::mem::take(&mut *s.borrow_mut());
-    });
-    let _ = crate::REPR_STACK.try_with(|s| {
-        let _ = std::mem::take(&mut *s.borrow_mut());
     });
     let _ = crate::REPR_SET.try_with(|s| {
         let _ = std::mem::take(&mut *s.borrow_mut());

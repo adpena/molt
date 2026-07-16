@@ -387,9 +387,10 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     assert rendered_js_abi["runtime_export_by_import"]["molt_PyArg_ParseTuple"] == (
         "molt_PyArg_ParseTuple"
     )
-    assert rendered_js_abi["runtime_import_canonical_names"][
-        "molt_PyArg_ParseTuple"
-    ] == "PyArg_ParseTuple"
+    assert (
+        rendered_js_abi["runtime_import_canonical_names"]["molt_PyArg_ParseTuple"]
+        == "PyArg_ParseTuple"
+    )
     assert rendered_js_abi["runtime_export_by_import"]["PyType_Ready"] == (
         "molt_PyType_Ready"
     )
@@ -612,6 +613,7 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert imports["xml_element_drop"]["runtime_feature"] == "stdlib_xml"
     assert imports["statistics_mean_slice"]["runtime_feature"] == "stdlib_math"
     assert imports["statistics_stdev_slice"]["runtime_feature"] == "stdlib_math"
+    assert not any(name.startswith("sqlite3_") for name in imports)
     dual_use_reserved_imports = {"object_new_bound"}
     for reserved in data["reserved_runtime_callable"]:
         if reserved["import_name"] in dual_use_reserved_imports:
@@ -650,6 +652,8 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "def wasm_runtime_callable_import_name" not in rendered_py
     assert "def wasm_runtime_callable_arity" in rendered_py
     assert "def wasm_runtime_callable_result" in rendered_py
+    assert "molt_sqlite3_" not in rendered_rs
+    assert "molt_sqlite3_" not in rendered_py
     assert "RuntimeCallableResult::Void" in rendered_rs
     assert "ReservedRuntimeCallableSpec" in rendered_rs
     assert "RUNTIME_CALLABLE_IMPORTS" in rendered_rs
@@ -678,14 +682,20 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert '        "print" => Some(PythonBuiltinFunctionInfo {' in rendered_runtime_rs
     assert '            runtime_name: "molt_print_builtin",' in rendered_runtime_rs
     assert '            vararg: Some("args"),' in rendered_runtime_rs
-    assert '            kwonly_params: &["sep", "end", "file", "flush"],' in rendered_runtime_rs
+    assert (
+        '            kwonly_params: &["sep", "end", "file", "flush"],'
+        in rendered_runtime_rs
+    )
     assert (
         '            kw_defaults: &[("sep", GeneratedBuiltinDefaultValue::Str(" ")), '
         r'("end", GeneratedBuiltinDefaultValue::Str("\n")), '
         '("file", GeneratedBuiltinDefaultValue::None), '
         '("flush", GeneratedBuiltinDefaultValue::Bool(false))],'
     ) in rendered_runtime_rs
-    assert "pub(crate) const PYTHON_BUILTIN_FUNCTION_COUNT: usize = 41;" in rendered_runtime_rs
+    assert (
+        "pub(crate) const PYTHON_BUILTIN_FUNCTION_COUNT: usize = 41;"
+        in rendered_runtime_rs
+    )
     assert "RUNTIME_VOID_CALLABLE_NAMES" not in rendered_runtime_rs
     assert "VOID_CALLABLE_TARGETS" not in rendered_runtime_rs
     assert "crate::intrinsics::resolve_symbol" not in rendered_runtime_rs
@@ -752,14 +762,14 @@ def test_wasm_runtime_callable_resolver_is_app_local_in_production() -> None:
     registry = (ROOT / "runtime/molt-runtime/src/intrinsics/registry.rs").read_text(
         encoding="utf-8"
     )
-    intrinsics_mod = (
-        ROOT / "runtime/molt-runtime/src/intrinsics/mod.rs"
-    ).read_text(encoding="utf-8")
+    intrinsics_mod = (ROOT / "runtime/molt-runtime/src/intrinsics/mod.rs").read_text(
+        encoding="utf-8"
+    )
 
     assert "#[cfg(test)]\nuse crate::intrinsics::generated::resolve_symbol;" in registry
-    assert "#[cfg(any(target_arch = \"wasm32\", test))]" not in registry
-    assert "#[cfg(not(any(target_arch = \"wasm32\", test)))]" not in registry
-    assert "pub extern \"C\" fn molt_set_app_callable_resolver" in registry
+    assert '#[cfg(any(target_arch = "wasm32", test))]' not in registry
+    assert '#[cfg(not(any(target_arch = "wasm32", test)))]' not in registry
+    assert 'pub extern "C" fn molt_set_app_callable_resolver' in registry
     assert "pub(crate) fn try_app_resolve_runtime_callable" in registry
     assert "try_app_resolve_symbol(spec.symbol)" in registry
     assert "pub(crate) use registry::try_app_resolve_symbol;" in intrinsics_mod

@@ -24,6 +24,8 @@ from pathlib import Path
 from molt._runtime_feature_gates import (
     LINK_AFFECTING_FEATURES,
     RUNTIME_FEATURE_GATES,
+    link_affecting_features_unsupported_on_target,
+    runtime_symbol_available_on_target,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -90,6 +92,21 @@ def test_link_affecting_features_match_runtime_crate_ground_truth() -> None:
 def test_link_affecting_is_subset_of_gate_table_features() -> None:
     gate_features = {feature for _prefix, feature in RUNTIME_FEATURE_GATES}
     assert LINK_AFFECTING_FEATURES <= gate_features
+
+
+def test_sqlite_target_availability_is_generated_for_profiles_and_admission() -> None:
+    assert runtime_symbol_available_on_target(
+        "molt_sqlite3_connect", target_triple="x86_64-unknown-linux-gnu"
+    )
+    assert not runtime_symbol_available_on_target(
+        "molt_sqlite3_connect", target_triple="wasm32-wasip1"
+    )
+    assert not runtime_symbol_available_on_target(
+        "molt_sqlite3_connect", target_triple="wasm32-unknown-unknown"
+    )
+    assert link_affecting_features_unsupported_on_target("wasm32-wasip1") == frozenset(
+        {"sqlite"}
+    )
 
 
 def test_ast_feature_is_link_affecting() -> None:

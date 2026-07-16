@@ -126,6 +126,7 @@ def _run_backend_pipeline(
         target_python=prepared_build_config.target_python,
         stdlib_profile=stdlib_profile,
         target=target,
+        target_triple=output_layout.target_triple,
         native_artifact_plan=native_artifact_plan,
     )
     if prepared_build_preamble.diagnostics_enabled:

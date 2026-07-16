@@ -101,6 +101,38 @@ pub(crate) fn current_task_ptr() -> *mut u8 {
     CURRENT_TASK.with(|cell| cell.get())
 }
 
+/// Install one execution-context owner on the current native thread and keep
+/// the exception fast byte synchronized with that exact owner.
+pub(crate) fn replace_current_task(_py: &PyToken<'_>, task_ptr: *mut u8) -> *mut u8 {
+    let previous = CURRENT_TASK.with(|cell| cell.replace(task_ptr));
+    crate::sync_current_exception_pending(_py, task_ptr);
+    previous
+}
+
+pub(crate) struct CurrentTaskScope {
+    previous: *mut u8,
+}
+
+impl CurrentTaskScope {
+    pub(crate) fn enter(py: &PyToken<'_>, task_ptr: *mut u8) -> Self {
+        Self {
+            previous: replace_current_task(py, task_ptr),
+        }
+    }
+
+    pub(crate) fn previous(&self) -> *mut u8 {
+        self.previous
+    }
+}
+
+impl Drop for CurrentTaskScope {
+    fn drop(&mut self) {
+        with_gil(|py| {
+            replace_current_task(&py, self.previous);
+        });
+    }
+}
+
 pub(crate) fn current_task_key() -> Option<PtrSlot> {
     // Use try_with to avoid panicking during TLS destruction (e.g.,
     // when exception_pending is called from ThreadLocalGuard::drop).
@@ -402,11 +434,8 @@ impl MoltScheduler {
                     let _gil = GilGuard::new();
                     let _py = _gil.token();
                     let _py = &_py;
-                    let prev_task = CURRENT_TASK.with(|cell| {
-                        let prev = cell.get();
-                        cell.set(task_ptr);
-                        prev
-                    });
+                    let task_scope = CurrentTaskScope::enter(_py, task_ptr);
+                    let prev_task = task_scope.previous();
                     {
                         let _guard = task_queue_lock().lock().unwrap();
                         unsafe {
@@ -507,7 +536,7 @@ impl MoltScheduler {
                             );
                         }
                     }
-                    CURRENT_TASK.with(|cell| cell.set(prev_task));
+                    drop(task_scope);
                 }
                 if poll_fn_addr == 0 && async_trace_enabled() {
                     eprintln!(
@@ -548,11 +577,8 @@ impl MoltScheduler {
                     let _gil = GilGuard::new();
                     let _py = _gil.token();
                     let _py = &_py;
-                    let prev_task = CURRENT_TASK.with(|cell| {
-                        let prev = cell.get();
-                        cell.set(task_ptr);
-                        prev
-                    });
+                    let task_scope = CurrentTaskScope::enter(_py, task_ptr);
+                    let prev_task = task_scope.previous();
                     {
                         let _guard = task_queue_lock().lock().unwrap();
                         let header = header_from_obj_ptr(task_ptr);
@@ -658,7 +684,7 @@ impl MoltScheduler {
                             );
                         }
                     }
-                    CURRENT_TASK.with(|cell| cell.set(prev_task));
+                    drop(task_scope);
                 }
                 if poll_fn_addr == 0 {
                     task_clear_queue_flags(task_ptr);
@@ -946,6 +972,7 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
         let (
             task_ptr,
             poll_fn_addr,
+            task_scope,
             prev_task,
             prev_token,
             caller_depth,
@@ -969,11 +996,8 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
             if poll_fn_addr == 0 {
                 return 0;
             }
-            let prev_task = CURRENT_TASK.with(|cell| {
-                let prev = cell.get();
-                cell.set(task_ptr);
-                prev
-            });
+            let task_scope = CurrentTaskScope::enter(_py, task_ptr);
+            let prev_task = task_scope.previous();
             let token = ensure_task_token(_py, task_ptr, current_token_id());
             let prev_token = set_current_token(_py, token);
             let caller_depth = exception_stack_depth();
@@ -1006,6 +1030,7 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
             (
                 task_ptr,
                 poll_fn_addr,
+                task_scope,
                 prev_task,
                 prev_token,
                 caller_depth,
@@ -1198,7 +1223,7 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
                     continue;
                 }
                 if let Some(spec) = wait_spec {
-                    let _release = GilReleaseGuard::new();
+                    let _release = GilReleaseGuard::suspend();
                     #[cfg(not(target_arch = "wasm32"))]
                     match spec {
                         BlockOnWaitSpec::Io {
@@ -1239,7 +1264,7 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
                 };
                 let spawned = spawned_task_count();
                 if let Some(deadline) = refreshed_deadline {
-                    let _release = GilReleaseGuard::new();
+                    let _release = GilReleaseGuard::suspend();
                     let now = Instant::now();
                     if deadline > now {
                         // Cap block_on sleeps so external wakeups (io/thread/process/task) are
@@ -1255,7 +1280,7 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
                         std::thread::yield_now();
                     }
                 } else {
-                    let _release = GilReleaseGuard::new();
+                    let _release = GilReleaseGuard::suspend();
                     std::thread::sleep(BLOCK_ON_MIN_SLEEP);
                 }
                 continue;
@@ -1340,17 +1365,11 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
             exception_context_fallback_pop(_py);
             trace_step("exception_context_fallback_pop");
             // Move any pending exception off the block_on task and onto the caller/global slot.
-            let task_exc_slot = {
-                let state = runtime_state(_py);
-                let mut guard = task_last_exceptions(_py).lock().unwrap();
-                let slot = guard.remove(&PtrSlot(task_ptr));
-                if guard.is_empty() {
-                    state
-                        .task_last_exception_pending
-                        .store(false, AtomicOrdering::Relaxed);
-                }
-                slot
-            };
+            let task_exc_slot = task_last_exceptions(_py)
+                .lock()
+                .unwrap()
+                .remove(&PtrSlot(task_ptr));
+            crate::CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(false));
             trace_step("task_exc_slot_taken");
             let pending_bits = if let Some(exc_slot) = task_exc_slot {
                 MoltObject::from_ptr(exc_slot.0).bits()
@@ -1361,19 +1380,17 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
             };
             trace_step("pending_bits_selected");
             if let Some(exc_ptr) = maybe_ptr_from_bits(pending_bits) {
-                let restore_task = CURRENT_TASK.with(|cell| {
-                let restore = cell.get();
-                if debug_current_task() && prev_task.is_null() && !restore.is_null() {
+                let restore_task = current_task_ptr();
+                if debug_current_task() && prev_task.is_null() && !restore_task.is_null() {
                     eprintln!(
                         "molt task trace: block_on temp restore null current=0x{:x} task=0x{:x}",
-                        restore as usize, task_ptr as usize
+                        restore_task as usize, task_ptr as usize
                     );
                 }
-                cell.set(prev_task);
-                restore
-            });
+                let caller_scope = CurrentTaskScope::enter(_py, prev_task);
                 record_exception(_py, exc_ptr);
-                CURRENT_TASK.with(|cell| cell.set(restore_task));
+                drop(caller_scope);
+                debug_assert_eq!(current_task_ptr(), restore_task);
                 trace_step("record_exception");
             }
             if !obj_from_bits(pending_bits).is_none() {
@@ -1408,7 +1425,7 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
                     );
                 }
             }
-            CURRENT_TASK.with(|cell| cell.set(prev_task));
+            drop(task_scope);
             trace_step("restore_current_task");
             let pending_after = exception_pending(_py);
             let handlers_active = exception_handler_active();

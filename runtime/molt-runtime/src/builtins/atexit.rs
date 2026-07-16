@@ -5,11 +5,10 @@ use crate::state::runtime_state::{
 };
 use crate::{
     MoltObject, PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_FUNCTION, bound_method_func_bits,
-    bound_method_self_bits, clear_exception, clear_exception_state, dec_ref_bits,
-    exception_pending, function_closure_bits, function_fn_ptr, inc_ref_bits, int_bits_from_i64,
-    is_truthy, molt_call_bind, molt_callargs_expand_kwstar, molt_callargs_expand_star,
-    molt_callargs_new, molt_eq, molt_is_callable, obj_from_bits, object_type_id, raise_exception,
-    runtime_state,
+    bound_method_self_bits, clear_exception, dec_ref_bits, exception_pending,
+    function_closure_bits, function_fn_ptr, inc_ref_bits, int_bits_from_i64, is_truthy,
+    molt_call_bind, molt_callargs_expand_kwstar, molt_callargs_expand_star, molt_callargs_new,
+    molt_eq, molt_is_callable, obj_from_bits, object_type_id, raise_exception, runtime_state,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -644,14 +643,16 @@ fn atexit_clear_impl(_py: &PyToken<'_>) -> u64 {
 }
 
 fn atexit_run_exitfuncs_impl(_py: &PyToken<'_>) -> u64 {
+    #[cfg(test)]
+    crate::state::runtime_state::run_finalizing_atexit_test_hook();
     loop {
         let callback = {
             let mut registry = runtime_state(_py).exit_registry.lock().unwrap();
             let callback = registry.callbacks.pop();
-            if let Some(callback) = callback.as_ref() {
-                if callback.kind == AtexitCallbackKind::WeakrefFinalizerRunner {
-                    registry.weakref_runner_state = WeakrefRunnerState::Cleared;
-                }
+            if let Some(callback) = callback.as_ref()
+                && callback.kind == AtexitCallbackKind::WeakrefFinalizerRunner
+            {
+                registry.weakref_runner_state = WeakrefRunnerState::Cleared;
             }
             callback
         };
@@ -706,7 +707,6 @@ pub(crate) fn atexit_run_exitfuncs_teardown(_py: &PyToken<'_>) {
     }
     if exception_pending(_py) {
         clear_exception(_py);
-        clear_exception_state(_py);
     }
 }
 
@@ -747,7 +747,7 @@ mod tests {
         let mut growths = 0;
         for len in 0..10_000 {
             if let Some(next) = growth_capacity_for_insert(len, capacity).expect("growth") {
-                assert!(next >= len + 1);
+                assert!(next > len);
                 assert!(next >= MIN_EXIT_REGISTRY_CAPACITY);
                 capacity = next;
                 growths += 1;

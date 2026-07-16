@@ -519,69 +519,61 @@ unsafe fn validate_dataclass_class_target(
 unsafe fn refresh_dataclass_class_metadata(_py: &PyToken<'_>, ptr: *mut u8, class_bits: u64) {
     unsafe {
         let desc_ptr = dataclass_desc_ptr(ptr);
-        if !desc_ptr.is_null() {
-            if class_bits != 0 {
-                let class_obj = obj_from_bits(class_bits);
-                if let Some(class_ptr) = class_obj.as_ptr()
-                    && object_type_id(class_ptr) == TYPE_ID_TYPE
-                {
-                    (*desc_ptr).allows_dict = if (*desc_ptr).slots {
-                        crate::builtins::attr::class_slots_info(_py, class_ptr)
-                            .is_some_and(|info| info.allows_dict)
-                    } else {
-                        true
-                    };
-                    let flags_name =
-                        attr_name_bits_from_bytes(_py, b"__molt_dataclass_field_flags__");
-                    if let Some(flags_name) = flags_name {
-                        if let Some(flags_bits) =
-                            class_attr_lookup_raw_mro(_py, class_ptr, flags_name)
-                        {
-                            let flags_obj = obj_from_bits(flags_bits);
-                            let flags_ptr = flags_obj.as_ptr();
-                            if let Some(flags_ptr) = flags_ptr {
-                                let type_id = object_type_id(flags_ptr);
-                                if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
-                                    let out = crate::object::seq_access::with_borrowed(
-                                        flags_ptr,
-                                        |elems| {
-                                            let mut out = Vec::with_capacity(elems.len());
-                                            for &elem_bits in elems {
-                                                let elem_obj = obj_from_bits(elem_bits);
-                                                let Some(val) = to_i64(elem_obj) else {
-                                                    return Vec::new();
-                                                };
-                                                if val < 0 || val > u8::MAX as i64 {
-                                                    return Vec::new();
-                                                }
-                                                out.push(val as u8);
+        if !desc_ptr.is_null() && class_bits != 0 {
+            let class_obj = obj_from_bits(class_bits);
+            if let Some(class_ptr) = class_obj.as_ptr()
+                && object_type_id(class_ptr) == TYPE_ID_TYPE
+            {
+                (*desc_ptr).allows_dict = if (*desc_ptr).slots {
+                    crate::builtins::attr::class_slots_info(_py, class_ptr)
+                        .is_some_and(|info| info.allows_dict)
+                } else {
+                    true
+                };
+                let flags_name = attr_name_bits_from_bytes(_py, b"__molt_dataclass_field_flags__");
+                if let Some(flags_name) = flags_name {
+                    if let Some(flags_bits) = class_attr_lookup_raw_mro(_py, class_ptr, flags_name)
+                    {
+                        let flags_obj = obj_from_bits(flags_bits);
+                        let flags_ptr = flags_obj.as_ptr();
+                        if let Some(flags_ptr) = flags_ptr {
+                            let type_id = object_type_id(flags_ptr);
+                            if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                                let out =
+                                    crate::object::seq_access::with_borrowed(flags_ptr, |elems| {
+                                        let mut out = Vec::with_capacity(elems.len());
+                                        for &elem_bits in elems {
+                                            let elem_obj = obj_from_bits(elem_bits);
+                                            let Some(val) = to_i64(elem_obj) else {
+                                                return Vec::new();
+                                            };
+                                            if val < 0 || val > u8::MAX as i64 {
+                                                return Vec::new();
                                             }
-                                            out
-                                        },
-                                    );
-                                    if !out.is_empty() {
-                                        (*desc_ptr).field_flags = out;
-                                    }
+                                            out.push(val as u8);
+                                        }
+                                        out
+                                    });
+                                if !out.is_empty() {
+                                    (*desc_ptr).field_flags = out;
                                 }
                             }
                         }
-                        dec_ref_bits(_py, flags_name);
                     }
-                    let hash_name = attr_name_bits_from_bytes(_py, b"__molt_dataclass_hash__");
-                    if let Some(hash_name) = hash_name {
-                        if let Some(hash_bits) =
-                            class_attr_lookup_raw_mro(_py, class_ptr, hash_name)
+                    dec_ref_bits(_py, flags_name);
+                }
+                let hash_name = attr_name_bits_from_bytes(_py, b"__molt_dataclass_hash__");
+                if let Some(hash_name) = hash_name {
+                    if let Some(hash_bits) = class_attr_lookup_raw_mro(_py, class_ptr, hash_name) {
+                        let hash_obj = obj_from_bits(hash_bits);
+                        if let Some(val) = to_i64(hash_obj)
+                            && val >= 0
+                            && val <= u8::MAX as i64
                         {
-                            let hash_obj = obj_from_bits(hash_bits);
-                            if let Some(val) = to_i64(hash_obj)
-                                && val >= 0
-                                && val <= u8::MAX as i64
-                            {
-                                (*desc_ptr).hash_mode = val as u8;
-                            }
+                            (*desc_ptr).hash_mode = val as u8;
                         }
-                        dec_ref_bits(_py, hash_name);
                     }
+                    dec_ref_bits(_py, hash_name);
                 }
             }
         }

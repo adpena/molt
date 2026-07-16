@@ -1462,14 +1462,11 @@ fn bytes_collect_from_iter(
             if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
                 return None;
             }
-            let Some((val_bits, done_bits)) =
+            let (val_bits, done_bits) =
                 crate::object::seq_access::with_immutable_tuple_slice(pair_ptr, |items| {
                     items.first().copied().zip(items.get(1).copied())
                 })
-                .flatten()
-            else {
-                return None;
-            };
+                .flatten()?;
             if is_truthy(_py, obj_from_bits(done_bits)) {
                 break;
             }

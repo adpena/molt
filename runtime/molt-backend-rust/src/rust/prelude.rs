@@ -350,9 +350,7 @@ impl RustBackend {
             "    clippy::useless_vec,\n",
             ")]\n\n",
         ));
-        if !self.use_crate {
-            self.output.push_str("use std::sync::Arc;\n\n");
-        }
+        self.output.push_str("use std::sync::Arc;\n\n");
     }
 
     pub(super) fn emit_prelude_conditional(&mut self, func_body: &str) {
@@ -429,10 +427,14 @@ impl RustBackend {
             "fn molt_int(x: &MoltValue) -> i64 {\n",
             "    match x {\n",
             "        MoltValue::Int(n) => *n,\n",
-            "        MoltValue::Float(f) => *f as i64,\n",
+            "        MoltValue::Float(f) => {\n",
+            "            if f.is_nan() { panic!(\"ValueError: cannot convert float NaN to integer\") }\n",
+            "            if !f.is_finite() || *f >= 9223372036854775808.0 || *f < -9223372036854775808.0 { panic!(\"OverflowError: float too large to convert to int\") }\n",
+            "            f.trunc() as i64\n",
+            "        }\n",
             "        MoltValue::Bool(b) => *b as i64,\n",
-            "        MoltValue::Str(s) => s.trim().parse::<i64>().unwrap_or(0),\n",
-            "        _ => 0,\n",
+            "        MoltValue::Str(s) => s.trim().parse::<i64>().unwrap_or_else(|_| panic!(\"ValueError: invalid literal for int(): {s}\")),\n",
+            "        _ => panic!(\"TypeError: int() argument must be a string or a number\"),\n",
             "    }\n",
             "}\n\n",
             "fn molt_float(x: &MoltValue) -> f64 {\n",
@@ -440,9 +442,17 @@ impl RustBackend {
             "        MoltValue::Float(f) => *f,\n",
             "        MoltValue::Int(n) => *n as f64,\n",
             "        MoltValue::Bool(b) => *b as i64 as f64,\n",
-            "        MoltValue::Str(s) => s.trim().parse::<f64>().unwrap_or(0.0),\n",
-            "        _ => 0.0,\n",
+            "        MoltValue::Str(s) => s.trim().parse::<f64>().unwrap_or_else(|_| panic!(\"ValueError: could not convert string to float: {s}\")),\n",
+            "        _ => panic!(\"TypeError: float() argument must be a string or a number\"),\n",
             "    }\n",
+            "}\n\n",
+            "fn molt_int_add(a: i64, b: i64) -> i64 { a.checked_add(b).unwrap_or_else(|| panic!(\"OverflowError: Rust backend integer addition exceeds i64 representation\")) }\n",
+            "fn molt_int_sub(a: i64, b: i64) -> i64 { a.checked_sub(b).unwrap_or_else(|| panic!(\"OverflowError: Rust backend integer subtraction exceeds i64 representation\")) }\n",
+            "fn molt_int_mul(a: i64, b: i64) -> i64 { a.checked_mul(b).unwrap_or_else(|| panic!(\"OverflowError: Rust backend integer multiplication exceeds i64 representation\")) }\n",
+            "fn molt_int_neg(a: i64) -> i64 { a.checked_neg().unwrap_or_else(|| panic!(\"OverflowError: Rust backend integer negation exceeds i64 representation\")) }\n",
+            "fn molt_int_pow(a: i64, b: i64) -> i64 {\n",
+            "    let exponent = u32::try_from(b).unwrap_or_else(|_| panic!(\"OverflowError: Rust backend integer exponent is not representable\"));\n",
+            "    a.checked_pow(exponent).unwrap_or_else(|| panic!(\"OverflowError: Rust backend integer power exceeds i64 representation\"))\n",
             "}\n\n",
         ));
 
@@ -564,7 +574,7 @@ impl RustBackend {
                 "        MoltValue::Str(s) => s.chars().count() as i64,\n",
                 "        MoltValue::List(v) => v.len() as i64,\n",
                 "        MoltValue::Dict(d) => d.len() as i64,\n",
-                "        _ => 0,\n",
+                "        _ => panic!(\"TypeError: object has no len()\"),\n",
                 "    };\n",
                 "    MoltValue::Int(n)\n",
                 "}\n\n",
@@ -575,11 +585,12 @@ impl RustBackend {
         if used("molt_range(") || used("molt_builtin_func(") {
             self.output.push_str(concat!(
                 "fn molt_range(start: i64, stop: i64, step: i64) -> MoltValue {\n",
+                "    if step == 0 { panic!(\"ValueError: range() arg 3 must not be zero\") }\n",
                 "    let mut result = Vec::new();\n",
                 "    let mut i = start;\n",
                 "    while (step > 0 && i < stop) || (step < 0 && i > stop) {\n",
                 "        result.push(MoltValue::Int(i));\n",
-                "        i += step;\n",
+                "        i = i.checked_add(step).unwrap_or_else(|| panic!(\"OverflowError: Rust backend range exceeds i64 representation\"));\n",
                 "    }\n",
                 "    MoltValue::List(result)\n",
                 "}\n\n",
@@ -591,7 +602,7 @@ impl RustBackend {
             self.output.push_str(concat!(
                 "fn molt_add(a: MoltValue, b: MoltValue) -> MoltValue {\n",
                 "    match (&a, &b) {\n",
-                "        (MoltValue::Int(x), MoltValue::Int(y)) => MoltValue::Int(x.wrapping_add(*y)),\n",
+                "        (MoltValue::Int(x), MoltValue::Int(y)) => MoltValue::Int(molt_int_add(*x, *y)),\n",
                 "        (MoltValue::Float(x), MoltValue::Float(y)) => MoltValue::Float(x + y),\n",
                 "        (MoltValue::Int(x), MoltValue::Float(y)) => MoltValue::Float(*x as f64 + y),\n",
                 "        (MoltValue::Float(x), MoltValue::Int(y)) => MoltValue::Float(x + *y as f64),\n",
@@ -599,7 +610,7 @@ impl RustBackend {
                 "        (MoltValue::List(x), MoltValue::List(y)) => {\n",
                 "            let mut v = x.clone(); v.extend_from_slice(y); MoltValue::List(v)\n",
                 "        }\n",
-                "        _ => MoltValue::Int(molt_int(&a).wrapping_add(molt_int(&b))),\n",
+                "        _ => MoltValue::Int(molt_int_add(molt_int(&a), molt_int(&b))),\n",
                 "    }\n",
                 "}\n\n",
             ));
@@ -608,11 +619,11 @@ impl RustBackend {
             self.output.push_str(concat!(
                 "fn molt_sub(a: MoltValue, b: MoltValue) -> MoltValue {\n",
                 "    match (&a, &b) {\n",
-                "        (MoltValue::Int(x), MoltValue::Int(y)) => MoltValue::Int(x.wrapping_sub(*y)),\n",
+                "        (MoltValue::Int(x), MoltValue::Int(y)) => MoltValue::Int(molt_int_sub(*x, *y)),\n",
                 "        (MoltValue::Float(x), MoltValue::Float(y)) => MoltValue::Float(x - y),\n",
                 "        (MoltValue::Int(x), MoltValue::Float(y)) => MoltValue::Float(*x as f64 - y),\n",
                 "        (MoltValue::Float(x), MoltValue::Int(y)) => MoltValue::Float(x - *y as f64),\n",
-                "        _ => MoltValue::Int(molt_int(&a).wrapping_sub(molt_int(&b))),\n",
+                "        _ => MoltValue::Int(molt_int_sub(molt_int(&a), molt_int(&b))),\n",
                 "    }\n",
                 "}\n\n",
             ));
@@ -621,12 +632,12 @@ impl RustBackend {
             self.output.push_str(concat!(
                 "fn molt_mul(a: MoltValue, b: MoltValue) -> MoltValue {\n",
                 "    match (&a, &b) {\n",
-                "        (MoltValue::Int(x), MoltValue::Int(y)) => MoltValue::Int(x.wrapping_mul(*y)),\n",
+                "        (MoltValue::Int(x), MoltValue::Int(y)) => MoltValue::Int(molt_int_mul(*x, *y)),\n",
                 "        (MoltValue::Float(x), MoltValue::Float(y)) => MoltValue::Float(x * y),\n",
                 "        (MoltValue::Int(x), MoltValue::Float(y)) => MoltValue::Float(*x as f64 * y),\n",
                 "        (MoltValue::Float(x), MoltValue::Int(y)) => MoltValue::Float(x * *y as f64),\n",
-                "        (MoltValue::Str(s), MoltValue::Int(n)) => MoltValue::Str(s.repeat(*n as usize)),\n",
-                "        _ => MoltValue::Int(molt_int(&a).wrapping_mul(molt_int(&b))),\n",
+                "        (MoltValue::Str(s), MoltValue::Int(n)) => { let count = if *n <= 0 { 0 } else { usize::try_from(*n).unwrap_or_else(|_| panic!(\"OverflowError: repeated string is too long\")) }; MoltValue::Str(s.repeat(count)) },\n",
+                "        _ => MoltValue::Int(molt_int_mul(molt_int(&a), molt_int(&b))),\n",
                 "    }\n",
                 "}\n\n",
             ));
@@ -635,7 +646,7 @@ impl RustBackend {
             self.output.push_str(concat!(
                 "fn molt_div(a: MoltValue, b: MoltValue) -> MoltValue {\n",
                 "    let bv = molt_float(&b);\n",
-                "    if bv == 0.0 { return MoltValue::Float(f64::NAN); }\n",
+                "    if bv == 0.0 { panic!(\"ZeroDivisionError: division by zero\") }\n",
                 "    MoltValue::Float(molt_float(&a) / bv)\n",
                 "}\n\n",
             ));
@@ -645,11 +656,11 @@ impl RustBackend {
                 "fn molt_floor_div(a: MoltValue, b: MoltValue) -> MoltValue {\n",
                 "    match (&a, &b) {\n",
                 "        (MoltValue::Int(x), MoltValue::Int(y)) if *y != 0 => {\n",
-                "            MoltValue::Int(x.div_euclid(*y) - if (x % y != 0) && ((x < &0) != (y < &0)) { 1 } else { 0 })\n",
+                "            MoltValue::Int(x.checked_div_euclid(*y).unwrap_or_else(|| panic!(\"OverflowError: Rust backend floor division exceeds i64 representation\")))\n",
                 "        }\n",
                 "        _ => {\n",
                 "            let bv = molt_float(&b);\n",
-                "            if bv == 0.0 { return MoltValue::Float(f64::NAN); }\n",
+                "            if bv == 0.0 { panic!(\"ZeroDivisionError: division by zero\") }\n",
                 "            MoltValue::Float((molt_float(&a) / bv).floor())\n",
                 "        }\n",
                 "    }\n",
@@ -661,10 +672,11 @@ impl RustBackend {
                 "fn molt_mod(a: MoltValue, b: MoltValue) -> MoltValue {\n",
                 "    match (&a, &b) {\n",
                 "        (MoltValue::Int(x), MoltValue::Int(y)) if *y != 0 => {\n",
-                "            let r = x % y; MoltValue::Int(if r != 0 && (r < 0) != (y < &0) { r + y } else { r })\n",
+                "            MoltValue::Int(x.checked_rem_euclid(*y).unwrap_or_else(|| panic!(\"OverflowError: Rust backend modulo exceeds i64 representation\")))\n",
                 "        }\n",
                 "        _ => {\n",
                 "            let av = molt_float(&a); let bv = molt_float(&b);\n",
+                "            if bv == 0.0 { panic!(\"ZeroDivisionError: modulo by zero\") }\n",
                 "            MoltValue::Float(av - (av / bv).floor() * bv)\n",
                 "        }\n",
                 "    }\n",
@@ -676,7 +688,7 @@ impl RustBackend {
                 "fn molt_pow(a: MoltValue, b: MoltValue) -> MoltValue {\n",
                 "    match (&a, &b) {\n",
                 "        (MoltValue::Int(x), MoltValue::Int(y)) if *y >= 0 => {\n",
-                "            MoltValue::Int(x.wrapping_pow(*y as u32))\n",
+                "            MoltValue::Int(molt_int_pow(*x, *y))\n",
                 "        }\n",
                 "        _ => MoltValue::Float(molt_float(&a).powf(molt_float(&b))),\n",
                 "    }\n",
@@ -687,9 +699,9 @@ impl RustBackend {
             self.output.push_str(concat!(
                 "fn molt_neg(a: MoltValue) -> MoltValue {\n",
                 "    match a {\n",
-                "        MoltValue::Int(n) => MoltValue::Int(-n),\n",
+                "        MoltValue::Int(n) => MoltValue::Int(molt_int_neg(n)),\n",
                 "        MoltValue::Float(f) => MoltValue::Float(-f),\n",
-                "        other => MoltValue::Int(-molt_int(&other)),\n",
+                "        other => MoltValue::Int(molt_int_neg(molt_int(&other))),\n",
                 "    }\n",
                 "}\n\n",
             ));
@@ -748,24 +760,47 @@ impl RustBackend {
         }
 
         // Collection helpers
+        if used("molt_get_item(") || used("molt_ord_at(") || used("molt_set_item(") {
+            self.output.push_str(concat!(
+                "fn molt_checked_index(len: usize, idx: i64, kind: &str) -> usize {\n",
+                "    let normalized = if idx < 0 { len as i64 + idx } else { idx };\n",
+                "    if normalized < 0 || normalized >= len as i64 {\n",
+                "        panic!(\"IndexError: {kind} index out of range\");\n",
+                "    }\n",
+                "    normalized as usize\n",
+                "}\n\n",
+            ));
+        }
+        if used("molt_get_item(") || used("molt_ord_at(") {
+            self.output.push_str(concat!(
+                "fn molt_checked_char(s: &str, idx: i64) -> char {\n",
+                "    let value = if idx >= 0 {\n",
+                "        usize::try_from(idx).ok().and_then(|i| s.chars().nth(i))\n",
+                "    } else {\n",
+                "        let len = s.chars().count();\n",
+                "        let i = molt_checked_index(len, idx, \"string\");\n",
+                "        s.chars().nth(i)\n",
+                "    };\n",
+                "    value.unwrap_or_else(|| panic!(\"IndexError: string index out of range\"))\n",
+                "}\n\n",
+            ));
+        }
         if used("molt_get_item(") || used("molt_ord_at(") {
             self.output.push_str(concat!(
                 "fn molt_get_item(obj: &MoltValue, key: &MoltValue) -> MoltValue {\n",
                 "    match obj {\n",
                 "        MoltValue::List(v) => {\n",
                 "            let idx = molt_int(key);\n",
-                "            let i = if idx < 0 { (v.len() as i64 + idx).max(0) as usize } else { idx as usize };\n",
-                "            v.get(i).cloned().unwrap_or(MoltValue::None)\n",
+                "            let i = molt_checked_index(v.len(), idx, \"list\");\n",
+                "            v[i].clone()\n",
                 "        }\n",
                 "        MoltValue::Dict(d) => d.iter().find(|(k, _)| molt_eq(k, key))\n",
-                "            .map(|(_, v)| v.clone()).unwrap_or(MoltValue::None),\n",
+                "            .map(|(_, v)| v.clone()).unwrap_or_else(|| panic!(\"KeyError: {}\", molt_repr_inner(key))),\n",
                 "        MoltValue::Str(s) => {\n",
                 "            let idx = molt_int(key);\n",
-                "            let chars: Vec<char> = s.chars().collect();\n",
-                "            let i = if idx < 0 { (chars.len() as i64 + idx).max(0) as usize } else { idx as usize };\n",
-                "            chars.get(i).map(|c| MoltValue::Str(c.to_string())).unwrap_or(MoltValue::None)\n",
+                "            MoltValue::Str(molt_checked_char(s, idx).to_string())\n",
                 "        }\n",
-                "        _ => MoltValue::None,\n",
+                "        _ => panic!(\"TypeError: object is not subscriptable\"),\n",
                 "    }\n",
                 "}\n\n",
             ));
@@ -776,8 +811,8 @@ impl RustBackend {
                 "    match obj {\n",
                 "        MoltValue::List(v) => {\n",
                 "            let idx = molt_int(&key);\n",
-                "            let i = if idx < 0 { (v.len() as i64 + idx).max(0) as usize } else { idx as usize };\n",
-                "            if i < v.len() { v[i] = val; }\n",
+                "            let i = molt_checked_index(v.len(), idx, \"list assignment\");\n",
+                "            v[i] = val;\n",
                 "        }\n",
                 "        MoltValue::Dict(d) => {\n",
                 "            if let Some(entry) = d.iter_mut().find(|(k, _)| molt_eq(k, &key)) {\n",
@@ -786,7 +821,7 @@ impl RustBackend {
                 "                d.push((key, val));\n",
                 "            }\n",
                 "        }\n",
-                "        _ => {}\n",
+                "        _ => panic!(\"TypeError: object does not support item assignment\"),\n",
                 "    }\n",
                 "}\n\n",
             ));
@@ -794,7 +829,7 @@ impl RustBackend {
         if used("molt_list_append(") {
             self.output.push_str(concat!(
                 "fn molt_list_append(list: &mut MoltValue, val: MoltValue) {\n",
-                "    if let MoltValue::List(v) = list { v.push(val); }\n",
+                "    if let MoltValue::List(v) = list { v.push(val); } else { panic!(\"TypeError: append target is not a list\") }\n",
                 "}\n\n",
             ));
         }
@@ -938,9 +973,9 @@ impl RustBackend {
                 "        MoltValue::List(v) => v.iter().any(|x| molt_eq(x, elem)),\n",
                 "        MoltValue::Dict(d) => d.iter().any(|(k, _)| molt_eq(k, elem)),\n",
                 "        MoltValue::Str(s) => {\n",
-                "            if let MoltValue::Str(sub) = elem { s.contains(sub.as_str()) } else { false }\n",
+                "            if let MoltValue::Str(sub) = elem { s.contains(sub.as_str()) } else { panic!(\"TypeError: string containment requires string operand\") }\n",
                 "        }\n",
-                "        _ => false,\n",
+                "        _ => panic!(\"TypeError: object is not a container\"),\n",
                 "    }\n",
                 "}\n\n",
             ));
@@ -952,10 +987,10 @@ impl RustBackend {
                 "fn molt_enumerate(t: &MoltValue, start: i64) -> MoltValue {\n",
                 "    if let MoltValue::List(v) = t {\n",
                 "        let result = v.iter().enumerate()\n",
-                "            .map(|(i, x)| MoltValue::List(vec![MoltValue::Int(start + i as i64), x.clone()]))\n",
+                "            .map(|(i, x)| { let offset = i64::try_from(i).unwrap_or_else(|_| panic!(\"OverflowError: enumerate index exceeds i64 representation\")); MoltValue::List(vec![MoltValue::Int(molt_int_add(start, offset)), x.clone()]) })\n",
                 "            .collect();\n",
                 "        MoltValue::List(result)\n",
-                "    } else { MoltValue::List(vec![]) }\n",
+                "    } else { panic!(\"TypeError: enumerate() argument must be iterable\") }\n",
                 "}\n\n",
             ));
         }
@@ -969,7 +1004,7 @@ impl RustBackend {
                 "                .collect();\n",
                 "            MoltValue::List(result)\n",
                 "        }\n",
-                "        _ => MoltValue::List(vec![]),\n",
+                "        _ => panic!(\"TypeError: zip() arguments must be iterable\"),\n",
                 "    }\n",
                 "}\n\n",
             ));
@@ -981,7 +1016,7 @@ impl RustBackend {
                 "        let mut copy = v.clone();\n",
                 "        copy.sort_by(|a, b| molt_numeric_cmp(a, b));\n",
                 "        MoltValue::List(copy)\n",
-                "    } else { t.clone() }\n",
+                "    } else { panic!(\"TypeError: sorted() argument must be iterable\") }\n",
                 "}\n\n",
             ));
         }
@@ -990,7 +1025,7 @@ impl RustBackend {
                 "fn molt_reversed(t: &MoltValue) -> MoltValue {\n",
                 "    if let MoltValue::List(v) = t {\n",
                 "        MoltValue::List(v.iter().rev().cloned().collect())\n",
-                "    } else { t.clone() }\n",
+                "    } else { panic!(\"TypeError: object is not reversible\") }\n",
                 "}\n\n",
             ));
         }
@@ -999,21 +1034,21 @@ impl RustBackend {
                 "fn molt_sum(t: &MoltValue) -> MoltValue {\n",
                 "    if let MoltValue::List(v) = t {\n",
                 "        v.iter().fold(MoltValue::Int(0), |acc, x| molt_add(acc, x.clone()))\n",
-                "    } else { MoltValue::Int(0) }\n",
+                "    } else { panic!(\"TypeError: sum() argument must be iterable\") }\n",
                 "}\n\n",
             ));
         }
         if used("molt_any(") {
             self.output.push_str(concat!(
                 "fn molt_any(t: &MoltValue) -> bool {\n",
-                "    if let MoltValue::List(v) = t { v.iter().any(|x| molt_bool(x)) } else { false }\n",
+                "    if let MoltValue::List(v) = t { v.iter().any(molt_bool) } else { panic!(\"TypeError: any() argument must be iterable\") }\n",
                 "}\n\n",
             ));
         }
         if used("molt_all(") {
             self.output.push_str(concat!(
                 "fn molt_all(t: &MoltValue) -> bool {\n",
-                "    if let MoltValue::List(v) = t { v.iter().all(|x| molt_bool(x)) } else { true }\n",
+                "    if let MoltValue::List(v) = t { v.iter().all(molt_bool) } else { panic!(\"TypeError: all() argument must be iterable\") }\n",
                 "}\n\n",
             ));
         }
@@ -1022,17 +1057,16 @@ impl RustBackend {
                 "fn molt_dict_keys(d: &MoltValue) -> MoltValue {\n",
                 "    if let MoltValue::Dict(pairs) = d {\n",
                 "        MoltValue::List(pairs.iter().map(|(k, _)| k.clone()).collect())\n",
-                "    } else { MoltValue::List(vec![]) }\n",
+                "    } else { panic!(\"TypeError: dict.keys target is not a dict\") }\n",
                 "}\n\n",
             ));
         }
         if used("molt_dict_values(") {
             self.output.push_str(concat!(
                 "fn molt_dict_values(d: &MoltValue) -> MoltValue {\n",
-                "    if let MoltValue::List(v) = d { MoltValue::List(v.clone()) }\n",
-                "    else if let MoltValue::Dict(pairs) = d {\n",
+                "    if let MoltValue::Dict(pairs) = d {\n",
                 "        MoltValue::List(pairs.iter().map(|(_, v)| v.clone()).collect())\n",
-                "    } else { MoltValue::List(vec![]) }\n",
+                "    } else { panic!(\"TypeError: dict.values target is not a dict\") }\n",
                 "}\n\n",
             ));
         }
@@ -1043,7 +1077,7 @@ impl RustBackend {
                 "        MoltValue::List(pairs.iter()\n",
                 "            .map(|(k, v)| MoltValue::List(vec![k.clone(), v.clone()]))\n",
                 "            .collect())\n",
-                "    } else { MoltValue::List(vec![]) }\n",
+                "    } else { panic!(\"TypeError: dict.items target is not a dict\") }\n",
                 "}\n\n",
             ));
         }
@@ -1056,7 +1090,7 @@ impl RustBackend {
                 "        MoltValue::List(v) => v.clone(),\n",
                 "        MoltValue::Dict(d) => d.iter().map(|(k, _)| k.clone()).collect(),\n",
                 "        MoltValue::Str(s) => s.chars().map(|c| MoltValue::Str(c.to_string())).collect(),\n",
-                "        _ => vec![],\n",
+                "        _ => panic!(\"TypeError: object is not iterable\"),\n",
                 "    }\n",
                 "}\n\n",
             ));
@@ -1167,8 +1201,9 @@ fn molt_unpack_sequence(seq: &MoltValue, expected_count: usize) -> Vec<MoltValue
         if used("molt_chr(") {
             self.output.push_str(concat!(
                 "fn molt_chr(x: &MoltValue) -> MoltValue {\n",
-                "    let n = molt_int(x) as u32;\n",
-                "    MoltValue::Str(char::from_u32(n).map(|c| c.to_string()).unwrap_or_default())\n",
+                "    let n = molt_int(x);\n",
+                "    if !(0..=0x10ffff).contains(&n) { panic!(\"ValueError: chr() arg not in range(0x110000)\") }\n",
+                "    MoltValue::Str(char::from_u32(n as u32).map(|c| c.to_string()).unwrap_or_else(|| panic!(\"ValueError: chr() arg not in range(0x110000)\")))\n",
                 "}\n\n",
             ));
         }
@@ -1176,8 +1211,11 @@ fn molt_unpack_sequence(seq: &MoltValue, expected_count: usize) -> Vec<MoltValue
             self.output.push_str(concat!(
                 "fn molt_ord(x: &MoltValue) -> MoltValue {\n",
                 "    if let MoltValue::Str(s) = x {\n",
-                "        MoltValue::Int(s.chars().next().map(|c| c as i64).unwrap_or(0))\n",
-                "    } else { MoltValue::Int(0) }\n",
+                "        let mut chars = s.chars();\n",
+                "        let ch = chars.next().unwrap_or_else(|| panic!(\"TypeError: ord() expected a character, but string of length 0 found\"));\n",
+                "        if chars.next().is_some() { panic!(\"TypeError: ord() expected a character, but string of length greater than 1 found\") }\n",
+                "        MoltValue::Int(ch as i64)\n",
+                "    } else { panic!(\"TypeError: ord() expected string of length 1\") }\n",
                 "}\n\n",
             ));
         }
