@@ -63,7 +63,6 @@ def test_run_context_preserves_explicit_root_and_session(tmp_path: Path) -> None
             "CARGO_TARGET_DIR": str(explicit_target),
             "CARGO_INCREMENTAL": "1",
             "MOLT_SESSION_ID": "caller-session",
-            "MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS": "1",
         },
         create_dirs=False,
     )
@@ -176,7 +175,6 @@ def test_run_context_prefers_healthy_external_artifact_root(tmp_path: Path) -> N
             "MOLT_EXTERNAL_ARTIFACT_ROOTS": str(external_root),
             "MOLT_EXTERNAL_MIN_FREE_GB": "0",
             "MOLT_ALLOW_C_DRIVE_ARTIFACTS": "1",
-            "MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS": "1",
             "TMPDIR": "/var/folders/example/T/",
         },
         create_dirs=True,
@@ -198,7 +196,7 @@ def test_run_context_prefers_windows_external_drive_artifact_root_by_default(
     repo_root.mkdir()
     monkeypatch.setattr(dx.os, "name", "nt")
     monkeypatch.setattr(
-        dx, "_default_windows_external_artifact_roots", lambda: (external_root,)
+        dx, "_default_windows_external_artifact_roots", lambda _root: (external_root,)
     )
     monkeypatch.setattr(dx, "_is_windows_c_drive_path", lambda _path: False)
 
@@ -231,7 +229,9 @@ def test_run_context_skips_unhealthy_windows_external_candidate(
     repo_root.mkdir()
     monkeypatch.setattr(dx.os, "name", "nt")
     monkeypatch.setattr(
-        dx, "_default_windows_external_artifact_roots", lambda: (unhealthy, healthy)
+        dx,
+        "_default_windows_external_artifact_roots",
+        lambda _root: (unhealthy, healthy),
     )
     monkeypatch.setattr(dx, "_is_windows_c_drive_path", lambda _path: False)
 
@@ -302,7 +302,6 @@ def test_run_context_prefers_external_without_rejecting_explicit_user_output_roo
         {
             "MOLT_EXT_ROOT": str(user_output_root),
             "MOLT_EXTERNAL_MIN_FREE_GB": "0",
-            "MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS": "1",
         },
         create_dirs=False,
     )
@@ -326,7 +325,6 @@ def test_run_context_require_external_artifacts_forces_candidate(
             "MOLT_REQUIRE_EXTERNAL_ARTIFACTS": "1",
             "MOLT_EXTERNAL_ARTIFACT_ROOTS": str(external_root),
             "MOLT_EXTERNAL_MIN_FREE_GB": "0",
-            "MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS": "1",
         },
         create_dirs=True,
     )
@@ -365,7 +363,6 @@ def test_run_context_rejects_explicit_c_drive_canonical_root(
                 "MOLT_EXTERNAL_ARTIFACT_ROOTS": str(external_root),
                 "MOLT_EXTERNAL_MIN_FREE_GB": "0",
                 "CARGO_TARGET_DIR": str(c_target),
-                "MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS": "1",
             },
             create_dirs=False,
         )
@@ -387,7 +384,6 @@ def test_run_context_preserves_nonambient_tmpdir_with_external_root(
             "MOLT_EXTERNAL_ARTIFACT_ROOTS": str(external_root),
             "MOLT_EXTERNAL_MIN_FREE_GB": "0",
             "MOLT_ALLOW_C_DRIVE_ARTIFACTS": "1",
-            "MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS": "1",
             "TMPDIR": str(explicit_tmp),
         },
         create_dirs=False,
@@ -408,7 +404,6 @@ def test_run_context_can_force_repo_defaults_except_explicit_keys(
             "MOLT_EXT_ROOT": str(ambient_root),
             "MOLT_CACHE": str(explicit_cache),
             "MOLT_SESSION_ID": "ambient-session",
-            "MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS": "1",
         },
         create_dirs=False,
         force_default_keys=forced_keys,
@@ -544,7 +539,6 @@ def test_run_context_env_preserves_explicit_uv_project_environment(
     explicit = tmp_path / "custom-venv"
     monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(explicit))
     monkeypatch.setenv("MOLT_ALLOW_C_DRIVE_ARTIFACTS", "1")
-    monkeypatch.setenv("MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS", "1")
 
     assert (
         run_context_env.main(
@@ -590,11 +584,11 @@ def test_dx_env_sets_uv_copy_link_mode_for_windows_exfat_root(
     tmp_path: Path,
 ) -> None:
     repo_root = tmp_path / "repo"
-    external_root = tmp_path / "external" / dx.DEFAULT_WINDOWS_EXTERNAL_ARTIFACT_DIRNAME
+    external_root = tmp_path / "external" / "Molt"
     repo_root.mkdir()
     monkeypatch.setattr(dx.os, "name", "nt")
     monkeypatch.setattr(
-        dx, "_default_windows_external_artifact_roots", lambda: (external_root,)
+        dx, "_default_windows_external_artifact_roots", lambda _root: (external_root,)
     )
     monkeypatch.setattr(dx, "_is_windows_c_drive_path", lambda _path: False)
     monkeypatch.setattr(dx, "_artifact_root_is_windows_exfat", lambda _path: True)
@@ -619,11 +613,11 @@ def test_dx_env_preserves_explicit_uv_link_mode_on_exfat_root(
     tmp_path: Path,
 ) -> None:
     repo_root = tmp_path / "repo"
-    external_root = tmp_path / "external" / dx.DEFAULT_WINDOWS_EXTERNAL_ARTIFACT_DIRNAME
+    external_root = tmp_path / "external" / "Molt"
     repo_root.mkdir()
     monkeypatch.setattr(dx.os, "name", "nt")
     monkeypatch.setattr(
-        dx, "_default_windows_external_artifact_roots", lambda: (external_root,)
+        dx, "_default_windows_external_artifact_roots", lambda _root: (external_root,)
     )
     monkeypatch.setattr(dx, "_is_windows_c_drive_path", lambda _path: False)
     monkeypatch.setattr(dx, "_artifact_root_is_windows_exfat", lambda _path: True)
@@ -686,7 +680,6 @@ PYTHONPATH = "{root}/src"
             "PATH": "/usr/bin",
             "MOLT_EXT_ROOT": str(explicit_root),
             "MOLT_ALLOW_C_DRIVE_ARTIFACTS": "1",
-            "MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS": "1",
         },
         create_dirs=False,
     )
@@ -714,124 +707,48 @@ def test_dx_project_dx_env_uses_same_key_authority(tmp_path: Path) -> None:
     assert env["PYTHONPATH"] == str(project_root.resolve() / "src")
 
 
-def test_default_windows_artifact_roots_prefers_primary_then_label_fallback(
+def test_default_windows_artifact_roots_has_no_volume_fallback(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    # C:\Molt is the primary candidate; APDataStore is a labeled fallback, and a
-    # non-preferred legacy E: volume is excluded rather than ranked behind.
+    # The checkout-family root is the only automatic Windows root. Capacity-
+    # selected volumes may be explicit outputs, but never custody by label.
     primary = tmp_path / "primary"
-    apdatastore = tmp_path / "apdatastore"
-    legacy = tmp_path / "legacy"
-    primary.mkdir()
-    apdatastore.mkdir()
-    legacy.mkdir()
-    labels = {apdatastore: "APDataStore", legacy: "BAT00_01"}
-    monkeypatch.setattr(dx, "DEFAULT_WINDOWS_PRIMARY_ARTIFACT_ROOT", primary)
-    monkeypatch.setattr(dx, "_windows_drive_roots", lambda: (apdatastore, legacy))
-    monkeypatch.setattr(dx, "_windows_volume_label", lambda root: labels.get(root))
+    repo_root = primary / "molt-src"
+    repo_root.mkdir(parents=True)
 
-    roots = dx._default_windows_external_artifact_roots()
+    roots = dx._default_windows_external_artifact_roots(repo_root)
 
-    assert roots == (
-        primary,
-        apdatastore / dx.DEFAULT_WINDOWS_EXTERNAL_ARTIFACT_DIRNAME,
-    )
+    assert roots == (primary,)
 
 
-def test_run_context_scrubs_inherited_legacy_windows_artifact_roots(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    repo_root = tmp_path / "repo"
-    primary = tmp_path / "Molt"
-    repo_root.mkdir()
-    primary.mkdir()
-    monkeypatch.setattr(dx.os, "name", "nt")
-    monkeypatch.setattr(dx, "DEFAULT_WINDOWS_PRIMARY_ARTIFACT_ROOT", primary)
-    monkeypatch.setattr(dx, "_windows_drive_roots", lambda: ())
-    monkeypatch.setattr(dx, "_is_windows_c_drive_path", lambda _path: False)
-
-    env = RunContext(
-        repo_root,
-        session_prefix="test",
-        prefer_external_artifacts=True,
-    ).canonical_env(
-        {
-            "MOLT_EXT_ROOT": r"D:\Molt",
-            "MOLT_EXTERNAL_ARTIFACT_ROOTS": r"D:\Molt",
-            "MOLT_EXTERNAL_MIN_FREE_GB": "0",
-            "CARGO_TARGET_DIR": r"D:\Molt\target\sessions\old",
-            "MOLT_DIFF_CARGO_TARGET_DIR": r"D:\Molt\target\sessions\old",
-            "MOLT_TARGET_ROOT": r"D:\Molt\target-root",
-            "UV_PROJECT_ENVIRONMENT": r"D:\Molt\tmp\uv-project-envs\old",
-            "TMPDIR": r"D:\Molt\tmp",
-            "TMP": r"D:\Molt\tmp",
-            "TEMP": r"D:\Molt\tmp",
-        },
-        create_dirs=False,
-    )
-
-    resolved = primary.resolve()
-    assert env["MOLT_EXT_ROOT"] == str(resolved)
-    assert env["CARGO_TARGET_DIR"] == str(resolved / "target")
-    assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == env["CARGO_TARGET_DIR"]
-    assert env["MOLT_TARGET_ROOT"] == str(resolved / dx.DEFAULT_TARGET_ROOT_DIRNAME)
-    assert env["UV_PROJECT_ENVIRONMENT"].startswith(
-        str(resolved / "tmp" / "uv-project-envs")
-    )
-    assert env["TMPDIR"] == str(resolved / "tmp")
-    assert env["TMP"] == env["TMPDIR"]
-    assert env["TEMP"] == env["TMPDIR"]
-
-
-def test_run_context_preserves_legacy_windows_artifact_roots_with_opt_in(
+def test_run_context_keeps_explicit_d_scratch_out_of_toolchain_custody(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
     monkeypatch.setattr(dx.os, "name", "nt")
-    monkeypatch.setattr(dx, "_default_windows_external_artifact_roots", lambda: ())
-    monkeypatch.setattr(dx, "_is_windows_c_drive_path", lambda _path: False)
-
     env = RunContext(
         repo_root,
         session_prefix="test",
         prefer_external_artifacts=True,
-    ).canonical_env(
-        {
-            "MOLT_EXT_ROOT": r"D:\Molt",
-            "MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS": "1",
-            "MOLT_EXTERNAL_MIN_FREE_GB": "0",
-            "CARGO_TARGET_DIR": r"D:\Molt\target\sessions\intentional",
-            "MOLT_DIFF_CARGO_TARGET_DIR": r"D:\Molt\target\sessions\intentional",
-            "MOLT_CACHE": r"D:\Molt\.molt_cache",
-            "TMPDIR": r"D:\Molt\tmp",
-        },
-        create_dirs=False,
-    )
+    ).canonical_env({"MOLT_EXT_ROOT": r"D:\scratch"}, create_dirs=False)
 
-    assert env["MOLT_EXT_ROOT"] == str(Path(r"D:\Molt").resolve())
-    assert env["CARGO_TARGET_DIR"] == str(
-        Path(r"D:\Molt\target\sessions\intentional").resolve()
+    assert env["MOLT_EXT_ROOT"] == str(Path(r"D:\scratch").resolve())
+    assert env["MOLT_TARGET_ROOT"] == str(
+        dx.canonical_toolchain_root(Path(dx.__file__).resolve().parents[2])
     )
-    assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == env["CARGO_TARGET_DIR"]
-    assert env["MOLT_CACHE"] == str(Path(r"D:\Molt\.molt_cache").resolve())
-    assert env["TMPDIR"] == str(Path(r"D:\Molt\tmp").resolve())
 
 
 def test_run_context_attests_selected_windows_c_artifact_root(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    repo_root = tmp_path / "repo"
     primary = tmp_path / "Molt"
-    repo_root.mkdir()
-    primary.mkdir()
+    repo_root = primary / "molt-src"
+    repo_root.mkdir(parents=True)
     monkeypatch.setattr(dx.os, "name", "nt")
-    monkeypatch.setattr(dx, "DEFAULT_WINDOWS_PRIMARY_ARTIFACT_ROOT", primary)
-    monkeypatch.setattr(dx, "_windows_drive_roots", lambda: ())
     monkeypatch.setattr(dx, "_is_windows_c_drive_path", lambda _path: True)
 
     env = RunContext(
@@ -849,15 +766,24 @@ def test_run_context_attests_selected_windows_c_artifact_root(
     assert payload["MOLT_ALLOW_C_DRIVE_ARTIFACTS"] == "1"
 
 
-def test_default_toolchain_root_is_child_of_artifact_root(tmp_path: Path) -> None:
-    molt_root = tmp_path / dx.DEFAULT_WINDOWS_EXTERNAL_ARTIFACT_DIRNAME
-    assert dx._default_toolchain_root_for_artifact_root(molt_root) == (
-        molt_root / dx.DEFAULT_TARGET_ROOT_DIRNAME
+def test_toolchain_root_is_child_of_canonical_custody_root(
+    monkeypatch, tmp_path: Path
+) -> None:
+    custody = tmp_path / "custody"
+    worktree = custody / "worktrees" / "lane"
+    worktree.mkdir(parents=True)
+    monkeypatch.setattr(dx.os, "name", "nt")
+    assert dx.canonical_toolchain_root(worktree) == (
+        custody.resolve() / dx.DEFAULT_TARGET_ROOT_DIRNAME
     )
-    other = tmp_path / "custom-root"
-    assert dx._default_toolchain_root_for_artifact_root(other) == (
-        other / dx.DEFAULT_TARGET_ROOT_DIRNAME
-    )
+
+
+def test_canonical_custody_fails_closed_on_d_worktree_family(monkeypatch) -> None:
+    monkeypatch.setattr(dx.os, "name", "nt")
+    with pytest.raises(dx.DxConfigError, match=r"forbidden drive D:"):
+        dx.canonical_molt_root(
+            Path(r"D:\Molt\worktrees\lane"), require_exists=False
+        )
 
 
 @pytest.mark.skipif(os.name != "nt", reason="drive-letter rehoming is Windows-only")
@@ -867,15 +793,23 @@ def test_should_rehome_offvolume_toolchain_root(monkeypatch) -> None:
     # Same-volume legacy sibling is still stale: the APDataStore authority is
     # D:\Molt\target-root, not the empty old D:\molt-target default.
     assert dx._should_rehome_toolchain_root(r"D:\molt-target", Path(r"D:\Molt"), {})
-    assert not dx._should_rehome_toolchain_root(
+    assert dx._should_rehome_toolchain_root(
         r"D:\Molt\target-root", Path(r"D:\Molt"), {}
     )
-    assert not dx._should_rehome_toolchain_root(
+    assert dx._should_rehome_toolchain_root(
         r"D:\custom-toolchains", Path(r"D:\Molt"), {}
     )
-    # Explicit operator opt-out preserves an intentional off-volume root.
+    # Explicit operator opt-out cannot preserve D:, but may preserve a
+    # deliberate non-poison custom toolchain location.
+    assert dx._should_rehome_toolchain_root(
+        r"D:\custom-toolchains",
+        Path(r"C:\Molt"),
+        {"MOLT_PRESERVE_TARGET_ROOT": "1"},
+    )
     assert not dx._should_rehome_toolchain_root(
-        r"E:\molt-target", Path(r"D:\Molt"), {"MOLT_PRESERVE_TARGET_ROOT": "1"}
+        r"E:\custom-toolchains",
+        Path(r"C:\Molt"),
+        {"MOLT_PRESERVE_TARGET_ROOT": "1"},
     )
 
 
@@ -885,11 +819,18 @@ def test_canonical_env_rehomes_stale_target_root_and_adds_ruff_cache(
     tmp_path: Path,
 ) -> None:
     repo_root = tmp_path / "repo"
-    external_root = tmp_path / "external" / dx.DEFAULT_WINDOWS_EXTERNAL_ARTIFACT_DIRNAME
+    external_root = tmp_path / "external" / "Molt"
+    custody_root = tmp_path / "custody"
     repo_root.mkdir()
+    custody_root.mkdir()
     monkeypatch.setattr(dx.os, "name", "nt")
     monkeypatch.setattr(
-        dx, "_default_windows_external_artifact_roots", lambda: (external_root,)
+        dx,
+        "_maintainer_toolchain_root",
+        lambda _artifact_root: custody_root / dx.DEFAULT_TARGET_ROOT_DIRNAME,
+    )
+    monkeypatch.setattr(
+        dx, "_default_windows_external_artifact_roots", lambda _root: (external_root,)
     )
     monkeypatch.setattr(dx, "_is_windows_c_drive_path", lambda _path: False)
 
@@ -900,40 +841,11 @@ def test_canonical_env_rehomes_stale_target_root_and_adds_ruff_cache(
         create_dirs=True,
     )
 
-    resolved = external_root.resolve()
-    # A stale off-volume E:\molt-target is rehomed under the selected artifact
-    # root — the legacy fallback is not honored.
-    assert env["MOLT_TARGET_ROOT"] == str(resolved / dx.DEFAULT_TARGET_ROOT_DIRNAME)
-    assert env["RUFF_CACHE_DIR"] == str(resolved / ".ruff-cache")
-
-
-@pytest.mark.skipif(os.name != "nt", reason="drive-letter rehoming is Windows-only")
-def test_canonical_env_rehomes_same_volume_legacy_target_root(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    repo_root = tmp_path / "repo"
-    external_root = tmp_path / "external" / dx.DEFAULT_WINDOWS_EXTERNAL_ARTIFACT_DIRNAME
-    legacy_sibling = external_root.parent / dx.LEGACY_WINDOWS_TARGET_ROOT_DIRNAME
-    repo_root.mkdir()
-    monkeypatch.setattr(dx.os, "name", "nt")
-    monkeypatch.setattr(
-        dx, "_default_windows_external_artifact_roots", lambda: (external_root,)
+    resolved_output = external_root.resolve()
+    assert env["MOLT_TARGET_ROOT"] == str(
+        custody_root.resolve() / dx.DEFAULT_TARGET_ROOT_DIRNAME
     )
-    monkeypatch.setattr(dx, "_is_windows_c_drive_path", lambda _path: False)
-
-    env = RunContext(
-        repo_root, session_prefix="test", prefer_external_artifacts=True
-    ).canonical_env(
-        {
-            "MOLT_EXTERNAL_MIN_FREE_GB": "0",
-            "MOLT_TARGET_ROOT": str(legacy_sibling),
-        },
-        create_dirs=True,
-    )
-
-    resolved = external_root.resolve()
-    assert env["MOLT_TARGET_ROOT"] == str(resolved / dx.DEFAULT_TARGET_ROOT_DIRNAME)
+    assert env["RUFF_CACHE_DIR"] == str(resolved_output / ".ruff-cache")
 
 
 def test_uv_project_env_is_stable_across_sessions(tmp_path: Path) -> None:

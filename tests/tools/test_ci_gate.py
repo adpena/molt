@@ -150,12 +150,9 @@ def test_check_env_seeds_canonical_artifact_roots(monkeypatch) -> None:
         monkeypatch.delenv(key, raising=False)
 
     # Pin the canonical-root resolver to its repo-local fallback so the
-    # assertions below stay deterministic on developer hosts that have an
-    # external (non-C:) artifact drive attached. development_artifact_env()
-    # prefers an external root whenever one is available; emptying the candidate
-    # set reproduces the no-external-drive CI environment, and clearing the
-    # request knobs keeps a developer's shell env from forcing external
-    # selection (or a hard external-required failure).
+    # assertions below stay deterministic when developer shell output roots are
+    # configured. Emptying the candidate set reproduces repo-local CI scratch;
+    # durable custody remains independent of this selector.
     for key in (
         "MOLT_REQUIRE_EXTERNAL_ARTIFACTS",
         "MOLT_PREFER_EXTERNAL_ARTIFACTS",
@@ -165,7 +162,7 @@ def test_check_env_seeds_canonical_artifact_roots(monkeypatch) -> None:
         "MOLT_ALLOW_C_DRIVE_ARTIFACTS",
     ):
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setattr(molt_dx, "_candidate_roots", lambda _env: ())
+    monkeypatch.setattr(molt_dx, "_candidate_roots", lambda _root, _env: ())
 
     env = module._check_env(module.Check(name="unit", tier=1, cmd=["true"]))
 
@@ -196,12 +193,6 @@ def test_check_env_preserves_explicit_artifact_roots(monkeypatch, tmp_path) -> N
     monkeypatch.setenv("MOLT_CACHE", str(cache))
     monkeypatch.setenv("MOLT_SESSION_ID", "caller-session")
     monkeypatch.setenv("CARGO_BUILD_JOBS", "1")
-    # Pytest temp roots on this workstation live under the D:\Molt fallback
-    # volume. That root is deliberately scrubbed unless the operator says the
-    # fallback is intentional, so preserve it here to test explicit-root
-    # precedence rather than stale-root rehoming.
-    monkeypatch.setenv("MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS", "1")
-
     env = module._check_env(module.Check(name="unit", tier=1, cmd=["true"]))
 
     assert env["CARGO_TARGET_DIR"] == str(target)

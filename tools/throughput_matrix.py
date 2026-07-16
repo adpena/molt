@@ -530,8 +530,8 @@ def parse_args() -> argparse.Namespace:
         "--shared-target-dir",
         help=(
             "Optional shared CARGO_TARGET_DIR for all cases. Defaults should "
-            "come from the DX-selected artifact root; on this workstation that "
-            "is APDataStore (D:\\Molt) when healthy."
+            "come from the DX-selected artifact root; on the canonical Windows "
+            "maintainer workstation that is C:\\Molt."
         ),
     )
     parser.add_argument(

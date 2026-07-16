@@ -39,7 +39,7 @@ below remains the cross-session artifact authority.
 **Obligation:**
 1. `molt_runtime.wasm` is built ONCE and reused across sessions, cached
    content-addressed on `(runtime_source_hash, target, abi, profile)` in the
-   SHARED cache (MOLT_CACHE / D:\Molt\.molt_cache), NOT the per-session target
+   SHARED cache (MOLT_CACHE / C:\Molt\.molt_cache), NOT the per-session target
    dir. A fresh session finds and reuses the warm runtime instead of recompiling.
    The app.wasm (per-program) stays session-scoped.
 2. Cargo parallelism is bounded to available memory (cap `--jobs` /
