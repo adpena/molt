@@ -108,18 +108,27 @@ unsafe fn generator_set_closed(_py: &PyToken<'_>, ptr: *mut u8, closed: bool) {
 pub(crate) unsafe fn generator_running(ptr: *mut u8) -> bool {
     unsafe {
         let header = header_from_obj_ptr(ptr);
-        ((*header).flags & HEADER_FLAG_GEN_RUNNING) != 0
+        ((*header).load_flags() & HEADER_FLAG_GEN_RUNNING) != 0
     }
 }
 
-unsafe fn generator_set_running(_py: &PyToken<'_>, ptr: *mut u8, running: bool) {
-    unsafe {
-        crate::gil_assert();
-        let header = header_from_obj_ptr(ptr);
-        if running {
-            (*header).flags |= HEADER_FLAG_GEN_RUNNING;
-        } else {
-            (*header).flags &= !HEADER_FLAG_GEN_RUNNING;
+struct GeneratorRunningGuard(*mut MoltHeader);
+
+impl GeneratorRunningGuard {
+    unsafe fn try_enter(ptr: *mut u8) -> Option<Self> {
+        unsafe {
+            let header = header_from_obj_ptr(ptr);
+            (*header)
+                .try_set_flags_unless(HEADER_FLAG_GEN_RUNNING, HEADER_FLAG_GEN_RUNNING)
+                .then_some(Self(header))
+        }
+    }
+}
+
+impl Drop for GeneratorRunningGuard {
+    fn drop(&mut self) {
+        unsafe {
+            (*self.0).take_flags(HEADER_FLAG_GEN_RUNNING);
         }
     }
 }
@@ -127,7 +136,7 @@ unsafe fn generator_set_running(_py: &PyToken<'_>, ptr: *mut u8, running: bool) 
 pub(crate) unsafe fn generator_started(ptr: *mut u8) -> bool {
     unsafe {
         let header = header_from_obj_ptr(ptr);
-        ((*header).flags & HEADER_FLAG_GEN_STARTED) != 0
+        ((*header).load_flags() & HEADER_FLAG_GEN_STARTED) != 0
     }
 }
 
@@ -202,7 +211,7 @@ unsafe fn generator_set_started(_py: &PyToken<'_>, ptr: *mut u8) {
     unsafe {
         crate::gil_assert();
         let header = header_from_obj_ptr(ptr);
-        (*header).flags |= HEADER_FLAG_GEN_STARTED;
+        (*header).fetch_or_flags(HEADER_FLAG_GEN_STARTED);
     }
 }
 
@@ -316,7 +325,7 @@ pub extern "C" fn molt_task_new(poll_fn_addr: u64, closure_size: u64, kind_bits:
                 return MoltObject::none().bits();
             }
             if is_coroutine {
-                (*header).flags |= HEADER_FLAG_COROUTINE;
+                (*header).fetch_or_flags(HEADER_FLAG_COROUTINE);
             }
             if type_id == TYPE_ID_GENERATOR && closure_size as usize >= GEN_CONTROL_SIZE {
                 *generator_slot_ptr(ptr, GEN_SEND_OFFSET) = MoltObject::none().bits();
@@ -410,9 +419,9 @@ pub extern "C" fn molt_generator_send(gen_bits: u64, send_bits: u64) -> u64 {
             if object_type_id(ptr) != TYPE_ID_GENERATOR {
                 return raise_exception::<_>(_py, "TypeError", "expected generator");
             }
-            if generator_running(ptr) {
+            let Some(_running_guard) = GeneratorRunningGuard::try_enter(ptr) else {
                 return raise_exception::<_>(_py, "ValueError", "generator already executing");
-            }
+            };
             if generator_closed(ptr) {
                 return generator_done_tuple(_py, MoltObject::none().bits());
             }
@@ -453,11 +462,9 @@ pub extern "C" fn molt_generator_send(gen_bits: u64, send_bits: u64) -> u64 {
             let prev_raise = generator_raise_active();
             set_generator_raise(true);
             generator_set_started(_py, ptr);
-            generator_set_running(_py, ptr, true);
             let state_before = object_state(ptr);
             let res = call_poll_fn(_py, poll_fn_addr, ptr);
             let state_after = object_state(ptr);
-            generator_set_running(_py, ptr, false);
             set_generator_raise(prev_raise);
             if trace {
                 eprintln!(
@@ -519,9 +526,9 @@ pub extern "C" fn molt_generator_throw(gen_bits: u64, exc_bits: u64) -> u64 {
             if object_type_id(ptr) != TYPE_ID_GENERATOR {
                 return raise_exception::<_>(_py, "TypeError", "expected generator");
             }
-            if generator_running(ptr) {
+            let Some(_running_guard) = GeneratorRunningGuard::try_enter(ptr) else {
                 return raise_exception::<_>(_py, "ValueError", "generator already executing");
-            }
+            };
             if generator_closed(ptr) {
                 return molt_raise(exc_bits);
             }
@@ -559,9 +566,7 @@ pub extern "C" fn molt_generator_throw(gen_bits: u64, exc_bits: u64) -> u64 {
             let prev_raise = generator_raise_active();
             set_generator_raise(true);
             generator_set_started(_py, ptr);
-            generator_set_running(_py, ptr, true);
             let res = call_poll_fn(_py, poll_fn_addr, ptr);
-            generator_set_running(_py, ptr, false);
             set_generator_raise(prev_raise);
             let pending = exception_pending(_py);
             let exc_bits = if pending {
@@ -612,6 +617,9 @@ unsafe fn generator_resume_bits(_py: &PyToken<'_>, gen_bits: u64) -> u64 {
         if object_type_id(ptr) != TYPE_ID_GENERATOR {
             return raise_exception::<_>(_py, "TypeError", "expected generator");
         }
+        let Some(_running_guard) = GeneratorRunningGuard::try_enter(ptr) else {
+            return raise_exception::<_>(_py, "ValueError", "generator already executing");
+        };
         if generator_closed(ptr) {
             return generator_done_tuple(_py, MoltObject::none().bits());
         }
@@ -643,9 +651,7 @@ unsafe fn generator_resume_bits(_py: &PyToken<'_>, gen_bits: u64) -> u64 {
         let prev_raise = generator_raise_active();
         set_generator_raise(true);
         generator_set_started(_py, ptr);
-        generator_set_running(_py, ptr, true);
         let res = call_poll_fn(_py, poll_fn_addr, ptr);
-        generator_set_running(_py, ptr, false);
         set_generator_raise(prev_raise);
         let exc_pending = exception_pending(_py);
         let exc_bits = if exc_pending {
@@ -744,9 +750,9 @@ pub extern "C" fn molt_generator_close(gen_bits: u64) -> u64 {
             if object_type_id(ptr) != TYPE_ID_GENERATOR {
                 return raise_exception::<_>(_py, "TypeError", "expected generator");
             }
-            if generator_running(ptr) {
+            let Some(_running_guard) = GeneratorRunningGuard::try_enter(ptr) else {
                 return raise_exception::<_>(_py, "ValueError", "generator already executing");
-            }
+            };
             if generator_closed(ptr) {
                 return MoltObject::none().bits();
             }
@@ -804,9 +810,7 @@ pub extern "C" fn molt_generator_close(gen_bits: u64) -> u64 {
             let prev_raise = generator_raise_active();
             set_generator_raise(true);
             generator_set_started(_py, ptr);
-            generator_set_running(_py, ptr, true);
             let res = call_poll_fn(_py, poll_fn_addr, ptr) as u64;
-            generator_set_running(_py, ptr, false);
             set_generator_raise(prev_raise);
             let pending = exception_pending(_py);
             let exc_bits = if pending {

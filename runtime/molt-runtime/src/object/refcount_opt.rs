@@ -1,7 +1,7 @@
 //! Container reference optimization (Monty-inspired `contains_refs`).
 //!
 //! Every list, dict, tuple, and set tracks a `HEADER_FLAG_CONTAINS_REFS` bit
-//! in its `MoltHeader.flags`.  When the container holds only primitive values
+//! in its canonical atomic `MoltHeader` flag word. When the container holds only primitive values
 //! (ints, floats, bools, None) — which is the common case — `dec_ref` cleanup
 //! can skip iterating over elements entirely.  This turns an O(n) scan into an
 //! O(1) flag check for the majority of containers.

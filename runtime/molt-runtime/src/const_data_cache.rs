@@ -92,7 +92,7 @@ fn mark_bits_immortal(bits: u64) {
     if let Some(ptr) = obj.as_ptr() {
         unsafe {
             let header = crate::object::header_from_obj_ptr(ptr);
-            (*header).flags |= crate::object::HEADER_FLAG_IMMORTAL;
+            (*header).fetch_or_flags(crate::object::HEADER_FLAG_IMMORTAL);
         }
     }
 }

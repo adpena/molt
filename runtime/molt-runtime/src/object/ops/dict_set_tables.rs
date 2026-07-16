@@ -80,7 +80,8 @@ pub(crate) extern "C" fn dict_popitem_method(self_bits: u64) -> i64 {
             let capacity = dict_table_capacity(entries.max(1));
             dict_rebuild(_py, order, hashes, table, capacity);
             if order.is_empty() {
-                (*header_from_obj_ptr(ptr)).flags &= !crate::object::HEADER_FLAG_CONTAINS_REFS;
+                (*header_from_obj_ptr(ptr))
+                    .fetch_and_flags(!crate::object::HEADER_FLAG_CONTAINS_REFS);
             }
             dec_ref_bits(_py, key_bits);
             dec_ref_bits(_py, val_bits);
@@ -2179,7 +2180,8 @@ pub(crate) unsafe fn dict_set_in_place(
             if old_bits != val_bits {
                 if crate::object::refcount_opt::is_heap_ref(val_bits) {
                     inc_ref_bits(_py, val_bits);
-                    (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
+                    (*header_from_obj_ptr(ptr))
+                        .fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
                 }
                 order[val_idx] = val_bits;
                 if crate::object::refcount_opt::is_heap_ref(old_bits) {
@@ -2218,7 +2220,7 @@ pub(crate) unsafe fn dict_set_in_place(
         if crate::object::refcount_opt::is_heap_ref(key_bits)
             || crate::object::refcount_opt::is_heap_ref(val_bits)
         {
-            (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
+            (*header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
         }
     }
 }
@@ -2263,8 +2265,8 @@ pub(crate) unsafe fn dict_set_inline_int_in_place(
                             let new_obj = obj_from_bits(val_bits);
                             if new_obj.as_ptr().is_some() {
                                 inc_ref_bits(_py, val_bits);
-                                (*header_from_obj_ptr(ptr)).flags |=
-                                    crate::object::HEADER_FLAG_CONTAINS_REFS;
+                                (*header_from_obj_ptr(ptr))
+                                    .fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
                             }
                             order[val_idx] = val_bits;
                             if old_obj.as_ptr().is_some() {
@@ -2299,7 +2301,7 @@ pub(crate) unsafe fn dict_set_inline_int_in_place(
         let val_obj = obj_from_bits(val_bits);
         if val_obj.as_ptr().is_some() {
             inc_ref_bits(_py, val_bits);
-            (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
+            (*header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
         }
         let entry_idx = order.len() / 2 - 1;
         dict_insert_entry_with_hash(_py, order, table, entry_idx, hash);
@@ -2391,7 +2393,8 @@ pub(crate) unsafe fn dict_set_in_place_preserving_pending(
                 inc_ref_bits(_py, val_bits);
                 order[val_idx] = val_bits;
                 if crate::object::refcount_opt::is_heap_ref(val_bits) {
-                    (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
+                    (*header_from_obj_ptr(ptr))
+                        .fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
                 }
                 dec_ref_bits(_py, old_bits);
             }
@@ -2442,7 +2445,7 @@ pub(crate) unsafe fn dict_set_in_place_preserving_pending(
         if crate::object::refcount_opt::is_heap_ref(key_bits)
             || crate::object::refcount_opt::is_heap_ref(val_bits)
         {
-            (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
+            (*header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
         }
     }
 }
@@ -2494,7 +2497,7 @@ pub(crate) unsafe fn set_add_in_place(
         let entry_idx = order.len() - 1;
         set_insert_entry_with_hash(_py, order, table, entry_idx, hash);
         if crate::object::refcount_opt::is_heap_ref(key_bits) {
-            (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
+            (*header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
         }
     }
 }
@@ -2683,7 +2686,7 @@ pub(crate) unsafe fn set_del_in_place(_py: &PyToken<'_>, ptr: *mut u8, key_bits:
             set_rebuild(_py, order, hashes, table, desired_capacity);
         }
         if order.is_empty() {
-            (*header_from_obj_ptr(ptr)).flags &= !crate::object::HEADER_FLAG_CONTAINS_REFS;
+            (*header_from_obj_ptr(ptr)).fetch_and_flags(!crate::object::HEADER_FLAG_CONTAINS_REFS);
         }
         dec_ref_bits(_py, key_val);
         true
@@ -2741,9 +2744,9 @@ pub(crate) unsafe fn set_replace_entries(_py: &PyToken<'_>, ptr: *mut u8, entrie
             .iter()
             .any(|&entry| crate::object::refcount_opt::is_heap_ref(entry))
         {
-            (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
+            (*header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
         } else {
-            (*header_from_obj_ptr(ptr)).flags &= !crate::object::HEADER_FLAG_CONTAINS_REFS;
+            (*header_from_obj_ptr(ptr)).fetch_and_flags(!crate::object::HEADER_FLAG_CONTAINS_REFS);
         }
         for entry in removed {
             dec_ref_bits(_py, entry);
@@ -2797,7 +2800,7 @@ pub(crate) unsafe fn dict_del_in_place(_py: &PyToken<'_>, ptr: *mut u8, key_bits
             dict_rebuild(_py, order, hashes, table, desired_capacity);
         }
         if order.is_empty() {
-            (*header_from_obj_ptr(ptr)).flags &= !crate::object::HEADER_FLAG_CONTAINS_REFS;
+            (*header_from_obj_ptr(ptr)).fetch_and_flags(!crate::object::HEADER_FLAG_CONTAINS_REFS);
         }
         for bits in removed {
             dec_ref_bits(_py, bits);
@@ -2815,7 +2818,7 @@ pub(crate) unsafe fn dict_clear_in_place(_py: &PyToken<'_>, ptr: *mut u8) {
         hashes.clear();
         let table = dict_table(ptr);
         table.clear();
-        (*header_from_obj_ptr(ptr)).flags &= !crate::object::HEADER_FLAG_CONTAINS_REFS;
+        (*header_from_obj_ptr(ptr)).fetch_and_flags(!crate::object::HEADER_FLAG_CONTAINS_REFS);
         for pair in removed.chunks_exact(2) {
             dec_ref_bits(_py, pair[0]);
             dec_ref_bits(_py, pair[1]);
@@ -2832,7 +2835,7 @@ pub(crate) unsafe fn dict_clear_in_place_shutdown(_py: &PyToken<'_>, ptr: *mut u
         hashes.clear();
         let table = dict_table(ptr);
         table.clear();
-        (*header_from_obj_ptr(ptr)).flags &= !crate::object::HEADER_FLAG_CONTAINS_REFS;
+        (*header_from_obj_ptr(ptr)).fetch_and_flags(!crate::object::HEADER_FLAG_CONTAINS_REFS);
         for pair in removed.chunks_exact(2) {
             crate::object::release_shutdown_bits(_py, pair[0]);
             crate::object::release_shutdown_bits(_py, pair[1]);

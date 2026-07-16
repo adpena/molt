@@ -30,7 +30,7 @@ impl<'a, 'py> ListMutationTxn<'a, 'py> {
             return None;
         }
         let header = unsafe { header_from_obj_ptr(ptr) };
-        if unsafe { (*header).flags } & HEADER_FLAG_HAS_ABI_VIEW == 0 {
+        if unsafe { (*header).load_flags() } & HEADER_FLAG_HAS_ABI_VIEW == 0 {
             return None;
         }
         let base = unsafe { seq_vec_ptr(ptr) };
@@ -260,9 +260,9 @@ impl<'a, 'py> ListMutationTxn<'a, 'py> {
         let header = unsafe { header_from_obj_ptr(self.ptr) };
         let retired_projection = unsafe {
             if contains_refs {
-                (*header).flags |= HEADER_FLAG_CONTAINS_REFS;
+                (*header).fetch_or_flags(HEADER_FLAG_CONTAINS_REFS);
             } else {
-                (*header).flags &= !HEADER_FLAG_CONTAINS_REFS;
+                (*header).fetch_and_flags(!HEADER_FLAG_CONTAINS_REFS);
             }
             prepared.publish()
         };
@@ -320,7 +320,8 @@ impl<'a, 'py> ListSortTxn<'a, 'py> {
             let _ = raise_exception::<u64>(py, "RuntimeError", "list storage changed before sort");
             return None;
         }
-        let has_view = unsafe { (*header_from_obj_ptr(ptr)).flags } & HEADER_FLAG_HAS_ABI_VIEW != 0;
+        let has_view =
+            unsafe { (*header_from_obj_ptr(ptr)).load_flags() } & HEADER_FLAG_HAS_ABI_VIEW != 0;
         let prepared = if has_view {
             let bits = MoltObject::from_ptr(ptr).bits();
             match molt_cpython_abi::bridge::GLOBAL_BRIDGE.detach_list_projection_for_sort(bits) {
@@ -336,7 +337,9 @@ impl<'a, 'py> ListSortTxn<'a, 'py> {
         };
         unsafe { crate::object::backing::tracked_vec_swap_contents(base, detached) };
         let sort_epoch = unsafe { crate::object::backing::tracked_vec_bump_mutation_epoch(base) };
-        unsafe { (*header_from_obj_ptr(ptr)).flags &= !HEADER_FLAG_CONTAINS_REFS };
+        unsafe {
+            (*header_from_obj_ptr(ptr)).fetch_and_flags(!HEADER_FLAG_CONTAINS_REFS);
+        }
         drop(mutation_guard);
         Some(Self {
             py,
@@ -396,9 +399,9 @@ impl<'a, 'py> ListSortTxn<'a, 'py> {
         let header = unsafe { header_from_obj_ptr(self.ptr) };
         unsafe {
             if contains_refs {
-                (*header).flags |= HEADER_FLAG_CONTAINS_REFS;
+                (*header).fetch_or_flags(HEADER_FLAG_CONTAINS_REFS);
             } else {
-                (*header).flags &= !HEADER_FLAG_CONTAINS_REFS;
+                (*header).fetch_and_flags(!HEADER_FLAG_CONTAINS_REFS);
             }
         }
         let retired_projection = self
@@ -462,7 +465,8 @@ pub(crate) unsafe fn insert_with_projection(
     if index > len {
         return false;
     }
-    let has_view = unsafe { (*header_from_obj_ptr(ptr)).flags } & HEADER_FLAG_HAS_ABI_VIEW != 0;
+    let has_view =
+        unsafe { (*header_from_obj_ptr(ptr)).load_flags() } & HEADER_FLAG_HAS_ABI_VIEW != 0;
     let prepared = if has_view {
         let bits = MoltObject::from_ptr(ptr).bits();
         let Some(prepared) = (if item_ptr.is_null() {
@@ -527,7 +531,9 @@ pub(crate) unsafe fn insert_with_projection(
         )
     };
     if item_is_heap {
-        unsafe { (*header_from_obj_ptr(ptr)).flags |= HEADER_FLAG_CONTAINS_REFS };
+        unsafe {
+            (*header_from_obj_ptr(ptr)).fetch_or_flags(HEADER_FLAG_CONTAINS_REFS);
+        }
     }
     unsafe { crate::object::backing::tracked_vec_bump_mutation_epoch(base) };
     drop(mutation_guard);
@@ -560,7 +566,7 @@ pub(crate) unsafe fn append_owned_unpublished(ptr: *mut u8, item: u64) {
     crate::gil_assert();
     if ptr.is_null()
         || unsafe { object_type_id(ptr) } != TYPE_ID_LIST
-        || unsafe { (*header_from_obj_ptr(ptr)).flags } & HEADER_FLAG_HAS_ABI_VIEW != 0
+        || unsafe { (*header_from_obj_ptr(ptr)).load_flags() } & HEADER_FLAG_HAS_ABI_VIEW != 0
     {
         eprintln!("molt fatal: owned list-builder append targeted a published or invalid list");
         std::process::abort();
@@ -581,7 +587,7 @@ pub(crate) unsafe fn append_owned_unpublished(ptr: *mut u8, item: u64) {
             usize::from(item_is_heap),
         );
         if item_is_heap {
-            (*header_from_obj_ptr(ptr)).flags |= HEADER_FLAG_CONTAINS_REFS;
+            (*header_from_obj_ptr(ptr)).fetch_or_flags(HEADER_FLAG_CONTAINS_REFS);
         }
         crate::object::backing::tracked_vec_bump_mutation_epoch(base);
     }
@@ -620,9 +626,9 @@ pub(crate) unsafe fn replace_one_transferring_displaced(
     } != 0;
     unsafe {
         if contains_refs {
-            (*header_from_obj_ptr(ptr)).flags |= HEADER_FLAG_CONTAINS_REFS;
+            (*header_from_obj_ptr(ptr)).fetch_or_flags(HEADER_FLAG_CONTAINS_REFS);
         } else {
-            (*header_from_obj_ptr(ptr)).flags &= !HEADER_FLAG_CONTAINS_REFS;
+            (*header_from_obj_ptr(ptr)).fetch_and_flags(!HEADER_FLAG_CONTAINS_REFS);
         }
         crate::object::backing::tracked_vec_bump_mutation_epoch(base);
     }
@@ -653,7 +659,8 @@ pub(crate) unsafe fn replace_one_with_projection(
     if index >= len {
         return false;
     }
-    let has_view = unsafe { (*header_from_obj_ptr(ptr)).flags } & HEADER_FLAG_HAS_ABI_VIEW != 0;
+    let has_view =
+        unsafe { (*header_from_obj_ptr(ptr)).load_flags() } & HEADER_FLAG_HAS_ABI_VIEW != 0;
     let prepared = if has_view {
         let bits = MoltObject::from_ptr(ptr).bits();
         let prepared = if item_ptr.is_null() {
@@ -705,9 +712,9 @@ pub(crate) unsafe fn replace_one_with_projection(
     } != 0;
     unsafe {
         if contains_refs {
-            (*header_from_obj_ptr(ptr)).flags |= HEADER_FLAG_CONTAINS_REFS;
+            (*header_from_obj_ptr(ptr)).fetch_or_flags(HEADER_FLAG_CONTAINS_REFS);
         } else {
-            (*header_from_obj_ptr(ptr)).flags &= !HEADER_FLAG_CONTAINS_REFS;
+            (*header_from_obj_ptr(ptr)).fetch_and_flags(!HEADER_FLAG_CONTAINS_REFS);
         }
         crate::object::backing::tracked_vec_bump_mutation_epoch(base);
     }
@@ -732,7 +739,8 @@ pub(crate) unsafe fn pop(py: &PyToken<'_>, ptr: *mut u8, index: usize) -> Option
     inc_ref_bits(py, value);
     let removed = unsafe { (&mut *base).remove(index) };
     debug_assert_eq!(removed, value);
-    let has_view = unsafe { (*header_from_obj_ptr(ptr)).flags } & HEADER_FLAG_HAS_ABI_VIEW != 0;
+    let has_view =
+        unsafe { (*header_from_obj_ptr(ptr)).load_flags() } & HEADER_FLAG_HAS_ABI_VIEW != 0;
     let retired = if has_view {
         let Some(retired) = molt_cpython_abi::bridge::GLOBAL_BRIDGE
             .publish_list_remove(MoltObject::from_ptr(ptr).bits(), index)
@@ -756,7 +764,9 @@ pub(crate) unsafe fn pop(py: &PyToken<'_>, ptr: *mut u8, index: usize) -> Option
         )
     } != 0;
     if !contains_refs {
-        unsafe { (*header_from_obj_ptr(ptr)).flags &= !HEADER_FLAG_CONTAINS_REFS };
+        unsafe {
+            (*header_from_obj_ptr(ptr)).fetch_and_flags(!HEADER_FLAG_CONTAINS_REFS);
+        }
     }
     unsafe { crate::object::backing::tracked_vec_bump_mutation_epoch(base) };
     drop(mutation_guard);
@@ -776,7 +786,8 @@ pub(crate) unsafe fn clear(py: &PyToken<'_>, ptr: *mut u8) -> bool {
     let base = unsafe { seq_vec_ptr(ptr) };
     let mutation_guard = unsafe { crate::object::backing::tracked_vec_mutation_lock(base) };
     let displaced = unsafe { crate::object::backing::tracked_vec_take_contents(base) };
-    let has_view = unsafe { (*header_from_obj_ptr(ptr)).flags } & HEADER_FLAG_HAS_ABI_VIEW != 0;
+    let has_view =
+        unsafe { (*header_from_obj_ptr(ptr)).load_flags() } & HEADER_FLAG_HAS_ABI_VIEW != 0;
     let retired = if has_view {
         let Some(retired) = molt_cpython_abi::bridge::GLOBAL_BRIDGE
             .publish_list_clear(MoltObject::from_ptr(ptr).bits())
@@ -789,7 +800,7 @@ pub(crate) unsafe fn clear(py: &PyToken<'_>, ptr: *mut u8) -> bool {
         None
     };
     unsafe {
-        (*header_from_obj_ptr(ptr)).flags &= !HEADER_FLAG_CONTAINS_REFS;
+        (*header_from_obj_ptr(ptr)).fetch_and_flags(!HEADER_FLAG_CONTAINS_REFS);
         crate::object::backing::tracked_vec_bump_mutation_epoch(base);
     }
     drop(mutation_guard);
@@ -811,7 +822,7 @@ pub(crate) unsafe fn reverse(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
     let base = unsafe { seq_vec_ptr(ptr) };
     let mutation_guard = unsafe { crate::object::backing::tracked_vec_mutation_lock(base) };
     unsafe { (&mut *base).reverse() };
-    if unsafe { (*header_from_obj_ptr(ptr)).flags } & HEADER_FLAG_HAS_ABI_VIEW != 0
+    if unsafe { (*header_from_obj_ptr(ptr)).load_flags() } & HEADER_FLAG_HAS_ABI_VIEW != 0
         && !molt_cpython_abi::bridge::GLOBAL_BRIDGE
             .publish_list_reverse(MoltObject::from_ptr(ptr).bits())
     {
@@ -900,7 +911,7 @@ pub(crate) unsafe fn replace_range_with_projection(
     if low == 0 && high == len && items.is_empty() {
         return unsafe { clear(py, ptr) };
     }
-    if unsafe { (*header_from_obj_ptr(ptr)).flags } & HEADER_FLAG_HAS_ABI_VIEW != 0 {
+    if unsafe { (*header_from_obj_ptr(ptr)).load_flags() } & HEADER_FLAG_HAS_ABI_VIEW != 0 {
         let Some(mut txn) = (unsafe { ListMutationTxn::begin(py, ptr) }) else {
             return false;
         };
@@ -946,9 +957,9 @@ pub(crate) unsafe fn replace_range_with_projection(
     let header = unsafe { header_from_obj_ptr(ptr) };
     unsafe {
         if contains_refs {
-            (*header).flags |= HEADER_FLAG_CONTAINS_REFS;
+            (*header).fetch_or_flags(HEADER_FLAG_CONTAINS_REFS);
         } else {
-            (*header).flags &= !HEADER_FLAG_CONTAINS_REFS;
+            (*header).fetch_and_flags(!HEADER_FLAG_CONTAINS_REFS);
         }
         note_in_place_mutation(ptr);
     }
@@ -996,7 +1007,7 @@ pub(crate) unsafe fn replace_indices(
     if indices.len() == 1 {
         return unsafe { replace_one(py, ptr, indices[0], items[0]) };
     }
-    if unsafe { (*header_from_obj_ptr(ptr)).flags } & HEADER_FLAG_HAS_ABI_VIEW != 0 {
+    if unsafe { (*header_from_obj_ptr(ptr)).load_flags() } & HEADER_FLAG_HAS_ABI_VIEW != 0 {
         let Some(mut txn) = (unsafe { ListMutationTxn::begin(py, ptr) }) else {
             return false;
         };
@@ -1026,9 +1037,9 @@ pub(crate) unsafe fn replace_indices(
     let header = unsafe { header_from_obj_ptr(ptr) };
     unsafe {
         if contains_refs {
-            (*header).flags |= HEADER_FLAG_CONTAINS_REFS;
+            (*header).fetch_or_flags(HEADER_FLAG_CONTAINS_REFS);
         } else {
-            (*header).flags &= !HEADER_FLAG_CONTAINS_REFS;
+            (*header).fetch_and_flags(!HEADER_FLAG_CONTAINS_REFS);
         }
         note_in_place_mutation(ptr);
     }
@@ -1067,7 +1078,7 @@ pub(crate) unsafe fn remove_indices(
         dec_ref_bits(py, removed);
         return true;
     }
-    if unsafe { (*header_from_obj_ptr(ptr)).flags } & HEADER_FLAG_HAS_ABI_VIEW != 0 {
+    if unsafe { (*header_from_obj_ptr(ptr)).load_flags() } & HEADER_FLAG_HAS_ABI_VIEW != 0 {
         let Some(mut txn) = (unsafe { ListMutationTxn::begin(py, ptr) }) else {
             return false;
         };
@@ -1094,9 +1105,9 @@ pub(crate) unsafe fn remove_indices(
     let header = unsafe { header_from_obj_ptr(ptr) };
     unsafe {
         if contains_refs {
-            (*header).flags |= HEADER_FLAG_CONTAINS_REFS;
+            (*header).fetch_or_flags(HEADER_FLAG_CONTAINS_REFS);
         } else {
-            (*header).flags &= !HEADER_FLAG_CONTAINS_REFS;
+            (*header).fetch_and_flags(!HEADER_FLAG_CONTAINS_REFS);
         }
         note_in_place_mutation(ptr);
     }
@@ -1126,7 +1137,7 @@ pub(crate) unsafe fn repeat(py: &PyToken<'_>, ptr: *mut u8, count: usize) -> boo
         );
         return false;
     };
-    if unsafe { (*header_from_obj_ptr(ptr)).flags } & HEADER_FLAG_HAS_ABI_VIEW != 0 {
+    if unsafe { (*header_from_obj_ptr(ptr)).load_flags() } & HEADER_FLAG_HAS_ABI_VIEW != 0 {
         let Some(mut txn) = (unsafe { ListMutationTxn::begin(py, ptr) }) else {
             return false;
         };
@@ -1184,7 +1195,7 @@ pub(crate) unsafe fn swap_indices(
         return true;
     }
     values.swap(left, right);
-    if unsafe { (*header_from_obj_ptr(ptr)).flags } & HEADER_FLAG_HAS_ABI_VIEW != 0
+    if unsafe { (*header_from_obj_ptr(ptr)).load_flags() } & HEADER_FLAG_HAS_ABI_VIEW != 0
         && !molt_cpython_abi::bridge::GLOBAL_BRIDGE.publish_list_swap(
             MoltObject::from_ptr(ptr).bits(),
             left,

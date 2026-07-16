@@ -92,7 +92,7 @@ pub extern "C" fn molt_future_poll(future_bits: u64) -> i64 {
                 raise_exception::<i64>(_py, "TypeError", "object is not awaitable");
                 return 0;
             }
-            if ((*header).flags & HEADER_FLAG_TASK_DONE) != 0 {
+            if ((*header).load_flags() & HEADER_FLAG_TASK_DONE) != 0 {
                 if let Some(result_bits) = task_result_get(_py, ptr) {
                     return result_bits as i64;
                 }
@@ -109,7 +109,7 @@ pub extern "C" fn molt_future_poll(future_bits: u64) -> i64 {
                 }
                 return MoltObject::none().bits() as i64;
             }
-            if ((*header).flags & HEADER_FLAG_COROUTINE) != 0
+            if ((*header).load_flags() & HEADER_FLAG_COROUTINE) != 0
                 && crate::object::object_state(ptr) == 0
                 && task_cancel_pending(ptr)
             {
@@ -142,8 +142,9 @@ pub extern "C" fn molt_future_poll(future_bits: u64) -> i64 {
                 if !current_task.is_null() && ptr != current_task {
                     await_waiter_register(_py, current_task, ptr);
                     let current_header = header_from_obj_ptr(current_task);
-                    let is_block_on = ((*current_header).flags & HEADER_FLAG_BLOCK_ON) != 0;
-                    let is_spawned = ((*current_header).flags & HEADER_FLAG_SPAWN_RETAIN) != 0;
+                    let is_block_on = ((*current_header).load_flags() & HEADER_FLAG_BLOCK_ON) != 0;
+                    let is_spawned =
+                        ((*current_header).load_flags() & HEADER_FLAG_SPAWN_RETAIN) != 0;
                     if is_block_on || is_spawned {
                         let sleep_target = resolve_sleep_target(_py, ptr);
                         let _ = sleep_register_impl(_py, current_task, sleep_target);
@@ -382,7 +383,7 @@ fn sleep_register_impl(_py: &PyToken<'_>, task_ptr: *mut u8, future_ptr: *mut u8
             );
         }
         let task_header = unsafe { header_from_obj_ptr(task_ptr) };
-        if unsafe { ((*task_header).flags & HEADER_FLAG_BLOCK_ON) != 0 } {
+        if unsafe { ((*task_header).load_flags() & HEADER_FLAG_BLOCK_ON) != 0 } {
             let deadline =
                 Instant::now() + Duration::from_secs_f64(ASYNC_SLEEP_YIELD_SECS.max(0.0));
             runtime_state(_py)
@@ -404,7 +405,7 @@ fn sleep_register_impl(_py: &PyToken<'_>, task_ptr: *mut u8, future_ptr: *mut u8
             let deadline =
                 Instant::now() + Duration::from_secs_f64(ASYNC_SLEEP_YIELD_SECS.max(0.0));
             let task_header = unsafe { header_from_obj_ptr(task_ptr) };
-            if unsafe { ((*task_header).flags & HEADER_FLAG_BLOCK_ON) != 0 } {
+            if unsafe { ((*task_header).load_flags() & HEADER_FLAG_BLOCK_ON) != 0 } {
                 runtime_state(_py)
                     .sleep_queue()
                     .register_blocking(_py, task_ptr, deadline);
@@ -446,7 +447,7 @@ fn sleep_register_impl(_py: &PyToken<'_>, task_ptr: *mut u8, future_ptr: *mut u8
             let deadline =
                 Instant::now() + Duration::from_secs_f64(ASYNC_SLEEP_YIELD_SECS.max(0.0));
             let task_header = unsafe { header_from_obj_ptr(task_ptr) };
-            if unsafe { ((*task_header).flags & HEADER_FLAG_BLOCK_ON) != 0 } {
+            if unsafe { ((*task_header).load_flags() & HEADER_FLAG_BLOCK_ON) != 0 } {
                 runtime_state(_py)
                     .sleep_queue()
                     .register_blocking(_py, task_ptr, deadline);
@@ -477,7 +478,7 @@ fn sleep_register_impl(_py: &PyToken<'_>, task_ptr: *mut u8, future_ptr: *mut u8
         return true;
     }
     let task_header = unsafe { header_from_obj_ptr(task_ptr) };
-    if unsafe { ((*task_header).flags & HEADER_FLAG_BLOCK_ON) != 0 } {
+    if unsafe { ((*task_header).load_flags() & HEADER_FLAG_BLOCK_ON) != 0 } {
         runtime_state(_py)
             .sleep_queue()
             .register_blocking(_py, task_ptr, deadline);
@@ -959,7 +960,7 @@ pub unsafe extern "C" fn molt_sleep_register(task_ptr: *mut u8, future_ptr: *mut
                 return 0;
             }
             let header = header_from_obj_ptr(task_ptr);
-            let flags = (*header).flags;
+            let flags = (*header).load_flags();
             let is_block_on = (flags & HEADER_FLAG_BLOCK_ON) != 0;
             let is_spawned = (flags & HEADER_FLAG_SPAWN_RETAIN) != 0;
             if !is_block_on && !is_spawned {

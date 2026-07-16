@@ -131,7 +131,7 @@ pub(crate) fn molt_list_append_with_projection(
                 // layout for comprehension-built homogeneous lists that
                 // accumulate elements one at a time.
                 let mut tid = object_type_id(ptr);
-                let has_abi_view = (*header_from_obj_ptr(ptr)).flags
+                let has_abi_view = (*header_from_obj_ptr(ptr)).load_flags()
                     & crate::object::HEADER_FLAG_HAS_ABI_VIEW
                     != 0;
                 if matches!(tid, TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL)

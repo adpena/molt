@@ -27,7 +27,7 @@ pub(crate) fn builtin_func_bits(
         unsafe {
             // Cached builtin callables are runtime singletons; treat them as immortal so
             // refcount churn in compiled code cannot free them out from under the caches.
-            (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_IMMORTAL;
+            (*header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_IMMORTAL);
             let builtin_bits = builtin_classes(_py).builtin_function_or_method;
             let old_bits = object_class_bits(ptr);
             if old_bits != builtin_bits
@@ -38,7 +38,7 @@ pub(crate) fn builtin_func_bits(
                     ClassEdgeOwnership::Owned,
                 )
             {
-                (*header_from_obj_ptr(ptr)).flags &= !crate::object::HEADER_FLAG_IMMORTAL;
+                (*header_from_obj_ptr(ptr)).fetch_and_flags(!crate::object::HEADER_FLAG_IMMORTAL);
                 dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
                 return MoltObject::none().bits();
             }
@@ -67,7 +67,7 @@ pub(crate) fn builtin_func_bits_with_bind_kind(
             return MoltObject::none().bits();
         }
         unsafe {
-            (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_IMMORTAL;
+            (*header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_IMMORTAL);
             let bind_kind_name = intern_static_name(
                 _py,
                 &runtime_state(_py).interned.molt_bind_kind,
@@ -90,7 +90,7 @@ pub(crate) fn builtin_func_bits_with_bind_kind(
                     ClassEdgeOwnership::Owned,
                 )
             {
-                (*header_from_obj_ptr(ptr)).flags &= !crate::object::HEADER_FLAG_IMMORTAL;
+                (*header_from_obj_ptr(ptr)).fetch_and_flags(!crate::object::HEADER_FLAG_IMMORTAL);
                 dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
                 return MoltObject::none().bits();
             }
@@ -116,7 +116,7 @@ pub(crate) fn builtin_func_bits_with_defaults_tuple(
             return MoltObject::none().bits();
         }
         unsafe {
-            (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_IMMORTAL;
+            (*header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_IMMORTAL);
             // Set __defaults__ tuple as a function attribute.
             let defaults_name = intern_static_name(
                 _py,
@@ -138,7 +138,7 @@ pub(crate) fn builtin_func_bits_with_defaults_tuple(
                     ClassEdgeOwnership::Owned,
                 )
             {
-                (*header_from_obj_ptr(ptr)).flags &= !crate::object::HEADER_FLAG_IMMORTAL;
+                (*header_from_obj_ptr(ptr)).fetch_and_flags(!crate::object::HEADER_FLAG_IMMORTAL);
                 dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
                 return MoltObject::none().bits();
             }
@@ -198,7 +198,7 @@ pub(crate) fn builtin_classmethod_bits_with_defaults_tuple(
             return MoltObject::none().bits();
         }
         unsafe {
-            (*header_from_obj_ptr(func_ptr)).flags |= crate::object::HEADER_FLAG_IMMORTAL;
+            (*header_from_obj_ptr(func_ptr)).fetch_or_flags(crate::object::HEADER_FLAG_IMMORTAL);
             let defaults_name = intern_static_name(
                 _py,
                 &runtime_state(_py).interned.defaults_name,
@@ -219,7 +219,8 @@ pub(crate) fn builtin_classmethod_bits_with_defaults_tuple(
                     ClassEdgeOwnership::Owned,
                 )
             {
-                (*header_from_obj_ptr(func_ptr)).flags &= !crate::object::HEADER_FLAG_IMMORTAL;
+                (*header_from_obj_ptr(func_ptr))
+                    .fetch_and_flags(!crate::object::HEADER_FLAG_IMMORTAL);
                 dec_ref_bits(_py, MoltObject::from_ptr(func_ptr).bits());
                 return MoltObject::none().bits();
             }

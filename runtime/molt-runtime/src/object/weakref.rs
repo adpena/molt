@@ -160,7 +160,7 @@ fn try_pin_cookie_state(cookie: WeakContainerCookie) -> bool {
     let header = unsafe { header_from_obj_ptr(state_ptr) };
     unsafe {
         if (*header).type_id != crate::TYPE_ID_WEAK_CONTAINER_STATE
-            || ((*header).flags & super::HEADER_FLAG_DEALLOCATING) != 0
+            || ((*header).load_flags() & super::HEADER_FLAG_DEALLOCATING) != 0
         {
             return false;
         }
@@ -177,7 +177,7 @@ fn try_pin_cookie_state(cookie: WeakContainerCookie) -> bool {
             ) {
                 Ok(_) => {
                     debug_assert_eq!(
-                        (*header).flags & super::HEADER_FLAG_DEALLOCATING,
+                        (*header).load_flags() & super::HEADER_FLAG_DEALLOCATING,
                         0,
                         "state entered terminal death after a successful live retain"
                     );
@@ -788,7 +788,8 @@ pub extern "C" fn molt_weakref_register(
             let msg = format!("cannot create weak reference to '{type_label}' object");
             return raise_exception::<_>(_py, "TypeError", &msg);
         }
-        if unsafe { (*header_from_obj_ptr(target_ptr)).flags } & super::HEADER_FLAG_DEALLOCATING
+        if unsafe { (*header_from_obj_ptr(target_ptr)).load_flags() }
+            & super::HEADER_FLAG_DEALLOCATING
             != 0
         {
             return raise_exception::<_>(
@@ -864,8 +865,8 @@ pub extern "C" fn molt_weakref_register(
         // committed. Failed initialization must not make an arbitrary object
         // enter weakref-specific deallocation.
         unsafe {
-            (*header_from_obj_ptr(target_ptr)).flags |= super::HEADER_FLAG_HAS_WEAKREF;
-            (*header_from_obj_ptr(weak_ptr)).flags |= super::HEADER_FLAG_IS_WEAKREF;
+            (*header_from_obj_ptr(target_ptr)).fetch_or_flags(super::HEADER_FLAG_HAS_WEAKREF);
+            (*header_from_obj_ptr(weak_ptr)).fetch_or_flags(super::HEADER_FLAG_IS_WEAKREF);
         }
         MoltObject::from_bool(true).bits()
     })
@@ -1105,9 +1106,13 @@ mod tests {
             assert!(try_pin_cookie_state(cookie));
             assert_eq!(unsafe { (*header).ref_count.load(Ordering::Acquire) }, 2);
             crate::dec_ref_bits(_py, state_bits);
-            unsafe { (*header).flags |= crate::object::HEADER_FLAG_DEALLOCATING };
+            unsafe {
+                (*header).fetch_or_flags(crate::object::HEADER_FLAG_DEALLOCATING);
+            }
             assert!(!try_pin_cookie_state(cookie));
-            unsafe { (*header).flags &= !crate::object::HEADER_FLAG_DEALLOCATING };
+            unsafe {
+                (*header).fetch_and_flags(!crate::object::HEADER_FLAG_DEALLOCATING);
+            }
             crate::dec_ref_bits(_py, state_bits);
         });
     }

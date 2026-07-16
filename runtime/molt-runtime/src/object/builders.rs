@@ -27,7 +27,7 @@ pub extern "C" fn molt_alloc(size_bits: u64) -> u64 {
         }
         unsafe {
             let header = crate::object::header_from_obj_ptr(obj_ptr);
-            (*header).flags |= crate::object::HEADER_FLAG_RAW_ALLOC;
+            (*header).fetch_or_flags(crate::object::HEADER_FLAG_RAW_ALLOC);
         }
         MoltObject::from_ptr(obj_ptr).bits()
     })
@@ -812,7 +812,7 @@ pub(crate) fn alloc_list_with_capacity(
         );
         *(ptr as *mut *mut Vec<u64>) = vec_ptr;
         if crate::object::refcount_opt::slice_contains_heap_refs(elems) {
-            (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
+            (*header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
         }
     }
     ptr
@@ -847,7 +847,7 @@ pub(crate) fn alloc_list_filled(_py: &PyToken<'_>, len: usize, value: MoltObject
         );
         *(ptr as *mut *mut Vec<u64>) = vec_ptr;
         if len != 0 && value.is_ptr() {
-            (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
+            (*header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
         }
     }
     ptr
@@ -878,7 +878,7 @@ pub(crate) fn alloc_list_with_capacity_owned(
         );
         *(ptr as *mut *mut Vec<u64>) = vec_ptr;
         if crate::object::refcount_opt::slice_contains_heap_refs(elems) {
-            (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
+            (*header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
         }
     }
     ptr
@@ -1131,7 +1131,7 @@ fn alloc_tuple_exact(_py: &PyToken<'_>, elems: &[u64], owned: bool) -> *mut u8 {
             }
         }
         if crate::object::refcount_opt::slice_contains_heap_refs(elems) {
-            (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
+            (*header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
         }
     }
     ptr
@@ -1193,8 +1193,9 @@ pub(crate) fn alloc_tuple(_py: &PyToken<'_>, elems: &[u64]) -> *mut u8 {
         unsafe {
             crate::object::gc::gc_untrack_on_free(candidate, TYPE_ID_TUPLE);
             let header = header_from_obj_ptr(candidate);
-            (*header).flags |=
-                crate::object::HEADER_FLAG_IMMORTAL | crate::object::HEADER_FLAG_INTERNED;
+            (*header).fetch_or_flags(
+                crate::object::HEADER_FLAG_IMMORTAL | crate::object::HEADER_FLAG_INTERNED,
+            );
             (*header)
                 .ref_count
                 .store(u32::MAX, std::sync::atomic::Ordering::Release);
@@ -1461,7 +1462,7 @@ pub(crate) fn alloc_module_obj(_py: &PyToken<'_>, name_bits: u64) -> *mut u8 {
         // are process-lifetime singletons in Molt, so marking them immortal
         // is both correct and avoids the refcount imbalance entirely.
         let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
-        (*header_ptr).flags |= crate::object::HEADER_FLAG_IMMORTAL;
+        (*header_ptr).fetch_or_flags(crate::object::HEADER_FLAG_IMMORTAL);
     }
     ptr
 }
@@ -1609,8 +1610,9 @@ fn init_ascii_chars(_py: &PyToken<'_>) {
             let data_ptr = ptr.add(std::mem::size_of::<usize>());
             *data_ptr = byte;
             let header = header_from_obj_ptr(ptr);
-            (*header).flags |=
-                crate::object::HEADER_FLAG_IMMORTAL | crate::object::HEADER_FLAG_INTERNED;
+            (*header).fetch_or_flags(
+                crate::object::HEADER_FLAG_IMMORTAL | crate::object::HEADER_FLAG_INTERNED,
+            );
             (*header)
                 .ref_count
                 .store(u32::MAX, std::sync::atomic::Ordering::Relaxed);
@@ -1681,7 +1683,7 @@ pub(crate) fn alloc_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
             if !ptr.is_null() {
                 unsafe {
                     let header = header_from_obj_ptr(ptr);
-                    (*header).flags |= crate::object::HEADER_FLAG_IMMORTAL;
+                    (*header).fetch_or_flags(crate::object::HEADER_FLAG_IMMORTAL);
                     (*header)
                         .ref_count
                         .store(u32::MAX, std::sync::atomic::Ordering::Relaxed);
@@ -1735,8 +1737,9 @@ pub(crate) fn alloc_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
             let data_ptr = ptr.add(std::mem::size_of::<usize>());
             std::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr, bytes.len());
             let header = header_from_obj_ptr(ptr);
-            (*header).flags |=
-                crate::object::HEADER_FLAG_IMMORTAL | crate::object::HEADER_FLAG_INTERNED;
+            (*header).fetch_or_flags(
+                crate::object::HEADER_FLAG_IMMORTAL | crate::object::HEADER_FLAG_INTERNED,
+            );
             (*header)
                 .ref_count
                 .store(u32::MAX, std::sync::atomic::Ordering::Relaxed);
@@ -1814,7 +1817,7 @@ pub(crate) fn alloc_bytes(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
             if !ptr.is_null() {
                 unsafe {
                     let header = header_from_obj_ptr(ptr);
-                    (*header).flags |= crate::object::HEADER_FLAG_IMMORTAL;
+                    (*header).fetch_or_flags(crate::object::HEADER_FLAG_IMMORTAL);
                     (*header)
                         .ref_count
                         .store(u32::MAX, std::sync::atomic::Ordering::Relaxed);

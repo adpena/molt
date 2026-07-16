@@ -357,7 +357,7 @@ fn snapshot_tracked_registry() -> Option<Vec<*mut u8>> {
 pub(crate) unsafe fn molt_traverse(py: &PyToken<'_>, ptr: *mut u8, visit: &mut dyn FnMut(*mut u8)) {
     unsafe {
         let type_id = object_type_id(ptr);
-        let flags = (*header_from_obj_ptr(ptr)).flags;
+        let flags = (*header_from_obj_ptr(ptr)).load_flags();
         if (flags & super::HEADER_FLAG_IS_WEAKREF) != 0
             && let Some(bits) = super::weakref::weakref_object_callback_bits(py, ptr)
         {
@@ -512,7 +512,7 @@ pub(crate) unsafe fn molt_traverse(py: &PyToken<'_>, ptr: *mut u8, visit: &mut d
 pub(crate) unsafe fn molt_clear(py: &PyToken<'_>, ptr: *mut u8) {
     unsafe {
         let type_id = object_type_id(ptr);
-        let flags = (*header_from_obj_ptr(ptr)).flags;
+        let flags = (*header_from_obj_ptr(ptr)).load_flags();
         let weakref_registration = if (flags & super::HEADER_FLAG_IS_WEAKREF) != 0 {
             super::weakref::weakref_object_detach(py, ptr)
         } else {
@@ -528,7 +528,7 @@ pub(crate) unsafe fn molt_clear(py: &PyToken<'_>, ptr: *mut u8) {
                 let mutation_guard = crate::object::backing::tracked_vec_mutation_lock(vec_ptr);
                 let detached = crate::object::backing::tracked_vec_take_contents(vec_ptr);
                 let clear_list_projection = (flags & HEADER_FLAG_HAS_ABI_VIEW) != 0;
-                (*header_from_obj_ptr(ptr)).flags &= !super::HEADER_FLAG_CONTAINS_REFS;
+                (*header_from_obj_ptr(ptr)).fetch_and_flags(!super::HEADER_FLAG_CONTAINS_REFS);
                 crate::object::backing::tracked_vec_bump_mutation_epoch(vec_ptr);
                 drop(mutation_guard);
                 if clear_list_projection {
@@ -675,10 +675,10 @@ unsafe fn header_refcount(ptr: *mut u8) -> u32 {
 unsafe fn effective_gc_refcount(ptr: *mut u8) -> isize {
     let mut raw = unsafe { header_refcount(ptr) } as isize;
     let header = unsafe { header_from_obj_ptr(ptr) };
-    if unsafe { (*header).flags } & HEADER_FLAG_GC_PINNED != 0 {
+    if unsafe { (*header).load_flags() } & HEADER_FLAG_GC_PINNED != 0 {
         raw -= 1;
     }
-    if unsafe { (*header).flags } & HEADER_FLAG_HAS_ABI_VIEW == 0 {
+    if unsafe { (*header).load_flags() } & HEADER_FLAG_HAS_ABI_VIEW == 0 {
         return raw;
     }
     let bits = MoltObject::from_ptr(ptr).bits();
@@ -695,7 +695,7 @@ unsafe fn pin_unreachable(ptrs: &[*mut u8]) {
         let header = unsafe { header_from_obj_ptr(ptr) };
         unsafe {
             (*header).ref_count.fetch_add(1, AtomicOrdering::Relaxed);
-            (*header).flags |= HEADER_FLAG_GC_PINNED;
+            (*header).fetch_or_flags(HEADER_FLAG_GC_PINNED);
         }
     }
 }
@@ -703,7 +703,9 @@ unsafe fn pin_unreachable(ptrs: &[*mut u8]) {
 unsafe fn release_unreachable_pins(py: &PyToken<'_>, ptrs: &[*mut u8]) {
     for &ptr in ptrs {
         let header = unsafe { header_from_obj_ptr(ptr) };
-        unsafe { (*header).flags &= !HEADER_FLAG_GC_PINNED };
+        unsafe {
+            (*header).fetch_and_flags(!HEADER_FLAG_GC_PINNED);
+        }
         unsafe { dec_ref_ptr(py, ptr) };
     }
 }
@@ -713,9 +715,9 @@ unsafe fn header_set_collecting(ptr: *mut u8, on: bool) {
     unsafe {
         let header = header_from_obj_ptr(ptr);
         if on {
-            (*header).flags |= HEADER_FLAG_GC_COLLECTING;
+            (*header).fetch_or_flags(HEADER_FLAG_GC_COLLECTING);
         } else {
-            (*header).flags &= !HEADER_FLAG_GC_COLLECTING;
+            (*header).fetch_and_flags(!HEADER_FLAG_GC_COLLECTING);
         }
     }
 }
@@ -724,7 +726,7 @@ unsafe fn header_set_collecting(ptr: *mut u8, on: bool) {
 unsafe fn header_is_collecting(ptr: *mut u8) -> bool {
     unsafe {
         let header = header_from_obj_ptr(ptr);
-        ((*header).flags & HEADER_FLAG_GC_COLLECTING) != 0
+        ((*header).load_flags() & HEADER_FLAG_GC_COLLECTING) != 0
     }
 }
 
@@ -932,7 +934,7 @@ pub(crate) unsafe fn collect_cycles(py: &PyToken<'_>) -> CollectStats {
 unsafe fn run_finalizer_once(py: &PyToken<'_>, ptr: *mut u8) {
     unsafe {
         let header = header_from_obj_ptr(ptr);
-        let flags = (*header).flags;
+        let flags = (*header).load_flags();
         if !object_class_has_finalizer(ptr) {
             return;
         }

@@ -581,7 +581,7 @@ pub extern "C" fn molt_anext_builtin(iter_bits: u64, default_bits: u64) -> u64 {
         }
         let obj_bits = MoltObject::from_ptr(obj_ptr).bits();
         unsafe {
-            (*header_from_obj_ptr(obj_ptr)).flags |= crate::object::HEADER_FLAG_RAW_ALLOC;
+            (*header_from_obj_ptr(obj_ptr)).fetch_or_flags(crate::object::HEADER_FLAG_RAW_ALLOC);
             if !object_init_poll_fn_unpublished(obj_ptr, anext_default_poll_fn_addr())
                 || !object_init_state_unpublished(obj_ptr, 0)
             {
@@ -2346,7 +2346,7 @@ mod tests {
                 assert_eq!(first_ptr, cached);
                 let first_header = header_from_obj_ptr(first_ptr);
                 assert_eq!(
-                    (*first_header).flags & HEADER_FLAG_CONTAINS_REFS,
+                    (*first_header).load_flags() & HEADER_FLAG_CONTAINS_REFS,
                     0,
                     "primitive cached pair should not be marked as ref-containing",
                 );
@@ -2367,7 +2367,7 @@ mod tests {
                 assert_eq!(second_ptr, cached, "cached tuple should be reused in place");
                 let second_header = header_from_obj_ptr(second_ptr);
                 assert_ne!(
-                    (*second_header).flags & HEADER_FLAG_CONTAINS_REFS,
+                    (*second_header).load_flags() & HEADER_FLAG_CONTAINS_REFS,
                     0,
                     "cached pair mutated to hold heap refs must mark the tuple for element decref",
                 );
