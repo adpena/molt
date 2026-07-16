@@ -1744,6 +1744,7 @@ class _PreparedNativeLink:
     stub_path: Path
     runtime_lib: Path
     output_binary: Path
+    link_output: Path
     external_native_artifacts: tuple[_StagedExternalPackageNativeArtifact, ...]
     link_cmd: list[str]
     linker_hint: str | None
@@ -1752,6 +1753,7 @@ class _PreparedNativeLink:
     link_fingerprint: dict[str, str | None] | None
     link_skipped: bool
     link_process: subprocess.CompletedProcess[str]
+    strip_after_link: bool
 
 
 @dataclass(frozen=True)

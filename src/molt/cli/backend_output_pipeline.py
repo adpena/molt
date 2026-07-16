@@ -25,6 +25,7 @@ from molt.cli.models import (
 )
 from molt.cli.output import fail as _fail
 from molt.cli.runtime_build import _ensure_native_runtime_lib_ready_before_link
+from molt.cli.native_toolchain import _run_bolt_post_link
 
 
 def _emit_backend_pipeline_outputs(
@@ -53,6 +54,8 @@ def _emit_backend_pipeline_outputs(
     profile: BuildProfile = "dev",
     json_output: bool = False,
     stdlib_profile: str | None = DEFAULT_RUNTIME_STDLIB_PROFILE,
+    bolt_requested: bool = False,
+    bolt_training_cmd: str | None = None,
 ) -> int:
     runtime_lib = prepared_backend_runtime_context.runtime_lib
     runtime_wasm = prepared_backend_runtime_context.runtime_wasm
@@ -77,6 +80,21 @@ def _emit_backend_pipeline_outputs(
     diagnostics_path = None
     backend_daemon_config_digest = prepared_backend_compile.backend_daemon_config_digest
     wasm_table_base = prepared_backend_compile.wasm_table_base
+
+    def snapshot_build_diagnostics() -> tuple[Any, Path | None]:
+        nonlocal diagnostics_payload, diagnostics_path
+        diagnostics_payload, diagnostics_path = build_diagnostics_payload()
+        return diagnostics_payload, diagnostics_path
+
+    def return_after_build_diagnostics(result: int) -> int:
+        snapshot_build_diagnostics()
+        _emit_build_diagnostics_if_present(
+            diagnostics_payload=diagnostics_payload,
+            diagnostics_path=diagnostics_path,
+            json_output=json_output,
+            verbosity=prepared_build_preamble.resolved_diagnostics_verbosity,
+        )
+        return result
 
     if (
         output_layout.is_rust_transpile
@@ -114,16 +132,9 @@ def _emit_backend_pipeline_outputs(
             )
         )
         if prepared_non_native_result_error is not None:
-            diagnostics_payload, diagnostics_path = build_diagnostics_payload()
-            _emit_build_diagnostics_if_present(
-                diagnostics_payload=diagnostics_payload,
-                diagnostics_path=diagnostics_path,
-                json_output=json_output,
-                verbosity=prepared_build_preamble.resolved_diagnostics_verbosity,
-            )
-            return prepared_non_native_result_error
+            return return_after_build_diagnostics(prepared_non_native_result_error)
         assert prepared_non_native_result is not None
-        diagnostics_payload, diagnostics_path = build_diagnostics_payload()
+        snapshot_build_diagnostics()
 
         # -- Snapshot header generation (Plan D) ----------------------------
         if snapshot and output_layout.is_wasm:
@@ -193,8 +204,9 @@ def _emit_backend_pipeline_outputs(
             )
         )
         if prepared_object_error is not None:
-            return prepared_object_error
+            return return_after_build_diagnostics(prepared_object_error)
         assert prepared_object_output is not None
+        snapshot_build_diagnostics()
         return _emit_non_native_build_result(
             output=prepared_object_output,
             consumer_output=prepared_object_output,
@@ -247,9 +259,10 @@ def _emit_backend_pipeline_outputs(
         stdlib_profile=stdlib_profile,
         resolved_modules=resolved_modules,
     ):
-        return _fail("Runtime build failed", json_output, command="build")
-    if prepared_build_preamble.diagnostics_enabled:
-        diagnostics_payload, diagnostics_path = build_diagnostics_payload()
+        return return_after_build_diagnostics(
+            _fail("Runtime build failed", json_output, command="build")
+        )
+    snapshot_build_diagnostics()
     prepared_native_link, prepared_native_link_error = (
         _link_pipeline._prepare_native_link(
             output_artifact=output_layout.output_artifact,
@@ -275,11 +288,31 @@ def _emit_backend_pipeline_outputs(
             stdlib_module_symbols=prepared_backend_setup.cache_setup.stdlib_module_symbols,
             native_artifact_plan=native_artifact_plan,
             stdlib_profile=stdlib_profile,
+            bolt_requested=bolt_requested,
         )
     )
     if prepared_native_link_error is not None:
-        return prepared_native_link_error
+        return return_after_build_diagnostics(prepared_native_link_error)
     assert prepared_native_link is not None
+    if bolt_requested and prepared_native_link.link_process.returncode == 0:
+        bolt_rc = _run_bolt_post_link(
+            bolt_requested=True,
+            bolt_training_cmd=bolt_training_cmd,
+            target=output_layout.target_triple or "native",
+            input_binary=str(prepared_native_link.link_output),
+            output=str(prepared_native_link.output_binary),
+            out_dir=None,
+            build_rc=0,
+            json_output=json_output,
+        )
+        if bolt_rc != 0:
+            return return_after_build_diagnostics(
+                _fail(
+                    "BOLT post-link optimization failed",
+                    json_output,
+                    command="build",
+                )
+            )
     return _emit_native_link_result(
         link_process=prepared_native_link.link_process,
         link_skipped=prepared_native_link.link_skipped,
@@ -299,6 +332,11 @@ def _emit_backend_pipeline_outputs(
         target_triple=output_layout.target_triple,
         source_path=resolved_build_entry.source_path,
         output_binary=prepared_native_link.output_binary,
+        link_candidate=(
+            prepared_native_link.output_binary
+            if bolt_requested
+            else prepared_native_link.link_output
+        ),
         deterministic=deterministic,
         trusted=trusted,
         capabilities_list=prepared_build_config.capabilities_list,
@@ -321,4 +359,5 @@ def _emit_backend_pipeline_outputs(
         warnings=prepared_build_preamble.warnings,
         json_output=json_output,
         resolved_diagnostics_verbosity=prepared_build_preamble.resolved_diagnostics_verbosity,
+        strip_after_link=prepared_native_link.strip_after_link,
     )

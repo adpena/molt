@@ -6,6 +6,7 @@ import pytest
 
 import molt.cli as cli
 import molt.cli.native_link_deps as NATIVE_LINK_DEPS
+import molt.cli.native_toolchain as NATIVE_TOOLCHAIN
 from tests.cli.process_guard import run_cli_test_process
 
 
@@ -166,7 +167,7 @@ def test_runtime_archive_crate_name_parsing_matches_cargo_build_dirs() -> None:
     )
 
 
-def test_build_native_link_command_includes_metal_frameworks_when_runtime_gpu_metal_enabled(
+def test_build_native_link_plan_includes_metal_frameworks_when_runtime_gpu_metal_enabled(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -181,7 +182,7 @@ def test_build_native_link_command_includes_metal_frameworks_when_runtime_gpu_me
     stub_path.write_text("int main(void) { return 0; }\n", encoding="utf-8")
     output_binary = tmp_path / "app"
 
-    cmd, _, _ = cli._build_native_link_command(
+    plan = cli._build_native_link_plan(
         output_obj=output_obj,
         stub_path=stub_path,
         runtime_lib=runtime_lib,
@@ -192,9 +193,9 @@ def test_build_native_link_command_includes_metal_frameworks_when_runtime_gpu_me
         stdlib_obj_path=None,
     )
 
-    assert "-framework" in cmd
-    assert "Metal" in cmd
-    assert "-lobjc" in cmd
+    assert "-framework" in plan.command
+    assert "Metal" in plan.command
+    assert "-lobjc" in plan.command
 
 
 def test_append_darwin_runtime_frameworks_skips_non_darwin_target() -> None:
@@ -208,13 +209,13 @@ def test_append_darwin_runtime_frameworks_skips_non_darwin_target() -> None:
 def test_detect_macos_deployment_target_prefers_molt_env(monkeypatch) -> None:
     monkeypatch.setenv("MOLT_MACOSX_DEPLOYMENT_TARGET", "13.3")
     monkeypatch.delenv("MACOSX_DEPLOYMENT_TARGET", raising=False)
-    assert cli._detect_macos_deployment_target("arm64") == "13.3"
+    assert NATIVE_TOOLCHAIN._detect_macos_deployment_target("arm64") == "13.3"
 
 
 def test_detect_macos_deployment_target_prefers_standard_env(monkeypatch) -> None:
     monkeypatch.delenv("MOLT_MACOSX_DEPLOYMENT_TARGET", raising=False)
     monkeypatch.setenv("MACOSX_DEPLOYMENT_TARGET", "12.7")
-    assert cli._detect_macos_deployment_target("arm64") == "12.7"
+    assert NATIVE_TOOLCHAIN._detect_macos_deployment_target("arm64") == "12.7"
 
 
 @pytest.mark.parametrize(
@@ -229,7 +230,7 @@ def test_detect_macos_deployment_target_uses_stable_arch_baseline(
 ) -> None:
     monkeypatch.delenv("MOLT_MACOSX_DEPLOYMENT_TARGET", raising=False)
     monkeypatch.delenv("MACOSX_DEPLOYMENT_TARGET", raising=False)
-    assert cli._detect_macos_deployment_target(arch) == expected
+    assert NATIVE_TOOLCHAIN._detect_macos_deployment_target(arch) == expected
 
 
 def test_detect_macos_deployment_target_arm64_uses_sdk_version(
@@ -250,7 +251,7 @@ def test_detect_macos_deployment_target_arm64_uses_sdk_version(
 
         ver = platform.mac_ver()[0]
         parts = ver.split(".")
-        expected = ".".join(parts[:2]) if len(parts) >= 2 else ver
+        expected = ".".join(parts[:2]) if len(parts) >= 2 else ver or "11.0"
     for arch in ("arm64", "aarch64", "mystery"):
-        result = cli._detect_macos_deployment_target(arch)
+        result = NATIVE_TOOLCHAIN._detect_macos_deployment_target(arch)
         assert result == expected, f"arch={arch}: got {result}, expected {expected}"

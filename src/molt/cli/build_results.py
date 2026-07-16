@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import contextlib
-import os
 from collections.abc import Mapping, MutableMapping, Sequence
 from pathlib import Path
+import platform
 import subprocess
 import sys
 from typing import Any
@@ -17,9 +17,15 @@ from molt.cli.build_diagnostics import _emit_build_diagnostics_if_present
 from molt.cli.command_runtime import _run_completed_command
 from molt.cli.extension_manifest import _cpu_baseline
 from molt.cli.models import _StagedExternalPackageNativeArtifact
+from molt.cli.llvm_wasi_tools import llvm_tool_candidates
 from molt.cli.native_binary import (
     _NativeBinaryInvalid,
     _assert_native_binary_valid,
+)
+from molt.cli.atomic_io import _atomic_copy_file
+from molt.cli.native_link_plan import (
+    native_strip_flags,
+    resolve_native_target_spec,
 )
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import json_payload as _json_payload
@@ -236,39 +242,83 @@ def _build_native_link_error_data(
     }
 
 
-def _post_link_strip(binary: Path, target_triple: str | None) -> None:
-    """Run platform-appropriate post-link strip for maximum size reduction."""
-    _is_darwin = (
-        target_triple and ("apple" in target_triple or "darwin" in target_triple)
-    ) or (not target_triple and sys.platform == "darwin")
-    _is_linux = (target_triple and "linux" in target_triple) or (
-        not target_triple and sys.platform.startswith("linux")
-    )
+def _post_link_strip(binary: Path, target_triple: str | None) -> str | None:
+    """Strip through an object-format-capable tool without host-target guessing."""
     if not binary.exists():
-        return
+        return f"post-link strip input does not exist: {binary}"
     try:
-        if _is_darwin:
-            # -x: remove all local symbols (keeps only external/undefined).
-            # Catches Rust metadata and alignment padding the linker preserves.
-            _run_completed_command(
-                ["strip", "-x", str(binary)],
-                capture_output=True,
-                env=None,
-                cwd=binary.parent,
-                memory_guard_prefix="MOLT_BUILD",
-                timeout=30,
-            )
-        elif _is_linux:
-            _run_completed_command(
-                ["strip", "--strip-all", str(binary)],
-                capture_output=True,
-                env=None,
-                cwd=binary.parent,
-                memory_guard_prefix="MOLT_BUILD",
-                timeout=30,
-            )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass  # strip not available or timed out — binary is still valid
+        target = resolve_native_target_spec(
+            target_triple,
+            host_platform=sys.platform,
+            host_arch=platform.machine(),
+        )
+        host = resolve_native_target_spec(
+            None,
+            host_platform=sys.platform,
+            host_arch=platform.machine(),
+        )
+        flags = native_strip_flags(target)
+    except RuntimeError as exc:
+        return f"post-link strip target policy failed: {exc}"
+
+    candidates = llvm_tool_candidates("strip")
+    target_is_host = (target.os, target.arch) == (host.os, host.arch)
+    if not target_is_host:
+        candidates = tuple(
+            candidate
+            for candidate in candidates
+            if candidate.stem.lower() == "llvm-strip"
+        )
+    if not candidates:
+        qualifier = "target-capable llvm-strip" if not target_is_host else "strip tool"
+        return f"post-link {qualifier} is unavailable for {target.os}/{target.arch}"
+
+    strip_command = [str(candidates[0]), *flags, str(binary)]
+    try:
+        result = _run_completed_command(
+            strip_command,
+            capture_output=True,
+            env=None,
+            cwd=binary.parent,
+            memory_guard_prefix="MOLT_BUILD",
+            timeout=30,
+        )
+    except FileNotFoundError:
+        return "post-link strip tool is unavailable"
+    except subprocess.TimeoutExpired:
+        return "post-link strip timed out"
+    except OSError as exc:
+        return f"post-link strip could not start: {exc}"
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        return f"post-link strip failed{f': {detail}' if detail else ''}"
+    return None
+
+
+def _finalize_native_link_candidate(
+    *,
+    candidate: Path,
+    output_binary: Path,
+    target_triple: str | None,
+    strip: bool,
+) -> str | None:
+    """Finalize and validate a private candidate before atomic publication."""
+    if candidate == output_binary:
+        return None
+    if strip:
+        if strip_error := _post_link_strip(candidate, target_triple):
+            return strip_error
+    try:
+        _assert_native_binary_valid(candidate, target_triple)
+    except _NativeBinaryInvalid as exc:
+        return f"native candidate validation failed: {exc}"
+    try:
+        _atomic_copy_file(candidate, output_binary, codesign=True)
+    except OSError as exc:
+        return f"atomic native publication failed: {exc}"
+    with contextlib.suppress(OSError):
+        candidate.unlink()
+    return None
 
 
 def _write_link_fingerprint_if_needed(
@@ -309,6 +359,7 @@ def _emit_native_link_result(
     target_triple: str | None,
     source_path: Path,
     output_binary: Path,
+    link_candidate: Path | None = None,
     deterministic: bool,
     trusted: bool,
     capabilities_list: list[str] | None,
@@ -331,17 +382,40 @@ def _emit_native_link_result(
     warnings: list[str],
     json_output: bool,
     resolved_diagnostics_verbosity: str,
+    strip_after_link: bool = True,
 ) -> int:
     if link_process.returncode == 0:
-        # Post-link strip: remove all remaining local symbols for maximum
-        # binary size reduction. The linker's -x/-S flags strip most, but
-        # `strip -x` on macOS catches Rust metadata and alignment padding
-        # that the linker preserves. MOLT_KEEP_SYMBOLS=1 is a diagnostic-only
-        # escape hatch that must also skip this strip so size-attribution tools
-        # can see which functions survived dead-strip (it never affects default
-        # output).
-        if os.environ.get("MOLT_KEEP_SYMBOLS") != "1":
-            _post_link_strip(output_binary, target_triple)
+        # LinkPlan owns strip ordering. Ordinary release plans strip here;
+        # BOLT plans retain symbols and relocations until the optimized image
+        # has been validated and published, then strip in the BOLT executor.
+        candidate = link_candidate or output_binary
+        if candidate != output_binary:
+            if finalize_error := _finalize_native_link_candidate(
+                candidate=candidate,
+                output_binary=output_binary,
+                target_triple=target_triple,
+                strip=strip_after_link,
+            ):
+                message = f"Build failed during native finalization: {finalize_error}"
+                if json_output:
+                    _emit_json(
+                        _json_payload(
+                            "build",
+                            "error",
+                            data={"output": str(output_binary), "target": target},
+                            errors=[message],
+                        ),
+                        json_output,
+                    )
+                else:
+                    print(message, file=sys.stderr)
+                _emit_build_diagnostics_if_present(
+                    diagnostics_payload=diagnostics_payload,
+                    diagnostics_path=diagnostics_path,
+                    json_output=json_output,
+                    verbosity=resolved_diagnostics_verbosity,
+                )
+                return 1
         # Build-time output validity gate (self-protection, task #18): a link
         # that returns 0 can still emit a structurally corrupt artifact (e.g. a
         # mis-applied relocation that flips the Mach-O magic 0xFEEDFACF->0xFEEDFACE,

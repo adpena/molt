@@ -107,6 +107,8 @@ def _run_build_pipeline(
     precompile: bool = False,
     snapshot: bool = False,
     stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
+    bolt_requested: bool = False,
+    bolt_training_cmd: str | None = None,
     fact_graph_request: _factgraph.FactGraphRequest | None = None,
 ) -> int:
     prepared_frontend_run_ticket = prepared_frontend_pipeline_bundle[0]
@@ -258,5 +260,7 @@ def _run_build_pipeline(
         precompile=precompile,
         snapshot=snapshot,
         stdlib_profile=stdlib_profile,
+        bolt_requested=bolt_requested,
+        bolt_training_cmd=bolt_training_cmd,
         fact_graph_request=fact_graph_request,
     )

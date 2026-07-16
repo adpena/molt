@@ -12,7 +12,6 @@ _LINK_PIPELINE_NAMES = (
     "_link_fingerprint_path",
     "_prepare_native_link",
     "_prepare_native_object_artifact",
-    "_retry_native_link_without_hint",
     "_run_native_link_command",
     "_run_native_partial_link_command",
     "_validate_darwin_link_output",

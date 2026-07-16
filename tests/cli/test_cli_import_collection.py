@@ -9368,6 +9368,9 @@ def test_prepare_native_link_stages_stdlib_object_for_link_command(
     assert prepared is not None
     staged_stdlib = artifacts_root / stdlib_obj.name
     assert str(staged_stdlib) in captured_link_cmd
+    assert str(prepared.link_output) in captured_link_cmd
+    assert str(output_binary) not in captured_link_cmd
+    assert str(output_binary) in prepared.link_cmd
     assert staged_stdlib.read_bytes() == b"stdlib"
 
 
@@ -9658,7 +9661,7 @@ def test_build_native_link_success_data_reports_external_native_artifacts(
     assert data["external_native_artifacts"] == [staged.json_payload()]
 
 
-def test_build_native_link_command_does_not_read_ambient_stdlib_env(
+def test_build_native_link_plan_does_not_read_ambient_stdlib_env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     output_obj = tmp_path / "output.o"
@@ -9674,7 +9677,7 @@ def test_build_native_link_command_does_not_read_ambient_stdlib_env(
     monkeypatch.setenv("CC", "clang")
     monkeypatch.setenv("MOLT_STDLIB_OBJ", str(ambient_stdlib))
 
-    link_cmd, _linker_hint, _normalized_target = cli._build_native_link_command(
+    link_plan = cli._build_native_link_plan(
         output_obj=output_obj,
         stub_path=stub_path,
         runtime_lib=runtime_lib,
@@ -9685,7 +9688,7 @@ def test_build_native_link_command_does_not_read_ambient_stdlib_env(
         stdlib_obj_path=None,
     )
 
-    assert str(ambient_stdlib) not in link_cmd
+    assert str(ambient_stdlib) not in link_plan.command
 
 
 def test_linux_release_link_omits_safe_icf_without_capable_linker(
@@ -9703,7 +9706,7 @@ def test_linux_release_link_omits_safe_icf_without_capable_linker(
     monkeypatch.setenv("CC", "clang")
     monkeypatch.setattr(NATIVE_LINK_COMMAND.shutil, "which", lambda _name: None)
 
-    link_cmd, linker_hint, _normalized_target = cli._build_native_link_command(
+    link_plan = cli._build_native_link_plan(
         output_obj=output_obj,
         stub_path=stub_path,
         runtime_lib=runtime_lib,
@@ -9714,8 +9717,8 @@ def test_linux_release_link_omits_safe_icf_without_capable_linker(
         stdlib_obj_path=None,
     )
 
-    assert linker_hint is None
-    assert "-Wl,--icf=safe" not in link_cmd
+    assert link_plan.linker_hint is None
+    assert "-Wl,--icf=safe" not in link_plan.command
 
 
 def test_linux_link_exports_molt_runtime_symbols_for_source_extensions(
@@ -9733,7 +9736,7 @@ def test_linux_link_exports_molt_runtime_symbols_for_source_extensions(
     monkeypatch.setenv("CC", "clang")
     monkeypatch.setattr(NATIVE_LINK_COMMAND.shutil, "which", lambda _name: None)
 
-    link_cmd, _linker_hint, _normalized_target = cli._build_native_link_command(
+    link_plan = cli._build_native_link_plan(
         output_obj=output_obj,
         stub_path=stub_path,
         runtime_lib=runtime_lib,
@@ -9745,7 +9748,7 @@ def test_linux_link_exports_molt_runtime_symbols_for_source_extensions(
         export_molt_runtime_symbols=True,
     )
 
-    assert "-Wl,--export-dynamic" in link_cmd
+    assert "-Wl,--export-dynamic" in link_plan.command
     version_script = tmp_path / ".molt_version.ver"
     assert "molt_*" in version_script.read_text(encoding="utf-8")
 
@@ -9770,7 +9773,7 @@ def test_linux_release_link_selects_lld_without_icf_for_fn_identity(
     monkeypatch.setenv("CC", "clang")
     monkeypatch.setattr(NATIVE_LINK_COMMAND.shutil, "which", fake_which)
 
-    link_cmd, linker_hint, _normalized_target = cli._build_native_link_command(
+    link_plan = cli._build_native_link_plan(
         output_obj=output_obj,
         stub_path=stub_path,
         runtime_lib=runtime_lib,
@@ -9781,9 +9784,9 @@ def test_linux_release_link_selects_lld_without_icf_for_fn_identity(
         stdlib_obj_path=None,
     )
 
-    assert linker_hint == "lld"
-    assert "-fuse-ld=lld" in link_cmd
-    assert "-Wl,--icf=safe" not in link_cmd
+    assert link_plan.linker_hint == "lld"
+    assert "-fuse-ld=lld" in link_plan.command
+    assert "-Wl,--icf=none" in link_plan.command
 
 
 def test_windows_link_omits_icf_for_fn_identity(
@@ -9801,7 +9804,7 @@ def test_windows_link_omits_icf_for_fn_identity(
     monkeypatch.setenv("CC", "clang")
     monkeypatch.setattr(NATIVE_LINK_COMMAND.shutil, "which", lambda _name: None)
 
-    link_cmd, _linker_hint, _normalized_target = cli._build_native_link_command(
+    link_plan = cli._build_native_link_plan(
         output_obj=output_obj,
         stub_path=stub_path,
         runtime_lib=runtime_lib,
@@ -9812,12 +9815,12 @@ def test_windows_link_omits_icf_for_fn_identity(
         stdlib_obj_path=None,
     )
 
-    assert "-Wl,/OPT:REF" in link_cmd
-    assert "-Wl,/OPT:ICF" not in link_cmd
-    assert "-lws2_32" in link_cmd
-    assert "-lntdll" in link_cmd
-    assert "-luserenv" in link_cmd
-    assert "-ladvapi32" in link_cmd
+    assert "-Wl,/OPT:REF" in link_plan.command
+    assert "-Wl,/OPT:NOICF" in link_plan.command
+    assert "-lws2_32" in link_plan.command
+    assert "-lntdll" in link_plan.command
+    assert "-luserenv" in link_plan.command
+    assert "-ladvapi32" in link_plan.command
 
 
 def test_windows_link_exports_molt_runtime_symbols_for_source_extensions(
@@ -9840,7 +9843,7 @@ def test_windows_link_exports_molt_runtime_symbols_for_source_extensions(
         lambda: ("molt_c_api_version", "molt_module_create"),
     )
 
-    link_cmd, _linker_hint, _normalized_target = cli._build_native_link_command(
+    link_plan = cli._build_native_link_plan(
         output_obj=output_obj,
         stub_path=stub_path,
         runtime_lib=runtime_lib,
@@ -9853,9 +9856,14 @@ def test_windows_link_exports_molt_runtime_symbols_for_source_extensions(
     )
 
     def_path = tmp_path / ".molt_exports.def"
-    assert f"-Wl,/DEF:{def_path}" in link_cmd
+    assert f"-Wl,/DEF:{def_path}" in link_plan.command
     assert def_path.read_text(encoding="utf-8") == (
-        "EXPORTS\nmolt_c_api_version\nmolt_module_create\n"
+        "EXPORTS\n"
+        "molt_c_api_version\n"
+        "molt_module_create\n"
+        "_Py_NoneStruct=Py_None\n"
+        "_Py_NotImplementedStruct=Py_NotImplementedSentinel\n"
+        "_Py_EllipsisObject=Py_EllipsisObject\n"
     )
 
 
@@ -9877,7 +9885,7 @@ def test_windows_gnu_link_uses_gnu_system_lib_flags(
         lambda name: "zig" if name == "zig" else None,
     )
 
-    link_cmd, _linker_hint, normalized_target = cli._build_native_link_command(
+    link_plan = cli._build_native_link_plan(
         output_obj=output_obj,
         stub_path=stub_path,
         runtime_lib=runtime_lib,
@@ -9888,11 +9896,11 @@ def test_windows_gnu_link_uses_gnu_system_lib_flags(
         stdlib_obj_path=None,
     )
 
-    assert normalized_target == "x86_64-windows-gnu"
-    assert "-lws2_32" in link_cmd
-    assert "-lntdll" in link_cmd
-    assert "-luserenv" in link_cmd
-    assert "-ladvapi32" in link_cmd
+    assert link_plan.normalized_target == "x86_64-windows-gnu"
+    assert "-lws2_32" in link_plan.command
+    assert "-lntdll" in link_plan.command
+    assert "-luserenv" in link_plan.command
+    assert "-ladvapi32" in link_plan.command
 
 
 def test_windows_native_partial_link_uses_coff_library_tool(

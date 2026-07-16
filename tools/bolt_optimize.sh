@@ -1,103 +1,93 @@
-#!/bin/bash
-# BOLT post-link optimization for molt output binaries.
-# Reorders functions and basic blocks for optimal icache utilization.
-#
-# Usage:
-#   tools/bolt_optimize.sh <binary> [training_command]
-#
-# Example:
-#   tools/bolt_optimize.sh /tmp/sieve_bench /tmp/sieve_bench
-#   tools/bolt_optimize.sh ./my_program "./my_program --input data.txt"
+#!/usr/bin/env bash
+# Linux ELF BOLT post-link optimization for Molt release binaries.
+# Usage: tools/bolt_optimize.sh <binary> [training command containing {binary}]
 
 set -euo pipefail
 
-if [ $# -lt 1 ]; then
-    echo "Usage: $0 <binary> [training_command]" >&2
-    exit 1
+if [[ $# -lt 1 || $# -gt 2 ]]; then
+    echo "Usage: $0 <binary> [training command containing {binary}]" >&2
+    exit 2
 fi
 
 BINARY="$1"
-TRAINING="${2:-$BINARY}"
+TRAINING="${2:-}"
 BOLT_BINARY="${BINARY}.bolt"
-FDATA_PATH="/tmp/molt-bolt-prof.fdata"
 
-if [ ! -f "$BINARY" ]; then
-    echo "ERROR: Binary not found: ${BINARY}" >&2
+if [[ ! -f "$BINARY" ]]; then
+    echo "BOLT: binary not found: ${BINARY}" >&2
     exit 1
 fi
+if [[ "$(uname -s)" != "Linux" ]]; then
+    echo "BOLT: only Linux ELF binaries are supported" >&2
+    exit 1
+fi
+if ! command -v llvm-bolt >/dev/null 2>&1; then
+    echo "BOLT: llvm-bolt not found; install the Molt LLVM toolchain or llvm-bolt" >&2
+    exit 1
+fi
+if [[ -n "$TRAINING" && "$TRAINING" != *"{binary}"* ]]; then
+    echo "BOLT: custom training command must contain the {binary} placeholder" >&2
+    exit 2
+fi
 
-# Resolve BOLT binary — llvm-bolt (standard) or bolt (some distros).
-BOLT=""
-if command -v llvm-bolt >/dev/null 2>&1; then
-    BOLT="$(command -v llvm-bolt)"
-elif command -v bolt >/dev/null 2>&1; then
-    BOLT="$(command -v bolt)"
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/molt-bolt.XXXXXXXX")"
+trap 'rm -rf -- "$WORK_DIR"' EXIT
+INSTRUMENTED="$WORK_DIR/instrumented"
+FDATA_PATH="$WORK_DIR/profile.fdata"
+
+echo "==> BOLT instrumenting ${BINARY}" >&2
+llvm-bolt "$BINARY" -o "$INSTRUMENTED" -instrument \
+    -instrumentation-file="$FDATA_PATH" \
+    -instrumentation-file-append-pid
+
+if [[ -z "$TRAINING" ]]; then
+    echo "==> BOLT training: ${INSTRUMENTED}" >&2
+    "$INSTRUMENTED"
 else
-    echo "ERROR: llvm-bolt not found. Install via: brew install llvm (macOS) or apt install llvm-bolt (Linux)" >&2
-    exit 1
+    TRAINING_COMMAND="${TRAINING//\{binary\}/$INSTRUMENTED}"
+    echo "==> BOLT training: ${TRAINING_COMMAND}" >&2
+    bash -lc "$TRAINING_COMMAND"
 fi
 
-# Clean stale profile data from previous runs.
-rm -f "${FDATA_PATH}" "${FDATA_PATH}."*
-
-# Step 1: Instrument the binary for profile collection.
-echo "==> Instrumenting ${BINARY}..." >&2
-"$BOLT" "$BINARY" -o "${BINARY}.instr" -instrument \
-    -instrumentation-file="${FDATA_PATH}" \
-    -instrumentation-file-append-pid 2>/dev/null || {
-    echo "BOLT instrumentation failed — binary may need --emit-relocs" >&2
-    echo "Rebuild with: RUSTFLAGS='-C link-arg=-Wl,--emit-relocs' cargo build ..." >&2
-    exit 1
-}
-
-# Step 2: Run the instrumented binary with the training workload.
-echo "==> Profiling with: ${TRAINING}..." >&2
-eval "${BINARY}.instr" 2>/dev/null || true
-rm -f "${BINARY}.instr"
-
-# Merge any PID-suffixed profile fragments into the canonical path.
-# BOLT appends .<pid> when -instrumentation-file-append-pid is used.
-FDATA_FOUND=""
-for f in "${FDATA_PATH}" "${FDATA_PATH}."*; do
-    if [ -f "$f" ] && [ -s "$f" ]; then
-        FDATA_FOUND="$f"
-        break
+PROFILE_FRAGMENTS=()
+for profile in "$FDATA_PATH" "$FDATA_PATH".*; do
+    if [[ -s "$profile" ]]; then
+        PROFILE_FRAGMENTS+=("$profile")
     fi
 done
-
-if [ -z "$FDATA_FOUND" ]; then
-    echo "ERROR: No profile data generated — training workload may have failed." >&2
-    rm -f "${BINARY}.instr"
+if (( ${#PROFILE_FRAGMENTS[@]} == 0 )); then
+    echo "BOLT: training produced no profile data" >&2
     exit 1
 fi
-
-# If the profile data ended up in a PID-suffixed file, move it to the canonical path.
-if [ "$FDATA_FOUND" != "$FDATA_PATH" ]; then
-    mv "$FDATA_FOUND" "$FDATA_PATH"
+if (( ${#PROFILE_FRAGMENTS[@]} == 1 )); then
+    FDATA_FOUND="${PROFILE_FRAGMENTS[0]}"
+else
+    if ! command -v merge-fdata >/dev/null 2>&1; then
+        echo "BOLT: multiple profile fragments require merge-fdata" >&2
+        exit 1
+    fi
+    FDATA_FOUND="$WORK_DIR/merged.fdata"
+    merge-fdata "${PROFILE_FRAGMENTS[@]}" > "$FDATA_FOUND"
+    if [[ ! -s "$FDATA_FOUND" ]]; then
+        echo "BOLT: merge-fdata produced no merged profile data" >&2
+        exit 1
+    fi
 fi
 
-# Step 3: Optimize with BOLT using the collected profile.
-echo "==> Optimizing with BOLT..." >&2
-"$BOLT" "$BINARY" -o "$BOLT_BINARY" \
-    -data="${FDATA_PATH}" \
+echo "==> BOLT optimizing ${BINARY}" >&2
+llvm-bolt "$BINARY" -o "$BOLT_BINARY" \
+    -data="$FDATA_FOUND" \
     -reorder-blocks=ext-tsp \
     -reorder-functions=hfsort \
     -split-functions \
     -split-all-cold \
-    -dyno-stats 2>&1 | tail -5
+    -dyno-stats
 
-# Step 4: Report results.
-if [ -f "$BOLT_BINARY" ]; then
-    # stat -f%z is macOS, stat --format=%s is Linux.
-    SIZE_BEFORE=$(stat -f%z "$BINARY" 2>/dev/null || stat --format=%s "$BINARY")
-    SIZE_AFTER=$(stat -f%z "$BOLT_BINARY" 2>/dev/null || stat --format=%s "$BOLT_BINARY")
-    echo "==> Binary size: ${SIZE_BEFORE} -> ${SIZE_AFTER} bytes" >&2
-    echo "==> BOLT-optimized binary: ${BOLT_BINARY}" >&2
-    echo "==> To replace original: mv ${BOLT_BINARY} ${BINARY}" >&2
-else
-    echo "BOLT optimization failed" >&2
+if [[ ! -f "$BOLT_BINARY" ]]; then
+    echo "BOLT: optimizer did not produce ${BOLT_BINARY}" >&2
     exit 1
 fi
 
-# Clean up profile data.
-rm -f "${FDATA_PATH}" "${FDATA_PATH}."*
+SIZE_BEFORE="$(stat --format=%s "$BINARY")"
+SIZE_AFTER="$(stat --format=%s "$BOLT_BINARY")"
+echo "==> BOLT binary size: ${SIZE_BEFORE} -> ${SIZE_AFTER} bytes" >&2
