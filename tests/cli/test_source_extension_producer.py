@@ -1962,8 +1962,12 @@ def test_retire_replaceable_extension_destination_rejects_non_atomic_legacy_tree
     assert not transaction.exists()
 
 
-def test_retire_replaceable_canonical_v2_seal_requires_exact_contract(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    ("existing_schema_version", "replaceable"),
+    ((1, True), (2, True), (3, False)),
+)
+def test_retire_replaceable_canonical_seal_requires_supported_schema_and_contract(
+    tmp_path: Path, existing_schema_version: int, replaceable: bool
 ) -> None:
     destination = tmp_path / "canonical"
     transaction = tmp_path / "transaction"
@@ -2017,7 +2021,6 @@ def test_retire_replaceable_canonical_v2_seal_requires_exact_contract(
             }
         )
     identity = {
-        "schema_version": 2,
         "kind": "molt-source-extension-set",
         "package": "scipy",
         "name": "pact-witness",
@@ -2031,6 +2034,7 @@ def test_retire_replaceable_canonical_v2_seal_requires_exact_contract(
     set_manifest_path.write_text(
         json.dumps(
             {
+                "schema_version": existing_schema_version,
                 **identity,
                 "extensions": extensions,
             }
@@ -2049,11 +2053,30 @@ def test_retire_replaceable_canonical_v2_seal_requires_exact_contract(
     )
     shutil.copytree(seal.root, destination)
 
+    replacement_identity = {
+        "schema_version": producer.SOURCE_EXTENSION_SET_SCHEMA_VERSION,
+        **identity,
+    }
+    if not replaceable:
+        with pytest.raises(
+            producer.SourceExtensionProducerError,
+            match="unsupported existing extension-set schema_version",
+        ):
+            producer._retire_replaceable_extension_destination(
+                destination,
+                transaction_root=transaction,
+                extension_set=extension_set,
+                set_manifest=replacement_identity,
+            )
+        assert destination.is_dir()
+        assert not transaction.exists()
+        return
+
     retired = producer._retire_replaceable_extension_destination(
         destination,
         transaction_root=transaction,
         extension_set=extension_set,
-        set_manifest=identity,
+        set_manifest=replacement_identity,
     )
 
     assert retired == transaction / "retired-destination"
