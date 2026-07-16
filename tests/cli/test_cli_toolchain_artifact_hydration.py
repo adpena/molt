@@ -12,6 +12,7 @@ import molt.wasm_artifact as wasm_artifact
 from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import runtime_build as RUNTIME_BUILD
 from molt.cli import runtime_paths as RUNTIME_PATHS
+from molt.cli.native_link_manifest import write_native_link_dependency_manifest
 import pytest
 
 _FAKE_STATICLIB = b"!<arch>\nfake-staticlib"
@@ -403,6 +404,22 @@ def test_ensure_runtime_lib_hydrates_from_canonical_target(
     canonical_fp.parent.mkdir(parents=True, exist_ok=True)
     cli._write_runtime_fingerprint(
         canonical_fp, fingerprint, artifact=canonical_runtime
+    )
+    write_native_link_dependency_manifest(
+        json.dumps(
+            {
+                "reason": "compiler-message",
+                "message": {
+                    "message": "native-static-libs: ",
+                    "level": "note",
+                },
+            }
+        ),
+        runtime_lib=canonical_runtime,
+        cargo_profile="dev-fast",
+        target_triple=None,
+        source_root=project_root,
+        source_fingerprint=fingerprint,
     )
 
     monkeypatch.setenv("CARGO_TARGET_DIR", str(isolated_target))

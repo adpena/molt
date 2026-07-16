@@ -6,6 +6,10 @@ from pathlib import Path
 
 import molt.cli as cli
 from molt.cli import link_pipeline as cli_link_pipeline
+from tests.cli.native_link_test_support import (
+    SOURCE_FINGERPRINT,
+    write_test_native_link_manifest,
+)
 
 
 def _write_complete_stdlib_contract(stdlib_obj: Path, cache_key: str) -> str:
@@ -44,6 +48,7 @@ def test_prepare_native_link_keeps_current_keyed_stdlib_when_runtime_is_newer(
     runtime_lib = tmp_path / "explicit-target" / "release" / "libmolt_runtime.a"
     runtime_lib.parent.mkdir(parents=True)
     runtime_lib.write_bytes(b"archive")
+    write_test_native_link_manifest(runtime_lib, source_root=project_root)
     output_binary = tmp_path / "app"
     stdlib_obj = tmp_path / "stdlib_shared.o"
     stdlib_obj.write_bytes(b"stdlib")
@@ -85,6 +90,7 @@ def test_prepare_native_link_keeps_current_keyed_stdlib_when_runtime_is_newer(
         json_output=False,
         output_binary=output_binary,
         runtime_lib=runtime_lib,
+        runtime_source_fingerprint=SOURCE_FINGERPRINT,
         molt_root=project_root,
         runtime_cargo_profile="dev-fast",
         target_triple=None,
@@ -119,6 +125,7 @@ def test_prepare_native_link_uses_pre_staged_stdlib_copy(
     runtime_lib = tmp_path / "explicit-target" / "release" / "libmolt_runtime.a"
     runtime_lib.parent.mkdir(parents=True)
     runtime_lib.write_bytes(b"archive")
+    write_test_native_link_manifest(runtime_lib, source_root=project_root)
     output_binary = tmp_path / "app"
     artifacts_root = tmp_path / "artifacts"
     artifacts_root.mkdir()
@@ -154,6 +161,7 @@ def test_prepare_native_link_uses_pre_staged_stdlib_copy(
         json_output=False,
         output_binary=output_binary,
         runtime_lib=runtime_lib,
+        runtime_source_fingerprint=SOURCE_FINGERPRINT,
         molt_root=project_root,
         runtime_cargo_profile="dev-fast",
         target_triple=None,

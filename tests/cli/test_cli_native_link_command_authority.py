@@ -31,3 +31,9 @@ def test_cli_native_link_command_authority_is_single_home() -> None:
     cli_source = inspect.getsource(cli)
     for marker in _NATIVE_LINK_COMMAND_DEFINITIONS:
         assert marker not in cli_source
+
+    command_source = inspect.getsource(native_link_command)
+    assert "shutil.which" not in command_source
+    assert "llvm_tool_candidates" in command_source
+    assert "llvm_named_tool_candidates" in command_source
+    assert "resolve_explicit_tool_command" in command_source

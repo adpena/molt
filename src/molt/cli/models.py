@@ -583,6 +583,7 @@ class _RuntimeArtifactState:
     runtime_wasm: Path | None = None
     runtime_reloc_wasm: Path | None = None
     extra_runtime_features: tuple[str, ...] = ()
+    native_link_source_fingerprint: dict[str, object] | None = None
     runtime_wasm_ready: bool = False
     runtime_reloc_wasm_ready: bool = False
     runtime_wasm_ready_export_sets: set[frozenset[str] | None] = field(
@@ -1468,8 +1469,7 @@ class _ImportPlan:
         if unknown:
             raise ValueError(
                 "compile module set contains modules outside the closure plan "
-                "or without source graph entries: "
-                + ", ".join(unknown)
+                "or without source graph entries: " + ", ".join(unknown)
             )
         return _ImportPlan(
             image_scope=self.image_scope,

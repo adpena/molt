@@ -298,10 +298,7 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
     '_windows_coff_library_command': ('native_link_command', '_windows_coff_library_command'),
     # molt.cli.native_link_deps
     '_collect_cargo_native_link_deps': ('native_link_deps', '_collect_cargo_native_link_deps'),
-    '_crate_name_from_archive_member': ('native_link_deps', '_crate_name_from_archive_member'),
-    '_crate_name_from_cargo_build_dir': ('native_link_deps', '_crate_name_from_cargo_build_dir'),
     '_native_target_is_windows': ('native_link_deps', '_native_target_is_windows'),
-    '_runtime_archive_crate_names': ('native_link_deps', '_runtime_archive_crate_names'),
     # molt.cli.native_main_stub
     '_native_main_stub_snippets': ('native_main_stub', '_native_main_stub_snippets'),
     '_render_native_main_stub': ('native_main_stub', '_render_native_main_stub'),

@@ -13,6 +13,7 @@ from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import backend_cache_setup as cli_backend_cache_setup
 from molt.cli import backend_compile as cli_backend_compile
 from molt.cli import link_pipeline as cli_link_pipeline
+from tests.cli.native_link_test_support import SOURCE_FINGERPRINT
 
 COMPILER_METADATA = importlib.import_module("molt.cli.compiler_metadata")
 RUNTIME_FEATURES = importlib.import_module("molt.cli.runtime_features")
@@ -482,9 +483,7 @@ def test_runtime_fingerprint_reuses_stored_hash_when_inputs_unchanged(
         calls += 1
         original(path, root, hasher)
 
-    monkeypatch.setattr(
-        FILE_HASHING, "_hash_source_tree_file", wrapped, raising=True
-    )
+    monkeypatch.setattr(FILE_HASHING, "_hash_source_tree_file", wrapped, raising=True)
     reused = cli._runtime_fingerprint(
         tmp_path,
         cargo_profile="dev-fast",
@@ -589,9 +588,7 @@ def test_runtime_fingerprint_rehashes_when_source_metadata_changes(
         calls += 1
         original(path, root, hasher)
 
-    monkeypatch.setattr(
-        FILE_HASHING, "_hash_source_tree_file", wrapped, raising=True
-    )
+    monkeypatch.setattr(FILE_HASHING, "_hash_source_tree_file", wrapped, raising=True)
     changed = cli._runtime_fingerprint(
         tmp_path,
         cargo_profile="dev-fast",
@@ -805,6 +802,12 @@ def test_ensure_runtime_lib_full_profile_fingerprint_declares_default_stdlib(
     )
     monkeypatch.setattr(
         RUNTIME_BUILD,
+        "_native_link_manifest_matches",
+        lambda *args, **kwargs: True,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        RUNTIME_BUILD,
         "_build_lock",
         lambda *args, **kwargs: contextlib.nullcontext(),
         raising=True,
@@ -898,6 +901,12 @@ def test_ensure_runtime_lib_session_cache_is_source_fingerprint_qualified(
         RUNTIME_BUILD,
         "_runtime_artifact_fingerprint_matches",
         fake_runtime_artifact_fingerprint_matches,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        RUNTIME_BUILD,
+        "_native_link_manifest_matches",
+        lambda *args, **kwargs: True,
         raising=True,
     )
     monkeypatch.setattr(
@@ -1172,11 +1181,14 @@ def test_prepare_native_link_resolves_runtime_alias_for_stdlib_profile(
         target_triple: str | None,
         sysroot_path: Path | None,
         profile: str,
+        source_root: Path,
+        source_fingerprint: dict[str, object],
         stdlib_obj_path: Path | None = None,
         export_molt_runtime_symbols: bool = False,
         bolt_requested: bool = False,
     ) -> SimpleNamespace:
         del output_obj, stub_path, target_triple, sysroot_path, profile
+        del source_root, source_fingerprint
         del stdlib_obj_path
         del bolt_requested
         assert not export_molt_runtime_symbols
@@ -1222,6 +1234,7 @@ def test_prepare_native_link_resolves_runtime_alias_for_stdlib_profile(
         json_output=True,
         output_binary=output_binary,
         runtime_lib=None,
+        runtime_source_fingerprint=SOURCE_FINGERPRINT,
         molt_root=project_root,
         runtime_cargo_profile="dev-fast",
         target_triple=None,
@@ -1355,6 +1368,7 @@ def test_prepare_backend_setup_records_backend_stage_timings(
         lambda *args, **kwargs: runtime_state,
         raising=True,
     )
+
     def fake_prepare_backend_cache_setup(*args, **kwargs):
         del args
         assert kwargs["stage_timings_ms"] is stage_timings_ms
@@ -1537,7 +1551,9 @@ def test_ensure_runtime_lib_rebuilds_unfingerprinted_prebuilt_archive(
     source.write_text("pub fn marker() {}\n", encoding="utf-8")
     exfat_epoch_ns = 315_532_800 * 1_000_000_000
     os.utime(source, ns=(exfat_epoch_ns, exfat_epoch_ns))
-    os.utime(runtime_lib, ns=(exfat_epoch_ns + 1_000_000_000, exfat_epoch_ns + 1_000_000_000))
+    os.utime(
+        runtime_lib, ns=(exfat_epoch_ns + 1_000_000_000, exfat_epoch_ns + 1_000_000_000)
+    )
     project_root = tmp_path / "repo"
     project_root.mkdir()
     seen_cmds: list[list[str]] = []
@@ -1688,9 +1704,7 @@ def test_backend_fingerprint_reuses_stored_hash_when_inputs_unchanged(
         calls += 1
         original(path, root, hasher)
 
-    monkeypatch.setattr(
-        FILE_HASHING, "_hash_source_tree_file", wrapped, raising=True
-    )
+    monkeypatch.setattr(FILE_HASHING, "_hash_source_tree_file", wrapped, raising=True)
     reused = cli_backend_binary._backend_fingerprint(
         tmp_path,
         cargo_profile="dev-fast",
@@ -2121,6 +2135,12 @@ def test_ensure_runtime_lib_records_runtime_stage_timings_on_cache_hit(
     monkeypatch.setattr(
         RUNTIME_BUILD,
         "_runtime_artifact_fingerprint_matches",
+        lambda *args, **kwargs: True,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        RUNTIME_BUILD,
+        "_native_link_manifest_matches",
         lambda *args, **kwargs: True,
         raising=True,
     )

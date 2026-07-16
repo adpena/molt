@@ -6,15 +6,16 @@ from pathlib import Path
 import platform
 import re
 import shlex
-import shutil
 import sys
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from molt.cli.atomic_io import _atomic_write_text
-from molt.cli.native_link_deps import (
-    _collect_cargo_native_link_deps,
-    _native_windows_system_link_libs,
+from molt.cli.llvm_wasi_tools import (
+    llvm_named_tool_candidates,
+    llvm_tool_candidates,
+    resolve_explicit_tool_command,
 )
+from molt.cli.native_link_deps import _collect_cargo_native_link_deps
 from molt.cli.native_link_plan import (
     NativeLinkPlan,
     NativeObjectFormat,
@@ -40,15 +41,29 @@ _CPYTHON_SINGLETON_CANONICAL_ALIASES = (
 )
 
 
-def _resolve_available_fast_linker() -> str | None:
-    if shutil.which("mold"):
+def _tool_sibling_directories(command: Sequence[str]) -> tuple[Path, ...]:
+    if not command:
+        return ()
+    executable = Path(command[0])
+    return (executable.parent,) if executable.is_absolute() else ()
+
+
+def _resolve_available_fast_linker(
+    driver_command: Sequence[str] = (),
+) -> str | None:
+    sibling_directories = _tool_sibling_directories(driver_command)
+    if sys.platform.startswith("linux") and llvm_named_tool_candidates(
+        "mold", sibling_directories=sibling_directories
+    ):
         return "mold"
-    if shutil.which("ld.lld") or shutil.which("lld"):
+    if llvm_named_tool_candidates(
+        "ld.lld", "lld", "lld-link", sibling_directories=sibling_directories
+    ):
         return "lld"
     return None
 
 
-def _resolve_dev_linker() -> str | None:
+def _resolve_dev_linker(driver_command: Sequence[str] = ()) -> str | None:
     raw = os.environ.get("MOLT_DEV_LINKER", "auto").strip().lower()
     if raw in {"0", "false", "no", "off", "none", "disable"}:
         return None
@@ -56,29 +71,33 @@ def _resolve_dev_linker() -> str | None:
         return raw
     if raw != "auto":
         return None
-    return _resolve_available_fast_linker()
+    return _resolve_available_fast_linker(driver_command)
 
 
 def _resolve_native_linker_hint(
     *,
     profile: str,
     target_triple: str | None,
+    driver_command: Sequence[str] = (),
 ) -> str | None:
     if profile == "dev":
         raw = os.environ.get("MOLT_DEV_LINKER", "auto").strip().lower()
         is_host_linux = target_triple is None and sys.platform.startswith("linux")
-        if raw == "auto" and not is_host_linux:
+        is_host_windows = target_triple is None and sys.platform == "win32"
+        if raw == "auto" and not (is_host_linux or is_host_windows):
             return None
-        selected = _resolve_dev_linker()
+        selected = _resolve_dev_linker(driver_command)
         target_is_linux = (target_triple is not None and "linux" in target_triple) or (
             target_triple is None and sys.platform.startswith("linux")
         )
         if selected == "mold" and not target_is_linux:
             raise RuntimeError("mold is supported only for Linux ELF link targets.")
         return selected
-    is_host_linux = target_triple is None and sys.platform.startswith("linux")
-    if is_host_linux:
-        return _resolve_available_fast_linker()
+    is_host_fast_linker = target_triple is None and (
+        sys.platform.startswith("linux") or sys.platform == "win32"
+    )
+    if is_host_fast_linker:
+        return _resolve_available_fast_linker(driver_command)
     return None
 
 
@@ -104,16 +123,26 @@ def _build_native_link_driver_command(
     sysroot_path: Path | None,
     profile: str,
 ) -> tuple[list[str], str | None, str | None]:
-    cc = os.environ.get("CC", "clang")
-    link_cmd = shlex.split(cc)
+    explicit_cc = os.environ.get("CC", "").strip()
+    if explicit_cc:
+        link_cmd = list(resolve_explicit_tool_command(explicit_cc, label="CC"))
+    else:
+        candidates = llvm_tool_candidates("cc")
+        if not candidates:
+            raise RuntimeError(
+                "Native link requires Clang in the managed LLVM toolchain or PATH."
+            )
+        link_cmd = [str(candidates[0])]
     normalized_target: str | None = target_triple
     if target_triple:
         cross_cc = os.environ.get("MOLT_CROSS_CC")
         target_arg = target_triple
         if cross_cc:
-            link_cmd = shlex.split(cross_cc)
-        elif shutil.which("zig"):
-            link_cmd = ["zig", "cc"]
+            link_cmd = list(
+                resolve_explicit_tool_command(cross_cc, label="MOLT_CROSS_CC")
+            )
+        elif (zig := llvm_named_tool_candidates("zig")):
+            link_cmd = [str(zig[0]), "cc"]
             target_arg = _zig_target_query(target_triple)
             normalized_target = target_arg
         else:
@@ -134,6 +163,7 @@ def _build_native_link_driver_command(
     linker_hint = _resolve_native_linker_hint(
         profile=profile,
         target_triple=target_triple,
+        driver_command=link_cmd,
     )
     if linker_hint and not any(arg.startswith("-fuse-ld=") for arg in link_cmd):
         link_cmd.append(f"-fuse-ld={linker_hint}")
@@ -159,23 +189,17 @@ def _windows_coff_library_command(
     override = os.environ.get("MOLT_COFF_LIB")
     if override:
         return [
-            *shlex.split(override),
+            *resolve_explicit_tool_command(override, label="MOLT_COFF_LIB"),
             f"/OUT:{output_path}",
             *[str(path) for path in input_objects],
         ]
-    for tool_name in ("llvm-lib", "lib"):
-        tool = shutil.which(tool_name)
-        if tool:
-            return [
-                tool,
-                f"/OUT:{output_path}",
-                *[str(path) for path in input_objects],
-            ]
-    lld_link = shutil.which("lld-link")
-    if lld_link:
+    candidates = llvm_named_tool_candidates("llvm-lib", "lib", "lld-link")
+    if candidates:
+        tool = candidates[0]
+        is_lld_link = tool.stem.lower() == "lld-link"
         return [
-            lld_link,
-            "/lib",
+            str(tool),
+            * (("/lib",) if is_lld_link else ()),
             f"/OUT:{output_path}",
             *[str(path) for path in input_objects],
         ]
@@ -194,6 +218,8 @@ def _build_native_link_plan(
     target_triple: str | None,
     sysroot_path: Path | None,
     profile: str,
+    source_root: Path,
+    source_fingerprint: Mapping[str, object],
     stdlib_obj_path: Path | None = None,
     export_molt_runtime_symbols: bool = False,
     bolt_requested: bool = False,
@@ -298,10 +324,14 @@ def _build_native_link_plan(
         )
     )
     _append_darwin_runtime_frameworks(link_cmd, target_triple=target_triple)
-    cargo_search, cargo_libs = _collect_cargo_native_link_deps(runtime_lib)
-    link_cmd.extend(cargo_search)
-    link_cmd.extend(cargo_libs)
-    link_cmd.extend(_native_windows_system_link_libs(target_triple))
+    cargo_native_link_flags = _collect_cargo_native_link_deps(
+        runtime_lib,
+        target_triple=target_triple,
+        object_format=target.object_format.value,
+        source_root=source_root,
+        source_fingerprint=source_fingerprint,
+    )
+    link_cmd.extend(cargo_native_link_flags)
     return NativeLinkPlan(
         target=target,
         capabilities=capabilities,

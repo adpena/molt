@@ -8,7 +8,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Collection, Sequence, cast
+from typing import Any, Collection, Mapping, Sequence, cast
 
 from molt.cli.artifact_state import _artifact_state_path
 from molt.cli.config_resolution import DEFAULT_RUNTIME_STDLIB_PROFILE
@@ -281,6 +281,7 @@ def _prepare_native_link(
     json_output: bool,
     output_binary: Path | None,
     runtime_lib: Path | None,
+    runtime_source_fingerprint: Mapping[str, object],
     molt_root: Path,
     runtime_cargo_profile: str,
     target_triple: str | None,
@@ -377,6 +378,8 @@ def _prepare_native_link(
             target_triple=target_triple,
             sysroot_path=sysroot_path,
             profile=profile,
+            source_root=molt_root,
+            source_fingerprint=runtime_source_fingerprint,
             stdlib_obj_path=link_stdlib_obj,
             export_molt_runtime_symbols=bool(staged_external_native_artifacts),
             bolt_requested=bolt_requested,

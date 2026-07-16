@@ -28,6 +28,10 @@ from molt.cli import backend_compile as cli_backend_compile
 from molt.cli import backend_output_pipeline as cli_backend_output_pipeline
 from molt.cli import backend_pipeline as cli_backend_pipeline
 from molt.cli import link_pipeline as cli_link_pipeline
+from tests.cli.native_link_test_support import (
+    SOURCE_FINGERPRINT,
+    write_test_native_link_manifest,
+)
 from molt.cli import non_native_output as cli_non_native_output
 import pytest
 from molt.cli import build_diagnostics as cli_build_diagnostics
@@ -9165,6 +9169,7 @@ def test_prepare_native_link_includes_stdlib_object_in_link_fingerprint_inputs(
     output_obj.write_bytes(b"\x7fELFobject")
     runtime_lib = tmp_path / "libmolt_runtime.a"
     runtime_lib.write_bytes(b"archive")
+    write_test_native_link_manifest(runtime_lib, source_root=tmp_path)
     output_binary = tmp_path / "app"
     stdlib_obj = tmp_path / "stdlib.o"
     stdlib_obj.write_bytes(b"stdlib")
@@ -9197,6 +9202,7 @@ def test_prepare_native_link_includes_stdlib_object_in_link_fingerprint_inputs(
         json_output=False,
         output_binary=output_binary,
         runtime_lib=runtime_lib,
+        runtime_source_fingerprint=SOURCE_FINGERPRINT,
         molt_root=tmp_path,
         runtime_cargo_profile="dev-fast",
         target_triple=None,
@@ -9231,6 +9237,7 @@ def test_prepare_native_link_rehashes_when_stdlib_object_contents_change(
     output_obj.write_bytes(b"\x7fELFobject")
     runtime_lib = tmp_path / "libmolt_runtime.a"
     runtime_lib.write_bytes(b"archive")
+    write_test_native_link_manifest(runtime_lib, source_root=tmp_path)
     output_binary = tmp_path / "app"
     stdlib_obj = tmp_path / "stdlib.o"
     stdlib_obj.write_bytes(b"stdlib-v1")
@@ -9258,6 +9265,7 @@ def test_prepare_native_link_rehashes_when_stdlib_object_contents_change(
         json_output=False,
         output_binary=output_binary,
         runtime_lib=runtime_lib,
+        runtime_source_fingerprint=SOURCE_FINGERPRINT,
         molt_root=tmp_path,
         runtime_cargo_profile="dev-fast",
         target_triple=None,
@@ -9286,6 +9294,7 @@ def test_prepare_native_link_rehashes_when_stdlib_object_contents_change(
         json_output=False,
         output_binary=output_binary,
         runtime_lib=runtime_lib,
+        runtime_source_fingerprint=SOURCE_FINGERPRINT,
         molt_root=tmp_path,
         runtime_cargo_profile="dev-fast",
         target_triple=None,
@@ -9312,6 +9321,7 @@ def test_prepare_native_link_stages_stdlib_object_for_link_command(
     output_obj.write_bytes(b"\x7fELFobject")
     runtime_lib = tmp_path / "libmolt_runtime.a"
     runtime_lib.write_bytes(b"archive")
+    write_test_native_link_manifest(runtime_lib, source_root=tmp_path)
     output_binary = tmp_path / "app"
     stdlib_obj = tmp_path / "stdlib.o"
     stdlib_obj.write_bytes(b"stdlib")
@@ -9349,6 +9359,7 @@ def test_prepare_native_link_stages_stdlib_object_for_link_command(
         json_output=False,
         output_binary=output_binary,
         runtime_lib=runtime_lib,
+        runtime_source_fingerprint=SOURCE_FINGERPRINT,
         molt_root=tmp_path,
         runtime_cargo_profile="dev-fast",
         target_triple=None,
@@ -9430,6 +9441,7 @@ def test_prepare_native_link_stages_external_native_artifacts_for_runtime_custod
     output_obj.write_bytes(b"\x7fELFobject")
     runtime_lib = tmp_path / "libmolt_runtime.a"
     runtime_lib.write_bytes(b"archive")
+    write_test_native_link_manifest(runtime_lib, source_root=tmp_path)
     output_binary = tmp_path / "app"
     artifacts_root = tmp_path / "artifacts"
     artifacts_root.mkdir()
@@ -9476,6 +9488,7 @@ def test_prepare_native_link_stages_external_native_artifacts_for_runtime_custod
         json_output=False,
         output_binary=output_binary,
         runtime_lib=runtime_lib,
+        runtime_source_fingerprint=SOURCE_FINGERPRINT,
         molt_root=tmp_path,
         runtime_cargo_profile="dev-fast",
         target_triple=None,
@@ -9580,6 +9593,7 @@ def test_prepare_native_link_rejects_external_native_artifact_checksum_drift(
         json_output=False,
         output_binary=tmp_path / "app",
         runtime_lib=runtime_lib,
+        runtime_source_fingerprint={},
         molt_root=tmp_path,
         runtime_cargo_profile="dev-fast",
         target_triple=None,
@@ -9661,8 +9675,19 @@ def test_build_native_link_success_data_reports_external_native_artifacts(
     assert data["external_native_artifacts"] == [staged.json_payload()]
 
 
+@pytest.fixture
+def no_cargo_native_link_deps(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        NATIVE_LINK_COMMAND,
+        "_collect_cargo_native_link_deps",
+        lambda _runtime_lib, **_kwargs: [],
+    )
+
+
 def test_build_native_link_plan_does_not_read_ambient_stdlib_env(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    no_cargo_native_link_deps: None,
 ) -> None:
     output_obj = tmp_path / "output.o"
     stub_path = tmp_path / "main_stub.c"
@@ -9685,6 +9710,8 @@ def test_build_native_link_plan_does_not_read_ambient_stdlib_env(
         target_triple=None,
         sysroot_path=None,
         profile="dev",
+        source_root=tmp_path,
+        source_fingerprint={},
         stdlib_obj_path=None,
     )
 
@@ -9692,7 +9719,9 @@ def test_build_native_link_plan_does_not_read_ambient_stdlib_env(
 
 
 def test_linux_release_link_omits_safe_icf_without_capable_linker(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    no_cargo_native_link_deps: None,
 ) -> None:
     output_obj = tmp_path / "output.o"
     stub_path = tmp_path / "main_stub.c"
@@ -9714,6 +9743,8 @@ def test_linux_release_link_omits_safe_icf_without_capable_linker(
         target_triple=None,
         sysroot_path=None,
         profile="release",
+        source_root=tmp_path,
+        source_fingerprint={},
         stdlib_obj_path=None,
     )
 
@@ -9722,7 +9753,9 @@ def test_linux_release_link_omits_safe_icf_without_capable_linker(
 
 
 def test_linux_link_exports_molt_runtime_symbols_for_source_extensions(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    no_cargo_native_link_deps: None,
 ) -> None:
     output_obj = tmp_path / "output.o"
     stub_path = tmp_path / "main_stub.c"
@@ -9744,6 +9777,8 @@ def test_linux_link_exports_molt_runtime_symbols_for_source_extensions(
         target_triple=None,
         sysroot_path=None,
         profile="release",
+        source_root=tmp_path,
+        source_fingerprint={},
         stdlib_obj_path=None,
         export_molt_runtime_symbols=True,
     )
@@ -9754,7 +9789,9 @@ def test_linux_link_exports_molt_runtime_symbols_for_source_extensions(
 
 
 def test_linux_release_link_selects_lld_without_icf_for_fn_identity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    no_cargo_native_link_deps: None,
 ) -> None:
     output_obj = tmp_path / "output.o"
     stub_path = tmp_path / "main_stub.c"
@@ -9781,6 +9818,8 @@ def test_linux_release_link_selects_lld_without_icf_for_fn_identity(
         target_triple=None,
         sysroot_path=None,
         profile="release",
+        source_root=tmp_path,
+        source_fingerprint={},
         stdlib_obj_path=None,
     )
 
@@ -9790,7 +9829,9 @@ def test_linux_release_link_selects_lld_without_icf_for_fn_identity(
 
 
 def test_windows_link_omits_icf_for_fn_identity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    no_cargo_native_link_deps: None,
 ) -> None:
     output_obj = tmp_path / "output.obj"
     stub_path = tmp_path / "main_stub.c"
@@ -9812,6 +9853,8 @@ def test_windows_link_omits_icf_for_fn_identity(
         target_triple=None,
         sysroot_path=None,
         profile="release",
+        source_root=tmp_path,
+        source_fingerprint={},
         stdlib_obj_path=None,
     )
 
@@ -9824,7 +9867,9 @@ def test_windows_link_omits_icf_for_fn_identity(
 
 
 def test_windows_link_exports_molt_runtime_symbols_for_source_extensions(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    no_cargo_native_link_deps: None,
 ) -> None:
     output_obj = tmp_path / "output.obj"
     stub_path = tmp_path / "main_stub.c"
@@ -9851,6 +9896,8 @@ def test_windows_link_exports_molt_runtime_symbols_for_source_extensions(
         target_triple=None,
         sysroot_path=None,
         profile="release",
+        source_root=tmp_path,
+        source_fingerprint={},
         stdlib_obj_path=None,
         export_molt_runtime_symbols=True,
     )
@@ -9868,7 +9915,9 @@ def test_windows_link_exports_molt_runtime_symbols_for_source_extensions(
 
 
 def test_windows_gnu_link_uses_gnu_system_lib_flags(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    no_cargo_native_link_deps: None,
 ) -> None:
     output_obj = tmp_path / "output.obj"
     stub_path = tmp_path / "main_stub.c"
@@ -9893,6 +9942,8 @@ def test_windows_gnu_link_uses_gnu_system_lib_flags(
         target_triple="x86_64-pc-windows-gnu",
         sysroot_path=None,
         profile="release",
+        source_root=tmp_path,
+        source_fingerprint={},
         stdlib_obj_path=None,
     )
 
@@ -18645,6 +18696,7 @@ def test_ensure_native_runtime_lib_ready_before_link_awaits_async_future(
     runtime_state = cli._RuntimeArtifactState(
         runtime_lib=tmp_path / "libmolt_runtime.a",
         runtime_lib_ready_future=fake_future,
+        native_link_source_fingerprint={},
     )
     monkeypatch.setattr(
         RUNTIME_BUILD,
@@ -18679,13 +18731,15 @@ def test_ensure_native_runtime_lib_ready_before_link_passes_resolved_modules(
     )
     captured: list[frozenset[str]] = []
 
+    def fake_ensure_runtime_lib_ready(runtime_state, **kwargs) -> bool:
+        captured.append(frozenset(cast(set[str], kwargs["resolved_modules"])))
+        runtime_state.native_link_source_fingerprint = {}
+        return True
+
     monkeypatch.setattr(
         RUNTIME_BUILD,
         "_ensure_runtime_lib_ready",
-        lambda runtime_state, **kwargs: (
-            captured.append(frozenset(cast(set[str], kwargs["resolved_modules"])))
-            or True
-        ),
+        fake_ensure_runtime_lib_ready,
     )
 
     ready = RUNTIME_BUILD._ensure_native_runtime_lib_ready_before_link(
@@ -21164,6 +21218,11 @@ def test_ensure_runtime_lib_native_path_does_not_require_wasm_export_fingerprint
     )
     monkeypatch.setattr(
         RUNTIME_BUILD,
+        "_native_link_manifest_matches",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        RUNTIME_BUILD,
         "_run_cargo_with_sccache_retry",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("unexpected runtime rebuild")
@@ -21500,6 +21559,11 @@ def test_ensure_runtime_lib_verified_key_is_stable_across_user_import_graph(
         RUNTIME_BUILD,
         "_runtime_artifact_fingerprint_matches",
         fake_runtime_artifact_fingerprint_matches,
+    )
+    monkeypatch.setattr(
+        RUNTIME_BUILD,
+        "_native_link_manifest_matches",
+        lambda *_args, **_kwargs: True,
     )
 
     try:
