@@ -1,4 +1,11 @@
-# Repository Guidelines
+<!-- INSTRUCTION_ARCHIVE: non-normative -->
+
+> **Non-normative archive.** This file preserves historical instruction material
+> for targeted research. It is not an agent contract and must not be loaded or
+> inherited as project guidance. The root `AGENTS.md` is the sole project-wide
+> instruction authority.
+
+# Repository Guidelines (historical archive)
 
 ## HIGHEST GUIDING PRINCIPLES: 100-Year Optimal Engineering (Turn Blocker)
 
