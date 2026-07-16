@@ -341,6 +341,199 @@ fn iter_next_unboxed_value_not_return_boundary_dropped_on_exhaustion_edge() {
     );
 }
 
+/// Two mutually exclusive loops can share one post-branch join even though
+/// each loop owns a distinct branch-local iterator.  Each iterator is live on
+/// its continue edge and dies only on its own exhausted edge.  A join-entry
+/// drop is impossible because neither iterator dominates the sibling branch;
+/// the release must therefore live on the exact exhausted edge.
+#[test]
+fn mutually_exclusive_loop_iterators_drop_on_their_own_exit_edges() {
+    let mut func = TirFunction::new(
+        "mutually_exclusive_loop_iterators".into(),
+        vec![],
+        TirType::None,
+    );
+    let choose_left = func.fresh_value();
+    func.value_types.insert(choose_left, TirType::Bool);
+
+    let left_preheader = func.fresh_block();
+    let left_header = func.fresh_block();
+    let left_body = func.fresh_block();
+    let right_preheader = func.fresh_block();
+    let right_header = func.fresh_block();
+    let right_body = func.fresh_block();
+    let join = func.fresh_block();
+
+    let left_iter = func.fresh_value();
+    let left_value = func.fresh_value();
+    let left_done = func.fresh_value();
+    let right_iter = func.fresh_value();
+    let right_value = func.fresh_value();
+    let right_done = func.fresh_value();
+    for value in [left_iter, left_value, right_iter, right_value] {
+        func.value_types.insert(value, TirType::DynBox);
+    }
+    for value in [left_done, right_done] {
+        func.value_types.insert(value, TirType::Bool);
+    }
+
+    let entry = func.entry_block;
+    {
+        let block = func.blocks.get_mut(&entry).unwrap();
+        block
+            .ops
+            .push(op(OpCode::ConstBool, vec![], vec![choose_left]));
+        block.terminator = Terminator::CondBranch {
+            cond: choose_left,
+            then_block: left_preheader,
+            then_args: vec![],
+            else_block: right_preheader,
+            else_args: vec![],
+        };
+    }
+    func.blocks.insert(
+        left_preheader,
+        TirBlock {
+            id: left_preheader,
+            args: vec![],
+            ops: vec![const_str(left_iter)],
+            terminator: Terminator::Branch {
+                target: left_header,
+                args: vec![],
+            },
+        },
+    );
+    func.blocks.insert(
+        left_header,
+        TirBlock {
+            id: left_header,
+            args: vec![],
+            ops: vec![op(
+                OpCode::IterNextUnboxed,
+                vec![left_iter],
+                vec![left_value, left_done],
+            )],
+            terminator: Terminator::CondBranch {
+                cond: left_done,
+                then_block: join,
+                then_args: vec![],
+                else_block: left_body,
+                else_args: vec![],
+            },
+        },
+    );
+    func.blocks.insert(
+        left_body,
+        TirBlock {
+            id: left_body,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Branch {
+                target: left_header,
+                args: vec![],
+            },
+        },
+    );
+    func.blocks.insert(
+        right_preheader,
+        TirBlock {
+            id: right_preheader,
+            args: vec![],
+            ops: vec![const_str(right_iter)],
+            terminator: Terminator::Branch {
+                target: right_header,
+                args: vec![],
+            },
+        },
+    );
+    func.blocks.insert(
+        right_header,
+        TirBlock {
+            id: right_header,
+            args: vec![],
+            ops: vec![op(
+                OpCode::IterNextUnboxed,
+                vec![right_iter],
+                vec![right_value, right_done],
+            )],
+            terminator: Terminator::CondBranch {
+                cond: right_done,
+                then_block: join,
+                then_args: vec![],
+                else_block: right_body,
+                else_args: vec![],
+            },
+        },
+    );
+    func.blocks.insert(
+        right_body,
+        TirBlock {
+            id: right_body,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Branch {
+                target: right_header,
+                args: vec![],
+            },
+        },
+    );
+    func.blocks.insert(
+        join,
+        TirBlock {
+            id: join,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Return { values: vec![] },
+        },
+    );
+    func.loop_roles.insert(left_header, LoopRole::LoopHeader);
+    func.loop_roles.insert(right_header, LoopRole::LoopHeader);
+
+    let mut am = AnalysisManager::new();
+    run(&mut func, &mut am);
+
+    let exit_target = |header: BlockId| match &func.blocks[&header].terminator {
+        Terminator::CondBranch {
+            then_block,
+            else_block,
+            ..
+        } => (*then_block, *else_block),
+        other => panic!("loop header must remain conditional, got {other:?}"),
+    };
+    let (left_exit, left_continue) = exit_target(left_header);
+    let (right_exit, right_continue) = exit_target(right_header);
+    assert_eq!(left_continue, left_body);
+    assert_eq!(right_continue, right_body);
+    assert_ne!(left_exit, join, "left exhausted edge must be split");
+    assert_ne!(right_exit, join, "right exhausted edge must be split");
+
+    for (split, iterator) in [(left_exit, left_iter), (right_exit, right_iter)] {
+        let block = &func.blocks[&split];
+        assert_eq!(
+            block
+                .ops
+                .iter()
+                .filter(|op| op.opcode == OpCode::DecRef && op.operands == [iterator])
+                .count(),
+            1,
+            "the branch-local iterator must be released exactly once on its exhausted edge"
+        );
+        assert!(matches!(
+            &block.terminator,
+            Terminator::Branch { target, args } if *target == join && args.is_empty()
+        ));
+    }
+    assert!(
+        func.blocks[&join]
+            .ops
+            .iter()
+            .all(|op| op.opcode != OpCode::DecRef),
+        "the shared join cannot release branch-local values that do not dominate it"
+    );
+    crate::tir::verify::verify_function(&func)
+        .expect("path-specific release splits must preserve valid SSA");
+}
+
 /// Straight-line temp: v1 = Call(a); v2 = Call(v1); Return(v2).
 /// v1 dies after op 2 → exactly one DecRef(v1). v2 is returned (transferred)
 /// → not dropped.
@@ -2317,11 +2510,9 @@ fn mixed_phi_critical_edge_split_inserts_fresh_incref_block() {
     let _ = verify_am.get::<TirLiveness>(&func).clone();
 }
 
-/// FINDING 3 (round-4) fail-closed pin. `incoming_arg_roots` keys on alias
-/// ROOT over ALL predecessors, so a root forwarded into a join's phi by ANY
-/// predecessor is excluded from that join's edge-dying drop on EVERY path.
-/// This test pins the load-bearing invariant the imprecision must preserve:
-/// the exclusion can only ever LEAK, NEVER double-free (over-release → UAF).
+/// A root forwarded into the same join phi by every predecessor transfers one
+/// owner into the phi; path-specific edge dying must not release it beside the
+/// transfer.  The phi's own last use remains the sole release authority.
 ///
 /// Shape (a diamond where the SAME owned root reaches a join on BOTH edges):
 /// `entry` mints one owned value `r`, then branches to `p1` / `p2`. `p1`
@@ -2331,11 +2522,9 @@ fn mixed_phi_critical_edge_split_inserts_fresh_incref_block() {
 /// and is a member of `incoming_arg_roots`. The join consumes the phi (a
 /// `Call`) and returns nothing. There is exactly ONE underlying owned object;
 /// the assertion is that the pass emits AT MOST ONE `DecRef` naming any member
-/// of `r`'s group across the whole function — never two (the double-free the
-/// global keying must not introduce). A leak (zero drops) would be acceptable
-/// per the fail-closed contract; a double-free would be the UAF bug.
+/// of `r`'s group across the whole function.
 #[test]
-fn forwarded_into_phi_other_pred_live_is_leak_not_uaf() {
+fn forwarded_into_phi_on_every_edge_releases_exactly_once() {
     let mut func = TirFunction::new("diamond".into(), vec![], TirType::DynBox);
     let p1 = func.fresh_block();
     let p2 = func.fresh_block();
@@ -2408,9 +2597,8 @@ fn forwarded_into_phi_other_pred_live_is_leak_not_uaf() {
     );
     let mut am = AnalysisManager::new();
     run(&mut func, &mut am);
-    // The single owned object (`r`'s alias group: r, r_alias, phi) must be
-    // released AT MOST once — never twice. (Fail-closed: a leak is allowed; a
-    // double-free is the UAF the global keying must never introduce.)
+    // The single owned object (`r`'s alias group: r, r_alias, phi) is released
+    // exactly once by the phi after its last use.
     let group_decrefs = func
         .blocks
         .values()
@@ -2422,10 +2610,142 @@ fn forwarded_into_phi_other_pred_live_is_leak_not_uaf() {
                     .is_some_and(|&v| v == r || v == r_alias || v == phi)
         })
         .count();
-    assert!(
-        group_decrefs <= 1,
-        "incoming_arg_roots over-all-preds keying must never double-free a \
-             forwarded root (fail-closed: leak ok, UAF never); got {group_decrefs} \
-             DecRefs of the owned group"
+    assert_eq!(
+        group_decrefs, 1,
+        "the transferred phi group must have one release authority; got {group_decrefs}"
     );
+}
+
+/// A join-wide incoming-root set must not suppress a release on a sibling arc.
+/// `r` transfers into `join` through `p1`, remains live through `p2` only for
+/// `keep`, and dies specifically on `p2 -> join` where a distinct owner `q`
+/// feeds the phi.  This is the asymmetric authority shape that requires an
+/// edge split: a join-entry release would double-release `r` on the `p1` path,
+/// while omitting the `p2` release leaks it on that path.
+#[test]
+fn forwarded_into_phi_on_one_edge_drops_on_the_asymmetric_sibling_arc() {
+    let mut func = TirFunction::new("asymmetric_phi_transfer".into(), vec![], TirType::None);
+    let p1 = func.fresh_block();
+    let p2 = func.fresh_block();
+    let keep = func.fresh_block();
+    let join = func.fresh_block();
+    let r = func.fresh_value();
+    let q = func.fresh_value();
+    let choose_p1 = func.fresh_value();
+    let choose_join = func.fresh_value();
+    let phi = func.fresh_value();
+    let join_used = func.fresh_value();
+    let keep_used = func.fresh_value();
+    for value in [r, q, phi, join_used, keep_used] {
+        func.value_types.insert(value, TirType::Str);
+    }
+    for value in [choose_p1, choose_join] {
+        func.value_types.insert(value, TirType::Bool);
+    }
+
+    let entry = func.entry_block;
+    {
+        let block = func.blocks.get_mut(&entry).unwrap();
+        block.ops.push(const_str(r));
+        block
+            .ops
+            .push(op(OpCode::ConstBool, vec![], vec![choose_p1]));
+        block.terminator = Terminator::CondBranch {
+            cond: choose_p1,
+            then_block: p1,
+            then_args: vec![],
+            else_block: p2,
+            else_args: vec![],
+        };
+    }
+    func.blocks.insert(
+        p1,
+        TirBlock {
+            id: p1,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Branch {
+                target: join,
+                args: vec![r],
+            },
+        },
+    );
+    func.blocks.insert(
+        p2,
+        TirBlock {
+            id: p2,
+            args: vec![],
+            ops: vec![
+                const_str(q),
+                op(OpCode::ConstBool, vec![], vec![choose_join]),
+            ],
+            terminator: Terminator::CondBranch {
+                cond: choose_join,
+                then_block: join,
+                then_args: vec![q],
+                else_block: keep,
+                else_args: vec![],
+            },
+        },
+    );
+    func.blocks.insert(
+        keep,
+        TirBlock {
+            id: keep,
+            args: vec![],
+            ops: vec![op(OpCode::Call, vec![r], vec![keep_used])],
+            terminator: Terminator::Return { values: vec![] },
+        },
+    );
+    func.blocks.insert(
+        join,
+        TirBlock {
+            id: join,
+            args: vec![TirValue {
+                id: phi,
+                ty: TirType::Str,
+            }],
+            ops: vec![op(OpCode::Call, vec![phi], vec![join_used])],
+            terminator: Terminator::Return { values: vec![] },
+        },
+    );
+
+    let mut am = AnalysisManager::new();
+    run(&mut func, &mut am);
+
+    let p2_join_arc = match &func.blocks[&p2].terminator {
+        Terminator::CondBranch {
+            then_block,
+            else_block,
+            ..
+        } => {
+            assert_eq!(*else_block, keep, "the r-live arc must remain unsplit");
+            *then_block
+        }
+        other => panic!("p2 must remain conditional, got {other:?}"),
+    };
+    assert_ne!(p2_join_arc, join, "the asymmetric dying arc must be split");
+    let split = &func.blocks[&p2_join_arc];
+    assert_eq!(
+        split
+            .ops
+            .iter()
+            .filter(|op| op.opcode == OpCode::DecRef && op.operands == [r])
+            .count(),
+        1,
+        "r must be released exactly once on p2 -> join"
+    );
+    assert!(matches!(
+        &split.terminator,
+        Terminator::Branch { target, args } if *target == join && args == &[q]
+    ));
+    assert!(
+        func.blocks[&join]
+            .ops
+            .iter()
+            .all(|op| op.opcode != OpCode::DecRef || op.operands != [r]),
+        "the join cannot own a path-independent release of r"
+    );
+    crate::tir::verify::verify_function(&func)
+        .expect("asymmetric ownership edge splitting must preserve valid SSA");
 }
