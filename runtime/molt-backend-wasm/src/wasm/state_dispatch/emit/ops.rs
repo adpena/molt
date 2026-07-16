@@ -179,7 +179,7 @@ pub(super) fn emit_dispatch_op(
             func.instruction(&Instruction::End);
             false
         }
-        "check_exception" => {
+        "check_exception" | "async_work_poll" => {
             emit_dispatch_check_exception(
                 func,
                 op_emitter,

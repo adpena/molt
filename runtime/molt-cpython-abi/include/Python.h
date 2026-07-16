@@ -1592,6 +1592,8 @@ extern void PyGILState_Release(PyGILState_STATE state);
 extern int PyGILState_Check(void);
 extern PyThreadState *PyEval_SaveThread(void);
 extern void PyEval_RestoreThread(PyThreadState *tstate);
+extern int Py_AddPendingCall(int (*func)(void *), void *arg);
+extern int Py_MakePendingCalls(void);
 
 /* GIL allow-threads block macros. Verbatim from CPython 3.12 Include/ceval.h
  * (python/cpython v3.12.0); defined unconditionally there (no WITH_THREAD /

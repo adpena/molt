@@ -652,15 +652,21 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
             // -- CheckException: inspect the current exception state --
             OpCode::CheckException => {
+                let pending_symbol =
+                    if matches!(op.attrs.get("async_work_poll"), Some(AttrValue::Bool(true))) {
+                        "molt_async_work_poll_and_exception_pending"
+                    } else {
+                        "molt_exception_pending"
+                    };
                 let check_fn = self
                     .backend
                     .module
-                    .get_function("molt_exception_pending")
+                    .get_function(pending_symbol)
                     .unwrap_or_else(|| {
                         let i64_ty = self.backend.context.i64_type();
                         let fn_ty = i64_ty.fn_type(&[], false);
                         self.backend.module.add_function(
-                            "molt_exception_pending",
+                            pending_symbol,
                             fn_ty,
                             Some(inkwell::module::Linkage::External),
                         )

@@ -13007,14 +13007,8 @@ static inline void PyObject_ClearWeakRefs(PyObject *obj) {
 
 /* ---- Py_AddPendingCall / Py_MakePendingCalls ---- */
 
-static inline int Py_AddPendingCall(int (*func)(void *), void *arg) {
-    /* Molt is single-threaded; call immediately */
-    return func(arg);
-}
-
-static inline int Py_MakePendingCalls(void) {
-    return 0;
-}
+int Py_AddPendingCall(int (*func)(void *), void *arg);
+int Py_MakePendingCalls(void);
 
 /* ---- PyObject_GC_IsTracked / PyObject_GC_IsFinalized already exist;
         ensure _PyObject_GC_TRACK / _PyObject_GC_UNTRACK macros ---- */

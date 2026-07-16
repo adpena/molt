@@ -3646,6 +3646,7 @@ impl Drop for ThreadStateRecord {
 thread_local! {
     static MOLT_THREAD_STATE: RefCell<Option<Box<ThreadStateRecord>>> = const { RefCell::new(None) };
     static GILSTATE_ATTACHMENT: Cell<(usize, bool)> = const { Cell::new((0, false)) };
+    static RUNTIME_EXECUTION_ATTACHMENT: Cell<bool> = const { Cell::new(false) };
 }
 
 fn ensure_current_thread_state() -> *mut PyThreadState {
@@ -3682,6 +3683,45 @@ fn set_current_thread_state_attached(attached: bool) {
                 .expect("detaching a thread without PyThreadState")
         };
         record.attached = attached;
+    });
+}
+
+/// Establish the CPython thread-state half of the outer compiled-execution
+/// boundary. Runtime initialization alone is deliberately insufficient: the
+/// native main/embedding boundary must hold execution custody and call this
+/// after acquiring it.
+pub fn attach_runtime_execution_thread() {
+    assert_runtime_initialized("runtime execution attachment");
+    assert_ne!(
+        unsafe { (hooks_or_stubs().gil_check)() },
+        0,
+        "runtime execution attachment requires current-thread execution custody"
+    );
+    RUNTIME_EXECUTION_ATTACHMENT.with(|owned| {
+        if owned.get() || current_thread_state_attached() {
+            return;
+        }
+        let _ = ensure_current_thread_state();
+        set_current_thread_state_attached(true);
+        owned.set(true);
+    });
+}
+
+/// Clear only attachment established by [`attach_runtime_execution_thread`].
+/// An embedding-owned `PyGILState_Ensure` attachment is never stolen.
+pub fn detach_runtime_execution_thread() {
+    RUNTIME_EXECUTION_ATTACHMENT.with(|owned| {
+        if !owned.replace(false) {
+            return;
+        }
+        GILSTATE_ATTACHMENT.with(|state| {
+            assert_eq!(
+                state.get().0,
+                0,
+                "runtime execution detach crossed live PyGILState custody"
+            );
+        });
+        set_current_thread_state_attached(false);
     });
 }
 

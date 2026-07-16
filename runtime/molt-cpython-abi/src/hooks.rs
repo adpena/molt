@@ -194,6 +194,14 @@ pub struct RuntimeHooks {
     pub gil_restore: unsafe extern "C" fn(),
     pub gil_check: unsafe extern "C" fn() -> std::os::raw::c_int,
     pub runtime_is_initialized: unsafe extern "C" fn() -> std::os::raw::c_int,
+    /// Project the runtime's target-specific execution custody into one typed
+    /// ABI-stable capability discriminant. Pending calls require a non-detached
+    /// projection in addition to process-main identity.
+    pub attached_runtime_context: unsafe extern "C" fn() -> u32,
+    /// Finalize a pending-call failure at a runtime boundary: preserve an
+    /// existing runtime error, otherwise consume the exact C error, otherwise
+    /// synthesize the typed failure represented by `reason`.
+    pub pending_call_error: unsafe extern "C" fn(reason: u32),
     // ── Allocation ────────────────────────────────────────────────────────────
     /// Allocate a UTF-8 string object. Returns handle bits, 0 on failure.
     pub alloc_str: unsafe extern "C" fn(data: *const u8, len: usize) -> u64,
@@ -618,6 +626,9 @@ pub struct RuntimeHooks {
         actual_class_bits: *mut u64,
         traceback_bits: *mut u64,
     ) -> OwnedHandleResult,
+    /// Clear and release the runtime pending-exception indicator without
+    /// projecting it into the C domain.
+    pub clear_pending_exception: unsafe extern "C" fn(),
     /// Return the runtime's active handled exception (`sys.exception()`) as an
     /// owned handle. `Missing` means no exception is being handled.
     pub handled_exception_get: unsafe extern "C" fn() -> OwnedHandleResult,
@@ -628,7 +639,61 @@ pub struct RuntimeHooks {
 }
 
 pub const RUNTIME_HOOKS_ABI_MAGIC: u64 = 0x4d4f_4c54_484f_4f4b;
-pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 16;
+pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 19;
+
+/// Target projection used to construct an attached runtime-context capability.
+/// This is deliberately not a boolean: native GIL, free-threaded attachment,
+/// and wasm single-thread custody have different future synchronization rules.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AttachedRuntimeContextKind {
+    Detached = 0,
+    NativeGil = 1,
+    NativeFreeThreaded = 2,
+    WasmSingleThread = 3,
+}
+
+impl AttachedRuntimeContextKind {
+    #[inline]
+    pub fn from_abi(value: u32) -> Option<Self> {
+        match value {
+            0 => Some(Self::Detached),
+            1 => Some(Self::NativeGil),
+            2 => Some(Self::NativeFreeThreaded),
+            3 => Some(Self::WasmSingleThread),
+            _ => None,
+        }
+    }
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PendingCallErrorKind {
+    CallbackFailedWithoutException = 1,
+    RuntimeContextDetached = 2,
+}
+
+impl PendingCallErrorKind {
+    #[inline]
+    pub fn from_abi(value: u32) -> Option<Self> {
+        match value {
+            1 => Some(Self::CallbackFailedWithoutException),
+            2 => Some(Self::RuntimeContextDetached),
+            _ => None,
+        }
+    }
+
+    pub fn message(self) -> &'static std::ffi::CStr {
+        match self {
+            Self::CallbackFailedWithoutException => {
+                c"pending-call callback failed without setting an exception"
+            }
+            Self::RuntimeContextDetached => {
+                c"pending-call execution requires an attached main-thread runtime context"
+            }
+        }
+    }
+}
 
 /// Discriminants for [`RuntimeHooks::dict_op`]. Kept in sync with the match in
 /// the runtime hook implementation (`hook_dict_op`).
@@ -1143,6 +1208,10 @@ unsafe extern "C" fn stub_gil_check() -> std::os::raw::c_int {
 unsafe extern "C" fn stub_runtime_is_initialized() -> std::os::raw::c_int {
     0
 }
+unsafe extern "C" fn stub_attached_runtime_context() -> u32 {
+    AttachedRuntimeContextKind::Detached as u32
+}
+unsafe extern "C" fn stub_pending_call_error(_reason: u32) {}
 unsafe extern "C" fn stub_try_mark_abi_view(
     _bits: u64,
     _present: std::os::raw::c_int,
@@ -1224,6 +1293,7 @@ unsafe extern "C" fn stub_take_pending_exception(
 unsafe extern "C" fn stub_handled_exception_get() -> OwnedHandleResult {
     OwnedHandleResult::missing()
 }
+unsafe extern "C" fn stub_clear_pending_exception() {}
 unsafe extern "C" fn stub_handled_exception_set(_owned_exception_bits: u64) -> std::os::raw::c_int {
     -1
 }
@@ -1239,6 +1309,8 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     gil_restore: stub_gil_restore,
     gil_check: stub_gil_check,
     runtime_is_initialized: stub_runtime_is_initialized,
+    attached_runtime_context: stub_attached_runtime_context,
+    pending_call_error: stub_pending_call_error,
     alloc_str: stub_alloc_str,
     alloc_bytes: stub_alloc_bytes,
     int_from_i64: stub_int_from_i64,
@@ -1327,6 +1399,7 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     exception_commit_snapshot: stub_exception_commit_snapshot,
     type_is_subtype: stub_type_is_subtype,
     take_pending_exception: stub_take_pending_exception,
+    clear_pending_exception: stub_clear_pending_exception,
     handled_exception_get: stub_handled_exception_get,
     handled_exception_set: stub_handled_exception_set,
 };

@@ -486,6 +486,57 @@ pub(super) fn path_states_before(
     states
 }
 
+/// Compute the active lexical exception-region owner at every reachable op
+/// boundary in one CFG traversal. `op_index == block.ops.len()` is the block
+/// exit/terminator boundary, which makes this the shared authority for both
+/// in-block observations and backedge observations.
+pub(super) fn lexical_handlers_before(
+    func: &TirFunction,
+    label_to_block: &BTreeMap<i64, BlockId>,
+    state_resume_stacks: &StateResumeStacks,
+) -> BTreeMap<ExceptionOpPosition, BTreeSet<Option<ExceptionRegionToken>>> {
+    let mut queue = VecDeque::new();
+    queue.push_back((func.entry_block, 0usize, ExceptionPathState::default()));
+    let mut visited = BTreeSet::new();
+    let mut handlers: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
+    while let Some((block, op_index, state)) = queue.pop_front() {
+        if !visited.insert((block, op_index, state.clone())) {
+            continue;
+        }
+        let Some(tir_block) = func.blocks.get(&block) else {
+            continue;
+        };
+        handlers
+            .entry(ExceptionOpPosition { block, op_index })
+            .or_default()
+            .insert(state.frames.last().copied());
+        if op_index >= tir_block.ops.len() {
+            for (succ, succ_state) in terminator_successors_with_state(
+                &tir_block.terminator,
+                label_to_block,
+                &state,
+                state_resume_stacks,
+                Some(&state),
+            ) {
+                queue.push_back((succ, 0, succ_state));
+            }
+            continue;
+        }
+        let op = &tir_block.ops[op_index];
+        let pos = ExceptionOpPosition { block, op_index };
+        let next_state = state.after_op(pos, op);
+        for (succ, succ_state) in
+            op_exception_successors_with_state(label_to_block, op, &next_state)
+        {
+            queue.push_back((succ, 0, succ_state));
+        }
+        if op_normal_fallthrough_reachable(&state, op) {
+            queue.push_back((block, op_index + 1, next_state));
+        }
+    }
+    handlers
+}
+
 pub fn exception_pop_owner_states(
     func: &TirFunction,
     target: ExceptionOpPosition,

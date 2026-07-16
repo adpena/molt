@@ -39,6 +39,7 @@ pub mod memory;
 pub mod modules;
 pub mod numbers;
 pub mod object;
+pub mod pending_calls;
 pub mod refcount;
 pub mod sequences;
 pub mod slice;

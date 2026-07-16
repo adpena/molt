@@ -548,7 +548,7 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
                     }
                 }
             }
-            "check_exception" => {
+            "check_exception" | "async_work_poll" => {
                 if let Some(label_id) = op.value {
                     exception_label_ids.insert(label_id);
                 }

@@ -16,6 +16,13 @@ impl RustBackend {
     }
 
     pub(super) fn emit_op_runtime_control_gap(&mut self, op: &OpIR) {
+        if op.kind == "async_work_poll" {
+            self.emit_unsupported_op(
+                op,
+                "canonical pending-call/eval-breaker runtime boundary is unavailable",
+            );
+            return;
+        }
         self.emit_unsupported_op(
             op,
             format!("{} requires a runtime-control representation", op.kind),

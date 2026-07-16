@@ -206,6 +206,56 @@ unsafe extern "C" fn hook_runtime_is_initialized() -> c_int {
     c_int::from(crate::state::runtime_state::runtime_is_initialized())
 }
 
+unsafe extern "C" fn hook_attached_runtime_context() -> u32 {
+    use molt_cpython_abi::hooks::AttachedRuntimeContextKind;
+
+    if !crate::state::runtime_state::runtime_is_initialized() {
+        return AttachedRuntimeContextKind::Detached as u32;
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        AttachedRuntimeContextKind::WasmSingleThread as u32
+    }
+    #[cfg(all(not(target_arch = "wasm32"), feature = "free-threaded"))]
+    {
+        if unsafe { molt_cpython_abi::api::object::_PyThreadState_UncheckedGet() }.is_null() {
+            AttachedRuntimeContextKind::Detached as u32
+        } else {
+            AttachedRuntimeContextKind::NativeFreeThreaded as u32
+        }
+    }
+    #[cfg(all(not(target_arch = "wasm32"), not(feature = "free-threaded")))]
+    {
+        if !unsafe { molt_cpython_abi::api::object::_PyThreadState_UncheckedGet() }.is_null() {
+            AttachedRuntimeContextKind::NativeGil as u32
+        } else {
+            AttachedRuntimeContextKind::Detached as u32
+        }
+    }
+}
+
+unsafe extern "C" fn hook_pending_call_error(reason: u32) {
+    use molt_cpython_abi::hooks::PendingCallErrorKind;
+
+    if with_gil(|_py| crate::exception_pending(&_py)) {
+        drop(molt_cpython_abi::api::errors::take_current_error());
+        return;
+    }
+    if transfer_pending_cpython_exception() {
+        return;
+    }
+    let message = PendingCallErrorKind::from_abi(reason)
+        .map(|kind| {
+            kind.message()
+                .to_str()
+                .expect("static UTF-8 pending-call error")
+        })
+        .unwrap_or("invalid pending-call failure reason");
+    with_gil(|_py| {
+        let _ = crate::builtins::exceptions::raise_exception::<u64>(&_py, "SystemError", message);
+    });
+}
+
 fn runtime_buffer_view_from_abi(view: AbiMoltBufferView) -> crate::MoltBufferView {
     unsafe { std::mem::transmute::<AbiMoltBufferView, crate::MoltBufferView>(view) }
 }
@@ -2062,6 +2112,15 @@ unsafe extern "C" fn hook_take_pending_exception(
     OwnedHandleResult::ok(exception_bits)
 }
 
+unsafe extern "C" fn hook_clear_pending_exception() {
+    let exception_bits = crate::builtins::exceptions::molt_exception_clear();
+    with_gil(|_py| {
+        if !crate::obj_from_bits(exception_bits).is_none() {
+            crate::dec_ref_bits(&_py, exception_bits);
+        }
+    });
+}
+
 unsafe extern "C" fn hook_handled_exception_get() -> OwnedHandleResult {
     with_gil(|_py| {
         let Some(bits) = crate::builtins::exceptions::exception_context_active_bits() else {
@@ -3872,6 +3931,8 @@ pub fn register_cpython_hooks() {
             gil_restore: hook_gil_restore,
             gil_check: hook_gil_check,
             runtime_is_initialized: hook_runtime_is_initialized,
+            attached_runtime_context: hook_attached_runtime_context,
+            pending_call_error: hook_pending_call_error,
             alloc_str: hook_alloc_str,
             alloc_bytes: hook_alloc_bytes,
             int_from_i64: hook_int_from_i64,
@@ -3960,6 +4021,7 @@ pub fn register_cpython_hooks() {
             exception_commit_snapshot: hook_exception_commit_snapshot,
             type_is_subtype: hook_type_is_subtype,
             take_pending_exception: hook_take_pending_exception,
+            clear_pending_exception: hook_clear_pending_exception,
             handled_exception_get: hook_handled_exception_get,
             handled_exception_set: hook_handled_exception_set,
         };
@@ -3991,6 +4053,33 @@ mod tests {
     use std::time::{Duration, Instant};
 
     static CANONICAL_EXEC_MODULE_BITS: AtomicU64 = AtomicU64::new(0);
+    static PENDING_CALL_TEST_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe extern "C" fn pending_call_test_noop(_arg: *mut c_void) -> c_int {
+        PENDING_CALL_TEST_CALLBACKS.fetch_add(1, AtomicOrdering::Relaxed);
+        0
+    }
+
+    unsafe extern "C" fn pending_call_test_type_error(_arg: *mut c_void) -> c_int {
+        unsafe {
+            molt_cpython_abi::api::errors::PyErr_SetString(
+                (&raw mut PyExc_TypeError).cast::<PyObject>(),
+                c"exact pending-call callback TypeError".as_ptr(),
+            )
+        };
+        -1
+    }
+
+    unsafe extern "C" fn pending_call_test_runtime_type_error(_arg: *mut c_void) -> c_int {
+        crate::with_gil_entry_nopanic!(_py, {
+            let _ = crate::builtins::exceptions::raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "exact runtime pending-call TypeError",
+            );
+        });
+        -1
+    }
 
     fn borrowed_bits(result: BorrowedHandleResult) -> Option<u64> {
         match result.decode() {
@@ -4688,8 +4777,22 @@ mod tests {
             unsafe { molt_cpython_abi::api::object::Py_IsInitialized() },
             1
         );
+        assert_eq!(
+            unsafe { hook_attached_runtime_context() },
+            molt_cpython_abi::hooks::AttachedRuntimeContextKind::Detached as u32,
+            "initialized main thread is not attached until an execution boundary says so"
+        );
 
         let ensure_state = unsafe { molt_cpython_abi::api::object::PyGILState_Ensure() };
+        let expected_attached = if cfg!(feature = "free-threaded") {
+            molt_cpython_abi::hooks::AttachedRuntimeContextKind::NativeFreeThreaded
+        } else {
+            molt_cpython_abi::hooks::AttachedRuntimeContextKind::NativeGil
+        };
+        assert_eq!(
+            unsafe { hook_attached_runtime_context() },
+            expected_attached as u32
+        );
         let tstate = unsafe { molt_cpython_abi::api::object::PyThreadState_Get() };
         assert!(!tstate.is_null());
         assert_eq!(
@@ -4726,6 +4829,105 @@ mod tests {
         );
         unsafe { molt_cpython_abi::api::object::PyGILState_Release(ensure_state) };
         assert!(unsafe { molt_cpython_abi::api::object::_PyThreadState_UncheckedGet() }.is_null());
+        assert_eq!(
+            unsafe { hook_attached_runtime_context() },
+            molt_cpython_abi::hooks::AttachedRuntimeContextKind::Detached as u32
+        );
+    }
+
+    #[test]
+    fn pending_call_failure_ends_in_exactly_one_boundary_exception_domain() {
+        let _test_guard = cpython_abi_test_guard();
+        assert_eq!(crate::state::runtime_state::molt_runtime_init(), 1);
+        register_cpython_hooks();
+        PENDING_CALL_TEST_CALLBACKS.store(0, AtomicOrdering::Relaxed);
+
+        assert_eq!(
+            unsafe { hook_attached_runtime_context() },
+            molt_cpython_abi::hooks::AttachedRuntimeContextKind::Detached as u32
+        );
+        assert_eq!(
+            unsafe {
+                molt_cpython_abi::api::pending_calls::Py_AddPendingCall(
+                    Some(pending_call_test_noop),
+                    ptr::null_mut(),
+                )
+            },
+            0
+        );
+        assert_eq!(
+            molt_cpython_abi::api::pending_calls::Py_MakePendingCalls(),
+            -1
+        );
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() },
+            (&raw mut molt_cpython_abi::abi_types::PyExc_SystemError).cast::<PyObject>()
+        );
+        assert_eq!(unsafe { hook_exception_pending() }, 0);
+        assert_eq!(PENDING_CALL_TEST_CALLBACKS.load(AtomicOrdering::Relaxed), 0);
+        unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+        assert_eq!(
+            unsafe { hook_exception_pending() },
+            0,
+            "clearing the direct C boundary must not reveal stale runtime residue"
+        );
+
+        let attachment = unsafe { molt_cpython_abi::api::object::PyGILState_Ensure() };
+        assert_eq!(
+            molt_cpython_abi::api::pending_calls::Py_MakePendingCalls(),
+            0
+        );
+        assert_eq!(PENDING_CALL_TEST_CALLBACKS.load(AtomicOrdering::Relaxed), 1);
+
+        assert_eq!(
+            unsafe {
+                molt_cpython_abi::api::pending_calls::Py_AddPendingCall(
+                    Some(pending_call_test_type_error),
+                    ptr::null_mut(),
+                )
+            },
+            0
+        );
+        assert_eq!(
+            crate::builtins::exceptions::molt_async_work_poll_and_exception_pending(),
+            1,
+            "drain rc must branch while the C TypeError moves into runtime custody"
+        );
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() },
+            ptr::null_mut(),
+            "the runtime safepoint must consume the C indicator"
+        );
+        assert_eq!(pending_exception_type_for_assertion(), "TypeError");
+        assert_eq!(
+            pending_exception_message_for_assertion(),
+            "exact pending-call callback TypeError"
+        );
+
+        assert_eq!(
+            unsafe {
+                molt_cpython_abi::api::pending_calls::Py_AddPendingCall(
+                    Some(pending_call_test_runtime_type_error),
+                    ptr::null_mut(),
+                )
+            },
+            0
+        );
+        assert_eq!(
+            crate::builtins::exceptions::molt_async_work_poll_and_exception_pending(),
+            1
+        );
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() },
+            ptr::null_mut(),
+            "a runtime-originated TypeError must never be projected into C"
+        );
+        assert_eq!(pending_exception_type_for_assertion(), "TypeError");
+        assert_eq!(
+            pending_exception_message_for_assertion(),
+            "exact runtime pending-call TypeError"
+        );
+        unsafe { molt_cpython_abi::api::object::PyGILState_Release(attachment) };
     }
 
     #[test]

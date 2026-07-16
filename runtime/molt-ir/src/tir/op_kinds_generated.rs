@@ -481,6 +481,7 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "add"
         | "async_for_end"
         | "async_for_start"
+        | "async_work_poll"
         | "bit_and"
         | "bit_not"
         | "bit_or"
@@ -854,7 +855,7 @@ pub fn kind_to_opcode_table(kind: &str) -> Option<OpCode> {
         "yield" => Some(OpCode::Yield),
         "yield_from" => Some(OpCode::YieldFrom),
         "raise" => Some(OpCode::Raise),
-        "check_exception" => Some(OpCode::CheckException),
+        "check_exception" | "async_work_poll" => Some(OpCode::CheckException),
         "exception_pending" => Some(OpCode::ExceptionPending),
         "function_defaults_version" => Some(OpCode::FunctionDefaultsVersion),
         "try_start" => Some(OpCode::TryStart),
@@ -2166,6 +2167,132 @@ pub fn simpleir_kind_is_call_graph_user_call(kind: &str) -> bool {
             | "call_method"
             | "invoke_ffi"
     )
+}
+
+/// Whether this SimpleIR spelling is the generated async-work poll.
+#[inline]
+pub fn simpleir_kind_is_async_work_poll(kind: &str) -> bool {
+    matches!(kind, "async_work_poll")
+}
+
+/// Whether successful completion of this first-class opcode is a Python
+/// asynchronous-work/eval-breaker observation point. Preserved Copy call
+/// spellings use `simpleir_kind_is_call_graph_user_call`. EXHAUSTIVE over
+/// OpCode so native and wasm cannot grow private call-return poll sets.
+#[inline]
+pub fn opcode_requires_async_work_poll_after_table(opcode: OpCode) -> bool {
+    match opcode {
+        OpCode::Add => false,
+        OpCode::Sub => false,
+        OpCode::Mul => false,
+        OpCode::CheckedAdd => false,
+        OpCode::CheckedMul => false,
+        OpCode::InplaceAdd => false,
+        OpCode::InplaceSub => false,
+        OpCode::InplaceMul => false,
+        OpCode::Div => false,
+        OpCode::FloorDiv => false,
+        OpCode::Mod => false,
+        OpCode::Pow => false,
+        OpCode::Neg => false,
+        OpCode::Pos => false,
+        OpCode::Eq => false,
+        OpCode::Ne => false,
+        OpCode::Lt => false,
+        OpCode::Le => false,
+        OpCode::Gt => false,
+        OpCode::Ge => false,
+        OpCode::Is => false,
+        OpCode::IsNot => false,
+        OpCode::In => false,
+        OpCode::NotIn => false,
+        OpCode::BitAnd => false,
+        OpCode::BitOr => false,
+        OpCode::BitXor => false,
+        OpCode::BitNot => false,
+        OpCode::Shl => false,
+        OpCode::Shr => false,
+        OpCode::And => false,
+        OpCode::Or => false,
+        OpCode::Not => false,
+        OpCode::Bool => false,
+        OpCode::Alloc => false,
+        OpCode::StackAlloc => false,
+        OpCode::ObjectNewBound => false,
+        OpCode::ObjectNewBoundStack => false,
+        OpCode::Free => false,
+        OpCode::LoadAttr => false,
+        OpCode::StoreAttr => false,
+        OpCode::DelAttr => false,
+        OpCode::Index => false,
+        OpCode::StoreIndex => false,
+        OpCode::DelIndex => false,
+        OpCode::DeleteVar => false,
+        OpCode::Call => true,
+        OpCode::CallMethod => true,
+        OpCode::CallMethodIc => true,
+        OpCode::CallSuperMethodIc => true,
+        OpCode::CallBuiltin => true,
+        OpCode::OrdAt => false,
+        OpCode::BoxVal => false,
+        OpCode::UnboxVal => false,
+        OpCode::TypeGuard => false,
+        OpCode::IncRef => false,
+        OpCode::DecRef => false,
+        OpCode::DelBoundary => false,
+        OpCode::BuildList => false,
+        OpCode::BuildDict => false,
+        OpCode::BuildTuple => false,
+        OpCode::BuildSet => false,
+        OpCode::BuildSlice => false,
+        OpCode::GetIter => false,
+        OpCode::IterNext => false,
+        OpCode::IterNextUnboxed => false,
+        OpCode::ForIter => false,
+        OpCode::AllocTask => false,
+        OpCode::StateSwitch => false,
+        OpCode::StateTransition => false,
+        OpCode::StateYield => false,
+        OpCode::ChanSendYield => false,
+        OpCode::ChanRecvYield => false,
+        OpCode::ClosureLoad => false,
+        OpCode::ClosureStore => false,
+        OpCode::Yield => false,
+        OpCode::YieldFrom => false,
+        OpCode::Raise => false,
+        OpCode::CheckException => false,
+        OpCode::ExceptionPending => false,
+        OpCode::FunctionDefaultsVersion => false,
+        OpCode::TryStart => false,
+        OpCode::TryEnd => false,
+        OpCode::StateBlockStart => false,
+        OpCode::StateBlockEnd => false,
+        OpCode::ConstInt => false,
+        OpCode::ConstBigInt => false,
+        OpCode::ConstFloat => false,
+        OpCode::ConstStr => false,
+        OpCode::ConstBool => false,
+        OpCode::ConstNone => false,
+        OpCode::ConstBytes => false,
+        OpCode::Copy => false,
+        OpCode::Import => false,
+        OpCode::ImportFrom => false,
+        OpCode::ModuleCacheGet => false,
+        OpCode::ModuleCacheSet => false,
+        OpCode::ModuleCacheDel => false,
+        OpCode::ModuleGetAttr => false,
+        OpCode::ModuleImportFrom => false,
+        OpCode::ModuleGetGlobal => false,
+        OpCode::ModuleGetName => false,
+        OpCode::ModuleSetAttr => false,
+        OpCode::ModuleDelGlobal => false,
+        OpCode::ModuleDelGlobalIfPresent => false,
+        OpCode::WarnStderr => false,
+        OpCode::ScfIf => false,
+        OpCode::ScfFor => false,
+        OpCode::ScfWhile => false,
+        OpCode::ScfYield => false,
+    }
 }
 
 /// Fixed result count for opcodes whose arity is statically known.

@@ -953,6 +953,8 @@ pub extern "C" fn molt_runtime_exit(code_bits: u64) -> u64 {
             }
         };
         if let Some(ptr) = ptr {
+            #[cfg(not(target_arch = "wasm32"))]
+            molt_cpython_abi::api::object::attach_runtime_execution_thread();
             let state = unsafe { &*ptr };
             let py = gil.token();
             crate::object::ops::profile_dump_with_gil(&py);
@@ -994,6 +996,8 @@ pub extern "C" fn molt_runtime_exit(code_bits: u64) -> u64 {
             );
             *phase = RuntimeLifecyclePhase::Shutdown;
             lifecycle.changed.notify_all();
+            #[cfg(not(target_arch = "wasm32"))]
+            molt_cpython_abi::api::object::detach_runtime_execution_thread();
         }
         drop(gil);
     }
@@ -1112,6 +1116,13 @@ pub extern "C" fn molt_runtime_init() -> u64 {
                 continue;
             }
             RuntimeLifecyclePhase::Uninitialized => {
+                // Main-thread custody is part of the same winning lifecycle
+                // transaction as RuntimeState initialization. A losing caller
+                // must never publish a competing pending-call identity.
+                assert!(
+                    molt_cpython_abi::api::pending_calls::register_main_thread(owner),
+                    "runtime initialization attempted to transfer process-main custody"
+                );
                 *phase = RuntimeLifecyclePhase::Initializing { owner };
             }
         }
@@ -1149,10 +1160,11 @@ pub extern "C" fn molt_runtime_init() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_runtime_ensure_gil() {
     touch_tls_guard();
-    if gil_held() {
-        return;
+    if !gil_held() {
+        hold_runtime_gil(GilGuard::new());
     }
-    hold_runtime_gil(GilGuard::new());
+    #[cfg(not(target_arch = "wasm32"))]
+    molt_cpython_abi::api::object::attach_runtime_execution_thread();
 }
 
 #[unsafe(no_mangle)]
@@ -1189,6 +1201,9 @@ pub extern "C" fn molt_runtime_shutdown() -> u64 {
     lifecycle.changed.notify_all();
     drop(phase);
 
+    #[cfg(not(target_arch = "wasm32"))]
+    molt_cpython_abi::api::object::attach_runtime_execution_thread();
+
     let state = unsafe { &*ptr };
     let py = gil.token();
     runtime_teardown(&py, state);
@@ -1208,6 +1223,8 @@ pub extern "C" fn molt_runtime_shutdown() -> u64 {
     );
     *phase = RuntimeLifecyclePhase::Shutdown;
     lifecycle.changed.notify_all();
+    #[cfg(not(target_arch = "wasm32"))]
+    molt_cpython_abi::api::object::detach_runtime_execution_thread();
     1
 }
 

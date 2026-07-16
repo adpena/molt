@@ -21,7 +21,11 @@ pub(in crate::wasm::state_dispatch) fn exception_handler_region_indices_from_lab
     let mut regions = BTreeSet::new();
     let handler_labels: Vec<i64> = ops
         .iter()
-        .filter_map(|op| (op.kind == "check_exception").then_some(op.value).flatten())
+        .filter_map(|op| {
+            matches!(op.kind.as_str(), "check_exception" | "async_work_poll")
+                .then_some(op.value)
+                .flatten()
+        })
         .collect();
     for label in handler_labels {
         let Some(&start_idx) = label_to_index.get(&label) else {

@@ -14,13 +14,13 @@ pub(super) fn emit_plain_function_body(
     let mut label_stack: Vec<i64> = Vec::new();
     let mut label_depths: BTreeMap<i64, usize> = BTreeMap::new();
 
-    let mut jump_labels: BTreeSet<i64> = BTreeSet::new();
+    let mut branch_target_labels: BTreeSet<i64> = BTreeSet::new();
     let mut label_order: Vec<i64> = Vec::new();
     for op in &func_ir.ops {
         match op.kind.as_str() {
-            "jump" => {
+            "jump" | "br_if" | "check_exception" | "async_work_poll" => {
                 if let Some(label_id) = op.value {
-                    jump_labels.insert(label_id);
+                    branch_target_labels.insert(label_id);
                 }
             }
             "label" => {
@@ -33,7 +33,7 @@ pub(super) fn emit_plain_function_body(
     }
     let label_ids: Vec<i64> = label_order
         .into_iter()
-        .filter(|label_id| jump_labels.contains(label_id))
+        .filter(|label_id| branch_target_labels.contains(label_id))
         .collect();
     if !label_ids.is_empty() {
         for label_id in label_ids.iter().rev() {

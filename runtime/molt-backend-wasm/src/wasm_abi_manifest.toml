@@ -661,6 +661,10 @@ name = "exception_pending"
 type = 0
 
 [[import]]
+name = "async_work_poll_and_exception_pending"
+type = 0
+
+[[import]]
 name = "exception_pop"
 type = 0
 

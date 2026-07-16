@@ -437,6 +437,17 @@ impl TargetInfo {
         self.branch_mispredict_cost > 0
     }
 
+    /// Whether this target has the canonical runtime observer that services
+    /// pending calls and the eval breaker at generated Python safepoints.
+    /// Targets without that runtime boundary must not receive compiler-created
+    /// polls; an explicit poll in input IR remains a hard capability error.
+    pub const fn supports_pending_call_eval_breaker_poll(&self) -> bool {
+        matches!(
+            self.target,
+            TargetKind::NativeCranelift | TargetKind::Wasm | TargetKind::Llvm
+        )
+    }
+
     /// Whether `name` is a PGO-hot function per the attached profile data.
     /// Always `false` until PGO lands (no `profile_data` is populated).
     pub fn is_pgo_hot(&self, name: &str) -> bool {
@@ -526,6 +537,14 @@ mod tests {
 
         // Tile sizes: single L1-edge tile of 32.
         assert_eq!(t.tile_sizes(8), vec![32]);
+    }
+
+    #[test]
+    fn pending_call_eval_breaker_poll_capability_matches_runtime_boundaries() {
+        assert!(TargetInfo::native_release_fast().supports_pending_call_eval_breaker_poll());
+        assert!(TargetInfo::wasm_release_fast().supports_pending_call_eval_breaker_poll());
+        assert!(TargetInfo::llvm_release_fast().supports_pending_call_eval_breaker_poll());
+        assert!(!TargetInfo::luau_release_fast().supports_pending_call_eval_breaker_poll());
     }
 
     /// PGO hook: when (someday) populated, hot callees get the larger budget;

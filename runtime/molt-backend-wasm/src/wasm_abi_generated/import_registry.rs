@@ -405,6 +405,11 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 0,
     },
     RuntimeImportSpec {
+        import: WasmRuntimeImport::AsyncWorkPollAndExceptionPending,
+        name: "async_work_poll_and_exception_pending",
+        type_idx: 0,
+    },
+    RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionPop,
         name: "exception_pop",
         type_idx: 0,
@@ -14888,6 +14893,12 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "exception_new_from_class" => Some(WasmRuntimeImport::ExceptionNewFromClass),
         "exception_pending" => Some(WasmRuntimeImport::ExceptionPending),
         "molt_exception_pending" => Some(WasmRuntimeImport::ExceptionPending),
+        "async_work_poll_and_exception_pending" => {
+            Some(WasmRuntimeImport::AsyncWorkPollAndExceptionPending)
+        }
+        "molt_async_work_poll_and_exception_pending" => {
+            Some(WasmRuntimeImport::AsyncWorkPollAndExceptionPending)
+        }
         "exception_pop" => Some(WasmRuntimeImport::ExceptionPop),
         "exception_push" => Some(WasmRuntimeImport::ExceptionPush),
         "exception_set_cause" => Some(WasmRuntimeImport::ExceptionSetCause),

@@ -370,6 +370,21 @@ pub extern "C" fn molt_exception_pending_fast() -> u64 {
     crate::with_gil_entry_nopanic!(_py, { if exception_pending(_py) { 1 } else { 0 } })
 }
 
+/// Explicit eval-breaker observer used only by generated call-return and loop-
+/// backedge polls. Pure exception predicates above remain non-reentrant.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_async_work_poll_and_exception_pending() -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let drain_failed =
+            molt_cpython_abi::api::pending_calls::make_pending_calls_at_runtime_safepoint() != 0;
+        if drain_failed || exception_pending(_py) {
+            1
+        } else {
+            0
+        }
+    })
+}
+
 /// Returns a pointer to the current thread's pending-exception byte.
 /// The native Cranelift backend uses this to inline the exception check
 /// as a single byte load + branch, avoiding the full function call

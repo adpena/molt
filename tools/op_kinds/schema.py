@@ -322,6 +322,7 @@ _TERMINATOR_VARIANTS = (
 # alias_analysis.rs). Kept distinct from the mapper's alias grouping because
 # the classifier groups per-individual-kind, not per-OpCode-equivalence.
 _CLASSIFIER_SETS = (
+    "async_work_poll_kinds",
     "classifier_fresh_value",
     "classifier_exception_creation_ref",
     "classifier_owned_alias",
@@ -396,6 +397,7 @@ _OPCODE_FACT_SETS = (
     "generator_fusion_poll_required_yield_opcodes",
     "generator_fusion_poll_reject_opcodes",
     "state_machine_opcodes",
+    "async_work_poll_after_opcodes",
     "inliner_numeric_raw_lane_consumer_opcodes",
     "overflow_peel_guard_compare_opcodes",
     "overflow_peel_body_pure_opcodes",

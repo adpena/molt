@@ -245,15 +245,12 @@ unsafe fn install_normalization_failure() {
     }));
 }
 
-/// Move an exact runtime-pending exception into the C indicator without text
-/// conversion. The hook detaches the runtime pending edge; this function takes
-/// independent C references to its exact class and traceback before returning.
-fn take_runtime_pending_error() -> Option<OwnedCError> {
+fn owned_c_error_from_runtime_projection(
+    result: crate::hooks::OwnedHandleResult,
+    class_bits: u64,
+    traceback_bits: u64,
+) -> Option<OwnedCError> {
     let hooks = crate::hooks::hooks_or_stubs();
-    let mut class_bits = 0u64;
-    let mut traceback_bits = 0u64;
-    let result =
-        unsafe { (hooks.take_pending_exception)(&raw mut class_bits, &raw mut traceback_bits) };
     let crate::hooks::DecodedHandleResult::Ok(exception_bits) = result.decode() else {
         return None;
     };
@@ -290,6 +287,18 @@ fn take_runtime_pending_error() -> Option<OwnedCError> {
         value,
         traceback,
     })
+}
+
+/// Move an exact runtime-pending exception into the C indicator without text
+/// conversion. The hook detaches the runtime pending edge; this function takes
+/// independent C references to its exact class and traceback before returning.
+fn take_runtime_pending_error() -> Option<OwnedCError> {
+    let hooks = crate::hooks::hooks_or_stubs();
+    let mut class_bits = 0u64;
+    let mut traceback_bits = 0u64;
+    let result =
+        unsafe { (hooks.take_pending_exception)(&raw mut class_bits, &raw mut traceback_bits) };
+    owned_c_error_from_runtime_projection(result, class_bits, traceback_bits)
 }
 
 /// Move the exact runtime pending instance into CURRENT_EXC when the C channel

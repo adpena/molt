@@ -148,6 +148,7 @@ CANONICAL_KIND: dict[str, str] = {
     "yield_from": "yield_from",
     "raise": "raise",
     "check_exception": "check_exception",
+    "async_work_poll": "check_exception",
     "exception_pending": "exception_pending",
     "function_defaults_version": "function_defaults_version",
     "try_start": "try_start",
@@ -497,6 +498,7 @@ FRONTEND_EFFECT_CLASS: dict[str, str] = {
     "ALLOC": "writes_heap",
     "ALLOC_TASK": "reads_heap",
     "AND": "pure",
+    "ASYNC_WORK_POLL": "writes_heap",
     "BIT_AND": "pure",
     "BIT_NOT": "pure",
     "BIT_OR": "pure",
@@ -865,6 +867,7 @@ FRONTEND_EFFECT_READS_HEAP_KINDS: frozenset[str] = frozenset(
 FRONTEND_EFFECT_WRITES_HEAP_KINDS: frozenset[str] = frozenset(
     {
         "ALLOC",
+        "ASYNC_WORK_POLL",
         "BORROW",
         "BUILTIN_PRINT",
         "BYTEARRAY_FILL_RANGE",

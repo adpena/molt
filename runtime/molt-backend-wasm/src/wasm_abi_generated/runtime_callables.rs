@@ -473,6 +473,12 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         result: RuntimeCallableResult::I64,
     },
     RuntimeCallableImportSpec {
+        runtime_name: "molt_async_work_poll_and_exception_pending",
+        import: WasmRuntimeImport::AsyncWorkPollAndExceptionPending,
+        arity: 0,
+        result: RuntimeCallableResult::I64,
+    },
+    RuntimeCallableImportSpec {
         runtime_name: "molt_exceptiongroup_combine",
         import: WasmRuntimeImport::ExceptiongroupCombine,
         arity: 1,
@@ -15675,6 +15681,9 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_exception_last" => Some(WasmRuntimeImport::ExceptionLast),
         "molt_exception_last_pending" => Some(WasmRuntimeImport::ExceptionLastPending),
         "molt_exception_pending" => Some(WasmRuntimeImport::ExceptionPending),
+        "molt_async_work_poll_and_exception_pending" => {
+            Some(WasmRuntimeImport::AsyncWorkPollAndExceptionPending)
+        }
         "molt_exceptiongroup_combine" => Some(WasmRuntimeImport::ExceptiongroupCombine),
         "molt_exceptiongroup_match" => Some(WasmRuntimeImport::ExceptiongroupMatch),
         "molt_class_apply_set_name" => Some(WasmRuntimeImport::ClassApplySetName),
@@ -18643,6 +18652,7 @@ pub(crate) fn runtime_callable_arity(runtime_name: &str) -> Option<usize> {
         "molt_exception_last" => Some(0),
         "molt_exception_last_pending" => Some(0),
         "molt_exception_pending" => Some(0),
+        "molt_async_work_poll_and_exception_pending" => Some(0),
         "molt_exceptiongroup_combine" => Some(1),
         "molt_exceptiongroup_match" => Some(2),
         "molt_class_apply_set_name" => Some(1),
