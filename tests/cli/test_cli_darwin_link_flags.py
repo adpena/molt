@@ -1,13 +1,39 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 import molt.cli as cli
-import molt.cli.native_link_deps as NATIVE_LINK_DEPS
 import molt.cli.native_toolchain as NATIVE_TOOLCHAIN
+from molt.cli.native_link_manifest import write_native_link_dependency_manifest
 from tests.cli.process_guard import run_cli_test_process
+
+
+_SOURCE_FINGERPRINT = {
+    "hash": "1" * 64,
+    "inputs_digest": "2" * 64,
+    "meta_digest": "3" * 64,
+    "rustc": "rustc 1.91.0",
+}
+
+
+def _cargo_output(message: str, native_arguments: str = "") -> str:
+    return "\n".join(
+        (
+            message,
+            json.dumps(
+                {
+                    "reason": "compiler-message",
+                    "message": {
+                        "message": f"native-static-libs: {native_arguments}",
+                        "level": "note",
+                    },
+                }
+            ),
+        )
+    )
 
 
 def test_append_darwin_runtime_frameworks_for_host_darwin(
@@ -77,38 +103,63 @@ def test_collect_cargo_native_link_deps_preserves_framework_link_kinds(
 ) -> None:
     runtime_lib = tmp_path / "target" / "dev-fast" / "libmolt_runtime.a"
     runtime_lib.parent.mkdir(parents=True)
-    runtime_lib.write_bytes(b"")
-    build_output = runtime_lib.parent / "build" / "wgpu-sys" / "output"
-    build_output.parent.mkdir(parents=True)
-    build_output.write_text(
-        "\n".join(
-            [
-                "cargo:rustc-link-lib=framework=Metal",
-                "cargo:rustc-link-lib=framework=Foundation",
-                "cargo:rustc-link-lib=dylib=c++",
-                "cargo:rustc-link-search=framework=/tmp/fwk",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
+    runtime_lib.write_bytes(b"!<arch>\n")
+    out_dir = tmp_path / "out"
+    framework_dir = tmp_path / "fwk"
+    out_dir.mkdir()
+    framework_dir.mkdir()
+    (framework_dir / "Metal.framework").mkdir()
+    (framework_dir / "Foundation.framework").mkdir()
+    write_native_link_dependency_manifest(
+        _cargo_output(
+            json.dumps(
+                {
+                    "reason": "build-script-executed",
+                    "package_id": "registry#mdk-sys@0.1.0",
+                    "out_dir": str(out_dir),
+                    "linked_paths": [f"framework={framework_dir}"],
+                    "linked_libs": [
+                        "framework=Metal",
+                        "framework=Foundation",
+                        "dylib=c++",
+                    ],
+                }
+            ),
+            "-framework Metal -framework Foundation -lc++",
+        ),
+        runtime_lib=runtime_lib,
+        cargo_profile="dev-fast",
+        target_triple=None,
+        source_root=tmp_path,
+        source_fingerprint=_SOURCE_FINGERPRINT,
     )
 
-    search_paths, link_libs = cli._collect_cargo_native_link_deps(runtime_lib)
+    link_flags = cli._collect_cargo_native_link_deps(
+        runtime_lib,
+        object_format="macho",
+        source_root=tmp_path,
+        source_fingerprint=_SOURCE_FINGERPRINT,
+    )
 
-    assert "-L/tmp/fwk" in search_paths
-    assert "-framework" in link_libs
-    assert "Metal" in link_libs
-    assert "Foundation" in link_libs
-    assert "-lc++" in link_libs
+    assert link_flags == [
+        f"-F{framework_dir}",
+        "-framework",
+        "Metal",
+        f"-F{framework_dir}",
+        "-framework",
+        "Foundation",
+        "-lc++",
+    ]
 
 
 def test_collect_cargo_native_link_deps_ignores_stale_inactive_build_outputs(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime_lib = tmp_path / "target" / "release-output" / "libmolt_runtime.a"
     runtime_lib.parent.mkdir(parents=True)
     runtime_lib.write_bytes(b"!<arch>\nfake-staticlib")
+    exact_out = tmp_path / "exact-out"
+    exact_out.mkdir()
 
     build_dir = runtime_lib.parent / "build"
     active = build_dir / "getrandom-aaaaaaaaaaaaaaaa" / "output"
@@ -129,42 +180,35 @@ def test_collect_cargo_native_link_deps_ignores_stale_inactive_build_outputs(
         + "\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(
-        NATIVE_LINK_DEPS,
-        "_runtime_archive_crate_names",
-        lambda _runtime_lib: frozenset({"getrandom"}),
+    write_native_link_dependency_manifest(
+        _cargo_output(
+            json.dumps(
+                {
+                    "reason": "build-script-executed",
+                    "package_id": "registry#getrandom@0.3.0",
+                    "out_dir": str(exact_out),
+                    "linked_paths": [],
+                    "linked_libs": ["framework=Security"],
+                }
+            ),
+            "-framework Security",
+        ),
+        runtime_lib=runtime_lib,
+        cargo_profile="release-output",
+        target_triple=None,
+        source_root=tmp_path,
+        source_fingerprint=_SOURCE_FINGERPRINT,
     )
 
-    search_paths, link_libs = cli._collect_cargo_native_link_deps(runtime_lib)
+    link_flags = cli._collect_cargo_native_link_deps(
+        runtime_lib,
+        object_format="macho",
+        source_root=tmp_path,
+        source_fingerprint=_SOURCE_FINGERPRINT,
+    )
 
-    assert search_paths == []
-    assert link_libs == ["-framework", "Security"]
-    assert "-llzma" not in link_libs
-
-
-def test_runtime_archive_crate_name_parsing_matches_cargo_build_dirs() -> None:
-    assert (
-        cli._crate_name_from_archive_member(
-            "molt_runtime_core-fd8aa164401cbab3."
-            "molt_runtime_core.72746e05456e55ff-cgu.0.rcgu.o"
-        )
-        == "molt_runtime_core"
-    )
-    assert (
-        cli._crate_name_from_archive_member(
-            "libmimalloc_sys-b09204f8862a05be."
-            "libmimalloc_sys.859cd25662bf594f-cgu.0.rcgu.o"
-        )
-        == "libmimalloc_sys"
-    )
-    assert cli._crate_name_from_archive_member("077ae3504b1c7768-static.o") is None
-    assert (
-        cli._crate_name_from_cargo_build_dir("libmimalloc-sys-a169d24182e74596")
-        == "libmimalloc_sys"
-    )
-    assert cli._crate_name_from_cargo_build_dir("lzma-sys-4f003b5513bfab3a") == (
-        "lzma_sys"
-    )
+    assert link_flags == ["-framework", "Security"]
+    assert "-llzma" not in link_flags
 
 
 def test_build_native_link_plan_includes_metal_frameworks_when_runtime_gpu_metal_enabled(
@@ -181,6 +225,14 @@ def test_build_native_link_plan_includes_metal_frameworks_when_runtime_gpu_metal
     stub_path = tmp_path / "main_stub.c"
     stub_path.write_text("int main(void) { return 0; }\n", encoding="utf-8")
     output_binary = tmp_path / "app"
+    write_native_link_dependency_manifest(
+        _cargo_output(""),
+        runtime_lib=runtime_lib,
+        cargo_profile="dev-fast",
+        target_triple=None,
+        source_root=tmp_path,
+        source_fingerprint=_SOURCE_FINGERPRINT,
+    )
 
     plan = cli._build_native_link_plan(
         output_obj=output_obj,
@@ -190,6 +242,8 @@ def test_build_native_link_plan_includes_metal_frameworks_when_runtime_gpu_metal
         target_triple=None,
         sysroot_path=None,
         profile="dev",
+        source_root=tmp_path,
+        source_fingerprint=_SOURCE_FINGERPRINT,
         stdlib_obj_path=None,
     )
 

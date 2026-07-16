@@ -6,8 +6,14 @@ from molt.cli import native_link_command
 
 
 def test_bool_singletons_need_no_final_link_aliases() -> None:
-    assert ("_Py_TrueStruct", "Py_True") not in native_link_command._CPYTHON_SINGLETON_CANONICAL_ALIASES
-    assert ("_Py_FalseStruct", "Py_False") not in native_link_command._CPYTHON_SINGLETON_CANONICAL_ALIASES
+    assert (
+        "_Py_TrueStruct",
+        "Py_True",
+    ) not in native_link_command._CPYTHON_SINGLETON_CANONICAL_ALIASES
+    assert (
+        "_Py_FalseStruct",
+        "Py_False",
+    ) not in native_link_command._CPYTHON_SINGLETON_CANONICAL_ALIASES
     discovery = (
         Path(__file__).parents[2] / "runtime" / "molt-cext-discovery" / "build.rs"
     ).read_text(encoding="utf-8")
@@ -20,10 +26,7 @@ def _command(monkeypatch, tmp_path: Path, platform: str) -> list[str]:
     monkeypatch.setattr(
         native_link_command,
         "_collect_cargo_native_link_deps",
-        lambda _runtime_lib: ([], []),
-    )
-    monkeypatch.setattr(
-        native_link_command, "_native_windows_system_link_libs", lambda _target: []
+        lambda _runtime_lib, **_kwargs: [],
     )
     monkeypatch.setattr(
         native_link_command,
@@ -43,6 +46,8 @@ def _command(monkeypatch, tmp_path: Path, platform: str) -> list[str]:
         target_triple=None,
         sysroot_path=None,
         profile="dev",
+        source_root=tmp_path,
+        source_fingerprint={},
         export_molt_runtime_symbols=True,
     )
     return list(plan.command)

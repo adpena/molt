@@ -86,6 +86,30 @@ def test_tool_family_resolves_managed_target_root_before_path(
     assert family.nm.path == managed["nm"].resolve()
 
 
+def test_worktree_resolver_reuses_common_checkout_managed_toolchain(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    canonical = tmp_path / "canonical"
+    worktree = tmp_path / "worktree"
+    git_dir = canonical / ".git" / "worktrees" / "lane"
+    git_dir.mkdir(parents=True)
+    (worktree / "src" / "molt" / "cli").mkdir(parents=True)
+    (worktree / ".git").write_text(f"gitdir: {git_dir}\n", encoding="utf-8")
+    managed = _write_tool_family(
+        canonical / "target" / "toolchains" / "llvm-22.1.8" / "bin"
+    )
+    monkeypatch.setattr(
+        llvm_wasi_tools,
+        "__file__",
+        str(worktree / "src" / "molt" / "cli" / "llvm_wasi_tools.py"),
+    )
+    monkeypatch.delenv("MOLT_TARGET_ROOT", raising=False)
+    monkeypatch.setattr(llvm_wasi_tools.shutil, "which", lambda _name: None)
+
+    assert llvm_wasi_tools.llvm_tool_candidates("cc")[0] == managed["cc"].resolve()
+
+
 def test_source_commands_share_family_and_never_duplicate_target() -> None:
     def tool(
         role: llvm_wasi_tools.LlvmToolRole,

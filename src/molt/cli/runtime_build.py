@@ -54,6 +54,13 @@ from molt.cli.command_runtime import (
     _run_subprocess_captured_to_tempfiles,
 )
 from molt.cli.compiler_metadata import _compiler_root
+from molt.cli.file_hashing import _sha256_file
+from molt.cli.native_link_manifest import (
+    NativeLinkDependencyManifestError,
+    native_link_dependency_manifest_path,
+    read_native_link_dependency_manifest,
+    write_native_link_dependency_manifest,
+)
 from molt.cli.runtime_features import (
     _runtime_builtin_features_for_profile,
     _runtime_cargo_features,
@@ -259,6 +266,7 @@ def _ensure_runtime_lib_ready(
         resolved_modules=resolved_modules,
         extra_runtime_features=runtime_state.extra_runtime_features,
         stage_timings_ms=stage_timings_ms,
+        runtime_state=runtime_state,
     )
 
 
@@ -283,12 +291,13 @@ def _ensure_native_runtime_lib_ready_before_link(
         if diagnostics_enabled and "runtime_setup" not in phase_starts:
             phase_starts["runtime_setup"] = time.perf_counter()
         try:
-            return bool(runtime_state.runtime_lib_ready_future.result())
+            ready = bool(runtime_state.runtime_lib_ready_future.result())
+            return ready and runtime_state.native_link_source_fingerprint is not None
         finally:
             runtime_state.runtime_lib_ready_future = None
     if diagnostics_enabled and "runtime_setup" not in phase_starts:
         phase_starts["runtime_setup"] = time.perf_counter()
-    return _ensure_runtime_lib_ready(
+    ready = _ensure_runtime_lib_ready(
         runtime_state,
         target_triple=target_triple,
         json_output=json_output,
@@ -299,6 +308,7 @@ def _ensure_native_runtime_lib_ready_before_link(
         resolved_modules=resolved_modules,
         stage_timings_ms=stage_timings_ms,
     )
+    return ready and runtime_state.native_link_source_fingerprint is not None
 
 
 def _runtime_lib_verified_session_key(
@@ -343,6 +353,171 @@ def _runtime_lib_verified_session_key(
     )
 
 
+def _native_runtime_cargo_command(
+    *,
+    cargo_profile: str,
+    concrete_stdlib_profile: str,
+    runtime_features: Sequence[str],
+    builtin_features: Sequence[str],
+    concrete_stdlib_feature: str,
+    target_triple: str | None,
+) -> list[str]:
+    """Return the one exact Cargo command used for build and manifest refresh."""
+    cmd = [
+        "cargo",
+        "rustc",
+        "-p",
+        "molt-runtime",
+        "--profile",
+        cargo_profile,
+        "--message-format=json-render-diagnostics",
+    ]
+    if concrete_stdlib_profile != "full":
+        cmd.append("--no-default-features")
+        concrete_features = _dedupe_preserve_order(
+            list(runtime_features) + list(builtin_features) + [concrete_stdlib_feature]
+        )
+        cmd.extend(["--features", ",".join(concrete_features)])
+    elif target_triple and "wasm" in target_triple:
+        cmd.append("--no-default-features")
+        wasm_features = list(runtime_features) + [
+            "stdlib_crypto",
+            "stdlib_compression",
+            "stdlib_serialization",
+            "stdlib_archive",
+            "stdlib_ast",
+            "stdlib_fs_extra",
+            "builtin_set",
+            "builtin_complex",
+            "builtin_memoryview",
+            "builtin_contextvars",
+            "builtin_fcntl",
+        ]
+        cmd.extend(["--features", ",".join(wasm_features)])
+    else:
+        full_features = _dedupe_preserve_order(
+            list(runtime_features) + [concrete_stdlib_feature]
+        )
+        cmd.extend(["--features", ",".join(full_features)])
+    if target_triple:
+        cmd.extend(["--target", target_triple])
+    cmd.extend(["--", "--print", "native-static-libs"])
+    return cmd
+
+
+def _native_link_manifest_matches(
+    runtime_lib: Path,
+    *,
+    cargo_profile: str,
+    target_triple: str | None,
+    source_root: Path,
+    source_fingerprint: Mapping[str, object],
+) -> bool:
+    try:
+        read_native_link_dependency_manifest(
+            runtime_lib,
+            cargo_profile=cargo_profile,
+            target_triple=target_triple,
+            source_root=source_root,
+            source_fingerprint=source_fingerprint,
+        )
+    except NativeLinkDependencyManifestError:
+        return False
+    return True
+
+
+def _native_link_source_fingerprint(
+    fingerprint: Mapping[str, object] | None,
+) -> dict[str, object] | None:
+    """Project the runtime fingerprint into the native-link source identity."""
+    if fingerprint is None:
+        return None
+    projected = {
+        key: fingerprint.get(key)
+        for key in ("hash", "inputs_digest", "meta_digest", "rustc")
+    }
+    if any(
+        not isinstance(projected[key], str) or not projected[key]
+        for key in ("hash", "meta_digest", "rustc")
+    ):
+        return None
+    inputs_digest = projected["inputs_digest"]
+    if inputs_digest is not None and (
+        not isinstance(inputs_digest, str) or not inputs_digest
+    ):
+        return None
+    return projected
+
+
+def _runtime_archive_bytes_match(left: Path, right: Path) -> bool:
+    try:
+        return left.stat().st_size == right.stat().st_size and _sha256_file(
+            left
+        ) == _sha256_file(right)
+    except OSError:
+        return False
+
+
+def _refresh_native_link_manifest(
+    *,
+    runtime_lib: Path,
+    target_triple: str | None,
+    cargo_profile: str,
+    project_root: Path,
+    cmd: list[str],
+    build_env: dict[str, str],
+    cargo_timeout: float | None,
+    json_output: bool,
+    source_fingerprint: Mapping[str, object],
+) -> bool:
+    """Refresh missing provenance through the exact no-op-capable Cargo command."""
+    try:
+        with _build_slot() as _slot:
+            result = _run_cargo_with_sccache_retry(
+                cmd,
+                cwd=project_root,
+                env=build_env,
+                timeout=cargo_timeout,
+                json_output=json_output,
+                label="Runtime native-link manifest refresh",
+            )
+    except subprocess.TimeoutExpired:
+        return False
+    if result.returncode != 0:
+        if not json_output:
+            detail = result.stderr.strip() or result.stdout.strip()
+            if detail:
+                print(detail, file=sys.stderr)
+        return False
+    cargo_runtime_lib = _runtime_cargo_scratch_lib_path(runtime_lib, target_triple)
+    if not _runtime_archive_bytes_match(runtime_lib, cargo_runtime_lib):
+        if not json_output:
+            print(
+                "Runtime native-link manifest refresh produced an archive that "
+                "does not match the selected runtime artifact.",
+                file=sys.stderr,
+            )
+        return False
+    try:
+        write_native_link_dependency_manifest(
+            result.stdout,
+            cargo_stderr=result.stderr,
+            runtime_lib=runtime_lib,
+            cargo_profile=cargo_profile,
+            target_triple=target_triple,
+            source_root=project_root,
+            source_fingerprint=source_fingerprint,
+        )
+    except (OSError, NativeLinkDependencyManifestError) as exc:
+        if not json_output:
+            print(
+                f"Failed to publish runtime native-link manifest: {exc}",
+                file=sys.stderr,
+            )
+        return False
+    return True
+
+
 def _ensure_runtime_lib(
     runtime_lib: Path,
     target_triple: str | None,
@@ -354,7 +529,10 @@ def _ensure_runtime_lib(
     resolved_modules: Collection[str] | None = None,
     extra_runtime_features: Sequence[str] | None = None,
     stage_timings_ms: dict[str, float] | None = None,
+    runtime_state: _RuntimeArtifactState | None = None,
 ) -> bool:
+    if runtime_state is not None:
+        runtime_state.native_link_source_fingerprint = None
     rustflags = os.environ.get("RUSTFLAGS", "")
     runtime_features = tuple(
         _dedupe_preserve_order(
@@ -376,15 +554,20 @@ def _ensure_runtime_lib(
         target_triple=target_triple,
         extra_runtime_features=extra_runtime_features,
     )
+    cmd = _native_runtime_cargo_command(
+        cargo_profile=cargo_profile,
+        concrete_stdlib_profile=concrete_stdlib_profile,
+        runtime_features=runtime_features,
+        builtin_features=builtin_features,
+        concrete_stdlib_feature=concrete_stdlib_feature,
+        target_triple=target_triple,
+    )
+    build_env = _cargo_build_env()
+    build_env["CARGO_TARGET_DIR"] = str(_cargo_target_root(project_root))
+    _maybe_enable_sccache(build_env)
     fingerprint_path = _runtime_fingerprint_path(
         project_root, runtime_lib, cargo_profile, target_triple
     )
-    # MOLT_SKIP_RUNTIME_REBUILD=1 skips the fingerprint check entirely.
-    # Use when you have already run `cargo build` manually and want to avoid
-    # the ~90s overhead of the CLI re-running cargo.
-    if os.environ.get("MOLT_SKIP_RUNTIME_REBUILD") == "1":
-        if runtime_lib.exists():
-            return True
     read_fingerprint_start = time.perf_counter()
     stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
     _record_runtime_build_stage_ms(
@@ -406,6 +589,47 @@ def _ensure_runtime_lib(
         "runtime_lib_compute_fingerprint",
         compute_fingerprint_start,
     )
+    source_fingerprint = _native_link_source_fingerprint(fingerprint)
+    if source_fingerprint is None:
+        if not json_output:
+            print(
+                "Failed to compute an exact source/toolchain identity for the "
+                "runtime native-link manifest.",
+                file=sys.stderr,
+            )
+        return False
+
+    def accept_source_attestation() -> bool:
+        if runtime_state is not None:
+            runtime_state.native_link_source_fingerprint = dict(source_fingerprint)
+        return True
+
+    # The skip knob may avoid recompilation, but it may not bypass artifact/source
+    # custody. Missing or foreign provenance is refreshed by the same exact Cargo
+    # command from this invoking workspace and accepted only when bytes match.
+    if os.environ.get("MOLT_SKIP_RUNTIME_REBUILD") == "1" and runtime_lib.exists():
+        if _native_link_manifest_matches(
+            runtime_lib,
+            cargo_profile=cargo_profile,
+            target_triple=target_triple,
+            source_root=project_root,
+            source_fingerprint=source_fingerprint,
+        ):
+            return accept_source_attestation()
+        lock_target = target_triple or "native"
+        with _build_lock(project_root, f"runtime.{cargo_profile}.{lock_target}"):
+            refreshed = _refresh_native_link_manifest(
+                runtime_lib=runtime_lib,
+                target_triple=target_triple,
+                cargo_profile=cargo_profile,
+                project_root=project_root,
+                cmd=cmd,
+                build_env=build_env,
+                cargo_timeout=cargo_timeout,
+                json_output=json_output,
+                source_fingerprint=source_fingerprint,
+            )
+            return accept_source_attestation() if refreshed else False
     session_key = _runtime_lib_verified_session_key(
         project_root=project_root,
         runtime_lib=runtime_lib,
@@ -416,8 +640,18 @@ def _ensure_runtime_lib(
         fingerprint_features=fingerprint_features,
         fingerprint=fingerprint,
     )
-    if session_key is not None and session_key in _RUNTIME_LIB_VERIFIED:
-        return True
+    if (
+        session_key is not None
+        and session_key in _RUNTIME_LIB_VERIFIED
+        and _native_link_manifest_matches(
+            runtime_lib,
+            cargo_profile=cargo_profile,
+            target_triple=target_triple,
+            source_root=project_root,
+            source_fingerprint=source_fingerprint,
+        )
+    ):
+        return accept_source_attestation()
     lock_target = target_triple or "native"
     lock_name = f"runtime.{cargo_profile}.{lock_target}"
     with _build_lock(project_root, lock_name):
@@ -449,9 +683,27 @@ def _ensure_runtime_lib(
                 "runtime_lib_artifact_match",
                 artifact_match_start,
             )
+            if not _native_link_manifest_matches(
+                runtime_lib,
+                cargo_profile=cargo_profile,
+                target_triple=target_triple,
+                source_root=project_root,
+                source_fingerprint=source_fingerprint,
+            ) and not _refresh_native_link_manifest(
+                runtime_lib=runtime_lib,
+                target_triple=target_triple,
+                cargo_profile=cargo_profile,
+                project_root=project_root,
+                cmd=cmd,
+                build_env=build_env,
+                cargo_timeout=cargo_timeout,
+                json_output=json_output,
+                source_fingerprint=source_fingerprint,
+            ):
+                return False
             if session_key is not None:
                 _RUNTIME_LIB_VERIFIED.add(session_key)
-            return True
+            return accept_source_attestation()
         _record_runtime_build_stage_ms(
             stage_timings_ms,
             "runtime_lib_artifact_match",
@@ -491,9 +743,43 @@ def _ensure_runtime_lib(
                 "runtime_lib_canonical_hydrate",
                 hydrate_start,
             )
+            manifest_hydrated = False
+            try:
+                read_native_link_dependency_manifest(
+                    canonical_runtime_lib,
+                    cargo_profile=cargo_profile,
+                    target_triple=target_triple,
+                    source_root=project_root,
+                    source_fingerprint=source_fingerprint,
+                )
+                _atomic_copy_file(
+                    native_link_dependency_manifest_path(canonical_runtime_lib),
+                    native_link_dependency_manifest_path(runtime_lib),
+                )
+                manifest_hydrated = _native_link_manifest_matches(
+                    runtime_lib,
+                    cargo_profile=cargo_profile,
+                    target_triple=target_triple,
+                    source_root=project_root,
+                    source_fingerprint=source_fingerprint,
+                )
+            except (OSError, NativeLinkDependencyManifestError):
+                manifest_hydrated = False
+            if not manifest_hydrated and not _refresh_native_link_manifest(
+                runtime_lib=runtime_lib,
+                target_triple=target_triple,
+                cargo_profile=cargo_profile,
+                project_root=project_root,
+                cmd=cmd,
+                build_env=build_env,
+                cargo_timeout=cargo_timeout,
+                json_output=json_output,
+                source_fingerprint=source_fingerprint,
+            ):
+                return False
             if session_key is not None:
                 _RUNTIME_LIB_VERIFIED.add(session_key)
-            return True
+            return accept_source_attestation()
         _record_runtime_build_stage_ms(
             stage_timings_ms,
             "runtime_lib_canonical_hydrate",
@@ -508,52 +794,6 @@ def _ensure_runtime_lib(
                 )
             else:
                 print("Runtime sources changed; rebuilding runtime...", file=sys.stderr)
-        cmd = ["cargo", "build", "-p", "molt-runtime", "--profile", cargo_profile]
-        if concrete_stdlib_profile != "full":
-            cmd.append("--no-default-features")
-            # Re-enable the selected concrete runtime tier plus explicit runtime
-            # target features. In auto mode, the caller has already resolved the
-            # tier from reached link features before artifact selection.
-            concrete_features = _dedupe_preserve_order(
-                list(runtime_features) + builtin_features + [concrete_stdlib_feature]
-            )
-            cmd.extend(["--features", ",".join(concrete_features)])
-        else:
-            # For WASM targets, exclude stdlib_unicode_names (unicode_names2,
-            # ~1MB) - not useful on WASM and it inflates the binary past the
-            # 3MB Cloudflare free tier. stdlib_ast stays in: it matches the
-            # wasm feature ceiling and source-recompiled numpy reaches it.
-            is_wasm = target_triple and "wasm" in target_triple
-            if is_wasm:
-                cmd.append("--no-default-features")
-                wasm_features = list(runtime_features) + [
-                    "stdlib_crypto",
-                    "stdlib_compression",
-                    "stdlib_serialization",
-                    "stdlib_archive",
-                    "stdlib_ast",
-                    "stdlib_fs_extra",
-                    "builtin_set",
-                    "builtin_complex",
-                    "builtin_memoryview",
-                    "builtin_contextvars",
-                    "builtin_fcntl",
-                ]
-                cmd.extend(["--features", ",".join(wasm_features)])
-            else:
-                full_features = _dedupe_preserve_order(
-                    list(runtime_features) + [concrete_stdlib_feature]
-                )
-                cmd.extend(["--features", ",".join(full_features)])
-        if target_triple:
-            cmd.extend(["--target", target_triple])
-        build_env = _cargo_build_env()
-        # Per-session build isolation: route cargo output to
-        # target/sessions/<id>/ under the canonical target root
-        # when MOLT_SESSION_ID is active to prevent concurrent agents from
-        # clobbering each other's runtime artifacts.
-        build_env["CARGO_TARGET_DIR"] = str(_cargo_target_root(project_root))
-        _maybe_enable_sccache(build_env)
         try:
             with _build_slot() as _slot:
                 cargo_build_start = time.perf_counter()
@@ -602,6 +842,23 @@ def _ensure_runtime_lib(
                         file=sys.stderr,
                     )
                 return False
+        try:
+            write_native_link_dependency_manifest(
+                build.stdout,
+                cargo_stderr=build.stderr,
+                runtime_lib=runtime_lib,
+                cargo_profile=cargo_profile,
+                target_triple=target_triple,
+                source_root=project_root,
+                source_fingerprint=source_fingerprint,
+            )
+        except (OSError, NativeLinkDependencyManifestError) as exc:
+            if not json_output:
+                print(
+                    f"Failed to publish runtime native-link manifest: {exc}",
+                    file=sys.stderr,
+                )
+            return False
         if fingerprint is not None:
             try:
                 fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
@@ -618,7 +875,7 @@ def _ensure_runtime_lib(
                     )
         if session_key is not None:
             _RUNTIME_LIB_VERIFIED.add(session_key)
-    return True
+    return accept_source_attestation()
 
 
 def _runtime_build_profile_override() -> str:
@@ -825,9 +1082,7 @@ def _prebuild_runtime_wasm(
         label = "shared" if kind == "shared" else "reloc"
         reloc = kind == "reloc"
         runtime_path = (
-            runtime_state.runtime_reloc_wasm
-            if reloc
-            else runtime_state.runtime_wasm
+            runtime_state.runtime_reloc_wasm if reloc else runtime_state.runtime_wasm
         )
         if runtime_path is None:
             if not json_output:
@@ -1983,7 +2238,7 @@ def _compute_runtime_wasm_build_spec(
     _longdouble_link_token = _reloc_link_archive_fingerprint_token()
     fingerprint_rustflags = _append_rustflags_text(
         fingerprint_rustflags,
-        f'--cfg molt_{"reloc" if reloc else "shared"}_longdouble_link'
+        f"--cfg molt_{'reloc' if reloc else 'shared'}_longdouble_link"
         f'="{_longdouble_link_token}"',
     )
     effective_stdlib_profile = stdlib_profile or DEFAULT_RUNTIME_STDLIB_PROFILE
@@ -2289,6 +2544,7 @@ def _ensure_runtime_wasm(
                     )
                 return False
             return True
+
         def _finalize_reused_runtime_wasm() -> bool:
             # Shared reuse/hydration lands a validated artifact at
             # ``runtime_wasm``; record the integrity pin + fingerprint sidecar so
@@ -2351,19 +2607,22 @@ def _ensure_runtime_wasm(
         # compatible-or-better opt level (the consumer only observes the export/
         # import ABI, not the profile). Acceptance lanes keep this OFF and pin
         # exact identity. The candidate is re-validated (structure + exports).
-        if _build_reuse_compatible_enabled() and _hydrate_runtime_wasm_from_compatible_cache(
-            dest=runtime_wasm,
-            reloc=reloc,
-            inputs_digest=_compat_key["inputs_digest"],
-            compat_digest=str(_compat_key["compat_digest"]),
-            request_profile=cargo_profile,
-            is_valid=_shared_cache_validator,
-            exports_ok=lambda path: (
-                not validate_exports
-                or _runtime_exports_satisfy_for_mode(
-                    path, required_exports, reloc=reloc
-                )
-            ),
+        if (
+            _build_reuse_compatible_enabled()
+            and _hydrate_runtime_wasm_from_compatible_cache(
+                dest=runtime_wasm,
+                reloc=reloc,
+                inputs_digest=_compat_key["inputs_digest"],
+                compat_digest=str(_compat_key["compat_digest"]),
+                request_profile=cargo_profile,
+                is_valid=_shared_cache_validator,
+                exports_ok=lambda path: (
+                    not validate_exports
+                    or _runtime_exports_satisfy_for_mode(
+                        path, required_exports, reloc=reloc
+                    )
+                ),
+            )
         ):
             if _finalize_reused_runtime_wasm():
                 _record_runtime_wasm_build_phase(
@@ -2435,7 +2694,6 @@ def _ensure_runtime_wasm(
                     )
                 return False
             return True
-
 
         needs_rebuild = not _runtime_artifact_fingerprint_matches(
             runtime_wasm,
@@ -3089,10 +3347,9 @@ def _prepopulate_combined_runtime_wasm_target(
         return False
     cdylib = cdylib_candidates[0]
     staticlib = staticlib_candidates[0]
-    if (
-        _inspect_wasm_binary(cdylib) != "valid"
-        or not _is_valid_shared_runtime_wasm_artifact(cdylib)
-    ):
+    if _inspect_wasm_binary(
+        cdylib
+    ) != "valid" or not _is_valid_shared_runtime_wasm_artifact(cdylib):
         if not json_output:
             print(
                 "Runtime wasm combined build produced an invalid cdylib artifact.",

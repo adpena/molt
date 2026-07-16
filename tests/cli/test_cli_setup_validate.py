@@ -663,8 +663,6 @@ def test_cli_build_toolchain_probes_use_memory_guard(
     wasm_path.write_bytes(b"\x00asm\x01\x00\x00\x00")
     obj_path = tmp_path / "module.o"
     obj_path.write_bytes(b"")
-    archive_path = tmp_path / "libmolt_runtime.a"
-    archive_path.write_bytes(b"")
 
     COMPILER_METADATA._rustc_version.cache_clear()
     WASM_TOOLCHAIN.rust_target_libdir.cache_clear()
@@ -676,7 +674,6 @@ def test_cli_build_toolchain_probes_use_memory_guard(
         "/rust/target/lib"
     )
     assert cli._is_valid_cached_backend_artifact(obj_path, is_wasm=False) is False
-    assert cli._runtime_archive_crate_names(archive_path) == frozenset()
     assert cli._detect_macos_arch(obj_path) is None
     assert cli._resolve_macos_sdk_root() == "/Applications/Xcode.app/SDKs/MacOSX.sdk"
 

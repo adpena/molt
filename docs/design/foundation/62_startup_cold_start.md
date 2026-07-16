@@ -105,7 +105,7 @@ ordering the artifact, and gating the result** — not re-measuring.
 | **Decomposition data** | `bench/scoreboard/cold_start_decomposition.json` | The measured per-component table (codesign 70 ms one-time, dyld 18 ms, page-in ~0, init 0.127 ms) seeding the budget | The before/after fixture for the codesign + order-file wins |
 | **Native ad-hoc codesign** | `src/molt/cli/native_toolchain.py` `_codesign_binary` (`codesign -f -s -`) | Ad-hoc signs a Mach-O; called for the **daemon binary** (`__init__.py:27484`) and **BOLT output** (`_atomic_copy_file(codesign=True)`) | **NOT called for the user binary** after `_post_link_strip(output_binary)` (`__init__.py:20842`) — the load-bearing gap (§3.1) |
 | **Real-identity codesign** | `src/molt/cli/__init__.py` `_codesign_sign` / `_codesign_identity_info` (lines ~3750–3805) | `codesign -s <identity>` + display/verify for a configured Developer-ID | The "preferred over ad-hoc when configured" branch the build-time signer dispatches to (§3.1) |
-| **Native link driver** | `src/molt/cli/__init__.py` `_build_native_link_driver_command` / `_finalize_native_link` (lines ~20156–20285) | ld64 `-dead_strip` + `-exported_symbols_list` (Darwin); `--gc-sections` + `--version-script` (ELF); `-x -S` + `strip -x` post-link; `-Wl,-O2`; `/OPT:REF` (Windows) | No `-order_file` (Darwin) / ordered-section (ELF) for page-in locality; no `__TEXT`/`__DATA` hot-prefix grouping (§3.2) |
+| **Native link driver** | `native_link_plan.py` + `native_link_command.py::_build_native_link_plan`; finalization in `build_results.py::_finalize_native_link_candidate` | target-specific dead stripping, export policy, validation, stripping, and atomic publication | No measured order-file / ordered-section policy for page-in locality yet; profile through the canonical link benchmark before changing it (§3.2) |
 | **Order-file generator (STUB)** | `runtime/molt-passes/src/tir/bolt.rs` `generate_order_file` (lines 124–136) | Writes a *placeholder* order file ("# Add function symbols in hot-to-cold order"); BOLT/`perf2bolt` (Linux) + Instruments (macOS) scaffolding exists | **The stub never emits real symbols** — this arc derives the startup-hot symbol order and feeds it to the linker (§3.2) |
 | **BOLT post-link** | `tools/bolt_optimize.sh` + `native_toolchain.py::_run_bolt_post_link` (`--bolt`) | Optional BOLT reordering of an existing binary (re-codesigns via `_atomic_copy_file(codesign=True)`) | The *opt-in heavyweight* path; this arc adds the *always-on lightweight* static startup order (§3.2) and reuses BOLT's reorder as the heavy tier |
 | **Binary-size audit** | `tools/binary_size_analysis.py`, `tools/output_startup_size_audit.py` (fresh-path aware), `tools/wasm_size_audit.py` | Section/symbol size attribution; fresh-path startup shape; WASM raw/gzip/brotli | The size arc's instruments — this arc *consumes* their output (smaller image ⇒ less page-in) and feeds the convergence (§6) |
@@ -145,7 +145,7 @@ Work backward from the §0 end-state to the mechanisms that make it inevitable.
   → **requires** the user artifact to carry a **valid code signature before it
      leaves the build** (ad-hoc at minimum; real identity when configured).
   → **requires** the build pipeline to *invoke the signer on the final user binary*
-     at the one place it is finalized (`_finalize_native_link`, after
+     at the one place it is finalized (`_finalize_native_link_candidate`, after
      `_post_link_strip`), not only on the daemon/BOLT artifacts.
      **FACT NEEDED:** a single **`sign_native_artifact(binary, profile, target)`**
      authority that (a) is the *only* place native signing happens, (b) chooses
@@ -244,7 +244,7 @@ sign_native_artifact(binary: Path, *, target_triple, profile,
   #    verified via _codesign_identity_info (the existing display/verify probe).
 ```
 
-- **Call site (the load-bearing one):** in `_finalize_native_link`, immediately
+- **Call site (the load-bearing one):** in `_finalize_native_link_candidate`, immediately
   after `_post_link_strip(output_binary, target_triple)` (`__init__.py:20842`) and
   *before* the success JSON is emitted, for `emit_mode == "bin"` on Darwin. The
   signing cost is captured into the build-success payload (`build_native_link_success_data`)
@@ -310,7 +310,7 @@ StartupOrder (a derived backend fact, emitted alongside the artifact):
   The entry-module top-level symbol is known from codegen. The backend writes a
   `<artifact>.startup_order` file; the CLI link step consumes it:
   - **Darwin (ld64/lld):** `-Wl,-order_file,<path>` placed alongside `-dead_strip`
-    + `-exported_symbols_list` in `_build_native_link_driver_command`. ld64 honors
+    + `-exported_symbols_list` in `_build_native_link_plan`. ld64 honors
     the order file to lay the named symbols first in `__TEXT,__text`. (Note: this
     requires the named local symbols to survive long enough for the linker to order
     them; the order file is applied at link, *before* the `-x -S` strip — strip
@@ -467,7 +467,8 @@ other phases land against.
 ### Phase 1 — Build-time codesign of the user artifact (highest leverage, lowest risk)
 
 **Deliverable:** `sign_native_artifact` (§3.1) in `src/molt/cli/native_toolchain.py`;
-call it in `_finalize_native_link` after `_post_link_strip` for `emit_mode == "bin"`
+call it from the native result path after `_finalize_native_link_candidate` for
+`emit_mode == "bin"`
 on Darwin; route the daemon-binary + BOLT signing through it; record the
 `{signed, identity, elapsed_ms}` in the build-success JSON; compute `link_fingerprint`
 over the *signed* artifact. Cross-host-no-codesign emits a warning.
@@ -494,7 +495,7 @@ first run. **Lowest risk** (build-time, additive, Darwin-gated).
 **Deliverable:** the backend emits `<artifact>.startup_order` (the static hot-symbol
 list, §3.2) — a small additive emit in the native backend
 (`simple_backend.rs` / `function_compiler`), gated so it is always produced for
-`emit_mode == "bin"`; the CLI link step (`_build_native_link_driver_command`)
+`emit_mode == "bin"`; the CLI link plan (`_build_native_link_plan`)
 consumes it: `-Wl,-order_file,<path>` (Darwin), `--section-ordering-file`/ordered
 `.text.*` (ELF lld), `/ORDER:@<path>` (Windows). The order file is applied *before*
 the existing `-x -S` strip (layout persists; names stripped after).
@@ -697,8 +698,8 @@ build (serialize). Phase 3 coordinates with arc 64's owner.
 | Phase | Owner files (new unless noted) | Touches Rust? | Blocks / blocked-by |
 |---|---|---|---|
 | 0 | `bench/scoreboard/cold_start_budget.json` (v2); `docs/perf/COLD_START.md`; `tests/tools/test_cold_start_budget_schema.py` | no | blocks 3 |
-| 1 | `src/molt/cli/native_toolchain.py` (`sign_native_artifact`); `src/molt/cli/__init__.py` (call site at `_finalize_native_link`, route daemon/BOLT signing) | no | independent; feeds 3 |
-| 2 | `runtime/molt-backend/src/native_backend/simple_backend.rs` (additive `startup_order` emit); `src/molt/cli/__init__.py` (`_build_native_link_driver_command` order-file flags) | **yes (additive emit)** | independent; feeds 5; serialize Rust build |
+| 1 | `src/molt/cli/native_toolchain.py` (`sign_native_artifact`); `build_results.py::_finalize_native_link_candidate` plus BOLT finalization | no | independent; feeds 3 |
+| 2 | `runtime/molt-backend/src/native_backend/simple_backend.rs` (additive `startup_order` emit); `native_link_command.py::_build_native_link_plan` order-file policy | **yes (additive emit)** | independent; feeds 5; serialize Rust build |
 | 3 | `bench/scoreboard/cold_start_budget.json` (seed); `tools/perf_scoreboard.py` (two-axis budget consumption) | no | blocked-by 0,1; **coordinate arc 64** |
 | 4 | `wasm/run_wasm.js`; `deploy/cloudflare/*.js`; `deploy/browser/*.js` | no | independent |
 | 5 | `runtime/molt-passes/src/tir/bolt.rs` (complete `generate_order_file`); `src/molt/cli/native_toolchain.py` (`_run_bolt_post_link` order-file hook) | **yes** | blocked-by 2; serialize Rust build |
@@ -793,13 +794,14 @@ made a release-gating correctness property, not an aspiration.**
 
 - **Codesign authority + call site (Phase 1):** `src/molt/cli/native_toolchain.py`
   `_codesign_binary` (lines 40–54) + `__init__.py` `_codesign_sign`/`_codesign_identity_info`
-  (~3750–3805); the **missing** user-binary call site is in `_finalize_native_link`
+  (~3750–3805); the user-binary call site belongs after
+  `_finalize_native_link_candidate`
   after `_post_link_strip(output_binary, target_triple)` (`__init__.py:20842`); the
   daemon-binary site to route through it: `__init__.py:27484`; BOLT site:
   `_atomic_copy_file(..., codesign=True)` (`__init__.py:14126–14134`, called at
   `27482` / `native_toolchain.py:177`).
 - **Native link command to add `-order_file` (Phase 2):** `__init__.py`
-  `_build_native_link_driver_command` Darwin branch (lines ~20201–20218, beside
+  `_build_native_link_plan` Darwin branch, beside
   `-Wl,-dead_strip` / `-exported_symbols_list`) and ELF branch (~20219–20239, beside
   `--gc-sections` / `--version-script`); Windows `/OPT:REF` (~20241).
 - **Per-function-section emit (Phase 2, ELF ordering relies on it):**

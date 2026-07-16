@@ -6,6 +6,7 @@ from pathlib import Path
 import platform
 import subprocess
 import sys
+import time
 from typing import Any
 
 from molt.cli.binary_image_analysis import (
@@ -301,23 +302,44 @@ def _finalize_native_link_candidate(
     output_binary: Path,
     target_triple: str | None,
     strip: bool,
+    phase_times: MutableMapping[str, int] | None = None,
 ) -> str | None:
     """Finalize and validate a private candidate before atomic publication."""
     if candidate == output_binary:
         return None
+    strip_started = time.perf_counter_ns() if phase_times is not None else 0
+    strip_error: str | None = None
     if strip:
-        if strip_error := _post_link_strip(candidate, target_triple):
-            return strip_error
+        strip_error = _post_link_strip(candidate, target_triple)
+    if phase_times is not None:
+        phase_times["strip_wall_ns"] = time.perf_counter_ns() - strip_started
+    if strip and strip_error:
+        return strip_error
+    validate_started = time.perf_counter_ns() if phase_times is not None else 0
     try:
         _assert_native_binary_valid(candidate, target_triple)
     except _NativeBinaryInvalid as exc:
+        if phase_times is not None:
+            phase_times["validate_wall_ns"] = (
+                time.perf_counter_ns() - validate_started
+            )
         return f"native candidate validation failed: {exc}"
+    if phase_times is not None:
+        phase_times["validate_wall_ns"] = time.perf_counter_ns() - validate_started
+    publish_started = time.perf_counter_ns() if phase_times is not None else 0
     try:
         _atomic_copy_file(candidate, output_binary, codesign=True)
     except OSError as exc:
+        if phase_times is not None:
+            phase_times["publish_wall_ns"] = time.perf_counter_ns() - publish_started
         return f"atomic native publication failed: {exc}"
+    if phase_times is not None:
+        phase_times["publish_wall_ns"] = time.perf_counter_ns() - publish_started
+    cleanup_started = time.perf_counter_ns() if phase_times is not None else 0
     with contextlib.suppress(OSError):
         candidate.unlink()
+    if phase_times is not None:
+        phase_times["cleanup_wall_ns"] = time.perf_counter_ns() - cleanup_started
     return None
 
 

@@ -12,6 +12,14 @@ from molt.cli import build_results, native_link_command, source_extensions
 from molt.cli.native_link_plan import NativeObjectFormat
 
 
+def _managed_tool(directory: Path, name: str) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    suffix = ".exe" if sys.platform == "win32" else ""
+    path = directory / f"{name}{suffix}"
+    path.write_bytes(b"tool")
+    return path
+
+
 def _plan(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -31,7 +39,9 @@ def _plan(
 
     monkeypatch.setattr(native_link_command.sys, "platform", host_platform)
     monkeypatch.setattr(native_link_command.platform, "machine", lambda: host_arch)
-    monkeypatch.setenv("CC", cc)
+    fake_driver = tmp_path / "clang.exe"
+    fake_driver.write_bytes(b"clang")
+    monkeypatch.setenv("CC", cc.replace("clang", str(fake_driver), 1))
     monkeypatch.delenv("MOLT_KEEP_SYMBOLS", raising=False)
     monkeypatch.setattr(
         native_link_command,
@@ -41,12 +51,7 @@ def _plan(
     monkeypatch.setattr(
         native_link_command,
         "_collect_cargo_native_link_deps",
-        lambda _runtime_lib: ([], []),
-    )
-    monkeypatch.setattr(
-        native_link_command,
-        "_native_windows_system_link_libs",
-        lambda _target: [],
+        lambda _runtime_lib, **_kwargs: [],
     )
     monkeypatch.setattr(
         native_link_command,
@@ -61,6 +66,8 @@ def _plan(
         target_triple=None,
         sysroot_path=None,
         profile=profile,
+        source_root=tmp_path,
+        source_fingerprint={},
         bolt_requested=bolt_requested,
     )
 
@@ -117,9 +124,8 @@ def test_fast_linker_auto_detection_does_not_leak_across_target_formats(
     monkeypatch.setattr(
         native_link_command,
         "_resolve_available_fast_linker",
-        lambda: "mold",
+        lambda *_args: "mold",
     )
-
     assert (
         native_link_command._resolve_native_linker_hint(
             profile="dev",
@@ -127,6 +133,95 @@ def test_fast_linker_auto_detection_does_not_leak_across_target_formats(
         )
         is None
     )
+
+
+def test_windows_native_link_selects_available_lld_explicitly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(native_link_command.sys, "platform", "win32")
+    monkeypatch.delenv("MOLT_DEV_LINKER", raising=False)
+    monkeypatch.setattr(
+        native_link_command,
+        "_resolve_available_fast_linker",
+        lambda *_args: "lld",
+    )
+    assert (
+        native_link_command._resolve_native_linker_hint(
+            profile="dev",
+            target_triple=None,
+        )
+        == "lld"
+    )
+    assert (
+        native_link_command._resolve_native_linker_hint(
+            profile="release",
+            target_triple=None,
+        )
+        == "lld"
+    )
+
+
+def test_native_driver_and_linker_prefer_one_managed_llvm_family(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    managed_bin = tmp_path / "target" / "toolchains" / "llvm-99" / "bin"
+    clang = _managed_tool(managed_bin, "clang")
+    _managed_tool(managed_bin, "lld-link")
+    monkeypatch.setattr(native_link_command.sys, "platform", "win32")
+    monkeypatch.setenv("MOLT_TARGET_ROOT", str(tmp_path / "target"))
+    monkeypatch.delenv("CC", raising=False)
+    monkeypatch.delenv("MOLT_DEV_LINKER", raising=False)
+
+    command, linker_hint, _target = (
+        native_link_command._build_native_link_driver_command(
+            output_obj=None,
+            target_triple=None,
+            sysroot_path=None,
+            profile="dev",
+        )
+    )
+
+    assert command[0] == str(clang.resolve())
+    assert command.count("-fuse-ld=lld") == 1
+    assert linker_hint == "lld"
+
+
+def test_explicit_cc_overrides_managed_driver(tmp_path: Path, monkeypatch) -> None:
+    managed_bin = tmp_path / "target" / "toolchains" / "llvm-99" / "bin"
+    _managed_tool(managed_bin, "clang")
+    explicit = _managed_tool(tmp_path / "explicit" / "bin", "clang")
+    monkeypatch.setenv("MOLT_TARGET_ROOT", str(tmp_path / "target"))
+    monkeypatch.setenv("CC", str(explicit))
+    monkeypatch.setenv("MOLT_DEV_LINKER", "off")
+
+    command, linker_hint, _target = (
+        native_link_command._build_native_link_driver_command(
+            output_obj=None,
+            target_triple=None,
+            sysroot_path=None,
+            profile="dev",
+        )
+    )
+
+    assert command == [str(explicit.resolve())]
+    assert linker_hint is None
+
+
+def test_coff_librarian_prefers_managed_llvm_lib(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    managed_bin = tmp_path / "target" / "toolchains" / "llvm-99" / "bin"
+    llvm_lib = _managed_tool(managed_bin, "llvm-lib")
+    input_object = tmp_path / "input.obj"
+    input_object.write_bytes(b"object")
+    monkeypatch.setenv("MOLT_TARGET_ROOT", str(tmp_path / "target"))
+    monkeypatch.delenv("MOLT_COFF_LIB", raising=False)
+
+    command = native_link_command._windows_coff_library_command(
+        input_objects=(input_object,), output_path=tmp_path / "output.lib"
+    )
+
+    assert command[0] == str(llvm_lib.resolve())
 
 
 def test_explicit_mold_non_elf_selection_fails_before_link(
@@ -266,9 +361,7 @@ def test_cross_target_strip_requires_target_capable_llvm_strip(
         lambda _role: (Path("C:/Windows/System32/strip.exe"),),
     )
 
-    assert build_results._post_link_strip(
-        binary, "aarch64-unknown-linux-gnu"
-    ) == (
+    assert build_results._post_link_strip(binary, "aarch64-unknown-linux-gnu") == (
         "post-link target-capable llvm-strip is unavailable for linux/aarch64"
     )
 
@@ -295,9 +388,7 @@ def test_cross_target_strip_uses_llvm_strip_and_target_format_flags(
 
     monkeypatch.setattr(build_results, "_run_completed_command", fake_run)
 
-    assert (
-        build_results._post_link_strip(binary, "aarch64-unknown-linux-gnu") is None
-    )
+    assert build_results._post_link_strip(binary, "aarch64-unknown-linux-gnu") is None
     assert received == [[str(llvm_strip), "--strip-all", str(binary)]]
 
 
@@ -330,6 +421,7 @@ def test_native_candidate_is_finalized_before_atomic_publication(
     monkeypatch.setattr(build_results, "_post_link_strip", fake_strip)
     monkeypatch.setattr(build_results, "_assert_native_binary_valid", fake_validate)
     monkeypatch.setattr(build_results, "_atomic_copy_file", fake_publish)
+    phase_times: dict[str, int] = {}
 
     assert (
         build_results._finalize_native_link_candidate(
@@ -337,12 +429,20 @@ def test_native_candidate_is_finalized_before_atomic_publication(
             output_binary=output,
             target_triple=None,
             strip=True,
+            phase_times=phase_times,
         )
         is None
     )
     assert events == ["strip", "validate", "publish"]
     assert output.read_bytes() == b"stripped"
     assert not candidate.exists()
+    assert set(phase_times) == {
+        "strip_wall_ns",
+        "validate_wall_ns",
+        "publish_wall_ns",
+        "cleanup_wall_ns",
+    }
+    assert all(value >= 0 for value in phase_times.values())
 
 
 def test_native_candidate_failure_preserves_previous_published_artifact(
@@ -358,12 +458,18 @@ def test_native_candidate_failure_preserves_previous_published_artifact(
         lambda *_args, **_kwargs: "unsupported target relocation",
     )
 
-    assert build_results._finalize_native_link_candidate(
-        candidate=candidate,
-        output_binary=output,
-        target_triple="aarch64-unknown-linux-gnu",
-        strip=True,
-    ) == "unsupported target relocation"
+    phase_times: dict[str, int] = {}
+    assert (
+        build_results._finalize_native_link_candidate(
+            candidate=candidate,
+            output_binary=output,
+            target_triple="aarch64-unknown-linux-gnu",
+            strip=True,
+            phase_times=phase_times,
+        )
+        == "unsupported target relocation"
+    )
+    assert set(phase_times) == {"strip_wall_ns"}
     assert output.read_bytes() == b"previous"
     assert candidate.read_bytes() == b"linked"
 
@@ -393,9 +499,12 @@ def test_extension_links_share_native_identity_and_dead_strip_policy(
     monkeypatch.setattr(source_extensions.sys, "platform", host_platform)
     monkeypatch.setattr(source_extensions.platform, "machine", lambda: "x86_64")
 
-    assert tuple(
-        source_extensions._source_extension_link_policy_args(
-            cc_cmd=cc,
-            target_triple=None,
+    assert (
+        tuple(
+            source_extensions._source_extension_link_policy_args(
+                cc_cmd=cc,
+                target_triple=None,
+            )
         )
-    ) == expected
+        == expected
+    )

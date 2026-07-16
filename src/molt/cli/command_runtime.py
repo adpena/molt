@@ -46,6 +46,8 @@ def _run_completed_command(
     memory_guard_prefix: str | None,
     input: str | None = None,
     timeout: float | None = None,
+    encoding: str = "utf-8",
+    errors: str = "replace",
 ) -> subprocess.CompletedProcess[str]:
     guard_env = (
         None
@@ -61,6 +63,8 @@ def _run_completed_command(
             capture_output=capture_output,
             text=True,
             timeout=timeout,
+            encoding=encoding,
+            errors=errors,
         )
     return _process_guard.run_completed_command(
         cmd,
@@ -70,6 +74,8 @@ def _run_completed_command(
         memory_guard_prefix=memory_guard_prefix,
         input=input,
         timeout=timeout,
+        encoding=encoding,
+        errors=errors,
         guard_loader=_load_cli_harness_memory_guard,
     )
 
