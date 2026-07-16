@@ -222,9 +222,28 @@ def _environment_spec(
     return root, python_executable, root / SOURCE_BUILD_ENVIRONMENT_MANIFEST, custody, uv
 
 
+def _canonical_distribution_roots() -> tuple[str, ...]:
+    roots: list[str] = []
+    seen: set[str] = set()
+    for scheme in ("purelib", "platlib"):
+        raw_root = sysconfig.get_path(scheme)
+        if not isinstance(raw_root, str) or not raw_root.strip():
+            raise SourceBuildEnvironmentError(
+                f"source-build environment has no {scheme} sysconfig path"
+            )
+        root = str(Path(raw_root).resolve())
+        identity = os.path.normcase(root)
+        if identity not in seen:
+            seen.add(identity)
+            roots.append(root)
+    return tuple(roots)
+
+
 def _installed_distributions() -> list[dict[str, str]]:
     rows: dict[str, dict[str, str]] = {}
-    for distribution in importlib_metadata.distributions():
+    for distribution in importlib_metadata.distributions(
+        path=_canonical_distribution_roots()
+    ):
         raw_name = distribution.metadata.get("Name")
         if not isinstance(raw_name, str) or not raw_name.strip():
             raise SourceBuildEnvironmentError(
@@ -242,10 +261,22 @@ def _installed_distributions() -> list[dict[str, str]]:
 
 
 _DISTRIBUTION_PROBE = """
-import importlib.metadata as m, json
+import importlib.metadata as m, json, os, sysconfig
+from pathlib import Path
 from packaging.utils import canonicalize_name
+roots = []
+seen = set()
+for scheme in ('purelib', 'platlib'):
+    raw_root = sysconfig.get_path(scheme)
+    if not isinstance(raw_root, str) or not raw_root.strip():
+        raise SystemExit('missing sysconfig path: ' + scheme)
+    root = str(Path(raw_root).resolve())
+    identity = os.path.normcase(root)
+    if identity not in seen:
+        seen.add(identity)
+        roots.append(root)
 rows = {}
-for distribution in m.distributions():
+for distribution in m.distributions(path=roots):
     raw_name = distribution.metadata.get('Name')
     if not isinstance(raw_name, str) or not raw_name.strip():
         raise SystemExit('distribution without Name metadata')
@@ -261,13 +292,18 @@ print(json.dumps([rows[name] for name in sorted(rows)], separators=(',', ':')))
 def _probe_environment_distributions(python_executable: Path) -> list[dict[str, str]]:
     # This bounded, read-only bootstrap probe is the trust boundary used to
     # decide whether an environment may launch guarded package build work.
+    probe_environment = os.environ.copy()
+    probe_environment.pop("PYTHONHOME", None)
+    probe_environment.pop("PYTHONPATH", None)
+    probe_environment["PYTHONNOUSERSITE"] = "1"
     result = subprocess.run(
-        [str(python_executable), "-c", _DISTRIBUTION_PROBE],
+        [str(python_executable), "-P", "-c", _DISTRIBUTION_PROBE],
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
         check=False,
+        env=probe_environment,
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
