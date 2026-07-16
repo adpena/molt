@@ -10,8 +10,6 @@ pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = 
     "alloc",
     "stack_alloc",
     "alloc_class",
-    "alloc_class_trusted",
-    "alloc_class_static",
     "alloc_task",
     "store",
     "store_init",
@@ -107,7 +105,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             // with an initialized MoltHeader (refcount 1, ARENA flag
             // set so dec_ref skips the global allocator).
             let is_arena = op.arena_eligible == Some(true) && scope_arena_ptr.is_some();
-            let res = if is_arena {
+            let unpublished = if is_arena {
                 let arena_ptr = scope_arena_ptr.unwrap();
                 let arena_alloc_id = SimpleBackend::import_func_id_split(
                     &mut *module,
@@ -131,6 +129,16 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 let call = builder.ins().call(local_callee, &[iconst]);
                 builder.inst_results(call)[0]
             };
+            let publish_callee = SimpleBackend::import_func_id_split(
+                &mut *module,
+                &mut *import_ids,
+                "molt_object_publish_initialized",
+                &[types::I64],
+                &[types::I64],
+            );
+            let local_publish = module.declare_func_in_func(publish_callee, builder.func);
+            let publish_call = builder.ins().call(local_publish, &[unpublished]);
+            let res = builder.inst_results(publish_call)[0];
             let Some(out_name) = op.out.as_ref() else {
                 return OpFlow::Continue;
             };
@@ -161,69 +169,17 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[iconst, *class_bits]);
-            let res = builder.inst_results(call)[0];
-            let Some(out_name) = op.out.as_ref() else {
-                return OpFlow::Continue;
-            };
-            def_var_named(&mut *builder, vars, out_name, res);
-        }
-        "alloc_class_trusted" => {
-            let size = op.value.unwrap_or(0);
-            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let class_bits = var_get_boxed_overflow_safe(
+            let unpublished = builder.inst_results(call)[0];
+            let publish_callee = SimpleBackend::import_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[0],
-                representation_plan,
-            )
-            .expect("Class not found");
-            let iconst = builder.ins().iconst(types::I64, size);
-
-            let callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_alloc_class_trusted",
-                &[types::I64, types::I64],
+                "molt_object_publish_initialized",
+                &[types::I64],
                 &[types::I64],
             );
-            let local_callee = module.declare_func_in_func(callee, builder.func);
-            let call = builder.ins().call(local_callee, &[iconst, *class_bits]);
-            let res = builder.inst_results(call)[0];
-            let Some(out_name) = op.out.as_ref() else {
-                return OpFlow::Continue;
-            };
-            def_var_named(&mut *builder, vars, out_name, res);
-        }
-        "alloc_class_static" => {
-            let size = op.value.unwrap_or(0);
-            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let class_bits = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[0],
-                representation_plan,
-            )
-            .expect("Class not found");
-            let iconst = builder.ins().iconst(types::I64, size);
-
-            let callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_alloc_class_static",
-                &[types::I64, types::I64],
-                &[types::I64],
-            );
-            let local_callee = module.declare_func_in_func(callee, builder.func);
-            let call = builder.ins().call(local_callee, &[iconst, *class_bits]);
-            let res = builder.inst_results(call)[0];
+            let local_publish = module.declare_func_in_func(publish_callee, builder.func);
+            let publish_call = builder.ins().call(local_publish, &[unpublished]);
+            let res = builder.inst_results(publish_call)[0];
             let Some(out_name) = op.out.as_ref() else {
                 return OpFlow::Continue;
             };

@@ -181,13 +181,13 @@ fn alloc_class_balances_heap_class_refcount() {
 }
 
 #[test]
-fn alloc_class_static_owns_and_balances_heap_class_refcount() {
+fn alloc_class_owns_and_balances_heap_class_refcount_canonically() {
     let _guard = init();
 
     let class_bits = class_from_name(b"HeapClassStatic");
     let class_before = refcount(class_bits);
 
-    let obj_bits = molt_runtime::molt_alloc_class_static(0, class_bits);
+    let obj_bits = molt_runtime::molt_alloc_class(0, class_bits);
     assert_ne!(obj_bits, none());
     assert_eq!(molt_runtime::molt_type_of_borrowed(obj_bits), class_bits);
     assert_eq!(refcount(class_bits), class_before + 1);

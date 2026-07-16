@@ -174,9 +174,7 @@ impl RustBackend {
             "module_new" => self.emit_op_module_new(op),
             "class_new" | "object_new" | "builtin_type" => self.emit_op_class_new(op),
             "bound_method_new" => self.emit_op_bound_method_new(op),
-            "alloc_class_static" | "alloc_class_trusted" | "alloc_class" => {
-                self.emit_op_alloc_class_static(op)
-            }
+            "alloc_class" => self.emit_op_alloc_class(op),
             "object_set_class" => self.emit_op_object_set_class(op),
             "class_set_base" => self.emit_op_class_set_base(op),
             "class_set_layout_version" => self.emit_op_class_set_layout_version(op),

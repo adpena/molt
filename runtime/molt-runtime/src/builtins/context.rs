@@ -58,6 +58,18 @@ pub(crate) fn generator_context_stack_store(ptr: *mut u8, values: Vec<u64>) {
     }
 }
 
+pub(crate) fn generator_context_stack_visit(ptr: *mut u8, mut visit: impl FnMut(u64)) {
+    if let Some(values) = GENERATOR_CONTEXT_STACKS
+        .lock()
+        .unwrap()
+        .get(&(ptr as usize))
+    {
+        for &bits in values {
+            visit(bits);
+        }
+    }
+}
+
 pub(crate) fn generator_context_stack_drop(_py: &PyToken<'_>, ptr: *mut u8) {
     crate::gil_assert();
     if let Some(values) = GENERATOR_CONTEXT_STACKS

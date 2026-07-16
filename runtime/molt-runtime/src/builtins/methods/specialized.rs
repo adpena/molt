@@ -1,4 +1,4 @@
-use super::common::builtin_func_bits;
+use super::common::{builtin_func_bits, builtin_func_bits_with_defaults_tuple};
 use crate::PyToken;
 use crate::*;
 
@@ -104,6 +104,44 @@ pub(crate) fn asyncgen_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64>
             _py,
             &runtime_state(_py).method_cache.asyncgen_aclose,
             fn_addr!(molt_asyncgen_aclose),
+            1,
+        )),
+        _ => None,
+    }
+}
+
+pub(crate) fn weakref_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
+    let cache = &runtime_state(_py).method_cache;
+    match name {
+        "__init__" => Some(builtin_func_bits_with_defaults_tuple(
+            _py,
+            &cache.weakref_init,
+            fn_addr!(molt_weakref_init),
+            3,
+            &[MoltObject::none().bits()],
+        )),
+        "__call__" => Some(builtin_func_bits(
+            _py,
+            &cache.weakref_call,
+            fn_addr!(molt_weakref_call),
+            1,
+        )),
+        "__eq__" => Some(builtin_func_bits(
+            _py,
+            &cache.weakref_eq,
+            fn_addr!(molt_weakref_eq),
+            2,
+        )),
+        "__repr__" => Some(builtin_func_bits(
+            _py,
+            &cache.weakref_repr,
+            fn_addr!(molt_weakref_repr),
+            1,
+        )),
+        "__hash__" => Some(builtin_func_bits(
+            _py,
+            &cache.weakref_hash,
+            fn_addr!(molt_weakref_hash),
             1,
         )),
         _ => None,

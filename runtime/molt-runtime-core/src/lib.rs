@@ -60,57 +60,16 @@ pub fn opaque_handle_ptr_from_bits(bits: u64) -> Option<*mut u8> {
 // Type ID constants (canonical copies — values must match molt-runtime)
 // ---------------------------------------------------------------------------
 
+mod heap_kinds_generated;
+
 pub mod type_ids {
-    pub const TYPE_ID_OBJECT: u32 = 100;
-    pub const TYPE_ID_STRING: u32 = 200;
-    pub const TYPE_ID_LIST: u32 = 201;
-    pub const TYPE_ID_BYTES: u32 = 202;
-    pub const TYPE_ID_LIST_BUILDER: u32 = 203;
-    pub const TYPE_ID_DICT: u32 = 204;
-    pub const TYPE_ID_DICT_BUILDER: u32 = 205;
-    pub const TYPE_ID_TUPLE: u32 = 206;
-    pub const TYPE_ID_DICT_KEYS_VIEW: u32 = 207;
-    pub const TYPE_ID_DICT_VALUES_VIEW: u32 = 208;
-    pub const TYPE_ID_DICT_ITEMS_VIEW: u32 = 209;
-    pub const TYPE_ID_ITER: u32 = 210;
-    pub const TYPE_ID_BYTEARRAY: u32 = 211;
-    pub const TYPE_ID_RANGE: u32 = 212;
-    pub const TYPE_ID_SLICE: u32 = 213;
-    pub const TYPE_ID_EXCEPTION: u32 = 214;
-    pub const TYPE_ID_DATACLASS: u32 = 215;
-    pub const TYPE_ID_BUFFER2D: u32 = 216;
-    pub const TYPE_ID_CONTEXT_MANAGER: u32 = 217;
-    pub const TYPE_ID_FILE_HANDLE: u32 = 218;
-    pub const TYPE_ID_MEMORYVIEW: u32 = 219;
-    pub const TYPE_ID_INTARRAY: u32 = 220;
-    pub const TYPE_ID_FUNCTION: u32 = 221;
-    pub const TYPE_ID_BOUND_METHOD: u32 = 222;
-    pub const TYPE_ID_MODULE: u32 = 223;
-    pub const TYPE_ID_TYPE: u32 = 224;
-    pub const TYPE_ID_GENERATOR: u32 = 225;
-    pub const TYPE_ID_CLASSMETHOD: u32 = 226;
-    pub const TYPE_ID_STATICMETHOD: u32 = 227;
-    pub const TYPE_ID_PROPERTY: u32 = 228;
-    pub const TYPE_ID_SUPER: u32 = 229;
-    pub const TYPE_ID_SET: u32 = 230;
-    pub const TYPE_ID_SET_BUILDER: u32 = 231;
-    pub const TYPE_ID_FROZENSET: u32 = 232;
-    pub const TYPE_ID_BIGINT: u32 = 233;
-    pub const TYPE_ID_COMPLEX: u32 = 234;
-    pub const TYPE_ID_ENUMERATE: u32 = 235;
-    pub const TYPE_ID_CALLARGS: u32 = 236;
-    pub const TYPE_ID_NOT_IMPLEMENTED: u32 = 237;
-    pub const TYPE_ID_CALL_ITER: u32 = 238;
-    pub const TYPE_ID_REVERSED: u32 = 239;
-    pub const TYPE_ID_ZIP: u32 = 240;
-    pub const TYPE_ID_MAP: u32 = 241;
-    pub const TYPE_ID_FILTER: u32 = 242;
-    pub const TYPE_ID_CODE: u32 = 243;
-    pub const TYPE_ID_ELLIPSIS: u32 = 244;
-    pub const TYPE_ID_GENERIC_ALIAS: u32 = 245;
-    pub const TYPE_ID_ASYNC_GENERATOR: u32 = 246;
-    pub const TYPE_ID_UNION: u32 = 247;
+    pub use super::heap_kinds_generated::*;
 }
+
+pub use heap_kinds_generated::{
+    ObjectShapeId, ObjectShapeLifecycleFamily, ObjectShapeResourceSlot, object_shape_is_task,
+    object_shape_lifecycle_family, object_shape_resource_slot,
+};
 
 // ---------------------------------------------------------------------------
 // GIL custody proof

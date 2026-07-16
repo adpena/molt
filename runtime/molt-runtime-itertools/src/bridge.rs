@@ -72,7 +72,12 @@ unsafe extern "C" {
     fn molt_itertools_call_callable1(call_bits: u64, arg0_bits: u64) -> u64;
     fn molt_itertools_call_callable2_bridge(call_bits: u64, arg0_bits: u64, arg1_bits: u64) -> u64;
     fn molt_itertools_tuple_from_iter(iter_bits: u64) -> u64;
-    fn molt_itertools_alloc_class(name_ptr: *const u8, name_len: usize, layout_size: i64) -> u64;
+    fn molt_itertools_alloc_class(
+        name_ptr: *const u8,
+        name_len: usize,
+        layout_size: i64,
+        shape_id: u16,
+    ) -> u64;
     fn molt_itertools_class_set_iter_next(class_bits: u64, iter_fn_bits: u64, next_fn_bits: u64);
     fn molt_itertools_class_set_new(class_bits: u64, new_fn_bits: u64);
     fn molt_itertools_alloc_function(fn_ptr: u64, arity: u64) -> u64;
@@ -295,8 +300,13 @@ pub fn tuple_from_iter_bits(_py: &PyToken, iter_bits: u64) -> Option<u64> {
     if result == 0 { None } else { Some(result) }
 }
 
-pub fn alloc_itertools_class(_py: &PyToken, name: &str, layout_size: i64) -> u64 {
-    unsafe { molt_itertools_alloc_class(name.as_ptr(), name.len(), layout_size) }
+pub fn alloc_itertools_class(
+    _py: &PyToken,
+    name: &str,
+    layout_size: i64,
+    shape: molt_runtime_core::ObjectShapeId,
+) -> u64 {
+    unsafe { molt_itertools_alloc_class(name.as_ptr(), name.len(), layout_size, shape as u16) }
 }
 
 pub fn class_set_iter_next(_py: &PyToken, class_bits: u64, iter_fn_bits: u64, next_fn_bits: u64) {

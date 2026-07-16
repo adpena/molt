@@ -630,6 +630,14 @@ pub(crate) unsafe fn attr_lookup_ptr(
                 return Some(bound_bits);
             }
         }
+        if type_id == TYPE_ID_WEAKREF
+            && let Some(name) = string_obj_to_owned(obj_from_bits(attr_bits))
+            && name == "__callback__"
+        {
+            return Some(crate::molt_weakref_callback(
+                MoltObject::from_ptr(obj_ptr).bits(),
+            ));
+        }
         let class_bits = object_class_bits(obj_ptr);
         if class_bits != 0
             && type_id != TYPE_ID_OBJECT

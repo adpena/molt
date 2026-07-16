@@ -13,12 +13,12 @@
 #[cfg(kani)]
 mod object_proofs {
     use molt_codegen_abi::{
-        HEADER_ALLOC_ALIGN_BYTES, HEADER_AUX_KIND_CLASS_INLINE, HEADER_AUX_KIND_NONE,
-        HEADER_AUX_KIND_OFFSET, HEADER_AUX_KIND_SIDECAR, HEADER_AUX_KIND_STATE_INLINE,
-        HEADER_AUX_OFFSET, HEADER_CLASS_WORD_BITS_MASK, HEADER_CLASS_WORD_BORROWED,
-        HEADER_CLASS_WORD_TAG_MASK, HEADER_FLAG_CONTAINS_REFS, HEADER_FLAG_GC_UNPUBLISHED,
-        HEADER_FLAG_HAS_PTRS, HEADER_FLAG_IMMORTAL, HEADER_SIZE_BYTES, TYPE_ID_FUNCTION,
-        TYPE_ID_OBJECT,
+        ALL_HEAP_TYPE_IDS, HEADER_ALLOC_ALIGN_BYTES, HEADER_AUX_KIND_CLASS_INLINE,
+        HEADER_AUX_KIND_NONE, HEADER_AUX_KIND_OFFSET, HEADER_AUX_KIND_SIDECAR,
+        HEADER_AUX_KIND_STATE_INLINE, HEADER_AUX_OFFSET, HEADER_CLASS_WORD_BITS_MASK,
+        HEADER_CLASS_WORD_BORROWED, HEADER_CLASS_WORD_TAG_MASK, HEADER_FLAG_CONTAINS_REFS,
+        HEADER_FLAG_GC_UNPUBLISHED, HEADER_FLAG_HAS_PTRS, HEADER_FLAG_IMMORTAL, HEADER_SIZE_BYTES,
+        TYPE_ID_FUNCTION, TYPE_ID_NOT_IMPLEMENTED, TYPE_ID_OBJECT, TYPE_ID_STRING,
     };
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -131,106 +131,7 @@ mod object_proofs {
     const HEADER_FLAG_IS_WEAKREF: u32 = 1 << 31;
 
     // Type IDs — must match the real constants in object/type_ids.rs.
-    const TYPE_ID_STRING: u32 = 200;
-    const TYPE_ID_LIST: u32 = 201;
-    const TYPE_ID_BYTES: u32 = 202;
-    const TYPE_ID_LIST_BUILDER: u32 = 203;
-    const TYPE_ID_DICT: u32 = 204;
-    const TYPE_ID_DICT_BUILDER: u32 = 205;
-    const TYPE_ID_TUPLE: u32 = 206;
-    const TYPE_ID_DICT_KEYS_VIEW: u32 = 207;
-    const TYPE_ID_DICT_VALUES_VIEW: u32 = 208;
-    const TYPE_ID_DICT_ITEMS_VIEW: u32 = 209;
-    const TYPE_ID_ITER: u32 = 210;
-    const TYPE_ID_BYTEARRAY: u32 = 211;
-    const TYPE_ID_RANGE: u32 = 212;
-    const TYPE_ID_SLICE: u32 = 213;
-    const TYPE_ID_EXCEPTION: u32 = 214;
-    const TYPE_ID_DATACLASS: u32 = 215;
-    const TYPE_ID_BUFFER2D: u32 = 216;
-    const TYPE_ID_CONTEXT_MANAGER: u32 = 217;
-    const TYPE_ID_FILE_HANDLE: u32 = 218;
-    const TYPE_ID_MEMORYVIEW: u32 = 219;
-    const TYPE_ID_INTARRAY: u32 = 220;
-    const TYPE_ID_BOUND_METHOD: u32 = 222;
-    const TYPE_ID_MODULE: u32 = 223;
-    const TYPE_ID_TYPE: u32 = 224;
-    const TYPE_ID_GENERATOR: u32 = 225;
-    const TYPE_ID_CLASSMETHOD: u32 = 226;
-    const TYPE_ID_STATICMETHOD: u32 = 227;
-    const TYPE_ID_PROPERTY: u32 = 228;
-    const TYPE_ID_SUPER: u32 = 229;
-    const TYPE_ID_SET: u32 = 230;
-    const TYPE_ID_SET_BUILDER: u32 = 231;
-    const TYPE_ID_FROZENSET: u32 = 232;
-    const TYPE_ID_BIGINT: u32 = 233;
-    const TYPE_ID_COMPLEX: u32 = 234;
-    const TYPE_ID_ENUMERATE: u32 = 235;
-    const TYPE_ID_CALLARGS: u32 = 236;
-    const TYPE_ID_NOT_IMPLEMENTED: u32 = 237;
-    const TYPE_ID_CALL_ITER: u32 = 238;
-    const TYPE_ID_REVERSED: u32 = 239;
-    const TYPE_ID_ZIP: u32 = 240;
-    const TYPE_ID_MAP: u32 = 241;
-    const TYPE_ID_FILTER: u32 = 242;
-    const TYPE_ID_CODE: u32 = 243;
-    const TYPE_ID_ELLIPSIS: u32 = 244;
-    const TYPE_ID_GENERIC_ALIAS: u32 = 245;
-    const TYPE_ID_ASYNC_GENERATOR: u32 = 246;
-    const TYPE_ID_UNION: u32 = 247;
-
-    /// All type IDs as a static array for uniqueness checks.
-    const ALL_TYPE_IDS: [u32; 49] = [
-        TYPE_ID_OBJECT,
-        TYPE_ID_STRING,
-        TYPE_ID_LIST,
-        TYPE_ID_BYTES,
-        TYPE_ID_LIST_BUILDER,
-        TYPE_ID_DICT,
-        TYPE_ID_DICT_BUILDER,
-        TYPE_ID_TUPLE,
-        TYPE_ID_DICT_KEYS_VIEW,
-        TYPE_ID_DICT_VALUES_VIEW,
-        TYPE_ID_DICT_ITEMS_VIEW,
-        TYPE_ID_ITER,
-        TYPE_ID_BYTEARRAY,
-        TYPE_ID_RANGE,
-        TYPE_ID_SLICE,
-        TYPE_ID_EXCEPTION,
-        TYPE_ID_DATACLASS,
-        TYPE_ID_BUFFER2D,
-        TYPE_ID_CONTEXT_MANAGER,
-        TYPE_ID_FILE_HANDLE,
-        TYPE_ID_MEMORYVIEW,
-        TYPE_ID_INTARRAY,
-        TYPE_ID_FUNCTION,
-        TYPE_ID_BOUND_METHOD,
-        TYPE_ID_MODULE,
-        TYPE_ID_TYPE,
-        TYPE_ID_GENERATOR,
-        TYPE_ID_CLASSMETHOD,
-        TYPE_ID_STATICMETHOD,
-        TYPE_ID_PROPERTY,
-        TYPE_ID_SUPER,
-        TYPE_ID_SET,
-        TYPE_ID_SET_BUILDER,
-        TYPE_ID_FROZENSET,
-        TYPE_ID_BIGINT,
-        TYPE_ID_COMPLEX,
-        TYPE_ID_ENUMERATE,
-        TYPE_ID_CALLARGS,
-        TYPE_ID_NOT_IMPLEMENTED,
-        TYPE_ID_CALL_ITER,
-        TYPE_ID_REVERSED,
-        TYPE_ID_ZIP,
-        TYPE_ID_MAP,
-        TYPE_ID_FILTER,
-        TYPE_ID_CODE,
-        TYPE_ID_ELLIPSIS,
-        TYPE_ID_GENERIC_ALIAS,
-        TYPE_ID_ASYNC_GENERATOR,
-        TYPE_ID_UNION,
-    ];
+    const ALL_TYPE_IDS: [u32; 58] = ALL_HEAP_TYPE_IDS;
 
     /// All header flags as a static array for bit-independence checks.
     const ALL_FLAGS: [u32; 30] = [

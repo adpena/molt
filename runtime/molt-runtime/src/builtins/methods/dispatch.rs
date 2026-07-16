@@ -56,6 +56,29 @@ pub(crate) fn builtin_class_method_bits(
             3,
         ));
     }
+    if class_bits == builtins.reference_type && name == "__new__" {
+        return Some(builtin_func_bits_with_defaults_tuple(
+            _py,
+            &runtime_state(_py).method_cache.weakref_new,
+            fn_addr!(molt_weakref_new),
+            3,
+            &[MoltObject::none().bits()],
+        ));
+    }
+    if issubclass_bits(class_bits, builtins.reference_type) {
+        if name == "__new__" {
+            return Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.weakref_new,
+                fn_addr!(molt_weakref_new),
+                3,
+                &[MoltObject::none().bits()],
+            ));
+        }
+        if let Some(bits) = crate::builtins::methods::weakref_method_bits(_py, name) {
+            return Some(bits);
+        }
+    }
     if class_bits == builtins.object {
         return object_method_bits(_py, name);
     }

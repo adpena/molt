@@ -9,7 +9,6 @@
 use crate::builtins::numbers::int_bits_from_i64;
 use crate::state::runtime_state::{RuntimeState, runtime_state};
 use crate::*;
-use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering as AtomicOrdering};
 
@@ -45,7 +44,6 @@ impl SysTraceProfileState {
 }
 
 pub(crate) struct SysRuntimeState {
-    intern_table: Mutex<HashMap<String, u64>>,
     trace_profile: Mutex<SysTraceProfileState>,
     switch_interval_bits: AtomicU64,
     int_max_str_digits: AtomicI64,
@@ -55,7 +53,6 @@ pub(crate) struct SysRuntimeState {
 impl SysRuntimeState {
     pub(crate) fn new() -> Self {
         Self {
-            intern_table: Mutex::new(HashMap::new()),
             trace_profile: Mutex::new(SysTraceProfileState::new()),
             switch_interval_bits: AtomicU64::new(DEFAULT_SWITCH_INTERVAL_BITS),
             int_max_str_digits: AtomicI64::new(DEFAULT_INT_MAX_STR_DIGITS),
@@ -70,14 +67,6 @@ fn sys_state(_py: &PyToken<'_>) -> &'static SysRuntimeState {
 
 pub(crate) fn sys_ext_clear_state(_py: &PyToken<'_>, state: &RuntimeState) {
     crate::gil_assert();
-    let interned = {
-        let mut table = state
-            .sys_ext
-            .intern_table
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        std::mem::take(&mut *table)
-    };
     let (trace_bits, profile_bits) = {
         let mut trace_profile = state
             .sys_ext
@@ -106,9 +95,6 @@ pub(crate) fn sys_ext_clear_state(_py: &PyToken<'_>, state: &RuntimeState) {
         std::mem::take(&mut *hooks)
     };
 
-    for bits in interned.into_values() {
-        dec_ref_sys_owned_bits(_py, bits);
-    }
     dec_ref_sys_owned_bits(_py, trace_bits);
     dec_ref_sys_owned_bits(_py, profile_bits);
     for bits in audit_hooks {
@@ -479,43 +465,11 @@ pub extern "C" fn molt_sys_intern(s_bits: u64) -> u64 {
                 );
             }
         };
-        let state = sys_state(_py);
-        {
-            let table = state
-                .intern_table
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if let Some(&bits) = table.get(&s) {
-                inc_ref_bits(_py, bits);
-                return bits;
-            }
-        }
-        // Allocate new interned string
-        let ptr = alloc_string(_py, s.as_bytes());
+        let ptr = crate::object::builders::alloc_interned_string(_py, s.as_bytes());
         if ptr.is_null() {
             return MoltObject::none().bits();
         }
-        let bits = MoltObject::from_ptr(ptr).bits();
-        let existing_bits = {
-            let mut table = state
-                .intern_table
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if let Some(&existing_bits) = table.get(&s) {
-                Some(existing_bits)
-            } else {
-                inc_ref_bits(_py, bits); // extra ref for the table
-                table.insert(s, bits);
-                None
-            }
-        };
-        if let Some(existing_bits) = existing_bits {
-            inc_ref_bits(_py, existing_bits);
-            dec_ref_bits(_py, bits);
-            existing_bits
-        } else {
-            bits
-        }
+        MoltObject::from_ptr(ptr).bits()
     })
 }
 
@@ -1295,8 +1249,8 @@ mod tests {
             let input_bits = MoltObject::from_ptr(input_ptr).bits();
             let interned_bits = molt_sys_intern(input_bits);
             let interned_ptr = obj_from_bits(interned_bits).as_ptr().unwrap();
-            let interned_refs_with_table = ref_count(interned_ptr);
-            assert_eq!(state.sys_ext.intern_table.lock().unwrap().len(), 1);
+            let interned_refs = ref_count(interned_ptr);
+            assert_eq!(molt_sys_intern(input_bits), interned_bits);
 
             let trace_ptr = alloc_function_obj(_py, 0, 0);
             let trace_bits = MoltObject::from_ptr(trace_ptr).bits();
@@ -1346,8 +1300,7 @@ mod tests {
 
             sys_ext_clear_state(_py, state);
 
-            assert!(state.sys_ext.intern_table.lock().unwrap().is_empty());
-            assert_eq!(ref_count(interned_ptr), interned_refs_with_table - 1);
+            assert_eq!(ref_count(interned_ptr), interned_refs);
             assert_eq!(ref_count(trace_ptr), trace_refs_initial);
             assert_eq!(ref_count(profile_ptr), profile_refs_initial);
             assert_eq!(ref_count(hook_ptr), hook_refs_initial);
@@ -1366,7 +1319,7 @@ mod tests {
             let input2_ptr = alloc_string(_py, b"sys-ext-runtime-intern-2");
             let input2_bits = MoltObject::from_ptr(input2_ptr).bits();
             let interned2_bits = molt_sys_intern(input2_bits);
-            assert_eq!(state.sys_ext.intern_table.lock().unwrap().len(), 1);
+            assert_eq!(molt_sys_intern(input2_bits), interned2_bits);
 
             sys_ext_clear_state(_py, state);
             dec_ref_bits(_py, interned2_bits);

@@ -39,8 +39,8 @@ pub(crate) use cancellation::{
     CURRENT_TOKEN, CancelTokenEntry, NEXT_CANCEL_TOKEN_ID, cancel_tokens, clear_task_token,
     current_token_id, default_cancel_tokens, ensure_task_token, raise_cancelled_with_message,
     register_task_token, release_token, retain_token, set_current_token, task_cancel_message_clear,
-    task_cancel_message_set, task_cancel_pending, task_has_token, task_set_cancel_pending,
-    task_take_cancel_pending, token_id_from_bits, token_is_cancelled,
+    task_cancel_message_set, task_cancel_pending, task_cancellation_detach, task_has_token,
+    task_set_cancel_pending, task_take_cancel_pending, token_id_from_bits, token_is_cancelled,
     wake_tasks_for_cancelled_tokens,
 };
 
@@ -66,9 +66,9 @@ pub(crate) use scheduler::{
     molt_asyncio_task_registry_pop, molt_asyncio_task_registry_set,
     molt_asyncio_task_registry_values, molt_asyncio_unregister_task, molt_block_on, molt_spawn,
     monotonic_now_nanos, monotonic_now_secs, record_async_poll, replace_current_task,
-    task_exception_depths, task_exception_handler_stacks, task_exception_stacks,
-    task_last_exceptions, task_mark_done, task_result_drop, task_result_get, task_result_store,
-    task_waiting_on, task_waiting_on_future, wake_await_waiters, wake_task_ptr,
+    task_detach_owned_edges, task_exception_depths, task_exception_handler_stacks,
+    task_exception_stacks, task_last_exceptions, task_mark_done, task_result_drop, task_result_get,
+    task_result_store, task_waiting_on, task_waiting_on_future, wake_await_waiters, wake_task_ptr,
 };
 
 #[cfg(not(target_arch = "wasm32"))]

@@ -267,10 +267,10 @@ unsafe extern "C" fn counted_dec_ref(bits: u64) {
     count_hook();
     // The boundary-control hook has no backing runtime allocator. Mirror the
     // real terminal runtime path: once c_ref_zero delegates the last heap hold,
-    // finalization is vacuous and runtime_object_destroyed retires the canonical
-    // view after that (empty) resurrection window.
+    // finalization is vacuous and deferred retirement removes canonical
+    // identity before releasing its projection-owned C edges.
     if MoltObject::from_bits(bits).is_ptr() {
-        GLOBAL_BRIDGE.runtime_object_destroyed(bits);
+        drop(GLOBAL_BRIDGE.retire_runtime_object_deferred(bits));
     }
 }
 
@@ -892,13 +892,24 @@ fn enforce_allocation_free_cases(cases: &[CaseResult]) {
 }
 
 fn enforce_legacy_raw_lane_absent() {
-    let bridge = include_str!("../src/bridge.rs");
+    let bridge = concat!(
+        include_str!("../src/bridge.rs"),
+        include_str!("../src/bridge/identity.rs"),
+        include_str!("../src/bridge/identity/ffi_exports.rs"),
+        include_str!("../src/bridge/identity/layouts.rs"),
+        include_str!("../src/bridge/identity/lifecycle.rs"),
+        include_str!("../src/bridge/identity/managed_objects.rs"),
+        include_str!("../src/bridge/identity/numeric_projection.rs"),
+        include_str!("../src/bridge/identity/registry.rs"),
+        include_str!("../src/bridge/identity/retired_guards.rs"),
+        include_str!("../src/bridge/identity/tag_table.rs"),
+    );
     let probe = include_str!("../../molt-cpython-abi-test-support/l7_overlay_probe.c");
     let raw_variant = ["Raw", "Molt"].concat();
     let raw_probe_prefix = ["molt_l7_overlay_", "raw_"].concat();
     assert!(
         !bridge.contains(&raw_variant),
-        "legacy raw-handle PyObject variant remains in bridge.rs"
+        "legacy raw-handle PyObject variant remains in bridge authority"
     );
     assert!(
         !probe.contains(&raw_probe_prefix),

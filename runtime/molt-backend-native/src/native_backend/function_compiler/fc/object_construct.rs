@@ -242,8 +242,11 @@ pub(in crate::native_backend::function_compiler) fn handle_object_construct_op(
             let ptr_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_ptr);
             let is_ptr = builder.ins().icmp(IntCC::Equal, tag_bits, ptr_tag);
             let type_check_block = builder.create_block();
+            let instance_kind_check_block = builder.create_block();
             let valid_class_block = builder.create_block();
+            let heap_class_block = builder.create_block();
             let invalid_class_block = builder.create_block();
+            builder.set_cold_block(heap_class_block);
             builder.set_cold_block(invalid_class_block);
             let merge_block = builder.create_block();
             builder.append_block_param(merge_block, types::I64);
@@ -264,9 +267,55 @@ pub(in crate::native_backend::function_compiler) fn handle_object_construct_op(
             let is_type = builder
                 .ins()
                 .icmp(IntCC::Equal, class_type_id, expected_type_id);
-            builder
+            builder.ins().brif(
+                is_type,
+                instance_kind_check_block,
+                &[],
+                invalid_class_block,
+                &[],
+            );
+
+            switch_to_block_materialized(&mut *builder, instance_kind_check_block);
+            seal_block_once(
+                &mut *builder,
+                &mut *sealed_blocks,
+                instance_kind_check_block,
+            );
+            let class_policy_ptr = builder
                 .ins()
-                .brif(is_type, valid_class_block, &[], invalid_class_block, &[]);
+                .iadd_imm(class_ptr, i64::from(CLASS_POLICY_WORD_OFFSET));
+            let class_policy =
+                builder
+                    .ins()
+                    .atomic_load(types::I64, MemFlagsData::trusted(), class_policy_ptr);
+            let instance_kind = builder
+                .ins()
+                .ushr_imm(class_policy, i64::from(CLASS_POLICY_INSTANCE_KIND_SHIFT));
+            let ordinary_object_kind = builder.ins().icmp_imm(IntCC::Equal, instance_kind, 0);
+            builder.ins().brif(
+                ordinary_object_kind,
+                valid_class_block,
+                &[],
+                heap_class_block,
+                &[],
+            );
+
+            switch_to_block_materialized(&mut *builder, heap_class_block);
+            seal_block_once(&mut *builder, &mut *sealed_blocks, heap_class_block);
+            let payload_size_val = builder.ins().iconst(types::I64, payload_i64);
+            let callee = SimpleBackend::import_func_id_split(
+                &mut *module,
+                &mut *import_ids,
+                "molt_object_new_bound_sized",
+                &[types::I64, types::I64],
+                &[types::I64],
+            );
+            let local_callee = module.declare_func_in_func(callee, builder.func);
+            let call = builder
+                .ins()
+                .call(local_callee, &[*cls_bits, payload_size_val]);
+            let heap_res = builder.inst_results(call)[0];
+            jump_block(&mut *builder, merge_block, &[heap_res]);
 
             switch_to_block_materialized(&mut *builder, valid_class_block);
             seal_block_once(&mut *builder, &mut *sealed_blocks, valid_class_block);

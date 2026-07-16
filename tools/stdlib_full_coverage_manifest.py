@@ -592,7 +592,6 @@ STDLIB_REQUIRED_INTRINSICS_BY_MODULE: dict[str, tuple[str, ...]] = {
     ),
     "types": ("molt_types_bootstrap",),
     "weakref": (
-        "molt_weakref_bind_reference_type",
         "molt_weakref_callback",
         "molt_weakref_count",
         "molt_weakref_finalize_track",

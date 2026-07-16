@@ -15,7 +15,7 @@ fn rust_backend_rejects_class_slots_without_object_representation() {
     let mut class_new = op("class_new");
     class_new.out = Some("point_cls".to_string());
 
-    let mut alloc_obj = op("alloc_class_static");
+    let mut alloc_obj = op("alloc_class");
     alloc_obj.args = Some(vec!["point_cls".to_string()]);
     alloc_obj.value = Some(24);
     alloc_obj.out = Some("point_obj".to_string());
@@ -128,9 +128,7 @@ fn rust_backend_rejects_class_slots_without_object_representation() {
         .expect_err("class slot IR requires a real Rust object/type representation");
 
     assert!(err.contains("class_new requires a Rust backend object/type representation"));
-    assert!(
-        err.contains("alloc_class_static requires a Rust backend class instance representation")
-    );
+    assert!(err.contains("alloc_class requires a Rust backend class instance representation"));
     assert!(err.contains("object_set_class requires a Rust backend object/type representation"));
 }
 

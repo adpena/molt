@@ -40,26 +40,6 @@ class SerializationObjectAttrOpsMixin(_MixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "ALLOC_CLASS_TRUSTED":
-            class_ref, class_id = op.args
-            ctx.json_ops.append(
-                {
-                    "kind": "alloc_class_trusted",
-                    "args": [class_ref.name],
-                    "value": self.classes[class_id]["size"],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "ALLOC_CLASS_STATIC":
-            class_ref, class_id = op.args
-            ctx.json_ops.append(
-                {
-                    "kind": "alloc_class_static",
-                    "args": [class_ref.name],
-                    "value": self.classes[class_id]["size"],
-                    "out": op.result.name,
-                }
-            )
         elif op.kind == "OBJECT_SET_CLASS":
             ctx.json_ops.append(
                 {

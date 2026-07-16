@@ -2,6 +2,7 @@
 //!
 //! The cfg guard is on the `mod` declaration in `async_rt/mod.rs`.
 
+use crate::MoltObject;
 use crate::concurrency::PyToken;
 
 pub(crate) struct IoPoller;
@@ -26,8 +27,14 @@ impl IoPoller {
     pub(crate) fn shutdown(&self) {}
 }
 
-pub(crate) fn io_wait_release_socket(_py: &PyToken<'_>, _future_ptr: *mut u8) {}
-pub(crate) fn ws_wait_release(_py: &PyToken<'_>, _future_ptr: *mut u8) {}
+pub(crate) fn io_wait_detach_resource(_future_ptr: *mut u8) -> u64 {
+    MoltObject::none().bits()
+}
+pub(crate) fn io_wait_release_detached_resource(_py: &PyToken<'_>, _resource_bits: u64) {}
+pub(crate) fn ws_wait_detach_resource(_future_ptr: *mut u8) -> u64 {
+    MoltObject::none().bits()
+}
+pub(crate) fn ws_wait_release_detached_resource(_py: &PyToken<'_>, _resource_bits: u64) {}
 
 #[cfg(feature = "stdlib_net")]
 fn net_unavailable_message() -> &'static str {

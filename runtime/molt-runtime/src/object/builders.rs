@@ -1,7 +1,6 @@
 use crate::PyToken;
 use crate::object::{
-    ClassEdgeOwnership, IMMORTAL_REFCOUNT, object_init_class_edge_unpublished,
-    release_shutdown_owned_bits,
+    ClassEdgeOwnership, IMMORTAL_REFCOUNT, MoltAuxWord, object_init_class_edge_unpublished,
 };
 use crate::*;
 
@@ -22,7 +21,12 @@ pub extern "C" fn molt_alloc(size_bits: u64) -> u64 {
         let Some(total_size) = raw_payload_total_or_null(size) else {
             return MoltObject::none().bits();
         };
-        let obj_ptr = alloc_object_zeroed(_py, total_size, TYPE_ID_OBJECT);
+        let obj_ptr = crate::object::alloc_object_zeroed_unpublished_with_aux(
+            _py,
+            total_size,
+            TYPE_ID_OBJECT,
+            ObjectAuxPreselection::Default,
+        );
         if obj_ptr.is_null() {
             return MoltObject::none().bits();
         }
@@ -100,143 +104,69 @@ pub(crate) unsafe fn alloc_dataclass_for_class_ptr(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_alloc_class(size_bits: u64, class_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        if class_bits != 0 {
-            let class_obj = obj_from_bits(class_bits);
-            let Some(class_ptr) = class_obj.as_ptr() else {
-                return MoltObject::none().bits();
-            };
-            unsafe {
-                if object_type_id(class_ptr) != TYPE_ID_TYPE {
-                    return MoltObject::none().bits();
-                }
-                if let Some(inst_bits) = alloc_dataclass_for_class_ptr(_py, class_ptr, class_bits) {
-                    return inst_bits;
-                }
-            }
-        }
-        let size = usize_from_bits(size_bits);
-        let Some(total_size) = raw_payload_total_or_null(size) else {
-            return MoltObject::none().bits();
-        };
-        let aux = if class_bits == 0 {
-            ObjectAuxPreselection::Default
-        } else {
-            ObjectAuxPreselection::ClassInline
-        };
-        let obj_ptr = alloc_object_zeroed_with_aux(_py, total_size, TYPE_ID_OBJECT, aux);
-        if obj_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        unsafe {
-            if class_bits != 0
-                && !object_init_class_edge_unpublished(
-                    _py,
-                    obj_ptr,
-                    class_bits,
-                    ClassEdgeOwnership::Owned,
-                )
-            {
-                dec_ref_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
-                return MoltObject::none().bits();
-            }
-        }
-        MoltObject::from_ptr(obj_ptr).bits()
-    })
+    crate::with_gil_entry_nopanic!(_py, { alloc_class_instance(_py, size_bits, class_bits) })
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_alloc_class_trusted(size_bits: u64, class_bits: u64) -> u64 {
+pub extern "C" fn molt_object_publish_initialized(obj_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if class_bits != 0 {
-            let class_obj = obj_from_bits(class_bits);
-            let Some(class_ptr) = class_obj.as_ptr() else {
-                return MoltObject::none().bits();
-            };
-            unsafe {
-                if object_type_id(class_ptr) != TYPE_ID_TYPE {
-                    return MoltObject::none().bits();
-                }
-                if let Some(inst_bits) = alloc_dataclass_for_class_ptr(_py, class_ptr, class_bits) {
-                    return inst_bits;
-                }
-            }
-        }
-        let size = usize_from_bits(size_bits);
-        let Some(total_size) = raw_payload_total_or_null(size) else {
-            return MoltObject::none().bits();
+        let Some(ptr) = obj_from_bits(obj_bits).as_ptr() else {
+            return obj_bits;
         };
-        let aux = if class_bits == 0 {
-            ObjectAuxPreselection::Default
-        } else {
-            ObjectAuxPreselection::ClassInline
-        };
-        let obj_ptr = alloc_object_zeroed_with_aux(_py, total_size, TYPE_ID_OBJECT, aux);
-        if obj_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
         unsafe {
-            if class_bits != 0
-                && !object_init_class_edge_unpublished(
+            if (*header_from_obj_ptr(ptr)).gc_is_published() {
+                return raise_exception::<u64>(
                     _py,
-                    obj_ptr,
-                    class_bits,
-                    ClassEdgeOwnership::Owned,
-                )
-            {
-                dec_ref_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
-                return MoltObject::none().bits();
+                    "SystemError",
+                    "object construction published more than once",
+                );
             }
+            crate::object::gc::gc_publish_initialized(_py, ptr);
         }
-        MoltObject::from_ptr(obj_ptr).bits()
+        obj_bits
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_alloc_class_static(size_bits: u64, class_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        if class_bits != 0 {
-            let class_obj = obj_from_bits(class_bits);
-            let Some(class_ptr) = class_obj.as_ptr() else {
-                return MoltObject::none().bits();
-            };
-            unsafe {
-                if object_type_id(class_ptr) != TYPE_ID_TYPE {
-                    return MoltObject::none().bits();
-                }
-                if let Some(inst_bits) = alloc_dataclass_for_class_ptr(_py, class_ptr, class_bits) {
-                    return inst_bits;
-                }
-            }
-        }
-        let size = usize_from_bits(size_bits);
-        let Some(total_size) = raw_payload_total_or_null(size) else {
+fn alloc_class_instance(_py: &PyToken<'_>, size_bits: u64, class_bits: u64) -> u64 {
+    let mut type_id = TYPE_ID_OBJECT;
+    if class_bits != 0 {
+        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
             return MoltObject::none().bits();
         };
-        let aux = if class_bits == 0 {
-            ObjectAuxPreselection::Default
-        } else {
-            ObjectAuxPreselection::ClassInline
-        };
-        let obj_ptr = alloc_object_zeroed_with_aux(_py, total_size, TYPE_ID_OBJECT, aux);
-        if obj_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
         unsafe {
-            if class_bits != 0
-                && !object_init_class_edge_unpublished(
-                    _py,
-                    obj_ptr,
-                    class_bits,
-                    ClassEdgeOwnership::Owned,
-                )
-            {
-                dec_ref_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
+            if object_type_id(class_ptr) != TYPE_ID_TYPE {
                 return MoltObject::none().bits();
             }
+            type_id = crate::object::class_instance_type_id(class_ptr);
         }
-        MoltObject::from_ptr(obj_ptr).bits()
-    })
+    }
+    let Some(total_size) = raw_payload_total_or_null(usize_from_bits(size_bits)) else {
+        return MoltObject::none().bits();
+    };
+    let aux = if class_bits == 0 {
+        ObjectAuxPreselection::Default
+    } else {
+        ObjectAuxPreselection::ClassInline
+    };
+    let obj_ptr =
+        crate::object::alloc_object_zeroed_unpublished_with_aux(_py, total_size, type_id, aux);
+    if obj_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    unsafe {
+        if class_bits != 0
+            && !object_init_class_edge_unpublished(
+                _py,
+                obj_ptr,
+                class_bits,
+                ClassEdgeOwnership::Owned,
+            )
+        {
+            dec_ref_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
+            return MoltObject::none().bits();
+        }
+    }
+    MoltObject::from_ptr(obj_ptr).bits()
 }
 
 pub(crate) fn alloc_dict_with_pairs(_py: &PyToken<'_>, pairs: &[u64]) -> *mut u8 {
@@ -1176,43 +1106,84 @@ pub(crate) fn alloc_tuple_owned(_py: &PyToken<'_>, elems: &[u64]) -> *mut u8 {
     alloc_tuple_exact(_py, elems, true)
 }
 
-/// Cached empty tuple singleton. Allocated once, immortal (never freed).
-static EMPTY_TUPLE_PTR: std::sync::atomic::AtomicPtr<u8> =
-    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+/// Runtime-owned authority for stable-address canonical heap objects.
+///
+/// Hits are lock-free. A miss is serialized through `singleton_init`, so a
+/// fully initialized and immortal object is release-published exactly once and
+/// no losing allocation can leak. The intern pool keeps its lock through
+/// allocation and insertion for the same reason. Runtime teardown drains every
+/// pointer from this owner before the state itself is dropped.
+pub(crate) struct CanonicalObjectCache {
+    singleton_init: std::sync::Mutex<()>,
+    empty_tuple: std::sync::atomic::AtomicPtr<u8>,
+    empty_string: std::sync::atomic::AtomicPtr<u8>,
+    empty_bytes: std::sync::atomic::AtomicPtr<u8>,
+    ascii_chars: [std::sync::atomic::AtomicPtr<u8>; 128],
+    interned_strings: std::sync::Mutex<std::collections::HashMap<Box<[u8]>, usize>>,
+}
+
+impl CanonicalObjectCache {
+    pub(crate) fn new() -> Self {
+        Self {
+            singleton_init: std::sync::Mutex::new(()),
+            empty_tuple: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
+            empty_string: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
+            empty_bytes: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
+            ascii_chars: [const { std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()) }; 128],
+            interned_strings: std::sync::Mutex::new(std::collections::HashMap::new()),
+        }
+    }
+}
+
+#[inline]
+unsafe fn prepare_canonical_object(ptr: *mut u8, interned: bool) {
+    unsafe {
+        let header = header_from_obj_ptr(ptr);
+        let flags = crate::object::HEADER_FLAG_IMMORTAL
+            | if interned {
+                crate::object::HEADER_FLAG_INTERNED
+            } else {
+                0
+            };
+        (*header).fetch_or_flags(flags);
+        (*header)
+            .ref_count
+            .store(IMMORTAL_REFCOUNT, std::sync::atomic::Ordering::Release);
+    }
+}
 
 pub(crate) fn alloc_tuple(_py: &PyToken<'_>, elems: &[u64]) -> *mut u8 {
     // Fast path: return the immortal empty tuple singleton.
     if elems.is_empty() {
-        let cached = EMPTY_TUPLE_PTR.load(std::sync::atomic::Ordering::Acquire);
+        let cache = &runtime_state(_py).canonical_objects;
+        let cached = cache.empty_tuple.load(std::sync::atomic::Ordering::Acquire);
+        if !cached.is_null() {
+            return cached;
+        }
+        let _init = cache
+            .singleton_init
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let cached = cache.empty_tuple.load(std::sync::atomic::Ordering::Acquire);
         if !cached.is_null() {
             return cached;
         }
         let candidate = alloc_tuple_exact(_py, &[], false);
         if candidate.is_null() {
-            return EMPTY_TUPLE_PTR.load(std::sync::atomic::Ordering::Acquire);
+            return std::ptr::null_mut();
         }
         unsafe {
-            crate::object::gc::gc_untrack_on_free(candidate, TYPE_ID_TUPLE);
-            let header = header_from_obj_ptr(candidate);
-            (*header).fetch_or_flags(
-                crate::object::HEADER_FLAG_IMMORTAL | crate::object::HEADER_FLAG_INTERNED,
+            crate::object::gc::gc_untrack(
+                candidate,
+                TYPE_ID_TUPLE,
+                crate::object::gc::GcUntrackReason::DynamicProjection,
             );
-            (*header)
-                .ref_count
-                .store(IMMORTAL_REFCOUNT, std::sync::atomic::Ordering::Release);
+            prepare_canonical_object(candidate, true);
         }
-        return match EMPTY_TUPLE_PTR.compare_exchange(
-            std::ptr::null_mut(),
-            candidate,
-            std::sync::atomic::Ordering::AcqRel,
-            std::sync::atomic::Ordering::Acquire,
-        ) {
-            Ok(_) => candidate,
-            Err(winner) => {
-                release_shutdown_owned_bits(_py, MoltObject::from_ptr(candidate).bits());
-                winner
-            }
-        };
+        cache
+            .empty_tuple
+            .store(candidate, std::sync::atomic::Ordering::Release);
+        return candidate;
     }
     alloc_tuple_exact(_py, elems, false)
 }
@@ -1223,6 +1194,18 @@ pub(crate) fn alloc_range(
     stop_bits: u64,
     step_bits: u64,
 ) -> *mut u8 {
+    use crate::object::heap_kinds_generated::HeapAcyclicSlot;
+    if !acyclic_slot_edge(HeapAcyclicSlot::RangeStart, start_bits)
+        || !acyclic_slot_edge(HeapAcyclicSlot::RangeStop, stop_bits)
+        || !acyclic_slot_edge(HeapAcyclicSlot::RangeStep, step_bits)
+    {
+        raise_exception::<u64>(
+            _py,
+            "SystemError",
+            "range constructor violated generated int_triplet acyclic capability",
+        );
+        return std::ptr::null_mut();
+    }
     let total = std::mem::size_of::<MoltHeader>() + 3 * std::mem::size_of::<u64>();
     let ptr = alloc_object(_py, total, TYPE_ID_RANGE);
     if ptr.is_null() {
@@ -1237,6 +1220,60 @@ pub(crate) fn alloc_range(
         inc_ref_bits(_py, step_bits);
     }
     ptr
+}
+
+#[inline]
+fn acyclic_int_edge(bits: u64) -> bool {
+    let obj = obj_from_bits(bits);
+    obj.as_int().is_some()
+        || obj
+            .as_ptr()
+            .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_BIGINT })
+}
+
+fn code_string_tuple_edge(bits: u64) -> bool {
+    let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+        return false;
+    };
+    if unsafe { object_type_id(ptr) } != TYPE_ID_TUPLE {
+        return false;
+    }
+    unsafe { crate::object::seq_access::with_immutable_tuple_slice(ptr, |items| {
+        items.iter().copied().all(|item| {
+            obj_from_bits(item)
+                .as_ptr()
+                .is_some_and(|item_ptr| unsafe { object_type_id(item_ptr) == TYPE_ID_STRING })
+        })
+    }) }
+    .unwrap_or(false)
+}
+
+#[inline]
+pub(crate) fn acyclic_slot_edge(
+    slot: crate::object::heap_kinds_generated::HeapAcyclicSlot,
+    bits: u64,
+) -> bool {
+    use crate::object::heap_kinds_generated::{HeapAcyclicEdgeDomain, heap_acyclic_slot_domain};
+    let obj = obj_from_bits(bits);
+    match heap_acyclic_slot_domain(slot) {
+        HeapAcyclicEdgeDomain::Int => acyclic_int_edge(bits),
+        HeapAcyclicEdgeDomain::Str => obj
+            .as_ptr()
+            .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_STRING }),
+        HeapAcyclicEdgeDomain::BytesOrNone => {
+            obj.is_none()
+                || obj
+                    .as_ptr()
+                    .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_BYTES })
+        }
+        HeapAcyclicEdgeDomain::StrTuple => code_string_tuple_edge(bits),
+        HeapAcyclicEdgeDomain::StrOrNone => {
+            obj.is_none()
+                || obj
+                    .as_ptr()
+                    .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_STRING })
+        }
+    }
 }
 
 pub(crate) fn alloc_slice_obj(
@@ -1357,6 +1394,20 @@ pub(crate) fn alloc_code_obj(
     posonlyargcount: u64,
     kwonlyargcount: u64,
 ) -> *mut u8 {
+    use crate::object::heap_kinds_generated::HeapAcyclicSlot;
+    if !acyclic_slot_edge(HeapAcyclicSlot::CodeFilename, filename_bits)
+        || !acyclic_slot_edge(HeapAcyclicSlot::CodeName, name_bits)
+        || !acyclic_slot_edge(HeapAcyclicSlot::CodeLinetable, linetable_bits)
+        || !acyclic_slot_edge(HeapAcyclicSlot::CodeVarnames, varnames_bits)
+        || !acyclic_slot_edge(HeapAcyclicSlot::CodeNames, names_bits)
+    {
+        raise_exception::<u64>(
+            _py,
+            "SystemError",
+            "code constructor violated generated code_metadata acyclic capability",
+        );
+        return std::ptr::null_mut();
+    }
     // Slots 0..8 are CPython-visible code facts, 9..11 hold the Molt callable
     // identity, and 12..16 retain immutable signature facts used by
     // `types.FunctionType` reconstruction.
@@ -1451,19 +1502,6 @@ pub(crate) fn alloc_module_obj(_py: &PyToken<'_>, name_bits: u64) -> *mut u8 {
             dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
             return std::ptr::null_mut();
         }
-        // Mark module objects as immortal.  The native backend's Cranelift
-        // code generation emits dec_ref_obj calls for every SSA value whose
-        // last-use point is reached (Perceus-style reference counting).
-        // Module objects are returned by MODULE_CACHE_GET which inc_refs,
-        // and then dec_ref'd when the local goes dead.  However, modules
-        // are also stored in the module cache (with their own inc_ref) and
-        // in sys.modules, and multiple overlapping load sequences can cause
-        // the compiled code's dec_refs to out-pace the inc_refs, freeing
-        // the module while the cache still holds dangling bits.  Modules
-        // are process-lifetime singletons in Molt, so marking them immortal
-        // is both correct and avoids the refcount imbalance entirely.
-        let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
-        (*header_ptr).fetch_or_flags(crate::object::HEADER_FLAG_IMMORTAL);
     }
     ptr
 }
@@ -1495,7 +1533,10 @@ pub(crate) fn alloc_class_obj(_py: &PyToken<'_>, name_bits: u64) -> *mut u8 {
         let none_bits = MoltObject::none().bits();
         *(ptr.add(6 * std::mem::size_of::<u64>()) as *mut u64) = none_bits;
         *(ptr.add(7 * std::mem::size_of::<u64>()) as *mut u64) = qualname_bits;
-        *(ptr.add(8 * std::mem::size_of::<u64>()) as *mut u64) = 0;
+        std::ptr::write(
+            ptr.add(8 * std::mem::size_of::<u64>()) as *mut MoltAuxWord,
+            MoltAuxWord::new(0),
+        );
         inc_ref_bits(_py, name_bits);
         inc_ref_bits(_py, bases_bits);
         inc_ref_bits(_py, mro_bits);
@@ -1585,48 +1626,40 @@ pub(crate) fn alloc_bytes_like_with_len(_py: &PyToken<'_>, len: usize, type_id: 
     ptr
 }
 
-/// Cached empty string singleton.
-static EMPTY_STRING_PTR: std::sync::atomic::AtomicPtr<u8> =
-    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
-
-/// Interned single-character ASCII strings (0x00..0x7F).  Lazily populated on first access.
-/// Each entry stores the raw object pointer (`null` = not yet initialised).
-/// Using atomics avoids a mutex on the hot lookup path.
-static ASCII_CHARS: [std::sync::atomic::AtomicPtr<u8>; 128] =
-    [const { std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()) }; 128];
-
-/// Lazily initialise every slot in `ASCII_CHARS` that is still zero.  Called once (guarded
-/// by `OnceLock`) on the first single-ASCII-char allocation.
-fn init_ascii_chars(_py: &PyToken<'_>) {
-    for byte in 0u8..128 {
-        let slot = &ASCII_CHARS[byte as usize];
-        if !slot.load(std::sync::atomic::Ordering::Relaxed).is_null() {
-            continue;
-        }
-        let ptr = alloc_bytes_like_with_len(_py, 1, TYPE_ID_STRING);
-        if ptr.is_null() {
-            continue;
-        }
-        unsafe {
-            let data_ptr = ptr.add(std::mem::size_of::<usize>());
-            *data_ptr = byte;
-            let header = header_from_obj_ptr(ptr);
-            (*header).fetch_or_flags(
-                crate::object::HEADER_FLAG_IMMORTAL | crate::object::HEADER_FLAG_INTERNED,
-            );
-            (*header)
-                .ref_count
-                .store(IMMORTAL_REFCOUNT, std::sync::atomic::Ordering::Relaxed);
-        }
-        // If another thread raced us, the first writer wins; second allocation leaks
-        // harmlessly (both are immortal).
-        let _ = slot.compare_exchange(
-            std::ptr::null_mut(),
-            ptr,
-            std::sync::atomic::Ordering::Release,
-            std::sync::atomic::Ordering::Relaxed,
-        );
+fn canonical_bytes_like(
+    _py: &PyToken<'_>,
+    slot: &std::sync::atomic::AtomicPtr<u8>,
+    bytes: &[u8],
+    type_id: u32,
+    interned: bool,
+) -> *mut u8 {
+    let cached = slot.load(std::sync::atomic::Ordering::Acquire);
+    if !cached.is_null() {
+        return cached;
     }
+    let cache = &runtime_state(_py).canonical_objects;
+    let _init = cache
+        .singleton_init
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let cached = slot.load(std::sync::atomic::Ordering::Acquire);
+    if !cached.is_null() {
+        return cached;
+    }
+    let ptr = alloc_bytes_like_with_len(_py, bytes.len(), type_id);
+    if ptr.is_null() {
+        return ptr;
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            bytes.as_ptr(),
+            ptr.add(std::mem::size_of::<usize>()),
+            bytes.len(),
+        );
+        prepare_canonical_object(ptr, interned);
+    }
+    slot.store(ptr, std::sync::atomic::Ordering::Release);
+    ptr
 }
 
 /// Try to return an interned single-ASCII-character string.
@@ -1640,65 +1673,46 @@ fn try_intern_ascii_char(_py: &PyToken<'_>, bytes: &[u8]) -> Option<*mut u8> {
     if byte > 127 {
         return None;
     }
-    if ASCII_CHARS[byte as usize]
-        .load(std::sync::atomic::Ordering::Acquire)
-        .is_null()
-    {
-        init_ascii_chars(_py);
-    }
-    let raw = ASCII_CHARS[byte as usize].load(std::sync::atomic::Ordering::Acquire);
+    let slot = &runtime_state(_py).canonical_objects.ascii_chars[byte as usize];
+    let raw = canonical_bytes_like(_py, slot, bytes, TYPE_ID_STRING, true);
     if raw.is_null() { None } else { Some(raw) }
 }
 
-#[derive(Clone, Copy)]
-struct InternedPtr(*mut u8);
-
-// SAFETY: these pointers only refer to immortal interned string objects, so
-// sharing the pointer value across threads does not transfer mutable aliasing
-// rights or ownership. The underlying objects are never freed.
-unsafe impl Send for InternedPtr {}
-unsafe impl Sync for InternedPtr {}
-
-/// Molt-level string intern pool: maps identifier-like ASCII strings to their immortal
-/// Molt object pointer (stored as `usize` to be `Send`).
-///
-/// Only strings that pass `string_intern::is_identifier_like` are candidates.  The
-/// objects stored here are marked `HEADER_FLAG_IMMORTAL | HEADER_FLAG_INTERNED` so the
-/// GC never frees them, and repeated allocations of the same identifier return the same
-/// heap object (pointer equality).
-fn molt_string_intern_pool()
--> &'static std::sync::Mutex<std::collections::HashMap<Box<[u8]>, InternedPtr>> {
-    static POOL: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashMap<Box<[u8]>, InternedPtr>>,
-    > = std::sync::OnceLock::new();
-    POOL.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+pub(crate) fn alloc_interned_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
+    if bytes.is_empty() {
+        let slot = &runtime_state(_py).canonical_objects.empty_string;
+        return canonical_bytes_like(_py, slot, bytes, TYPE_ID_STRING, true);
+    }
+    if let Some(ptr) = try_intern_ascii_char(_py, bytes) {
+        return ptr;
+    }
+    let cache = &runtime_state(_py).canonical_objects;
+    let mut pool = cache
+        .interned_strings
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(&raw) = pool.get(bytes) {
+        return raw as *mut u8;
+    }
+    let ptr = alloc_bytes_like_with_len(_py, bytes.len(), TYPE_ID_STRING);
+    if ptr.is_null() {
+        return ptr;
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            bytes.as_ptr(),
+            ptr.add(std::mem::size_of::<usize>()),
+            bytes.len(),
+        );
+        prepare_canonical_object(ptr, true);
+    }
+    pool.insert(bytes.to_vec().into_boxed_slice(), ptr as usize);
+    ptr
 }
 
 pub(crate) fn alloc_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
     if bytes.is_empty() {
-        let cached = EMPTY_STRING_PTR.load(std::sync::atomic::Ordering::Relaxed);
-        let ptr = if !cached.is_null() {
-            cached
-        } else {
-            let ptr = alloc_bytes_like_with_len(_py, 0, TYPE_ID_STRING);
-            if !ptr.is_null() {
-                unsafe {
-                    let header = header_from_obj_ptr(ptr);
-                    (*header).fetch_or_flags(crate::object::HEADER_FLAG_IMMORTAL);
-                    (*header)
-                        .ref_count
-                        .store(IMMORTAL_REFCOUNT, std::sync::atomic::Ordering::Relaxed);
-                }
-                let _ = EMPTY_STRING_PTR.compare_exchange(
-                    std::ptr::null_mut(),
-                    ptr,
-                    std::sync::atomic::Ordering::Relaxed,
-                    std::sync::atomic::Ordering::Relaxed,
-                );
-            }
-            EMPTY_STRING_PTR.load(std::sync::atomic::Ordering::Relaxed)
-        };
-        return ptr;
+        return alloc_interned_string(_py, bytes);
     }
 
     // Fast path: single ASCII character strings (space, digits, punctuation, etc.)
@@ -1721,42 +1735,7 @@ pub(crate) fn alloc_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
             unsafe { std::str::from_utf8_unchecked(bytes) },
         );
     if is_ident {
-        // Check the Molt-level pool first (no allocation on hit).
-        if let Ok(pool) = molt_string_intern_pool().lock()
-            && let Some(&raw) = pool.get(bytes)
-        {
-            // Cache hit: return the existing immortal object directly.
-            return raw.0;
-        }
-        // Pool miss: allocate a new string object, mark it immortal+interned, and
-        // insert it into the pool so future allocations reuse this object.
-        let ptr = alloc_bytes_like_with_len(_py, bytes.len(), TYPE_ID_STRING);
-        if ptr.is_null() {
-            return ptr;
-        }
-        unsafe {
-            let data_ptr = ptr.add(std::mem::size_of::<usize>());
-            std::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr, bytes.len());
-            let header = header_from_obj_ptr(ptr);
-            (*header).fetch_or_flags(
-                crate::object::HEADER_FLAG_IMMORTAL | crate::object::HEADER_FLAG_INTERNED,
-            );
-            (*header)
-                .ref_count
-                .store(IMMORTAL_REFCOUNT, std::sync::atomic::Ordering::Relaxed);
-        }
-        // Insert into pool; on concurrent miss (two threads race) we accept the
-        // redundant allocation — the first writer wins and the second allocation
-        // leaks harmlessly (both are immortal, pool holds the canonical one).
-        if let Ok(mut pool) = molt_string_intern_pool().lock() {
-            pool.entry(bytes.to_vec().into_boxed_slice())
-                .or_insert(InternedPtr(ptr));
-            // Re-read: if another thread won the race, prefer their pointer.
-            if let Some(&canonical) = pool.get(bytes) {
-                return canonical.0;
-            }
-        }
-        return ptr;
+        return alloc_interned_string(_py, bytes);
     }
 
     let ptr = alloc_bytes_like_with_len(_py, bytes.len(), TYPE_ID_STRING);
@@ -1804,71 +1783,60 @@ pub(crate) fn alloc_bytes_like(_py: &PyToken<'_>, bytes: &[u8], type_id: u32) ->
     ptr
 }
 
-/// Cached empty bytes singleton.
-static EMPTY_BYTES_PTR: std::sync::atomic::AtomicPtr<u8> =
-    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
-
 pub(crate) fn alloc_bytes(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
     if bytes.is_empty() {
-        let cached = EMPTY_BYTES_PTR.load(std::sync::atomic::Ordering::Relaxed);
-        let ptr = if !cached.is_null() {
-            cached
-        } else {
-            let ptr = alloc_bytes_like(_py, &[], TYPE_ID_BYTES);
-            if !ptr.is_null() {
-                unsafe {
-                    let header = header_from_obj_ptr(ptr);
-                    (*header).fetch_or_flags(crate::object::HEADER_FLAG_IMMORTAL);
-                    (*header)
-                        .ref_count
-                        .store(IMMORTAL_REFCOUNT, std::sync::atomic::Ordering::Relaxed);
-                }
-                let _ = EMPTY_BYTES_PTR.compare_exchange(
-                    std::ptr::null_mut(),
-                    ptr,
-                    std::sync::atomic::Ordering::Relaxed,
-                    std::sync::atomic::Ordering::Relaxed,
-                );
-            }
-            EMPTY_BYTES_PTR.load(std::sync::atomic::Ordering::Relaxed)
-        };
-        return ptr;
+        let slot = &runtime_state(_py).canonical_objects.empty_bytes;
+        return canonical_bytes_like(_py, slot, bytes, TYPE_ID_BYTES, false);
     }
     alloc_bytes_like(_py, bytes, TYPE_ID_BYTES)
 }
 
-pub(crate) fn clear_builder_singletons(_py: &PyToken<'_>) {
+pub(crate) fn clear_builder_singletons(_py: &PyToken<'_>, state: &crate::RuntimeState) {
     crate::gil_assert();
-    let mut released = std::collections::HashSet::new();
-
-    let mut release_once = |ptr: *mut u8| {
-        if !ptr.is_null() && released.insert(ptr as usize) {
-            crate::object::release_shutdown_owned_bits(_py, MoltObject::from_ptr(ptr).bits());
-        }
-    };
-
-    let empty_tuple =
-        EMPTY_TUPLE_PTR.swap(std::ptr::null_mut(), std::sync::atomic::Ordering::AcqRel);
-    release_once(empty_tuple);
-
-    let empty_string =
-        EMPTY_STRING_PTR.swap(std::ptr::null_mut(), std::sync::atomic::Ordering::AcqRel);
-    release_once(empty_string);
-
-    let empty_bytes =
-        EMPTY_BYTES_PTR.swap(std::ptr::null_mut(), std::sync::atomic::Ordering::AcqRel);
-    release_once(empty_bytes);
-
-    for slot in &ASCII_CHARS {
-        let ptr = slot.swap(std::ptr::null_mut(), std::sync::atomic::Ordering::AcqRel);
-        release_once(ptr);
+    let cache = &state.canonical_objects;
+    let init = cache
+        .singleton_init
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut singleton_ptrs = [std::ptr::null_mut(); 131];
+    for (index, slot) in [&cache.empty_tuple, &cache.empty_string, &cache.empty_bytes]
+        .into_iter()
+        .enumerate()
+    {
+        singleton_ptrs[index] =
+            slot.swap(std::ptr::null_mut(), std::sync::atomic::Ordering::AcqRel);
     }
+    for (index, slot) in cache.ascii_chars.iter().enumerate() {
+        singleton_ptrs[index + 3] =
+            slot.swap(std::ptr::null_mut(), std::sync::atomic::Ordering::AcqRel);
+    }
+    let mut pool = cache
+        .interned_strings
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let interned = std::mem::take(&mut *pool);
+    drop(pool);
+    drop(init);
 
-    if let Ok(mut pool) = molt_string_intern_pool().lock() {
-        let old = std::mem::take(&mut *pool);
-        drop(pool);
-        for (_key, ptr) in old {
-            release_once(ptr.0);
+    // These domains are disjoint by construction: empty values have dedicated
+    // slots, every one-byte ASCII string has a dedicated slot, and the pool
+    // only admits remaining nonempty strings. Teardown must not hide an
+    // authority collision behind deduplication.
+    #[cfg(debug_assertions)]
+    {
+        for (index, &ptr) in singleton_ptrs.iter().enumerate() {
+            if !ptr.is_null() {
+                assert!(!singleton_ptrs[index + 1..].contains(&ptr));
+                assert!(!interned.values().any(|&raw| raw == ptr as usize));
+            }
+        }
+    }
+    for ptr in singleton_ptrs
+        .into_iter()
+        .chain(interned.into_values().map(|raw| raw as *mut u8))
+    {
+        if !ptr.is_null() {
+            crate::object::release_shutdown_owned_bits(_py, MoltObject::from_ptr(ptr).bits());
         }
     }
 }
@@ -2026,8 +1994,12 @@ pub(crate) fn alloc_memoryview_from_storage(
 
 #[cfg(test)]
 mod tests {
-    use super::alloc_function_obj;
-    use crate::{TYPE_ID_FUNCTION, dec_ref_bits, function_globals_bits, object_type_id};
+    use super::{acyclic_slot_edge, alloc_function_obj};
+    use crate::object::heap_kinds_generated::HeapAcyclicSlot;
+    use crate::{
+        TYPE_ID_FUNCTION, alloc_bytes, alloc_list, alloc_string, alloc_tuple, dec_ref_bits,
+        function_globals_bits, object_type_id,
+    };
     use molt_obj_model::MoltObject;
 
     extern "C" fn allocator_inert_function_target() -> u64 {
@@ -2051,6 +2023,67 @@ mod tests {
                 "function creation must be inert; metadata or FunctionType owns globals installation"
             );
             dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+        });
+    }
+
+    #[test]
+    fn closed_acyclic_capabilities_reject_heap_backedge_domains() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry_nopanic!(_py, {
+            assert!(acyclic_slot_edge(
+                HeapAcyclicSlot::RangeStart,
+                MoltObject::from_int(7).bits(),
+            ));
+            assert!(!acyclic_slot_edge(
+                HeapAcyclicSlot::RangeStart,
+                MoltObject::from_float(7.0).bits(),
+            ));
+
+            let text_ptr = alloc_string(_py, b"name");
+            let text_bits = MoltObject::from_ptr(text_ptr).bits();
+            let bytes_ptr = alloc_bytes(_py, b"line-table");
+            let bytes_bits = MoltObject::from_ptr(bytes_ptr).bits();
+            let list_ptr = alloc_list(_py, &[text_bits]);
+            let list_bits = MoltObject::from_ptr(list_ptr).bits();
+            let valid_tuple_ptr = alloc_tuple(_py, &[text_bits]);
+            let valid_tuple_bits = MoltObject::from_ptr(valid_tuple_ptr).bits();
+            let invalid_tuple_ptr = alloc_tuple(_py, &[list_bits]);
+            let invalid_tuple_bits = MoltObject::from_ptr(invalid_tuple_ptr).bits();
+
+            assert!(acyclic_slot_edge(
+                HeapAcyclicSlot::CodeLinetable,
+                bytes_bits,
+            ));
+            assert!(acyclic_slot_edge(
+                HeapAcyclicSlot::CodeLinetable,
+                MoltObject::none().bits(),
+            ));
+            assert!(acyclic_slot_edge(
+                HeapAcyclicSlot::CodeVarnames,
+                valid_tuple_bits,
+            ));
+            assert!(acyclic_slot_edge(HeapAcyclicSlot::CodeVararg, text_bits));
+            assert!(acyclic_slot_edge(
+                HeapAcyclicSlot::CodeVararg,
+                MoltObject::none().bits(),
+            ));
+            for bad_slot in [
+                HeapAcyclicSlot::CodeLinetable,
+                HeapAcyclicSlot::CodeVarnames,
+                HeapAcyclicSlot::CodeVararg,
+            ] {
+                assert!(!acyclic_slot_edge(bad_slot, list_bits));
+            }
+            assert!(!acyclic_slot_edge(
+                HeapAcyclicSlot::CodeVarnames,
+                invalid_tuple_bits,
+            ));
+
+            dec_ref_bits(_py, invalid_tuple_bits);
+            dec_ref_bits(_py, valid_tuple_bits);
+            dec_ref_bits(_py, list_bits);
+            dec_ref_bits(_py, bytes_bits);
+            dec_ref_bits(_py, text_bits);
         });
     }
 }

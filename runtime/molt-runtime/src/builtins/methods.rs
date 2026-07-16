@@ -24,4 +24,5 @@ pub(crate) use singletons::{
 };
 pub(crate) use specialized::{
     asyncgen_method_bits, coroutine_method_bits, generator_method_bits, property_method_bits,
+    weakref_method_bits,
 };

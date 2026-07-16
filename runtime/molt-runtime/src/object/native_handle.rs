@@ -5,11 +5,34 @@ use crate::{PyToken, TYPE_ID_NATIVE_HANDLE};
 
 use super::{alloc_object, bits_from_ptr, object_type_id, ptr_from_bits};
 
+mod sealed {
+    pub trait Sealed {}
+}
+
 struct NativeHandlePayload {
     type_id: TypeId,
     data: *const (),
     drop_fn: unsafe fn(*const ()),
 }
+
+pub(crate) struct DetachedNativeHandle(*mut NativeHandlePayload);
+
+/// Safety contract for opaque Rust payloads admitted to `TYPE_ID_NATIVE_HANDLE`.
+/// Implementors must not own MoltObject/NaN-boxed reference edges. Such edges must
+/// use a traced heap kind instead; the native handle is intentionally GREEN.
+pub(crate) unsafe trait NativeHandleNoMoltEdges:
+    sealed::Sealed + Send + Sync + 'static
+{
+}
+
+impl sealed::Sealed for std::sync::Mutex<crate::builtins::array_mod::ArrayHandle> {}
+unsafe impl NativeHandleNoMoltEdges for std::sync::Mutex<crate::builtins::array_mod::ArrayHandle> {}
+impl sealed::Sealed for crate::builtins::array_mod::ArrayBufferLease {}
+unsafe impl NativeHandleNoMoltEdges for crate::builtins::array_mod::ArrayBufferLease {}
+#[cfg(not(target_arch = "wasm32"))]
+impl sealed::Sealed for crate::concurrency::isolates::MoltThreadHandle {}
+#[cfg(not(target_arch = "wasm32"))]
+unsafe impl NativeHandleNoMoltEdges for crate::concurrency::isolates::MoltThreadHandle {}
 
 unsafe fn drop_arc_payload<T: Send + Sync + 'static>(data: *const ()) {
     unsafe {
@@ -17,7 +40,7 @@ unsafe fn drop_arc_payload<T: Send + Sync + 'static>(data: *const ()) {
     }
 }
 
-pub(crate) fn native_handle_new<T: Send + Sync + 'static>(
+pub(crate) fn native_handle_new<T: NativeHandleNoMoltEdges>(
     _py: &PyToken<'_>,
     handle: Arc<T>,
 ) -> u64 {
@@ -38,7 +61,7 @@ pub(crate) fn native_handle_new<T: Send + Sync + 'static>(
     bits_from_ptr(ptr)
 }
 
-pub(crate) fn native_handle_arc<T: Send + Sync + 'static>(bits: u64) -> Option<Arc<T>> {
+pub(crate) fn native_handle_arc<T: NativeHandleNoMoltEdges>(bits: u64) -> Option<Arc<T>> {
     let ptr = ptr_from_bits(bits);
     if ptr.is_null() {
         return None;
@@ -62,9 +85,14 @@ pub(crate) fn native_handle_arc<T: Send + Sync + 'static>(bits: u64) -> Option<A
     }
 }
 
-pub(crate) fn native_handle_drop(ptr: *mut u8) {
+pub(crate) fn native_handle_detach(ptr: *mut u8) -> DetachedNativeHandle {
+    let payload = unsafe { (ptr as *mut *mut NativeHandlePayload).replace(std::ptr::null_mut()) };
+    DetachedNativeHandle(payload)
+}
+
+pub(crate) fn native_handle_release(detached: DetachedNativeHandle) {
     unsafe {
-        let payload_ptr = *(ptr as *mut *mut NativeHandlePayload);
+        let payload_ptr = detached.0;
         if payload_ptr.is_null() {
             return;
         }
@@ -80,11 +108,14 @@ mod tests {
 
     use crate::{dec_ref_bits, inc_ref_bits};
 
-    use super::{native_handle_arc, native_handle_new};
+    use super::{NativeHandleNoMoltEdges, native_handle_arc, native_handle_new};
 
     struct DropCounter {
         drops: Arc<AtomicUsize>,
     }
+
+    impl super::sealed::Sealed for DropCounter {}
+    unsafe impl NativeHandleNoMoltEdges for DropCounter {}
 
     impl Drop for DropCounter {
         fn drop(&mut self) {

@@ -18,6 +18,16 @@ pub(crate) fn mappingproxy_class(_py: &PyToken<'_>) -> u64 {
         "mappingproxy",
         16,
     );
+    if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
+        && !unsafe {
+            crate::object::class_set_instance_shape_id(
+                class_ptr,
+                crate::object::ObjectShapeId::TypesMappingProxy,
+            )
+        }
+    {
+        return MoltObject::none().bits();
+    }
     let new_bits = builtin_func_bits(
         _py,
         &types_state(_py).mappingproxy_new_fn,
@@ -639,4 +649,32 @@ pub(crate) fn types_drop_instance(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
         return true;
     }
     false
+}
+
+pub(crate) unsafe fn types_visit_owned_edges(
+    shape: crate::object::ObjectShapeId,
+    ptr: *mut u8,
+    mut visit: impl FnMut(u64),
+) {
+    match shape {
+        crate::object::ObjectShapeId::TypesMappingProxy => {
+            visit(unsafe { mappingproxy_mapping_bits(ptr) });
+        }
+        _ => unreachable!("non-types object shape"),
+    }
+}
+
+pub(crate) unsafe fn types_detach_owned_edges(
+    shape: crate::object::ObjectShapeId,
+    ptr: *mut u8,
+    mut detach: impl FnMut(u64),
+) {
+    match shape {
+        crate::object::ObjectShapeId::TypesMappingProxy => unsafe {
+            let old = mappingproxy_mapping_bits(ptr);
+            mappingproxy_set_mapping_bits(ptr, MoltObject::none().bits());
+            detach(old);
+        },
+        _ => unreachable!("non-types object shape"),
+    }
 }

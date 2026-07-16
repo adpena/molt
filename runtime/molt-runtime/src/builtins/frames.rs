@@ -345,19 +345,28 @@ pub extern "C" fn molt_frame_push(code_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_frame_push_info(filename_bits: u64, name_bits: u64, lineno: i64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        use crate::object::builders::alloc_code_obj;
+        use crate::object::builders::{alloc_code_obj, alloc_tuple};
+        let empty_tuple_ptr = alloc_tuple(_py, &[]);
+        if empty_tuple_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let empty_tuple_bits = MoltObject::from_ptr(empty_tuple_ptr).bits();
         let code_ptr = alloc_code_obj(
             _py,
             filename_bits,
             name_bits,
             lineno,
-            0, // linetable (None — not needed for traceback)
-            0, // varnames (None — not needed for traceback)
-            0, // names (None — not needed for traceback)
+            MoltObject::none().bits(),
+            empty_tuple_bits,
+            empty_tuple_bits,
             0, // argcount
             0, // posonlyargcount
             0, // kwonlyargcount
         );
+        dec_ref_bits(_py, empty_tuple_bits);
+        if code_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
         let code_bits = MoltObject::from_ptr(code_ptr).bits();
         frame_stack_push_owned(_py, code_bits);
         MoltObject::none().bits()
@@ -1099,7 +1108,7 @@ mod tests {
         frame_stack_active_builtins_bits, frame_stack_pop, frame_stack_push,
         frame_stack_push_entry, frame_stack_push_owned,
     };
-    use crate::object::builders::alloc_code_obj;
+    use crate::object::builders::{alloc_code_obj, alloc_tuple};
     use crate::object::header_from_obj_ptr;
     use crate::{
         alloc_dict_with_pairs, alloc_string, dec_ref_bits, dict_set_in_place, inc_ref_bits,
@@ -1120,7 +1129,21 @@ mod tests {
         let name_ptr = alloc_string(_py, b"frame_test");
         let filename_bits = MoltObject::from_ptr(filename_ptr).bits();
         let name_bits = MoltObject::from_ptr(name_ptr).bits();
-        let code_ptr = alloc_code_obj(_py, filename_bits, name_bits, 7, 0, 0, 0, 0, 0, 0);
+        let empty_tuple_ptr = alloc_tuple(_py, &[]);
+        let empty_tuple_bits = MoltObject::from_ptr(empty_tuple_ptr).bits();
+        let code_ptr = alloc_code_obj(
+            _py,
+            filename_bits,
+            name_bits,
+            7,
+            MoltObject::none().bits(),
+            empty_tuple_bits,
+            empty_tuple_bits,
+            0,
+            0,
+            0,
+        );
+        dec_ref_bits(_py, empty_tuple_bits);
         dec_ref_bits(_py, filename_bits);
         dec_ref_bits(_py, name_bits);
         (code_ptr, MoltObject::from_ptr(code_ptr).bits())

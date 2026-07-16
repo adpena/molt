@@ -1,0 +1,1051 @@
+schema_version = 1
+
+# Canonical heap-kind and lifetime-policy authority. The object header stores only
+# `type_id`; fixed kinds therefore resolve by dense table lookup with no header
+# growth. `TYPE_ID_OBJECT` uses an immutable shape descriptor for subtype-specific
+# lifetime hooks (see object/heap_kinds.rs).
+
+[[kind]]
+name = "OBJECT"
+id = 100
+layout = "object"
+edges = "shape"
+cycle = "always"
+weakref = "class"
+shape = "class"
+drop = "object_shape"
+metrics = "object"
+
+[[kind]]
+name = "STRING"
+id = 200
+layout = "inline"
+edges = "none"
+cycle = "never"
+weakref = "deny"
+shape = "fixed"
+drop = "string"
+metrics = "string"
+
+[[kind]]
+name = "LIST"
+id = 201
+layout = "vec_bits"
+edges = "dynamic"
+cycle = "always"
+weakref = "deny"
+shape = "fixed"
+drop = "list"
+metrics = "list"
+
+[[kind]]
+name = "BYTES"
+id = 202
+layout = "inline"
+edges = "none"
+cycle = "never"
+weakref = "deny"
+shape = "fixed"
+drop = "none"
+metrics = "none"
+
+[[kind]]
+name = "LIST_BUILDER"
+id = 203
+layout = "vec_bits"
+edges = "dynamic"
+cycle = "never"
+publication = "linear_unpublished"
+weakref = "deny"
+shape = "fixed"
+drop = "list_builder"
+metrics = "list"
+
+[[kind]]
+name = "DICT"
+id = 204
+layout = "dict"
+edges = "dynamic"
+cycle = "dynamic"
+track = "dict_dynamic"
+weakref = "deny"
+shape = "fixed"
+drop = "dict"
+metrics = "dict"
+
+[[kind]]
+name = "DICT_BUILDER"
+id = 205
+layout = "vec_bits"
+edges = "dynamic"
+cycle = "never"
+publication = "linear_unpublished"
+weakref = "deny"
+shape = "fixed"
+drop = "dict_builder"
+metrics = "none"
+
+[[kind]]
+name = "TUPLE"
+id = 206
+layout = "tuple"
+edges = "dynamic"
+cycle = "dynamic"
+track = "tuple_dynamic"
+weakref = "deny"
+shape = "fixed"
+drop = "tuple"
+metrics = "tuple"
+
+[[kind]]
+name = "DICT_KEYS_VIEW"
+id = 207
+layout = "fixed_bits"
+edges = "fixed"
+cycle = "always"
+weakref = "deny"
+shape = "fixed"
+drop = "dict_view"
+metrics = "none"
+
+[[kind]]
+name = "DICT_VALUES_VIEW"
+id = 208
+layout = "fixed_bits"
+edges = "fixed"
+cycle = "always"
+weakref = "deny"
+shape = "fixed"
+drop = "dict_view"
+metrics = "none"
+
+[[kind]]
+name = "DICT_ITEMS_VIEW"
+id = 209
+layout = "fixed_bits"
+edges = "fixed"
+cycle = "always"
+weakref = "deny"
+shape = "fixed"
+drop = "dict_view"
+metrics = "none"
+
+[[kind]]
+name = "ITER"
+id = 210
+layout = "iterator"
+edges = "dynamic"
+cycle = "always"
+weakref = "deny"
+shape = "fixed"
+drop = "iter"
+metrics = "none"
+
+[[kind]]
+name = "BYTEARRAY"
+id = 211
+layout = "vec_u8"
+edges = "none"
+cycle = "never"
+weakref = "deny"
+shape = "fixed"
+drop = "bytearray"
+metrics = "none"
+
+[[kind]]
+name = "RANGE"
+id = 212
+layout = "fixed_bits"
+edges = "fixed"
+cycle = "never"
+weakref = "deny"
+shape = "fixed"
+drop = "range"
+metrics = "none"
+acyclic_capability = "int_triplet"
+acyclic_slots = { start = "int", stop = "int", step = "int" }
+
+[[kind]]
+name = "SLICE"
+id = 213
+layout = "fixed_bits"
+edges = "fixed"
+cycle = "always"
+weakref = "deny"
+shape = "fixed"
+drop = "slice"
+metrics = "none"
+
+[[kind]]
+name = "EXCEPTION"
+id = 214
+layout = "exception"
+edges = "dynamic"
+cycle = "always"
+weakref = "deny"
+shape = "fixed"
+drop = "exception"
+metrics = "exception"
+
+[[kind]]
+name = "DATACLASS"
+id = 215
+layout = "dynamic"
+edges = "dynamic"
+cycle = "always"
+weakref = "deny"
+shape = "fixed"
+drop = "dataclass"
+metrics = "none"
+
+[[kind]]
+name = "BUFFER2D"
+id = 216
+layout = "boxed"
+edges = "none"
+cycle = "never"
+weakref = "deny"
+shape = "fixed"
+drop = "buffer2d"
+metrics = "none"
+
+[[kind]]
+name = "CONTEXT_MANAGER"
+id = 217
+layout = "fixed_bits"
+edges = "fixed"
+cycle = "always"
+weakref = "deny"
+shape = "fixed"
+drop = "context_manager"
+metrics = "none"
+
+[[kind]]
+name = "FILE_HANDLE"
+id = 218
+layout = "boxed"
+edges = "dynamic"
+cycle = "always"
+weakref = "deny"
+shape = "fixed"
+drop = "file_handle"
+metrics = "none"
+
+[[kind]]
+name = "MEMORYVIEW"
+id = 219
+layout = "memoryview"
+edges = "fixed"
+cycle = "always"
+weakref = "allow"
+shape = "fixed"
+drop = "memoryview"
+metrics = "none"
+
+[[kind]]
+name = "INTARRAY"
+id = 220
+layout = "inline"
+edges = "none"
+cycle = "never"
+weakref = "deny"
+shape = "fixed"
+drop = "none"
+metrics = "none"
+
+[[kind]]
+name = "FUNCTION"
+id = 221
+layout = "function"
+edges = "fixed"
+cycle = "always"
+weakref = "allow"
+shape = "fixed"
+drop = "function"
+metrics = "none"
+
+[[kind]]
+name = "BOUND_METHOD"
+id = 222
+layout = "fixed_bits"
+edges = "fixed"
+cycle = "always"
+weakref = "allow"
+shape = "fixed"
+drop = "bound_method"
+metrics = "none"
+
+[[kind]]
+name = "MODULE"
+id = 223
+layout = "module"
+edges = "fixed"
+cycle = "always"
+weakref = "allow"
+shape = "fixed"
+drop = "module"
+metrics = "none"
+
+[[kind]]
+name = "TYPE"
+id = 224
+layout = "type"
+edges = "fixed"
+cycle = "always"
+weakref = "allow"
+shape = "fixed"
+drop = "type"
+metrics = "none"
+
+[[kind]]
+name = "GENERATOR"
+id = 225
+layout = "generator"
+edges = "shape"
+cycle = "always"
+weakref = "allow"
+shape = "sidecar"
+drop = "generator"
+metrics = "none"
+
+[[kind]]
+name = "CLASSMETHOD"
+id = 226
+layout = "fixed_bits"
+edges = "fixed"
+cycle = "always"
+weakref = "deny"
+shape = "fixed"
+drop = "classmethod"
+metrics = "none"
+
+[[kind]]
+name = "STATICMETHOD"
+id = 227
+layout = "fixed_bits"
+edges = "fixed"
+cycle = "always"
+weakref = "deny"
+shape = "fixed"
+drop = "staticmethod"
+metrics = "none"
+
+[[kind]]
+name = "PROPERTY"
+id = 228
+layout = "fixed_bits"
+edges = "fixed"
+cycle = "always"
+weakref = "deny"
+shape = "fixed"
+drop = "property"
+metrics = "none"
+
+[[kind]]
+name = "SUPER"
+id = 229
+layout = "fixed_bits"
+edges = "fixed"
+cycle = "always"
+weakref = "deny"
+shape = "fixed"
+drop = "super"
+metrics = "none"
+
+[[kind]]
+name = "SET"
+id = 230
+layout = "set"
+edges = "dynamic"
+cycle = "always"
+weakref = "allow"
+shape = "fixed"
+drop = "set"
+metrics = "none"
+
+[[kind]]
+name = "SET_BUILDER"
+id = 231
+layout = "vec_bits"
+edges = "dynamic"
+cycle = "never"
+publication = "linear_unpublished"
+weakref = "deny"
+shape = "fixed"
+drop = "set_builder"
+metrics = "none"
+
+[[kind]]
+name = "FROZENSET"
+id = 232
+layout = "set"
+edges = "dynamic"
+cycle = "always"
+weakref = "allow"
+shape = "fixed"
+drop = "frozenset"
+metrics = "none"
+
+[[kind]]
+name = "BIGINT"
+id = 233
+layout = "inline_rust"
+edges = "none"
+cycle = "never"
+weakref = "deny"
+shape = "fixed"
+drop = "bigint"
+metrics = "bigint"
+
+[[kind]]
+name = "COMPLEX"
+id = 234
+layout = "inline"
+edges = "none"
+cycle = "never"
+weakref = "deny"
+shape = "fixed"
+drop = "none"
+metrics = "none"
+
+[[kind]]
+name = "ENUMERATE"
+id = 235
+layout = "iterator"
+edges = "fixed"
+cycle = "always"
+weakref = "deny"
+shape = "fixed"
+drop = "enumerate"
+metrics = "none"
+
+[[kind]]
+name = "CALLARGS"
+id = 236
+layout = "boxed_bits"
+edges = "dynamic"
+cycle = "never"
+publication = "linear_unpublished"
+weakref = "deny"
+shape = "fixed"
+drop = "callargs"
+metrics = "callargs"
+
+[[kind]]
+name = "NOT_IMPLEMENTED"
+id = 237
+layout = "inline"
+edges = "none"
+cycle = "never"
+weakref = "deny"
+shape = "fixed"
+drop = "none"
+metrics = "none"
+
+[[kind]]
+name = "CALL_ITER"
+id = 238
+layout = "iterator"
+edges = "fixed"
+cycle = "always"
+weakref = "deny"
+shape = "fixed"
+drop = "call_iter"
+metrics = "none"
+
+[[kind]]
+name = "REVERSED"
+id = 239
+layout = "iterator"
+edges = "fixed"
+cycle = "always"
+weakref = "deny"
+shape = "fixed"
+drop = "reversed"
+metrics = "none"
+
+[[kind]]
+name = "ZIP"
+id = 240
+layout = "iterator"
+edges = "dynamic"
+cycle = "always"
+weakref = "deny"
+shape = "fixed"
+drop = "zip"
+metrics = "none"
+
+[[kind]]
+name = "MAP"
+id = 241
+layout = "iterator"
+edges = "dynamic"
+cycle = "always"
+weakref = "deny"
+shape = "fixed"
+drop = "map"
+metrics = "none"
+
+[[kind]]
+name = "FILTER"
+id = 242
+layout = "iterator"
+edges = "fixed"
+cycle = "always"
+weakref = "deny"
+shape = "fixed"
+drop = "filter"
+metrics = "none"
+
+[[kind]]
+name = "CODE"
+id = 243
+layout = "code"
+edges = "fixed"
+cycle = "never"
+weakref = "allow"
+shape = "fixed"
+drop = "code"
+metrics = "none"
+acyclic_capability = "code_metadata"
+acyclic_slots = { filename = "str", name = "str", linetable = "bytes_or_none", varnames = "str_tuple", names = "str_tuple", arg_names = "str_tuple", posonly = "int", kwonly = "str_tuple", vararg = "str_or_none", varkw = "str_or_none" }
+
+[[kind]]
+name = "ELLIPSIS"
+id = 244
+layout = "inline"
+edges = "none"
+cycle = "never"
+weakref = "deny"
+shape = "fixed"
+drop = "none"
+metrics = "none"
+
+[[kind]]
+name = "GENERIC_ALIAS"
+id = 245
+layout = "fixed_bits"
+edges = "fixed"
+cycle = "always"
+weakref = "allow"
+shape = "fixed"
+drop = "generic_alias"
+metrics = "none"
+
+[[kind]]
+name = "ASYNC_GENERATOR"
+id = 246
+layout = "async_generator"
+edges = "fixed"
+cycle = "always"
+weakref = "allow"
+shape = "sidecar"
+drop = "async_generator"
+metrics = "none"
+
+[[kind]]
+name = "UNION"
+id = 247
+layout = "fixed_bits"
+edges = "fixed"
+cycle = "always"
+weakref = "deny"
+shape = "fixed"
+drop = "union"
+metrics = "none"
+
+[[kind]]
+name = "LIST_INT"
+id = 248
+layout = "boxed_i64"
+edges = "none"
+cycle = "never"
+weakref = "deny"
+shape = "fixed"
+drop = "list_int"
+metrics = "list"
+
+[[kind]]
+name = "FLOAT"
+id = 249
+layout = "inline"
+edges = "none"
+cycle = "never"
+weakref = "deny"
+shape = "fixed"
+drop = "none"
+metrics = "none"
+
+[[kind]]
+name = "LIST_BOOL"
+id = 250
+layout = "boxed_u8"
+edges = "none"
+cycle = "never"
+weakref = "deny"
+shape = "fixed"
+drop = "list_bool"
+metrics = "list"
+
+[[kind]]
+name = "TRACEBACK_PAYLOAD"
+id = 251
+layout = "fixed_bits"
+edges = "fixed"
+cycle = "always"
+weakref = "deny"
+shape = "fixed"
+drop = "traceback_payload"
+metrics = "none"
+
+[[kind]]
+name = "NATIVE_HANDLE"
+id = 252
+layout = "boxed"
+edges = "none"
+cycle = "never"
+weakref = "deny"
+shape = "fixed"
+drop = "native_handle"
+metrics = "none"
+external_gc = "opaque_rust_arc"
+
+[[kind]]
+name = "GLOB_ITER"
+id = 253
+layout = "boxed"
+edges = "none"
+cycle = "never"
+weakref = "deny"
+shape = "fixed"
+drop = "glob_iter"
+metrics = "none"
+
+[[kind]]
+name = "FOREIGN"
+id = 254
+layout = "foreign"
+edges = "none"
+cycle = "never"
+weakref = "class"
+shape = "fixed"
+drop = "foreign"
+metrics = "none"
+external_gc = "cpython_bridge"
+
+[[kind]]
+name = "WEAK_CONTAINER_STATE"
+id = 255
+layout = "boxed"
+edges = "dynamic"
+cycle = "always"
+weakref = "deny"
+shape = "fixed"
+drop = "weak_container"
+metrics = "none"
+
+[[kind]]
+name = "WEAKREF"
+id = 256
+layout = "object"
+edges = "fixed"
+cycle = "always"
+weakref = "deny"
+shape = "class"
+drop = "object_shape"
+metrics = "none"
+
+
+# Immutable OBJECT subshape ABI. Selected before publication and used directly
+# for visit/clear/terminal-drop dispatch; poll functions and class identities are
+# construction inputs only and are never lifecycle rediscovery authorities.
+
+[[object_shape]]
+name = "PLAIN"
+id = 0
+family = "plain"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "PROMISE"
+id = 1
+family = "task"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ASYNC_SLEEP"
+id = 2
+family = "task"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ASYNC_GENERATOR_FUTURE"
+id = 3
+family = "task"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ANEXT_DEFAULT"
+id = 4
+family = "task"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ASYNCIO_WAIT"
+id = 5
+family = "task"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ASYNCIO_GATHER"
+id = 6
+family = "task"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ASYNCIO_WAIT_FOR"
+id = 7
+family = "task"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ASYNCIO_TIMER_HANDLE"
+id = 8
+family = "task"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ASYNCIO_FD_WATCHER"
+id = 9
+family = "task"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ASYNCIO_SERVER_ACCEPT_LOOP"
+id = 10
+family = "task"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ASYNCIO_READY_RUNNER"
+id = 11
+family = "task"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "CONTEXTLIB_ASYNCGEN_ENTER"
+id = 12
+family = "task"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "CONTEXTLIB_ASYNCGEN_EXIT"
+id = 13
+family = "task"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "CONTEXTLIB_ASYNC_EXITSTACK_ENTER"
+id = 14
+family = "task"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "CONTEXTLIB_ASYNC_EXITSTACK_EXIT"
+id = 15
+family = "task"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ASYNCIO_SOCKET_READER_READ"
+id = 16
+family = "task"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ASYNCIO_SOCKET_READER_READLINE"
+id = 17
+family = "task"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ASYNCIO_STREAM_READER_READ"
+id = 18
+family = "task"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ASYNCIO_STREAM_READER_READLINE"
+id = 19
+family = "task"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ASYNCIO_STREAM_SEND_ALL"
+id = 20
+family = "task"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ASYNCIO_SOCK_RECV"
+id = 21
+family = "task"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ASYNCIO_SOCK_CONNECT"
+id = 22
+family = "task"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ASYNCIO_SOCK_ACCEPT"
+id = 23
+family = "task"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ASYNCIO_SOCK_RECV_INTO"
+id = 24
+family = "task"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ASYNCIO_SOCK_SEND_ALL"
+id = 25
+family = "task"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ASYNCIO_SOCK_RECV_FROM"
+id = 26
+family = "task"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ASYNCIO_SOCK_RECV_FROM_INTO"
+id = 27
+family = "task"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ASYNCIO_SOCK_SEND_TO"
+id = 28
+family = "task"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "THREAD_TASK"
+id = 29
+family = "task"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "PROCESS_TASK"
+id = 30
+family = "task"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "IO_WAIT"
+id = 31
+family = "task"
+resource_slot0 = "io_socket"
+
+[[object_shape]]
+name = "WEBSOCKET_WAIT"
+id = 32
+family = "task"
+resource_slot0 = "websocket"
+
+[[object_shape]]
+name = "GENERIC_TASK_PAYLOAD"
+id = 33
+family = "task"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "DICT_SUBCLASS"
+id = 64
+family = "dict_subclass"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "OPERATOR_ITEM_GETTER"
+id = 65
+family = "operator"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "OPERATOR_ATTR_GETTER"
+id = 66
+family = "operator"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "OPERATOR_METHOD_CALLER"
+id = 67
+family = "operator"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "FUNCTOOLS_PARTIAL"
+id = 68
+family = "functools"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "FUNCTOOLS_CMP_KEY"
+id = 69
+family = "functools"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "FUNCTOOLS_LRU_WRAPPER"
+id = 70
+family = "functools"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "FUNCTOOLS_LRU_FACTORY"
+id = 71
+family = "functools"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "FUNCTOOLS_CACHE_INFO"
+id = 72
+family = "functools"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "TYPES_MAPPING_PROXY"
+id = 73
+family = "types"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ITERTOOLS_CHAIN"
+id = 96
+family = "itertools"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ITERTOOLS_ISLICE"
+id = 97
+family = "itertools"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ITERTOOLS_REPEAT"
+id = 98
+family = "itertools"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ITERTOOLS_COUNT"
+id = 99
+family = "itertools"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ITERTOOLS_CYCLE"
+id = 100
+family = "itertools"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ITERTOOLS_ACCUMULATE"
+id = 101
+family = "itertools"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ITERTOOLS_BATCHED"
+id = 102
+family = "itertools"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ITERTOOLS_COMBINATIONS"
+id = 103
+family = "itertools"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ITERTOOLS_COMBINATIONS_WITH_REPLACEMENT"
+id = 104
+family = "itertools"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ITERTOOLS_COMPRESS"
+id = 105
+family = "itertools"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ITERTOOLS_DROPWHILE"
+id = 106
+family = "itertools"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ITERTOOLS_FILTERFALSE"
+id = 107
+family = "itertools"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ITERTOOLS_PAIRWISE"
+id = 108
+family = "itertools"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ITERTOOLS_GROUPBY"
+id = 109
+family = "itertools"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ITERTOOLS_GROUPBY_ITER"
+id = 110
+family = "itertools"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ITERTOOLS_PRODUCT"
+id = 111
+family = "itertools"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ITERTOOLS_PERMUTATIONS"
+id = 112
+family = "itertools"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ITERTOOLS_STARMAP"
+id = 113
+family = "itertools"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ITERTOOLS_TAKEWHILE"
+id = 114
+family = "itertools"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ITERTOOLS_TEE"
+id = 115
+family = "itertools"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "ITERTOOLS_ZIP_LONGEST"
+id = 116
+family = "itertools"
+resource_slot0 = "none"

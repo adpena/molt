@@ -39,6 +39,9 @@ pub mod float_repr;
 pub(crate) mod foreign;
 pub(crate) mod gc;
 #[allow(dead_code)]
+pub(crate) mod heap_kinds_generated;
+pub(crate) mod heap_lifecycle;
+#[allow(dead_code)]
 pub mod inline_cache;
 pub(crate) mod layout;
 pub(crate) mod list_mutation;
@@ -84,81 +87,35 @@ use aux_header::{
 };
 
 use crate::async_rt::poll::ws_wait_poll_fn_addr;
-#[cfg(not(feature = "stdlib_itertools"))]
-use crate::builtins::itertools::itertools_drop_instance;
-use crate::builtins::{
-    functools::functools_drop_instance, operator::operator_drop_instance,
-    types::types_drop_instance,
-};
 use crate::{
     ALLOC_BYTES_DICT, ALLOC_BYTES_EXCEPTION, ALLOC_BYTES_LIST, ALLOC_BYTES_STRING,
     ALLOC_BYTES_TOTAL, ALLOC_BYTES_TUPLE, ALLOC_CALLARGS_COUNT, ALLOC_COUNT, ALLOC_DICT_COUNT,
     ALLOC_EXCEPTION_COUNT, ALLOC_OBJECT_COUNT, ALLOC_STRING_COUNT, ALLOC_TUPLE_COUNT,
     AUX_CLASS_INLINE_COUNT, AUX_STATE_INLINE_COUNT, DEALLOC_BIGINT_COUNT, DEALLOC_BYTES_EXCEPTION,
     DEALLOC_BYTES_TOTAL, DEALLOC_COUNT, DEALLOC_DICT_COUNT, DEALLOC_EXCEPTION_COUNT,
-    DEALLOC_OBJECT_COUNT, DEALLOC_STRING_COUNT, DEALLOC_TUPLE_COUNT, GEN_CLOSED_OFFSET,
-    GEN_EXC_DEPTH_OFFSET, GEN_SEND_OFFSET, GEN_THROW_OFFSET, PyToken, TYPE_ID_ASYNC_GENERATOR,
-    TYPE_ID_BIGINT, TYPE_ID_BOUND_METHOD, TYPE_ID_BUFFER2D, TYPE_ID_BYTEARRAY, TYPE_ID_CALL_ITER,
-    TYPE_ID_CALLARGS, TYPE_ID_CLASSMETHOD, TYPE_ID_CODE, TYPE_ID_CONTEXT_MANAGER,
-    TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_DICT_ITEMS_VIEW, TYPE_ID_DICT_KEYS_VIEW,
-    TYPE_ID_DICT_VALUES_VIEW, TYPE_ID_ENUMERATE, TYPE_ID_EXCEPTION, TYPE_ID_FILE_HANDLE,
-    TYPE_ID_FILTER, TYPE_ID_FOREIGN, TYPE_ID_FROZENSET, TYPE_ID_FUNCTION, TYPE_ID_GENERATOR,
-    TYPE_ID_GENERIC_ALIAS, TYPE_ID_GLOB_ITER, TYPE_ID_ITER, TYPE_ID_LIST, TYPE_ID_LIST_BUILDER,
-    TYPE_ID_MAP, TYPE_ID_MEMORYVIEW, TYPE_ID_MODULE, TYPE_ID_NATIVE_HANDLE, TYPE_ID_OBJECT,
-    TYPE_ID_PROPERTY, TYPE_ID_REVERSED, TYPE_ID_SET, TYPE_ID_SLICE, TYPE_ID_STATICMETHOD,
-    TYPE_ID_STRING, TYPE_ID_TRACEBACK_PAYLOAD, TYPE_ID_TUPLE, TYPE_ID_UNION, TYPE_ID_ZIP,
-    asyncgen_call_finalizer, asyncgen_gen_bits, asyncgen_pending_bits, asyncgen_registry_remove,
-    asyncgen_running_bits, asyncio_fd_watcher_poll_fn_addr, asyncio_fd_watcher_task_drop,
-    asyncio_gather_poll_fn_addr, asyncio_gather_task_drop, asyncio_ready_runner_poll_fn_addr,
-    asyncio_ready_runner_task_drop, asyncio_server_accept_loop_poll_fn_addr,
-    asyncio_server_accept_loop_task_drop, asyncio_sock_accept_poll_fn_addr,
-    asyncio_sock_accept_task_drop, asyncio_sock_connect_poll_fn_addr,
-    asyncio_sock_connect_task_drop, asyncio_sock_recv_into_poll_fn_addr,
-    asyncio_sock_recv_into_task_drop, asyncio_sock_recv_poll_fn_addr, asyncio_sock_recv_task_drop,
-    asyncio_sock_recvfrom_into_poll_fn_addr, asyncio_sock_recvfrom_into_task_drop,
-    asyncio_sock_recvfrom_poll_fn_addr, asyncio_sock_recvfrom_task_drop,
-    asyncio_sock_sendall_poll_fn_addr, asyncio_sock_sendall_task_drop,
-    asyncio_sock_sendto_poll_fn_addr, asyncio_sock_sendto_task_drop,
-    asyncio_socket_reader_read_poll_fn_addr, asyncio_socket_reader_read_task_drop,
-    asyncio_socket_reader_readline_poll_fn_addr, asyncio_socket_reader_readline_task_drop,
-    asyncio_stream_reader_read_poll_fn_addr, asyncio_stream_reader_read_task_drop,
-    asyncio_stream_reader_readline_poll_fn_addr, asyncio_stream_reader_readline_task_drop,
-    asyncio_stream_send_all_poll_fn_addr, asyncio_stream_send_all_task_drop,
-    asyncio_timer_handle_poll_fn_addr, asyncio_timer_handle_task_drop,
-    asyncio_wait_for_poll_fn_addr, asyncio_wait_for_task_drop, asyncio_wait_poll_fn_addr,
-    asyncio_wait_task_drop, bound_method_func_bits, bound_method_self_bits,
-    builtin_classes_if_initialized, bytearray_data, bytearray_len, bytearray_vec_ptr,
-    call_iter_cached_tuple, call_iter_callable_bits, call_iter_sentinel_bits, callargs_dec_ref_all,
-    callargs_ptr, classmethod_func_bits, code_arg_names_bits, code_filename_bits,
-    code_kwonly_names_bits, code_linetable_bits, code_name_bits, code_names_bits,
-    code_signature_posonly_bits, code_vararg_bits, code_varkw_bits, code_varnames_bits,
-    context_payload_bits, contextlib_async_exitstack_enter_context_poll_fn_addr,
-    contextlib_async_exitstack_enter_context_task_drop,
-    contextlib_async_exitstack_exit_poll_fn_addr, contextlib_async_exitstack_exit_task_drop,
-    contextlib_asyncgen_enter_poll_fn_addr, contextlib_asyncgen_enter_task_drop,
-    contextlib_asyncgen_exit_poll_fn_addr, contextlib_asyncgen_exit_task_drop, dict_hashes_ptr,
-    dict_order_ptr, dict_table_ptr, dict_view_dict_bits, enumerate_cached_inner,
-    enumerate_cached_outer, enumerate_index_bits, enumerate_target_bits,
-    exception_detach_owned_edges, exception_release_detached_edges, filter_func_bits,
-    filter_iter_bits, function_annotate_bits, function_annotations_bits, function_closure_bits,
-    function_code_bits, function_dict_bits, generator_context_stack_drop,
-    generator_exception_stack_drop, generic_alias_args_bits, generic_alias_origin_bits,
-    io_wait_poll_fn_addr, io_wait_release_socket, issubclass_bits, iter_cached_tuple,
-    iter_target_bits, map_cached_tuple, map_func_bits, map_iters_ptr, module_dict_bits,
-    module_name_bits, process_poll_fn_addr, profile_hit, profile_hit_bytes, property_del_bits,
-    property_get_bits, property_set_bits, range_start_bits, range_step_bits, range_stop_bits,
-    reversed_target_bits, runtime_state, seq_vec_ptr, set_hashes_ptr, set_order_ptr, set_table_ptr,
-    slice_start_bits, slice_step_bits, slice_stop_bits, staticmethod_func_bits,
-    task_cancel_message_clear, thread_poll_fn_addr, traceback_payload_code_bits,
-    traceback_payload_next_bits, union_type_args_bits, utf8_cache_remove, weakref_clear_for_ptr,
-    ws_wait_release, zip_iters_ptr, zip_strict_bits,
+    DEALLOC_OBJECT_COUNT, DEALLOC_STRING_COUNT, DEALLOC_TUPLE_COUNT, PyToken,
+    TYPE_ID_ASYNC_GENERATOR, TYPE_ID_BIGINT, TYPE_ID_BYTEARRAY, TYPE_ID_CODE, TYPE_ID_DICT,
+    TYPE_ID_EXCEPTION, TYPE_ID_FILE_HANDLE, TYPE_ID_FUNCTION, TYPE_ID_GENERATOR, TYPE_ID_ITER,
+    TYPE_ID_LIST_BUILDER, TYPE_ID_OBJECT, TYPE_ID_STRING, TYPE_ID_TUPLE, asyncgen_call_finalizer,
+    asyncgen_registry_remove, asyncio_fd_watcher_poll_fn_addr, asyncio_gather_poll_fn_addr,
+    asyncio_ready_runner_poll_fn_addr, asyncio_server_accept_loop_poll_fn_addr,
+    asyncio_sock_accept_poll_fn_addr, asyncio_sock_connect_poll_fn_addr,
+    asyncio_sock_recv_into_poll_fn_addr, asyncio_sock_recv_poll_fn_addr,
+    asyncio_sock_recvfrom_into_poll_fn_addr, asyncio_sock_recvfrom_poll_fn_addr,
+    asyncio_sock_sendall_poll_fn_addr, asyncio_sock_sendto_poll_fn_addr,
+    asyncio_socket_reader_read_poll_fn_addr, asyncio_socket_reader_readline_poll_fn_addr,
+    asyncio_stream_reader_read_poll_fn_addr, asyncio_stream_reader_readline_poll_fn_addr,
+    asyncio_stream_send_all_poll_fn_addr, asyncio_timer_handle_poll_fn_addr,
+    asyncio_wait_for_poll_fn_addr, asyncio_wait_poll_fn_addr, builtin_classes_if_initialized,
+    bytearray_data, bytearray_len, bytearray_vec_ptr, code_filename_bits, code_name_bits,
+    code_names_bits, code_varnames_bits, contextlib_async_exitstack_enter_context_poll_fn_addr,
+    contextlib_async_exitstack_exit_poll_fn_addr, contextlib_asyncgen_enter_poll_fn_addr,
+    contextlib_asyncgen_exit_poll_fn_addr, dict_hashes_ptr, dict_order_ptr, dict_table_ptr,
+    io_wait_detach_resource, io_wait_poll_fn_addr, map_iters_ptr, process_poll_fn_addr,
+    profile_hit, profile_hit_bytes, runtime_state, seq_vec_ptr, set_hashes_ptr, set_order_ptr,
+    set_table_ptr, thread_poll_fn_addr, utf8_cache_remove, weakref_clear_for_ptr,
+    ws_wait_detach_resource, zip_iters_ptr,
 };
-#[cfg(feature = "stdlib_itertools")]
-use molt_runtime_itertools::itertools::itertools_drop_instance;
-
-#[cfg(not(target_arch = "wasm32"))]
-use crate::{process_task_drop, thread_task_drop};
-
 fn debug_alloc_list_builder() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
@@ -591,6 +548,48 @@ impl MoltAuxWord {
             }
         }
     }
+
+    #[inline]
+    pub fn fetch_or(&self, value: u64, order: AtomicOrdering) -> u64 {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.0.fetch_or(value, order)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = order;
+            let old = self.0.get();
+            self.0.set(old | value);
+            old
+        }
+    }
+
+    #[inline]
+    pub fn fetch_update<F>(
+        &self,
+        set_order: AtomicOrdering,
+        fetch_order: AtomicOrdering,
+        mut f: F,
+    ) -> Result<u64, u64>
+    where
+        F: FnMut(u64) -> Option<u64>,
+    {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.0.fetch_update(set_order, fetch_order, f)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (set_order, fetch_order);
+            let old = self.0.get();
+            if let Some(new) = f(old) {
+                self.0.set(new);
+                Ok(old)
+            } else {
+                Err(old)
+            }
+        }
+    }
 }
 
 const _: () = {
@@ -776,7 +775,6 @@ pub(crate) const HEADER_FLAG_GC_COLLECTING: u32 = 1 << 25;
 pub(crate) const HEADER_FLAG_HAS_ABI_VIEW: u32 = 1 << 27;
 /// This object is itself a registered weakref and owns its callback edge in
 /// the runtime registry. The Python shim carries no duplicate lifetime state.
-pub(crate) const HEADER_FLAG_IS_WEAKREF: u32 = 1 << 31;
 /// Transient cycle-collector pin for an ABI-rooted candidate.
 pub(crate) const HEADER_FLAG_GC_PINNED: u32 = 1 << 28;
 pub(crate) const HEADER_FLAG_GC_UNPUBLISHED: u32 = molt_codegen_abi::HEADER_FLAG_GC_UNPUBLISHED;
@@ -791,6 +789,9 @@ pub(crate) const HEADER_FLAG_DEALLOCATING: u32 = 1 << 30;
 /// ownership. The sticky bit preserves a zero-lock negative path for objects
 /// that never participated in weakref state.
 pub(crate) const HEADER_FLAG_HAS_WEAKREF: u32 = 1 << 24;
+/// Marks weak-reference objects themselves, distinct from referents whose
+/// sticky `HAS_WEAKREF` bit opens the finalization window.
+pub(crate) const HEADER_FLAG_IS_WEAKREF: u32 = 1 << 31;
 
 // Keep every persistent and transient lifetime bit in this single registry and
 // fail compilation on any future collision. Cold type policy intentionally
@@ -843,14 +844,90 @@ const _: () = {
 
 const CLASS_POLICY_NOT_BASE: u64 = 1;
 const CLASS_POLICY_IMMUTABLE: u64 = 1 << 1;
-const CLASS_POLICY_WORD_OFFSET: usize = 8 * std::mem::size_of::<u64>();
+const CLASS_POLICY_INSTANCE_KIND_EXPLICIT: u64 = 1 << 2;
+const CLASS_POLICY_INSTANCE_SHAPE_EXPLICIT: u64 = 1 << 3;
+const CLASS_POLICY_INSTANCE_SHAPE_SHIFT: u32 = 8;
+const CLASS_POLICY_INSTANCE_SHAPE_MASK: u64 =
+    (u16::MAX as u64) << CLASS_POLICY_INSTANCE_SHAPE_SHIFT;
+const CLASS_POLICY_INSTANCE_KIND_SHIFT: u32 = molt_codegen_abi::CLASS_POLICY_INSTANCE_KIND_SHIFT;
+const CLASS_POLICY_INSTANCE_KIND_MASK: u64 = (u32::MAX as u64) << CLASS_POLICY_INSTANCE_KIND_SHIFT;
+const CLASS_POLICY_WORD_OFFSET: usize = molt_codegen_abi::CLASS_POLICY_WORD_OFFSET as usize;
 
 #[inline]
-unsafe fn class_policy_word(class_ptr: *mut u8) -> &'static AtomicU64 {
+unsafe fn class_policy_word<'a>(class_ptr: *mut u8) -> &'a MoltAuxWord {
     // TYPE_ID_TYPE payloads reserve this naturally aligned word exclusively
     // for monotonic class policy. Atomic publication keeps this boundary valid
     // when type reads become GIL-free; policy never pollutes the hot RC/GC word.
-    unsafe { &*(class_ptr.add(CLASS_POLICY_WORD_OFFSET) as *const AtomicU64) }
+    unsafe { &*(class_ptr.add(CLASS_POLICY_WORD_OFFSET) as *const MoltAuxWord) }
+}
+
+pub(crate) use molt_runtime_core::{
+    ObjectShapeId, ObjectShapeLifecycleFamily, ObjectShapeResourceSlot, object_shape_is_task,
+    object_shape_lifecycle_family, object_shape_resource_slot,
+};
+
+#[inline]
+pub(crate) unsafe fn class_instance_shape_id(class_ptr: *mut u8) -> ObjectShapeId {
+    let word = unsafe { class_policy_word(class_ptr).load(AtomicOrdering::Acquire) };
+    let encoded =
+        ((word & CLASS_POLICY_INSTANCE_SHAPE_MASK) >> CLASS_POLICY_INSTANCE_SHAPE_SHIFT) as u16;
+    ObjectShapeId::from_u16(encoded).expect("corrupt class instance-shape policy")
+}
+
+/// Install the payload shape owned by instances of a runtime-created class.
+/// The shape is immutable once selected; a conflicting second writer is an
+/// invariant violation rather than a compatibility lane.
+pub(crate) unsafe fn class_set_instance_shape_id(class_ptr: *mut u8, shape: ObjectShapeId) -> bool {
+    if class_ptr.is_null() || unsafe { object_type_id(class_ptr) } != TYPE_ID_TYPE {
+        return false;
+    }
+    let encoded = (shape as u64) << CLASS_POLICY_INSTANCE_SHAPE_SHIFT;
+    unsafe {
+        class_policy_word(class_ptr)
+            .fetch_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |word| {
+                let current = word & CLASS_POLICY_INSTANCE_SHAPE_MASK;
+                (current == 0 || current == encoded).then_some(
+                    (word & !CLASS_POLICY_INSTANCE_SHAPE_MASK)
+                        | encoded
+                        | CLASS_POLICY_INSTANCE_SHAPE_EXPLICIT,
+                )
+            })
+            .is_ok()
+    }
+}
+
+pub(crate) unsafe fn class_can_inherit_instance_shape_id(
+    class_ptr: *mut u8,
+    inherited: ObjectShapeId,
+) -> bool {
+    let word = unsafe { class_policy_word(class_ptr).load(AtomicOrdering::Acquire) };
+    let current =
+        ((word & CLASS_POLICY_INSTANCE_SHAPE_MASK) >> CLASS_POLICY_INSTANCE_SHAPE_SHIFT) as u16;
+    if inherited == ObjectShapeId::Plain {
+        current == 0 || word & CLASS_POLICY_INSTANCE_SHAPE_EXPLICIT != 0
+    } else {
+        current == 0 || current == inherited as u16
+    }
+}
+
+pub(crate) unsafe fn class_inherit_instance_shape_id(
+    class_ptr: *mut u8,
+    inherited: ObjectShapeId,
+) -> bool {
+    let encoded = (inherited as u64) << CLASS_POLICY_INSTANCE_SHAPE_SHIFT;
+    unsafe {
+        class_policy_word(class_ptr)
+            .fetch_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |word| {
+                let current = word & CLASS_POLICY_INSTANCE_SHAPE_MASK;
+                let explicit = word & CLASS_POLICY_INSTANCE_SHAPE_EXPLICIT != 0;
+                if inherited == ObjectShapeId::Plain {
+                    return (current == 0 || explicit).then_some(word);
+                }
+                (current == 0 || current == encoded)
+                    .then_some((word & !CLASS_POLICY_INSTANCE_SHAPE_MASK) | encoded)
+            })
+            .is_ok()
+    }
 }
 
 #[inline]
@@ -863,6 +940,86 @@ unsafe fn class_add_policy(class_ptr: *mut u8, policy: u64) {
 #[inline]
 unsafe fn class_has_policy(class_ptr: *mut u8, policy: u64) -> bool {
     unsafe { class_policy_word(class_ptr).load(AtomicOrdering::Acquire) & policy != 0 }
+}
+
+#[inline]
+pub(crate) unsafe fn class_instance_type_id(class_ptr: *mut u8) -> u32 {
+    let word = unsafe { class_policy_word(class_ptr).load(AtomicOrdering::Acquire) };
+    let encoded = (word & CLASS_POLICY_INSTANCE_KIND_MASK) >> CLASS_POLICY_INSTANCE_KIND_SHIFT;
+    if encoded == 0 {
+        TYPE_ID_OBJECT
+    } else {
+        encoded as u32
+    }
+}
+
+pub(crate) unsafe fn class_set_instance_type_id(class_ptr: *mut u8, type_id: u32) -> bool {
+    if heap_layout_policy(type_id) != Some(HeapLayoutPolicy::Object)
+        || heap_shape_policy(type_id) != Some(HeapShapePolicy::Class)
+    {
+        return false;
+    }
+    let encoded = (type_id as u64) << CLASS_POLICY_INSTANCE_KIND_SHIFT;
+    unsafe {
+        class_policy_word(class_ptr)
+            .fetch_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |word| {
+                let current = word & CLASS_POLICY_INSTANCE_KIND_MASK;
+                (current == 0 || current == encoded).then_some(
+                    (word & !CLASS_POLICY_INSTANCE_KIND_MASK)
+                        | encoded
+                        | CLASS_POLICY_INSTANCE_KIND_EXPLICIT,
+                )
+            })
+            .is_ok()
+    }
+}
+
+pub(crate) unsafe fn class_inherit_instance_type_id(
+    class_ptr: *mut u8,
+    inherited_type_id: u32,
+) -> bool {
+    if heap_layout_policy(inherited_type_id) != Some(HeapLayoutPolicy::Object)
+        || heap_shape_policy(inherited_type_id) != Some(HeapShapePolicy::Class)
+    {
+        return false;
+    }
+    let inherited = (inherited_type_id as u64) << CLASS_POLICY_INSTANCE_KIND_SHIFT;
+    unsafe {
+        class_policy_word(class_ptr)
+            .fetch_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |word| {
+                let current = word & CLASS_POLICY_INSTANCE_KIND_MASK;
+                let explicit = word & CLASS_POLICY_INSTANCE_KIND_EXPLICIT != 0;
+                let current_type_id = if current == 0 {
+                    TYPE_ID_OBJECT
+                } else {
+                    (current >> CLASS_POLICY_INSTANCE_KIND_SHIFT) as u32
+                };
+                if inherited_type_id == TYPE_ID_OBJECT {
+                    return (current_type_id == TYPE_ID_OBJECT || explicit).then_some(word);
+                }
+                (current_type_id == TYPE_ID_OBJECT || current == inherited)
+                    .then_some((word & !CLASS_POLICY_INSTANCE_KIND_MASK) | inherited)
+            })
+            .is_ok()
+    }
+}
+
+pub(crate) unsafe fn class_can_inherit_instance_type_id(
+    class_ptr: *mut u8,
+    inherited_type_id: u32,
+) -> bool {
+    let word = unsafe { class_policy_word(class_ptr).load(AtomicOrdering::Acquire) };
+    let current = word & CLASS_POLICY_INSTANCE_KIND_MASK;
+    let current_type_id = if current == 0 {
+        TYPE_ID_OBJECT
+    } else {
+        (current >> CLASS_POLICY_INSTANCE_KIND_SHIFT) as u32
+    };
+    if inherited_type_id == TYPE_ID_OBJECT {
+        current_type_id == TYPE_ID_OBJECT || word & CLASS_POLICY_INSTANCE_KIND_EXPLICIT != 0
+    } else {
+        current_type_id == TYPE_ID_OBJECT || current_type_id == inherited_type_id
+    }
 }
 
 pub(crate) unsafe fn class_set_not_base(_py: &PyToken<'_>, class_ptr: *mut u8) -> bool {
@@ -1115,6 +1272,123 @@ pub(crate) fn object_poll_fn(data_ptr: *mut u8) -> u64 {
     unsafe { sidecar_from_snapshot(snapshot) }.poll_fn()
 }
 
+/// Read the immutable typed payload shape selected before publication.
+///
+/// Poll/task shapes live in the object's sidecar. Class-governed builtin
+/// shapes live in the class policy word and are inherited with the class
+/// layout. This is the only lifecycle dispatch authority for OBJECT payloads.
+#[inline]
+pub(crate) fn object_shape_id(data_ptr: *mut u8) -> ObjectShapeId {
+    let snapshot = unsafe { object_aux_snapshot(data_ptr) };
+    if snapshot.kind == HEADER_AUX_KIND_SIDECAR {
+        let encoded = unsafe { sidecar_from_snapshot(snapshot) }.shape();
+        if encoded != 0 {
+            return ObjectShapeId::from_u16(encoded).expect("corrupt object shape id");
+        }
+    }
+    let class_bits = unsafe { object_class_bits(data_ptr) };
+    obj_from_bits(class_bits)
+        .as_ptr()
+        .map(|class_ptr| unsafe { class_instance_shape_id(class_ptr) })
+        .unwrap_or(ObjectShapeId::Plain)
+}
+
+/// Set a sidecar-owned payload shape before the object is published.
+/// Conflicting initialization is rejected; published mutation is forbidden.
+#[must_use]
+pub(crate) unsafe fn object_init_shape_unpublished(
+    data_ptr: *mut u8,
+    shape: ObjectShapeId,
+) -> bool {
+    unsafe {
+        if !object_init_sidecar_unpublished(data_ptr) {
+            return false;
+        }
+        let sidecar = sidecar_from_snapshot(object_aux_snapshot(data_ptr));
+        sidecar
+            .shape
+            .fetch_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |current| {
+                (current == 0 || current == shape as u64).then_some(shape as u64)
+            })
+            .is_ok()
+    }
+}
+
+/// Resolve a task constructor's code pointer to its immutable lifecycle shape.
+/// This conversion runs once while the object is unpublished; lifecycle paths
+/// dispatch only on the resulting compact ID.
+pub(crate) fn object_shape_for_poll_fn(poll_fn: u64) -> ObjectShapeId {
+    if poll_fn == crate::promise_poll_fn_addr() {
+        ObjectShapeId::Promise
+    } else if poll_fn == crate::async_sleep_poll_fn_addr() {
+        ObjectShapeId::AsyncSleep
+    } else if poll_fn == crate::asyncgen_poll_fn_addr() {
+        ObjectShapeId::AsyncGeneratorFuture
+    } else if poll_fn == crate::anext_default_poll_fn_addr() {
+        ObjectShapeId::AnextDefault
+    } else if poll_fn == asyncio_wait_poll_fn_addr() {
+        ObjectShapeId::AsyncioWait
+    } else if poll_fn == asyncio_gather_poll_fn_addr() {
+        ObjectShapeId::AsyncioGather
+    } else if poll_fn == asyncio_wait_for_poll_fn_addr() {
+        ObjectShapeId::AsyncioWaitFor
+    } else if poll_fn == asyncio_timer_handle_poll_fn_addr() {
+        ObjectShapeId::AsyncioTimerHandle
+    } else if poll_fn == asyncio_fd_watcher_poll_fn_addr() {
+        ObjectShapeId::AsyncioFdWatcher
+    } else if poll_fn == asyncio_server_accept_loop_poll_fn_addr() {
+        ObjectShapeId::AsyncioServerAcceptLoop
+    } else if poll_fn == asyncio_ready_runner_poll_fn_addr() {
+        ObjectShapeId::AsyncioReadyRunner
+    } else if poll_fn == contextlib_asyncgen_enter_poll_fn_addr() {
+        ObjectShapeId::ContextlibAsyncgenEnter
+    } else if poll_fn == contextlib_asyncgen_exit_poll_fn_addr() {
+        ObjectShapeId::ContextlibAsyncgenExit
+    } else if poll_fn == contextlib_async_exitstack_enter_context_poll_fn_addr() {
+        ObjectShapeId::ContextlibAsyncExitstackEnter
+    } else if poll_fn == contextlib_async_exitstack_exit_poll_fn_addr() {
+        ObjectShapeId::ContextlibAsyncExitstackExit
+    } else if poll_fn == asyncio_socket_reader_read_poll_fn_addr() {
+        ObjectShapeId::AsyncioSocketReaderRead
+    } else if poll_fn == asyncio_socket_reader_readline_poll_fn_addr() {
+        ObjectShapeId::AsyncioSocketReaderReadline
+    } else if poll_fn == asyncio_stream_reader_read_poll_fn_addr() {
+        ObjectShapeId::AsyncioStreamReaderRead
+    } else if poll_fn == asyncio_stream_reader_readline_poll_fn_addr() {
+        ObjectShapeId::AsyncioStreamReaderReadline
+    } else if poll_fn == asyncio_stream_send_all_poll_fn_addr() {
+        ObjectShapeId::AsyncioStreamSendAll
+    } else if poll_fn == asyncio_sock_recv_poll_fn_addr() {
+        ObjectShapeId::AsyncioSockRecv
+    } else if poll_fn == asyncio_sock_connect_poll_fn_addr() {
+        ObjectShapeId::AsyncioSockConnect
+    } else if poll_fn == asyncio_sock_accept_poll_fn_addr() {
+        ObjectShapeId::AsyncioSockAccept
+    } else if poll_fn == asyncio_sock_recv_into_poll_fn_addr() {
+        ObjectShapeId::AsyncioSockRecvInto
+    } else if poll_fn == asyncio_sock_sendall_poll_fn_addr() {
+        ObjectShapeId::AsyncioSockSendAll
+    } else if poll_fn == asyncio_sock_recvfrom_poll_fn_addr() {
+        ObjectShapeId::AsyncioSockRecvFrom
+    } else if poll_fn == asyncio_sock_recvfrom_into_poll_fn_addr() {
+        ObjectShapeId::AsyncioSockRecvFromInto
+    } else if poll_fn == asyncio_sock_sendto_poll_fn_addr() {
+        ObjectShapeId::AsyncioSockSendTo
+    } else if poll_fn == thread_poll_fn_addr() {
+        ObjectShapeId::ThreadTask
+    } else if poll_fn == process_poll_fn_addr() {
+        ObjectShapeId::ProcessTask
+    } else if poll_fn == io_wait_poll_fn_addr() {
+        ObjectShapeId::IoWait
+    } else if poll_fn == ws_wait_poll_fn_addr() {
+        ObjectShapeId::WebsocketWait
+    } else if poll_fn != 0 {
+        ObjectShapeId::GenericTaskPayload
+    } else {
+        ObjectShapeId::Plain
+    }
+}
+
 /// Initialize a poll function before publication, selecting sidecar storage if
 /// necessary.
 ///
@@ -1294,7 +1568,7 @@ pub extern "C" fn molt_object_init_stack(
         let total = std::mem::size_of::<MoltHeader>() + payload;
         std::ptr::write_bytes(header_ptr, 0, total);
         let header = header_ptr as *mut MoltHeader;
-        (*header).type_id = TYPE_ID_OBJECT;
+        (*header).type_id = class_instance_type_id(cls_ptr);
         // ref_count is wrapped in MoltRefCount; replace whole field.
         std::ptr::write(
             std::ptr::addr_of_mut!((*header).ref_count),
@@ -1398,6 +1672,25 @@ pub(crate) fn alloc_object_zeroed_with_aux(
     type_id: u32,
     aux: ObjectAuxPreselection,
 ) -> *mut u8 {
+    alloc_object_zeroed_with_aux_policy(_py, total_size, type_id, aux, false)
+}
+
+pub(crate) fn alloc_object_zeroed_unpublished_with_aux(
+    _py: &PyToken<'_>,
+    total_size: usize,
+    type_id: u32,
+    aux: ObjectAuxPreselection,
+) -> *mut u8 {
+    alloc_object_zeroed_with_aux_policy(_py, total_size, type_id, aux, true)
+}
+
+fn alloc_object_zeroed_with_aux_policy(
+    _py: &PyToken<'_>,
+    total_size: usize,
+    type_id: u32,
+    aux: ObjectAuxPreselection,
+    unpublished: bool,
+) -> *mut u8 {
     crate::gil_assert();
     let Some(plan) = object_allocation_plan(total_size) else {
         if debug_oom() {
@@ -1426,7 +1719,11 @@ pub(crate) fn alloc_object_zeroed_with_aux(
         let header = ptr as *mut MoltHeader;
         (*header).type_id = type_id;
         (*header).ref_count.store(1, AtomicOrdering::Relaxed);
-        MoltHeader::initialize_flags_before_publication(header, 0);
+        if unpublished {
+            MoltHeader::initialize_flags_gc_unpublished(header, 0);
+        } else {
+            MoltHeader::initialize_flags_before_publication(header, 0);
+        }
         (*header).size_class = plan.size_class;
         if !initialize_header_aux(header, type_id, plan.size_class, total_size, aux) {
             std::alloc::dealloc(ptr, plan.layout);
@@ -1539,13 +1836,13 @@ pub(crate) unsafe fn header_from_obj_ptr(ptr: *mut u8) -> *mut MoltHeader {
 // the compiler eliminate the entire match body during dead-code elimination.
 #[cfg_attr(target_arch = "wasm32", inline(always))]
 fn profile_alloc_type(_py: &PyToken<'_>, type_id: u32) {
-    match type_id {
-        TYPE_ID_OBJECT => profile_hit(_py, &ALLOC_OBJECT_COUNT),
-        TYPE_ID_EXCEPTION => profile_hit(_py, &ALLOC_EXCEPTION_COUNT),
-        TYPE_ID_DICT => profile_hit(_py, &ALLOC_DICT_COUNT),
-        TYPE_ID_TUPLE => profile_hit(_py, &ALLOC_TUPLE_COUNT),
-        TYPE_ID_STRING => profile_hit(_py, &ALLOC_STRING_COUNT),
-        TYPE_ID_CALLARGS => profile_hit(_py, &ALLOC_CALLARGS_COUNT),
+    match heap_metrics_policy(type_id) {
+        Some(HeapMetricsPolicy::Object) => profile_hit(_py, &ALLOC_OBJECT_COUNT),
+        Some(HeapMetricsPolicy::Exception) => profile_hit(_py, &ALLOC_EXCEPTION_COUNT),
+        Some(HeapMetricsPolicy::Dict) => profile_hit(_py, &ALLOC_DICT_COUNT),
+        Some(HeapMetricsPolicy::Tuple) => profile_hit(_py, &ALLOC_TUPLE_COUNT),
+        Some(HeapMetricsPolicy::String) => profile_hit(_py, &ALLOC_STRING_COUNT),
+        Some(HeapMetricsPolicy::Callargs) => profile_hit(_py, &ALLOC_CALLARGS_COUNT),
         _ => {}
     }
 }
@@ -1562,12 +1859,12 @@ fn profile_alloc_aux_kind(_py: &PyToken<'_>, aux_kind: u16) {
 #[cfg_attr(target_arch = "wasm32", inline(always))]
 fn profile_alloc_type_bytes(_py: &PyToken<'_>, type_id: u32, total_size: usize) {
     let bytes = total_size as u64;
-    match type_id {
-        TYPE_ID_DICT => profile_hit_bytes(_py, &ALLOC_BYTES_DICT, bytes),
-        TYPE_ID_EXCEPTION => profile_hit_bytes(_py, &ALLOC_BYTES_EXCEPTION, bytes),
-        TYPE_ID_TUPLE => profile_hit_bytes(_py, &ALLOC_BYTES_TUPLE, bytes),
-        TYPE_ID_STRING => profile_hit_bytes(_py, &ALLOC_BYTES_STRING, bytes),
-        TYPE_ID_LIST | TYPE_ID_LIST_BUILDER => profile_hit_bytes(_py, &ALLOC_BYTES_LIST, bytes),
+    match heap_metrics_policy(type_id) {
+        Some(HeapMetricsPolicy::Dict) => profile_hit_bytes(_py, &ALLOC_BYTES_DICT, bytes),
+        Some(HeapMetricsPolicy::Exception) => profile_hit_bytes(_py, &ALLOC_BYTES_EXCEPTION, bytes),
+        Some(HeapMetricsPolicy::Tuple) => profile_hit_bytes(_py, &ALLOC_BYTES_TUPLE, bytes),
+        Some(HeapMetricsPolicy::String) => profile_hit_bytes(_py, &ALLOC_BYTES_STRING, bytes),
+        Some(HeapMetricsPolicy::List) => profile_hit_bytes(_py, &ALLOC_BYTES_LIST, bytes),
         _ => {}
     }
 }
@@ -1578,13 +1875,13 @@ fn profile_alloc_type_bytes(_py: &PyToken<'_>, type_id: u32, total_size: usize) 
 /// concrete object family.
 #[cfg_attr(target_arch = "wasm32", inline(always))]
 fn profile_dealloc_type(_py: &PyToken<'_>, type_id: u32, total_size: u64) {
-    match type_id {
-        TYPE_ID_OBJECT => profile_hit(_py, &DEALLOC_OBJECT_COUNT),
-        TYPE_ID_BIGINT => profile_hit(_py, &DEALLOC_BIGINT_COUNT),
-        TYPE_ID_STRING => profile_hit(_py, &DEALLOC_STRING_COUNT),
-        TYPE_ID_DICT => profile_hit(_py, &DEALLOC_DICT_COUNT),
-        TYPE_ID_TUPLE => profile_hit(_py, &DEALLOC_TUPLE_COUNT),
-        TYPE_ID_EXCEPTION => {
+    match heap_metrics_policy(type_id) {
+        Some(HeapMetricsPolicy::Object) => profile_hit(_py, &DEALLOC_OBJECT_COUNT),
+        Some(HeapMetricsPolicy::Bigint) => profile_hit(_py, &DEALLOC_BIGINT_COUNT),
+        Some(HeapMetricsPolicy::String) => profile_hit(_py, &DEALLOC_STRING_COUNT),
+        Some(HeapMetricsPolicy::Dict) => profile_hit(_py, &DEALLOC_DICT_COUNT),
+        Some(HeapMetricsPolicy::Tuple) => profile_hit(_py, &DEALLOC_TUPLE_COUNT),
+        Some(HeapMetricsPolicy::Exception) => {
             profile_hit(_py, &DEALLOC_EXCEPTION_COUNT);
             profile_hit_bytes(_py, &DEALLOC_BYTES_EXCEPTION, total_size);
         }
@@ -1854,6 +2151,23 @@ pub(crate) unsafe fn object_clear_class_edge_unpublished(_py: &PyToken<'_>, ptr:
         dec_ref_bits(_py, old_bits);
     }
     true
+}
+
+/// Atomically publish the common class lane empty and transfer its owned edge
+/// to terminal lifecycle custody. Borrowed class identities are simply
+/// cleared. The caller releases the returned edge only after every other
+/// inline, backing, ABI, and side-registry source is empty.
+pub(crate) unsafe fn object_detach_class_edge(ptr: *mut u8) -> u64 {
+    let snapshot = unsafe { object_aux_snapshot(ptr) };
+    let Some(target) = (unsafe { class_edge_target(ptr, snapshot) }) else {
+        return 0;
+    };
+    let old_word = target.swap(0, AtomicOrdering::AcqRel);
+    if old_word & HEADER_CLASS_WORD_BORROWED != 0 {
+        0
+    } else {
+        unsafe { object_class_bits_from_word(old_word) }
+    }
 }
 
 /// Replace an existing published class lane without changing aux kind/address.
@@ -2484,22 +2798,210 @@ pub(crate) unsafe fn maybe_run_object_finalizer_for_cycle(py: &PyToken<'_>, ptr:
     unsafe { run_object_del_in_revival_window(py, ptr) };
 }
 
-unsafe fn release_dealloc_tracked_bits_vec(
-    py: &PyToken<'_>,
-    vec_ptr: *mut Vec<u64>,
-    header_flags: u32,
-) {
+unsafe fn drop_detached_tracked_vec<T>(vec_ptr: *mut Vec<T>) {
+    if !vec_ptr.is_null() {
+        drop(unsafe { backing::tracked_vec_box_from_raw(vec_ptr) });
+    }
+}
+
+unsafe fn drop_detached_linear_builder_vec(ptr: *mut u8) {
     unsafe {
+        let slot = ptr as *mut *mut Vec<u64>;
+        let vec_ptr = slot.replace(std::ptr::null_mut());
         if vec_ptr.is_null() {
             return;
         }
-        let mut vec = backing::tracked_vec_box_from_raw(vec_ptr);
-        if (header_flags & HEADER_FLAG_CONTAINS_REFS) == 0 {
-            return;
+        drop(backing::tracked_vec_box_from_raw(vec_ptr));
+    }
+}
+
+#[inline]
+fn terminal_resource_drop_no_unwind(drop_resources: impl FnOnce()) {
+    #[cfg(panic = "unwind")]
+    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(drop_resources)).is_err() {
+        std::process::abort();
+    }
+    #[cfg(not(panic = "unwind"))]
+    drop_resources();
+}
+
+#[inline]
+fn record_terminal_deallocation(py: &PyToken<'_>, type_id: u32, bytes: u64) {
+    profile_hit(py, &DEALLOC_COUNT);
+    profile_hit_bytes(py, &DEALLOC_BYTES_TOTAL, bytes);
+    profile_dealloc_type(py, type_id, bytes);
+}
+
+/// Typed projection of the payload edges layered under OBJECT/WEAKREF.
+/// Common class, inline-field, and instance-dict edges are owned by the heap
+/// lifecycle dispatcher; this function enumerates only the selected subshape.
+pub(crate) unsafe fn object_shape_visit_owned_edges(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    mut visit: impl FnMut(u64),
+) {
+    let shape = object_shape_id(ptr);
+    if object_shape_is_task(shape) {
+        let slots = unsafe { object_payload_size(ptr) } / std::mem::size_of::<u64>();
+        let first_python_slot = usize::from(!matches!(
+            object_shape_resource_slot(shape),
+            ObjectShapeResourceSlot::None
+        ));
+        for index in first_python_slot..slots {
+            visit(unsafe { *(ptr as *const u64).add(index) });
         }
-        let detached = std::mem::take(&mut *vec);
-        for bits in detached {
-            dec_ref_bits(py, bits);
+        crate::async_rt::scheduler::task_visit_owned_edges(py, ptr, &mut visit);
+        return;
+    }
+    unsafe {
+        match object_shape_lifecycle_family(shape) {
+            ObjectShapeLifecycleFamily::Plain => {}
+            ObjectShapeLifecycleFamily::DictSubclass => {
+                if let Some(&bits) = runtime_state(py)
+                    .dict_subclass_storage
+                    .lock()
+                    .unwrap()
+                    .get(&PtrSlot(ptr))
+                {
+                    visit(bits);
+                }
+                let payload = object_payload_size(ptr);
+                if payload >= 2 * std::mem::size_of::<u64>() {
+                    visit(*(ptr.add(payload - 2 * std::mem::size_of::<u64>()) as *const u64));
+                }
+            }
+            ObjectShapeLifecycleFamily::Operator => {
+                crate::builtins::operator::operator_visit_owned_edges(shape, ptr, visit);
+            }
+            ObjectShapeLifecycleFamily::Functools => {
+                crate::builtins::functools::functools_visit_owned_edges(shape, ptr, visit);
+            }
+            ObjectShapeLifecycleFamily::Types => {
+                crate::builtins::types::types_visit_owned_edges(shape, ptr, visit);
+            }
+            ObjectShapeLifecycleFamily::Itertools => {
+                #[cfg(feature = "stdlib_itertools")]
+                molt_runtime_itertools::itertools::itertools_visit_owned_edges(
+                    shape as u16,
+                    ptr,
+                    visit,
+                );
+                #[cfg(not(feature = "stdlib_itertools"))]
+                crate::builtins::itertools::itertools_visit_owned_edges(shape as u16, ptr, visit);
+            }
+            ObjectShapeLifecycleFamily::Task => {
+                unreachable!("task family bypassed task projection")
+            }
+        }
+    }
+}
+
+/// Idempotently detach and release every mutable edge owned by an OBJECT
+/// subshape. State is published empty before any DECREF can re-enter it.
+pub(crate) unsafe fn object_shape_clear_cycle_edges(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    detached_sink: &mut heap_lifecycle::DetachedEdgeSink,
+) {
+    let shape = object_shape_id(ptr);
+    if object_shape_is_task(shape) {
+        let slots = unsafe { object_payload_size(ptr) } / std::mem::size_of::<u64>();
+        let none = MoltObject::none().bits();
+        let resource_slot = object_shape_resource_slot(shape);
+        let detached_resource = match resource_slot {
+            ObjectShapeResourceSlot::IoSocket => io_wait_detach_resource(ptr),
+            ObjectShapeResourceSlot::Websocket => ws_wait_detach_resource(ptr),
+            ObjectShapeResourceSlot::None => none,
+        };
+        let first_python_slot = usize::from(resource_slot != ObjectShapeResourceSlot::None);
+        for index in first_python_slot..slots {
+            let bits = unsafe { (ptr as *mut u64).add(index).replace(none) };
+            detached_sink.detach_if_heap(bits);
+        }
+        crate::async_rt::scheduler::task_detach_owned_edges(py, ptr, detached_sink);
+        match resource_slot {
+            ObjectShapeResourceSlot::IoSocket => detached_sink.detach_resource(
+                heap_lifecycle::DetachedResource::IoSocket(detached_resource),
+            ),
+            ObjectShapeResourceSlot::Websocket => detached_sink.detach_resource(
+                heap_lifecycle::DetachedResource::Websocket(detached_resource),
+            ),
+            ObjectShapeResourceSlot::None => {}
+        }
+        return;
+    }
+    unsafe {
+        match object_shape_lifecycle_family(shape) {
+            ObjectShapeLifecycleFamily::Plain => {}
+            ObjectShapeLifecycleFamily::DictSubclass => {
+                let side = runtime_state(py)
+                    .dict_subclass_storage
+                    .lock()
+                    .unwrap()
+                    .remove(&PtrSlot(ptr));
+                let payload = object_payload_size(ptr);
+                let tail = (payload >= 2 * std::mem::size_of::<u64>()).then(|| {
+                    (ptr.add(payload - 2 * std::mem::size_of::<u64>()) as *mut u64)
+                        .replace(MoltObject::none().bits())
+                });
+                if let Some(bits) = side {
+                    detached_sink.detach_if_heap(bits);
+                }
+                if let Some(bits) = tail {
+                    detached_sink.detach_if_heap(bits);
+                }
+            }
+            ObjectShapeLifecycleFamily::Operator => {
+                crate::builtins::operator::operator_detach_owned_edges(shape, ptr, |bits| {
+                    detached_sink.detach_if_heap(bits)
+                });
+            }
+            ObjectShapeLifecycleFamily::Functools => {
+                crate::builtins::functools::functools_detach_owned_edges(shape, ptr, |bits| {
+                    detached_sink.detach_if_heap(bits)
+                });
+            }
+            ObjectShapeLifecycleFamily::Types => {
+                crate::builtins::types::types_detach_owned_edges(shape, ptr, |bits| {
+                    detached_sink.detach_if_heap(bits)
+                });
+            }
+            ObjectShapeLifecycleFamily::Itertools => {
+                #[cfg(feature = "stdlib_itertools")]
+                molt_runtime_itertools::itertools::itertools_detach_owned_edges(
+                    shape as u16,
+                    ptr,
+                    |bits| detached_sink.detach_if_heap(bits),
+                );
+                #[cfg(not(feature = "stdlib_itertools"))]
+                crate::builtins::itertools::itertools_detach_owned_edges(
+                    shape as u16,
+                    ptr,
+                    |bits| detached_sink.detach_if_heap(bits),
+                );
+            }
+            ObjectShapeLifecycleFamily::Task => unreachable!("task family bypassed task clear"),
+        }
+        match object_shape_lifecycle_family(shape) {
+            ObjectShapeLifecycleFamily::Functools => {
+                detached_sink.detach_resource(heap_lifecycle::DetachedResource::Functools(
+                    crate::builtins::functools::functools_detach_typed_resources(shape, ptr),
+                ))
+            }
+            ObjectShapeLifecycleFamily::Itertools => {
+                #[cfg(feature = "stdlib_itertools")]
+                detached_sink.detach_resource(heap_lifecycle::DetachedResource::Itertools(
+                    molt_runtime_itertools::itertools::itertools_detach_typed_resources(
+                        shape as u16,
+                        ptr,
+                    ),
+                ));
+                #[cfg(not(feature = "stdlib_itertools"))]
+                detached_sink.detach_resource(heap_lifecycle::DetachedResource::Itertools(
+                    crate::builtins::itertools::itertools_detach_typed_resources(shape as u16, ptr),
+                ));
+            }
+            _ => {}
         }
     }
 }
@@ -2788,7 +3290,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                 // DEALLOCATING before weakref clearing so callbacks cannot create
                 // fresh weakrefs or synthesize a runtime owner from stale bits.
                 (*header_ptr).fetch_or_flags(HEADER_FLAG_DEALLOCATING);
-                gc::gc_untrack_on_free(ptr, type_id);
+                gc::gc_untrack(ptr, type_id, gc::GcUntrackReason::Deallocation);
                 // Detach weakrefs and invoke callbacks after the death verdict.
                 // The referent remains allocated only as an internal pin; checked
                 // retain/view publication rejects every attempt to reopen it.
@@ -2848,742 +3350,173 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             // byte total was snapshotted before the window ran.
             if (terminal_flags & HEADER_FLAG_DEALLOCATING) == 0 {
                 (*header_ptr).fetch_or_flags(HEADER_FLAG_DEALLOCATING);
-                gc::gc_untrack_on_free(ptr, type_id);
+                gc::gc_untrack(ptr, type_id, gc::GcUntrackReason::Deallocation);
             }
-            let weakref_registration = if (terminal_flags & HEADER_FLAG_IS_WEAKREF) != 0 {
-                weakref::weakref_object_detach(py, ptr)
-            } else {
-                None
-            };
-            // Exception teardown is a four-stage transaction across the
-            // runtime payload and its physical CPython view. Detach runtime
-            // ownership first, null physical fields while their referents are
-            // still live, then retire the view. The detached edges are released
-            // only in the type arm below, after no bridge reentry can observe a
-            // stale slot.
-            let detached_exception_edges = if type_id == TYPE_ID_EXCEPTION {
-                Some(exception_detach_owned_edges(ptr))
-            } else {
-                None
-            };
             // Remove tuple identity before child retirement, but keep its
             // packed projection and projection-owned C references alive until
             // every inline runtime item edge has been released in the tuple
             // type arm. This is the tuple analogue of exception field detach:
             // no reentrant lookup sees a terminal tuple and no child view loses
             // both ownership domains out of order.
-            let mut retired_tuple_view =
-                if type_id == TYPE_ID_TUPLE && (terminal_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0 {
-                    Some(
-                        molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                            .retire_tuple_view_deferred(MoltObject::from_ptr(ptr).bits())
-                            .unwrap_or_else(|| std::process::abort()),
-                    )
-                } else {
-                    None
-                };
-            if type_id == TYPE_ID_EXCEPTION && (terminal_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0 {
-                molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                    .clear_exception_view_fields(MoltObject::from_ptr(ptr).bits());
+            if type_id == TYPE_ID_ASYNC_GENERATOR {
+                // Async-generator finalization is the last callback-bearing
+                // phase. Count only after it returns because it may mutate the
+                // generator's owned slots.
+                asyncgen_call_finalizer(py, ptr);
             }
-            if matches!(type_id, TYPE_ID_LIST | TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL)
-                && (terminal_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0
-            {
-                molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                    .clear_list_view(MoltObject::from_ptr(ptr).bits());
-            }
-            if (terminal_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0 && type_id != TYPE_ID_TUPLE {
-                molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                    .runtime_object_destroyed(MoltObject::from_ptr(ptr).bits());
-            }
-            weakref::weakref_object_release(py, weakref_registration);
-            profile_hit(py, &DEALLOC_COUNT);
-            profile_hit_bytes(py, &DEALLOC_BYTES_TOTAL, dealloc_bytes);
-            profile_dealloc_type(py, type_id, dealloc_bytes);
-            // Class identity lives in the common aux authority for every heap
-            // kind. Snapshot its one owned edge before type-specific teardown,
-            // then discharge it once afterward. Static/stack objects encode
-            // borrowed ownership directly in the class word.
-            let terminal_class_word = object_class_word(ptr);
-            let terminal_class_bits = if terminal_class_word & HEADER_CLASS_WORD_BORROWED == 0 {
-                object_class_bits_from_word(terminal_class_word)
+            // Remove every canonical bridge identity before detaching any
+            // runtime source. The returned guard owns all projection C edges
+            // and is released only after the complete source-empty barrier.
+            let retired_runtime_view = if (terminal_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0 {
+                Some(
+                    molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                        .retire_runtime_object_deferred(MoltObject::from_ptr(ptr).bits())
+                        .unwrap_or_else(|| std::process::abort()),
+                )
             } else {
-                0
+                None
             };
-            match type_id {
-                // Hot path: most-frequently-freed types first
-                TYPE_ID_STRING => {
-                    utf8_cache_remove(py, ptr as usize);
-                }
-                // Heap-allocated NaN float: no inner refs to dec-ref.
-                TYPE_ID_FLOAT => {}
-                // Class objects: dec-ref all ref-counted fields and bump the
-                // global type version so all inline caches that held a pointer
-                // to this class are invalidated before the memory is reused.
-                //
-                // ORDERING IS CRITICAL: `molt_class_set_base` stores both the
-                // class payload slots (bases, mro) AND the class dict entries
-                // `__bases__`/`__mro__` as counted references.  We must
-                // dec-ref the payload slots BEFORE dec-refing the dict, so
-                // that when the dict cascade runs it sees refcount==1 (not 0)
-                // and correctly frees those objects without a double-free.
-                TYPE_ID_TYPE => {
-                    let name_bits = layout::class_name_bits(ptr);
-                    let dict_bits = layout::class_dict_bits(ptr);
-                    let bases_bits = layout::class_bases_bits(ptr);
-                    let mro_bits = layout::class_mro_bits(ptr);
-                    let annotations_bits = layout::class_annotations_bits(ptr);
-                    let annotate_bits = layout::class_annotate_bits(ptr);
-                    let qualname_bits = layout::class_qualname_bits(ptr);
-                    // Dec-ref non-dict slots first so the dict cascade doesn't
-                    // see a refcount of zero for objects it also references.
-                    // `dec_ref_bits` is a no-op for primitives (None, int, etc.)
-                    // so we don't need to guard against None/zero explicitly —
-                    // but we do guard against the zero-bits sentinel (bits==0
-                    // is not a valid NaN-boxed heap pointer, and as_ptr() on it
-                    // returns None, making dec_ref_bits a no-op anyway; the
-                    // explicit guard is for clarity and avoids the function call).
-                    dec_ref_bits(py, name_bits);
-                    dec_ref_bits(py, bases_bits);
-                    dec_ref_bits(py, mro_bits);
-                    dec_ref_bits(py, annotations_bits);
-                    dec_ref_bits(py, annotate_bits);
-                    dec_ref_bits(py, qualname_bits);
-                    // Dict last: its cascade will free __bases__ and __mro__
-                    // after the slot refs above have been released.
-                    dec_ref_bits(py, dict_bits);
-                    // Invalidate all result-level inline caches that may hold a
-                    // stale pointer to this now-freed class object.  Without
-                    // this bump, caches that were written when type_version==N
-                    // would still pass the version check after the class is freed
-                    // and its memory reused, causing use-after-free in
-                    // inc_ref_bits on the cached result.
-                    bump_type_version();
-                }
-                TYPE_ID_LIST_INT => {
-                    // list_int stores a *mut ListIntStorage (#[repr(C)]).
-                    // Reconstruct the Vec to free the backing buffer.
-                    let storage_ptr = layout::list_int_storage_ptr(ptr);
-                    if !storage_ptr.is_null() {
-                        let storage = *Box::from_raw(storage_ptr);
-                        // Drop the backing buffer by reconstructing the Vec.
-                        // Raw i64 elements have no inner refs to dec-ref.
-                        drop(storage.into_vec());
-                    }
-                }
-                TYPE_ID_LIST_BOOL => {
-                    // list_bool stores a *mut ListBoolStorage (#[repr(C)]).
-                    // Reconstruct the Vec<u8> to free the backing buffer.
-                    // No inner refs to dec-ref — bools are inline values.
-                    let storage_ptr = layout::list_bool_storage_ptr(ptr);
-                    if !storage_ptr.is_null() {
-                        let storage = *Box::from_raw(storage_ptr);
-                        drop(storage.into_vec());
-                    }
-                }
-                TYPE_ID_LIST => {
-                    release_dealloc_tracked_bits_vec(py, seq_vec_ptr(ptr), header_flags);
-                }
-                TYPE_ID_TUPLE => {
-                    crate::object::seq_access::release_tuple_edges(py, ptr, header_flags);
-                    drop(retired_tuple_view.take());
-                }
-                TYPE_ID_DICT => {
-                    let order_ptr = dict_order_ptr(ptr);
-                    let table_ptr = dict_table_ptr(ptr);
-                    let hashes_ptr = dict_hashes_ptr(ptr);
-                    release_dealloc_tracked_bits_vec(py, order_ptr, header_flags);
-                    if !table_ptr.is_null() {
-                        drop(backing::tracked_vec_box_from_raw(table_ptr));
-                    }
-                    if !hashes_ptr.is_null() {
-                        drop(backing::tracked_vec_box_from_raw(hashes_ptr));
-                    }
-                }
-                TYPE_ID_LIST_BUILDER => {
-                    let vec_ptr = *(ptr as *mut *mut Vec<u64>);
-                    if !vec_ptr.is_null() {
-                        drop(backing::tracked_vec_box_from_raw(vec_ptr));
-                    }
-                }
-                TYPE_ID_BYTEARRAY => {
-                    let vec_ptr = bytearray_vec_ptr(ptr);
-                    if !vec_ptr.is_null() {
-                        drop(backing::tracked_vec_box_from_raw(vec_ptr));
-                    }
-                }
-                TYPE_ID_DICT_BUILDER => {
-                    let vec_ptr = *(ptr as *mut *mut Vec<u64>);
-                    if !vec_ptr.is_null() {
-                        drop(backing::tracked_vec_box_from_raw(vec_ptr));
-                    }
-                }
-                TYPE_ID_SET | TYPE_ID_FROZENSET => {
-                    let order_ptr = set_order_ptr(ptr);
-                    let table_ptr = set_table_ptr(ptr);
-                    let hashes_ptr = set_hashes_ptr(ptr);
-                    release_dealloc_tracked_bits_vec(py, order_ptr, header_flags);
-                    if !table_ptr.is_null() {
-                        drop(backing::tracked_vec_box_from_raw(table_ptr));
-                    }
-                    if !hashes_ptr.is_null() {
-                        drop(backing::tracked_vec_box_from_raw(hashes_ptr));
-                    }
-                }
-                TYPE_ID_SET_BUILDER => {
-                    let vec_ptr = *(ptr as *mut *mut Vec<u64>);
-                    if !vec_ptr.is_null() {
-                        drop(backing::tracked_vec_box_from_raw(vec_ptr));
-                    }
-                }
-                TYPE_ID_CALLARGS => {
-                    let args_ptr = callargs_ptr(ptr);
-                    if !args_ptr.is_null() {
-                        crate::call::bind::note_callargs_free(py, ptr, args_ptr);
-                        callargs_dec_ref_all(py, args_ptr);
-                        drop(Box::from_raw(args_ptr));
-                    }
-                }
-                TYPE_ID_MEMORYVIEW => {
-                    let owner_bits = memoryview_owner_bits(ptr);
-                    if owner_bits != 0 && !obj_from_bits(owner_bits).is_none() {
-                        dec_ref_bits(py, owner_bits);
-                    }
-                    let format_bits = memoryview_format_bits(ptr);
-                    if format_bits != 0 && !obj_from_bits(format_bits).is_none() {
-                        dec_ref_bits(py, format_bits);
-                    }
-                    let shape_ptr = memoryview_shape_ptr(ptr);
-                    if !shape_ptr.is_null() {
-                        drop(backing::tracked_vec_box_from_raw(shape_ptr));
-                    }
-                    let strides_ptr = memoryview_strides_ptr(ptr);
-                    if !strides_ptr.is_null() {
-                        drop(backing::tracked_vec_box_from_raw(strides_ptr));
-                    }
-                }
-                TYPE_ID_RANGE => {
-                    let start_bits = range_start_bits(ptr);
-                    let stop_bits = range_stop_bits(ptr);
-                    let step_bits = range_step_bits(ptr);
-                    if start_bits != 0 && !obj_from_bits(start_bits).is_none() {
-                        dec_ref_bits(py, start_bits);
-                    }
-                    if stop_bits != 0 && !obj_from_bits(stop_bits).is_none() {
-                        dec_ref_bits(py, stop_bits);
-                    }
-                    if step_bits != 0 && !obj_from_bits(step_bits).is_none() {
-                        dec_ref_bits(py, step_bits);
-                    }
-                }
-                TYPE_ID_SLICE => {
-                    let start_bits = slice_start_bits(ptr);
-                    let stop_bits = slice_stop_bits(ptr);
-                    let step_bits = slice_step_bits(ptr);
-                    if start_bits != 0 && !obj_from_bits(start_bits).is_none() {
-                        dec_ref_bits(py, start_bits);
-                    }
-                    if stop_bits != 0 && !obj_from_bits(stop_bits).is_none() {
-                        dec_ref_bits(py, stop_bits);
-                    }
-                    if step_bits != 0 && !obj_from_bits(step_bits).is_none() {
-                        dec_ref_bits(py, step_bits);
-                    }
-                }
-                TYPE_ID_DATACLASS => {
-                    let desc_ptr = dataclass_desc_ptr(ptr);
-                    let fields_ptr = dataclass_fields_ptr(ptr);
-                    if !fields_ptr.is_null() {
-                        let fields = backing::tracked_vec_box_from_raw(fields_ptr);
-                        for &val_bits in fields.iter() {
-                            if val_bits != 0 && !obj_from_bits(val_bits).is_none() {
-                                dec_ref_bits(py, val_bits);
-                            }
-                        }
-                    }
-                    let dict_bits = dataclass_dict_bits(ptr);
-                    if dict_bits != 0 && !obj_from_bits(dict_bits).is_none() {
-                        dec_ref_bits(py, dict_bits);
-                    }
-                    if !desc_ptr.is_null() {
-                        drop(Box::from_raw(desc_ptr));
-                    }
-                }
-                TYPE_ID_CODE => {
-                    let filename_bits = code_filename_bits(ptr);
-                    let name_bits = code_name_bits(ptr);
-                    let linetable_bits = code_linetable_bits(ptr);
-                    let varnames_bits = code_varnames_bits(ptr);
-                    let names_bits = code_names_bits(ptr);
-                    let arg_names_bits = code_arg_names_bits(ptr);
-                    let posonly_bits = code_signature_posonly_bits(ptr);
-                    let kwonly_bits = code_kwonly_names_bits(ptr);
-                    let vararg_bits = code_vararg_bits(ptr);
-                    let varkw_bits = code_varkw_bits(ptr);
-                    if filename_bits != 0 && !obj_from_bits(filename_bits).is_none() {
-                        dec_ref_bits(py, filename_bits);
-                    }
-                    if name_bits != 0 && !obj_from_bits(name_bits).is_none() {
-                        dec_ref_bits(py, name_bits);
-                    }
-                    if linetable_bits != 0 && !obj_from_bits(linetable_bits).is_none() {
-                        dec_ref_bits(py, linetable_bits);
-                    }
-                    if varnames_bits != 0 && !obj_from_bits(varnames_bits).is_none() {
-                        dec_ref_bits(py, varnames_bits);
-                    }
-                    if names_bits != 0 && !obj_from_bits(names_bits).is_none() {
-                        dec_ref_bits(py, names_bits);
-                    }
-                    if arg_names_bits != 0 && !obj_from_bits(arg_names_bits).is_none() {
-                        dec_ref_bits(py, arg_names_bits);
-                    }
-                    if posonly_bits != 0 && !obj_from_bits(posonly_bits).is_none() {
-                        dec_ref_bits(py, posonly_bits);
-                    }
-                    if kwonly_bits != 0 && !obj_from_bits(kwonly_bits).is_none() {
-                        dec_ref_bits(py, kwonly_bits);
-                    }
-                    if vararg_bits != 0 && !obj_from_bits(vararg_bits).is_none() {
-                        dec_ref_bits(py, vararg_bits);
-                    }
-                    if varkw_bits != 0 && !obj_from_bits(varkw_bits).is_none() {
-                        dec_ref_bits(py, varkw_bits);
-                    }
-                }
-                TYPE_ID_FUNCTION => {
-                    let dict_bits = function_dict_bits(ptr);
-                    if dict_bits != 0 && !obj_from_bits(dict_bits).is_none() {
-                        dec_ref_bits(py, dict_bits);
-                    }
-                    let annotations_bits = function_annotations_bits(ptr);
-                    if annotations_bits != 0 && !obj_from_bits(annotations_bits).is_none() {
-                        dec_ref_bits(py, annotations_bits);
-                    }
-                    let annotate_bits = function_annotate_bits(ptr);
-                    if annotate_bits != 0 && !obj_from_bits(annotate_bits).is_none() {
-                        dec_ref_bits(py, annotate_bits);
-                    }
-                    let code_bits = function_code_bits(ptr);
-                    if code_bits != 0 && !obj_from_bits(code_bits).is_none() {
-                        dec_ref_bits(py, code_bits);
-                    }
-                    let closure_bits = function_closure_bits(ptr);
-                    if closure_bits != 0 && !obj_from_bits(closure_bits).is_none() {
-                        dec_ref_bits(py, closure_bits);
-                    }
-                }
-                TYPE_ID_BOUND_METHOD => {
-                    let func_bits = bound_method_func_bits(ptr);
-                    let self_bits = bound_method_self_bits(ptr);
-                    if func_bits != 0 && !obj_from_bits(func_bits).is_none() {
-                        dec_ref_bits(py, func_bits);
-                    }
-                    if self_bits != 0 && !obj_from_bits(self_bits).is_none() {
-                        dec_ref_bits(py, self_bits);
-                    }
-                }
-                TYPE_ID_PROPERTY => {
-                    let get_bits = property_get_bits(ptr);
-                    let set_bits = property_set_bits(ptr);
-                    let del_bits = property_del_bits(ptr);
-                    if get_bits != 0 && !obj_from_bits(get_bits).is_none() {
-                        dec_ref_bits(py, get_bits);
-                    }
-                    if set_bits != 0 && !obj_from_bits(set_bits).is_none() {
-                        dec_ref_bits(py, set_bits);
-                    }
-                    if del_bits != 0 && !obj_from_bits(del_bits).is_none() {
-                        dec_ref_bits(py, del_bits);
-                    }
-                }
-                TYPE_ID_CLASSMETHOD => {
-                    let func_bits = classmethod_func_bits(ptr);
-                    if func_bits != 0 && !obj_from_bits(func_bits).is_none() {
-                        dec_ref_bits(py, func_bits);
-                    }
-                }
-                TYPE_ID_STATICMETHOD => {
-                    let func_bits = staticmethod_func_bits(ptr);
-                    if func_bits != 0 && !obj_from_bits(func_bits).is_none() {
-                        dec_ref_bits(py, func_bits);
-                    }
-                }
-                TYPE_ID_GENERIC_ALIAS => {
-                    let origin_bits = generic_alias_origin_bits(ptr);
-                    let args_bits = generic_alias_args_bits(ptr);
-                    if origin_bits != 0 && !obj_from_bits(origin_bits).is_none() {
-                        dec_ref_bits(py, origin_bits);
-                    }
-                    if args_bits != 0 && !obj_from_bits(args_bits).is_none() {
-                        dec_ref_bits(py, args_bits);
-                    }
-                }
-                TYPE_ID_UNION => {
-                    let args_bits = union_type_args_bits(ptr);
-                    if args_bits != 0 && !obj_from_bits(args_bits).is_none() {
-                        dec_ref_bits(py, args_bits);
-                    }
-                }
-                TYPE_ID_DICT_KEYS_VIEW | TYPE_ID_DICT_VALUES_VIEW | TYPE_ID_DICT_ITEMS_VIEW => {
-                    let dict_bits = dict_view_dict_bits(ptr);
-                    if dict_bits != 0 && !obj_from_bits(dict_bits).is_none() {
-                        dec_ref_bits(py, dict_bits);
-                    }
-                }
-                TYPE_ID_TRACEBACK_PAYLOAD => {
-                    let code_bits = traceback_payload_code_bits(ptr);
-                    if code_bits != 0 && !obj_from_bits(code_bits).is_none() {
-                        dec_ref_bits(py, code_bits);
-                    }
-                    let next_bits = traceback_payload_next_bits(ptr);
-                    if next_bits != 0 && !obj_from_bits(next_bits).is_none() {
-                        dec_ref_bits(py, next_bits);
-                    }
-                }
-                TYPE_ID_NATIVE_HANDLE => {
-                    native_handle::native_handle_drop(ptr);
-                }
-                TYPE_ID_FOREIGN => {
-                    foreign::foreign_drop(ptr);
-                }
-                TYPE_ID_EXCEPTION => {
-                    exception_release_detached_edges(
-                        py,
-                        detached_exception_edges
-                            .expect("exception edges detached before ABI retirement"),
-                    );
-                }
-                TYPE_ID_CONTEXT_MANAGER => {
-                    let payload_bits = context_payload_bits(ptr);
-                    if payload_bits != 0 && !obj_from_bits(payload_bits).is_none() {
-                        dec_ref_bits(py, payload_bits);
-                    }
-                }
-                TYPE_ID_MODULE => {
-                    crate::c_api::c_api_module_on_module_teardown(py, ptr);
-                    let dict_bits = module_dict_bits(ptr);
-                    if dict_bits != 0 && !obj_from_bits(dict_bits).is_none() {
-                        dec_ref_bits(py, dict_bits);
-                    }
-                    let name_bits = module_name_bits(ptr);
-                    if name_bits != 0 && !obj_from_bits(name_bits).is_none() {
-                        dec_ref_bits(py, name_bits);
-                    }
-                }
-                TYPE_ID_ENUMERATE => {
-                    let target_bits = enumerate_target_bits(ptr);
-                    if target_bits != 0 && !obj_from_bits(target_bits).is_none() {
-                        dec_ref_bits(py, target_bits);
-                    }
-                    let idx_bits = enumerate_index_bits(ptr);
-                    if idx_bits != 0 && !obj_from_bits(idx_bits).is_none() {
-                        dec_ref_bits(py, idx_bits);
-                    }
-                    // Drop cached (idx, val) inner tuple — held by the
-                    // cache slot at refcount=1.
-                    let cached_inner = enumerate_cached_inner(ptr);
-                    if !cached_inner.is_null() {
-                        dec_ref_ptr(py, cached_inner);
-                    }
-                    // Drop cached (item, done) outer wrapper.
-                    let cached_outer = enumerate_cached_outer(ptr);
-                    if !cached_outer.is_null() {
-                        dec_ref_ptr(py, cached_outer);
-                    }
-                }
-                TYPE_ID_FILTER => {
-                    let func_bits = filter_func_bits(ptr);
-                    let iter_bits = filter_iter_bits(ptr);
-                    if func_bits != 0 && !obj_from_bits(func_bits).is_none() {
-                        dec_ref_bits(py, func_bits);
-                    }
-                    if iter_bits != 0 && !obj_from_bits(iter_bits).is_none() {
-                        dec_ref_bits(py, iter_bits);
-                    }
-                }
-                TYPE_ID_MAP => {
-                    let func_bits = map_func_bits(ptr);
-                    let iters_ptr = map_iters_ptr(ptr);
-                    if func_bits != 0 && !obj_from_bits(func_bits).is_none() {
-                        dec_ref_bits(py, func_bits);
-                    }
-                    if !iters_ptr.is_null() {
-                        let iters = backing::tracked_vec_box_from_raw(iters_ptr);
-                        for bits in iters.iter() {
-                            dec_ref_bits(py, *bits);
-                        }
-                    }
-                    // Drop cached (value, done) wrapper tuple.
-                    let cached = map_cached_tuple(ptr);
-                    if !cached.is_null() {
-                        dec_ref_ptr(py, cached);
-                    }
-                }
-                TYPE_ID_ITER => {
-                    let target_bits = iter_target_bits(ptr);
-                    if let Some(target_ptr) = obj_from_bits(target_bits).as_ptr()
-                        && object_type_id(target_ptr) == TYPE_ID_WEAK_CONTAINER_STATE
-                    {
-                        let version = layout::iter_expected_version(ptr);
-                        if version != weak_container::WEAK_ITER_VERSION_UNSTARTED
-                            && version != weak_container::WEAK_ITER_VERSION_FINISHED
-                        {
-                            weak_container::weakcontainer_iter_finish(py, target_ptr);
-                        }
-                    }
-                    if target_bits != 0 && !obj_from_bits(target_bits).is_none() {
-                        dec_ref_bits(py, target_bits);
-                    }
-                    let cached = iter_cached_tuple(ptr);
-                    if !cached.is_null() {
-                        dec_ref_ptr(py, cached);
-                    }
-                }
-                TYPE_ID_WEAK_CONTAINER_STATE => {
-                    weak_container::weakcontainer_drop_state(py, ptr);
-                }
-                TYPE_ID_REVERSED => {
-                    let target_bits = reversed_target_bits(ptr);
-                    if target_bits != 0 && !obj_from_bits(target_bits).is_none() {
-                        dec_ref_bits(py, target_bits);
-                    }
-                }
-                TYPE_ID_ZIP => {
-                    let iters_ptr = zip_iters_ptr(ptr);
-                    if !iters_ptr.is_null() {
-                        let iters = backing::tracked_vec_box_from_raw(iters_ptr);
-                        for bits in iters.iter() {
-                            dec_ref_bits(py, *bits);
-                        }
-                    }
-                    let strict_bits = zip_strict_bits(ptr);
-                    if strict_bits != 0 && !obj_from_bits(strict_bits).is_none() {
-                        dec_ref_bits(py, strict_bits);
-                    }
-                }
-                TYPE_ID_GENERATOR => {
-                    let send_bits = *(ptr.add(GEN_SEND_OFFSET) as *const u64);
-                    let throw_bits = *(ptr.add(GEN_THROW_OFFSET) as *const u64);
-                    let closed_bits = *(ptr.add(GEN_CLOSED_OFFSET) as *const u64);
-                    let depth_bits = *(ptr.add(GEN_EXC_DEPTH_OFFSET) as *const u64);
-                    dec_ref_bits(py, send_bits);
-                    dec_ref_bits(py, throw_bits);
-                    dec_ref_bits(py, closed_bits);
-                    dec_ref_bits(py, depth_bits);
-                    generator_exception_stack_drop(py, ptr);
-                    generator_context_stack_drop(py, ptr);
-                }
-                TYPE_ID_ASYNC_GENERATOR => {
-                    let pending_bits = asyncgen_pending_bits(ptr);
-                    let running_bits = asyncgen_running_bits(ptr);
-                    let gen_bits = asyncgen_gen_bits(ptr);
-                    asyncgen_call_finalizer(py, ptr);
-                    if pending_bits != 0 && !obj_from_bits(pending_bits).is_none() {
-                        dec_ref_bits(py, pending_bits);
-                    }
-                    if running_bits != 0 && !obj_from_bits(running_bits).is_none() {
-                        dec_ref_bits(py, running_bits);
-                    }
-                    if gen_bits != 0 && !obj_from_bits(gen_bits).is_none() {
-                        dec_ref_bits(py, gen_bits);
-                    }
-                    asyncgen_registry_remove(py, ptr);
-                }
-                TYPE_ID_BUFFER2D => {
-                    let buffer_ptr = buffer2d_ptr(ptr);
-                    if !buffer_ptr.is_null() {
-                        drop(Box::from_raw(buffer_ptr));
-                    }
-                }
-                TYPE_ID_GLOB_ITER => {
-                    // State holds only Rust Strings (no MoltObject refs); a plain
-                    // box-drop frees the entire streaming work-stack.
-                    let state_ptr = glob_iter_state_ptr(ptr);
-                    if !state_ptr.is_null() {
-                        drop(Box::from_raw(state_ptr));
-                    }
-                }
-                TYPE_ID_FILE_HANDLE => {
-                    let handle_ptr = file_handle_ptr(ptr);
-                    if !handle_ptr.is_null() {
-                        let handle = &mut *handle_ptr;
-                        flush_file_handle_on_drop(py, handle);
-                        // Match CPython: file handles close their underlying backend/FD on drop.
-                        // This is required for correct semantics in cases like open(0) where the
-                        // file descriptor should be closed once the last reference is released.
-                        crate::builtins::io::file_handle_close_ptr(ptr);
-                        if handle.name_bits != 0 && !obj_from_bits(handle.name_bits).is_none() {
-                            dec_ref_bits(py, handle.name_bits);
-                        }
-                        if handle.buffer_bits != 0 && !obj_from_bits(handle.buffer_bits).is_none() {
-                            dec_ref_bits(py, handle.buffer_bits);
-                        }
-                        if handle.mem_bits != 0 && !obj_from_bits(handle.mem_bits).is_none() {
-                            dec_ref_bits(py, handle.mem_bits);
-                        }
-                        drop(Box::from_raw(handle_ptr));
-                    }
-                }
-                TYPE_ID_CALL_ITER => {
-                    let sentinel_bits = call_iter_sentinel_bits(ptr);
-                    let callable_bits = call_iter_callable_bits(ptr);
-                    if sentinel_bits != 0 && !obj_from_bits(sentinel_bits).is_none() {
-                        dec_ref_bits(py, sentinel_bits);
-                    }
-                    if callable_bits != 0 && !obj_from_bits(callable_bits).is_none() {
-                        dec_ref_bits(py, callable_bits);
-                    }
-                    // Drop cached (value, done) wrapper tuple.
-                    let cached = call_iter_cached_tuple(ptr);
-                    if !cached.is_null() {
-                        dec_ref_ptr(py, cached);
-                    }
-                }
-                TYPE_ID_OBJECT => {
-                    let poll_fn = object_poll_fn(ptr);
-                    if poll_fn == asyncio_wait_for_poll_fn_addr() {
-                        asyncio_wait_for_task_drop(py, ptr);
-                    } else if poll_fn == asyncio_wait_poll_fn_addr() {
-                        asyncio_wait_task_drop(py, ptr);
-                    } else if poll_fn == asyncio_gather_poll_fn_addr() {
-                        asyncio_gather_task_drop(py, ptr);
-                    } else if poll_fn == asyncio_timer_handle_poll_fn_addr() {
-                        asyncio_timer_handle_task_drop(py, ptr);
-                    } else if poll_fn == asyncio_fd_watcher_poll_fn_addr() {
-                        asyncio_fd_watcher_task_drop(py, ptr);
-                    } else if poll_fn == asyncio_server_accept_loop_poll_fn_addr() {
-                        asyncio_server_accept_loop_task_drop(py, ptr);
-                    } else if poll_fn == asyncio_ready_runner_poll_fn_addr() {
-                        asyncio_ready_runner_task_drop(py, ptr);
-                    } else if poll_fn == contextlib_asyncgen_enter_poll_fn_addr() {
-                        contextlib_asyncgen_enter_task_drop(py, ptr);
-                    } else if poll_fn == contextlib_asyncgen_exit_poll_fn_addr() {
-                        contextlib_asyncgen_exit_task_drop(py, ptr);
-                    } else if poll_fn == contextlib_async_exitstack_exit_poll_fn_addr() {
-                        contextlib_async_exitstack_exit_task_drop(py, ptr);
-                    } else if poll_fn == contextlib_async_exitstack_enter_context_poll_fn_addr() {
-                        contextlib_async_exitstack_enter_context_task_drop(py, ptr);
-                    } else if poll_fn == asyncio_socket_reader_read_poll_fn_addr() {
-                        asyncio_socket_reader_read_task_drop(py, ptr);
-                    } else if poll_fn == asyncio_socket_reader_readline_poll_fn_addr() {
-                        asyncio_socket_reader_readline_task_drop(py, ptr);
-                    } else if poll_fn == asyncio_stream_reader_read_poll_fn_addr() {
-                        asyncio_stream_reader_read_task_drop(py, ptr);
-                    } else if poll_fn == asyncio_stream_reader_readline_poll_fn_addr() {
-                        asyncio_stream_reader_readline_task_drop(py, ptr);
-                    } else if poll_fn == asyncio_stream_send_all_poll_fn_addr() {
-                        asyncio_stream_send_all_task_drop(py, ptr);
-                    } else if poll_fn == asyncio_sock_recv_poll_fn_addr() {
-                        asyncio_sock_recv_task_drop(py, ptr);
-                    } else if poll_fn == asyncio_sock_connect_poll_fn_addr() {
-                        asyncio_sock_connect_task_drop(py, ptr);
-                    } else if poll_fn == asyncio_sock_accept_poll_fn_addr() {
-                        asyncio_sock_accept_task_drop(py, ptr);
-                    } else if poll_fn == asyncio_sock_recv_into_poll_fn_addr() {
-                        asyncio_sock_recv_into_task_drop(py, ptr);
-                    } else if poll_fn == asyncio_sock_sendall_poll_fn_addr() {
-                        asyncio_sock_sendall_task_drop(py, ptr);
-                    } else if poll_fn == asyncio_sock_recvfrom_poll_fn_addr() {
-                        asyncio_sock_recvfrom_task_drop(py, ptr);
-                    } else if poll_fn == asyncio_sock_recvfrom_into_poll_fn_addr() {
-                        asyncio_sock_recvfrom_into_task_drop(py, ptr);
-                    } else if poll_fn == asyncio_sock_sendto_poll_fn_addr() {
-                        asyncio_sock_sendto_task_drop(py, ptr);
-                    } else if poll_fn == thread_poll_fn_addr() {
-                        #[cfg(not(target_arch = "wasm32"))]
-                        thread_task_drop(py, ptr);
-                    } else if poll_fn == process_poll_fn_addr() {
-                        #[cfg(not(target_arch = "wasm32"))]
-                        process_task_drop(py, ptr);
-                    } else if poll_fn == io_wait_poll_fn_addr() {
-                        io_wait_release_socket(py, ptr);
-                    } else if poll_fn == ws_wait_poll_fn_addr() {
-                        ws_wait_release(py, ptr);
-                    }
-                    if poll_fn != 0 {
-                        task_cancel_message_clear(py, ptr);
-                    }
-                    let class_bits = object_class_bits(ptr);
-                    let builtins = builtin_classes_if_initialized(py);
-                    if let Some(builtins) = builtins
-                        && class_bits != 0
-                        && issubclass_bits(class_bits, builtins.dict)
-                    {
-                        let payload = object_payload_size(ptr);
-                        let slot = PtrSlot(ptr);
-                        let mut storage = runtime_state(py).dict_subclass_storage.lock().unwrap();
-                        if let Some(bits) = storage.remove(&slot)
-                            && bits != 0
-                            && !obj_from_bits(bits).is_none()
-                        {
-                            dec_ref_bits(py, bits);
-                        }
-                        drop(storage);
-                        if payload >= 2 * std::mem::size_of::<u64>() {
-                            let storage_ptr =
-                                ptr.add(payload - 2 * std::mem::size_of::<u64>()) as *mut u64;
-                            let storage_bits = *storage_ptr;
-                            if storage_bits != 0 && !obj_from_bits(storage_bits).is_none() {
-                                dec_ref_bits(py, storage_bits);
-                            }
-                        }
-                    }
-                    let _ = operator_drop_instance(py, ptr)
-                        // SAFETY: object destruction is serialized by `py` for
-                        // this complete drop dispatch.
-                        || itertools_drop_instance(py, ptr)
-                        || functools_drop_instance(py, ptr)
-                        || types_drop_instance(py, ptr);
-                    // Design A (#86 — single field-ownership authority): release the
-                    // instance's inline typed attribute fields. The inline slots are
-                    // the SOLE owner of their pointer refs (`object_field_set_ptr_raw`
-                    // inc_refs on store); the runtime free is the one authority that
-                    // releases them. Without this, every NON-folded object (a class
-                    // with `__del__`, a @dataclass, dynamic/metaclass/decorated
-                    // classes — all of which decline the constructor fold) leaks its
-                    // object-valued attributes and skips their `__del__`. Gated on
-                    // `HEADER_FLAG_HAS_PTRS` is only a hot-path hint: the offset table
-                    // plus pointer-bit check is the ownership authority. Folded objects
-                    // release their fields via the compiler drop pass and are
-                    // stack-promoted/immortal (they never reach this runtime free
-                    // path), so there is no double-free.
-                    let class_bits = object_class_bits(ptr);
-                    if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
-                        crate::builtins::attr::dec_ref_object_inline_fields(py, ptr, class_ptr);
-                    }
-                    let dict_bits = instance_dict_bits(ptr);
-                    if dict_bits != 0 && !obj_from_bits(dict_bits).is_none() {
-                        dec_ref_bits(py, dict_bits);
-                    }
-                }
-                TYPE_ID_BIGINT => {
-                    std::ptr::drop_in_place(ptr as *mut BigInt);
-                }
-                _ => {}
+            let (terminal_edge_count, terminal_resource_count) =
+                heap_lifecycle::terminal_detach_capacity(py, ptr);
+            let terminal_resource_count = terminal_resource_count
+                .checked_add(usize::from(
+                    (terminal_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0,
+                ))
+                .unwrap_or_else(|| std::process::abort());
+            let mut terminal_edges = heap_lifecycle::DetachedEdgeSink::terminal_with_capacities(
+                terminal_edge_count,
+                terminal_resource_count,
+            );
+            heap_lifecycle::detach_terminal_owned_edges(py, ptr, &mut terminal_edges);
+            if type_id == TYPE_ID_ASYNC_GENERATOR {
+                asyncgen_registry_remove(py, ptr);
             }
-            if terminal_class_bits != 0 && !obj_from_bits(terminal_class_bits).is_none() {
-                dec_ref_bits(py, terminal_class_bits);
+            if let Some(view) = retired_runtime_view {
+                terminal_edges.detach_resource(heap_lifecycle::DetachedResource::RuntimeView(view));
             }
-            release_ptr(ptr);
+            terminal_edges.release_all(py);
             let total_size =
                 total_size_from_header_fields(header_size_class, header_aux.kind, header_aux.word);
-            // Notify the resource tracker that this object's memory is freed.
-            let _ = crate::resource::try_with_tracker(|t| t.on_free(total_size));
-            if header_aux.kind == HEADER_AUX_KIND_SIDECAR {
-                free_aux_sidecar(header_aux.word);
-            }
-            if total_size == 0 {
-                return;
-            }
-            // Arena-allocated objects live inside a bump region and must NOT
-            // be passed to the global allocator. The scope arena reclaims via
-            // `molt_arena_free` at scope exit.
-            if (header_flags & HEADER_FLAG_ARENA) != 0 {
-                return;
-            }
-            let layout = std::alloc::Layout::from_size_align(total_size, 8).unwrap();
-            std::alloc::dealloc(header_ptr as *mut u8, layout);
+            terminal_resource_drop_no_unwind(|| {
+                match heap_drop_policy(type_id) {
+                    Some(HeapDropPolicy::String) => utf8_cache_remove(py, ptr as usize),
+                    Some(HeapDropPolicy::Type) => {
+                        bump_type_version();
+                    }
+                    Some(HeapDropPolicy::ListInt) => {
+                        let storage = layout::list_int_storage_ptr(ptr);
+                        if !storage.is_null() {
+                            drop((*Box::from_raw(storage)).into_vec());
+                        }
+                    }
+                    Some(HeapDropPolicy::ListBool) => {
+                        let storage = layout::list_bool_storage_ptr(ptr);
+                        if !storage.is_null() {
+                            drop((*Box::from_raw(storage)).into_vec());
+                        }
+                    }
+                    Some(HeapDropPolicy::List) => drop_detached_tracked_vec(seq_vec_ptr(ptr)),
+                    Some(HeapDropPolicy::Dict) => {
+                        drop_detached_tracked_vec(dict_order_ptr(ptr));
+                        drop_detached_tracked_vec(dict_table_ptr(ptr));
+                        drop_detached_tracked_vec(dict_hashes_ptr(ptr));
+                    }
+                    Some(
+                        HeapDropPolicy::ListBuilder
+                        | HeapDropPolicy::DictBuilder
+                        | HeapDropPolicy::SetBuilder,
+                    ) => {
+                        drop_detached_linear_builder_vec(ptr);
+                    }
+                    Some(HeapDropPolicy::Bytearray) => {
+                        drop_detached_tracked_vec(bytearray_vec_ptr(ptr))
+                    }
+                    Some(HeapDropPolicy::Set | HeapDropPolicy::Frozenset) => {
+                        drop_detached_tracked_vec(set_order_ptr(ptr));
+                        drop_detached_tracked_vec(set_table_ptr(ptr));
+                        drop_detached_tracked_vec(set_hashes_ptr(ptr));
+                    }
+                    Some(HeapDropPolicy::Memoryview) => {
+                        drop_detached_tracked_vec(memoryview_shape_ptr(ptr));
+                        drop_detached_tracked_vec(memoryview_strides_ptr(ptr));
+                    }
+                    Some(HeapDropPolicy::Dataclass) => {
+                        drop_detached_tracked_vec(dataclass_fields_ptr(ptr));
+                        let desc = dataclass_desc_ptr(ptr);
+                        if !desc.is_null() {
+                            drop(Box::from_raw(desc));
+                        }
+                    }
+                    Some(HeapDropPolicy::Map) => drop_detached_tracked_vec(map_iters_ptr(ptr)),
+                    Some(HeapDropPolicy::WeakContainer) => {
+                        weak_container::weakcontainer_drop_detached_state(ptr)
+                    }
+                    Some(HeapDropPolicy::Zip) => drop_detached_tracked_vec(zip_iters_ptr(ptr)),
+                    Some(HeapDropPolicy::Buffer2d) => {
+                        let buffer = buffer2d_ptr(ptr);
+                        if !buffer.is_null() {
+                            drop(Box::from_raw(buffer));
+                        }
+                    }
+                    Some(HeapDropPolicy::GlobIter) => {
+                        let state = glob_iter_state_ptr(ptr);
+                        if !state.is_null() {
+                            drop(Box::from_raw(state));
+                        }
+                    }
+                    Some(HeapDropPolicy::Bigint) => std::ptr::drop_in_place(ptr as *mut BigInt),
+                    Some(
+                        HeapDropPolicy::None
+                        | HeapDropPolicy::NativeHandle
+                        | HeapDropPolicy::Foreign
+                        | HeapDropPolicy::FileHandle
+                        | HeapDropPolicy::ObjectShape
+                        | HeapDropPolicy::Callargs
+                        | HeapDropPolicy::Tuple
+                        | HeapDropPolicy::Range
+                        | HeapDropPolicy::Slice
+                        | HeapDropPolicy::Code
+                        | HeapDropPolicy::Function
+                        | HeapDropPolicy::Module
+                        | HeapDropPolicy::BoundMethod
+                        | HeapDropPolicy::Property
+                        | HeapDropPolicy::Super
+                        | HeapDropPolicy::Classmethod
+                        | HeapDropPolicy::Staticmethod
+                        | HeapDropPolicy::GenericAlias
+                        | HeapDropPolicy::Union
+                        | HeapDropPolicy::DictView
+                        | HeapDropPolicy::TracebackPayload
+                        | HeapDropPolicy::Exception
+                        | HeapDropPolicy::ContextManager
+                        | HeapDropPolicy::Enumerate
+                        | HeapDropPolicy::Filter
+                        | HeapDropPolicy::Iter
+                        | HeapDropPolicy::Reversed
+                        | HeapDropPolicy::Generator
+                        | HeapDropPolicy::AsyncGenerator
+                        | HeapDropPolicy::CallIter,
+                    ) => {}
+                    None => {
+                        eprintln!(
+                            "molt fatal: unknown heap type id {type_id} reached deallocation"
+                        );
+                        std::process::abort();
+                    }
+                }
+                release_ptr(ptr);
+                // Notify the resource tracker only after typed backing state is gone.
+                let _ = crate::resource::try_with_tracker(|t| t.on_free(total_size));
+                if header_aux.kind == HEADER_AUX_KIND_SIDECAR {
+                    free_aux_sidecar(header_aux.word);
+                }
+                if total_size != 0 && (header_flags & HEADER_FLAG_ARENA) == 0 {
+                    let layout = std::alloc::Layout::from_size_align(total_size, 8)
+                        .unwrap_or_else(|_| std::process::abort());
+                    std::alloc::dealloc(header_ptr as *mut u8, layout);
+                }
+            });
+            record_terminal_deallocation(py, type_id, dealloc_bytes);
         }
     }
 }

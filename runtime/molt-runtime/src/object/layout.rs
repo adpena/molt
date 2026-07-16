@@ -1198,6 +1198,28 @@ pub(crate) unsafe fn code_set_signature_bits(
 ) {
     unsafe {
         crate::gil_assert();
+        use crate::object::heap_kinds_generated::HeapAcyclicSlot;
+        if !crate::object::builders::acyclic_slot_edge(
+            HeapAcyclicSlot::CodeArgNames,
+            arg_names_bits,
+        ) || !crate::object::builders::acyclic_slot_edge(
+            HeapAcyclicSlot::CodePosonly,
+            posonly_bits,
+        ) || !crate::object::builders::acyclic_slot_edge(
+            HeapAcyclicSlot::CodeKwonly,
+            kwonly_bits,
+        ) || !crate::object::builders::acyclic_slot_edge(
+            HeapAcyclicSlot::CodeVararg,
+            vararg_bits,
+        ) || !crate::object::builders::acyclic_slot_edge(HeapAcyclicSlot::CodeVarkw, varkw_bits)
+        {
+            crate::raise_exception::<u64>(
+                _py,
+                "SystemError",
+                "code signature mutation violated generated code_metadata acyclic capability",
+            );
+            return;
+        }
         for (idx, bits) in [
             (12usize, arg_names_bits),
             (13usize, posonly_bits),
@@ -1505,6 +1527,30 @@ mod tests {
         }
     }
 
+    fn alloc_test_code(
+        _py: &crate::PyToken<'_>,
+        filename_bits: u64,
+        name_bits: u64,
+        firstlineno: i64,
+    ) -> *mut u8 {
+        let empty_tuple_ptr = crate::alloc_tuple(_py, &[]);
+        let empty_tuple_bits = MoltObject::from_ptr(empty_tuple_ptr).bits();
+        let code_ptr = crate::alloc_code_obj(
+            _py,
+            filename_bits,
+            name_bits,
+            firstlineno,
+            MoltObject::none().bits(),
+            empty_tuple_bits,
+            empty_tuple_bits,
+            0,
+            0,
+            0,
+        );
+        dec_ref_bits(_py, empty_tuple_bits);
+        code_ptr
+    }
+
     struct TrackerReset;
 
     impl Drop for TrackerReset {
@@ -1569,18 +1615,7 @@ mod tests {
             let name_ptr = alloc_string(_py, b"<replacement-code-name>");
             let filename_bits = MoltObject::from_ptr(filename_ptr).bits();
             let name_bits = MoltObject::from_ptr(name_ptr).bits();
-            let replacement_ptr = crate::alloc_code_obj(
-                _py,
-                filename_bits,
-                name_bits,
-                3,
-                MoltObject::none().bits(),
-                0,
-                0,
-                0,
-                0,
-                0,
-            );
+            let replacement_ptr = alloc_test_code(_py, filename_bits, name_bits, 3);
             dec_ref_bits(_py, filename_bits);
             dec_ref_bits(_py, name_bits);
             let replacement_bits = MoltObject::from_ptr(replacement_ptr).bits();
@@ -1613,18 +1648,7 @@ mod tests {
             let name_a_ptr = alloc_string(_py, b"<fn-ptr-code-a-name>");
             let filename_a_bits = MoltObject::from_ptr(filename_a_ptr).bits();
             let name_a_bits = MoltObject::from_ptr(name_a_ptr).bits();
-            let code_a_ptr = crate::alloc_code_obj(
-                _py,
-                filename_a_bits,
-                name_a_bits,
-                5,
-                MoltObject::none().bits(),
-                0,
-                0,
-                0,
-                0,
-                0,
-            );
+            let code_a_ptr = alloc_test_code(_py, filename_a_bits, name_a_bits, 5);
             dec_ref_bits(_py, filename_a_bits);
             dec_ref_bits(_py, name_a_bits);
             let code_a_bits = MoltObject::from_ptr(code_a_ptr).bits();
@@ -1634,18 +1658,7 @@ mod tests {
             let name_b_ptr = alloc_string(_py, b"<fn-ptr-code-b-name>");
             let filename_b_bits = MoltObject::from_ptr(filename_b_ptr).bits();
             let name_b_bits = MoltObject::from_ptr(name_b_ptr).bits();
-            let code_b_ptr = crate::alloc_code_obj(
-                _py,
-                filename_b_bits,
-                name_b_bits,
-                9,
-                MoltObject::none().bits(),
-                0,
-                0,
-                0,
-                0,
-                0,
-            );
+            let code_b_ptr = alloc_test_code(_py, filename_b_bits, name_b_bits, 9);
             dec_ref_bits(_py, filename_b_bits);
             dec_ref_bits(_py, name_b_bits);
             let code_b_bits = MoltObject::from_ptr(code_b_ptr).bits();

@@ -605,54 +605,45 @@ fn ws_url_has_supported_scheme(url: &str) -> bool {
 }
 
 #[cfg(molt_has_net_io)]
-pub(crate) fn ws_wait_release(_py: &PyToken<'_>, future_ptr: *mut u8) {
+pub(crate) fn ws_wait_detach_resource(future_ptr: *mut u8) -> u64 {
     if future_ptr.is_null() {
-        return;
+        return MoltObject::none().bits();
     }
     let _header = unsafe { header_from_obj_ptr(future_ptr) };
     let payload_bytes = unsafe { crate::object::object_payload_size(future_ptr) };
     if payload_bytes < std::mem::size_of::<u64>() {
-        return;
+        return MoltObject::none().bits();
     }
     let payload_ptr = future_ptr as *mut u64;
-    let ws_bits = unsafe { *payload_ptr };
+    unsafe { payload_ptr.replace(MoltObject::none().bits()) }
+}
+
+#[cfg(molt_has_net_io)]
+pub(crate) fn ws_wait_release_detached_resource(_py: &PyToken<'_>, ws_bits: u64) {
     let ws_ptr = ptr_from_bits(ws_bits);
     if !ws_ptr.is_null() {
         ws_ref_dec(_py, ws_ptr as *mut MoltWebSocket);
-    }
-    if payload_bytes >= 2 * std::mem::size_of::<u64>() {
-        let events_bits = unsafe { *payload_ptr.add(1) };
-        dec_ref_bits(_py, events_bits);
-    }
-    if payload_bytes >= 3 * std::mem::size_of::<u64>() {
-        let timeout_bits = unsafe { *payload_ptr.add(2) };
-        dec_ref_bits(_py, timeout_bits);
     }
 }
 
 #[cfg(target_arch = "wasm32")]
-pub(crate) fn ws_wait_release(_py: &PyToken<'_>, future_ptr: *mut u8) {
+pub(crate) fn ws_wait_detach_resource(future_ptr: *mut u8) -> u64 {
     if future_ptr.is_null() {
-        return;
+        return MoltObject::none().bits();
     }
-    let header = unsafe { header_from_obj_ptr(future_ptr) };
     let payload_bytes = unsafe { crate::object::object_payload_size(future_ptr) };
     if payload_bytes < std::mem::size_of::<u64>() {
-        return;
+        return MoltObject::none().bits();
     }
     let payload_ptr = future_ptr as *mut u64;
-    let ws_bits = unsafe { *payload_ptr };
+    unsafe { payload_ptr.replace(MoltObject::none().bits()) }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn ws_wait_release_detached_resource(_py: &PyToken<'_>, ws_bits: u64) {
     let ws_ptr = ptr_from_bits(ws_bits);
     if !ws_ptr.is_null() {
         ws_ref_dec(_py, ws_ptr as *mut MoltWebSocket);
-    }
-    if payload_bytes >= 2 * std::mem::size_of::<u64>() {
-        let events_bits = unsafe { *payload_ptr.add(1) };
-        dec_ref_bits(_py, events_bits);
-    }
-    if payload_bytes >= 3 * std::mem::size_of::<u64>() {
-        let timeout_bits = unsafe { *payload_ptr.add(2) };
-        dec_ref_bits(_py, timeout_bits);
     }
 }
 

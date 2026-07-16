@@ -12,6 +12,7 @@ use crate::bridge::{
     raise_exception, raise_not_iterable, seq_read_item_gil_borrowed, seq_read_item_owned,
     seq_read_len, seq_snapshot, tuple_from_iter_bits,
 };
+use molt_runtime_core::ObjectShapeId;
 use molt_runtime_core::prelude::*;
 use molt_runtime_core::type_ids::*;
 
@@ -208,9 +209,10 @@ fn itertools_class(
     layout_size: i64,
     next_slot: &AtomicU64,
     next_fn: u64,
+    shape: ObjectShapeId,
 ) -> u64 {
     init_atomic_bits(_py, slot, || {
-        let class_bits = alloc_itertools_class(_py, name, layout_size);
+        let class_bits = alloc_itertools_class(_py, name, layout_size, shape);
         if obj_from_bits(class_bits).is_none() {
             return MoltObject::none().bits();
         }
@@ -775,7 +777,7 @@ unsafe fn tee_set_index(ptr: *mut u8, val: i64) {
 }
 
 struct TeeData {
-    refcount: usize,
+    owners: Vec<*mut u8>,
     iter_bits: u64,
     values: Vec<u64>,
     done: bool,
@@ -836,6 +838,7 @@ fn chain_class(_py: &PyToken) -> u64 {
         24,
         &state.chain_next_fn,
         molt_itertools_chain_next as *const () as usize as u64,
+        ObjectShapeId::ItertoolsChain,
     )
 }
 
@@ -848,6 +851,7 @@ fn islice_class(_py: &PyToken) -> u64 {
         56,
         &state.islice_next_fn,
         molt_itertools_islice_next as *const () as usize as u64,
+        ObjectShapeId::ItertoolsIslice,
     )
 }
 
@@ -860,6 +864,7 @@ fn repeat_class(_py: &PyToken) -> u64 {
         24,
         &state.repeat_next_fn,
         molt_itertools_repeat_next as *const () as usize as u64,
+        ObjectShapeId::ItertoolsRepeat,
     );
     install_repeat_constructor(_py, class_bits);
     class_bits
@@ -888,6 +893,7 @@ fn count_class(_py: &PyToken) -> u64 {
         24,
         &state.count_next_fn,
         molt_itertools_count_next as *const () as usize as u64,
+        ObjectShapeId::ItertoolsCount,
     )
 }
 
@@ -900,6 +906,7 @@ fn cycle_class(_py: &PyToken) -> u64 {
         24,
         &state.cycle_next_fn,
         molt_itertools_cycle_next as *const () as usize as u64,
+        ObjectShapeId::ItertoolsCycle,
     )
 }
 
@@ -912,6 +919,7 @@ fn accumulate_class(_py: &PyToken) -> u64 {
         48,
         &state.accumulate_next_fn,
         molt_itertools_accumulate_next as *const () as usize as u64,
+        ObjectShapeId::ItertoolsAccumulate,
     )
 }
 
@@ -924,6 +932,7 @@ fn batched_class(_py: &PyToken) -> u64 {
         40,
         &state.batched_next_fn,
         molt_itertools_batched_next as *const () as usize as u64,
+        ObjectShapeId::ItertoolsBatched,
     )
 }
 
@@ -936,6 +945,7 @@ fn combinations_class(_py: &PyToken) -> u64 {
         16,
         &state.combinations_next_fn,
         molt_itertools_combinations_next as *const () as usize as u64,
+        ObjectShapeId::ItertoolsCombinations,
     )
 }
 
@@ -948,6 +958,7 @@ fn combinations_with_replacement_class(_py: &PyToken) -> u64 {
         16,
         &state.combinations_with_replacement_next_fn,
         molt_itertools_combinations_with_replacement_next as *const () as usize as u64,
+        ObjectShapeId::ItertoolsCombinationsWithReplacement,
     )
 }
 
@@ -960,6 +971,7 @@ fn compress_class(_py: &PyToken) -> u64 {
         24,
         &state.compress_next_fn,
         molt_itertools_compress_next as *const () as usize as u64,
+        ObjectShapeId::ItertoolsCompress,
     )
 }
 
@@ -972,6 +984,7 @@ fn dropwhile_class(_py: &PyToken) -> u64 {
         32,
         &state.dropwhile_next_fn,
         molt_itertools_dropwhile_next as *const () as usize as u64,
+        ObjectShapeId::ItertoolsDropwhile,
     )
 }
 
@@ -984,6 +997,7 @@ fn filterfalse_class(_py: &PyToken) -> u64 {
         24,
         &state.filterfalse_next_fn,
         molt_itertools_filterfalse_next as *const () as usize as u64,
+        ObjectShapeId::ItertoolsFilterfalse,
     )
 }
 
@@ -996,6 +1010,7 @@ fn pairwise_class(_py: &PyToken) -> u64 {
         32,
         &state.pairwise_next_fn,
         molt_itertools_pairwise_next as *const () as usize as u64,
+        ObjectShapeId::ItertoolsPairwise,
     )
 }
 
@@ -1008,6 +1023,7 @@ fn groupby_class(_py: &PyToken) -> u64 {
         56,
         &state.groupby_next_fn,
         molt_itertools_groupby_next as *const () as usize as u64,
+        ObjectShapeId::ItertoolsGroupby,
     )
 }
 
@@ -1020,6 +1036,7 @@ fn groupby_iter_class(_py: &PyToken) -> u64 {
         24,
         &state.groupby_iter_next_fn,
         molt_itertools_groupby_iter_next as *const () as usize as u64,
+        ObjectShapeId::ItertoolsGroupbyIter,
     )
 }
 
@@ -1032,6 +1049,7 @@ fn product_class(_py: &PyToken) -> u64 {
         16,
         &state.product_next_fn,
         molt_itertools_product_next as *const () as usize as u64,
+        ObjectShapeId::ItertoolsProduct,
     )
 }
 
@@ -1044,6 +1062,7 @@ fn permutations_class(_py: &PyToken) -> u64 {
         16,
         &state.permutations_next_fn,
         molt_itertools_permutations_next as *const () as usize as u64,
+        ObjectShapeId::ItertoolsPermutations,
     )
 }
 
@@ -1056,6 +1075,7 @@ fn starmap_class(_py: &PyToken) -> u64 {
         24,
         &state.starmap_next_fn,
         molt_itertools_starmap_next as *const () as usize as u64,
+        ObjectShapeId::ItertoolsStarmap,
     )
 }
 
@@ -1068,6 +1088,7 @@ fn takewhile_class(_py: &PyToken) -> u64 {
         32,
         &state.takewhile_next_fn,
         molt_itertools_takewhile_next as *const () as usize as u64,
+        ObjectShapeId::ItertoolsTakewhile,
     )
 }
 
@@ -1080,6 +1101,7 @@ fn tee_iter_class(_py: &PyToken) -> u64 {
         24,
         &state.tee_next_fn,
         molt_itertools_tee_next as *const () as usize as u64,
+        ObjectShapeId::ItertoolsTee,
     )
 }
 
@@ -1092,6 +1114,7 @@ fn zip_longest_class(_py: &PyToken) -> u64 {
         16,
         &state.zip_longest_next_fn,
         molt_itertools_zip_longest_next as *const () as usize as u64,
+        ObjectShapeId::ItertoolsZipLongest,
     )
 }
 
@@ -2885,7 +2908,7 @@ pub extern "C" fn molt_itertools_tee(iterable_bits: u64, n_bits: u64) -> u64 {
         }
         inc_ref_bits(_py, iter_bits);
         let data = Box::new(TeeData {
-            refcount: n as usize,
+            owners: Vec::with_capacity(n as usize),
             iter_bits,
             values: Vec::new(),
             done: false,
@@ -2903,19 +2926,23 @@ pub extern "C" fn molt_itertools_tee(iterable_bits: u64, n_bits: u64) -> u64 {
         for _ in 0..n {
             let inst_bits = alloc_instance_for_class(_py, class_bits);
             if obj_from_bits(inst_bits).is_none() {
-                for bits in iters.iter() {
-                    dec_ref_bits(_py, *bits);
+                if iters.is_empty() {
+                    unsafe {
+                        dec_ref_bits(_py, (*data_ptr).iter_bits);
+                        drop(Box::from_raw(data_ptr));
+                    }
+                } else {
+                    for bits in iters.iter() {
+                        dec_ref_bits(_py, *bits);
+                    }
                 }
-                unsafe {
-                    dec_ref_bits(_py, (*data_ptr).iter_bits);
-                    drop(Box::from_raw(data_ptr));
-                };
                 return MoltObject::none().bits();
             }
             let inst_ptr = obj_from_bits(inst_bits).as_ptr().unwrap();
             unsafe {
                 tee_set_data_ptr(inst_ptr, data_ptr);
                 tee_set_index(inst_ptr, 0);
+                (*data_ptr).owners.push(inst_ptr);
             }
             iters.push(inst_bits);
         }
@@ -2924,10 +2951,6 @@ pub extern "C" fn molt_itertools_tee(iterable_bits: u64, n_bits: u64) -> u64 {
             for bits in iters.iter() {
                 dec_ref_bits(_py, *bits);
             }
-            unsafe {
-                dec_ref_bits(_py, (*data_ptr).iter_bits);
-                drop(Box::from_raw(data_ptr));
-            };
             return MoltObject::none().bits();
         }
         for bits in iters.iter() {
@@ -2970,305 +2993,363 @@ pub extern "C" fn molt_itertools_tee_next(self_bits: u64) -> u64 {
     })
 }
 
-/// Release an itertools instance from the runtime's canonical object-drop path.
-///
-/// # Safety
-///
-/// The current thread must hold the runtime GIL for this entire call.
-pub unsafe fn itertools_drop_instance<T>(_py: &T, ptr: *mut u8) -> bool {
-    // SAFETY: upheld by the object-drop boundary documented above. This avoids
-    // a redundant vtable acquisition while retaining an explicit proof token
-    // for every bridge operation below.
-    let py = unsafe { PyToken::assume_gil_held() };
-    itertools_drop_instance_inner(&py, ptr)
+/// Enumerate the Python edges owned by a typed itertools payload without
+/// consulting global class caches.
+pub fn itertools_visit_owned_edges(shape_id: u16, ptr: *mut u8, mut visit: impl FnMut(u64)) {
+    let shape = ObjectShapeId::from_u16(shape_id).expect("invalid itertools shape id");
+    unsafe {
+        match shape {
+            ObjectShapeId::ItertoolsChain => {
+                visit(chain_iterables_bits(ptr));
+                visit(chain_current_bits(ptr));
+            }
+            ObjectShapeId::ItertoolsIslice => visit(islice_iter_bits(ptr)),
+            ObjectShapeId::ItertoolsRepeat => visit(repeat_obj_bits(ptr)),
+            ObjectShapeId::ItertoolsCount => {
+                visit(count_current_bits(ptr));
+                visit(count_step_bits(ptr));
+            }
+            ObjectShapeId::ItertoolsCycle => visit(cycle_saved_bits(ptr)),
+            ObjectShapeId::ItertoolsAccumulate => {
+                visit(accumulate_iter_bits(ptr));
+                visit(accumulate_func_bits(ptr));
+                visit(accumulate_total_bits(ptr));
+                visit(accumulate_initial_bits(ptr));
+            }
+            ObjectShapeId::ItertoolsBatched => visit(batched_iter_bits(ptr)),
+            ObjectShapeId::ItertoolsCombinations => {
+                let data = combinations_data_ptr(ptr);
+                if !data.is_null() {
+                    visit((*data).pool_bits);
+                }
+            }
+            ObjectShapeId::ItertoolsCombinationsWithReplacement => {
+                let data = combinations_with_replacement_data_ptr(ptr);
+                if !data.is_null() {
+                    visit((*data).pool_bits);
+                }
+            }
+            ObjectShapeId::ItertoolsCompress => {
+                visit(compress_data_iter_bits(ptr));
+                visit(compress_selectors_iter_bits(ptr));
+            }
+            ObjectShapeId::ItertoolsDropwhile => {
+                visit(dropwhile_predicate_bits(ptr));
+                visit(dropwhile_iter_bits(ptr));
+            }
+            ObjectShapeId::ItertoolsFilterfalse => {
+                visit(filterfalse_predicate_bits(ptr));
+                visit(filterfalse_iter_bits(ptr));
+            }
+            ObjectShapeId::ItertoolsPairwise => {
+                visit(pairwise_iter_bits(ptr));
+                visit(pairwise_prev_bits(ptr));
+            }
+            ObjectShapeId::ItertoolsGroupby => {
+                visit(groupby_iter_bits(ptr));
+                visit(groupby_keyfunc_bits(ptr));
+                visit(groupby_tgt_key_bits(ptr));
+                visit(groupby_curr_key_bits(ptr));
+                visit(groupby_curr_val_bits(ptr));
+            }
+            ObjectShapeId::ItertoolsGroupbyIter => {
+                visit(groupby_iter_parent_bits(ptr));
+                visit(groupby_iter_target_bits(ptr));
+            }
+            ObjectShapeId::ItertoolsProduct => {
+                let data = product_data_ptr(ptr);
+                if !data.is_null() {
+                    for &bits in &(*data).pools_bits {
+                        visit(bits);
+                    }
+                }
+            }
+            ObjectShapeId::ItertoolsPermutations => {
+                let data = permutations_data_ptr(ptr);
+                if !data.is_null() {
+                    visit((*data).pool_bits);
+                }
+            }
+            ObjectShapeId::ItertoolsStarmap => {
+                visit(starmap_func_bits(ptr));
+                visit(starmap_iter_bits(ptr));
+            }
+            ObjectShapeId::ItertoolsTakewhile => {
+                visit(takewhile_predicate_bits(ptr));
+                visit(takewhile_iter_bits(ptr));
+            }
+            ObjectShapeId::ItertoolsTee => {
+                let data = tee_data_ptr(ptr);
+                if !data.is_null() && (*data).owners.first().copied() == Some(ptr) {
+                    visit((*data).iter_bits);
+                    for &bits in &(*data).values {
+                        visit(bits);
+                    }
+                }
+            }
+            ObjectShapeId::ItertoolsZipLongest => {
+                let data = zip_longest_data_ptr(ptr);
+                if !data.is_null() {
+                    for &bits in &(*data).iter_bits {
+                        visit(bits);
+                    }
+                    visit((*data).fillvalue_bits);
+                }
+            }
+            _ => unreachable!("non-itertools object shape"),
+        }
+    }
 }
 
-fn itertools_drop_instance_inner(_py: &PyToken, ptr: *mut u8) -> bool {
-    let class_bits = unsafe { object_class_bits(ptr) };
-    if class_bits == 0 {
-        return false;
-    }
-    let state = itertools_state(_py);
-    let class = state.chain_class.load(Ordering::Acquire);
-    if class_bits == class {
-        let iterables_bits = unsafe { chain_iterables_bits(ptr) };
-        let current_bits = unsafe { chain_current_bits(ptr) };
-        if iterables_bits != 0 && !obj_from_bits(iterables_bits).is_none() {
-            dec_ref_bits(_py, iterables_bits);
-        }
-        if current_bits != 0 && !obj_from_bits(current_bits).is_none() {
-            dec_ref_bits(_py, current_bits);
-        }
-        return true;
-    }
-    let class = state.islice_class.load(Ordering::Acquire);
-    if class_bits == class {
-        let iter_bits = unsafe { islice_iter_bits(ptr) };
-        if iter_bits != 0 && !obj_from_bits(iter_bits).is_none() {
-            dec_ref_bits(_py, iter_bits);
-        }
-        return true;
-    }
-    let class = state.repeat_class.load(Ordering::Acquire);
-    if class_bits == class {
-        let obj_bits = unsafe { repeat_obj_bits(ptr) };
-        if obj_bits != 0 && !obj_from_bits(obj_bits).is_none() {
-            dec_ref_bits(_py, obj_bits);
-        }
-        return true;
-    }
-    let class = state.count_class.load(Ordering::Acquire);
-    if class_bits == class {
-        let current_bits = unsafe { count_current_bits(ptr) };
-        let step_bits = unsafe { count_step_bits(ptr) };
-        if current_bits != 0 && !obj_from_bits(current_bits).is_none() {
-            dec_ref_bits(_py, current_bits);
-        }
-        if step_bits != 0 && !obj_from_bits(step_bits).is_none() {
-            dec_ref_bits(_py, step_bits);
-        }
-        return true;
-    }
-    let class = state.cycle_class.load(Ordering::Acquire);
-    if class_bits == class {
-        let list_bits = unsafe { cycle_saved_bits(ptr) };
-        if list_bits != 0 && !obj_from_bits(list_bits).is_none() {
-            dec_ref_bits(_py, list_bits);
-        }
-        return true;
-    }
-    let class = state.accumulate_class.load(Ordering::Acquire);
-    if class_bits == class {
-        let iter_bits = unsafe { accumulate_iter_bits(ptr) };
-        let func_bits = unsafe { accumulate_func_bits(ptr) };
-        let total_bits = unsafe { accumulate_total_bits(ptr) };
-        let initial_bits = unsafe { accumulate_initial_bits(ptr) };
-        let missing = kwd_mark_bits(_py);
-        if iter_bits != 0 && !obj_from_bits(iter_bits).is_none() {
-            dec_ref_bits(_py, iter_bits);
-        }
-        if func_bits != 0 && !obj_from_bits(func_bits).is_none() {
-            dec_ref_bits(_py, func_bits);
-        }
-        if total_bits != 0 && !obj_from_bits(total_bits).is_none() {
-            dec_ref_bits(_py, total_bits);
-        }
-        if initial_bits != 0 && initial_bits != missing && !obj_from_bits(initial_bits).is_none() {
-            dec_ref_bits(_py, initial_bits);
-        }
-        return true;
-    }
-    let class = state.batched_class.load(Ordering::Acquire);
-    if class_bits == class {
-        let iter_bits = unsafe { batched_iter_bits(ptr) };
-        if iter_bits != 0 && !obj_from_bits(iter_bits).is_none() {
-            dec_ref_bits(_py, iter_bits);
-        }
-        return true;
-    }
-    let class = state.combinations_class.load(Ordering::Acquire);
-    if class_bits == class {
-        let data_ptr = unsafe { combinations_data_ptr(ptr) };
-        if !data_ptr.is_null() {
-            unsafe {
-                let data = Box::from_raw(data_ptr);
-                if data.pool_bits != 0 && !obj_from_bits(data.pool_bits).is_none() {
-                    dec_ref_bits(_py, data.pool_bits);
+/// Publish an empty typed payload and move every mutable cycle edge to the
+/// caller's pre-reserved detach transaction. No Python destructor runs here.
+pub fn itertools_detach_owned_edges(shape_id: u16, ptr: *mut u8, mut detach: impl FnMut(u64)) {
+    let shape = ObjectShapeId::from_u16(shape_id).expect("invalid itertools shape id");
+    let none = MoltObject::none().bits();
+    unsafe {
+        match shape {
+            ObjectShapeId::ItertoolsChain => {
+                let detached = [chain_iterables_bits(ptr), chain_current_bits(ptr)];
+                chain_set_iterables_bits(ptr, none);
+                chain_set_current_bits(ptr, none);
+                detached.into_iter().for_each(&mut detach);
+            }
+            ObjectShapeId::ItertoolsIslice => {
+                let detached = islice_iter_bits(ptr);
+                islice_set_iter_bits(ptr, none);
+                detach(detached);
+            }
+            ObjectShapeId::ItertoolsRepeat => {
+                let detached = repeat_obj_bits(ptr);
+                repeat_set_obj_bits(ptr, none);
+                detach(detached);
+            }
+            ObjectShapeId::ItertoolsCount => {
+                let detached = [count_current_bits(ptr), count_step_bits(ptr)];
+                count_set_current_bits(ptr, none);
+                count_set_step_bits(ptr, none);
+                detached.into_iter().for_each(&mut detach);
+            }
+            ObjectShapeId::ItertoolsCycle => {
+                let detached = cycle_saved_bits(ptr);
+                cycle_set_saved_bits(ptr, none);
+                detach(detached);
+            }
+            ObjectShapeId::ItertoolsAccumulate => {
+                let detached = [
+                    accumulate_iter_bits(ptr),
+                    accumulate_func_bits(ptr),
+                    accumulate_total_bits(ptr),
+                    accumulate_initial_bits(ptr),
+                ];
+                accumulate_set_iter_bits(ptr, none);
+                accumulate_set_func_bits(ptr, none);
+                accumulate_set_total_bits(ptr, none);
+                accumulate_set_initial_bits(ptr, none);
+                detached.into_iter().for_each(&mut detach);
+            }
+            ObjectShapeId::ItertoolsBatched => {
+                let detached = batched_iter_bits(ptr);
+                batched_set_iter_bits(ptr, none);
+                detach(detached);
+            }
+            ObjectShapeId::ItertoolsCombinations => {
+                let data = combinations_data_ptr(ptr);
+                if !data.is_null() {
+                    detach(std::mem::replace(&mut (*data).pool_bits, none));
                 }
             }
-        }
-        return true;
-    }
-    let class = state
-        .combinations_with_replacement_class
-        .load(Ordering::Acquire);
-    if class_bits == class {
-        let data_ptr = unsafe { combinations_with_replacement_data_ptr(ptr) };
-        if !data_ptr.is_null() {
-            unsafe {
-                let data = Box::from_raw(data_ptr);
-                if data.pool_bits != 0 && !obj_from_bits(data.pool_bits).is_none() {
-                    dec_ref_bits(_py, data.pool_bits);
+            ObjectShapeId::ItertoolsCombinationsWithReplacement => {
+                let data = combinations_with_replacement_data_ptr(ptr);
+                if !data.is_null() {
+                    detach(std::mem::replace(&mut (*data).pool_bits, none));
                 }
             }
-        }
-        return true;
-    }
-    let class = state.compress_class.load(Ordering::Acquire);
-    if class_bits == class {
-        let data_iter_bits = unsafe { compress_data_iter_bits(ptr) };
-        let selectors_iter_bits = unsafe { compress_selectors_iter_bits(ptr) };
-        if data_iter_bits != 0 && !obj_from_bits(data_iter_bits).is_none() {
-            dec_ref_bits(_py, data_iter_bits);
-        }
-        if selectors_iter_bits != 0 && !obj_from_bits(selectors_iter_bits).is_none() {
-            dec_ref_bits(_py, selectors_iter_bits);
-        }
-        return true;
-    }
-    let class = state.dropwhile_class.load(Ordering::Acquire);
-    if class_bits == class {
-        let predicate_bits = unsafe { dropwhile_predicate_bits(ptr) };
-        let iter_bits = unsafe { dropwhile_iter_bits(ptr) };
-        if predicate_bits != 0 && !obj_from_bits(predicate_bits).is_none() {
-            dec_ref_bits(_py, predicate_bits);
-        }
-        if iter_bits != 0 && !obj_from_bits(iter_bits).is_none() {
-            dec_ref_bits(_py, iter_bits);
-        }
-        return true;
-    }
-    let class = state.filterfalse_class.load(Ordering::Acquire);
-    if class_bits == class {
-        let predicate_bits = unsafe { filterfalse_predicate_bits(ptr) };
-        let iter_bits = unsafe { filterfalse_iter_bits(ptr) };
-        if predicate_bits != 0 && !obj_from_bits(predicate_bits).is_none() {
-            dec_ref_bits(_py, predicate_bits);
-        }
-        if iter_bits != 0 && !obj_from_bits(iter_bits).is_none() {
-            dec_ref_bits(_py, iter_bits);
-        }
-        return true;
-    }
-    let class = state.pairwise_class.load(Ordering::Acquire);
-    if class_bits == class {
-        let iter_bits = unsafe { pairwise_iter_bits(ptr) };
-        let prev_bits = unsafe { pairwise_prev_bits(ptr) };
-        if iter_bits != 0 && !obj_from_bits(iter_bits).is_none() {
-            dec_ref_bits(_py, iter_bits);
-        }
-        if prev_bits != 0 && !obj_from_bits(prev_bits).is_none() {
-            dec_ref_bits(_py, prev_bits);
-        }
-        return true;
-    }
-    let class = state.groupby_class.load(Ordering::Acquire);
-    if class_bits == class {
-        let iter_bits = unsafe { groupby_iter_bits(ptr) };
-        let keyfunc_bits = unsafe { groupby_keyfunc_bits(ptr) };
-        let tgt_bits = unsafe { groupby_tgt_key_bits(ptr) };
-        let curr_key_bits = unsafe { groupby_curr_key_bits(ptr) };
-        let curr_val_bits = unsafe { groupby_curr_val_bits(ptr) };
-        let missing = missing_bits(_py);
-        if iter_bits != 0 && !obj_from_bits(iter_bits).is_none() {
-            dec_ref_bits(_py, iter_bits);
-        }
-        if keyfunc_bits != 0 && !obj_from_bits(keyfunc_bits).is_none() {
-            dec_ref_bits(_py, keyfunc_bits);
-        }
-        for bits in [tgt_bits, curr_key_bits, curr_val_bits] {
-            if bits != 0 && bits != missing && !obj_from_bits(bits).is_none() {
-                dec_ref_bits(_py, bits);
+            ObjectShapeId::ItertoolsCompress => {
+                let detached = [
+                    compress_data_iter_bits(ptr),
+                    compress_selectors_iter_bits(ptr),
+                ];
+                compress_set_data_iter_bits(ptr, none);
+                compress_set_selectors_iter_bits(ptr, none);
+                detached.into_iter().for_each(&mut detach);
             }
+            ObjectShapeId::ItertoolsDropwhile => {
+                let detached = [dropwhile_predicate_bits(ptr), dropwhile_iter_bits(ptr)];
+                dropwhile_set_predicate_bits(ptr, none);
+                dropwhile_set_iter_bits(ptr, none);
+                detached.into_iter().for_each(&mut detach);
+            }
+            ObjectShapeId::ItertoolsFilterfalse => {
+                let detached = [filterfalse_predicate_bits(ptr), filterfalse_iter_bits(ptr)];
+                filterfalse_set_predicate_bits(ptr, none);
+                filterfalse_set_iter_bits(ptr, none);
+                detached.into_iter().for_each(&mut detach);
+            }
+            ObjectShapeId::ItertoolsPairwise => {
+                let detached = [pairwise_iter_bits(ptr), pairwise_prev_bits(ptr)];
+                pairwise_set_iter_bits(ptr, none);
+                pairwise_set_prev_bits(ptr, none);
+                detached.into_iter().for_each(&mut detach);
+            }
+            ObjectShapeId::ItertoolsGroupby => {
+                let detached = [
+                    groupby_iter_bits(ptr),
+                    groupby_keyfunc_bits(ptr),
+                    groupby_tgt_key_bits(ptr),
+                    groupby_curr_key_bits(ptr),
+                    groupby_curr_val_bits(ptr),
+                ];
+                groupby_set_iter_bits(ptr, none);
+                groupby_set_keyfunc_bits(ptr, none);
+                groupby_set_tgt_key_bits(ptr, none);
+                groupby_set_curr_key_bits(ptr, none);
+                groupby_set_curr_val_bits(ptr, none);
+                detached.into_iter().for_each(&mut detach);
+            }
+            ObjectShapeId::ItertoolsGroupbyIter => {
+                let detached = [groupby_iter_parent_bits(ptr), groupby_iter_target_bits(ptr)];
+                groupby_iter_set_parent_bits(ptr, none);
+                groupby_iter_set_target_bits(ptr, none);
+                detached.into_iter().for_each(&mut detach);
+            }
+            ObjectShapeId::ItertoolsProduct => {
+                let data = product_data_ptr(ptr);
+                if !data.is_null() {
+                    let detached = std::mem::take(&mut (*data).pools_bits);
+                    detached.into_iter().for_each(&mut detach);
+                }
+            }
+            ObjectShapeId::ItertoolsPermutations => {
+                let data = permutations_data_ptr(ptr);
+                if !data.is_null() {
+                    detach(std::mem::replace(&mut (*data).pool_bits, none));
+                }
+            }
+            ObjectShapeId::ItertoolsStarmap => {
+                let detached = [starmap_func_bits(ptr), starmap_iter_bits(ptr)];
+                starmap_set_func_bits(ptr, none);
+                starmap_set_iter_bits(ptr, none);
+                detached.into_iter().for_each(&mut detach);
+            }
+            ObjectShapeId::ItertoolsTakewhile => {
+                let detached = [takewhile_predicate_bits(ptr), takewhile_iter_bits(ptr)];
+                takewhile_set_predicate_bits(ptr, none);
+                takewhile_set_iter_bits(ptr, none);
+                detached.into_iter().for_each(&mut detach);
+            }
+            ObjectShapeId::ItertoolsTee => {
+                let data = tee_data_ptr(ptr);
+                if !data.is_null() && (*data).owners.first().copied() == Some(ptr) {
+                    let iter = std::mem::replace(&mut (*data).iter_bits, none);
+                    let values = std::mem::take(&mut (*data).values);
+                    (*data).done = true;
+                    detach(iter);
+                    values.into_iter().for_each(&mut detach);
+                }
+            }
+            ObjectShapeId::ItertoolsZipLongest => {
+                let data = zip_longest_data_ptr(ptr);
+                if !data.is_null() {
+                    let iters = std::mem::take(&mut (*data).iter_bits);
+                    let fill = std::mem::replace(&mut (*data).fillvalue_bits, none);
+                    iters.into_iter().for_each(&mut detach);
+                    detach(fill);
+                }
+            }
+            _ => unreachable!("non-itertools object shape"),
         }
-        return true;
     }
-    let class = state.groupby_iter_class.load(Ordering::Acquire);
-    if class_bits == class {
-        let parent_bits = unsafe { groupby_iter_parent_bits(ptr) };
-        let target_bits = unsafe { groupby_iter_target_bits(ptr) };
-        if parent_bits != 0 && !obj_from_bits(parent_bits).is_none() {
-            dec_ref_bits(_py, parent_bits);
-        }
-        if target_bits != 0 && !obj_from_bits(target_bits).is_none() {
-            dec_ref_bits(_py, target_bits);
-        }
-        return true;
+}
+
+pub struct DetachedItertoolsResource {
+    pointer: *mut (),
+    drop_fn: unsafe fn(*mut ()),
+}
+
+unsafe fn drop_detached_box<T>(pointer: *mut ()) {
+    if !pointer.is_null() {
+        unsafe { drop(Box::from_raw(pointer.cast::<T>())) };
     }
-    let class = state.product_class.load(Ordering::Acquire);
-    if class_bits == class {
-        let data_ptr = unsafe { product_data_ptr(ptr) };
-        if !data_ptr.is_null() {
-            unsafe {
-                let data = Box::from_raw(data_ptr);
-                for bits in data.pools_bits.iter().copied() {
-                    if bits != 0 && !obj_from_bits(bits).is_none() {
-                        dec_ref_bits(_py, bits);
+}
+
+pub fn itertools_detach_typed_resources(shape_id: u16, ptr: *mut u8) -> DetachedItertoolsResource {
+    let shape = ObjectShapeId::from_u16(shape_id).expect("invalid itertools shape id");
+    unsafe {
+        match shape {
+            ObjectShapeId::ItertoolsTee => {
+                let data_ptr = tee_data_ptr(ptr);
+                tee_set_data_ptr(ptr, std::ptr::null_mut());
+                let detached = if data_ptr.is_null() {
+                    std::ptr::null_mut()
+                } else {
+                    let data = &mut *data_ptr;
+                    if let Some(index) = data.owners.iter().position(|&owner| owner == ptr) {
+                        data.owners.swap_remove(index);
                     }
-                }
-            }
-        }
-        return true;
-    }
-    let class = state.permutations_class.load(Ordering::Acquire);
-    if class_bits == class {
-        let data_ptr = unsafe { permutations_data_ptr(ptr) };
-        if !data_ptr.is_null() {
-            unsafe {
-                let data = Box::from_raw(data_ptr);
-                if data.pool_bits != 0 && !obj_from_bits(data.pool_bits).is_none() {
-                    dec_ref_bits(_py, data.pool_bits);
-                }
-            }
-        }
-        return true;
-    }
-    let class = state.starmap_class.load(Ordering::Acquire);
-    if class_bits == class {
-        let func_bits = unsafe { starmap_func_bits(ptr) };
-        let iter_bits = unsafe { starmap_iter_bits(ptr) };
-        if func_bits != 0 && !obj_from_bits(func_bits).is_none() {
-            dec_ref_bits(_py, func_bits);
-        }
-        if iter_bits != 0 && !obj_from_bits(iter_bits).is_none() {
-            dec_ref_bits(_py, iter_bits);
-        }
-        return true;
-    }
-    let class = state.takewhile_class.load(Ordering::Acquire);
-    if class_bits == class {
-        let predicate_bits = unsafe { takewhile_predicate_bits(ptr) };
-        let iter_bits = unsafe { takewhile_iter_bits(ptr) };
-        if predicate_bits != 0 && !obj_from_bits(predicate_bits).is_none() {
-            dec_ref_bits(_py, predicate_bits);
-        }
-        if iter_bits != 0 && !obj_from_bits(iter_bits).is_none() {
-            dec_ref_bits(_py, iter_bits);
-        }
-        return true;
-    }
-    let class = state.tee_iter_class.load(Ordering::Acquire);
-    if class_bits == class {
-        let data_ptr = unsafe { tee_data_ptr(ptr) };
-        if !data_ptr.is_null() {
-            unsafe {
-                let data = &mut *data_ptr;
-                if data.refcount > 0 {
-                    data.refcount -= 1;
-                    if data.refcount == 0 {
-                        if data.iter_bits != 0 && !obj_from_bits(data.iter_bits).is_none() {
-                            dec_ref_bits(_py, data.iter_bits);
-                        }
-                        for bits in data.values.drain(..) {
-                            dec_ref_bits(_py, bits);
-                        }
-                        drop(Box::from_raw(data_ptr));
+                    if data.owners.is_empty() {
+                        debug_assert!(obj_from_bits(data.iter_bits).is_none());
+                        debug_assert!(data.values.is_empty());
+                        data_ptr.cast::<()>()
+                    } else {
+                        std::ptr::null_mut()
                     }
+                };
+                DetachedItertoolsResource {
+                    pointer: detached,
+                    drop_fn: drop_detached_box::<TeeData>,
                 }
             }
+            ObjectShapeId::ItertoolsCombinations => DetachedItertoolsResource {
+                pointer: {
+                    let data = combinations_data_ptr(ptr);
+                    combinations_set_data_ptr(ptr, std::ptr::null_mut());
+                    data.cast::<()>()
+                },
+                drop_fn: drop_detached_box::<CombinationsData>,
+            },
+            ObjectShapeId::ItertoolsCombinationsWithReplacement => DetachedItertoolsResource {
+                pointer: {
+                    let data = combinations_with_replacement_data_ptr(ptr);
+                    combinations_with_replacement_set_data_ptr(ptr, std::ptr::null_mut());
+                    data.cast::<()>()
+                },
+                drop_fn: drop_detached_box::<CombinationsWithReplacementData>,
+            },
+            ObjectShapeId::ItertoolsProduct => DetachedItertoolsResource {
+                pointer: {
+                    let data = product_data_ptr(ptr);
+                    product_set_data_ptr(ptr, std::ptr::null_mut());
+                    data.cast::<()>()
+                },
+                drop_fn: drop_detached_box::<ProductData>,
+            },
+            ObjectShapeId::ItertoolsPermutations => DetachedItertoolsResource {
+                pointer: {
+                    let data = permutations_data_ptr(ptr);
+                    permutations_set_data_ptr(ptr, std::ptr::null_mut());
+                    data.cast::<()>()
+                },
+                drop_fn: drop_detached_box::<PermutationsData>,
+            },
+            ObjectShapeId::ItertoolsZipLongest => DetachedItertoolsResource {
+                pointer: {
+                    let data = zip_longest_data_ptr(ptr);
+                    zip_longest_set_data_ptr(ptr, std::ptr::null_mut());
+                    data.cast::<()>()
+                },
+                drop_fn: drop_detached_box::<ZipLongestData>,
+            },
+            _ => DetachedItertoolsResource {
+                pointer: std::ptr::null_mut(),
+                drop_fn: drop_detached_box::<()>,
+            },
         }
-        return true;
     }
-    let class = state.zip_longest_class.load(Ordering::Acquire);
-    if class_bits == class {
-        let data_ptr = unsafe { zip_longest_data_ptr(ptr) };
-        if !data_ptr.is_null() {
-            unsafe {
-                let data = Box::from_raw(data_ptr);
-                for bits in data.iter_bits.iter().copied() {
-                    if bits != 0 && !obj_from_bits(bits).is_none() {
-                        dec_ref_bits(_py, bits);
-                    }
-                }
-                let fillvalue_bits = data.fillvalue_bits;
-                if fillvalue_bits != 0 && !obj_from_bits(fillvalue_bits).is_none() {
-                    dec_ref_bits(_py, fillvalue_bits);
-                }
-            }
-        }
-        return true;
-    }
-    false
+}
+
+pub fn itertools_release_typed_resources(resource: DetachedItertoolsResource) {
+    unsafe { (resource.drop_fn)(resource.pointer) };
 }
 
 #[cfg(test)]

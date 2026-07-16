@@ -15,6 +15,9 @@ compile_error!("Molt native free-threaded mode requires 32-bit atomic operations
 #[cfg(test)]
 extern crate std;
 
+mod heap_kinds_generated;
+pub use heap_kinds_generated::*;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OperatingSystem {
     Windows,
@@ -549,10 +552,9 @@ const _: () = {
     assert!(core::mem::align_of::<MoltFlags>() == core::mem::align_of::<u32>());
 };
 
-pub const TYPE_ID_OBJECT: u32 = 100;
-pub const TYPE_ID_FUNCTION: u32 = 221;
-pub const TYPE_ID_TYPE: u32 = 224;
-pub const TYPE_ID_LIST_BOOL: u32 = 250;
+pub const CLASS_POLICY_WORD_OFFSET: i32 = 8 * 8;
+pub const CLASS_POLICY_INSTANCE_KIND_SHIFT: u32 = 32;
+
 pub const JIT_TYPE_ID_LIST_BOOL: i64 = TYPE_ID_LIST_BOOL as i64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
