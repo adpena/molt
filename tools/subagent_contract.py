@@ -129,12 +129,13 @@ GIT_CUSTODY = (
     "clean -fd / stash drop) on the shared checkout."
 )
 
-#: M14/M28/M29/M62/M66 -- build env: isolated target dir off C:, .venv python, native
+#: M14/M28/M29/M62/M66 -- build env: canonical checkout-family target, .venv python, native
 #: cpython-abi tests don't set MOLT_SESSION_ID.
 BUILD_ENV = (
     "BUILD ENV (M14/M28/M62): the molt CLI needs `.venv/Scripts/python.exe` (Py3.12; the "
-    "host python lacks the deps). Route builds through an isolated CARGO_TARGET_DIR with "
-    "artifacts OFF the C: drive (MOLT_EXTERNAL_ARTIFACT_ROOTS); the perf gate is `molt build "
+    "host python lacks the deps). Use the checkout-family DX root for shared build state; "
+    "an explicit output/scratch directory must never change source, seal, worktree, or "
+    "toolchain custody. The perf gate is `molt build "
     "--release` (default dev is unoptimized); differential is serial "
     "(`tests/molt_diff.py --jobs 1`). Native cpython-abi tests must NOT set MOLT_SESSION_ID."
 )
@@ -232,7 +233,7 @@ KEY_PHRASES: dict[str, str] = {
     "LANDING_CONTRACT": "every work turn lands something real",
     "NO_FAKES": "zero stubs, zero theater",
     "GIT_CUSTODY": "NEVER `git add -A`",
-    "BUILD_ENV": "OFF the C: drive",
+    "BUILD_ENV": "never change source, seal, worktree, or toolchain custody",
     "DISTILL": "delete as much code as possible",
     "MODEL_TIER": "Fable orchestrates",
     "TRIALITY_WIRING": "all three legs",

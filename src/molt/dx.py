@@ -14,7 +14,7 @@ import tempfile
 import time
 import tomllib
 import uuid
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Literal, Mapping, Sequence, cast
 
 
@@ -59,25 +59,10 @@ DEFAULT_POSIX_EXTERNAL_ARTIFACT_ROOTS = (
     "/Volumes/APDataStore/Molt",
     "/Volumes/VertigoDataTier/Molt",
 )
-DEFAULT_WINDOWS_EXTERNAL_ARTIFACT_DIRNAME = "Molt"
-DEFAULT_WINDOWS_PRIMARY_ARTIFACT_ROOT = Path("C:/Molt")
-LEGACY_WINDOWS_MOLT_ROOTS = (
-    r"D:\Molt",
-    r"E:\Molt",
-    r"D:\molt-target",
-    r"E:\molt-target",
-)
-# The maintainer/agent artifact root prefers C:\Molt, then fallback volumes
-# selected by VOLUME LABEL, never by drive-letter order. The deleted
-# letter-order scan silently picked E:\Molt (the contended legacy drive).
-# Explicit MOLT_EXTERNAL_ARTIFACT_ROOTS remains the escape hatch for any other
-# fallback volume.
-DEFAULT_WINDOWS_PREFERRED_VOLUME_LABELS = ("APDataStore",)
-# Toolchain root (wasi-sysroot / binaryen / zig) is DERIVED from the selected
-# artifact root so MOLT_TARGET_ROOT follows the one root authority instead of
-# stranding a legacy E:\molt-target or D:\molt-target.
+FORBIDDEN_WINDOWS_CANONICAL_DRIVES = frozenset({"D:"})
+# Toolchain root (wasi-sysroot / binaryen / zig) is DERIVED from the durable
+# Molt custody root, never from a capacity-selected scratch/output volume.
 DEFAULT_TARGET_ROOT_DIRNAME = "target-root"
-LEGACY_WINDOWS_TARGET_ROOT_DIRNAME = "molt-target"
 DEFAULT_SCCACHE_CACHE_SIZE = "10G"
 DEFAULT_MOLT_CACHE_MAX_GB = "30"
 DEFAULT_MOLT_CACHE_MAX_AGE_DAYS = "30"
@@ -472,10 +457,12 @@ def _dedupe_paths(paths: list[Path]) -> tuple[Path, ...]:
     return tuple(deduped)
 
 
-def _default_external_artifact_roots(env: Mapping[str, str]) -> tuple[Path, ...]:
+def _default_external_artifact_roots(
+    repo_root: Path, env: Mapping[str, str]
+) -> tuple[Path, ...]:
     roots: list[Path] = []
     if os.name == "nt":
-        roots.extend(_default_windows_external_artifact_roots())
+        roots.extend(_default_windows_external_artifact_roots(repo_root))
     else:
         roots.extend(
             Path(path).expanduser() for path in DEFAULT_POSIX_EXTERNAL_ARTIFACT_ROOTS
@@ -483,38 +470,15 @@ def _default_external_artifact_roots(env: Mapping[str, str]) -> tuple[Path, ...]
     return _dedupe_paths(roots)
 
 
-def _default_windows_external_artifact_roots() -> tuple[Path, ...]:
-    """Windows artifact roots, with C:\\Molt primary when present.
+def _default_windows_external_artifact_roots(repo_root: Path) -> tuple[Path, ...]:
+    """Return the one automatic Windows Molt root.
 
-    APDataStore-labeled volumes remain fallback candidates. The legacy
-    drive-letter-order scan is deleted: it silently returned ``E:\\Molt`` (the
-    contended legacy volume) ahead of the intended root whenever labels went
-    unchecked. A volume without a preferred label is not a default candidate;
-    set MOLT_EXTERNAL_ARTIFACT_ROOTS explicitly for any other fallback.
+    Other volumes are valid only as explicit, non-custodial output locations.
+    Volume labels and free-space ranking must never promote a removable or
+    legacy volume into source, package-input, worktree, or toolchain authority.
     """
-    preferred_labels = {
-        label.casefold() for label in DEFAULT_WINDOWS_PREFERRED_VOLUME_LABELS
-    }
-    roots: list[Path] = list(_default_windows_primary_artifact_roots())
-    for drive_root in _windows_drive_roots():
-        label = _windows_volume_label(drive_root)
-        if label is not None and label.casefold() in preferred_labels:
-            roots.append(drive_root / DEFAULT_WINDOWS_EXTERNAL_ARTIFACT_DIRNAME)
-    return _dedupe_paths(roots)
-
-
-def _default_windows_primary_artifact_roots() -> tuple[Path, ...]:
-    root = DEFAULT_WINDOWS_PRIMARY_ARTIFACT_ROOT
+    root = canonical_molt_root(repo_root, require_exists=False)
     return (root,) if root.is_dir() else ()
-
-
-def _windows_drive_roots() -> tuple[Path, ...]:
-    roots: list[Path] = []
-    for letter in "DEFGHIJKLMNOPQRSTUVWXYZ":
-        drive_root = Path(f"{letter}:\\")
-        if drive_root.exists():
-            roots.append(drive_root)
-    return tuple(roots)
 
 
 def _windows_volume_info(drive_root: Path) -> tuple[str | None, str | None]:
@@ -572,61 +536,56 @@ def _artifact_root_is_windows_exfat(artifact_root: Path) -> bool:
     return filesystem is not None and filesystem.casefold() == "exfat"
 
 
-def _default_toolchain_root_for_artifact_root(artifact_root: Path) -> Path:
-    """Toolchain root (MOLT_TARGET_ROOT) derived from the artifact root.
+def _checkout_family_custody_root(repo_root: Path) -> Path:
+    """Derive the durable checkout family root without consulting build env."""
+    root = repo_root.expanduser().resolve()
+    if root.name == "molt-src":
+        return root.parent
+    if root.parent.name == "worktrees":
+        return root.parent.parent
+    return root
 
-    ``C:\\Molt`` -> ``C:\\Molt\\target-root`` on the canonical workstation
-    root, and similarly for any explicitly selected artifact root.
+
+def canonical_molt_root(repo_root: Path, *, require_exists: bool = True) -> Path:
+    """Return the single durable Molt custody root for this platform.
+
+    The authority is derived from the invoking checkout family (``molt-src`` or
+    a sibling under ``worktrees``). It never consults artifact-output
+    environment, volume labels, free-space policy, or preservation switches.
+    A normal installed/user project therefore has no global ``C:\\Molt``
+    requirement, while this workstation's ``C:\\Molt`` family resolves there
+    deterministically. Drive D is refused for durable custody.
     """
+    root = _checkout_family_custody_root(repo_root)
+    if _forbidden_windows_canonical_path(root):
+        raise DxConfigError(
+            f"canonical Molt custody resolved to forbidden drive D: ({root})"
+        )
+    if require_exists and not root.is_dir():
+        raise DxConfigError(f"canonical Molt custody root does not exist: {root}")
+    return root
+
+
+def canonical_toolchain_root(repo_root: Path, *, require_exists: bool = True) -> Path:
+    return (
+        canonical_molt_root(repo_root, require_exists=require_exists)
+        / DEFAULT_TARGET_ROOT_DIRNAME
+    )
+
+
+def _maintainer_toolchain_root(artifact_root: Path) -> Path:
+    """Separate repository toolchain custody from user-project scratch layout."""
+    source_checkout = Path(__file__).resolve().parents[2]
+    if (source_checkout / "docs" / "agent" / "ORCHESTRATION.md").is_file():
+        return canonical_toolchain_root(source_checkout)
     return artifact_root / DEFAULT_TARGET_ROOT_DIRNAME
 
 
-def _legacy_sibling_toolchain_root_for_artifact_root(
-    artifact_root: Path,
-) -> Path | None:
-    if (
-        artifact_root.name.casefold()
-        == DEFAULT_WINDOWS_EXTERNAL_ARTIFACT_DIRNAME.casefold()
-    ):
-        parent = artifact_root.parent
-        if parent != artifact_root:
-            return parent / LEGACY_WINDOWS_TARGET_ROOT_DIRNAME
-    return None
-
-
-def _same_path_text(left: Path, right: Path) -> bool:
-    return _path_text_key(left) == _path_text_key(right)
-
-
-def _path_text_key(path: Path) -> str:
-    return os.path.normcase(str(path.expanduser())).rstrip("\\/")
-
-
-def _windows_path_text_key(raw: str | Path) -> str:
-    return str(raw).strip().replace("/", "\\").rstrip("\\").casefold()
-
-
-def _windows_path_is_under(raw: str | Path, root: str) -> bool:
-    path_key = _windows_path_text_key(raw)
-    root_key = _windows_path_text_key(root)
-    return path_key == root_key or path_key.startswith(root_key + "\\")
-
-
-def _stale_windows_molt_root_value(raw: str, env: Mapping[str, str]) -> bool:
+def _forbidden_windows_canonical_path(raw: str | Path) -> bool:
     if os.name != "nt":
         return False
-    if _env_bool(env, ("MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS",), default=False):
-        return False
-    if not _default_windows_primary_artifact_roots():
-        return False
-    return any(_windows_path_is_under(raw, root) for root in LEGACY_WINDOWS_MOLT_ROOTS)
-
-
-def _drop_stale_windows_root_env(env: dict[str, str]) -> None:
-    for key in CANONICAL_ROOT_ENV_KEYS:
-        raw = env.get(key, "")
-        if raw and _stale_windows_molt_root_value(raw, env):
-            env.pop(key, None)
+    drive = PureWindowsPath(str(raw).strip()).drive.upper()
+    return drive in FORBIDDEN_WINDOWS_CANONICAL_DRIVES
 
 
 def _should_rehome_toolchain_root(
@@ -634,24 +593,23 @@ def _should_rehome_toolchain_root(
     artifact_root: Path,
     env: Mapping[str, str],
 ) -> bool:
-    """True when an inherited MOLT_TARGET_ROOT is stale for the selected root.
+    """True when inherited toolchain custody conflicts with durable authority.
 
-    Rehome off-volume roots (for example ``E:\\molt-target`` when the authority
-    chose ``D:\\Molt``) and the old same-volume sibling default
-    (``D:\\molt-target``). Set ``MOLT_PRESERVE_TARGET_ROOT=1`` to keep an
-    intentional non-default toolchain root.
+    Drive D is unconditionally forbidden. An intentional non-poison custom
+    toolchain may be retained with ``MOLT_PRESERVE_TARGET_ROOT=1``.
     """
-    if _env_bool(env, ("MOLT_PRESERVE_TARGET_ROOT",), default=False):
-        return False
     if os.name != "nt":
+        return False
+    if _forbidden_windows_canonical_path(raw):
+        return True
+    if _env_bool(env, ("MOLT_PRESERVE_TARGET_ROOT",), default=False):
         return False
     target_path = Path(raw).expanduser()
     target_drive = _path_drive(target_path)
     artifact_drive = _path_drive(artifact_root)
     if bool(target_drive and artifact_drive) and target_drive != artifact_drive:
         return True
-    legacy_sibling = _legacy_sibling_toolchain_root_for_artifact_root(artifact_root)
-    return legacy_sibling is not None and _same_path_text(target_path, legacy_sibling)
+    return False
 
 
 def _requires_external_artifacts(
@@ -699,7 +657,7 @@ def _reject_c_drive_artifact_path(
         )
 
 
-def _candidate_roots(env: Mapping[str, str]) -> tuple[Path, ...]:
+def _candidate_roots(repo_root: Path, env: Mapping[str, str]) -> tuple[Path, ...]:
     raw = (
         env.get("MOLT_EXTERNAL_ARTIFACT_ROOTS")
         or env.get("MOLT_EXTERNAL_ARTIFACT_CANDIDATES")
@@ -711,10 +669,12 @@ def _candidate_roots(env: Mapping[str, str]) -> tuple[Path, ...]:
         text = candidate.strip()
         if not text:
             continue
-        if _stale_windows_molt_root_value(text, env):
-            continue
         roots.append(Path(text).expanduser())
-    return _dedupe_paths(roots) if roots else _default_external_artifact_roots(env)
+    return (
+        _dedupe_paths(roots)
+        if roots
+        else _default_external_artifact_roots(repo_root, env)
+    )
 
 
 def _nearest_existing_parent(path: Path) -> Path | None:
@@ -774,7 +734,7 @@ def select_external_artifact_root(
 
     min_free_gb = _env_float(env, "MOLT_EXTERNAL_MIN_FREE_GB", default=20.0)
     repo_root = repo_root.resolve()
-    for raw_candidate in _candidate_roots(env):
+    for raw_candidate in _candidate_roots(repo_root, env):
         candidate = (
             raw_candidate if raw_candidate.is_absolute() else repo_root / raw_candidate
         )
@@ -826,7 +786,10 @@ def require_external_artifact_root(
         env,
         prefer_external=prefer_external,
     ):
-        candidates = ", ".join(str(path) for path in _candidate_roots(env)) or "<none>"
+        candidates = (
+            ", ".join(str(path) for path in _candidate_roots(repo_root, env))
+            or "<none>"
+        )
         raise DxConfigError(
             "Molt build artifacts must not be placed on C:. Configure a healthy "
             "non-C artifact root with MOLT_EXTERNAL_ARTIFACT_ROOTS or MOLT_EXT_ROOT. "
@@ -1157,7 +1120,6 @@ class RunContext:
         force_default_keys: Collection[str] = (),
     ) -> dict[str, str]:
         env = dict(os.environ if base is None else base)
-        _drop_stale_windows_root_env(env)
         _drop_ambient_tmpdir(env, prefer_external=self.prefer_external_artifacts)
         forced = set(force_default_keys)
 
@@ -1238,10 +1200,10 @@ class RunContext:
         install_default("UV_PROJECT_ENVIRONMENT", self.uv_project_env_dir(env))
         install_default("PIP_CACHE_DIR", ext_root / ".pip-cache")
         install_default("RUFF_CACHE_DIR", ext_root / ".ruff-cache")
-        # MOLT_TARGET_ROOT (wasi-sysroot/binaryen/zig toolchains) flows through
-        # the one root authority: derive it from the selected artifact root,
-        # and rehome stale inherited defaults rather than honoring legacy roots.
-        default_toolchain_root = _default_toolchain_root_for_artifact_root(ext_root)
+        # MOLT_TARGET_ROOT is durable toolchain custody, not scratch capacity.
+        # Keep it on the canonical Molt root even when build outputs are routed
+        # elsewhere explicitly.
+        default_toolchain_root = _maintainer_toolchain_root(ext_root)
         raw_target_root = env.get("MOLT_TARGET_ROOT")
         if not raw_target_root or _should_rehome_toolchain_root(
             raw_target_root, ext_root, env
@@ -1410,7 +1372,6 @@ class DxProject:
     ) -> dict[str, str]:
         dx = self.load_config()
         env = dict(os.environ if base is None else base)
-        _drop_stale_windows_root_env(env)
         for name in ("VIRTUAL_ENV", "PYTHONHOME", "CONDA_PREFIX", "CONDA_DEFAULT_ENV"):
             env.pop(name, None)
         prefer_external = bool(dx.get("prefer_external_artifacts"))

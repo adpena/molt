@@ -15,6 +15,7 @@ from molt.cli.target_python import (
     TargetPythonVersion,
     require_known_cpython_coverage_version,
 )
+from molt.dx import canonical_molt_root
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = ROOT / "config" / "scientific_stack_versions.toml"
@@ -332,34 +333,19 @@ def apply_scientific_stack_substitutions(value: str) -> str:
         ) from exc
 
 
-def scientific_artifact_root(env: dict[str, str] | None = None) -> Path:
-    env_view = os.environ if env is None else env
-    configured = env_view.get("MOLT_EXT_ROOT", "").strip()
-    if configured:
-        return Path(configured).expanduser().resolve()
-    roots = env_view.get("MOLT_EXTERNAL_ARTIFACT_ROOTS", "").strip()
-    if roots:
-        first = next(
-            (item.strip() for item in roots.split(os.pathsep) if item.strip()), ""
-        )
-        if first:
-            return Path(first).expanduser().resolve()
-    raise ValueError(
-        "scientific package seals require MOLT_EXT_ROOT or "
-        "MOLT_EXTERNAL_ARTIFACT_ROOTS so effective artifacts have durable shared custody"
-    )
+def scientific_custody_root() -> Path:
+    """Durable package-seal root, independent of scratch/build output policy."""
+    return canonical_molt_root(ROOT)
 
 
 def numpy_witness_seal_root(
     *,
     stack: ScientificStackVersion | None = None,
-    artifact_root: Path | None = None,
 ) -> Path:
     selected = resolve_scientific_stack() if stack is None else stack
     return scientific_extension_set_root(
         scientific_extension_set("numpy", "pact-witness", stack=selected),
         stack=selected,
-        artifact_root=artifact_root,
     )
 
 
@@ -380,7 +366,6 @@ def scientific_extension_set(
 def scientific_extension_set_root(
     extension_set: ScientificExtensionSet,
     stack: ScientificStackVersion | None = None,
-    artifact_root: Path | None = None,
 ) -> Path:
     selected = resolve_scientific_stack() if stack is None else stack
     configured = scientific_extension_set(
@@ -398,9 +383,7 @@ def scientific_extension_set_root(
         raise ValueError(
             f"unsupported scientific extension package {extension_set.package!r}"
         )
-    root = (
-        scientific_artifact_root() if artifact_root is None else artifact_root.resolve()
-    )
+    root = scientific_custody_root()
     return (
         root
         / "package-seals"
@@ -413,13 +396,11 @@ def scientific_extension_set_root(
 def scipy_witness_seal_root(
     *,
     stack: ScientificStackVersion | None = None,
-    artifact_root: Path | None = None,
 ) -> Path:
     selected = resolve_scientific_stack() if stack is None else stack
     return scientific_extension_set_root(
         scientific_extension_set("scipy", "pact-witness", stack=selected),
         stack=selected,
-        artifact_root=artifact_root,
     )
 
 

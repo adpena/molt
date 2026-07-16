@@ -59,7 +59,7 @@ REQUIRED_KEY_PHRASES: dict[str, str] = {
     "LANDING_CONTRACT": "every work turn lands something real",
     "NO_FAKES": "zero stubs, zero theater",
     "GIT_CUSTODY": "NEVER `git add -A`",
-    "BUILD_ENV": "OFF the C: drive",
+    "BUILD_ENV": "never change source, seal, worktree, or toolchain custody",
     "DISTILL": "delete as much code as possible",
     "MODEL_TIER": "Fable orchestrates",
     "TRIALITY_WIRING": "all three legs",

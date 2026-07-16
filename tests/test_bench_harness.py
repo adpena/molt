@@ -50,7 +50,7 @@ def test_bench_harness_run_cmd_uses_memory_guard(
         "MOLT_ALLOW_C_DRIVE_ARTIFACTS",
     ):
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setattr(molt_dx, "_candidate_roots", lambda _env: ())
+    monkeypatch.setattr(molt_dx, "_candidate_roots", lambda _root, _env: ())
 
     stdout, stderr, returncode, elapsed = bench_harness.run_cmd(
         ["python3", "--version"],

@@ -181,7 +181,7 @@ def test_example_real_lane_prompt_renders() -> None:
     assert "cargo test -p <crate>" in prompt          # VERIFY_FULL_SUITE (M05)
     assert "zero stubs, zero theater" in prompt        # NO_FAKES (M05)
     assert "NEVER `git add -A`" in prompt              # GIT_CUSTODY
-    assert "OFF the C: drive" in prompt                # BUILD_ENV
+    assert "never change source, seal, worktree, or toolchain custody" in prompt
     assert "every work turn lands something real" in prompt  # LANDING_CONTRACT (M12)
     assert "all three legs" in prompt                  # TRIALITY_WIRING (M63)
     # And does NOT carry the blocks it did not request.
