@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import molt.scientific_stack_versions as stack_versions
 from molt.cli.source_extension_toolchain import _python_pc_text
 from molt.scientific_stack_versions import (
     CONFIG_ENV,
@@ -15,6 +16,7 @@ from molt.scientific_stack_versions import (
     resolve_scientific_stack,
     scientific_extension_set,
     scientific_extension_set_root,
+    scientific_custody_root,
     scipy_witness_seal_root,
     verify_cpython_abi_headers,
     verify_source_checkout,
@@ -101,9 +103,12 @@ def test_current_verified_stack_and_cpython_abi_are_aligned() -> None:
     verify_cpython_abi_headers(stack=stack, repo_root=ROOT)
 
 
-def test_numpy_seal_root_is_version_keyed(tmp_path: Path) -> None:
+def test_numpy_seal_root_is_version_keyed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(stack_versions, "canonical_molt_root", lambda _root: tmp_path)
     stack = resolve_scientific_stack()
-    assert numpy_witness_seal_root(stack=stack, artifact_root=tmp_path) == (
+    assert numpy_witness_seal_root(stack=stack) == (
         tmp_path
         / "package-seals"
         / "numpy"
@@ -112,9 +117,26 @@ def test_numpy_seal_root_is_version_keyed(tmp_path: Path) -> None:
     )
 
 
+def test_scientific_custody_ignores_scratch_output_roots(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    custody = tmp_path / "custody"
+    custody.mkdir()
+    monkeypatch.setattr(
+        stack_versions, "canonical_molt_root", lambda _root: custody.resolve()
+    )
+    monkeypatch.setenv("MOLT_EXT_ROOT", r"D:\Molt")
+    monkeypatch.setenv("MOLT_EXTERNAL_ARTIFACT_ROOTS", r"D:\Molt")
+
+    assert scientific_custody_root() == custody.resolve()
+    assert numpy_witness_seal_root().is_relative_to(custody.resolve())
+
+
 def test_scipy_extension_set_and_seal_root_are_typed_and_version_keyed(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    monkeypatch.setattr(stack_versions, "canonical_molt_root", lambda _root: tmp_path)
     stack = resolve_scientific_stack()
     extension_set = scientific_extension_set("scipy", "pact-witness", stack=stack)
 
@@ -160,12 +182,10 @@ def test_scipy_extension_set_and_seal_root_are_typed_and_version_keyed(
     ]
     expected = tmp_path / "package-seals" / "scipy" / "1.18.0" / "pact_scipy_witness"
     assert (
-        scientific_extension_set_root(
-            extension_set, stack=stack, artifact_root=tmp_path
-        )
+        scientific_extension_set_root(extension_set, stack=stack)
         == expected
     )
-    assert scipy_witness_seal_root(stack=stack, artifact_root=tmp_path) == expected
+    assert scipy_witness_seal_root(stack=stack) == expected
 
 
 def test_numpy_seal_attestation_rejects_config_effective_drift(tmp_path: Path) -> None:

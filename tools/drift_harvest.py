@@ -35,6 +35,7 @@ worktree, or locked worktrees.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import os
 import subprocess
 import sys
@@ -42,13 +43,29 @@ import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+SRC_ROOT = REPO_ROOT / "src"
 
 # The pre-push hook invokes this script without the repo root on sys.path;
-# bootstrap it so `from tools import ...` resolves in every invocation context.
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+# put this worktree first so neither `tools` nor `molt` resolves through an
+# older editable install from the main checkout.
+for import_root in (REPO_ROOT, SRC_ROOT):
+    text = str(import_root)
+    if text in sys.path:
+        sys.path.remove(text)
+    sys.path.insert(0, text)
 
 from tools import lane_maturity  # noqa: E402
+
+
+def _worktree_canonical_molt_root(repo_root: Path) -> Path:
+    """Load the invoking worktree's authority despite an older editable install."""
+    module_path = SRC_ROOT / "molt" / "dx.py"
+    spec = importlib.util.spec_from_file_location("_molt_worktree_dx", module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load canonical root authority from {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.canonical_molt_root(repo_root)
 
 # Worktrees that must never be pruned regardless of freshness.
 _PROTECTED_SUBSTRINGS = ("OneDrive", "recover-mainclean-20260707", "molt-cli")
@@ -79,7 +96,7 @@ def _leave_prune_targets(targets: list[Path]) -> Path:
 def _sweep_empty_orphan_worktree_dirs() -> list[Path]:
     registered = {Path(row["path"]).resolve() for row in _worktrees()}
     removed: list[Path] = []
-    canonical_root = REPO_ROOT.parent.resolve()
+    canonical_root = _worktree_canonical_molt_root(REPO_ROOT)
     roots = (canonical_root, (canonical_root / "worktrees").resolve())
     for root in roots:
         if not root.is_dir():
@@ -334,10 +351,9 @@ def main() -> int:
 
     captured: set[str] = set()
     if args.bundle or args.prune:
-        # Default the bundle to a stable `drift-bundles/` dir under the artifact
-        # root (never a worktree being pruned, and off the repo working tree). An
-        # explicit --bundle always wins.
-        default_root = Path(os.environ.get("MOLT_EXT_ROOT") or REPO_ROOT.parent)
+        # Signal custody follows the checkout family, never scratch/build env.
+        # An explicit --bundle is an operator-chosen export destination.
+        default_root = _worktree_canonical_molt_root(REPO_ROOT)
         bundle_path = Path(
             args.bundle
             or (default_root / "drift-bundles" / f"drift-harvest-{int(now)}.bundle")

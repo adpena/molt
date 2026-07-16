@@ -8936,30 +8936,17 @@ def test_pact_canonical_input_root_is_independent_of_build_free_space(
     tmp_path: Path,
 ) -> None:
     selected = tmp_path / "canonical-inputs"
-    observed: dict[str, object] = {}
+    observed: list[Path] = []
 
-    def select(
-        repo_root: Path,
-        env: dict[str, str],
-        *,
-        create_dirs: bool,
-        prefer_external: bool,
-    ) -> Path:
-        observed.update(
-            repo_root=repo_root,
-            env=dict(env),
-            create_dirs=create_dirs,
-            prefer_external=prefer_external,
-        )
+    def custody(repo_root: Path) -> Path:
+        observed.append(repo_root)
         return selected
 
-    monkeypatch.setattr(pact, "select_external_artifact_root", select)
+    monkeypatch.setattr(pact, "canonical_molt_root", custody)
 
     canonical = pact._pact_canonical_input_environment(state.ROOT)
 
-    assert observed["env"]["MOLT_EXTERNAL_MIN_FREE_GB"] == "0"
-    assert observed["create_dirs"] is False
-    assert observed["prefer_external"] is True
+    assert observed == [state.ROOT.resolve()]
     assert canonical["MOLT_EXT_ROOT"] == str(selected.resolve())
     assert canonical["MOLT_EXTERNAL_ARTIFACT_ROOTS"] == str(selected.resolve())
 

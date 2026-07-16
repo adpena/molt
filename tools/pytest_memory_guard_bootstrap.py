@@ -21,6 +21,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from molt._host_exit import process_returncode_for_direct_os_exit  # noqa: E402
+from molt.dx import canonical_molt_root  # noqa: E402
 from tools.process_spawn import (  # noqa: E402
     hidden_windows_process_group_kwargs,
     inherit_stdio_kwargs,
@@ -372,19 +373,6 @@ def _artifact_root_accepts_child_dirs(path: Path, *, create_dirs: bool) -> bool:
     return True
 
 
-def _is_windows_c_drive_path(path: Path) -> bool:
-    return path.resolve().drive.upper() == "C:"
-
-
-def _allow_c_drive_artifacts() -> bool:
-    return os.environ.get("MOLT_ALLOW_C_DRIVE_ARTIFACTS", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-
-
 def _configured_windows_pytest_artifact_roots() -> tuple[Path, ...]:
     raw = (
         os.environ.get("MOLT_EXTERNAL_ARTIFACT_ROOTS")
@@ -401,16 +389,7 @@ def _configured_windows_pytest_artifact_roots() -> tuple[Path, ...]:
 
 def _default_windows_pytest_artifact_roots() -> tuple[Path, ...]:
     roots: list[Path] = list(_configured_windows_pytest_artifact_roots())
-    for letter in "DEFGHIJKLMNOPQRSTUVWXYZ":
-        drive_root = Path(f"{letter}:\\")
-        if drive_root.exists():
-            roots.append(drive_root / "Molt" / "tmp")
-    if _allow_c_drive_artifacts():
-        for key in ("LOCALAPPDATA", "TEMP", "TMP"):
-            raw = os.environ.get(key)
-            if raw:
-                roots.append(Path(raw).expanduser() / "Molt" / "tmp")
-        roots.append(ROOT / "tmp")
+    roots.append(canonical_molt_root(ROOT, require_exists=False) / "tmp")
     seen: set[str] = set()
     deduped: list[Path] = []
     for root in roots:
@@ -425,22 +404,14 @@ def _default_windows_pytest_artifact_roots() -> tuple[Path, ...]:
 def _windows_pytest_artifact_base() -> Path:
     explicit = os.environ.get("MOLT_EXT_ROOT")
     if explicit:
-        root = Path(explicit).expanduser()
-        if _is_windows_c_drive_path(root) and not _allow_c_drive_artifacts():
-            raise RuntimeError(
-                "Molt pytest artifacts must not be placed on C:. "
-                f"Rejected MOLT_EXT_ROOT={root}"
-            )
-        return root / "tmp"
+        return Path(explicit).expanduser() / "tmp"
     for root in _default_windows_pytest_artifact_roots():
-        if _is_windows_c_drive_path(root) and not _allow_c_drive_artifacts():
-            continue
         if _artifact_root_accepts_child_dirs(root, create_dirs=True):
             return root
     if _is_windows_process_model():
         raise RuntimeError(
-            "Molt pytest artifacts must use a non-C artifact root. Set "
-            "MOLT_EXT_ROOT or MOLT_EXTERNAL_ARTIFACT_ROOTS to an external drive."
+            "Molt pytest scratch is unavailable under the checkout-family "
+            "custody root; set MOLT_EXT_ROOT to an explicit scratch directory."
         )
     return ROOT / "tmp"
 

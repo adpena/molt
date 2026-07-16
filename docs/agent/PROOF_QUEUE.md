@@ -61,11 +61,10 @@ The healthy default is `MOLT_EXT_ROOT=C:\Molt`,
 `CARGO_TARGET_DIR=C:\Molt\target`, and
 `MOLT_TARGET_ROOT=C:\Molt\target-root`, with `UV_PROJECT_ENVIRONMENT` stable at
 `C:\Molt\tmp\uv-project-envs\dx__py3.12` for the standard Python 3.12 DX lane.
-Do not submit rows with inherited `D:\Molt`, `E:\Molt`, `D:\molt-target`, or
-`E:\molt-target` roots unless the operator explicitly set
-`MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS=1` for that row. ExFAT fallback hard-link
-behavior is a cache-authority defect to diagnose, not a reason to reroute proof
-lanes to legacy `E:` roots.
+Rows with any canonical run root on `D:` fail closed; there is no preservation
+flag or volume-label fallback. `MOLT_EXT_ROOT` may be explicitly configured for
+non-custodial output on approved volumes, but named inputs, package seals,
+worktrees, and `MOLT_TARGET_ROOT` remain rooted at `C:\Molt`.
 
 `C:\Molt` is the artifact and warm-checkout tier, not a disposable cold-clone or
 backup treadmill. Create a new `C:\Molt\worktrees\...` checkout only for real
@@ -405,7 +404,8 @@ Root selection is authority-driven, not directory-discovery ordered. The queue
 admits exactly the versioned NumPy seal and the configured SciPy
 `pact-witness` set resolved from `config/scientific_stack_versions.toml`. The
 SciPy root lives under
-`$MOLT_EXT_ROOT/package-seals/scipy/<version>/pact_scipy_witness` and must
+`C:\Molt\package-seals\scipy\<version>\pact_scipy_witness` on Windows (the
+platform custody root, independent of `$MOLT_EXT_ROOT`) and must
 contain the exact configured four-module transaction; historical per-module
 roots under `tmp/` are evidence only and are never unioned or used as fallback.
 Missing, extra, stale-ABI, nondeterministic, checksum-inconsistent, or

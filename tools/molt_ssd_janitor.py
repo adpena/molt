@@ -173,33 +173,7 @@ def _autodetect_root() -> Path | None:
     if sys.platform == "darwin":
         cand = Path("/Volumes/APDataStore/Molt")
         return cand if cand.is_dir() else None
-    if os.name == "nt":
-        for letter in "DEFGHIJKLMNOPQRSTUVWXYZ":
-            drive = Path(f"{letter}:\\")
-            if _windows_volume_label(drive) == "APDataStore":
-                cand = drive / "Molt"
-                return cand if cand.is_dir() else None
     return None
-
-
-def _windows_volume_label(drive_root: Path) -> str | None:
-    if os.name != "nt":
-        return None
-    try:
-        import ctypes
-
-        label = ctypes.create_unicode_buffer(261)
-        fs = ctypes.create_unicode_buffer(261)
-        serial = ctypes.c_ulong()
-        maxlen = ctypes.c_ulong()
-        flags = ctypes.c_ulong()
-        ok = ctypes.windll.kernel32.GetVolumeInformationW(
-            str(drive_root), label, len(label), ctypes.byref(serial),
-            ctypes.byref(maxlen), ctypes.byref(flags), fs, len(fs),
-        )
-    except (AttributeError, OSError, ValueError):
-        return None
-    return label.value if ok else None
 
 
 def _registered_worktrees(root: Path) -> set[Path]:
@@ -534,7 +508,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument(
         "--root",
-        help="artifact root (default: $MOLT_EXT_ROOT or autodetect C:\\Molt/APDataStore)",
+        help="artifact root (default: explicit $MOLT_EXT_ROOT or C:\\Molt on Windows)",
     )
     ap.add_argument("--apply", action="store_true", help="delete (default: dry-run report only)")
     ap.add_argument("--classes", help=f"comma list of {ALL_CLASSES}; default = auto-safe {AUTO_SAFE_CLASSES}")

@@ -467,7 +467,7 @@ def test_bench_individual_process_helpers_use_molt_bench_guard(
         "MOLT_ALLOW_C_DRIVE_ARTIFACTS",
     ):
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setattr(molt_dx, "_candidate_roots", lambda _env: ())
+    monkeypatch.setattr(molt_dx, "_candidate_roots", lambda _root, _env: ())
 
     built_binary, build_s, build_err = bench.molt_build(
         str(script),
