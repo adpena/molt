@@ -290,7 +290,7 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
     '_target_is_host_executable': ('native_binary', '_target_is_host_executable'),
     '_validate_native_binary_format': ('native_binary', '_validate_native_binary_format'),
     # molt.cli.native_link_command
-    '_build_native_link_command': ('native_link_command', '_build_native_link_command'),
+    '_build_native_link_plan': ('native_link_command', '_build_native_link_plan'),
     '_build_native_link_driver_command': ('native_link_command', '_build_native_link_driver_command'),
     '_resolve_available_fast_linker': ('native_link_command', '_resolve_available_fast_linker'),
     '_resolve_dev_linker': ('native_link_command', '_resolve_dev_linker'),
@@ -954,12 +954,32 @@ def build(
     type_gate: bool = False,
     python_version: str | None = None,
     build_config: Mapping[str, Any] | None = None,
+    bolt: bool = False,
+    bolt_training_cmd: str | None = None,
     fact_graph_request: _factgraph.FactGraphRequest | None = None,
 ) -> int:
     if isinstance(profile, bool):
         profile = "release"
     if profile not in {"dev", "release"}:
         return _fail(f"Invalid build profile: {profile}", json_output, command="build")
+    if bolt_training_cmd is not None and not bolt:
+        return _fail(
+            "BOLT training command requires BOLT optimization.",
+            json_output,
+            command="build",
+        )
+    if bolt and profile != "release":
+        return _fail(
+            "BOLT requires the release build profile.",
+            json_output,
+            command="build",
+        )
+    if bolt and target in {"wasm", "wasm-freestanding", "rust", "luau", "mlir"}:
+        return _fail(
+            f"BOLT requires a native Linux ELF target, not {target!r}.",
+            json_output,
+            command="build",
+        )
     # Resolve `stdlib_profile` through the ONE config authority. The CLI
     # dispatcher already resolves it before calling `build()`, but direct
     # library callers may pass `None`; resolving here (honoring the flag value,
@@ -1094,6 +1114,8 @@ def build(
             precompile=precompile,
             snapshot=snapshot,
             stdlib_profile=stdlib_profile,
+            bolt_requested=bolt,
+            bolt_training_cmd=bolt_training_cmd,
             fact_graph_request=fact_graph_request,
         )
 

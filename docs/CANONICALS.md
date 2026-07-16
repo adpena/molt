@@ -43,6 +43,7 @@ of truth when a claim drifts.
 - [spec/areas/perf/0513_GPU_PARALLELISM_AND_MLIR.md](spec/areas/perf/0513_GPU_PARALLELISM_AND_MLIR.md)
 - [design/foundation/25_op_kind_registry.md](design/foundation/25_op_kind_registry.md)
 - [design/foundation/27_perceus_borrow_inference.md](design/foundation/27_perceus_borrow_inference.md)
+- [design/foundation/native_link_plan.md](design/foundation/native_link_plan.md)
 - [design/foundation/45_exception_region_ownership.md](design/foundation/45_exception_region_ownership.md)
 
 ## Long-Horizon Operating Doctrine

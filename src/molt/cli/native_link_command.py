@@ -15,6 +15,15 @@ from molt.cli.native_link_deps import (
     _collect_cargo_native_link_deps,
     _native_windows_system_link_libs,
 )
+from molt.cli.native_link_plan import (
+    NativeLinkPlan,
+    NativeObjectFormat,
+    native_dead_strip_identity_flags,
+    native_link_capabilities,
+    native_linker_name_from_driver_command,
+    native_link_policy,
+    resolve_native_target_spec,
+)
 from molt.cli.native_toolchain import (
     _append_darwin_runtime_frameworks,
     _detect_macos_arch,
@@ -56,7 +65,17 @@ def _resolve_native_linker_hint(
     target_triple: str | None,
 ) -> str | None:
     if profile == "dev":
-        return _resolve_dev_linker()
+        raw = os.environ.get("MOLT_DEV_LINKER", "auto").strip().lower()
+        is_host_linux = target_triple is None and sys.platform.startswith("linux")
+        if raw == "auto" and not is_host_linux:
+            return None
+        selected = _resolve_dev_linker()
+        target_is_linux = (target_triple is not None and "linux" in target_triple) or (
+            target_triple is None and sys.platform.startswith("linux")
+        )
+        if selected == "mold" and not target_is_linux:
+            raise RuntimeError("mold is supported only for Linux ELF link targets.")
+        return selected
     is_host_linux = target_triple is None and sys.platform.startswith("linux")
     if is_host_linux:
         return _resolve_available_fast_linker()
@@ -166,7 +185,7 @@ def _windows_coff_library_command(
     )
 
 
-def _build_native_link_command(
+def _build_native_link_plan(
     *,
     output_obj: Path,
     stub_path: Path,
@@ -177,7 +196,8 @@ def _build_native_link_command(
     profile: str,
     stdlib_obj_path: Path | None = None,
     export_molt_runtime_symbols: bool = False,
-) -> tuple[list[str], str | None, str | None]:
+    bolt_requested: bool = False,
+) -> NativeLinkPlan:
     link_cmd, linker_hint, normalized_target = _build_native_link_driver_command(
         output_obj=output_obj,
         target_triple=target_triple,
@@ -187,17 +207,27 @@ def _build_native_link_command(
     link_inputs = [str(stub_path), str(output_obj)]
     if stdlib_obj_path is not None and stdlib_obj_path.exists():
         link_inputs.append(str(stdlib_obj_path))
-    is_darwin = (
-        target_triple and ("apple" in target_triple or "darwin" in target_triple)
-    ) or (not target_triple and sys.platform == "darwin")
-    is_linux = (target_triple and "linux" in target_triple) or (
-        not target_triple and sys.platform.startswith("linux")
+    target = resolve_native_target_spec(
+        target_triple,
+        host_platform=sys.platform,
+        host_arch=platform.machine(),
     )
-    is_windows = (
-        target_triple and ("windows" in target_triple or "msvc" in target_triple)
-    ) or (not target_triple and sys.platform == "win32")
+    selected_linker_name = native_linker_name_from_driver_command(
+        link_cmd,
+        hinted=linker_hint,
+    )
+    capabilities = native_link_capabilities(
+        target=target,
+        linker_hint=selected_linker_name,
+    )
+    policy = native_link_policy(
+        target=target,
+        profile=profile,
+        keep_symbols=os.environ.get("MOLT_KEEP_SYMBOLS") == "1",
+        bolt_requested=bolt_requested,
+    )
     runtime_lib_str = str(runtime_lib)
-    if is_linux:
+    if target.object_format is NativeObjectFormat.ELF:
         link_inputs.extend(
             [
                 "-Wl,--start-group",
@@ -211,9 +241,7 @@ def _build_native_link_command(
         link_inputs.extend([runtime_lib_str, runtime_lib_str, "-o", str(output_binary)])
     link_cmd.extend(link_inputs)
 
-    suppress_linker_warnings = os.environ.get("MOLT_LINKER_WARNINGS") != "1"
-    if is_darwin:
-        link_cmd.append("-Wl,-dead_strip")
+    if target.object_format is NativeObjectFormat.MACHO:
         exported_symbols_path = output_binary.parent / ".molt_exports.exp"
         exported_symbols = ["_main"]
         if export_molt_runtime_symbols:
@@ -223,17 +251,13 @@ def _build_native_link_command(
                 link_cmd.append(f"-Wl,-alias,_{storage},_{canonical}")
         _atomic_write_text(exported_symbols_path, "\n".join(exported_symbols) + "\n")
         link_cmd.append(f"-Wl,-exported_symbols_list,{exported_symbols_path}")
-        if os.environ.get("MOLT_KEEP_SYMBOLS") != "1":
-            link_cmd.extend(["-Wl,-x", "-Wl,-S"])
-        if suppress_linker_warnings:
-            link_cmd.append("-Wl,-w")
         link_cmd.append("-lc++")
-    elif is_linux:
+    elif target.object_format is NativeObjectFormat.ELF:
         link_cmd.extend(["-fdata-sections", "-ffunction-sections"])
-        link_cmd.append("-Wl,--gc-sections")
-        link_cmd.append("-Wl,--strip-all")
         link_cmd.append("-Wl,--as-needed")
         link_cmd.append("-Wl,-O2")
+        if policy.emit_relocations:
+            link_cmd.append("-Wl,--emit-relocs")
         version_script_path = output_binary.parent / ".molt_version.ver"
         globals = "main;"
         if export_molt_runtime_symbols:
@@ -252,8 +276,7 @@ def _build_native_link_command(
             link_cmd.append("-Wl,--export-dynamic")
         link_cmd.append("-lstdc++")
         link_cmd.append("-lm")
-    elif is_windows:
-        link_cmd.extend(["-Wl,/OPT:REF"])
+    elif target.object_format is NativeObjectFormat.COFF:
         if export_molt_runtime_symbols:
             def_path = output_binary.parent / ".molt_exports.def"
             exports = "\n".join(
@@ -267,9 +290,23 @@ def _build_native_link_command(
             )
             _atomic_write_text(def_path, f"EXPORTS\n{exports}\n")
             link_cmd.append(f"-Wl,/DEF:{def_path}")
+    link_cmd.extend(
+        native_dead_strip_identity_flags(
+            target=target,
+            capabilities=capabilities,
+            dead_strip=policy.dead_strip,
+        )
+    )
     _append_darwin_runtime_frameworks(link_cmd, target_triple=target_triple)
     cargo_search, cargo_libs = _collect_cargo_native_link_deps(runtime_lib)
     link_cmd.extend(cargo_search)
     link_cmd.extend(cargo_libs)
     link_cmd.extend(_native_windows_system_link_libs(target_triple))
-    return link_cmd, linker_hint, normalized_target
+    return NativeLinkPlan(
+        target=target,
+        capabilities=capabilities,
+        policy=policy,
+        command=tuple(link_cmd),
+        linker_hint=selected_linker_name,
+        normalized_target=normalized_target,
+    )

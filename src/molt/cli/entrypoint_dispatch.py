@@ -29,7 +29,6 @@ from molt.cli.extension_scan import extension_scan
 from molt.cli.extension_seal import extension_seal
 from molt.cli.maintenance import clean, show_config
 from molt.cli.models import BuildProfile
-from molt.cli.native_toolchain import _run_bolt_post_link
 from molt.cli.output import fail as _fail
 from molt.cli.package_distribution import package, publish, verify
 from molt.cli.package_registry import _is_remote_registry
@@ -332,6 +331,7 @@ def _dispatch_entrypoint_command(
             effective_backend = "cranelift"
         os.environ["MOLT_BACKEND"] = effective_backend
 
+        bolt_requested = getattr(args, "bolt", False)
         build_rc = build_fn(
             args.file,
             target,
@@ -379,20 +379,9 @@ def _dispatch_entrypoint_command(
             type_gate=getattr(args, "type_gate", False),
             python_version=getattr(args, "python_version", None),
             build_config=build_cfg,
-        )
-
-        # --bolt: post-link BOLT optimization for native targets.
-        bolt_requested = getattr(args, "bolt", False)
-        if bolt_rc := _run_bolt_post_link(
-            bolt_requested=bolt_requested,
+            bolt=bolt_requested,
             bolt_training_cmd=getattr(args, "bolt_training_cmd", None),
-            target=target,
-            output=output,
-            out_dir=out_dir,
-            build_rc=build_rc,
-            json_output=args.json,
-        ):
-            return bolt_rc
+        )
         return build_rc
     if args.command == "factgraph":
         return _factgraph.run_factgraph_command(

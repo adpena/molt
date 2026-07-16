@@ -2930,14 +2930,13 @@ def extension_build(
                 runtime_target_triple is None and sys.platform.startswith("linux")
             ):
                 link_command.append("-ldl")
-            if loaded_source_plan is not None:
-                link_command.extend(
-                    _source_extensions._source_extension_gc_link_args(
-                        cc_cmd=cc_cmd,
-                        target_triple=runtime_target_triple,
-                    )
-                )
             link_command.extend(link_args)
+            link_command.extend(
+                _source_extensions._source_extension_link_policy_args(
+                    cc_cmd=cc_cmd,
+                    target_triple=runtime_target_triple,
+                )
+            )
             link_result = _run_completed_command(
                 link_command,
                 cwd=project_root,

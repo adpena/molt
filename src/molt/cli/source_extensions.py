@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import platform
 import re
 import shlex
 import sys
@@ -22,6 +23,12 @@ from molt.cli.extension_scan_surface import _load_c_api_scan_surface
 from molt.cli.extension_scan_surface import _matches_project_generated_c_api_prefix
 from molt.cli.extension_scan_surface import _strip_c_like_comments_and_literals
 from molt.cli.file_hashing import _sha256_file
+from molt.cli.native_link_plan import (
+    native_dead_strip_identity_flags,
+    native_link_capabilities,
+    native_linker_name_from_driver_command,
+    resolve_native_target_spec,
+)
 
 
 _MOLT_NUMPY_ARRAY_API_CAPSULE = "numpy.core._multiarray_umath._ARRAY_API"
@@ -1636,20 +1643,29 @@ def _source_extension_replay_compile_args(
     return out
 
 
-def _source_extension_gc_link_args(
+def _source_extension_link_policy_args(
     *,
     cc_cmd: Sequence[str],
     target_triple: str | None,
 ) -> list[str]:
-    target = (target_triple or "").lower()
     tool = Path(cc_cmd[0]).name.lower() if cc_cmd else ""
-    if "windows" in target or (not target and os.name == "nt"):
-        if tool in {"cl", "cl.exe", "clang-cl", "clang-cl.exe"}:
-            return ["/link", "/OPT:REF"]
-        return ["-Wl,/OPT:REF"]
-    if "darwin" in target or (not target and sys.platform == "darwin"):
-        return ["-Wl,-dead_strip"]
-    return ["-Wl,--gc-sections"]
+    target = resolve_native_target_spec(
+        target_triple,
+        host_platform=sys.platform,
+        host_arch=platform.machine(),
+    )
+    selected_linker = native_linker_name_from_driver_command(cc_cmd)
+    capabilities = native_link_capabilities(
+        target=target,
+        linker_hint=selected_linker,
+    )
+    return list(
+        native_dead_strip_identity_flags(
+            target=target,
+            capabilities=capabilities,
+            msvc_driver=tool in {"cl", "cl.exe", "clang-cl", "clang-cl.exe"},
+        )
+    )
 
 
 def _source_extension_object_fact(

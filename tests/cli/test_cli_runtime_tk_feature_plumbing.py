@@ -5,6 +5,7 @@ import importlib
 import os
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import molt.cli as cli
 from molt.cli import commands as cli_commands
@@ -1162,7 +1163,7 @@ def test_prepare_native_link_resolves_runtime_alias_for_stdlib_profile(
     artifacts_root.mkdir()
     captured_runtime_libs: list[Path] = []
 
-    def fake_build_native_link_command(
+    def fake_build_native_link_plan(
         *,
         output_obj: Path,
         stub_path: Path,
@@ -1173,17 +1174,24 @@ def test_prepare_native_link_resolves_runtime_alias_for_stdlib_profile(
         profile: str,
         stdlib_obj_path: Path | None = None,
         export_molt_runtime_symbols: bool = False,
-    ) -> tuple[list[str], str | None, str | None]:
-        del output_obj, stub_path, output_binary, target_triple, sysroot_path, profile
+        bolt_requested: bool = False,
+    ) -> SimpleNamespace:
+        del output_obj, stub_path, target_triple, sysroot_path, profile
         del stdlib_obj_path
+        del bolt_requested
         assert not export_molt_runtime_symbols
         captured_runtime_libs.append(runtime_lib)
-        return ["clang", str(runtime_lib)], None, None
+        return SimpleNamespace(
+            command=("clang", str(runtime_lib), "-o", str(output_binary)),
+            linker_hint=None,
+            normalized_target=None,
+            policy=SimpleNamespace(strip_after_link=False, bolt_requested=False),
+        )
 
     monkeypatch.setattr(
         cli_link_pipeline,
-        "_build_native_link_command",
-        fake_build_native_link_command,
+        "_build_native_link_plan",
+        fake_build_native_link_plan,
         raising=True,
     )
     monkeypatch.setattr(

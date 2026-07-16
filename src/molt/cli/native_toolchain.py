@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import importlib
+import contextlib
 import os
+import platform
 import re
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
-from molt.cli.atomic_io import _atomic_copy_file
 from molt.cli.compiler_metadata import _compiler_root
 from molt.cli.config_resolution import _coerce_bool
+from molt.cli.native_link_plan import resolve_native_target_spec
 
 
 def _cli_module() -> Any:
@@ -19,14 +21,6 @@ def _cli_module() -> Any:
 
 def _run_completed_command(*args: Any, **kwargs: Any) -> Any:
     return _cli_module()._run_completed_command(*args, **kwargs)
-
-
-def _emit_json(*args: Any, **kwargs: Any) -> Any:
-    return _cli_module()._emit_json(*args, **kwargs)
-
-
-def _json_payload(*args: Any, **kwargs: Any) -> Any:
-    return _cli_module()._json_payload(*args, **kwargs)
 
 
 def _codesign_binary(binary_path: Path) -> None:
@@ -51,6 +45,7 @@ def _run_bolt_post_link(
     bolt_requested: bool,
     bolt_training_cmd: str | None,
     target: str,
+    input_binary: str | None = None,
     output: str | None,
     out_dir: str | None,
     build_rc: int,
@@ -66,31 +61,42 @@ def _run_bolt_post_link(
     if build_rc != 0:
         return 0  # build already failed — skip BOLT
 
-    # BOLT only applies to native targets.
-    is_native = target in {"native"} or (
-        target is not None
-        and "-" in target
-        and "wasm" not in target
-        and "luau" not in target
-    )
-    if not is_native:
+    target_triple = None if target == "native" else target
+    try:
+        target_spec = resolve_native_target_spec(
+            target_triple,
+            host_platform=sys.platform,
+            host_arch=platform.machine(),
+        )
+        host_spec = resolve_native_target_spec(
+            None,
+            host_platform=sys.platform,
+            host_arch=platform.machine(),
+        )
+    except RuntimeError as exc:
+        if not json_output:
+            print(f"BOLT: {exc}", file=sys.stderr)
+        return 1
+    if error := target_spec.bolt_support_error:
+        if not json_output:
+            print(f"BOLT: {error}", file=sys.stderr)
+        return 1
+    if (target_spec.os, target_spec.arch) != (host_spec.os, host_spec.arch):
         if not json_output:
             print(
-                "Warning: --bolt is only supported for native targets; skipping.",
+                "BOLT: cross-target training is unsupported because the "
+                "instrumented target binary must execute on the build host; "
+                f"target={target_spec.os}/{target_spec.arch}, "
+                f"host={host_spec.os}/{host_spec.arch}",
                 file=sys.stderr,
             )
-        return 0
+        return 1
 
     # Locate the BOLT wrapper script.
     bolt_script = _compiler_root() / "tools" / "bolt_optimize.sh"
     if not bolt_script.exists():
         msg = f"BOLT script not found: {bolt_script}"
-        if json_output:
-            _emit_json(
-                _json_payload("build", "error", errors=[msg]),
-                json_output,
-            )
-        else:
+        if not json_output:
             print(msg, file=sys.stderr)
         return 1
 
@@ -98,10 +104,14 @@ def _run_bolt_post_link(
     # resolve it directly; otherwise BOLT requires it explicitly because
     # the default output path lives inside internal build state.
     if output:
-        binary_path = Path(output).expanduser()
+        output_path = Path(output).expanduser()
+        binary_path = Path(input_binary).expanduser() if input_binary else output_path
         if not binary_path.is_absolute():
             base = Path(out_dir) if out_dir else Path.cwd()
             binary_path = base / binary_path
+        if not output_path.is_absolute():
+            base = Path(out_dir) if out_dir else Path.cwd()
+            output_path = base / output_path
     else:
         if not json_output:
             print(
@@ -133,7 +143,7 @@ def _run_bolt_post_link(
             bolt_cmd,
             cwd=binary_path.parent,
             env=None,
-            capture_output=not json_output,
+            capture_output=True,
             memory_guard_prefix="MOLT_BUILD",
             timeout=300,  # 5 min ceiling
         )
@@ -164,22 +174,33 @@ def _run_bolt_post_link(
 
     # Replace the original binary with the BOLT-optimized one.
     bolt_binary = Path(f"{binary_path}.bolt")
-    if bolt_binary.exists():
-        try:
-            _atomic_copy_file(bolt_binary, binary_path, codesign=True)
-            bolt_binary.unlink()
-        except OSError as exc:
-            if not json_output:
-                print(
-                    f"BOLT: failed to publish optimized binary: {exc}",
-                    file=sys.stderr,
-                )
-            return 1
+    if not bolt_binary.is_file():
         if not json_output:
             print(
-                f"==> BOLT-optimized binary installed: {binary_path}",
+                f"BOLT: optimizer exited successfully but did not produce {bolt_binary}",
                 file=sys.stderr,
             )
+        return 1
+    from molt.cli.build_results import _finalize_native_link_candidate
+
+    finalize_error = _finalize_native_link_candidate(
+        candidate=bolt_binary,
+        output_binary=output_path,
+        target_triple=target_triple,
+        strip=os.environ.get("MOLT_KEEP_SYMBOLS") != "1",
+    )
+    if finalize_error is not None:
+        if not json_output:
+            print(f"BOLT: {finalize_error}", file=sys.stderr)
+        return 1
+    if binary_path != output_path:
+        with contextlib.suppress(OSError):
+            binary_path.unlink()
+    if not json_output:
+        print(
+            f"==> BOLT-optimized binary installed: {output_path}",
+            file=sys.stderr,
+        )
 
     return 0
 

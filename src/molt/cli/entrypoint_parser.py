@@ -398,8 +398,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
             "Run BOLT post-link optimization on the output binary. "
             "Instruments, profiles with a training run, and reorders "
             "functions/basic blocks for optimal icache utilization. "
-            "Requires llvm-bolt (brew install llvm / apt install llvm-bolt). "
-            "Native targets only."
+            "Requires llvm-bolt and a release Linux ELF x86_64/aarch64 build."
         ),
     )
     build_parser.add_argument(
@@ -407,7 +406,8 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Custom training command for BOLT profiling (default: run the "
-            "output binary with no arguments). Only used with --bolt."
+            "output binary with no arguments). Use {binary} as the explicit "
+            "instrumented-binary placeholder. Only used with --bolt."
         ),
     )
     build_parser.add_argument(
