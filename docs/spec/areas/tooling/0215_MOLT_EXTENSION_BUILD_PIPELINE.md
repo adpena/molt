@@ -82,18 +82,27 @@ Flags:
 Each configured set names one project dependency group. Before acquiring the
 package publication lock, the producer derives an immutable environment address
 from the dependency-group name and ordered requirements, the complete
-`uv.lock` digest, the base-Python identity, and the uv executable identity. It
+`uv.lock` digest, the base-Python identity, the uv executable identity, and the
+provisioning-schema version. It
 serializes provisioning at that address, runs `uv sync --frozen
---no-default-groups --group <group> --no-install-project` into a private staging
-directory, verifies the resolved distributions, writes the attestation only
-after success, and atomically publishes the environment under the canonical
-Molt custody root. An ambient `.venv` is never accepted or mutated. The
+--no-default-groups --group <group> --no-install-project` directly at the final
+address after atomically recording exact provisioning intent in sibling custody
+outside uv's mutable environment directory. The
+resolved distributions and declared requirements are verified before an atomic
+manifest replacement publishes the complete attestation. An exact provisional
+record alone authorizes recovery of an unattested partial root under the same
+address lock; malformed, unrecorded, or final-attested roots are never mutated.
+The sibling record is removed only after publication; a crash between those
+steps accepts the complete root and removes the exact stale record. This
+attestation-atomic protocol avoids
+relocating uv environments whose Windows console launchers bind their creation
+path. An ambient `.venv` is never accepted or mutated. The
 producer transparently re-executes its typed command in safe-path mode under
 the attested Python, with `PYTHONPATH` replaced by exactly the invoking
-worktree's `src` and user-site/PYTHONHOME injection disabled; the environment
-itself therefore has no editable-worktree identity and is reusable by sibling
-worktrees. An existing address with stale content or attestation fails closed
-rather than being repaired in place.
+worktree's `src`, user-site/PYTHONHOME injection disabled, and the attested
+environment's `Scripts`/`bin` directory first on executable `PATH`; the
+environment itself therefore has no editable-worktree identity and is reusable
+by sibling worktrees.
 
 One invocation performs one real Meson setup, consumes the unchanged
 `intro-targets.json`, `compile_commands.json`, `intro-installed.json`, and Ninja

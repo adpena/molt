@@ -6935,6 +6935,97 @@ def test_proof_queue_diagnoses_missing_locked_source_build_environment(
     }
 
 
+def test_proof_queue_diagnoses_locked_console_script_path_custody(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "source-build-console-path.log"
+    summary_path = tmp_path / "source-build-console-path.memory_guard.json"
+    conn = state._connect(db)
+    scheduling._insert_run(
+        conn,
+        run_id="source-build-console-path",
+        logical_id="pact-numpy-canonical-seal",
+        reason="prove locked console-script PATH custody diagnosis",
+        command=[sys.executable, "-m", "molt", "extension", "produce-set"],
+        cwd=state.ROOT,
+        resource_family="wasm-source-extension",
+        contention_key="wasm:pact-seal-regen",
+        scopes=["src/molt/cli/source_extension_producer.py"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=log_path,
+        summary_json=summary_path,
+    )
+    log_path.write_text(
+        "meson.build:1:0: ERROR: Unknown compiler(s): "
+        "[['cython'], ['cython3']]\n"
+        'Running `cython -V` gave "[WinError 2] The system cannot find the '
+        'file specified"\n'
+        'Running `cython3 -V` gave "[WinError 2] The system cannot find the '
+        'file specified"\n',
+        encoding="utf-8",
+    )
+    state._update_run(
+        conn, "source-build-console-path", status="failed", returncode=2
+    )
+
+    assert (
+        cli.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(state.ROOT),
+                "evidence",
+                "--run-id",
+                "source-build-console-path",
+            ]
+        )
+        == 0
+    )
+    evidence = json.loads(capsys.readouterr().out)
+    diagnostics = evidence[0]["diagnostics"]
+    assert [item["signal_id"] for item in diagnostics] == [
+        "source-build-console-script-path-custody"
+    ]
+    assert diagnostics[0]["severity"] == "infra"
+    assert "Cython console script" in diagnostics[0]["summary"]
+    assert "Scripts/bin directory first" in diagnostics[0]["next_action"]
+    assert "Never install Cython into an ambient interpreter" in diagnostics[0][
+        "next_action"
+    ]
+    assert "pin an older version" in diagnostics[0]["next_action"]
+    assert diagnostics[0]["artifacts"] == [str(summary_path), str(log_path)]
+
+
+@pytest.mark.parametrize(
+    "near_miss",
+    [
+        "Unknown compiler(s): [['cython'], ['cython3']]\n"
+        "Running `cython -V` gave Cython 2.7 is out of range\n",
+        "Unknown compiler(s): [['fortran']]\n"
+        'Running `gfortran --version` gave "[WinError 2] file not found"\n',
+        'Running `cython -V` gave "[WinError 2] file not found"\n',
+    ],
+)
+def test_locked_console_script_path_diagnostic_rejects_near_misses(
+    near_miss: str,
+) -> None:
+    assert (
+        diagnostics_module.SOURCE_BUILD_CONSOLE_SCRIPT_PATH_CUSTODY_RE.search(
+            near_miss
+        )
+        is None
+    )
+
+
 def test_proof_queue_diagnoses_source_extension_cython_regeneration_failed(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -9426,6 +9517,7 @@ def _write_current_scientific_seal(
         "base_executable_sha256": "b" * 64,
     }
     build_custody_address = {
+        "schema_version": 2,
         "dependency_group": extension_set.build_dependency_group,
         "dependency_group_requirements": ["ninja==1.13.0"],
         "uv_lock_sha256": "c" * 64,
@@ -9437,7 +9529,6 @@ def _write_current_scientific_seal(
         },
     }
     build_custody = {
-        "schema_version": 1,
         "environment_id": hashlib.sha256(
             json.dumps(
                 build_custody_address, sort_keys=True, separators=(",", ":")

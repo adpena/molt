@@ -11,7 +11,6 @@ import subprocess
 import sys
 import sysconfig
 import tomllib
-import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,7 +30,7 @@ class SourceBuildEnvironmentError(ValueError):
     pass
 
 
-SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION = 1
+SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION = 2
 SOURCE_BUILD_ENVIRONMENT_MANIFEST = "molt-source-build-environment.json"
 
 # Project-owned stable schema. Recording only the standard build-marker inputs
@@ -203,6 +202,7 @@ def _environment_spec(
     python = _python_identity()
     uv, uv_payload = _uv_identity()
     address_payload = {
+        "schema_version": SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION,
         "dependency_group": dependency_group,
         "dependency_group_requirements": list(group_requirements),
         "uv_lock_sha256": lock_digest,
@@ -213,7 +213,6 @@ def _environment_spec(
         json.dumps(address_payload, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
     custody: dict[str, object] = {
-        "schema_version": SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION,
         "environment_id": environment_id,
         **address_payload,
     }
@@ -327,6 +326,14 @@ def _read_attestation(path: Path) -> Mapping[str, object] | None:
     return payload if isinstance(payload, Mapping) else None
 
 
+def _provisioning_record(custody: Mapping[str, object]) -> dict[str, object]:
+    return {"state": "provisioning", "custody": dict(custody)}
+
+
+def _provisioning_record_path(root: Path) -> Path:
+    return root.parent / ".provisioning" / f"{root.name}.json"
+
+
 def _validated_active_attestation(
     *, root: Path, manifest_path: Path, custody: Mapping[str, object]
 ) -> Mapping[str, object]:
@@ -376,6 +383,7 @@ def provision_source_build_environment(
         repo_root, dependency_group
     )
     lock_path = root.parent / ".locks" / f"{root.name}.lock"
+    provisioning_path = _provisioning_record_path(root)
     handle = _acquire_file_lock(
         lock_path,
         timeout_s=900.0,
@@ -386,12 +394,30 @@ def provision_source_build_environment(
     )
     try:
         existing = _read_attestation(manifest_path)
-        if python_executable.is_file() and isinstance(existing, Mapping):
+        provisioning = _read_attestation(provisioning_path)
+        expected_provisioning = _provisioning_record(custody)
+        if provisioning_path.exists() and provisioning is None:
+            raise SourceBuildEnvironmentError(
+                f"malformed source-build provisioning record: {provisioning_path}"
+            )
+        complete_fields = {*custody, "installed_distributions"}
+        if (
+            python_executable.is_file()
+            and isinstance(existing, Mapping)
+            and set(existing) == complete_fields
+        ):
             expected_core = dict(custody)
             actual_core = {key: existing.get(key) for key in expected_core}
             if actual_core == expected_core:
                 installed = _probe_environment_distributions(python_executable)
                 if existing.get("installed_distributions") == installed:
+                    if provisioning is not None:
+                        if provisioning != expected_provisioning:
+                            raise SourceBuildEnvironmentError(
+                                "complete source-build environment has a foreign "
+                                f"provisioning record: {provisioning_path}"
+                            )
+                        provisioning_path.unlink()
                     return LockedSourceBuildEnvironment(
                         root=root,
                         python_executable=python_executable,
@@ -400,65 +426,69 @@ def provision_source_build_environment(
                         active=False,
                     )
         if root.exists():
+            if provisioning != expected_provisioning:
+                raise SourceBuildEnvironmentError(
+                    "immutable source-build environment address exists without "
+                    f"its exact attestation or sibling provisioning record: {root}"
+                )
+            _remove_file_or_tree(root)
+        elif provisioning is not None and provisioning != expected_provisioning:
             raise SourceBuildEnvironmentError(
-                "immutable source-build environment address exists without its "
-                f"exact attestation: {root}"
+                f"foreign source-build provisioning record: {provisioning_path}"
             )
         root.parent.mkdir(parents=True, exist_ok=True)
-        staging_root = root.with_name(
-            f".{root.name}.provision-{os.getpid()}-{uuid.uuid4().hex}"
-        )
-        staging_python = staging_root / (
-            "Scripts/python.exe" if os.name == "nt" else "bin/python"
-        )
-        environment = os.environ.copy()
-        environment["UV_PROJECT_ENVIRONMENT"] = str(staging_root)
-        raw_base = getattr(sys, "_base_executable", None) or sys.executable
-        try:
-            # uv is the provisioner for the environment that will subsequently
-            # launch guarded build work. The canonical file lock bounds this sole
-            # bootstrap mutation and inherited stdio exposes its progress/errors.
-            result = subprocess.run(
-                [
-                    str(uv),
-                    "sync",
-                    "--project",
-                    str(repo_root.resolve()),
-                    "--python",
-                    str(Path(raw_base).resolve()),
-                    "--frozen",
-                    "--no-default-groups",
-                    "--group",
-                    dependency_group,
-                    "--no-install-project",
-                ],
-                cwd=repo_root,
-                env=environment,
-                check=False,
-            )
-            if result.returncode != 0:
-                raise SourceBuildEnvironmentError(
-                    "locked source-build environment provisioning failed: "
-                    f"uv sync returned {result.returncode}"
-                )
-            if not staging_python.is_file():
-                raise SourceBuildEnvironmentError(
-                    f"uv sync did not create source-build Python: {staging_python}"
-                )
-            installed = _probe_environment_distributions(staging_python)
-            raw_group_requirements = custody["dependency_group_requirements"]
-            assert isinstance(raw_group_requirements, list)
-            _validate_declared_group_resolutions(raw_group_requirements, installed)
-            manifest = {**custody, "installed_distributions": installed}
+        if provisioning is None:
             _atomic_write_json(
-                staging_root / SOURCE_BUILD_ENVIRONMENT_MANIFEST,
-                manifest,
+                provisioning_path,
+                expected_provisioning,
                 sort_keys=True,
             )
-            os.replace(staging_root, root)
-        finally:
-            if staging_root.exists():
-                _remove_file_or_tree(staging_root)
+
+        environment = os.environ.copy()
+        environment["UV_PROJECT_ENVIRONMENT"] = str(root)
+        raw_base = getattr(sys, "_base_executable", None) or sys.executable
+        # uv is the provisioner for the environment that will subsequently
+        # launch guarded build work. The canonical file lock and provisional
+        # record make this direct-final mutation recoverable but inadmissible;
+        # the complete attestation is the logical publication point.
+        result = subprocess.run(
+            [
+                str(uv),
+                "sync",
+                "--project",
+                str(repo_root.resolve()),
+                "--python",
+                str(Path(raw_base).resolve()),
+                "--frozen",
+                "--no-default-groups",
+                "--group",
+                dependency_group,
+                "--no-install-project",
+            ],
+            cwd=repo_root,
+            env=environment,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise SourceBuildEnvironmentError(
+                "locked source-build environment provisioning failed: "
+                f"uv sync returned {result.returncode}"
+            )
+        if not python_executable.is_file():
+            raise SourceBuildEnvironmentError(
+                f"uv sync did not create source-build Python: {python_executable}"
+            )
+        installed = _probe_environment_distributions(python_executable)
+        raw_group_requirements = custody["dependency_group_requirements"]
+        assert isinstance(raw_group_requirements, list)
+        _validate_declared_group_resolutions(raw_group_requirements, installed)
+        manifest = {**custody, "installed_distributions": installed}
+        _atomic_write_json(
+            manifest_path,
+            manifest,
+            sort_keys=True,
+        )
+        provisioning_path.unlink()
         return LockedSourceBuildEnvironment(
             root=root,
             python_executable=python_executable,
@@ -590,6 +620,7 @@ def source_build_environment_problems(payload: object) -> list[str]:
             and isinstance(custody_uv, Mapping)
         ):
             address_payload = {
+                "schema_version": custody["schema_version"],
                 "dependency_group": custody["dependency_group"],
                 "dependency_group_requirements": custody[
                     "dependency_group_requirements"
