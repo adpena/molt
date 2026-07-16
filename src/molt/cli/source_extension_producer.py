@@ -47,9 +47,12 @@ from molt.cli.source_extensions import (
     _meson_target_output_paths,
 )
 from molt.cli.source_build_environment import (
+    LockedSourceBuildEnvironment,
     SourceBuildEnvironmentError,
     active_source_build_requirements,
     canonical_source_marker_environment,
+    provision_source_build_environment,
+    source_build_environment,
 )
 from molt.cli.build_locks import _acquire_file_lock, _release_file_lock
 from molt.cli.source_extension_reproducibility import (
@@ -140,6 +143,7 @@ class _SourceBuildEnvironment:
     marker_environment: Mapping[str, str]
     active_requirements: tuple[str, ...]
     resolved: tuple[_ResolvedBuildRequirement, ...]
+    custody: Mapping[str, object]
 
     def manifest_payload(self) -> dict[str, Any]:
         return {
@@ -155,6 +159,7 @@ class _SourceBuildEnvironment:
             "marker_environment": dict(self.marker_environment),
             "active_requirements": list(self.active_requirements),
             "resolved": [item.manifest_payload() for item in self.resolved],
+            "custody": dict(self.custody),
         }
 
 
@@ -446,7 +451,9 @@ def _installed_build_requirement(
     )
 
 
-def _ensure_source_build_environment(source_root: Path) -> _SourceBuildEnvironment:
+def _ensure_source_build_environment(
+    source_root: Path, *, custody: Mapping[str, object]
+) -> _SourceBuildEnvironment:
     originals, marker_environment, active = _source_build_requirements(source_root)
     unsatisfied = [
         raw
@@ -455,9 +462,9 @@ def _ensure_source_build_environment(source_root: Path) -> _SourceBuildEnvironme
     ]
     if unsatisfied:
         raise SourceExtensionProducerError(
-            "source build environment is not pre-provisioned from locked custody; "
-            "the producer never mutates its active interpreter. Missing or "
-            "out-of-range requirements: " + ", ".join(unsatisfied)
+            "locked source-build environment does not satisfy upstream build "
+            "requirements; its configured dependency group or frozen lock is "
+            "incomplete: " + ", ".join(unsatisfied)
         )
     resolved: list[_ResolvedBuildRequirement] = []
     for raw, requirement in active:
@@ -470,7 +477,55 @@ def _ensure_source_build_environment(source_root: Path) -> _SourceBuildEnvironme
         marker_environment=marker_environment,
         active_requirements=tuple(raw for raw, _requirement in active),
         resolved=tuple(resolved),
+        custody=custody,
     )
+
+
+def _run_locked_source_extension_producer(
+    environment: LockedSourceBuildEnvironment,
+    *,
+    package: str,
+    module_set: str,
+    source: str,
+    build_root: str,
+    target: str,
+    abi_tier: str,
+    json_output: bool,
+) -> int:
+    argv = [
+        str(environment.python_executable),
+        "-P",
+        "-m",
+        "molt.cli",
+        "extension",
+        "produce-set",
+        "--package",
+        package,
+        "--module-set",
+        module_set,
+        "--source",
+        source,
+        "--build-root",
+        build_root,
+        "--target",
+        target,
+        "--abi-tier",
+        abi_tier,
+    ]
+    if json_output:
+        argv.append("--json")
+    child_environment = os.environ.copy()
+    current_src = str((_REPO_ROOT / "src").resolve())
+    child_environment["PYTHONPATH"] = current_src
+    child_environment.pop("PYTHONHOME", None)
+    child_environment["PYTHONNOUSERSITE"] = "1"
+    child_environment["VIRTUAL_ENV"] = str(environment.root)
+    return subprocess.run(
+        argv,
+        cwd=_REPO_ROOT,
+        env=child_environment,
+        check=False,
+    ).returncode
 
 
 def _source_build_config_tools(
@@ -2399,6 +2454,23 @@ def produce_source_extension_set(
                 f"source checkout is not a directory: {source_root}"
             )
         extension_set = scientific_extension_set(package, module_set)
+        locked_environment = source_build_environment(
+            _REPO_ROOT, extension_set.build_dependency_group
+        )
+        if not locked_environment.active:
+            locked_environment = provision_source_build_environment(
+                _REPO_ROOT, extension_set.build_dependency_group
+            )
+            return _run_locked_source_extension_producer(
+                locked_environment,
+                package=package,
+                module_set=module_set,
+                source=str(source_root),
+                build_root=str(resolved_build_root),
+                target=target,
+                abi_tier=abi_tier,
+                json_output=json_output,
+            )
         destination = scientific_extension_set_root(extension_set)
         destination.parent.mkdir(parents=True, exist_ok=True)
         lock_path = destination.parent / f".{destination.name}.producer.lock"
@@ -2415,7 +2487,9 @@ def produce_source_extension_set(
         _provision_recursive_submodules(source_root)
         submodules = _verify_recursive_submodules(source_root)
         verify_cpython_abi_headers(repo_root=_REPO_ROOT)
-        build_environment = _ensure_source_build_environment(source_root)
+        build_environment = _ensure_source_build_environment(
+            source_root, custody=locked_environment.custody
+        )
         meson_driver = _source_meson_driver(source_root)
         ninja_driver = _source_ninja_driver(source_root)
         discovered_config_tools = _source_build_config_tools(build_environment)

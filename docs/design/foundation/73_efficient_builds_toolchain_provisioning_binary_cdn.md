@@ -65,6 +65,18 @@ because the toolchain path was manual.
 **Obligation:** Molt derives, provisions, and configures the full toolchain a
 package's extension build requires, from the package's own build metadata
 (`pyproject`/`meson.build`/`setup.py`/Cython directives), with no manual env:
+- Every verified extension set declares one pinned project dependency group.
+  Its producer environment is immutable and content-addressed by the group name
+  plus ordered requirements, full `uv.lock`, base Python, and uv identity under
+  canonical Molt custody. Provisioning is serialized, staged privately with
+  frozen-lock `uv sync`, resolution-validated, attested, and atomically
+  published. No ambient `.venv`, editable project install, or worktree path can
+  become build-environment authority.
+- `molt extension produce-set` automatically provisions a missing address and
+  re-executes the same typed request under its attested Python with the invoking
+  worktree source as the only `PYTHONPATH` authority, safe-path mode enabled,
+  and ambient Python-home/user-site injection disabled. A stale published
+  address fails closed; it is never mutated beneath a concurrent build.
 - Detect the build backend + generators (Cython version + flags incl.
   shared-utility vs standalone; f2py; meson/ninja; setuptools).
 - Provision the cross toolchain (WASI sysroot, wasm compiler/zig, target libs)
@@ -75,6 +87,11 @@ package's extension build requires, from the package's own build metadata
   `_ni_label` embeds its utilities and drops the `scipy._cyutility` shared-util
   import — the bounded bypass), or build the shared-utility module as its own
   admitted extension. One custody path, no host fallback, no fake module.
+
+The source producer and its uv/Meson/Cython/Ninja/LLVM toolchain are developer,
+maintainer, and source-rebuild dependencies. Shipped end-user binaries consume
+verified artifacts and do not require those tools; they enter this path only on
+an explicit local source rebuild or registry miss that policy permits to build.
 
 **Gate (self-protect):** a test that `molt build` on a program importing scipy
 (distance_transform_edt/gaussian_filter/label) auto-provisions Cython + the wasm

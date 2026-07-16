@@ -35,9 +35,10 @@ def _write_config(
     verified_numpy: str = "2.5.1",
     verified_scipy: str = "1.18.0",
     verified_cpython: str = "3.12",
+    schema_version: int = 4,
 ) -> None:
     path.write_text(
-        f'''schema_version = 3
+        f'''schema_version = {schema_version}
 
 [selection]
 numpy = "{selected_numpy}"
@@ -54,6 +55,7 @@ scipy_repo_ref = "scipy-ref"
 package = "numpy"
 name = "pact-witness"
 seal_name = "pact_numpy_multiarray_sealed_for_witness"
+build_dependency_group = "source-build-numpy"
 use_pkg_config = false
 required_installed_files = ["numpy/__config__.py", "numpy/__init__.py", "numpy/version.py"]
 meson_setup_args = ["-Dblas=none", "-Dlapack=none"]
@@ -70,6 +72,7 @@ exclude_linked_static_libraries = []
 package = "scipy"
 name = "pact-witness"
 seal_name = "pact_scipy_witness"
+build_dependency_group = "source-build-scipy"
 use_pkg_config = true
 required_installed_files = ["scipy/__config__.py", "scipy/__init__.py", "scipy/version.py"]
 meson_setup_args = ["-Dblas=none", "-Dlapack=none"]
@@ -145,6 +148,7 @@ def test_scipy_extension_set_and_seal_root_are_typed_and_version_keyed(
         "pact-witness",
         "pact_scipy_witness",
     )
+    assert extension_set.build_dependency_group == "source-build-scipy"
     assert extension_set.meson_setup_args == (
         "-Dblas=none",
         "-Dlapack=none",
@@ -221,7 +225,7 @@ def test_unsupported_selection_fails_honestly_early(
     )
 
 
-def test_schema_v3_rejects_legacy_scipy_root_fields(tmp_path: Path) -> None:
+def test_schema_v4_rejects_legacy_scipy_root_fields(tmp_path: Path) -> None:
     config = tmp_path / "scientific.toml"
     _write_config(config, selected_numpy="2.5.1")
     text = config.read_text(encoding="utf-8")
@@ -252,7 +256,7 @@ def test_schema_v3_rejects_legacy_scipy_root_fields(tmp_path: Path) -> None:
         ),
     ],
 )
-def test_schema_v3_requires_canonical_module_capability_authority(
+def test_schema_v4_requires_canonical_module_capability_authority(
     tmp_path: Path, replacement: str, problem: str
 ) -> None:
     config = tmp_path / "scientific.toml"
@@ -265,6 +269,14 @@ def test_schema_v3_requires_canonical_module_capability_authority(
     )
 
     with pytest.raises(ValueError, match=problem):
+        resolve_scientific_stack(config)
+
+
+def test_schema_v3_is_rejected_without_a_compatibility_lane(tmp_path: Path) -> None:
+    config = tmp_path / "scientific.toml"
+    _write_config(config, selected_numpy="2.5.1", schema_version=3)
+
+    with pytest.raises(ValueError, match="schema_version must be 4"):
         resolve_scientific_stack(config)
 
 

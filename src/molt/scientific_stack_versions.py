@@ -38,6 +38,7 @@ class ScientificExtensionSet:
     package: str
     name: str
     seal_name: str
+    build_dependency_group: str
     meson_setup_args: tuple[str, ...]
     use_pkg_config: bool
     required_installed_files: tuple[str, ...]
@@ -207,6 +208,11 @@ def _extension_sets(
                     field=f"{set_field}.seal_name",
                     path=path,
                 ),
+                build_dependency_group=_string(
+                    raw_set.get("build_dependency_group"),
+                    field=f"{set_field}.build_dependency_group",
+                    path=path,
+                ),
                 meson_setup_args=_string_tuple(
                     raw_set.get("meson_setup_args"),
                     field=f"{set_field}.meson_setup_args",
@@ -240,8 +246,8 @@ def load_verified_support_matrix(
         ) from exc
     except tomllib.TOMLDecodeError as exc:
         raise ValueError(f"invalid scientific-stack config {path}: {exc}") from exc
-    if payload.get("schema_version") != 3:
-        raise ValueError(f"{path}: schema_version must be 3")
+    if payload.get("schema_version") != 4:
+        raise ValueError(f"{path}: schema_version must be 4")
     selection = payload.get("selection")
     if not isinstance(selection, dict):
         raise ValueError(f"{path}: [selection] table is required")
