@@ -2056,6 +2056,43 @@ def f(seq):
     assert producer.get("var") == "entry"
 
 
+def test_nested_branch_loop_targets_share_slot_based_scope_exit_boundaries() -> None:
+    source = """
+def f(target, mapping):
+    if hasattr(mapping, "items"):
+        for key, item in mapping.items():
+            target[key] = item
+    else:
+        for key, item in mapping:
+            target[key] = item
+"""
+    gen = SimpleTIRGenerator(module_name="__main__")
+    gen.visit(ast.parse(source))
+    ir = gen.to_json()
+    ops = next(func["ops"] for func in ir["functions"] if func["name"].endswith("f"))
+    producers = {
+        op["out"]: op for op in ops if isinstance(op.get("out"), str) and op["out"]
+    }
+
+    assert sum(op.get("kind") == "loop_start" for op in ops) == 2
+    final_join = max(idx for idx, op in enumerate(ops) if op.get("kind") == "end_if")
+    for name in ("key", "item"):
+        assert sum(
+            op.get("kind") == "store_var" and op.get("var") == name for op in ops
+        ) >= 3
+        boundaries = [
+            op
+            for idx, op in enumerate(ops)
+            if idx > final_join
+            and op.get("kind") == "del_boundary"
+            and op.get("s_value") == name
+        ]
+        assert len(boundaries) == 1
+        producer = producers[boundaries[0]["args"][0]]
+        assert producer.get("kind") == "load_var"
+        assert producer.get("var") == name
+
+
 def test_function_loop_rebind_boundary_reloads_current_local_slot() -> None:
     source = """
 def f(seq):

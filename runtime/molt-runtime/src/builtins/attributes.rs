@@ -2351,6 +2351,19 @@ pub(crate) unsafe fn attr_lookup_ptr(
     }
 }
 
+/// Consume the owned result of a successful attribute lookup when the caller
+/// needs only existence.  Both pointer and scalar attribute resolvers return a
+/// new owned reference on success (including freshly bound methods and values
+/// produced by descriptors); `hasattr` must discard that value immediately.
+#[inline]
+fn discard_owned_attr_result(_py: &PyToken<'_>, result: Option<u64>) -> bool {
+    let Some(attr_bits) = result else {
+        return false;
+    };
+    dec_ref_bits(_py, attr_bits);
+    true
+}
+
 /// # Safety
 /// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
 #[unsafe(no_mangle)]
@@ -2876,7 +2889,7 @@ pub extern "C" fn molt_has_attr_name(obj_bits: u64, name_bits: u64) -> u64 {
             let attr_name = string_obj_to_owned(obj_from_bits(name_bits))
                 .unwrap_or_else(|| "<attr>".to_string());
             if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
-                if attr_lookup_ptr(_py, obj_ptr, name_bits).is_some() {
+                if discard_owned_attr_result(_py, attr_lookup_ptr(_py, obj_ptr, name_bits)) {
                     return MoltObject::from_bool(true).bits();
                 }
                 if exception_pending(_py) {
@@ -2897,8 +2910,7 @@ pub extern "C" fn molt_has_attr_name(obj_bits: u64, name_bits: u64) -> u64 {
             // so `hasattr` can never disagree with it; the freshly materialized
             // bound method is released immediately, mirroring CPython's
             // `hasattr` discarding the value `getattr` returns.
-            if let Some(attr_bits) = resolve_scalar_attr(_py, obj_bits, &attr_name) {
-                dec_ref_bits(_py, attr_bits);
+            if discard_owned_attr_result(_py, resolve_scalar_attr(_py, obj_bits, &attr_name)) {
                 return MoltObject::from_bool(true).bits();
             }
         }
@@ -2910,8 +2922,8 @@ pub extern "C" fn molt_has_attr_name(obj_bits: u64, name_bits: u64) -> u64 {
 mod tests {
     use super::{AttrICEntry, attributes_clear_runtime_state};
     use crate::{
-        MoltObject, PtrSlot, PyToken, alloc_string, dec_ref_bits, header_from_obj_ptr,
-        runtime_state,
+        MoltObject, PtrSlot, PyToken, alloc_dict_with_pairs, alloc_string, dec_ref_bits,
+        header_from_obj_ptr, runtime_state,
     };
     use num_bigint::BigInt;
     use std::sync::atomic::Ordering;
@@ -3043,6 +3055,29 @@ mod tests {
 
             dec_ref_bits(_py, heap_bigint);
             dec_ref_bits(_py, heap_nan);
+        });
+    }
+
+    #[test]
+    fn hasattr_discards_owned_bound_method_result() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            let dict_bits = MoltObject::from_ptr(alloc_dict_with_pairs(_py, &[])).bits();
+            let name_bits = string_bits(_py, b"items");
+            let before = refcount(dict_bits);
+
+            let has_bits = super::molt_has_attr_name(dict_bits, name_bits);
+
+            assert_eq!(MoltObject::from_bits(has_bits).as_bool(), Some(true));
+            assert_eq!(crate::molt_exception_pending(), 0);
+            assert_eq!(
+                refcount(dict_bits),
+                before,
+                "discarding hasattr(dict, 'items') must release the temporary bound method"
+            );
+
+            dec_ref_bits(_py, name_bits);
+            dec_ref_bits(_py, dict_bits);
         });
     }
 

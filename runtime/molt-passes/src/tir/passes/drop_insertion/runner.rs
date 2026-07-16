@@ -1720,38 +1720,11 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             }
             s
         };
-        // FINDING 3 (round-4) — keying precision of `incoming_arg_roots`. This set
-        // is keyed by alias ROOT over ALL predecessors, NOT per (root, edge). A
-        // root forwarded into B's phi by SOME predecessor is excluded from B's
-        // edge-dying drop on EVERY incoming path. The theoretically-imprecise case:
-        // pred P1 forwards root R into B's phi (transfer), while a DIFFERENT pred P2
-        // delivers R live-out and R dies on the P2→B edge without being forwarded.
-        // The global exclusion would then skip R's legitimate drop on the P2 path.
-        //
-        // This is FAIL-CLOSED — leak-never-UAF — and the precise form is NOT a
-        // localized change. (1) Fail-closed: on the P2 path R merely leaks (its +1
-        // is never released); it is NEVER double-freed, because the phi that P1's
-        // transfer fed is released exactly once by the phi's own last-use drop, and
-        // the excluded R is never dropped at all. The over-release direction (the
-        // only UAF risk) cannot occur. (2) Not localized: the edge-dying rule is
-        // deliberately the OpsOnly form — it places ONE `DecRef` at B's *entry*,
-        // which fires on EVERY incoming path, and relies on `all_preds_deliver` +
-        // the elim pass hoisting the common case (see the §2.5 design note above).
-        // Dropping R on the P2 edge but not the P1 edge would require SPLITTING the
-        // P2 die-edge to host a per-edge drop — abandoning the at-entry form and
-        // splitting a potentially large number of die-edges (a CFG explosion the
-        // OpsOnly design exists to avoid). Refining the keying without that split is
-        // impossible: a single at-entry drop cannot distinguish the path it runs on.
-        //
-        // Reachability: in molt's SSA construction a phi at B is fed by each
-        // predecessor passing ITS version of the variable to the SAME arg position,
-        // so R-from-P1 and R-from-P2 are normally DISTINCT SSA values (P2 would pass
-        // its own W, not R) → R is not live-out of P2 and the case does not arise.
-        // It can only appear if a value defined above both P1 and P2 is forwarded to
-        // the phi on one edge AND separately live on the other — a shape the
-        // frontend does not emit for plain joins, and which (per the fail-closed
-        // analysis) costs at most a leak if a future frontend/inliner shape does.
-        // Pinned by `forwarded_into_phi_other_pred_live_is_leak_not_uaf` below.
+        // `incoming_arg_roots` is deliberately join-wide because one at-entry
+        // drop cannot distinguish incoming paths.  The precise per-arc phase
+        // below handles roots that transfer or die on only a subset of incoming
+        // edges.  Keeping this phase join-wide preserves the compact common case;
+        // only genuinely path-specific ownership allocates an edge block.
         let mut candidates: HashSet<ValueId> = HashSet::new();
         for p in preds {
             if let Some(set) = live.live_out.get(p) {
@@ -1882,6 +1855,141 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     emit_drop_inner_stage_audit(
         func,
         "after-edge-dying",
+        Some(plans.len()),
+        Some(edge_splits.len()),
+        Some(planned_insertion_count(&plans)),
+        Some(reachable.len()),
+        audit_start.elapsed().as_millis(),
+    );
+
+    // ── 3b. Path-specific edge-dying drops ───────────────────────────────────
+    //
+    // The compact at-entry rule above is intentionally limited to roots that
+    // every predecessor delivers.  Mutually exclusive branch-local loops expose
+    // the complementary shape: each loop owns an iterator that is live on its
+    // continue edge, dies on its exhausted edge, and reaches a shared join whose
+    // sibling predecessor never defined that iterator.  No value can be dropped
+    // at the join without violating dominance, and dropping before the branch
+    // would destroy the iterator on the continue path.
+    //
+    // Close that whole CFG class with exact edge placement.  A single-successor
+    // predecessor can release immediately before its terminator.  A branching
+    // predecessor gets one split block for the dying arc; `push_edge_split`
+    // coalesces every release on that arc, so CFG growth is bounded by ownership-
+    // divergent edges rather than by values.  Conditional iterator result slots,
+    // Python lifetime-bound roots, transferred phis, and borrowed values retain
+    // their existing authorities and are excluded here.
+    let entry_planned_roots_by_block: HashMap<BlockId, HashSet<ValueId>> = plans
+        .iter()
+        .map(|(&block, plan)| {
+            (
+                block,
+                plan.at_entry.iter().map(|&value| canon(value)).collect(),
+            )
+        })
+        .collect();
+    let before_term_planned_roots_by_block: HashMap<BlockId, HashSet<ValueId>> = plans
+        .iter()
+        .map(|(&block, plan)| {
+            (
+                block,
+                plan.before_term.iter().map(|&value| canon(value)).collect(),
+            )
+        })
+        .collect();
+    for &pred in &block_ids {
+        if !reachable.contains(&pred) {
+            continue;
+        }
+        let Some(pred_block) = func.blocks.get(&pred) else {
+            continue;
+        };
+        let arcs = terminator_arcs(&pred_block.terminator);
+        if arcs.is_empty() {
+            continue;
+        }
+        let Some(live_out) = live.live_out.get(&pred) else {
+            continue;
+        };
+        let mut candidates: Vec<ValueId> = live_out.iter().copied().collect();
+        candidates.sort_unstable_by_key(|value| value.0);
+
+        for arc in &arcs {
+            if !reachable.contains(&arc.target) {
+                continue;
+            }
+            // With one normal outgoing arc into a single-predecessor block, the
+            // compact at-entry rule above is already exact: the predecessor's
+            // definition dominates the target and no sibling path can lack the
+            // owner. Avoid opening per-edge sets on this overwhelmingly common
+            // straight-line CFG shape.
+            if arcs.len() == 1
+                && pred_map_term
+                    .get(&arc.target)
+                    .is_some_and(|preds| preds.len() == 1)
+            {
+                continue;
+            }
+            let entry_planned_roots = entry_planned_roots_by_block.get(&arc.target);
+            let pred_planned_roots = before_term_planned_roots_by_block.get(&pred);
+            let transferred_roots: HashSet<ValueId> =
+                arc.args.iter().map(|&value| canon(value)).collect();
+            let body_live_roots = edge_body_live_roots.get(&(pred, arc.descriptor));
+            let mut arc_root_seen: HashSet<ValueId> = HashSet::new();
+
+            for &value in &candidates {
+                let root = canon(value);
+                if !arc_root_seen.insert(root)
+                    || entry_planned_roots.is_some_and(|roots| roots.contains(&root))
+                    || pred_planned_roots.is_some_and(|roots| roots.contains(&root))
+                    || transferred_roots.contains(&root)
+                    || body_live_roots.is_some_and(|roots| roots.contains(&root))
+                    || boundary_release_roots.contains(&root)
+                    || explicit_release_blocks.contains_key(&root)
+                    || statement_release_plan.contains_released_root(root)
+                    || drop_eligibility.is_conditionally_valid_result_root(value)
+                    || ownership_lattice.is_conditionally_valid_result_root(root)
+                    || !drop_eligibility.is_droppable(value)
+                {
+                    continue;
+                }
+                match def_block.get(&value) {
+                    Some(&def)
+                        if def == pred || crate::tir::dominators::dominates(def, pred, &idoms) => {}
+                    _ => continue,
+                }
+
+                if arcs.len() == 1 {
+                    plans
+                        .entry(pred)
+                        .or_insert_with(|| BlockPlan {
+                            after_op: HashMap::new(),
+                            at_entry: Vec::new(),
+                            before_term: Vec::new(),
+                            before_op: HashMap::new(),
+                            before_exception_op: HashMap::new(),
+                            after_exception_op: HashMap::new(),
+                            before_term_incref: Vec::new(),
+                        })
+                        .before_term
+                        .push(value);
+                } else {
+                    push_edge_split(
+                        &mut edge_splits,
+                        pred,
+                        arc.descriptor,
+                        arc.target,
+                        arc.args.clone(),
+                        vec![],
+                        vec![value],
+                    );
+                }
+            }
+        }
+    }
+    emit_drop_inner_stage_audit(
+        func,
+        "after-path-specific-edge-dying",
         Some(plans.len()),
         Some(edge_splits.len()),
         Some(planned_insertion_count(&plans)),
