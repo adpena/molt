@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
+import threading
 import zipfile
 from pathlib import Path
 
 import pytest
 
 from molt.cli import entrypoint_dispatch, entrypoint_parser
+from molt.cli import source_build_environment as build_environment
 from molt.cli import source_extension_producer as producer
 from molt.cli.extension_wheel import _write_extension_wheel
 from molt.scientific_stack_versions import (
@@ -454,7 +457,9 @@ def test_source_build_environment_noop_records_exact_resolutions(
         ),
     )
 
-    environment = producer._ensure_source_build_environment(tmp_path)
+    environment = producer._ensure_source_build_environment(
+        tmp_path, custody={"environment_id": "test"}
+    )
 
     assert environment.manifest_payload() == {
         "python": {
@@ -480,10 +485,11 @@ def test_source_build_environment_noop_records_exact_resolutions(
                 "version": "3.1.2",
             },
         ],
+        "custody": {"environment_id": "test"},
     }
 
 
-def test_source_build_environment_rejects_unsatisfied_without_mutating_interpreter(
+def test_source_build_environment_rejects_incomplete_locked_group(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _write_build_pyproject(tmp_path, ("meson>=1.5", "Cython>=3.0"))
@@ -501,9 +507,11 @@ def test_source_build_environment_rejects_unsatisfied_without_mutating_interpret
 
     with pytest.raises(
         producer.SourceExtensionProducerError,
-        match="never mutates its active interpreter.*meson>=1.5",
+        match="configured dependency group or frozen lock is incomplete.*meson>=1.5",
     ):
-        producer._ensure_source_build_environment(tmp_path)
+        producer._ensure_source_build_environment(
+            tmp_path, custody={"environment_id": "test"}
+        )
 
 
 def test_source_build_environment_missing_distribution_is_fail_closed(
@@ -523,9 +531,337 @@ def test_source_build_environment_missing_distribution_is_fail_closed(
 
     with pytest.raises(
         producer.SourceExtensionProducerError,
-        match="never mutates its active interpreter.*meson>=1.5",
+        match="configured dependency group or frozen lock is incomplete.*meson>=1.5",
     ):
-        producer._ensure_source_build_environment(tmp_path)
+        producer._ensure_source_build_environment(
+            tmp_path, custody={"environment_id": "test"}
+        )
+
+
+def _locked_environment_spec(
+    tmp_path: Path,
+) -> tuple[Path, Path, Path, dict[str, object], Path]:
+    root = tmp_path / "custody/environment"
+    python = root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    custody: dict[str, object] = {
+        "schema_version": 1,
+        "environment_id": "a" * 64,
+        "dependency_group": "source-build-numpy",
+        "dependency_group_requirements": ["ninja==1.13.0"],
+        "uv_lock_sha256": "b" * 64,
+        "python": {
+            "implementation": "cpython",
+            "version": "3.12.13",
+            "platform": "win-amd64",
+            "base_executable": "python.exe",
+            "base_executable_sha256": "c" * 64,
+        },
+        "uv": {
+            "executable": "uv.exe",
+            "version": "uv 0.11.24",
+            "sha256": "d" * 64,
+        },
+    }
+    return (
+        root,
+        python,
+        root / build_environment.SOURCE_BUILD_ENVIRONMENT_MANIFEST,
+        custody,
+        tmp_path / "uv.exe",
+    )
+
+
+def test_source_build_environment_address_is_worktree_neutral(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = tmp_path / "worktrees/first"
+    second = tmp_path / "worktrees/second"
+    for root in (first, second):
+        root.mkdir(parents=True)
+        (root / "pyproject.toml").write_text(
+            '[dependency-groups]\nsource-build-numpy = ["ninja==1.13.0"]\n',
+            encoding="utf-8",
+        )
+        (root / "uv.lock").write_bytes(b"same complete lock")
+    monkeypatch.setattr(build_environment, "canonical_molt_root", lambda _root: tmp_path)
+    monkeypatch.setattr(
+        build_environment,
+        "_python_identity",
+        lambda: {
+            "implementation": "cpython",
+            "version": "3.12.13",
+            "platform": "win-amd64",
+            "base_executable": "python.exe",
+            "base_executable_sha256": "c" * 64,
+        },
+    )
+    monkeypatch.setattr(
+        build_environment,
+        "_uv_identity",
+        lambda: (
+            tmp_path / "uv.exe",
+            {
+                "executable": "uv.exe",
+                "version": "uv 0.11.24",
+                "sha256": "d" * 64,
+            },
+        ),
+    )
+
+    first_spec = build_environment._environment_spec(first, "source-build-numpy")
+    second_spec = build_environment._environment_spec(second, "source-build-numpy")
+
+    assert first_spec[:4] == second_spec[:4]
+    assert "worktrees" not in str(first_spec[0])
+
+
+def test_source_build_environment_failed_sync_leaves_no_attestation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = _locked_environment_spec(tmp_path)
+    monkeypatch.setattr(build_environment, "_environment_spec", lambda *_args: spec)
+    monkeypatch.setattr(
+        build_environment.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 7),
+    )
+
+    with pytest.raises(
+        build_environment.SourceBuildEnvironmentError,
+        match="provisioning failed.*returned 7",
+    ):
+        build_environment.provision_source_build_environment(
+            tmp_path, "source-build-numpy"
+        )
+
+    assert not spec[2].exists()
+
+
+def test_concurrent_source_build_provision_runs_one_sync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = _locked_environment_spec(tmp_path)
+    calls: list[tuple[str, ...]] = []
+    calls_lock = threading.Lock()
+    monkeypatch.setattr(build_environment, "_environment_spec", lambda *_args: spec)
+    distributions = [{"name": "ninja", "version": "1.13.0"}]
+    monkeypatch.setattr(
+        build_environment,
+        "_probe_environment_distributions",
+        lambda _python: distributions,
+    )
+
+    def run(argv, **_kwargs):
+        with calls_lock:
+            calls.append(tuple(argv))
+        staging_root = Path(_kwargs["env"]["UV_PROJECT_ENVIRONMENT"])
+        staging_python = staging_root / (
+            "Scripts/python.exe" if os.name == "nt" else "bin/python"
+        )
+        staging_python.parent.mkdir(parents=True, exist_ok=True)
+        staging_python.write_bytes(b"python")
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(build_environment.subprocess, "run", run)
+    errors: list[BaseException] = []
+
+    def provision() -> None:
+        try:
+            build_environment.provision_source_build_environment(
+                tmp_path, "source-build-numpy"
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=provision) for _index in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert not errors
+    assert len(calls) == 1
+    assert calls[0] == (
+        str(spec[4]),
+        "sync",
+        "--project",
+        str(tmp_path.resolve()),
+        "--python",
+        str(Path(getattr(sys, "_base_executable", None) or sys.executable).resolve()),
+        "--frozen",
+        "--no-default-groups",
+        "--group",
+        "source-build-numpy",
+        "--no-install-project",
+    )
+    assert json.loads(spec[2].read_text(encoding="utf-8")) == {
+        **spec[3],
+        "installed_distributions": distributions,
+    }
+
+
+def test_source_build_provision_rejects_group_resolution_before_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = _locked_environment_spec(tmp_path)
+    monkeypatch.setattr(build_environment, "_environment_spec", lambda *_args: spec)
+    monkeypatch.setattr(
+        build_environment,
+        "_probe_environment_distributions",
+        lambda _python: [{"name": "packaging", "version": "26.2"}],
+    )
+
+    def run(argv, **kwargs):
+        staging_root = Path(kwargs["env"]["UV_PROJECT_ENVIRONMENT"])
+        staging_python = staging_root / (
+            "Scripts/python.exe" if os.name == "nt" else "bin/python"
+        )
+        staging_python.parent.mkdir(parents=True, exist_ok=True)
+        staging_python.write_bytes(b"python")
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(build_environment.subprocess, "run", run)
+
+    with pytest.raises(
+        build_environment.SourceBuildEnvironmentError,
+        match="does not satisfy.*ninja==1.13.0",
+    ):
+        build_environment.provision_source_build_environment(
+            tmp_path, "source-build-numpy"
+        )
+
+    assert not spec[0].exists()
+    assert not spec[2].exists()
+
+
+def test_active_source_build_environment_rejects_mutated_ambient_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = _locked_environment_spec(tmp_path)
+    spec[0].mkdir(parents=True)
+    manifest = {**spec[3], "installed_distributions": []}
+    spec[2].write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(build_environment, "_environment_spec", lambda *_args: spec)
+    monkeypatch.setattr(build_environment.sys, "prefix", str(spec[0]))
+    monkeypatch.setattr(
+        build_environment,
+        "_installed_distributions",
+        lambda: [{"name": "ambient-drift", "version": "1"}],
+    )
+
+    with pytest.raises(
+        build_environment.SourceBuildEnvironmentError,
+        match="attestation is stale or invalid",
+    ):
+        build_environment.source_build_environment(tmp_path, "source-build-numpy")
+
+
+def test_source_build_reexec_uses_typed_args_and_invoking_worktree_src(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = _locked_environment_spec(tmp_path)
+    environment = build_environment.LockedSourceBuildEnvironment(
+        root=spec[0],
+        python_executable=spec[1],
+        manifest_path=spec[2],
+        custody=spec[3],
+        active=False,
+    )
+    observed: dict[str, object] = {}
+
+    def run(argv, **kwargs):
+        observed["argv"] = argv
+        observed.update(kwargs)
+        return subprocess.CompletedProcess(argv, 19)
+
+    monkeypatch.setattr(producer.subprocess, "run", run)
+    monkeypatch.setenv("PYTHONPATH", r"D:\poison;C:\OneDrive\stale")
+    monkeypatch.setenv("PYTHONHOME", r"D:\poison-python")
+
+    result = producer._run_locked_source_extension_producer(
+        environment,
+        package="numpy",
+        module_set="pact-witness",
+        source="source-root",
+        build_root="build-root",
+        target="wasm",
+        abi_tier="cpython-abi",
+        json_output=True,
+    )
+
+    assert result == 19
+    assert observed["argv"] == [
+        str(spec[1]),
+        "-P",
+        "-m",
+        "molt.cli",
+        "extension",
+        "produce-set",
+        "--package",
+        "numpy",
+        "--module-set",
+        "pact-witness",
+        "--source",
+        "source-root",
+        "--build-root",
+        "build-root",
+        "--target",
+        "wasm",
+        "--abi-tier",
+        "cpython-abi",
+        "--json",
+    ]
+    assert observed["check"] is False
+    assert "capture_output" not in observed
+    child_environment = observed["env"]
+    assert isinstance(child_environment, dict)
+    assert child_environment["PYTHONPATH"] == str(
+        (producer._REPO_ROOT / "src").resolve()
+    )
+    assert "PYTHONHOME" not in child_environment
+    assert child_environment["PYTHONNOUSERSITE"] == "1"
+    assert child_environment["VIRTUAL_ENV"] == str(spec[0])
+
+
+def test_producer_never_accepts_ambient_environment_or_locks_before_reexec(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    spec = _locked_environment_spec(tmp_path)
+    inactive = build_environment.LockedSourceBuildEnvironment(
+        root=spec[0],
+        python_executable=spec[1],
+        manifest_path=spec[2],
+        custody=spec[3],
+        active=False,
+    )
+    monkeypatch.setattr(producer, "source_build_environment", lambda *_args: inactive)
+    monkeypatch.setattr(
+        producer, "provision_source_build_environment", lambda *_args: inactive
+    )
+    monkeypatch.setattr(
+        producer,
+        "_run_locked_source_extension_producer",
+        lambda *_args, **_kwargs: 23,
+    )
+    monkeypatch.setattr(
+        producer,
+        "_acquire_file_lock",
+        lambda *_args, **_kwargs: pytest.fail(
+            "parent must not hold producer publication lock across re-exec"
+        ),
+    )
+
+    assert (
+        producer.produce_source_extension_set(
+            package="numpy",
+            module_set="pact-witness",
+            source=str(source),
+            build_root=str(tmp_path / "build"),
+        )
+        == 23
+    )
 
 
 def test_meson_setup_uses_typed_driver(
@@ -639,6 +975,7 @@ def test_generated_input_materialization_uses_one_upstream_meson_command(
             package="numpy",
             name="pact-witness",
             seal_name="numpy-witness",
+            build_dependency_group="source-build-numpy",
             meson_setup_args=(),
             use_pkg_config=False,
             required_installed_files=(),
@@ -715,6 +1052,7 @@ def test_cython_generated_input_uses_standalone_regeneration_authority(
             package="scipy",
             name="pact-witness",
             seal_name="scipy-witness",
+            build_dependency_group="source-build-scipy",
             meson_setup_args=(),
             use_pkg_config=False,
             required_installed_files=(),
@@ -944,6 +1282,7 @@ def test_complete_set_validator_rejects_duplicate_module_sidecar(
         package="scipy",
         name="pact-witness",
         seal_name="pact_scipy_witness",
+        build_dependency_group="source-build-scipy",
         meson_setup_args=(),
         use_pkg_config=True,
         required_installed_files=(),

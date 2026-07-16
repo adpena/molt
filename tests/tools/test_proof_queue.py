@@ -6870,6 +6870,71 @@ def test_proof_queue_diagnoses_source_extension_compile_header_missing(
     }
 
 
+def test_proof_queue_diagnoses_missing_locked_source_build_environment(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "source-build-environment.log"
+    conn = state._connect(db)
+    scheduling._insert_run(
+        conn,
+        run_id="source-build-environment",
+        logical_id="pact-numpy-canonical-seal",
+        reason="prove locked source-build environment diagnosis",
+        command=[sys.executable, "-m", "molt", "extension", "produce-set"],
+        cwd=state.ROOT,
+        resource_family="wasm-source-extension",
+        contention_key="wasm:pact-seal-regen",
+        scopes=["src/molt/cli/source_build_environment.py"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=log_path,
+        summary_json=tmp_path / "source-build-environment.memory_guard.json",
+    )
+    log_path.write_text(
+        "source build environment is not pre-provisioned from locked custody; "
+        "the producer never mutates its active interpreter. Missing or "
+        "out-of-range requirements: meson-python>=0.18.0, Cython>=3.0.6\n",
+        encoding="utf-8",
+    )
+    state._update_run(
+        conn, "source-build-environment", status="failed", returncode=2
+    )
+
+    assert (
+        cli.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(state.ROOT),
+                "evidence",
+                "--run-id",
+                "source-build-environment",
+            ]
+        )
+        == 0
+    )
+    evidence = json.loads(capsys.readouterr().out)
+    diagnostics = evidence[0]["diagnostics"]
+    assert diagnostics[0]["signal_id"] == (
+        "source-build-environment-custody-missing"
+    )
+    assert diagnostics[0]["severity"] == "infra"
+    assert "meson-python>=0.18.0" in diagnostics[0]["summary"]
+    assert "configured dependency group" in diagnostics[0]["next_action"]
+    assert "ambient project interpreter" in diagnostics[0]["next_action"]
+    assert "unclassified-failed-proof" not in {
+        item["signal_id"] for item in diagnostics
+    }
+
+
 def test_proof_queue_diagnoses_source_extension_cython_regeneration_failed(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -9350,6 +9415,36 @@ def _write_current_scientific_seal(
     config_tool_cross = meson_metadata_root / "build-config-tools.cross"
     if extension_set.use_pkg_config:
         config_tool_cross.write_text("[binaries]\n", encoding="utf-8")
+    build_custody_python = {
+        "implementation": sys.implementation.name,
+        "version": (
+            f"{sys.version_info.major}.{sys.version_info.minor}."
+            f"{sys.version_info.micro}"
+        ),
+        "platform": "test-platform",
+        "base_executable": Path(sys.executable).name,
+        "base_executable_sha256": "b" * 64,
+    }
+    build_custody_address = {
+        "dependency_group": extension_set.build_dependency_group,
+        "dependency_group_requirements": ["ninja==1.13.0"],
+        "uv_lock_sha256": "c" * 64,
+        "python": build_custody_python,
+        "uv": {
+            "executable": "uv.exe",
+            "version": "uv 0.11.24",
+            "sha256": "d" * 64,
+        },
+    }
+    build_custody = {
+        "schema_version": 1,
+        "environment_id": hashlib.sha256(
+            json.dumps(
+                build_custody_address, sort_keys=True, separators=(",", ":")
+            ).encode()
+        ).hexdigest(),
+        **build_custody_address,
+    }
     (root / "extension_set_manifest.json").write_text(
         json.dumps(
             {
@@ -9419,6 +9514,7 @@ def _write_current_scientific_seal(
                             "version": "2.5.1",
                         },
                     ],
+                    "custody": build_custody,
                 },
                 "meson": {
                     "driver": {
@@ -9788,6 +9884,9 @@ def test_proof_queue_rejects_scipy_set_manifest_identity_drift(
         "build_resolved_missing",
         "build_resolved_distribution",
         "build_resolved_version",
+        "build_custody_address",
+        "build_custody_python_sha256",
+        "build_custody_uv_sha256",
         "missing_manifest",
     ],
 )
@@ -9902,6 +10001,17 @@ def test_proof_queue_rejects_scipy_set_manifest_transaction_drift(
     elif mutation == "build_resolved_version":
         manifest["build_environment"]["resolved"][0]["version"] = "0"
         expected = "resolved version does not satisfy"
+    elif mutation == "build_custody_address":
+        manifest["build_environment"]["custody"]["environment_id"] = "0" * 64
+        expected = "build-environment address digest is invalid"
+    elif mutation == "build_custody_python_sha256":
+        manifest["build_environment"]["custody"]["python"][
+            "base_executable_sha256"
+        ] = "z" * 64
+        expected = "build Python custody is invalid"
+    elif mutation == "build_custody_uv_sha256":
+        manifest["build_environment"]["custody"]["uv"]["sha256"] = "z" * 64
+        expected = "uv custody is invalid"
     else:
         set_manifest_path.unlink()
         expected = "missing or unreadable extension-set manifest"

@@ -79,15 +79,37 @@ Flags:
   contract.
 - `--json` emits the machine-readable publication result.
 
+Each configured set names one project dependency group. Before acquiring the
+package publication lock, the producer derives an immutable environment address
+from the dependency-group name and ordered requirements, the complete
+`uv.lock` digest, the base-Python identity, and the uv executable identity. It
+serializes provisioning at that address, runs `uv sync --frozen
+--no-default-groups --group <group> --no-install-project` into a private staging
+directory, verifies the resolved distributions, writes the attestation only
+after success, and atomically publishes the environment under the canonical
+Molt custody root. An ambient `.venv` is never accepted or mutated. The
+producer transparently re-executes its typed command in safe-path mode under
+the attested Python, with `PYTHONPATH` replaced by exactly the invoking
+worktree's `src` and user-site/PYTHONHOME injection disabled; the environment
+itself therefore has no editable-worktree identity and is reusable by sibling
+worktrees. An existing address with stale content or attestation fails closed
+rather than being repaired in place.
+
 One invocation performs one real Meson setup, consumes the unchanged
 `intro-targets.json`, `compile_commands.json`, `intro-installed.json`, and Ninja
 generator commands, builds every configured module deterministically through
 `molt extension build`, audits its ABI/artifact/object/export custody, stages
 Meson's real installed Python files, and publishes only after the exact set is
 complete. The destination is version-keyed under
-`$MOLT_EXT_ROOT/package-seals/<package>/<version>/<seal-name>`. Publication is a
+the canonical Molt custody root at
+`package-seals/<package>/<version>/<seal-name>`. Publication is a
 same-volume directory replacement with rollback of the prior complete root;
 partial sets are never visible.
+
+These compilers, generators, and source-producer environments are maintainer and
+source-build tooling. End users running shipped Molt binaries do not need uv,
+Meson, Cython, Ninja, LLVM, or this producer environment unless they explicitly
+request a local source rebuild.
 
 ---
 

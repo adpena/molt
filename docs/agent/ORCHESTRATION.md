@@ -91,10 +91,12 @@ artifact or custody primitive — parallelizable, NOT the solo E2E lane:**
 - `E1-SCIPY-NI-SUPPORT` — same for `_ni_support`.
 - `E1-SCIPY-NI-DOCSTRINGS` — same for `_ni_docstrings` (doc-only; may be closure-
   strippable — prove which).
-- `E1-CYTHON-PROVISION-KNOWN-GOOD` — **(subagent active)** Molt provisions the LATEST
-  in-range Cython (3.2.8) which has a `_ni_label.pyx` codegen regression; select a
-  known-good in-constraint version in `source_extension_cython.py`. Coordinate; don't
-  double-claim.
+- `E1-CYTHON-PROVISION-KNOWN-GOOD` — **CLOSED; do not pin backward.** Cython 3.2.8
+  is the proven authority for both NumPy 2.5.1 and SciPy 1.18.0. The prior
+  `_ni_label.pyx` `MethodDispatcherTransform` crash was missing `cimport numpy`
+  `.pxd` search-root custody, not a Cython-version regression; pinning older only
+  masked it. The current resolver and standalone-Cython tests cover that root,
+  and the successful SciPy seal attests 3.2.8 plus a compiled `_ni_label` object.
 - `E1-NUMPY-HEADER-OVERLAY-CUSTODY` (also E4) — Molt still ships 23 of NumPy's OWN
   headers under `include/numpy/*` (POISON, tracked by fail_closed_gate). Route numpy
   headers through package custody (numpy's `_core/include`) at source-recompile and

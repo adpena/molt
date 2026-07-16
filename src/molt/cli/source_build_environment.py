@@ -1,18 +1,38 @@
-"""Canonical PEP 508 build-environment provenance for source extensions."""
+"""Locked, addressable build-environment custody for source extensions."""
 
 from __future__ import annotations
 
+import hashlib
+import importlib.metadata as importlib_metadata
+import json
+import os
+import shutil
+import subprocess
+import sys
+import sysconfig
+import tomllib
+import uuid
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path
 
 from packaging.markers import default_environment
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
+from molt.cli.atomic_io import _atomic_write_json, _remove_file_or_tree
+from molt.cli.build_locks import _acquire_file_lock, _release_file_lock
+from molt.cli.file_hashing import _sha256_file
+from molt.dx import canonical_molt_root
+
 
 class SourceBuildEnvironmentError(ValueError):
     pass
 
+
+SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION = 1
+SOURCE_BUILD_ENVIRONMENT_MANIFEST = "molt-source-build-environment.json"
 
 # Project-owned stable schema. Recording only the standard build-marker inputs
 # avoids coupling seal identity to incidental keys added by packaging releases.
@@ -29,6 +49,15 @@ SOURCE_MARKER_ENVIRONMENT_FIELDS = (
     "python_version",
     "sys_platform",
 )
+
+
+@dataclass(frozen=True)
+class LockedSourceBuildEnvironment:
+    root: Path
+    python_executable: Path
+    manifest_path: Path
+    custody: Mapping[str, object]
+    active: bool
 
 
 def canonical_source_marker_environment(
@@ -67,14 +96,390 @@ def active_source_build_requirements(
     return tuple(active)
 
 
+def _python_identity() -> dict[str, str]:
+    raw_base = getattr(sys, "_base_executable", None) or sys.executable
+    base_executable = Path(raw_base).resolve()
+    if not base_executable.is_file():
+        raise SourceBuildEnvironmentError(
+            f"cannot attest source-build base Python executable: {base_executable}"
+        )
+    return {
+        "implementation": sys.implementation.name,
+        "version": (
+            f"{sys.version_info.major}.{sys.version_info.minor}."
+            f"{sys.version_info.micro}"
+        ),
+        "platform": sysconfig.get_platform(),
+        "base_executable": base_executable.name,
+        "base_executable_sha256": _sha256_file(base_executable),
+    }
+
+
+def _uv_identity() -> tuple[Path, dict[str, str]]:
+    raw_uv = shutil.which("uv")
+    if raw_uv is None:
+        raise SourceBuildEnvironmentError(
+            "locked source-build environment provisioning requires uv on PATH"
+        )
+    uv = Path(raw_uv).resolve()
+    # This is a bounded bootstrap identity probe, before the guarded build
+    # environment exists. It never launches package build work.
+    result = subprocess.run(
+        [str(uv), "--version"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    version = result.stdout.strip()
+    if result.returncode != 0 or not version:
+        detail = (result.stderr or result.stdout).strip()
+        raise SourceBuildEnvironmentError(
+            "cannot attest uv for locked source-build provisioning: "
+            f"{detail or f'returncode={result.returncode}'}"
+        )
+    return uv, {
+        "executable": uv.name,
+        "version": version,
+        "sha256": _sha256_file(uv),
+    }
+
+
+def _declared_dependency_group(
+    repo_root: Path, dependency_group: str
+) -> tuple[str, ...]:
+    try:
+        payload = tomllib.loads(
+            (repo_root / "pyproject.toml").read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+        raise SourceBuildEnvironmentError(
+            f"cannot read source-build dependency-group authority: {exc}"
+        ) from exc
+    groups = payload.get("dependency-groups")
+    requirements = groups.get(dependency_group) if isinstance(groups, Mapping) else None
+    if (
+        not isinstance(requirements, list)
+        or not requirements
+        or not all(isinstance(item, str) and item.strip() for item in requirements)
+    ):
+        raise SourceBuildEnvironmentError(
+            f"source-build dependency group {dependency_group!r} is not declared"
+        )
+    normalized = tuple(item.strip() for item in requirements)
+    for raw in normalized:
+        try:
+            requirement = Requirement(raw)
+        except InvalidRequirement as exc:
+            raise SourceBuildEnvironmentError(
+                f"invalid requirement in source-build group {dependency_group!r}: "
+                f"{raw!r}: {exc}"
+            ) from exc
+        if requirement.url is not None:
+            raise SourceBuildEnvironmentError(
+                f"source-build dependency group {dependency_group!r} contains "
+                f"an unverifiable direct URL: {raw!r}"
+            )
+    return normalized
+
+
+def _environment_spec(
+    repo_root: Path, dependency_group: str
+) -> tuple[Path, Path, Path, dict[str, object], Path]:
+    repo_root = repo_root.resolve()
+    if not dependency_group or any(
+        character not in "abcdefghijklmnopqrstuvwxyz0123456789-_"
+        for character in dependency_group
+    ):
+        raise SourceBuildEnvironmentError(
+            f"invalid source-build dependency group {dependency_group!r}"
+        )
+    group_requirements = _declared_dependency_group(repo_root, dependency_group)
+    lock_path = repo_root / "uv.lock"
+    if not lock_path.is_file():
+        raise SourceBuildEnvironmentError(f"locked source-build input is absent: {lock_path}")
+    lock_digest = _sha256_file(lock_path)
+    python = _python_identity()
+    uv, uv_payload = _uv_identity()
+    address_payload = {
+        "dependency_group": dependency_group,
+        "dependency_group_requirements": list(group_requirements),
+        "uv_lock_sha256": lock_digest,
+        "python": python,
+        "uv": uv_payload,
+    }
+    environment_id = hashlib.sha256(
+        json.dumps(address_payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    custody: dict[str, object] = {
+        "schema_version": SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION,
+        "environment_id": environment_id,
+        **address_payload,
+    }
+    custody_root = canonical_molt_root(repo_root) / "build-environments" / "source-extension"
+    root = custody_root / environment_id
+    python_executable = root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    return root, python_executable, root / SOURCE_BUILD_ENVIRONMENT_MANIFEST, custody, uv
+
+
+def _installed_distributions() -> list[dict[str, str]]:
+    rows: dict[str, dict[str, str]] = {}
+    for distribution in importlib_metadata.distributions():
+        raw_name = distribution.metadata.get("Name")
+        if not isinstance(raw_name, str) or not raw_name.strip():
+            raise SourceBuildEnvironmentError(
+                "source-build environment contains a distribution without Name metadata"
+            )
+        name = canonicalize_name(raw_name)
+        row = {"name": name, "version": distribution.version}
+        previous = rows.get(name)
+        if previous is not None and previous != row:
+            raise SourceBuildEnvironmentError(
+                f"source-build environment contains duplicate distribution {name!r}"
+            )
+        rows[name] = row
+    return [rows[name] for name in sorted(rows)]
+
+
+_DISTRIBUTION_PROBE = """
+import importlib.metadata as m, json
+from packaging.utils import canonicalize_name
+rows = {}
+for distribution in m.distributions():
+    raw_name = distribution.metadata.get('Name')
+    if not isinstance(raw_name, str) or not raw_name.strip():
+        raise SystemExit('distribution without Name metadata')
+    name = canonicalize_name(raw_name)
+    row = {'name': name, 'version': distribution.version}
+    if name in rows and rows[name] != row:
+        raise SystemExit('duplicate distribution: ' + name)
+    rows[name] = row
+print(json.dumps([rows[name] for name in sorted(rows)], separators=(',', ':')))
+"""
+
+
+def _probe_environment_distributions(python_executable: Path) -> list[dict[str, str]]:
+    # This bounded, read-only bootstrap probe is the trust boundary used to
+    # decide whether an environment may launch guarded package build work.
+    result = subprocess.run(
+        [str(python_executable), "-c", _DISTRIBUTION_PROBE],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise SourceBuildEnvironmentError(
+            "cannot attest provisioned source-build distributions: "
+            f"{detail or f'returncode={result.returncode}'}"
+        )
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise SourceBuildEnvironmentError(
+            "source-build distribution probe returned invalid JSON"
+        ) from exc
+    if not isinstance(payload, list) or not all(
+        isinstance(item, dict)
+        and set(item) == {"name", "version"}
+        and all(isinstance(value, str) and value for value in item.values())
+        for item in payload
+    ):
+        raise SourceBuildEnvironmentError(
+            "source-build distribution probe returned an invalid payload"
+        )
+    return payload
+
+
+def _validate_declared_group_resolutions(
+    requirements: Sequence[str], distributions: Sequence[Mapping[str, str]]
+) -> None:
+    installed = {item["name"]: item["version"] for item in distributions}
+    marker_environment = canonical_source_marker_environment()
+    missing: list[str] = []
+    for raw in requirements:
+        requirement = Requirement(raw)
+        if requirement.marker is not None and not requirement.marker.evaluate(
+            environment=marker_environment
+        ):
+            continue
+        version = installed.get(canonicalize_name(requirement.name))
+        if version is None or (
+            requirement.specifier
+            and not requirement.specifier.contains(version, prereleases=True)
+        ):
+            missing.append(raw)
+    if missing:
+        raise SourceBuildEnvironmentError(
+            "provisioned source-build environment does not satisfy its declared "
+            "dependency group: " + ", ".join(missing)
+        )
+
+
+def _read_attestation(path: Path) -> Mapping[str, object] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, Mapping) else None
+
+
+def _validated_active_attestation(
+    *, root: Path, manifest_path: Path, custody: Mapping[str, object]
+) -> Mapping[str, object]:
+    try:
+        active_root = Path(sys.prefix).resolve(strict=True)
+    except OSError as exc:
+        raise SourceBuildEnvironmentError(
+            f"cannot resolve active source-build environment: {exc}"
+        ) from exc
+    if active_root != root.resolve():
+        raise SourceBuildEnvironmentError(
+            f"active interpreter is not the locked source-build environment {root}"
+        )
+    manifest = _read_attestation(manifest_path)
+    expected = {**custody, "installed_distributions": _installed_distributions()}
+    if manifest != expected:
+        raise SourceBuildEnvironmentError(
+            f"locked source-build environment attestation is stale or invalid: {manifest_path}"
+        )
+    return custody
+
+
+def source_build_environment(
+    repo_root: Path, dependency_group: str
+) -> LockedSourceBuildEnvironment:
+    root, python_executable, manifest_path, custody, _uv = _environment_spec(
+        repo_root, dependency_group
+    )
+    active = Path(sys.prefix).resolve() == root.resolve()
+    if active:
+        _validated_active_attestation(
+            root=root, manifest_path=manifest_path, custody=custody
+        )
+    return LockedSourceBuildEnvironment(
+        root=root,
+        python_executable=python_executable,
+        manifest_path=manifest_path,
+        custody=custody,
+        active=active,
+    )
+
+
+def provision_source_build_environment(
+    repo_root: Path, dependency_group: str
+) -> LockedSourceBuildEnvironment:
+    root, python_executable, manifest_path, custody, uv = _environment_spec(
+        repo_root, dependency_group
+    )
+    lock_path = root.parent / ".locks" / f"{root.name}.lock"
+    handle = _acquire_file_lock(
+        lock_path,
+        timeout_s=900.0,
+        timeout_message=(
+            "timed out waiting for locked source-build environment provisioning "
+            f"lock {lock_path}"
+        ),
+    )
+    try:
+        existing = _read_attestation(manifest_path)
+        if python_executable.is_file() and isinstance(existing, Mapping):
+            expected_core = dict(custody)
+            actual_core = {key: existing.get(key) for key in expected_core}
+            if actual_core == expected_core:
+                installed = _probe_environment_distributions(python_executable)
+                if existing.get("installed_distributions") == installed:
+                    return LockedSourceBuildEnvironment(
+                        root=root,
+                        python_executable=python_executable,
+                        manifest_path=manifest_path,
+                        custody=custody,
+                        active=False,
+                    )
+        if root.exists():
+            raise SourceBuildEnvironmentError(
+                "immutable source-build environment address exists without its "
+                f"exact attestation: {root}"
+            )
+        root.parent.mkdir(parents=True, exist_ok=True)
+        staging_root = root.with_name(
+            f".{root.name}.provision-{os.getpid()}-{uuid.uuid4().hex}"
+        )
+        staging_python = staging_root / (
+            "Scripts/python.exe" if os.name == "nt" else "bin/python"
+        )
+        environment = os.environ.copy()
+        environment["UV_PROJECT_ENVIRONMENT"] = str(staging_root)
+        raw_base = getattr(sys, "_base_executable", None) or sys.executable
+        try:
+            # uv is the provisioner for the environment that will subsequently
+            # launch guarded build work. The canonical file lock bounds this sole
+            # bootstrap mutation and inherited stdio exposes its progress/errors.
+            result = subprocess.run(
+                [
+                    str(uv),
+                    "sync",
+                    "--project",
+                    str(repo_root.resolve()),
+                    "--python",
+                    str(Path(raw_base).resolve()),
+                    "--frozen",
+                    "--no-default-groups",
+                    "--group",
+                    dependency_group,
+                    "--no-install-project",
+                ],
+                cwd=repo_root,
+                env=environment,
+                check=False,
+            )
+            if result.returncode != 0:
+                raise SourceBuildEnvironmentError(
+                    "locked source-build environment provisioning failed: "
+                    f"uv sync returned {result.returncode}"
+                )
+            if not staging_python.is_file():
+                raise SourceBuildEnvironmentError(
+                    f"uv sync did not create source-build Python: {staging_python}"
+                )
+            installed = _probe_environment_distributions(staging_python)
+            raw_group_requirements = custody["dependency_group_requirements"]
+            assert isinstance(raw_group_requirements, list)
+            _validate_declared_group_resolutions(raw_group_requirements, installed)
+            manifest = {**custody, "installed_distributions": installed}
+            _atomic_write_json(
+                staging_root / SOURCE_BUILD_ENVIRONMENT_MANIFEST,
+                manifest,
+                sort_keys=True,
+            )
+            os.replace(staging_root, root)
+        finally:
+            if staging_root.exists():
+                _remove_file_or_tree(staging_root)
+        return LockedSourceBuildEnvironment(
+            root=root,
+            python_executable=python_executable,
+            manifest_path=manifest_path,
+            custody=custody,
+            active=False,
+        )
+    finally:
+        _release_file_lock(handle)
+
+
 def source_build_environment_problems(payload: object) -> list[str]:
-    if not isinstance(payload, Mapping) or set(payload) != {
+    expected_fields = {
         "python",
         "requirements",
         "marker_environment",
         "active_requirements",
         "resolved",
-    }:
+        "custody",
+    }
+    if not isinstance(payload, Mapping) or set(payload) != expected_fields:
         return ["extension-set manifest build_environment shape is invalid"]
 
     problems: list[str] = []
@@ -83,6 +488,126 @@ def source_build_environment_problems(payload: object) -> list[str]:
     raw_environment = payload.get("marker_environment")
     recorded_active = payload.get("active_requirements")
     resolved = payload.get("resolved")
+    custody = payload.get("custody")
+    if not isinstance(custody, Mapping) or set(custody) != {
+        "schema_version",
+        "environment_id",
+        "dependency_group",
+        "dependency_group_requirements",
+        "uv_lock_sha256",
+        "python",
+        "uv",
+    }:
+        problems.append("extension-set manifest build-environment custody is invalid")
+    else:
+        def valid_sha256(value: object) -> bool:
+            return (
+                isinstance(value, str)
+                and len(value) == 64
+                and all(character in "0123456789abcdef" for character in value)
+            )
+
+        digest_fields = ("environment_id", "uv_lock_sha256")
+        if custody.get("schema_version") != SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION or any(
+            not valid_sha256(custody.get(field))
+            for field in digest_fields
+        ):
+            problems.append("extension-set manifest build-environment custody is invalid")
+        if not isinstance(custody.get("dependency_group"), str) or not custody.get(
+            "dependency_group"
+        ):
+            problems.append("extension-set manifest build-environment custody is invalid")
+        group_requirements = custody.get("dependency_group_requirements")
+        if (
+            not isinstance(group_requirements, list)
+            or not group_requirements
+            or not all(isinstance(item, str) and item for item in group_requirements)
+        ):
+            problems.append("extension-set manifest build dependency group is invalid")
+        else:
+            try:
+                parsed_group = [Requirement(item) for item in group_requirements]
+            except InvalidRequirement:
+                problems.append(
+                    "extension-set manifest build dependency group is invalid"
+                )
+            else:
+                if any(item.url is not None for item in parsed_group):
+                    problems.append(
+                        "extension-set manifest build dependency group is invalid"
+                    )
+        custody_python = custody.get("python")
+        custody_uv = custody.get("uv")
+        if not isinstance(custody_python, Mapping) or set(custody_python) != {
+            "implementation",
+            "version",
+            "platform",
+            "base_executable",
+            "base_executable_sha256",
+        }:
+            problems.append("extension-set manifest build Python custody is invalid")
+        elif (
+            not all(
+                isinstance(custody_python.get(field), str)
+                and custody_python.get(field)
+                for field in (
+                    "implementation",
+                    "version",
+                    "platform",
+                    "base_executable",
+                )
+            )
+            or any(
+                separator in str(custody_python.get("base_executable"))
+                for separator in ("/", "\\")
+            )
+            or not valid_sha256(custody_python.get("base_executable_sha256"))
+        ):
+            problems.append("extension-set manifest build Python custody is invalid")
+        if not isinstance(custody_uv, Mapping) or set(custody_uv) != {
+            "executable",
+            "version",
+            "sha256",
+        }:
+            problems.append("extension-set manifest uv custody is invalid")
+        elif (
+            not all(
+                isinstance(custody_uv.get(field), str) and custody_uv.get(field)
+                for field in ("executable", "version")
+            )
+            or any(
+                separator in str(custody_uv.get("executable"))
+                for separator in ("/", "\\")
+            )
+            or not valid_sha256(custody_uv.get("sha256"))
+        ):
+            problems.append("extension-set manifest uv custody is invalid")
+        if (
+            isinstance(custody.get("dependency_group"), str)
+            and valid_sha256(custody.get("uv_lock_sha256"))
+            and isinstance(custody_python, Mapping)
+            and isinstance(group_requirements, list)
+            and isinstance(custody_uv, Mapping)
+        ):
+            address_payload = {
+                "dependency_group": custody["dependency_group"],
+                "dependency_group_requirements": custody[
+                    "dependency_group_requirements"
+                ],
+                "uv_lock_sha256": custody["uv_lock_sha256"],
+                "python": dict(custody_python),
+                "uv": dict(custody_uv) if isinstance(custody_uv, Mapping) else custody_uv,
+            }
+            expected_environment_id = hashlib.sha256(
+                json.dumps(
+                    address_payload, sort_keys=True, separators=(",", ":")
+                ).encode()
+            ).hexdigest()
+            if custody.get("environment_id") != expected_environment_id:
+                problems.append(
+                    "extension-set manifest build-environment address digest is invalid"
+                )
+
     if not isinstance(python, Mapping) or set(python) != {
         "implementation",
         "version",
@@ -116,6 +641,15 @@ def source_build_environment_problems(payload: object) -> list[str]:
             != str(raw_environment.get("python_full_version"))
         ):
             problems.append("extension-set manifest build Python identity is invalid")
+        if isinstance(custody, Mapping) and isinstance(custody.get("python"), Mapping):
+            custody_python = custody["python"]
+            if (
+                python.get("implementation") != custody_python.get("implementation")
+                or python.get("version") != custody_python.get("version")
+            ):
+                problems.append(
+                    "extension-set manifest build Python identity differs from custody"
+                )
     expected_active = [raw for raw, _requirement in active]
     if recorded_active != expected_active:
         problems.append(
@@ -133,17 +667,13 @@ def source_build_environment_problems(payload: object) -> list[str]:
             "distribution",
             "version",
         }:
-            problems.append(
-                "extension-set manifest resolved requirement shape is invalid"
-            )
+            problems.append("extension-set manifest resolved requirement shape is invalid")
             continue
         if not all(
             isinstance(item.get(field), str) and item.get(field)
             for field in ("requirement", "distribution", "version")
         ):
-            problems.append(
-                "extension-set manifest resolved requirement values are invalid"
-            )
+            problems.append("extension-set manifest resolved requirement values are invalid")
             continue
         raw = str(item["requirement"])
         resolved_requirements.append(raw)
