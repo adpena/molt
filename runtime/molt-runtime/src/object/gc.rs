@@ -357,7 +357,7 @@ fn snapshot_tracked_registry() -> Option<Vec<*mut u8>> {
 pub(crate) unsafe fn molt_traverse(py: &PyToken<'_>, ptr: *mut u8, visit: &mut dyn FnMut(*mut u8)) {
     unsafe {
         let type_id = object_type_id(ptr);
-        let flags = (*header_from_obj_ptr(ptr)).load_flags();
+        let flags = (*header_from_obj_ptr(ptr)).load_synchronized_flags();
         if (flags & super::HEADER_FLAG_IS_WEAKREF) != 0
             && let Some(bits) = super::weakref::weakref_object_callback_bits(py, ptr)
         {
@@ -512,7 +512,7 @@ pub(crate) unsafe fn molt_traverse(py: &PyToken<'_>, ptr: *mut u8, visit: &mut d
 pub(crate) unsafe fn molt_clear(py: &PyToken<'_>, ptr: *mut u8) {
     unsafe {
         let type_id = object_type_id(ptr);
-        let flags = (*header_from_obj_ptr(ptr)).load_flags();
+        let flags = (*header_from_obj_ptr(ptr)).load_synchronized_flags();
         let weakref_registration = if (flags & super::HEADER_FLAG_IS_WEAKREF) != 0 {
             super::weakref::weakref_object_detach(py, ptr)
         } else {
@@ -675,10 +675,10 @@ unsafe fn header_refcount(ptr: *mut u8) -> u32 {
 unsafe fn effective_gc_refcount(ptr: *mut u8) -> isize {
     let mut raw = unsafe { header_refcount(ptr) } as isize;
     let header = unsafe { header_from_obj_ptr(ptr) };
-    if unsafe { (*header).load_flags() } & HEADER_FLAG_GC_PINNED != 0 {
+    if unsafe { (*header).load_synchronized_flags() } & HEADER_FLAG_GC_PINNED != 0 {
         raw -= 1;
     }
-    if unsafe { (*header).load_flags() } & HEADER_FLAG_HAS_ABI_VIEW == 0 {
+    if unsafe { (*header).load_synchronized_flags() } & HEADER_FLAG_HAS_ABI_VIEW == 0 {
         return raw;
     }
     let bits = MoltObject::from_ptr(ptr).bits();
@@ -726,7 +726,7 @@ unsafe fn header_set_collecting(ptr: *mut u8, on: bool) {
 unsafe fn header_is_collecting(ptr: *mut u8) -> bool {
     unsafe {
         let header = header_from_obj_ptr(ptr);
-        ((*header).load_flags() & HEADER_FLAG_GC_COLLECTING) != 0
+        ((*header).load_synchronized_flags() & HEADER_FLAG_GC_COLLECTING) != 0
     }
 }
 
@@ -934,7 +934,7 @@ pub(crate) unsafe fn collect_cycles(py: &PyToken<'_>) -> CollectStats {
 unsafe fn run_finalizer_once(py: &PyToken<'_>, ptr: *mut u8) {
     unsafe {
         let header = header_from_obj_ptr(ptr);
-        let flags = (*header).load_flags();
+        let flags = (*header).load_synchronized_flags();
         if !object_class_has_finalizer(ptr) {
             return;
         }

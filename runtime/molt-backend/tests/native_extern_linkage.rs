@@ -1,5 +1,8 @@
 use molt_backend::{FunctionIR, OpIR, SimpleBackend, SimpleIR};
-use object::{Object, ObjectSymbol};
+use object::{Object, ObjectSection, ObjectSymbol};
+
+#[path = "support/generated_object_abi.rs"]
+mod generated_object_abi;
 
 fn op(kind: &str) -> OpIR {
     OpIR {
@@ -8,11 +11,125 @@ fn op(kind: &str) -> OpIR {
     }
 }
 
+#[test]
+fn native_object_retains_exact_generated_object_abi_import() {
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_main".to_string(),
+            params: Vec::new(),
+            ops: vec![op("ret_void")],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        }],
+        profile: None,
+    };
+    let mut backend = SimpleBackend::new();
+    backend.emit_app_callable_resolver = false;
+    let output = backend.compile(ir);
+    generated_object_abi::assert_exact_import_and_dead_strip_link(&output.bytes, "Cranelift");
+    let file = object::File::parse(&*output.bytes).expect("parse native object");
+    let anchor = file
+        .symbols()
+        .find(|symbol| object_symbol_matches(symbol, "__molt_generated_object_abi_anchor"))
+        .expect("generated-object ABI anchor");
+    let anchor_section = file
+        .section_by_index(anchor.section_index().expect("anchor section"))
+        .expect("read anchor section");
+    let pointer_bytes = match file.architecture() {
+        object::Architecture::X86_64 | object::Architecture::Aarch64 => 8,
+        _ => 4,
+    };
+    assert_eq!(
+        anchor_section.size(),
+        pointer_bytes,
+        "link admission costs exactly one pointer-sized data word"
+    );
+    let witness_relocations = anchor_section
+        .relocations()
+        .filter(|(_, relocation)| {
+            let object::RelocationTarget::Symbol(index) = relocation.target() else {
+                return false;
+            };
+            file.symbol_by_index(index).ok().is_some_and(|symbol| {
+                object_symbol_matches(&symbol, molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL)
+            })
+        })
+        .count();
+    assert_eq!(
+        witness_relocations, 1,
+        "link admission costs exactly one retained relocation"
+    );
+
+    #[cfg(windows)]
+    {
+        let directives = file
+            .section_by_name(".drectve")
+            .and_then(|section| section.data().ok())
+            .expect("COFF object must carry linker retention directives");
+        let directives = String::from_utf8_lossy(directives);
+        assert!(
+            directives.contains(molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL),
+            "COFF /OPT:REF root must name exact ABI symbol: {directives}"
+        );
+    }
+}
+
 fn object_symbol_matches<'data, S: ObjectSymbol<'data>>(symbol: &S, logical_name: &str) -> bool {
     symbol
         .name()
         .ok()
         .is_some_and(|name| name == logical_name || name.strip_prefix('_') == Some(logical_name))
+}
+
+#[test]
+fn cross_format_objects_retain_generated_object_abi_anchor() {
+    for (target, expected_format) in [
+        ("x86_64-unknown-linux-gnu", object::BinaryFormat::Elf),
+        ("aarch64-apple-darwin", object::BinaryFormat::MachO),
+    ] {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "molt_main".to_string(),
+                params: Vec::new(),
+                ops: vec![op("ret_void")],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            }],
+            profile: None,
+        };
+        let mut backend = SimpleBackend::new_with_target(Some(target));
+        backend.emit_app_callable_resolver = false;
+        let output = backend.compile(ir);
+        let file = object::File::parse(&*output.bytes).expect("parse cross-format object");
+        assert_eq!(file.format(), expected_format);
+        let anchor = file
+            .symbols()
+            .find(|symbol| object_symbol_matches(symbol, "__molt_generated_object_abi_anchor"))
+            .expect("retained generated-object ABI anchor symbol");
+        let section = file
+            .section_by_index(anchor.section_index().expect("anchor section"))
+            .expect("read anchor section");
+        match (expected_format, section.flags()) {
+            (object::BinaryFormat::Elf, object::SectionFlags::Elf { sh_flags }) => assert_ne!(
+                sh_flags & u64::from(object::elf::SHF_GNU_RETAIN),
+                0,
+                "ELF anchor must survive --gc-sections"
+            ),
+            (object::BinaryFormat::MachO, object::SectionFlags::MachO { .. }) => assert_ne!(
+                match anchor.flags() {
+                    object::SymbolFlags::MachO { n_desc } => {
+                        n_desc & object::macho::N_NO_DEAD_STRIP
+                    }
+                    flags => panic!("unexpected Mach-O anchor symbol flags: {flags:?}"),
+                },
+                0,
+                "Mach-O anchor must survive -dead_strip"
+            ),
+            (_, flags) => panic!("unexpected {target} anchor flags: {flags:?}"),
+        }
+    }
 }
 
 #[test]

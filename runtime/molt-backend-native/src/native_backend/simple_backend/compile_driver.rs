@@ -2,18 +2,30 @@ use super::*;
 
 #[cfg(feature = "native-backend")]
 impl SimpleBackend {
-    pub fn compile(mut self, ir: SimpleIR) -> CompileOutput {
+    pub fn compile(self, ir: SimpleIR) -> CompileOutput {
+        // Backend selection: MOLT_BACKEND=llvm is an explicit contract. A
+        // missing LLVM feature must fail closed instead of substituting a
+        // different backend and producing misleading validation evidence.
+        let backend_setting = env_setting("MOLT_BACKEND");
+        let use_llvm = backend_setting_requests_llvm(backend_setting.as_deref());
+        self.compile_selected(ir, use_llvm)
+    }
+
+    /// Compile directly through LLVM without mutating process-global backend
+    /// selection. This is the canonical API for explicit multi-backend callers
+    /// and parallel tests.
+    #[cfg(feature = "llvm")]
+    pub fn compile_llvm(self, ir: SimpleIR) -> CompileOutput {
+        self.compile_selected(ir, true)
+    }
+
+    fn compile_selected(mut self, ir: SimpleIR, use_llvm: bool) -> CompileOutput {
         let timing = env_setting("MOLT_BACKEND_TIMING")
             .as_deref()
             .map(parse_truthy_env)
             .unwrap_or(false);
         let compile_start = std::time::Instant::now();
         let mut ir = ir;
-        // Backend selection: MOLT_BACKEND=llvm is an explicit contract. A
-        // missing LLVM feature must fail closed instead of substituting a
-        // different backend and producing misleading validation evidence.
-        let backend_setting = env_setting("MOLT_BACKEND");
-        let use_llvm = backend_setting_requests_llvm(backend_setting.as_deref());
         assert_requested_llvm_backend_available(use_llvm);
         let prepared = self.prepare_program_for_codegen(&mut ir, use_llvm, timing, &compile_start);
         let emit_resolver_here = prepared.emit_resolver_here;
@@ -265,6 +277,24 @@ impl SimpleBackend {
                 "llvm/molt_llvm_output.o",
             )
             .expect("failed to prepare LLVM object path");
+            let i8_type = context.i8_type();
+            let witness = llvm.module.add_global(
+                i8_type,
+                None,
+                molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL,
+            );
+            witness.set_linkage(inkwell::module::Linkage::External);
+            let pointer_type = context.ptr_type(inkwell::AddressSpace::default());
+            let anchor =
+                llvm.module
+                    .add_global(pointer_type, None, GENERATED_OBJECT_ABI_ANCHOR_SYMBOL);
+            anchor.set_linkage(inkwell::module::Linkage::Internal);
+            anchor.set_initializer(&witness.as_pointer_value());
+            let used_type = pointer_type.array_type(1);
+            let used = llvm.module.add_global(used_type, None, "llvm.used");
+            used.set_linkage(inkwell::module::Linkage::Appending);
+            used.set_section(Some("llvm.metadata"));
+            used.set_initializer(&pointer_type.const_array(&[anchor.as_pointer_value()]));
             llvm.emit_object(&tmp_obj, MoltOptLevel::Aggressive)
                 .expect("LLVM object emission failed");
             let bytes = std::fs::read(&tmp_obj).unwrap_or_else(|err| {
@@ -550,11 +580,13 @@ impl SimpleBackend {
             );
         }
 
+        emit_generated_object_abi_anchor(&mut self.module);
+
         let emit_start = std::time::Instant::now();
         let SimpleBackend { module, .. } = self;
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         let mut product = module.finish();
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", windows)))]
         let product = module.finish();
         // Set MachO platform load command so ld doesn't emit
         // "no platform load command found" warnings on macOS.
@@ -568,6 +600,25 @@ impl SimpleBackend {
             bv.minos = 0x000B_0000; // macOS 11.0.0
             bv.sdk = 0; // no SDK constraint
             product.object.set_macho_build_version(bv);
+        }
+        // `DataDescription::set_used` maps to ELF SHF_GNU_RETAIN and Mach-O
+        // N_NO_DEAD_STRIP, but COFF has no corresponding section bit. Emit the
+        // native linker directive so /OPT:REF still roots the exact runtime ABI
+        // witness and a crossed cached-object/runtime pair fails before startup.
+        #[cfg(windows)]
+        {
+            let directives = format!(
+                " /INCLUDE:{}",
+                molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL
+            );
+            let section = product.object.add_section(
+                Vec::new(),
+                b".drectve".to_vec(),
+                cranelift_object::object::SectionKind::Linker,
+            );
+            product
+                .object
+                .append_section_data(section, directives.as_bytes(), 1);
         }
         let bytes = product.emit().unwrap();
         if timing {

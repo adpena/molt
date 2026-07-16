@@ -261,7 +261,7 @@ pub extern "C" fn molt_inplace_add(a: u64, b: u64) -> u64 {
                     // In-place string concat: O(n) amortised when refcount == 1.
                     let header = &mut *header_from_obj_ptr(ptr);
                     if header.ref_count.load(std::sync::atomic::Ordering::Relaxed) == 1
-                        && (header.load_flags() & crate::object::HEADER_FLAG_IMMORTAL) == 0
+                        && (header.load_metadata_flags() & crate::object::HEADER_FLAG_IMMORTAL) == 0
                     {
                         let rhs_obj = obj_from_bits(b);
                         if let Some(r_ptr) = rhs_obj.as_ptr()
@@ -587,7 +587,9 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
                     if crate::object::refcount_opt::is_heap_ref(val) {
                         let obj_ptr = MoltObject::from_bits(val).as_ptr().unwrap();
                         let header = header_from_obj_ptr(obj_ptr);
-                        if ((*header).load_flags() & crate::object::HEADER_FLAG_IMMORTAL) == 0 {
+                        if ((*header).load_metadata_flags() & crate::object::HEADER_FLAG_IMMORTAL)
+                            == 0
+                        {
                             (*header)
                                 .ref_count
                                 .fetch_add(total as u32, std::sync::atomic::Ordering::Relaxed);
@@ -642,7 +644,9 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
                     if crate::object::refcount_opt::is_heap_ref(val) {
                         let obj_ptr = MoltObject::from_bits(val).as_ptr().unwrap();
                         let header = header_from_obj_ptr(obj_ptr);
-                        if ((*header).load_flags() & crate::object::HEADER_FLAG_IMMORTAL) == 0 {
+                        if ((*header).load_metadata_flags() & crate::object::HEADER_FLAG_IMMORTAL)
+                            == 0
+                        {
                             (*header)
                                 .ref_count
                                 .fetch_add(total as u32, std::sync::atomic::Ordering::Relaxed);

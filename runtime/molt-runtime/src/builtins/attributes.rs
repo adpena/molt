@@ -1905,17 +1905,18 @@ pub(crate) unsafe fn attr_lookup_ptr(
         }
         if type_id == TYPE_ID_OBJECT {
             let header = header_from_obj_ptr(obj_ptr);
-            if (*header).load_flags() & HEADER_FLAG_COROUTINE != 0
+            if (*header).load_metadata_flags() & HEADER_FLAG_COROUTINE != 0
                 && let Some(name) = string_obj_to_owned(obj_from_bits(attr_bits))
             {
                 match name.as_str() {
                     "cr_running" => {
-                        let running = ((*header).load_flags() & HEADER_FLAG_TASK_RUNNING) != 0;
+                        let running =
+                            ((*header).load_synchronized_flags() & HEADER_FLAG_TASK_RUNNING) != 0;
                         return Some(MoltObject::from_bool(running).bits());
                     }
                     "cr_frame" => {
                         if crate::object::object_poll_fn(obj_ptr) == 0
-                            || ((*header).load_flags() & HEADER_FLAG_TASK_DONE) != 0
+                            || ((*header).load_synchronized_flags() & HEADER_FLAG_TASK_DONE) != 0
                         {
                             return Some(MoltObject::none().bits());
                         }

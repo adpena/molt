@@ -1996,7 +1996,7 @@ pub(crate) unsafe fn refresh_function_requires_binder_flag(
 pub(crate) unsafe fn function_requires_binder_flag(func_ptr: *mut u8) -> bool {
     unsafe {
         let header = header_from_obj_ptr(func_ptr);
-        ((*header).load_flags() & HEADER_FLAG_FUNC_REQUIRES_BINDER) != 0
+        ((*header).load_metadata_flags() & HEADER_FLAG_FUNC_REQUIRES_BINDER) != 0
     }
 }
 

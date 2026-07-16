@@ -711,9 +711,10 @@ unsafe fn exception_publish_borrowed_slot(
         inc_ref_bits(_py, value_bits);
         *slot = value_bits;
         let header = crate::header_from_obj_ptr(exception_ptr);
-        let pushed = ((*header).load_flags() & crate::object::HEADER_FLAG_HAS_ABI_VIEW) == 0
-            || molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                .refresh_exception_view(MoltObject::from_ptr(exception_ptr).bits());
+        let pushed =
+            ((*header).load_synchronized_flags() & crate::object::HEADER_FLAG_HAS_ABI_VIEW) == 0
+                || molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                    .refresh_exception_view(MoltObject::from_ptr(exception_ptr).bits());
         if !pushed {
             *slot = old_bits;
             dec_ref_bits(_py, value_bits);
@@ -741,9 +742,10 @@ unsafe fn exception_publish_owned_slot(
         }
         *slot = value_bits;
         let header = crate::header_from_obj_ptr(exception_ptr);
-        let pushed = ((*header).load_flags() & crate::object::HEADER_FLAG_HAS_ABI_VIEW) == 0
-            || molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                .refresh_exception_view(MoltObject::from_ptr(exception_ptr).bits());
+        let pushed =
+            ((*header).load_synchronized_flags() & crate::object::HEADER_FLAG_HAS_ABI_VIEW) == 0
+                || molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                    .refresh_exception_view(MoltObject::from_ptr(exception_ptr).bits());
         if !pushed {
             *slot = old_bits;
             dec_ref_bits(_py, value_bits);
@@ -874,9 +876,10 @@ pub(crate) fn exception_replace_field_bits(
             *suppress_slot = new_suppress;
         }
         let header = crate::header_from_obj_ptr(exception_ptr);
-        let pushed = ((*header).load_flags() & crate::object::HEADER_FLAG_HAS_ABI_VIEW) == 0
-            || molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                .refresh_exception_view(MoltObject::from_ptr(exception_ptr).bits());
+        let pushed =
+            ((*header).load_synchronized_flags() & crate::object::HEADER_FLAG_HAS_ABI_VIEW) == 0
+                || molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                    .refresh_exception_view(MoltObject::from_ptr(exception_ptr).bits());
         if !pushed {
             if old_bits != value_bits {
                 *slot = old_bits;
@@ -928,8 +931,9 @@ pub(crate) fn exception_replace_suppress_context(
         inc_ref_bits(_py, new_bits);
         *slot = new_bits;
         let header = crate::header_from_obj_ptr(exception_ptr);
-        let pushed = ((*header).load_flags() & crate::object::HEADER_FLAG_HAS_ABI_VIEW) == 0
-            || molt_cpython_abi::bridge::GLOBAL_BRIDGE.refresh_exception_view(exception_bits);
+        let pushed =
+            ((*header).load_synchronized_flags() & crate::object::HEADER_FLAG_HAS_ABI_VIEW) == 0
+                || molt_cpython_abi::bridge::GLOBAL_BRIDGE.refresh_exception_view(exception_bits);
         if !pushed {
             *slot = old_bits;
             dec_ref_bits(_py, new_bits);
@@ -1785,7 +1789,7 @@ fn record_exception_with_caller_frame(_py: &PyToken<'_>, ptr: *mut u8, include_c
     }
     let mut suppress_trace = unsafe {
         let header = header_from_obj_ptr(ptr);
-        (*header).load_flags() & HEADER_FLAG_TRACEBACK_SUPPRESSED != 0
+        (*header).load_metadata_flags() & HEADER_FLAG_TRACEBACK_SUPPRESSED != 0
     };
     if !suppress_trace && traceback_suppressed() {
         let kind_bits = unsafe { exception_kind_bits(ptr) };
@@ -2647,9 +2651,10 @@ pub(crate) unsafe fn exception_store_args_and_message(
             *msg_slot = msg_bits;
         }
         let header = crate::header_from_obj_ptr(ptr);
-        let pushed = ((*header).load_flags() & crate::object::HEADER_FLAG_HAS_ABI_VIEW) == 0
-            || molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                .refresh_exception_view(MoltObject::from_ptr(ptr).bits());
+        let pushed =
+            ((*header).load_synchronized_flags() & crate::object::HEADER_FLAG_HAS_ABI_VIEW) == 0
+                || molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                    .refresh_exception_view(MoltObject::from_ptr(ptr).bits());
         if !pushed {
             *args_slot = old_args;
             *msg_slot = old_msg;

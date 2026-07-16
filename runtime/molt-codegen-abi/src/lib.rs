@@ -1,5 +1,10 @@
 #![no_std]
 
+#[cfg(all(feature = "free-threaded", target_arch = "wasm32"))]
+compile_error!(
+    "Molt free-threaded mode is not supported on wasm32 yet: declare and prove a shared-memory + atomics host capability before enabling it"
+);
+
 #[cfg(all(
     feature = "free-threaded",
     not(target_arch = "wasm32"),
@@ -136,11 +141,233 @@ pub const HEADER_FLAG_CONTAINS_REFS: u32 = 1 << 19;
 /// Two-phase lifecycle publication bit. Objects remain invisible to collector
 /// snapshots until initialization clears this bit with Release ordering.
 pub const HEADER_FLAG_GC_UNPUBLISHED: u32 = 1 << 29;
+pub const IMMORTAL_REFCOUNT: u32 = u32::MAX;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GeneratedObjectAbiFacts {
+    pub header_size: i32,
+    pub header_align: usize,
+    pub type_id_offset: i32,
+    pub refcount_offset: i32,
+    pub flags_offset: i32,
+    pub aux_kind_offset: i32,
+    pub aux_offset: i32,
+    pub aux_kind_class_inline: u16,
+    pub aux_kind_none: u16,
+    pub aux_kind_state_inline: u16,
+    pub aux_kind_sidecar: u16,
+    pub class_word_borrowed: u64,
+    pub class_word_tag_mask: u64,
+    pub class_word_bits_mask: u64,
+    pub flag_has_ptrs: u32,
+    pub flag_immortal: u32,
+    pub flag_contains_refs: u32,
+    pub flag_gc_unpublished: u32,
+    pub qnan: u64,
+    pub canonical_nan: u64,
+    pub tag_mask: u64,
+    pub tag_ptr: u64,
+    pub pointer_mask: u64,
+    pub pointer_payload_bits: u32,
+    pub tag_field_shift: i64,
+    pub ptr_sign_ext_shift: i64,
+    pub special_tag_base: i64,
+    pub special_tag_limit: i64,
+    pub immortal_refcount: u32,
+    pub generator_control_bytes: i32,
+    pub list_int_storage_data_offset: i32,
+    pub list_int_storage_len_offset: i32,
+    pub inline_int_bias: i64,
+    pub inline_int_limit: i64,
+    pub int_mask: u64,
+    pub int_min_inline: i64,
+    pub int_max_inline: i64,
+    pub int_shift: i64,
+    pub int_sign_bit: u64,
+    pub int_width: u64,
+    pub qnan_tag_mask: i64,
+    pub qnan_tag_int: i64,
+    pub qnan_tag_bool: i64,
+    pub qnan_tag_none: i64,
+    pub qnan_tag_ptr: i64,
+    pub qnan_tag_pending: i64,
+    pub tag_int: u64,
+    pub tag_bool: u64,
+    pub tag_none: u64,
+    pub tag_pending: u64,
+    pub task_kind_future: i64,
+    pub task_kind_generator: i64,
+    pub task_kind_coroutine: i64,
+    pub type_id_object: u32,
+    pub type_id_function: u32,
+    pub type_id_type: u32,
+    pub type_id_list_bool: u32,
+}
+
+impl GeneratedObjectAbiFacts {
+    pub const fn words(self) -> [u64; 57] {
+        [
+            self.header_size as i64 as u64,
+            self.header_align as u64,
+            self.type_id_offset as i64 as u64,
+            self.refcount_offset as i64 as u64,
+            self.flags_offset as i64 as u64,
+            self.aux_kind_offset as i64 as u64,
+            self.aux_offset as i64 as u64,
+            self.aux_kind_class_inline as u64,
+            self.aux_kind_none as u64,
+            self.aux_kind_state_inline as u64,
+            self.aux_kind_sidecar as u64,
+            self.class_word_borrowed,
+            self.class_word_tag_mask,
+            self.class_word_bits_mask,
+            self.flag_has_ptrs as u64,
+            self.flag_immortal as u64,
+            self.flag_contains_refs as u64,
+            self.flag_gc_unpublished as u64,
+            self.qnan,
+            self.canonical_nan,
+            self.tag_mask,
+            self.tag_ptr,
+            self.pointer_mask,
+            self.pointer_payload_bits as u64,
+            self.tag_field_shift as u64,
+            self.ptr_sign_ext_shift as u64,
+            self.special_tag_base as u64,
+            self.special_tag_limit as u64,
+            self.immortal_refcount as u64,
+            self.generator_control_bytes as i64 as u64,
+            self.list_int_storage_data_offset as i64 as u64,
+            self.list_int_storage_len_offset as i64 as u64,
+            self.inline_int_bias as u64,
+            self.inline_int_limit as u64,
+            self.int_mask,
+            self.int_min_inline as u64,
+            self.int_max_inline as u64,
+            self.int_shift as u64,
+            self.int_sign_bit,
+            self.int_width,
+            self.qnan_tag_mask as u64,
+            self.qnan_tag_int as u64,
+            self.qnan_tag_bool as u64,
+            self.qnan_tag_none as u64,
+            self.qnan_tag_ptr as u64,
+            self.qnan_tag_pending as u64,
+            self.tag_int,
+            self.tag_bool,
+            self.tag_none,
+            self.tag_pending,
+            self.task_kind_future as u64,
+            self.task_kind_generator as u64,
+            self.task_kind_coroutine as u64,
+            self.type_id_object as u64,
+            self.type_id_function as u64,
+            self.type_id_type as u64,
+            self.type_id_list_bool as u64,
+        ]
+    }
+
+    pub const fn fingerprint(self) -> u64 {
+        fingerprint_words(self.words())
+    }
+}
+
+pub const fn fingerprint_words<const N: usize>(facts: [u64; N]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    let mut fact_index = 0;
+    while fact_index < facts.len() {
+        let bytes = facts[fact_index].to_le_bytes();
+        let mut byte_index = 0;
+        while byte_index < bytes.len() {
+            hash = (hash ^ bytes[byte_index] as u64).wrapping_mul(0x0000_0100_0000_01b3);
+            byte_index += 1;
+        }
+        fact_index += 1;
+    }
+    hash
+}
+
+pub const GENERATED_OBJECT_ABI_FACTS: GeneratedObjectAbiFacts = GeneratedObjectAbiFacts {
+    header_size: HEADER_SIZE_BYTES,
+    header_align: HEADER_ALLOC_ALIGN_BYTES,
+    type_id_offset: HEADER_TYPE_ID_OFFSET,
+    refcount_offset: HEADER_REFCOUNT_OFFSET,
+    flags_offset: HEADER_FLAGS_OFFSET,
+    aux_kind_offset: HEADER_AUX_KIND_OFFSET,
+    aux_offset: HEADER_AUX_OFFSET,
+    aux_kind_class_inline: HEADER_AUX_KIND_CLASS_INLINE,
+    aux_kind_none: HEADER_AUX_KIND_NONE,
+    aux_kind_state_inline: HEADER_AUX_KIND_STATE_INLINE,
+    aux_kind_sidecar: HEADER_AUX_KIND_SIDECAR,
+    class_word_borrowed: HEADER_CLASS_WORD_BORROWED,
+    class_word_tag_mask: HEADER_CLASS_WORD_TAG_MASK,
+    class_word_bits_mask: HEADER_CLASS_WORD_BITS_MASK,
+    flag_has_ptrs: HEADER_FLAG_HAS_PTRS,
+    flag_immortal: HEADER_FLAG_IMMORTAL,
+    flag_contains_refs: HEADER_FLAG_CONTAINS_REFS,
+    flag_gc_unpublished: HEADER_FLAG_GC_UNPUBLISHED,
+    qnan: QNAN,
+    canonical_nan: CANONICAL_NAN_BITS,
+    tag_mask: TAG_MASK,
+    tag_ptr: TAG_PTR,
+    pointer_mask: POINTER_MASK,
+    pointer_payload_bits: POINTER_PAYLOAD_BITS,
+    tag_field_shift: TAG_FIELD_SHIFT,
+    ptr_sign_ext_shift: PTR_SIGN_EXT_SHIFT,
+    special_tag_base: SPECIAL_TAG_BASE,
+    special_tag_limit: SPECIAL_TAG_LIMIT,
+    immortal_refcount: IMMORTAL_REFCOUNT,
+    generator_control_bytes: GENERATOR_CONTROL_BYTES,
+    list_int_storage_data_offset: LIST_INT_STORAGE_DATA_OFFSET,
+    list_int_storage_len_offset: LIST_INT_STORAGE_LEN_OFFSET,
+    inline_int_bias: INLINE_INT_BIAS,
+    inline_int_limit: INLINE_INT_LIMIT,
+    int_mask: INT_MASK,
+    int_min_inline: INT_MIN_INLINE,
+    int_max_inline: INT_MAX_INLINE,
+    int_shift: INT_SHIFT,
+    int_sign_bit: INT_SIGN_BIT,
+    int_width: INT_WIDTH,
+    qnan_tag_mask: QNAN_TAG_MASK_I64,
+    qnan_tag_int: QNAN_TAG_INT_I64,
+    qnan_tag_bool: QNAN_TAG_BOOL_I64,
+    qnan_tag_none: QNAN_TAG_NONE_I64,
+    qnan_tag_ptr: QNAN_TAG_PTR_I64,
+    qnan_tag_pending: QNAN_TAG_PENDING_I64,
+    tag_int: TAG_INT,
+    tag_bool: TAG_BOOL,
+    tag_none: TAG_NONE,
+    tag_pending: TAG_PENDING,
+    task_kind_future: TASK_KIND_FUTURE,
+    task_kind_generator: TASK_KIND_GENERATOR,
+    task_kind_coroutine: TASK_KIND_COROUTINE,
+    type_id_object: TYPE_ID_OBJECT,
+    type_id_function: TYPE_ID_FUNCTION,
+    type_id_type: TYPE_ID_TYPE,
+    type_id_list_bool: TYPE_ID_LIST_BOOL,
+};
+
+/// Ratchet binding every hardcoded generated-code header fact. A layout/offset
+/// change fails compilation until this value and both link symbols are bumped.
+pub const GENERATED_OBJECT_ABI_FINGERPRINT_V1: u64 = 0x5fce_853b_ad8a_c502;
+const _: () = assert!(
+    GENERATED_OBJECT_ABI_FACTS.fingerprint() == GENERATED_OBJECT_ABI_FINGERPRINT_V1,
+    "native generated-object ABI changed: bump the fingerprint revision and link symbols",
+);
+pub const GENERATED_OBJECT_ABI_GIL_SYMBOL: &str =
+    "molt_generated_object_abi_5fce853bad8ac502_gil_v1";
+pub const GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL: &str =
+    "molt_generated_object_abi_5fce853bad8ac502_free_threaded_v1";
 /// Compile-time authority consumed by runtime storage and generated native
 /// access. Cargo feature unification may enable this through any dependency;
 /// consumers must branch on this value rather than a crate-local feature.
 pub const MOLT_FLAGS_ATOMIC: bool =
     cfg!(all(not(target_arch = "wasm32"), feature = "free-threaded"));
+pub const GENERATED_OBJECT_ABI_SYMBOL: &str = if MOLT_FLAGS_ATOMIC {
+    GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL
+} else {
+    GENERATED_OBJECT_ABI_GIL_SYMBOL
+};
 
 /// ABI-stable header flag storage: a zero-overhead `Cell` in deterministic
 /// default GIL mode and on wasm32, and AtomicU32 only in explicit native
@@ -254,23 +481,47 @@ impl MoltFlags {
         }
     }
 
-    /// Apply `(old | set) & !clear` as one coherent transition. The unchanged
-    /// fast path is a load only, avoiding a locked RMW for already-published
-    /// sticky facts; wasm lowers directly to Cell get/set.
+    /// Apply `(old | set) & !clear` as one coherent metadata transition with
+    /// relaxed ordering. This is for flag facts whose payload visibility is
+    /// guarded by object publication or another lock.
     #[inline(always)]
-    pub fn update(&self, set: u32, clear: u32) -> u32 {
-        let mut observed = self.load(core::sync::atomic::Ordering::Acquire);
+    pub fn update_relaxed(&self, set: u32, clear: u32) -> u32 {
+        self.update_ordered(
+            set,
+            clear,
+            core::sync::atomic::Ordering::Relaxed,
+            core::sync::atomic::Ordering::Relaxed,
+        )
+    }
+
+    /// Apply one state-machine transition with acquire/release synchronization.
+    /// This class is reserved for flags that themselves publish or consume
+    /// cross-thread state.
+    #[inline(always)]
+    pub fn update_synchronized(&self, set: u32, clear: u32) -> u32 {
+        self.update_ordered(
+            set,
+            clear,
+            core::sync::atomic::Ordering::AcqRel,
+            core::sync::atomic::Ordering::Acquire,
+        )
+    }
+
+    #[inline(always)]
+    fn update_ordered(
+        &self,
+        set: u32,
+        clear: u32,
+        success: core::sync::atomic::Ordering,
+        failure: core::sync::atomic::Ordering,
+    ) -> u32 {
+        let mut observed = self.load(failure);
         loop {
             let updated = (observed | set) & !clear;
             if updated == observed {
                 return observed;
             }
-            match self.compare_exchange(
-                observed,
-                updated,
-                core::sync::atomic::Ordering::AcqRel,
-                core::sync::atomic::Ordering::Acquire,
-            ) {
+            match self.compare_exchange(observed, updated, success, failure) {
                 Ok(previous) => return previous,
                 Err(actual) => observed = actual,
             }
@@ -581,6 +832,36 @@ mod tests {
     }
 
     #[test]
+    fn every_generated_object_fact_is_fingerprint_significant() {
+        let canonical = GENERATED_OBJECT_ABI_FACTS.words();
+        assert_eq!(
+            fingerprint_words(canonical),
+            GENERATED_OBJECT_ABI_FINGERPRINT_V1
+        );
+        for index in 0..canonical.len() {
+            let mut changed = canonical;
+            changed[index] ^= 1;
+            assert_ne!(
+                fingerprint_words(changed),
+                GENERATED_OBJECT_ABI_FINGERPRINT_V1,
+                "generated-object ABI word {index} is not fingerprinted"
+            );
+        }
+    }
+
+    #[test]
+    fn generated_object_link_symbols_embed_fingerprint_and_revision() {
+        let fingerprint = std::format!("{:016x}", GENERATED_OBJECT_ABI_FINGERPRINT_V1);
+        for symbol in [
+            GENERATED_OBJECT_ABI_GIL_SYMBOL,
+            GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL,
+        ] {
+            assert!(symbol.contains(&fingerprint), "{symbol}");
+            assert!(symbol.ends_with("_v1"), "{symbol}");
+        }
+    }
+
+    #[test]
     fn molt_flags_primitives_preserve_disjoint_bits() {
         use core::sync::atomic::Ordering;
 
@@ -594,6 +875,24 @@ mod tests {
             HEADER_FLAG_HAS_PTRS | HEADER_FLAG_IMMORTAL
         );
         assert_eq!(flags.load(Ordering::Acquire), HEADER_FLAG_IMMORTAL);
+    }
+
+    #[test]
+    fn explicit_ordering_classes_preserve_the_same_word_transition() {
+        use core::sync::atomic::Ordering;
+
+        let relaxed = MoltFlags::new(HEADER_FLAG_HAS_PTRS);
+        let synchronized = MoltFlags::new(HEADER_FLAG_HAS_PTRS);
+        assert_eq!(
+            relaxed.update_relaxed(HEADER_FLAG_IMMORTAL, HEADER_FLAG_HAS_PTRS),
+            HEADER_FLAG_HAS_PTRS
+        );
+        assert_eq!(
+            synchronized.update_synchronized(HEADER_FLAG_IMMORTAL, HEADER_FLAG_HAS_PTRS),
+            HEADER_FLAG_HAS_PTRS
+        );
+        assert_eq!(relaxed.load(Ordering::Relaxed), HEADER_FLAG_IMMORTAL);
+        assert_eq!(synchronized.load(Ordering::Acquire), HEADER_FLAG_IMMORTAL);
     }
 
     #[test]

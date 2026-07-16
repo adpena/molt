@@ -511,6 +511,84 @@ def test_prepare_backend_cache_setup_reuses_cache_fingerprints_for_backend_keys(
     assert all(value >= 0.0 for value in stage_timings_ms.values())
 
 
+def test_prepare_backend_cache_setup_custodies_free_threaded_mode_end_to_end(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected = ("native-backend",)
+    seen: list[tuple[str, ...]] = []
+
+    def selected_features(*, target: str, is_wasm: bool) -> tuple[str, ...]:
+        assert target == "native"
+        assert not is_wasm
+        return selected
+
+    def compiler_fingerprint(**kwargs: object) -> str:
+        features = tuple(kwargs["backend_features"])  # type: ignore[arg-type]
+        seen.append(features)
+        return "compiler-" + ",".join(features)
+
+    monkeypatch.setattr(
+        cli_backend_cache_setup,
+        "_backend_features_for_build_target",
+        selected_features,
+    )
+    monkeypatch.setattr(
+        cli_backend_cache_setup,
+        "_cache_fingerprint",
+        compiler_fingerprint,
+    )
+    ir = _ir_with_stdlib(
+        user_ops=[],
+        stdlib_ops=[{"kind": "code_slot_set", "value": 73}],
+    )
+    module_graph_metadata = cli._ModuleGraphMetadata(
+        logical_source_path_by_module={},
+        entry_override_by_module={},
+        module_is_namespace_by_module={},
+        module_is_package_by_module={},
+        frontend_module_costs=None,
+        stdlib_like_by_module={"sys": True},
+    )
+    common = dict(
+        cache_enabled=True,
+        ir=ir,
+        target="native",
+        target_triple=None,
+        profile="dev",
+        runtime_cargo_profile="dev-fast",
+        backend_cargo_profile="dev-fast",
+        emit_mode="bin",
+        is_wasm=False,
+        linked=False,
+        project_root=tmp_path,
+        cache_dir=str(tmp_path / "cache"),
+        warnings=[],
+        entry_module="app",
+        module_graph_metadata=module_graph_metadata,
+        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+        stdlib_profile="micro",
+    )
+
+    default = cli_backend_cache_setup._prepare_backend_cache_setup(
+        output_artifact=tmp_path / "default.o",
+        **common,
+    )
+    selected = ("native-backend", "free-threaded")
+    free_threaded = cli_backend_cache_setup._prepare_backend_cache_setup(
+        output_artifact=tmp_path / "free-threaded.o",
+        **common,
+    )
+
+    assert default.cache_key != free_threaded.cache_key
+    assert default.function_cache_key != free_threaded.function_cache_key
+    assert default.stdlib_object_cache_key != free_threaded.stdlib_object_cache_key
+    assert seen == [
+        ("native-backend",),
+        ("native-backend", "free-threaded"),
+    ]
+
+
 def test_prepare_backend_cache_setup_caches_stdlib_key_material(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2081,8 +2159,7 @@ def test_native_object_symbol_sets_reuse_stat_keyed_result(
         return subprocess.CompletedProcess(
             cmd,
             0,
-            "00000000 T hello__molt_module_chunk_1\n"
-            "         U molt_runtime_symbol\n",
+            "00000000 T hello__molt_module_chunk_1\n         U molt_runtime_symbol\n",
             "",
         )
 
@@ -2115,8 +2192,7 @@ def test_native_object_symbol_sets_reuse_persistent_symbol_facts(
         return subprocess.CompletedProcess(
             cmd,
             0,
-            "00000000 T hello__molt_module_chunk_1\n"
-            "         U molt_runtime_symbol\n",
+            "00000000 T hello__molt_module_chunk_1\n         U molt_runtime_symbol\n",
             "",
         )
 

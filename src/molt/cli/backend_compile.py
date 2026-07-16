@@ -570,6 +570,7 @@ def _prepare_backend_dispatch(
             backend_cargo_profile,
             backend_bin=backend_bin,
             target_triple=target_triple,
+            backend_features=backend_features,
         )
         if diagnostics_enabled and "backend_daemon_setup" not in phase_starts:
             phase_starts["backend_daemon_setup"] = time.perf_counter()

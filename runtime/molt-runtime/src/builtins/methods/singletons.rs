@@ -80,7 +80,7 @@ mod tests {
             let header = header_from_obj_ptr(ptr);
             assert_eq!(object_type_id(ptr), type_id);
             assert_ne!(
-                (*header).load_flags() & crate::object::HEADER_FLAG_IMMORTAL,
+                (*header).load_metadata_flags() & crate::object::HEADER_FLAG_IMMORTAL,
                 0
             );
             let refcount = (*header).ref_count.load(AtomicOrdering::Acquire);

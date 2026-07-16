@@ -435,7 +435,7 @@ pub(crate) fn task_waiting_on_event(_py: &PyToken<'_>, task_ptr: *mut u8) -> boo
     unsafe {
         let header = header_from_obj_ptr(awaited);
         let poll_fn = crate::object::object_poll_fn(awaited);
-        if ((*header).load_flags() & HEADER_FLAG_SPAWN_RETAIN) != 0 {
+        if ((*header).load_synchronized_flags() & HEADER_FLAG_SPAWN_RETAIN) != 0 {
             return true;
         }
         poll_fn == io_wait_poll_fn_addr()

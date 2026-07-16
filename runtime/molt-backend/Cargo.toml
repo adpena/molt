@@ -28,6 +28,7 @@ cudarc = { version = "0.19", optional = true, default-features = false, features
 mlx-rs = { version = "0.25", optional = true }
 
 [dev-dependencies]
+molt-codegen-abi = { path = "../molt-codegen-abi" }
 # Re-import molt-tir with the test-util feature so molt-backend's own tests can
 # reach the crate-private accessor seams (representation-plan / tir-cache /
 # value-range) that molt-tir exposes only under #[cfg(any(test, feature = "test-util"))].
