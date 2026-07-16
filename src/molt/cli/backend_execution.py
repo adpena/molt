@@ -54,7 +54,7 @@ _BACKEND_DAEMON_PROTOCOL_VERSION = 1
 _BACKEND_CODEGEN_ENV_DIGEST_SCHEMA_VERSION = 4
 
 
-_DAEMON_CONFIG_DIGEST_SCHEMA_VERSION = 3
+_DAEMON_CONFIG_DIGEST_SCHEMA_VERSION = 4
 
 
 _BACKEND_CODEGEN_REQUEST_ENV_KNOBS = (
@@ -401,6 +401,7 @@ def _backend_daemon_config_digest(
     env: Mapping[str, str] | None = None,
     backend_bin: Path | None = None,
     target_triple: str | None = None,
+    backend_features: tuple[str, ...] = _DEFAULT_BACKEND_FEATURES,
 ) -> str:
     payload = {
         "schema": _DAEMON_CONFIG_DIGEST_SCHEMA_VERSION,
@@ -408,7 +409,10 @@ def _backend_daemon_config_digest(
         "cargo_profile": cargo_profile,
         "codegen": _backend_codegen_env_inputs(is_wasm=False, env=env),
         "native_relocatable_linker": _native_relocatable_linker_identity(env),
-        "compiler_runtime_backend_fingerprint": _cache_fingerprint(),
+        "backend_features": sorted(backend_features),
+        "compiler_runtime_backend_fingerprint": _cache_fingerprint(
+            backend_features=backend_features
+        ),
         "frontend_tooling_fingerprint": _cache_tooling_fingerprint(),
     }
     if backend_bin is not None:

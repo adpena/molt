@@ -1,6 +1,7 @@
 use crate::PyToken;
 use crate::object::{
-    ClassEdgeOwnership, object_init_class_edge_unpublished, release_shutdown_owned_bits,
+    ClassEdgeOwnership, IMMORTAL_REFCOUNT, object_init_class_edge_unpublished,
+    release_shutdown_owned_bits,
 };
 use crate::*;
 
@@ -1198,7 +1199,7 @@ pub(crate) fn alloc_tuple(_py: &PyToken<'_>, elems: &[u64]) -> *mut u8 {
             );
             (*header)
                 .ref_count
-                .store(u32::MAX, std::sync::atomic::Ordering::Release);
+                .store(IMMORTAL_REFCOUNT, std::sync::atomic::Ordering::Release);
         }
         return match EMPTY_TUPLE_PTR.compare_exchange(
             std::ptr::null_mut(),
@@ -1615,7 +1616,7 @@ fn init_ascii_chars(_py: &PyToken<'_>) {
             );
             (*header)
                 .ref_count
-                .store(u32::MAX, std::sync::atomic::Ordering::Relaxed);
+                .store(IMMORTAL_REFCOUNT, std::sync::atomic::Ordering::Relaxed);
         }
         // If another thread raced us, the first writer wins; second allocation leaks
         // harmlessly (both are immortal).
@@ -1686,7 +1687,7 @@ pub(crate) fn alloc_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
                     (*header).fetch_or_flags(crate::object::HEADER_FLAG_IMMORTAL);
                     (*header)
                         .ref_count
-                        .store(u32::MAX, std::sync::atomic::Ordering::Relaxed);
+                        .store(IMMORTAL_REFCOUNT, std::sync::atomic::Ordering::Relaxed);
                 }
                 let _ = EMPTY_STRING_PTR.compare_exchange(
                     std::ptr::null_mut(),
@@ -1742,7 +1743,7 @@ pub(crate) fn alloc_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
             );
             (*header)
                 .ref_count
-                .store(u32::MAX, std::sync::atomic::Ordering::Relaxed);
+                .store(IMMORTAL_REFCOUNT, std::sync::atomic::Ordering::Relaxed);
         }
         // Insert into pool; on concurrent miss (two threads race) we accept the
         // redundant allocation — the first writer wins and the second allocation
@@ -1820,7 +1821,7 @@ pub(crate) fn alloc_bytes(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
                     (*header).fetch_or_flags(crate::object::HEADER_FLAG_IMMORTAL);
                     (*header)
                         .ref_count
-                        .store(u32::MAX, std::sync::atomic::Ordering::Relaxed);
+                        .store(IMMORTAL_REFCOUNT, std::sync::atomic::Ordering::Relaxed);
                 }
                 let _ = EMPTY_BYTES_PTR.compare_exchange(
                     std::ptr::null_mut(),

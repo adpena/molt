@@ -485,7 +485,7 @@ pub(crate) unsafe fn replace_unique_pair(
             .ref_count
             .load(std::sync::atomic::Ordering::Acquire)
     } != 1
-        || unsafe { (*header).load_flags() } & HEADER_FLAG_HAS_ABI_VIEW != 0
+        || unsafe { (*header).load_synchronized_flags() } & HEADER_FLAG_HAS_ABI_VIEW != 0
     {
         return None;
     }

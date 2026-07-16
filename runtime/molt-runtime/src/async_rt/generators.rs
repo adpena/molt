@@ -108,7 +108,7 @@ unsafe fn generator_set_closed(_py: &PyToken<'_>, ptr: *mut u8, closed: bool) {
 pub(crate) unsafe fn generator_running(ptr: *mut u8) -> bool {
     unsafe {
         let header = header_from_obj_ptr(ptr);
-        ((*header).load_flags() & HEADER_FLAG_GEN_RUNNING) != 0
+        ((*header).load_synchronized_flags() & HEADER_FLAG_GEN_RUNNING) != 0
     }
 }
 
@@ -136,7 +136,7 @@ impl Drop for GeneratorRunningGuard {
 pub(crate) unsafe fn generator_started(ptr: *mut u8) -> bool {
     unsafe {
         let header = header_from_obj_ptr(ptr);
-        ((*header).load_flags() & HEADER_FLAG_GEN_STARTED) != 0
+        ((*header).load_synchronized_flags() & HEADER_FLAG_GEN_STARTED) != 0
     }
 }
 

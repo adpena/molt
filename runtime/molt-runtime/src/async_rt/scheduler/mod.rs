@@ -411,7 +411,7 @@ impl MoltScheduler {
                 let poll_fn_addr = crate::object::object_poll_fn(task_ptr);
                 {
                     let _guard = task_queue_lock().lock().unwrap();
-                    if ((*header).load_flags() & HEADER_FLAG_TASK_DONE) != 0 {
+                    if ((*header).load_synchronized_flags() & HEADER_FLAG_TASK_DONE) != 0 {
                         (*header).update_flags(
                             0,
                             HEADER_FLAG_TASK_QUEUED
@@ -557,7 +557,7 @@ impl MoltScheduler {
                 let poll_fn_addr = crate::object::object_poll_fn(task_ptr);
                 {
                     let _guard = task_queue_lock().lock().unwrap();
-                    if ((*header).load_flags() & HEADER_FLAG_TASK_DONE) != 0 {
+                    if ((*header).load_synchronized_flags() & HEADER_FLAG_TASK_DONE) != 0 {
                         (*header).update_flags(
                             0,
                             HEADER_FLAG_TASK_QUEUED
@@ -820,7 +820,7 @@ fn enqueue_task_ptr(_py: &PyToken<'_>, task_ptr: *mut u8) {
         let _guard = task_queue_lock().lock().unwrap();
         unsafe {
             let header = header_from_obj_ptr(task_ptr);
-            let flags = (*header).load_flags();
+            let flags = (*header).load_synchronized_flags();
             if (flags & HEADER_FLAG_TASK_DONE) != 0 {
                 should_return = true;
             }
@@ -859,7 +859,7 @@ pub(crate) fn wake_task_ptr(_py: &PyToken<'_>, task_ptr: *mut u8) {
         let _guard = task_queue_lock().lock().unwrap();
         unsafe {
             let header = header_from_obj_ptr(task_ptr);
-            if ((*header).load_flags() & HEADER_FLAG_TASK_DONE) != 0 {
+            if ((*header).load_synchronized_flags() & HEADER_FLAG_TASK_DONE) != 0 {
                 return;
             }
             if async_trace_enabled() {
@@ -880,7 +880,7 @@ pub(crate) fn wake_task_ptr(_py: &PyToken<'_>, task_ptr: *mut u8) {
         let _guard = task_queue_lock().lock().unwrap();
         unsafe {
             let header = header_from_obj_ptr(task_ptr);
-            let flags = (*header).load_flags();
+            let flags = (*header).load_synchronized_flags();
             let done = (flags & HEADER_FLAG_TASK_DONE) != 0;
             let block_on = (flags & HEADER_FLAG_BLOCK_ON) != 0;
             let running = (flags & HEADER_FLAG_TASK_RUNNING) != 0;

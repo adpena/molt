@@ -160,13 +160,13 @@ fn try_pin_cookie_state(cookie: WeakContainerCookie) -> bool {
     let header = unsafe { header_from_obj_ptr(state_ptr) };
     unsafe {
         if (*header).type_id != crate::TYPE_ID_WEAK_CONTAINER_STATE
-            || ((*header).load_flags() & super::HEADER_FLAG_DEALLOCATING) != 0
+            || ((*header).load_synchronized_flags() & super::HEADER_FLAG_DEALLOCATING) != 0
         {
             return false;
         }
         let mut current = (*header).ref_count.load(AtomicOrdering::Acquire);
         loop {
-            if current == 0 || current == u32::MAX {
+            if current == 0 || current == super::IMMORTAL_REFCOUNT {
                 return false;
             }
             match (*header).ref_count.compare_exchange_weak(
@@ -177,7 +177,7 @@ fn try_pin_cookie_state(cookie: WeakContainerCookie) -> bool {
             ) {
                 Ok(_) => {
                     debug_assert_eq!(
-                        (*header).load_flags() & super::HEADER_FLAG_DEALLOCATING,
+                        (*header).load_synchronized_flags() & super::HEADER_FLAG_DEALLOCATING,
                         0,
                         "state entered terminal death after a successful live retain"
                     );
@@ -788,7 +788,7 @@ pub extern "C" fn molt_weakref_register(
             let msg = format!("cannot create weak reference to '{type_label}' object");
             return raise_exception::<_>(_py, "TypeError", &msg);
         }
-        if unsafe { (*header_from_obj_ptr(target_ptr)).load_flags() }
+        if unsafe { (*header_from_obj_ptr(target_ptr)).load_synchronized_flags() }
             & super::HEADER_FLAG_DEALLOCATING
             != 0
         {

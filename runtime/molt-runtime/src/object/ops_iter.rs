@@ -2346,7 +2346,7 @@ mod tests {
                 assert_eq!(first_ptr, cached);
                 let first_header = header_from_obj_ptr(first_ptr);
                 assert_eq!(
-                    (*first_header).load_flags() & HEADER_FLAG_CONTAINS_REFS,
+                    (*first_header).load_metadata_flags() & HEADER_FLAG_CONTAINS_REFS,
                     0,
                     "primitive cached pair should not be marked as ref-containing",
                 );
@@ -2367,7 +2367,7 @@ mod tests {
                 assert_eq!(second_ptr, cached, "cached tuple should be reused in place");
                 let second_header = header_from_obj_ptr(second_ptr);
                 assert_ne!(
-                    (*second_header).load_flags() & HEADER_FLAG_CONTAINS_REFS,
+                    (*second_header).load_metadata_flags() & HEADER_FLAG_CONTAINS_REFS,
                     0,
                     "cached pair mutated to hold heap refs must mark the tuple for element decref",
                 );

@@ -443,7 +443,7 @@ pub(crate) fn type_of_bits(_py: &PyToken<'_>, val_bits: u64) -> u64 {
                 TYPE_ID_PROPERTY => builtins.property,
                 TYPE_ID_OBJECT => {
                     let header = header_from_obj_ptr(ptr);
-                    if ((*header).load_flags() & HEADER_FLAG_COROUTINE) != 0 {
+                    if ((*header).load_metadata_flags() & HEADER_FLAG_COROUTINE) != 0 {
                         return builtins.coroutine;
                     }
                     let class_bits = object_class_bits(ptr);

@@ -252,7 +252,7 @@ pub(crate) fn task_cancel_pending(task_ptr: *mut u8) -> bool {
     }
     unsafe {
         let header = header_from_obj_ptr(task_ptr);
-        ((*header).load_flags() & HEADER_FLAG_CANCEL_PENDING) != 0
+        ((*header).load_synchronized_flags() & HEADER_FLAG_CANCEL_PENDING) != 0
     }
 }
 
@@ -322,8 +322,8 @@ pub(crate) fn wake_tasks_for_cancelled_tokens(_py: &PyToken<'_>) {
     for task_ptr in wake_list {
         let should_wake = unsafe {
             let header = header_from_obj_ptr(task_ptr.0);
-            ((*header).load_flags() & HEADER_FLAG_SPAWN_RETAIN) != 0
-                || ((*header).load_flags() & HEADER_FLAG_BLOCK_ON) != 0
+            ((*header).load_synchronized_flags() & HEADER_FLAG_SPAWN_RETAIN) != 0
+                || ((*header).load_synchronized_flags() & HEADER_FLAG_BLOCK_ON) != 0
         };
         if should_wake {
             wake_task_ptr(_py, task_ptr.0);

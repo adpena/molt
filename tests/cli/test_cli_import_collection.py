@@ -1112,7 +1112,9 @@ def test_materialize_import_plan_adds_native_runtime_python_import_closure(
     assert "nativepkg.exceptions" in import_plan.compile_modules
     assert "native_runtime_python_import" in module_reasons["math"]
     assert "native_support_source" in module_reasons["nativepkg.exceptions"]
-    assert not any(name.startswith("tmp.acceptance") for name in import_plan.module_graph)
+    assert not any(
+        name.startswith("tmp.acceptance") for name in import_plan.module_graph
+    )
 
 
 def _sealed_manifest_custody_overrides() -> dict[str, Any]:
@@ -2191,9 +2193,7 @@ def test_materialize_import_plan_accepts_relocated_object_closure_source_custody
     external_root = tmp_path / "site"
     support_path = external_root / "nativepkg" / "ndimage" / "_measurements.py"
     support_path.parent.mkdir(parents=True)
-    source_candidate = (
-        external_root / "nativepkg" / "ndimage" / "src" / "_ni_label.c"
-    )
+    source_candidate = external_root / "nativepkg" / "ndimage" / "src" / "_ni_label.c"
     source_candidate.parent.mkdir(parents=True)
     source_candidate.write_text(
         "int PyInit__ni_label(void) { return 0; }\n", encoding="utf-8"
@@ -10407,7 +10407,9 @@ def test_persisted_import_scan_cache_tracks_tooling_fingerprint(
     module_path.write_text("import json\n", encoding="utf-8")
 
     monkeypatch.setattr(
-        cli_module_graph_cache, "_frontend_semantic_tooling_fingerprint", lambda: "tool-a"
+        cli_module_graph_cache,
+        "_frontend_semantic_tooling_fingerprint",
+        lambda: "tool-a",
     )
     cli_module_graph_cache._write_persisted_import_scan(
         tmp_path,
@@ -10426,7 +10428,9 @@ def test_persisted_import_scan_cache_tracks_tooling_fingerprint(
     ) == ("json",)
 
     monkeypatch.setattr(
-        cli_module_graph_cache, "_frontend_semantic_tooling_fingerprint", lambda: "tool-b"
+        cli_module_graph_cache,
+        "_frontend_semantic_tooling_fingerprint",
+        lambda: "tool-b",
     )
     assert (
         cli_module_graph_cache._read_persisted_import_scan(
@@ -10449,7 +10453,9 @@ def test_persisted_import_scan_cache_tracks_source_content(
     original = module_path.stat()
 
     monkeypatch.setattr(
-        cli_module_graph_cache, "_frontend_semantic_tooling_fingerprint", lambda: "tool-a"
+        cli_module_graph_cache,
+        "_frontend_semantic_tooling_fingerprint",
+        lambda: "tool-a",
     )
     cli_module_graph_cache._write_persisted_import_scan(
         tmp_path,
@@ -10554,7 +10560,9 @@ def test_persisted_module_graph_cache_tracks_tooling_fingerprint(
     stdlib_root = tmp_path / "stdlib"
 
     monkeypatch.setattr(
-        cli_module_graph_cache, "_frontend_semantic_tooling_fingerprint", lambda: "tool-a"
+        cli_module_graph_cache,
+        "_frontend_semantic_tooling_fingerprint",
+        lambda: "tool-a",
     )
     cli_module_graph_cache._write_persisted_module_graph(
         tmp_path,
@@ -10585,7 +10593,9 @@ def test_persisted_module_graph_cache_tracks_tooling_fingerprint(
     )
 
     monkeypatch.setattr(
-        cli_module_graph_cache, "_frontend_semantic_tooling_fingerprint", lambda: "tool-b"
+        cli_module_graph_cache,
+        "_frontend_semantic_tooling_fingerprint",
+        lambda: "tool-b",
     )
     assert (
         cli_module_graph_cache._read_persisted_module_graph(
@@ -10614,7 +10624,9 @@ def test_persisted_module_graph_cache_tracks_source_content(
     stdlib_root = tmp_path / "stdlib"
 
     monkeypatch.setattr(
-        cli_module_graph_cache, "_frontend_semantic_tooling_fingerprint", lambda: "tool-a"
+        cli_module_graph_cache,
+        "_frontend_semantic_tooling_fingerprint",
+        lambda: "tool-a",
     )
     cli_module_graph_cache._write_persisted_module_graph(
         tmp_path,
@@ -11450,7 +11462,9 @@ def test_persisted_module_analysis_cache_rejects_import_scan_mode_mismatch(
     )
     shared_payload = json.loads(shared_path.read_text(encoding="utf-8"))
     shared_payload["import_scan_mode"] = "module_init"
-    shared_path.write_text(json.dumps(shared_payload, indent=2) + "\n", encoding="utf-8")
+    shared_path.write_text(
+        json.dumps(shared_payload, indent=2) + "\n", encoding="utf-8"
+    )
 
     assert (
         cli._read_persisted_module_analysis(
@@ -12989,7 +13003,9 @@ def test_persisted_module_lowering_roundtrip_respects_context_digest(
     assert miss is None
 
 
-def test_module_lowering_cache_key_ignores_generated_output_path(tmp_path: Path) -> None:
+def test_module_lowering_cache_key_ignores_generated_output_path(
+    tmp_path: Path,
+) -> None:
     first = tmp_path / "run-a" / "namespace_pkg.py"
     second = tmp_path / "run-b" / "namespace_pkg.py"
     first.parent.mkdir()
@@ -15292,9 +15308,7 @@ def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
         ) -> bool:
             return False
 
-        def shutdown(
-            self, wait: bool = True, cancel_futures: bool = False
-        ) -> None:
+        def shutdown(self, wait: bool = True, cancel_futures: bool = False) -> None:
             del wait, cancel_futures
 
         def submit(self, fn: object, payload: dict[str, object]) -> _FakeFuture:
@@ -15448,9 +15462,7 @@ def test_parallel_build_reuses_dependent_cache_after_stable_interface_change(
         ) -> bool:
             return False
 
-        def shutdown(
-            self, wait: bool = True, cancel_futures: bool = False
-        ) -> None:
+        def shutdown(self, wait: bool = True, cancel_futures: bool = False) -> None:
             del wait, cancel_futures
 
         def submit(self, fn: object, payload: dict[str, object]) -> _FakeFuture:
@@ -15588,9 +15600,7 @@ def test_parallel_build_allows_scoped_type_facts(
         def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
             return False
 
-        def shutdown(
-            self, wait: bool = True, cancel_futures: bool = False
-        ) -> None:
+        def shutdown(self, wait: bool = True, cancel_futures: bool = False) -> None:
             del wait, cancel_futures
 
         def submit(self, fn: object, payload: dict[str, object]) -> _FakeFuture:
@@ -17209,8 +17219,7 @@ def test_emit_build_diagnostics_includes_runtime_wasm_cache_summary(
     assert "publish_successes=2/3" in stderr
     assert "publish_failures=1" in stderr
     assert (
-        "- runtime_wasm_cache.last_publish_failure: "
-        "artifact copy failed: disk full"
+        "- runtime_wasm_cache.last_publish_failure: artifact copy failed: disk full"
     ) in stderr
 
 
@@ -25144,17 +25153,23 @@ def test_backend_daemon_config_digest_tracks_compiler_content_fingerprints(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.setattr(BACKEND_EXECUTION, "_cache_fingerprint", lambda: "compiler-a")
+    monkeypatch.setattr(
+        BACKEND_EXECUTION, "_cache_fingerprint", lambda **_kwargs: "compiler-a"
+    )
     monkeypatch.setattr(
         BACKEND_EXECUTION, "_cache_tooling_fingerprint", lambda: "tooling-a"
     )
 
     digest_a = cli._backend_daemon_config_digest(tmp_path, "dev-fast")
 
-    monkeypatch.setattr(BACKEND_EXECUTION, "_cache_fingerprint", lambda: "compiler-b")
+    monkeypatch.setattr(
+        BACKEND_EXECUTION, "_cache_fingerprint", lambda **_kwargs: "compiler-b"
+    )
     digest_b = cli._backend_daemon_config_digest(tmp_path, "dev-fast")
 
-    monkeypatch.setattr(BACKEND_EXECUTION, "_cache_fingerprint", lambda: "compiler-b")
+    monkeypatch.setattr(
+        BACKEND_EXECUTION, "_cache_fingerprint", lambda **_kwargs: "compiler-b"
+    )
     monkeypatch.setattr(
         BACKEND_EXECUTION, "_cache_tooling_fingerprint", lambda: "tooling-b"
     )
@@ -25162,6 +25177,39 @@ def test_backend_daemon_config_digest_tracks_compiler_content_fingerprints(
 
     assert digest_a != digest_b
     assert digest_b != digest_c
+
+
+def test_backend_daemon_config_digest_custodies_backend_features(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    seen: list[tuple[str, ...]] = []
+
+    def fingerprint(**kwargs: object) -> str:
+        features = tuple(kwargs["backend_features"])  # type: ignore[arg-type]
+        seen.append(features)
+        return "compiler-" + ",".join(features)
+
+    monkeypatch.setattr(BACKEND_EXECUTION, "_cache_fingerprint", fingerprint)
+    monkeypatch.setattr(
+        BACKEND_EXECUTION, "_cache_tooling_fingerprint", lambda: "tooling"
+    )
+    default = cli._backend_daemon_config_digest(
+        tmp_path,
+        "dev-fast",
+        backend_features=("native-backend",),
+    )
+    free_threaded = cli._backend_daemon_config_digest(
+        tmp_path,
+        "dev-fast",
+        backend_features=("native-backend", "free-threaded"),
+    )
+
+    assert default != free_threaded
+    assert seen == [
+        ("native-backend",),
+        ("native-backend", "free-threaded"),
+    ]
 
 
 def test_backend_daemon_paths_are_cached(

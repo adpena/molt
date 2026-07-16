@@ -6159,7 +6159,7 @@ mod tests {
             Some(1)
         );
         assert_ne!(
-            unsafe { (*header_from_obj_ptr(list_ptr)).load_flags() }
+            unsafe { (*header_from_obj_ptr(list_ptr)).load_metadata_flags() }
                 & crate::object::HEADER_FLAG_CONTAINS_REFS,
             0
         );
@@ -6173,7 +6173,7 @@ mod tests {
             Some(0)
         );
         assert_eq!(
-            unsafe { (*header_from_obj_ptr(list_ptr)).load_flags() }
+            unsafe { (*header_from_obj_ptr(list_ptr)).load_metadata_flags() }
                 & crate::object::HEADER_FLAG_CONTAINS_REFS,
             0
         );
@@ -6688,7 +6688,8 @@ mod tests {
                 Some(1)
             );
             assert_ne!(
-                (*header_from_obj_ptr(ptr)).load_flags() & crate::object::HEADER_FLAG_CONTAINS_REFS,
+                (*header_from_obj_ptr(ptr)).load_metadata_flags()
+                    & crate::object::HEADER_FLAG_CONTAINS_REFS,
                 0
             );
             let old = match hook_tuple_set(bits, 2, val, ptr::null_mut()).decode() {
@@ -6701,7 +6702,8 @@ mod tests {
                 Some(0)
             );
             assert_eq!(
-                (*header_from_obj_ptr(ptr)).load_flags() & crate::object::HEADER_FLAG_CONTAINS_REFS,
+                (*header_from_obj_ptr(ptr)).load_metadata_flags()
+                    & crate::object::HEADER_FLAG_CONTAINS_REFS,
                 0
             );
             dec_ref_bits(&_py, heap_bits);

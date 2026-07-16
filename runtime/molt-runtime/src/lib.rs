@@ -15,6 +15,25 @@ compile_error!("feature `cext_loader` is unsupported on wasm32 targets");
 #[cfg(all(target_arch = "wasm32", feature = "source_extension_loader"))]
 compile_error!("feature `source_extension_loader` is unsupported on wasm32 targets");
 
+// Link-time execution-contract witness. Every generated native object carries
+// a relocation to exactly one mode/version-specific symbol, so a cached object
+// cannot be linked against a runtime built under the other header concurrency
+// contract. `#[used]` keeps the witness in static archives until link admission.
+#[cfg(not(feature = "free-threaded"))]
+#[used]
+#[unsafe(export_name = "molt_generated_object_abi_5fce853bad8ac502_gil_v1")]
+pub static MOLT_GENERATED_OBJECT_ABI_LINK_WITNESS: u8 = 0;
+
+const _: () = assert!(
+    cfg!(feature = "free-threaded") == molt_codegen_abi::MOLT_FLAGS_ATOMIC,
+    "molt-runtime/free-threaded must exactly match molt-codegen-abi/free-threaded",
+);
+
+#[cfg(feature = "free-threaded")]
+#[used]
+#[unsafe(export_name = "molt_generated_object_abi_5fce853bad8ac502_free_threaded_v1")]
+pub static MOLT_GENERATED_OBJECT_ABI_LINK_WITNESS: u8 = 0;
+
 macro_rules! fn_addr {
     ($func:path) => {
         $crate::builtins::functions::runtime_fn_addr(stringify!($func), $func as *const ())
