@@ -83,10 +83,20 @@ def _path_like_command(command: str) -> bool:
 
 def resolve_explicit_tool_command(raw_command: str, *, label: str) -> tuple[str, ...]:
     """Parse and resolve one explicitly configured executable command."""
+    direct_path = Path(raw_command).expanduser()
+    if direct_path.is_file():
+        return (str(direct_path.resolve()),)
     try:
-        argv = shlex.split(raw_command)
+        argv = shlex.split(raw_command, posix=os.name != "nt")
     except ValueError as exc:
         raise ValueError(f"{label} is not a valid shell command: {exc}") from exc
+    if os.name == "nt":
+        argv = [
+            argument[1:-1]
+            if len(argument) >= 2 and argument[0] == argument[-1] == '"'
+            else argument
+            for argument in argv
+        ]
     if not argv:
         raise ValueError(f"{label} is empty")
     executable = argv[0]
@@ -114,25 +124,58 @@ def _dedupe_paths(paths: Iterable[Path]) -> tuple[Path, ...]:
     return tuple(result)
 
 
+def _source_checkout_roots() -> tuple[Path, ...]:
+    """Return the loaded checkout and its Git common checkout, if worktree-backed."""
+    checkout = Path(__file__).resolve().parents[3]
+    roots = [checkout]
+    git_marker = checkout / ".git"
+    if git_marker.is_file():
+        try:
+            marker = git_marker.read_text(encoding="utf-8", errors="strict").strip()
+        except (OSError, UnicodeDecodeError):
+            marker = ""
+        if marker.startswith("gitdir:"):
+            raw_git_dir = marker.removeprefix("gitdir:").strip()
+            git_dir = Path(raw_git_dir)
+            if not git_dir.is_absolute():
+                git_dir = checkout / git_dir
+            resolved_git_dir = git_dir.resolve(strict=False)
+            common_dot_git = next(
+                (
+                    candidate
+                    for candidate in (resolved_git_dir, *resolved_git_dir.parents)
+                    if candidate.name == ".git"
+                ),
+                None,
+            )
+            if common_dot_git is not None:
+                roots.append(common_dot_git.parent)
+    return _dedupe_paths(roots)
+
+
 def _managed_llvm_bin_directories(target_root: Path | None) -> tuple[Path, ...]:
-    if target_root is None:
-        raw_target_root = os.environ.get("MOLT_TARGET_ROOT", "").strip()
-        if not raw_target_root:
-            return ()
-        target_root = Path(raw_target_root)
-    root = target_root.expanduser()
-    toolchains = root / "toolchains"
-    candidates: list[Path] = [
-        root / "bin",
-        toolchains / "wasi-sdk" / "bin",
-    ]
-    if toolchains.is_dir():
-        candidates.extend(
-            child / "bin"
-            for child in sorted(toolchains.iterdir(), reverse=True)
-            if child.is_dir()
-            and (child.name.startswith("llvm-") or child.name.startswith("wasi-sdk-"))
-        )
+    roots: list[Path] = []
+    if target_root is not None:
+        roots.append(target_root)
+    raw_target_root = os.environ.get("MOLT_TARGET_ROOT", "").strip()
+    if raw_target_root:
+        roots.append(Path(raw_target_root))
+    roots.extend(checkout / "target" for checkout in _source_checkout_roots())
+
+    candidates: list[Path] = []
+    for root in _dedupe_paths(roots):
+        toolchains = root / "toolchains"
+        candidates.extend((root / "bin", toolchains / "wasi-sdk" / "bin"))
+        if toolchains.is_dir():
+            candidates.extend(
+                child / "bin"
+                for child in sorted(toolchains.iterdir(), reverse=True)
+                if child.is_dir()
+                and (
+                    child.name.startswith("llvm-")
+                    or child.name.startswith("wasi-sdk-")
+                )
+            )
     return _dedupe_paths(candidates)
 
 
@@ -184,7 +227,30 @@ def llvm_tool_candidates(
     include_rust_toolchain: bool = False,
 ) -> tuple[Path, ...]:
     """Return one deterministic candidate ladder for every LLVM/WASI consumer."""
-    names = _LLVM_TOOL_NAMES[role]
+    return llvm_named_tool_candidates(
+        *_LLVM_TOOL_NAMES[role],
+        explicit_commands=explicit_commands,
+        sibling_directories=sibling_directories,
+        target_root=target_root,
+        include_rust_toolchain=include_rust_toolchain,
+    )
+
+
+def llvm_named_tool_candidates(
+    *names: str,
+    explicit_commands: Sequence[tuple[str, ...]] = (),
+    sibling_directories: Sequence[Path] = (),
+    target_root: Path | None = None,
+    include_rust_toolchain: bool = False,
+) -> tuple[Path, ...]:
+    """Resolve an LLVM utility through the canonical managed-tool ladder.
+
+    The fixed role API above remains the authority for required toolchain roles.
+    Inspection and profiling utilities such as ``llvm-readobj`` use this generic
+    entry point so they do not grow a second PATH/managed-tool resolver.
+    """
+    if not names or any(not name for name in names):
+        raise ValueError("at least one non-empty LLVM tool name is required")
     explicit_paths = (Path(command[0]) for command in explicit_commands if command)
     directories: list[Path] = list(sibling_directories)
     if include_rust_toolchain:

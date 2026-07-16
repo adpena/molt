@@ -222,6 +222,8 @@ def _run_cargo_with_sccache_retry(
         capture_output=True,
         memory_guard_prefix="MOLT_BUILD",
         timeout=timeout,
+        encoding="utf-8",
+        errors="strict",
     )
     wrapper = env.get("RUSTC_WRAPPER", "")
     if (
@@ -244,6 +246,8 @@ def _run_cargo_with_sccache_retry(
             capture_output=True,
             memory_guard_prefix="MOLT_BUILD",
             timeout=timeout,
+            encoding="utf-8",
+            errors="strict",
         )
     active_wrapper = env.get("RUSTC_WRAPPER", "")
     if not json_output and active_wrapper and Path(active_wrapper).name == "sccache":
