@@ -616,7 +616,7 @@ unsafe fn function_needs_task_trampoline(_py: &PyToken<'_>, func_bits: u64) -> b
 unsafe fn function_task_trampoline_cached(func_ptr: *mut u8) -> Option<bool> {
     unsafe {
         let header = header_from_obj_ptr(func_ptr);
-        let flags = (*header).load_flags();
+        let flags = (*header).load_metadata_flags();
         if (flags & HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN) == 0 {
             return None;
         }
@@ -627,7 +627,9 @@ unsafe fn function_task_trampoline_cached(func_ptr: *mut u8) -> Option<bool> {
 #[inline]
 pub(crate) unsafe fn function_has_variadic_trampoline(func_ptr: *mut u8) -> bool {
     unsafe {
-        ((*header_from_obj_ptr(func_ptr)).load_flags() & HEADER_FLAG_FUNC_VARIADIC_TRAMPOLINE) != 0
+        ((*header_from_obj_ptr(func_ptr)).load_metadata_flags()
+            & HEADER_FLAG_FUNC_VARIADIC_TRAMPOLINE)
+            != 0
     }
 }
 

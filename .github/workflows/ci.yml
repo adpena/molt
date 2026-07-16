@@ -464,6 +464,11 @@ jobs:
           python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
             cargo test -p molt-backend --features "native-backend llvm" --lib llvm_backend::lowering --no-fail-fast
 
+      - name: Verify LLVM generated-object ABI link admission
+        run: |
+          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
+            cargo test -p molt-backend --features "native-backend llvm" --test llvm_generated_object_linkage
+
       - name: Clippy (molt-backend, llvm feature)
         run: |
           python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \

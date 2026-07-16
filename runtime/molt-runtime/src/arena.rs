@@ -296,7 +296,7 @@ mod tests {
                     "fresh arena alloc should have refcount 1"
                 );
                 assert_ne!(
-                    (*header).load_flags() & HEADER_FLAG_ARENA,
+                    (*header).load_metadata_flags() & HEADER_FLAG_ARENA,
                     0,
                     "HEADER_FLAG_ARENA must be set so dec_ref skips dealloc"
                 );

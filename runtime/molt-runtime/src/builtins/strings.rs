@@ -1999,7 +1999,7 @@ pub unsafe extern "C" fn molt_bytes_from_bytes(
                         "[molt bytes_from_bytes] empty ptr=0x{:x} type_id={} flags=0x{:x}",
                         obj_ptr as usize,
                         (*header).type_id,
-                        (*header).load_flags()
+                        (*header).load_metadata_flags()
                     );
                 }
                 write_bits_out(out, MoltObject::from_ptr(obj_ptr).bits());
@@ -2030,7 +2030,7 @@ pub unsafe extern "C" fn molt_bytes_from_bytes(
                     len,
                     obj_ptr as usize,
                     (*header).type_id,
-                    (*header).load_flags()
+                    (*header).load_metadata_flags()
                 );
             }
             write_bits_out(out, bits);

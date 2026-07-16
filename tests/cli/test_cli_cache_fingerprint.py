@@ -46,9 +46,10 @@ def test_cache_payload_digest_matches_canonical_json_bytes() -> None:
     assert b"".join(CACHE_KEYS._iter_cache_json_payload_bytes(payload)) == (
         canonical_bytes
     )
-    assert CACHE_KEYS._cache_payload_digest(payload) == hashlib.sha256(
-        canonical_bytes
-    ).hexdigest()
+    assert (
+        CACHE_KEYS._cache_payload_digest(payload)
+        == hashlib.sha256(canonical_bytes).hexdigest()
+    )
 
 
 @pytest.fixture
@@ -134,7 +135,9 @@ def test_cache_fingerprint_threads_selected_backend_and_runtime_features(
         "_backend_source_paths",
         backend_source_paths,
     )
-    monkeypatch.setattr(CACHE_FINGERPRINTS, "_runtime_source_paths", runtime_source_paths)
+    monkeypatch.setattr(
+        CACHE_FINGERPRINTS, "_runtime_source_paths", runtime_source_paths
+    )
     monkeypatch.setattr(CACHE_FINGERPRINTS, "_rustc_version", lambda: "rustc-test")
 
     fingerprint = CACHE_FINGERPRINTS._cache_fingerprint(
@@ -164,13 +167,41 @@ def test_cache_fingerprint_can_exclude_runtime_implementation_sources(
         "_backend_source_paths",
         lambda source_root, backend_features: [backend_source],
     )
-    monkeypatch.setattr(CACHE_FINGERPRINTS, "_runtime_source_paths", runtime_source_paths)
+    monkeypatch.setattr(
+        CACHE_FINGERPRINTS, "_runtime_source_paths", runtime_source_paths
+    )
     monkeypatch.setattr(CACHE_FINGERPRINTS, "_rustc_version", lambda: "rustc-test")
 
     assert CACHE_FINGERPRINTS._cache_fingerprint(
         backend_features=("native-backend",),
         include_runtime_sources=False,
     )
+
+
+def test_cache_fingerprint_custodies_backend_concurrency_feature(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    root = tmp_path / "repo"
+    backend_source = root / "runtime" / "molt-backend-native" / "src" / "lib.rs"
+    backend_source.parent.mkdir(parents=True)
+    backend_source.write_text("pub fn backend_marker() {}\n", encoding="utf-8")
+    monkeypatch.setattr(COMPILER_METADATA, "_COMPILER_ROOT", root)
+    monkeypatch.setattr(
+        CACHE_FINGERPRINTS,
+        "_backend_source_paths",
+        lambda source_root, backend_features: [backend_source],
+    )
+    monkeypatch.setattr(CACHE_FINGERPRINTS, "_rustc_version", lambda: "rustc-test")
+
+    default = CACHE_FINGERPRINTS._cache_fingerprint(
+        backend_features=("native-backend",),
+        include_runtime_sources=False,
+    )
+    free_threaded = CACHE_FINGERPRINTS._cache_fingerprint(
+        backend_features=("native-backend", "free-threaded"),
+        include_runtime_sources=False,
+    )
+    assert default != free_threaded
 
 
 def _write_crate(root: Path, name: str, manifest: str, lib_text: str = "") -> Path:
@@ -588,7 +619,9 @@ def test_source_tree_fingerprint_transaction_reuses_content_complete_result(
         calls.append(path)
         return original(path)
 
-    monkeypatch.setattr(CACHE_FINGERPRINTS, "_file_content_signature", counted_signature)
+    monkeypatch.setattr(
+        CACHE_FINGERPRINTS, "_file_content_signature", counted_signature
+    )
 
     with CACHE_FINGERPRINTS._source_tree_fingerprint_transaction():
         first = CACHE_FINGERPRINTS._source_tree_cache_fingerprint(
@@ -725,7 +758,9 @@ def test_lowering_scope_source_files_cache_validates_compact_pathspec_state(
             return full_state
         return None
 
-    monkeypatch.setattr(CACHE_FINGERPRINTS, "_default_molt_cache", lambda: tmp_path / "cache")
+    monkeypatch.setattr(
+        CACHE_FINGERPRINTS, "_default_molt_cache", lambda: tmp_path / "cache"
+    )
     monkeypatch.setattr(
         CACHE_FINGERPRINTS,
         "_compiler_clean_pathspec_source_state",
@@ -739,7 +774,9 @@ def test_lowering_scope_source_files_cache_validates_compact_pathspec_state(
         files,
     )
 
-    cached = CACHE_FINGERPRINTS._read_lowering_scope_source_files_cache(root, seed_state)
+    cached = CACHE_FINGERPRINTS._read_lowering_scope_source_files_cache(
+        root, seed_state
+    )
 
     assert cached == files
     assert seen_path_keys == [compact_full_keys]
@@ -771,7 +808,9 @@ def test_lowering_scope_source_files_cache_rejects_stale_full_state(
     }
     current_full_state = dict(stored_full_state, tracked_digest="new-objects")
 
-    monkeypatch.setattr(CACHE_FINGERPRINTS, "_default_molt_cache", lambda: tmp_path / "cache")
+    monkeypatch.setattr(
+        CACHE_FINGERPRINTS, "_default_molt_cache", lambda: tmp_path / "cache"
+    )
     monkeypatch.setattr(
         CACHE_FINGERPRINTS,
         "_compiler_clean_pathspec_source_state",
@@ -785,4 +824,7 @@ def test_lowering_scope_source_files_cache_rejects_stale_full_state(
         files,
     )
 
-    assert CACHE_FINGERPRINTS._read_lowering_scope_source_files_cache(root, seed_state) is None
+    assert (
+        CACHE_FINGERPRINTS._read_lowering_scope_source_files_cache(root, seed_state)
+        is None
+    )

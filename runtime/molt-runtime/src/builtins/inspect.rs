@@ -1208,7 +1208,7 @@ pub extern "C" fn molt_inspect_iscoroutine(obj_bits: u64) -> u64 {
             unsafe {
                 if object_type_id(ptr) == TYPE_ID_OBJECT {
                     let header = crate::header_from_obj_ptr(ptr);
-                    if ((*header).load_flags() & HEADER_FLAG_COROUTINE) != 0 {
+                    if ((*header).load_metadata_flags() & HEADER_FLAG_COROUTINE) != 0 {
                         return MoltObject::from_bool(true).bits();
                     }
                 }

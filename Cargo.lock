@@ -2787,6 +2787,7 @@ dependencies = [
  "molt-backend-native",
  "molt-backend-rust",
  "molt-backend-wasm",
+ "molt-codegen-abi",
  "molt-ir",
  "molt-tir",
  "objc",

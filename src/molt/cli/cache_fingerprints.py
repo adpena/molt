@@ -31,6 +31,7 @@ _BACKEND_FACADE_CRATE = Path("runtime/molt-backend")
 _BACKEND_CACHE_ALL_FEATURES = (
     "cbor",
     "egraphs",
+    "free-threaded",
     "jemalloc",
     "llvm",
     "luau-backend",
@@ -320,9 +321,7 @@ def _module_level_molt_import_targets(path: Path, src_root: Path) -> set[str]:
                 if node.level > 1:
                     trim = node.level - 1
                     base_parts = base_parts[:-trim] if trim < len(base_parts) else []
-                base = ".".join(
-                    base_parts + ([node.module] if node.module else [])
-                )
+                base = ".".join(base_parts + ([node.module] if node.module else []))
                 if not base.startswith("molt"):
                     continue
             # Attribute the dependency to each imported name (submodule ``base.X``
@@ -639,7 +638,10 @@ def _source_tree_content_digest(
         scope,
         extra_fingerprint_inputs,
     )
-    if len(_SOURCE_TREE_CONTENT_DIGEST_CACHE) >= _SOURCE_TREE_CONTENT_DIGEST_CACHE_LIMIT:
+    if (
+        len(_SOURCE_TREE_CONTENT_DIGEST_CACHE)
+        >= _SOURCE_TREE_CONTENT_DIGEST_CACHE_LIMIT
+    ):
         _SOURCE_TREE_CONTENT_DIGEST_CACHE.clear()
     _SOURCE_TREE_CONTENT_DIGEST_CACHE[cache_key] = digest
     return digest
@@ -727,11 +729,21 @@ def _cache_fingerprint(
                 root,
                 runtime_features=_selected_source_features(runtime_features),
             )
+    runtime_feature_contract = (
+        "all-source-features"
+        if runtime_features is None
+        else ",".join(_selected_source_features(runtime_features))
+    )
     return _source_tree_cache_fingerprint(
         root=root,
         source_paths=source_paths,
         scope="compiler-runtime-backend",
-        extra_fingerprint_inputs=(f"rustc:{rustc_info}\nrustflags:{rustflags}\n"),
+        extra_fingerprint_inputs=(
+            f"rustc:{rustc_info}\n"
+            f"rustflags:{rustflags}\n"
+            f"backend_features:{','.join(selected_backend_features)}\n"
+            f"runtime_features:{runtime_feature_contract}\n"
+        ),
     )
 
 

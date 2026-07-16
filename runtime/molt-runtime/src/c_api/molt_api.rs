@@ -139,7 +139,7 @@ pub extern "C" fn molt_c_heap_type_canonicalize(kind: u32, ptr: usize) -> usize 
 
 /// Magic word stamped into the shared `_MoltCHeapObject` header (`"MOLTCOBJ"`).
 const C_HEAP_MAGIC: u64 = 0x4d4f4c54434f424a;
-const C_HEAP_REFCNT_IMMORTAL: u32 = u32::MAX;
+const C_HEAP_REFCNT_IMMORTAL: u32 = molt_codegen_abi::IMMORTAL_REFCOUNT;
 const C_HEAP_KIND_TAG_MASK: u32 = 0x0000_ff00;
 const C_HEAP_OBJECT_KIND_TAG: u32 = 0x0000_4100;
 const C_HEAP_TYPE_KIND_TAG: u32 = 0x0000_5400;
