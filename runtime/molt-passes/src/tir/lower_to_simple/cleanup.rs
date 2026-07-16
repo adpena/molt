@@ -31,7 +31,8 @@ pub(super) fn eliminate_dead_labels(ops: &mut Vec<OpIR>) {
         let mut branch_targets: HashSet<i64> = HashSet::new();
         for op in ops.iter() {
             match op.kind.as_str() {
-                "jump" | "br_if" | "check_exception" | "try_start" | "loop_continue" => {
+                "jump" | "br_if" | "check_exception" | "async_work_poll" | "try_start"
+                | "loop_continue" => {
                     if let Some(id) = op.value {
                         branch_targets.insert(id);
                     }
@@ -274,7 +275,7 @@ pub(super) fn missing_label_references(ops: &[crate::ir::OpIR]) -> Vec<i64> {
                     defined_labels.insert(id);
                 }
             }
-            "jump" | "br_if" | "check_exception" => {
+            "jump" | "br_if" | "check_exception" | "async_work_poll" => {
                 if let Some(id) = op.value {
                     referenced_labels.insert(id);
                 }

@@ -55,7 +55,7 @@ pub(super) fn annotate_lowered_op(
     }
     if matches!(
         opir.kind.as_str(),
-        "check_exception" | "try_start" | "try_end"
+        "check_exception" | "async_work_poll" | "try_start" | "try_end"
     ) && let Some(orig_id) = opir.value
         && let Some(&new_id) = original_to_new_label.get(&orig_id)
     {

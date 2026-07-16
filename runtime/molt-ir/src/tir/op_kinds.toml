@@ -667,6 +667,21 @@ classifier_fresh_value = [
     "tuple_new",
 ]
 
+# Eval-breaker placement authority. Every first-class call return is a Python
+# asynchronous-work observation point on native, LLVM, and WASM targets whose
+# runtimes expose the canonical pending-call/eval-breaker observer. Preserved
+# Copy call spellings are classified by the generated call-kind predicate
+# beside this set; loop-backedge placement and target capability gating are
+# structural policy in the same pass.
+async_work_poll_after_opcodes = [
+    "Call",
+    "CallMethod",
+    "CallMethodIc",
+    "CallSuperMethodIc",
+    "CallBuiltin",
+]
+async_work_poll_kinds = ["async_work_poll"]
+
 # exception CreationRef producers: a fresh exception object reference whose
 # source ownership is released at the `raise` boundary after the runtime has
 # recorded the exception in handler/context state.
@@ -4007,7 +4022,7 @@ mapper_opcode = "Raise"
 
 [[kind]]
 canonical = "check_exception"
-aliases = []
+aliases = ["async_work_poll"]
 mapper_opcode = "CheckException"
 
 [[kind]]

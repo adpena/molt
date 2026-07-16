@@ -86,7 +86,8 @@ pub(in crate::wasm::state_dispatch) fn emit_dispatch_check_exception(
     depth: u32,
     exception_regions: &BTreeSet<usize>,
 ) {
-    if op_emitter.native_eh_enabled || exception_regions.contains(&idx) {
+    let async_work_poll = op.kind == "async_work_poll";
+    if !async_work_poll && (op_emitter.native_eh_enabled || exception_regions.contains(&idx)) {
         emit_set_state_and_br(func, locals.state_local, idx + 1, depth);
         return;
     }
@@ -107,7 +108,11 @@ pub(in crate::wasm::state_dispatch) fn emit_dispatch_check_exception(
     emit_call(
         func,
         op_emitter.reloc_enabled,
-        op_emitter.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ExceptionPending],
+        op_emitter.import_ids[if async_work_poll {
+            crate::wasm_abi_generated::WasmRuntimeImport::AsyncWorkPollAndExceptionPending
+        } else {
+            crate::wasm_abi_generated::WasmRuntimeImport::ExceptionPending
+        }],
     );
     func.instruction(&Instruction::I64Const(0));
     func.instruction(&Instruction::I64Ne);

@@ -1210,6 +1210,7 @@ INTRINSIC_SYMBOL_NAMES: dict[str, str] = {
     "molt_exception_active": "molt_exception_active",
     "molt_exception_last": "molt_exception_last",
     "molt_exception_pending": "molt_exception_pending",
+    "molt_async_work_poll_and_exception_pending": "molt_async_work_poll_and_exception_pending",
     "molt_exception_clear": "molt_exception_clear",
     "molt_unraisable_hook_args_is_exact": "molt_unraisable_hook_args_is_exact",
     "molt_gc_collect": "molt_gc_collect",

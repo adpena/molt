@@ -1,6 +1,11 @@
 use crate::OpIR;
 use std::collections::{BTreeMap, BTreeSet};
 
+#[inline]
+fn is_exception_observer_kind(kind: &str) -> bool {
+    matches!(kind, "check_exception" | "async_work_poll")
+}
+
 /// Strip dead code after unconditional returns at the same nesting depth.
 ///
 /// Tracks nesting depth via structured control flow ops (if/else/end_if,
@@ -62,7 +67,7 @@ fn infer_pcall_handler_label(
             _ => {}
         }
 
-        if op.kind == "check_exception"
+        if is_exception_observer_kind(&op.kind)
             && let Some(label) = op.value
         {
             return Some(label);
@@ -331,7 +336,7 @@ pub(super) fn hoist_exception_edge_block_arg_stores(ops: &[OpIR]) -> Vec<OpIR> {
             }
             if stores_end > i + 1
                 && stores_end < ops.len()
-                && ops[stores_end].kind == "check_exception"
+                && is_exception_observer_kind(&ops[stores_end].kind)
             {
                 let depends_on_previous_result = op.out.as_deref().is_some_and(|out| {
                     ops[(i + 1)..stores_end]
@@ -571,6 +576,7 @@ pub(super) fn lower_iter_to_for(ops: &[OpIR]) -> Vec<OpIR> {
                                 | "const"
                                 | "break"
                                 | "check_exception"
+                                | "async_work_poll"
                                 | "exception_last"
                                 | "exception_last_pending"
                                 | "exception_finally_pending_observer"
@@ -714,6 +720,7 @@ pub(super) fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
                         | "exception_stack_exit"
                         | "exception_stack_enter"
                         | "check_exception"
+                        | "async_work_poll"
                         | "exception_last"
                         | "exception_last_pending"
                         | "exception_finally_pending_observer"
@@ -754,6 +761,7 @@ pub(super) fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
                         if matches!(
                             mk,
                             "check_exception"
+                                | "async_work_poll"
                                 | "exception_stack_set_depth"
                                 | "exception_stack_exit"
                                 | "nop"
@@ -810,6 +818,7 @@ pub(super) fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
                 if matches!(
                     k,
                     "check_exception"
+                        | "async_work_poll"
                         | "exception_stack_set_depth"
                         | "exception_stack_exit"
                         | "exception_last"
@@ -869,6 +878,7 @@ pub(super) fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
                 if matches!(
                     k,
                     "check_exception"
+                        | "async_work_poll"
                         | "exception_stack_set_depth"
                         | "exception_stack_exit"
                         | "exception_stack_enter"
@@ -951,6 +961,7 @@ pub(super) fn strip_dead_after_return(ops: &[OpIR]) -> Vec<OpIR> {
                     | "branch"
                     | "branch_false"
                     | "check_exception"
+                    | "async_work_poll"
                     | "try_start"
                     | "state_block_start"
                     | "loop_break_if_true"

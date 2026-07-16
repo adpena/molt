@@ -68,4 +68,12 @@ impl LuauBackend {
         self.unsupported_ops
             .push(format!("`{}` (luau backend)", op.kind));
     }
+
+    pub(super) fn emit_unsupported_op_with_reason(&mut self, op: &OpIR, reason: impl Into<String>) {
+        let reason = reason.into();
+        // Preserve the same fail-closed source boundary as the generic path,
+        // while making a known target-capability gap actionable.
+        self.unsupported_ops
+            .push(format!("`{}` (luau backend): {reason}", op.kind));
+    }
 }

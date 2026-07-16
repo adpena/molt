@@ -83,6 +83,7 @@ pub(crate) enum WasmRuntimeImport {
     ExceptionNewBuiltinOne,
     ExceptionNewFromClass,
     ExceptionPending,
+    AsyncWorkPollAndExceptionPending,
     ExceptionPop,
     ExceptionPush,
     ExceptionSetCause,

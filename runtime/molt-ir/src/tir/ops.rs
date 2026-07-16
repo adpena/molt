@@ -417,6 +417,10 @@ pub struct TirOp {
     pub source_span: Option<(u32, u32)>,
 }
 
+/// Canonical TIR marker for a `CheckException` that must also service
+/// pending calls and the eval breaker at a Python asynchronous-work boundary.
+pub const ASYNC_WORK_POLL_ATTR: &str = "async_work_poll";
+
 impl TirOp {
     pub fn source_site(&self) -> Option<SourceSite> {
         SourceSite::from_attrs(&self.attrs)
@@ -447,6 +451,34 @@ impl TirOp {
         if let Some(op_idx) = other.source_op_index() {
             self.set_source_op_index(op_idx);
         }
+    }
+
+    /// Whether this exception observation is also the canonical pending-call /
+    /// eval-breaker observation. The opcode and marker are one semantic fact;
+    /// consumers must not infer it from the attribute spelling alone.
+    #[inline]
+    pub fn is_async_work_poll(&self) -> bool {
+        self.opcode == OpCode::CheckException
+            && matches!(
+                self.attrs.get(ASYNC_WORK_POLL_ATTR),
+                Some(AttrValue::Bool(true))
+            )
+    }
+
+    /// Promote a `CheckException` to the canonical asynchronous-work poll.
+    /// Returns whether the semantic fact changed.
+    pub fn mark_async_work_poll(&mut self) -> bool {
+        assert_eq!(
+            self.opcode,
+            OpCode::CheckException,
+            "only CheckException may carry the async-work poll authority"
+        );
+        if self.is_async_work_poll() {
+            return false;
+        }
+        self.attrs
+            .insert(ASYNC_WORK_POLL_ATTR.into(), AttrValue::Bool(true));
+        true
     }
 
     /// True only for a structural SSA value copy.

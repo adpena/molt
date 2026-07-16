@@ -564,6 +564,11 @@ unsafe extern "C" fn fake_gil_check() -> std::os::raw::c_int {
 unsafe extern "C" fn fake_runtime_is_initialized() -> std::os::raw::c_int {
     1
 }
+unsafe extern "C" fn fake_attached_runtime_context() -> u32 {
+    molt_cpython_abi::hooks::AttachedRuntimeContextKind::NativeGil as u32
+}
+unsafe extern "C" fn fake_pending_call_error(_reason: u32) {}
+unsafe extern "C" fn fake_clear_pending_exception() {}
 
 const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     abi_magic: molt_cpython_abi::hooks::RUNTIME_HOOKS_ABI_MAGIC,
@@ -575,6 +580,8 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     gil_restore: fake_gil_restore,
     gil_check: fake_gil_check,
     runtime_is_initialized: fake_runtime_is_initialized,
+    attached_runtime_context: fake_attached_runtime_context,
+    pending_call_error: fake_pending_call_error,
     alloc_str: fake_alloc_str,
     alloc_bytes: fake_alloc_bytes,
     int_from_i64: fake_int_from_i64,
@@ -658,6 +665,7 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     exception_get_field: fake_exception_get_field,
     exception_class_borrowed: fake_exception_class_borrowed,
     take_pending_exception: fake_take_pending_exception,
+    clear_pending_exception: fake_clear_pending_exception,
     ..molt_cpython_abi::hooks::STUB_HOOKS
 };
 

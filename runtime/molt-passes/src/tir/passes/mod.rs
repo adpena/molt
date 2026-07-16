@@ -2,6 +2,7 @@
 //! Each pass transforms a TirFunction in-place and returns statistics.
 
 pub mod alias_analysis;
+pub mod async_work_poll;
 pub mod bce;
 pub mod block_arg_prune;
 pub mod block_versioning;
@@ -218,6 +219,7 @@ mod tests {
                 "bce",
                 "vectorize",
                 "polyhedral",
+                "async_work_poll",
                 "check_exception_elim",
                 "overflow_peel",
                 "copy_prop",

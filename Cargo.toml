@@ -42,7 +42,7 @@ exclude = [
     # molt-backend-mlir requires system LLVM 22 (mlir-sys). Excluded from
     # default workspace to prevent cargo check --all failures on machines
     # without LLVM installed. Build explicitly with:
-    #   cargo check -p molt-backend-mlir
+    #   cargo check --manifest-path runtime/molt-backend-mlir/Cargo.toml
     "runtime/molt-backend-mlir",
 ]
 resolver = "2"

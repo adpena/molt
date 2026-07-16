@@ -87,8 +87,8 @@ mod exception_state_abi;
 #[cfg(test)]
 use exception_state_abi::{exception_last_pending_bits, exception_last_public_bits};
 pub(crate) use exception_state_abi::{
-    molt_exception_active, molt_exception_clear, molt_exception_last, molt_exception_last_pending,
-    molt_exception_pending, molt_raise,
+    molt_async_work_poll_and_exception_pending, molt_exception_active, molt_exception_clear,
+    molt_exception_last, molt_exception_last_pending, molt_exception_pending, molt_raise,
 };
 
 pub(crate) trait ExceptionSentinel {

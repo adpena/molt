@@ -494,7 +494,13 @@ impl RustBackend {
             .find(|op| {
                 !matches!(
                     op.kind.as_str(),
-                    "nop" | "comment" | "debug_label" | "line" | "check_exception" | "label"
+                    "nop"
+                        | "comment"
+                        | "debug_label"
+                        | "line"
+                        | "check_exception"
+                        | "async_work_poll"
+                        | "label"
                 )
             })
             .is_none_or(|op| {

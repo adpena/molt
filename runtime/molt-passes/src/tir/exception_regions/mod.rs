@@ -19,8 +19,8 @@ use super::function::TirFunction;
 use super::values::ValueId;
 
 use self::path_state::{
-    compute_state_resume_stacks, is_match_ref_source, iter_ops, match_ref_release_owner,
-    original_kind, path_states_before, reachable_region_pops,
+    compute_state_resume_stacks, is_match_ref_source, iter_ops, lexical_handlers_before,
+    match_ref_release_owner, original_kind, path_states_before, reachable_region_pops,
 };
 
 mod path_state;
@@ -81,6 +81,11 @@ pub struct ExceptionRegionDiagnostic {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExceptionRegionFacts {
+    /// Active lexical handler at every reachable op/block-exit boundary.
+    /// Multiple entries are preserved so consumers can fail closed rather
+    /// than guessing when CFG paths carry different exception stacks.
+    pub lexical_handlers_before:
+        BTreeMap<ExceptionOpPosition, BTreeSet<Option<ExceptionRegionToken>>>,
     pub match_refs: BTreeMap<ValueId, ExceptionMatchRefFact>,
     pub release_to_matches: BTreeMap<ExceptionOpPosition, Vec<ValueId>>,
     pub release_to_match_facts: BTreeMap<ExceptionOpPosition, Vec<ExceptionMatchReleaseFact>>,
@@ -111,7 +116,14 @@ pub fn compute_exception_region_facts(func: &TirFunction) -> ExceptionRegionFact
         .into_iter()
         .collect();
     let state_resume_stacks = compute_state_resume_stacks(func, &label_to_block);
-    let mut facts = ExceptionRegionFacts::default();
+    let mut facts = ExceptionRegionFacts {
+        lexical_handlers_before: lexical_handlers_before(
+            func,
+            &label_to_block,
+            &state_resume_stacks,
+        ),
+        ..ExceptionRegionFacts::default()
+    };
     for (producer, op) in iter_ops(func) {
         let Some(source_kind) = original_kind(op) else {
             continue;

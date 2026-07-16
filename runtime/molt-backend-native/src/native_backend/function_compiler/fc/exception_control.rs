@@ -3,8 +3,13 @@ use super::super::*;
 /// Single-source kind authority for [`handle_exception_control_op`], consulted by
 /// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] =
-    &["raise", "check_exception", "try_start", "try_end"];
+pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
+    "raise",
+    "check_exception",
+    "async_work_poll",
+    "try_start",
+    "try_end",
+];
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for runtime exception control: `raise` and
@@ -107,7 +112,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
                 def_var_named(&mut *builder, vars, out.clone(), res);
             }
         }
-        "check_exception" => {
+        "check_exception" | "async_work_poll" => {
             let target_id = op.value.unwrap_or_else(|| {
                 panic!(
                     "check_exception missing target label id in function `{}` op {}",
@@ -282,10 +287,22 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
             let fallthrough = builder.create_block();
             reachable_blocks.insert(target_block);
             reachable_blocks.insert(fallthrough);
+            let (pending_observer, pending_flag_slot) = if op.kind == "async_work_poll" {
+                let callee = SimpleBackend::import_func_id_split(
+                    &mut *module,
+                    &mut *import_ids,
+                    "molt_async_work_poll_and_exception_pending",
+                    &[],
+                    &[types::I64],
+                );
+                (module.declare_func_in_func(callee, builder.func), None)
+            } else {
+                (local_exc_pending_fast, exc_flag_ptr_slot)
+            };
             let cond = emit_exception_pending_condition(
                 &mut *builder,
-                local_exc_pending_fast,
-                exc_flag_ptr_slot,
+                pending_observer,
+                pending_flag_slot,
             );
             brif_block(&mut *builder, cond, target_block, &[], fallthrough, &[]);
             // The fallthrough block is always fresh and has its only

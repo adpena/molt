@@ -2,6 +2,61 @@ use super::*;
 use crate::{FunctionIR, OpIR, SimpleIR};
 
 #[test]
+fn compile_checked_keeps_ordinary_programs_available() {
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_main".to_string(),
+            params: vec![],
+            ops: vec![OpIR {
+                kind: "ret_void".to_string(),
+                ..OpIR::default()
+            }],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        }],
+        profile: None,
+    };
+
+    let source = RustBackend::new()
+        .compile_checked(&ir)
+        .expect("ordinary Rust programs must not require the native pending-call boundary");
+    assert!(source.contains("fn molt_main"));
+}
+
+#[test]
+fn compile_checked_rejects_async_work_poll_without_runtime_boundary() {
+    let mut backend = RustBackend::new();
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "async_work_poll_test".to_string(),
+            params: vec![],
+            ops: vec![OpIR {
+                kind: "async_work_poll".to_string(),
+                value: Some(0),
+                ..OpIR::default()
+            }],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        }],
+        profile: None,
+    };
+
+    let err = backend
+        .compile_checked(&ir)
+        .expect_err("Rust must not erase the pending-call/eval-breaker poll");
+    assert!(
+        err.contains("async_work_poll"),
+        "diagnostic must name the op: {err}"
+    );
+    assert!(
+        err.contains("canonical pending-call/eval-breaker runtime boundary is unavailable"),
+        "diagnostic must name the missing target capability: {err}"
+    );
+}
+
+#[test]
 fn compile_keeps_annotation_functions_when_referenced() {
     let mut backend = RustBackend::new();
     let ir = SimpleIR {

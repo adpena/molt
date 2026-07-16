@@ -231,6 +231,12 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_exception_pending",
             crate::molt_exception_pending as *const (),
         )),
+        "molt_async_work_poll_and_exception_pending" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_async_work_poll_and_exception_pending",
+                crate::molt_async_work_poll_and_exception_pending as *const (),
+            ))
+        }
         "molt_exception_clear" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_exception_clear",
             crate::molt_exception_clear as *const (),

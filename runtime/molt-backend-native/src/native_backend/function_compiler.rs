@@ -153,7 +153,7 @@ impl SimpleBackend {
             let ce_count = func_ir
                 .ops
                 .iter()
-                .filter(|op| op.kind == "check_exception")
+                .filter(|op| matches!(op.kind.as_str(), "check_exception" | "async_work_poll"))
                 .count();
             if std::env::var("MOLT_DEBUG_CHECK_EXC").is_ok()
                 && (ce_count > 0
@@ -492,6 +492,8 @@ impl SimpleBackend {
         // which could drop the live flag pointer on one edge and corrupt
         // exception propagation. A stack slot keeps the invariant pointer
         // available across arbitrary CFG without introducing block params.
+        // Generated async-work polls bypass this pure-exception lane in
+        // `handle_exception_control_op` and call the eval-breaker observer.
         let has_exc_handling = function_exception_label_id.is_some();
         static INLINE_EXC_DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let inline_exc_disabled = *INLINE_EXC_DISABLED.get_or_init(|| {

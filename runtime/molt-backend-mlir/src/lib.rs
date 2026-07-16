@@ -111,6 +111,35 @@ mod tests {
         func
     }
 
+    #[test]
+    fn test_rejects_async_work_poll_without_runtime_boundary() {
+        let mut func = TirFunction::new("async_work_poll".into(), vec![], TirType::None);
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        let mut poll = TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::CheckException,
+            operands: vec![],
+            results: vec![],
+            attrs: AttrDict::new(),
+            source_span: None,
+        };
+        poll.mark_async_work_poll();
+        entry.ops.push(poll);
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        let ctx = create_mlir_context();
+        let err = tir_to_mlir(&func, &ctx)
+            .expect_err("MLIR must not erase the pending-call/eval-breaker poll");
+        assert!(
+            err.contains("async_work_poll"),
+            "diagnostic must name the op: {err}"
+        );
+        assert!(
+            err.contains("canonical pending-call/eval-breaker runtime boundary is unavailable"),
+            "diagnostic must name the missing target capability: {err}"
+        );
+    }
+
     fn make_cond_func() -> TirFunction {
         let mut f = TirFunction::new(
             "cond".into(),
