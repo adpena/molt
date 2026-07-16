@@ -21,6 +21,7 @@ from tools.memory_guard_core.windows_snapshot import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
+MAX_TERMINATION_PID_FANOUT = 128
 
 
 def _is_windows_process_model() -> bool:
@@ -799,6 +800,23 @@ def terminate_watched_processes(
             if watched is not None
             else watched_pids(observed_samples, root_pid, tracker=tracker)
         )
+        if len(observed) > MAX_TERMINATION_PID_FANOUT:
+            actions.append(
+                _termination_action(
+                    target_kind="process_tree",
+                    target_id=root_pid,
+                    signum=None,
+                    result="skipped_ambiguous_fanout",
+                    error=(
+                        f"refusing to signal {len(observed)} tracked PIDs; "
+                        f"safe ceiling is {MAX_TERMINATION_PID_FANOUT}"
+                    ),
+                )
+            )
+            return finish(
+                watched_pids=set(observed),
+                finish_reason="windows_pid_tree_ambiguous_fanout",
+            )
         protected_pgids = _current_protected_process_group_ids(
             observed_samples,
             owned_pids=set(observed) | {root_pid},
@@ -1123,6 +1141,8 @@ def cleanup_tracked_orphans(
     )
     if sampler_failure is not None:
         raise sampler_failure
+    if report.reason == "windows_pid_tree_ambiguous_fanout":
+        return GuardOrphanCleanupResult(termination_reports=(report,))
     return GuardOrphanCleanupResult(
         process_groups=tuple(sorted(live_pgids)),
         termination_reports=() if report is None else (report,),

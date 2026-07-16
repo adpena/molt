@@ -178,14 +178,20 @@ class ProcessTreeTracker:
                 self.known_pids.remove(pid)
                 self.known_identities.pop(pid, None)
         changed = True
+        live_known_pids = {pid for pid in self.known_pids if pid in samples}
         while changed:
             changed = False
             for sample in samples.values():
                 sample_pgid = sample_pgid_or_pid(sample)
-                if sample.pid in self.known_pids or sample.ppid in self.known_pids:
+                # Historical PIDs remain known so a live reparented descendant
+                # stays under custody.  An absent historical PID must not admit
+                # new children: Windows can reuse that stale number, otherwise
+                # unrelated processes contaminate RSS and termination scope.
+                if sample.pid in self.known_pids or sample.ppid in live_known_pids:
                     if sample.pid not in self.known_pids:
                         self.known_pids.add(sample.pid)
                         self.known_identities[sample.pid] = process_identity(sample)
+                        live_known_pids.add(sample.pid)
                         changed = True
                     if (
                         sample.pid != self.root_pid or sample_pgid == self.root_pid
