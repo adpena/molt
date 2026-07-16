@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Collection, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
@@ -213,6 +214,93 @@ def _resolve_relative_import(
             return f"{base_name}.{module}"
         return module
     return base_name or None
+
+
+@dataclass(frozen=True, slots=True)
+class _StaticImportRequest:
+    """One statically knowable Python import operation.
+
+    Statements, ``__import__``/the runtime transaction, and
+    ``importlib.import_module`` all project through this value.  Keeping the
+    payload until resolution prevents the graph scanner from losing relative
+    level, package, and fromlist semantics by flattening calls to argument 0.
+    """
+
+    name: str
+    level: int = 0
+    fromlist: tuple[str, ...] = ()
+    package: str | None = None
+    package_is_explicit: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _StaticImportCallPayload:
+    target: str
+    name: ast.expr
+    package: ast.expr | None = None
+    fromlist: ast.expr | None = None
+    level: ast.expr | None = None
+
+
+def _static_import_request_modules(
+    request: _StaticImportRequest,
+    *,
+    module_name: str | None,
+    is_package: bool,
+    package_override: str | None = None,
+    package_override_set: bool = False,
+    spec_override: str | None = None,
+    spec_override_set: bool = False,
+    spec_override_is_package: bool | None = None,
+) -> tuple[str, ...]:
+    """Project a request to the module candidates needed by the build graph."""
+
+    request_name = request.name
+    level = request.level
+    explicit_package = request.package_is_explicit
+    if explicit_package:
+        # importlib.import_module expresses relative level as leading dots and
+        # supplies the package separately, unlike __import__.
+        leading_dots = len(request_name) - len(request_name.lstrip("."))
+        if leading_dots:
+            level = leading_dots
+            request_name = request_name[leading_dots:]
+        elif level == 0:
+            return _static_import_request_candidates(request_name, request.fromlist)
+
+    if level <= 0:
+        if request_name.startswith("."):
+            return ()
+        return _static_import_request_candidates(request_name, request.fromlist)
+    if module_name is None and not explicit_package:
+        return ()
+    context_name = request.package if explicit_package else cast(str, module_name)
+    resolved = _resolve_relative_import(
+        context_name,
+        is_package=True if explicit_package else is_package,
+        level=level,
+        module=request_name or None,
+        package_override=request.package if explicit_package else package_override,
+        package_override_set=explicit_package or package_override_set,
+        spec_override=None if explicit_package else spec_override,
+        spec_override_set=False if explicit_package else spec_override_set,
+        spec_override_is_package=(
+            None if explicit_package else spec_override_is_package
+        ),
+    )
+    if resolved is None:
+        return ()
+    return _static_import_request_candidates(resolved, request.fromlist)
+
+
+def _static_import_request_candidates(
+    base: str, fromlist: Sequence[str]
+) -> tuple[str, ...]:
+    if not base:
+        return ()
+    candidates = [base]
+    candidates.extend(f"{base}.{name}" for name in fromlist if name and name != "*")
+    return tuple(candidates)
 
 
 def _validate_import_scan_mode(import_scan_mode: ImportScanMode) -> None:
@@ -541,8 +629,10 @@ def _collect_imports(
     template_str_cls = getattr(ast, "TemplateStr", None)
     module_string_constants: dict[str, str] = {}
     helper_string_functions: dict[str, tuple[list[str], ast.expr]] = {}
-    helper_param_import_positions: dict[str, set[int]] = {}
-    helper_import_arg_exprs: dict[str, tuple[list[str], set[str], list[ast.expr]]] = {}
+    helper_import_calls: dict[
+        str,
+        tuple[list[str], set[str], list[_StaticImportCallPayload]],
+    ] = {}
     (
         package_override_set,
         package_override,
@@ -555,32 +645,45 @@ def _collect_imports(
         tuple[
             ast.FunctionDef | ast.AsyncFunctionDef,
             tuple[ast.AST, ...],
-            "_ImportlibStaticBindings",
+            "_StaticImportBindings",
         ]
     ] = []
 
-    class _ImportlibStaticBindings:
+    class _StaticImportBindings:
         def __init__(self) -> None:
             self.module_aliases: set[str] = {"importlib"}
             self.util_aliases: set[str] = set()
             self.import_module_aliases: set[str] = set()
+            self.find_spec_aliases: set[str] = set()
+            self.builtins_aliases: set[str] = {"builtins"}
+            self.dunder_import_aliases: set[str] = {"__import__"}
             self.module_import_module_mutated = False
             self.module_util_mutated = False
+            self.util_find_spec_mutated = False
+            self.builtins_dunder_import_mutated = False
 
-        def fork(self) -> "_ImportlibStaticBindings":
-            forked = _ImportlibStaticBindings()
+        def fork(self) -> "_StaticImportBindings":
+            forked = _StaticImportBindings()
             forked.module_aliases = set(self.module_aliases)
             forked.util_aliases = set(self.util_aliases)
             forked.import_module_aliases = set(self.import_module_aliases)
+            forked.find_spec_aliases = set(self.find_spec_aliases)
+            forked.builtins_aliases = set(self.builtins_aliases)
+            forked.dunder_import_aliases = set(self.dunder_import_aliases)
             forked.module_import_module_mutated = self.module_import_module_mutated
             forked.module_util_mutated = self.module_util_mutated
+            forked.util_find_spec_mutated = self.util_find_spec_mutated
+            forked.builtins_dunder_import_mutated = self.builtins_dunder_import_mutated
             return forked
 
         def record_aliases(self, node: ast.Import | ast.ImportFrom) -> None:
             if isinstance(node, ast.Import):
                 for alias in node.names:
+                    self.invalidate_name(alias.asname or alias.name.split(".", 1)[0])
                     if alias.name == "importlib":
                         self.module_aliases.add(alias.asname or "importlib")
+                    elif alias.name == "builtins":
+                        self.builtins_aliases.add(alias.asname or "builtins")
                     elif alias.name == "importlib.util":
                         if alias.asname:
                             if not self.module_util_mutated:
@@ -590,7 +693,21 @@ def _collect_imports(
                     elif alias.name.startswith("importlib.") and not alias.asname:
                         self.module_aliases.add("importlib")
                 return
-            if node.level or node.module != "importlib":
+            for alias in node.names:
+                self.invalidate_name(alias.asname or alias.name)
+            if node.level:
+                return
+            if node.module == "builtins":
+                for alias in node.names:
+                    if alias.name == "__import__":
+                        self.dunder_import_aliases.add(alias.asname or alias.name)
+                return
+            if node.module == "importlib.util":
+                for alias in node.names:
+                    if alias.name == "find_spec" and not self.util_find_spec_mutated:
+                        self.find_spec_aliases.add(alias.asname or alias.name)
+                return
+            if node.module != "importlib":
                 return
             for alias in node.names:
                 bind_name = alias.asname or alias.name
@@ -605,6 +722,9 @@ def _collect_imports(
             self.module_aliases.discard(name)
             self.util_aliases.discard(name)
             self.import_module_aliases.discard(name)
+            self.find_spec_aliases.discard(name)
+            self.builtins_aliases.discard(name)
+            self.dunder_import_aliases.discard(name)
 
         def record_rebinding_target(self, target: ast.expr) -> None:
             if isinstance(target, ast.Name):
@@ -619,11 +739,41 @@ def _collect_imports(
                     self.module_import_module_mutated = True
                 elif target.attr == "util":
                     self.module_util_mutated = True
+                return
+            if not isinstance(target, ast.Attribute):
+                return
+            if (
+                target.attr == "__import__"
+                and isinstance(target.value, ast.Name)
+                and target.value.id in self.builtins_aliases
+            ):
+                self.builtins_dunder_import_mutated = True
+                return
+            if target.attr != "find_spec":
+                return
+            if (
+                isinstance(target.value, ast.Name)
+                and target.value.id in self.util_aliases
+            ) or (
+                isinstance(target.value, ast.Attribute)
+                and target.value.attr == "util"
+                and isinstance(target.value.value, ast.Name)
+                and target.value.value.id in self.module_aliases
+            ):
+                self.util_find_spec_mutated = True
 
         def target(self, func: ast.expr) -> str | None:
             if isinstance(func, ast.Name):
+                if func.id in self.dunder_import_aliases:
+                    if self.builtins_dunder_import_mutated:
+                        return None
+                    return "builtins.__import__"
                 if func.id in self.import_module_aliases:
                     return "importlib.import_module"
+                if func.id in self.find_spec_aliases:
+                    if self.util_find_spec_mutated:
+                        return None
+                    return "importlib.util.find_spec"
                 return func.id
             if (
                 isinstance(func, ast.Attribute)
@@ -634,7 +784,18 @@ def _collect_imports(
                 if self.module_import_module_mutated:
                     return None
                 return "importlib.import_module"
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr == "__import__"
+                and isinstance(func.value, ast.Name)
+                and func.value.id in self.builtins_aliases
+            ):
+                if self.builtins_dunder_import_mutated:
+                    return None
+                return "builtins.__import__"
             if isinstance(func, ast.Attribute) and func.attr == "find_spec":
+                if self.util_find_spec_mutated:
+                    return None
                 if (
                     isinstance(func.value, ast.Name)
                     and func.value.id in self.util_aliases
@@ -649,22 +810,12 @@ def _collect_imports(
                     if self.module_util_mutated:
                         return None
                     return "importlib.util.find_spec"
-            if isinstance(func, ast.Attribute):
-                parts: list[str] = []
-                current: ast.expr | None = func
-                while isinstance(current, ast.Attribute):
-                    parts.append(current.attr)
-                    current = current.value
-                if isinstance(current, ast.Name):
-                    parts.append(current.id)
-                    return ".".join(reversed(parts))
             return None
 
-    helper_importlib_bindings = _ImportlibStaticBindings()
+    helper_importlib_bindings = _StaticImportBindings()
 
     def _is_static_import_target(target: str | None) -> bool:
         return target in {
-            "__import__",
             "builtins.__import__",
             "importlib.import_module",
             "importlib.util.find_spec",
@@ -828,6 +979,100 @@ def _collect_imports(
             current = local_expr_bindings[current.id]
         return current
 
+    def _call_argument(
+        call: ast.Call, position: int, keyword_name: str
+    ) -> ast.expr | None:
+        if position < len(call.args):
+            return call.args[position]
+        for keyword in call.keywords:
+            if keyword.arg == keyword_name:
+                return keyword.value
+        return None
+
+    def _resolve_int_constant(
+        node: ast.expr | None, bindings: Mapping[str, object]
+    ) -> int | None:
+        if node is None:
+            return None
+        if isinstance(node, ast.Constant) and type(node.value) is int:
+            return cast(int, node.value)
+        if isinstance(node, ast.Name):
+            value = bindings.get(node.id)
+            if type(value) is int:
+                return cast(int, value)
+        return None
+
+    def _static_import_call_payload(
+        call: ast.Call,
+        target: str,
+        *,
+        local_expr_bindings: Mapping[str, ast.expr] | None = None,
+    ) -> _StaticImportCallPayload | None:
+        name_expr = _call_argument(call, 0, "name")
+        if name_expr is None:
+            return None
+
+        def resolve_local(expr: ast.expr | None) -> ast.expr | None:
+            if expr is None or local_expr_bindings is None:
+                return expr
+            return _resolve_local_expr_binding(expr, dict(local_expr_bindings))
+
+        name_expr = cast(ast.expr, resolve_local(name_expr))
+        if target in {"importlib.import_module", "importlib.util.find_spec"}:
+            return _StaticImportCallPayload(
+                target=target,
+                name=name_expr,
+                package=resolve_local(_call_argument(call, 1, "package")),
+            )
+        return _StaticImportCallPayload(
+            target=target,
+            name=name_expr,
+            fromlist=resolve_local(_call_argument(call, 3, "fromlist")),
+            level=resolve_local(_call_argument(call, 4, "level")),
+        )
+
+    def _resolve_static_import_call(
+        payload: _StaticImportCallPayload,
+        bindings: dict[str, object] | None = None,
+    ) -> tuple[str, ...]:
+        bindings = bindings or {}
+        name = _resolve_string_constant(payload.name, bindings, set())
+        if name is None:
+            return ()
+        if payload.target in {"importlib.import_module", "importlib.util.find_spec"}:
+            package = (
+                _resolve_string_constant(payload.package, bindings, set())
+                if payload.package is not None
+                else None
+            )
+            request = _StaticImportRequest(
+                name=name,
+                package=package,
+                package_is_explicit=True,
+            )
+        else:
+            fromlist = (
+                _resolve_string_sequence(payload.fromlist, bindings, set())
+                if payload.fromlist is not None
+                else []
+            )
+            level = _resolve_int_constant(payload.level, bindings)
+            request = _StaticImportRequest(
+                name=name,
+                level=0 if level is None else level,
+                fromlist=tuple(fromlist or ()),
+            )
+        return _static_import_request_modules(
+            request,
+            module_name=module_name,
+            is_package=is_package,
+            package_override=package_override,
+            package_override_set=package_override_set,
+            spec_override=spec_override,
+            spec_override_set=spec_override_set,
+            spec_override_is_package=spec_override_is_package,
+        )
+
     def _bind_helper_call_arguments(
         call: ast.Call, params: list[str], required_params: set[str]
     ) -> dict[str, object] | None:
@@ -840,6 +1085,10 @@ def _collect_imports(
             if scalar is not None:
                 bindings[param] = scalar
                 continue
+            integer = _resolve_int_constant(arg, {})
+            if integer is not None:
+                bindings[param] = integer
+                continue
             seq = _resolve_string_sequence(arg, {}, set())
             if seq is not None:
                 bindings[param] = seq
@@ -851,6 +1100,10 @@ def _collect_imports(
             scalar = _resolve_string_constant(keyword.value)
             if scalar is not None:
                 bindings[keyword.arg] = scalar
+                continue
+            integer = _resolve_int_constant(keyword.value, {})
+            if integer is not None:
+                bindings[keyword.arg] = integer
                 continue
             seq = _resolve_string_sequence(keyword.value, {}, set())
             if seq is not None:
@@ -917,56 +1170,51 @@ def _collect_imports(
                 params.append(stmt.args.kwarg.arg)
             if not params:
                 continue
-            param_set = set(params)
-            param_positions = {name: idx for idx, name in enumerate(params)}
             required_params = _function_required_param_names(stmt, params)
             local_expr_bindings = _simple_function_local_expr_bindings(stmt)
             for node in stmt_nodes:
-                if not isinstance(node, ast.Call) or not node.args:
+                if not isinstance(node, ast.Call):
                     continue
                 target = stmt_importlib_bindings.target(node.func)
                 if not _is_static_import_target(target):
                     continue
-                first = _resolve_local_expr_binding(node.args[0], local_expr_bindings)
-                helper_entry = helper_import_arg_exprs.get(stmt.name)
+                assert target is not None
+                payload = _static_import_call_payload(
+                    node,
+                    target,
+                    local_expr_bindings=local_expr_bindings,
+                )
+                if payload is None:
+                    continue
+                helper_entry = helper_import_calls.get(stmt.name)
                 if helper_entry is None:
-                    helper_import_arg_exprs[stmt.name] = (
+                    helper_import_calls[stmt.name] = (
                         params,
                         required_params,
-                        [first],
+                        [payload],
                     )
                 else:
-                    helper_entry[2].append(first)
-                if isinstance(first, ast.Name) and first.id in param_set:
-                    pos = param_positions[first.id]
-                    helper_param_import_positions.setdefault(stmt.name, set()).add(pos)
+                    helper_entry[2].append(payload)
 
     def _record_helper_call_imports(node: ast.Call) -> None:
         if module_import_helper_scan:
             if not isinstance(node.func, ast.Name):
                 return
-            positions = helper_param_import_positions.get(node.func.id)
-            if positions:
-                for pos in positions:
-                    if pos < len(node.args):
-                        resolved = _resolve_string_constant(node.args[pos])
-                        if resolved is not None:
-                            imports.append(resolved)
-            helper_expr_entry = helper_import_arg_exprs.get(node.func.id)
-            if helper_expr_entry is not None:
-                params, required_params, exprs = helper_expr_entry
+            helper_call_entry = helper_import_calls.get(node.func.id)
+            if helper_call_entry is not None:
+                params, required_params, payloads = helper_call_entry
                 call_bindings = _bind_helper_call_arguments(
                     node, params, required_params
                 )
                 if call_bindings is not None:
-                    for expr in exprs:
-                        resolved = _resolve_string_constant(expr, call_bindings, set())
-                        if resolved is not None:
-                            imports.append(resolved)
+                    for payload in payloads:
+                        imports.extend(
+                            _resolve_static_import_call(payload, call_bindings)
+                        )
 
     def _record_import_statement(
         node: ast.Import | ast.ImportFrom,
-        bindings: _ImportlibStaticBindings,
+        bindings: _StaticImportBindings,
         truth_bindings: _StaticTruthBindings,
     ) -> None:
         truth_bindings.record_import_aliases(node)
@@ -975,41 +1223,41 @@ def _collect_imports(
         bindings.record_aliases(node)
         if isinstance(node, ast.Import):
             for alias in node.names:
-                imports.append(alias.name)
-            return
-        if node.level:
-            if module_name:
-                resolved = _resolve_relative_import(
-                    module_name,
-                    is_package=is_package,
-                    level=node.level,
-                    module=node.module,
-                    package_override=package_override,
-                    package_override_set=package_override_set,
-                    spec_override=spec_override,
-                    spec_override_set=spec_override_set,
-                    spec_override_is_package=spec_override_is_package,
+                imports.extend(
+                    _static_import_request_modules(
+                        _StaticImportRequest(name=alias.name),
+                        module_name=module_name,
+                        is_package=is_package,
+                    )
                 )
-                if resolved:
-                    imports.append(resolved)
-                    for alias in node.names:
-                        if alias.name != "*":
-                            imports.append(f"{resolved}.{alias.name}")
             return
-        if node.module:
-            imports.append(node.module)
-            for alias in node.names:
-                if alias.name != "*":
-                    imports.append(f"{node.module}.{alias.name}")
+        request = _StaticImportRequest(
+            name=node.module or "",
+            level=node.level,
+            fromlist=tuple(alias.name for alias in node.names),
+        )
+        imports.extend(
+            _static_import_request_modules(
+                request,
+                module_name=module_name,
+                is_package=is_package,
+                package_override=package_override,
+                package_override_set=package_override_set,
+                spec_override=spec_override,
+                spec_override_set=spec_override_set,
+                spec_override_is_package=spec_override_is_package,
+            )
+        )
 
-    def _collect_import_call(
-        node: ast.Call, bindings: _ImportlibStaticBindings
-    ) -> None:
+    def _collect_import_call(node: ast.Call, bindings: _StaticImportBindings) -> None:
         _record_helper_call_imports(node)
-        if _is_static_import_target(bindings.target(node.func)):
-            resolved = _resolve_string_constant(node.args[0])
-            if resolved is not None:
-                imports.append(resolved)
+        target = bindings.target(node.func)
+        if not _is_static_import_target(target):
+            return
+        assert target is not None
+        payload = _static_import_call_payload(node, target)
+        if payload is not None:
+            imports.extend(_resolve_static_import_call(payload))
 
     def _function_parameter_names(
         node: ast.Lambda | ast.FunctionDef | ast.AsyncFunctionDef,
@@ -1018,7 +1266,7 @@ def _collect_imports(
 
     def _visit_many(
         nodes: Iterable[ast.AST],
-        bindings: _ImportlibStaticBindings,
+        bindings: _StaticImportBindings,
         truth_bindings: _StaticTruthBindings,
         qualname_prefix: tuple[str, ...] = (),
     ) -> None:
@@ -1027,7 +1275,7 @@ def _collect_imports(
 
     def _visit(
         node: ast.AST,
-        bindings: _ImportlibStaticBindings,
+        bindings: _StaticImportBindings,
         truth_bindings: _StaticTruthBindings,
         qualname_prefix: tuple[str, ...] = (),
     ) -> None:
@@ -1123,6 +1371,10 @@ def _collect_imports(
                     class_bindings.module_import_module_mutated
                 )
                 bindings.module_util_mutated |= class_bindings.module_util_mutated
+                bindings.util_find_spec_mutated |= class_bindings.util_find_spec_mutated
+                bindings.builtins_dunder_import_mutated |= (
+                    class_bindings.builtins_dunder_import_mutated
+                )
                 return
             _visit_many(node.decorator_list, bindings, truth_bindings, qualname_prefix)
             _visit_many(
@@ -1208,12 +1460,12 @@ def _collect_imports(
             # module graph closure even though no `import` statement appears.
             needs_string_templatelib = True
             return
-        if isinstance(node, ast.Call) and node.args:
+        if isinstance(node, ast.Call):
             _collect_import_call(node, bindings)
         for child in ast.iter_child_nodes(node):
             _visit(child, bindings, truth_bindings, qualname_prefix)
 
-    _visit(tree, _ImportlibStaticBindings(), _StaticTruthBindings())
+    _visit(tree, _StaticImportBindings(), _StaticTruthBindings())
     if needs_typing:
         imports.append("typing")
     if needs_string_templatelib:
