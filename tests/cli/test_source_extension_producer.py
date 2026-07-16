@@ -64,6 +64,24 @@ class _Distribution:
         self.metadata = {"Name": name}
 
 
+def _write_distribution_metadata(root: Path, name: str, version: str) -> None:
+    metadata = root / f"{name.replace('-', '_')}-{version}.dist-info" / "METADATA"
+    metadata.parent.mkdir(parents=True)
+    metadata.write_text(
+        f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n",
+        encoding="utf-8",
+    )
+
+
+def _write_legacy_distribution_metadata(root: Path, name: str, version: str) -> None:
+    metadata = root / f"{name.replace('-', '_')}.egg-info" / "PKG-INFO"
+    metadata.parent.mkdir(parents=True)
+    metadata.write_text(
+        f"Metadata-Version: 1.2\nName: {name}\nVersion: {version}\n",
+        encoding="utf-8",
+    )
+
+
 def _write_build_pyproject(root: Path, requirements: tuple[str, ...]) -> None:
     root.mkdir(parents=True, exist_ok=True)
     encoded = ", ".join(json.dumps(item) for item in requirements)
@@ -769,6 +787,64 @@ def test_source_build_environment_rejects_malformed_sibling_record(
         build_environment.provision_source_build_environment(
             tmp_path, "source-build-numpy"
         )
+
+
+def test_installed_distributions_use_only_canonical_sysconfig_roots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    purelib = tmp_path / "environment" / "purelib"
+    platlib = tmp_path / "environment" / "platlib"
+    poison = tmp_path / "external"
+    _write_distribution_metadata(purelib, "canonical-pure", "1.2.3")
+    _write_distribution_metadata(platlib, "canonical-plat", "4.5.6")
+    _write_legacy_distribution_metadata(poison, "ambient-poison", "99")
+    monkeypatch.syspath_prepend(str(poison))
+    monkeypatch.setenv("PYTHONPATH", str(poison))
+
+    def get_path(scheme: str, *_args, **_kwargs) -> str:
+        return str({"purelib": purelib, "platlib": platlib}[scheme])
+
+    monkeypatch.setattr(build_environment.sysconfig, "get_path", get_path)
+
+    assert build_environment._installed_distributions() == [
+        {"name": "canonical-plat", "version": "4.5.6"},
+        {"name": "canonical-pure", "version": "1.2.3"},
+    ]
+
+
+def test_distribution_probe_sanitizes_python_import_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, object] = {}
+    monkeypatch.setenv("PYTHONHOME", "poison-home")
+    monkeypatch.setenv("PYTHONPATH", "poison-path")
+
+    def run(argv, **kwargs):
+        observed["argv"] = argv
+        observed["env"] = kwargs["env"]
+        return subprocess.CompletedProcess(argv, 0, stdout="[]", stderr="")
+
+    monkeypatch.setattr(build_environment.subprocess, "run", run)
+
+    assert build_environment._probe_environment_distributions(Path(sys.executable)) == []
+    assert observed["argv"][:3] == [str(Path(sys.executable)), "-P", "-c"]
+    environment = observed["env"]
+    assert isinstance(environment, dict)
+    assert "PYTHONHOME" not in environment
+    assert "PYTHONPATH" not in environment
+    assert environment["PYTHONNOUSERSITE"] == "1"
+
+
+def test_distribution_probe_excludes_external_pythonpath_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    poison = tmp_path / "external"
+    _write_legacy_distribution_metadata(poison, "ambient-probe-poison", "99")
+    monkeypatch.setenv("PYTHONPATH", str(poison))
+
+    rows = build_environment._probe_environment_distributions(Path(sys.executable))
+
+    assert not any(row["name"] == "ambient-probe-poison" for row in rows)
 
 
 def test_complete_environment_cleans_exact_stale_sibling_record(
