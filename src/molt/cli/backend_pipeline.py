@@ -58,6 +58,8 @@ def _run_backend_pipeline(
     precompile: bool = False,
     snapshot: bool = False,
     stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
+    bolt_requested: bool = False,
+    bolt_training_cmd: str | None = None,
     fact_graph_request: _factgraph.FactGraphRequest | None = None,
 ) -> int:
     (
@@ -389,4 +391,6 @@ def _run_backend_pipeline(
         profile=profile,
         json_output=json_output,
         stdlib_profile=runtime_stdlib_profile,
+        bolt_requested=bolt_requested,
+        bolt_training_cmd=bolt_training_cmd,
     )

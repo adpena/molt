@@ -34,7 +34,7 @@ from molt.cli.native_binary import (
     _darwin_binary_magic_error,
 )
 from molt.cli.native_link_command import (
-    _build_native_link_command,
+    _build_native_link_plan,
     _build_native_link_driver_command,
     _windows_coff_library_command,
 )
@@ -93,6 +93,28 @@ def _run_native_link_command(
             output=result.stdout,
             stderr=result.stderr,
         )
+    return result
+
+
+def _native_link_execution_command(
+    command: Sequence[str],
+    *,
+    planned_output: Path,
+    execution_output: Path,
+) -> list[str]:
+    """Retarget only the canonical `-o` operand to a private link candidate."""
+    result = list(command)
+    matches = [
+        index
+        for index in range(1, len(result))
+        if result[index - 1] == "-o" and result[index] == str(planned_output)
+    ]
+    if len(matches) != 1:
+        raise RuntimeError(
+            "Native link plan must contain exactly one canonical output operand; "
+            f"found {len(matches)} for {planned_output}."
+        )
+    result[matches[0]] = str(execution_output)
     return result
 
 
@@ -212,30 +234,6 @@ def _prepare_native_object_artifact(
     return output_artifact, link_process, None
 
 
-def _retry_native_link_without_hint(
-    *,
-    link_cmd: Sequence[str],
-    linker_hint: str | None,
-    json_output: bool,
-    link_timeout: float | None,
-) -> tuple[subprocess.CompletedProcess[str] | None, list[str]]:
-    if linker_hint is None:
-        return None, list(link_cmd)
-    retry_cmd = [
-        arg
-        for arg in link_cmd
-        if arg != f"-fuse-ld={linker_hint}" and arg != "-Wl,--icf=safe"
-    ]
-    if retry_cmd == list(link_cmd):
-        return None, retry_cmd
-    retry_process = _run_native_link_command(
-        link_cmd=retry_cmd,
-        json_output=json_output,
-        link_timeout=link_timeout,
-    )
-    return retry_process, retry_cmd
-
-
 def _darwin_link_validation_failure(
     *,
     output_binary: Path,
@@ -256,50 +254,13 @@ def _validate_darwin_link_output(
     *,
     link_process: subprocess.CompletedProcess[str],
     link_cmd: Sequence[str],
-    linker_hint: str | None,
     output_binary: Path,
     validation_kind: str,
-    json_output: bool,
-    link_timeout: float | None,
-    warnings: list[str],
 ) -> subprocess.CompletedProcess[str]:
     validation_error = _darwin_link_validation_failure(
         output_binary=output_binary,
         kind=validation_kind,
     )
-    if (
-        validation_error is not None
-        and linker_hint is not None
-        and any(arg == f"-fuse-ld={linker_hint}" for arg in link_cmd)
-    ):
-        retry_process, _ = _retry_native_link_without_hint(
-            link_cmd=link_cmd,
-            linker_hint=linker_hint,
-            json_output=json_output,
-            link_timeout=link_timeout,
-        )
-        if retry_process is not None:
-            if retry_process.returncode == 0:
-                retry_validation_error = _darwin_link_validation_failure(
-                    output_binary=output_binary,
-                    kind=validation_kind,
-                )
-                if retry_validation_error is None:
-                    label = (
-                        "invalid output"
-                        if validation_kind == "magic"
-                        else "invalid dyld imports"
-                    )
-                    warnings.append(
-                        "Linker fallback: "
-                        f"-fuse-ld={linker_hint} produced {label}; "
-                        "retried default linker."
-                    )
-                    return retry_process
-                link_process = retry_process
-                validation_error = retry_validation_error
-            else:
-                return retry_process
     if validation_error is None:
         return link_process
     failure_stderr = (link_process.stderr or "") + "\n" + validation_error
@@ -338,6 +299,7 @@ def _prepare_native_link(
         _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
     ),
     stdlib_profile: str | None = DEFAULT_RUNTIME_STDLIB_PROFILE,
+    bolt_requested: bool = False,
 ) -> tuple[_PreparedNativeLink | None, _CliFailure | None]:
     output_obj = output_artifact
     link_stdlib_obj = stdlib_obj_path
@@ -407,7 +369,7 @@ def _prepare_native_link(
             stdlib_profile=stdlib_profile,
         )
     try:
-        link_cmd, linker_hint, normalized_target = _build_native_link_command(
+        link_plan = _build_native_link_plan(
             output_obj=output_obj,
             stub_path=stub_path,
             runtime_lib=resolved_runtime_lib,
@@ -417,6 +379,7 @@ def _prepare_native_link(
             profile=profile,
             stdlib_obj_path=link_stdlib_obj,
             export_molt_runtime_symbols=bool(staged_external_native_artifacts),
+            bolt_requested=bolt_requested,
         )
     except RuntimeError as exc:
         return None, _fail(str(exc), json_output, command="build")
@@ -433,7 +396,10 @@ def _prepare_native_link(
             f"output_binary={output_binary}",
             file=sys.stderr,
         )
-        print(f"native-link cmd: {link_cmd}", file=sys.stderr)
+        print(f"native-link plan: {link_plan}", file=sys.stderr)
+    link_cmd = list(link_plan.command)
+    linker_hint = link_plan.linker_hint
+    normalized_target = link_plan.normalized_target
     if (
         normalized_target is not None
         and target_triple is not None
@@ -477,6 +443,11 @@ def _prepare_native_link(
         link_fingerprint,
         stored_link_fingerprint,
     )
+    # BOLT replaces the linked image with a post-link transformed artifact.
+    # Always recreate the unoptimized, relocation-bearing input before another
+    # BOLT run; a link fingerprint describes link inputs, not BOLT profile data.
+    if link_plan.policy.bolt_requested:
+        link_skipped = False
     # Staleness guard: even when the fingerprint matches, the cached binary
     # may be stale if ANY link input was rebuilt after the binary was linked.
     # This catches backend changes that produce identical .o files (from TIR
@@ -504,6 +475,7 @@ def _prepare_native_link(
                     break
         except OSError:
             pass
+    link_output = output_binary
     if link_skipped:
         link_process = subprocess.CompletedProcess(
             args=link_cmd,
@@ -512,31 +484,30 @@ def _prepare_native_link(
             stderr="",
         )
     else:
+        link_output = output_binary.with_name(
+            f".{output_binary.stem}.link-{os.getpid()}-{uuid.uuid4().hex}"
+            f"{output_binary.suffix}"
+        )
+        try:
+            execution_link_cmd = _native_link_execution_command(
+                link_cmd,
+                planned_output=output_binary,
+                execution_output=link_output,
+            )
+        except RuntimeError as exc:
+            return None, _fail(str(exc), json_output, command="build")
         if diagnostics_enabled and "link" not in phase_starts:
             phase_starts["link"] = time.perf_counter()
         try:
             link_process = _run_native_link_command(
-                link_cmd=link_cmd,
+                link_cmd=execution_link_cmd,
                 json_output=json_output,
                 link_timeout=link_timeout,
             )
         except subprocess.TimeoutExpired:
+            with contextlib.suppress(OSError):
+                link_output.unlink()
             return None, _fail("Linker timed out", json_output, command="build")
-        if link_process.returncode != 0 and linker_hint is not None:
-            try:
-                retry_process, _ = _retry_native_link_without_hint(
-                    link_cmd=link_cmd,
-                    linker_hint=linker_hint,
-                    json_output=json_output,
-                    link_timeout=link_timeout,
-                )
-            except subprocess.TimeoutExpired:
-                return None, _fail("Linker timed out", json_output, command="build")
-            if retry_process is not None and retry_process.returncode == 0:
-                warnings.append(
-                    f"Linker fallback: -fuse-ld={linker_hint} failed; retried default linker."
-                )
-                link_process = retry_process
         if (
             link_process.returncode == 0
             and sys.platform == "darwin"
@@ -545,15 +516,13 @@ def _prepare_native_link(
             try:
                 link_process = _validate_darwin_link_output(
                     link_process=link_process,
-                    link_cmd=link_cmd,
-                    linker_hint=linker_hint,
-                    output_binary=output_binary,
+                    link_cmd=execution_link_cmd,
+                    output_binary=link_output,
                     validation_kind="magic",
-                    json_output=json_output,
-                    link_timeout=link_timeout,
-                    warnings=warnings,
                 )
             except subprocess.TimeoutExpired:
+                with contextlib.suppress(OSError):
+                    link_output.unlink()
                 return None, _fail("Linker timed out", json_output, command="build")
         if (
             link_process.returncode == 0
@@ -563,21 +532,23 @@ def _prepare_native_link(
             try:
                 link_process = _validate_darwin_link_output(
                     link_process=link_process,
-                    link_cmd=link_cmd,
-                    linker_hint=linker_hint,
-                    output_binary=output_binary,
+                    link_cmd=execution_link_cmd,
+                    output_binary=link_output,
                     validation_kind="dyld",
-                    json_output=json_output,
-                    link_timeout=link_timeout,
-                    warnings=warnings,
                 )
             except subprocess.TimeoutExpired:
+                with contextlib.suppress(OSError):
+                    link_output.unlink()
                 return None, _fail("Linker timed out", json_output, command="build")
+        if link_process.returncode != 0:
+            with contextlib.suppress(OSError):
+                link_output.unlink()
     return _PreparedNativeLink(
         output_obj=output_obj,
         stub_path=stub_path,
         runtime_lib=resolved_runtime_lib,
         output_binary=output_binary,
+        link_output=link_output,
         external_native_artifacts=staged_external_native_artifacts,
         link_cmd=link_cmd,
         linker_hint=linker_hint,
@@ -586,6 +557,7 @@ def _prepare_native_link(
         link_fingerprint=link_fingerprint,
         link_skipped=link_skipped,
         link_process=link_process,
+        strip_after_link=link_plan.policy.strip_after_link,
     ), None
 
 

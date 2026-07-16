@@ -6,7 +6,7 @@ import molt.cli as cli
 from molt.cli import native_link_command
 
 _NATIVE_LINK_COMMAND_NAMES = (
-    "_build_native_link_command",
+    "_build_native_link_plan",
     "_build_native_link_driver_command",
     "_resolve_available_fast_linker",
     "_resolve_dev_linker",
@@ -15,7 +15,7 @@ _NATIVE_LINK_COMMAND_NAMES = (
 )
 
 _NATIVE_LINK_COMMAND_DEFINITIONS = (
-    "def _build_native_link_command(",
+    "def _build_native_link_plan(",
     "def _build_native_link_driver_command(",
     "def _resolve_available_fast_linker(",
     "def _resolve_dev_linker(",

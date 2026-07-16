@@ -35,7 +35,7 @@ def _command(monkeypatch, tmp_path: Path, platform: str) -> list[str]:
     runtime_lib = tmp_path / "libmolt_runtime.a"
     for path in (output_obj, stub_path, runtime_lib):
         path.write_bytes(b"x")
-    command, _, _ = native_link_command._build_native_link_command(
+    plan = native_link_command._build_native_link_plan(
         output_obj=output_obj,
         stub_path=stub_path,
         runtime_lib=runtime_lib,
@@ -45,7 +45,7 @@ def _command(monkeypatch, tmp_path: Path, platform: str) -> list[str]:
         profile="dev",
         export_molt_runtime_symbols=True,
     )
-    return command
+    return list(plan.command)
 
 
 def test_darwin_native_artifact_link_aliases_singletons_to_same_storage(
