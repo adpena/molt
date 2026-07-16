@@ -1985,9 +1985,9 @@ pub(crate) unsafe fn refresh_function_requires_binder_flag(
         let needs_binder = function_needs_full_binder(_py, func_ptr);
         let header = header_from_obj_ptr(func_ptr);
         if needs_binder {
-            (*header).flags |= HEADER_FLAG_FUNC_REQUIRES_BINDER;
+            (*header).fetch_or_flags(HEADER_FLAG_FUNC_REQUIRES_BINDER);
         } else {
-            (*header).flags &= !HEADER_FLAG_FUNC_REQUIRES_BINDER;
+            (*header).fetch_and_flags(!HEADER_FLAG_FUNC_REQUIRES_BINDER);
         }
         needs_binder
     }
@@ -1996,7 +1996,7 @@ pub(crate) unsafe fn refresh_function_requires_binder_flag(
 pub(crate) unsafe fn function_requires_binder_flag(func_ptr: *mut u8) -> bool {
     unsafe {
         let header = header_from_obj_ptr(func_ptr);
-        ((*header).flags & HEADER_FLAG_FUNC_REQUIRES_BINDER) != 0
+        ((*header).load_flags() & HEADER_FLAG_FUNC_REQUIRES_BINDER) != 0
     }
 }
 

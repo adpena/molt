@@ -398,14 +398,14 @@ unsafe fn adjust_tuple_contains_refs(ptr: *mut u8, removed: &[u64], added: &[u64
     let header = unsafe { header_from_obj_ptr(ptr) };
     unsafe {
         if added_ref {
-            (*header).flags |= HEADER_FLAG_CONTAINS_REFS;
+            (*header).fetch_or_flags(HEADER_FLAG_CONTAINS_REFS);
         } else if removed_ref
             && !tuple_slice(ptr)
                 .iter()
                 .copied()
                 .any(crate::object::refcount_opt::is_heap_ref)
         {
-            (*header).flags &= !HEADER_FLAG_CONTAINS_REFS;
+            (*header).fetch_and_flags(!HEADER_FLAG_CONTAINS_REFS);
         }
     }
 }
@@ -485,7 +485,7 @@ pub(crate) unsafe fn replace_unique_pair(
             .ref_count
             .load(std::sync::atomic::Ordering::Acquire)
     } != 1
-        || unsafe { (*header).flags } & HEADER_FLAG_HAS_ABI_VIEW != 0
+        || unsafe { (*header).load_flags() } & HEADER_FLAG_HAS_ABI_VIEW != 0
     {
         return None;
     }

@@ -635,7 +635,8 @@ pub extern "C" fn molt_list_fill_new(count: u64, fill_value: u64) -> u64 {
                     crate::object::inc_ref_n_ptr(_py, fill_ptr, batch);
                     remaining -= batch as usize;
                 }
-                (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
+                (*header_from_obj_ptr(ptr))
+                    .fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
             }
         }
         MoltObject::from_ptr(ptr).bits()

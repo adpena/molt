@@ -772,7 +772,7 @@ pub(crate) fn clear_atomic_bits(_py: &PyToken<'_>, slot: &AtomicU64) {
     let bits = slot.swap(0, AtomicOrdering::AcqRel);
     if bits != 0 {
         if let Some(ptr) = obj_from_bits(bits).as_ptr() {
-            let flags = unsafe { (*header_from_obj_ptr(ptr)).flags };
+            let flags = unsafe { (*header_from_obj_ptr(ptr)).load_flags() };
             if (flags & HEADER_FLAG_INTERNED) != 0 {
                 return;
             }

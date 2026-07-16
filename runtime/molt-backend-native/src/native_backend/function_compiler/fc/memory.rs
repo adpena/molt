@@ -515,7 +515,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             //     which subtracts `size_of::<MoltHeader>()`
             //     to get back to the header).  `MoltHeader`
             //     is `HEADER_SIZE_BYTES` with
-            //     `flags: u32` at field offset 8, so the
+            //     ABI-transparent `flags: MoltFlags` at field offset 8, so the
             //     absolute offset of `flags` from `obj_ptr`
             //     (which points to payload start) is
             //     `HEADER_FLAGS_OFFSET`.
@@ -558,12 +558,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             switch_to_block_materialized(&mut *builder, store_block);
             seal_block_once(&mut *builder, &mut *sealed_blocks, store_block);
 
-            let flags_val = builder.ins().load(
-                types::I32,
-                MemFlagsData::trusted(),
-                obj_ptr,
-                HEADER_FLAGS_OFFSET,
-            );
+            let flags_val = crate::native_backend::emit_header_flags_load(builder, obj_ptr);
             let flags_64 = builder.ins().uextend(types::I64, flags_val);
             let has_ptrs_bit = builder
                 .ins()

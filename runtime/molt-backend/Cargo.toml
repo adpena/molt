@@ -54,6 +54,7 @@ windows-sys = { version = "0.61", features = [
 [features]
 default = ["native-backend"]
 jemalloc = ["dep:tikv-jemallocator"]
+free-threaded = ["native-backend", "molt-backend-native/free-threaded"]
 egraphs = ["egg"]
 llvm = ["dep:molt-backend-native", "molt-backend-native/llvm"]
 polly = ["llvm", "molt-backend-native/polly"]

@@ -598,8 +598,8 @@ pub extern "C" fn molt_dict_pop(
                 let capacity = dict_table_capacity(entries.max(1));
                 dict_rebuild(_py, order, hashes, table, capacity);
                 if order.is_empty() {
-                    (*header_from_obj_ptr(dict_ptr)).flags &=
-                        !crate::object::HEADER_FLAG_CONTAINS_REFS;
+                    (*header_from_obj_ptr(dict_ptr))
+                        .fetch_and_flags(!crate::object::HEADER_FLAG_CONTAINS_REFS);
                 }
                 dec_ref_bits(_py, key_val);
                 dec_ref_bits(_py, val_val);
@@ -789,7 +789,8 @@ pub extern "C" fn molt_dict_popitem(dict_bits: u64) -> u64 {
             let capacity = dict_table_capacity(entries.max(1));
             dict_rebuild(_py, order, hashes, table, capacity);
             if order.is_empty() {
-                (*header_from_obj_ptr(dict_ptr)).flags &= !crate::object::HEADER_FLAG_CONTAINS_REFS;
+                (*header_from_obj_ptr(dict_ptr))
+                    .fetch_and_flags(!crate::object::HEADER_FLAG_CONTAINS_REFS);
             }
             dec_ref_bits(_py, key_bits);
             dec_ref_bits(_py, val_bits);

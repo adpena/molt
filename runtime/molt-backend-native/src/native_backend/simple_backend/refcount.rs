@@ -82,12 +82,7 @@ pub(in crate::native_backend::simple_backend) fn emit_inline_inc_ref_obj(
 
     // Load flags and compute delta branchlessly:
     // delta = (flags & IMMORTAL) == 0 ? 1 : 0
-    let flags = builder.ins().load(
-        types::I32,
-        MemFlagsData::trusted(),
-        raw_ptr,
-        HEADER_FLAGS_OFFSET,
-    );
+    let flags = crate::native_backend::emit_header_flags_load(builder, raw_ptr);
     let immortal_mask = builder
         .ins()
         .iconst(types::I32, HEADER_FLAG_IMMORTAL as i64);

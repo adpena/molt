@@ -1020,7 +1020,7 @@ fn guarded_class_def_arms_and_runs_instance_finalizer() {
         let (class_bits, attr_storage) =
             create_guarded_test_class(_py, b"FinalizerA", &[(b"__del__", func_bits)]);
         let class_ptr = obj_from_bits(class_bits).as_ptr().expect("class ptr");
-        let class_flags = unsafe { (*crate::object::header_from_obj_ptr(class_ptr)).flags };
+        let class_flags = unsafe { (*crate::object::header_from_obj_ptr(class_ptr)).load_flags() };
         assert_ne!(
             class_flags & crate::object::HEADER_FLAG_CLASS_HAS_FINALIZER,
             0,
@@ -1096,7 +1096,7 @@ fn weakref_callback_runs_with_live_target_not_rc0() {
         assert!(is_truthy(_py, obj_from_bits(registered)));
 
         assert_ne!(
-            unsafe { (*crate::object::header_from_obj_ptr(inst_ptr)).flags }
+            unsafe { (*crate::object::header_from_obj_ptr(inst_ptr)).load_flags() }
                 & crate::object::HEADER_FLAG_HAS_WEAKREF,
             0,
             "registering a weakref must stamp the HAS_WEAKREF lifetime-boundary bit"

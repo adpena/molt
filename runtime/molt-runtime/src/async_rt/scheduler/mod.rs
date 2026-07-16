@@ -411,10 +411,13 @@ impl MoltScheduler {
                 let poll_fn_addr = crate::object::object_poll_fn(task_ptr);
                 {
                     let _guard = task_queue_lock().lock().unwrap();
-                    if ((*header).flags & HEADER_FLAG_TASK_DONE) != 0 {
-                        (*header).flags &= !HEADER_FLAG_TASK_QUEUED;
-                        (*header).flags &= !HEADER_FLAG_TASK_RUNNING;
-                        (*header).flags &= !HEADER_FLAG_TASK_WAKE_PENDING;
+                    if ((*header).load_flags() & HEADER_FLAG_TASK_DONE) != 0 {
+                        (*header).update_flags(
+                            0,
+                            HEADER_FLAG_TASK_QUEUED
+                                | HEADER_FLAG_TASK_RUNNING
+                                | HEADER_FLAG_TASK_WAKE_PENDING,
+                        );
                         if async_trace_enabled() {
                             eprintln!(
                                 "molt async trace: poll_skip_done task=0x{:x}",
@@ -440,8 +443,8 @@ impl MoltScheduler {
                         let _guard = task_queue_lock().lock().unwrap();
                         unsafe {
                             let header = header_from_obj_ptr(task_ptr);
-                            (*header).flags &= !HEADER_FLAG_TASK_QUEUED;
-                            (*header).flags |= HEADER_FLAG_TASK_RUNNING;
+                            (*header)
+                                .update_flags(HEADER_FLAG_TASK_RUNNING, HEADER_FLAG_TASK_QUEUED);
                         }
                     }
                     let token = ensure_task_token(_py, task_ptr, current_token_id());
@@ -554,10 +557,13 @@ impl MoltScheduler {
                 let poll_fn_addr = crate::object::object_poll_fn(task_ptr);
                 {
                     let _guard = task_queue_lock().lock().unwrap();
-                    if ((*header).flags & HEADER_FLAG_TASK_DONE) != 0 {
-                        (*header).flags &= !HEADER_FLAG_TASK_QUEUED;
-                        (*header).flags &= !HEADER_FLAG_TASK_RUNNING;
-                        (*header).flags &= !HEADER_FLAG_TASK_WAKE_PENDING;
+                    if ((*header).load_flags() & HEADER_FLAG_TASK_DONE) != 0 {
+                        (*header).update_flags(
+                            0,
+                            HEADER_FLAG_TASK_QUEUED
+                                | HEADER_FLAG_TASK_RUNNING
+                                | HEADER_FLAG_TASK_WAKE_PENDING,
+                        );
                         if async_trace_enabled() {
                             eprintln!(
                                 "molt async trace: poll_skip_done task=0x{:x}",
@@ -582,8 +588,7 @@ impl MoltScheduler {
                     {
                         let _guard = task_queue_lock().lock().unwrap();
                         let header = header_from_obj_ptr(task_ptr);
-                        (*header).flags &= !HEADER_FLAG_TASK_QUEUED;
-                        (*header).flags |= HEADER_FLAG_TASK_RUNNING;
+                        (*header).update_flags(HEADER_FLAG_TASK_RUNNING, HEADER_FLAG_TASK_QUEUED);
                     }
                     let token = ensure_task_token(_py, task_ptr, current_token_id());
                     let prev_token = set_current_token(_py, token);
@@ -625,7 +630,7 @@ impl MoltScheduler {
                     {
                         let _guard = task_queue_lock().lock().unwrap();
                         let header = header_from_obj_ptr(task_ptr);
-                        (*header).flags &= !HEADER_FLAG_TASK_RUNNING;
+                        (*header).take_flags(HEADER_FLAG_TASK_RUNNING);
                     }
                     let wake_pending = task_take_wake_pending(task_ptr);
                     let new_depth = exception_stack_depth();
@@ -713,11 +718,7 @@ fn task_take_wake_pending(task_ptr: *mut u8) -> bool {
     let _guard = task_queue_lock().lock().unwrap();
     unsafe {
         let header = header_from_obj_ptr(task_ptr);
-        let pending = ((*header).flags & HEADER_FLAG_TASK_WAKE_PENDING) != 0;
-        if pending {
-            (*header).flags &= !HEADER_FLAG_TASK_WAKE_PENDING;
-        }
-        pending
+        (*header).take_flags(HEADER_FLAG_TASK_WAKE_PENDING) != 0
     }
 }
 
@@ -728,9 +729,10 @@ fn task_clear_queue_flags(task_ptr: *mut u8) {
     let _guard = task_queue_lock().lock().unwrap();
     unsafe {
         let header = header_from_obj_ptr(task_ptr);
-        (*header).flags &= !HEADER_FLAG_TASK_QUEUED;
-        (*header).flags &= !HEADER_FLAG_TASK_RUNNING;
-        (*header).flags &= !HEADER_FLAG_TASK_WAKE_PENDING;
+        (*header).update_flags(
+            0,
+            HEADER_FLAG_TASK_QUEUED | HEADER_FLAG_TASK_RUNNING | HEADER_FLAG_TASK_WAKE_PENDING,
+        );
     }
 }
 
@@ -747,7 +749,10 @@ pub(crate) fn task_mark_done(_py: &PyToken<'_>, task_ptr: *mut u8) {
     let _guard = task_queue_lock().lock().unwrap();
     unsafe {
         let header = header_from_obj_ptr(task_ptr);
-        (*header).flags |= HEADER_FLAG_TASK_DONE;
+        (*header).update_flags(
+            HEADER_FLAG_TASK_DONE,
+            HEADER_FLAG_TASK_QUEUED | HEADER_FLAG_TASK_RUNNING | HEADER_FLAG_TASK_WAKE_PENDING,
+        );
     }
 }
 
@@ -815,21 +820,22 @@ fn enqueue_task_ptr(_py: &PyToken<'_>, task_ptr: *mut u8) {
         let _guard = task_queue_lock().lock().unwrap();
         unsafe {
             let header = header_from_obj_ptr(task_ptr);
-            if ((*header).flags & HEADER_FLAG_TASK_DONE) != 0 {
+            let flags = (*header).load_flags();
+            if (flags & HEADER_FLAG_TASK_DONE) != 0 {
                 should_return = true;
             }
-            if ((*header).flags & HEADER_FLAG_BLOCK_ON) != 0 {
+            if (flags & HEADER_FLAG_BLOCK_ON) != 0 {
                 should_return = true;
             }
-            if !should_return && ((*header).flags & HEADER_FLAG_TASK_RUNNING) != 0 {
-                (*header).flags |= HEADER_FLAG_TASK_WAKE_PENDING;
+            if !should_return && (flags & HEADER_FLAG_TASK_RUNNING) != 0 {
+                (*header).fetch_or_flags(HEADER_FLAG_TASK_WAKE_PENDING);
                 should_return = true;
             }
-            if !should_return && ((*header).flags & HEADER_FLAG_TASK_QUEUED) != 0 {
+            if !should_return && (flags & HEADER_FLAG_TASK_QUEUED) != 0 {
                 should_return = true;
             }
             if !should_return {
-                (*header).flags |= HEADER_FLAG_TASK_QUEUED;
+                (*header).fetch_or_flags(HEADER_FLAG_TASK_QUEUED);
                 should_enqueue = true;
             }
         }
@@ -853,7 +859,7 @@ pub(crate) fn wake_task_ptr(_py: &PyToken<'_>, task_ptr: *mut u8) {
         let _guard = task_queue_lock().lock().unwrap();
         unsafe {
             let header = header_from_obj_ptr(task_ptr);
-            if ((*header).flags & HEADER_FLAG_TASK_DONE) != 0 {
+            if ((*header).load_flags() & HEADER_FLAG_TASK_DONE) != 0 {
                 return;
             }
             if async_trace_enabled() {
@@ -862,7 +868,7 @@ pub(crate) fn wake_task_ptr(_py: &PyToken<'_>, task_ptr: *mut u8) {
                     task_ptr as usize
                 );
             }
-            (*header).flags |= HEADER_FLAG_TASK_WAKE_PENDING;
+            (*header).fetch_or_flags(HEADER_FLAG_TASK_WAKE_PENDING);
         }
         return;
     }
@@ -874,11 +880,12 @@ pub(crate) fn wake_task_ptr(_py: &PyToken<'_>, task_ptr: *mut u8) {
         let _guard = task_queue_lock().lock().unwrap();
         unsafe {
             let header = header_from_obj_ptr(task_ptr);
-            let done = ((*header).flags & HEADER_FLAG_TASK_DONE) != 0;
-            let block_on = ((*header).flags & HEADER_FLAG_BLOCK_ON) != 0;
-            let running = ((*header).flags & HEADER_FLAG_TASK_RUNNING) != 0;
-            let queued = ((*header).flags & HEADER_FLAG_TASK_QUEUED) != 0;
-            let spawned = ((*header).flags & HEADER_FLAG_SPAWN_RETAIN) != 0;
+            let flags = (*header).load_flags();
+            let done = (flags & HEADER_FLAG_TASK_DONE) != 0;
+            let block_on = (flags & HEADER_FLAG_BLOCK_ON) != 0;
+            let running = (flags & HEADER_FLAG_TASK_RUNNING) != 0;
+            let queued = (flags & HEADER_FLAG_TASK_QUEUED) != 0;
+            let spawned = (flags & HEADER_FLAG_SPAWN_RETAIN) != 0;
             let inline_only = !spawned && !block_on;
             if async_trace_enabled() {
                 eprintln!(
@@ -890,18 +897,18 @@ pub(crate) fn wake_task_ptr(_py: &PyToken<'_>, task_ptr: *mut u8) {
                 should_return = true;
             }
             if !should_return && block_on {
-                (*header).flags |= HEADER_FLAG_TASK_WAKE_PENDING;
+                (*header).fetch_or_flags(HEADER_FLAG_TASK_WAKE_PENDING);
                 should_return = true;
             }
             if !should_return && running {
-                (*header).flags |= HEADER_FLAG_TASK_WAKE_PENDING;
+                (*header).fetch_or_flags(HEADER_FLAG_TASK_WAKE_PENDING);
                 should_return = true;
             }
             if !should_return && queued {
                 should_return = true;
             }
             if !should_return && !inline_only {
-                (*header).flags |= HEADER_FLAG_TASK_QUEUED;
+                (*header).fetch_or_flags(HEADER_FLAG_TASK_QUEUED);
                 should_enqueue = true;
             }
             inline_only
@@ -954,8 +961,8 @@ pub unsafe extern "C" fn molt_spawn(task_bits: u64) {
             // Respect the task's pre-registered cancellation/context token when present.
             let _ = ensure_task_token(_py, task_ptr, current_token_id());
             let header = task_ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
-            if ((*header).flags & HEADER_FLAG_SPAWN_RETAIN) == 0 {
-                (*header).flags |= HEADER_FLAG_SPAWN_RETAIN;
+            if ((*header).fetch_or_flags(HEADER_FLAG_SPAWN_RETAIN) & HEADER_FLAG_SPAWN_RETAIN) == 0
+            {
                 inc_ref_bits(_py, MoltObject::from_ptr(task_ptr).bits());
                 spawned_task_inc();
             }
@@ -1023,7 +1030,7 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
             });
             let task_depth = task_exception_depth_take(_py, task_ptr);
             exception_stack_set_depth(_py, task_depth);
-            (*header).flags |= HEADER_FLAG_BLOCK_ON;
+            (*header).fetch_or_flags(HEADER_FLAG_BLOCK_ON);
             BLOCK_ON_TASK.with(|cell| cell.set(task_ptr));
             let prev_raise = task_raise_active();
             set_task_raise_active(true);
@@ -1398,7 +1405,7 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
                 trace_step("pending_bits_dec_ref");
             }
             let header = header_from_obj_ptr(task_ptr);
-            (*header).flags &= !HEADER_FLAG_BLOCK_ON;
+            (*header).fetch_and_flags(!HEADER_FLAG_BLOCK_ON);
             trace_step("clear_block_on_flag");
             task_mark_done(_py, task_ptr);
             trace_step("task_mark_done");

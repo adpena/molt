@@ -6,6 +6,7 @@ use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use molt_codegen_abi::MoltFlags;
 use molt_obj_model::{MoltObject, release_ptr, resolve_ptr};
 use num_bigint::BigInt;
 
@@ -320,7 +321,7 @@ fn debug_alloc_object_type() -> Option<u32> {
 pub struct MoltHeader {
     pub type_id: u32,            // 4 bytes
     pub ref_count: MoltRefCount, // 4 bytes
-    pub flags: u32,              // 4 bytes (semantic bits declared below)
+    flags: MoltFlags,            // 4 bytes (semantic bits declared below)
     pub size_class: u16,         // 2 bytes — index into SIZE_CLASS_TABLE
     pub aux_kind: u16,           // 2 bytes — interpretation of aux
     pub aux: MoltAuxWord,        // 8 bytes — inline value or stable sidecar address
@@ -337,6 +338,118 @@ const _: () = {
         std::mem::size_of::<MoltHeader>()
             .is_multiple_of(molt_codegen_abi::HEADER_ALLOC_ALIGN_BYTES)
     );
+};
+
+impl MoltHeader {
+    /// Construct the flag word before an object is published. This pointer API
+    /// deliberately avoids creating a reference to uninitialized atomic state.
+    #[inline(always)]
+    pub(crate) unsafe fn initialize_flags_before_publication(header: *mut Self, value: u32) {
+        unsafe {
+            std::ptr::write(
+                std::ptr::addr_of_mut!((*header).flags),
+                MoltFlags::new(value),
+            );
+        }
+    }
+
+    /// Construct an unpublished collector state directly, without any
+    /// intermediate published flag word.
+    #[inline(always)]
+    pub(crate) unsafe fn initialize_flags_gc_unpublished(header: *mut Self, value: u32) {
+        unsafe {
+            std::ptr::write(
+                std::ptr::addr_of_mut!((*header).flags),
+                MoltFlags::new_unpublished(value),
+            );
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn load_flags(&self) -> u32 {
+        self.flags.load(AtomicOrdering::Acquire)
+    }
+
+    #[inline(always)]
+    pub(crate) fn has_flag(&self, flag: u32) -> bool {
+        self.load_flags() & flag != 0
+    }
+
+    #[inline(always)]
+    #[cfg(test)]
+    pub(crate) fn store_flags(&self, value: u32) {
+        self.flags.store(value, AtomicOrdering::Release);
+    }
+
+    #[inline(always)]
+    pub(crate) fn fetch_or_flags(&self, value: u32) -> u32 {
+        self.flags.update(value, 0)
+    }
+
+    #[inline(always)]
+    pub(crate) fn fetch_and_flags(&self, value: u32) -> u32 {
+        self.flags.update(0, !value)
+    }
+
+    #[inline(always)]
+    pub(crate) fn compare_exchange_flags(&self, current: u32, new: u32) -> Result<u32, u32> {
+        self.flags.compare_exchange(
+            current,
+            new,
+            AtomicOrdering::AcqRel,
+            AtomicOrdering::Acquire,
+        )
+    }
+
+    /// Atomically apply one coherent flag-state transition. Callers that move
+    /// between states (not merely publish a sticky bit) must use this instead
+    /// of independent clear/set operations, so lock-free readers never observe
+    /// a torn intermediate state.
+    #[inline(always)]
+    pub(crate) fn update_flags(&self, set: u32, clear: u32) -> u32 {
+        self.flags.update(set, clear)
+    }
+
+    /// Clear and return the selected bits as one indivisible consume action.
+    #[inline(always)]
+    pub(crate) fn take_flags(&self, selected: u32) -> u32 {
+        self.fetch_and_flags(!selected) & selected
+    }
+
+    /// Publish `set` only while every `forbidden` bit remains clear. The
+    /// predicate and publication share one CAS, closing check-then-set races at
+    /// terminal lifetime boundaries.
+    #[inline(always)]
+    pub(crate) fn try_set_flags_unless(&self, set: u32, forbidden: u32) -> bool {
+        let mut observed = self.load_flags();
+        loop {
+            if observed & forbidden != 0 {
+                return false;
+            }
+            let updated = observed | set;
+            if updated == observed {
+                return true;
+            }
+            match self.compare_exchange_flags(observed, updated) {
+                Ok(_) => return true,
+                Err(actual) => observed = actual,
+            }
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn gc_publish_initialized(&self) {
+        self.flags.publish_initialized();
+    }
+
+    #[inline(always)]
+    pub(crate) fn gc_is_published(&self) -> bool {
+        self.flags.is_published()
+    }
+}
+
+const _: () = {
+    assert!(std::mem::offset_of!(MoltHeader, flags) == 8);
 };
 
 /// Eight-byte auxiliary storage that is atomic on native free-thread-capable
@@ -613,6 +726,7 @@ pub(crate) const HEADER_FLAG_HAS_ABI_VIEW: u32 = 1 << 27;
 pub(crate) const HEADER_FLAG_IS_WEAKREF: u32 = 1 << 31;
 /// Transient cycle-collector pin for an ABI-rooted candidate.
 pub(crate) const HEADER_FLAG_GC_PINNED: u32 = 1 << 28;
+pub(crate) const HEADER_FLAG_GC_UNPUBLISHED: u32 = molt_codegen_abi::HEADER_FLAG_GC_UNPUBLISHED;
 /// Terminal lifetime state: the object is untracked and every externally
 /// discoverable sidecar is being detached before any child edge is released.
 pub(crate) const HEADER_FLAG_DEALLOCATING: u32 = 1 << 30;
@@ -628,7 +742,7 @@ pub(crate) const HEADER_FLAG_HAS_WEAKREF: u32 = 1 << 24;
 // Keep every persistent and transient lifetime bit in this single registry and
 // fail compilation on any future collision. Cold type policy intentionally
 // lives in the type payload rather than consuming hot RC/GC header capacity.
-const HEADER_FLAG_REGISTRY: [u32; 29] = [
+const HEADER_FLAG_REGISTRY: [u32; 30] = [
     HEADER_FLAG_HAS_PTRS,
     HEADER_FLAG_GEN_RUNNING,
     HEADER_FLAG_GEN_STARTED,
@@ -656,6 +770,7 @@ const HEADER_FLAG_REGISTRY: [u32; 29] = [
     HEADER_FLAG_FUNC_VARIADIC_TRAMPOLINE,
     HEADER_FLAG_HAS_ABI_VIEW,
     HEADER_FLAG_GC_PINNED,
+    HEADER_FLAG_GC_UNPUBLISHED,
     HEADER_FLAG_DEALLOCATING,
     HEADER_FLAG_IS_WEAKREF,
 ];
@@ -1132,7 +1247,7 @@ pub extern "C" fn molt_object_init_stack(
             std::ptr::addr_of_mut!((*header).ref_count),
             MoltRefCount::new(1),
         );
-        (*header).flags = HEADER_FLAG_IMMORTAL;
+        MoltHeader::initialize_flags_before_publication(header, HEADER_FLAG_IMMORTAL);
         (*header).size_class = 0;
         (*header).aux_kind = HEADER_AUX_KIND_CLASS_INLINE;
         std::ptr::write(
@@ -1175,7 +1290,7 @@ pub(crate) fn release_shutdown_owned_bits(_py: &PyToken<'_>, bits: u64) {
         if (*header_ptr).ref_count.load(AtomicOrdering::Acquire) == u32::MAX {
             (*header_ptr).ref_count.store(1, AtomicOrdering::Release);
         }
-        (*header_ptr).flags &= !(HEADER_FLAG_IMMORTAL | HEADER_FLAG_INTERNED);
+        (*header_ptr).fetch_and_flags(!(HEADER_FLAG_IMMORTAL | HEADER_FLAG_INTERNED));
     }
     dec_ref_bits(_py, bits);
 }
@@ -1187,7 +1302,7 @@ pub(crate) fn release_shutdown_bits(_py: &PyToken<'_>, bits: u64) {
     };
     unsafe {
         let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
-        if ((*header_ptr).flags & HEADER_FLAG_INTERNED) != 0 {
+        if ((*header_ptr).load_flags() & HEADER_FLAG_INTERNED) != 0 {
             return;
         }
     }
@@ -1258,7 +1373,7 @@ pub(crate) fn alloc_object_zeroed_with_aux(
         let header = ptr as *mut MoltHeader;
         (*header).type_id = type_id;
         (*header).ref_count.store(1, AtomicOrdering::Relaxed);
-        (*header).flags = 0;
+        MoltHeader::initialize_flags_before_publication(header, 0);
         (*header).size_class = plan.size_class;
         if !initialize_header_aux(header, type_id, plan.size_class, total_size, aux) {
             std::alloc::dealloc(ptr, plan.layout);
@@ -1341,7 +1456,8 @@ pub(crate) fn alloc_object_with_aux(
         let header = header_ptr as *mut MoltHeader;
         (*header).type_id = type_id;
         (*header).ref_count.store(1, AtomicOrdering::Relaxed);
-        // Flags and size_class are already 0 from write_bytes.
+        MoltHeader::initialize_flags_before_publication(header, 0);
+        // Payload and size_class are already 0 from write_bytes.
         (*header).size_class = plan.size_class;
         if !initialize_header_aux(header, type_id, plan.size_class, total_size, aux) {
             std::alloc::dealloc(header_ptr, plan.layout);
@@ -1585,7 +1701,7 @@ unsafe fn replace_published_class_edge(
     ownership: ClassEdgeOwnership,
 ) -> bool {
     crate::gil_assert();
-    if (unsafe { (*header_from_obj_ptr(ptr)).flags } & HEADER_FLAG_DEALLOCATING) != 0 {
+    if (unsafe { (*header_from_obj_ptr(ptr)).load_flags() } & HEADER_FLAG_DEALLOCATING) != 0 {
         return false;
     }
     let Some(new_bits) = (unsafe { validated_class_edge_bits(bits) }) else {
@@ -1699,7 +1815,8 @@ pub(crate) unsafe fn object_replace_class_edge(
 unsafe fn class_header_has_finalizer(class_ptr: *mut u8) -> bool {
     unsafe {
         object_type_id(class_ptr) == TYPE_ID_TYPE
-            && ((*header_from_obj_ptr(class_ptr)).flags & HEADER_FLAG_CLASS_HAS_FINALIZER) != 0
+            && ((*header_from_obj_ptr(class_ptr)).load_flags() & HEADER_FLAG_CLASS_HAS_FINALIZER)
+                != 0
     }
 }
 
@@ -1761,9 +1878,9 @@ pub(crate) unsafe fn class_refresh_finalizer_flag(_py: &PyToken<'_>, class_ptr: 
 
         let header = header_from_obj_ptr(class_ptr);
         if has_finalizer {
-            (*header).flags |= HEADER_FLAG_CLASS_HAS_FINALIZER;
+            (*header).fetch_or_flags(HEADER_FLAG_CLASS_HAS_FINALIZER);
         } else {
-            (*header).flags &= !HEADER_FLAG_CLASS_HAS_FINALIZER;
+            (*header).fetch_and_flags(!HEADER_FLAG_CLASS_HAS_FINALIZER);
         }
     }
 }
@@ -1784,7 +1901,7 @@ pub(crate) unsafe fn class_finish_definition(_py: &PyToken<'_>, class_ptr: *mut 
 pub(crate) unsafe fn object_mark_has_ptrs(_py: &PyToken<'_>, ptr: *mut u8) {
     unsafe {
         crate::gil_assert();
-        (*header_from_obj_ptr(ptr)).flags |= HEADER_FLAG_HAS_PTRS;
+        (*header_from_obj_ptr(ptr)).fetch_or_flags(HEADER_FLAG_HAS_PTRS);
     }
 }
 
@@ -2067,10 +2184,10 @@ pub(crate) unsafe fn inc_ref_ptr(_py: &PyToken<'_>, ptr: *mut u8) {
             );
             std::process::abort();
         }
-        if ((*header_ptr).flags & HEADER_FLAG_IMMORTAL) != 0 {
+        if ((*header_ptr).load_flags() & HEADER_FLAG_IMMORTAL) != 0 {
             return;
         }
-        if ((*header_ptr).flags & HEADER_FLAG_DEALLOCATING) != 0 {
+        if ((*header_ptr).load_flags() & HEADER_FLAG_DEALLOCATING) != 0 {
             eprintln!("molt fatal: owned INCREF attempted after terminal death");
             std::process::abort();
         }
@@ -2090,7 +2207,7 @@ pub(crate) unsafe fn inc_ref_ptr(_py: &PyToken<'_>, ptr: *mut u8) {
         }
         let previous = checked_retain_count(header_ptr, 1, "inc_ref_ptr");
         let new_count = previous + 1;
-        if previous == 1 && ((*header_ptr).flags & HEADER_FLAG_HAS_ABI_VIEW) != 0 {
+        if previous == 1 && ((*header_ptr).load_flags() & HEADER_FLAG_HAS_ABI_VIEW) != 0 {
             let bits = MoltObject::from_ptr(ptr).bits();
             molt_cpython_abi::bridge::GLOBAL_BRIDGE.runtime_owner_added_from_view_hold(bits);
         }
@@ -2135,16 +2252,16 @@ pub(crate) unsafe fn inc_ref_n_ptr(_py: &PyToken<'_>, ptr: *mut u8, count: u32) 
             );
             std::process::abort();
         }
-        if ((*header_ptr).flags & HEADER_FLAG_IMMORTAL) != 0 {
+        if ((*header_ptr).load_flags() & HEADER_FLAG_IMMORTAL) != 0 {
             return;
         }
-        if ((*header_ptr).flags & HEADER_FLAG_DEALLOCATING) != 0 {
+        if ((*header_ptr).load_flags() & HEADER_FLAG_DEALLOCATING) != 0 {
             eprintln!("molt fatal: owned batched INCREF attempted after terminal death");
             std::process::abort();
         }
         let previous = checked_retain_count(header_ptr, count, "inc_ref_n_ptr");
         let new_count = previous + count;
-        if previous == 1 && ((*header_ptr).flags & HEADER_FLAG_HAS_ABI_VIEW) != 0 {
+        if previous == 1 && ((*header_ptr).load_flags() & HEADER_FLAG_HAS_ABI_VIEW) != 0 {
             let bits = MoltObject::from_ptr(ptr).bits();
             molt_cpython_abi::bridge::GLOBAL_BRIDGE.runtime_owner_added_from_view_hold(bits);
         }
@@ -2177,7 +2294,7 @@ unsafe fn run_object_del_in_revival_window(py: &PyToken<'_>, ptr: *mut u8) {
     if !unsafe { object_class_has_finalizer(ptr) } {
         return;
     }
-    if (unsafe { (*header_ptr).flags } & HEADER_FLAG_FINALIZER_RAN) != 0 {
+    if (unsafe { (*header_ptr).load_flags() } & HEADER_FLAG_FINALIZER_RAN) != 0 {
         return;
     }
     let class_bits = unsafe { object_class_bits(ptr) };
@@ -2212,7 +2329,7 @@ unsafe fn run_object_del_in_revival_window(py: &PyToken<'_>, ptr: *mut u8) {
     // callable alive through post-failure policy repr/context reporting.
     inc_ref_bits(py, raw_del_bits);
     unsafe {
-        (*header_ptr).flags |= HEADER_FLAG_FINALIZER_RAN;
+        (*header_ptr).fetch_or_flags(HEADER_FLAG_FINALIZER_RAN);
     }
     // CPython `PyObject_CallFinalizer` runs the finalizer with a CLEAN exception
     // state: `_PyErr_GetRaisedException` FETCHES (saves AND clears) any in-flight
@@ -2364,7 +2481,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             }
             std::process::abort();
         }
-        let header_flags = (*header_ptr).flags;
+        let header_flags = (*header_ptr).load_flags();
         let header_size_class = (*header_ptr).size_class;
         let header_aux = header_aux_snapshot(header_ptr);
         if (header_flags & HEADER_FLAG_IMMORTAL) != 0 {
@@ -2614,7 +2731,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                 // `__del__` did not resurrect: death is now committed. Publish
                 // DEALLOCATING before weakref clearing so callbacks cannot create
                 // fresh weakrefs or synthesize a runtime owner from stale bits.
-                (*header_ptr).flags |= HEADER_FLAG_DEALLOCATING;
+                (*header_ptr).fetch_or_flags(HEADER_FLAG_DEALLOCATING);
                 gc::gc_untrack_on_free(ptr, type_id);
                 // Detach weakrefs and invoke callbacks after the death verdict.
                 // The referent remains allocated only as an internal pin; checked
@@ -2661,7 +2778,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             // Arbitrary finalizer/weakref code may have published side state
             // after the entry snapshot. Reload only after the resurrection
             // verdict, then close every terminal sidecar from this authority.
-            let terminal_flags = (*header_ptr).flags;
+            let terminal_flags = (*header_ptr).load_flags();
             if (terminal_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0 {
                 // Consume the stable view hold only after every resurrection
                 // opportunity has closed.
@@ -2674,7 +2791,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             // their real final drop). `type_id` is the cached entry value; the
             // byte total was snapshotted before the window ran.
             if (terminal_flags & HEADER_FLAG_DEALLOCATING) == 0 {
-                (*header_ptr).flags |= HEADER_FLAG_DEALLOCATING;
+                (*header_ptr).fetch_or_flags(HEADER_FLAG_DEALLOCATING);
                 gc::gc_untrack_on_free(ptr, type_id);
             }
             let weakref_registration = if (terminal_flags & HEADER_FLAG_IS_WEAKREF) != 0 {
@@ -3744,18 +3861,18 @@ mod tests {
                 .as_ptr()
                 .expect("builtin object class");
             let class_header = unsafe { super::header_from_obj_ptr(class_ptr) };
-            let old_flags = unsafe { (*class_header).flags };
+            let old_flags = unsafe { (*class_header).load_flags() };
             struct RestoreClassFlags(*mut super::MoltHeader, u32);
             impl Drop for RestoreClassFlags {
                 fn drop(&mut self) {
                     unsafe {
-                        (*self.0).flags = self.1;
+                        (*self.0).store_flags(self.1);
                     }
                 }
             }
             let _restore = RestoreClassFlags(class_header, old_flags);
             unsafe {
-                (*class_header).flags |= super::HEADER_FLAG_CLASS_HAS_FINALIZER;
+                (*class_header).fetch_or_flags(super::HEADER_FLAG_CLASS_HAS_FINALIZER);
             }
 
             let ptr = alloc_object_with_aux(
@@ -3776,7 +3893,7 @@ mod tests {
             assert!(unsafe { object_class_has_finalizer(ptr) });
 
             unsafe {
-                (*class_header).flags = old_flags;
+                (*class_header).store_flags(old_flags);
             }
             dec_ref_bits(_py, crate::MoltObject::from_ptr(ptr).bits());
         });
@@ -3799,5 +3916,75 @@ mod tests {
             assert_eq!(total_size_from_header(header, ptr), total);
             dec_ref_bits(_py, crate::MoltObject::from_ptr(ptr).bits());
         });
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), feature = "free-threaded"))]
+    #[test]
+    fn disjoint_flag_publishers_preserve_both_bits() {
+        use std::sync::{Arc, Barrier};
+
+        let flags = Arc::new(super::MoltFlags::new(0));
+        let barrier = Arc::new(Barrier::new(3));
+        let mut workers = Vec::new();
+        for bit in [
+            super::HEADER_FLAG_CANCEL_PENDING,
+            super::HEADER_FLAG_TASK_WAKE_PENDING,
+        ] {
+            let flags = Arc::clone(&flags);
+            let barrier = Arc::clone(&barrier);
+            workers.push(std::thread::spawn(move || {
+                barrier.wait();
+                flags.fetch_or(bit, std::sync::atomic::Ordering::AcqRel);
+            }));
+        }
+        barrier.wait();
+        for worker in workers {
+            worker.join().expect("flag publisher must complete");
+        }
+        assert_eq!(
+            flags.load(std::sync::atomic::Ordering::Acquire)
+                & (super::HEADER_FLAG_CANCEL_PENDING | super::HEADER_FLAG_TASK_WAKE_PENDING),
+            super::HEADER_FLAG_CANCEL_PENDING | super::HEADER_FLAG_TASK_WAKE_PENDING
+        );
+    }
+
+    #[test]
+    fn coherent_flag_transition_preserves_sibling_bits() {
+        let mut header = std::mem::MaybeUninit::<super::MoltHeader>::zeroed();
+        let header = header.as_mut_ptr();
+        unsafe {
+            super::MoltHeader::initialize_flags_before_publication(
+                header,
+                super::HEADER_FLAG_TASK_QUEUED | super::HEADER_FLAG_CANCEL_PENDING,
+            );
+            (*header).update_flags(
+                super::HEADER_FLAG_TASK_RUNNING,
+                super::HEADER_FLAG_TASK_QUEUED,
+            );
+            assert_eq!(
+                (*header).load_flags()
+                    & (super::HEADER_FLAG_TASK_QUEUED
+                        | super::HEADER_FLAG_TASK_RUNNING
+                        | super::HEADER_FLAG_CANCEL_PENDING),
+                super::HEADER_FLAG_TASK_RUNNING | super::HEADER_FLAG_CANCEL_PENDING
+            );
+        }
+    }
+
+    #[test]
+    fn gc_publication_has_no_intermediate_visible_state() {
+        let mut header = std::mem::MaybeUninit::<super::MoltHeader>::zeroed();
+        let header = header.as_mut_ptr();
+        unsafe {
+            super::MoltHeader::initialize_flags_gc_unpublished(
+                header,
+                super::HEADER_FLAG_CONTAINS_REFS,
+            );
+            assert!(!(*header).gc_is_published());
+            assert!((*header).has_flag(super::HEADER_FLAG_CONTAINS_REFS));
+            (*header).gc_publish_initialized();
+            assert!((*header).gc_is_published());
+            assert!((*header).has_flag(super::HEADER_FLAG_CONTAINS_REFS));
+        }
     }
 }

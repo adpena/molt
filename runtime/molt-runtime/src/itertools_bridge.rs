@@ -233,7 +233,7 @@ pub extern "C" fn molt_itertools_alloc_function_with_defaults(
             return MoltObject::none().bits();
         }
         unsafe {
-            (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_IMMORTAL;
+            (*header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_IMMORTAL);
             let defaults = std::slice::from_raw_parts(defaults_ptr, defaults_len);
             let defaults_tuple_ptr = alloc_tuple(_py, defaults);
             if !defaults_tuple_ptr.is_null() {

@@ -235,7 +235,7 @@ pub fn alloc_function_with_defaults(
             return MoltObject::none().bits();
         }
         unsafe {
-            (*crate::header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_IMMORTAL;
+            (*crate::header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_IMMORTAL);
             let defaults_tuple_ptr = crate::alloc_tuple(py, defaults);
             if !defaults_tuple_ptr.is_null() {
                 let defaults_name = crate::intern_static_name(
