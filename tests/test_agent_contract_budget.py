@@ -2,17 +2,13 @@ from pathlib import Path
 import subprocess
 import tomllib
 
+from tools import check_instruction_hierarchy
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT_DOC_MAX_BYTES = 32_768
 COMPACT_ROOT_BUDGET = 24 * 1024
 DISCOVERABLE_AGENT_DOCS = {"AGENTS.md", "AGENTS.override.md"}
-FULL_GUIDES = {
-    "AGENTS.md": ROOT / "docs" / "agent" / "AGENTS.full.md",
-    "CLAUDE.md": ROOT / "docs" / "agent" / "CLAUDE.full.md",
-}
-
-
 def _tracked_agent_docs() -> list[Path]:
     result = subprocess.run(
         ["git", "ls-files", "-z"],
@@ -75,13 +71,9 @@ def test_every_tracked_codex_agent_doc_chain_fits_loader_budget() -> None:
         )
 
 
-def test_full_agent_guides_are_preserved_outside_root_contracts() -> None:
-    for root_name, full_path in FULL_GUIDES.items():
-        assert full_path.exists(), f"{full_path} must preserve the expanded {root_name}"
-        assert full_path.stat().st_size > PROJECT_DOC_MAX_BYTES
-        assert not full_path.read_bytes().startswith(b"\xef\xbb\xbf")
-        root_text = (ROOT / root_name).read_text(encoding="utf-8")
-        assert str(full_path.relative_to(ROOT)).replace("\\", "/") in root_text
+def test_instruction_hierarchy_is_compact_single_authority() -> None:
+    result = check_instruction_hierarchy.audit(ROOT)
+    assert result.ok, "\n".join(result.failures)
 
 
 def test_agent_contract_has_no_shadow_authority_files() -> None:
@@ -91,24 +83,3 @@ def test_agent_contract_has_no_shadow_authority_files() -> None:
     ]
     for shadow_path in shadow_paths:
         assert not shadow_path.exists(), f"{shadow_path} reintroduces agent-doc drift"
-
-
-def test_agent_contract_blocks_unsupported_exec_interrupts() -> None:
-    for name in ("AGENTS.md", "CLAUDE.md"):
-        text = (ROOT / name).read_text(encoding="utf-8")
-        assert "Ctrl-C" in text
-        assert "unified exec backend" in text
-        assert "incident record" in text
-
-
-def test_agent_contract_pins_ecosystem_source_custody() -> None:
-    text = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
-    assert "Molt must never reinvent third-party libraries" in text
-    assert "package's own Python" in text
-    assert "source lists/config headers" in text
-    assert (
-        "docs/design/foundation/73_efficient_builds_toolchain_provisioning_binary_cdn.md"
-        in text
-    )
-    assert "docs/spec/areas/tooling/0215_MOLT_EXTENSION_BUILD_PIPELINE.md" in text
-    assert "tools/fail_closed_gate.py" in text
