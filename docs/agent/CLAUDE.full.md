@@ -1,4 +1,11 @@
-# Claude Code Instructions
+<!-- INSTRUCTION_ARCHIVE: non-normative -->
+
+> **Non-normative archive.** This file preserves historical instruction material
+> for targeted research. It is not an agent contract and must not be loaded or
+> inherited as project guidance. The root `AGENTS.md` is the sole project-wide
+> instruction authority, and root `CLAUDE.md` imports it without duplication.
+
+# Claude Code Instructions (historical archive)
 
 ## ABSOLUTE TOP PRIORITY (read this first, every turn)
 
