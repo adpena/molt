@@ -5,7 +5,15 @@ review, and the decision of what lands when. Codex agents: read this board at
 the START of every arc and before every commit. If your planned work touches a
 lane you don't own, stop and pick from "Delegated to Codex" instead.
 
-Last updated: 2026-07-08 by the orchestrator.
+Last updated: 2026-07-16 by the orchestrator.
+
+## CLOSED ARC — AGENT INSTRUCTION MODERNIZATION (2026-07-16)
+
+**COMPLETE; do not reopen from remembered or compacted backlog.** Commit
+`b0a1b4956` established the current instruction authority: the short root
+`AGENTS.md` constitution, `CLAUDE.md` importing it, the historical full bodies,
+and `docs/agent/INSTRUCTION_DESIGN.md` plus its drift checks. Revisit this arc
+only for new demonstrated instruction drift or an explicit operator request.
 
 ## 🚨 CANONICAL PATHS — BINDING, READ FIRST (2026-07-08)
 
@@ -19,6 +27,13 @@ drift/slowness. **STOP using it — cwd, venv, worktrees, `.pth`, PYTHONPATH, an
 | **checkout / all git work + landings** | `C:\Molt\molt-src` (NVMe, off OneDrive, own `.git`) |
 | **python env** | `C:\Molt\molt-src\.venv` (run `uv sync` there once) |
 | **build artifacts** | `C:\Molt` (`MOLT_EXTERNAL_ARTIFACT_ROOTS=C:\Molt` + `MOLT_ALLOW_C_DRIVE_ARTIFACTS=1`, NVMe, auto-janitored) |
+
+`D:\Molt` is **POISON for canonical authority**, not a capacity fallback.
+Canonical source inputs, package seals, worktrees, toolchains, custody records,
+and landings must resolve under `C:\Molt`; if that authority is unavailable or
+full, canonical operations fail closed. An explicitly selected disposable
+scratch/output root may exist only where it cannot change canonical identity or
+custody.
 
 **FORBIDDEN (being deleted):** `C:\Users\adpen\OneDrive\Documents\molt` and every
 worktree that references the doomed OneDrive `.git` (scattered under `C:\Molt\worktrees`,
