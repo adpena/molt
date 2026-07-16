@@ -107,6 +107,10 @@ class SourceExtensionProducerError(ValueError):
     pass
 
 
+SOURCE_EXTENSION_SET_SCHEMA_VERSION = 2
+SOURCE_EXTENSION_SET_SCHEMA_MIGRATION_ORIGINS = frozenset({1})
+
+
 @dataclass(frozen=True)
 class _ProducedExtension:
     module: str
@@ -2319,8 +2323,23 @@ def _retire_replaceable_extension_destination(
         raise SourceExtensionProducerError(
             "existing extension-set manifest is not an object"
         )
+    incoming_schema_version = set_manifest.get("schema_version")
+    if incoming_schema_version != SOURCE_EXTENSION_SET_SCHEMA_VERSION:
+        raise SourceExtensionProducerError(
+            "source-extension producer constructed an unsupported extension-set "
+            f"schema_version: {incoming_schema_version!r}"
+        )
+    existing_schema_version = existing_manifest.get("schema_version")
+    if (
+        existing_schema_version != SOURCE_EXTENSION_SET_SCHEMA_VERSION
+        and existing_schema_version
+        not in SOURCE_EXTENSION_SET_SCHEMA_MIGRATION_ORIGINS
+    ):
+        raise SourceExtensionProducerError(
+            "refusing to replace a canonical seal with an unsupported existing "
+            f"extension-set schema_version: {existing_schema_version!r}"
+        )
     identity_fields = (
-        "schema_version",
         "kind",
         "package",
         "name",
@@ -2640,7 +2659,7 @@ def produce_source_extension_set(
             produced.append(result)
 
         set_manifest = {
-            "schema_version": 2,
+            "schema_version": SOURCE_EXTENSION_SET_SCHEMA_VERSION,
             "kind": "molt-source-extension-set",
             "package": extension_set.package,
             "name": extension_set.name,
