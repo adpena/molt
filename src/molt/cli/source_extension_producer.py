@@ -520,12 +520,32 @@ def _run_locked_source_extension_producer(
     child_environment.pop("PYTHONHOME", None)
     child_environment["PYTHONNOUSERSITE"] = "1"
     child_environment["VIRTUAL_ENV"] = str(environment.root)
+    child_environment["PATH"] = _locked_console_tool_path(
+        environment.python_executable.parent.resolve(),
+        child_environment.get("PATH"),
+    )
     return subprocess.run(
         argv,
         cwd=_REPO_ROOT,
         env=child_environment,
         check=False,
     ).returncode
+
+
+def _locked_console_tool_path(
+    scripts_root: str | Path,
+    inherited_path: str | None,
+    *,
+    separator: str = os.pathsep,
+) -> str:
+    """Put attested environment scripts ahead of intentional host tools.
+
+    The inherited suffix retains system and cross-toolchain discovery (LLVM,
+    Git, Rust, and platform SDKs). Only the locked environment's console-script
+    directory gains precedence; ambient Python environments gain no authority.
+    """
+    locked = str(scripts_root)
+    return separator.join((locked, inherited_path)) if inherited_path else locked
 
 
 def _source_build_config_tools(
