@@ -1331,23 +1331,11 @@ pub extern "C" fn molt_code_new(
                 return raise_exception::<_>(_py, "TypeError", "code name must be str");
             }
         }
-        if !obj_from_bits(linetable_bits).is_none() {
-            let Some(table_ptr) = obj_from_bits(linetable_bits).as_ptr() else {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "code linetable must be tuple or None",
-                );
-            };
-            unsafe {
-                if object_type_id(table_ptr) != TYPE_ID_TUPLE {
-                    return raise_exception::<_>(
-                        _py,
-                        "TypeError",
-                        "code linetable must be tuple or None",
-                    );
-                }
-            }
+        if !crate::object::builders::acyclic_slot_edge(
+            crate::object::heap_kinds_generated::HeapAcyclicSlot::CodeLinetable,
+            linetable_bits,
+        ) {
+            return raise_exception::<_>(_py, "TypeError", "code linetable must be bytes or None");
         }
         let Some(argcount) = to_i64(obj_from_bits(argcount_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "code argcount must be int");
@@ -1371,21 +1359,15 @@ pub extern "C" fn molt_code_new(
             varnames_bits = MoltObject::from_ptr(tuple_ptr).bits();
             varnames_owned = true;
         } else {
-            let Some(varnames_ptr) = obj_from_bits(varnames_bits).as_ptr() else {
+            if !crate::object::builders::acyclic_slot_edge(
+                crate::object::heap_kinds_generated::HeapAcyclicSlot::CodeVarnames,
+                varnames_bits,
+            ) {
                 return raise_exception::<_>(
                     _py,
                     "TypeError",
-                    "code varnames must be tuple or None",
+                    "code varnames must be a tuple of str or None",
                 );
-            };
-            unsafe {
-                if object_type_id(varnames_ptr) != TYPE_ID_TUPLE {
-                    return raise_exception::<_>(
-                        _py,
-                        "TypeError",
-                        "code varnames must be tuple or None",
-                    );
-                }
             }
         }
         let mut names_bits = names_bits;
@@ -1401,23 +1383,18 @@ pub extern "C" fn molt_code_new(
             names_bits = MoltObject::from_ptr(tuple_ptr).bits();
             names_owned = true;
         } else {
-            let Some(names_ptr) = obj_from_bits(names_bits).as_ptr() else {
+            if !crate::object::builders::acyclic_slot_edge(
+                crate::object::heap_kinds_generated::HeapAcyclicSlot::CodeNames,
+                names_bits,
+            ) {
                 if varnames_owned {
                     dec_ref_bits(_py, varnames_bits);
                 }
-                return raise_exception::<_>(_py, "TypeError", "code names must be tuple or None");
-            };
-            unsafe {
-                if object_type_id(names_ptr) != TYPE_ID_TUPLE {
-                    if varnames_owned {
-                        dec_ref_bits(_py, varnames_bits);
-                    }
-                    return raise_exception::<_>(
-                        _py,
-                        "TypeError",
-                        "code names must be tuple or None",
-                    );
-                }
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "code names must be a tuple of str or None",
+                );
             }
         }
         let firstlineno = to_i64(obj_from_bits(firstlineno_bits)).unwrap_or(0);

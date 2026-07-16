@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::ThreadTaskState;
+use crate::object::heap_lifecycle::DetachedEdgeSink;
 use crate::object::{dec_ref_ptr, inc_ref_ptr};
 use crate::{
     HEADER_FLAG_SPAWN_RETAIN, MoltObject, ProcessTaskState, PtrSlot, PyToken, header_from_obj_ptr,
@@ -148,6 +149,130 @@ pub(crate) fn task_exception_depths(_py: &PyToken<'_>) -> &'static Mutex<HashMap
 
 pub(crate) fn task_last_exceptions(_py: &PyToken<'_>) -> &'static Mutex<HashMap<PtrSlot, PtrSlot>> {
     &runtime_state(_py).task_last_exceptions
+}
+
+/// Side-effect-free projection of every Python edge owned on behalf of a task
+/// outside its inline closure payload.
+pub(crate) fn task_visit_owned_edges(
+    _py: &PyToken<'_>,
+    task_ptr: *mut u8,
+    mut visit: impl FnMut(u64),
+) {
+    let slot = PtrSlot(task_ptr);
+    if unsafe { (*header_from_obj_ptr(task_ptr)).has_flag(HEADER_FLAG_SPAWN_RETAIN) } {
+        visit(MoltObject::from_ptr(task_ptr).bits());
+    }
+    if let Some(stack) = task_exception_stacks(_py).lock().unwrap().get(&slot) {
+        for &bits in stack {
+            visit(bits);
+        }
+    }
+    if let Some(exception) = task_last_exceptions(_py).lock().unwrap().get(&slot) {
+        visit(MoltObject::from_ptr(exception.0).bits());
+    }
+    if let Some(&bits) = runtime_state(_py).task_results.lock().unwrap().get(&slot) {
+        visit(bits);
+    }
+    if let Some(&bits) = crate::task_cancel_messages(_py).lock().unwrap().get(&slot) {
+        visit(bits);
+    }
+    if let Some(awaited) = task_waiting_on(_py).lock().unwrap().get(&slot) {
+        // The await graph retains both endpoints.
+        visit(MoltObject::from_ptr(task_ptr).bits());
+        visit(MoltObject::from_ptr(awaited.0).bits());
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(state) = runtime_state(_py).thread_tasks.lock().unwrap().get(&slot) {
+        if let Some(bits) = *state.result.lock().unwrap() {
+            visit(bits);
+        }
+        if let Some(bits) = *state.exception.lock().unwrap() {
+            visit(bits);
+        }
+    }
+}
+
+fn await_waiter_detach_owned_edge(
+    _py: &PyToken<'_>,
+    waiter_ptr: *mut u8,
+    sink: &mut DetachedEdgeSink,
+) {
+    let waiter = PtrSlot(waiter_ptr);
+    let awaited = task_waiting_on(_py).lock().unwrap().remove(&waiter);
+    let Some(awaited) = awaited else {
+        return;
+    };
+    let mut awaiters = await_waiters(_py).lock().unwrap();
+    let mut indices = await_waiter_index_map(_py).lock().unwrap();
+    if let Some(waiters) = awaiters.get_mut(&awaited) {
+        let index = indices.entry(awaited).or_default();
+        if index.positions.len() != waiters.len() {
+            index.positions = rebuild_unique_index(waiters.as_slice());
+        }
+        indexed_unique_vec_swap_remove(waiters, &mut index.positions, waiter);
+        if waiters.is_empty() {
+            awaiters.remove(&awaited);
+            indices.remove(&awaited);
+        }
+    } else {
+        indices.remove(&awaited);
+    }
+    drop(indices);
+    drop(awaiters);
+    sink.detach(MoltObject::from_ptr(waiter_ptr).bits());
+    sink.detach(MoltObject::from_ptr(awaited.0).bits());
+}
+
+/// Detach every scheduler-owned Python edge for one task while publishing all
+/// corresponding side tables empty. No Python destructor runs here.
+pub(crate) fn task_detach_owned_edges(
+    _py: &PyToken<'_>,
+    task_ptr: *mut u8,
+    sink: &mut DetachedEdgeSink,
+) {
+    let slot = PtrSlot(task_ptr);
+    if let Some(bits) = runtime_state(_py)
+        .task_results
+        .lock()
+        .unwrap()
+        .remove(&slot)
+    {
+        sink.detach_if_heap(bits);
+    }
+    crate::task_cancellation_detach(_py, task_ptr, sink);
+    crate::builtins::exceptions::task_exception_detach_owned_edges(_py, task_ptr, sink);
+    await_waiter_detach_owned_edge(_py, task_ptr, sink);
+
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(state) = runtime_state(_py)
+        .thread_tasks
+        .lock()
+        .unwrap()
+        .remove(&slot)
+    {
+        state.cancelled.store(true, AtomicOrdering::Release);
+        if let Some(bits) = state.result.lock().unwrap().take() {
+            sink.detach_if_heap(bits);
+        }
+        if let Some(bits) = state.exception.lock().unwrap().take() {
+            sink.detach_if_heap(bits);
+        }
+        state.condvar.notify_all();
+    }
+
+    if let Some(state) = runtime_state(_py)
+        .process_tasks
+        .lock()
+        .unwrap()
+        .remove(&slot)
+    {
+        state.cancelled.store(true, AtomicOrdering::Release);
+        let mut guard = state.process.wait_future.lock().unwrap();
+        if guard.map(|value| value.0) == Some(task_ptr) {
+            *guard = None;
+        }
+        state.process.condvar.notify_all();
+    }
 }
 
 pub(crate) fn await_waiter_register(_py: &PyToken<'_>, waiter_ptr: *mut u8, awaited_ptr: *mut u8) {

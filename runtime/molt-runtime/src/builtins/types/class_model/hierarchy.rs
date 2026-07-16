@@ -1,4 +1,5 @@
 use super::*;
+use crate::TYPE_ID_OBJECT;
 use crate::object::seq_access::snapshot;
 
 fn c3_merge(seqs: Vec<Vec<u64>>) -> Option<Vec<u64>> {
@@ -143,6 +144,8 @@ pub extern "C" fn molt_class_set_base(class_bits: u64, base_bits: u64) -> u64 {
                 return raise_exception::<_>(_py, "TypeError", &msg);
             }
         }
+        let mut inherited_instance_type_id = TYPE_ID_OBJECT;
+        let mut inherited_instance_shape = crate::object::ObjectShapeId::Plain;
         for base in bases_vec.iter() {
             let base_obj = obj_from_bits(*base);
             let Some(base_ptr) = base_obj.as_ptr() else {
@@ -167,7 +170,51 @@ pub extern "C" fn molt_class_set_base(class_bits: u64, base_bits: u64) -> u64 {
                         "class cannot inherit from itself",
                     );
                 }
+                let base_instance_type_id = crate::object::class_instance_type_id(base_ptr);
+                if base_instance_type_id != TYPE_ID_OBJECT {
+                    if inherited_instance_type_id != TYPE_ID_OBJECT
+                        && inherited_instance_type_id != base_instance_type_id
+                    {
+                        return raise_exception::<_>(
+                            _py,
+                            "TypeError",
+                            "multiple bases define conflicting native instance kinds",
+                        );
+                    }
+                    inherited_instance_type_id = base_instance_type_id;
+                }
+                let base_instance_shape = crate::object::class_instance_shape_id(base_ptr);
+                if base_instance_shape != crate::object::ObjectShapeId::Plain {
+                    if inherited_instance_shape != crate::object::ObjectShapeId::Plain
+                        && inherited_instance_shape != base_instance_shape
+                    {
+                        return raise_exception::<_>(
+                            _py,
+                            "TypeError",
+                            "multiple bases define conflicting native payload shapes",
+                        );
+                    }
+                    inherited_instance_shape = base_instance_shape;
+                }
             }
+        }
+        if !unsafe {
+            crate::object::class_can_inherit_instance_shape_id(class_ptr, inherited_instance_shape)
+        } {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "inherited native payload shape conflicts with class layout",
+            );
+        }
+        if !unsafe {
+            crate::object::class_can_inherit_instance_type_id(class_ptr, inherited_instance_type_id)
+        } {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "inherited native instance kind conflicts with class layout",
+            );
         }
 
         let mro = match compute_mro(class_bits, &bases_vec) {
@@ -222,6 +269,22 @@ pub extern "C" fn molt_class_set_base(class_bits: u64, base_bits: u64) -> u64 {
                 dec_ref_bits(_py, mro_bits);
             }
             if bases_updated || mro_updated {
+                let published = crate::object::class_inherit_instance_type_id(
+                    class_ptr,
+                    inherited_instance_type_id,
+                );
+                debug_assert!(
+                    published,
+                    "validated instance-kind publication must succeed"
+                );
+                let shape_published = crate::object::class_inherit_instance_shape_id(
+                    class_ptr,
+                    inherited_instance_shape,
+                );
+                debug_assert!(
+                    shape_published,
+                    "validated instance-shape publication must succeed"
+                );
                 crate::object::class_refresh_finalizer_flag(_py, class_ptr);
                 class_bump_layout_version(class_ptr);
             }

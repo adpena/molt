@@ -1,6 +1,6 @@
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::Instant;
@@ -32,6 +32,7 @@ use crate::call::bind::CallBindRuntimeState;
 use crate::concurrency::gil::{gil_held, hold_runtime_gil};
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
+use crate::object::builders::CanonicalObjectCache;
 use crate::object::utf8_cache::{Utf8CacheStore, Utf8CountCacheStore, build_utf8_count_cache};
 use crate::object::weakref::WeakContainerCookie;
 use crate::{
@@ -147,6 +148,9 @@ pub(crate) struct WeakRefEntry {
     pub(crate) target: PtrSlot,
     pub(crate) callback_bits: u64,
     pub(crate) container_cookie: Option<WeakContainerCookie>,
+    /// CPython-compatible sticky hash: once computed while the referent is
+    /// alive, the value remains available after referent death.
+    pub(crate) cached_hash: Option<i64>,
 }
 
 #[derive(Clone)]
@@ -484,11 +488,16 @@ impl SpecialCache {
 }
 
 pub(crate) struct RuntimeState {
+    pub(crate) gc_running: AtomicBool,
+    pub(crate) gc_last_failure: AtomicU8,
     pub(crate) builtin_classes: std::sync::atomic::AtomicPtr<BuiltinClasses>,
     pub(crate) interned: InternedNames,
     pub(crate) runtime_static_names: RuntimeStaticNames,
     pub(crate) method_cache: MethodCache,
     pub(crate) special_cache: SpecialCache,
+    pub(crate) canonical_objects: CanonicalObjectCache,
+    pub(crate) last_exception: AtomicPtr<u8>,
+    pub(crate) last_exception_pending: AtomicBool,
     pub(crate) module_cache: Mutex<HashMap<String, u64>>,
     /// Import-bedrock ModuleTable (design doc 69): dense per-ModuleId state
     /// machine + slots, one instance per isolate, sized from the installed
@@ -535,6 +544,7 @@ pub(crate) struct RuntimeState {
     pub(crate) task_exception_depths: Mutex<HashMap<PtrSlot, usize>>,
     pub(crate) task_exception_baselines: Mutex<HashMap<PtrSlot, usize>>,
     pub(crate) task_last_exceptions: Mutex<HashMap<PtrSlot, PtrSlot>>,
+    pub(crate) task_last_exception_pending: AtomicBool,
     pub(crate) task_results: Mutex<HashMap<PtrSlot, u64>>,
     pub(crate) attributes: AttributesRuntimeState,
     pub(crate) dict_subclass_storage: Mutex<HashMap<PtrSlot, u64>>,
@@ -557,7 +567,6 @@ pub(crate) struct RuntimeState {
     pub(crate) asyncgen_locals: Mutex<HashMap<u64, AsyncGenLocalsEntry>>,
     pub(crate) gen_locals: Mutex<HashMap<u64, GenLocalsEntry>>,
     pub(crate) weakrefs: Mutex<WeakRefRegistry>,
-    pub(crate) weakref_reference_type: AtomicU64,
     pub(crate) exit_registry: Mutex<ExitRegistry>,
     pub(crate) abc_invalidation_counter: AtomicU64,
     pub(crate) asyncgen_registry: Mutex<HashSet<PtrSlot>>,
@@ -585,11 +594,16 @@ pub(crate) struct RuntimeState {
 impl RuntimeState {
     pub(crate) fn new() -> Self {
         Self {
+            gc_running: AtomicBool::new(false),
+            gc_last_failure: AtomicU8::new(0),
             builtin_classes: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
             interned: InternedNames::new(),
             runtime_static_names: RuntimeStaticNames::new(),
             method_cache: MethodCache::new(),
             special_cache: SpecialCache::new(),
+            canonical_objects: CanonicalObjectCache::new(),
+            last_exception: AtomicPtr::new(std::ptr::null_mut()),
+            last_exception_pending: AtomicBool::new(false),
             module_cache: Mutex::new(HashMap::new()),
             #[cfg(not(target_arch = "wasm32"))]
             module_table: OnceLock::new(),
@@ -633,6 +647,7 @@ impl RuntimeState {
             task_exception_depths: Mutex::new(HashMap::new()),
             task_exception_baselines: Mutex::new(HashMap::new()),
             task_last_exceptions: Mutex::new(HashMap::new()),
+            task_last_exception_pending: AtomicBool::new(false),
             task_results: Mutex::new(HashMap::new()),
             attributes: AttributesRuntimeState::new(),
             dict_subclass_storage: Mutex::new(HashMap::new()),
@@ -658,7 +673,6 @@ impl RuntimeState {
             asyncgen_locals: Mutex::new(HashMap::new()),
             gen_locals: Mutex::new(HashMap::new()),
             weakrefs: Mutex::new(WeakRefRegistry::new()),
-            weakref_reference_type: AtomicU64::new(0),
             exit_registry: Mutex::new(ExitRegistry::new()),
             abc_invalidation_counter: AtomicU64::new(0),
             asyncgen_registry: Mutex::new(HashSet::new()),
@@ -953,7 +967,14 @@ pub extern "C" fn molt_runtime_exit(code_bits: u64) -> u64 {
             // Run the cyclic collector before module teardown so unreachable
             // cycles are finalized and reclaimed in CPython's shutdown position.
             unsafe {
-                let _ = crate::object::gc::collect_cycles(&py);
+                let outcome = crate::object::gc::collect_cycles(&py);
+                match outcome.status {
+                    crate::object::gc::GcCollectStatus::Completed
+                    | crate::object::gc::GcCollectStatus::ReentrantNoop => {}
+                    failure => {
+                        eprintln!("molt gc: process-exit collection failed closed: {failure:?}")
+                    }
+                }
             }
             runtime_teardown_for_process_exit(&py, state);
             // 2. Post-teardown TRUE-LEAK gauge (ownership_lattice_phase0.md

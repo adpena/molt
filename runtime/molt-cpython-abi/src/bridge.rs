@@ -217,6 +217,21 @@ pub struct RetiredListProjection {
     pointers: Vec<*mut PyObject>,
 }
 
+/// Both allocation buffers moved out of a canonical list projection after its
+/// C-visible storage has published empty. Keeping the original buffers avoids
+/// any allocation after publication, including for dirty direct-C slots.
+pub struct RetiredClearedListProjection {
+    items: Vec<*mut PyObject>,
+    shadow: Vec<*mut PyObject>,
+}
+
+/// The fixed C-owned field set removed from a canonical exception projection.
+/// Publication is complete before construction; dropping the guard performs
+/// only the deferred C decrements.
+pub struct RetiredExceptionProjection {
+    pointers: [*mut PyObject; 6],
+}
+
 /// One pre-acquired C projection edge for an allocation-free list delta.
 /// Preparation may reserve physical pointer-array capacity, but it does not
 /// change logical length or item ownership. Publication transfers `pointer`
@@ -254,6 +269,31 @@ impl Drop for RetiredListProjection {
     fn drop(&mut self) {
         for pointer in self.pointers.drain(..).filter(|pointer| !pointer.is_null()) {
             unsafe { GLOBAL_BRIDGE.projection_decref(pointer) };
+        }
+    }
+}
+
+impl Drop for RetiredClearedListProjection {
+    fn drop(&mut self) {
+        debug_assert_eq!(self.items.len(), self.shadow.len());
+        for (current, projected) in self.items.drain(..).zip(self.shadow.drain(..)) {
+            if !projected.is_null() {
+                unsafe { GLOBAL_BRIDGE.projection_decref(projected) };
+            }
+            if current != projected && !current.is_null() {
+                unsafe { crate::api::refcount::Py_DECREF(current) };
+            }
+        }
+    }
+}
+
+impl Drop for RetiredExceptionProjection {
+    fn drop(&mut self) {
+        for pointer in std::mem::replace(&mut self.pointers, [std::ptr::null_mut(); 6])
+            .into_iter()
+            .filter(|pointer| !pointer.is_null())
+        {
+            unsafe { crate::api::refcount::Py_DECREF(pointer) };
         }
     }
 }
@@ -759,7 +799,21 @@ pub struct RetiredTupleView {
     entry: Option<Box<BridgeEntry>>,
 }
 
+/// A canonical projection removed from both bridge identity maps but kept
+/// alive until the runtime has published every semantic edge source empty.
+pub struct RetiredRuntimeView {
+    entry: Option<Box<BridgeEntry>>,
+}
+
 impl Drop for RetiredTupleView {
+    fn drop(&mut self) {
+        if let Some(entry) = self.entry.take() {
+            release_bridge_entry(*entry);
+        }
+    }
+}
+
+impl Drop for RetiredRuntimeView {
     fn drop(&mut self) {
         if let Some(entry) = self.entry.take() {
             release_bridge_entry(*entry);
@@ -2782,39 +2836,26 @@ impl ObjectBridge {
     }
 
     /// Publish an empty list projection before releasing its C ownership edges.
-    pub fn clear_list_view(&self, bits: AbiHandle) {
-        let (old, direct) = {
+    pub fn clear_list_view(&self, bits: AbiHandle) -> Option<RetiredClearedListProjection> {
+        let (items, shadow) = {
             let mut handle = self.handle_shard(bits).lock();
             let Some(entry) = handle.to_py.get_mut(&bits) else {
-                return;
+                return None;
             };
             let ManagedView::List { allocation } = &mut entry.view else {
-                return;
+                return None;
             };
-            let direct = allocation
-                .items
-                .iter()
-                .copied()
-                .zip(allocation.shadow.iter().copied())
-                .filter_map(|(current, shadow)| {
-                    (current != shadow && !current.is_null()).then_some(current)
-                })
-                .collect::<Vec<_>>();
-            let old = std::mem::take(&mut allocation.shadow);
-            allocation.items.clear();
-            allocation.shadow.clear();
-            allocation.initialized.clear();
+            let items = std::mem::take(&mut allocation.items);
+            let shadow = std::mem::take(&mut allocation.shadow);
+            let initialized = std::mem::take(&mut allocation.initialized);
             allocation.uninitialized_count = 0;
             allocation.sealed = true;
             allocation.publish_storage();
-            (old, direct)
+            drop(initialized);
+            (items, shadow)
         };
-        for pointer in old.into_iter().filter(|pointer| !pointer.is_null()) {
-            unsafe { self.projection_decref(pointer) };
-        }
-        for pointer in direct {
-            unsafe { crate::api::refcount::Py_DECREF(pointer) };
-        }
+        debug_assert_eq!(items.len(), shadow.len());
+        Some(RetiredClearedListProjection { items, shadow })
     }
 }
 
@@ -2987,14 +3028,17 @@ impl ObjectBridge {
     /// detached first so any decref-triggered callback observes one coherent
     /// cleared object. Null publication also makes later bridge-entry teardown
     /// idempotent instead of double-decrementing the old fields.
-    pub fn clear_exception_view_fields(&self, bits: AbiHandle) {
+    pub fn clear_exception_view_fields(
+        &self,
+        bits: AbiHandle,
+    ) -> Option<RetiredExceptionProjection> {
         let old = {
             let mut handle = self.handle_shard(bits).lock();
             let Some(entry) = handle.to_py.get_mut(&bits) else {
-                return;
+                return None;
             };
             let ManagedView::Exception(object) = &mut entry.view else {
-                return;
+                return None;
             };
             unsafe {
                 let object = &mut *object.get();
@@ -3008,9 +3052,7 @@ impl ObjectBridge {
                 ]
             }
         };
-        for field in old.into_iter().filter(|field| !field.is_null()) {
-            unsafe { crate::api::refcount::Py_DECREF(field) };
-        }
+        Some(RetiredExceptionProjection { pointers: old })
     }
 
     /// Commit direct C writes to a managed `PyBaseExceptionObject` before the
@@ -3655,6 +3697,25 @@ impl ObjectBridge {
         Some(RetiredTupleView { entry: Some(entry) })
     }
 
+    /// Retire canonical identity while deferring every physical projection
+    /// edge until the runtime has published all semantic sources empty.
+    pub fn retire_runtime_object_deferred(&self, bits: AbiHandle) -> Option<RetiredRuntimeView> {
+        let addr = {
+            let handle = self.handle_shard(bits).lock();
+            let entry = handle.to_py.get(&bits)?;
+            entry.view.py_obj().addr()
+        };
+        let (mut address, mut handle) = self.lock_address_then_handle(addr, bits);
+        address.from_py.remove(&addr);
+        address.direct_molt_py.remove(&addr);
+        handle.to_py.get_mut(&bits)?.publication = PublicationState::Retiring;
+        let entry = handle.to_py.remove(&bits)?;
+        self.publication_ready[self.handle_shard_index(bits)].notify_all();
+        drop(handle);
+        drop(address);
+        Some(RetiredRuntimeView { entry: Some(entry) })
+    }
+
     /// Called after a runtime decrement leaves only the view's strong hold.
     /// `Some(true)` means the internal C bias was the last C reference and the
     /// caller must consume the view hold as the final runtime reference.
@@ -4200,6 +4261,28 @@ pub extern "C" fn molt_cpython_abi_init() {
 // NOT re-enter `PyObject_GetAttr`/`PyObject_SetAttr` (whose first branch is the
 // bridge hook back into the runtime), or a foreign object would recurse forever;
 // they go straight to `tp_getattro` / `tp_setattro` / `PyObject_Call`.
+
+/// Whether a foreign C object can participate in CPython cyclic GC.
+///
+/// Molt has no sound cross-collector trial-deletion protocol, so admission
+/// fails closed for GC-capable foreign objects.
+///
+/// # Safety
+/// `c_ptr` must identify a live `PyObject` while the GIL is held.
+pub unsafe fn molt_foreign_object_is_gc_capable(c_ptr: usize) -> bool {
+    if c_ptr == 0 {
+        return false;
+    }
+    let object = core::ptr::with_exposed_provenance_mut::<PyObject>(c_ptr);
+    let ty = unsafe { (*object).ob_type };
+    if ty.is_null() {
+        return false;
+    }
+    if let Some(is_gc) = unsafe { (*ty).tp_is_gc } {
+        return unsafe { is_gc(object) != 0 };
+    }
+    unsafe { ((*ty).tp_flags & crate::abi_types::Py_TPFLAGS_HAVE_GC) != 0 }
+}
 
 /// Release the bridge identity + strong reference a foreign wrapper held on the
 /// C object at `c_ptr`. Called from the runtime's `TYPE_ID_FOREIGN` drop hook.

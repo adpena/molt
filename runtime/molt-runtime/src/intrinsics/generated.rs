@@ -321,15 +321,15 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_weakref_bind_reference_type",
-        symbol: "molt_weakref_bind_reference_type",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_weakref_register",
         symbol: "molt_weakref_register",
         arity: 3,
+        defaults: &[],
+    },
+    IntrinsicSpec {
+        name: "molt_weakref_reference_type",
+        symbol: "molt_weakref_reference_type",
+        arity: 0,
         defaults: &[],
     },
     IntrinsicSpec {

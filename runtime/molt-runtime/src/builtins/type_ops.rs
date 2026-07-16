@@ -437,6 +437,7 @@ pub(crate) fn type_of_bits(_py: &PyToken<'_>, val_bits: u64) -> u64 {
                 }
                 TYPE_ID_GENERIC_ALIAS => builtins.generic_alias,
                 TYPE_ID_UNION => builtins.union_type,
+                TYPE_ID_WEAKREF => builtins.reference_type,
                 TYPE_ID_SUPER => builtins.super_type,
                 TYPE_ID_CLASSMETHOD => builtins.classmethod,
                 TYPE_ID_STATICMETHOD => builtins.staticmethod,

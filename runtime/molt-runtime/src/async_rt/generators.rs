@@ -7,7 +7,8 @@ use super::generators_async::{cancel_future_task, molt_future_new};
 use crate::object::accessors::resolve_obj_ptr;
 use crate::object::{
     HEADER_FLAG_COROUTINE, ObjectAuxPreselection, object_init_poll_fn_unpublished,
-    object_init_state_unpublished, object_state,
+    object_init_shape_unpublished, object_init_state_unpublished, object_shape_for_poll_fn,
+    object_state,
 };
 use crate::{
     ACTIVE_EXCEPTION_STACK, ASYNCGEN_CONTROL_SIZE, ASYNCGEN_FIRSTITER_OFFSET, ASYNCGEN_GEN_OFFSET,
@@ -319,6 +320,7 @@ pub extern "C" fn molt_task_new(poll_fn_addr: u64, closure_size: u64, kind_bits:
             }
             let header = header_from_obj_ptr(ptr);
             if !object_init_poll_fn_unpublished(ptr, poll_fn_addr)
+                || !object_init_shape_unpublished(ptr, object_shape_for_poll_fn(poll_fn_addr))
                 || !object_init_state_unpublished(ptr, 0)
             {
                 dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
@@ -1050,6 +1052,29 @@ pub(crate) unsafe fn asyncgen_pending_bits(ptr: *mut u8) -> u64 {
 
 pub(crate) unsafe fn asyncgen_firstiter_bits(ptr: *mut u8) -> u64 {
     unsafe { *asyncgen_slot_ptr(ptr, ASYNCGEN_FIRSTITER_OFFSET) }
+}
+
+pub(crate) unsafe fn asyncgen_visit_owned_edges(ptr: *mut u8, mut visit: impl FnMut(u64)) {
+    unsafe {
+        visit(asyncgen_pending_bits(ptr));
+        visit(asyncgen_running_bits(ptr));
+        visit(asyncgen_gen_bits(ptr));
+    }
+}
+
+pub(crate) unsafe fn asyncgen_detach_owned_edges(
+    ptr: *mut u8,
+    sink: &mut crate::object::heap_lifecycle::DetachedEdgeSink,
+) {
+    unsafe {
+        let none = MoltObject::none().bits();
+        let pending = asyncgen_slot_ptr(ptr, ASYNCGEN_PENDING_OFFSET).replace(none);
+        let running = asyncgen_slot_ptr(ptr, ASYNCGEN_RUNNING_OFFSET).replace(none);
+        let generator_bits = asyncgen_slot_ptr(ptr, ASYNCGEN_GEN_OFFSET).replace(none);
+        sink.detach_if_heap(pending);
+        sink.detach_if_heap(running);
+        sink.detach_if_heap(generator_bits);
+    }
 }
 
 unsafe fn asyncgen_set_firstiter_bits(_py: &PyToken<'_>, ptr: *mut u8, bits: u64) {

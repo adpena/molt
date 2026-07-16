@@ -1,31 +1,27 @@
-"""_weakref shim for Molt."""
+"""Runtime-native low-level weak-reference authority."""
 
 from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-from weakref import (
-    CallableProxyType,
-    ProxyType,
-    ReferenceType,
-    getweakrefcount,
-    getweakrefs,
-    proxy,
-    ref,
-)
-
+ReferenceType = _require_intrinsic("molt_weakref_reference_type")()
+ref = ReferenceType
 _MOLT_WEAKREF_COUNT = _require_intrinsic("molt_weakref_count")
+_MOLT_WEAKREF_REFS = _require_intrinsic("molt_weakref_refs")
+
+
+def getweakrefcount(obj):
+    return _MOLT_WEAKREF_COUNT(obj)
+
+
+def getweakrefs(obj):
+    return list(_MOLT_WEAKREF_REFS(obj))
 
 __all__ = [
-    "CallableProxyType",
-    "ProxyType",
     "ReferenceType",
     "getweakrefcount",
     "getweakrefs",
-    "proxy",
     "ref",
 ]
-
-del _MOLT_WEAKREF_COUNT
 
 globals().pop("_require_intrinsic", None)

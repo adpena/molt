@@ -27,16 +27,6 @@ impl Drop for CApiTestGuard {
     fn drop(&mut self) {}
 }
 
-fn bind_test_weakref_type(_py: &PyToken<'_>, class_bits: u64) {
-    crate::object::weakref::weakref_clear_runtime_state(_py, runtime_state(_py));
-    let result = crate::molt_weakref_bind_reference_type(class_bits);
-    assert!(obj_from_bits(result).is_none());
-}
-
-fn clear_test_weakref_type(_py: &PyToken<'_>) {
-    crate::object::weakref::weakref_clear_runtime_state(_py, runtime_state(_py));
-}
-
 fn assert_pending_exception_class(_py: &PyToken<'_>, expected: &str) {
     assert!(exception_pending(_py));
     let exc_bits = molt_err_fetch();
@@ -1068,7 +1058,6 @@ fn weakref_callback_runs_with_live_target_not_rc0() {
         // A plain class: instances have NO __del__, so the revival window here
         // is opened SOLELY by the HAS_WEAKREF lifetime-boundary bit.
         let (class_bits, attr_storage) = create_guarded_test_class(_py, b"WeakTargetA", &[]);
-        bind_test_weakref_type(_py, class_bits);
         let class_ptr = obj_from_bits(class_bits).as_ptr().expect("class ptr");
         let inst_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
         let inst_ptr = obj_from_bits(inst_bits).as_ptr().expect("instance ptr");
@@ -1126,7 +1115,6 @@ fn weakref_callback_runs_with_live_target_not_rc0() {
         for attr_bits in attr_storage.into_iter().step_by(2) {
             dec_ref_bits(_py, attr_bits);
         }
-        clear_test_weakref_type(_py);
         dec_ref_bits(_py, class_bits);
     });
 }
@@ -1137,7 +1125,6 @@ fn explicit_gc_collect_preserves_strongly_reachable_weakref_target() {
     crate::with_gil_entry_nopanic!(_py, {
         let (class_bits, attr_storage) =
             create_guarded_test_class(_py, b"WeakTargetStillReachable", &[]);
-        bind_test_weakref_type(_py, class_bits);
         let class_ptr = obj_from_bits(class_bits).as_ptr().expect("class ptr");
         let target_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
         let target_ptr = obj_from_bits(target_bits).as_ptr().expect("target ptr");
@@ -1166,7 +1153,6 @@ fn explicit_gc_collect_preserves_strongly_reachable_weakref_target() {
         for attr_bits in attr_storage.into_iter().step_by(2) {
             dec_ref_bits(_py, attr_bits);
         }
-        clear_test_weakref_type(_py);
         dec_ref_bits(_py, class_bits);
     });
 }
@@ -1181,7 +1167,6 @@ fn repeated_weakref_callbacks_transfer_registration_custody_without_leak() {
 
         let (class_bits, attr_storage) =
             create_guarded_test_class(_py, b"WeakCallbackCustody", &[]);
-        bind_test_weakref_type(_py, class_bits);
         let class_ptr = obj_from_bits(class_bits).as_ptr().expect("class ptr");
         let cb_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
@@ -1222,7 +1207,6 @@ fn repeated_weakref_callbacks_transfer_registration_custody_without_leak() {
         for attr_bits in attr_storage.into_iter().step_by(2) {
             dec_ref_bits(_py, attr_bits);
         }
-        clear_test_weakref_type(_py);
         dec_ref_bits(_py, class_bits);
     });
 }
@@ -1244,7 +1228,6 @@ fn weakref_callback_calling_gc_collect_keeps_target_live() {
         WEAKREF_CB_TYPE_ID_AFTER_GC.store(0, Ordering::SeqCst);
 
         let (class_bits, attr_storage) = create_guarded_test_class(_py, b"WeakTargetGc", &[]);
-        bind_test_weakref_type(_py, class_bits);
         let class_ptr = obj_from_bits(class_bits).as_ptr().expect("class ptr");
         let inst_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
         let weak_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
@@ -1299,7 +1282,6 @@ fn weakref_callback_calling_gc_collect_keeps_target_live() {
         for attr_bits in attr_storage.into_iter().step_by(2) {
             dec_ref_bits(_py, attr_bits);
         }
-        clear_test_weakref_type(_py);
         dec_ref_bits(_py, class_bits);
     });
 }
@@ -1322,7 +1304,6 @@ fn weakref_callback_reregistering_on_dying_target_leaves_no_orphan() {
         WEAKREF_CB_REREGISTER_NEW_WEAK_OUT.store(0, Ordering::SeqCst);
 
         let (class_bits, attr_storage) = create_guarded_test_class(_py, b"WeakTargetReReg", &[]);
-        bind_test_weakref_type(_py, class_bits);
         let class_ptr = obj_from_bits(class_bits).as_ptr().expect("class ptr");
         let inst_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
         let weak_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
@@ -1391,7 +1372,6 @@ fn weakref_callback_reregistering_on_dying_target_leaves_no_orphan() {
         for attr_bits in attr_storage.into_iter().step_by(2) {
             dec_ref_bits(_py, attr_bits);
         }
-        clear_test_weakref_type(_py);
         dec_ref_bits(_py, class_bits);
     });
 }
@@ -3132,13 +3112,47 @@ fn module_capi_metadata_and_state_registry_roundtrip() {
         assert_eq!(molt_err_clear(), 0);
 
         assert_eq!(molt_module_state_add(module_bits, module_def_ptr), 0);
-        c_api_module_on_module_teardown(_py, module_ptr);
+        assert!(c_api_module_detach_on_teardown(_py, module_ptr).is_none());
         assert_eq!(molt_module_capi_get_def(module_bits), 0);
         assert!(molt_module_capi_get_state(module_bits).is_null());
         assert_eq!(molt_module_state_find(module_def_ptr), 0);
 
         dec_ref_bits(_py, module_bits);
         dec_ref_bits(_py, module_name_bits);
+    });
+}
+
+#[test]
+fn module_capi_teardown_detaches_registry_edge_before_release() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        let owner = crate::alloc_list(_py, &[]);
+        let referent = crate::alloc_list(_py, &[]);
+        let owner_key = owner as usize;
+        let referent_bits = MoltObject::from_ptr(referent).bits();
+        let def_key = 0xDEC0DEusize;
+        inc_ref_bits(_py, referent_bits);
+        {
+            let mut state = c_api_module_state(_py);
+            state.state_registry.by_module.insert(owner_key, def_key);
+            state.state_registry.by_def.insert(def_key, referent_bits);
+        }
+
+        let mut visited = Vec::new();
+        c_api_module_visit_owned_edge(_py, owner, |bits| visited.push(bits));
+        assert_eq!(visited, vec![referent_bits]);
+        let detached = c_api_module_detach_on_teardown(_py, owner);
+        assert_eq!(detached, Some(referent_bits));
+        {
+            let state = c_api_module_state(_py);
+            assert!(!state.state_registry.by_module.contains_key(&owner_key));
+            assert!(!state.state_registry.by_def.contains_key(&def_key));
+        }
+
+        // Releasing the detached edge happens only after both maps are empty.
+        dec_ref_bits(_py, detached.expect("detached registry edge"));
+        dec_ref_bits(_py, MoltObject::from_ptr(owner).bits());
+        dec_ref_bits(_py, referent_bits);
     });
 }
 

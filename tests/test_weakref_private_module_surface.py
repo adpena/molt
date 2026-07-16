@@ -17,23 +17,11 @@ import types
 
 
 class ReferenceType:
-    pass
+    def __init__(self, obj):
+        self.obj = obj
 
-
-class ProxyType:
-    pass
-
-
-class CallableProxyType:
-    pass
-
-
-def ref(obj):
-    return ("ref", obj)
-
-
-def proxy(obj):
-    return ("proxy", obj)
+    def __call__(self):
+        return self.obj
 
 
 def getweakrefcount(obj):
@@ -44,18 +32,10 @@ def getweakrefs(obj):
     return [("ref", obj)]
 
 
-_fake_weakref = types.ModuleType("weakref")
-_fake_weakref.ReferenceType = ReferenceType
-_fake_weakref.ProxyType = ProxyType
-_fake_weakref.CallableProxyType = CallableProxyType
-_fake_weakref.ref = ref
-_fake_weakref.proxy = proxy
-_fake_weakref.getweakrefcount = getweakrefcount
-_fake_weakref.getweakrefs = getweakrefs
-sys.modules["weakref"] = _fake_weakref
-
 builtins._molt_intrinsics = {{
     "molt_weakref_count": lambda obj: 7,
+    "molt_weakref_refs": getweakrefs,
+    "molt_weakref_reference_type": lambda: ReferenceType,
 }}
 
 _intrinsics_mod = types.ModuleType("_intrinsics")
@@ -97,8 +77,8 @@ for name, type_name, is_callable in rows:
 checks = {{
     "anchor_hidden": "molt_weakref_count" not in _private.__dict__,
     "behavior": (
-        _private.ref("x") == ("ref", "x")
-        and _private.proxy("x") == ("proxy", "x")
+        _private.ref is _private.ReferenceType
+        and _private.ref("x")() == "x"
         and _private.getweakrefcount("x") == 7
         and _private.getweakrefs("x") == [("ref", "x")]
     ),
@@ -130,12 +110,9 @@ def _run_probe() -> tuple[list[tuple[str, str, str]], dict[str, str]]:
 def test__weakref_public_surface_matches_expected_shape() -> None:
     rows, checks = _run_probe()
     assert rows == [
-        ("CallableProxyType", "type", "True"),
-        ("ProxyType", "type", "True"),
         ("ReferenceType", "type", "True"),
         ("getweakrefcount", "function", "True"),
         ("getweakrefs", "function", "True"),
-        ("proxy", "function", "True"),
-        ("ref", "function", "True"),
+        ("ref", "type", "True"),
     ]
     assert checks == {"anchor_hidden": "True", "behavior": "True"}

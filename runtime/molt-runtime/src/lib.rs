@@ -382,9 +382,11 @@ pub(crate) use crate::async_rt::is_block_on_task;
 #[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
 pub(crate) use crate::async_rt::net_stubs::IoPoller;
 #[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
-pub(crate) use crate::async_rt::net_stubs::io_wait_release_socket;
-#[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
 pub use crate::async_rt::net_stubs::*;
+#[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
+pub(crate) use crate::async_rt::net_stubs::{
+    io_wait_detach_resource, io_wait_release_detached_resource,
+};
 pub use crate::async_rt::process::*;
 pub(crate) use crate::async_rt::scheduler::BLOCK_ON_TASK;
 pub use crate::async_rt::socket_pure::{
@@ -392,9 +394,11 @@ pub use crate::async_rt::socket_pure::{
     molt_socket_inet_ntop, molt_socket_inet_pton, molt_socket_ntohl, molt_socket_ntohs,
 };
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
-pub(crate) use crate::async_rt::sockets::io_wait_release_socket;
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 pub use crate::async_rt::sockets::*;
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+pub(crate) use crate::async_rt::sockets::{
+    io_wait_detach_resource, io_wait_release_detached_resource,
+};
 // Host-dependent socket helpers remain net-backed or no-net stubs.
 #[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
 pub use crate::async_rt::net_stubs::{
@@ -518,10 +522,11 @@ pub(crate) use crate::builtins::exceptions::{
     raise_unsupported_inplace, record_exception, set_generator_raise, set_task_raise_active,
     sync_current_exception_pending, task_exception_baseline_drop, task_exception_baseline_store,
     task_exception_baseline_take, task_exception_depth_drop, task_exception_depth_store,
-    task_exception_depth_take, task_exception_handler_stack_drop,
-    task_exception_handler_stack_store, task_exception_handler_stack_take,
-    task_exception_stack_drop, task_exception_stack_store, task_exception_stack_take,
-    task_last_exception_contains_valid, task_last_exception_drop, task_raise_active,
+    task_exception_depth_take, task_exception_detach_owned_edges,
+    task_exception_handler_stack_drop, task_exception_handler_stack_store,
+    task_exception_handler_stack_take, task_exception_stack_drop, task_exception_stack_store,
+    task_exception_stack_take, task_last_exception_contains_valid, task_last_exception_drop,
+    task_raise_active,
 };
 pub(crate) use crate::builtins::exceptions::{raise_os_error, raise_os_error_errno};
 pub use crate::builtins::fcntl::*;
@@ -599,6 +604,10 @@ pub(crate) use crate::builtins::type_ops::{
 };
 pub use crate::builtins::types::*;
 pub use crate::builtins::warnings_ext::*;
+pub use crate::builtins::weakref_type::{
+    molt_weakref_call, molt_weakref_callback_get, molt_weakref_eq, molt_weakref_hash,
+    molt_weakref_init, molt_weakref_new, molt_weakref_reference_type, molt_weakref_repr,
+};
 #[allow(unused_imports)]
 pub(crate) use crate::call::bind::molt_callargs_push_kw;
 pub(crate) use crate::call::bind::{
@@ -709,9 +718,9 @@ pub use crate::object::weak_container::{
 };
 pub(crate) use crate::object::weakref::weakref_clear_for_ptr;
 pub use crate::object::weakref::{
-    molt_weakref_bind_reference_type, molt_weakref_callback, molt_weakref_count,
-    molt_weakref_finalize_track, molt_weakref_finalize_untrack, molt_weakref_find_nocallback,
-    molt_weakref_get, molt_weakref_peek, molt_weakref_refs, molt_weakref_register,
+    molt_weakref_callback, molt_weakref_count, molt_weakref_finalize_track,
+    molt_weakref_finalize_untrack, molt_weakref_find_nocallback, molt_weakref_get,
+    molt_weakref_peek, molt_weakref_refs, molt_weakref_register,
 };
 pub(crate) use crate::object::{
     Buffer2D, ClassEdgeOwnership, DataclassDesc, HEADER_FLAG_BLOCK_ON, HEADER_FLAG_CANCEL_PENDING,

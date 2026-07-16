@@ -171,7 +171,7 @@ def main() -> int:
         return 0
     for path, content in outputs.items():
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+        path.write_text(content, encoding="utf-8", newline="\n")
     return 0
 
 

@@ -18,6 +18,7 @@ pub(crate) struct MoltAuxSidecar {
     pub(crate) class_edge: MoltAuxWord,
     pub(crate) poll_fn: MoltAuxWord,
     pub(crate) state: MoltAuxWord,
+    pub(crate) shape: MoltAuxWord,
     pub(crate) extended_size: usize,
 }
 
@@ -28,6 +29,7 @@ impl MoltAuxSidecar {
             class_edge: MoltAuxWord::new(class_edge),
             poll_fn: MoltAuxWord::new(poll_fn),
             state: MoltAuxWord::new(state as u64),
+            shape: MoltAuxWord::new(0),
             extended_size,
         }
     }
@@ -45,6 +47,11 @@ impl MoltAuxSidecar {
     #[inline]
     pub(crate) fn state(&self) -> i64 {
         self.state.load(Ordering::Acquire) as i64
+    }
+
+    #[inline]
+    pub(crate) fn shape(&self) -> u16 {
+        self.shape.load(Ordering::Acquire) as u16
     }
 }
 

@@ -101,7 +101,7 @@ unsafe impl GlobalAlloc for CountingAlloc {
 #[global_allocator]
 static GLOBAL: CountingAlloc = CountingAlloc;
 
-fn allocs() -> usize {
+pub(crate) fn allocs() -> usize {
     ALLOC_COUNT.with(Cell::get)
 }
 fn bytes() -> usize {

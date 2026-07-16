@@ -181,6 +181,24 @@ gates = [
 
 # --- Op-kind registry (generated files + emitter/registry drift) ---------
 [[rule]]
+name = "heap-kind-lifetime-authority"
+description = "Heap-kind IDs and lifetime descriptors stay synchronized across runtime, codegen ABI, runtime-core, and audit consumers."
+globs = [
+  "tools/gen_heap_kinds.py",
+  "runtime/heap_kinds.toml",
+  "runtime/heap_kinds.generated.json",
+  "runtime/molt-codegen-abi/src/heap_kinds_generated.rs",
+  "runtime/molt-runtime-core/src/heap_kinds_generated.rs",
+  "runtime/molt-runtime/src/object/heap_kinds_generated.rs",
+  "tests/test_gen_heap_kinds.py",
+]
+gates = [
+  "python3 tools/gen_heap_kinds.py --check",
+  "python3 -m pytest -q tests/test_gen_heap_kinds.py",
+]
+
+# --- Op-kind registry (generated files + emitter/registry drift) ---------
+[[rule]]
 name = "op-kind-registry"
 description = "Op-kind registry: generated-file sync + down-only emitter/registry drift."
 globs = [

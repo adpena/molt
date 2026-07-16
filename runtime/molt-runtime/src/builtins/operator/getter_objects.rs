@@ -3,11 +3,68 @@ use std::sync::atomic::Ordering;
 
 use molt_obj_model::MoltObject;
 
+use crate::object::ObjectShapeId;
 use crate::{
     PyToken, TYPE_ID_DICT, TYPE_ID_STRING, TYPE_ID_TUPLE, alloc_string, alloc_tuple, dec_ref_bits,
     exception_pending, inc_ref_bits, molt_getattr_builtin, molt_index, obj_from_bits,
     object_class_bits, object_type_id, raise_exception, string_obj_to_owned,
 };
+
+pub(crate) unsafe fn operator_visit_owned_edges(
+    shape: ObjectShapeId,
+    ptr: *mut u8,
+    mut visit: impl FnMut(u64),
+) {
+    unsafe {
+        match shape {
+            ObjectShapeId::OperatorItemGetter => visit(itemgetter_items_bits(ptr)),
+            ObjectShapeId::OperatorAttrGetter => visit(attrgetter_attrs_bits(ptr)),
+            ObjectShapeId::OperatorMethodCaller => {
+                visit(methodcaller_name_bits(ptr));
+                visit(methodcaller_args_bits(ptr));
+                visit(methodcaller_kwargs_bits(ptr));
+            }
+            _ => unreachable!("non-operator object shape"),
+        }
+    }
+}
+
+pub(crate) unsafe fn operator_detach_owned_edges(
+    shape: ObjectShapeId,
+    ptr: *mut u8,
+    mut detach: impl FnMut(u64),
+) {
+    let none = MoltObject::none().bits();
+    let detached = unsafe {
+        match shape {
+            ObjectShapeId::OperatorItemGetter => {
+                let old = itemgetter_items_bits(ptr);
+                itemgetter_set_items_bits(ptr, none);
+                [old, none, none]
+            }
+            ObjectShapeId::OperatorAttrGetter => {
+                let old = attrgetter_attrs_bits(ptr);
+                attrgetter_set_attrs_bits(ptr, none);
+                [old, none, none]
+            }
+            ObjectShapeId::OperatorMethodCaller => {
+                let old = [
+                    methodcaller_name_bits(ptr),
+                    methodcaller_args_bits(ptr),
+                    methodcaller_kwargs_bits(ptr),
+                ];
+                methodcaller_set_name_bits(ptr, none);
+                methodcaller_set_args_bits(ptr, none);
+                methodcaller_set_kwargs_bits(ptr, none);
+                old
+            }
+            _ => unreachable!("non-operator object shape"),
+        }
+    };
+    for bits in detached {
+        detach(bits);
+    }
+}
 
 unsafe fn itemgetter_items_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr as *const u64) }

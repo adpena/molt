@@ -2078,7 +2078,7 @@ def test_unstable_globals_user_class_ctor_lowers_via_call_bind() -> None:
     )
     assert all(
         op.get("kind")
-        not in {"alloc_class", "alloc_class_static", "alloc_class_trusted"}
+        not in {"alloc_class"}
         for op in main_ops
     ), (
         "globals-escaped class constructor should not lower via synthetic object allocation"

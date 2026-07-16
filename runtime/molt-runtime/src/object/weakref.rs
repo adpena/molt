@@ -1,3 +1,7 @@
+use super::heap_lifecycle::DetachedEdgeSink;
+use super::weak_container::{
+    WeakEntryId, weakcontainer_target_dead, weakcontainer_target_dead_detach,
+};
 use crate::state::runtime_state::{WeakRefEntry, WeakRefRegistry};
 use crate::{
     MoltObject, PtrSlot, PyToken, attr_name_bits_from_bytes, molt_get_attr_name, molt_is_callable,
@@ -10,40 +14,6 @@ use crate::{
 use std::ptr;
 use std::sync::atomic::Ordering as AtomicOrdering;
 
-use super::weak_container::{WeakEntryId, weakcontainer_target_dead};
-
-#[inline]
-fn builtin_type_id_supports_weakrefs(type_id: u32) -> bool {
-    matches!(
-        type_id,
-        crate::TYPE_ID_FUNCTION
-            | crate::TYPE_ID_MODULE
-            | crate::TYPE_ID_TYPE
-            | crate::TYPE_ID_GENERATOR
-            | crate::TYPE_ID_ASYNC_GENERATOR
-            | crate::TYPE_ID_SET
-            | crate::TYPE_ID_FROZENSET
-            | crate::TYPE_ID_CODE
-    )
-}
-
-#[inline]
-fn internal_type_id_forbids_weakrefs(type_id: u32) -> bool {
-    matches!(
-        type_id,
-        crate::TYPE_ID_LIST_BUILDER
-            | crate::TYPE_ID_DICT_BUILDER
-            | crate::TYPE_ID_SET_BUILDER
-            | crate::TYPE_ID_CALLARGS
-            | crate::TYPE_ID_NATIVE_HANDLE
-            | crate::TYPE_ID_TRACEBACK_PAYLOAD
-            | crate::TYPE_ID_ITER
-            | crate::TYPE_ID_GLOB_ITER
-            | crate::TYPE_ID_FOREIGN
-            | crate::TYPE_ID_WEAK_CONTAINER_STATE
-    )
-}
-
 /// Single fail-closed weakrefability authority for runtime registration.
 /// Internal/builders and unlisted builtins are rejected even when heap-backed.
 pub(crate) fn object_supports_weakrefs(_py: &PyToken<'_>, target_bits: u64) -> bool {
@@ -51,12 +21,11 @@ pub(crate) fn object_supports_weakrefs(_py: &PyToken<'_>, target_bits: u64) -> b
         return false;
     };
     let type_id = unsafe { crate::object_type_id(target_ptr) };
-    if internal_type_id_forbids_weakrefs(type_id) {
-        return false;
-    }
+    let policy = crate::object::heap_weakref_policy(type_id)
+        .unwrap_or(crate::object::HeapWeakrefPolicy::Deny);
     let class_bits = crate::type_of_bits(_py, target_bits);
     let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
-        return builtin_type_id_supports_weakrefs(type_id);
+        return policy == crate::object::HeapWeakrefPolicy::Allow;
     };
     if unsafe { crate::object_type_id(class_ptr) } == crate::TYPE_ID_TYPE
         && !crate::is_builtin_class_bits(_py, class_bits)
@@ -70,7 +39,7 @@ pub(crate) fn object_supports_weakrefs(_py: &PyToken<'_>, target_bits: u64) -> b
         return func_class
             != crate::builtins::classes::builtin_classes(_py).builtin_function_or_method;
     }
-    builtin_type_id_supports_weakrefs(type_id)
+    policy == crate::object::HeapWeakrefPolicy::Allow
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -90,62 +59,8 @@ enum WeakRefRegisterFailure {
     OutOfMemory,
 }
 
-/// Current object storage does not yet have a dedicated weakref type id. Until
-/// that RC/GC authority exists, registration is gated by the exact stdlib
-/// ReferenceType class retained during controlled module initialization. A
-/// native TYPE_ID_WEAKREF should replace this cached-class fact in the next
-/// ownership arc.
-fn object_is_weakref_slot(_py: &PyToken<'_>, weak_ptr: *mut u8) -> bool {
-    if unsafe { crate::object_type_id(weak_ptr) } != crate::TYPE_ID_OBJECT {
-        return false;
-    }
-    let reference_type_bits = runtime_state(_py)
-        .weakref_reference_type
-        .load(AtomicOrdering::Acquire);
-    if reference_type_bits == 0 {
-        return false;
-    }
-    let class_bits = crate::type_of_bits(_py, MoltObject::from_ptr(weak_ptr).bits());
-    crate::issubclass_bits(class_bits, reference_type_bits)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_weakref_bind_reference_type(class_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "ReferenceType binding must be a type");
-        };
-        if unsafe { crate::object_type_id(class_ptr) } != crate::TYPE_ID_TYPE {
-            return raise_exception::<_>(_py, "TypeError", "ReferenceType binding must be a type");
-        }
-        inc_ref_bits(_py, class_bits);
-        match runtime_state(_py).weakref_reference_type.compare_exchange(
-            0,
-            class_bits,
-            AtomicOrdering::AcqRel,
-            AtomicOrdering::Acquire,
-        ) {
-            Ok(_) => MoltObject::none().bits(),
-            Err(current) if current == class_bits => {
-                dec_ref_bits(_py, class_bits);
-                MoltObject::none().bits()
-            }
-            Err(_) => {
-                dec_ref_bits(_py, class_bits);
-                raise_exception::<_>(_py, "RuntimeError", "ReferenceType is already bound")
-            }
-        }
-    })
-}
-
-pub(crate) fn weakref_clear_runtime_state(
-    _py: &PyToken<'_>,
-    state: &crate::state::runtime_state::RuntimeState,
-) {
-    let class_bits = state.weakref_reference_type.swap(0, AtomicOrdering::AcqRel);
-    if class_bits != 0 {
-        dec_ref_bits(_py, class_bits);
-    }
+fn object_is_weakref_slot(weak_ptr: *mut u8) -> bool {
+    (unsafe { crate::object_type_id(weak_ptr) }) == crate::TYPE_ID_WEAKREF
 }
 
 /// Retain a cookie's state object only if its ordinary owner count is still
@@ -568,6 +483,51 @@ pub(crate) fn weakref_object_release(_py: &PyToken<'_>, entry: Option<WeakRefEnt
     }
 }
 
+pub(crate) fn weakref_object_visit_owned_edges(
+    _py: &PyToken<'_>,
+    weak_ptr: *mut u8,
+    mut visit: impl FnMut(u64),
+) {
+    let registry = runtime_state(_py).weakrefs.lock().unwrap();
+    let Some(entry) = registry.by_ref.get(&PtrSlot(weak_ptr)) else {
+        return;
+    };
+    visit(entry.callback_bits);
+    if let Some(cookie) = entry.container_cookie {
+        visit(cookie.state_bits);
+    }
+}
+
+pub(crate) fn weakref_object_detach_owned_edges(
+    _py: &PyToken<'_>,
+    weak_ptr: *mut u8,
+    sink: &mut DetachedEdgeSink,
+) {
+    let Some(entry) = unregister_weakref(_py, weak_ptr) else {
+        return;
+    };
+    if let Some(cookie) = entry.container_cookie {
+        weakcontainer_target_dead_detach(_py, cookie, sink);
+        sink.detach_if_heap(cookie.state_bits);
+    }
+    sink.detach_if_heap(entry.callback_bits);
+}
+
+pub(crate) fn weakref_object_terminal_extra_edge_count(
+    _py: &PyToken<'_>,
+    weak_ptr: *mut u8,
+) -> usize {
+    let registry = runtime_state(_py).weakrefs.lock().unwrap();
+    registry
+        .by_ref
+        .get(&PtrSlot(weak_ptr))
+        .and_then(|entry| entry.container_cookie)
+        .map_or(
+            0,
+            super::weak_container::weakcontainer_target_dead_detach_edge_count,
+        )
+}
+
 pub(crate) fn weakref_object_callback_bits(_py: &PyToken<'_>, weak_ptr: *mut u8) -> Option<u64> {
     let weak_slot = PtrSlot(weak_ptr);
     let registry = runtime_state(_py).weakrefs.lock().unwrap();
@@ -577,6 +537,18 @@ pub(crate) fn weakref_object_callback_bits(_py: &PyToken<'_>, weak_ptr: *mut u8)
     }
     inc_ref_bits(_py, bits);
     Some(bits)
+}
+
+/// Borrow the strong callback edge for side-effect-free GC traversal.
+/// The stop-the-world/GIL collection boundary keeps the registry entry stable;
+/// callers must not retain the returned bits beyond that boundary.
+pub(crate) fn weakref_object_borrowed_callback_bits(
+    _py: &PyToken<'_>,
+    weak_ptr: *mut u8,
+) -> Option<u64> {
+    let registry = runtime_state(_py).weakrefs.lock().unwrap();
+    let bits = registry.by_ref.get(&PtrSlot(weak_ptr))?.callback_bits;
+    (!obj_from_bits(bits).is_none()).then_some(bits)
 }
 
 fn weakref_resolve_target_ptr(registry: &WeakRefRegistry, weak_slot: PtrSlot) -> Option<*mut u8> {
@@ -761,7 +733,7 @@ pub extern "C" fn molt_weakref_register(
         let Some(weak_ptr) = obj_from_bits(weak_bits).as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "weakref must be an object");
         };
-        if !object_is_weakref_slot(_py, weak_ptr) {
+        if !object_is_weakref_slot(weak_ptr) {
             return raise_exception::<_>(_py, "TypeError", "weakref must be a ReferenceType");
         }
         let weak_slot = PtrSlot(weak_ptr);
@@ -835,6 +807,7 @@ pub extern "C" fn molt_weakref_register(
                         target: target_slot,
                         callback_bits,
                         container_cookie: None,
+                        cached_hash: None,
                     },
                 );
                 if let Some(list) = registry.by_target.get_mut(&target_slot) {
@@ -870,6 +843,56 @@ pub extern "C" fn molt_weakref_register(
         }
         MoltObject::from_bool(true).bits()
     })
+}
+
+/// Return a weakref's sticky CPython hash, computing it from a live referent at
+/// most once.  The registry lock is never held across user `__hash__` code.
+/// A successfully pinned referent cannot die during computation; after the
+/// call, the result is committed only if this registration still names the
+/// same referent.  Cached lookup is callback-free and remains valid after
+/// referent death.
+pub(crate) fn weakref_cached_hash_or_compute(_py: &PyToken<'_>, weak_bits: u64) -> i64 {
+    let Some(weak_ptr) = obj_from_bits(weak_bits).as_ptr() else {
+        return raise_exception::<i64>(_py, "TypeError", "weakref must be an object");
+    };
+    if !object_is_weakref_slot(weak_ptr) {
+        return raise_exception::<i64>(_py, "TypeError", "weakref must be an object");
+    }
+    let weak_slot = PtrSlot(weak_ptr);
+    let target_bits = {
+        let registry = runtime_state(_py).weakrefs.lock().unwrap();
+        let Some(entry) = registry.by_ref.get(&weak_slot) else {
+            return raise_exception::<i64>(_py, "TypeError", "weak object has gone away");
+        };
+        if let Some(hash) = entry.cached_hash {
+            return hash;
+        }
+        if entry.target.0.is_null() {
+            return raise_exception::<i64>(_py, "TypeError", "weak object has gone away");
+        }
+        let bits = MoltObject::from_ptr(entry.target.0).bits();
+        inc_ref_bits(_py, bits);
+        bits
+    };
+
+    let target_ptr = obj_from_bits(target_bits)
+        .as_ptr()
+        .unwrap_or_else(|| std::process::abort());
+    let hash = super::ops_hash::hash_bits_signed(_py, target_bits);
+    dec_ref_bits(_py, target_bits);
+    if exception_pending(_py) {
+        return 0;
+    }
+
+    let mut registry = runtime_state(_py).weakrefs.lock().unwrap();
+    if let Some(entry) = registry.by_ref.get_mut(&weak_slot) {
+        if entry.cached_hash.is_none() && (entry.target.0.is_null() || entry.target.0 == target_ptr)
+        {
+            entry.cached_hash = Some(hash);
+        }
+        return entry.cached_hash.unwrap_or(hash);
+    }
+    hash
 }
 
 #[unsafe(no_mangle)]
@@ -1013,10 +1036,7 @@ pub extern "C" fn molt_weakref_finalize_untrack(finalizer_bits: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        WeakContainerCookie, builtin_type_id_supports_weakrefs, try_pin_cookie_state,
-        weakref_clear_runtime_state,
-    };
+    use super::{WeakContainerCookie, try_pin_cookie_state};
     use std::sync::atomic::Ordering;
 
     #[test]
@@ -1030,8 +1050,14 @@ mod tests {
             crate::TYPE_ID_SET,
             crate::TYPE_ID_FROZENSET,
             crate::TYPE_ID_CODE,
+            crate::TYPE_ID_MEMORYVIEW,
+            crate::TYPE_ID_GENERIC_ALIAS,
+            crate::TYPE_ID_BOUND_METHOD,
         ] {
-            assert!(builtin_type_id_supports_weakrefs(type_id));
+            assert_eq!(
+                crate::object::heap_weakref_policy(type_id),
+                Some(crate::object::HeapWeakrefPolicy::Allow)
+            );
         }
         for type_id in [
             crate::TYPE_ID_STRING,
@@ -1044,7 +1070,6 @@ mod tests {
             crate::TYPE_ID_SLICE,
             crate::TYPE_ID_EXCEPTION,
             crate::TYPE_ID_PROPERTY,
-            crate::TYPE_ID_BOUND_METHOD,
             crate::TYPE_ID_STATICMETHOD,
             crate::TYPE_ID_CLASSMETHOD,
             crate::TYPE_ID_SUPER,
@@ -1055,36 +1080,11 @@ mod tests {
             crate::TYPE_ID_ITER,
             crate::TYPE_ID_WEAK_CONTAINER_STATE,
         ] {
-            assert!(!builtin_type_id_supports_weakrefs(type_id));
-        }
-    }
-
-    #[test]
-    fn reference_type_cache_releases_its_owned_class_handle() {
-        let _lock = crate::TEST_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
-        crate::with_gil_entry_nopanic!(_py, {
-            let ptr = crate::alloc_list(_py, &[]);
-            assert!(!ptr.is_null());
-            let bits = crate::bits_from_ptr(ptr);
-            crate::inc_ref_bits(_py, bits);
-            let state = crate::runtime_state(_py);
-            let previous = state.weakref_reference_type.swap(bits, Ordering::AcqRel);
-            weakref_clear_runtime_state(_py, state);
             assert_eq!(
-                unsafe {
-                    (*crate::header_from_obj_ptr(ptr))
-                        .ref_count
-                        .load(Ordering::Acquire)
-                },
-                1
+                crate::object::heap_weakref_policy(type_id),
+                Some(crate::object::HeapWeakrefPolicy::Deny)
             );
-            if previous != 0 {
-                state
-                    .weakref_reference_type
-                    .store(previous, Ordering::Release);
-            }
-            crate::dec_ref_bits(_py, bits);
-        });
+        }
     }
 
     #[test]
@@ -1121,12 +1121,7 @@ mod tests {
     fn container_cookie_unlinks_for_both_gc_clear_orders() {
         let _lock = crate::TEST_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
         crate::with_gil_entry_nopanic!(_py, {
-            weakref_clear_runtime_state(_py, crate::runtime_state(_py));
-            let reference_type_bits = crate::builtins::classes::builtin_classes(_py).object;
-            assert!(
-                crate::obj_from_bits(crate::molt_weakref_bind_reference_type(reference_type_bits))
-                    .is_none()
-            );
+            let reference_type_bits = crate::builtins::classes::builtin_classes(_py).reference_type;
             let reference_type_ptr = crate::obj_from_bits(reference_type_bits)
                 .as_ptr()
                 .expect("object class ptr");
@@ -1144,6 +1139,10 @@ mod tests {
                     weak_bits,
                     target_bits,
                     crate::MoltObject::none().bits(),
+                );
+                assert_eq!(
+                    unsafe { crate::object_type_id(weak_ptr) },
+                    crate::TYPE_ID_WEAKREF
                 );
                 crate::molt_weakcontainer_store_commit(
                     state_bits,
@@ -1173,7 +1172,6 @@ mod tests {
                 crate::dec_ref_bits(_py, target_bits);
                 crate::dec_ref_bits(_py, state_bits);
             }
-            weakref_clear_runtime_state(_py, crate::runtime_state(_py));
         });
     }
 }

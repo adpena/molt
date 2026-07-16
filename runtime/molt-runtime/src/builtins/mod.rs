@@ -80,3 +80,4 @@ pub(crate) mod threading_helpers;
 pub(crate) mod type_ops;
 pub(crate) mod types;
 pub(crate) mod warnings_ext;
+pub(crate) mod weakref_type;

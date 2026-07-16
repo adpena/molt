@@ -10,7 +10,7 @@ pub fn elide_dead_struct_allocs(func_ir: &mut FunctionIR) {
         return;
     }
     let mut remove = vec![false; func_ir.ops.len()];
-    let alloc_kinds = ["alloc_class", "alloc_class_trusted", "alloc_class_static"];
+    let alloc_kinds = ["alloc_class"];
     let allowed_use_kinds = [
         "store",
         "store_init",

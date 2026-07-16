@@ -1422,6 +1422,7 @@ class ClassInfo(TypedDict, total=False):
     class_value_name: str
     constructor_fold_safe: bool
     decorated: bool
+    heap_kind: str | None
 
 
 class FuncInfo(TypedDict):

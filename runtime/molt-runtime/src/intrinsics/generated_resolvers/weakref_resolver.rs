@@ -3,13 +3,13 @@
 #[cold]
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
     match symbol {
-        "molt_weakref_bind_reference_type" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_weakref_bind_reference_type",
-            crate::molt_weakref_bind_reference_type as *const (),
-        )),
         "molt_weakref_register" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_weakref_register",
             crate::molt_weakref_register as *const (),
+        )),
+        "molt_weakref_reference_type" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_weakref_reference_type",
+            crate::molt_weakref_reference_type as *const (),
         )),
         "molt_weakref_get" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_weakref_get",

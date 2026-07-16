@@ -425,10 +425,22 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let size = self.resolve(op.operands[0]);
                 let size_i64 = self.ensure_i64(size);
                 let alloc_fn = self.backend.module.get_function("molt_alloc").unwrap();
-                let result = self
+                let unpublished = self
                     .backend
                     .builder
                     .build_call(alloc_fn, &[size_i64.into()], "alloc")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                let publish_fn = self
+                    .backend
+                    .module
+                    .get_function("molt_object_publish_initialized")
+                    .unwrap();
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(publish_fn, &[unpublished.into()], "publish_initialized")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();

@@ -1128,12 +1128,15 @@ unsafe fn build_class_from_args(
         }
 
         if winner_bits != metaclass_bits {
-            if let Err(err) = strip_internal_namespace_keys(namespace_bits) {
-                if bases_owned {
-                    dec_ref_bits(_py, bases_tuple_bits);
+            match strip_internal_namespace_keys(namespace_bits) {
+                Ok(()) => {}
+                Err(err) => {
+                    if bases_owned {
+                        dec_ref_bits(_py, bases_tuple_bits);
+                    }
+                    return err;
                 }
-                return err;
-            }
+            };
             let builder_bits =
                 molt_callargs_new((3 + kw_names.len()) as u64, kw_names.len() as u64);
             if builder_bits == 0 {
@@ -1176,13 +1179,15 @@ unsafe fn build_class_from_args(
             return MoltObject::none().bits();
         }
 
-        if let Err(err) = strip_internal_namespace_keys(namespace_bits) {
-            if bases_owned {
-                dec_ref_bits(_py, bases_tuple_bits);
+        match strip_internal_namespace_keys(namespace_bits) {
+            Ok(()) => {}
+            Err(err) => {
+                if bases_owned {
+                    dec_ref_bits(_py, bases_tuple_bits);
+                }
+                return err;
             }
-            return err;
-        }
-
+        };
         let dict_bits = class_dict_bits(class_ptr);
         let _ = dict_update_apply(_py, dict_bits, dict_update_set_in_place, namespace_bits);
         if exception_pending(_py) {
@@ -1289,6 +1294,52 @@ pub(crate) unsafe fn callargs_dec_ref_all(_py: &PyToken<'_>, args_ptr: *mut Call
         for &bits in args.kw_values.iter() {
             dec_ref_bits(_py, bits);
         }
+    }
+}
+
+pub(crate) unsafe fn callargs_visit_owned(args_ptr: *mut CallArgs, mut visit: impl FnMut(u64)) {
+    unsafe {
+        if args_ptr.is_null() {
+            return;
+        }
+        let args = &*args_ptr;
+        for &bits in &args.pos {
+            visit(bits);
+        }
+        for &bits in &args.kw_names {
+            visit(bits);
+        }
+        for &bits in &args.kw_values {
+            visit(bits);
+        }
+    }
+}
+
+pub(crate) unsafe fn callargs_detach_owned(
+    _py: &PyToken<'_>,
+    builder_ptr: *mut u8,
+    args_ptr: *mut CallArgs,
+    mut detach: impl FnMut(u64),
+) {
+    unsafe {
+        if args_ptr.is_null() {
+            return;
+        }
+        // Registry visibility is retired before any edge can be released by
+        // the caller's object-wide sink.
+        note_callargs_free(_py, builder_ptr, args_ptr);
+        let args = &mut *args_ptr;
+        for bits in std::mem::take(&mut args.pos) {
+            detach(bits);
+        }
+        for bits in std::mem::take(&mut args.kw_names) {
+            detach(bits);
+        }
+        for bits in std::mem::take(&mut args.kw_values) {
+            detach(bits);
+        }
+        args.kw_seen.clear();
+        drop(Box::from_raw(args_ptr));
     }
 }
 

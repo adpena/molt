@@ -125,49 +125,42 @@ pub(crate) enum SendData {
 }
 
 #[cfg(molt_has_net_io)]
-pub(crate) fn io_wait_release_socket(_py: &PyToken<'_>, future_ptr: *mut u8) {
+pub(crate) fn io_wait_detach_resource(future_ptr: *mut u8) -> u64 {
     if future_ptr.is_null() {
-        return;
+        return MoltObject::none().bits();
     }
     let _header = unsafe { header_from_obj_ptr(future_ptr) };
     let payload_bytes = unsafe { crate::object::object_payload_size(future_ptr) };
     if payload_bytes < std::mem::size_of::<u64>() {
-        return;
+        return MoltObject::none().bits();
     }
     let payload_ptr = future_ptr as *mut u64;
-    let socket_bits = unsafe { *payload_ptr };
+    unsafe { payload_ptr.replace(MoltObject::none().bits()) }
+}
+
+#[cfg(molt_has_net_io)]
+pub(crate) fn io_wait_release_detached_resource(_py: &PyToken<'_>, socket_bits: u64) {
     let socket_ptr = socket_ptr_from_bits_or_fd(socket_bits);
     if !socket_ptr.is_null() {
         socket_ref_dec(_py, socket_ptr);
     }
-    if payload_bytes >= 2 * std::mem::size_of::<u64>() {
-        let events_bits = unsafe { *payload_ptr.add(1) };
-        dec_ref_bits(_py, events_bits);
-    }
-    if payload_bytes >= 3 * std::mem::size_of::<u64>() {
-        let timeout_bits = unsafe { *payload_ptr.add(2) };
-        dec_ref_bits(_py, timeout_bits);
-    }
 }
 
 #[cfg(target_arch = "wasm32")]
-pub(crate) fn io_wait_release_socket(_py: &PyToken<'_>, future_ptr: *mut u8) {
+pub(crate) fn io_wait_detach_resource(future_ptr: *mut u8) -> u64 {
     if future_ptr.is_null() {
-        return;
+        return MoltObject::none().bits();
     }
-    let header = unsafe { header_from_obj_ptr(future_ptr) };
     let payload_bytes = unsafe { crate::object::object_payload_size(future_ptr) };
-    if payload_bytes < 2 * std::mem::size_of::<u64>() {
-        return;
+    if payload_bytes < std::mem::size_of::<u64>() {
+        return MoltObject::none().bits();
     }
     let payload_ptr = future_ptr as *mut u64;
-    let events_bits = unsafe { *payload_ptr.add(1) };
-    dec_ref_bits(_py, events_bits);
-    if payload_bytes >= 3 * std::mem::size_of::<u64>() {
-        let timeout_bits = unsafe { *payload_ptr.add(2) };
-        dec_ref_bits(_py, timeout_bits);
-    }
+    unsafe { payload_ptr.replace(MoltObject::none().bits()) }
 }
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn io_wait_release_detached_resource(_py: &PyToken<'_>, _resource_bits: u64) {}
 
 pub(crate) fn send_data_from_bits(bits: u64) -> Result<SendData, String> {
     let obj = obj_from_bits(bits);

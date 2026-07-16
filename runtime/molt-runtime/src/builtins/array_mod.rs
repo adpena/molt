@@ -142,7 +142,7 @@ impl ArrayElem {
 // ArrayHandle
 // ---------------------------------------------------------------------------
 
-struct ArrayHandle {
+pub(crate) struct ArrayHandle {
     typecode: Typecode,
     data: Vec<u8>,
     exports: usize,
@@ -414,7 +414,7 @@ type ArrayCell = Mutex<ArrayHandle>;
 // reaches zero, this `Drop` decrements `exports`. So `resize_blocked` reports
 // true for precisely the window a buffer is live-exported (use-after-free
 // guard: an array cannot be reallocated while a live view points into it).
-struct ArrayBufferLease {
+pub(crate) struct ArrayBufferLease {
     cell: Arc<ArrayCell>,
 }
 

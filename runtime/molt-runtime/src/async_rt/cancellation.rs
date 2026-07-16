@@ -5,6 +5,7 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
+use crate::object::heap_lifecycle::DetachedEdgeSink;
 use crate::{
     ExceptionSentinel, HEADER_FLAG_BLOCK_ON, HEADER_FLAG_CANCEL_PENDING, HEADER_FLAG_SPAWN_RETAIN,
     MoltHeader, MoltObject, PtrSlot, TYPE_ID_TUPLE, alloc_exception_from_class_bits, alloc_tuple,
@@ -120,6 +121,46 @@ pub(crate) fn task_cancel_message_clear(_py: &PyToken<'_>, task_ptr: *mut u8) {
     let mut map = task_cancel_messages(_py).lock().unwrap();
     if let Some(old_bits) = map.remove(&PtrSlot(task_ptr)) {
         dec_ref_bits(_py, old_bits);
+    }
+}
+
+/// Publish every cancellation-owned task slot empty without running Python
+/// destructors.  The caller releases `sink` only after the complete task
+/// ownership transaction (inline payload, scheduler side tables, and worker
+/// state) has been detached.
+pub(crate) fn task_cancellation_detach(
+    _py: &PyToken<'_>,
+    task_ptr: *mut u8,
+    sink: &mut DetachedEdgeSink,
+) {
+    crate::gil_assert();
+    if task_ptr.is_null() {
+        return;
+    }
+    let task_slot = PtrSlot(task_ptr);
+    if let Some(bits) = task_cancel_messages(_py).lock().unwrap().remove(&task_slot) {
+        sink.detach_if_heap(bits);
+    }
+
+    let token = task_tokens(_py).lock().unwrap().remove(&task_slot);
+    if let Some(token) = token {
+        let mut index = task_tokens_by_id(_py).lock().unwrap();
+        if let Some(tasks) = index.get_mut(&token) {
+            tasks.remove(&task_slot);
+            if tasks.is_empty() {
+                index.remove(&token);
+            }
+        }
+        drop(index);
+        release_token(_py, token);
+    }
+
+    unsafe {
+        let header = task_ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
+        if (*header).take_flags(HEADER_FLAG_SPAWN_RETAIN) != 0 {
+            sink.detach(MoltObject::from_ptr(task_ptr).bits());
+            spawned_task_dec();
+        }
     }
 }
 

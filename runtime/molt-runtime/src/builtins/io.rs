@@ -42,8 +42,8 @@ use handle::{
     vfs_writeback_register, vfs_writeback_take,
 };
 pub(crate) use handle::{
-    close_payload, file_handle_close_ptr, file_handle_detached_message, file_handle_enter,
-    file_handle_exit, file_handle_is_closed, file_handle_require_attached,
+    close_payload, file_handle_close_detached, file_handle_close_ptr, file_handle_detached_message,
+    file_handle_enter, file_handle_exit, file_handle_is_closed, file_handle_require_attached,
 };
 #[path = "io/text.rs"]
 mod text;

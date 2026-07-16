@@ -446,8 +446,6 @@ All use the standard `args` + `out` pattern.
 | `unbox_to_raw_int`| `args` [obj], `out`      | Unbox Python int to raw i64          |
 | `alloc`           | `value` (size), `out`    | Allocate object of known size        |
 | `alloc_class`     | `args` [cls], `value` (size), `out` | Allocate instance of class |
-| `alloc_class_trusted` | `args`, `value`, `out` | Trusted alloc (no guard)           |
-| `alloc_class_static` | `args`, `value`, `out`  | Static alloc                       |
 | `inc_ref`         | `args`, `out`            | Increment reference count            |
 | `dec_ref`         | `args`, `out`            | Decrement reference count            |
 | `borrow`          | `args`, `out`            | Perceus borrow                       |

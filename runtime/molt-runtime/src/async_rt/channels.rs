@@ -21,6 +21,6 @@ pub(crate) use stream::{
     default_stream_max_queued_bytes, stream_close_local, stream_enqueue_bytes_blocking,
     stream_new_with_byte_budget, stream_release_queued_bytes,
 };
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
-pub(crate) use websocket::ws_wait_release;
 pub use websocket::*;
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+pub(crate) use websocket::{ws_wait_detach_resource, ws_wait_release_detached_resource};

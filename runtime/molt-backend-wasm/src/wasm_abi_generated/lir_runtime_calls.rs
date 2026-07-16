@@ -950,40 +950,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str) -> Option<OpLoopRuntimeCallSpec> 
             ],
             required_imports: &[
                 WasmRuntimeImport::AllocClass,
-                WasmRuntimeImport::ClassNew,
-                WasmRuntimeImport::ClassSetBase,
-                WasmRuntimeImport::ClassApplySetName,
-                WasmRuntimeImport::ClassLayoutVersion,
-                WasmRuntimeImport::ClassMergeLayout,
-                WasmRuntimeImport::ClassSetLayoutVersion,
-            ],
-            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
-        }),
-        "alloc_class_trusted" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::AllocClassTrusted,
-            args: &[
-                OpLoopRuntimeArgSpec::OpValueI64("alloc_class_trusted missing payload size"),
-                OpLoopRuntimeArgSpec::Local(0),
-            ],
-            required_imports: &[
-                WasmRuntimeImport::AllocClassTrusted,
-                WasmRuntimeImport::ClassNew,
-                WasmRuntimeImport::ClassSetBase,
-                WasmRuntimeImport::ClassApplySetName,
-                WasmRuntimeImport::ClassLayoutVersion,
-                WasmRuntimeImport::ClassMergeLayout,
-                WasmRuntimeImport::ClassSetLayoutVersion,
-            ],
-            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
-        }),
-        "alloc_class_static" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::AllocClassStatic,
-            args: &[
-                OpLoopRuntimeArgSpec::OpValueI64("alloc_class_static missing payload size"),
-                OpLoopRuntimeArgSpec::Local(0),
-            ],
-            required_imports: &[
-                WasmRuntimeImport::AllocClassStatic,
+                WasmRuntimeImport::ObjectPublishInitialized,
                 WasmRuntimeImport::ClassNew,
                 WasmRuntimeImport::ClassSetBase,
                 WasmRuntimeImport::ClassApplySetName,

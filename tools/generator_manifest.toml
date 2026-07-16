@@ -87,6 +87,23 @@ closed_domains = ["CPython 3.12 stable ABI type-slot ids"]
 discovery_only = false
 
 [[generator]]
+tool = "tools/gen_heap_kinds.py"
+outputs = [
+  "runtime/molt-codegen-abi/src/heap_kinds_generated.rs",
+  "runtime/molt-runtime-core/src/heap_kinds_generated.rs",
+  "runtime/molt-runtime/src/object/heap_kinds_generated.rs",
+  "runtime/heap_kinds.generated.json",
+  "src/molt/heap_kinds_generated.py",
+]
+source = "runtime/heap_kinds.toml"
+check_mode = true
+check_command = "tools/gen_heap_kinds.py --check"
+idempotent = true
+sync_test = "tests/test_gen_heap_kinds.py"
+closed_domains = []
+discovery_only = false
+
+[[generator]]
 tool = "tools/gen_op_kinds.py"
 outputs = [
   "runtime/molt-ir/src/tir/op_kinds_generated.rs",
