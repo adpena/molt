@@ -92,7 +92,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                     representation_plan,
                 )
                 .expect("inc_ref/borrow source not found");
-                emit_inc_ref_obj(&mut *builder, src, local_inc_ref_obj, nbc);
+                emit_inc_ref_obj(&mut *builder, src, local_inc_ref_obj);
                 if let Some(out_name) = op.out.as_ref()
                     && out_name != "none"
                 {
@@ -196,7 +196,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                 // Output aliases input bits — inc_ref to prevent
                 // use-after-free when the input name is dec_ref'd
                 // independently by tracking/check_exception cleanup.
-                emit_inc_ref_obj(&mut *builder, src, local_inc_ref_obj, nbc);
+                emit_inc_ref_obj(&mut *builder, src, local_inc_ref_obj);
                 def_var_named(&mut *builder, vars, out_name.clone(), src);
             }
         }
@@ -311,7 +311,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                     )
                     .expect("alias source not found");
                     // Same aliasing hazard as box/unbox/cast/widen above.
-                    emit_inc_ref_obj(&mut *builder, src, local_inc_ref_obj, nbc);
+                    emit_inc_ref_obj(&mut *builder, src, local_inc_ref_obj);
                     def_var_named(&mut *builder, vars, out_name.clone(), src);
                 }
             }

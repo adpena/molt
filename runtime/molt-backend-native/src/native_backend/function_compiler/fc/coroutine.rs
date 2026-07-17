@@ -378,7 +378,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 // Suspension returns an owned value to the caller; explicitly
                 // retain it here so downstream cleanup/control-flow lowering cannot
                 // invalidate yielded data before next()/send()/throw() unwraps it.
-                emit_inc_ref_obj(&mut *builder, *pair, local_inc_ref_obj, nbc);
+                emit_inc_ref_obj(&mut *builder, *pair, local_inc_ref_obj);
             }
             // ── Suspend-boundary cleanup of dead per-iteration temporaries ──
             //
@@ -1036,7 +1036,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                     builder
                         .ins()
                         .store(MemFlagsData::trusted(), *val, obj_ptr, (idx * 8) as i32);
-                    emit_inc_ref_obj(&mut *builder, *val, local_inc_ref_obj, nbc);
+                    emit_inc_ref_obj(&mut *builder, *val, local_inc_ref_obj);
                 }
             }
             let Some(out_name) = op.out.as_ref() else {

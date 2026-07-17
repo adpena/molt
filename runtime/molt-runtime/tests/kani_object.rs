@@ -1,8 +1,9 @@
 //! Kani bounded-verification harnesses for the Molt object model.
 //!
 //! These harnesses verify structural invariants of `MoltHeader`, the header-flag
-//! encoding, type-ID uniqueness, refcount semantics on the real `MoltRefCount`,
-//! and the `range_len_i64` helper.
+//! encoding, type-ID uniqueness, and the `range_len_i64` helper.  Refcount
+//! transitions are proved against the shared runtime authority in
+//! `molt-obj-model/tests/kani_refcount.rs`.
 //!
 //! Because the full runtime pulls in global state, GIL tokens, and allocator
 //! infrastructure that Kani cannot model, we use standalone models that mirror
@@ -18,41 +19,9 @@ mod object_proofs {
         HEADER_AUX_KIND_STATE_INLINE, HEADER_AUX_OFFSET, HEADER_CLASS_WORD_BITS_MASK,
         HEADER_CLASS_WORD_BORROWED, HEADER_CLASS_WORD_TAG_MASK, HEADER_FLAG_CONTAINS_REFS,
         HEADER_FLAG_GC_UNPUBLISHED, HEADER_FLAG_HAS_PTRS, HEADER_FLAG_IMMORTAL, HEADER_SIZE_BYTES,
-        TYPE_ID_FUNCTION, TYPE_ID_NOT_IMPLEMENTED, TYPE_ID_OBJECT, TYPE_ID_STRING,
+        TYPE_ID_FUNCTION,
     };
     use std::sync::atomic::{AtomicU32, Ordering};
-
-    // ---------------------------------------------------------------
-    // Mirror of MoltRefCount (native path only — AtomicU32).
-    // ---------------------------------------------------------------
-    #[repr(transparent)]
-    struct MoltRefCount {
-        inner: AtomicU32,
-    }
-
-    impl MoltRefCount {
-        const fn new(val: u32) -> Self {
-            Self {
-                inner: AtomicU32::new(val),
-            }
-        }
-
-        fn store(&self, val: u32, order: Ordering) {
-            self.inner.store(val, order);
-        }
-
-        fn load(&self, order: Ordering) -> u32 {
-            self.inner.load(order)
-        }
-
-        fn fetch_add(&self, val: u32, order: Ordering) -> u32 {
-            self.inner.fetch_add(val, order)
-        }
-
-        fn fetch_sub(&self, val: u32, order: Ordering) -> u32 {
-            self.inner.fetch_sub(val, order)
-        }
-    }
 
     #[repr(transparent)]
     struct MoltFlags {
@@ -95,7 +64,7 @@ mod object_proofs {
     #[repr(C)]
     struct MoltHeader {
         type_id: u32,
-        ref_count: MoltRefCount,
+        ref_count: AtomicU32,
         flags: MoltFlags,
         size_class: u16,
         aux_kind: u16,
@@ -227,7 +196,7 @@ mod object_proofs {
     fn type_id_at_offset_zero() {
         let header = MoltHeader {
             type_id: 0xDEAD_BEEF,
-            ref_count: MoltRefCount::new(0),
+            ref_count: AtomicU32::new(0),
             flags: MoltFlags::new(0),
             size_class: 0,
             aux_kind: HEADER_AUX_KIND_NONE,
@@ -245,14 +214,14 @@ mod object_proofs {
     fn refcount_at_offset_4() {
         let header = MoltHeader {
             type_id: 0,
-            ref_count: MoltRefCount::new(0x1234_5678),
+            ref_count: AtomicU32::new(0x1234_5678),
             flags: MoltFlags::new(0),
             size_class: 0,
             aux_kind: HEADER_AUX_KIND_NONE,
             aux: 0,
         };
         let base = &header as *const MoltHeader as *const u8;
-        let rc_ptr = &header.ref_count as *const MoltRefCount as *const u8;
+        let rc_ptr = &header.ref_count as *const AtomicU32 as *const u8;
         let offset = rc_ptr as usize - base as usize;
         assert_eq!(offset, 4);
     }
@@ -263,7 +232,7 @@ mod object_proofs {
     fn flags_at_offset_8() {
         let header = MoltHeader {
             type_id: 0,
-            ref_count: MoltRefCount::new(0),
+            ref_count: AtomicU32::new(0),
             flags: MoltFlags::new(0),
             size_class: 0,
             aux_kind: HEADER_AUX_KIND_NONE,
@@ -281,7 +250,7 @@ mod object_proofs {
     fn aux_fields_match_shared_abi_offsets() {
         let header = MoltHeader {
             type_id: 0,
-            ref_count: MoltRefCount::new(0),
+            ref_count: AtomicU32::new(0),
             flags: MoltFlags::new(0),
             size_class: 0,
             aux_kind: HEADER_AUX_KIND_CLASS_INLINE,
@@ -307,7 +276,7 @@ mod object_proofs {
     fn header_from_obj_ptr_roundtrip() {
         let header = MoltHeader {
             type_id: 42,
-            ref_count: MoltRefCount::new(1),
+            ref_count: AtomicU32::new(1),
             flags: MoltFlags::new(0),
             size_class: 0,
             aux_kind: HEADER_AUX_KIND_NONE,
@@ -462,79 +431,7 @@ mod object_proofs {
     }
 
     // ===============================================================
-    // 4. IMMORTAL REFCOUNT SKIP MODEL
-    // ===============================================================
-
-    /// Models the inc_ref_ptr logic: if IMMORTAL is set, the refcount is untouched.
-    #[kani::proof]
-    #[kani::unwind(1)]
-    fn immortal_skips_inc_ref() {
-        let init_rc: u32 = kani::any();
-        let header = MoltHeader {
-            type_id: TYPE_ID_OBJECT,
-            ref_count: MoltRefCount::new(init_rc),
-            flags: MoltFlags::new(HEADER_FLAG_IMMORTAL),
-            size_class: 0,
-            aux_kind: HEADER_AUX_KIND_NONE,
-            aux: 0,
-        };
-
-        // Model of inc_ref_ptr:
-        if (header.flags.load(Ordering::Acquire) & HEADER_FLAG_IMMORTAL) != 0 {
-            // Should not touch refcount — verify it is unchanged.
-            assert_eq!(header.ref_count.load(Ordering::Relaxed), init_rc);
-        }
-    }
-
-    /// Models the dec_ref_ptr logic: if IMMORTAL is set, the refcount is untouched.
-    #[kani::proof]
-    #[kani::unwind(1)]
-    fn immortal_skips_dec_ref() {
-        let init_rc: u32 = kani::any();
-        let header = MoltHeader {
-            type_id: TYPE_ID_OBJECT,
-            ref_count: MoltRefCount::new(init_rc),
-            flags: MoltFlags::new(HEADER_FLAG_IMMORTAL),
-            size_class: 0,
-            aux_kind: HEADER_AUX_KIND_NONE,
-            aux: 0,
-        };
-
-        // Model of dec_ref_ptr:
-        if (header.flags.load(Ordering::Acquire) & HEADER_FLAG_IMMORTAL) != 0 {
-            assert_eq!(header.ref_count.load(Ordering::Relaxed), init_rc);
-        }
-    }
-
-    /// For a non-immortal header, inc then dec restores the original refcount.
-    #[kani::proof]
-    #[kani::unwind(1)]
-    fn non_immortal_inc_dec_identity() {
-        let init_rc: u32 = kani::any();
-        kani::assume(init_rc > 0 && init_rc < u32::MAX);
-
-        let header = MoltHeader {
-            type_id: TYPE_ID_STRING,
-            ref_count: MoltRefCount::new(init_rc),
-            flags: MoltFlags::new(0),
-            size_class: 0,
-            aux_kind: HEADER_AUX_KIND_NONE,
-            aux: 0,
-        };
-
-        // Model: not immortal, so inc_ref adds 1, dec_ref subtracts 1.
-        assert_eq!(
-            header.flags.load(Ordering::Acquire) & HEADER_FLAG_IMMORTAL,
-            0
-        );
-        header.ref_count.fetch_add(1, Ordering::Relaxed);
-        assert_eq!(header.ref_count.load(Ordering::Relaxed), init_rc + 1);
-        header.ref_count.fetch_sub(1, Ordering::AcqRel);
-        assert_eq!(header.ref_count.load(Ordering::Relaxed), init_rc);
-    }
-
-    // ===============================================================
-    // 5. ALLOCATION ALIGNMENT MODEL
+    // 4. ALLOCATION ALIGNMENT MODEL
     // ===============================================================
 
     /// Models the invariant that alloc_object returns header_ptr + HEADER_SIZE
@@ -565,30 +462,7 @@ mod object_proofs {
     }
 
     // ===============================================================
-    // 6. MoltRefCount (REAL TYPE MODEL) — store/load roundtrip
-    // ===============================================================
-
-    /// store then load returns the stored value.
-    #[kani::proof]
-    #[kani::unwind(1)]
-    fn refcount_store_load_roundtrip() {
-        let rc = MoltRefCount::new(0);
-        let val: u32 = kani::any();
-        rc.store(val, Ordering::Relaxed);
-        assert_eq!(rc.load(Ordering::Relaxed), val);
-    }
-
-    /// new(val).load() == val for any val.
-    #[kani::proof]
-    #[kani::unwind(1)]
-    fn refcount_new_load() {
-        let val: u32 = kani::any();
-        let rc = MoltRefCount::new(val);
-        assert_eq!(rc.load(Ordering::Relaxed), val);
-    }
-
-    // ===============================================================
-    // 7. range_len_i64 PROOFS
+    // 5. range_len_i64 PROOFS
     // ===============================================================
 
     /// range_len_i64 returns 0 when step is 0.
@@ -678,32 +552,7 @@ mod object_proofs {
     }
 
     // ===============================================================
-    // 8. NOT_IMPLEMENTED SKIP MODEL
-    // ===============================================================
-
-    /// Models the dec_ref_ptr early return for TYPE_ID_NOT_IMPLEMENTED:
-    /// if type_id == NOT_IMPLEMENTED, the refcount is not touched.
-    #[kani::proof]
-    #[kani::unwind(1)]
-    fn not_implemented_skips_dec_ref() {
-        let init_rc: u32 = kani::any();
-        let header = MoltHeader {
-            type_id: TYPE_ID_NOT_IMPLEMENTED,
-            ref_count: MoltRefCount::new(init_rc),
-            flags: MoltFlags::new(0),
-            size_class: 0,
-            aux_kind: HEADER_AUX_KIND_NONE,
-            aux: 0,
-        };
-
-        // Model of dec_ref_ptr: early return when type_id == NOT_IMPLEMENTED.
-        if header.type_id == TYPE_ID_NOT_IMPLEMENTED {
-            assert_eq!(header.ref_count.load(Ordering::Relaxed), init_rc);
-        }
-    }
-
-    // ===============================================================
-    // 9. FINALIZER FLAG IDEMPOTENCY
+    // 6. FINALIZER FLAG IDEMPOTENCY
     // ===============================================================
 
     /// Setting HEADER_FLAG_FINALIZER_RAN twice is idempotent.

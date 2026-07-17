@@ -1039,7 +1039,6 @@ mod tests {
     use super::release_failed_builtin_classes;
     use crate::object::{ClassEdgeOwnership, object_init_class_edge_unpublished};
     use crate::*;
-    use std::sync::atomic::Ordering;
 
     #[test]
     fn builtin_bootstrap_rollback_clears_self_edge_and_releases_each_owner_once() {
@@ -1065,22 +1064,14 @@ mod tests {
                 )
             });
             assert_eq!(
-                unsafe {
-                    (*header_from_obj_ptr(class_ptr))
-                        .ref_count
-                        .load(Ordering::Acquire)
-                },
+                unsafe { (*header_from_obj_ptr(class_ptr)).ref_count_snapshot() },
                 3
             );
 
             release_failed_builtin_classes(_py, &[class_bits]);
             assert_eq!(unsafe { object_class_bits(class_ptr) }, 0);
             assert_eq!(
-                unsafe {
-                    (*header_from_obj_ptr(class_ptr))
-                        .ref_count
-                        .load(Ordering::Acquire)
-                },
+                unsafe { (*header_from_obj_ptr(class_ptr)).ref_count_snapshot() },
                 1,
                 "rollback must release the self edge and its external owner only",
             );

@@ -86,14 +86,9 @@ pub extern "C" fn __molt_asyncio_type_name(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::Ordering as AtomicOrdering;
 
     fn ref_count(ptr: *mut u8) -> u32 {
-        unsafe {
-            (*header_from_obj_ptr(ptr))
-                .ref_count
-                .load(AtomicOrdering::Relaxed)
-        }
+        unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() }
     }
 
     #[test]

@@ -784,7 +784,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 // NaN-boxed bits).  The generated result-ownership table
                 // classifies boxed `and` as minting a new owned selected
                 // operand, so retain exactly when an output name is bound.
-                emit_inc_ref_obj(&mut *builder, res, local_inc_ref_obj, nbc);
+                emit_inc_ref_obj(&mut *builder, res, local_inc_ref_obj);
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
@@ -862,7 +862,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     )
                 );
                 // Same selected-alias ownership contract as `and`.
-                emit_inc_ref_obj(&mut *builder, res, local_inc_ref_obj, nbc);
+                emit_inc_ref_obj(&mut *builder, res, local_inc_ref_obj);
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }

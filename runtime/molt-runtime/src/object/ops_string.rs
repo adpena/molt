@@ -977,7 +977,7 @@ pub extern "C" fn molt_string_count(hay_bits: u64, needle_bits: u64) -> u64 {
             {
                 cache.count
             } else {
-                profile_hit(_py, &runtime_state(_py).string_count_cache_miss);
+                profile_hit(_py, &STRING_COUNT_CACHE_MISS_COUNT);
                 let count = bytes_count_impl(hay_bytes, needle_bytes);
                 utf8_count_cache_store(
                     _py,

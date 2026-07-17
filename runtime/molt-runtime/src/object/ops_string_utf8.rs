@@ -93,7 +93,7 @@ pub(super) fn utf8_count_cache_lookup(
             }
         })
     }) {
-        profile_hit(_py, &runtime_state(_py).string_count_cache_hit);
+        profile_hit(_py, &STRING_COUNT_CACHE_HIT_COUNT);
         return Some(cache);
     }
     let shard = utf8_count_cache_shard(key);
@@ -104,7 +104,7 @@ pub(super) fn utf8_count_cache_lookup(
         .ok()?;
     let cache = store.get(key)?;
     if cache.needle == needle {
-        profile_hit(_py, &runtime_state(_py).string_count_cache_hit);
+        profile_hit(_py, &STRING_COUNT_CACHE_HIT_COUNT);
         return Some(cache);
     }
     None

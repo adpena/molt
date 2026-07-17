@@ -664,7 +664,6 @@ from molt.cli.package_registry import (
 )
 from molt.cli.profile_feedback import (
     _extract_hot_functions,
-    _extract_runtime_feedback_hot_functions,
     _load_pgo_profile,
     _load_runtime_feedback,
     _pgo_hotspot_entries,

@@ -635,22 +635,6 @@ pub extern "C" fn molt_types_simplenamespace_eq(self_bits: u64, other_bits: u64)
     })
 }
 
-pub(crate) fn types_drop_instance(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
-    let class_bits = unsafe { object_class_bits(ptr) };
-    if class_bits == 0 {
-        return false;
-    }
-    let mappingproxy = types_state(_py).mappingproxy_class.load(Ordering::Acquire);
-    if class_bits == mappingproxy {
-        let mapping_bits = unsafe { mappingproxy_mapping_bits(ptr) };
-        if mapping_bits != 0 && !obj_from_bits(mapping_bits).is_none() {
-            dec_ref_bits(_py, mapping_bits);
-        }
-        return true;
-    }
-    false
-}
-
 pub(crate) unsafe fn types_visit_owned_edges(
     shape: crate::object::ObjectShapeId,
     ptr: *mut u8,

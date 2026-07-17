@@ -16,12 +16,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOLS_ROOT = Path(__file__).resolve().parent
+SRC_ROOT = ROOT / "src"
 BENCH_DIR = ROOT / "tests" / "benchmarks"
 if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
 from bench_suites import molt_args_for_benchmark  # noqa: E402
 import harness_memory_guard  # noqa: E402
+from molt._runtime_profile_schema import is_process_profile, is_profile_epoch  # noqa: E402
 
 TOP_BENCHES = [
     "bench_deeply_nested_loop.py",
@@ -254,7 +258,7 @@ def _parse_molt_profile_json(log_text: str) -> dict[str, object] | None:
         parsed = json.loads(payload)
     except json.JSONDecodeError:
         return None
-    if not isinstance(parsed, dict):
+    if not is_process_profile(parsed):
         return None
     flat: dict[str, object] = {}
     for section in ("profile", "hot_paths", "deopt_reasons", "aux", "gc", "memory"):
@@ -265,6 +269,45 @@ def _parse_molt_profile_json(log_text: str) -> dict[str, object] | None:
             if isinstance(key, str) and isinstance(value, (int, float, str)):
                 flat[key] = int(value) if isinstance(value, float) else value
     return _normalize_molt_profile(flat)
+
+
+def _parse_molt_profile_epoch_json(
+    log_text: str,
+) -> list[dict[str, object]] | None:
+    epochs: list[dict[str, object]] = []
+    for line in log_text.splitlines():
+        if not line.startswith("molt_profile_epoch_json "):
+            continue
+        payload = line[len("molt_profile_epoch_json ") :].strip()
+        if not payload:
+            continue
+        try:
+            parsed = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if not is_profile_epoch(parsed):
+            continue
+        flat_delta: dict[str, object] = {}
+        delta = parsed.get("delta")
+        if isinstance(delta, dict):
+            for values in delta.values():
+                if not isinstance(values, dict):
+                    continue
+                for key, value in values.items():
+                    if isinstance(key, str) and isinstance(value, (int, float)):
+                        flat_delta[key] = int(value)
+        epoch: dict[str, object] = {
+            "generation": parsed.get("generation"),
+            "label": parsed.get("label"),
+            "delta": _normalize_molt_profile(flat_delta) or {},
+            "delta_sections": delta if isinstance(delta, dict) else {},
+        }
+        for section in ("counter_regressions", "gauges", "memory"):
+            value = parsed.get(section)
+            if isinstance(value, dict):
+                epoch[section] = value
+        epochs.append(epoch)
+    return epochs or None
 
 
 def _parse_molt_profile_cpu_features(log_text: str) -> dict[str, object] | None:
@@ -325,6 +368,9 @@ def _merge_profile_metrics(
     profile = _parse_molt_profile_json(log_text)
     if profile:
         metrics["molt_profile"] = profile
+    epochs = _parse_molt_profile_epoch_json(log_text)
+    if epochs:
+        metrics["molt_profile_epochs"] = epochs
     cpu_features = _parse_molt_profile_cpu_features(log_text)
     if cpu_features:
         metrics["molt_profile_cpu_features"] = cpu_features
@@ -344,6 +390,7 @@ def _collect_profile_summary(
     for entry in metadata.get("benchmarks", []):
         bench_name = entry.get("bench", "unknown")
         profiles: list[dict[str, object]] = []
+        epoch_samples: dict[str, list[dict[str, object]]] = {}
         external_rss_samples: list[int] = []
         sites = None
         for run in entry.get("cpu_runs", []):
@@ -351,19 +398,29 @@ def _collect_profile_summary(
             profile = metrics.get("molt_profile")
             if isinstance(profile, dict):
                 profiles.append(profile)
+            epochs = metrics.get("molt_profile_epochs")
+            if isinstance(epochs, list):
+                for epoch in epochs:
+                    if not isinstance(epoch, dict):
+                        continue
+                    label = epoch.get("label")
+                    if isinstance(label, str):
+                        epoch_samples.setdefault(label, []).append(epoch)
             external_rss = metrics.get("peak_rss_bytes_external")
             if isinstance(external_rss, (int, float)):
                 external_rss_samples.append(int(external_rss))
             sites = sites or metrics.get("molt_profile_string_sites")
         if not profiles:
             missing_profile.append(str(bench_name))
-            continue
+            if not epoch_samples:
+                continue
 
         def samples(key: str) -> list[int]:
             return [int(profile.get(key, 0) or 0) for profile in profiles]
 
-        def median_counter(key: str) -> int:
-            return int(statistics.median(samples(key)))
+        def median_counter(key: str) -> int | None:
+            values = samples(key)
+            return int(statistics.median(values)) if values else None
 
         counter_drift = {
             key: {"min": min(values), "max": max(values)}
@@ -382,9 +439,40 @@ def _collect_profile_summary(
         gc_lock_contention = median_counter("gc_registry_lock_contention_count")
         gc_lock_wait_ns = median_counter("gc_registry_lock_wait_ns")
         runtime_rss_samples = samples("peak_rss_bytes")
+        epoch_summaries: list[dict[str, object]] = []
+        for label, epochs in sorted(epoch_samples.items()):
+            deltas = [epoch.get("delta") for epoch in epochs]
+            delta_maps = [delta for delta in deltas if isinstance(delta, dict)]
+            metric_names = sorted({key for delta in delta_maps for key in delta})
+            median_delta: dict[str, int] = {}
+            epoch_drift: dict[str, dict[str, int]] = {}
+            for metric in metric_names:
+                values = [int(delta.get(metric, 0) or 0) for delta in delta_maps]
+                median_delta[metric] = int(statistics.median(values))
+                if min(values) != max(values):
+                    epoch_drift[metric] = {"min": min(values), "max": max(values)}
+            epoch_summaries.append(
+                {
+                    "label": label,
+                    "counter_runs": len(delta_maps),
+                    "delta_median": median_delta,
+                    "counter_drift": epoch_drift,
+                    "counter_regressions": [
+                        regression
+                        for epoch in epochs
+                        if isinstance(
+                            regression := epoch.get("counter_regressions"), dict
+                        )
+                        and regression
+                    ],
+                    "gauges": [epoch.get("gauges") for epoch in epochs],
+                    "memory": [epoch.get("memory") for epoch in epochs],
+                }
+            )
         benches.append(
             {
                 "bench": bench_name,
+                "epochs": epoch_summaries,
                 "counter_runs": len(profiles),
                 "counter_drift": counter_drift,
                 "alloc_count": alloc_count,
@@ -427,17 +515,21 @@ def _collect_profile_summary(
                 "gc_contention_per_track": (
                     float(gc_lock_contention) / float(gc_track_count)
                     if gc_track_count
-                    else 0.0
+                    else (0.0 if profiles else None)
                 ),
                 "gc_wait_ns_per_contention": (
                     float(gc_lock_wait_ns) / float(gc_lock_contention)
                     if gc_lock_contention
-                    else 0.0
+                    else (0.0 if profiles else None)
                 ),
-                "runtime_peak_rss_bytes_median": int(
-                    statistics.median(runtime_rss_samples)
+                "runtime_peak_rss_bytes_median": (
+                    int(statistics.median(runtime_rss_samples))
+                    if runtime_rss_samples
+                    else None
                 ),
-                "runtime_peak_rss_bytes_max": max(runtime_rss_samples),
+                "runtime_peak_rss_bytes_max": (
+                    max(runtime_rss_samples) if runtime_rss_samples else None
+                ),
                 "external_peak_rss_bytes_median": (
                     int(statistics.median(external_rss_samples))
                     if external_rss_samples

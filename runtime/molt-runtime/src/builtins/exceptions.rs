@@ -1850,7 +1850,7 @@ fn record_exception_with_caller_frame(_py: &PyToken<'_>, ptr: *mut u8, include_c
     if debug_rc {
         let rc = unsafe {
             let header = header_from_obj_ptr(ptr);
-            (*header).ref_count.load(AtomicOrdering::Acquire)
+            (*header).ref_count_snapshot()
         };
         eprintln!("molt exc rc start ptr=0x{:x} rc={}", ptr as usize, rc);
     }
@@ -1885,7 +1885,7 @@ fn record_exception_with_caller_frame(_py: &PyToken<'_>, ptr: *mut u8, include_c
         if debug_rc {
             let old_rc = unsafe {
                 let header = header_from_obj_ptr(old_ptr);
-                (*header).ref_count.load(AtomicOrdering::Acquire)
+                (*header).ref_count_snapshot()
             };
             eprintln!(
                 "molt exc rc prior ptr=0x{:x} rc={}",
@@ -2040,7 +2040,7 @@ fn record_exception_with_caller_frame(_py: &PyToken<'_>, ptr: *mut u8, include_c
     if debug_rc {
         let rc = unsafe {
             let header = header_from_obj_ptr(ptr);
-            (*header).ref_count.load(AtomicOrdering::Acquire)
+            (*header).ref_count_snapshot()
         };
         eprintln!(
             "molt exc rc end ptr=0x{:x} rc={} same_ptr={} ctx_owned={}",
@@ -3515,11 +3515,7 @@ mod tests {
             let class_ptr = super::alloc_class_obj_from_name(_py, "IdentityBefore");
             assert!(!class_ptr.is_null());
             let class_bits = MoltObject::from_ptr(class_ptr).bits();
-            let class_rc_before = unsafe {
-                (*header_from_obj_ptr(class_ptr))
-                    .ref_count
-                    .load(Ordering::Acquire)
-            };
+            let class_rc_before = unsafe { (*header_from_obj_ptr(class_ptr)).ref_count_snapshot() };
             let msg_ptr = crate::alloc_string(_py, b"identity");
             let args_ptr = crate::alloc_tuple(_py, &[]);
             assert!(!msg_ptr.is_null());
@@ -3544,11 +3540,7 @@ mod tests {
 
             assert_eq!(unsafe { crate::object_class_bits(exc_ptr) }, class_bits);
             assert_eq!(
-                unsafe {
-                    (*header_from_obj_ptr(class_ptr))
-                        .ref_count
-                        .load(Ordering::Acquire)
-                },
+                unsafe { (*header_from_obj_ptr(class_ptr)).ref_count_snapshot() },
                 class_rc_before + 1
             );
 
@@ -3587,11 +3579,7 @@ mod tests {
 
             dec_ref_bits(_py, MoltObject::from_ptr(exc_ptr).bits());
             assert_eq!(
-                unsafe {
-                    (*header_from_obj_ptr(class_ptr))
-                        .ref_count
-                        .load(Ordering::Acquire)
-                },
+                unsafe { (*header_from_obj_ptr(class_ptr)).ref_count_snapshot() },
                 class_rc_before
             );
             dec_ref_bits(_py, class_bits);
@@ -3609,11 +3597,8 @@ mod tests {
             let invalid_class_bits = MoltObject::from_ptr(invalid_class_ptr).bits();
             let msg_bits = MoltObject::from_ptr(msg_ptr).bits();
             let args_bits = MoltObject::from_ptr(args_ptr).bits();
-            let refcount = |ptr: *mut u8| unsafe {
-                (*header_from_obj_ptr(ptr))
-                    .ref_count
-                    .load(Ordering::Acquire)
-            };
+            let refcount =
+                |ptr: *mut u8| unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() };
             let invalid_class_baseline = refcount(invalid_class_ptr);
             let msg_baseline = refcount(msg_ptr);
             let args_baseline = refcount(args_ptr);
@@ -3748,8 +3733,9 @@ mod tests {
                 .task_last_exception_pending
                 .store(true, Ordering::Release);
 
-            let mut sink = crate::object::heap_lifecycle::DetachedEdgeSink::try_with_capacity(2)
-                .expect("test detach sink");
+            let mut sink =
+                crate::object::heap_lifecycle::DetachedEdgeSink::try_with_capacities(2, 0)
+                    .expect("test detach sink");
             task_exception_detach_owned_edges(_py, task, &mut sink);
 
             assert!(
@@ -4074,11 +4060,7 @@ mod tests {
             let task = Box::into_raw(Box::new(0_u8));
             let exc_ptr = alloc_exception(_py, "RuntimeError", "same-owner");
             let exc_bits = MoltObject::from_ptr(exc_ptr).bits();
-            let refcount = || unsafe {
-                (*header_from_obj_ptr(exc_ptr))
-                    .ref_count
-                    .load(Ordering::Acquire)
-            };
+            let refcount = || unsafe { (*header_from_obj_ptr(exc_ptr)).ref_count_snapshot() };
             let baseline = refcount();
 
             record_exception(_py, exc_ptr);
@@ -4114,11 +4096,7 @@ mod tests {
         let (exc_bits, baseline) = crate::with_gil_entry_nopanic!(_py, {
             let exc_ptr = alloc_exception(_py, "RuntimeError", "worker-exit");
             let bits = MoltObject::from_ptr(exc_ptr).bits();
-            let count = unsafe {
-                (*header_from_obj_ptr(exc_ptr))
-                    .ref_count
-                    .load(Ordering::Acquire)
-            };
+            let count = unsafe { (*header_from_obj_ptr(exc_ptr)).ref_count_snapshot() };
             (bits, count)
         });
 
@@ -4127,11 +4105,7 @@ mod tests {
                 let ptr = obj_from_bits(exc_bits).as_ptr().expect("live exception");
                 record_exception(_py, ptr);
                 assert_eq!(
-                    unsafe {
-                        (*header_from_obj_ptr(ptr))
-                            .ref_count
-                            .load(Ordering::Acquire)
-                    },
+                    unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() },
                     baseline + 1
                 );
             });
@@ -4144,11 +4118,7 @@ mod tests {
                 .as_ptr()
                 .expect("main owner remains live");
             assert_eq!(
-                unsafe {
-                    (*header_from_obj_ptr(ptr))
-                        .ref_count
-                        .load(Ordering::Acquire)
-                },
+                unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() },
                 baseline,
                 "TLS teardown must consume the worker's pending-exception edge"
             );

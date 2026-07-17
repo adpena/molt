@@ -1,7 +1,8 @@
 //! Out-of-band runtime diagnostics channel.
 //!
 //! Profiling and leak-gauge instrumentation — the versioned `molt_profile_json`
-//! payload, the `[MOLT_PROFILE] LEAK WARNING`, and the
+//! process payload, labeled `molt_profile_epoch_json` deltas, the
+//! `[MOLT_PROFILE] LEAK WARNING`, and the
 //! `[MOLT_ASSERT_NO_LEAK]` leak report — is NOT part of a program's observable
 //! behavior. It must never interleave with the program's own stdout/stderr,
 //! because the differential parity harness compares those streams byte-for-byte

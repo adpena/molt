@@ -2936,11 +2936,7 @@ mod tests {
 
     fn refcount(bits: u64) -> u32 {
         let ptr = MoltObject::from_bits(bits).as_ptr().unwrap();
-        unsafe {
-            (*header_from_obj_ptr(ptr))
-                .ref_count
-                .load(Ordering::Acquire)
-        }
+        unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() }
     }
 
     fn assert_callable_attr(_py: &PyToken<'_>, bits: u64) {

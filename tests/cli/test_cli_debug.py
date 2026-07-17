@@ -99,7 +99,12 @@ def _write_perf_inputs(tmp_path: Path) -> tuple[Path, Path]:
     profile_json_path.write_text(
         json.dumps(
             {
+                "schema_version": 2,
+                "kind": "runtime_feedback",
                 "profile": {"alloc_count": 4},
+                "aux": {},
+                "gc": {},
+                "memory": {"peak_rss_bytes": 0, "current_rss_bytes": 0},
                 "hot_paths": {"call_bind_ic_hit": 10, "call_bind_ic_miss": 1},
                 "deopt_reasons": {},
             }
@@ -111,7 +116,12 @@ def _write_perf_inputs(tmp_path: Path) -> tuple[Path, Path]:
         "noise\nmolt_profile_json "
         + json.dumps(
             {
+                "schema_version": 2,
+                "kind": "runtime_feedback",
                 "profile": {"alloc_count": 6, "alloc_callargs": 2},
+                "aux": {},
+                "gc": {},
+                "memory": {"peak_rss_bytes": 0, "current_rss_bytes": 0},
                 "hot_paths": {"call_bind_ic_hit": 3, "call_bind_ic_miss": 4},
                 "deopt_reasons": {},
             }

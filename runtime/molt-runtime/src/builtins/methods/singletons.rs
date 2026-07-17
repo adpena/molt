@@ -70,7 +70,6 @@ fn special_singleton_bits(_py: &PyToken<'_>, slot: &AtomicU64, type_id: u32) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::Ordering as AtomicOrdering;
 
     fn assert_immortal_singleton(_py: &PyToken<'_>, bits: u64, type_id: u32) {
         let ptr = obj_from_bits(bits)
@@ -83,11 +82,11 @@ mod tests {
                 (*header).load_metadata_flags() & crate::object::HEADER_FLAG_IMMORTAL,
                 0
             );
-            let refcount = (*header).ref_count.load(AtomicOrdering::Acquire);
+            let refcount = (*header).ref_count_snapshot();
             dec_ref_bits(_py, bits);
             dec_ref_bits(_py, bits);
             assert_eq!(object_type_id(ptr), type_id);
-            assert_eq!((*header).ref_count.load(AtomicOrdering::Acquire), refcount);
+            assert_eq!((*header).ref_count_snapshot(), refcount);
         }
     }
 

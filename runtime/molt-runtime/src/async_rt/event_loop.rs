@@ -990,11 +990,7 @@ mod tests {
     use crate::{MoltObject, alloc_string, header_from_obj_ptr};
 
     fn ref_count(ptr: *mut u8) -> u32 {
-        unsafe {
-            (*header_from_obj_ptr(ptr))
-                .ref_count
-                .load(Ordering::Relaxed)
-        }
+        unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() }
     }
 
     #[test]

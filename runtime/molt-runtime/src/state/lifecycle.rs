@@ -200,6 +200,8 @@ pub(crate) fn runtime_teardown_for_process_exit(_py: &PyToken<'_>, state: &Runti
     exceptions_clear_runtime_state(_py, state);
     trace_shutdown("process_exit_clear_resource_state");
     crate::resource::clear_resource_state();
+    trace_shutdown("process_exit_clear_profile_epoch");
+    crate::object::ops::profile_epoch_clear();
     trace_shutdown("process_exit_done");
 }
 
@@ -362,6 +364,8 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
         reset_ptr_registry();
         trace_shutdown("reset_gc_registry");
         crate::object::gc::gc_reset_registry();
+        trace_shutdown("clear_profile_epoch");
+        crate::object::ops::profile_epoch_clear();
     }
     trace_shutdown("clear_resource_state");
     crate::resource::clear_resource_state();

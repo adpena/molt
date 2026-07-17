@@ -1517,14 +1517,9 @@ mod tests {
         inc_ref_bits, obj_from_bits,
     };
     use molt_obj_model::MoltObject;
-    use std::sync::atomic::Ordering;
 
     unsafe fn ref_count(ptr: *mut u8) -> u32 {
-        unsafe {
-            (*header_from_obj_ptr(ptr))
-                .ref_count
-                .load(Ordering::Relaxed)
-        }
+        unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() }
     }
 
     fn alloc_test_code(

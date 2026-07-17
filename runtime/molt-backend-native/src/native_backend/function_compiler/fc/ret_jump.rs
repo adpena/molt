@@ -1026,7 +1026,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                         return OpFlow::Continue;
                     }
                     let old = builder.ins().stack_load(types::I64, slot, 0);
-                    emit_inc_ref_obj(&mut *builder, *val, local_inc_ref_obj, nbc);
+                    emit_inc_ref_obj(&mut *builder, *val, local_inc_ref_obj);
                     builder.ins().stack_store(*val, slot, 0);
                     builder.ins().call(local_dec_ref_obj, &[old]);
                     return OpFlow::Continue;
@@ -1267,7 +1267,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     // it; the load yields a borrowed alias the TIR pass tracks
                     // in alias-root space.
                     if rc_authority.native_value_tracking_enabled() {
-                        emit_inc_ref_obj(&mut *builder, val, local_inc_ref_obj, nbc);
+                        emit_inc_ref_obj(&mut *builder, val, local_inc_ref_obj);
                     }
                     if let Some(out_name) = op.out.as_ref().as_ref() {
                         def_var_from_boxed_transport(
@@ -1444,7 +1444,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     // it; the load yields a borrowed alias the TIR pass tracks
                     // in alias-root space.
                     if rc_authority.native_value_tracking_enabled() {
-                        emit_inc_ref_obj(&mut *builder, val, local_inc_ref_obj, nbc);
+                        emit_inc_ref_obj(&mut *builder, val, local_inc_ref_obj);
                     }
                     if let Some(out_name) = op.out.as_ref().as_ref() {
                         def_var_from_boxed_transport(

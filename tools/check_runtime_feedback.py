@@ -6,6 +6,12 @@ import json
 import sys
 from pathlib import Path
 
+SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from molt._runtime_profile_schema import is_process_profile  # noqa: E402
+
 
 REQUIRED_TOP_LEVEL = {
     "schema_version",
@@ -80,55 +86,6 @@ REQUIRED_DEOPT_REASON_KEYS = {
 }
 
 
-def _validate_hot_functions(payload: dict) -> str | None:
-    hot_functions = payload.get("hot_functions")
-    if hot_functions is None:
-        return None
-    if isinstance(hot_functions, dict):
-        for name, score in hot_functions.items():
-            if not isinstance(name, str) or not name:
-                return "hot_functions object keys must be non-empty strings"
-            if score is not None and not isinstance(score, (int, float)):
-                return "hot_functions object values must be numeric or null"
-        return None
-    if isinstance(hot_functions, list):
-        for entry in hot_functions:
-            if isinstance(entry, str):
-                if not entry:
-                    return "hot_functions string entries must be non-empty"
-                continue
-            if isinstance(entry, (list, tuple)):
-                if not entry or not isinstance(entry[0], str) or not entry[0]:
-                    return "hot_functions tuple entries must start with a function name"
-                if (
-                    len(entry) > 1
-                    and entry[1] is not None
-                    and not isinstance(entry[1], (int, float))
-                ):
-                    return "hot_functions tuple scores must be numeric or null"
-                continue
-            if isinstance(entry, dict):
-                name = (
-                    entry.get("symbol")
-                    or entry.get("name")
-                    or entry.get("func")
-                    or entry.get("function")
-                )
-                if not isinstance(name, str) or not name:
-                    return "hot_functions object entries require a function name"
-                score = None
-                for key in ("score", "count", "time_ms", "time_us"):
-                    if key in entry:
-                        score = entry.get(key)
-                        break
-                if score is not None and not isinstance(score, (int, float)):
-                    return "hot_functions entry scores must be numeric or null"
-                continue
-            return "hot_functions entries must be strings, pairs, or objects"
-        return None
-    return "hot_functions must be a list or object when present"
-
-
 def _validate_non_negative_ints(
     section_name: str, payload: dict, keys: set[str]
 ) -> str | None:
@@ -158,10 +115,12 @@ def _validate(path: Path) -> int:
     if missing_top:
         return _fail(f"missing top-level keys: {sorted(missing_top)}")
 
-    if payload.get("kind") != "runtime_feedback":
-        return _fail(f"unexpected kind={payload.get('kind')!r}")
-    if payload.get("schema_version") != 2:
-        return _fail(f"unexpected schema_version={payload.get('schema_version')!r}")
+    if not is_process_profile(payload):
+        return _fail(
+            "expected runtime_feedback process schema v2, got "
+            f"kind={payload.get('kind')!r} "
+            f"schema_version={payload.get('schema_version')!r}"
+        )
 
     profile = payload.get("profile")
     if not isinstance(profile, dict):
@@ -270,10 +229,6 @@ def _validate(path: Path) -> int:
     )
     if deopt_value_err:
         return _fail(deopt_value_err)
-    hot_function_err = _validate_hot_functions(payload)
-    if hot_function_err:
-        return _fail(hot_function_err)
-
     print(f"runtime-feedback-check: OK: {path}")
     return 0
 

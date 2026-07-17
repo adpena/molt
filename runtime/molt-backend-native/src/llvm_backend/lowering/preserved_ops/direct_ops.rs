@@ -1796,7 +1796,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // (the value comes from `class_attr_lookup` / a descriptor / a slot
             // — not a fresh allocation). The native handler
             // (`fc/attrs.rs::get_attr_special_obj`) therefore inc_refs the result
-            // via `emit_maybe_ref_adjust_v2(res, molt_inc_ref_obj)` to take owned
+            // via `emit_inc_ref_obj(res, molt_inc_ref_obj)` to take owned
             // ownership; the existing LLVM `get_attr_generic_obj` arm
             // (`molt_get_attr_object_ic`) does the same. We MUST mirror that here:
             // binding the borrowed result without the inc_ref under-counts it and

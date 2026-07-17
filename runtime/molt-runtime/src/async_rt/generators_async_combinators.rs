@@ -499,68 +499,6 @@ pub unsafe extern "C" fn molt_asyncio_gather_poll(obj_bits: u64) -> i64 {
     }
 }
 
-/// # Safety
-/// - `future_ptr` must be a valid Molt wait future pointer.
-pub(crate) unsafe fn asyncio_wait_task_drop(_py: &PyToken<'_>, future_ptr: *mut u8) {
-    unsafe {
-        if future_ptr.is_null() {
-            return;
-        }
-        let _header = header_from_obj_ptr(future_ptr);
-        let payload_bytes = crate::object::object_payload_size(future_ptr);
-        if payload_bytes < 4 * std::mem::size_of::<u64>() {
-            return;
-        }
-        let payload_ptr = future_ptr as *mut u64;
-        for idx in 0..4usize {
-            asyncio_drop_slot_ref(_py, payload_ptr, idx);
-        }
-    }
-}
-
-/// # Safety
-/// - `future_ptr` must be a valid Molt gather future pointer.
-pub(crate) unsafe fn asyncio_gather_task_drop(_py: &PyToken<'_>, future_ptr: *mut u8) {
-    unsafe {
-        if future_ptr.is_null() {
-            return;
-        }
-        let _header = header_from_obj_ptr(future_ptr);
-        let payload_bytes = crate::object::object_payload_size(future_ptr);
-        let payload_slots = payload_bytes / std::mem::size_of::<u64>();
-        if payload_slots < ASYNCIO_GATHER_RESULT_OFFSET {
-            return;
-        }
-        let payload_ptr = future_ptr as *mut u64;
-        for idx in 0..payload_slots {
-            asyncio_drop_slot_ref(_py, payload_ptr, idx);
-        }
-    }
-}
-
-/// # Safety
-/// - `future_ptr` must be a valid Molt wait_for future pointer.
-pub(crate) unsafe fn asyncio_wait_for_task_drop(_py: &PyToken<'_>, future_ptr: *mut u8) {
-    unsafe {
-        if future_ptr.is_null() {
-            return;
-        }
-        let _header = header_from_obj_ptr(future_ptr);
-        let payload_bytes = crate::object::object_payload_size(future_ptr);
-        if payload_bytes < 4 * std::mem::size_of::<u64>() {
-            return;
-        }
-        let payload_ptr = future_ptr as *mut u64;
-        for idx in 0..3usize {
-            let bits = *payload_ptr.add(idx);
-            if bits != 0 && !obj_from_bits(bits).is_none() {
-                dec_ref_bits(_py, bits);
-                *payload_ptr.add(idx) = MoltObject::none().bits();
-            }
-        }
-    }
-}
-
 fn wait_for_raise_timeout(_py: &PyToken<'_>) -> i64 {
     raise_exception::<i64>(_py, "TimeoutError", "")
 }

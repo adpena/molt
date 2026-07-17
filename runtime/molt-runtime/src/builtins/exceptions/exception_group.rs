@@ -1113,11 +1113,7 @@ mod tests {
 
     fn heap_refcount(bits: u64) -> u32 {
         let ptr = obj_from_bits(bits).as_ptr().expect("heap object");
-        unsafe {
-            (*header_from_obj_ptr(ptr))
-                .ref_count
-                .load(AtomicOrdering::Acquire)
-        }
+        unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() }
     }
 
     fn generic_sequence(_py: &PyToken<'_>, items_bits: u64) -> (u64, u64, u64) {

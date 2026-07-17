@@ -31,11 +31,13 @@ from molt.harness_conformance import (  # noqa: E402
     build_molt_conformance_env,
     ensure_molt_conformance_dirs,
 )
+from molt._runtime_profile_schema import is_process_profile, is_profile_epoch  # noqa: E402
 from molt.dx import cargo_target_dir_for_artifact_root  # noqa: E402
 from molt.cli.runtime_features import (  # noqa: E402
     _runtime_builtin_features_for_profile,
     _runtime_cargo_features,
 )
+from molt.cli.wasm_link_args import wasm_link_args_response_file  # noqa: E402
 from molt.wasm_artifact import (  # noqa: E402
     _read_wasm_import_metrics,
     _read_wasm_table_min,
@@ -114,6 +116,8 @@ class _SampleResult:
     returncode: int
     error: str | None
     error_class: str | None
+    profile: dict[str, object] | None = None
+    profile_epochs: list[dict[str, object]] | None = None
 
 
 def _is_valid_wasm(path: Path) -> bool:
@@ -498,12 +502,6 @@ def _parse_env_float(name: str, *, default: float | None = None) -> float | None
     return parsed
 
 
-def _append_rustflags(env: dict[str, str], flags: str) -> None:
-    existing = env.get("RUSTFLAGS", "")
-    joined = f"{existing} {flags}".strip()
-    env["RUSTFLAGS"] = joined
-
-
 def _dedupe_preserve_order(items: list[str]) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
@@ -570,18 +568,25 @@ def build_runtime_wasm(
             "-C link-arg=--import-memory -C link-arg=--import-table"
             " -C link-arg=--growable-table" + wasm_runtime_export_link_args()
         )
-    _append_rustflags(env, base_flags)
+    response_path = wasm_link_args_response_file(
+        _repo_root(),
+        label=f"bench-runtime-{'reloc' if reloc else 'shared'}",
+        link_flags=base_flags,
+    )
     resolved_limits = limits or harness_memory_guard.limits_from_env("MOLT_BENCH", env)
     build_cmd = [
         "cargo",
-        "build",
+        "rustc",
         "--release",
         "--package",
         "molt-runtime",
+        "--lib",
         "--target",
         "wasm32-wasip1",
         *_runtime_wasm_feature_args(),
     ]
+    if response_path is not None:
+        build_cmd.extend(["--", "-C", f"link-arg=@{response_path}"])
     res = _run_cmd(
         build_cmd,
         env=env,
@@ -1214,6 +1219,8 @@ def measure_wasm_run(
         returncode=run_res.returncode,
         error=None,
         error_class=None,
+        profile=_extract_profile_json(run_res.stderr or ""),
+        profile_epochs=_extract_profile_epoch_json(run_res.stderr or ""),
     )
 
 
@@ -1235,9 +1242,28 @@ def _extract_profile_json(text: str) -> dict[str, object] | None:
             parsed = json.loads(payload)
         except json.JSONDecodeError:
             continue
-        if isinstance(parsed, dict):
+        if is_process_profile(parsed):
             profile = parsed
     return profile
+
+
+def _extract_profile_epoch_json(text: str) -> list[dict[str, object]] | None:
+    epochs: list[dict[str, object]] = []
+    prefix = "molt_profile_epoch_json "
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith(prefix):
+            continue
+        payload = stripped[len(prefix) :].strip()
+        if not payload:
+            continue
+        try:
+            parsed = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if is_profile_epoch(parsed):
+            epochs.append(parsed)
+    return epochs or None
 
 
 def _load_hostfed_call_bundle(path: Path) -> list[dict[str, object]]:
@@ -1403,7 +1429,7 @@ def collect_samples(
     *,
     log: TextIO | None,
     limits: harness_memory_guard.HarnessMemoryLimits | None = None,
-) -> tuple[list[float], bool, _SampleResult | None]:
+) -> tuple[list[float], bool, _SampleResult | None, list[dict[str, object]]]:
     for _ in range(warmup):
         result = measure_wasm_run(
             wasm.run_env,
@@ -1413,8 +1439,9 @@ def collect_samples(
             limits=limits,
         )
         if result.elapsed_s is None:
-            return [], False, result
+            return [], False, result, []
     timings: list[float] = []
+    profile_samples: list[dict[str, object]] = []
     first_failure: _SampleResult | None = None
     for _ in range(samples):
         result = measure_wasm_run(
@@ -1429,7 +1456,19 @@ def collect_samples(
                 first_failure = result
             continue
         timings.append(result.elapsed_s)
-    return timings, len(timings) == samples and first_failure is None, first_failure
+        profile_samples.append(
+            {
+                "sample_index": len(timings) - 1,
+                "profile": result.profile,
+                "epochs": result.profile_epochs or [],
+            }
+        )
+    return (
+        timings,
+        len(timings) == samples and first_failure is None,
+        first_failure,
+        profile_samples,
+    )
 
 
 def _resolve_runner(
@@ -1572,6 +1611,7 @@ def bench_results(
             linked_used = False
             ok = False
             wasm_samples: list[float] = []
+            wasm_profile_samples: list[dict[str, object]] = []
             failed_sample: _SampleResult | None = None
             control_sample: _SampleResult | None = None
             try:
@@ -1592,14 +1632,16 @@ def bench_results(
                 wasm_binary = None
             if wasm_binary is not None:
                 try:
-                    wasm_samples, ok, failed_sample = collect_samples(
-                        wasm_binary,
-                        samples,
-                        warmup,
-                        runner_cmd,
-                        runner_name,
-                        log=log,
-                        limits=limits,
+                    wasm_samples, ok, failed_sample, wasm_profile_samples = (
+                        collect_samples(
+                            wasm_binary,
+                            samples,
+                            warmup,
+                            runner_cmd,
+                            runner_name,
+                            log=log,
+                            limits=limits,
+                        )
                     )
                     wasm_time = statistics.mean(wasm_samples) if ok else None
                     wasm_size = wasm_binary.size_kb
@@ -1636,6 +1678,8 @@ def bench_results(
                 "molt_wasm_ok": ok,
                 "molt_wasm_linked": linked_used,
             }
+            if wasm_profile_samples:
+                data[name]["molt_wasm_profile_samples"] = wasm_profile_samples
             if wasm_binary is not None:
                 if wasm_binary.import_count_total is not None:
                     data[name]["molt_wasm_import_count"] = (

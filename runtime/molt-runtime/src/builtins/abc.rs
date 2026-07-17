@@ -1601,11 +1601,7 @@ mod tests {
         let header = unsafe {
             ptr.sub(std::mem::size_of::<crate::MoltHeader>()) as *const crate::MoltHeader
         };
-        unsafe {
-            (*header)
-                .ref_count
-                .load(std::sync::atomic::Ordering::Acquire)
-        }
+        unsafe { (*header).ref_count_snapshot() }
     }
 
     fn test_class(_py: &crate::PyToken<'_>, name: &[u8], bases: &[u64]) -> u64 {

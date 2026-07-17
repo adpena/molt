@@ -70,21 +70,6 @@ pub(crate) fn generator_context_stack_visit(ptr: *mut u8, mut visit: impl FnMut(
     }
 }
 
-pub(crate) fn generator_context_stack_drop(_py: &PyToken<'_>, ptr: *mut u8) {
-    crate::gil_assert();
-    if let Some(values) = GENERATOR_CONTEXT_STACKS
-        .lock()
-        .unwrap()
-        .remove(&(ptr as usize))
-    {
-        for bits in values {
-            if !obj_from_bits(bits).is_none() {
-                dec_ref_bits(_py, bits);
-            }
-        }
-    }
-}
-
 unsafe fn context_enter_fn(ptr: *mut u8) -> *const () {
     unsafe { *(ptr as *const *const ()) }
 }

@@ -1114,14 +1114,9 @@ mod tests {
         alloc_dict_with_pairs, alloc_string, dec_ref_bits, dict_set_in_place, inc_ref_bits,
     };
     use molt_obj_model::MoltObject;
-    use std::sync::atomic::Ordering;
 
     unsafe fn ref_count(ptr: *mut u8) -> u32 {
-        unsafe {
-            (*header_from_obj_ptr(ptr))
-                .ref_count
-                .load(Ordering::Relaxed)
-        }
+        unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() }
     }
 
     fn alloc_test_code(_py: &crate::PyToken<'_>) -> (*mut u8, u64) {

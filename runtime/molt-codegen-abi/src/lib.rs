@@ -366,6 +366,10 @@ pub const GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL: &str =
 /// consumers must branch on this value rather than a crate-local feature.
 pub const MOLT_FLAGS_ATOMIC: bool =
     cfg!(all(not(target_arch = "wasm32"), feature = "free-threaded"));
+/// The refcount word follows the same compile-time concurrency domain as flags:
+/// zero-atomic under GIL/default and single-thread wasm, atomic only for native
+/// free-threaded artifacts. The mode-specific link witness prevents mixing.
+pub const MOLT_REFCOUNT_ATOMIC: bool = MOLT_FLAGS_ATOMIC;
 pub const GENERATED_OBJECT_ABI_SYMBOL: &str = if MOLT_FLAGS_ATOMIC {
     GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL
 } else {
@@ -815,6 +819,7 @@ mod tests {
             MOLT_FLAGS_ATOMIC,
             cfg!(all(not(target_arch = "wasm32"), feature = "free-threaded"))
         );
+        assert_eq!(MOLT_REFCOUNT_ATOMIC, MOLT_FLAGS_ATOMIC);
         assert_eq!(HEADER_TYPE_ID_OFFSET, -HEADER_SIZE_BYTES);
         assert_eq!(HEADER_REFCOUNT_OFFSET, -(HEADER_SIZE_BYTES - 4));
         assert_eq!(HEADER_FLAGS_OFFSET, -(HEADER_SIZE_BYTES - 8));

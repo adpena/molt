@@ -3,7 +3,6 @@
 //! Each hook acquires the GIL internally via `with_gil` — re-entrant and safe
 //! whether called from within Molt's execution frame or from a bare C extension.
 
-use std::sync::atomic::Ordering;
 use std::sync::{Condvar, Mutex};
 
 use std::ffi::CStr;
@@ -1477,7 +1476,7 @@ unsafe extern "C" fn hook_dec_ref(bits: u64) {
 unsafe extern "C" fn hook_ref_count(bits: u64) -> usize {
     MoltObject::from_bits(bits).as_ptr().map_or(0, |ptr| {
         let header = unsafe { header_from_obj_ptr(ptr) };
-        unsafe { (*header).ref_count.load(Ordering::Acquire) as usize }
+        unsafe { (*header).ref_count_snapshot() as usize }
     })
 }
 
@@ -4255,11 +4254,8 @@ mod tests {
             assert!(!child_ptr.is_null() && !parent_ptr.is_null());
             let child_bits = MoltObject::from_ptr(child_ptr).bits();
             let parent_bits = MoltObject::from_ptr(parent_ptr).bits();
-            let child_baseline = unsafe {
-                (*crate::header_from_obj_ptr(child_ptr))
-                    .ref_count
-                    .load(AtomicOrdering::Acquire)
-            };
+            let child_baseline =
+                unsafe { (*crate::header_from_obj_ptr(child_ptr)).ref_count_snapshot() };
             for field in [
                 crate::builtins::exceptions::ExceptionFieldSlot::Context,
                 crate::builtins::exceptions::ExceptionFieldSlot::Cause,
@@ -4281,11 +4277,7 @@ mod tests {
             assert_eq!(unsafe { (*parent_view).cause }, child_view);
             assert_eq!(unsafe { (*child_view).ob_refcnt }, 3);
             assert_eq!(
-                unsafe {
-                    (*crate::header_from_obj_ptr(child_ptr))
-                        .ref_count
-                        .load(AtomicOrdering::Acquire)
-                },
+                unsafe { (*crate::header_from_obj_ptr(child_ptr)).ref_count_snapshot() },
                 child_baseline + 3,
                 "two runtime fields plus one canonical child view hold"
             );
@@ -4293,11 +4285,7 @@ mod tests {
             dec_ref_bits(_py, parent_bits);
             assert_eq!(unsafe { (*child_view).ob_refcnt }, 1);
             assert_eq!(
-                unsafe {
-                    (*crate::header_from_obj_ptr(child_ptr))
-                        .ref_count
-                        .load(AtomicOrdering::Acquire)
-                },
+                unsafe { (*crate::header_from_obj_ptr(child_ptr)).ref_count_snapshot() },
                 child_baseline + 1,
                 "parent dealloc must release both runtime and physical field occurrences"
             );

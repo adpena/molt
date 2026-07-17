@@ -734,7 +734,30 @@ Notes:
   diagnostics channel — stderr by default, so the profiler can scrape it from a
   captured log. Schema v2 includes allocation/deallocation/live gauges, exception
   bytes, typed-aux sidecars, GC registry pressure, and runtime RSS. The profiler
-  also records guarded process-tree peak RSS on every host.
+  also records guarded process-tree peak RSS on every host. All consumers reject
+  unversioned process payloads; there is no legacy JSON interpretation path.
+- Steady-state microbenchmarks must use the canonical profiling epoch intrinsics,
+  `molt_profile_epoch_reset(label)` and `molt_profile_epoch_dump()`. Reset captures
+  a baseline without zeroing the process-lifetime leak counters; dump consumes the
+  epoch and emits `molt_profile_epoch_json` schema v1. Its `delta` sections contain
+  every monotonic runtime counter, while `gauges` retain signed start/end/delta
+  triples and `memory` retains current-RSS and process-peak endpoints. Any
+  impossible monotonic decrease is retained under `counter_regressions` instead
+  of being silently reported as a zero delta. This is the authority for claims
+  such as "one million cache hits allocate zero objects and zero bytes";
+  subtracting a separate startup run is not accepted evidence.
+- `tools/profile.py --molt-profile --summary` parses every labeled epoch and
+  reports per-label medians and drift. Native artifacts retain the exact nested
+  counter schema as `delta_sections` alongside normalized summary counters, so
+  flattening cannot discard a future same-named metric. Completed epochs remain
+  reportable even when a process-exit profile line is missing; the missing
+  lifetime fields stay null rather than erasing the phase evidence. Place epoch
+  boundaries after imports, warmup, and before reporting/printing.
+- `MOLT_PROFILE=1 tools/bench_wasm.py --json-out <path>` preserves the same
+  per-sample epoch payloads under `molt_wasm_profile_samples`, with one indexed
+  record per successful timed sample. Missing diagnostics remain explicit as a
+  null process profile and empty epoch list, so native and WASM claims use one
+  counter/gauge schema rather than target-specific subtraction.
 - The diagnostics channel is out-of-band: it carries `molt_profile_json`
   and the `MOLT_ASSERT_NO_LEAK` leak report, neither of which is program output.
   Set `MOLT_DIAGNOSTICS_FILE=<path>` to redirect the whole channel to a file
