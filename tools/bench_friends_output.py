@@ -20,6 +20,7 @@ from bench_friends_types import (
 )
 
 import harness_memory_guard
+import perf_authority
 from molt import backend_daemon_custody as daemon_custody
 
 
@@ -591,12 +592,18 @@ def _write_run_outputs(
     )
     molt_failure_details = _molt_failure_detail_records(suite_results)
     interrupt_payload = _interrupted_payload(interrupted)
+    git_rev = _git_rev()
     payload = {
         "schema_version": 1,
         "manifest_schema_version": metadata["schema_version"],
         "generated_at": run_started.isoformat(),
         "manifest_path": str(manifest_path),
-        "git_rev": _git_rev(),
+        "git_rev": git_rev,
+        "provenance": perf_authority.non_canonical_provenance(
+            profile="manifest-defined",
+            source="tools/bench_friends.py",
+            git_rev=git_rev,
+        ),
         "dry_run": args.dry_run,
         "partial": interrupted is not None,
         "interrupted": interrupt_payload,
