@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = ROOT / "config" / "scientific_stack_versions.toml"
 CONFIG_ENV = "MOLT_SCIENTIFIC_STACK_CONFIG"
 _PUBLIC_VERSION_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)+$")
+SCIENTIFIC_EXTENSION_EXEC_CAPABILITY = "module.extension.exec"
 
 
 @dataclass(frozen=True)
@@ -171,6 +172,11 @@ def _extension_sets(
                 field=f"{extension_field}.capabilities",
                 path=path,
             )
+            if SCIENTIFIC_EXTENSION_EXEC_CAPABILITY not in capabilities:
+                raise ValueError(
+                    f"{path}: {extension_field}.capabilities must include "
+                    f"{SCIENTIFIC_EXTENSION_EXEC_CAPABILITY!r}"
+                )
             provided_capsules = _capability_tuple(
                 raw_extension.get("provided_capsules", []),
                 field=f"{extension_field}.provided_capsules",
