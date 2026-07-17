@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping, Set as AbstractSet
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,6 +30,10 @@ _C_PREPROCESSOR_DIRECTIVE_RE = re.compile(
 )
 _C_PREPROCESSOR_DEFINE_RE = re.compile(
     rf"^\s*#\s*define\s+(?P<symbol>{_C_IDENTIFIER})\b"
+)
+_C_INTEGER_LITERAL_RE = re.compile(
+    r"(?P<value>(?:0[xX][0-9A-Fa-f]+|0[bB][01]+|0[0-7]*|[1-9][0-9]*))"
+    r"[uUlL]*"
 )
 _C_DEFINE_SYMBOL_RE = re.compile(rf"^\s*#\s*define\s+(?P<symbol>{_C_API_TOKEN})\b")
 _C_FUNCTION_LIKE_DEFINE_RE = re.compile(
@@ -159,6 +164,98 @@ def _strip_outer_parens(expr: str) -> str:
     return stripped
 
 
+def _parse_preprocessor_integer(raw: str) -> int | None:
+    match = _C_INTEGER_LITERAL_RE.fullmatch(raw.strip())
+    if match is None:
+        return None
+    literal = match.group("value")
+    if literal.lower().startswith(("0x", "0b")):
+        return int(literal, 0)
+    if len(literal) > 1 and literal.startswith("0"):
+        return int(literal, 8)
+    return int(literal, 10)
+
+
+def _preprocessor_definition_value(raw: str | None) -> int | None:
+    """Return the scalar value of one object-like macro when it is knowable.
+
+    A command-line ``-DNAME`` is defined as 1.  Non-integral replacement text
+    remains ``None``: it is still defined for ``#ifdef``/``defined(NAME)`` but
+    cannot be guessed in a numeric ``#if`` expression.
+    """
+
+    if raw is None or not raw.strip():
+        return 1
+    return _parse_preprocessor_integer(_strip_outer_parens(raw.strip()))
+
+
+def _parse_preprocessor_argument_definition(raw: str) -> tuple[str, int | None] | None:
+    symbol, separator, value = raw.partition("=")
+    if not re.fullmatch(_C_IDENTIFIER, symbol):
+        return None
+    return symbol, _preprocessor_definition_value(value if separator else None)
+
+
+def _extract_preprocessor_definitions(text: str) -> dict[str, int | None]:
+    definitions: dict[str, int | None] = {}
+    sanitized = _strip_c_like_comments_and_literals(text)
+    for line in sanitized.splitlines():
+        match = _C_PREPROCESSOR_DEFINE_RE.match(line)
+        if match is None:
+            continue
+        symbol = match.group("symbol")
+        tail = line[match.end() :]
+        # No whitespace between the macro name and '(' means a function-like
+        # macro. It is defined, but its replacement cannot be an integer fact.
+        definitions[symbol] = (
+            None
+            if tail.startswith("(")
+            else _preprocessor_definition_value(tail)
+        )
+    version_core = tuple(
+        definitions.get(symbol)
+        for symbol in ("PY_MAJOR_VERSION", "PY_MINOR_VERSION", "PY_MICRO_VERSION")
+    )
+    if all(isinstance(value, int) for value in version_core):
+        major, minor, micro = version_core
+        level = definitions.get("PY_RELEASE_LEVEL", 0xF)
+        serial = definitions.get("PY_RELEASE_SERIAL", 0)
+        assert isinstance(major, int)
+        assert isinstance(minor, int)
+        assert isinstance(micro, int)
+        if isinstance(level, int) and isinstance(serial, int):
+            definitions["PY_VERSION_HEX"] = (
+                (major << 24)
+                | (minor << 16)
+                | (micro << 8)
+                | (level << 4)
+                | serial
+            )
+    return definitions
+
+
+def _normalize_preprocessor_definitions(
+    definitions: Mapping[str, int | None] | AbstractSet[str],
+) -> dict[str, int | None]:
+    if isinstance(definitions, Mapping):
+        return dict(definitions)
+    return {symbol: 1 for symbol in definitions}
+
+
+def _preprocessor_operand_value(
+    raw: str,
+    *,
+    definitions: Mapping[str, int | None],
+) -> int | None:
+    operand = _strip_outer_parens(raw.strip())
+    integer = _parse_preprocessor_integer(operand)
+    if integer is not None:
+        return integer
+    if re.fullmatch(_C_IDENTIFIER, operand):
+        return definitions.get(operand, 0)
+    return None
+
+
 @dataclass
 class _PreprocessorFrame:
     parent_active: bool
@@ -170,13 +267,14 @@ class _PreprocessorFrame:
 def _evaluate_preprocessor_condition(
     expr: str,
     *,
-    defined_symbols: frozenset[str],
+    definitions: Mapping[str, int | None] | AbstractSet[str],
 ) -> bool | None:
+    definitions = _normalize_preprocessor_definitions(definitions)
     stripped = _strip_outer_parens(expr.replace("\\", "").strip())
     or_parts = _split_top_level_bool_operator(stripped, "||")
     if or_parts:
         values = [
-            _evaluate_preprocessor_condition(part, defined_symbols=defined_symbols)
+            _evaluate_preprocessor_condition(part, definitions=definitions)
             for part in or_parts
         ]
         if any(value is True for value in values):
@@ -187,7 +285,7 @@ def _evaluate_preprocessor_condition(
     and_parts = _split_top_level_bool_operator(stripped, "&&")
     if and_parts:
         values = [
-            _evaluate_preprocessor_condition(part, defined_symbols=defined_symbols)
+            _evaluate_preprocessor_condition(part, definitions=definitions)
             for part in and_parts
         ]
         if any(value is False for value in values):
@@ -196,15 +294,28 @@ def _evaluate_preprocessor_condition(
             return True
         return None
     comparison_match = re.fullmatch(
-        r"(?P<left>[0-9]+)\s*(?P<op>==|!=)\s*(?P<right>[0-9]+)",
+        rf"(?P<left>{_C_IDENTIFIER}|(?:0[xX][0-9A-Fa-f]+|0[bB][01]+|[0-9]+)[uUlL]*)"
+        rf"\s*(?P<op>==|!=|<=|>=|<|>)\s*"
+        rf"(?P<right>{_C_IDENTIFIER}|(?:0[xX][0-9A-Fa-f]+|0[bB][01]+|[0-9]+)[uUlL]*)",
         stripped,
     )
     if comparison_match is not None:
-        left = int(comparison_match.group("left"))
-        right = int(comparison_match.group("right"))
-        if comparison_match.group("op") == "==":
-            return left == right
-        return left != right
+        left = _preprocessor_operand_value(
+            comparison_match.group("left"), definitions=definitions
+        )
+        right = _preprocessor_operand_value(
+            comparison_match.group("right"), definitions=definitions
+        )
+        if left is None or right is None:
+            return None
+        return {
+            "==": left == right,
+            "!=": left != right,
+            "<=": left <= right,
+            ">=": left >= right,
+            "<": left < right,
+            ">": left > right,
+        }[comparison_match.group("op")]
     if stripped in {"0", "0L", "0UL", "0U"}:
         return False
     if re.fullmatch(r"[1-9][0-9]*[uUlL]*", stripped):
@@ -216,7 +327,7 @@ def _evaluate_preprocessor_condition(
     )
     if defined_match is not None:
         symbol = defined_match.group("paren") or defined_match.group("bare")
-        return symbol in defined_symbols
+        return symbol in definitions
 
     not_defined_match = re.fullmatch(
         rf"!\s*defined\s*(?:\(\s*(?P<paren>{_C_IDENTIFIER})\s*\)|(?P<bare>{_C_IDENTIFIER}))",
@@ -224,11 +335,18 @@ def _evaluate_preprocessor_condition(
     )
     if not_defined_match is not None:
         symbol = not_defined_match.group("paren") or not_defined_match.group("bare")
-        return symbol not in defined_symbols
+        return symbol not in definitions
+
+    if stripped.startswith("!"):
+        value = _evaluate_preprocessor_condition(
+            stripped[1:], definitions=definitions
+        )
+        return None if value is None else not value
 
     identifier_match = re.fullmatch(_C_IDENTIFIER, stripped)
     if identifier_match is not None:
-        return stripped in defined_symbols
+        value = definitions.get(stripped, 0)
+        return None if value is None else value != 0
 
     return None
 
@@ -236,12 +354,12 @@ def _evaluate_preprocessor_condition(
 def _strip_inactive_preprocessor_blocks(
     text: str,
     *,
-    defined_symbols: frozenset[str],
+    definitions: Mapping[str, int | None] | AbstractSet[str],
 ) -> str:
     lines: list[str] = []
     input_lines = text.splitlines(keepends=True)
     stack: list[_PreprocessorFrame] = []
-    active_definitions = set(defined_symbols)
+    active_definitions = _normalize_preprocessor_definitions(definitions)
 
     def current_active() -> bool:
         return stack[-1].active if stack else True
@@ -266,16 +384,16 @@ def _strip_inactive_preprocessor_blocks(
             expr = directive_match.group("expr")
             if kind == "define":
                 if current_active():
-                    define_match = _C_PREPROCESSOR_DEFINE_RE.match(directive_body)
-                    if define_match is not None:
-                        active_definitions.add(define_match.group("symbol"))
+                    active_definitions.update(
+                        _extract_preprocessor_definitions(directive_body)
+                    )
                 lines.extend(directive_newlines)
                 idx += 1
                 continue
             if kind == "undef":
                 if current_active():
                     symbol = expr.strip().split(None, 1)[0] if expr.strip() else ""
-                    active_definitions.discard(symbol)
+                    active_definitions.pop(symbol, None)
                 lines.extend(directive_newlines)
                 idx += 1
                 continue
@@ -288,7 +406,7 @@ def _strip_inactive_preprocessor_blocks(
                 else:
                     condition = _evaluate_preprocessor_condition(
                         expr,
-                        defined_symbols=frozenset(active_definitions),
+                        definitions=active_definitions,
                     )
                 if condition is None:
                     stack.append(
@@ -317,7 +435,7 @@ def _strip_inactive_preprocessor_blocks(
                 else:
                     condition = _evaluate_preprocessor_condition(
                         expr,
-                        defined_symbols=frozenset(active_definitions),
+                        definitions=active_definitions,
                     )
                     if condition is None:
                         frame.active = frame.parent_active
@@ -348,12 +466,7 @@ def _strip_inactive_preprocessor_blocks(
 
 
 def _extract_preprocessor_defined_symbols(text: str) -> set[str]:
-    sanitized = _strip_c_like_comments_and_literals(text)
-    return {
-        match.group("symbol")
-        for line in sanitized.splitlines()
-        if (match := _C_PREPROCESSOR_DEFINE_RE.match(line)) is not None
-    }
+    return set(_extract_preprocessor_definitions(text))
 
 
 def _extract_project_generated_c_api_prefixes(text: str) -> set[str]:
@@ -481,14 +594,16 @@ def _extract_c_api_tokens(
     text: str,
     *,
     strip_py_condition_blocks: bool = True,
-    active_preprocessor_symbols: frozenset[str] | None = None,
+    active_preprocessor_symbols: (
+        Mapping[str, int | None] | AbstractSet[str] | None
+    ) = None,
 ) -> set[str]:
     del strip_py_condition_blocks
     sanitized = _strip_c_like_comments_and_literals(text)
     if active_preprocessor_symbols is not None:
         sanitized = _strip_inactive_preprocessor_blocks(
             sanitized,
-            defined_symbols=active_preprocessor_symbols,
+            definitions=active_preprocessor_symbols,
         )
     sanitized = _C_PREPROCESSOR_INCLUDE_RE.sub(" ", sanitized)
     sanitized = _C_PREPROCESSOR_CONDITION_RE.sub(" ", sanitized)
@@ -502,7 +617,9 @@ def _extract_c_api_tokens(
 def _extract_file_local_c_api_symbols(
     text: str,
     *,
-    active_preprocessor_symbols: frozenset[str] | None = None,
+    active_preprocessor_symbols: (
+        Mapping[str, int | None] | AbstractSet[str] | None
+    ) = None,
 ) -> set[str]:
     """Return C/API identifiers that are local to the source file.
 
@@ -520,7 +637,7 @@ def _extract_file_local_c_api_symbols(
     if active_preprocessor_symbols is not None:
         sanitized = _strip_inactive_preprocessor_blocks(
             sanitized,
-            defined_symbols=active_preprocessor_symbols,
+            definitions=active_preprocessor_symbols,
         )
     sanitized = _strip_preprocessor_macro_definitions(sanitized)
     for function_re in (
