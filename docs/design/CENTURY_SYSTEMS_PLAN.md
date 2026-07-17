@@ -130,6 +130,17 @@ an ecosystem lane may not clone an upstream package.
 - A lifetime state machine, not scattered flags, owns strong/weak/finalized/
   resurrected/deallocated transitions. Unsafe code has explicit provenance and
   concurrency invariants; Loom/Miri/Kani-style proofs cover transition races.
+- Object-header auxiliary representation is chosen before publication and its
+  kind/address never moves afterward. Constructors preselect every class,
+  state, poll, and sidecar lane they can require, initialize all owned edges,
+  and release-publish exactly once. Published mutation changes an edge through
+  that stable lane and never performs a torn representation upgrade or relies
+  on a caller-specific repair.
+- The legal refcount transition algebra is a small, pure, formally checked
+  kernel consumed unchanged by native atomic, wasm single-thread, biased,
+  deferred, GC-pin, weak-upgrade, and finalizer-revival storage strategies.
+  Storage adapters choose representation and ordering; they may not duplicate
+  or weaken zero, immortal, overflow, or committed-death rules.
 - Free-threaded/gilless support is designed in from every touched ownership,
   container, cache, import, and ABI boundary, while CPython-compatible GIL mode
   remains deterministic by default.
