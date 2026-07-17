@@ -1828,9 +1828,7 @@ mod tests {
         use std::hint::black_box;
         use std::time::Instant;
 
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::test_mutex_guard();
         install_test_registry();
         crate::with_gil_entry_nopanic!(_py, {
             let _ = crate::molt_exception_clear();
