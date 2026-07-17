@@ -13,8 +13,8 @@
 // / `decode_bytes_text` functions used by builtins/codecs.rs so that all 30+
 // codec implementations share a single code path.
 //
-// Error handlers are stored as NaN-boxed callable bits in a thread-local map
-// keyed by name string.  We do *not* call them from within intrinsics (Molt's
+// Error handlers are stored as runtime-owned NaN-boxed callable bits, matching
+// CPython's interpreter-wide registry. We do *not* call them from intrinsics (Molt's
 // static analysis prevents dynamic callsite lowering); instead we store them
 // and surface them to the Python wrapper via `molt_codecs_lookup_error`.
 
@@ -50,28 +50,8 @@ fn next_stream_wtr_handle() -> i64 {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Error handler registry (thread-local, keyed by name)
+// Error handler registry (runtime-owned, keyed by name)
 // ─────────────────────────────────────────────────────────────────────────────
-
-thread_local! {
-    /// name → callable bits
-    static ERROR_HANDLERS: RefCell<HashMap<String, u64>> = RefCell::new({
-        // Pre-populate CPython built-in handler names with a sentinel non-None
-        // value (MoltObject::from_bool(true)) so that `lookup_error` can
-        // return a truthy object for them.  The Python wrapper recognises these
-        // by name and applies the built-in logic.
-        let mut m = HashMap::new();
-        m.insert("strict".to_owned(),   MoltObject::from_bool(true).bits());
-        m.insert("ignore".to_owned(),   MoltObject::from_bool(true).bits());
-        m.insert("replace".to_owned(),  MoltObject::from_bool(true).bits());
-        m.insert("xmlcharrefreplace".to_owned(), MoltObject::from_bool(true).bits());
-        m.insert("backslashreplace".to_owned(),  MoltObject::from_bool(true).bits());
-        m.insert("namereplace".to_owned(),       MoltObject::from_bool(true).bits());
-        m.insert("surrogateescape".to_owned(),   MoltObject::from_bool(true).bits());
-        m.insert("surrogatepass".to_owned(),     MoltObject::from_bool(true).bits());
-        m
-    });
-}
 
 /// Register a custom error handler. Returns None.
 #[unsafe(no_mangle)]
@@ -83,7 +63,18 @@ pub extern "C" fn molt_codecs_register_error(name_bits: u64, handler_bits: u64) 
             let msg = format!("register_error() argument 'name' must be str, not {tn}");
             return raise_exception::<_>(_py, "TypeError", &msg);
         };
-        ERROR_HANDLERS.with(|h| h.borrow_mut().insert(name, handler_bits));
+        if !crate::builtins::callable::is_callable_impl(_py, handler_bits) {
+            return raise_exception::<_>(_py, "TypeError", "handler must be callable");
+        }
+        inc_ref_bits(_py, handler_bits);
+        let previous = runtime_state(_py)
+            .codec_error_handlers
+            .lock()
+            .unwrap()
+            .insert(name, handler_bits);
+        if let Some(previous) = previous {
+            dec_ref_bits(_py, previous);
+        }
         MoltObject::none().bits()
     })
 }
@@ -98,15 +89,111 @@ pub extern "C" fn molt_codecs_lookup_error(name_bits: u64) -> u64 {
             let msg = format!("lookup_error() argument must be str, not {tn}");
             return raise_exception::<_>(_py, "TypeError", &msg);
         };
-        let handler = ERROR_HANDLERS.with(|h| h.borrow().get(&name).copied());
+        let handler = runtime_state(_py)
+            .codec_error_handlers
+            .lock()
+            .unwrap()
+            .get(&name)
+            .copied();
         match handler {
-            Some(bits) => bits,
+            Some(bits) => {
+                inc_ref_bits(_py, bits);
+                bits
+            }
             None => {
                 let msg = format!("unknown error handler name '{name}'");
                 raise_exception::<_>(_py, "LookupError", &msg)
             }
         }
     })
+}
+
+pub(crate) fn codecs_clear_error_handlers(_py: &PyToken<'_>, state: &RuntimeState) {
+    let handlers = std::mem::take(
+        &mut *state
+            .codec_error_handlers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    );
+    for bits in handlers.into_values() {
+        dec_ref_bits(_py, bits);
+    }
+}
+
+#[cfg(test)]
+mod error_handler_tests {
+    use super::*;
+
+    extern "C" fn test_error_handler(_error_bits: u64) -> i64 {
+        MoltObject::none().bits() as i64
+    }
+
+    #[test]
+    fn error_handler_registry_is_runtime_wide_and_owns_exactly_one_reference() {
+        let _guard = crate::test_mutex_guard();
+        let (handler_bits, handler_address, baseline) = crate::with_gil_entry_nopanic!(_py, {
+            let handler_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+                _py,
+                crate::provenance::abi::expose_function_address(test_error_handler as *const ()),
+                1,
+            );
+            let handler_bits = MoltObject::from_ptr(handler_ptr).bits();
+            let name_ptr = alloc_string(_py, b"molt-test-runtime-wide-handler");
+            let name_bits = MoltObject::from_ptr(name_ptr).bits();
+            let baseline =
+                unsafe { (*crate::header_from_obj_ptr(handler_ptr)).ref_count_snapshot() };
+            assert_eq!(
+                molt_codecs_register_error(name_bits, handler_bits),
+                MoltObject::none().bits()
+            );
+            assert_eq!(
+                unsafe { (*crate::header_from_obj_ptr(handler_ptr)).ref_count_snapshot() },
+                baseline + 1
+            );
+            let looked_up = molt_codecs_lookup_error(name_bits);
+            assert_eq!(looked_up, handler_bits);
+            assert_eq!(
+                unsafe { (*crate::header_from_obj_ptr(handler_ptr)).ref_count_snapshot() },
+                baseline + 2,
+                "lookup must return a new owned reference"
+            );
+            dec_ref_bits(_py, looked_up);
+            dec_ref_bits(_py, name_bits);
+            (handler_bits, handler_ptr as usize, baseline)
+        });
+
+        let worker = std::thread::spawn(move || {
+            crate::state::run_runtime_worker(|| {
+                crate::with_gil_entry_nopanic!(_py, {
+                    let name_ptr = alloc_string(_py, b"molt-test-runtime-wide-handler");
+                    let name_bits = MoltObject::from_ptr(name_ptr).bits();
+                    let looked_up = molt_codecs_lookup_error(name_bits);
+                    assert_eq!(looked_up, handler_bits);
+                    dec_ref_bits(_py, looked_up);
+                    dec_ref_bits(_py, name_bits);
+                });
+            });
+        });
+        worker.join().unwrap();
+
+        crate::with_gil_entry_nopanic!(_py, {
+            let removed = runtime_state(_py)
+                .codec_error_handlers
+                .lock()
+                .unwrap()
+                .remove("molt-test-runtime-wide-handler")
+                .expect("registered handler");
+            dec_ref_bits(_py, removed);
+            assert_eq!(
+                unsafe {
+                    (*crate::header_from_obj_ptr(handler_address as *mut u8)).ref_count_snapshot()
+                },
+                baseline,
+                "registry removal must release exactly its one owned reference"
+            );
+            dec_ref_bits(_py, handler_bits);
+        });
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

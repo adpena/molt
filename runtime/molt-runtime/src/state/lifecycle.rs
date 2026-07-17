@@ -3,6 +3,7 @@ use crate::PyToken;
 use crate::async_rt::sockets::socket_runtime_state_clear;
 use crate::builtins::attr::clear_attr_tls_caches;
 use crate::builtins::attributes::attributes_clear_runtime_state;
+use crate::builtins::codecs_ext::codecs_clear_error_handlers;
 use crate::builtins::concurrent::concurrent_clear_runtime_state;
 use crate::builtins::contextvars::contextvars_clear_state;
 use crate::builtins::copy_mod::copy_memo_clear_state;
@@ -107,7 +108,7 @@ impl Drop for ThreadLocalGuard {
             trace_thread_local_drop("drained");
             return;
         }
-        clear_thread_local_state(&gil.token());
+        clear_thread_local_state_without_ref_owning_ic(&gil.token());
         #[cfg(test)]
         trace_thread_local_drop("cleared");
     }
@@ -304,6 +305,8 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     io_clear_runtime_state(_py, state);
     trace_shutdown("clear_exception_type_cache");
     clear_exception_type_cache(_py, state);
+    trace_shutdown("clear_codec_error_handlers");
+    codecs_clear_error_handlers(_py, state);
     trace_shutdown("clear_exceptions_runtime_state");
     exceptions_clear_runtime_state(_py, state);
     trace_shutdown("clear_gen_locals");
@@ -318,12 +321,6 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     clear_runtime_static_names(_py, state);
     trace_shutdown("clear_python_builtin_function_cache");
     python_builtin_functions_clear_runtime_state(_py, state);
-    trace_shutdown("clear_call_bind_ic_cache");
-    clear_call_bind_ic_cache(_py);
-    trace_shutdown("clear_method_ic_cache");
-    clear_method_ic_cache(_py);
-    trace_shutdown("clear_super_ic_cache");
-    clear_super_ic_cache(_py);
     trace_shutdown("clear_attributes_runtime_state");
     attributes_clear_runtime_state(_py, state);
     trace_shutdown("clear_special_cache");
@@ -474,6 +471,16 @@ fn clear_async_hang_probe(state: &RuntimeState) {
 
 fn clear_thread_local_state(_py: &PyToken<'_>) {
     crate::gil_assert();
+    clear_call_bind_ic_cache(_py);
+    clear_method_ic_cache(_py);
+    clear_super_ic_cache(_py);
+    #[cfg(test)]
+    trace_thread_local_drop("ic_caches_cleared");
+    clear_thread_local_state_without_ref_owning_ic(_py);
+}
+
+fn clear_thread_local_state_without_ref_owning_ic(_py: &PyToken<'_>) {
+    crate::gil_assert();
     clear_thread_exception_for_teardown(_py);
     let _ = CURRENT_EXCEPTION_PENDING.try_with(|pending| pending.set(false));
     let _ = CONTEXT_STACK.try_with(|stack| {
@@ -562,6 +569,26 @@ fn clear_code_slots(_py: &PyToken<'_>, state: &RuntimeState) {
 pub(crate) fn clear_worker_thread_state(_py: &PyToken<'_>) {
     crate::gil_assert();
     clear_thread_local_state(_py);
+}
+
+struct RuntimeWorkerCleanup;
+
+impl Drop for RuntimeWorkerCleanup {
+    fn drop(&mut self) {
+        if crate::state::runtime_state::runtime_state_for_gil().is_none() {
+            return;
+        }
+        let gil = GilGuard::new();
+        clear_worker_thread_state(&gil.token());
+    }
+}
+
+/// Run a worker that may enter Python with deterministic TLS cleanup on both
+/// normal return and unwind. The stack guard is independent of TLS destructor
+/// order and re-raises the original panic after cleanup.
+pub(crate) fn run_runtime_worker<R>(worker: impl FnOnce() -> R) -> R {
+    let _cleanup = RuntimeWorkerCleanup;
+    worker()
 }
 
 fn clear_task_state(_py: &PyToken<'_>, state: &RuntimeState) {
@@ -875,12 +902,12 @@ fn clear_utf8_caches(state: &RuntimeState) {
     }
 }
 
-/// Drain the heap-backed TLS anchors initialized before `TLS_GUARD`.
+/// Drain the allocation-only TLS anchors initialized before `TLS_GUARD`.
 ///
-/// Every other TLS key is initialized after the guard and therefore has
-/// already run its destructor when this function executes. Calling `try_with`
-/// on those keys here would initialize fresh TLS during TLS destruction,
-/// creating a second destructor wave and potentially stranding thread exit.
+/// Ref-owning call-cache TLS is also initialized before the guard, but it is
+/// cleared only on the runtime-present path because releasing Python objects
+/// requires a live runtime and PyToken. Runtime teardown and explicit worker
+/// cleanup must empty it before the runtime-absent destructor path is possible.
 fn drain_heap_tls() {
     // Replace the parse arena with an empty state whose outer Vec has zero
     // capacity, so the TLS destructor has nothing to deallocate.
@@ -915,27 +942,71 @@ fn clear_special_cache(_py: &PyToken<'_>, state: &RuntimeState) {
 
 #[cfg(test)]
 mod tests {
-    use super::{clear_interned_names, clear_special_cache, clear_worker_thread_state};
+    use super::{
+        THREAD_LOCAL_DROP_TEST_TRACE, clear_interned_names, clear_special_cache,
+        clear_worker_thread_state,
+    };
     use crate::{MoltObject, alloc_string, runtime_state};
     use std::sync::atomic::Ordering;
 
-    #[test]
-    fn panicking_worker_does_not_double_panic_during_tls_cleanup() {
-        let worker = std::thread::spawn(|| {
-            crate::with_gil_entry_nopanic!(_py, {
-                let _: u64 = crate::builtins::exceptions::raise_exception(
-                    _py,
-                    "RuntimeError",
-                    "intentional worker unwind",
-                );
-                panic!("intentional worker unwind");
+    fn traced_worker(should_panic: bool) -> (std::thread::Result<()>, Vec<&'static str>) {
+        let (id_tx, id_rx) = std::sync::mpsc::channel();
+        let (go_tx, go_rx) = std::sync::mpsc::channel();
+        let (stage_tx, stage_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            id_tx.send(std::thread::current().id()).unwrap();
+            go_rx.recv().unwrap();
+            super::run_runtime_worker(|| {
+                crate::with_gil_entry_nopanic!(_py, {
+                    let _ = crate::runtime_state(_py);
+                    if should_panic {
+                        let _: u64 = crate::builtins::exceptions::raise_exception(
+                            _py,
+                            "RuntimeError",
+                            "intentional worker unwind",
+                        );
+                        panic!("intentional worker unwind");
+                    }
+                });
             });
         });
+        let worker_id = id_rx.recv().unwrap();
+        *THREAD_LOCAL_DROP_TEST_TRACE.lock().unwrap() = Some((worker_id, stage_tx));
+        go_tx.send(()).unwrap();
+        let result = worker.join();
+        *THREAD_LOCAL_DROP_TEST_TRACE.lock().unwrap() = None;
+        (result, stage_rx.try_iter().collect())
+    }
+
+    fn assert_runtime_worker_released_ic_tls(stages: &[&'static str]) {
+        assert_eq!(
+            stages
+                .iter()
+                .filter(|stage| **stage == "ic_caches_cleared")
+                .count(),
+            1,
+            "the stack-owned runtime worker guard must drain IC refs exactly once"
+        );
+    }
+
+    #[test]
+    fn normal_worker_releases_ic_tls_before_key_destruction() {
+        let _guard = crate::test_mutex_guard();
+        let (result, stages) = traced_worker(false);
+        assert!(result.is_ok());
+        assert_runtime_worker_released_ic_tls(&stages);
+    }
+
+    #[test]
+    fn panicking_worker_does_not_double_panic_during_tls_cleanup() {
+        let _guard = crate::test_mutex_guard();
+        let (result, stages) = traced_worker(true);
 
         assert!(
-            worker.join().is_err(),
+            result.is_err(),
             "the primary worker panic must remain observable after TLS cleanup"
         );
+        assert_runtime_worker_released_ic_tls(&stages);
     }
 
     #[test]

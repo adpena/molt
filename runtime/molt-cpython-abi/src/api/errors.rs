@@ -156,33 +156,9 @@ pub unsafe extern "C" fn PyErr_NewExceptionWithDoc(
 
 // ─── Thread-local error state ─────────────────────────────────────────────
 
-pub struct OwnedCError {
-    pub exc_type: *mut PyObject,
-    pub value: *mut PyObject,
-    pub traceback: *mut PyObject,
-}
-
-impl Drop for OwnedCError {
-    fn drop(&mut self) {
-        unsafe {
-            crate::api::refcount::Py_XDECREF(self.exc_type);
-            crate::api::refcount::Py_XDECREF(self.value);
-            crate::api::refcount::Py_XDECREF(self.traceback);
-        }
-    }
-}
-
-impl OwnedCError {
-    pub fn type_bits(&self) -> u64 {
-        GLOBAL_BRIDGE
-            .molt_handle_for_pyobj(self.exc_type)
-            .map(|value| value.bits())
-            .unwrap_or(0)
-    }
-}
+pub use crate::api::object::OwnedCError;
 
 thread_local! {
-    static CURRENT_EXC: std::cell::RefCell<Option<OwnedCError>> = const { std::cell::RefCell::new(None) };
     static NORMALIZING_EXCEPTION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
@@ -207,13 +183,13 @@ impl Drop for ExceptionNormalizationGuard {
 }
 
 fn replace_current_error(state: Option<OwnedCError>) {
-    let old = CURRENT_EXC.with(|c| std::mem::replace(&mut *c.borrow_mut(), state));
+    let old = crate::api::object::replace_thread_state_error(state);
     drop(old);
 }
 
 /// Transfer the exact owned C error-indicator triple.
 pub fn take_current_error() -> Option<OwnedCError> {
-    CURRENT_EXC.with(|c| c.borrow_mut().take())
+    crate::api::object::take_thread_state_error()
 }
 
 /// Restore a previously detached, already-normalized C error triple without
@@ -227,7 +203,7 @@ pub fn restore_current_error_exact(error: OwnedCError) {
 /// exception pending. Used by `PyErr_ExceptionMatches` to compare the live
 /// exception's type against a candidate rather than answering "is any set".
 fn current_exc_type_ptr() -> Option<*mut PyObject> {
-    CURRENT_EXC.with(|c| c.borrow().as_ref().map(|state| state.exc_type))
+    crate::api::object::thread_state_error_type()
 }
 
 /// Install the only error shape available before runtime hooks are registered:

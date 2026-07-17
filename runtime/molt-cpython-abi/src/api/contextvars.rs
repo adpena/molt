@@ -3,21 +3,14 @@
 //! Bindings live in a CURRENT-CONTEXT mapping keyed by the `ContextVar`
 //! object (not in a mutable field on the var itself), matching CPython's
 //! per-context HAMT model. Until a `copy_context()`/`Context.run()` surface
-//! exists there is exactly one context per thread, so a thread-local map IS
-//! the current context — Set in one thread no longer leaks into others.
+//! exists there is exactly one context per `PyThreadState`; the canonical
+//! thread-state owner tears down its retained values under live GIL custody.
 //! `PyContextVar_Set` returns a real reset token consumed by
 //! `PyContextVar_Reset`, never the previous value itself.
 
 use crate::abi_types::{PyContextVarObject, PyObject, PyTypeObject};
-use std::cell::RefCell;
-use std::collections::HashMap;
 use std::os::raw::c_int;
 use std::ptr;
-
-thread_local! {
-    /// The current context: var pointer -> owned (incref'd) value pointer.
-    static CURRENT_CONTEXT: RefCell<HashMap<usize, usize>> = RefCell::new(HashMap::new());
-}
 
 // ── Reset token object ───────────────────────────────────────────────────────
 // CPython's PyContextToken wraps (var, old value | MISSING, used flag).
@@ -137,7 +130,8 @@ pub unsafe extern "C" fn PyContextVar_Get(
         return -1;
     }
     // Current-context binding.
-    let bound = CURRENT_CONTEXT.with(|ctx| ctx.borrow().get(&(var as usize)).copied());
+    let bound =
+        crate::api::object::with_thread_state_context(|ctx| ctx.get(&(var as usize)).copied());
     if let Some(bound) = bound {
         let bound = bound as *mut PyObject;
         unsafe {
@@ -183,9 +177,8 @@ pub unsafe extern "C" fn PyContextVar_Set(
     // Store the binding in the CURRENT CONTEXT (owned reference), capturing the
     // previous binding for the token.
     unsafe { crate::api::refcount::Py_INCREF(value) };
-    let previous = CURRENT_CONTEXT.with(|ctx| {
-        ctx.borrow_mut()
-            .insert(var as usize, value as usize)
+    let previous = crate::api::object::with_thread_state_context(|ctx| {
+        ctx.insert(var as usize, value as usize)
             .map(|old| old as *mut PyObject)
     });
     // Mint a real reset token wrapping (var, old-or-MISSING). The token owns
@@ -241,8 +234,7 @@ pub unsafe extern "C" fn PyContextVar_Reset(var: *mut PyObject, token: *mut PyOb
         return -1;
     }
     let old_value = unsafe { (*token).old_value };
-    let displaced = CURRENT_CONTEXT.with(|ctx| {
-        let mut ctx = ctx.borrow_mut();
+    let displaced = crate::api::object::with_thread_state_context(|ctx| {
         if old_value.is_null() {
             // Token.MISSING: the var had no binding before Set — remove it.
             ctx.remove(&(var as usize)).map(|v| v as *mut PyObject)
@@ -266,11 +258,10 @@ pub unsafe extern "C" fn molt_contextvar_dealloc(op: *mut PyObject) {
     }
     // Drop any current-context binding for this var (the map key is the var
     // pointer; a dangling key would leak the bound value).
-    let bound = CURRENT_CONTEXT.with(|ctx| {
-        ctx.borrow_mut()
-            .remove(&(op as usize))
-            .map(|v| v as *mut PyObject)
-    });
+    let bound = crate::api::object::with_existing_thread_state_context(|ctx| {
+        ctx.remove(&(op as usize)).map(|v| v as *mut PyObject)
+    })
+    .flatten();
     if let Some(bound) = bound {
         unsafe { crate::api::refcount::Py_DECREF(bound) };
     }
