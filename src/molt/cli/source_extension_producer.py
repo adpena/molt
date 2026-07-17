@@ -793,7 +793,7 @@ def _installed_source_path(
         return path.resolve()
     for root in (build_root, source_root):
         candidate = (root / path).resolve()
-        if candidate.is_file():
+        if candidate.exists():
             return candidate
     return (build_root / path).resolve()
 
@@ -836,6 +836,26 @@ def _stage_installed_package_files(
             f"Meson installed-file introspection must be an object: {intro_installed}"
         )
 
+    def installed_leaves(source: Path, relative: Path) -> tuple[tuple[Path, Path], ...]:
+        if source.is_file():
+            return ((source, relative),)
+        if not source.is_dir():
+            raise SourceExtensionProducerError(
+                f"Meson installed source is missing: {source}"
+            )
+        return tuple(
+            (child, relative / child.relative_to(source))
+            for child in sorted(source.rglob("*"), key=lambda path: path.as_posix())
+            if child.is_file()
+        )
+
+    def is_installed_package_support(relative: Path) -> bool:
+        return (
+            relative.suffix in {".py", ".pyi"}
+            or relative.name == "py.typed"
+            or "include" in relative.parts
+        )
+
     staged_by_relative: dict[Path, Path] = {}
     for raw_source, raw_destination in sorted(
         payload.items(), key=lambda item: str(item[0])
@@ -845,46 +865,38 @@ def _stage_installed_package_files(
                 "Meson installed-file introspection entries must map path strings "
                 "to path strings"
             )
-        raw_source_path = Path(raw_source)
         relative = _installed_package_relative_path(raw_destination, package=package)
         if relative is None:
-            continue
-        is_python_support = (
-            raw_source_path.suffix in {".py", ".pyi"}
-            or raw_source_path.name == "py.typed"
-        )
-        is_installed_include = "include" in relative.parts
-        if not is_python_support and not is_installed_include:
             continue
         source = _installed_source_path(
             raw_source, source_root=source_root, build_root=build_root
         )
-        if not source.is_file():
-            raise SourceExtensionProducerError(
-                f"Meson installed source is missing: {source}"
-            )
-        try:
-            raw_bytes = source.read_bytes()
-        except OSError as exc:
-            raise SourceExtensionProducerError(
-                f"cannot read installed package source {source}: {exc}"
-            ) from exc
-        try:
-            canonical_bytes = _canonicalize_location_string(
-                raw_bytes.decode("utf-8"), location_roots
-            ).encode("utf-8")
-        except UnicodeError:
-            canonical_bytes = raw_bytes
-        previous = staged_by_relative.get(relative)
-        if previous is not None:
-            if (publish_root / relative).read_bytes() != canonical_bytes:
+        for leaf_source, leaf_relative in installed_leaves(source, relative):
+            if not is_installed_package_support(leaf_relative):
+                continue
+            try:
+                raw_bytes = leaf_source.read_bytes()
+            except OSError as exc:
                 raise SourceExtensionProducerError(
-                    f"Meson installs different package files to the same path: {relative}"
-                )
-            continue
-        destination = publish_root / relative
-        _atomic_write_bytes(destination, canonical_bytes)
-        staged_by_relative[relative] = source
+                    f"cannot read installed package source {leaf_source}: {exc}"
+                ) from exc
+            try:
+                canonical_bytes = _canonicalize_location_string(
+                    raw_bytes.decode("utf-8"), location_roots
+                ).encode("utf-8")
+            except UnicodeError:
+                canonical_bytes = raw_bytes
+            previous = staged_by_relative.get(leaf_relative)
+            if previous is not None:
+                if (publish_root / leaf_relative).read_bytes() != canonical_bytes:
+                    raise SourceExtensionProducerError(
+                        "Meson installs different package files to the same path: "
+                        f"{leaf_relative}"
+                    )
+                continue
+            destination = publish_root / leaf_relative
+            _atomic_write_bytes(destination, canonical_bytes)
+            staged_by_relative[leaf_relative] = leaf_source
 
     required = tuple(required_installed_files)
     missing = [item for item in required if Path(item) not in staged_by_relative]

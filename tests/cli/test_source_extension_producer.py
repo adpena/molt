@@ -316,6 +316,103 @@ def test_meson_installed_python_is_complete_package_authority(tmp_path: Path) ->
     assert not (publish / "array_api_extra").exists()
 
 
+def test_meson_installed_directory_is_recursively_materialized(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    build = tmp_path / "build"
+    publish = tmp_path / "publish"
+    package_dir = source / "numpy/_utils"
+    (package_dir / "nested").mkdir(parents=True)
+    (package_dir / "__init__.py").write_text("\n", encoding="utf-8")
+    (package_dir / "_inspect.py").write_text(
+        'ROOT = r"' + str(source) + '"\n', encoding="utf-8"
+    )
+    (package_dir / "py.typed").write_text("\n", encoding="utf-8")
+    (package_dir / "nested/data.bin").write_bytes(b"\x00package-data\xff")
+    (package_dir / "unmanaged.cp312-win_amd64.pyd").write_bytes(b"native")
+    intro = build / "meson-info" / "intro-installed.json"
+    intro.parent.mkdir(parents=True)
+    intro.write_text(
+        json.dumps(
+            {
+                str(package_dir): (
+                    "C:/prefix/Lib/site-packages/numpy/_utils"
+                )
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    staged = producer._stage_installed_package_files(
+        intro_installed=intro,
+        source_root=source,
+        build_root=build,
+        package="numpy",
+        publish_root=publish,
+        location_roots=((source, "@source"), (build, "@build")),
+        required_installed_files=(
+            "numpy/_utils/__init__.py",
+            "numpy/_utils/_inspect.py",
+        ),
+    )
+
+    relative = {
+        path.relative_to(publish).as_posix()
+        for path in staged
+    }
+    assert relative == {
+        "numpy/_utils/__init__.py",
+        "numpy/_utils/_inspect.py",
+        "numpy/_utils/py.typed",
+    }
+    assert (publish / "numpy/_utils/_inspect.py").read_text(encoding="utf-8") == (
+        'ROOT = r"@source"\n'
+    )
+    assert not (publish / "numpy/_utils/nested/data.bin").exists()
+    assert not (publish / "numpy/_utils/unmanaged.cp312-win_amd64.pyd").exists()
+
+
+def test_meson_installed_directory_preserves_leaf_collision_authority(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    build = tmp_path / "build"
+    publish = tmp_path / "publish"
+    package_dir = source / "numpy/_utils"
+    package_dir.mkdir(parents=True)
+    (package_dir / "_inspect.py").write_text("DIRECTORY = True\n", encoding="utf-8")
+    conflicting = source / "conflicting.py"
+    conflicting.write_text("DIRECTORY = False\n", encoding="utf-8")
+    intro = build / "meson-info" / "intro-installed.json"
+    intro.parent.mkdir(parents=True)
+    intro.write_text(
+        json.dumps(
+            {
+                str(package_dir): "C:/prefix/Lib/site-packages/numpy/_utils",
+                str(conflicting): (
+                    "C:/prefix/Lib/site-packages/numpy/_utils/_inspect.py"
+                ),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        producer.SourceExtensionProducerError,
+        match="different package files to the same path",
+    ):
+        producer._stage_installed_package_files(
+            intro_installed=intro,
+            source_root=source,
+            build_root=build,
+            package="numpy",
+            publish_root=publish,
+            location_roots=((source, "@source"), (build, "@build")),
+            required_installed_files=(),
+        )
+
+
 def test_meson_installed_python_rejects_old_handwritten_config_gap(
     tmp_path: Path,
 ) -> None:
