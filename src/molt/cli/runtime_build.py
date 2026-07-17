@@ -18,9 +18,10 @@ from molt._runtime_feature_gates import link_affecting_feature_gate_for_symbol
 from molt._wasm_runtime_exports import (
     wasm_cpython_abi_requested_data_export_names,
     wasm_cpython_abi_requested_export_names,
-    wasm_split_runtime_export_rename_map,
+    wasm_runtime_export_name_for_import,
     wasm_runtime_export_link_args,
     wasm_runtime_shared_export_link_args,
+    wasm_split_runtime_export_rename_map,
 )
 from molt.cli.artifact_state import (
     _artifact_state_path_for_build_state_root,
@@ -2187,8 +2188,11 @@ def _compute_runtime_wasm_build_spec(
     # validator proves insufficient.
     export_link_features = frozenset(
         feature
-        for symbol in required_exports or ()
-        if (feature := link_affecting_feature_gate_for_symbol(symbol)) is not None
+        for import_name in required_exports or ()
+        if (runtime_symbol := wasm_runtime_export_name_for_import(import_name))
+        is not None
+        if (feature := link_affecting_feature_gate_for_symbol(runtime_symbol))
+        is not None
     )
     required_link_features = frozenset(required_link_features) | export_link_features
     requested_cargo_profile = cargo_profile
