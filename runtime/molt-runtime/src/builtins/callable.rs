@@ -1,11 +1,10 @@
 use molt_obj_model::MoltObject;
 
+use crate::call::has_type_call_attr;
 use crate::{
-    TYPE_ID_BOUND_METHOD, TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS,
-    TYPE_ID_OBJECT, TYPE_ID_TYPE, class_attr_lookup_raw_mro, dataclass_desc_ptr,
-    dataclass_dict_bits, dict_get_in_place, function_attr_bits, function_closure_bits,
-    function_dict_bits, instance_dict_bits, intern_static_name, is_truthy, maybe_ptr_from_bits,
-    obj_from_bits, object_class_bits, object_type_id, raise_exception, runtime_state,
+    TYPE_ID_BOUND_METHOD, TYPE_ID_FOREIGN, TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS, TYPE_ID_TYPE,
+    function_attr_bits, function_closure_bits, function_dict_bits, intern_static_name, is_truthy,
+    maybe_ptr_from_bits, obj_from_bits, object_type_id, raise_exception, runtime_state,
 };
 
 #[unsafe(no_mangle)]
@@ -101,72 +100,10 @@ unsafe fn is_callable_for_ptr(_py: &crate::PyToken<'_>, ptr: *mut u8) -> bool {
     unsafe {
         match object_type_id(ptr) {
             TYPE_ID_FUNCTION | TYPE_ID_BOUND_METHOD | TYPE_ID_TYPE | TYPE_ID_GENERIC_ALIAS => true,
-            TYPE_ID_OBJECT => {
-                // NOTE (parity baton): this consults the instance `__dict__`
-                // for `__call__`, which diverges from CPython (`tp_call` is
-                // type-only). It is intentionally PRESERVED here so this
-                // oracle stays consistent with molt's instance-call dispatch
-                // (`call::lookup_call_attr`), which also honors instance-dict
-                // `__call__`. Fixing the divergence requires a coordinated
-                // type-only `__call__` resolver shared by BOTH this oracle
-                // and every `lookup_call_attr` call site (see batoned bug).
-                let call_bits =
-                    intern_static_name(_py, &runtime_state(_py).interned.call_name, b"__call__");
-                let dict_bits = instance_dict_bits(ptr);
-                if dict_bits != 0
-                    && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-                    && object_type_id(dict_ptr) == TYPE_ID_DICT
-                    && let Some(found_bits) = dict_get_in_place(_py, dict_ptr, call_bits)
-                    && !obj_from_bits(found_bits).is_none()
-                {
-                    return true;
-                }
-                let class_bits = object_class_bits(ptr);
-                if class_bits != 0
-                    && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
-                    && object_type_id(class_ptr) == TYPE_ID_TYPE
-                {
-                    if let Some(found_bits) = class_attr_lookup_raw_mro(_py, class_ptr, call_bits) {
-                        return !obj_from_bits(found_bits).is_none();
-                    }
-                    return false;
-                }
-                false
-            }
-            TYPE_ID_DATACLASS => {
-                // See TYPE_ID_OBJECT note: instance-dict `__call__` honored
-                // for consistency with the call dispatch (batoned divergence).
-                let call_bits =
-                    intern_static_name(_py, &runtime_state(_py).interned.call_name, b"__call__");
-                let desc_ptr = dataclass_desc_ptr(ptr);
-                if !desc_ptr.is_null() && (*desc_ptr).allows_dict {
-                    let dict_bits = dataclass_dict_bits(ptr);
-                    if dict_bits != 0
-                        && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-                        && object_type_id(dict_ptr) == TYPE_ID_DICT
-                        && let Some(found_bits) = dict_get_in_place(_py, dict_ptr, call_bits)
-                        && !obj_from_bits(found_bits).is_none()
-                    {
-                        return true;
-                    }
-                }
-                if !desc_ptr.is_null() {
-                    let class_bits = object_class_bits(ptr);
-                    if class_bits != 0
-                        && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
-                        && object_type_id(class_ptr) == TYPE_ID_TYPE
-                    {
-                        if let Some(found_bits) =
-                            class_attr_lookup_raw_mro(_py, class_ptr, call_bits)
-                        {
-                            return !obj_from_bits(found_bits).is_none();
-                        }
-                        return false;
-                    }
-                }
-                false
-            }
-            _ => false,
+            TYPE_ID_FOREIGN => molt_cpython_abi::bridge::molt_foreign_is_callable(
+                crate::object::foreign::foreign_ptr_from_obj(ptr),
+            ),
+            _ => has_type_call_attr(_py, ptr),
         }
     }
 }

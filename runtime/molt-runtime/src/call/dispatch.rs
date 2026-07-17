@@ -1,12 +1,13 @@
 use crate::call::type_policy::{InitArgPolicy, resolved_constructor_init_policy};
+use crate::call::{CallAttrLookup, require_call_attr};
 use crate::{
-    MoltObject, PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_DATACLASS, TYPE_ID_FUNCTION,
-    TYPE_ID_GENERIC_ALIAS, TYPE_ID_OBJECT, TYPE_ID_TYPE, bound_method_func_bits,
-    call_builtin_type_if_needed, call_function_obj_vec, class_attr_lookup_raw_mro,
-    class_name_for_error, dec_ref_bits, exception_pending, exception_stack_baseline_get,
-    exception_stack_baseline_set, function_arity, generic_alias_origin_bits, intern_static_name,
-    lookup_call_attr, molt_call_bind, molt_callargs_new, molt_callargs_push_pos, obj_from_bits,
-    object_type_id, raise_exception, raise_not_callable, runtime_state, try_call_generator,
+    MoltObject, PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS,
+    TYPE_ID_TYPE, bound_method_func_bits, call_builtin_type_if_needed, call_function_obj_vec,
+    class_attr_lookup_raw_mro, class_name_for_error, dec_ref_bits, exception_pending,
+    exception_stack_baseline_get, exception_stack_baseline_set, function_arity,
+    generic_alias_origin_bits, intern_static_name, lookup_call_attr, molt_call_bind,
+    molt_callargs_new, molt_callargs_push_pos, obj_from_bits, object_type_id, raise_exception,
+    raise_not_callable, runtime_state, try_call_generator,
 };
 
 struct ExceptionBaselineGuard {
@@ -25,6 +26,17 @@ impl Drop for ExceptionBaselineGuard {
     fn drop(&mut self) {
         exception_stack_baseline_set(self.prev);
     }
+}
+
+#[inline]
+unsafe fn with_owned_callable<T>(
+    _py: &PyToken<'_>,
+    callable_bits: u64,
+    invoke: impl FnOnce(u64) -> T,
+) -> T {
+    let result = invoke(callable_bits);
+    dec_ref_bits(_py, callable_bits);
+    result
 }
 
 unsafe fn call_type_via_bind(_py: &PyToken<'_>, call_bits: u64, args: &[u64]) -> u64 {
@@ -150,13 +162,13 @@ pub(crate) unsafe fn call_callable0(_py: &PyToken<'_>, call_bits: u64) -> u64 {
             TYPE_ID_TYPE => call_type_via_bind(_py, call_bits, &[]),
             crate::TYPE_ID_FOREIGN => call_type_via_bind(_py, call_bits, &[]),
             TYPE_ID_GENERIC_ALIAS => call_generic_alias_via_bind(_py, call_ptr, &[]),
-            TYPE_ID_OBJECT | TYPE_ID_DATACLASS => {
-                let Some(call_attr_bits) = lookup_call_attr(_py, call_ptr) else {
-                    return raise_not_callable(_py, call_obj);
+            _ => {
+                let call_attr_bits = match require_call_attr(_py, call_ptr, call_obj) {
+                    Ok(bits) => bits,
+                    Err(result) => return result,
                 };
-                call_callable0(_py, call_attr_bits)
+                with_owned_callable(_py, call_attr_bits, |bits| call_callable0(_py, bits))
             }
-            _ => raise_not_callable(_py, call_obj),
         }
     }
 }
@@ -182,13 +194,15 @@ pub(crate) unsafe fn call_callable1(_py: &PyToken<'_>, call_bits: u64, arg0_bits
             TYPE_ID_TYPE => call_type_via_bind(_py, call_bits, &[arg0_bits]),
             crate::TYPE_ID_FOREIGN => call_type_via_bind(_py, call_bits, &[arg0_bits]),
             TYPE_ID_GENERIC_ALIAS => call_generic_alias_via_bind(_py, call_ptr, &[arg0_bits]),
-            TYPE_ID_OBJECT | TYPE_ID_DATACLASS => {
-                let Some(call_attr_bits) = lookup_call_attr(_py, call_ptr) else {
-                    return raise_not_callable(_py, call_obj);
+            _ => {
+                let call_attr_bits = match require_call_attr(_py, call_ptr, call_obj) {
+                    Ok(bits) => bits,
+                    Err(result) => return result,
                 };
-                call_callable1(_py, call_attr_bits, arg0_bits)
+                with_owned_callable(_py, call_attr_bits, |bits| {
+                    call_callable1(_py, bits, arg0_bits)
+                })
             }
-            _ => raise_not_callable(_py, call_obj),
         }
     }
 }
@@ -212,11 +226,12 @@ pub(crate) unsafe fn callable_arity(_py: &PyToken<'_>, call_bits: u64) -> Option
                 let origin_bits = generic_alias_origin_bits(call_ptr);
                 callable_arity(_py, origin_bits)
             }
-            TYPE_ID_OBJECT | TYPE_ID_DATACLASS => {
-                let call_attr_bits = lookup_call_attr(_py, call_ptr)?;
-                callable_arity(_py, call_attr_bits)
+            _ => {
+                let CallAttrLookup::Found(call_attr_bits) = lookup_call_attr(_py, call_ptr) else {
+                    return None;
+                };
+                with_owned_callable(_py, call_attr_bits, |bits| callable_arity(_py, bits))
             }
-            _ => None,
         }
     }
 }
@@ -251,13 +266,15 @@ pub(crate) unsafe fn call_callable2(
             TYPE_ID_GENERIC_ALIAS => {
                 call_generic_alias_via_bind(_py, call_ptr, &[arg0_bits, arg1_bits])
             }
-            TYPE_ID_OBJECT | TYPE_ID_DATACLASS => {
-                let Some(call_attr_bits) = lookup_call_attr(_py, call_ptr) else {
-                    return raise_not_callable(_py, call_obj);
+            _ => {
+                let call_attr_bits = match require_call_attr(_py, call_ptr, call_obj) {
+                    Ok(bits) => bits,
+                    Err(result) => return result,
                 };
-                call_callable2(_py, call_attr_bits, arg0_bits, arg1_bits)
+                with_owned_callable(_py, call_attr_bits, |bits| {
+                    call_callable2(_py, bits, arg0_bits, arg1_bits)
+                })
             }
-            _ => raise_not_callable(_py, call_obj),
         }
     }
 }
@@ -302,13 +319,15 @@ pub(crate) unsafe fn call_callable3(
             TYPE_ID_GENERIC_ALIAS => {
                 call_generic_alias_via_bind(_py, call_ptr, &[arg0_bits, arg1_bits, arg2_bits])
             }
-            TYPE_ID_OBJECT | TYPE_ID_DATACLASS => {
-                let Some(call_attr_bits) = lookup_call_attr(_py, call_ptr) else {
-                    return raise_not_callable(_py, call_obj);
+            _ => {
+                let call_attr_bits = match require_call_attr(_py, call_ptr, call_obj) {
+                    Ok(bits) => bits,
+                    Err(result) => return result,
                 };
-                call_callable3(_py, call_attr_bits, arg0_bits, arg1_bits, arg2_bits)
+                with_owned_callable(_py, call_attr_bits, |bits| {
+                    call_callable3(_py, bits, arg0_bits, arg1_bits, arg2_bits)
+                })
             }
-            _ => raise_not_callable(_py, call_obj),
         }
     }
 }
