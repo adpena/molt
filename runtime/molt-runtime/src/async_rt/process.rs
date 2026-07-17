@@ -11,7 +11,7 @@ mod wasm_host;
 
 pub use stdio::molt_asyncio_subprocess_stdio_normalize;
 #[cfg(target_arch = "wasm32")]
-pub(crate) use wasm_host::{ProcessRegistry, ProcessTaskState};
+pub(crate) use wasm_host::{ProcessRegistry, ProcessState};
 #[cfg(target_arch = "wasm32")]
 pub use wasm_host::{
     molt_process_drop, molt_process_host_notify, molt_process_kill, molt_process_pid,
@@ -28,11 +28,13 @@ use child_resources::{apply_child_memory_rlimit, configure_unix_owned_process_gr
 use native_io::{attach_process_stdio, ignore_sigpipe, trace_process_io};
 #[cfg(not(target_arch = "wasm32"))]
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::Condvar;
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering as AtomicOrdering};
-#[cfg(not(target_arch = "wasm32"))]
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 #[cfg(not(target_arch = "wasm32"))]
 use std::thread::{self, JoinHandle};
 #[cfg(not(target_arch = "wasm32"))]
@@ -52,6 +54,127 @@ const PROCESS_TEARDOWN_JOIN_TIMEOUT_MS_ENV: &str = "MOLT_PROCESS_TEARDOWN_JOIN_T
 const PROCESS_TEARDOWN_TERM_GRACE_MS_DEFAULT: u64 = 50;
 #[cfg(not(target_arch = "wasm32"))]
 const PROCESS_TEARDOWN_JOIN_TIMEOUT_MS_DEFAULT: u64 = 1_000;
+
+/// Target-independent terminal state for one spawned process.
+///
+/// The exit code is published exactly once. The single process-wait future is
+/// separately consumed by completion or cancellation, so a completion/cancel
+/// race can wake at most one scheduler edge.
+struct ProcessCompletionState {
+    exit_code: AtomicI32,
+    wait_future: Mutex<Option<PtrSlot>>,
+}
+
+struct ProcessExitPublication {
+    wait_future: Option<PtrSlot>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ProcessWaiterId(NonZeroUsize);
+
+impl ProcessWaiterId {
+    #[inline]
+    fn from_slot(waiter: PtrSlot) -> Self {
+        Self(
+            NonZeroUsize::new(waiter.0 as usize).expect("process waiter identity must be non-null"),
+        )
+    }
+
+    #[inline]
+    fn matches(self, waiter: PtrSlot) -> bool {
+        self.0.get() == waiter.0 as usize
+    }
+}
+
+enum ProcessWaitFutureInstall {
+    Installed,
+    AlreadyInstalled(PtrSlot),
+    Terminal(i32),
+}
+
+impl ProcessCompletionState {
+    fn pending() -> Self {
+        Self {
+            exit_code: AtomicI32::new(PROCESS_EXIT_PENDING),
+            wait_future: Mutex::new(None),
+        }
+    }
+
+    #[inline]
+    fn exit_code(&self) -> i32 {
+        self.exit_code.load(AtomicOrdering::Acquire)
+    }
+
+    #[inline]
+    fn is_pending(&self) -> bool {
+        self.exit_code() == PROCESS_EXIT_PENDING
+    }
+
+    fn publish_exit(&self, exit_code: i32) -> Option<ProcessExitPublication> {
+        if exit_code == PROCESS_EXIT_PENDING {
+            return None;
+        }
+        let mut wait_future = self.wait_future.lock().unwrap();
+        if self
+            .exit_code
+            .compare_exchange(
+                PROCESS_EXIT_PENDING,
+                exit_code,
+                AtomicOrdering::AcqRel,
+                AtomicOrdering::Acquire,
+            )
+            .is_err()
+        {
+            return None;
+        }
+        Some(ProcessExitPublication {
+            wait_future: wait_future.take(),
+        })
+    }
+
+    fn wait_future(&self) -> Option<PtrSlot> {
+        *self.wait_future.lock().unwrap()
+    }
+
+    fn install_wait_future(&self, future: PtrSlot) -> ProcessWaitFutureInstall {
+        let mut guard = self.wait_future.lock().unwrap();
+        let exit_code = self.exit_code();
+        if exit_code != PROCESS_EXIT_PENDING {
+            return ProcessWaitFutureInstall::Terminal(exit_code);
+        }
+        if let Some(existing) = *guard {
+            return ProcessWaitFutureInstall::AlreadyInstalled(existing);
+        }
+        *guard = Some(future);
+        ProcessWaitFutureInstall::Installed
+    }
+
+    fn cancel_wait_future(&self, waiter_id: ProcessWaiterId) -> bool {
+        let mut guard = self.wait_future.lock().unwrap();
+        if guard.is_some_and(|waiter| waiter_id.matches(waiter)) {
+            *guard = None;
+            return true;
+        }
+        false
+    }
+}
+
+pub(crate) struct ProcessTaskState {
+    process: Arc<ProcessState>,
+    // Stable identity only. The scheduler never carries a dereferenceable raw
+    // pointer across threads, so the state is naturally Send + Sync.
+    waiter_id: ProcessWaiterId,
+    cancelled: AtomicBool,
+}
+
+impl ProcessTaskState {
+    pub(crate) fn cancel_wait(&self) -> bool {
+        if self.cancelled.swap(true, AtomicOrdering::AcqRel) {
+            return false;
+        }
+        self.process.cancel_wait(self.waiter_id)
+    }
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 fn trace_process_spawn() -> bool {
@@ -192,15 +315,13 @@ pub unsafe extern "C" fn molt_process_spawn(
             child: Mutex::new(child),
             pid,
             owned_process_group,
-            exit_code: AtomicI32::new(PROCESS_EXIT_PENDING),
+            completion: ProcessCompletionState::pending(),
             kill_requested: AtomicBool::new(false),
             teardown_draining: AtomicBool::new(false),
             streams_released: AtomicBool::new(false),
-            wait_future: Mutex::new(None),
             stdin_stream: process_stdio.stdin_stream,
             stdout_stream: process_stdio.stdout_stream,
             stderr_stream: process_stdio.stderr_stream,
-            wait_lock: Mutex::new(()),
             condvar: Condvar::new(),
         });
         runtime_state(_py)
@@ -373,15 +494,13 @@ pub unsafe extern "C" fn molt_process_spawn_ex(
             child: Mutex::new(child),
             pid,
             owned_process_group,
-            exit_code: AtomicI32::new(PROCESS_EXIT_PENDING),
+            completion: ProcessCompletionState::pending(),
             kill_requested: AtomicBool::new(false),
             teardown_draining: AtomicBool::new(false),
             streams_released: AtomicBool::new(false),
-            wait_future: Mutex::new(None),
             stdin_stream: process_stdio.stdin_stream,
             stdout_stream: process_stdio.stdout_stream,
             stderr_stream: process_stdio.stderr_stream,
-            wait_lock: Mutex::new(()),
             condvar: Condvar::new(),
         });
         runtime_state(_py)
@@ -410,7 +529,7 @@ pub unsafe extern "C" fn molt_process_wait_future(proc_bits: u64) -> u64 {
             }
             let handle = &*(proc_ptr as *mut MoltProcessHandle);
             let state = Arc::clone(&handle.state);
-            if let Some(existing) = *state.wait_future.lock().unwrap() {
+            if let Some(existing) = state.wait_future() {
                 let bits = MoltObject::from_ptr(existing.0).bits();
                 inc_ref_bits(_py, bits);
                 return bits;
@@ -421,6 +540,7 @@ pub unsafe extern "C" fn molt_process_wait_future(proc_bits: u64) -> u64 {
             };
             let task_state = Arc::new(ProcessTaskState {
                 process: state,
+                waiter_id: ProcessWaiterId::from_slot(PtrSlot(future_ptr)),
                 cancelled: AtomicBool::new(false),
             });
             runtime_state(_py)
@@ -428,8 +548,24 @@ pub unsafe extern "C" fn molt_process_wait_future(proc_bits: u64) -> u64 {
                 .lock()
                 .unwrap()
                 .insert(PtrSlot(future_ptr), Arc::clone(&task_state));
-            *task_state.process.wait_future.lock().unwrap() = Some(PtrSlot(future_ptr));
-            future_bits
+            match task_state.process.install_wait_future(PtrSlot(future_ptr)) {
+                ProcessWaitFutureInstall::Installed => future_bits,
+                ProcessWaitFutureInstall::Terminal(exit_code) => {
+                    debug_assert_eq!(task_state.process.exit_code(), exit_code);
+                    future_bits
+                }
+                ProcessWaitFutureInstall::AlreadyInstalled(existing) => {
+                    runtime_state(_py)
+                        .process_tasks
+                        .lock()
+                        .unwrap()
+                        .remove(&PtrSlot(future_ptr));
+                    dec_ref_bits(_py, future_bits);
+                    let bits = MoltObject::from_ptr(existing.0).bits();
+                    inc_ref_bits(_py, bits);
+                    bits
+                }
+            }
         })
     }
 }
@@ -447,14 +583,14 @@ pub unsafe extern "C" fn molt_process_poll(obj_bits: u64) -> i64 {
         let Some(state) = process_task_state(_py, obj_ptr) else {
             return raise_exception::<i64>(_py, "RuntimeError", "process task missing");
         };
-        if state.process.exit_code.load(AtomicOrdering::Acquire) != PROCESS_EXIT_PENDING {
+        if !state.process.is_pending() {
             task_take_cancel_pending(obj_ptr);
         } else if task_cancel_pending(obj_ptr) {
             task_take_cancel_pending(obj_ptr);
-            state.cancelled.store(true, AtomicOrdering::Release);
+            state.cancel_wait();
             return raise_cancelled_with_message::<i64>(_py, obj_ptr);
         }
-        let code = state.process.exit_code.load(AtomicOrdering::Acquire);
+        let code = state.process.exit_code();
         if code == PROCESS_EXIT_PENDING {
             return pending_bits_i64();
         }
@@ -491,7 +627,7 @@ pub unsafe extern "C" fn molt_process_returncode(proc_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             }
             let handle = &*(proc_ptr as *mut MoltProcessHandle);
-            let code = handle.state.exit_code.load(AtomicOrdering::Acquire);
+            let code = handle.state.exit_code();
             if code == PROCESS_EXIT_PENDING {
                 MoltObject::none().bits()
             } else {
@@ -513,7 +649,7 @@ pub unsafe extern "C" fn molt_process_kill(proc_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             }
             let handle = &*(proc_ptr as *mut MoltProcessHandle);
-            if handle.state.exit_code.load(AtomicOrdering::Acquire) != PROCESS_EXIT_PENDING {
+            if !handle.state.is_pending() {
                 return MoltObject::none().bits();
             }
             if let Err(err) = handle.state.request_kill() {
@@ -536,7 +672,7 @@ pub unsafe extern "C" fn molt_process_terminate(proc_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             }
             let handle = &*(proc_ptr as *mut MoltProcessHandle);
-            if handle.state.exit_code.load(AtomicOrdering::Acquire) != PROCESS_EXIT_PENDING {
+            if !handle.state.is_pending() {
                 return MoltObject::none().bits();
             }
             if let Err(err) = handle.state.request_terminate() {
@@ -631,16 +767,50 @@ pub(crate) struct ProcessState {
     pub(crate) pid: u32,
     #[cfg_attr(not(unix), allow(dead_code))]
     owned_process_group: Option<i32>,
-    pub(crate) exit_code: AtomicI32,
+    completion: ProcessCompletionState,
     kill_requested: AtomicBool,
     teardown_draining: AtomicBool,
     streams_released: AtomicBool,
-    pub(crate) wait_future: Mutex<Option<PtrSlot>>,
     stdin_stream: u64,
     stdout_stream: u64,
     stderr_stream: u64,
-    wait_lock: Mutex<()>,
     pub(crate) condvar: Condvar,
+}
+
+impl ProcessState {
+    #[inline]
+    fn exit_code(&self) -> i32 {
+        self.completion.exit_code()
+    }
+
+    #[inline]
+    fn is_pending(&self) -> bool {
+        self.completion.is_pending()
+    }
+
+    fn wait_future(&self) -> Option<PtrSlot> {
+        self.completion.wait_future()
+    }
+
+    fn install_wait_future(&self, future: PtrSlot) -> ProcessWaitFutureInstall {
+        self.completion.install_wait_future(future)
+    }
+
+    fn publish_exit(&self, exit_code: i32) -> Option<ProcessExitPublication> {
+        let publication = self.completion.publish_exit(exit_code)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        self.condvar.notify_all();
+        Some(publication)
+    }
+
+    fn cancel_wait(&self, waiter_id: ProcessWaiterId) -> bool {
+        let removed = self.completion.cancel_wait_future(waiter_id);
+        #[cfg(not(target_arch = "wasm32"))]
+        if removed {
+            self.condvar.notify_all();
+        }
+        removed
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -731,7 +901,6 @@ impl ProcessRegistry {
                 .state
                 .teardown_draining
                 .store(true, AtomicOrdering::Release);
-            let _ = entry.state.wait_future.lock().unwrap().take();
             entry.state.request_terminate_for_teardown();
         }
         let term_deadline = Instant::now() + term_grace;
@@ -743,7 +912,7 @@ impl ProcessRegistry {
             let _ = entry.state.wait_for_exit(remaining);
         }
         for entry in entries.values() {
-            if entry.state.exit_code.load(AtomicOrdering::Acquire) == PROCESS_EXIT_PENDING {
+            if entry.state.is_pending() {
                 entry.state.request_kill_for_teardown();
             }
             entry.state.release_owned_streams();
@@ -780,13 +949,16 @@ fn process_teardown_duration(env_key: &str, default_ms: u64) -> Duration {
 #[cfg(not(target_arch = "wasm32"))]
 impl ProcessState {
     fn wait_for_exit(&self, timeout: Duration) -> bool {
-        if self.exit_code.load(AtomicOrdering::Acquire) != PROCESS_EXIT_PENDING {
+        if !self.is_pending() {
             return true;
         }
         let deadline = Instant::now() + timeout;
-        let mut guard = self.wait_lock.lock().unwrap();
+        // Wait on the same mutex that serializes terminal publication.  Using
+        // a separate wait mutex permits publication to notify between the
+        // predicate check and the condvar sleep, losing the only wakeup.
+        let mut guard = self.completion.wait_future.lock().unwrap();
         loop {
-            if self.exit_code.load(AtomicOrdering::Acquire) != PROCESS_EXIT_PENDING {
+            if !self.is_pending() {
                 return true;
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -834,7 +1006,7 @@ impl ProcessState {
     }
 
     fn request_terminate(&self) -> Result<(), std::io::Error> {
-        if self.exit_code.load(AtomicOrdering::Acquire) != PROCESS_EXIT_PENDING {
+        if !self.is_pending() {
             return Ok(());
         }
         #[cfg(unix)]
@@ -848,7 +1020,7 @@ impl ProcessState {
     }
 
     fn request_kill(&self) -> Result<(), std::io::Error> {
-        if self.exit_code.load(AtomicOrdering::Acquire) != PROCESS_EXIT_PENDING {
+        if !self.is_pending() {
             return Ok(());
         }
         self.kill_requested.store(true, AtomicOrdering::Release);
@@ -894,18 +1066,6 @@ impl ProcessState {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) struct ProcessTaskState {
-    pub(crate) process: Arc<ProcessState>,
-    pub(crate) cancelled: AtomicBool,
-}
-
-// Process tasks only touch shared state under locks; safe to share across threads.
-#[cfg(not(target_arch = "wasm32"))]
-unsafe impl Send for ProcessTaskState {}
-#[cfg(not(target_arch = "wasm32"))]
-unsafe impl Sync for ProcessTaskState {}
-
-#[cfg(not(target_arch = "wasm32"))]
 struct MoltProcessHandle {
     state: Arc<ProcessState>,
 }
@@ -929,12 +1089,15 @@ impl Drop for ProcessState {
 #[cfg(not(target_arch = "wasm32"))]
 impl ProcessTaskState {
     pub(crate) fn wait_blocking(&self, timeout: Option<Duration>) {
-        if self.process.exit_code.load(AtomicOrdering::Acquire) != PROCESS_EXIT_PENDING {
+        if self.wait_finished() {
             return;
         }
-        let mut guard = self.process.wait_lock.lock().unwrap();
+        // Cancellation and terminal publication both mutate their predicates
+        // while serialized by this mutex, so the condvar handoff is atomic
+        // with respect to every wake source.
+        let mut guard = self.process.completion.wait_future.lock().unwrap();
         loop {
-            if self.process.exit_code.load(AtomicOrdering::Acquire) != PROCESS_EXIT_PENDING {
+            if self.wait_finished() {
                 break;
             }
             match timeout {
@@ -947,6 +1110,10 @@ impl ProcessTaskState {
                 }
             }
         }
+    }
+
+    fn wait_finished(&self) -> bool {
+        !self.process.is_pending() || self.cancelled.load(AtomicOrdering::Acquire)
     }
 }
 
@@ -970,7 +1137,7 @@ fn exit_code_from_status(status: std::process::ExitStatus) -> i32 {
 #[cfg(not(target_arch = "wasm32"))]
 fn process_wait_worker(state: Arc<ProcessState>) {
     loop {
-        if state.exit_code.load(AtomicOrdering::Acquire) != PROCESS_EXIT_PENDING {
+        if !state.is_pending() {
             break;
         }
         if state.kill_requested.load(AtomicOrdering::Acquire) {
@@ -980,14 +1147,14 @@ fn process_wait_worker(state: Arc<ProcessState>) {
         match guard.try_wait() {
             Ok(Some(status)) => {
                 let code = exit_code_from_status(status);
-                state.exit_code.store(code, AtomicOrdering::Release);
+                let publication = state.publish_exit(code);
                 if trace_process_io() {
                     eprintln!("molt_process_wait exit_code={code}");
                 }
                 drop(guard);
-                state.condvar.notify_all();
-                if !state.teardown_draining.load(AtomicOrdering::Acquire)
-                    && let Some(future) = state.wait_future.lock().unwrap().take()
+                if let Some(publication) = publication
+                    && !state.teardown_draining.load(AtomicOrdering::Acquire)
+                    && let Some(future) = publication.wait_future
                 {
                     let gil = GilGuard::new();
                     let py = gil.token();
@@ -1005,6 +1172,280 @@ fn process_wait_worker(state: Arc<ProcessState>) {
         runtime
             .process_registry
             .finish_wait_worker(state.registry_id);
+    }
+}
+
+#[cfg(test)]
+mod process_completion_state_tests {
+    use super::*;
+
+    fn slot(value: usize) -> PtrSlot {
+        PtrSlot(value as *mut u8)
+    }
+
+    #[test]
+    fn process_state_layout_metrics() {
+        fn assert_send_sync<T: Send + Sync>() {}
+
+        let task_bytes = std::mem::size_of::<ProcessTaskState>();
+        let completion_bytes = std::mem::size_of::<ProcessCompletionState>();
+        let process_bytes = std::mem::size_of::<ProcessState>();
+        eprintln!(
+            "process_state_layout task_bytes={task_bytes} completion_bytes={completion_bytes} process_bytes={process_bytes}"
+        );
+        assert_send_sync::<ProcessTaskState>();
+        assert_eq!(task_bytes, 3 * std::mem::size_of::<usize>());
+        assert_eq!(
+            std::mem::size_of::<ProcessWaiterId>(),
+            std::mem::size_of::<usize>()
+        );
+    }
+
+    #[test]
+    fn process_completion_transition_metrics() {
+        const SAMPLES: usize = 100_000;
+        let states: Vec<_> = std::iter::repeat_with(ProcessCompletionState::pending)
+            .take(SAMPLES)
+            .collect();
+        let started = std::time::Instant::now();
+        for state in &states {
+            assert!(std::hint::black_box(state.publish_exit(0)).is_some());
+        }
+        let elapsed = started.elapsed();
+        eprintln!(
+            "process_completion_transition samples={SAMPLES} elapsed_ns={} ns_per_transition={:.2}",
+            elapsed.as_nanos(),
+            elapsed.as_nanos() as f64 / SAMPLES as f64
+        );
+    }
+
+    #[test]
+    fn wait_future_install_is_identity_safe_and_terminal_aware() {
+        let completion = ProcessCompletionState::pending();
+        let first = slot(1);
+        let second = slot(2);
+
+        assert!(matches!(
+            completion.install_wait_future(first),
+            ProcessWaitFutureInstall::Installed
+        ));
+        assert!(matches!(
+            completion.install_wait_future(second),
+            ProcessWaitFutureInstall::AlreadyInstalled(existing) if existing == first
+        ));
+        assert!(!completion.cancel_wait_future(ProcessWaiterId::from_slot(second)));
+        assert_eq!(completion.wait_future(), Some(first));
+
+        let publication = completion.publish_exit(17).expect("first terminal publish");
+        assert_eq!(publication.wait_future, Some(first));
+        assert_eq!(completion.exit_code(), 17);
+        assert!(completion.publish_exit(23).is_none());
+        assert!(completion.publish_exit(PROCESS_EXIT_PENDING).is_none());
+        assert!(matches!(
+            completion.install_wait_future(second),
+            ProcessWaitFutureInstall::Terminal(17)
+        ));
+        assert_eq!(completion.wait_future(), None);
+    }
+
+    #[test]
+    fn cancellation_returns_the_registered_waiter_exactly_once() {
+        let completion = ProcessCompletionState::pending();
+        let waiter = slot(3);
+        assert!(matches!(
+            completion.install_wait_future(waiter),
+            ProcessWaitFutureInstall::Installed
+        ));
+        let waiter_id = ProcessWaiterId::from_slot(waiter);
+        assert!(completion.cancel_wait_future(waiter_id));
+        assert!(!completion.cancel_wait_future(waiter_id));
+        assert_eq!(completion.wait_future(), None);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn install_and_publish_race_cannot_strand_a_waiter() {
+        use std::sync::Barrier;
+
+        for iteration in 0..64 {
+            let completion = Arc::new(ProcessCompletionState::pending());
+            let barrier = Arc::new(Barrier::new(3));
+            let waiter_address = iteration + 16;
+            let waiter = slot(waiter_address);
+
+            let install_state = Arc::clone(&completion);
+            let install_barrier = Arc::clone(&barrier);
+            let installer = std::thread::spawn(move || {
+                install_barrier.wait();
+                install_state.install_wait_future(slot(waiter_address))
+            });
+
+            let publish_state = Arc::clone(&completion);
+            let publish_barrier = Arc::clone(&barrier);
+            let publisher = std::thread::spawn(move || {
+                publish_barrier.wait();
+                publish_state.publish_exit(31)
+            });
+
+            barrier.wait();
+            let installation = installer.join().unwrap();
+            let publication = publisher.join().unwrap().expect("publisher wins once");
+            match installation {
+                ProcessWaitFutureInstall::Installed => {
+                    assert_eq!(publication.wait_future, Some(waiter));
+                }
+                ProcessWaitFutureInstall::Terminal(31) => {
+                    assert_eq!(publication.wait_future, None);
+                }
+                ProcessWaitFutureInstall::AlreadyInstalled(_) => {
+                    panic!("single installer cannot observe another waiter")
+                }
+                ProcessWaitFutureInstall::Terminal(other) => {
+                    panic!("unexpected terminal code {other}")
+                }
+            }
+            assert_eq!(completion.wait_future(), None);
+            assert_eq!(completion.exit_code(), 31);
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn cancel_and_publish_race_has_exactly_one_waiter_owner() {
+        use std::sync::Barrier;
+
+        for iteration in 0..64 {
+            let completion = Arc::new(ProcessCompletionState::pending());
+            let barrier = Arc::new(Barrier::new(3));
+            let waiter = slot(iteration + 128);
+            let waiter_id = ProcessWaiterId::from_slot(waiter);
+            assert!(matches!(
+                completion.install_wait_future(waiter),
+                ProcessWaitFutureInstall::Installed
+            ));
+
+            let cancel_state = Arc::clone(&completion);
+            let cancel_barrier = Arc::clone(&barrier);
+            let canceller = std::thread::spawn(move || {
+                cancel_barrier.wait();
+                cancel_state.cancel_wait_future(waiter_id)
+            });
+
+            let publish_state = Arc::clone(&completion);
+            let publish_barrier = Arc::clone(&barrier);
+            let publisher = std::thread::spawn(move || {
+                publish_barrier.wait();
+                publish_state.publish_exit(47)
+            });
+
+            barrier.wait();
+            let cancelled = canceller.join().unwrap();
+            let publication = publisher.join().unwrap().expect("publisher wins once");
+            assert_eq!(publication.wait_future == Some(waiter), !cancelled);
+            assert_eq!(completion.wait_future(), None);
+            assert_eq!(completion.exit_code(), 47);
+        }
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod process_wait_state_tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    fn inert_child() -> std::process::Child {
+        #[cfg(windows)]
+        {
+            std::process::Command::new("cmd")
+                .args(["/C", "exit", "0"])
+                .spawn()
+                .expect("spawn inert Windows child")
+        }
+        #[cfg(not(windows))]
+        {
+            std::process::Command::new("sh")
+                .args(["-c", "exit 0"])
+                .spawn()
+                .expect("spawn inert Unix child")
+        }
+    }
+
+    fn process_state() -> Arc<ProcessState> {
+        let child = inert_child();
+        Arc::new(ProcessState {
+            registry_id: 0,
+            pid: child.id(),
+            child: Mutex::new(child),
+            owned_process_group: None,
+            completion: ProcessCompletionState::pending(),
+            kill_requested: AtomicBool::new(false),
+            teardown_draining: AtomicBool::new(false),
+            streams_released: AtomicBool::new(false),
+            stdin_stream: 0,
+            stdout_stream: 0,
+            stderr_stream: 0,
+            condvar: Condvar::new(),
+        })
+    }
+
+    #[test]
+    fn native_blocking_wait_observes_cancellation_predicate() {
+        let state = process_state();
+        let waiter = PtrSlot(1usize as *mut u8);
+        assert!(matches!(
+            state.install_wait_future(waiter),
+            ProcessWaitFutureInstall::Installed
+        ));
+        let task = Arc::new(ProcessTaskState {
+            process: Arc::clone(&state),
+            waiter_id: ProcessWaiterId::from_slot(waiter),
+            cancelled: AtomicBool::new(false),
+        });
+        let blocking_task = Arc::clone(&task);
+        let (tx, rx) = mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            blocking_task.wait_blocking(None);
+            tx.send(()).unwrap();
+        });
+
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(task.cancel_wait());
+        assert!(!task.cancel_wait());
+        rx.recv_timeout(Duration::from_secs(1))
+            .expect("cancelled process wait must wake");
+        thread.join().unwrap();
+        assert!(task.cancelled.load(AtomicOrdering::Acquire));
+        assert_eq!(state.wait_future(), None);
+    }
+
+    #[test]
+    fn native_terminal_publish_wakes_blocking_wait_exactly_once() {
+        let state = process_state();
+        let waiter = PtrSlot(2usize as *mut u8);
+        assert!(matches!(
+            state.install_wait_future(waiter),
+            ProcessWaitFutureInstall::Installed
+        ));
+        let task = Arc::new(ProcessTaskState {
+            process: Arc::clone(&state),
+            waiter_id: ProcessWaiterId::from_slot(waiter),
+            cancelled: AtomicBool::new(false),
+        });
+        let blocking_task = Arc::clone(&task);
+        let (tx, rx) = mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            blocking_task.wait_blocking(None);
+            tx.send(()).unwrap();
+        });
+
+        std::thread::sleep(Duration::from_millis(20));
+        let publication = state.publish_exit(9).expect("first terminal publish");
+        assert_eq!(publication.wait_future, Some(waiter));
+        assert!(state.publish_exit(10).is_none());
+        rx.recv_timeout(Duration::from_secs(1))
+            .expect("completed process wait must wake");
+        thread.join().unwrap();
+        assert_eq!(state.exit_code(), 9);
     }
 }
 
@@ -1026,15 +1467,13 @@ mod process_registry_tests {
             child: Mutex::new(child),
             pid,
             owned_process_group: Some(pid as i32),
-            exit_code: AtomicI32::new(PROCESS_EXIT_PENDING),
+            completion: ProcessCompletionState::pending(),
             kill_requested: AtomicBool::new(false),
             teardown_draining: AtomicBool::new(false),
             streams_released: AtomicBool::new(false),
-            wait_future: Mutex::new(None),
             stdin_stream: 0,
             stdout_stream: 0,
             stderr_stream: 0,
-            wait_lock: Mutex::new(()),
             condvar: Condvar::new(),
         });
         registry.register_pending(Arc::clone(&state));
@@ -1110,7 +1549,7 @@ mod process_registry_tests {
         registry.drain_for_teardown();
         let _ = fs::remove_file(pid_path);
         assert_eq!(registry.live_count(), 0);
-        assert!(state.exit_code.load(AtomicOrdering::Acquire) != PROCESS_EXIT_PENDING);
+        assert!(!state.is_pending());
         assert_process_exits(shell_pid);
         assert_process_exits(sleep_pid);
     }

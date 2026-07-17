@@ -266,12 +266,7 @@ pub(crate) fn task_detach_owned_edges(
         .unwrap()
         .remove(&slot)
     {
-        state.cancelled.store(true, AtomicOrdering::Release);
-        let mut guard = state.process.wait_future.lock().unwrap();
-        if guard.map(|value| value.0) == Some(task_ptr) {
-            *guard = None;
-        }
-        state.process.condvar.notify_all();
+        state.cancel_wait();
     }
 }
 
@@ -475,7 +470,6 @@ pub(crate) fn thread_task_drop(_py: &PyToken<'_>, future_ptr: *mut u8) {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn process_task_state(
     _py: &PyToken<'_>,
     future_ptr: *mut u8,
@@ -491,7 +485,6 @@ pub(crate) fn process_task_state(
         .cloned()
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn process_task_drop(_py: &PyToken<'_>, future_ptr: *mut u8) {
     crate::gil_assert();
     if future_ptr.is_null() {
@@ -503,48 +496,7 @@ pub(crate) fn process_task_drop(_py: &PyToken<'_>, future_ptr: *mut u8) {
         .unwrap()
         .remove(&PtrSlot(future_ptr));
     if let Some(state) = state {
-        state.cancelled.store(true, AtomicOrdering::Release);
-        let mut guard = state.process.wait_future.lock().unwrap();
-        if guard.map(|val| val.0) == Some(future_ptr) {
-            *guard = None;
-        }
-        state.process.condvar.notify_all();
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn process_task_state(
-    _py: &PyToken<'_>,
-    future_ptr: *mut u8,
-) -> Option<Arc<ProcessTaskState>> {
-    if future_ptr.is_null() {
-        return None;
-    }
-    runtime_state(_py)
-        .process_tasks
-        .lock()
-        .unwrap()
-        .get(&PtrSlot(future_ptr))
-        .cloned()
-}
-
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn process_task_drop(_py: &PyToken<'_>, future_ptr: *mut u8) {
-    crate::gil_assert();
-    if future_ptr.is_null() {
-        return;
-    }
-    let state = runtime_state(_py)
-        .process_tasks
-        .lock()
-        .unwrap()
-        .remove(&PtrSlot(future_ptr));
-    if let Some(state) = state {
-        state.cancelled.store(true, AtomicOrdering::Release);
-        let mut guard = state.process.wait_future.lock().unwrap();
-        if guard.map(|val| val.0) == Some(future_ptr) {
-            *guard = None;
-        }
+        state.cancel_wait();
     }
 }
 

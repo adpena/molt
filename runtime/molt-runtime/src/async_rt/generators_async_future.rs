@@ -273,12 +273,10 @@ pub(crate) fn cancel_future_task(_py: &PyToken<'_>, task_ptr: *mut u8, msg_bits:
                 state.condvar.notify_all();
             }
         }
-        if poll_fn == process_poll_fn_addr() {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(state) = process_task_state(_py, task_ptr) {
-                state.cancelled.store(true, AtomicOrdering::Release);
-                state.process.condvar.notify_all();
-            }
+        if poll_fn == process_poll_fn_addr()
+            && let Some(state) = process_task_state(_py, task_ptr)
+        {
+            state.cancel_wait();
         }
         if poll_fn == io_wait_poll_fn_addr() {
             #[cfg(not(target_arch = "wasm32"))]
