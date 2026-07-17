@@ -293,6 +293,81 @@ static GC_CLEAR_PROBE_CONTAINER_BITS: AtomicU64 = AtomicU64::new(0);
 static GC_CLEAR_PROBE_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
 static GC_CLEAR_PROBE_OBSERVED_EMPTY: AtomicU32 = AtomicU32::new(0);
 static SET_NAME_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
+static CALL_DESCRIPTOR_GET_COUNT: AtomicUsize = AtomicUsize::new(0);
+static CALL_DESCRIPTOR_TARGET_BITS: AtomicU64 = AtomicU64::new(0);
+static CUSTOM_METACLASS_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
+static MUTATED_METACLASS_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
+static INHERITED_CALL_REPLACEMENT_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+extern "C" fn c_api_test_identity(arg_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        if arg_bits == 0 || obj_from_bits(arg_bits).is_none() {
+            return raise_exception::<u64>(_py, "TypeError", "identity arg missing");
+        }
+        inc_ref_bits(_py, arg_bits);
+        arg_bits
+    })
+}
+
+extern "C" fn c_api_test_call_descriptor_get_once(
+    self_bits: u64,
+    instance_bits: u64,
+    owner_bits: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        if obj_from_bits(self_bits).is_none()
+            || obj_from_bits(instance_bits).is_none()
+            || obj_from_bits(owner_bits).is_none()
+        {
+            return raise_exception::<u64>(_py, "RuntimeError", "descriptor bind args missing");
+        }
+        let prior = CALL_DESCRIPTOR_GET_COUNT.fetch_add(1, Ordering::SeqCst);
+        if prior != 0 {
+            return raise_exception::<u64>(_py, "RuntimeError", "descriptor rebound");
+        }
+        let target_bits = CALL_DESCRIPTOR_TARGET_BITS.load(Ordering::SeqCst);
+        if obj_from_bits(target_bits).is_none() {
+            return raise_exception::<u64>(_py, "RuntimeError", "descriptor target missing");
+        }
+        inc_ref_bits(_py, target_bits);
+        target_bits
+    })
+}
+
+extern "C" fn c_api_test_custom_metaclass_call(self_bits: u64, arg_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        if obj_from_bits(self_bits).is_none() {
+            return raise_exception::<u64>(_py, "RuntimeError", "metaclass self missing");
+        }
+        if arg_bits == 0 || obj_from_bits(arg_bits).is_none() {
+            return raise_exception::<u64>(_py, "TypeError", "metaclass arg missing");
+        }
+        CUSTOM_METACLASS_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
+        inc_ref_bits(_py, arg_bits);
+        arg_bits
+    })
+}
+
+extern "C" fn c_api_test_mutated_metaclass_call(self_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        if obj_from_bits(self_bits).is_none() {
+            return raise_exception::<u64>(_py, "RuntimeError", "metaclass self missing");
+        }
+        MUTATED_METACLASS_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
+        MoltObject::from_int(97).bits()
+    })
+}
+
+extern "C" fn c_api_test_replaced_inherited_call(self_bits: u64, arg_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        if obj_from_bits(self_bits).is_none() {
+            return raise_exception::<u64>(_py, "RuntimeError", "call self missing");
+        }
+        INHERITED_CALL_REPLACEMENT_COUNT.fetch_add(1, Ordering::SeqCst);
+        inc_ref_bits(_py, arg_bits);
+        arg_bits
+    })
+}
 
 extern "C" fn c_api_test_finalizer_records(self_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -761,6 +836,40 @@ fn create_test_heap_class(_py: &PyToken<'_>, name: &[u8], attrs: &[(&[u8], u64)]
     class_bits
 }
 
+fn create_test_type(
+    _py: &PyToken<'_>,
+    metaclass_bits: u64,
+    name: &[u8],
+    base_bits: u64,
+    attrs: &[(&[u8], u64)],
+) -> u64 {
+    let name_bits = unsafe { molt_string_from(name.as_ptr(), name.len() as u64) };
+    assert!(!obj_from_bits(name_bits).is_none());
+    let namespace_bits = molt_dict_new(attrs.len() as u64);
+    assert!(!obj_from_bits(namespace_bits).is_none());
+    for &(attr_name, value_bits) in attrs {
+        let attr_bits = unsafe { molt_string_from(attr_name.as_ptr(), attr_name.len() as u64) };
+        assert!(!obj_from_bits(attr_bits).is_none());
+        assert_eq!(
+            molt_mapping_setitem(namespace_bits, attr_bits, value_bits),
+            0
+        );
+        dec_ref_bits(_py, attr_bits);
+    }
+    let class_bits = crate::builtins::types::molt_type_new(
+        metaclass_bits,
+        name_bits,
+        base_bits,
+        namespace_bits,
+        none_bits(),
+    );
+    assert!(!obj_from_bits(class_bits).is_none());
+    assert!(!exception_pending(_py));
+    dec_ref_bits(_py, namespace_bits);
+    dec_ref_bits(_py, name_bits);
+    class_bits
+}
+
 fn create_guarded_test_class(
     _py: &PyToken<'_>,
     name: &[u8],
@@ -797,6 +906,19 @@ fn create_guarded_test_class(
 fn heap_refcount(bits: u64) -> u32 {
     let ptr = obj_from_bits(bits).as_ptr().expect("expected heap object");
     unsafe { (*crate::object::header_from_obj_ptr(ptr)).ref_count_snapshot() }
+}
+
+fn alloc_test_weakref(_py: &PyToken<'_>) -> u64 {
+    let reference_type = crate::builtins::classes::builtin_classes(_py).reference_type;
+    let reference_type_ptr = obj_from_bits(reference_type)
+        .as_ptr()
+        .expect("ReferenceType class ptr");
+    let weak_bits = unsafe { crate::alloc_instance_for_class(_py, reference_type_ptr) };
+    let weak_ptr = obj_from_bits(weak_bits)
+        .as_ptr()
+        .expect("ReferenceType instance ptr");
+    assert_eq!(unsafe { object_type_id(weak_ptr) }, crate::TYPE_ID_WEAKREF);
+    weak_bits
 }
 
 #[test]
@@ -1052,8 +1174,7 @@ fn weakref_callback_runs_with_live_target_not_rc0() {
             "plain instance must not derive finalizer sensitivity"
         );
 
-        // The weakref object is itself a heap instance.
-        let weak_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
+        let weak_bits = alloc_test_weakref(_py);
 
         // The callback records the target refcount it observes at fire time.
         let cb_ptr = crate::builtins::functions::alloc_runtime_function_obj(
@@ -1114,7 +1235,7 @@ fn explicit_gc_collect_preserves_strongly_reachable_weakref_target() {
         let class_ptr = obj_from_bits(class_bits).as_ptr().expect("class ptr");
         let target_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
         let target_ptr = obj_from_bits(target_bits).as_ptr().expect("target ptr");
-        let weak_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
+        let weak_bits = alloc_test_weakref(_py);
 
         let registered = crate::molt_weakref_register(weak_bits, target_bits, none_bits());
         assert!(is_truthy(_py, obj_from_bits(registered)));
@@ -1169,7 +1290,7 @@ fn repeated_weakref_callbacks_transfer_registration_custody_without_leak() {
 
         for _ in 0..16 {
             let target_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
-            let weak_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
+            let weak_bits = alloc_test_weakref(_py);
             WEAKREF_CB_TARGET_BITS.store(target_bits, Ordering::SeqCst);
             let registered = crate::molt_weakref_register(weak_bits, target_bits, cb_bits);
             assert!(is_truthy(_py, obj_from_bits(registered)));
@@ -1216,7 +1337,7 @@ fn weakref_callback_calling_gc_collect_keeps_target_live() {
         let (class_bits, attr_storage) = create_guarded_test_class(_py, b"WeakTargetGc", &[]);
         let class_ptr = obj_from_bits(class_bits).as_ptr().expect("class ptr");
         let inst_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
-        let weak_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
+        let weak_bits = alloc_test_weakref(_py);
 
         let cb_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
@@ -1292,11 +1413,11 @@ fn weakref_callback_reregistering_on_dying_target_leaves_no_orphan() {
         let (class_bits, attr_storage) = create_guarded_test_class(_py, b"WeakTargetReReg", &[]);
         let class_ptr = obj_from_bits(class_bits).as_ptr().expect("class ptr");
         let inst_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
-        let weak_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
+        let weak_bits = alloc_test_weakref(_py);
         // The fresh weakref object the callback will register against the dying
         // target. Allocated up front and kept alive across the death so its
         // registry entry would persist as an orphan absent the re-drain.
-        let new_weak_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
+        let new_weak_bits = alloc_test_weakref(_py);
         WEAKREF_CB_REREGISTER_WEAK_BITS.store(new_weak_bits, Ordering::SeqCst);
 
         let cb_ptr = crate::builtins::functions::alloc_runtime_function_obj(
@@ -2635,6 +2756,331 @@ fn call_bind_ic_hits_simple_object_call_bound_function() {
         dec_ref_bits(_py, inst_bits);
         dec_ref_bits(_py, class_bits);
         dec_ref_bits(_py, func_bits);
+    });
+}
+
+#[test]
+fn call_bind_ic_classification_does_not_rebind_stateful_call_descriptor() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        crate::call::bind::clear_call_bind_ic_cache(_py);
+        CALL_DESCRIPTOR_GET_COUNT.store(0, Ordering::SeqCst);
+
+        let target_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+            _py,
+            crate::builtins::functions::runtime_fn_addr(
+                "c_api_test_identity",
+                c_api_test_identity as *const (),
+            ),
+            1,
+        );
+        assert!(!target_ptr.is_null());
+        let target_bits = MoltObject::from_ptr(target_ptr).bits();
+        CALL_DESCRIPTOR_TARGET_BITS.store(target_bits, Ordering::SeqCst);
+
+        let get_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+            _py,
+            crate::builtins::functions::runtime_fn_addr(
+                "c_api_test_call_descriptor_get_once",
+                c_api_test_call_descriptor_get_once as *const (),
+            ),
+            3,
+        );
+        assert!(!get_ptr.is_null());
+        let get_bits = MoltObject::from_ptr(get_ptr).bits();
+        let descriptor_class_bits =
+            create_test_heap_class(_py, b"OneShotCallDescriptor", &[(b"__get__", get_bits)]);
+        let descriptor_class_ptr = obj_from_bits(descriptor_class_bits)
+            .as_ptr()
+            .expect("descriptor class ptr");
+        let descriptor_bits = unsafe { crate::alloc_instance_for_class(_py, descriptor_class_ptr) };
+        assert!(!obj_from_bits(descriptor_bits).is_none());
+
+        let callable_class_bits =
+            create_test_heap_class(_py, b"StatefulCallable", &[(b"__call__", descriptor_bits)]);
+        let callable_class_ptr = obj_from_bits(callable_class_bits)
+            .as_ptr()
+            .expect("callable class ptr");
+        let callable_bits = unsafe { crate::alloc_instance_for_class(_py, callable_class_ptr) };
+        assert!(!obj_from_bits(callable_bits).is_none());
+
+        let site_id = 113u64;
+        let builder_bits = crate::call::bind::molt_callargs_new(1, 0);
+        let _ =
+            unsafe { crate::molt_callargs_push_pos(builder_bits, MoltObject::from_int(29).bits()) };
+        let out_bits = crate::call::bind::molt_call_bind_ic(
+            MoltObject::from_int(site_id as i64).bits(),
+            callable_bits,
+            builder_bits,
+        );
+
+        assert_eq!(to_i64(obj_from_bits(out_bits)), Some(29));
+        assert_eq!(
+            CALL_DESCRIPTOR_GET_COUNT.load(Ordering::SeqCst),
+            1,
+            "IC classification must not execute __get__ after the real bind"
+        );
+        assert!(!exception_pending(_py));
+        assert!(
+            !crate::call::bind::call_bind_ic_site_cached_for_test(site_id),
+            "a dynamic __call__ descriptor must never install a direct-call IC"
+        );
+
+        CALL_DESCRIPTOR_TARGET_BITS.store(0, Ordering::SeqCst);
+        dec_ref_bits(_py, out_bits);
+        dec_ref_bits(_py, callable_bits);
+        dec_ref_bits(_py, callable_class_bits);
+        dec_ref_bits(_py, descriptor_bits);
+        dec_ref_bits(_py, descriptor_class_bits);
+        dec_ref_bits(_py, get_bits);
+        dec_ref_bits(_py, target_bits);
+        crate::call::bind::clear_call_bind_ic_cache(_py);
+    });
+}
+
+#[test]
+fn call_bind_ic_never_bypasses_custom_metaclass_call() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        crate::call::bind::clear_call_bind_ic_cache(_py);
+        CUSTOM_METACLASS_CALL_COUNT.store(0, Ordering::SeqCst);
+
+        let call_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+            _py,
+            crate::builtins::functions::runtime_fn_addr(
+                "c_api_test_custom_metaclass_call",
+                c_api_test_custom_metaclass_call as *const (),
+            ),
+            2,
+        );
+        assert!(!call_ptr.is_null());
+        let call_bits = MoltObject::from_ptr(call_ptr).bits();
+        let builtins = crate::builtins::classes::builtin_classes(_py);
+        let metaclass_bits = create_test_type(
+            _py,
+            builtins.type_obj,
+            b"CountingMeta",
+            builtins.type_obj,
+            &[(b"__call__", call_bits)],
+        );
+        let class_bits =
+            create_test_type(_py, metaclass_bits, b"MetaCallable", builtins.object, &[]);
+
+        let site_id = 127u64;
+        for (index, expected) in [41i64, 43i64].into_iter().enumerate() {
+            let builder_bits = crate::call::bind::molt_callargs_new(1, 0);
+            let _ = unsafe {
+                crate::molt_callargs_push_pos(builder_bits, MoltObject::from_int(expected).bits())
+            };
+            let out_bits = crate::call::bind::molt_call_bind_ic(
+                MoltObject::from_int(site_id as i64).bits(),
+                class_bits,
+                builder_bits,
+            );
+            assert_eq!(to_i64(obj_from_bits(out_bits)), Some(expected));
+            assert_eq!(
+                CUSTOM_METACLASS_CALL_COUNT.load(Ordering::SeqCst),
+                index + 1,
+                "every call at the same site must dispatch through metaclass __call__"
+            );
+            assert!(!exception_pending(_py));
+            assert!(
+                !crate::call::bind::call_bind_ic_site_cached_for_test(site_id),
+                "custom metaclass __call__ must never install TYPE_CALL"
+            );
+            dec_ref_bits(_py, out_bits);
+        }
+
+        dec_ref_bits(_py, class_bits);
+        dec_ref_bits(_py, metaclass_bits);
+        dec_ref_bits(_py, call_bits);
+        crate::call::bind::clear_call_bind_ic_cache(_py);
+    });
+}
+
+#[test]
+fn type_call_ic_invalidates_when_metaclass_call_policy_changes() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        crate::call::bind::clear_call_bind_ic_cache(_py);
+        MUTATED_METACLASS_CALL_COUNT.store(0, Ordering::SeqCst);
+
+        let builtins = crate::builtins::classes::builtin_classes(_py);
+        let metaclass_bits = create_test_type(
+            _py,
+            builtins.type_obj,
+            b"MutableMeta",
+            builtins.type_obj,
+            &[],
+        );
+        let class_bits = create_test_type(
+            _py,
+            metaclass_bits,
+            b"InitiallyDefaultCall",
+            builtins.object,
+            &[],
+        );
+        let site_id = 131u64;
+
+        let first_builder = crate::call::bind::molt_callargs_new(0, 0);
+        let first = crate::call::bind::molt_call_bind_ic(
+            MoltObject::from_int(site_id as i64).bits(),
+            class_bits,
+            first_builder,
+        );
+        assert!(obj_from_bits(first).as_ptr().is_some());
+        assert!(crate::call::bind::call_bind_ic_site_cached_for_test(
+            site_id
+        ));
+        dec_ref_bits(_py, first);
+
+        let call_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+            _py,
+            crate::builtins::functions::runtime_fn_addr(
+                "c_api_test_mutated_metaclass_call",
+                c_api_test_mutated_metaclass_call as *const (),
+            ),
+            1,
+        );
+        assert!(!call_ptr.is_null());
+        let call_bits = MoltObject::from_ptr(call_ptr).bits();
+        let call_name_bits = unsafe { molt_string_from(b"__call__".as_ptr(), 8) };
+        let _ = crate::molt_set_attr_name(metaclass_bits, call_name_bits, call_bits);
+        assert!(!exception_pending(_py));
+
+        let second_builder = crate::call::bind::molt_callargs_new(0, 0);
+        let second = crate::call::bind::molt_call_bind_ic(
+            MoltObject::from_int(site_id as i64).bits(),
+            class_bits,
+            second_builder,
+        );
+        assert_eq!(to_i64(obj_from_bits(second)), Some(97));
+        assert_eq!(MUTATED_METACLASS_CALL_COUNT.load(Ordering::SeqCst), 1);
+        assert!(!exception_pending(_py));
+
+        dec_ref_bits(_py, second);
+        dec_ref_bits(_py, call_name_bits);
+        dec_ref_bits(_py, call_bits);
+        dec_ref_bits(_py, class_bits);
+        dec_ref_bits(_py, metaclass_bits);
+        crate::call::bind::clear_call_bind_ic_cache(_py);
+    });
+}
+
+#[test]
+fn empty_class_layout_memo_does_not_republish_type_epoch() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        let builtins = crate::builtins::classes::builtin_classes(_py);
+        let class_bits = create_test_type(
+            _py,
+            builtins.type_obj,
+            b"MemoizedEmptyLayout",
+            builtins.object,
+            &[],
+        );
+        let class_ptr = obj_from_bits(class_bits).as_ptr().expect("class ptr");
+        let first = unsafe { crate::call::class_init::class_layout_size_cached(_py, class_ptr) };
+        let epoch_after_publish = crate::global_type_version();
+        let second = unsafe { crate::call::class_init::class_layout_size_cached(_py, class_ptr) };
+        assert_eq!(second, first);
+        assert_eq!(
+            crate::global_type_version(),
+            epoch_after_publish,
+            "reading an already-published empty-class layout memo must not look like a type mutation"
+        );
+        dec_ref_bits(_py, class_bits);
+    });
+}
+
+#[test]
+fn heap_call_ic_invalidates_when_inherited_call_changes() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        crate::call::bind::clear_call_bind_ic_cache(_py);
+        INHERITED_CALL_REPLACEMENT_COUNT.store(0, Ordering::SeqCst);
+
+        let original_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+            _py,
+            crate::builtins::functions::runtime_fn_addr(
+                "c_api_test_bound_identity",
+                c_api_test_bound_identity as *const (),
+            ),
+            2,
+        );
+        assert!(!original_ptr.is_null());
+        let original_bits = MoltObject::from_ptr(original_ptr).bits();
+        let base_bits = create_test_heap_class(
+            _py,
+            b"InheritedCallableBase",
+            &[(b"__call__", original_bits)],
+        );
+        let builtins = crate::builtins::classes::builtin_classes(_py);
+        let derived_bits = create_test_type(
+            _py,
+            builtins.type_obj,
+            b"InheritedCallableDerived",
+            base_bits,
+            &[],
+        );
+        let derived_ptr = obj_from_bits(derived_bits)
+            .as_ptr()
+            .expect("derived class ptr");
+        let instance_bits = unsafe { crate::alloc_instance_for_class(_py, derived_ptr) };
+        let site_id = 137u64;
+
+        let first_builder = crate::call::bind::molt_callargs_new(1, 0);
+        let _ = unsafe {
+            crate::molt_callargs_push_pos(first_builder, MoltObject::from_int(17).bits())
+        };
+        let first = crate::call::bind::molt_call_bind_ic(
+            MoltObject::from_int(site_id as i64).bits(),
+            instance_bits,
+            first_builder,
+        );
+        assert_eq!(to_i64(obj_from_bits(first)), Some(17));
+        assert!(crate::call::bind::call_bind_ic_site_cached_for_test(
+            site_id
+        ));
+        dec_ref_bits(_py, first);
+
+        let replacement_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+            _py,
+            crate::builtins::functions::runtime_fn_addr(
+                "c_api_test_replaced_inherited_call",
+                c_api_test_replaced_inherited_call as *const (),
+            ),
+            2,
+        );
+        assert!(!replacement_ptr.is_null());
+        let replacement_bits = MoltObject::from_ptr(replacement_ptr).bits();
+        let call_name_bits = unsafe { molt_string_from(b"__call__".as_ptr(), 8) };
+        let version_before = crate::global_type_version();
+        let _ = crate::molt_set_attr_name(base_bits, call_name_bits, replacement_bits);
+        assert!(crate::global_type_version() > version_before);
+        assert!(!exception_pending(_py));
+
+        let second_builder = crate::call::bind::molt_callargs_new(1, 0);
+        let _ = unsafe {
+            crate::molt_callargs_push_pos(second_builder, MoltObject::from_int(19).bits())
+        };
+        let second = crate::call::bind::molt_call_bind_ic(
+            MoltObject::from_int(site_id as i64).bits(),
+            instance_bits,
+            second_builder,
+        );
+        assert_eq!(to_i64(obj_from_bits(second)), Some(19));
+        assert_eq!(INHERITED_CALL_REPLACEMENT_COUNT.load(Ordering::SeqCst), 1);
+        assert!(!exception_pending(_py));
+
+        dec_ref_bits(_py, second);
+        dec_ref_bits(_py, call_name_bits);
+        dec_ref_bits(_py, replacement_bits);
+        dec_ref_bits(_py, instance_bits);
+        dec_ref_bits(_py, derived_bits);
+        dec_ref_bits(_py, base_bits);
+        dec_ref_bits(_py, original_bits);
+        crate::call::bind::clear_call_bind_ic_cache(_py);
     });
 }
 
