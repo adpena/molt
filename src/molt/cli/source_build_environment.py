@@ -14,6 +14,7 @@ import tomllib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypedDict, cast
 
 from packaging.markers import default_environment
 from packaging.requirements import InvalidRequirement, Requirement
@@ -48,6 +49,19 @@ SOURCE_MARKER_ENVIRONMENT_FIELDS = (
     "python_version",
     "sys_platform",
 )
+
+
+class _SourceBuildAddress(TypedDict):
+    schema_version: int
+    dependency_group: str
+    dependency_group_requirements: list[str]
+    uv_lock_sha256: str
+    python: dict[str, str]
+    uv: dict[str, str]
+
+
+class _SourceBuildCustody(_SourceBuildAddress):
+    environment_id: str
 
 
 @dataclass(frozen=True)
@@ -185,7 +199,7 @@ def _declared_dependency_group(
 
 def _environment_spec(
     repo_root: Path, dependency_group: str
-) -> tuple[Path, Path, Path, dict[str, object], Path]:
+) -> tuple[Path, Path, Path, _SourceBuildCustody, Path]:
     repo_root = repo_root.resolve()
     if not dependency_group or any(
         character not in "abcdefghijklmnopqrstuvwxyz0123456789-_"
@@ -201,7 +215,7 @@ def _environment_spec(
     lock_digest = _sha256_file(lock_path)
     python = _python_identity()
     uv, uv_payload = _uv_identity()
-    address_payload = {
+    address_payload: _SourceBuildAddress = {
         "schema_version": SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION,
         "dependency_group": dependency_group,
         "dependency_group_requirements": list(group_requirements),
@@ -212,7 +226,7 @@ def _environment_spec(
     environment_id = hashlib.sha256(
         json.dumps(address_payload, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
-    custody: dict[str, object] = {
+    custody: _SourceBuildCustody = {
         "environment_id": environment_id,
         **address_payload,
     }
@@ -242,7 +256,7 @@ def _canonical_distribution_roots() -> tuple[str, ...]:
 def _installed_distributions() -> list[dict[str, str]]:
     rows: dict[str, dict[str, str]] = {}
     for distribution in importlib_metadata.distributions(
-        path=_canonical_distribution_roots()
+        path=list(_canonical_distribution_roots())
     ):
         raw_name = distribution.metadata.get("Name")
         if not isinstance(raw_name, str) or not raw_name.strip():
@@ -515,9 +529,9 @@ def provision_source_build_environment(
                 f"uv sync did not create source-build Python: {python_executable}"
             )
         installed = _probe_environment_distributions(python_executable)
-        raw_group_requirements = custody["dependency_group_requirements"]
-        assert isinstance(raw_group_requirements, list)
-        _validate_declared_group_resolutions(raw_group_requirements, installed)
+        _validate_declared_group_resolutions(
+            custody["dependency_group_requirements"], installed
+        )
         manifest = {**custody, "installed_distributions": installed}
         _atomic_write_json(
             manifest_path,
@@ -547,6 +561,7 @@ def source_build_environment_problems(payload: object) -> list[str]:
     }
     if not isinstance(payload, Mapping) or set(payload) != expected_fields:
         return ["extension-set manifest build_environment shape is invalid"]
+    payload = cast(Mapping[str, object], payload)
 
     problems: list[str] = []
     python = payload.get("python")
@@ -566,6 +581,8 @@ def source_build_environment_problems(payload: object) -> list[str]:
     }:
         problems.append("extension-set manifest build-environment custody is invalid")
     else:
+        custody = cast(Mapping[str, object], custody)
+
         def valid_sha256(value: object) -> bool:
             return (
                 isinstance(value, str)
@@ -584,15 +601,24 @@ def source_build_environment_problems(payload: object) -> list[str]:
         ):
             problems.append("extension-set manifest build-environment custody is invalid")
         group_requirements = custody.get("dependency_group_requirements")
-        if (
+        candidate_group_requirements = (
+            [item for item in group_requirements if isinstance(item, str) and item]
+            if isinstance(group_requirements, list)
+            else []
+        )
+        group_requirements_are_valid = not (
             not isinstance(group_requirements, list)
             or not group_requirements
-            or not all(isinstance(item, str) and item for item in group_requirements)
-        ):
+            or len(candidate_group_requirements) != len(group_requirements)
+        )
+        normalized_group_requirements = (
+            candidate_group_requirements if group_requirements_are_valid else None
+        )
+        if normalized_group_requirements is None:
             problems.append("extension-set manifest build dependency group is invalid")
         else:
             try:
-                parsed_group = [Requirement(item) for item in group_requirements]
+                parsed_group = [Requirement(item) for item in normalized_group_requirements]
             except InvalidRequirement:
                 problems.append(
                     "extension-set manifest build dependency group is invalid"
@@ -652,15 +678,13 @@ def source_build_environment_problems(payload: object) -> list[str]:
             isinstance(custody.get("dependency_group"), str)
             and valid_sha256(custody.get("uv_lock_sha256"))
             and isinstance(custody_python, Mapping)
-            and isinstance(group_requirements, list)
+            and normalized_group_requirements is not None
             and isinstance(custody_uv, Mapping)
         ):
             address_payload = {
                 "schema_version": custody["schema_version"],
                 "dependency_group": custody["dependency_group"],
-                "dependency_group_requirements": custody[
-                    "dependency_group_requirements"
-                ],
+                "dependency_group_requirements": normalized_group_requirements,
                 "uv_lock_sha256": custody["uv_lock_sha256"],
                 "python": dict(custody_python),
                 "uv": dict(custody_uv) if isinstance(custody_uv, Mapping) else custody_uv,
@@ -688,11 +712,17 @@ def source_build_environment_problems(payload: object) -> list[str]:
     ):
         problems.append("extension-set manifest build requirements are invalid")
         return problems
+    requirements = [item for item in requirements if isinstance(item, str) and item]
     if not isinstance(raw_environment, Mapping) or set(raw_environment) != set(
         SOURCE_MARKER_ENVIRONMENT_FIELDS
     ) or not all(isinstance(value, str) for value in raw_environment.values()):
         problems.append("extension-set manifest marker environment is invalid")
         return problems
+    raw_environment = {
+        str(key): value
+        for key, value in raw_environment.items()
+        if isinstance(key, str) and isinstance(value, str)
+    }
     try:
         active = active_source_build_requirements(requirements, raw_environment)
     except SourceBuildEnvironmentError:
@@ -708,8 +738,9 @@ def source_build_environment_problems(payload: object) -> list[str]:
             != str(raw_environment.get("python_full_version"))
         ):
             problems.append("extension-set manifest build Python identity is invalid")
-        if isinstance(custody, Mapping) and isinstance(custody.get("python"), Mapping):
-            custody_python = custody["python"]
+        custody_python_value = custody.get("python") if isinstance(custody, Mapping) else None
+        if isinstance(custody_python_value, Mapping):
+            custody_python = cast(Mapping[str, object], custody_python_value)
             if (
                 python.get("implementation") != custody_python.get("implementation")
                 or python.get("version") != custody_python.get("version")
@@ -742,20 +773,21 @@ def source_build_environment_problems(payload: object) -> list[str]:
         ):
             problems.append("extension-set manifest resolved requirement values are invalid")
             continue
-        raw = str(item["requirement"])
+        item = cast(Mapping[str, object], item)
+        raw = cast(str, item["requirement"])
+        distribution = cast(str, item["distribution"])
+        raw_version = cast(str, item["version"])
         resolved_requirements.append(raw)
         if index >= len(active) or raw != active[index][0]:
             continue
         requirement = active[index][1]
-        if canonicalize_name(str(item["distribution"])) != canonicalize_name(
-            requirement.name
-        ):
+        if canonicalize_name(distribution) != canonicalize_name(requirement.name):
             problems.append(
                 f"extension-set manifest resolved distribution does not satisfy {raw!r}"
             )
             continue
         try:
-            version = Version(str(item["version"]))
+            version = Version(raw_version)
         except InvalidVersion:
             problems.append(
                 f"extension-set manifest resolved version is invalid for {raw!r}"

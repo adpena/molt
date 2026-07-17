@@ -497,7 +497,10 @@ def _read_native_archive_symbol_cache(
         return None
     if not all(isinstance(symbol, str) for symbol in (*defined, *undefined)):
         return None
-    return set(defined), set(undefined)
+    return (
+        {symbol for symbol in defined if isinstance(symbol, str)},
+        {symbol for symbol in undefined if isinstance(symbol, str)},
+    )
 
 
 def _write_native_archive_symbol_cache(
