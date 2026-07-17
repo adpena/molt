@@ -342,16 +342,22 @@ fn call_extension_loader_boundary(_py: &PyToken<'_>, module_name: &str, path: &s
     out
 }
 
-fn call_extension_exec_boundary(
-    _py: &PyToken<'_>,
-    namespace_bits: u64,
-    module_name: &str,
-    path: &str,
-) -> u64 {
-    let module_bits = alloc_test_string_bits(_py, module_name);
+fn call_extension_exec_boundary(_py: &PyToken<'_>, module_name: &str, path: &str) -> u64 {
+    let module_name_bits = alloc_test_string_bits(_py, module_name);
     let path_bits = alloc_test_string_bits(_py, path);
-    let out = molt_importlib_exec_extension(namespace_bits, module_bits, path_bits);
+    let module_bits = crate::molt_module_new(module_name_bits);
+    let namespace_ptr = obj_from_bits(module_bits)
+        .as_ptr()
+        .map(|ptr| unsafe { crate::object::layout::module_dict_bits(ptr) })
+        .and_then(|bits| obj_from_bits(bits).as_ptr())
+        .expect("test module namespace");
+    let out =
+        match importlib_exec_extension_impl(_py, module_bits, namespace_ptr, module_name, path) {
+            Ok(()) => MoltObject::none().bits(),
+            Err(bits) => bits,
+        };
     dec_ref_bits(_py, module_bits);
+    dec_ref_bits(_py, module_name_bits);
     dec_ref_bits(_py, path_bits);
     out
 }
@@ -602,7 +608,7 @@ fn sys_bootstrap_state_ignores_virtual_env_site_packages_when_present() {
 }
 
 #[test]
-fn runpy_resolve_path_uses_bootstrap_pwd_for_relative_paths() {
+fn bootstrap_resolve_abspath_uses_bootstrap_pwd_for_relative_paths() {
     let sep = bootstrap_path_sep();
     let pwd = platform_test_path(&["bootstrap_pwd"]);
     let rel_path = path_join_text(path_join_text("pkg".to_string(), "..", sep), "mod.py", sep);
@@ -637,32 +643,6 @@ fn importlib_source_loader_resolution_marks_packages() {
     assert!(!module.is_package);
     assert_eq!(module.module_package, "demo.pkg");
     assert_eq!(module.package_root, None);
-}
-
-#[test]
-fn importlib_source_exec_payload_reads_source_and_resolution() {
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let tmp = std::env::temp_dir().join(format!(
-        "molt_importlib_source_exec_payload_{}_{}",
-        std::process::id(),
-        stamp
-    ));
-    std::fs::create_dir_all(&tmp).expect("create temp dir");
-    let module_path = tmp.join("demo.py");
-    std::fs::write(&module_path, "value = 42\n").expect("write module source");
-
-    let payload = importlib_source_exec_payload("demo", &module_path.to_string_lossy(), false)
-        .expect("build source exec payload");
-    assert!(!payload.is_package);
-    assert_eq!(payload.module_package, "");
-    assert_eq!(payload.package_root, None);
-    let text = String::from_utf8(payload.source.clone()).expect("decode source text");
-    assert!(text.contains("value = 42"));
-
-    std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
 }
 
 #[test]
@@ -1261,16 +1241,7 @@ fn extension_exec_boundary_rejects_missing_manifest_sidecar() {
         let extension_path_text = extension_path.to_string_lossy().into_owned();
 
         crate::with_gil_entry_nopanic!(_py, {
-            let namespace_ptr = alloc_dict_with_pairs(_py, &[]);
-            assert!(!namespace_ptr.is_null(), "alloc namespace dict");
-            let namespace_bits = MoltObject::from_ptr(namespace_ptr).bits();
-            let _ = call_extension_exec_boundary(
-                _py,
-                namespace_bits,
-                module_name,
-                &extension_path_text,
-            );
-            dec_ref_bits(_py, namespace_bits);
+            let _ = call_extension_exec_boundary(_py, module_name, &extension_path_text);
             assert_pending_exception_contains(
                 _py,
                 "ImportError",
@@ -1301,16 +1272,7 @@ fn extension_exec_boundary_rejects_invalid_manifest_metadata() {
         let extension_path_text = extension_path.to_string_lossy().into_owned();
 
         crate::with_gil_entry_nopanic!(_py, {
-            let namespace_ptr = alloc_dict_with_pairs(_py, &[]);
-            assert!(!namespace_ptr.is_null(), "alloc namespace dict");
-            let namespace_bits = MoltObject::from_ptr(namespace_ptr).bits();
-            let _ = call_extension_exec_boundary(
-                _py,
-                namespace_bits,
-                module_name,
-                &extension_path_text,
-            );
-            dec_ref_bits(_py, namespace_bits);
+            let _ = call_extension_exec_boundary(_py, module_name, &extension_path_text);
             assert_pending_exception_contains(
                 _py,
                 "ImportError",
@@ -1380,16 +1342,7 @@ fn extension_exec_boundary_rejects_manifest_module_mismatch() {
         );
 
         crate::with_gil_entry_nopanic!(_py, {
-            let namespace_ptr = alloc_dict_with_pairs(_py, &[]);
-            assert!(!namespace_ptr.is_null(), "alloc namespace dict");
-            let namespace_bits = MoltObject::from_ptr(namespace_ptr).bits();
-            let _ = call_extension_exec_boundary(
-                _py,
-                namespace_bits,
-                module_name,
-                &extension_path_text,
-            );
-            dec_ref_bits(_py, namespace_bits);
+            let _ = call_extension_exec_boundary(_py, module_name, &extension_path_text);
             assert_pending_exception_contains(
                 _py,
                 "ImportError",
@@ -1888,7 +1841,7 @@ fn importlib_find_in_path_resolves_zip_source_module_and_package() {
 #[cfg(feature = "stdlib_archive")]
 #[test]
 #[cfg_attr(miri, ignore)]
-fn importlib_zip_source_exec_payload_reads_source_and_resolution() {
+fn importlib_zip_source_payload_reads_source_and_resolution() {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -1913,7 +1866,7 @@ fn importlib_zip_source_exec_payload_reads_source_and_resolution() {
     writer.finish().expect("finish zip file");
 
     let archive_text = archive.to_string_lossy().into_owned();
-    let payload = importlib_zip_source_exec_payload("zipmod", &archive_text, "zipmod.py", false)
+    let payload = importlib_zip_source_payload("zipmod", &archive_text, "zipmod.py", false)
         .expect("build zip source exec payload");
     assert!(!payload.is_package);
     assert_eq!(payload.module_package, "");
@@ -1921,6 +1874,11 @@ fn importlib_zip_source_exec_payload_reads_source_and_resolution() {
     assert!(payload.origin.ends_with("mods.zip/zipmod.py"));
     let text = String::from_utf8(payload.source.clone()).expect("decode source text");
     assert!(text.contains("value = 41"));
+
+    let resolution = importlib_zip_source_resolution("zipmod", &archive_text, "zipmod.py", false)
+        .expect("resolve compiled zip source without reading it");
+    assert_eq!(resolution.origin, payload.origin);
+    assert_eq!(resolution.module_package, payload.module_package);
 
     std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
 }

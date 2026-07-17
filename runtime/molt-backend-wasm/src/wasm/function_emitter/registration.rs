@@ -16,9 +16,10 @@ pub(super) fn register_function(
         );
     }
     backend.funcs.function(type_idx);
-    if reloc_enabled && func_ir.name == "molt_main" {
+    let needs_entry_wrapper = reloc_enabled || backend.module_registry.is_some();
+    if needs_entry_wrapper && func_ir.name == "molt_main" {
         backend.molt_main_index = Some(func_index);
-    } else if reloc_enabled && func_ir.name == "molt_host_init" {
+    } else if needs_entry_wrapper && func_ir.name == "molt_host_init" {
         backend.molt_host_init_index = Some(func_index);
     } else {
         backend

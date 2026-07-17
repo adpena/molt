@@ -1,3 +1,5 @@
+use crate::ir::ModuleRegistryIR;
+use crate::wasm_data::DataSegmentRef;
 use crate::wasm_data::WasmDataSegments;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_options::WasmCompileOptions;
@@ -35,6 +37,8 @@ pub struct WasmBackend {
     /// Number of tail calls emitted via `return_call` (WASM tail calls proposal).
     pub(in crate::wasm) tail_calls_emitted: usize,
     pub(in crate::wasm) numeric_lane_stats: WasmNumericLaneStats,
+    pub(in crate::wasm) module_registry: Option<ModuleRegistryIR>,
+    pub(in crate::wasm) module_registry_segment: Option<DataSegmentRef>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -145,7 +149,14 @@ impl WasmBackend {
             options,
             tail_calls_emitted: 0,
             numeric_lane_stats: WasmNumericLaneStats::default(),
+            module_registry: None,
+            module_registry_segment: None,
         }
+    }
+
+    pub fn with_module_registry(mut self, module_registry: Option<ModuleRegistryIR>) -> Self {
+        self.module_registry = module_registry;
+        self
     }
 
     pub(in crate::wasm) fn compile_diagnostics(&self) -> WasmCompileDiagnostics {

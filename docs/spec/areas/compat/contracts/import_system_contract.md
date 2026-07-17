@@ -270,6 +270,12 @@ Modules may be:
   `sys.modules` substitution return selection to the shared Rust
   spec-execution transaction. Python loader code may still normalize arguments
   and build specs, but it must not own the module-cache transaction.
+- `SourceFileLoader`/`ZipSourceLoader.exec_module(module)` and compiler-admitted
+  extension/sourceless shim execution run the compiler initializer directly in
+  the supplied module object. The execution transaction redirects the
+  initializer's `MODULE_NEW` to that object, preserves loader-created metadata,
+  and leaves partial namespace mutations on failure; no dict-copy executor or
+  dict-only compatibility ABI remains.
 - Target/device-specific lazy imports, such as GPU backend families, must be
   represented as explicit runtime/device policy edges before they are admitted
   to the compiled graph. Non-admitted imports raise deterministic errors.
@@ -304,7 +310,7 @@ Import/bootstrap changes are expected to be covered by the existing in-tree regr
 - Static package `__all__` star-child slice: `tests/cli/test_cli_import_collection.py::test_from_import_star_graph_admits_static_all_child_module`, `tests/test_native_import_star_all_regressions.py`, and `tests/differential/basic/import_star_package_all_child.py`. Keep this paired with `tests/differential/basic/import_star.py` when changing `MODULE_IMPORT_STAR`, import-scan caches, or the Rust transaction `fromlist=["*"]` path.
 - Package-context slice: `tests/test_native_import_package_context_regressions.py` and `tests/differential/basic/import_dunder_package_context.py`; the differential receipt is `logs/import_dunder_package_context_diff.log` plus `logs/import_dunder_package_context_diff_results.jsonl`. Keep this paired with transaction/fromlist tests when changing `importlib_transaction_package_from_globals` or relative `__import__` resolution.
 - Public importlib resolver-validation slice: `tests/test_native_importlib_public_api_regressions.py` and `tests/differential/stdlib/importlib_public_api_validation.py`; the differential receipt is `logs/importlib_public_api_validation_diff.log` plus `logs/importlib_public_api_validation_diff_results.jsonl`. Keep this paired with transaction tests when changing `molt_importlib_resolve_name`, `molt_importlib_import_module_resolve_name`, or `importlib.import_module` shim wiring.
-- Load-module spec-execution slice: `tests/test_native_importlib_load_module_transaction.py`, `tests/differential/stdlib/importlib_load_module_transaction.py`, and the existing spec/module differential shard (`importlib_module_from_spec.py`, `importlib_spec_from_file.py`, `importlib_util_spec_module.py`, `importlib_util_exec_module.py`, `importlib_sourcefileloader_restricted_exec.py`). The differential receipts are `logs/importlib_load_module_transaction_diff.log`, `logs/importlib_load_module_transaction_diff_results.jsonl`, `logs/importlib_spec_execution_transaction_regression_diff.log`, and `logs/importlib_spec_execution_transaction_regression_diff_results.jsonl`.
+- Load-module spec-execution slice: `tests/test_native_importlib_load_module_transaction.py`, `tests/differential/stdlib/importlib_load_module_transaction.py`, and the existing spec/module differential shard (`importlib_module_from_spec.py`, `importlib_spec_from_file.py`, `importlib_util_spec_module.py`, `importlib_util_exec_module.py`, `importlib_sourcefileloader_compiled_exec.py`). The differential receipts are `logs/importlib_load_module_transaction_diff.log`, `logs/importlib_load_module_transaction_diff_results.jsonl`, `logs/importlib_spec_execution_transaction_regression_diff.log`, and `logs/importlib_spec_execution_transaction_regression_diff_results.jsonl`.
 
 ---
 

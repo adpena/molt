@@ -26,24 +26,24 @@ use payloads::*;
 #[allow(unused_imports)]
 use reload_bootstrap::*;
 
-pub(super) use bootstrap_loader::importlib_coerce_search_paths_values;
+pub(super) use bootstrap_loader::{
+    importlib_coerce_search_paths_values, importlib_exec_extension_impl,
+};
 pub use bootstrap_loader::{
     molt_importlib_cache_from_source, molt_importlib_coerce_module_name,
     molt_importlib_coerce_search_paths, molt_importlib_decode_source,
-    molt_importlib_exec_extension, molt_importlib_exec_sourceless,
     molt_importlib_extension_loader_exec_module, molt_importlib_extension_loader_payload,
     molt_importlib_finder_signature, molt_importlib_module_spec_is_package,
     molt_importlib_package_root_from_origin, molt_importlib_path_importer_cache_signature,
     molt_importlib_path_is_archive_member, molt_importlib_read_file,
-    molt_importlib_source_exec_payload, molt_importlib_source_from_cache,
-    molt_importlib_source_hash, molt_importlib_source_loader_payload,
-    molt_importlib_sourcefileloader_exec_module, molt_importlib_sourceless_loader_exec_module,
-    molt_importlib_sourceless_loader_payload, molt_importlib_zip_read_entry,
-    molt_importlib_zip_source_exec_payload, molt_importlib_zip_source_loader_exec_module,
-    molt_linecache_loader_get_source, molt_sys_bootstrap_include_cwd,
-    molt_sys_bootstrap_module_roots, molt_sys_bootstrap_path, molt_sys_bootstrap_payload,
-    molt_sys_bootstrap_pwd, molt_sys_bootstrap_pythonpath, molt_sys_bootstrap_stdlib_root,
-    molt_traceback_exception_suppress_context,
+    molt_importlib_source_from_cache, molt_importlib_source_hash,
+    molt_importlib_source_loader_payload, molt_importlib_sourcefileloader_exec_module,
+    molt_importlib_sourceless_loader_exec_module, molt_importlib_sourceless_loader_payload,
+    molt_importlib_zip_read_entry, molt_importlib_zip_source_loader_exec_module,
+    molt_importlib_zip_source_payload, molt_linecache_loader_get_source,
+    molt_sys_bootstrap_include_cwd, molt_sys_bootstrap_module_roots, molt_sys_bootstrap_path,
+    molt_sys_bootstrap_payload, molt_sys_bootstrap_pwd, molt_sys_bootstrap_pythonpath,
+    molt_sys_bootstrap_stdlib_root, molt_traceback_exception_suppress_context,
 };
 pub use find_spec::{
     molt_importlib_filefinder_find_spec, molt_importlib_filefinder_invalidate,
@@ -68,7 +68,7 @@ pub use metadata_spec::{
     molt_importlib_metadata_record_payload, molt_importlib_module_from_spec,
     molt_importlib_set_module_state, molt_importlib_spec_from_file_location,
     molt_importlib_spec_from_file_location_payload, molt_importlib_spec_from_loader,
-    molt_importlib_stabilize_module_state, molt_runpy_resolve_path,
+    molt_importlib_stabilize_module_state,
 };
 pub use payloads::{
     molt_importlib_frozen_external_payload, molt_importlib_frozen_payload,

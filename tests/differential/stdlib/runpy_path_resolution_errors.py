@@ -20,6 +20,13 @@ with tempfile.TemporaryDirectory() as tmp:
     except FileNotFoundError:
         print("missing-ok")
 
+    empty = os.path.join(tmp, "empty")
+    os.mkdir(empty)
+    try:
+        runpy.run_path(empty)
+    except ImportError as exc:
+        print("__main__" in str(exc))
+
 try:
     runpy.run_path(123)
 except TypeError:

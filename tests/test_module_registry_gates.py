@@ -68,9 +68,18 @@ def _sample_registry():
     return build_module_registry(
         [
             ModuleRegistryEntry(
-                name="demo", kind="source", init_symbol="molt_init_demo"
+                name="demo",
+                kind="source",
+                init_symbol="molt_init_demo",
+                origin="/app/demo.py",
             ),
-            ModuleRegistryEntry(name="pkg", kind="source", init_symbol="molt_init_pkg"),
+            ModuleRegistryEntry(
+                name="pkg",
+                kind="source",
+                init_symbol="molt_init_pkg",
+                is_package=True,
+                origin="/app/pkg/__init__.py",
+            ),
             ModuleRegistryEntry(
                 name="pkg.sub", kind="source", init_symbol="molt_init_pkg__sub"
             ),
@@ -178,17 +187,23 @@ def test_module_registry_blob_layout_matches_schema() -> None:
     assert schema == authority.MODULE_REGISTRY_SCHEMA_VERSION
     assert count == len(registry.rows)
     (names_len,) = struct.unpack_from("<Q", blob, 32)
+    (origins_len,) = struct.unpack_from("<Q", blob, 40)
     rows_end = (
         authority.MODULE_REGISTRY_HEADER_BYTES
         + count * authority.MODULE_REGISTRY_ROW_BYTES
     )
-    assert len(blob) == rows_end + names_len
+    assert len(blob) == rows_end + names_len + origins_len
     # Name table is the sorted id-order concatenation (binary-search contract).
-    names = blob[rows_end:].decode("utf-8")
+    names = blob[rows_end : rows_end + names_len].decode("utf-8")
     offset = 0
     for row in registry.rows:
         assert names[offset : offset + len(row.name)] == row.name
         offset += len(row.name)
+    origins = blob[rows_end + names_len :].decode("utf-8")
+    offset = 0
+    for row in registry.rows:
+        assert origins[offset : offset + len(row.origin)] == row.origin
+        offset += len(row.origin)
     # Every init relocation lands on a row's 8-aligned init-pointer slot.
     for reloc_offset, symbol in payload["relocs"]:
         row_offset = reloc_offset - authority.MODULE_REGISTRY_HEADER_BYTES
@@ -203,6 +218,9 @@ def test_module_registry_blob_layout_matches_schema() -> None:
     assert "molt_init_smuggled" not in reloc_symbols
     lazy_row = registry.row_of("lazy_row")
     assert lazy_row is not None and lazy_row.init_symbol == ""
+    package_row = registry.row_of("pkg")
+    assert package_row is not None
+    assert package_row.flags & authority.MODULE_FLAG_PACKAGE
     assert set(payload["init_symbols"]) == reloc_symbols
 
 
@@ -222,9 +240,9 @@ def test_module_registry_schema_authority_is_synchronized() -> None:
     )
     assert (
         _rust_const(reader, "MODULE_REGISTRY_MAGIC")
-        == 'u64::from_le_bytes(*b"MOLTMOD1")'
+        == 'u64::from_le_bytes(*b"MOLTMOD2")'
     )
-    assert authority.MODULE_REGISTRY_MAGIC == int.from_bytes(b"MOLTMOD1", "little")
+    assert authority.MODULE_REGISTRY_MAGIC == int.from_bytes(b"MOLTMOD2", "little")
     assert _rust_const(reader, "MODULE_REGISTRY_HEADER_BYTES") == str(
         authority.MODULE_REGISTRY_HEADER_BYTES
     )
@@ -233,6 +251,10 @@ def test_module_registry_schema_authority_is_synchronized() -> None:
     )
     assert _rust_const(reader, "NO_MODULE_ID") == "u32::MAX"
     assert authority.NO_MODULE_ID == 0xFFFF_FFFF
+    assert _rust_const(reader, "MODULE_FLAG_PACKAGE") == "0x02"
+    assert authority.MODULE_FLAG_PACKAGE == 0x02
+    assert _rust_const(reader, "MODULE_FLAG_HAS_BODY") == "0x04"
+    assert authority.MODULE_FLAG_HAS_BODY == 0x04
     for kind_name, code in (
         ("MODULE_KIND_SOURCE", authority.MODULE_KIND_SOURCE),
         ("MODULE_KIND_EXTENSION", authority.MODULE_KIND_EXTENSION),
@@ -504,30 +526,29 @@ def test_module_ensure_is_the_only_state_transition_owner() -> None:
     assert offenders == [], "\n".join(offenders)
 
 
-def test_native_runtime_has_no_isolate_import_lane() -> None:
-    """The string_eq chain's runtime half is gone on native: the only
-    remaining `molt_isolate_import` code references are the wasm32-gated env
-    import and its wasm32-gated call in builtins/modules.rs (deleted in PR3).
+def test_isolate_import_is_only_the_wasm_module_id_projection() -> None:
+    """The old name/string bridge cannot return on either target.
+
+    WASM owns exactly one integer ModuleId projection at the module-table
+    boundary; native reaches the same table through its relocation column.
     """
     offenders: list[str] = []
     for path in RUNTIME_SRC.rglob("*.rs"):
         code = _strip_line_comments(path.read_text(encoding="utf-8", errors="replace"))
         if "molt_isolate_import" not in code:
             continue
-        if path == RUNTIME_SRC / "builtins" / "modules.rs":
+        if path == RUNTIME_SRC / "builtins" / "module_table.rs":
             assert '#[cfg(target_arch = "wasm32")]' in code
             assert '#[link(wasm_import_module = "env")]' in code
-            # Exactly one call site, itself under a wasm32 cfg.
+            assert "fn molt_isolate_import(module_id: u64) -> u64;" in code
             call_sites = [
                 idx
                 for idx in range(len(code))
                 if code.startswith("molt_isolate_import(", idx)
             ]
-            assert len(call_sites) <= 2, (
-                "the wasm32 lane owns one declaration + one call"
-            )
+            assert len(call_sites) == 2, "one declaration and one ModuleId call"
             continue
         offenders.append(str(path))
     assert offenders == [], (
-        f"native molt_isolate_import references must not come back: {offenders}"
+        f"name/string isolate-import authority must not come back: {offenders}"
     )

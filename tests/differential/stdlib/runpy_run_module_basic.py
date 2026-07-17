@@ -1,44 +1,49 @@
-# MOLT_ENV: MOLT_CAPABILITIES=fs.read,fs.write,env.read
-"""Purpose: runpy.run_module supports module and package __main__ execution parity."""
+"""Purpose: runpy.run_module executes compiler-admitted modules and package mains."""
 
-import os
 import runpy
 import sys
-import tempfile
 
 
-with tempfile.TemporaryDirectory() as tmp:
-    mod_path = os.path.join(tmp, "modrun.py")
-    with open(mod_path, "w", encoding="utf-8") as handle:
-        handle.write("value = 11\n")
+def _admit_compiled_runpy_modules() -> None:
+    import runpy_compiled_fixture
+    import runpy_compiled_package.__main__
+    import runpy_compiled_package_no_main
+    import runpy_compiled_namespace.__main__
 
-    pkg_root = os.path.join(tmp, "pkgdemo")
-    os.mkdir(pkg_root)
-    with open(os.path.join(pkg_root, "__init__.py"), "w", encoding="utf-8") as handle:
-        handle.write("marker = 3\n")
-    with open(os.path.join(pkg_root, "__main__.py"), "w", encoding="utf-8") as handle:
-        handle.write("entry = 42\n")
 
-    original = list(sys.path)
-    try:
-        sys.path.insert(0, tmp)
-        ns = runpy.run_module("modrun")
-        print(ns.get("value"))
-        print(ns.get("__name__"))
-        print(ns.get("__package__"))
-        print(getattr(ns.get("__spec__"), "name", None))
+ns = runpy.run_module("runpy_compiled_fixture")
+print(ns["value"])
+print(ns["name_seen"])
+print(ns["package_seen"])
+print(getattr(ns["spec_seen"], "name", None))
+print(ns["loader_seen"] is not None)
+print(ns["loader_seen"] is getattr(ns["spec_seen"], "loader", None))
+print(ns["cached_seen"] == getattr(ns["spec_seen"], "cached", None))
 
-        ns2 = runpy.run_module(
-            "modrun", run_name="alias.runner", init_globals={"seed": 9}
-        )
-        print(ns2.get("seed"))
-        print(ns2.get("__name__"))
-        print(ns2.get("__package__"))
+alias = runpy.run_module(
+    "runpy_compiled_fixture",
+    run_name="alias.runner",
+    init_globals={"seed": 9},
+)
+print(alias["seed_seen"])
+print(alias["name_seen"])
+print(alias["package_seen"])
+print(getattr(alias["spec_seen"], "name", None))
 
-        pkg_ns = runpy.run_module("pkgdemo")
-        print(pkg_ns.get("entry"))
-        print(pkg_ns.get("__name__"))
-        print(pkg_ns.get("__package__"))
-        print(getattr(pkg_ns.get("__spec__"), "name", None))
-    finally:
-        sys.path[:] = original
+package = runpy.run_module("runpy_compiled_package")
+print(package["entry"])
+print(package["name_seen"])
+print(package["package_seen"])
+print(getattr(package["spec_seen"], "name", None))
+
+namespace = runpy.run_module("runpy_compiled_namespace")
+print(namespace["entry"])
+print(namespace["name_seen"])
+print(namespace["package_seen"])
+print(getattr(namespace["spec_seen"], "name", None))
+print("runpy_compiled_fixture" in sys.modules)
+
+try:
+    runpy.run_module("runpy_compiled_package_no_main")
+except ImportError as exc:
+    print("cannot be directly executed" in str(exc))

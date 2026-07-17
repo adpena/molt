@@ -44,7 +44,7 @@ builtins._molt_intrinsics = {{
         "is_package": False,
         "origin": "pkg.zip/pkg/mod.py",
     }},
-    "molt_importlib_zip_source_exec_payload": lambda fullname, archive, inner, is_package: {{
+    "molt_importlib_zip_source_payload": lambda fullname, archive, inner, is_package: {{
         "source": "VALUE = 7\\n"
     }},
     "molt_importlib_zip_read_entry": lambda archive, inner: b"payload",
