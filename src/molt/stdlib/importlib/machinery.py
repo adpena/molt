@@ -227,11 +227,13 @@ class SourceFileLoader(_SourceLoader):
         return None
 
     def exec_module(self, module) -> None:
-        _ensure_intrinsics()
-        _check_loader_exec_result(
-            _MOLT_IMPORTLIB_SOURCEFILELOADER_EXEC_MODULE(
-                self, module, self.path, ModuleSpec
-            )
+        _run_compiled_loader_exec(
+            0,
+            self.name,
+            self,
+            module,
+            self.path,
+            None,
         )
 
 
@@ -264,11 +266,13 @@ class _ZipSourceLoader:
         return None
 
     def exec_module(self, module) -> None:
-        _ensure_intrinsics()
-        _check_loader_exec_result(
-            _MOLT_IMPORTLIB_ZIP_SOURCE_LOADER_EXEC_MODULE(
-                self, module, self.archive_path, self.inner_path, ModuleSpec
-            )
+        _run_compiled_loader_exec(
+            1,
+            self.name,
+            self,
+            module,
+            self.archive_path,
+            self.inner_path,
         )
 
 
@@ -287,11 +291,13 @@ class ExtensionFileLoader(_FileLoader):
         return None
 
     def exec_module(self, module) -> None:
-        _ensure_intrinsics()
-        _check_loader_exec_result(
-            _MOLT_IMPORTLIB_EXTENSION_LOADER_EXEC_MODULE(
-                self, module, self.path, ModuleSpec
-            )
+        _run_compiled_loader_exec(
+            2,
+            self.name,
+            self,
+            module,
+            self.path,
+            None,
         )
 
 
@@ -319,11 +325,13 @@ class SourcelessFileLoader(_FileLoader):
         return None
 
     def exec_module(self, module) -> None:
-        _ensure_intrinsics()
-        _check_loader_exec_result(
-            _MOLT_IMPORTLIB_SOURCELESS_LOADER_EXEC_MODULE(
-                self, module, self.path, ModuleSpec
-            )
+        _run_compiled_loader_exec(
+            3,
+            self.name,
+            self,
+            module,
+            self.path,
+            None,
         )
 
 
@@ -385,9 +393,62 @@ class _MoltResourceReader:
         return values
 
 
+_MISSING_SYS_MODULE = object()
+
+
+def _restore_sys_modules_entry(modules, module_name: str, previous) -> None:
+    if not isinstance(modules, dict):
+        return
+    if previous is _MISSING_SYS_MODULE:
+        modules.pop(module_name, None)
+    else:
+        modules[module_name] = previous
+
+
+def _run_compiled_loader_exec(
+    kind: int,
+    module_name: str,
+    loader,
+    module,
+    path: str,
+    inner_path: str | None,
+) -> None:
+    modules = getattr(_sys, "modules", None)
+    previous = (
+        modules.get(module_name, _MISSING_SYS_MODULE)
+        if isinstance(modules, dict)
+        else _MISSING_SYS_MODULE
+    )
+    try:
+        _ensure_intrinsics()
+        # Intrinsic bootstrap may initialize statically admitted modules.
+        # Restore the caller's exact mapping before executing the requested
+        # body; direct Loader.exec_module does not own sys.modules publication.
+        _restore_sys_modules_entry(modules, module_name, previous)
+        if kind == 0:
+            result = _MOLT_IMPORTLIB_SOURCEFILELOADER_EXEC_MODULE(
+                loader, module, path, ModuleSpec
+            )
+        elif kind == 1:
+            result = _MOLT_IMPORTLIB_ZIP_SOURCE_LOADER_EXEC_MODULE(
+                loader, module, path, inner_path, ModuleSpec
+            )
+        elif kind == 2:
+            result = _MOLT_IMPORTLIB_EXTENSION_LOADER_EXEC_MODULE(
+                loader, module, path, ModuleSpec
+            )
+        else:
+            result = _MOLT_IMPORTLIB_SOURCELESS_LOADER_EXEC_MODULE(
+                loader, module, path, ModuleSpec
+            )
+        _check_loader_exec_result(result)
+    finally:
+        _restore_sys_modules_entry(modules, module_name, previous)
+
+
 def _check_loader_exec_result(result) -> None:
     if _MOLT_EXCEPTION_PENDING():
-        exc = _MOLT_EXCEPTION_LAST()
+        exc = _MOLT_EXCEPTION_LAST_PENDING()
         cleared = _MOLT_EXCEPTION_CLEAR()
         if cleared is not None:
             raise RuntimeError(
@@ -551,7 +612,7 @@ _MOLT_IMPORTLIB_PACKAGE_ROOT_FROM_ORIGIN = None
 _MOLT_IMPORTLIB_VALIDATE_RESOURCE_NAME = None
 _MOLT_IMPORTLIB_LOAD_MODULE_FROM_SPEC = None
 _MOLT_EXCEPTION_CLEAR = None
-_MOLT_EXCEPTION_LAST = None
+_MOLT_EXCEPTION_LAST_PENDING = None
 _MOLT_EXCEPTION_PENDING = None
 _MOLT_MODULE_IMPORT = None
 _MOLT_IMPORTLIB_INTRINSICS_READY = False
@@ -575,7 +636,7 @@ def _ensure_intrinsics() -> None:
     global _MOLT_IMPORTLIB_VALIDATE_RESOURCE_NAME
     global _MOLT_IMPORTLIB_LOAD_MODULE_FROM_SPEC
     global _MOLT_EXCEPTION_CLEAR
-    global _MOLT_EXCEPTION_LAST
+    global _MOLT_EXCEPTION_LAST_PENDING
     global _MOLT_EXCEPTION_PENDING
     global _MOLT_MODULE_IMPORT
     global _MOLT_IMPORTLIB_INTRINSICS_READY
@@ -629,7 +690,7 @@ def _ensure_intrinsics() -> None:
         "molt_importlib_load_module_from_spec"
     )
     exception_clear = _require_intrinsic("molt_exception_clear")
-    exception_last = _require_intrinsic("molt_exception_last")
+    exception_last_pending = _require_intrinsic("molt_exception_last_pending")
     exception_pending = _require_intrinsic("molt_exception_pending")
     module_import = _require_intrinsic("molt_module_import")
 
@@ -664,7 +725,7 @@ def _ensure_intrinsics() -> None:
     _MOLT_IMPORTLIB_VALIDATE_RESOURCE_NAME = importlib_validate_resource_name
     _MOLT_IMPORTLIB_LOAD_MODULE_FROM_SPEC = importlib_load_module_from_spec
     _MOLT_EXCEPTION_CLEAR = exception_clear
-    _MOLT_EXCEPTION_LAST = exception_last
+    _MOLT_EXCEPTION_LAST_PENDING = exception_last_pending
     _MOLT_EXCEPTION_PENDING = exception_pending
     _MOLT_MODULE_IMPORT = module_import
     _MOLT_IMPORTLIB_INTRINSICS_READY = True

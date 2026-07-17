@@ -1007,6 +1007,25 @@ fn collect_wasi_argv_bytes() -> Option<Vec<Vec<u8>>> {
     None
 }
 
+/// Borrow the canonical process argument vector after lazily admitting the
+/// platform source available before an embedding entrypoint explicitly calls
+/// `molt_set_argv`.  Every Python-facing argv/executable projection uses this
+/// authority, so bootstrap timing and link order cannot select different
+/// values.
+pub(crate) fn with_process_argv<R>(_py: &PyToken<'_>, project: impl FnOnce(&[Vec<u8>]) -> R) -> R {
+    let mut args = runtime_state(_py).argv.lock().unwrap();
+    if args.is_empty()
+        && let Some(wasi_args) = collect_wasi_argv_bytes()
+        && !wasi_args.is_empty()
+    {
+        *args = wasi_args;
+    }
+    if args.is_empty() {
+        *args = std::env::args().map(|arg| arg.into_bytes()).collect();
+    }
+    project(&args)
+}
+
 #[inline]
 fn trace_len_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -1572,44 +1591,30 @@ pub extern "C" fn molt_setrecursionlimit(limit_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_getargv() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let mut args_guard = runtime_state(_py).argv.lock().unwrap();
-        if args_guard.is_empty()
-            && let Some(wasi_args) = collect_wasi_argv_bytes()
-            && !wasi_args.is_empty()
-        {
-            *args_guard = wasi_args;
-        }
-        // On WASM, molt_set_argv may not have been called (no C main stub).
-        // Fall back to std::env::args() so WASI args are still visible.
-        let env_args_storage;
-        let args: &Vec<Vec<u8>> = if args_guard.is_empty() {
-            env_args_storage = std::env::args().map(|s| s.into_bytes()).collect::<Vec<_>>();
-            &env_args_storage
-        } else {
-            &args_guard
-        };
-        let mut elems = Vec::with_capacity(args.len());
-        for arg in args.iter() {
-            let ptr = alloc_string(_py, arg);
-            if ptr.is_null() {
+        with_process_argv(_py, |args| {
+            let mut elems = Vec::with_capacity(args.len());
+            for arg in args {
+                let ptr = alloc_string(_py, arg);
+                if ptr.is_null() {
+                    for bits in elems {
+                        dec_ref_bits(_py, bits);
+                    }
+                    return MoltObject::none().bits();
+                }
+                elems.push(MoltObject::from_ptr(ptr).bits());
+            }
+            let list_ptr = alloc_list(_py, &elems);
+            if list_ptr.is_null() {
                 for bits in elems {
                     dec_ref_bits(_py, bits);
                 }
                 return MoltObject::none().bits();
             }
-            elems.push(MoltObject::from_ptr(ptr).bits());
-        }
-        let list_ptr = alloc_list(_py, &elems);
-        if list_ptr.is_null() {
             for bits in elems {
                 dec_ref_bits(_py, bits);
             }
-            return MoltObject::none().bits();
-        }
-        for bits in elems {
-            dec_ref_bits(_py, bits);
-        }
-        MoltObject::from_ptr(list_ptr).bits()
+            MoltObject::from_ptr(list_ptr).bits()
+        })
     })
 }
 
@@ -1997,13 +2002,7 @@ pub extern "C" fn molt_sys_executable() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let executable = match std::env::var("MOLT_SYS_EXECUTABLE") {
             Ok(val) if !val.is_empty() => val.into_bytes(),
-            _ => runtime_state(_py)
-                .argv
-                .lock()
-                .unwrap()
-                .first()
-                .cloned()
-                .unwrap_or_default(),
+            _ => with_process_argv(_py, |args| args.first().cloned().unwrap_or_default()),
         };
         let ptr = alloc_string(_py, &executable);
         if ptr.is_null() {
@@ -2038,6 +2037,9 @@ pub unsafe extern "C" fn molt_set_argv(argc: i32, argv: *const *const u8) {
                 eprintln!("molt_set_argv argc={argc} argv0={:?}", args.first());
             }
             *runtime_state(_py).argv.lock().unwrap() = args;
+            if crate::builtins::modules::refresh_sys_argv_executable(_py).is_err() {
+                let _ = raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            }
         })
     }
 }
@@ -2072,6 +2074,9 @@ pub unsafe extern "C" fn molt_set_argv_utf16(argc: i32, argv: *const *const u16)
             }
         }
         *runtime_state(_py).argv.lock().unwrap() = args;
+        if unsafe { crate::builtins::modules::refresh_sys_argv_executable(_py) }.is_err() {
+            let _ = raise_exception::<u64>(_py, "MemoryError", "out of memory");
+        }
     })
 }
 

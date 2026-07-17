@@ -372,6 +372,19 @@ class StatementScopeVisitorMixin(_MixinBase):
                 self.locals["__annotate__"] = annotate_val
                 self._emit_module_attr_set("__annotate__", annotate_val)
                 self.module_annotation_emitted = True
+        module_doc = ast.get_docstring(node, clean=False)
+        module_doc_val = MoltValue(
+            self.next_var(), type_hint="str" if module_doc is not None else "None"
+        )
+        if module_doc is None:
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=module_doc_val))
+        else:
+            self.emit(
+                MoltOp(kind="CONST_STR", args=[module_doc], result=module_doc_val)
+            )
+        self.globals["__doc__"] = module_doc_val
+        self.locals["__doc__"] = module_doc_val
+        self._emit_module_attr_set("__doc__", module_doc_val)
         if defer:
             self.defer_module_attrs = True
             self.deferred_module_attrs = set()
