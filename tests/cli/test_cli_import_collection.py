@@ -10983,6 +10983,7 @@ def test_discover_module_graph_reuses_precomputed_entry_imports(
         stdlib_allowlist,
         resolver_cache=cache,
         precomputed_imports=("pkg.helper",),
+        precomputed_source_executions=(),
     )
 
     assert entry not in reads

@@ -33,8 +33,8 @@ time = _time
 _MOLT_IMPORTLIB_FIND_IN_PATH_PACKAGE_CONTEXT = _require_intrinsic(
     "molt_importlib_find_in_path_package_context"
 )
-_MOLT_IMPORTLIB_ZIP_SOURCE_PAYLOAD = _require_intrinsic(
-    "molt_importlib_zip_source_payload"
+_MOLT_IMPORTLIB_ZIP_SOURCE_EXEC_PAYLOAD = _require_intrinsic(
+    "molt_importlib_zip_source_exec_payload"
 )
 _MOLT_IMPORTLIB_ZIP_READ_ENTRY = _require_intrinsic("molt_importlib_zip_read_entry")
 _MOLT_CAPABILITIES_TRUSTED = _require_intrinsic("molt_capabilities_trusted")
@@ -80,7 +80,7 @@ def _validate_resolution(payload: _Any) -> dict[str, _Any]:
 def _source_payload_from_resolution(
     fullname: str, payload: dict[str, _Any]
 ) -> dict[str, _Any]:
-    source_payload = _MOLT_IMPORTLIB_ZIP_SOURCE_PAYLOAD(
+    source_payload = _MOLT_IMPORTLIB_ZIP_SOURCE_EXEC_PAYLOAD(
         fullname,
         payload["zip_archive"],
         payload["zip_inner_path"],

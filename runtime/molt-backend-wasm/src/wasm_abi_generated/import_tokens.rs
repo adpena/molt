@@ -662,7 +662,7 @@ pub(crate) enum WasmRuntimeImport {
     ImportlibStabilizeModuleState,
     ImportlibValidateResourceName,
     ImportlibZipReadEntry,
-    ImportlibZipSourcePayload,
+    ImportlibZipSourceExecPayload,
     FileClose,
     FileDetach,
     FileFileno,

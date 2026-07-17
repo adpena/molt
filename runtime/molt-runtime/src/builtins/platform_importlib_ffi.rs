@@ -1,7 +1,7 @@
 use super::*;
 
 #[path = "platform_importlib_ffi/bootstrap_loader.rs"]
-mod bootstrap_loader;
+pub(super) mod bootstrap_loader;
 #[path = "platform_importlib_ffi/find_spec.rs"]
 mod find_spec;
 #[path = "platform_importlib_ffi/import_transaction.rs"]
@@ -26,9 +26,7 @@ use payloads::*;
 #[allow(unused_imports)]
 use reload_bootstrap::*;
 
-pub(super) use bootstrap_loader::{
-    importlib_coerce_search_paths_values, importlib_exec_extension_impl,
-};
+pub(super) use bootstrap_loader::importlib_coerce_search_paths_values;
 pub use bootstrap_loader::{
     molt_importlib_cache_from_source, molt_importlib_coerce_module_name,
     molt_importlib_coerce_search_paths, molt_importlib_decode_source,
@@ -39,8 +37,8 @@ pub use bootstrap_loader::{
     molt_importlib_source_from_cache, molt_importlib_source_hash,
     molt_importlib_source_loader_payload, molt_importlib_sourcefileloader_exec_module,
     molt_importlib_sourceless_loader_exec_module, molt_importlib_sourceless_loader_payload,
-    molt_importlib_zip_read_entry, molt_importlib_zip_source_loader_exec_module,
-    molt_importlib_zip_source_payload, molt_linecache_loader_get_source,
+    molt_importlib_zip_read_entry, molt_importlib_zip_source_exec_payload,
+    molt_importlib_zip_source_loader_exec_module, molt_linecache_loader_get_source,
     molt_sys_bootstrap_include_cwd, molt_sys_bootstrap_module_roots, molt_sys_bootstrap_path,
     molt_sys_bootstrap_payload, molt_sys_bootstrap_pwd, molt_sys_bootstrap_pythonpath,
     molt_sys_bootstrap_stdlib_root, molt_traceback_exception_suppress_context,

@@ -341,11 +341,16 @@ fn call_extension_exec_boundary(_py: &PyToken<'_>, module_name: &str, path: &str
         .map(|ptr| unsafe { crate::object::layout::module_dict_bits(ptr) })
         .and_then(|bits| obj_from_bits(bits).as_ptr())
         .expect("test module namespace");
-    let out =
-        match importlib_exec_extension_impl(_py, module_bits, namespace_ptr, module_name, path) {
-            Ok(()) => MoltObject::none().bits(),
-            Err(bits) => bits,
-        };
+    let out = match importlib_ffi::bootstrap_loader::importlib_exec_extension_impl(
+        _py,
+        module_bits,
+        namespace_ptr,
+        module_name,
+        path,
+    ) {
+        Ok(()) => MoltObject::none().bits(),
+        Err(bits) => bits,
+    };
     dec_ref_bits(_py, module_bits);
     dec_ref_bits(_py, module_name_bits);
     dec_ref_bits(_py, path_bits);
@@ -1831,7 +1836,7 @@ fn importlib_find_in_path_resolves_zip_source_module_and_package() {
 #[cfg(feature = "stdlib_archive")]
 #[test]
 #[cfg_attr(miri, ignore)]
-fn importlib_zip_source_payload_reads_source_and_resolution() {
+fn importlib_zip_source_exec_payload_reads_source_and_resolution() {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -1856,7 +1861,7 @@ fn importlib_zip_source_payload_reads_source_and_resolution() {
     writer.finish().expect("finish zip file");
 
     let archive_text = archive.to_string_lossy().into_owned();
-    let payload = importlib_zip_source_payload("zipmod", &archive_text, "zipmod.py", false)
+    let payload = importlib_zip_source_exec_payload("zipmod", &archive_text, "zipmod.py", false)
         .expect("build zip source exec payload");
     assert!(!payload.is_package);
     assert_eq!(payload.module_package, "");
@@ -1864,11 +1869,6 @@ fn importlib_zip_source_payload_reads_source_and_resolution() {
     assert!(payload.origin.ends_with("mods.zip/zipmod.py"));
     let text = String::from_utf8(payload.source.clone()).expect("decode source text");
     assert!(text.contains("value = 41"));
-
-    let resolution = importlib_zip_source_resolution("zipmod", &archive_text, "zipmod.py", false)
-        .expect("resolve compiled zip source without reading it");
-    assert_eq!(resolution.origin, payload.origin);
-    assert_eq!(resolution.module_package, payload.module_package);
 
     std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
 }

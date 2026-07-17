@@ -786,9 +786,7 @@ def _native_support_function_roots_by_module(
     # IMPORT_GLOBAL pulls ComplexWarning and friends), so they carry no
     # function roots: every consumer (frontend statement-scope slicer and
     # the pruned-source materializer) then compiles their full bodies.
-    runtime_import_modules = (
-        native_artifact_plan.runtime_python_import_module_names()
-    )
+    runtime_import_modules = native_artifact_plan.runtime_python_import_module_names()
     return {
         module: tuple(sorted(module_roots))
         for module, module_roots in sorted(roots.items())
@@ -823,12 +821,14 @@ def _native_support_source_slices(
             continue
         operation_counts["native_support_slice_cache_misses"] += 1
         if not roots:
-            persisted_imports = _graph_discovery._module_graph_cache._read_persisted_import_scan(
-                artifacts_root,
-                path,
-                module_name=module,
-                is_package=path.name == "__init__.py",
-                import_scan_mode="module_init",
+            persisted_imports = (
+                _graph_discovery._module_graph_cache._read_persisted_import_scan(
+                    artifacts_root,
+                    path,
+                    module_name=module,
+                    is_package=path.name == "__init__.py",
+                    import_scan_mode="module_init",
+                )
             )
             if persisted_imports is not None:
                 operation_counts["native_support_persisted_import_scan_hits"] += 1
@@ -933,9 +933,7 @@ def _missing_native_support_artifact_imports(
         | native_artifact_plan.support_source_module_names()
     )
     source_modules = frozenset(module_graph)
-    runtime_import_modules = (
-        native_artifact_plan.runtime_python_import_module_names()
-    )
+    runtime_import_modules = native_artifact_plan.runtime_python_import_module_names()
     object_closure_source_paths, object_closure_source_hashes = (
         _native_artifact_object_closure_source_custody(native_artifact_plan)
     )
@@ -1503,6 +1501,12 @@ def _prepare_entry_module_graph(
             target_python=target_python,
         )
     )
+    entry_source_executions = _module_import_scanner._collect_static_source_executions(
+        entry_tree,
+        source_path=source_path,
+        import_scan_mode="full",
+        module_name=entry_module,
+    )
     module_graph, explicit_imports = _graph_discovery._discover_module_graph(
         source_path,
         roots,
@@ -1514,6 +1518,7 @@ def _prepare_entry_module_graph(
         stub_parents=STUB_PARENT_MODULES,
         resolver_cache=module_resolution_cache,
         precomputed_imports=entry_imports,
+        precomputed_source_executions=entry_source_executions,
         import_admission_policy=import_admission_policy,
         target_python=target_python,
         capability_config_digest=capability_config_digest,

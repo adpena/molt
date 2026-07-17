@@ -44,7 +44,7 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
 _MODULE_GRAPH_CACHE_SCHEMA_VERSION = 9
 
 
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 7
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 8
 
 
 def _module_graph_policy_digest(
@@ -335,7 +335,7 @@ def _write_persisted_module_graph(
     _write_cached_json_object(cache_path, payload)
 
 
-def _read_persisted_import_scan(
+def _read_persisted_import_scan_payload(
     project_root: Path,
     path: Path,
     *,
@@ -345,7 +345,7 @@ def _read_persisted_import_scan(
     path_stat: os.stat_result | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     capability_config_digest: str = "",
-) -> tuple[str, ...] | None:
+) -> dict[str, Any] | None:
     cache_path = _import_scan_cache_path(
         project_root,
         path,
@@ -371,12 +371,38 @@ def _read_persisted_import_scan(
             path_stat = path.stat()
         except OSError:
             return None
+    if not _module_source._payload_source_matches(payload, path, path_stat):
+        return None
+    return payload
+
+
+def _read_persisted_import_scan(
+    project_root: Path,
+    path: Path,
+    *,
+    module_name: str,
+    is_package: bool,
+    import_scan_mode: ImportScanMode,
+    path_stat: os.stat_result | None = None,
+    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    capability_config_digest: str = "",
+) -> tuple[str, ...] | None:
+    payload = _read_persisted_import_scan_payload(
+        project_root,
+        path,
+        module_name=module_name,
+        is_package=is_package,
+        import_scan_mode=import_scan_mode,
+        path_stat=path_stat,
+        target_python=target_python,
+        capability_config_digest=capability_config_digest,
+    )
+    if payload is None:
+        return None
     imports = payload.get("imports")
     if not isinstance(imports, list) or not all(
         isinstance(item, str) for item in imports
     ):
-        return None
-    if not _module_source._payload_source_matches(payload, path, path_stat):
         return None
     return tuple(imports)
 
@@ -389,6 +415,7 @@ def _write_persisted_import_scan(
     is_package: bool,
     import_scan_mode: ImportScanMode,
     imports: Iterable[str],
+    source_executions: Iterable[tuple[str | None, Path]] = (),
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     capability_config_digest: str = "",
 ) -> None:
@@ -417,6 +444,53 @@ def _write_persisted_import_scan(
         "mtime_ns": stat.st_mtime_ns,
         "source_sha256": source_sha256,
         "imports": list(imports),
+        "source_executions": [
+            {
+                "module": execution_module,
+                "path": os.fspath(execution_path.resolve()),
+            }
+            for execution_module, execution_path in source_executions
+        ],
     }
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     _write_artifact_sync_payload(cache_path, payload)
+
+
+def _read_persisted_source_executions(
+    project_root: Path,
+    path: Path,
+    *,
+    module_name: str,
+    is_package: bool,
+    import_scan_mode: ImportScanMode,
+    path_stat: os.stat_result | None = None,
+    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    capability_config_digest: str = "",
+) -> tuple[tuple[str | None, Path], ...] | None:
+    payload = _read_persisted_import_scan_payload(
+        project_root,
+        path,
+        module_name=module_name,
+        is_package=is_package,
+        import_scan_mode=import_scan_mode,
+        path_stat=path_stat,
+        target_python=target_python,
+        capability_config_digest=capability_config_digest,
+    )
+    if payload is None:
+        return None
+    raw_executions = payload.get("source_executions")
+    if not isinstance(raw_executions, list):
+        return None
+    executions: list[tuple[str | None, Path]] = []
+    for raw_execution in raw_executions:
+        if not isinstance(raw_execution, dict):
+            return None
+        execution_module = raw_execution.get("module")
+        execution_path = raw_execution.get("path")
+        if (
+            execution_module is not None and not isinstance(execution_module, str)
+        ) or not isinstance(execution_path, str):
+            return None
+        executions.append((execution_module, Path(execution_path)))
+    return tuple(executions)
