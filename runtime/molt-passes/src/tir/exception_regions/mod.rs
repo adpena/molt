@@ -79,17 +79,68 @@ pub struct ExceptionRegionDiagnostic {
     pub message: String,
 }
 
+/// Total classification of lexical exception custody at one exact TIR
+/// boundary. Absence from the path-state map is a proven unreachable boundary,
+/// not a missing handler and not depth zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExceptionBoundaryHandler {
+    Unreachable,
+    DepthZero,
+    Labeled(i64),
+}
+
+/// Reachable boundaries whose lexical custody cannot be represented by one
+/// ordinary labeled `CheckException` remain explicit fail-closed errors.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExceptionBoundaryHandlerError {
+    Anonymous {
+        position: ExceptionOpPosition,
+        owner: ExceptionOpPosition,
+    },
+    Ambiguous {
+        position: ExceptionOpPosition,
+        states: BTreeSet<Option<ExceptionRegionToken>>,
+    },
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExceptionRegionFacts {
     /// Active lexical handler at every reachable op/block-exit boundary.
     /// Multiple entries are preserved so consumers can fail closed rather
     /// than guessing when CFG paths carry different exception stacks.
-    pub lexical_handlers_before:
-        BTreeMap<ExceptionOpPosition, BTreeSet<Option<ExceptionRegionToken>>>,
+    lexical_handlers_before: BTreeMap<ExceptionOpPosition, BTreeSet<Option<ExceptionRegionToken>>>,
     pub match_refs: BTreeMap<ValueId, ExceptionMatchRefFact>,
     pub release_to_matches: BTreeMap<ExceptionOpPosition, Vec<ValueId>>,
     pub release_to_match_facts: BTreeMap<ExceptionOpPosition, Vec<ExceptionMatchReleaseFact>>,
     pub diagnostics: Vec<ExceptionRegionDiagnostic>,
+}
+
+impl ExceptionRegionFacts {
+    /// Classify one op or block-exit boundary from the same path-state authority
+    /// that owns exception-region reachability and lexical handler stacks.
+    pub fn lexical_handler_before(
+        &self,
+        position: ExceptionOpPosition,
+    ) -> Result<ExceptionBoundaryHandler, ExceptionBoundaryHandlerError> {
+        let Some(states) = self.lexical_handlers_before.get(&position) else {
+            return Ok(ExceptionBoundaryHandler::Unreachable);
+        };
+        if states.len() != 1 {
+            return Err(ExceptionBoundaryHandlerError::Ambiguous {
+                position,
+                states: states.clone(),
+            });
+        }
+        match states.iter().next().copied().flatten() {
+            None => Ok(ExceptionBoundaryHandler::DepthZero),
+            Some(ExceptionRegionToken::Labeled(label)) => {
+                Ok(ExceptionBoundaryHandler::Labeled(label))
+            }
+            Some(ExceptionRegionToken::Anonymous(owner)) => {
+                Err(ExceptionBoundaryHandlerError::Anonymous { position, owner })
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

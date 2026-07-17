@@ -1410,3 +1410,55 @@ fn exception_regions_analysis_manager_caches_and_invalidates() {
     am.invalidate_cfg();
     assert!(!am.is_cached(AnalysisId::ExceptionRegions));
 }
+
+#[test]
+fn lexical_handler_query_is_total_and_fail_closed() {
+    let position = ExceptionOpPosition {
+        block: BlockId(7),
+        op_index: 3,
+    };
+    let mut facts = ExceptionRegionFacts::default();
+    assert_eq!(
+        facts.lexical_handler_before(position),
+        Ok(ExceptionBoundaryHandler::Unreachable)
+    );
+
+    facts
+        .lexical_handlers_before
+        .insert(position, BTreeSet::from([None]));
+    assert_eq!(
+        facts.lexical_handler_before(position),
+        Ok(ExceptionBoundaryHandler::DepthZero)
+    );
+
+    facts.lexical_handlers_before.insert(
+        position,
+        BTreeSet::from([Some(ExceptionRegionToken::Labeled(41))]),
+    );
+    assert_eq!(
+        facts.lexical_handler_before(position),
+        Ok(ExceptionBoundaryHandler::Labeled(41))
+    );
+
+    let owner = ExceptionOpPosition {
+        block: BlockId(2),
+        op_index: 1,
+    };
+    facts.lexical_handlers_before.insert(
+        position,
+        BTreeSet::from([Some(ExceptionRegionToken::Anonymous(owner))]),
+    );
+    assert_eq!(
+        facts.lexical_handler_before(position),
+        Err(ExceptionBoundaryHandlerError::Anonymous { position, owner })
+    );
+
+    let states = BTreeSet::from([None, Some(ExceptionRegionToken::Labeled(41))]);
+    facts
+        .lexical_handlers_before
+        .insert(position, states.clone());
+    assert_eq!(
+        facts.lexical_handler_before(position),
+        Err(ExceptionBoundaryHandlerError::Ambiguous { position, states })
+    );
+}

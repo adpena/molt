@@ -36,9 +36,9 @@ pub use self::call_facts::{
 };
 pub use self::call_graph::{CallEdge, CallGraph};
 pub use self::exception_regions::{
-    ExceptionMatchRefFact, ExceptionOpPosition, ExceptionRegionDiagnostic,
-    ExceptionRegionDiagnosticKind, ExceptionRegionFacts, ExceptionRegions,
-    verify_exception_regions,
+    ExceptionBoundaryHandler, ExceptionBoundaryHandlerError, ExceptionMatchRefFact,
+    ExceptionOpPosition, ExceptionRegionDiagnostic, ExceptionRegionDiagnosticKind,
+    ExceptionRegionFacts, ExceptionRegions, verify_exception_regions,
 };
 pub use self::fact_graph::{
     FACT_GRAPH_KIND, FACT_GRAPH_SCHEMA_VERSION, FactConsumer, FactEdge, FactEntry, FactGraph,
