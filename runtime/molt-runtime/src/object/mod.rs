@@ -16,19 +16,19 @@ use num_bigint::BigInt;
 /// (attribute set/deleted, base class changed, __dict__ mutated).
 /// Inline caches compare against this to detect staleness.
 ///
-/// Uses `Relaxed` ordering because all callers hold the GIL, which provides
-/// the happens-before relationship. If the GIL is ever relaxed or removed,
-/// these must be upgraded to `Acquire`/`Release`.
+/// Release/acquire ordering makes the epoch a publication boundary for class
+/// dictionary/MRO mutation. The default GIL path does not need the fence, but
+/// free-threaded readers must never observe a new epoch with stale type state.
 static GLOBAL_TYPE_VERSION: AtomicU64 = AtomicU64::new(1);
 
 #[inline(always)]
 pub fn global_type_version() -> u64 {
-    GLOBAL_TYPE_VERSION.load(AtomicOrdering::Relaxed)
+    GLOBAL_TYPE_VERSION.load(AtomicOrdering::Acquire)
 }
 
 #[inline(always)]
 pub fn bump_type_version() -> u64 {
-    GLOBAL_TYPE_VERSION.fetch_add(1, AtomicOrdering::Relaxed) + 1
+    GLOBAL_TYPE_VERSION.fetch_add(1, AtomicOrdering::AcqRel) + 1
 }
 
 pub(crate) mod accessors;

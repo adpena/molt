@@ -2399,9 +2399,74 @@ pub extern "C" fn molt_anext(obj_bits: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::cached_pair_return;
+    use super::{cached_pair_return, molt_iter, molt_iter_next_unboxed};
     use crate::object::HEADER_FLAG_CONTAINS_REFS;
-    use crate::{MoltObject, alloc_string, dec_ref_bits, header_from_obj_ptr};
+    use crate::{
+        MoltObject, alloc_dict_with_pairs, alloc_string, dec_ref_bits, header_from_obj_ptr,
+        molt_dict_items, molt_unpack_sequence,
+    };
+
+    unsafe fn refcount(bits: u64) -> u32 {
+        let ptr = MoltObject::from_bits(bits).as_ptr().expect("heap object");
+        unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() }
+    }
+
+    #[test]
+    fn exhausted_dict_items_iterator_releases_view_dict_and_last_pair() {
+        let _guard = crate::test_mutex_guard();
+        crate::with_gil_entry_nopanic!(_py, {
+            unsafe {
+                let key = MoltObject::from_int(1).bits();
+                let class_name = MoltObject::from_ptr(alloc_string(_py, b"IterOwnedValue")).bits();
+                let class = crate::molt_class_new(class_name);
+                let value = crate::molt_alloc_class(0, class);
+                let dict = MoltObject::from_ptr(alloc_dict_with_pairs(_py, &[key, value])).bits();
+                assert_eq!(refcount(value), 2, "dict owns one value edge");
+
+                let view = molt_dict_items(dict);
+                let iter = molt_iter(view);
+                dec_ref_bits(_py, view);
+
+                loop {
+                    let mut pair = MoltObject::none().bits();
+                    let done = molt_iter_next_unboxed(iter, (&raw mut pair) as usize as u64);
+                    if MoltObject::from_bits(done).as_bool() == Some(true) {
+                        break;
+                    }
+                    assert_eq!(MoltObject::from_bits(done).as_bool(), Some(false));
+                    let mut outputs = [MoltObject::none().bits(); 2];
+                    assert_eq!(
+                        molt_unpack_sequence(
+                            pair,
+                            outputs.len() as u64,
+                            outputs.as_mut_ptr() as usize as u64,
+                        ),
+                        0
+                    );
+                    dec_ref_bits(_py, pair);
+                    for output in outputs {
+                        dec_ref_bits(_py, output);
+                    }
+                }
+
+                dec_ref_bits(_py, iter);
+                assert_eq!(
+                    refcount(dict),
+                    1,
+                    "iterator teardown must release the items view"
+                );
+                dec_ref_bits(_py, dict);
+                assert_eq!(
+                    refcount(value),
+                    1,
+                    "dict teardown must release the last yielded value"
+                );
+                dec_ref_bits(_py, value);
+                dec_ref_bits(_py, class);
+                dec_ref_bits(_py, class_name);
+            }
+        });
+    }
 
     #[test]
     fn cached_pair_reuse_updates_contains_refs_flag() {
