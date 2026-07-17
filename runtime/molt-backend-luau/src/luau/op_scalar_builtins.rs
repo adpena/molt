@@ -11,12 +11,14 @@ impl LuauBackend {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(obj) = args.first() {
                     let obj_s = sanitize_ident(obj);
-                    let is_known_lennable = matches!(
-                        self.scalar_plan.name_container_kind(obj),
-                        Some(ContainerKind::List | ContainerKind::Tuple | ContainerKind::Str)
-                    );
-                    if is_known_lennable {
-                        self.emit_line(&format!("local {out} = #{obj_s}"));
+                    let container_kind = self.scalar_plan.name_container_kind(obj);
+                    if matches!(
+                        container_kind,
+                        Some(ContainerKind::List | ContainerKind::Tuple)
+                    ) {
+                        self.emit_line(&format!("local {out} = molt_sequence_len({obj_s})"));
+                    } else if container_kind == Some(ContainerKind::Dict) {
+                        self.emit_line(&format!("local {out} = molt_dict_len({obj_s})"));
                     } else {
                         self.emit_line(&format!("local {out} = molt_len({obj_s})"));
                     }
@@ -128,11 +130,24 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = molt_repr({})", sanitize_ident(val)));
                 }
             }
-            "bytes_from_obj" | "bytes_from_str" | "bytearray_from_str" => {
+            "bytes_from_obj" | "bytes_from_str" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(val) = args.first() {
-                    self.emit_line(&format!("local {out} = tostring({})", sanitize_ident(val)));
+                    self.emit_line(&format!(
+                        "local {out} = molt_binary_new(\"bytes\", tostring({}))",
+                        sanitize_ident(val)
+                    ));
+                }
+            }
+            "bytearray_from_str" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if let Some(val) = args.first() {
+                    self.emit_line(&format!(
+                        "local {out} = molt_binary_new(\"bytearray\", tostring({}))",
+                        sanitize_ident(val)
+                    ));
                 }
             }
             "bytearray_from_obj" => {
@@ -140,9 +155,7 @@ impl LuauBackend {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(val) = args.first() {
                     let val = sanitize_ident(val);
-                    self.emit_line(&format!(
-                        "local {out} = if type({val}) == \"number\" then string.rep(string.char(0), math.max(0, {val})) else tostring({val})"
-                    ));
+                    self.emit_line(&format!("local {out} = molt_binary_new(\"bytearray\", if type({val}) == \"number\" then string.rep(string.char(0), math.max(0, {val})) else tostring({val}))"));
                 }
             }
 

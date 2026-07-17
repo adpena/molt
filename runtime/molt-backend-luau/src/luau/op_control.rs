@@ -175,10 +175,48 @@ impl LuauBackend {
             "for_iter" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
-                if let Some(iterable) = args.first() {
-                    let iterable = sanitize_ident(iterable);
-                    self.emit_line(&format!("for _, {out} in ipairs({iterable}) do"));
-                    self.push_indent();
+                if let Some(iterable_raw) = args.first() {
+                    let iterable = sanitize_ident(iterable_raw);
+                    if matches!(
+                        self.scalar_plan.name_container_kind(iterable_raw),
+                        Some(ContainerKind::List | ContainerKind::Tuple)
+                    ) {
+                        let index = format!("__molt_iter_index_{}", self.temp_counter);
+                        self.temp_counter += 1;
+                        self.emit_line(&format!(
+                            "for {index} = 1, molt_sequence_len({iterable}) do"
+                        ));
+                        self.push_indent();
+                        self.emit_line(&format!("local {out} = rawget({iterable}, {index})"));
+                    } else if self.scalar_plan.name_container_kind(iterable_raw)
+                        == Some(ContainerKind::Dict)
+                    {
+                        let iterator = format!("__molt_dict_iter_{}", self.temp_counter);
+                        let step = format!("__molt_dict_step_{}", self.temp_counter);
+                        self.temp_counter += 1;
+                        self.emit_line(&format!(
+                            "local {iterator} = molt_dict_iterator_new({iterable}, \"keys\")"
+                        ));
+                        self.emit_line("while true do");
+                        self.push_indent();
+                        self.emit_line(&format!(
+                            "local {step} = molt_dict_iterator_next({iterator})"
+                        ));
+                        self.emit_line(&format!("if rawget({step}, 2) then break end"));
+                        self.emit_line(&format!("local {out} = rawget({step}, 1)"));
+                    } else {
+                        let iterator = format!("__molt_iter_{}", self.temp_counter);
+                        let step = format!("__molt_step_{}", self.temp_counter);
+                        self.temp_counter += 1;
+                        self.emit_line(&format!(
+                            "local {iterator} = molt_iterator_new({iterable})"
+                        ));
+                        self.emit_line("while true do");
+                        self.push_indent();
+                        self.emit_line(&format!("local {step} = {iterator}()"));
+                        self.emit_line(&format!("if rawget({step}, 2) then break end"));
+                        self.emit_line(&format!("local {out} = rawget({step}, 1)"));
+                    }
                 }
             }
             "end_for" => {

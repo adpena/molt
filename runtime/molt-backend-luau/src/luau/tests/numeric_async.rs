@@ -582,9 +582,11 @@ fn test_compile_checked_rejects_malformed_callable_family_without_nil_values() {
         .compile_checked(&ir)
         .expect_err("malformed callable IR must fail before source publication");
     assert!(
-        err.contains("rejected before source generation")
+        err.contains("refuses to emit fail-open codegen")
             && err.contains("`call`")
-            && err.contains("structured catchable Python exceptions"),
+            && err.contains("`func_new`")
+            && err.contains("`builtin_func`")
+            && err.contains("`call_bind`"),
         "malformed callable family must fail at its first semantic violation: {err}"
     );
 }

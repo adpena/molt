@@ -6,30 +6,40 @@ impl LuauBackend {
             "set_new" | "frozenset_new" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
-                if args.is_empty() {
-                    self.emit_line(&format!("local {out} = {{}}"));
+                let kind = if op.kind == "frozenset_new" {
+                    "frozenset"
                 } else {
-                    let entries = args
-                        .iter()
-                        .map(|a| format!("[{}] = true", sanitize_ident(a)))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    self.emit_line(&format!("local {out} = {{{entries}}}"));
+                    "set"
+                };
+                self.emit_line(&format!("local {out} = molt_set_new(\"{kind}\")"));
+                for value in args {
+                    self.emit_line(&format!("molt_set_add({out}, {})", sanitize_ident(value)));
+                }
+                if kind == "frozenset" {
+                    self.emit_line(&format!("molt_set_freeze({out})"));
                 }
             }
             "set_clear" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(tbl) = args.first() {
                     let tbl = sanitize_ident(tbl);
-                    self.emit_line(&format!("table.clear({tbl})"));
+                    self.emit_line(&format!("molt_set_clear({tbl})"));
                 }
             }
-            "set_add" | "set_add_probe" | "frozenset_add" => {
+            "set_add" | "set_add_probe" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let set = sanitize_ident(&args[0]);
                     let val = sanitize_ident(&args[1]);
-                    self.emit_line(&format!("{set}[{val}] = true"));
+                    self.emit_line(&format!("molt_set_add({set}, {val})"));
+                }
+            }
+            "frozenset_add" => {
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let set = sanitize_ident(&args[0]);
+                    let val = sanitize_ident(&args[1]);
+                    self.emit_line(&format!("molt_frozenset_build_add({set}, {val})"));
                 }
             }
             "set_discard" => {
@@ -37,7 +47,7 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let set = sanitize_ident(&args[0]);
                     let val = sanitize_ident(&args[1]);
-                    self.emit_line(&format!("{set}[{val}] = nil"));
+                    self.emit_line(&format!("molt_set_discard({set}, {val}, true)"));
                 }
             }
             "set_remove" => {
@@ -45,9 +55,7 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let set = sanitize_ident(&args[0]);
                     let val = sanitize_ident(&args[1]);
-                    self.emit_line(&format!(
-                        "if {set}[{val}] == nil then error(\"KeyError: \" .. tostring({val})) end; {set}[{val}] = nil"
-                    ));
+                    self.emit_line(&format!("molt_set_discard({set}, {val}, false)"));
                 }
             }
             "set_pop" => {
@@ -55,9 +63,7 @@ impl LuauBackend {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(set) = args.first() {
                     let set = sanitize_ident(set);
-                    self.emit_line(&format!(
-                        "local {out} = nil; for __k in pairs({set}) do {out} = __k; {set}[__k] = nil; break end; if {out} == nil then error(\"KeyError: pop from an empty set\") end"
-                    ));
+                    self.emit_line(&format!("local {out} = molt_set_pop({set})"));
                 }
             }
             "set_update" => {
@@ -65,9 +71,7 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let set = sanitize_ident(&args[0]);
                     let other = sanitize_ident(&args[1]);
-                    self.emit_line(&format!(
-                        "for __k in pairs({other}) do {set}[__k] = true end"
-                    ));
+                    self.emit_line(&format!("molt_set_update({set}, {other})"));
                 }
             }
             _ => return false,

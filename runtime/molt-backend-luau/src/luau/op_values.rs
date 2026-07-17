@@ -48,10 +48,14 @@ impl LuauBackend {
                 let out = self.out_var(op);
                 if let Some(ref bytes) = op.bytes {
                     let escaped: String = bytes.iter().map(|b| format!("\\x{b:02x}")).collect();
-                    self.emit_line(&format!("local {out}: string = \"{escaped}\""));
+                    self.emit_line(&format!(
+                        "local {out} = molt_binary_new(\"bytes\", \"{escaped}\")"
+                    ));
                 } else if let Some(s) = op.s_value.as_deref() {
                     let escaped = escape_luau_string(s);
-                    self.emit_line(&format!("local {out}: string = \"{escaped}\""));
+                    self.emit_line(&format!(
+                        "local {out} = molt_binary_new(\"bytes\", \"{escaped}\")"
+                    ));
                 } else {
                     self.emit_unsupported_op(op);
                 }

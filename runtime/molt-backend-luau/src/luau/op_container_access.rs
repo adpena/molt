@@ -10,14 +10,17 @@ impl LuauBackend {
                     let container = sanitize_ident(&args[0]);
                     let val = sanitize_ident(&args[1]);
                     let container_kind = self.scalar_plan.name_container_kind(&args[0]);
-                    let is_dict = matches!(
-                        container_kind,
-                        Some(ContainerKind::Dict | ContainerKind::Set)
-                    );
+                    let is_dict = container_kind == Some(ContainerKind::Dict);
+                    let is_set = container_kind == Some(ContainerKind::Set);
                     let is_list = matches!(container_kind, Some(ContainerKind::List));
                     if is_dict {
-                        // Dict/set: key lookup.
-                        self.emit_line(&format!("local {out} = ({container}[{val}] ~= nil)"));
+                        self.emit_line(&format!(
+                            "local {out} = molt_dict_contains({container}, {val})"
+                        ));
+                    } else if is_set {
+                        self.emit_line(&format!(
+                            "local {out} = molt_set_contains({container}, {val})"
+                        ));
                     } else if is_list {
                         // List: value search via table.find.
                         self.emit_line(&format!(
@@ -29,6 +32,12 @@ impl LuauBackend {
                         self.emit_line(&format!(
                             "local {out} = if type({container}) == \"string\" then \
                              (string.find({container}, {val}, 1, true) ~= nil) \
+                             elseif molt_dict_is_ordered({container}) then \
+                             molt_dict_contains({container}, {val}) \
+                             elseif molt_dict_view_is({container}) then \
+                             molt_dict_view_contains({container}, {val}) \
+                             elseif molt_set_is({container}) then \
+                             molt_set_contains({container}, {val}) \
                              elseif type({container}) == \"table\" then \
                              (table.find({container}, {val}) ~= nil or {container}[{val}] ~= nil) \
                              else false"
@@ -45,6 +54,7 @@ impl LuauBackend {
 
                     let container_kind = self.scalar_plan.name_container_kind(&args[0]);
                     let container_is_str = container_kind == Some(ContainerKind::Str);
+                    let container_is_dict = container_kind == Some(ContainerKind::Dict);
 
                     // Fast-path: when the key is a known non-negative constant,
                     // skip the negative-index ternary entirely.
@@ -52,7 +62,11 @@ impl LuauBackend {
                     let key_known_nonneg = self.nonneg_consts.contains(&args[1])
                         || (key_is_scalar_int && op.value.is_some_and(|v| v >= 0));
 
-                    if container_is_str {
+                    if container_is_dict {
+                        self.emit_line(&format!(
+                            "local {out} = molt_dict_getitem({container}, {key})"
+                        ));
+                    } else if container_is_str {
                         // Luau does not support string[index]; use string.sub.
                         // Python uses 0-based indexing, Luau uses 1-based.
                         let idx_var = format!("__idx_{out}");
@@ -93,14 +107,12 @@ impl LuauBackend {
                                 self.emit_line(&format!("local {idx_var}: number = {key} + 1"));
                             } else {
                                 self.emit_line(&format!(
-                                    "local {idx_var}: number = if {key} >= 0 then {key} + 1 else #{container} + {key} + 1"
+                                    "local {idx_var}: number = if {key} >= 0 then {key} + 1 else molt_sequence_len({container}) + {key} + 1"
                                 ));
                             }
-                            self.emit_index_bounds_guard(
-                                &idx_var,
-                                &container,
-                                "list index out of range",
-                            );
+                            self.emit_line(&format!(
+                                "if {idx_var} < 1 or {idx_var} > molt_sequence_len({container}) then error({{__type=\"IndexError\", __msg=\"list index out of range\"}}) end"
+                            ));
                             // rawget bypasses metamethods: safe for plain list
                             // tables and faster in Luau's native codegen path.
                             self.emit_line(&format!(
@@ -116,7 +128,7 @@ impl LuauBackend {
                             ));
                         } else {
                             self.emit_line(&format!(
-                                "local {out} = {container}[if type({key}) == \"number\" then (if {key} >= 0 then {key} + 1 else #{container} + {key} + 1) else {key}]"
+                                "local {out} = if molt_dict_is_ordered({container}) then molt_dict_getitem({container}, {key}) else {container}[if type({key}) == \"number\" then (if {key} >= 0 then {key} + 1 else #{container} + {key} + 1) else {key}]"
                             ));
                         }
                     }
@@ -135,15 +147,21 @@ impl LuauBackend {
                         self.scalar_plan.name_container_kind(&args[0]),
                         Some(ContainerKind::List)
                     );
-                    if known_list_like {
+                    let known_dict =
+                        self.scalar_plan.name_container_kind(&args[0]) == Some(ContainerKind::Dict);
+                    if known_dict {
+                        self.emit_line(&format!("molt_dict_set({container}, {key}, {value})"));
+                    } else if known_list_like {
                         let idx_expr = if key_known_nonneg {
                             format!("{key} + 1")
                         } else {
-                            format!("if {key} >= 0 then {key} + 1 else #{container} + {key} + 1")
+                            format!(
+                                "if {key} >= 0 then {key} + 1 else molt_sequence_len({container}) + {key} + 1"
+                            )
                         };
                         // rawset bypasses metamethods: safe for plain list tables.
                         self.emit_line(&format!(
-                            "do local __idx: number = {idx_expr}; if __idx < 1 or __idx > #{container} then error({{__type=\"IndexError\", __msg=\"list assignment index out of range\"}}) end; rawset({container}, __idx, {value}) end"
+                            "do local __idx: number = {idx_expr}; if __idx < 1 or __idx > molt_sequence_len({container}) then error({{__type=\"IndexError\", __msg=\"list assignment index out of range\"}}) end; rawset({container}, __idx, {value}) end"
                         ));
                     } else if key_known_nonneg {
                         self.emit_line(&format!("{container}[{key} + 1] = {value}"));
@@ -153,7 +171,7 @@ impl LuauBackend {
                         ));
                     } else {
                         self.emit_line(&format!(
-                            "{container}[if type({key}) == \"number\" then (if {key} >= 0 then {key} + 1 else #{container} + {key} + 1) else {key}] = {value}"
+                            "if molt_dict_is_ordered({container}) then molt_dict_set({container}, {key}, {value}) else {container}[if type({key}) == \"number\" then (if {key} >= 0 then {key} + 1 else #{container} + {key} + 1) else {key}] = {value} end"
                         ));
                     }
                 }
@@ -174,14 +192,20 @@ impl LuauBackend {
                         self.scalar_plan.name_container_kind(&args[0]),
                         Some(ContainerKind::List)
                     );
-                    if known_list_like {
+                    let known_dict =
+                        self.scalar_plan.name_container_kind(&args[0]) == Some(ContainerKind::Dict);
+                    if known_dict {
+                        self.emit_line(&format!("molt_dict_delete({container}, {key}, false)"));
+                    } else if known_list_like {
                         let idx_expr = if key_known_nonneg {
                             format!("{key} + 1")
                         } else {
-                            format!("if {key} >= 0 then {key} + 1 else #{container} + {key} + 1")
+                            format!(
+                                "if {key} >= 0 then {key} + 1 else molt_sequence_len({container}) + {key} + 1"
+                            )
                         };
                         self.emit_line(&format!(
-                            "do local __idx = {idx_expr}; if __idx < 1 or __idx > #{container} then error({{__type=\"IndexError\", __msg=\"list deletion index out of range\"}}) end; table.remove({container}, __idx) end"
+                            "do local __n = molt_sequence_len({container}); local __idx = {idx_expr}; if __idx < 1 or __idx > __n then error({{__type=\"IndexError\", __msg=\"list deletion index out of range\"}}) end; for __i = __idx, __n - 1 do rawset({container}, __i, rawget({container}, __i + 1)) end; rawset({container}, __n, nil); if type(rawget({container}, molt_sequence_length_key)) == \"number\" then rawset({container}, molt_sequence_length_key, __n - 1) end end"
                         ));
                     } else if key_known_nonneg {
                         self.emit_line(&format!("table.remove({container}, {key} + 1)"));
@@ -191,7 +215,7 @@ impl LuauBackend {
                         ));
                     } else {
                         self.emit_line(&format!(
-                            "if type({key}) == \"number\" then table.remove({container}, if {key} >= 0 then {key} + 1 else #{container} + {key} + 1) else {container}[{key}] = nil end"
+                            "if molt_dict_is_ordered({container}) then molt_dict_delete({container}, {key}, false) elseif type({key}) == \"number\" then table.remove({container}, if {key} >= 0 then {key} + 1 else #{container} + {key} + 1) else {container}[{key}] = nil end"
                         ));
                     }
                 }
