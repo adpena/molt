@@ -16,6 +16,7 @@ use super::state::{
     socket_timeout, wasm_socket_family, wasm_socket_meta_clone, wasm_socket_meta_insert,
     wasm_socket_meta_remove,
 };
+use super::target_capability::{base_socket_type, socket_type_requests_nonblocking};
 use super::wait::{errno_from_rc, socket_wait_ready, would_block_errno};
 use super::{SendData, require_net_capability, send_data_from_bits, socket_handle_from_bits};
 
@@ -89,24 +90,8 @@ pub extern "C" fn molt_socket_new(
                 }
             }
         };
-        #[cfg(unix)]
-        let base_type = sock_type & !(SOCK_NONBLOCK_FLAG | SOCK_CLOEXEC_FLAG);
-        #[cfg(not(unix))]
-        let base_type = sock_type;
-        let timeout = {
-            #[cfg(unix)]
-            {
-                if (sock_type & SOCK_NONBLOCK_FLAG) != 0 {
-                    Some(Duration::ZERO)
-                } else {
-                    None
-                }
-            }
-            #[cfg(not(unix))]
-            {
-                None
-            }
-        };
+        let base_type = base_socket_type(sock_type);
+        let timeout = socket_type_requests_nonblocking(sock_type).then_some(Duration::ZERO);
         let handle = unsafe { crate::molt_socket_new_host(family, base_type, proto, fileno) };
         if handle < 0 {
             return raise_os_error_errno::<u64>(_py, (-handle) as i64, "socket");

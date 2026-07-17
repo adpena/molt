@@ -1,3 +1,4 @@
+use super::target_capability::{base_socket_type, socket_type_requests_nonblocking};
 use super::*;
 
 #[cfg(molt_has_net_io)]
@@ -46,10 +47,7 @@ pub extern "C" fn molt_socket_new(
                 );
             }
         };
-        #[cfg(unix)]
-        let base_type = sock_type & !(SOCK_NONBLOCK_FLAG | SOCK_CLOEXEC_FLAG);
-        #[cfg(not(unix))]
-        let base_type = sock_type;
+        let base_type = base_socket_type(sock_type);
         let socket_type = match base_type {
             val if val == libc::SOCK_STREAM => Type::STREAM,
             val if val == libc::SOCK_DGRAM => Type::DGRAM,
@@ -88,25 +86,7 @@ pub extern "C" fn molt_socket_new(
         if let Err(err) = socket.set_nonblocking(true) {
             return raise_os_error::<u64>(_py, err, "socket");
         }
-        let timeout = {
-            #[cfg(unix)]
-            {
-                match SOCK_NONBLOCK_FLAG {
-                    0 => None,
-                    flag => {
-                        if (sock_type & flag) != 0 {
-                            Some(Duration::ZERO)
-                        } else {
-                            None
-                        }
-                    }
-                }
-            }
-            #[cfg(not(unix))]
-            {
-                None
-            }
-        };
+        let timeout = socket_type_requests_nonblocking(sock_type).then_some(Duration::ZERO);
         let connect_pending = false;
         let kind = if base_type == libc::SOCK_DGRAM {
             #[cfg(unix)]

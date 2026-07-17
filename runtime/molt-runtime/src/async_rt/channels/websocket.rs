@@ -15,11 +15,13 @@ use super::super::{current_token_id, token_id_from_bits};
 use super::stream::bytes_channel;
 #[cfg(molt_has_net_io)]
 use super::stream::{default_stream_max_queued_bytes, stream_enqueue_bytes_blocking};
+#[cfg(molt_has_net_io)]
+use crate::GilReleaseGuard;
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 use crate::audit::{AuditArgs, audit_capability_decision};
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 use crate::string_obj_to_owned;
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 use crate::{

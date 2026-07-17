@@ -11,6 +11,8 @@ pub use super::net_stubs::{
     molt_socket_reader_read, molt_socket_reader_readline, molt_socket_reader_readline_limit,
 };
 
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+mod target_capability;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
 #[allow(unused_imports)]
