@@ -31,6 +31,9 @@ from molt.cli.extension_manifest import (
     _validate_extension_manifest,
 )
 from molt.cli.file_hashing import _sha256_file
+from molt.cli.external_link_providers import (
+    wasm_external_link_provider_symbol_classes,
+)
 from molt.cli import module_import_scanner as _module_import_scanner
 from molt.cli.models import (
     _BuildOutputLayout,
@@ -822,17 +825,6 @@ def _abi_primitive_class(symbol: str) -> str:
     return "native_project_symbol"
 
 
-def _external_link_primitive_class(symbol: str) -> str:
-    primitive_class = WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES.get(symbol)
-    if primitive_class is not None:
-        return primitive_class
-    raise AssertionError(f"unknown external native link import: {symbol!r}")
-
-
-def _is_external_link_import(symbol: str) -> bool:
-    return symbol in WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES
-
-
 def _molt_runtime_namespace_symbol(symbol: str) -> bool:
     return symbol.startswith(("molt_", "__molt"))
 
@@ -883,6 +875,10 @@ def _object_closure_abi_symbol_board(
     defined_symbols = set(_manifest_object_closure_defined_symbols(manifest))
     runtime_symbols = set(_manifest_object_closure_runtime_symbols(manifest))
     runtime_backed_symbols = _wasm_runtime_backed_abi_symbols()
+    external_link_classes = {
+        **wasm_external_link_provider_symbol_classes(),
+        **WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES,
+    }
     records: list[_ExternalNativeAbiSymbol] = []
     errors: list[str] = []
     for symbol in non_c_api_symbols:
@@ -891,11 +887,11 @@ def _object_closure_abi_symbol_board(
             sources.add("defined_symbols")
             status = "project_defined"
             primitive_class = "native_project_symbol"
-        elif _is_external_link_import(symbol):
+        elif symbol in external_link_classes:
             if symbol in runtime_symbols:
                 sources.add("runtime_symbols")
             status = "external_link"
-            primitive_class = _external_link_primitive_class(symbol)
+            primitive_class = external_link_classes[symbol]
         elif symbol in runtime_symbols:
             sources.add("runtime_symbols")
             if symbol in runtime_backed_symbols:
