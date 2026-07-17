@@ -1279,11 +1279,15 @@ def development_artifact_env(
 
     env = dict(os.environ if base is None else base)
     if session_id:
+        inherited_generated_session = generated_session_id(env) and (
+            env.get("MOLT_SESSION_ID", "").strip() == session_id
+        )
         env["MOLT_SESSION_ID"] = session_id
-        # An explicit API argument supersedes provenance inherited from an outer
-        # guard.  Leaving the marker behind silently converts requested shard
-        # isolation into the shared warm target.
-        env.pop("MOLT_SESSION_ID_GENERATED", None)
+        if not inherited_generated_session:
+            # A genuinely different explicit API argument supersedes provenance
+            # inherited from an outer guard.  Re-passing that guard's identical
+            # generated ID is propagation, not a request for shard isolation.
+            env.pop("MOLT_SESSION_ID_GENERATED", None)
     env = RunContext(
         repo_root,
         session_prefix=session_prefix,
