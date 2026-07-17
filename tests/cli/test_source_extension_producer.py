@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -1976,15 +1977,13 @@ def test_retire_replaceable_extension_destination_rejects_non_atomic_legacy_tree
     assert not transaction.exists()
 
 
-@pytest.mark.parametrize(
-    ("existing_schema_version", "replaceable"),
-    ((1, True), (2, True), (3, False)),
-)
-def test_retire_replaceable_canonical_seal_requires_supported_schema_and_contract(
-    tmp_path: Path, existing_schema_version: int, replaceable: bool
-) -> None:
-    destination = tmp_path / "canonical"
-    transaction = tmp_path / "transaction"
+def _stage_replaceable_extension_set_fixture(
+    tmp_path: Path,
+    *,
+    schema_version: int,
+    source_head: str,
+    old_first_capabilities: tuple[str, ...] | None = None,
+) -> tuple[ScientificExtensionSet, dict[str, object]]:
     extension_set = scientific_extension_set("scipy", "pact-witness")
     extensions: list[dict[str, object]] = []
     inputs: list[producer.SourcePackageInput] = []
@@ -1995,6 +1994,12 @@ def test_retire_replaceable_canonical_seal_requires_supported_schema_and_contrac
         artifact.write_bytes(b"\x00asm" + extension.target.encode())
         artifact_sha256 = hashlib.sha256(artifact.read_bytes()).hexdigest()
         sidecar = artifact.with_name(artifact.name + ".extension_manifest.json")
+        old_capabilities = list(extension.capabilities)
+        if (
+            old_first_capabilities is not None
+            and extension.module == extension_set.extensions[0].module
+        ):
+            old_capabilities = list(old_first_capabilities)
         sidecar.write_text(
             json.dumps(
                 {
@@ -2003,7 +2008,7 @@ def test_retire_replaceable_canonical_seal_requires_supported_schema_and_contrac
                     "extension_sha256": artifact_sha256,
                     "source_plan": {"target_selector": extension.target},
                     "python_exports": list(extension.python_exports),
-                    "capabilities": list(extension.capabilities),
+                    "capabilities": old_capabilities,
                     "provided_capsules": list(extension.provided_capsules),
                 }
             ),
@@ -2028,7 +2033,7 @@ def test_retire_replaceable_canonical_seal_requires_supported_schema_and_contrac
             {
                 "module": extension.module,
                 "target": extension.target,
-                "capabilities": list(extension.capabilities),
+                "capabilities": old_capabilities,
                 "exclude_linked_static_libraries": list(
                     extension.exclude_linked_static_libraries
                 ),
@@ -2039,7 +2044,7 @@ def test_retire_replaceable_canonical_seal_requires_supported_schema_and_contrac
         "package": "scipy",
         "name": "pact-witness",
         "seal_name": extension_set.seal_name,
-        "source_head": "same-source",
+        "source_head": source_head,
         "target": "wasm",
         "target_triple": "wasm32-wasip1",
         "abi_tier": "cpython-abi",
@@ -2048,7 +2053,7 @@ def test_retire_replaceable_canonical_seal_requires_supported_schema_and_contrac
     set_manifest_path.write_text(
         json.dumps(
             {
-                "schema_version": existing_schema_version,
+                "schema_version": schema_version,
                 **identity,
                 "extensions": extensions,
             }
@@ -2062,10 +2067,26 @@ def test_retire_replaceable_canonical_seal_requires_supported_schema_and_contrac
             role="manifest",
         )
     )
-    seal = producer.stage_source_package_seal(
-        tmp_path / "package-store", inputs
+    seal = producer.stage_source_package_seal(tmp_path / "package-store", inputs)
+    shutil.copytree(seal.root, tmp_path / "canonical")
+    return extension_set, identity
+
+
+@pytest.mark.parametrize(
+    ("existing_schema_version", "replaceable"),
+    ((1, True), (2, True), (3, False)),
+)
+def test_retire_replaceable_canonical_seal_allows_typed_contract_evolution(
+    tmp_path: Path, existing_schema_version: int, replaceable: bool
+) -> None:
+    destination = tmp_path / "canonical"
+    transaction = tmp_path / "transaction"
+    extension_set, identity = _stage_replaceable_extension_set_fixture(
+        tmp_path,
+        schema_version=existing_schema_version,
+        source_head="same-source",
+        old_first_capabilities=("fs.read",),
     )
-    shutil.copytree(seal.root, destination)
 
     replacement_identity = {
         "schema_version": producer.SOURCE_EXTENSION_SET_SCHEMA_VERSION,
@@ -2096,3 +2117,66 @@ def test_retire_replaceable_canonical_seal_requires_supported_schema_and_contrac
     assert retired == transaction / "retired-destination"
     assert retired.is_dir()
     assert not destination.exists()
+
+
+def test_retire_replaceable_canonical_seal_rejects_source_identity_drift(
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / "canonical"
+    transaction = tmp_path / "transaction"
+    extension_set, identity = _stage_replaceable_extension_set_fixture(
+        tmp_path,
+        schema_version=producer.SOURCE_EXTENSION_SET_SCHEMA_VERSION,
+        source_head="old-source",
+    )
+
+    with pytest.raises(
+        producer.SourceExtensionProducerError,
+        match="owned by another source identity.*source_head",
+    ):
+        producer._retire_replaceable_extension_destination(
+            destination,
+            transaction_root=transaction,
+            extension_set=extension_set,
+            set_manifest={
+                "schema_version": producer.SOURCE_EXTENSION_SET_SCHEMA_VERSION,
+                **identity,
+                "source_head": "new-source",
+            },
+        )
+
+    assert destination.is_dir()
+    assert not transaction.exists()
+
+
+def test_retire_replaceable_canonical_seal_rejects_module_family_drift(
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / "canonical"
+    transaction = tmp_path / "transaction"
+    extension_set, identity = _stage_replaceable_extension_set_fixture(
+        tmp_path,
+        schema_version=producer.SOURCE_EXTENSION_SET_SCHEMA_VERSION,
+        source_head="same-source",
+    )
+    incomplete_set = replace(
+        extension_set,
+        extensions=extension_set.extensions[:-1],
+    )
+
+    with pytest.raises(
+        producer.SourceExtensionProducerError,
+        match="different module family",
+    ):
+        producer._retire_replaceable_extension_destination(
+            destination,
+            transaction_root=transaction,
+            extension_set=incomplete_set,
+            set_manifest={
+                "schema_version": producer.SOURCE_EXTENSION_SET_SCHEMA_VERSION,
+                **identity,
+            },
+        )
+
+    assert destination.is_dir()
+    assert not transaction.exists()
