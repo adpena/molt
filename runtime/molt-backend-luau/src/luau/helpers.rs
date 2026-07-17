@@ -41,23 +41,23 @@ impl LuauBackend {
 
     pub(super) fn emit_list_insert(&mut self, list: &str, idx: &str, val: &str) {
         self.emit_line(&format!(
-            "do local __idx = if {idx} >= 0 then {idx} + 1 else #{list} + {idx} + 1; if __idx < 1 then __idx = 1 end; if __idx > #{list} + 1 then __idx = #{list} + 1 end; if __idx == #{list} + 1 then {list}[#{list} + 1] = {val} else table.insert({list}, __idx, {val}) end end"
+            "do if type(rawget({list}, molt_sequence_length_key)) ~= \"number\" then local __idx = if {idx} >= 0 then {idx} + 1 else #{list} + {idx} + 1; if __idx < 1 then __idx = 1 end; if __idx > #{list} + 1 then __idx = #{list} + 1 end; if __idx == #{list} + 1 then {list}[#{list} + 1] = {val} else table.insert({list}, __idx, {val}) end else local __n = molt_sequence_len({list}); local __idx = if {idx} >= 0 then {idx} + 1 else __n + {idx} + 1; if __idx < 1 then __idx = 1 end; if __idx > __n + 1 then __idx = __n + 1 end; for __i = __n, __idx, -1 do rawset({list}, __i + 1, rawget({list}, __i)) end; rawset({list}, __idx, {val}); rawset({list}, molt_sequence_length_key, __n + 1) end end"
         ));
     }
 
     pub(super) fn emit_list_pop(&mut self, list: &str, idx: Option<&str>, out: Option<&str>) {
         match (idx, out) {
             (Some(idx), Some(out)) => self.emit_line(&format!(
-                "local {out}; do local __idx = if {idx} >= 0 then {idx} + 1 else #{list} + {idx} + 1; if __idx < 1 or __idx > #{list} then error({{__type=\"IndexError\", __msg=\"pop index out of range\"}}) end; {out} = table.remove({list}, __idx) end"
+                "local {out}; do local __n = molt_sequence_len({list}); local __idx = if {idx} >= 0 then {idx} + 1 else __n + {idx} + 1; if __idx < 1 or __idx > __n then error({{__type=\"IndexError\", __msg=\"pop index out of range\"}}) end; {out} = rawget({list}, __idx); for __i = __idx, __n - 1 do rawset({list}, __i, rawget({list}, __i + 1)) end; rawset({list}, __n, nil); if type(rawget({list}, molt_sequence_length_key)) == \"number\" then rawset({list}, molt_sequence_length_key, __n - 1) end end"
             )),
             (Some(idx), None) => self.emit_line(&format!(
-                "do local __idx = if {idx} >= 0 then {idx} + 1 else #{list} + {idx} + 1; if __idx < 1 or __idx > #{list} then error({{__type=\"IndexError\", __msg=\"pop index out of range\"}}) end; table.remove({list}, __idx) end"
+                "do local __n = molt_sequence_len({list}); local __idx = if {idx} >= 0 then {idx} + 1 else __n + {idx} + 1; if __idx < 1 or __idx > __n then error({{__type=\"IndexError\", __msg=\"pop index out of range\"}}) end; for __i = __idx, __n - 1 do rawset({list}, __i, rawget({list}, __i + 1)) end; rawset({list}, __n, nil); if type(rawget({list}, molt_sequence_length_key)) == \"number\" then rawset({list}, molt_sequence_length_key, __n - 1) end end"
             )),
             (None, Some(out)) => self.emit_line(&format!(
-                "local {out}; if #{list} == 0 then error({{__type=\"IndexError\", __msg=\"pop from empty list\"}}) end; {out} = table.remove({list})"
+                "local {out}; do local __n = molt_sequence_len({list}); if __n == 0 then error({{__type=\"IndexError\", __msg=\"pop from empty list\"}}) end; {out} = rawget({list}, __n); rawset({list}, __n, nil); if type(rawget({list}, molt_sequence_length_key)) == \"number\" then rawset({list}, molt_sequence_length_key, __n - 1) end end"
             )),
             (None, None) => self.emit_line(&format!(
-                "if #{list} == 0 then error({{__type=\"IndexError\", __msg=\"pop from empty list\"}}) end; table.remove({list})"
+                "do local __n = molt_sequence_len({list}); if __n == 0 then error({{__type=\"IndexError\", __msg=\"pop from empty list\"}}) end; rawset({list}, __n, nil); if type(rawget({list}, molt_sequence_length_key)) == \"number\" then rawset({list}, molt_sequence_length_key, __n - 1) end end"
             )),
         }
     }
@@ -121,12 +121,12 @@ impl LuauBackend {
 
     pub(super) fn container_truthiness(&self, raw_name: &str, ident: &str) -> Option<String> {
         match self.scalar_plan.name_container_kind(raw_name) {
-            Some(ContainerKind::List | ContainerKind::Tuple | ContainerKind::Str) => {
-                Some(format!("(#{ident} > 0)"))
+            Some(ContainerKind::List | ContainerKind::Tuple) => {
+                Some(format!("(molt_sequence_len({ident}) > 0)"))
             }
-            Some(ContainerKind::Dict | ContainerKind::Set) => {
-                Some(format!("(next({ident}) ~= nil)"))
-            }
+            Some(ContainerKind::Str) => Some(format!("(#{ident} > 0)")),
+            Some(ContainerKind::Dict) => Some(format!("(molt_dict_len({ident}) > 0)")),
+            Some(ContainerKind::Set) => Some(format!("(molt_set_len({ident}) > 0)")),
             None => None,
         }
     }

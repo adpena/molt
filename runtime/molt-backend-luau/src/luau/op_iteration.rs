@@ -8,12 +8,7 @@ impl LuauBackend {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(iterable) = args.first() {
                     let it = sanitize_ident(iterable);
-                    self.emit_line(&format!(
-                        "local {out}; do local _t = {it}; local _i = 0; \
-                         {out} = function() _i = _i + 1; \
-                         if _i <= #_t then return {{_t[_i], nil}} \
-                         else return {{nil, true}} end; end; end"
-                    ));
+                    self.emit_line(&format!("local {out} = molt_iterator_new({it})"));
                 }
             }
             "iter_next" => {
@@ -58,7 +53,7 @@ impl LuauBackend {
                     let obj = sanitize_ident(&args[0]);
                     let start = sanitize_ident(&args[1]);
                     self.emit_line(&format!(
-                        "local {out} = {{table.unpack({obj}, {start} + 1)}}"
+                        "local {out} = {{table.unpack({obj}, {start} + 1, molt_sequence_len({obj}))}}"
                     ));
                 }
             }

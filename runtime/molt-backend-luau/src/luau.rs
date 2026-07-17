@@ -30,6 +30,7 @@ mod source_checks;
 pub use source_checks::{review_luau_perf, validate_luau_source};
 
 mod compile_pipeline;
+mod dict_runtime;
 mod function_body;
 mod helpers;
 mod op_attributes;
@@ -74,6 +75,8 @@ pub struct LuauBackend {
     try_depth_counter: Vec<u32>,
     /// Monotonically increasing counter for generating unique pcall variable names.
     pcall_counter: u32,
+    /// Monotonically increasing counter for backend-owned temporary locals.
+    temp_counter: u32,
     /// True when we are inside a pcall body (between pcall_wrap_begin and
     /// pcall_wrap_end). exception_last should return nil in this zone.
     inside_pcall_body: bool,
@@ -115,6 +118,7 @@ impl LuauBackend {
             scalar_plan: ScalarRepresentationPlan::default(),
             try_depth_counter: Vec::new(),
             pcall_counter: 0,
+            temp_counter: 0,
             inside_pcall_body: false,
             nonneg_consts: BTreeSet::new(),
             scope_local_count: 0,

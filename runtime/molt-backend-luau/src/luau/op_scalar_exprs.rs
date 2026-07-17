@@ -179,7 +179,7 @@ impl LuauBackend {
             // ================================================================
             // Comparison ops (real IR op kinds)
             // ================================================================
-            "lt" | "le" | "gt" | "ge" | "eq" | "string_eq" | "ne" => {
+            "lt" | "le" | "gt" | "ge" | "string_eq" => {
                 let operator = match op.kind.as_str() {
                     "lt" => "<",
                     "le" => "<=",
@@ -190,6 +190,35 @@ impl LuauBackend {
                     _ => unreachable!(),
                 };
                 self.emit_scalar_binary_op(op, operator);
+            }
+            "eq" | "ne" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let lhs = sanitize_ident(&args[0]);
+                    let rhs = sanitize_ident(&args[1]);
+                    let lhs_kind = self.scalar_plan.name_scalar_kind(&args[0]);
+                    let rhs_kind = self.scalar_plan.name_scalar_kind(&args[1]);
+                    let bool_number_cross = matches!(
+                        (lhs_kind, rhs_kind),
+                        (
+                            Some(ScalarKind::Bool),
+                            Some(ScalarKind::Int | ScalarKind::Float)
+                        ) | (
+                            Some(ScalarKind::Int | ScalarKind::Float),
+                            Some(ScalarKind::Bool)
+                        )
+                    );
+                    if lhs_kind.is_some() && rhs_kind.is_some() && !bool_number_cross {
+                        let operator = if op.kind == "ne" { "~=" } else { "==" };
+                        self.emit_line(&format!("local {out}: boolean = ({lhs} {operator} {rhs})"));
+                    } else {
+                        let negation = if op.kind == "ne" { "not " } else { "" };
+                        self.emit_line(&format!(
+                            "local {out}: boolean = {negation}molt_equal({lhs}, {rhs})"
+                        ));
+                    }
+                }
             }
             "is" => {
                 let out = self.out_var(op);
@@ -264,11 +293,14 @@ impl LuauBackend {
                     let lhs = sanitize_ident(&args[0]);
                     let rhs = sanitize_ident(&args[1]);
                     let cmp = op.s_value.as_deref().unwrap_or("==");
-                    let luau_cmp = match cmp {
-                        "!=" | "<>" => "~=",
-                        other => other,
-                    };
-                    self.emit_line(&format!("local {out} = {lhs} {luau_cmp} {rhs}"));
+                    if matches!(cmp, "==" | "!=" | "<>") {
+                        let negation = if cmp == "==" { "" } else { "not " };
+                        self.emit_line(&format!(
+                            "local {out} = {negation}molt_equal({lhs}, {rhs})"
+                        ));
+                    } else {
+                        self.emit_line(&format!("local {out} = {lhs} {cmp} {rhs}"));
+                    }
                 }
             }
             "unary_op" => {

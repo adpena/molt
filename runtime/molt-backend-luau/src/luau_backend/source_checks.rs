@@ -82,14 +82,13 @@ fn opens_luau_function_block(trimmed: &str) -> bool {
     (trimmed.starts_with("local function ")
         || trimmed.starts_with("function ")
         || trimmed.contains("= function(")
-        || trimmed.contains("pcall(function(")
-        || trimmed.contains("xpcall(function(")
+        || trimmed.contains("function(")
         || trimmed.starts_with("return function("))
         && !trimmed.contains(" end")
 }
 
 fn opens_luau_if_block(trimmed: &str) -> bool {
-    trimmed.starts_with("if ") && trimmed.ends_with(" then")
+    trimmed.starts_with("if ") && trimmed.contains(" then") && !trimmed.ends_with(" end")
 }
 
 fn opens_luau_loop_block(trimmed: &str) -> bool {
@@ -107,6 +106,24 @@ fn validate_luau_block_structure(source: &str) -> Result<(), String> {
         let line_number = line_index + 1;
         let trimmed = strip_luau_line_comment(raw_line).trim();
         if trimmed.is_empty() {
+            continue;
+        }
+
+        if trimmed.starts_with("else ") && trimmed.ends_with(" end") {
+            match stack.pop() {
+                Some((LuauBlockKind::If, _)) => {}
+                Some((kind, opened_line)) => {
+                    return Err(format!(
+                        "luau block structure error at line {line_number}: inline else closes if block, but top block is {} opened at line {opened_line}",
+                        luau_block_kind_name(kind)
+                    ));
+                }
+                None => {
+                    return Err(format!(
+                        "luau block structure error at line {line_number}: orphan inline else"
+                    ));
+                }
+            }
             continue;
         }
 
@@ -147,18 +164,18 @@ fn validate_luau_block_structure(source: &str) -> Result<(), String> {
         }
 
         if is_luau_end_line(trimmed) {
-            let closing_pcall_function = trimmed.starts_with("end)");
+            let closing_function_expression = trimmed.starts_with("end)");
             match stack.pop() {
-                Some((LuauBlockKind::Function, _)) if closing_pcall_function => {}
+                Some((LuauBlockKind::Function, _)) if closing_function_expression => {}
                 Some((LuauBlockKind::Function, opened_line)) if trimmed != "end" => {
                     return Err(format!(
                         "luau block structure error at line {line_number}: function block opened at line {opened_line} was closed by unsupported terminator `{trimmed}`"
                     ));
                 }
-                Some((_kind, _opened_line)) if !closing_pcall_function => {}
+                Some((_kind, _opened_line)) if !closing_function_expression => {}
                 Some((kind, opened_line)) => {
                     return Err(format!(
-                        "luau block structure error at line {line_number}: `end)` closes pcall function, but top block is {} opened at line {opened_line}",
+                        "luau block structure error at line {line_number}: `end)` closes function expression, but top block is {} opened at line {opened_line}",
                         luau_block_kind_name(kind)
                     ));
                 }
@@ -335,6 +352,24 @@ mod tests {
             "\tif not __ok_0 then",
             "\t\terror(__err_0)",
             "\tend",
+            "end",
+            "",
+        ]
+        .join("\n");
+        assert!(validate_luau_source(&source).is_ok());
+    }
+
+    #[test]
+    fn test_validate_luau_source_accepts_generic_callback_and_inline_else_close() {
+        let source = [
+            "--!strict",
+            "local function bind(values)",
+            "\tscan(values, function(value)",
+            "\t\tif value then",
+            "\t\t\tif ready then print(value)",
+            "\t\t\telse error('not ready') end",
+            "\t\telse error('missing') end",
+            "\tend)",
             "end",
             "",
         ]

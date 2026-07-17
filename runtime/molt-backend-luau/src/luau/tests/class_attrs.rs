@@ -447,13 +447,13 @@ fn test_compile_checked_lowers_descriptor_attribute_authority() {
             "descriptor constructors should use one table shape, got:\n{source}"
         );
     assert!(
-        source.contains("molt_set_attr(cls, \"cm\", cm_desc)")
-            && source.contains("local cm_bound = molt_get_attr(obj, \"cm\")")
-            && source.contains("local sm_func = molt_get_attr(cls, \"sm\")")
-            && source.contains("local prop_value = molt_get_attr(obj, \"value\")")
-            && source.contains("local has_value = molt_has_attr(obj, value_name)")
-            && source.contains("molt_set_attr(obj, \"value\", new_value)")
-            && source.contains("molt_del_attr(obj, \"value\")")
+        source.contains("then molt_func_attr_set(cls, \"cm\", cm_desc) else molt_set_attr(cls, \"cm\", cm_desc) end")
+            && source.contains("then molt_func_attr_get(obj, \"cm\") else molt_get_attr(obj, \"cm\")")
+            && source.contains("then molt_func_attr_get(cls, \"sm\") else molt_get_attr(cls, \"sm\")")
+            && source.contains("then molt_func_attr_get(obj, \"value\") else molt_get_attr(obj, \"value\")")
+            && source.contains("then molt_func_attr_get(obj, value_name) ~= nil else molt_has_attr(obj, value_name)")
+            && source.contains("then molt_func_attr_set(obj, \"value\", new_value) else molt_set_attr(obj, \"value\", new_value) end")
+            && source.contains("then molt_func_attr_del(obj, \"value\") else molt_del_attr(obj, \"value\") end")
             && source.contains(
                 "local method_result; do local __method = molt_get_attr_checked(obj, \"method\");"
             )
@@ -461,14 +461,15 @@ fn test_compile_checked_lowers_descriptor_attribute_authority() {
         "attribute get/set/delete and method call should route through descriptor authority, got:\n{source}"
     );
     assert!(
-            source.contains("local getattr_builtin = function(a, ...)")
-                && source.contains("local value = molt_get_attr(a[1], a[2])")
-                && source.contains("local setattr_builtin = function(a, ...) return molt_set_attr(a[1], a[2], a[3]) end")
-                && source.contains("local delattr_builtin = function(a, ...) return molt_del_attr(a[1], a[2]) end")
-                && source.contains("local hasattr_builtin = function(a, ...) return molt_has_attr(a[1], a[2]) end")
-                && !source.contains("molt_getattr(table.unpack(a))"),
-            "attribute builtins should route through descriptor helpers, got:\n{source}"
-        );
+        source.contains("local getattr_builtin = function(a, ...)")
+            && source
+                .contains("then molt_func_attr_get(a[1], a[2]) else molt_get_attr(a[1], a[2])")
+            && source.contains("then return molt_func_attr_set(a[1], a[2], a[3]) end")
+            && source.contains("then return molt_func_attr_del(a[1], a[2]) end")
+            && source.contains("then return molt_func_attr_get(a[1], a[2]) ~= nil end")
+            && !source.contains("molt_getattr(table.unpack(a))"),
+        "attribute builtins should route through descriptor helpers, got:\n{source}"
+    );
     assert!(
         !source.contains("[classmethod_new]")
             && !source.contains("[staticmethod_new]")

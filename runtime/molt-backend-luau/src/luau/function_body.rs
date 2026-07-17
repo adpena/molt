@@ -388,6 +388,15 @@ impl LuauBackend {
 
         self.pop_indent();
         self.emit_line("end");
+        let param_names = func
+            .params
+            .iter()
+            .map(|param| format!("{param:?}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.emit_line(&format!(
+            "molt_function_register_signature({name}, molt_pack_tuple({param_names}))"
+        ));
 
         // Post-process: (1) for hoisted variables, replace `local var = ...`
         // with `var = ...` (the pre-declaration already emitted `local var`),
