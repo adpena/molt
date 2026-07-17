@@ -306,6 +306,9 @@ def _write_meson_source_plan_project(
     (src_dir / "demoext.c").write_text(
         "#include <Python.h>\n"
         '#include "demoext.h"\n'
+        "static void unused_version_compat(void) {\n"
+        "    (void)_PyFloat_FormatAdvancedWriter;\n"
+        "}\n"
         "static PyModuleDef demoext_module = {\n"
         "    PyModuleDef_HEAD_INIT,\n"
         '    "demoext",\n'
@@ -328,6 +331,12 @@ def _write_meson_source_plan_project(
         "#if (0 && 0) && \\\n"
         "    defined(NPY_DISABLED_SVE)\n"
         "    (void)NPY_DISABLED_SVE;\n"
+        "#endif\n"
+        "#if CYTHON_DISABLED_WRITER\n"
+        "    (void)_PyLong_FormatAdvancedWriter;\n"
+        "#endif\n"
+        "#if PY_VERSION_HEX >= 0x030d0000\n"
+        "    (void)PyUnicode_CopyCharacters;\n"
         "#endif\n"
         "    (void)npy_generated_int8;\n"
         "    (void)helper_generated();\n"
@@ -502,6 +511,7 @@ def _write_meson_source_plan_project(
                 "-I",
                 "pkg/include",
                 "-DDEMO_COMPILE_DB=1",
+                "-DCYTHON_DISABLED_WRITER=0",
                 "-c",
                 "pkg/demoext.c",
                 "-o",
@@ -1776,7 +1786,10 @@ def test_extension_build_consumes_meson_source_plan_object_closure(
         monkeypatch,
         default_init_symbol="PyInit_demoext",
         by_stem={
-            "demoext": ({"PyInit_demoext"}, {"PyModule_Create", "helper_generated"}),
+            "demoext": (
+                {"PyInit_demoext"},
+                {"PyModule_Create", "PyTuple_New", "helper_generated"},
+            ),
             "helper_generated": (
                 {"helper_generated"},
                 {"PyLong_AsLong", "PyLong_FromLong"},
@@ -1863,6 +1876,10 @@ def test_extension_build_consumes_meson_source_plan_object_closure(
     assert "NPY_DISABLED_Alias" not in required_c_api_symbols
     assert "NPY_DISABLED_SVE" not in required_c_api_symbols
     assert "PyCode_NewWithPosOnlyArgs" not in required_c_api_symbols
+    assert "_PyLong_FormatAdvancedWriter" not in required_c_api_symbols
+    assert "_PyFloat_FormatAdvancedWriter" not in required_c_api_symbols
+    assert "PyUnicode_CopyCharacters" not in required_c_api_symbols
+    assert manifest["build"]["source_c_api_scan"]["missing_symbols"] == []
     assert "PyTuple_New" in required_c_api_symbols
     assert (out_dir / "pkg" / "__init__.py").read_text(
         encoding="utf-8"
@@ -1877,6 +1894,37 @@ def test_extension_build_consumes_meson_source_plan_object_closure(
         artifact_manifest["source_plan"]["digest"] == manifest["source_plan"]["digest"]
     )
     assert artifact_manifest["python_exports"] == ["pkg.demoext"]
+
+
+def test_source_extension_preprocessor_uses_macro_values_and_python_version() -> None:
+    compile_definitions, undefined = (
+        cli_source_extensions._source_extension_compile_arg_preprocessor_symbols(
+            ("-DCYTHON_USE_UNICODE_WRITER=0", "-DFEATURE_LEVEL=3", "-UOLD_API")
+        )
+    )
+    header_definitions = cli_source_extensions._extract_preprocessor_definitions(
+        "#define PY_MAJOR_VERSION 3\n"
+        "#define PY_MINOR_VERSION 12\n"
+        "#define PY_MICRO_VERSION 13\n"
+    )
+    definitions = {**header_definitions, **compile_definitions}
+    required = cli_source_extensions._extract_c_api_tokens(
+        "#if CYTHON_USE_UNICODE_WRITER\n"
+        "(void)_PyLong_FormatAdvancedWriter;\n"
+        "#endif\n"
+        "#if PY_VERSION_HEX >= 0x030d0000\n"
+        "(void)PyUnicode_CopyCharacters;\n"
+        "#endif\n"
+        "#if FEATURE_LEVEL >= 3\n"
+        "(void)PyTuple_New;\n"
+        "#endif\n",
+        active_preprocessor_symbols=definitions,
+    )
+
+    assert compile_definitions["CYTHON_USE_UNICODE_WRITER"] == 0
+    assert header_definitions["PY_VERSION_HEX"] == 0x030C0DF0
+    assert undefined == {"OLD_API"}
+    assert required == {"PyTuple_New"}
 
 
 def test_extension_build_threads_source_plan_roots_to_cython_regeneration(
