@@ -53,6 +53,9 @@ ProcessIdentity = _process_model.ProcessIdentity
 ProcessTreeTracker = _process_model.ProcessTreeTracker
 RssViolation = _process_model.RssViolation
 process_identity = _process_model.process_identity
+process_identity_has_creation_marker = (
+    _process_model.process_identity_has_creation_marker
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -474,7 +477,7 @@ def _pid_exited_or_unobservable(pid: int, *, grace: float) -> bool:
         except ProcessLookupError:
             return True
         except OSError:
-            return True
+            return False
         time.sleep(0.02)
     return False
 
@@ -489,7 +492,7 @@ def _process_group_exited_or_unobservable(pgid: int, *, grace: float) -> bool:
         except ProcessLookupError:
             return True
         except OSError:
-            return True
+            return False
         time.sleep(0.02)
     return False
 
@@ -587,7 +590,30 @@ def _send_pid_signal_if_identity_action(
     *,
     sampler: Callable[[], Mapping[int, ProcessSample]],
 ) -> GuardTerminationAction:
-    samples = sampler()
+    if identity is None:
+        return _termination_action(
+            target_kind="process",
+            target_id=pid,
+            signum=signum,
+            result="skipped_missing_identity",
+        )
+    if not process_identity_has_creation_marker(identity):
+        return _termination_action(
+            target_kind="process",
+            target_id=pid,
+            signum=signum,
+            result="skipped_ambiguous_identity",
+        )
+    try:
+        samples = sampler()
+    except (KeyboardInterrupt, Exception) as exc:
+        return _termination_action(
+            target_kind="process",
+            target_id=pid,
+            signum=signum,
+            result="skipped_sampler_failure",
+            error=str(exc),
+        )
     sample = samples.get(pid)
     if sample is None:
         return _termination_action(
@@ -596,24 +622,12 @@ def _send_pid_signal_if_identity_action(
             signum=signum,
             result="missing",
         )
-    if identity is not None and process_identity(sample) != identity:
+    if process_identity(sample) != identity:
         return _termination_action(
             target_kind="process",
             target_id=pid,
             signum=signum,
             result="skipped_identity_mismatch",
-        )
-    if _process_model.has_external_host_control_plane_lineage(
-        samples,
-        pid,
-        current_pid=os.getpid(),
-        owned_pids={pid} if identity is not None else (),
-    ):
-        return _termination_action(
-            target_kind="process",
-            target_id=pid,
-            signum=signum,
-            result="skipped_host_control_lineage",
         )
     if is_host_control_plane_process(sample):
         return _termination_action(
@@ -622,9 +636,21 @@ def _send_pid_signal_if_identity_action(
             signum=signum,
             result="skipped_host_control_plane",
         )
+    if _process_model.has_external_host_control_plane_lineage(
+        samples,
+        pid,
+        current_pid=os.getpid(),
+        owned_pids={pid},
+    ):
+        return _termination_action(
+            target_kind="process",
+            target_id=pid,
+            signum=signum,
+            result="skipped_host_control_lineage",
+        )
     if _sample_pgid(sample) in _current_protected_process_group_ids(
         samples,
-        owned_pids={pid} if identity is not None else set(),
+        owned_pids={pid},
     ):
         return _termination_action(
             target_kind="process",
@@ -642,7 +668,16 @@ def _send_process_group_signal_if_identities_match_action(
     *,
     sampler: Callable[[], Mapping[int, ProcessSample]],
 ) -> GuardTerminationAction:
-    samples = sampler()
+    try:
+        samples = sampler()
+    except (KeyboardInterrupt, Exception) as exc:
+        return _termination_action(
+            target_kind="process_group",
+            target_id=pgid,
+            signum=signum,
+            result="skipped_sampler_failure",
+            error=str(exc),
+        )
     protected_pgids = _current_protected_process_group_ids(
         samples,
         owned_pids=set(identities),
@@ -664,12 +699,23 @@ def _send_process_group_signal_if_identities_match_action(
         )
     for sample in members:
         identity = identities.get(sample.pid)
-        if identity is None or process_identity(sample) != identity:
+        if (
+            identity is None
+            or not process_identity_has_creation_marker(identity)
+            or process_identity(sample) != identity
+        ):
             return _termination_action(
                 target_kind="process_group",
                 target_id=pgid,
                 signum=signum,
                 result="skipped_identity_mismatch",
+            )
+        if is_host_control_plane_process(sample):
+            return _termination_action(
+                target_kind="process_group",
+                target_id=pgid,
+                signum=signum,
+                result="skipped_host_control_plane",
             )
         if _process_model.has_external_host_control_plane_lineage(
             samples,
@@ -682,13 +728,6 @@ def _send_process_group_signal_if_identities_match_action(
                 target_id=pgid,
                 signum=signum,
                 result="skipped_host_control_lineage",
-            )
-        if is_host_control_plane_process(sample):
-            return _termination_action(
-                target_kind="process_group",
-                target_id=pgid,
-                signum=signum,
-                result="skipped_host_control_plane",
             )
     return _send_process_group_signal_action(pgid, signum)
 
@@ -743,6 +782,7 @@ def terminate_watched_processes(
     samples: Mapping[int, ProcessSample] | None = None,
     watched: set[int] | None = None,
     tracker: ProcessTreeTracker | None = None,
+    expected_identities: Mapping[int, ProcessIdentity] | None = None,
     grace: float = 0.25,
     root_owned: bool = False,
     reason: str = "terminate_watched_processes",
@@ -792,9 +832,6 @@ def terminate_watched_processes(
         return finish(finish_reason="invalid_root_pid")
     if _is_windows_process_model():
         observed_samples = sampler() if samples is None else samples
-        observed_identities = {
-            pid: process_identity(sample) for pid, sample in observed_samples.items()
-        }
         observed = (
             watched
             if watched is not None
@@ -817,21 +854,55 @@ def terminate_watched_processes(
                 watched_pids=set(observed),
                 finish_reason="windows_pid_tree_ambiguous_fanout",
             )
+        if expected_identities is not None:
+            custody_identities = dict(expected_identities)
+        elif tracker is not None:
+            custody_identities = tracker.custody_identities(set(observed) | {root_pid})
+        else:
+            custody_identities = {
+                pid: process_identity(sample)
+                for pid, sample in observed_samples.items()
+                if pid in observed or pid == root_pid
+            }
+        identity_owned_pids: set[int] = set()
+        for pid in sorted(set(observed) | {root_pid}):
+            sample = observed_samples.get(pid)
+            identity = custody_identities.get(pid)
+            if sample is None or identity is None:
+                result = "skipped_missing_identity"
+            elif not process_identity_has_creation_marker(identity):
+                result = "skipped_ambiguous_identity"
+            elif process_identity(sample) != identity:
+                result = "skipped_identity_mismatch"
+            else:
+                identity_owned_pids.add(pid)
+                continue
+            actions.append(
+                _termination_action(
+                    target_kind="process",
+                    target_id=pid,
+                    signum=None,
+                    result=result,
+                )
+            )
         protected_pgids = _current_protected_process_group_ids(
             observed_samples,
-            owned_pids=set(observed) | {root_pid},
+            owned_pids=identity_owned_pids,
         )
-        owned_pids = _filter_protected_watched_pids(observed_samples, set(observed))
+        owned_pids = _filter_protected_watched_pids(
+            observed_samples,
+            set(observed) & identity_owned_pids,
+        )
         root_sample = observed_samples.get(root_pid)
         root_group_pgid = None if root_sample is None else _sample_pgid(root_sample)
-        if _root_pid_is_kill_eligible(
+        if root_pid in identity_owned_pids and _root_pid_is_kill_eligible(
             observed_samples,
             root_pid,
             protected_pgids=protected_pgids,
             root_owned=root_owned,
         ):
             owned_pids.add(root_pid)
-        else:
+        elif root_pid in identity_owned_pids:
             if root_pid == os.getpid():
                 result = "skipped_guard_process"
             elif root_sample is None:
@@ -862,9 +933,7 @@ def terminate_watched_processes(
                     result=result,
                 )
             )
-        identity_sampler = (
-            (lambda: observed_samples) if samples is not None else sampler
-        )
+        identity_sampler = sampler
         remaining_pids: set[int] = set()
         for pid in sorted(owned_pids, reverse=True):
             if pid <= 0:
@@ -900,7 +969,7 @@ def terminate_watched_processes(
                     )
                 )
                 continue
-            identity = observed_identities.get(pid)
+            identity = custody_identities.get(pid)
             if identity is None:
                 actions.append(
                     _termination_action(
@@ -921,7 +990,7 @@ def terminate_watched_processes(
             if action.result == "still_live":
                 remaining_pids.add(pid)
         for pid in sorted(remaining_pids, reverse=True):
-            identity = observed_identities.get(pid)
+            identity = custody_identities.get(pid)
             actions.append(
                 _send_pid_signal_if_identity_action(
                     pid,
@@ -947,17 +1016,52 @@ def terminate_watched_processes(
             finish_reason="non_posix_root_pid",
         )
     observed_samples = sampler() if samples is None else samples
-    observed_identities = {
-        pid: process_identity(sample) for pid, sample in observed_samples.items()
-    }
     observed = (
         watched
         if watched is not None
         else watched_pids(observed_samples, root_pid, tracker=tracker)
     )
+    if expected_identities is not None:
+        observed_identities = dict(expected_identities)
+    elif tracker is not None:
+        observed_identities = tracker.custody_identities(set(observed) | {root_pid})
+    else:
+        observed_identities = {
+            pid: process_identity(sample)
+            for pid, sample in observed_samples.items()
+            if pid in observed or pid == root_pid
+        }
+    identity_owned_pids = {
+        pid
+        for pid in set(observed) | {root_pid}
+        if (sample := observed_samples.get(pid)) is not None
+        and (identity := observed_identities.get(pid)) is not None
+        and process_identity_has_creation_marker(identity)
+        and process_identity(sample) == identity
+    }
+    for pid in sorted((set(observed) | {root_pid}) - identity_owned_pids):
+        actions.append(
+            _termination_action(
+                target_kind="process",
+                target_id=pid,
+                signum=None,
+                result=(
+                    "skipped_missing_identity"
+                    if observed_identities.get(pid) is None
+                    else (
+                        "skipped_ambiguous_identity"
+                        if not process_identity_has_creation_marker(
+                            observed_identities[pid]
+                        )
+                        else "skipped_identity_mismatch"
+                    )
+                ),
+            )
+        )
+    observed &= identity_owned_pids
     protected_pgids = _current_protected_process_group_ids(
         observed_samples,
-        owned_pids=set(observed) | {root_pid},
+        owned_pids=identity_owned_pids,
     )
     root_sample = observed_samples.get(root_pid)
     root_group_pgid = (
@@ -968,7 +1072,7 @@ def terminate_watched_processes(
     root_sid = _safe_getsid(root_pid)
     observed = _filter_protected_watched_pids(observed_samples, set(observed))
     pids: set[int] = set()
-    if _root_pid_is_kill_eligible(
+    if root_pid in identity_owned_pids and _root_pid_is_kill_eligible(
         observed_samples,
         root_pid,
         protected_pgids=protected_pgids,
@@ -1031,8 +1135,21 @@ def terminate_watched_processes(
                 result="skipped_not_fully_owned",
             )
         )
+    individual_pids = set(escaped_pids)
+    if not root_group_fully_owned:
+        individual_pids.update(pids)
     remaining_pids: set[int] = set()
-    for pid in sorted(escaped_pids):
+    for pid in sorted(individual_pids):
+        if pid == os.getpid():
+            actions.append(
+                _termination_action(
+                    target_kind="process",
+                    target_id=pid,
+                    signum=signal.SIGTERM,
+                    result="skipped_guard_process",
+                )
+            )
+            continue
         identity = observed_identities.get(pid)
         if identity is None:
             actions.append(
@@ -1062,7 +1179,7 @@ def terminate_watched_processes(
                 sampler=sampler,
             )
         )
-    for pid in sorted(pids | remaining_pids):
+    for pid in sorted(remaining_pids):
         if pid == os.getpid():
             actions.append(
                 _termination_action(
@@ -1118,6 +1235,7 @@ def cleanup_tracked_orphans(
     observed = tracker.update(samples)
     if not observed and remembered_watched is not None:
         observed = set(remembered_watched)
+    expected_identities = tracker.custody_identities(observed)
     watched = _filter_protected_watched_pids(samples, observed)
     live_pgids: set[int] = set()
     for pid in watched:
@@ -1134,6 +1252,7 @@ def cleanup_tracked_orphans(
         samples=samples,
         watched=watched,
         tracker=tracker,
+        expected_identities=expected_identities,
         grace=grace,
         reason="tracked_orphan_cleanup",
         sampler=sampler,
@@ -1143,10 +1262,42 @@ def cleanup_tracked_orphans(
         raise sampler_failure
     if report.reason == "windows_pid_tree_ambiguous_fanout":
         return GuardOrphanCleanupResult(termination_reports=(report,))
+    group_members: dict[int, set[int]] = {}
+    for pid in watched:
+        sample = samples.get(pid)
+        if sample is not None:
+            group_members.setdefault(_sample_pgid(sample), set()).add(pid)
+    completed_groups = _fully_completed_process_groups(group_members, report.actions)
     return GuardOrphanCleanupResult(
-        process_groups=tuple(sorted(live_pgids)),
+        process_groups=tuple(sorted(completed_groups & live_pgids)),
         termination_reports=() if report is None else (report,),
     )
+
+
+def _fully_completed_process_groups(
+    group_members: Mapping[int, set[int]],
+    actions: Sequence[GuardTerminationAction],
+) -> set[int]:
+    """Return only groups whose complete detected membership was terminated."""
+
+    completed_processes = {
+        action.target_id
+        for action in actions
+        if action.target_kind == "process"
+        and action.result == "completed_or_missing"
+    }
+    completed_groups = {
+        action.target_id
+        for action in actions
+        if action.target_kind == "process_group"
+        and action.result == "completed_or_missing"
+    }
+    completed_groups.update(
+        pgid
+        for pgid, members in group_members.items()
+        if members and members <= completed_processes
+    )
+    return completed_groups
 
 
 def _live_process_group_ids(samples: Mapping[int, ProcessSample]) -> frozenset[int]:
@@ -1205,39 +1356,6 @@ def _terminate_pid_if_identity_action(
     sampler: Callable[[], Mapping[int, ProcessSample]],
     grace: float,
 ) -> GuardTerminationAction:
-    samples = sampler()
-    sample = samples.get(pid)
-    if sample is None:
-        return _termination_action(
-            target_kind="process",
-            target_id=pid,
-            signum=None,
-            result="skipped_missing",
-        )
-    if process_identity(sample) != identity:
-        return _termination_action(
-            target_kind="process",
-            target_id=pid,
-            signum=None,
-            result="skipped_identity_mismatch",
-        )
-    if is_host_control_plane_process(sample):
-        return _termination_action(
-            target_kind="process",
-            target_id=pid,
-            signum=None,
-            result="skipped_host_control_plane",
-        )
-    if _sample_pgid(sample) in _current_protected_process_group_ids(
-        samples,
-        owned_pids={pid},
-    ):
-        return _termination_action(
-            target_kind="process",
-            target_id=pid,
-            signum=None,
-            result="skipped_protected_group_member",
-        )
     action = _send_pid_signal_if_identity_action(
         pid,
         identity,
@@ -1373,7 +1491,14 @@ def cleanup_repo_scoped_orphans_since_baseline(
                     grace=grace,
                 )
             )
-        if any(action.result == "completed_or_missing" for action in actions):
+        if fresh_group.pgid in _fully_completed_process_groups(
+            {
+                fresh_group.pgid: {
+                    sample.pid for sample in fresh_group.samples
+                }
+            },
+            actions,
+        ):
             terminated.append(fresh_group.pgid)
         if actions:
             reports.append(

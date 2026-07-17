@@ -1914,13 +1914,23 @@ def test_repo_process_sentinel_scopes_automatic_kills_to_current_tree(
     harness_memory_guard._TERMINATED_PGIDS.clear()
     owned_pgid = 246810
     peer_pgid = 246811
+    self_pid = os.getpid()
     samples = {
+        self_pid: harness_memory_guard.memory_guard.ProcessSample(
+            pid=self_pid,
+            ppid=1,
+            pgid=self_pid,
+            rss_kb=64,
+            command=f"{tmp_path}/.venv/bin/python -m pytest",
+            started_at_ns=self_pid,
+        ),
         owned_pgid: harness_memory_guard.memory_guard.ProcessSample(
             pid=owned_pgid,
-            ppid=os.getpid(),
+            ppid=self_pid,
             pgid=owned_pgid,
             rss_kb=5 * 1024 * 1024,
             command=f"{tmp_path}/target/dev-fast/molt-backend --owned",
+            started_at_ns=owned_pgid,
         ),
         peer_pgid: harness_memory_guard.memory_guard.ProcessSample(
             pid=peer_pgid,
@@ -1928,6 +1938,7 @@ def test_repo_process_sentinel_scopes_automatic_kills_to_current_tree(
             pgid=peer_pgid,
             rss_kb=6 * 1024 * 1024,
             command=f"{tmp_path}/target/dev-fast/molt-backend --peer",
+            started_at_ns=peer_pgid,
         ),
     }
     monkeypatch.setattr(
@@ -2050,23 +2061,36 @@ def test_repo_process_sentinel_keeps_reparented_observed_child_in_scope(
     harness_memory_guard._TERMINATED_PGIDS.clear()
     owned_pgid = 314159
     peer_pgid = 314160
+    self_pid = os.getpid()
+    self_sample = harness_memory_guard.memory_guard.ProcessSample(
+        pid=self_pid,
+        ppid=1,
+        pgid=self_pid,
+        rss_kb=64,
+        command=f"{tmp_path}/.venv/bin/python -m pytest",
+        started_at_ns=self_pid,
+    )
     sample_sets = [
         {
+            self_pid: self_sample,
             owned_pgid: harness_memory_guard.memory_guard.ProcessSample(
                 pid=owned_pgid,
-                ppid=os.getpid(),
+                ppid=self_pid,
                 pgid=owned_pgid,
                 rss_kb=100,
                 command=f"{tmp_path}/target/dev-fast/molt-backend --warming",
+                started_at_ns=owned_pgid,
             ),
         },
         {
+            self_pid: self_sample,
             owned_pgid: harness_memory_guard.memory_guard.ProcessSample(
                 pid=owned_pgid,
                 ppid=1,
                 pgid=owned_pgid,
                 rss_kb=5 * 1024 * 1024,
                 command=f"{tmp_path}/target/dev-fast/molt-backend --warming",
+                started_at_ns=owned_pgid,
             ),
             peer_pgid: harness_memory_guard.memory_guard.ProcessSample(
                 pid=peer_pgid,
@@ -2074,6 +2098,7 @@ def test_repo_process_sentinel_keeps_reparented_observed_child_in_scope(
                 pgid=peer_pgid,
                 rss_kb=6 * 1024 * 1024,
                 command=f"{tmp_path}/target/dev-fast/molt-backend --peer",
+                started_at_ns=peer_pgid,
             ),
         },
     ]

@@ -1,12 +1,22 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Collection, Mapping, Sequence
+import contextlib
 from dataclasses import dataclass
+from datetime import datetime
 import os
+from pathlib import Path
 import re
 import subprocess
+import sys
+import threading
+import time
+from typing import Any, cast
 
-from tools.memory_guard_core.windows_snapshot import _windows_process_snapshot_rows
+from tools.memory_guard_core.windows_snapshot import (
+    ProcessSnapshotError,
+    _windows_process_snapshot_rows,
+)
 
 
 HOST_CONTROL_PLANE_TOKENS = (
@@ -134,11 +144,21 @@ class ProcessSample:
     started_at_ns: int | None = None
 
 
-ProcessIdentity = tuple[int | None, str, int | None]
+@dataclass(frozen=True, slots=True)
+class ProcessIdentity:
+    """Stable process-instance identity, independent of mutable execution state."""
+
+    started_at_ns: int | None
 
 
 def process_identity(sample: ProcessSample) -> ProcessIdentity:
-    return (sample.pgid, sample.command, sample.started_at_ns)
+    return ProcessIdentity(started_at_ns=sample.started_at_ns)
+
+
+def process_identity_has_creation_marker(identity: ProcessIdentity) -> bool:
+    """Return whether an identity can distinguish PID reuse by construction."""
+
+    return identity.started_at_ns is not None
 
 
 @dataclass(slots=True)
@@ -173,12 +193,26 @@ class ProcessTreeTracker:
             identity = process_identity(sample)
             known_identity = self.known_identities.get(pid)
             if known_identity is None:
-                self.known_identities[pid] = identity
+                if process_identity_has_creation_marker(identity):
+                    self.known_identities[pid] = identity
+            elif not process_identity_has_creation_marker(identity):
+                # An access-degraded sample cannot revoke strong historical
+                # custody and cannot refresh it. Keep the last-good identity;
+                # signal-time validation will fail closed until sampling
+                # recovers the creation marker.
+                continue
             elif known_identity != identity:
                 self.known_pids.remove(pid)
                 self.known_identities.pop(pid, None)
         changed = True
-        live_known_pids = {pid for pid in self.known_pids if pid in samples}
+        live_known_pids = {
+            pid
+            for pid in self.known_pids
+            if (sample := samples.get(pid)) is not None
+            and (known_identity := self.known_identities.get(pid)) is not None
+            and (current_identity := process_identity(sample)) == known_identity
+            and process_identity_has_creation_marker(current_identity)
+        }
         while changed:
             changed = False
             for sample in samples.values():
@@ -190,8 +224,11 @@ class ProcessTreeTracker:
                 if sample.pid in self.known_pids or sample.ppid in live_known_pids:
                     if sample.pid not in self.known_pids:
                         self.known_pids.add(sample.pid)
-                        self.known_identities[sample.pid] = process_identity(sample)
-                        live_known_pids.add(sample.pid)
+                        identity = process_identity(sample)
+                        if process_identity_has_creation_marker(identity):
+                            self.known_identities[sample.pid] = identity
+                        if sample.pid in self.known_identities:
+                            live_known_pids.add(sample.pid)
                         changed = True
                     if (
                         sample.pid != self.root_pid or sample_pgid == self.root_pid
@@ -199,6 +236,25 @@ class ProcessTreeTracker:
                         self.known_pgids.add(sample_pgid)
                         changed = True
         return {pid for pid in self.known_pids if pid in samples}
+
+    def custody_identities(
+        self,
+        pids: Collection[int],
+    ) -> dict[int, ProcessIdentity]:
+        """Return the identities captured when each PID entered custody.
+
+        A fresh sampler row is evidence about what owns a PID *now*; it must not
+        replace the historical identity that made the PID part of this tree.
+        Termination code compares these captured identities with a fresh sample
+        before signaling so PID reuse cannot manufacture ownership.
+        """
+
+        assert self.known_identities is not None
+        return {
+            pid: identity
+            for pid in pids
+            if (identity := self.known_identities.get(pid)) is not None
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -335,6 +391,377 @@ def parse_process_table(text: str) -> dict[int, ProcessSample]:
     return samples
 
 
+def _ps_lstart_ns(value: str) -> int | None:
+    try:
+        local_start = datetime.strptime(value, "%a %b %d %H:%M:%S %Y")
+        return int(local_start.timestamp() * 1_000_000_000)
+    except (OverflowError, ValueError):
+        return None
+
+
+def parse_process_table_with_start(text: str) -> dict[int, ProcessSample]:
+    """Parse one `ps` snapshot that includes its stable `lstart` field."""
+
+    samples: dict[int, ProcessSample] = {}
+    now_ns = time.time_ns()
+    for raw_line in text.splitlines():
+        parts = raw_line.strip().split(None, 9)
+        if len(parts) != 10:
+            continue
+        try:
+            pid = int(parts[0])
+            ppid = int(parts[1])
+            pgid = int(parts[2])
+            rss_kb = int(parts[3])
+        except ValueError:
+            continue
+        started_at_ns = _ps_lstart_ns(" ".join(parts[4:9]))
+        if pid <= 0 or started_at_ns is None:
+            continue
+        samples[pid] = ProcessSample(
+            pid=pid,
+            ppid=max(0, ppid),
+            rss_kb=max(0, rss_kb),
+            command=parts[9],
+            pgid=pgid,
+            elapsed_sec=max(0, (now_ns - started_at_ns) // 1_000_000_000),
+            started_at_ns=started_at_ns,
+        )
+    return samples
+
+
+def _linux_proc_stat_identity(
+    pid: int,
+    proc_root: Path = Path("/proc"),
+) -> tuple[int, int, int, str] | None:
+    """Read parent, group, start marker, and comm from one `/proc` stat row."""
+
+    if pid <= 0 or (
+        not sys.platform.startswith("linux") and proc_root == Path("/proc")
+    ):
+        return None
+    try:
+        raw = (proc_root / str(pid) / "stat").read_text(encoding="utf-8")
+        comm_end = raw.rindex(")")
+        comm_start = raw.index("(") + 1
+        command = raw[comm_start:comm_end]
+        tail = raw[comm_end + 2 :].split()
+        ppid = int(tail[1])
+        pgid = int(tail[2])
+        start_ticks = int(tail[19])
+        ticks_per_second = (
+            int(os.sysconf("SC_CLK_TCK"))
+            if hasattr(os, "sysconf")
+            else 100
+        )
+    except (IndexError, OSError, ValueError):
+        return None
+    if start_ticks < 0 or ticks_per_second <= 0:
+        return None
+    return (
+        max(0, ppid),
+        pgid,
+        start_ticks * 1_000_000_000 // ticks_per_second,
+        command,
+    )
+
+
+def _linux_proc_started_at_ns(pid: int) -> int | None:
+    identity = _linux_proc_stat_identity(pid)
+    return None if identity is None else identity[2]
+
+
+def _linux_proc_command(
+    pid: int,
+    fallback: str,
+    proc_root: Path = Path("/proc"),
+) -> str:
+    try:
+        raw = (proc_root / str(pid) / "cmdline").read_bytes()
+    except OSError:
+        return fallback
+    fields = [part.decode(errors="replace") for part in raw.split(b"\0") if part]
+    return " ".join(fields) if fields else fallback
+
+
+def _linux_proc_rss_kb(pid: int, proc_root: Path = Path("/proc")) -> int:
+    try:
+        lines = (proc_root / str(pid) / "status").read_text(
+            encoding="utf-8"
+        ).splitlines()
+    except OSError:
+        return 0
+    for line in lines:
+        if not line.startswith("VmRSS:"):
+            continue
+        fields = line.split()
+        if len(fields) >= 2:
+            with contextlib.suppress(ValueError):
+                return max(0, int(fields[1]))
+    return 0
+
+
+def sample_processes_linux_proc(
+    proc_root: Path = Path("/proc"),
+    *,
+    stat_reader: Callable[[int, Path], tuple[int, int, int, str] | None]
+    | None = None,
+    uptime_sec: float | None = None,
+) -> dict[int, ProcessSample]:
+    """Sample Linux processes with instance-bound ancestry and identity."""
+
+    if stat_reader is None:
+        stat_reader = _linux_proc_stat_identity
+    samples: dict[int, ProcessSample] = {}
+    try:
+        pids = [
+            int(entry.name)
+            for entry in proc_root.iterdir()
+            if entry.name.isdigit()
+        ]
+    except OSError as exc:
+        raise ProcessSnapshotError(f"Linux /proc enumeration failed: {exc}") from exc
+    if uptime_sec is None:
+        try:
+            uptime_sec = time.clock_gettime(time.CLOCK_BOOTTIME)
+        except (AttributeError, OSError):
+            try:
+                uptime_sec = float(
+                    (proc_root / "uptime")
+                    .read_text(encoding="utf-8")
+                    .split()[0]
+                )
+            except (IndexError, OSError, ValueError) as exc:
+                raise ProcessSnapshotError(
+                    f"Linux boot-time clock is unavailable: {exc}"
+                ) from exc
+    for pid in pids:
+        before = stat_reader(pid, proc_root)
+        if before is None:
+            continue
+        ppid, pgid, started_at_ns, comm = before
+        command = _linux_proc_command(pid, comm, proc_root)
+        rss_kb = _linux_proc_rss_kb(pid, proc_root)
+        after = stat_reader(pid, proc_root)
+        if after != before:
+            continue
+        samples[pid] = ProcessSample(
+            pid=pid,
+            ppid=ppid,
+            rss_kb=rss_kb,
+            command=command,
+            pgid=pgid,
+            elapsed_sec=max(0, int(uptime_sec - started_at_ns / 1_000_000_000)),
+            started_at_ns=started_at_ns,
+        )
+    if not samples:
+        raise ProcessSnapshotError("Linux /proc snapshot contained no stable rows")
+    return samples
+
+
+@dataclass(frozen=True, slots=True)
+class _DarwinProcessAuthority:
+    """Process-wide Darwin FFI bindings shared by every sampler pass."""
+
+    ctypes: Any
+    libproc: Any
+    libsystem: Any
+    proc_bsd_info_type: type[Any]
+    proc_pidinfo: Callable[..., int]
+    sysctl: Callable[..., int]
+
+    def metadata(self, pid: int) -> tuple[int, int, int, str] | None:
+        info = self.proc_bsd_info_type()
+        size = self.ctypes.sizeof(info)
+        returned = self.proc_pidinfo(
+            pid,
+            3,
+            0,
+            self.ctypes.byref(info),
+            size,
+        )
+        if returned != size or info.pbi_start_tvsec <= 0:
+            return None
+        started_at_ns = int(info.pbi_start_tvsec) * 1_000_000_000 + int(
+            info.pbi_start_tvusec
+        ) * 1_000
+        raw_name = bytes(info.pbi_name).split(b"\0", 1)[0]
+        if not raw_name:
+            raw_name = bytes(info.pbi_comm).split(b"\0", 1)[0]
+        command = raw_name.decode(errors="replace") or f"pid:{pid}"
+        return int(info.pbi_ppid), int(info.pbi_pgid), started_at_ns, command
+
+    def command(self, pid: int) -> str | None:
+        mib = (self.ctypes.c_int * 3)(1, 49, pid)
+        size = self.ctypes.c_size_t(0)
+        if (
+            self.sysctl(mib, 3, None, self.ctypes.byref(size), None, 0) != 0
+            or size.value <= 4
+        ):
+            return None
+        buffer = self.ctypes.create_string_buffer(size.value)
+        if (
+            self.sysctl(
+                mib,
+                3,
+                buffer,
+                self.ctypes.byref(size),
+                None,
+                0,
+            )
+            != 0
+        ):
+            return None
+        raw = bytes(buffer.raw[: size.value])
+        argc = int.from_bytes(raw[:4], sys.byteorder, signed=True)
+        if argc <= 0:
+            return None
+        offset = raw.find(b"\0", 4)
+        if offset < 0:
+            return None
+        offset += 1
+        while offset < len(raw) and raw[offset] == 0:
+            offset += 1
+        argv: list[str] = []
+        while offset < len(raw) and len(argv) < argc:
+            end = raw.find(b"\0", offset)
+            if end < 0:
+                break
+            argv.append(raw[offset:end].decode(errors="replace"))
+            offset = end + 1
+        return " ".join(argv) if len(argv) == argc else None
+
+
+def _load_darwin_process_authority() -> _DarwinProcessAuthority:
+    import ctypes
+
+    class ProcBsdInfo(ctypes.Structure):
+        _fields_ = [
+            ("pbi_flags", ctypes.c_uint32),
+            ("pbi_status", ctypes.c_uint32),
+            ("pbi_xstatus", ctypes.c_uint32),
+            ("pbi_pid", ctypes.c_uint32),
+            ("pbi_ppid", ctypes.c_uint32),
+            ("pbi_uid", ctypes.c_uint32),
+            ("pbi_gid", ctypes.c_uint32),
+            ("pbi_ruid", ctypes.c_uint32),
+            ("pbi_rgid", ctypes.c_uint32),
+            ("pbi_svuid", ctypes.c_uint32),
+            ("pbi_svgid", ctypes.c_uint32),
+            ("pbi_rfu_1", ctypes.c_uint32),
+            ("pbi_comm", ctypes.c_char * 16),
+            ("pbi_name", ctypes.c_char * 32),
+            ("pbi_nfiles", ctypes.c_uint32),
+            ("pbi_pgid", ctypes.c_uint32),
+            ("pbi_pjobc", ctypes.c_uint32),
+            ("e_tdev", ctypes.c_uint32),
+            ("e_tpgid", ctypes.c_uint32),
+            ("pbi_nice", ctypes.c_int32),
+            ("pbi_start_tvsec", ctypes.c_uint64),
+            ("pbi_start_tvusec", ctypes.c_uint64),
+        ]
+
+    libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+    proc_pidinfo = libproc.proc_pidinfo
+    proc_pidinfo.argtypes = [
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_uint64,
+        ctypes.c_void_p,
+        ctypes.c_int,
+    ]
+    proc_pidinfo.restype = ctypes.c_int
+
+    libsystem = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+    sysctl = libsystem.sysctl
+    sysctl.argtypes = [
+        ctypes.POINTER(ctypes.c_int),
+        ctypes.c_uint,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_size_t),
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+    ]
+    sysctl.restype = ctypes.c_int
+    return _DarwinProcessAuthority(
+        ctypes=ctypes,
+        libproc=libproc,
+        libsystem=libsystem,
+        proc_bsd_info_type=ProcBsdInfo,
+        proc_pidinfo=proc_pidinfo,
+        sysctl=sysctl,
+    )
+
+
+_DARWIN_PROCESS_AUTHORITY_UNSET = object()
+_darwin_process_authority_cache: _DarwinProcessAuthority | None | object = (
+    _DARWIN_PROCESS_AUTHORITY_UNSET
+)
+_darwin_process_authority_lock = threading.Lock()
+
+
+def _darwin_process_authority() -> _DarwinProcessAuthority | None:
+    """Return the one cached Darwin authority, including cached unavailability."""
+
+    global _darwin_process_authority_cache
+    cached = _darwin_process_authority_cache
+    if cached is _DARWIN_PROCESS_AUTHORITY_UNSET:
+        with _darwin_process_authority_lock:
+            cached = _darwin_process_authority_cache
+            if cached is _DARWIN_PROCESS_AUTHORITY_UNSET:
+                try:
+                    cached = _load_darwin_process_authority()
+                except (AttributeError, OSError, TypeError, ValueError):
+                    cached = None
+                _darwin_process_authority_cache = cached
+    return None if cached is None else cast(_DarwinProcessAuthority, cached)
+
+
+def _darwin_proc_metadata(pid: int) -> tuple[int, int, int, str] | None:
+    """Return instance-bound Darwin parent, group, start marker, and name."""
+
+    if sys.platform != "darwin" or pid <= 0:
+        return None
+    authority = _darwin_process_authority()
+    if authority is None:
+        return None
+    try:
+        return authority.metadata(pid)
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+
+
+def _darwin_proc_started_at_ns(pid: int) -> int | None:
+    metadata = _darwin_proc_metadata(pid)
+    return None if metadata is None else metadata[2]
+
+
+def _darwin_proc_command(pid: int) -> str | None:
+    """Read Darwin argv from KERN_PROCARGS2 for one process instance."""
+
+    if sys.platform != "darwin" or pid <= 0:
+        return None
+    authority = _darwin_process_authority()
+    if authority is None:
+        return None
+    try:
+        return authority.command(pid)
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+
+
+def process_started_at_ns(pid: int) -> int | None:
+    """Read one process creation marker without authorizing a whole snapshot."""
+
+    if pid <= 0 or os.name == "nt":
+        return None
+    if sys.platform.startswith("linux"):
+        return _linux_proc_started_at_ns(pid)
+    if sys.platform == "darwin":
+        return _darwin_proc_started_at_ns(pid)
+    return None
+
+
 def parse_windows_process_snapshot_rows(
     rows: Sequence[
         tuple[int, int, int, str, int | None]
@@ -363,19 +790,70 @@ def parse_windows_process_snapshot_rows(
 
 
 def sample_processes_posix() -> dict[int, ProcessSample]:
+    if sys.platform.startswith("linux"):
+        return sample_processes_linux_proc()
     try:
         result = subprocess.run(
-            ["ps", "-axo", "pid=,ppid=,pgid=,rss=,etime=,command="],
+            ["ps", "-axo", "pid=,ppid=,pgid=,rss=,lstart=,command="],
             capture_output=True,
             text=True,
             timeout=2.0,
             check=False,
+            env={**os.environ, "LC_ALL": "C"},
         )
-    except (OSError, subprocess.TimeoutExpired, TypeError):
-        return {}
+    except (OSError, subprocess.TimeoutExpired, TypeError) as exc:
+        raise ProcessSnapshotError(f"POSIX process snapshot failed: {exc}") from exc
     if result.returncode != 0:
-        return {}
-    return parse_process_table(result.stdout)
+        raise ProcessSnapshotError(
+            f"POSIX process snapshot failed with exit code {result.returncode}"
+        )
+    samples = parse_process_table_with_start(result.stdout)
+    if sys.platform == "darwin":
+        bound_samples: dict[int, ProcessSample] = {}
+        for pid, sample in samples.items():
+            before = _darwin_proc_metadata(pid)
+            command = _darwin_proc_command(pid)
+            after = _darwin_proc_metadata(pid)
+            if before is None or before != after or command is None:
+                bound_samples[pid] = ProcessSample(
+                    pid=pid,
+                    ppid=0,
+                    rss_kb=sample.rss_kb,
+                    command=sample.command,
+                    pgid=sample.pgid,
+                    elapsed_sec=sample.elapsed_sec,
+                    started_at_ns=None,
+                )
+                continue
+            ppid, pgid, started_at_ns, _native_name = before
+            bound_samples[pid] = ProcessSample(
+                pid=pid,
+                ppid=max(0, ppid),
+                rss_kb=sample.rss_kb,
+                command=command,
+                pgid=pgid,
+                elapsed_sec=sample.elapsed_sec,
+                started_at_ns=started_at_ns,
+            )
+        samples = bound_samples
+    else:
+        # Other BSDs retain observability but not signal authority until a
+        # native subsecond creation marker is implemented for that kernel.
+        samples = {
+            pid: ProcessSample(
+                pid=sample.pid,
+                ppid=sample.ppid,
+                rss_kb=sample.rss_kb,
+                command=sample.command,
+                pgid=sample.pgid,
+                elapsed_sec=sample.elapsed_sec,
+                started_at_ns=None,
+            )
+            for pid, sample in samples.items()
+        }
+    if not samples:
+        raise ProcessSnapshotError("POSIX process snapshot contained no usable rows")
+    return samples
 
 
 def sample_processes_windows(
@@ -389,9 +867,14 @@ def sample_processes_windows(
 ) -> dict[int, ProcessSample]:
     try:
         rows = snapshot_rows()
-    except (OSError, TypeError, AttributeError, TimeoutError):
-        return {}
-    return parse_windows_process_snapshot_rows(rows)
+    except ProcessSnapshotError:
+        raise
+    except (OSError, TypeError, AttributeError, TimeoutError) as exc:
+        raise ProcessSnapshotError(f"Windows process snapshot failed: {exc}") from exc
+    samples = parse_windows_process_snapshot_rows(rows)
+    if not samples:
+        raise ProcessSnapshotError("Windows process snapshot contained no usable rows")
+    return samples
 
 
 def sample_processes() -> dict[int, ProcessSample]:

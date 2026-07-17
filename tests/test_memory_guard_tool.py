@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import dataclasses
 import json
 import os
 from pathlib import Path
@@ -153,6 +154,151 @@ def test_parse_process_table_reads_process_elapsed_age() -> None:
     )
     assert samples[11].elapsed_sec == 3723
     assert samples[12].elapsed_sec == 183845
+
+
+def test_parse_process_table_with_start_produces_creation_identity() -> None:
+    samples = memory_guard.parse_process_table_with_start(
+        "10 1 10 2048 Thu Jul 17 07:15:01 2026 python worker.py --flag value\n"
+    )
+
+    assert samples[10].command == "python worker.py --flag value"
+    assert samples[10].started_at_ns is not None
+    assert memory_guard.process_identity(samples[10]).started_at_ns == (
+        samples[10].started_at_ns
+    )
+
+
+def _write_linux_proc_sample(
+    root: Path,
+    *,
+    pid: int,
+    ppid: int,
+    pgid: int,
+    start_ticks: int,
+) -> None:
+    proc = root / str(pid)
+    proc.mkdir(parents=True)
+    tail = ["S", str(ppid), str(pgid), *(["0"] * 16), str(start_ticks)]
+    (proc / "stat").write_text(
+        f"{pid} (worker) {' '.join(tail)}\n",
+        encoding="utf-8",
+    )
+    (proc / "cmdline").write_bytes(b"python\0worker.py\0")
+    (proc / "status").write_text("Name:\tworker\nVmRSS:\t1234 kB\n", encoding="utf-8")
+
+
+def test_linux_proc_sampler_binds_lineage_identity_command_and_rss(
+    tmp_path: Path,
+) -> None:
+    _write_linux_proc_sample(
+        tmp_path,
+        pid=200,
+        ppid=100,
+        pgid=200,
+        start_ticks=321,
+    )
+
+    samples = memory_guard.sample_processes_linux_proc(tmp_path, uptime_sec=1000.0)
+
+    assert samples[200].ppid == 100
+    assert samples[200].pgid == 200
+    assert samples[200].command == "python worker.py"
+    assert samples[200].rss_kb == 1234
+    assert samples[200].started_at_ns is not None
+    assert samples[200].elapsed_sec is not None
+
+
+def test_linux_proc_sampler_discards_reuse_between_bound_reads(
+    tmp_path: Path,
+) -> None:
+    _write_linux_proc_sample(
+        tmp_path,
+        pid=200,
+        ppid=100,
+        pgid=200,
+        start_ticks=321,
+    )
+    observations = iter(
+        (
+            (100, 200, 321_000, "worker"),
+            (4, 200, 322_000, "System"),
+        )
+    )
+
+    with pytest.raises(memory_guard.ProcessSnapshotError, match="no stable rows"):
+        memory_guard.sample_processes_linux_proc(
+            tmp_path,
+            stat_reader=lambda _pid, _root: next(observations),
+            uptime_sec=1000.0,
+        )
+
+
+def test_linux_proc_sampler_preserves_typed_enumeration_failure(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(memory_guard.ProcessSnapshotError, match="enumeration failed"):
+        memory_guard.sample_processes_linux_proc(tmp_path / "missing")
+
+
+def test_darwin_sampler_keeps_bound_launcher_arguments_for_host_protection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = memory_guard._process_model
+    monkeypatch.setattr(model.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        model.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout="7 3 7 2048 Thu Jul 17 07:15:01 2026 node\n",
+            stderr="",
+        ),
+    )
+    metadata = (3, 7, 123_456_789, "node")
+    monkeypatch.setattr(model, "_darwin_proc_metadata", lambda _pid: metadata)
+    monkeypatch.setattr(
+        model,
+        "_darwin_proc_command",
+        lambda _pid: "node /opt/node_modules/@openai/codex/bin/codex.js app-server",
+    )
+
+    samples = model.sample_processes_posix()
+
+    assert samples[7].ppid == 3
+    assert samples[7].started_at_ns == 123_456_789
+    assert "@openai/codex" in samples[7].command
+    assert memory_guard.is_host_control_plane_process(samples[7])
+
+
+def test_darwin_sampler_revokes_identity_when_native_binding_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = memory_guard._process_model
+    monkeypatch.setattr(model.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        model.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout="7 3 7 2048 Thu Jul 17 07:15:01 2026 node\n",
+            stderr="",
+        ),
+    )
+    metadata = iter(
+        (
+            (3, 7, 123_456_789, "node"),
+            (4, 7, 123_456_790, "node"),
+        )
+    )
+    monkeypatch.setattr(model, "_darwin_proc_metadata", lambda _pid: next(metadata))
+    monkeypatch.setattr(model, "_darwin_proc_command", lambda _pid: "node codex.js")
+
+    samples = model.sample_processes_posix()
+
+    assert samples[7].ppid == 0
+    assert samples[7].started_at_ns is None
 
 
 def test_descendant_pids_includes_grandchildren() -> None:
@@ -337,16 +483,26 @@ def test_watched_pids_excludes_node_launched_claude_code_group() -> None:
 def test_process_tree_tracker_keeps_reparented_new_session_child_after_seen() -> None:
     tracker = memory_guard.ProcessTreeTracker(100)
     first = {
-        100: memory_guard.ProcessSample(100, 1, 10, "root", pgid=100),
-        101: memory_guard.ProcessSample(101, 100, 20, "child", pgid=101),
-        102: memory_guard.ProcessSample(102, 101, 30, "grandchild", pgid=102),
+        100: memory_guard.ProcessSample(
+            100, 1, 10, "root", pgid=100, started_at_ns=100
+        ),
+        101: memory_guard.ProcessSample(
+            101, 100, 20, "child", pgid=101, started_at_ns=101
+        ),
+        102: memory_guard.ProcessSample(
+            102, 101, 30, "grandchild", pgid=102, started_at_ns=102
+        ),
     }
 
     assert tracker.update(first) == {100, 101, 102}
 
     reparented = {
-        101: memory_guard.ProcessSample(101, 1, 20, "child", pgid=101),
-        102: memory_guard.ProcessSample(102, 1, 30, "grandchild", pgid=102),
+        101: memory_guard.ProcessSample(
+            101, 1, 20, "child", pgid=101, started_at_ns=101
+        ),
+        102: memory_guard.ProcessSample(
+            102, 1, 30, "grandchild", pgid=102, started_at_ns=102
+        ),
     }
 
     assert tracker.update(reparented) == {101, 102}
@@ -384,6 +540,168 @@ def test_process_tree_tracker_stale_pid_cannot_admit_unrelated_child() -> None:
         ),
     }
     assert tracker.update(reused_parent_edge) == {100}
+
+
+def test_process_tree_tracker_identity_ignores_mutable_command_and_group() -> None:
+    tracker = memory_guard.ProcessTreeTracker(100)
+    initial = {
+        100: memory_guard.ProcessSample(
+            100, 1, 10, "guard", pgid=100, started_at_ns=1
+        ),
+        200: memory_guard.ProcessSample(
+            200, 100, 20, "python worker.py", pgid=100, started_at_ns=2
+        ),
+    }
+    assert tracker.update(initial) == {100, 200}
+
+    execed_and_reparented = {
+        100: initial[100],
+        200: memory_guard.ProcessSample(
+            200,
+            1,
+            20,
+            "/opt/molt-backend --daemon",
+            pgid=200,
+            started_at_ns=2,
+        ),
+    }
+
+    assert tracker.update(execed_and_reparented) == {100, 200}
+    assert tracker.custody_identities({200}) == {
+        200: memory_guard.process_identity(initial[200])
+    }
+
+
+def test_process_tree_tracker_revokes_same_command_pid_reuse() -> None:
+    tracker = memory_guard.ProcessTreeTracker(100)
+    initial = {
+        100: memory_guard.ProcessSample(
+            100, 1, 10, "guard", pgid=100, started_at_ns=1
+        ),
+        200: memory_guard.ProcessSample(
+            200, 100, 20, "worker", pgid=200, started_at_ns=2
+        ),
+    }
+    tracker.update(initial)
+    reused = {
+        100: initial[100],
+        200: memory_guard.ProcessSample(
+            200, 1, 20, "worker", pgid=200, started_at_ns=3
+        ),
+    }
+
+    assert tracker.update(reused) == {100}
+    assert tracker.custody_identities({200}) == {}
+
+
+def test_process_tree_tracker_weak_reused_parent_cannot_admit_child() -> None:
+    tracker = memory_guard.ProcessTreeTracker(100)
+    root = memory_guard.ProcessSample(
+        100, 1, 10, "guard", started_at_ns=100
+    )
+    tracker.update({100: root})
+
+    weak_reused_root = memory_guard.ProcessSample(
+        100,
+        1,
+        10,
+        "unreadable.exe",
+        started_at_ns=None,
+    )
+    unrelated_child = memory_guard.ProcessSample(
+        200,
+        100,
+        20,
+        "worker.exe",
+        started_at_ns=200,
+    )
+
+    assert tracker.update({100: weak_reused_root, 200: unrelated_child}) == {100}
+    assert tracker.custody_identities({100}) == {
+        100: memory_guard.process_identity(root)
+    }
+
+
+def test_windows_termination_requires_creation_identity(monkeypatch) -> None:
+    sample = memory_guard.ProcessSample(
+        200,
+        100,
+        20,
+        "worker.exe",
+        started_at_ns=None,
+    )
+    sent: list[tuple[int, int]] = []
+    monkeypatch.setattr(memory_guard, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(memory_guard.os, "getpid", lambda: 999)
+    monkeypatch.setattr(
+        memory_guard.os,
+        "kill",
+        lambda pid, sig: sent.append((pid, sig)),
+    )
+
+    report = memory_guard.terminate_watched_processes(
+        100,
+        samples={200: sample},
+        watched={200},
+        expected_identities={200: memory_guard.process_identity(sample)},
+        root_owned=True,
+    )
+
+    assert sent == []
+    assert any(
+        action.target_id == 200 and action.result == "skipped_ambiguous_identity"
+        for action in report.actions
+    )
+
+
+def test_windows_termination_uses_tracker_identity_not_fresh_pid_owner(
+    monkeypatch,
+) -> None:
+    tracker = memory_guard.ProcessTreeTracker(100)
+    original = memory_guard.ProcessSample(
+        100,
+        1,
+        10,
+        "guard.exe",
+        started_at_ns=1,
+    )
+    child = memory_guard.ProcessSample(
+        200,
+        100,
+        20,
+        "rustc.exe",
+        started_at_ns=2,
+    )
+    tracker.update({100: original, 200: child})
+    reused = memory_guard.ProcessSample(
+        200,
+        4,
+        20,
+        "System",
+        started_at_ns=3,
+    )
+    sent: list[tuple[int, int]] = []
+    monkeypatch.setattr(memory_guard, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(memory_guard.os, "getpid", lambda: 999)
+    monkeypatch.setattr(
+        memory_guard.os,
+        "kill",
+        lambda pid, sig: sent.append((pid, sig)),
+    )
+
+    report = memory_guard.terminate_watched_processes(
+        100,
+        samples={200: reused},
+        watched={200},
+        tracker=tracker,
+        root_owned=True,
+    )
+
+    assert sent == []
+    assert any(
+        action.target_id == 200 and action.result == "skipped_identity_mismatch"
+        for action in report.actions
+    )
 
 
 def test_windows_termination_refuses_ambiguous_process_fanout(monkeypatch) -> None:
@@ -450,9 +768,15 @@ def test_process_tree_tracker_does_not_absorb_learned_descendant_process_group_p
 ):
     tracker = memory_guard.ProcessTreeTracker(100)
     samples = {
-        100: memory_guard.ProcessSample(100, 1, 10, "root", pgid=100),
-        101: memory_guard.ProcessSample(101, 100, 20, "child", pgid=777),
-        200: memory_guard.ProcessSample(200, 1, 999, "unrelated", pgid=777),
+        100: memory_guard.ProcessSample(
+            100, 1, 10, "root", pgid=100, started_at_ns=100
+        ),
+        101: memory_guard.ProcessSample(
+            101, 100, 20, "child", pgid=777, started_at_ns=101
+        ),
+        200: memory_guard.ProcessSample(
+            200, 1, 999, "unrelated", pgid=777, started_at_ns=200
+        ),
     }
 
     assert tracker.update(samples) == {100, 101}
@@ -1474,10 +1798,18 @@ def test_run_guarded_interrupt_reuses_last_successful_descendant_snapshot(
     child_pid = 4243
     grandchild_pid = 4244
     samples = {
-        root_pid: memory_guard.ProcessSample(root_pid, 1, 64, "root"),
-        child_pid: memory_guard.ProcessSample(child_pid, root_pid, 64, "child"),
+        root_pid: memory_guard.ProcessSample(
+            root_pid, 1, 64, "root", started_at_ns=root_pid
+        ),
+        child_pid: memory_guard.ProcessSample(
+            child_pid, root_pid, 64, "child", started_at_ns=child_pid
+        ),
         grandchild_pid: memory_guard.ProcessSample(
-            grandchild_pid, child_pid, 64, "grandchild"
+            grandchild_pid,
+            child_pid,
+            64,
+            "grandchild",
+            started_at_ns=grandchild_pid,
         ),
     }
 
@@ -1546,6 +1878,7 @@ def test_run_guarded_interrupt_reuses_last_successful_descendant_snapshot(
         {root_pid, child_pid, grandchild_pid}.issubset(call.get("watched", set()))
         for call in terminations
     )
+    assert all(call.get("root_owned") is True for call in terminations)
 
 
 def test_run_guarded_sampler_failure_cleans_then_reraises(
@@ -1554,8 +1887,12 @@ def test_run_guarded_sampler_failure_cleans_then_reraises(
     root_pid = 5252
     child_pid = 5253
     samples = {
-        root_pid: memory_guard.ProcessSample(root_pid, 1, 64, "root"),
-        child_pid: memory_guard.ProcessSample(child_pid, root_pid, 64, "child"),
+        root_pid: memory_guard.ProcessSample(
+            root_pid, 1, 64, "root", started_at_ns=root_pid
+        ),
+        child_pid: memory_guard.ProcessSample(
+            child_pid, root_pid, 64, "child", started_at_ns=child_pid
+        ),
     }
 
     class FakePopen:
@@ -1622,6 +1959,340 @@ def test_run_guarded_sampler_failure_cleans_then_reraises(
         {root_pid, child_pid}.issubset(call.get("watched", set()))
         for call in terminations
     )
+    assert all(call.get("root_owned") is True for call in terminations)
+
+
+def test_run_guarded_binds_root_identity_before_first_sampler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root_pid = 6262
+
+    class FakePopen:
+        pid = root_pid
+        stdin = None
+        returncode: int | None = None
+        _handle = 123
+
+        def __init__(self, command: list[str], **_kwargs: object) -> None:
+            self.command = command
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def wait(self, timeout: float | None = None) -> int:
+            if self.returncode is None:
+                raise subprocess.TimeoutExpired(self.command, timeout)
+            return self.returncode
+
+    process = FakePopen(["fake-python"])
+    reports: list[dict[str, object]] = []
+
+    def fake_terminate(root: int, **kwargs: object):
+        reports.append({"root": root, **kwargs})
+        process.returncode = -15
+        return _guard_termination_report(reason="sampler_failure", root_pid=root)
+
+    monkeypatch.setattr(memory_guard.subprocess, "Popen", lambda *_a, **_kw: process)
+    monkeypatch.setattr(memory_guard, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(
+        memory_guard,
+        "windows_process_handle_started_at_ns",
+        lambda handle: 987_654_300 if handle == 123 else None,
+    )
+    monkeypatch.setattr(memory_guard, "terminate_watched_processes", fake_terminate)
+
+    with pytest.raises(RuntimeError, match="first snapshot failed"):
+        memory_guard.run_guarded(
+            ["fake-python"],
+            max_rss_kb=1_000_000,
+            poll_interval=0.01,
+            sampler=lambda: (_ for _ in ()).throw(
+                RuntimeError("first snapshot failed")
+            ),
+        )
+
+    tracker = reports[0]["tracker"]
+    assert isinstance(tracker, memory_guard.ProcessTreeTracker)
+    assert tracker.custody_identities({root_pid}) == {
+        root_pid: memory_guard.ProcessIdentity(987_654_300)
+    }
+
+
+def test_run_guarded_persistent_sampler_failure_reaps_owned_child_handle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root_pid = 6363
+
+    class FakePopen:
+        pid = root_pid
+        stdin = None
+        returncode: int | None = None
+        _handle = None
+        terminate_calls = 0
+        kill_calls = 0
+
+        def __init__(self, command: list[str], **_kwargs: object) -> None:
+            self.command = command
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def wait(self, timeout: float | None = None) -> int:
+            if self.returncode is None:
+                raise subprocess.TimeoutExpired(self.command, timeout)
+            return self.returncode
+
+        def terminate(self) -> None:
+            self.terminate_calls += 1
+            self.returncode = 0
+            raise ProcessLookupError
+
+        def kill(self) -> None:
+            self.kill_calls += 1
+            self.returncode = -9
+
+    process = FakePopen(["fake-python"])
+    root_sample = memory_guard.ProcessSample(
+        root_pid,
+        1,
+        64,
+        "fake-python",
+        started_at_ns=root_pid,
+    )
+    sample_count = 0
+
+    def sampler() -> Mapping[int, memory_guard.ProcessSample]:
+        nonlocal sample_count
+        sample_count += 1
+        if sample_count == 1:
+            return {root_pid: root_sample}
+        raise RuntimeError("persistent snapshot failure")
+
+    monkeypatch.setattr(memory_guard.subprocess, "Popen", lambda *_a, **_kw: process)
+    monkeypatch.setattr(
+        memory_guard,
+        "terminate_watched_processes",
+        lambda root, **kwargs: _guard_termination_report(
+            reason=str(kwargs["reason"]),
+            root_pid=root,
+            actions=(
+                memory_guard.GuardTerminationAction(
+                    target_kind="process",
+                    target_id=root,
+                    signal=None,
+                    signal_name=None,
+                    result="skipped_sampler_failure",
+                ),
+            ),
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="persistent snapshot failure"):
+        memory_guard.run_guarded(
+            ["fake-python"],
+            max_rss_kb=1_000_000,
+            poll_interval=0.01,
+            sampler=sampler,
+        )
+
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 0
+    assert process.returncode == 0
+
+
+def test_run_guarded_post_loop_sampler_failure_reaps_only_owned_child_handle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root_pid = 6464
+    unrelated_pid = 7474
+
+    class FakePopen:
+        pid = root_pid
+        stdin = None
+        returncode: int | None = None
+        _handle = None
+        terminate_calls = 0
+        kill_calls = 0
+
+        def __init__(self, command: list[str], **_kwargs: object) -> None:
+            self.command = command
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def wait(self, timeout: float | None = None) -> int:
+            if self.returncode is None:
+                raise subprocess.TimeoutExpired(self.command, timeout)
+            return self.returncode
+
+        def terminate(self) -> None:
+            self.terminate_calls += 1
+
+        def kill(self) -> None:
+            self.kill_calls += 1
+            self.returncode = -9
+
+    process = FakePopen(["fake-python"])
+    samples = {
+        root_pid: memory_guard.ProcessSample(
+            root_pid,
+            1,
+            2_000_000,
+            "fake-python",
+            started_at_ns=root_pid,
+        ),
+        unrelated_pid: memory_guard.ProcessSample(
+            unrelated_pid,
+            1,
+            64,
+            "unrelated",
+            started_at_ns=unrelated_pid,
+        ),
+    }
+    sample_count = 0
+
+    def sampler() -> Mapping[int, memory_guard.ProcessSample]:
+        nonlocal sample_count
+        sample_count += 1
+        if sample_count == 1:
+            return samples
+        raise RuntimeError("post-loop snapshot failure")
+
+    watched_calls: list[set[int]] = []
+
+    def record_termination(
+        root: int, **kwargs: object
+    ) -> memory_guard.GuardTerminationReport:
+        watched = set(kwargs.get("watched", set()))
+        watched_calls.append(watched)
+        return _guard_termination_report(
+            reason=str(kwargs["reason"]),
+            root_pid=root,
+            watched_pids=tuple(sorted(watched)),
+            actions=(
+                memory_guard.GuardTerminationAction(
+                    target_kind="process",
+                    target_id=root,
+                    signal=memory_guard.signal.SIGTERM,
+                    signal_name="SIGTERM",
+                    result="still_live",
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(memory_guard.subprocess, "Popen", lambda *_a, **_kw: process)
+    monkeypatch.setattr(memory_guard, "terminate_watched_processes", record_termination)
+
+    with pytest.raises(RuntimeError, match="post-loop snapshot failure"):
+        memory_guard.run_guarded(
+            ["fake-python"],
+            max_rss_kb=1_000_000,
+            poll_interval=0.01,
+            sampler=sampler,
+            cleanup_orphans=False,
+        )
+
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 1
+    assert process.returncode == -9
+    assert watched_calls
+    assert all(root_pid in watched for watched in watched_calls)
+    assert all(unrelated_pid not in watched for watched in watched_calls)
+
+
+def test_run_guarded_weak_sampler_reaps_only_owned_child_handle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root_pid = 6565
+    unrelated_pid = 7575
+
+    class FakePopen:
+        pid = root_pid
+        stdin = None
+        returncode: int | None = None
+        _handle = None
+        terminate_calls = 0
+        kill_calls = 0
+
+        def __init__(self, command: list[str], **_kwargs: object) -> None:
+            self.command = command
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def wait(self, timeout: float | None = None) -> int:
+            if self.returncode is None:
+                raise subprocess.TimeoutExpired(self.command, timeout)
+            return self.returncode
+
+        def terminate(self) -> None:
+            self.terminate_calls += 1
+
+        def kill(self) -> None:
+            self.kill_calls += 1
+            self.returncode = -9
+
+    process = FakePopen(["fake-python"])
+    weak_samples = {
+        root_pid: memory_guard.ProcessSample(
+            root_pid,
+            1,
+            2_000_000,
+            "fake-python",
+            started_at_ns=None,
+        ),
+        unrelated_pid: memory_guard.ProcessSample(
+            unrelated_pid,
+            1,
+            64,
+            "unrelated",
+            started_at_ns=None,
+        ),
+    }
+    watched_calls: list[set[int]] = []
+
+    def record_termination(
+        root: int, **kwargs: object
+    ) -> memory_guard.GuardTerminationReport:
+        watched = set(kwargs.get("watched", set()))
+        watched_calls.append(watched)
+        return _guard_termination_report(
+            reason=str(kwargs["reason"]),
+            root_pid=root,
+            watched_pids=tuple(sorted(watched)),
+            actions=(
+                memory_guard.GuardTerminationAction(
+                    target_kind="process",
+                    target_id=root,
+                    signal=None,
+                    signal_name=None,
+                    result="skipped_missing_identity",
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(memory_guard.subprocess, "Popen", lambda *_a, **_kw: process)
+    monkeypatch.setattr(memory_guard, "terminate_watched_processes", record_termination)
+
+    result = memory_guard.run_guarded(
+        ["fake-python"],
+        max_rss_kb=1_000_000,
+        poll_interval=0.01,
+        sampler=lambda: weak_samples,
+        cleanup_orphans=False,
+    )
+
+    assert result.returncode == memory_guard.GUARD_RETURN_CODE
+    assert result.violation is not None
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 1
+    assert process.returncode == -9
+    assert watched_calls
+    assert all(unrelated_pid not in watched for watched in watched_calls)
+    assert any(
+        report.reason == "post_loop_unreaped_child_direct_child_handle"
+        for report in result.termination_reports
+    )
 
 
 def test_cleanup_tracked_orphans_terminates_live_tracked_groups(monkeypatch) -> None:
@@ -1647,7 +2318,25 @@ def test_cleanup_tracked_orphans_terminates_live_tracked_groups(monkeypatch) -> 
         ),
     }
     calls: list[dict[str, object]] = []
-    report = _guard_termination_report(reason="tracked_orphan_cleanup")
+    report = _guard_termination_report(
+        reason="tracked_orphan_cleanup",
+        actions=(
+            memory_guard.GuardTerminationAction(
+                target_kind="process",
+                target_id=200,
+                signal=memory_guard.signal.SIGTERM,
+                signal_name="SIGTERM",
+                result="completed_or_missing",
+            ),
+            memory_guard.GuardTerminationAction(
+                target_kind="process",
+                target_id=300,
+                signal=memory_guard.signal.SIGTERM,
+                signal_name="SIGTERM",
+                result="completed_or_missing",
+            ),
+        ),
+    )
 
     def fake_terminate(root_pid, **kwargs):
         calls.append({"root_pid": root_pid, **kwargs})
@@ -1668,6 +2357,85 @@ def test_cleanup_tracked_orphans_terminates_live_tracked_groups(monkeypatch) -> 
     assert calls[0]["watched"] == {200, 300}
     assert calls[0]["grace"] == 0.125
     assert calls[0]["reason"] == "tracked_orphan_cleanup"
+
+
+def test_cleanup_tracked_orphans_does_not_report_failed_actions_as_cleaned(
+    monkeypatch,
+) -> None:
+    tracker = memory_guard.ProcessTreeTracker(100)
+    initial = {
+        100: memory_guard.ProcessSample(
+            100, 1, 10, "guard.exe", started_at_ns=1
+        ),
+        200: memory_guard.ProcessSample(
+            200, 100, 20, "worker.exe", started_at_ns=2
+        ),
+    }
+    tracker.update(initial)
+    live = {200: initial[200]}
+    report = _guard_termination_report(
+        reason="tracked_orphan_cleanup",
+        actions=(
+            memory_guard.GuardTerminationAction(
+                target_kind="process",
+                target_id=200,
+                signal=memory_guard.signal.SIGTERM,
+                signal_name="SIGTERM",
+                result="failed",
+                error="access denied",
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        memory_guard,
+        "terminate_watched_processes",
+        lambda *_args, **_kwargs: report,
+    )
+
+    result = memory_guard.cleanup_tracked_orphans(
+        100,
+        tracker=tracker,
+        sampler=lambda: live,
+    )
+
+    assert result.process_groups == ()
+    assert result.termination_reports == (report,)
+
+
+def test_cleanup_group_completion_requires_every_detected_member() -> None:
+    completed = memory_guard.GuardTerminationAction(
+        target_kind="process",
+        target_id=200,
+        signal=memory_guard.signal.SIGTERM,
+        signal_name="SIGTERM",
+        result="completed_or_missing",
+    )
+    failed = memory_guard.GuardTerminationAction(
+        target_kind="process",
+        target_id=201,
+        signal=memory_guard.signal.SIGTERM,
+        signal_name="SIGTERM",
+        result="failed",
+        error="access denied",
+    )
+
+    assert memory_guard._fully_completed_process_groups(
+        {777: {200, 201}},
+        (completed, failed),
+    ) == set()
+    assert memory_guard._fully_completed_process_groups(
+        {777: {200, 201}},
+        (
+            completed,
+            memory_guard.GuardTerminationAction(
+                target_kind="process",
+                target_id=201,
+                signal=memory_guard.signal.SIGTERM,
+                signal_name="SIGTERM",
+                result="completed_or_missing",
+            ),
+        ),
+    ) == {777}
 
 
 def test_cleanup_repo_scoped_orphans_since_baseline_only_drains_tracked_orphans(
@@ -1896,7 +2664,7 @@ def test_terminate_verified_pid_revalidates_identity_before_fallback(
         command="/Applications/Claude.app/Contents/MacOS/Claude",
         started_at_ns=222,
     )
-    sample_sets = iter([{200: original}, {200: original}, {200: reused_pid}])
+    sample_sets = iter([{200: original}, {200: reused_pid}])
     sent: list[tuple[int, int]] = []
 
     monkeypatch.setattr(memory_guard.os, "getpid", lambda: 999)
@@ -1998,6 +2766,148 @@ def test_cleanup_tracked_orphans_sampler_failure_uses_remembered_watched(
 
     assert calls and calls[0]["watched"] == {200}
     assert calls[0]["reason"] == "tracked_orphan_cleanup"
+
+
+def test_windows_cleanup_sampler_failure_never_signals_remembered_pid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tracker = memory_guard.ProcessTreeTracker(100)
+    root = memory_guard.ProcessSample(
+        100, 1, 10, "guard.exe", started_at_ns=100
+    )
+    child = memory_guard.ProcessSample(
+        200, 100, 20, "worker.exe", started_at_ns=200
+    )
+    remembered = {100: root, 200: child}
+    tracker.update(remembered)
+    sent: list[tuple[int, int]] = []
+
+    def failing_sampler() -> Mapping[int, memory_guard.ProcessSample]:
+        raise RuntimeError("live sampler unavailable")
+
+    monkeypatch.setattr(memory_guard, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(memory_guard.os, "getpid", lambda: 999)
+    monkeypatch.setattr(
+        memory_guard.os,
+        "kill",
+        lambda pid, sig: sent.append((pid, sig)),
+    )
+
+    with pytest.raises(RuntimeError, match="live sampler unavailable"):
+        memory_guard.cleanup_tracked_orphans(
+            100,
+            tracker=tracker,
+            sampler=failing_sampler,
+            remembered_samples=remembered,
+            remembered_watched={200},
+        )
+
+    assert sent == []
+
+
+def test_pid_permission_error_is_live_unknown_not_completed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sample = memory_guard.ProcessSample(
+        pid=300,
+        ppid=1,
+        pgid=300,
+        rss_kb=64,
+        command="worker",
+        started_at_ns=333,
+    )
+    sent: list[tuple[int, int]] = []
+    monkeypatch.setattr(memory_guard, "_is_windows_process_model", lambda: False)
+    monkeypatch.setattr(memory_guard.os, "getpid", lambda: 999)
+    monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999, raising=False)
+
+    def permission_liveness(pid: int, sig: int) -> None:
+        if sig == 0:
+            raise PermissionError("EPERM")
+        sent.append((pid, sig))
+
+    monkeypatch.setattr(memory_guard.os, "kill", permission_liveness)
+
+    action = memory_guard._terminate_pid_if_identity_action(
+        300,
+        memory_guard.process_identity(sample),
+        sampler=lambda: {300: sample},
+        grace=0.01,
+    )
+
+    assert action.result == "still_live"
+    assert sent == [(300, memory_guard.signal.SIGTERM)]
+
+
+def test_process_group_permission_error_is_live_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(memory_guard, "_is_windows_process_model", lambda: False)
+    monkeypatch.setattr(
+        memory_guard.os,
+        "killpg",
+        lambda _pgid, _sig: (_ for _ in ()).throw(PermissionError("EPERM")),
+        raising=False,
+    )
+
+    assert not memory_guard._process_group_exited_or_unobservable(300, grace=0.01)
+
+
+def test_completed_process_group_does_not_emit_redundant_member_kill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    custody = memory_guard._process_custody
+    samples = {
+        100: memory_guard.ProcessSample(
+            100, 1, 10, "root", pgid=100, started_at_ns=100
+        ),
+        101: memory_guard.ProcessSample(
+            101, 100, 20, "child", pgid=100, started_at_ns=101
+        ),
+    }
+    monkeypatch.setattr(custody, "_is_windows_process_model", lambda: False)
+    monkeypatch.setattr(custody.os, "name", "posix", raising=False)
+    monkeypatch.setattr(custody.os, "getpid", lambda: 999)
+    monkeypatch.setattr(custody, "_safe_getpgrp", lambda: 999)
+    monkeypatch.setattr(custody, "_safe_getpgid", lambda _pid: 100)
+    monkeypatch.setattr(custody, "_safe_getsid", lambda _pid: 100)
+    monkeypatch.setattr(
+        custody,
+        "_current_protected_process_group_ids",
+        lambda _samples, **_kwargs: set(),
+    )
+    monkeypatch.setattr(
+        custody,
+        "_terminate_process_group_if_identities_match_action",
+        lambda pgid, _identities, **_kwargs: memory_guard.GuardTerminationAction(
+            target_kind="process_group",
+            target_id=pgid,
+            signal=memory_guard.signal.SIGTERM,
+            signal_name="SIGTERM",
+            result="completed_or_missing",
+        ),
+    )
+    monkeypatch.setattr(
+        custody,
+        "_send_pid_signal_if_identity_action",
+        lambda *_args, **_kwargs: pytest.fail(
+            "completed group must not emit redundant member SIGKILL"
+        ),
+    )
+
+    report = custody.terminate_watched_processes(
+        100,
+        samples=samples,
+        watched=set(samples),
+        expected_identities={
+            pid: memory_guard.process_identity(sample)
+            for pid, sample in samples.items()
+        },
+        sampler=lambda: samples,
+        root_owned=True,
+    )
+
+    assert [action.result for action in report.actions] == ["completed_or_missing"]
 
 
 def test_run_command_cleans_tracked_orphans_by_default(monkeypatch) -> None:
@@ -2257,6 +3167,12 @@ def test_run_command_timeout_teardown_uses_bounded_wait(monkeypatch) -> None:
 
         def poll(self):  # type: ignore[no-untyped-def]
             return self.returncode
+
+        def terminate(self) -> None:
+            pass
+
+        def kill(self) -> None:
+            pass
 
     monkeypatch.setattr(memory_guard.subprocess, "Popen", FakeProc)
     monkeypatch.setattr(memory_guard, "sample_processes", lambda: {})
@@ -3872,6 +4788,221 @@ def test_main_reports_orphan_cleanup_with_operator_signal(
     assert payload["incident"]["process_groups"] == [44]
     assert payload["termination_reports"][0]["reason"] == "repo_scoped_orphan_cleanup"
     assert payload["incident"]["termination_reports"][0]["root_pgid"] == 44
+
+
+def test_incident_reports_incomplete_orphan_cleanup_without_false_success() -> None:
+    report = _guard_termination_report(
+        reason="tracked_orphan_cleanup",
+        root_pid=100,
+        actions=(
+            memory_guard.GuardTerminationAction(
+                target_kind="process",
+                target_id=100,
+                signal=None,
+                signal_name=None,
+                result="skipped_missing_identity",
+            ),
+            memory_guard.GuardTerminationAction(
+                target_kind="process",
+                target_id=200,
+                signal=memory_guard.signal.SIGTERM,
+                signal_name="SIGTERM",
+                result="failed",
+                error="access denied",
+            ),
+        ),
+    )
+    result = memory_guard.GuardResult(
+        returncode=1,
+        violation=None,
+        peak=None,
+        peak_total=None,
+        stdout="",
+        stderr="",
+        elapsed_s=1.0,
+        # Even if another group was fully cleaned, this incomplete group must
+        # dominate the incident classification and quarantine authority.
+        orphaned_process_groups=(777,),
+        termination_reports=(report,),
+    )
+
+    incident = memory_guard._incident_payload(result)
+
+    assert incident is not None
+    assert incident["reason"] == "orphan_cleanup_incomplete"
+    assert incident["candidate_pids"] == [200]
+    assert "reported as cleaned" in str(incident["cleanup"])
+    assert incident["termination_reports"][0]["actions"][1]["result"] == "failed"
+
+
+@pytest.mark.parametrize(
+    ("result_overrides", "expected_reason", "report_reason"),
+    [
+        (
+            {"guard_signal": int(signal.SIGTERM)},
+            "guard_interrupted",
+            "guard_signal",
+        ),
+        ({"timed_out": True}, "timeout", "timeout"),
+        (
+            {
+                "violation": memory_guard.RssViolation(
+                    pid=200,
+                    rss_kb=10,
+                    command="worker",
+                )
+            },
+            "rss_limit_exceeded",
+            "rss_limit",
+        ),
+    ],
+)
+def test_primary_incidents_preserve_incomplete_cleanup_truth(
+    result_overrides: dict[str, object],
+    expected_reason: str,
+    report_reason: str,
+) -> None:
+    report = _guard_termination_report(
+        reason=report_reason,
+        root_pid=100,
+        actions=(
+            memory_guard.GuardTerminationAction(
+                target_kind="process",
+                target_id=200,
+                signal=memory_guard.signal.SIGTERM,
+                signal_name="SIGTERM",
+                result="failed",
+                error="access denied",
+            ),
+        ),
+    )
+    kwargs: dict[str, object] = {
+        "returncode": 1,
+        "violation": None,
+        "peak": None,
+        "peak_total": None,
+        "stdout": "",
+        "stderr": "",
+        "elapsed_s": 1.0,
+        "termination_reports": (report,),
+    }
+    kwargs.update(result_overrides)
+    result = memory_guard.GuardResult(**kwargs)  # type: ignore[arg-type]
+
+    incident = memory_guard._incident_payload(result)
+
+    assert incident is not None
+    assert incident["reason"] == expected_reason
+    assert "cleanup incomplete" in str(incident["cleanup"])
+    assert incident["process_tree_cleanup_status"] == "incomplete"
+    assert incident["process_tree_cleanup_candidate_pids"] == [200]
+
+
+def test_owned_child_handle_success_reconciles_only_direct_child_failure() -> None:
+    primary = _guard_termination_report(
+        reason="timeout",
+        root_pid=100,
+        actions=(
+            memory_guard.GuardTerminationAction(
+                target_kind="process",
+                target_id=100,
+                signal=memory_guard.signal.SIGTERM,
+                signal_name="SIGTERM",
+                result="still_live",
+            ),
+            memory_guard.GuardTerminationAction(
+                target_kind="process",
+                target_id=200,
+                signal=memory_guard.signal.SIGTERM,
+                signal_name="SIGTERM",
+                result="failed",
+                error="access denied",
+            ),
+        ),
+    )
+    handle = _guard_termination_report(
+        reason="post_loop_unreaped_child_direct_child_handle",
+        root_pid=100,
+        actions=(
+            memory_guard.GuardTerminationAction(
+                target_kind="owned_child_handle",
+                target_id=100,
+                signal=memory_guard.fallback_kill_signal(),
+                signal_name=memory_guard._signal_name(
+                    memory_guard.fallback_kill_signal()
+                ),
+                result="completed_or_missing",
+            ),
+        ),
+    )
+    result = memory_guard.GuardResult(
+        returncode=memory_guard.TIMEOUT_RETURN_CODE,
+        violation=None,
+        peak=None,
+        peak_total=None,
+        stdout="",
+        stderr="",
+        timed_out=True,
+        termination_reports=(primary, handle),
+    )
+
+    incident = memory_guard._incident_payload(result)
+
+    assert incident is not None
+    assert incident["process_tree_cleanup_status"] == "incomplete"
+    assert incident["process_tree_cleanup_candidate_pids"] == [200]
+
+    fully_reaped = dataclasses.replace(
+        result,
+        termination_reports=(
+            dataclasses.replace(primary, actions=(primary.actions[0],)),
+            handle,
+        ),
+    )
+    fully_reaped_incident = memory_guard._incident_payload(fully_reaped)
+    assert fully_reaped_incident is not None
+    assert "process_tree_cleanup_status" not in fully_reaped_incident
+    assert fully_reaped_incident["cleanup"] == "terminated tracked process tree"
+
+
+def test_completed_group_outcome_supersedes_preliminary_root_group_skip() -> None:
+    report = _guard_termination_report(
+        reason="tracked_orphan_cleanup",
+        root_pid=100,
+        root_pgid=100,
+        actions=(
+            memory_guard.GuardTerminationAction(
+                target_kind="process_group",
+                target_id=100,
+                signal=None,
+                signal_name=None,
+                result="skipped_protected_root_group",
+            ),
+            memory_guard.GuardTerminationAction(
+                target_kind="process_group",
+                target_id=100,
+                signal=memory_guard.signal.SIGTERM,
+                signal_name="SIGTERM",
+                result="completed_or_missing",
+            ),
+        ),
+    )
+    result = memory_guard.GuardResult(
+        returncode=0,
+        violation=None,
+        peak=None,
+        peak_total=None,
+        stdout="",
+        stderr="",
+        orphaned_process_groups=(100,),
+        termination_reports=(report,),
+    )
+
+    incident = memory_guard._incident_payload(result)
+
+    assert incident is not None
+    assert incident["reason"] == "orphaned_processes_cleaned"
+    assert "orphan_cleanup_status" not in incident
 
 
 def test_main_writes_samples_jsonl(tmp_path) -> None:

@@ -30,7 +30,11 @@ WINDOWS_FULL_COMMAND_LINE_EXECUTABLE_NAMES = frozenset(
 )
 
 
-class WindowsProcessSnapshotTimeout(TimeoutError):
+class ProcessSnapshotError(RuntimeError):
+    """Raised when a process-table snapshot is not authoritative."""
+
+
+class WindowsProcessSnapshotTimeout(ProcessSnapshotError, TimeoutError):
     """Raised when Windows process-table custody cannot be sampled completely."""
 
 
@@ -106,15 +110,22 @@ def _windows_process_snapshot_rows_hard_timeout() -> list[
             if timeout_sec is not None
             else "Windows process snapshot helper timed out"
         ) from exc
-    except OSError:
-        return []
+    except OSError as exc:
+        raise ProcessSnapshotError(
+            f"Windows process snapshot helper could not start: {exc}"
+        ) from exc
     if result.returncode != 0:
-        return []
+        raise ProcessSnapshotError(
+            "Windows process snapshot helper failed with "
+            f"exit code {result.returncode}: {result.stderr.strip()}"
+        )
     try:
         payload = json.loads(result.stdout)
         return _coerce_windows_process_snapshot_rows(payload)
-    except (json.JSONDecodeError, ValueError, TypeError):
-        return []
+    except (json.JSONDecodeError, ValueError, TypeError) as exc:
+        raise ProcessSnapshotError(
+            f"Windows process snapshot helper returned invalid payload: {exc}"
+        ) from exc
 
 
 def _windows_process_needs_full_command_line(exe_name: str) -> bool:
@@ -195,11 +206,73 @@ def windows_process_handle_rss_kb(handle: object) -> int | None:
     return _working_set_rss_kb(counters)
 
 
-def _filetime_to_unix_seconds(low: int, high: int) -> float | None:
-    ticks = (high << 32) | low
-    if ticks <= 0:
+def windows_process_handle_started_at_ns(handle: object) -> int | None:
+    """Read the stable creation marker from the already-owned process handle."""
+
+    if os.name != "nt" or not handle:
         return None
-    return (ticks - 116444736000000000) / 10_000_000
+    try:
+        handle_value = int(handle)
+    except (TypeError, ValueError):
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        get_process_times = kernel32.GetProcessTimes
+        get_process_times.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+        ]
+        get_process_times.restype = wintypes.BOOL
+        created = wintypes.FILETIME()
+        exited = wintypes.FILETIME()
+        kernel = wintypes.FILETIME()
+        user = wintypes.FILETIME()
+        if not get_process_times(
+            wintypes.HANDLE(handle_value),
+            ctypes.byref(created),
+            ctypes.byref(exited),
+            ctypes.byref(kernel),
+            ctypes.byref(user),
+        ):
+            return None
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+    return _filetime_to_unix_ns(
+        int(created.dwLowDateTime),
+        int(created.dwHighDateTime),
+    )
+
+
+def _filetime_to_unix_seconds(low: int, high: int) -> float | None:
+    ns = _filetime_to_unix_ns(low, high)
+    return None if ns is None else ns / 1_000_000_000
+
+
+def _filetime_to_unix_ns(low: int, high: int) -> int | None:
+    ticks = (high << 32) | low
+    unix_100ns = ticks - 116444736000000000
+    if unix_100ns <= 0:
+        return None
+    return unix_100ns * 100
+
+
+def _validated_windows_process_binding(
+    enumerated_pid: int,
+    bound_pid: int | None,
+    bound_ppid: int | None,
+    started_at_ns: int | None,
+) -> tuple[int, int | None]:
+    """Bind lineage and creation identity to the same opened process handle."""
+
+    if bound_pid != enumerated_pid or bound_ppid is None or started_at_ns is None:
+        return 0, None
+    return max(0, bound_ppid), started_at_ns
 
 
 def _windows_process_snapshot_rows() -> list[
@@ -351,16 +424,8 @@ def _windows_process_snapshot_rows() -> list[
 
     def read_process_command_line(handle: wintypes.HANDLE) -> str | None:
         enforce_deadline("reading process command line")
-        info = PROCESS_BASIC_INFORMATION()
-        returned = wintypes.ULONG(0)
-        status = nt_query_information_process(
-            handle,
-            ProcessBasicInformation,
-            ctypes.byref(info),
-            ctypes.sizeof(info),
-            ctypes.byref(returned),
-        )
-        if status != 0 or not info.PebBaseAddress:
+        info = read_process_basic_info(handle)
+        if info is None or not info.PebBaseAddress:
             return None
         process_parameters = read_ptr(
             handle,
@@ -377,6 +442,22 @@ def _windows_process_snapshot_rows() -> list[
             return None
         enforce_deadline("reading process command line")
         return raw.decode("utf-16-le", errors="replace").strip("\x00")
+
+    def read_process_basic_info(
+        handle: wintypes.HANDLE,
+    ) -> PROCESS_BASIC_INFORMATION | None:
+        returned = wintypes.ULONG(0)
+        info = PROCESS_BASIC_INFORMATION()
+        status = nt_query_information_process(
+            handle,
+            ProcessBasicInformation,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+            ctypes.byref(returned),
+        )
+        if status != 0:
+            return None
+        return info
 
     def read_process_image_name(handle: wintypes.HANDLE) -> str | None:
         enforce_deadline("reading process image name")
@@ -401,6 +482,9 @@ def _windows_process_snapshot_rows() -> list[
             enforce_deadline("enumerating process snapshot")
             pid = int(entry.th32ProcessID)
             if pid > 0:
+                ppid = 0
+                bound_pid: int | None = None
+                bound_ppid: int | None = None
                 rss_kb = 0
                 elapsed_sec: int | None = None
                 started_at_ns: int | None = None
@@ -420,6 +504,14 @@ def _windows_process_snapshot_rows() -> list[
                 if handle:
                     try:
                         enforce_deadline("reading process metadata")
+                        basic_info = read_process_basic_info(handle)
+                        bound_pid = (
+                            None
+                            if basic_info is None
+                            else int(basic_info.UniqueProcessId)
+                        )
+                        if basic_info is not None and bound_pid == pid:
+                            bound_ppid = int(basic_info.InheritedFromUniqueProcessId)
                         image_name = read_process_image_name(handle)
                         if _windows_process_needs_full_command_line(exe_name):
                             command = (
@@ -450,22 +542,29 @@ def _windows_process_snapshot_rows() -> list[
                             ctypes.byref(user),
                         ):
                             enforce_deadline("reading process times")
-                            created_ts = _filetime_to_unix_seconds(
+                            started_at_ns = _filetime_to_unix_ns(
                                 int(created.dwLowDateTime),
                                 int(created.dwHighDateTime),
                             )
-                            if created_ts is not None:
-                                elapsed_sec = max(0, int(now - created_ts))
-                                started_at_ns = max(
+                            if started_at_ns is not None:
+                                elapsed_sec = max(
                                     0,
-                                    int(created_ts * 1_000_000_000),
+                                    int(now - started_at_ns / 1_000_000_000),
                                 )
                     finally:
                         close_handle(handle)
+                ppid, started_at_ns = _validated_windows_process_binding(
+                    pid,
+                    bound_pid,
+                    bound_ppid,
+                    started_at_ns,
+                )
+                if started_at_ns is None:
+                    elapsed_sec = None
                 rows.append(
                     (
                         pid,
-                        int(entry.th32ParentProcessID),
+                        ppid,
                         rss_kb,
                         command,
                         elapsed_sec,

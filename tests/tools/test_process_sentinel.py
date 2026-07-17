@@ -1365,6 +1365,7 @@ def test_terminate_group_uses_pid_kill_without_getpgrp_on_windows(monkeypatch) -
         pgid=None,
         rss_kb=500_000,
         command="/repo/molt/target/release-fast/molt-backend",
+        started_at_ns=100,
     )
     samples = {100: sample}
     killed: list[tuple[int, int]] = []
@@ -1441,6 +1442,7 @@ def test_terminate_group_refuses_windows_group_without_expected_identity(
             ppid=1,
             pgid=None,
             rss_kb=500_000,
+            started_at_ns=100,
             command="/repo/molt/target/release-fast/molt-backend",
         ),
     }
@@ -1607,6 +1609,7 @@ def test_terminate_group_windows_keeps_current_sentinel_child_killable(
             ppid=100,
             pgid=None,
             rss_kb=30_000,
+            started_at_ns=999,
             command=(
                 r"C:\Users\adpen\OneDrive\Documents\molt"
                 r"\tools\process_sentinel.py --once --kill-all"
@@ -1617,6 +1620,7 @@ def test_terminate_group_windows_keeps_current_sentinel_child_killable(
             ppid=999,
             pgid=None,
             rss_kb=250_000,
+            started_at_ns=200,
             command=(
                 r"C:\Users\adpen\OneDrive\Documents\molt"
                 r"\target\dev-fast\molt-backend.exe --owned"
