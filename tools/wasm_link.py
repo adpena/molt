@@ -30,6 +30,12 @@ import artifact_publish  # noqa: E402
 from wasm_optimize import find_wasm_opt  # noqa: E402
 from wasm_metrics import wasm_metrics  # noqa: E402
 from molt.cli import wasm_toolchain  # noqa: E402
+from molt.cli.external_link_providers import (  # noqa: E402
+    WASM_COMPILER_RT_LINK_IMPORT_CLASS,
+    WASM_LIBCXX_LINK_IMPORT_CLASS,
+    WASM_LIBC_LINK_IMPORT_CLASS,
+    wasm_external_link_provider_symbols,
+)
 from molt.cli.runtime_wasm_validation import (  # noqa: E402
     _runtime_wasm_integrity_pin_paths,
 )
@@ -859,15 +865,18 @@ def _split_artifact_contract_function_symbols(
 
 
 def _external_native_host_link_imports() -> tuple[str, ...]:
-    return tuple(
+    generated = {
         symbol
         for symbol in WASM_EXTERNAL_NATIVE_LINK_IMPORTS
         if WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES.get(symbol)
-        not in {
-            _COMPILER_RT_LINK_IMPORT_CLASS,
-            _CPYTHON_ABI_LINK_IMPORT_CLASS,
-        }
+        not in {_COMPILER_RT_LINK_IMPORT_CLASS, _CPYTHON_ABI_LINK_IMPORT_CLASS}
+    }
+    provider_symbols = wasm_external_link_provider_symbols(
+        primitive_classes=frozenset(
+            {WASM_LIBC_LINK_IMPORT_CLASS, WASM_LIBCXX_LINK_IMPORT_CLASS}
+        )
     )
+    return tuple(sorted(generated | provider_symbols))
 
 
 def _iter_linking_data_symbols(
@@ -1401,10 +1410,16 @@ def _rewrite_split_app_got_data_globals(
 
 
 def _compiler_rt_link_imports() -> frozenset[str]:
-    return frozenset(
+    generated = {
         symbol
         for symbol, primitive_class in WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES.items()
         if primitive_class == _COMPILER_RT_LINK_IMPORT_CLASS
+    }
+    return frozenset(
+        generated
+        | wasm_external_link_provider_symbols(
+            primitive_classes=frozenset({WASM_COMPILER_RT_LINK_IMPORT_CLASS})
+        )
     )
 
 

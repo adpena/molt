@@ -3046,6 +3046,23 @@ def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
         lambda: compiler_rt_provider,
         raising=True,
     )
+    def provider_symbols(*, primitive_classes=None, **_kwargs):
+        symbols: set[str] = set()
+        if primitive_classes is None or wasm_link.WASM_LIBC_LINK_IMPORT_CLASS in primitive_classes:
+            symbols.add("malloc")
+        if (
+            primitive_classes is None
+            or wasm_link.WASM_COMPILER_RT_LINK_IMPORT_CLASS in primitive_classes
+        ):
+            symbols.add("__trunctfdf2")
+        return frozenset(symbols)
+
+    monkeypatch.setattr(
+        wasm_link,
+        "wasm_external_link_provider_symbols",
+        provider_symbols,
+        raising=True,
+    )
 
     rc = wasm_link._run_wasm_ld(
         "wasm-ld",
@@ -6090,6 +6107,12 @@ def test_resolve_native_link_inputs_adds_compiler_rt_provider(
         lambda: provider,
         raising=True,
     )
+    monkeypatch.setattr(
+        wasm_link,
+        "wasm_external_link_provider_symbols",
+        lambda **_kwargs: frozenset({"__trunctfdf2"}),
+        raising=True,
+    )
 
     inputs = wasm_link._resolve_native_link_inputs((native,))
 
@@ -6107,6 +6130,12 @@ def test_resolve_native_link_inputs_rejects_missing_compiler_rt_provider(
         wasm_link.wasm_toolchain,
         "wasm_compiler_builtins_archive",
         lambda: None,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        wasm_link,
+        "wasm_external_link_provider_symbols",
+        lambda **_kwargs: frozenset({"__trunctfdf2"}),
         raising=True,
     )
 

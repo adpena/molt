@@ -1645,19 +1645,12 @@ def test_wasm_abi_manifest_owns_host_import_policy() -> None:
         for name, primitive_class in external_native_classes.items()
         if primitive_class == "molt_cpython_abi_link_import"
     } == generated_cpython_abi_imports
-    assert external_native_classes["__cxa_atexit"] == "wasm_libc_link_import"
-    assert external_native_classes["acos"] == "wasm_libc_link_import"
-    assert external_native_classes["cpow"] == "wasm_libc_link_import"
-    assert external_native_classes["fwrite"] == "wasm_libc_link_import"
-    assert external_native_classes["aligned_alloc"] == "wasm_libc_link_import"
-    assert external_native_classes["printf"] == "wasm_libc_link_import"
-    assert external_native_classes["stdout"] == "wasm_libc_link_import"
-    assert external_native_classes["strtol"] == "wasm_libc_link_import"
-    assert external_native_classes["wmemchr"] == "wasm_libc_link_import"
-    assert external_native_classes["vfprintf"] == "wasm_libc_link_import"
-    assert external_native_classes["malloc"] == "wasm_libc_link_import"
-    assert external_native_classes["vsnprintf"] == "wasm_libc_link_import"
-    assert external_native_classes["__trunctfdf2"] == ("wasm_compiler_rt_link_import")
+    provider_classes = {
+        "wasm_libc_link_import",
+        "wasm_compiler_rt_link_import",
+        "wasm_libcxx_link_import",
+    }
+    assert not (provider_classes & set(external_native_classes.values()))
     assert len(allowed) == len(set(allowed))
     broken = copy.deepcopy(data)
     broken["link_allowed_import"] = [
@@ -1697,10 +1690,9 @@ def test_wasm_abi_manifest_owns_host_import_policy() -> None:
     assert "WASM_STRIP_IMPORT_RULES" in rendered_py
     assert "WASM_STRIP_IMPORT_PREFIX_RULES" in rendered_py
     js_link_imports = rendered_js_abi["external_native_link_imports"]
-    assert js_link_imports["primitive_classes"]["_ZNSt3__217bad_function_callD1Ev"] == (
-        "wasm_libcxx_link_import"
+    assert not (
+        provider_classes & set(js_link_imports["primitive_classes"].values())
     )
-    assert js_link_imports["symbol_kinds"]["_ZTVNSt3__217bad_function_callE"] == "data"
 
     allowlist = gen.OUT_ALLOWED_IMPORTS.read_text(encoding="utf-8")
     assert allowlist == gen.render_allowed_imports(data)
