@@ -137,6 +137,11 @@ integrity metadata. Until that release lane exists, the honest path is:
    generated graph follows transitive ES/CommonJS imports, dynamic imports,
    workers, classic-worker imports, and statically rooted fetches. Dynamic URLs
    stay explicit runtime/deployment inputs rather than guessed graph edges.
+4. Hash and materialize textual loader assets in canonical UTF-8/LF wire form.
+   Git checkout line endings must not change graph identity, manifests, or
+   deployed bytes. Proof scopes resolve from the canonical source graph; a
+   staged witness repository supplies git/input identity, never generator
+   authority.
 
 `--split-runtime` remains the cache-friendly deployment mode for larger apps:
 

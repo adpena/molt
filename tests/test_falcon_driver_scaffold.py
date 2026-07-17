@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import shutil
@@ -10,6 +11,7 @@ from pathlib import Path
 
 from molt.browser_asset_closure import (
     BROWSER_HOST_ENTRY_ASSETS,
+    canonical_wasm_loader_asset_bytes,
     wasm_loader_asset_closure,
 )
 from tests.process_guard_common import run_guarded_test_process
@@ -268,6 +270,16 @@ def test_falcon_driver_materialize_bundle_emits_manifest_and_assets(
     assert {entry["url"] for entry in manifest["browser_static_assets"]} == {
         f"/{asset}" for asset in browser_assets
     }
+    browser_asset_records = {
+        entry["url"].removeprefix("/"): entry
+        for entry in manifest["browser_static_assets"]
+    }
+    for name, record in browser_asset_records.items():
+        expected = canonical_wasm_loader_asset_bytes(ROOT.joinpath("wasm", name))
+        emitted = bundle_root.joinpath("assets", name).read_bytes()
+        assert emitted == expected
+        assert record["size_bytes"] == len(expected)
+        assert record["sha256"] == hashlib.sha256(expected).hexdigest()
     assert manifest["weights"]["base_url"] == "https://weights.example.invalid/falcon"
     assert manifest["weights"]["files"][0]["path"] == "layer0.safetensors"
     wrangler = json.loads((bundle_root / "wrangler.jsonc").read_text(encoding="utf-8"))
