@@ -32,8 +32,24 @@ _IN_PROCESS_LOCK_REGISTRY: dict[str, _InProcessLockEntry] = {}
 _IN_PROCESS_LOCK_REGISTRY_GUARD = threading.Lock()
 
 
+def _in_process_lock_key(lock_path: Path) -> str:
+    return os.path.normcase(os.fspath(lock_path.resolve(strict=False)))
+
+
+def _reset_in_process_lock_registry_after_fork() -> None:
+    global _IN_PROCESS_LOCK_REGISTRY, _IN_PROCESS_LOCK_REGISTRY_GUARD
+    # A forked child owns no parent threads. Replacing both objects avoids an
+    # inherited mutex/registry guard that was locked by a vanished thread.
+    _IN_PROCESS_LOCK_REGISTRY = {}
+    _IN_PROCESS_LOCK_REGISTRY_GUARD = threading.Lock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_in_process_lock_registry_after_fork)
+
+
 def _in_process_lock_reserve(lock_path: Path) -> tuple[str, _InProcessLockEntry]:
-    key = os.path.normcase(os.path.abspath(os.fspath(lock_path)))
+    key = _in_process_lock_key(lock_path)
     with _IN_PROCESS_LOCK_REGISTRY_GUARD:
         entry = _IN_PROCESS_LOCK_REGISTRY.get(key)
         if entry is None:
