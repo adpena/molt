@@ -13,6 +13,17 @@ BROWSER_WASM_ENTRY_ASSETS = "browser-wasm"
 BROWSER_HOST_ENTRY_ASSETS = "browser-host"
 NODE_RUNNER_ENTRY_ASSETS = "node-runner"
 _GRAPH_NAME = "browser_asset_graph.generated.json"
+_CANONICAL_WASM_ROOT = Path(__file__).resolve().parents[2] / "wasm"
+_CANONICAL_TEXT_SUFFIXES = frozenset({".js", ".json", ".mjs"})
+
+
+def canonical_wasm_loader_asset_bytes(path: Path) -> bytes:
+    """Read a loader asset in its deterministic publication wire form."""
+
+    if path.suffix not in _CANONICAL_TEXT_SUFFIXES:
+        return path.read_bytes()
+    with path.open("r", encoding="utf-8", newline=None) as handle:
+        return handle.read().encode("utf-8")
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,7 +66,7 @@ def _load_verified_graph(
         if not path.is_file():
             raise FileNotFoundError(f"missing browser static asset: {path}")
         expected_hash = facts.get("sha256")
-        actual_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+        actual_hash = hashlib.sha256(canonical_wasm_loader_asset_bytes(path)).hexdigest()
         if expected_hash != actual_hash:
             raise ValueError(
                 f"browser asset graph hash drift for {name}: "
@@ -174,10 +185,11 @@ def browser_asset_manifest_keys(assets: Iterable[str]) -> dict[str, str]:
 
 
 def wasm_loader_asset_scope_paths(
-    repo_root: Path,
     entries: str | Iterable[str] = BROWSER_WASM_ENTRY_ASSETS,
 ) -> tuple[str, ...]:
+    """Return proof scopes from source authority, never a staged witness root."""
+
     return tuple(
         f"wasm/{asset}"
-        for asset in wasm_loader_asset_closure(repo_root / "wasm", entries)
+        for asset in wasm_loader_asset_closure(_CANONICAL_WASM_ROOT, entries)
     )

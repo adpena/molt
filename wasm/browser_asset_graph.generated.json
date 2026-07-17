@@ -32,7 +32,7 @@
         "loader_bridge.js"
       ],
       "role": "browser",
-      "sha256": "d164c43158c33c5fd83dc4e5df152bd3e2764899ac50e09f40d14730d0b8140c",
+      "sha256": "9137a6a7ad96230c2a1d7c276fc74408e60bd64bf0f30f4a443c01b031258546",
       "source_type": "module"
     },
     "browser_gpu_dispatch.js": {
@@ -51,7 +51,7 @@
         "browser_gpu_worker.js"
       ],
       "role": "browser",
-      "sha256": "420a1c2117a5a488ac0994ccc7e82a13c0399edeed6b0f37a7d03c65ebcd86e3",
+      "sha256": "225efdc5d1ac43320dee13124aa999d3c231c9eba3f8d131834c6f9eaf194cd1",
       "source_type": "module"
     },
     "browser_gpu_worker.js": {
@@ -60,7 +60,7 @@
       "reference_facts": [],
       "references": [],
       "role": "browser",
-      "sha256": "99704396adca66220adedb37b9050e5a2609ea59ad68cb2767ad5da8d7d9fce2",
+      "sha256": "5a1bbef9f03aab4d23eb6a528322e1d9077a59cf8495b006c7ed80eb40b9e7f3",
       "source_type": "script"
     },
     "browser_host.js": {
@@ -103,7 +103,7 @@
         "molt_vfs_browser.js"
       ],
       "role": "browser",
-      "sha256": "d3c4bcc08fb51d927719ee51422799791ba803ec63d499b1378a2d1cb4a77ae8",
+      "sha256": "c3c15cd4395b43e71fa43db61a711ff9a416ff47e30789d51351ac1b19685d01",
       "source_type": "module"
     },
     "browser_target_features.js": {
@@ -122,7 +122,7 @@
         "target_feature_constants.generated.js"
       ],
       "role": "browser",
-      "sha256": "3f7d780dfbcd8f42dd5fd0ce1e4ba2f4d64730360a24e684f05abb08d026bf6a",
+      "sha256": "a0d6db98b64228e6cbfd4031d0cab7e83cbf93f6c19b73a1c9ae6970fe8643ab",
       "source_type": "module"
     },
     "loader_bridge.js": {
@@ -131,7 +131,7 @@
       "reference_facts": [],
       "references": [],
       "role": "shared",
-      "sha256": "abcd36b327800263e112b5f72b712f2ed6b229f806b2e7acb1fffacec92fa173",
+      "sha256": "d2f12dba59e1dcb62c1c76f10aab855129bd3d6aa063ea4f7fd2e5424fb04e98",
       "source_type": "script"
     },
     "molt_vfs_browser.js": {
@@ -140,7 +140,7 @@
       "reference_facts": [],
       "references": [],
       "role": "browser",
-      "sha256": "4a19c5bc287394a61c8bb4935842574536f5b5fc8db63aedc6b46cff6097b59a",
+      "sha256": "1790828ada67d454de67ed7e07d65448cf0d84d434ad2774e5427d20a7905002",
       "source_type": "module"
     },
     "run_wasm.js": {
@@ -264,7 +264,7 @@
         "wasm_abi_generated.json"
       ],
       "role": "node",
-      "sha256": "0cffd6e212793d548f1c3719daebb699ee2b9e7d9a5c6ee212466446f026c652",
+      "sha256": "32ca75c607d72b40e61d1c667c21f891ee03a3ceecfff59a6407659c3577e975",
       "source_type": "script"
     },
     "target_feature_constants.generated.js": {
@@ -273,7 +273,7 @@
       "reference_facts": [],
       "references": [],
       "role": "browser",
-      "sha256": "f5eca55bc4a92a09da073cd3e591bc322a310e2b939ccfb9c39f4b343121c8df",
+      "sha256": "17b8774f553fdb69c82c581cb591d489e2a0809d1aaec096fb9a8f9df7861e5c",
       "source_type": "module"
     },
     "target_feature_manifest.json": {
@@ -282,7 +282,7 @@
       "reference_facts": [],
       "references": [],
       "role": "node",
-      "sha256": "49555fe30cc2a0750793e55916c54bdd31c92060e165f34d62ad066e093d0cde",
+      "sha256": "78b2846c6342ddb172b7bdf164015784f3794f9b9968c1d40ed3199e17283b14",
       "source_type": "data"
     },
     "wasm_abi_generated.json": {
@@ -291,7 +291,7 @@
       "reference_facts": [],
       "references": [],
       "role": "node",
-      "sha256": "84b56d59c78b78112c2003ef748c000fcccc4d029316963d901857d2e2713c60",
+      "sha256": "a5b2fd487a3c2822def2809cd2f1541a2c1b8ac339fcf60e1ca2aee2317ef4c0",
       "source_type": "data"
     }
   },
@@ -317,9 +317,9 @@
     }
   },
   "scanner": {
-    "package_lock_sha256": "48aa8d11316e983cc93be2cfe319503092bed17b4d311290bd8c60a6a70051bc",
+    "package_lock_sha256": "4d3b5314421fcf83ec9fe144af7a3181b8cd98baf158aca25e486c507c516e6d",
     "path": "tools/browser_asset_graph/scan.mjs",
-    "sha256": "ea7eeef271322224eb4dbd6200f0d8901e6776e66023d9646be03549e566fa0c"
+    "sha256": "d58d7c415807a6767eafe6284224a0814d645f6f48aa2a95e94a07fe6c9c839a"
   },
   "schema_version": 2
 }
