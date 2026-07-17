@@ -338,6 +338,7 @@ pub(crate) unsafe fn tuple_pair(ptr: *mut u8) -> Option<(u64, u64)> {
     }
 }
 
+#[cfg(test)]
 #[inline]
 pub(crate) unsafe fn tracked_heap_edge_count(ptr: *mut u8) -> Option<usize> {
     if ptr.is_null() {

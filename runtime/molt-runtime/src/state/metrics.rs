@@ -23,6 +23,38 @@ fn profile_env_enabled() -> bool {
     profile_flag_enabled("MOLT_PROFILE") || leak_assertion_enabled()
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ProcessMemorySnapshot {
+    pub(crate) source: &'static str,
+    pub(crate) current_rss_bytes: Option<u64>,
+    pub(crate) peak_rss_bytes: Option<u64>,
+}
+
+impl ProcessMemorySnapshot {
+    #[inline]
+    const fn unavailable(source: &'static str) -> Self {
+        Self {
+            source,
+            current_rss_bytes: None,
+            peak_rss_bytes: None,
+        }
+    }
+
+    #[inline]
+    fn available(source: &'static str, current_rss_bytes: u64, peak_rss_bytes: u64) -> Self {
+        Self {
+            source,
+            current_rss_bytes: Some(current_rss_bytes),
+            peak_rss_bytes: Some(peak_rss_bytes.max(current_rss_bytes)),
+        }
+    }
+
+    #[inline]
+    pub(crate) const fn available_flag(self) -> bool {
+        self.current_rss_bytes.is_some() && self.peak_rss_bytes.is_some()
+    }
+}
+
 /// Phase-0 exact-survivor leak gauge (doc 55 §2.5 / ownership_lattice_phase0.md
 /// §2.4). The measured immortal-survivor floor |S| for THIS program's import set,
 /// snapshot as `live = ALLOC_COUNT - DEALLOC_COUNT` at the bootstrap->user-code
@@ -141,17 +173,15 @@ mod wasm_stubs {
         }
     }
 
-    pub(crate) fn current_rss_bytes() -> u64 {
-        0
+    pub(crate) fn process_memory_snapshot() -> super::ProcessMemorySnapshot {
+        super::ProcessMemorySnapshot::unavailable("unsupported-wasm")
     }
-
-    pub(crate) fn sample_peak_rss() {}
 
     #[unsafe(no_mangle)]
     pub extern "C" fn molt_profile_snapshot() {
         crate::with_gil_entry_nopanic!(_py, {
             if profile_enabled(_py) {
-                sample_peak_rss();
+                let _ = process_memory_snapshot();
             }
         })
     }
@@ -173,10 +203,10 @@ mod wasm_stubs {
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) use wasm_stubs::{
-    current_rss_bytes, init_profile_enabled_from_env, molt_profile_enabled,
-    molt_profile_handle_resolve, molt_profile_snapshot, molt_profile_struct_field_store,
+    init_profile_enabled_from_env, molt_profile_enabled, molt_profile_handle_resolve,
+    molt_profile_snapshot, molt_profile_struct_field_store, process_memory_snapshot,
     profile_enabled, profile_enabled_unchecked, profile_hit, profile_hit_bytes,
-    profile_hit_bytes_unchecked, profile_hit_unchecked, sample_peak_rss,
+    profile_hit_bytes_unchecked, profile_hit_unchecked,
 };
 
 // Full profiling implementation for non-wasm32 targets.
@@ -184,10 +214,16 @@ pub(crate) use wasm_stubs::{
 mod native {
     use std::sync::atomic::{AtomicU8, AtomicU64, Ordering as AtomicOrdering};
 
-    use crate::{HANDLE_RESOLVE_COUNT, PEAK_RSS_BYTES, PyToken, STRUCT_FIELD_STORE_COUNT};
+    use crate::{HANDLE_RESOLVE_COUNT, PyToken, STRUCT_FIELD_STORE_COUNT};
 
     const PROFILE_UNKNOWN: u8 = 2;
     static PROFILE_ENABLED: AtomicU8 = AtomicU8::new(PROFILE_UNKNOWN);
+
+    #[cfg(target_os = "macos")]
+    unsafe extern "C" {
+        #[link_name = "mach_task_self_"]
+        static MOLT_MACH_TASK_SELF: libc::mach_port_t;
+    }
 
     pub(crate) fn init_profile_enabled_from_env() {
         PROFILE_ENABLED.store(
@@ -247,89 +283,99 @@ mod native {
     }
 
     #[cfg(target_os = "macos")]
-    pub(crate) fn current_rss_bytes() -> u64 {
-        // Use mach_task_basic_info to query RSS on macOS.
-        #[repr(C)]
-        struct MachTaskBasicInfo {
-            virtual_size: u64,
-            resident_size: u64,
-            resident_size_max: u64,
-            user_time: [u32; 2],   // time_value_t
-            system_time: [u32; 2], // time_value_t
-            policy: i32,
-            suspend_count: i32,
-        }
-        const MACH_TASK_BASIC_INFO: u32 = 20;
-        // MACH_TASK_BASIC_INFO_COUNT = size_of::<MachTaskBasicInfo>() / size_of::<u32>()
-        const INFO_COUNT: u32 =
-            (std::mem::size_of::<MachTaskBasicInfo>() / std::mem::size_of::<u32>()) as u32;
-        unsafe extern "C" {
-            fn mach_task_self() -> u32;
-            fn task_info(
-                target_task: u32,
-                flavor: u32,
-                task_info_out: *mut MachTaskBasicInfo,
-                task_info_count: *mut u32,
-            ) -> i32;
-        }
+    fn read_process_memory() -> Option<(u64, u64)> {
         unsafe {
-            let mut info: MachTaskBasicInfo = std::mem::zeroed();
-            let mut count = INFO_COUNT;
-            let kr = task_info(
-                mach_task_self(),
-                MACH_TASK_BASIC_INFO,
-                &mut info,
+            let mut info: libc::mach_task_basic_info = std::mem::zeroed();
+            let mut count = libc::MACH_TASK_BASIC_INFO_COUNT;
+            let kr = libc::task_info(
+                MOLT_MACH_TASK_SELF,
+                libc::MACH_TASK_BASIC_INFO,
+                (&raw mut info).cast(),
                 &mut count,
             );
-            if kr == 0 { info.resident_size } else { 0 }
+            (kr == 0).then(|| {
+                (
+                    std::ptr::addr_of!(info.resident_size).read_unaligned(),
+                    std::ptr::addr_of!(info.resident_size_max).read_unaligned(),
+                )
+            })
         }
     }
 
     #[cfg(target_os = "linux")]
-    pub(crate) fn current_rss_bytes() -> u64 {
-        // Read /proc/self/statm; second field is RSS in pages.
-        if let Ok(contents) = std::fs::read_to_string("/proc/self/statm") {
-            if let Some(rss_pages_str) = contents.split_whitespace().nth(1) {
-                if let Ok(rss_pages) = rss_pages_str.parse::<u64>() {
-                    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-                    if page_size > 0 {
-                        return rss_pages * (page_size as u64);
-                    }
-                    return rss_pages * 4096;
-                }
+    fn parse_linux_status_memory(contents: &str) -> Option<(u64, u64)> {
+        fn kib_value(line: &str, name: &str) -> Option<u64> {
+            let value = line.strip_prefix(name)?.split_whitespace().next()?;
+            value.parse::<u64>().ok()?.checked_mul(1024)
+        }
+
+        let mut current = None;
+        let mut peak = None;
+        for line in contents.lines() {
+            current = current.or_else(|| kib_value(line, "VmRSS:"));
+            peak = peak.or_else(|| kib_value(line, "VmHWM:"));
+            if current.is_some() && peak.is_some() {
+                break;
             }
         }
-        0
+        Some((current?, peak?))
     }
 
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    pub(crate) fn current_rss_bytes() -> u64 {
-        0
+    #[cfg(target_os = "linux")]
+    fn read_process_memory() -> Option<(u64, u64)> {
+        let contents = std::fs::read_to_string("/proc/self/status").ok()?;
+        parse_linux_status_memory(&contents)
     }
 
-    /// Sample current RSS and update PEAK_RSS_BYTES if it's a new peak.
-    pub(crate) fn sample_peak_rss() {
-        let rss = current_rss_bytes();
-        if rss > 0 {
-            // CAS loop to update peak.
-            loop {
-                let prev = PEAK_RSS_BYTES.load(AtomicOrdering::Relaxed);
-                if rss <= prev {
-                    break;
-                }
-                if PEAK_RSS_BYTES
-                    .compare_exchange_weak(
-                        prev,
-                        rss,
-                        AtomicOrdering::Relaxed,
-                        AtomicOrdering::Relaxed,
-                    )
-                    .is_ok()
-                {
-                    break;
-                }
-            }
+    #[cfg(windows)]
+    fn read_process_memory() -> Option<(u64, u64)> {
+        use windows_sys::Win32::System::ProcessStatus::{
+            GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+        };
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+        let mut counters = PROCESS_MEMORY_COUNTERS {
+            cb: u32::try_from(std::mem::size_of::<PROCESS_MEMORY_COUNTERS>()).ok()?,
+            ..Default::default()
+        };
+        let ok =
+            unsafe { GetProcessMemoryInfo(GetCurrentProcess(), &raw mut counters, counters.cb) };
+        (ok != 0).then_some((
+            u64::try_from(counters.WorkingSetSize).ok()?,
+            u64::try_from(counters.PeakWorkingSetSize).ok()?,
+        ))
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+    fn read_process_memory() -> Option<(u64, u64)> {
+        None
+    }
+
+    #[inline]
+    const fn process_memory_source() -> &'static str {
+        #[cfg(target_os = "linux")]
+        {
+            "proc-self-status"
         }
+        #[cfg(target_os = "macos")]
+        {
+            "mach-task-basic-info"
+        }
+        #[cfg(windows)]
+        {
+            "windows-process-memory-info"
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+        {
+            "unsupported-target"
+        }
+    }
+
+    pub(crate) fn process_memory_snapshot() -> super::ProcessMemorySnapshot {
+        let source = process_memory_source();
+        read_process_memory()
+            .map(|(current, peak)| super::ProcessMemorySnapshot::available(source, current, peak))
+            .unwrap_or_else(|| super::ProcessMemorySnapshot::unavailable(source))
     }
 
     /// Extern entry point: sample RSS and update peak. Can be called from
@@ -338,7 +384,7 @@ mod native {
     pub extern "C" fn molt_profile_snapshot() {
         crate::with_gil_entry_nopanic!(_py, {
             if profile_enabled(_py) {
-                sample_peak_rss();
+                let _ = process_memory_snapshot();
             }
         })
     }
@@ -356,32 +402,35 @@ mod native {
             profile_hit(_py, &HANDLE_RESOLVE_COUNT);
         })
     }
+
+    #[cfg(test)]
+    mod tests {
+        #[cfg(target_os = "linux")]
+        #[test]
+        fn linux_status_parser_reads_current_and_high_water_bytes() {
+            let status = "Name:\tmolt\nVmHWM:\t4096 kB\nVmRSS:\t3072 kB\n";
+            assert_eq!(
+                super::parse_linux_status_memory(status),
+                Some((3_145_728, 4_194_304))
+            );
+            assert_eq!(super::parse_linux_status_memory("VmRSS:\t1 kB\n"), None);
+        }
+
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+        #[test]
+        fn supported_platform_reports_canonical_rss_source() {
+            let snapshot = super::process_memory_snapshot();
+            assert_eq!(snapshot.source, super::process_memory_source());
+            assert!(snapshot.available_flag());
+            assert!(snapshot.peak_rss_bytes >= snapshot.current_rss_bytes);
+        }
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use native::{
-    current_rss_bytes, init_profile_enabled_from_env, molt_profile_enabled,
-    molt_profile_handle_resolve, molt_profile_snapshot, molt_profile_struct_field_store,
+    init_profile_enabled_from_env, molt_profile_enabled, molt_profile_handle_resolve,
+    molt_profile_snapshot, molt_profile_struct_field_store, process_memory_snapshot,
     profile_enabled, profile_enabled_unchecked, profile_hit, profile_hit_bytes,
-    profile_hit_bytes_unchecked, profile_hit_unchecked, sample_peak_rss,
-};
-
-/// Mirrors `mach_task_basic_info` from `<mach/task_info.h>`.
-#[cfg(target_os = "macos")]
-#[repr(C)]
-#[allow(dead_code)]
-pub(crate) struct MachTaskBasicInfo {
-    pub virtual_size: u64,
-    pub resident_size: u64,
-    pub resident_size_max: u64,
-    pub user_time: [u32; 2],
-    pub system_time: [u32; 2],
-}
-
-#[cfg(target_os = "macos")]
-const _: () = {
-    assert!(
-        core::mem::size_of::<MachTaskBasicInfo>() == 40,
-        "MachTaskBasicInfo layout mismatch — Apple may have changed the struct"
-    );
+    profile_hit_bytes_unchecked, profile_hit_unchecked,
 };

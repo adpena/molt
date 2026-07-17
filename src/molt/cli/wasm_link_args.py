@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import shlex
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -11,7 +12,10 @@ from molt.cli.runtime_paths import _build_state_root
 
 def wasm_link_args_from_rustflags(flags: str) -> list[str]:
     """Extract ordered linker arguments from a Rust flags string."""
-    tokens = flags.split()
+    try:
+        tokens = shlex.split(flags, posix=True)
+    except ValueError as exc:
+        raise ValueError(f"invalid Rust flags: {exc}") from exc
     link_args: list[str] = []
     index = 0
     while index < len(tokens):
@@ -35,6 +39,15 @@ def write_wasm_link_args_response_file(
     link_args: Sequence[str],
 ) -> Path:
     """Publish one content-addressed, byte-stable linker response file."""
+    for index, argument in enumerate(link_args):
+        if not argument:
+            raise ValueError(f"WASM link argument {index} is empty")
+        if "\0" in argument or any(character.isspace() for character in argument):
+            raise ValueError(
+                f"WASM link argument {index} contains response-file-unsafe whitespace"
+            )
+        if argument.startswith("@"):
+            raise ValueError(f"WASM link argument {index} nests a response file")
     digest = hashlib.sha256("\0".join(link_args).encode("utf-8")).hexdigest()
     safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "_", label).strip("._-") or "runtime"
     response_path = response_root / f"{safe_label}.{digest}.rsp"
@@ -63,18 +76,3 @@ def wasm_link_args_response_file(
         label=label,
         link_args=link_args,
     )
-
-
-def wasm_link_args_response_rustflags(
-    project_root: Path,
-    *,
-    label: str,
-    link_flags: str,
-) -> str:
-    """Return the bounded Rust flags form used by Cargo build environments."""
-    response_path = wasm_link_args_response_file(
-        project_root,
-        label=label,
-        link_flags=link_flags,
-    )
-    return "" if response_path is None else f"-C link-arg=@{response_path}"

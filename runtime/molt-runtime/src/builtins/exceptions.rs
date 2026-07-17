@@ -1057,6 +1057,7 @@ pub(crate) unsafe fn exception_detach_owned_edges(ptr: *mut u8) -> DetachedExcep
     }
 }
 
+#[cfg(test)]
 pub(crate) fn exception_release_detached_edges(
     _py: &PyToken<'_>,
     detached: DetachedExceptionEdges,
@@ -1624,6 +1625,7 @@ pub(crate) fn generator_exception_stack_visit(ptr: *mut u8, mut visit: impl FnMu
     });
 }
 
+#[cfg(test)]
 pub(crate) fn generator_exception_stack_drop(_py: &PyToken<'_>, ptr: *mut u8) {
     crate::gil_assert();
     GENERATOR_EXCEPTION_STACKS.with(|map| {

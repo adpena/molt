@@ -4,7 +4,11 @@ import json
 from pathlib import Path
 from typing import Any
 
-from molt._runtime_profile_schema import is_process_profile, is_profile_epoch
+from molt._runtime_profile_schema import (
+    PROCESS_COUNTER_KEYS,
+    is_process_profile,
+    is_profile_epoch,
+)
 
 
 HOT_COUNTER_KEYS = (
@@ -86,12 +90,13 @@ def load_profile(path: Path) -> dict[str, Any] | None:
 
 def flatten_counters(profile: dict[str, Any]) -> dict[str, int]:
     flat: dict[str, int] = {}
-    for sub in profile.values():
+    for section in PROCESS_COUNTER_KEYS:
+        sub = profile.get(section)
         if not isinstance(sub, dict):
             continue
         for key, value in sub.items():
-            if isinstance(value, (int, float)):
-                flat[key] = int(value)
+            if isinstance(value, int) and not isinstance(value, bool):
+                flat[key] = value
     return flat
 
 

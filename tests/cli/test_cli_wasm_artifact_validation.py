@@ -20,6 +20,7 @@ RUNTIME_FINGERPRINTS = importlib.import_module("molt.cli.runtime_fingerprints")
 RUNTIME_BUILD = importlib.import_module("molt.cli.runtime_build")
 RUNTIME_WASM_VALIDATION = importlib.import_module("molt.cli.runtime_wasm_validation")
 WASM_TOOLCHAIN = importlib.import_module("molt.cli.wasm_toolchain")
+WASM_LINK_ARGS = importlib.import_module("molt.cli.wasm_link_args")
 
 # Any 64-hex value is a valid runtime integrity-pin key; the real key is the
 # runtime fingerprint meta digest (resolved profile/feature identity).
@@ -230,14 +231,14 @@ def test_ensure_runtime_reloc_wasm_exports_wasi_clock_ids(
 
 
 def test_reloc_runtime_publication_preserves_linker_metadata_bytes() -> None:
-    reloc = (
-        b"\0asm\x01\0\0\0"
-        b"linking-reloc-debug-metadata-must-remain-byte-identical"
-    )
+    reloc = b"\0asm\x01\0\0\0linking-reloc-debug-metadata-must-remain-byte-identical"
 
-    assert RUNTIME_BUILD._runtime_publication_bytes(
-        reloc, reloc=True, preserve_debug=False
-    ) == reloc
+    assert (
+        RUNTIME_BUILD._runtime_publication_bytes(
+            reloc, reloc=True, preserve_debug=False
+        )
+        == reloc
+    )
 
 
 def test_shared_runtime_publication_still_uses_final_artifact_strip(
@@ -251,9 +252,12 @@ def test_shared_runtime_publication_still_uses_final_artifact_strip(
 
     monkeypatch.setattr(RUNTIME_BUILD, "strip_wasm_publication_sections", fake_strip)
 
-    assert RUNTIME_BUILD._runtime_publication_bytes(
-        b"shared", reloc=False, preserve_debug=False
-    ) == b"shared-stripped"
+    assert (
+        RUNTIME_BUILD._runtime_publication_bytes(
+            b"shared", reloc=False, preserve_debug=False
+        )
+        == b"shared-stripped"
+    )
     assert seen == {"final_artifact": True, "preserve_debug": False}
 
 
@@ -619,10 +623,11 @@ def test_ensure_runtime_wasm_uses_fallback_profile_when_release_artifacts_invali
 def test_ensure_runtime_wasm_rebuilds_when_feature_shape_changes_even_if_artifact_is_newer(
     tmp_path: Path, monkeypatch
 ) -> None:
-    project_root = tmp_path / "repo"
+    project_root = tmp_path / "repo with spaces"
     project_root.mkdir()
     runtime_wasm = tmp_path / "wasm" / "molt_runtime.wasm"
-    target_root = tmp_path / "target"
+    target_root = tmp_path / "target with spaces"
+    build_state_root = tmp_path / "build state with spaces"
     fingerprint_path = tmp_path / "fingerprint.json"
     runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
     runtime_wasm.write_bytes(_valid_wasm_bytes(b"old"))
@@ -633,6 +638,18 @@ def test_ensure_runtime_wasm_rebuilds_when_feature_shape_changes_even_if_artifac
     )
 
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
+    monkeypatch.setattr(
+        RUNTIME_BUILD,
+        "_build_state_root",
+        lambda _root: build_state_root,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        WASM_LINK_ARGS,
+        "_build_state_root",
+        lambda _root: build_state_root,
+        raising=True,
+    )
     monkeypatch.setattr(
         RUNTIME_BUILD,
         "_runtime_fingerprint",
@@ -1131,10 +1148,11 @@ def test_backend_fingerprint_recomputes_when_rustflags_change(
 def test_ensure_runtime_wasm_shared_uses_response_file_for_export_allowlist(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project_root = tmp_path / "repo"
+    project_root = tmp_path / "repo with spaces"
     project_root.mkdir()
     runtime_wasm = tmp_path / "wasm" / "molt_runtime.wasm"
-    target_root = tmp_path / "target"
+    target_root = tmp_path / "target with spaces"
+    build_state_root = tmp_path / "build state with spaces"
     export_flags = (
         " -C link-arg=--export-if-defined=molt_required_export"
         " -C link-arg=--export-if-defined=molt_other_required_export"
@@ -1152,6 +1170,18 @@ def test_ensure_runtime_wasm_shared_uses_response_file_for_export_allowlist(
         return export_flags
 
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
+    monkeypatch.setattr(
+        RUNTIME_BUILD,
+        "_build_state_root",
+        lambda _root: build_state_root,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        WASM_LINK_ARGS,
+        "_build_state_root",
+        lambda _root: build_state_root,
+        raising=True,
+    )
     monkeypatch.setattr(
         RUNTIME_BUILD,
         "wasm_runtime_shared_export_link_args",
@@ -1255,8 +1285,16 @@ def test_ensure_runtime_wasm_shared_uses_response_file_for_export_allowlist(
     ]
     cargo_rustflags = captured["env"]["RUSTFLAGS"]
     assert "--export-if-defined=molt_required_export" not in cargo_rustflags
-    assert "-C link-arg=@" in cargo_rustflags
-    response_path = Path(cargo_rustflags.split("-C link-arg=@", 1)[1].split()[0])
+    assert "link-arg=@" not in cargo_rustflags
+    cargo_cmd = captured["cmd"]
+    response_arg = next(
+        arg
+        for arg in cargo_cmd
+        if isinstance(arg, str) and arg.startswith("link-arg=@")
+    )
+    response_path = Path(response_arg.removeprefix("link-arg=@"))
+    assert " " in str(response_path)
+    assert response_path.parent == build_state_root / "wasm_link_args"
     response_text = response_path.read_text(encoding="utf-8")
     assert "--import-memory" in response_text
     assert "--import-table" in response_text
@@ -1410,10 +1448,10 @@ def test_ensure_runtime_wasm_reloc_requests_staticlib_build(
     assert "--crate-type=staticlib" in cmd
     cargo_rustflags = captured["env"].get("RUSTFLAGS", "")
     assert "--export-if-defined=molt_reloc_required_export" not in cargo_rustflags
-    assert "-C link-arg=@" in cargo_rustflags
-    response_path = Path(cargo_rustflags.split("-C link-arg=@", 1)[1].split()[0])
-    response_text = response_path.read_text(encoding="utf-8")
-    assert "--export-if-defined=molt_reloc_required_export" in response_text
+    assert "link-arg=@" not in cargo_rustflags
+    assert not any(
+        isinstance(arg, str) and arg.startswith("link-arg=@") for arg in captured["cmd"]
+    )
     assert captured["export_link_args"] == export_flags
     assert captured["linked_staticlib_path"] == (
         target_root / "wasm32-wasip1" / "release-fast" / "libmolt_runtime.a"

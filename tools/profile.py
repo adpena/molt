@@ -25,7 +25,11 @@ if str(SRC_ROOT) not in sys.path:
 
 from bench_suites import molt_args_for_benchmark  # noqa: E402
 import harness_memory_guard  # noqa: E402
-from molt._runtime_profile_schema import is_process_profile, is_profile_epoch  # noqa: E402
+from molt._runtime_profile_schema import (  # noqa: E402
+    PROCESS_COUNTER_KEYS,
+    is_process_profile,
+    is_profile_epoch,
+)
 
 TOP_BENCHES = [
     "bench_deeply_nested_loop.py",
@@ -261,13 +265,18 @@ def _parse_molt_profile_json(log_text: str) -> dict[str, object] | None:
     if not is_process_profile(parsed):
         return None
     flat: dict[str, object] = {}
-    for section in ("profile", "hot_paths", "deopt_reasons", "aux", "gc", "memory"):
+    for section in PROCESS_COUNTER_KEYS:
         values = parsed.get(section)
         if not isinstance(values, dict):
             continue
         for key, value in values.items():
-            if isinstance(key, str) and isinstance(value, (int, float, str)):
-                flat[key] = int(value) if isinstance(value, float) else value
+            if (
+                isinstance(key, str)
+                and isinstance(value, int)
+                and not isinstance(value, bool)
+            ):
+                flat[key] = value
+    flat["memory"] = parsed["memory"]
     return _normalize_molt_profile(flat)
 
 
@@ -299,6 +308,7 @@ def _parse_molt_profile_epoch_json(
         epoch: dict[str, object] = {
             "generation": parsed.get("generation"),
             "label": parsed.get("label"),
+            "claimable": parsed.get("claimable"),
             "delta": _normalize_molt_profile(flat_delta) or {},
             "delta_sections": delta if isinstance(delta, dict) else {},
         }
@@ -416,7 +426,12 @@ def _collect_profile_summary(
                 continue
 
         def samples(key: str) -> list[int]:
-            return [int(profile.get(key, 0) or 0) for profile in profiles]
+            return [
+                value
+                for profile in profiles
+                if isinstance(value := profile.get(key), int)
+                and not isinstance(value, bool)
+            ]
 
         def median_counter(key: str) -> int | None:
             values = samples(key)
@@ -425,8 +440,7 @@ def _collect_profile_summary(
         counter_drift = {
             key: {"min": min(values), "max": max(values)}
             for key in sorted(
-                {key for profile in profiles for key in profile}
-                - {"peak_rss_bytes", "current_rss_bytes"}
+                {key for profile in profiles for key in profile} - {"memory"}
             )
             if (values := samples(key)) and min(values) != max(values)
         }
@@ -438,11 +452,35 @@ def _collect_profile_summary(
         gc_track_count = median_counter("gc_track_count")
         gc_lock_contention = median_counter("gc_registry_lock_contention_count")
         gc_lock_wait_ns = median_counter("gc_registry_lock_wait_ns")
-        runtime_rss_samples = samples("peak_rss_bytes")
+        memory_samples = [
+            memory
+            for profile in profiles
+            if isinstance((memory := profile.get("memory")), dict)
+        ]
+        runtime_rss_samples = [
+            peak
+            for memory in memory_samples
+            if memory.get("available") is True
+            and isinstance((peak := memory.get("peak_rss_bytes")), int)
+            and not isinstance(peak, bool)
+        ]
+        runtime_rss_sources = sorted(
+            {
+                source
+                for memory in memory_samples
+                if isinstance((source := memory.get("source")), str)
+            }
+        )
         epoch_summaries: list[dict[str, object]] = []
         for label, epochs in sorted(epoch_samples.items()):
-            deltas = [epoch.get("delta") for epoch in epochs]
-            delta_maps = [delta for delta in deltas if isinstance(delta, dict)]
+            claimable_epochs = [
+                epoch for epoch in epochs if epoch.get("claimable") is True
+            ]
+            delta_maps = [
+                delta
+                for epoch in claimable_epochs
+                if isinstance((delta := epoch.get("delta")), dict)
+            ]
             metric_names = sorted({key for delta in delta_maps for key in delta})
             median_delta: dict[str, int] = {}
             epoch_drift: dict[str, dict[str, int]] = {}
@@ -455,6 +493,7 @@ def _collect_profile_summary(
                 {
                     "label": label,
                     "counter_runs": len(delta_maps),
+                    "unclaimable_runs": len(epochs) - len(claimable_epochs),
                     "delta_median": median_delta,
                     "counter_drift": epoch_drift,
                     "counter_regressions": [
@@ -530,6 +569,9 @@ def _collect_profile_summary(
                 "runtime_peak_rss_bytes_max": (
                     max(runtime_rss_samples) if runtime_rss_samples else None
                 ),
+                "runtime_rss_sources": runtime_rss_sources,
+                "runtime_rss_unavailable_runs": len(memory_samples)
+                - len(runtime_rss_samples),
                 "external_peak_rss_bytes_median": (
                     int(statistics.median(external_rss_samples))
                     if external_rss_samples

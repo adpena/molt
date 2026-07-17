@@ -732,18 +732,25 @@ uv run --python 3.12 python3 -m molt.cli run --profile dev --trusted \
 Notes:
 - One versioned `molt_profile_json {...}` schema is emitted on the runtime
   diagnostics channel — stderr by default, so the profiler can scrape it from a
-  captured log. Schema v2 includes allocation/deallocation/live gauges, exception
-  bytes, typed-aux sidecars, GC registry pressure, and runtime RSS. The profiler
+  captured log. Schema v3 has exact counter maps for allocation/deallocation/live
+  gauges, exception bytes, typed-aux sidecars, and GC registry pressure. Runtime
+  RSS is an explicit source-tagged snapshot: Linux uses `/proc/self/status`, macOS
+  uses `mach_task_basic_info`, Windows uses `GetProcessMemoryInfo`, and targets
+  without a process RSS authority publish `available=false` with null values.
+  Zero is therefore a measurement, never an unavailable sentinel. The profiler
   also records guarded process-tree peak RSS on every host. All consumers reject
-  unversioned process payloads; there is no legacy JSON interpretation path.
+  truncated, extended, or unversioned process payloads; there is no legacy JSON
+  interpretation path.
 - Steady-state microbenchmarks must use the canonical profiling epoch intrinsics,
   `molt_profile_epoch_reset(label)` and `molt_profile_epoch_dump()`. Reset captures
   a baseline without zeroing the process-lifetime leak counters; dump consumes the
-  epoch and emits `molt_profile_epoch_json` schema v1. Its `delta` sections contain
-  every monotonic runtime counter, while `gauges` retain signed start/end/delta
-  triples and `memory` retains current-RSS and process-peak endpoints. Any
-  impossible monotonic decrease is retained under `counter_regressions` instead
-  of being silently reported as a zero delta. This is the authority for claims
+  epoch and emits `molt_profile_epoch_json` schema v2. Its exact `delta` sections
+  contain every monotonic runtime counter, while `gauges` retain signed
+  start/end/delta triples and `memory` retains source-tagged RSS snapshots. Any
+  impossible monotonic decrease sets `claimable=false`, records start/end under
+  `counter_regressions`, and makes that counter's delta null rather than silently
+  certifying zero work. Unavailable RSS endpoints likewise produce a null RSS
+  delta. This is the authority for claims
   such as "one million cache hits allocate zero objects and zero bytes";
   subtracting a separate startup run is not accepted evidence.
 - `tools/profile.py --molt-profile --summary` parses every labeled epoch and

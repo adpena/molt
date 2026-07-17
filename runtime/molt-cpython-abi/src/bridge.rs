@@ -3893,6 +3893,31 @@ impl ObjectBridge {
         entry.lifecycle = BridgeLifecycle::FinalizingPin;
     }
 
+    /// Adopt a canonical view first published by arbitrary finalizer code into
+    /// the already-open runtime revival window. The publication's runtime-owner
+    /// bias becomes the finalization pin in place: the stable runtime view hold
+    /// remains part of the runtime baseline and any additional direct C roots
+    /// remain visible above this pin.
+    pub fn begin_finalization_for_new_view(&self, bits: AbiHandle) {
+        let mut handle = self.handle_shard(bits).lock();
+        let Some(entry) = handle.to_py.get_mut(&bits) else {
+            eprintln!("molt fatal: finalizer-published ABI view disappeared");
+            std::process::abort();
+        };
+        if entry.lifecycle != BridgeLifecycle::RuntimeOwned {
+            eprintln!(
+                "molt fatal: finalizer-published ABI view was not runtime-owned: {:?}",
+                entry.lifecycle
+            );
+            std::process::abort();
+        }
+        if unsafe { (*entry.view.py_obj()).ob_refcnt } < 1 {
+            eprintln!("molt fatal: finalizer-published ABI view lost its runtime bias");
+            std::process::abort();
+        }
+        entry.lifecycle = BridgeLifecycle::FinalizingPin;
+    }
+
     pub fn finish_finalization(&self, bits: AbiHandle, runtime_resurrected: bool) {
         let mut handle = self.handle_shard(bits).lock();
         let Some(entry) = handle.to_py.get_mut(&bits) else {

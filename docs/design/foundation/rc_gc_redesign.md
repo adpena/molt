@@ -333,7 +333,7 @@ Implementation note (2026-06-27): the first runtime slice is now landed. `runtim
 Current implementation note (2026-07-13): the tracked registry is split across 64
 deterministically hashed shards; collection freezes all shards in canonical order,
 sorts the snapshot by the global allocation ordinal, and releases registry capacity
-at embedded-runtime teardown. Profile schema v2 exposes track/untrack/live/high-water,
+at embedded-runtime teardown. Profile schema v3 exposes track/untrack/live/high-water,
 lock contention/wait, and snapshot-allocation failures. This makes default-GIL order
 deterministic and removes the former single map lock, but it is not the free-threaded
 collector boundary: raw candidate traversal still requires a runtime-owned stop-the-

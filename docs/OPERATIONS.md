@@ -730,9 +730,11 @@ Benchmarks that cannot survive a disconnect are not acceptable.
 - Runtime microbenchmarks that make steady-state allocation, GC, or contention
   claims must bracket each measured phase with the profiling epoch intrinsics.
   The emitted `molt_profile_epoch_json` records process-wide counter deltas and
-  signed gauge/RSS endpoints without resetting the lifetime leak authority;
-  impossible monotonic decreases are retained as `counter_regressions` rather
-  than hidden as zero. `tools/profile.py --summary` preserves every label and
+  signed gauge and source-tagged RSS endpoints without resetting the lifetime
+  leak authority; unavailable RSS is explicit and never encoded as zero.
+  Impossible monotonic decreases make the whole epoch non-claimable, retain
+  `counter_regressions`, and null the affected delta rather than hiding it as
+  zero. `tools/profile.py --summary` preserves every label and
   reports cross-run drift. `molt debug perf` also retains every epoch, including
   completed epochs from a log whose final process-exit profile is missing. All
   consumers reject unversioned process payloads rather than guessing a schema.

@@ -157,7 +157,6 @@ pub static GC_REGISTRY_LOCK_CONTENTION_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static GC_REGISTRY_LOCK_WAIT_NS: AtomicU64 = AtomicU64::new(0);
 pub static GC_TRACKED_HIGH_WATER: AtomicU64 = AtomicU64::new(0);
 pub static GC_SNAPSHOT_ALLOC_FAILURE_COUNT: AtomicU64 = AtomicU64::new(0);
-pub static PEAK_RSS_BYTES: AtomicU64 = AtomicU64::new(0);
 
 // Deallocation tracking counters (RC drop-insertion substrate, design 20).
 // Incremented at the `dec_ref_ptr` zero-transition — the single actual
