@@ -7,7 +7,7 @@ import platform
 import re
 import shlex
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -16,11 +16,12 @@ from molt.c_api_symbols import is_c_api_external_requirement
 from molt.cli import source_extension_cython as _source_extension_cython
 from molt.cli.extension_scan_surface import _extract_c_api_tokens
 from molt.cli.extension_scan_surface import _extract_file_local_c_api_symbols
-from molt.cli.extension_scan_surface import _extract_preprocessor_defined_symbols
+from molt.cli.extension_scan_surface import _extract_preprocessor_definitions
 from molt.cli.extension_scan_surface import _extract_project_generated_c_api_prefixes
 from molt.cli.extension_scan_surface import _extract_project_defined_c_api_symbols
 from molt.cli.extension_scan_surface import _load_c_api_scan_surface
 from molt.cli.extension_scan_surface import _matches_project_generated_c_api_prefix
+from molt.cli.extension_scan_surface import _parse_preprocessor_argument_definition
 from molt.cli.extension_scan_surface import _strip_c_like_comments_and_literals
 from molt.cli.file_hashing import _sha256_file
 from molt.cli.native_link_plan import (
@@ -190,6 +191,39 @@ class _SourceExtensionCAPIRequirements:
     project_defined_symbols: tuple[str, ...]
     missing_symbols: tuple[str, ...]
     fail_fast_symbols: tuple[str, ...]
+
+    def restrict_to_link_closure(
+        self,
+        runtime_symbols: Iterable[str],
+    ) -> _SourceExtensionCAPIRequirements:
+        """Project textual requirements onto the compiled unresolved closure.
+
+        C/C++ sources intentionally retain alternative CPython-version and
+        Cython-feature branches.  The compiler's undefined-symbol closure is
+        the canonical statement of which external functions survived the exact
+        target preprocessor and optimizer.  Keeping the broader text scan in a
+        published seal creates a second, false reachability authority.
+        """
+
+        reachable = frozenset(runtime_symbols)
+        return _SourceExtensionCAPIRequirements(
+            required_by_source={
+                path: tuple(symbol for symbol in symbols if symbol in reachable)
+                for path, symbols in self.required_by_source.items()
+            },
+            required_capsules_by_source=self.required_capsules_by_source,
+            project_generated_c_api_by_source=(
+                self.project_generated_c_api_by_source
+            ),
+            project_generated_c_api_prefixes=self.project_generated_c_api_prefixes,
+            project_defined_symbols=self.project_defined_symbols,
+            missing_symbols=tuple(
+                symbol for symbol in self.missing_symbols if symbol in reachable
+            ),
+            fail_fast_symbols=tuple(
+                symbol for symbol in self.fail_fast_symbols if symbol in reachable
+            ),
+        )
 
     def manifest_payload(self) -> dict[str, Any]:
         project_generated_symbols = sorted(
@@ -2572,8 +2606,8 @@ def _source_extension_project_generated_c_api_prefixes(
 
 def _source_extension_compile_arg_preprocessor_symbols(
     compile_args: Sequence[str],
-) -> tuple[set[str], set[str]]:
-    defined: set[str] = set()
+) -> tuple[dict[str, int | None], set[str]]:
+    defined: dict[str, int | None] = {}
     undefined: set[str] = set()
     items = [str(item) for item in compile_args]
     idx = 0
@@ -2602,27 +2636,31 @@ def _source_extension_compile_arg_preprocessor_symbols(
         elif item.startswith("-Wp,"):
             for part in item.split(",")[1:]:
                 if part.startswith("-D") and len(part) > 2:
-                    symbol = part[2:].split("=", 1)[0]
-                    if _C_IDENTIFIER_RE.fullmatch(symbol):
-                        defined.add(symbol)
+                    definition = _parse_preprocessor_argument_definition(part[2:])
+                    if definition is not None:
+                        symbol, value = definition
+                        defined[symbol] = value
+                        undefined.discard(symbol)
                 elif part.startswith("-U") and len(part) > 2:
                     symbol = part[2:].split("=", 1)[0]
                     if _C_IDENTIFIER_RE.fullmatch(symbol):
                         undefined.add(symbol)
+                        defined.pop(symbol, None)
             idx += 1
         else:
             idx += 1
 
         if raw_define is not None:
-            symbol = raw_define.split("=", 1)[0]
-            if _C_IDENTIFIER_RE.fullmatch(symbol):
-                defined.add(symbol)
+            definition = _parse_preprocessor_argument_definition(raw_define)
+            if definition is not None:
+                symbol, value = definition
+                defined[symbol] = value
                 undefined.discard(symbol)
         if raw_undef is not None:
             symbol = raw_undef.split("=", 1)[0]
             if _C_IDENTIFIER_RE.fullmatch(symbol):
                 undefined.add(symbol)
-                defined.discard(symbol)
+                defined.pop(symbol, None)
     return defined, undefined
 
 
@@ -2630,15 +2668,15 @@ def _source_extension_global_preprocessor_symbols(
     *,
     definition_header_text_by_path: Mapping[Path, str],
     explicit_symbols: Sequence[str],
-) -> frozenset[str]:
-    symbols = {
-        str(symbol)
+) -> dict[str, int | None]:
+    definitions: dict[str, int | None] = {
+        str(symbol): 1
         for symbol in explicit_symbols
         if _C_IDENTIFIER_RE.fullmatch(str(symbol))
     }
     for header_text in definition_header_text_by_path.values():
-        symbols.update(_extract_preprocessor_defined_symbols(header_text))
-    return frozenset(symbols)
+        definitions.update(_extract_preprocessor_definitions(header_text))
+    return definitions
 
 
 def _source_extension_required_c_api_by_source(
@@ -2686,18 +2724,19 @@ def _source_extension_required_c_api_by_source(
         path.resolve(): tuple(args)
         for path, args in (compile_args_by_source or {}).items()
     }
-    active_preprocessor_symbols_by_source: dict[Path, frozenset[str]] = {}
+    active_preprocessor_symbols_by_source: dict[Path, dict[str, int | None]] = {}
     file_local_symbols_by_path: dict[Path, set[str]] = {}
     for source_path, source_text in source_text_by_path.items():
-        active_symbols = set(global_preprocessor_symbols)
+        active_symbols = dict(global_preprocessor_symbols)
         defined_by_args, undefined_by_args = (
             _source_extension_compile_arg_preprocessor_symbols(
                 compile_args_by_resolved_source.get(source_path, ())
             )
         )
         active_symbols.update(defined_by_args)
-        active_symbols.difference_update(undefined_by_args)
-        active_preprocessor_symbols = frozenset(active_symbols)
+        for symbol in undefined_by_args:
+            active_symbols.pop(symbol, None)
+        active_preprocessor_symbols = active_symbols
         active_preprocessor_symbols_by_source[source_path] = active_preprocessor_symbols
         file_local_symbols_by_path[source_path] = _extract_file_local_c_api_symbols(
             source_text,
