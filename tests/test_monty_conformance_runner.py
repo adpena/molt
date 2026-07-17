@@ -73,8 +73,9 @@ def test_find_molt_parses_molt_bin_override(monkeypatch):
     assert run_molt_conformance.find_molt() == ["custom-molt", "--flag"]
 
 
-def test_molt_build_env_sets_canonical_defaults(monkeypatch):
-    repo_root = Path("/tmp/molt-repo")
+def test_molt_build_env_sets_canonical_defaults(monkeypatch, tmp_path: Path):
+    repo_root = tmp_path / "molt-repo"
+    repo_root.mkdir()
     for key in (
         "MOLT_EXT_ROOT",
         "CARGO_TARGET_DIR",
@@ -105,8 +106,9 @@ def test_molt_build_env_sets_canonical_defaults(monkeypatch):
     assert env["MOLT_SESSION_ID"] == "monty-conformance"
 
 
-def test_molt_build_env_overrides_ambient_roots(monkeypatch):
-    repo_root = Path("/tmp/molt-repo")
+def test_molt_build_env_overrides_ambient_roots(monkeypatch, tmp_path: Path):
+    repo_root = tmp_path / "molt-repo"
+    repo_root.mkdir()
     monkeypatch.setenv("CARGO_TARGET_DIR", "/tmp/ambient-target")
     monkeypatch.setenv("TMPDIR", "/tmp/ambient-tmp")
     monkeypatch.setenv("PYTHONPATH", "/tmp/ambient-pythonpath")
@@ -257,7 +259,9 @@ def test_batch_build_params_are_native_error_fallback_and_canonical_env():
     }
 
 
-def test_conformance_batch_server_starts_in_guarded_process_group(monkeypatch):
+def test_conformance_batch_server_starts_in_guarded_process_group(
+    monkeypatch, tmp_path: Path
+):
     captured: dict[str, object] = {}
 
     class FakeClient:
@@ -272,8 +276,10 @@ def test_conformance_batch_server_starts_in_guarded_process_group(monkeypatch):
             captured["closed"] = (force, timeout)
 
     monkeypatch.setattr(run_molt_conformance, "BatchCompileServerClient", FakeClient)
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
     compiler = run_molt_conformance.ConformanceBatchCompiler(
-        ["molt"], {}, repo_root=Path("/tmp/repo")
+        ["molt"], {}, repo_root=repo_root
     )
 
     compiler.start()
