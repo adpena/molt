@@ -4,6 +4,7 @@ import re
 from collections.abc import Mapping, Set as AbstractSet
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 from molt.c_api_symbols import C_API_TOKEN as _C_API_TOKEN
 from molt.c_api_symbols import C_API_TOKEN_RE as _C_API_TOKEN_RE
@@ -238,7 +239,7 @@ def _normalize_preprocessor_definitions(
     definitions: Mapping[str, int | None] | AbstractSet[str],
 ) -> dict[str, int | None]:
     if isinstance(definitions, Mapping):
-        return dict(definitions)
+        return dict(cast(Mapping[str, int | None], definitions))
     return {symbol: 1 for symbol in definitions}
 
 

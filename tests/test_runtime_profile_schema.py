@@ -41,6 +41,16 @@ def test_process_profile_rejects_truncated_and_unknown_counter_maps() -> None:
     assert not is_process_profile(extra)
 
 
+def test_profile_validators_reject_non_string_object_keys_without_crashing() -> None:
+    process_payload: dict[object, object] = dict(process_profile_payload())
+    process_payload[1] = 0
+    epoch_payload = profile_epoch_payload()
+    epoch_payload["counter_regressions"] = {1: {"metric": {"start": 2, "end": 1}}}
+
+    assert not is_process_profile(process_payload)
+    assert not is_profile_epoch(epoch_payload)
+
+
 def test_process_profile_requires_explicit_rss_availability() -> None:
     unavailable = process_profile_payload()
     unavailable["memory"] = memory_snapshot(
