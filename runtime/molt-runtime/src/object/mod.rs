@@ -324,6 +324,15 @@ const fn flag_transition_is_synchronized(changed: u32) -> bool {
 }
 
 impl MoltHeader {
+    /// Observe the reference count under the active concurrency contract.
+    ///
+    /// This diagnostic snapshot is atomic in the current native runtime. It is
+    /// not an ownership token and cannot justify a later dereference.
+    #[inline(always)]
+    pub fn ref_count_snapshot(&self) -> u32 {
+        self.ref_count.load(AtomicOrdering::Acquire)
+    }
+
     /// Construct the flag word before an object is published. This pointer API
     /// deliberately avoids creating a reference to uninitialized atomic state.
     #[inline(always)]
@@ -3582,7 +3591,7 @@ mod tests {
 
     #[test]
     fn denied_sidecar_allocation_rolls_back_object_charge() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let total = std::mem::size_of::<super::MoltHeader>();
             let plan = super::object_allocation_plan(total).expect("valid header-sized object");
@@ -3615,7 +3624,7 @@ mod tests {
 
     #[test]
     fn nonclass_state_never_impersonates_a_class_pointer() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let ptr = crate::alloc_string(_py, b"state-discriminator");
             assert!(!ptr.is_null());
@@ -3629,7 +3638,7 @@ mod tests {
 
     #[test]
     fn common_class_edge_stays_inline() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let ptr = alloc_object_with_aux(
                 _py,
@@ -3656,7 +3665,7 @@ mod tests {
 
     #[test]
     fn fresh_and_published_class_edges_balance_owned_and_borrowed_refs() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let name_ptr = crate::alloc_string(_py, b"AuxOwnershipClass");
             assert!(!name_ptr.is_null());
@@ -3770,7 +3779,7 @@ mod tests {
 
     #[test]
     fn common_state_stays_inline() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let ptr = crate::alloc_string(_py, b"inline-state");
             assert!(!ptr.is_null());
@@ -3784,7 +3793,7 @@ mod tests {
 
     #[test]
     fn denied_sidecar_upgrade_preserves_inline_state_and_representation() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let ptr = crate::alloc_string(_py, b"preserve-inline-state");
             assert!(!ptr.is_null());
@@ -3806,7 +3815,7 @@ mod tests {
 
     #[test]
     fn class_state_and_poll_share_one_stable_sidecar() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let ptr = alloc_object_with_aux(
                 _py,
@@ -3843,7 +3852,7 @@ mod tests {
 
     #[test]
     fn non_object_heap_kind_derives_finalizer_policy_from_common_class_edge() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let class_bits = crate::builtin_classes(_py).object;
             let class_ptr = crate::obj_from_bits(class_bits)
@@ -3890,7 +3899,7 @@ mod tests {
 
     #[test]
     fn oversized_allocation_uses_immutable_sidecar_size() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let total = super::SIZE_CLASS_TABLE
                 .last()
