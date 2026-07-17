@@ -1,10 +1,10 @@
 use molt_backend::{ModuleRegistryIR, SimpleIR};
 use molt_backend::{WasmBackend, WasmCompileOptions};
 use std::io;
-use std::io::Write;
+use std::path::Path;
 
 use super::super::cli_args::WasmCliOptions;
-use super::super::io_limits::create_backend_output_file;
+use crate::backend_process::write_bytes_atomically;
 
 pub(crate) fn validate_wasm_module_catalog(
     ir: &SimpleIR,
@@ -48,12 +48,6 @@ pub(super) fn emit_wasm_target(
     if let Some(registry) = module_registry.as_ref() {
         validate_wasm_module_catalog(&ir, registry)?;
     }
-    let mut file = create_backend_output_file(output_file).map_err(|err| {
-        io::Error::new(
-            err.kind(),
-            format!("failed to create backend output '{}': {}", output_file, err),
-        )
-    })?;
     let mut options = WasmCompileOptions::default();
     if wasm_options.link_relocs {
         options.reloc_enabled = true;
@@ -69,7 +63,12 @@ pub(super) fn emit_wasm_target(
     }
     let backend = WasmBackend::with_options(options).with_module_registry(module_registry);
     let wasm_bytes = backend.compile(ir);
-    file.write_all(&wasm_bytes)?;
+    write_bytes_atomically(Path::new(output_file), &wasm_bytes).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("failed to publish backend output {output_file:?}: {error}"),
+        )
+    })?;
     println!("Successfully compiled to {output_file}");
     Ok(())
 }

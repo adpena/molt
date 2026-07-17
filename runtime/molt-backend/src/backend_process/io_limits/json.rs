@@ -2,14 +2,13 @@ use std::fs::File;
 use std::io;
 use std::path::Path;
 
-use super::output::ensure_output_parent_dir;
+use crate::backend_process::write_atomically;
 
 #[cfg(feature = "native-backend")]
 pub(crate) fn write_json_artifact<T: serde::Serialize>(path: &Path, value: &T) -> io::Result<()> {
-    ensure_output_parent_dir(path.to_str().unwrap_or_default())?;
-    let file = File::create(path)?;
-    let writer = io::BufWriter::new(file);
-    serde_json::to_writer(writer, value).map_err(io::Error::other)
+    write_atomically(path, |writer| {
+        serde_json::to_writer(writer, value).map_err(io::Error::other)
+    })
 }
 
 #[cfg(feature = "native-backend")]

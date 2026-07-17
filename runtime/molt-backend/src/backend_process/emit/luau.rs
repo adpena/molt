@@ -1,11 +1,11 @@
 use molt_backend::SimpleIR;
 use molt_backend::luau::LuauBackend;
 use std::io;
-use std::io::Write;
+use std::path::Path;
 use std::time::Instant;
 
-use super::super::io_limits::create_backend_output_file;
 use super::luau_pipeline::run_luau_tir_module_pipeline;
+use crate::backend_process::write_text_atomically;
 
 pub(super) fn emit_luau_target(
     ir: &mut SimpleIR,
@@ -33,13 +33,12 @@ pub(super) fn emit_luau_target(
             format!("Luau validation failed for '{}': {}", output_file, err),
         )
     })?;
-    let mut file = create_backend_output_file(output_file).map_err(|err| {
+    write_text_atomically(Path::new(output_file), &source).map_err(|error| {
         io::Error::new(
-            err.kind(),
-            format!("failed to create backend output '{}': {}", output_file, err),
+            error.kind(),
+            format!("failed to publish backend output {output_file:?}: {error}"),
         )
     })?;
-    file.write_all(source.as_bytes())?;
     let lines = source.lines().count();
     eprintln!(
         "Successfully transpiled to {output_file} ({lines} lines, {:.1} KB)",
