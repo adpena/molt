@@ -8981,6 +8981,59 @@ def test_discover_module_graph_includes_importlib_from_alias_target(
     assert "pkg.helper" in explicit_imports
 
 
+def test_collect_static_source_execution_preserves_loader_name_and_path(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "runtime_site" / "target.py"
+    target.parent.mkdir()
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+    entry = tmp_path / "main.py"
+    tree = ast.parse(
+        "import importlib.util\n"
+        f"path = {str(target)!r}\n"
+        "importlib.util.spec_from_file_location('loaded_name', path)\n"
+    )
+
+    assert cli_module_import_scanner._collect_static_source_executions(
+        tree, source_path=entry
+    ) == (
+        cli_module_import_scanner._StaticSourceExecution(
+            module_name="loaded_name", source_path=target.resolve()
+        ),
+    )
+
+
+def test_discover_module_graph_admits_static_loader_source_under_execution_name(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "runtime_site" / "target.py"
+    target.parent.mkdir()
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+    entry = tmp_path / "main.py"
+    entry.write_text(
+        "import importlib.util\n"
+        f"path = {str(target)!r}\n"
+        "importlib.util.spec_from_file_location('loaded_name', path)\n",
+        encoding="utf-8",
+    )
+    stdlib_root = cli_module_resolution._stdlib_root_path()
+    module_roots = [tmp_path.resolve()]
+
+    graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
+        entry,
+        [*module_roots, stdlib_root],
+        module_roots,
+        stdlib_root,
+        None,
+        cli_module_stdlib_policy._stdlib_allowlist(),
+        skip_modules=cli.STUB_MODULES,
+        stub_parents=cli.STUB_PARENT_MODULES,
+    )
+
+    assert graph["loaded_name"] == target.resolve()
+    assert "loaded_name" in explicit_imports
+
+
 def test_cached_json_round_trips_molt_value_and_set() -> None:
     payload = {
         "value": MoltValue(name="v1", type_hint="int"),

@@ -41,7 +41,7 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
     ).hexdigest()[:24]
 
 
-_MODULE_GRAPH_CACHE_SCHEMA_VERSION = 8
+_MODULE_GRAPH_CACHE_SCHEMA_VERSION = 9
 
 
 _IMPORT_SCAN_CACHE_SCHEMA_VERSION = 7

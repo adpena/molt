@@ -242,6 +242,190 @@ class _StaticImportCallPayload:
     level: ast.expr | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _StaticSourceExecution:
+    """Compiler-admitted Python source executed through a loader or runpy.
+
+    Unlike an import request, the execution name and source path are independent:
+    ``spec_from_file_location`` may intentionally execute one file under an
+    arbitrary module name.  Keeping both values prevents the module graph from
+    guessing identity from the filesystem layout.
+    """
+
+    module_name: str | None
+    source_path: Path
+
+
+_STATIC_SOURCE_LOADER_TARGETS = frozenset(
+    {
+        "importlib.util.spec_from_file_location",
+        "importlib.machinery.SourceFileLoader",
+        "importlib.machinery.SourcelessFileLoader",
+    }
+)
+
+_STATIC_SOURCE_EXECUTION_MARKERS = (
+    "spec_from_file_location",
+    "SourceFileLoader",
+    "SourcelessFileLoader",
+    "run_path",
+)
+
+
+def _source_may_use_static_source_execution(source: str) -> bool:
+    return any(marker in source for marker in _STATIC_SOURCE_EXECUTION_MARKERS)
+
+
+def _collect_static_source_executions(
+    tree: ast.AST,
+    *,
+    source_path: Path,
+    import_scan_mode: ImportScanMode = "full",
+    module_name: str | None = None,
+) -> tuple[_StaticSourceExecution, ...]:
+    """Collect statically addressable loader/runpy source execution roots.
+
+    This is the source-path projection of the import scanner.  It deliberately
+    accepts only expressions that can be evaluated without executing user code;
+    dynamic paths remain runtime capability work and never become build inputs
+    by accident.
+    """
+
+    aliases: dict[str, str] = {
+        "importlib": "importlib",
+        "runpy": "runpy",
+        "Path": "pathlib.Path",
+    }
+    constants: dict[str, str | Path] = {}
+
+    if isinstance(tree, ast.Module):
+        for stmt in tree.body:
+            if isinstance(stmt, ast.Import):
+                for alias in stmt.names:
+                    bound = alias.asname or alias.name.split(".", 1)[0]
+                    aliases[bound] = alias.name if alias.asname else bound
+            elif isinstance(stmt, ast.ImportFrom) and stmt.level == 0 and stmt.module:
+                for alias in stmt.names:
+                    aliases[alias.asname or alias.name] = f"{stmt.module}.{alias.name}"
+
+    def qualified_name(expr: ast.expr) -> str | None:
+        if isinstance(expr, ast.Name):
+            return aliases.get(expr.id, expr.id)
+        if isinstance(expr, ast.Attribute):
+            base = qualified_name(expr.value)
+            return None if base is None else f"{base}.{expr.attr}"
+        return None
+
+    def static_value(expr: ast.expr) -> str | Path | None:
+        if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
+            return expr.value
+        if isinstance(expr, ast.Name):
+            return constants.get(expr.id)
+        if isinstance(expr, ast.BinOp):
+            left = static_value(expr.left)
+            right = static_value(expr.right)
+            if (
+                isinstance(expr.op, ast.Add)
+                and isinstance(left, str)
+                and isinstance(right, str)
+            ):
+                return left + right
+            if (
+                isinstance(expr.op, ast.Div)
+                and isinstance(left, (str, Path))
+                and isinstance(right, (str, Path))
+            ):
+                return Path(left) / Path(right)
+            return None
+        if isinstance(expr, ast.Call):
+            target = qualified_name(expr.func)
+            if target == "pathlib.Path" and len(expr.args) == 1 and not expr.keywords:
+                value = static_value(expr.args[0])
+                return Path(value) if isinstance(value, (str, Path)) else None
+            if (
+                target in {"os.path.join", "posixpath.join", "ntpath.join"}
+                and expr.args
+            ):
+                parts = [static_value(arg) for arg in expr.args]
+                if all(isinstance(part, (str, Path)) for part in parts):
+                    head, *tail = [Path(part) for part in parts]
+                    return head.joinpath(*tail)
+            if (
+                isinstance(expr.func, ast.Attribute)
+                and expr.func.attr in {"resolve", "absolute"}
+                and not expr.args
+                and not expr.keywords
+            ):
+                value = static_value(expr.func.value)
+                if isinstance(value, (str, Path)):
+                    path = Path(value)
+                    if not path.is_absolute():
+                        path = source_path.parent / path
+                    return path.resolve()
+        return None
+
+    # Module constants are the common authority for loader paths and remain
+    # visible to calls nested in entry-module functions.
+    if isinstance(tree, ast.Module):
+        for stmt in tree.body:
+            assignment: tuple[ast.expr, ast.expr] | None = None
+            if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
+                assignment = stmt.targets[0], stmt.value
+            elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
+                assignment = stmt.target, stmt.value
+            if assignment is None or not isinstance(assignment[0], ast.Name):
+                continue
+            value = static_value(assignment[1])
+            if value is not None:
+                constants[assignment[0].id] = value
+
+    def call_argument(call: ast.Call, position: int, keyword: str) -> ast.expr | None:
+        if position < len(call.args):
+            return call.args[position]
+        return next((item.value for item in call.keywords if item.arg == keyword), None)
+
+    requests: list[_StaticSourceExecution] = []
+    seen: set[tuple[str | None, str]] = set()
+    for node in _scan_nodes_for_import_mode(
+        tree, import_scan_mode, module_name=module_name
+    ):
+        if not isinstance(node, ast.Call):
+            continue
+        target = qualified_name(node.func)
+        request_name: str | None
+        path_expr: ast.expr | None
+        if target in _STATIC_SOURCE_LOADER_TARGETS:
+            name_expr = call_argument(node, 0, "name")
+            path_expr = call_argument(node, 1, "location")
+            if target != "importlib.util.spec_from_file_location":
+                path_expr = call_argument(node, 1, "path")
+            name_value = static_value(name_expr) if name_expr is not None else None
+            if not isinstance(name_value, str):
+                continue
+            request_name = name_value
+        elif target == "runpy.run_path":
+            request_name = None
+            path_expr = call_argument(node, 0, "path_name")
+        else:
+            continue
+        path_value = static_value(path_expr) if path_expr is not None else None
+        if not isinstance(path_value, (str, Path)):
+            continue
+        resolved = Path(path_value)
+        if not resolved.is_absolute():
+            resolved = source_path.parent / resolved
+        resolved = resolved.resolve()
+        if resolved.is_dir():
+            resolved = resolved / "__main__.py"
+        if resolved.suffix not in {".py", ".pyi"} or not resolved.is_file():
+            continue
+        key = request_name, str(resolved)
+        if key not in seen:
+            seen.add(key)
+            requests.append(_StaticSourceExecution(request_name, resolved))
+    return tuple(requests)
+
+
 def _static_import_request_modules(
     request: _StaticImportRequest,
     *,

@@ -867,38 +867,44 @@ fn molt_module_import_inner(name_bits: u64) -> u64 {
             MoltObject::from_ptr(ptr).bits()
         };
         let result_bits = 'result: {
-            // Prefer canonical handles already present in sys.modules before
-            // isolate import, so alias-backed module names (for example
-            // `os.path`) resolve even when the runtime importer would reject
-            // them as non-package dotted paths.
-            let sys_bits = {
-                let cache = crate::builtins::exceptions::internals::module_cache(_py);
-                let guard = cache.lock().unwrap();
-                guard.get("sys").copied()
-            };
-            if let Some(sys_bits) = sys_bits
-                && let Some(modules_ptr) = sys_modules_dict_ptr(_py, sys_bits)
-            {
-                let from_sys_bits = unsafe { dict_get_in_place(_py, modules_ptr, name_key_bits) };
-                if exception_pending(_py) {
-                    break 'result MoltObject::none().bits();
-                }
-                if let Some(bits) = from_sys_bits
-                    && let Some(ptr) = obj_from_bits(bits).as_ptr()
+            // Normal imports prefer canonical handles already present in
+            // sys.modules, so alias-backed names (for example `os.path`)
+            // resolve even when the runtime importer would reject them as
+            // non-package dotted paths.  A fresh execution transaction is the
+            // one exception: Loader.exec_module and runpy deliberately execute
+            // the admitted body again while preserving/restoring sys.modules.
+            // Returning the visible module here would silently skip that body.
+            if !execution::suppress_python_sys_modules_sync(_py, &name) {
+                let sys_bits = {
+                    let cache = crate::builtins::exceptions::internals::module_cache(_py);
+                    let guard = cache.lock().unwrap();
+                    guard.get("sys").copied()
+                };
+                if let Some(sys_bits) = sys_bits
+                    && let Some(modules_ptr) = sys_modules_dict_ptr(_py, sys_bits)
                 {
-                    let ty = unsafe { object_type_id(ptr) };
-                    if ty == TYPE_ID_MODULE || ty == TYPE_ID_DICT {
-                        // Keep runtime module cache aligned with sys.modules alias hits
-                        // so frontend MODULE_CACHE_GET-based import lowering observes
-                        // the same module identity as importlib/builtins paths.
-                        let cache = crate::builtins::exceptions::internals::module_cache(_py);
-                        let mut guard = cache.lock().unwrap();
-                        if let Some(old) = guard.insert(name.clone(), bits) {
-                            dec_ref_bits(_py, old);
+                    let from_sys_bits =
+                        unsafe { dict_get_in_place(_py, modules_ptr, name_key_bits) };
+                    if exception_pending(_py) {
+                        break 'result MoltObject::none().bits();
+                    }
+                    if let Some(bits) = from_sys_bits
+                        && let Some(ptr) = obj_from_bits(bits).as_ptr()
+                    {
+                        let ty = unsafe { object_type_id(ptr) };
+                        if ty == TYPE_ID_MODULE || ty == TYPE_ID_DICT {
+                            // Keep runtime module cache aligned with sys.modules alias hits
+                            // so frontend MODULE_CACHE_GET-based import lowering observes
+                            // the same module identity as importlib/builtins paths.
+                            let cache = crate::builtins::exceptions::internals::module_cache(_py);
+                            let mut guard = cache.lock().unwrap();
+                            if let Some(old) = guard.insert(name.clone(), bits) {
+                                dec_ref_bits(_py, old);
+                            }
+                            inc_ref_bits(_py, bits);
+                            inc_ref_bits(_py, bits);
+                            break 'result bits;
                         }
-                        inc_ref_bits(_py, bits);
-                        inc_ref_bits(_py, bits);
-                        break 'result bits;
                     }
                 }
             }
