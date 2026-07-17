@@ -2311,7 +2311,15 @@ def _retire_replaceable_extension_destination(
     extension_set: ScientificExtensionSet,
     set_manifest: Mapping[str, Any],
 ) -> Path | None:
-    """Move the same typed extension authority aside for crash-safe replacement."""
+    """Move the same source/module authority aside for crash-safe replacement.
+
+    The incoming publish root and its seal are fully validated before this
+    function runs.  The existing seal therefore owns only two replacement
+    invariants: source identity and module-family custody.  Its capabilities,
+    exports, capsules, build selectors, and linked-library policy are the old
+    configuration being replaced, not a second configuration authority that
+    may veto an intentional canonical migration.
+    """
 
     if not destination.exists():
         return None
@@ -2421,57 +2429,6 @@ def _retire_replaceable_extension_destination(
         raise SourceExtensionProducerError(
             "refusing to replace an extension set with a different module family; "
             f"expected {sorted(expected_modules)}, found {sorted(manifests)}"
-        )
-    raw_extensions = existing_manifest.get("extensions")
-    if not isinstance(raw_extensions, list) or not all(
-        isinstance(item, Mapping) for item in raw_extensions
-    ):
-        raise SourceExtensionProducerError(
-            "existing extension-set manifest extensions must be an object array"
-        )
-    set_entries: dict[str, Mapping[str, Any]] = {}
-    for item in raw_extensions:
-        module = item.get("module")
-        if not isinstance(module, str) or not module or module in set_entries:
-            raise SourceExtensionProducerError(
-                "existing extension-set manifest has missing or duplicate module custody"
-            )
-        set_entries[module] = item
-    expected_contracts = tuple(
-        (
-            spec.module,
-            spec.target,
-            spec.python_exports,
-            spec.capabilities,
-            spec.provided_capsules,
-            spec.exclude_linked_static_libraries,
-        )
-        for spec in extension_set.extensions
-    )
-    actual_contracts: list[tuple[object, ...]] = []
-    for spec in extension_set.extensions:
-        manifest = manifests[spec.module]
-        source_plan = manifest.get("source_plan")
-        set_entry = set_entries.get(spec.module, {})
-        excluded = set_entry.get("exclude_linked_static_libraries")
-        actual_contracts.append(
-            (
-                manifest.get("module"),
-                (
-                    source_plan.get("target_selector")
-                    if isinstance(source_plan, Mapping)
-                    else None
-                ),
-                tuple(manifest.get("python_exports") or ()),
-                tuple(manifest.get("capabilities") or ()),
-                tuple(manifest.get("provided_capsules") or ()),
-                tuple(excluded or ()),
-            )
-        )
-    if tuple(actual_contracts) != expected_contracts:
-        raise SourceExtensionProducerError(
-            "refusing to replace a canonical seal with different typed "
-            "extension contracts"
         )
     retired = transaction_root / "retired-destination"
     if retired.exists():
