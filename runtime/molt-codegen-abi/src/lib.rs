@@ -352,94 +352,94 @@ pub const GENERATED_OBJECT_ABI_FACTS: GeneratedObjectAbiFacts = GeneratedObjectA
 
 /// Ratchet binding every hardcoded generated-code header fact. A layout/offset
 /// change fails compilation until this value and both link symbols are bumped.
-pub const GENERATED_OBJECT_ABI_FINGERPRINT_V1: u64 = 0x5fce_853b_ad8a_c502;
+/// Revision 2 also binds the execution contract: native flags are always
+/// atomic, while the refcount word is selected by concurrency mode. The layout
+/// fingerprint is intentionally unchanged because both words remain u32-sized.
+pub const GENERATED_OBJECT_ABI_FINGERPRINT_V2: u64 = 0x5fce_853b_ad8a_c502;
 const _: () = assert!(
-    GENERATED_OBJECT_ABI_FACTS.fingerprint() == GENERATED_OBJECT_ABI_FINGERPRINT_V1,
+    GENERATED_OBJECT_ABI_FACTS.fingerprint() == GENERATED_OBJECT_ABI_FINGERPRINT_V2,
     "native generated-object ABI changed: bump the fingerprint revision and link symbols",
 );
 pub const GENERATED_OBJECT_ABI_GIL_SYMBOL: &str =
-    "molt_generated_object_abi_5fce853bad8ac502_gil_v1";
+    "molt_generated_object_abi_5fce853bad8ac502_gil_v2";
 pub const GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL: &str =
-    "molt_generated_object_abi_5fce853bad8ac502_free_threaded_v1";
+    "molt_generated_object_abi_5fce853bad8ac502_free_threaded_v2";
 /// Compile-time authority consumed by runtime storage and generated native
 /// access. Cargo feature unification may enable this through any dependency;
 /// consumers must branch on this value rather than a crate-local feature.
-pub const MOLT_FLAGS_ATOMIC: bool =
+pub const MOLT_FLAGS_ATOMIC: bool = cfg!(not(target_arch = "wasm32"));
+pub const MOLT_REFCOUNT_ATOMIC: bool =
     cfg!(all(not(target_arch = "wasm32"), feature = "free-threaded"));
-/// The refcount word follows the same compile-time concurrency domain as flags:
-/// zero-atomic under GIL/default and single-thread wasm, atomic only for native
-/// free-threaded artifacts. The mode-specific link witness prevents mixing.
-pub const MOLT_REFCOUNT_ATOMIC: bool = MOLT_FLAGS_ATOMIC;
-pub const GENERATED_OBJECT_ABI_SYMBOL: &str = if MOLT_FLAGS_ATOMIC {
+pub const GENERATED_OBJECT_ABI_SYMBOL: &str = if MOLT_REFCOUNT_ATOMIC {
     GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL
 } else {
     GENERATED_OBJECT_ABI_GIL_SYMBOL
 };
 
-/// ABI-stable header flag storage: a zero-overhead `Cell` in deterministic
-/// default GIL mode and on wasm32, and AtomicU32 only in explicit native
-/// `free-threaded` builds.
-/// Runtime helpers own semantic memory orderings; this type owns the target
-/// representation and primitive operations.
-#[cfg(all(not(target_arch = "wasm32"), feature = "free-threaded"))]
-#[repr(transparent)]
-pub struct MoltFlags(core::sync::atomic::AtomicU32);
+macro_rules! define_header_word {
+    ($name:ident, atomic = $atomic:meta, cell = $cell:meta) => {
+        #[cfg($atomic)]
+        #[repr(transparent)]
+        struct $name(core::sync::atomic::AtomicU32);
 
-#[cfg(any(target_arch = "wasm32", not(feature = "free-threaded")))]
-#[repr(transparent)]
-pub struct MoltFlags(core::cell::Cell<u32>);
+        #[cfg($cell)]
+        #[repr(transparent)]
+        struct $name(core::cell::Cell<u32>);
 
-impl MoltFlags {
+        impl $name {
+            #[inline(always)]
+            const fn new(value: u32) -> Self {
+                #[cfg($atomic)]
+                {
+                    Self(core::sync::atomic::AtomicU32::new(value))
+                }
+                #[cfg($cell)]
+                {
+                    Self(core::cell::Cell::new(value))
+                }
+            }
+
+            #[inline(always)]
+            fn load(&self, order: core::sync::atomic::Ordering) -> u32 {
+                #[cfg($atomic)]
+                {
+                    self.0.load(order)
+                }
+                #[cfg($cell)]
+                {
+                    let _ = order;
+                    self.0.get()
+                }
+            }
+
+            #[inline(always)]
+            fn store(&self, value: u32, order: core::sync::atomic::Ordering) {
+                #[cfg($atomic)]
+                self.0.store(value, order);
+                #[cfg($cell)]
+                {
+                    let _ = order;
+                    self.0.set(value);
+                }
+            }
+        }
+    };
+}
+
+define_header_word!(
+    FlagWord,
+    atomic = not(target_arch = "wasm32"),
+    cell = target_arch = "wasm32"
+);
+
+impl FlagWord {
     #[inline(always)]
-    pub const fn new(value: u32) -> Self {
-        #[cfg(all(not(target_arch = "wasm32"), feature = "free-threaded"))]
-        {
-            Self(core::sync::atomic::AtomicU32::new(value))
-        }
-        #[cfg(any(target_arch = "wasm32", not(feature = "free-threaded")))]
-        {
-            Self(core::cell::Cell::new(value))
-        }
-    }
-
-    #[inline(always)]
-    pub const fn new_unpublished(value: u32) -> Self {
-        Self::new(value | HEADER_FLAG_GC_UNPUBLISHED)
-    }
-
-    #[inline(always)]
-    pub fn load(&self, order: core::sync::atomic::Ordering) -> u32 {
-        #[cfg(all(not(target_arch = "wasm32"), feature = "free-threaded"))]
-        {
-            self.0.load(order)
-        }
-        #[cfg(any(target_arch = "wasm32", not(feature = "free-threaded")))]
-        {
-            let _ = order;
-            self.0.get()
-        }
-    }
-
-    #[inline(always)]
-    pub fn store(&self, value: u32, order: core::sync::atomic::Ordering) {
-        #[cfg(all(not(target_arch = "wasm32"), feature = "free-threaded"))]
-        {
-            self.0.store(value, order);
-        }
-        #[cfg(any(target_arch = "wasm32", not(feature = "free-threaded")))]
-        {
-            let _ = order;
-            self.0.set(value);
-        }
-    }
-
-    #[inline(always)]
-    pub fn fetch_or(&self, value: u32, order: core::sync::atomic::Ordering) -> u32 {
-        #[cfg(all(not(target_arch = "wasm32"), feature = "free-threaded"))]
+    fn fetch_or(&self, value: u32, order: core::sync::atomic::Ordering) -> u32 {
+        #[cfg(not(target_arch = "wasm32"))]
         {
             self.0.fetch_or(value, order)
         }
-        #[cfg(any(target_arch = "wasm32", not(feature = "free-threaded")))]
+        #[cfg(target_arch = "wasm32")]
         {
             let _ = order;
             let previous = self.0.get();
@@ -449,12 +449,12 @@ impl MoltFlags {
     }
 
     #[inline(always)]
-    pub fn fetch_and(&self, value: u32, order: core::sync::atomic::Ordering) -> u32 {
-        #[cfg(all(not(target_arch = "wasm32"), feature = "free-threaded"))]
+    fn fetch_and(&self, value: u32, order: core::sync::atomic::Ordering) -> u32 {
+        #[cfg(not(target_arch = "wasm32"))]
         {
             self.0.fetch_and(value, order)
         }
-        #[cfg(any(target_arch = "wasm32", not(feature = "free-threaded")))]
+        #[cfg(target_arch = "wasm32")]
         {
             let _ = order;
             let previous = self.0.get();
@@ -464,7 +464,34 @@ impl MoltFlags {
     }
 
     #[inline(always)]
-    pub fn compare_exchange(
+    fn compare_exchange(
+        &self,
+        current: u32,
+        new: u32,
+        success: core::sync::atomic::Ordering,
+        failure: core::sync::atomic::Ordering,
+    ) -> Result<u32, u32> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.0.compare_exchange(current, new, success, failure)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (success, failure);
+            let observed = self.0.get();
+            if observed == current {
+                self.0.set(new);
+                Ok(observed)
+            } else {
+                Err(observed)
+            }
+        }
+    }
+}
+
+impl RefCountWord {
+    #[inline(always)]
+    fn compare_exchange_weak(
         &self,
         current: u32,
         new: u32,
@@ -473,7 +500,7 @@ impl MoltFlags {
     ) -> Result<u32, u32> {
         #[cfg(all(not(target_arch = "wasm32"), feature = "free-threaded"))]
         {
-            self.0.compare_exchange(current, new, success, failure)
+            self.0.compare_exchange_weak(current, new, success, failure)
         }
         #[cfg(any(target_arch = "wasm32", not(feature = "free-threaded")))]
         {
@@ -486,6 +513,68 @@ impl MoltFlags {
                 Err(observed)
             }
         }
+    }
+
+    #[inline(always)]
+    fn acquire_fence() {
+        #[cfg(all(not(target_arch = "wasm32"), feature = "free-threaded"))]
+        core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
+    }
+}
+define_header_word!(
+    RefCountWord,
+    atomic = all(not(target_arch = "wasm32"), feature = "free-threaded"),
+    cell = any(target_arch = "wasm32", not(feature = "free-threaded"))
+);
+
+/// ABI-stable header flag storage. Native scheduler workers can read and
+/// transition task flags before acquiring the GIL, so flags remain atomic on
+/// every native mode; wasm32 uses a zero-overhead cell.
+/// Runtime helpers own semantic memory orderings; this type owns the target
+/// representation and primitive operations.
+#[repr(transparent)]
+pub struct MoltFlags(FlagWord);
+
+impl MoltFlags {
+    #[inline(always)]
+    pub const fn new(value: u32) -> Self {
+        Self(FlagWord::new(value))
+    }
+
+    #[inline(always)]
+    pub const fn new_unpublished(value: u32) -> Self {
+        Self::new(value | HEADER_FLAG_GC_UNPUBLISHED)
+    }
+
+    #[inline(always)]
+    pub fn load(&self, order: core::sync::atomic::Ordering) -> u32 {
+        self.0.load(order)
+    }
+
+    #[inline(always)]
+    pub fn store(&self, value: u32, order: core::sync::atomic::Ordering) {
+        self.0.store(value, order);
+    }
+
+    #[inline(always)]
+    pub fn fetch_or(&self, value: u32, order: core::sync::atomic::Ordering) -> u32 {
+        self.0.fetch_or(value, order)
+    }
+
+    #[inline(always)]
+    pub fn fetch_and(&self, value: u32, order: core::sync::atomic::Ordering) -> u32 {
+        self.0.fetch_and(value, order)
+    }
+
+    #[inline(always)]
+    pub fn compare_exchange(
+        &self,
+        current: u32,
+        new: u32,
+        success: core::sync::atomic::Ordering,
+        failure: core::sync::atomic::Ordering,
+    ) -> Result<u32, u32> {
+        self.0.compare_exchange(current, new, success, failure)
     }
 
     /// Apply `(old | set) & !clear` as one coherent metadata transition with
@@ -554,6 +643,322 @@ impl MoltFlags {
 const _: () = {
     assert!(core::mem::size_of::<MoltFlags>() == core::mem::size_of::<u32>());
     assert!(core::mem::align_of::<MoltFlags>() == core::mem::align_of::<u32>());
+};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RetainError {
+    Zero,
+    Immortal,
+    Deallocating,
+    Overflow,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RefCountRelease {
+    previous: u32,
+}
+
+/// Linear authority for the sole finalizer/weakref revival pin.
+///
+/// A token can be minted only by an exact-baseline open on its borrowed
+/// refcount. It is intentionally not `Copy` or `Clone`: closing consumes the
+/// token, so safe callers cannot subtract the internal pin twice or apply it to
+/// a different object.
+#[must_use = "an opened revival window must be closed or deliberately leaked"]
+pub struct RefCountRevivalWindow<'a> {
+    ref_count: &'a MoltRefCount,
+    baseline: u32,
+}
+
+impl RefCountRevivalWindow<'_> {
+    #[inline(always)]
+    pub const fn baseline(&self) -> u32 {
+        self.baseline
+    }
+
+    /// Record a stable ABI-view hold published while this window was open.
+    #[inline(always)]
+    pub fn record_stable_view_hold(&mut self) -> Result<u32, u32> {
+        if self.baseline != 1 {
+            return Err(self.baseline);
+        }
+        self.baseline = 2;
+        Ok(self.baseline)
+    }
+
+    /// Consume the window authority and remove exactly its internal pin.
+    #[inline(always)]
+    pub fn close(self) -> Result<u32, u32> {
+        self.ref_count.close_revival_window(self.baseline)
+    }
+}
+
+impl RefCountRelease {
+    #[inline(always)]
+    pub const fn previous(self) -> u32 {
+        self.previous
+    }
+
+    #[inline(always)]
+    pub const fn next(self) -> u32 {
+        self.previous - 1
+    }
+
+    #[inline(always)]
+    pub const fn reached_zero(self) -> bool {
+        self.previous == 1
+    }
+}
+
+/// Pure transition authority shared by runtime storage, tests, and formal proof.
+#[inline(always)]
+pub const fn retain_next(current: u32, count: u32, deallocating: bool) -> Result<u32, RetainError> {
+    if current == 0 {
+        return Err(RetainError::Zero);
+    }
+    if current == IMMORTAL_REFCOUNT {
+        return Err(RetainError::Immortal);
+    }
+    if deallocating {
+        return Err(RetainError::Deallocating);
+    }
+    if count == 0 {
+        return Ok(current);
+    }
+    match current.checked_add(count) {
+        Some(next) if next < IMMORTAL_REFCOUNT => Ok(next),
+        Some(_) | None => Err(RetainError::Overflow),
+    }
+}
+
+#[inline(always)]
+pub const fn live_upgrade_next(current: u32, deallocating: bool) -> Result<u32, RetainError> {
+    retain_next(current, 1, deallocating)
+}
+
+#[inline(always)]
+pub const fn release_transition(previous: u32) -> Option<RefCountRelease> {
+    if previous == 0 || previous == IMMORTAL_REFCOUNT {
+        None
+    } else {
+        Some(RefCountRelease { previous })
+    }
+}
+
+/// Return the live baseline after adding the finalizer/weakref internal pin.
+#[inline(always)]
+pub const fn revival_window_baseline(previous: u32, has_stable_view_hold: bool) -> Option<u32> {
+    let expected = has_stable_view_hold as u32;
+    if previous == expected {
+        Some(expected + 1)
+    } else {
+        None
+    }
+}
+
+/// ABI-stable refcount storage and checked lifecycle authority. The default
+/// deterministic GIL and wasm32 modes use a plain cell; explicit native
+/// free-threaded mode uses the atomic Release/Acquire protocol.
+///
+/// The concrete target/mode representation is intentional. Do not create an
+/// alternate atomic view of plain storage with `AtomicU32::from_ptr`: mixing
+/// safe `Cell` access and atomic access to one word would weaken the aliasing
+/// and synchronization contract this compile-time-selected type makes exact.
+///
+/// Raw arithmetic is deliberately not an external API:
+///
+/// ```compile_fail
+/// use molt_codegen_abi::MoltRefCount;
+/// let count = MoltRefCount::new(1);
+/// let _ = count.load_relaxed();
+/// let _ = count.compare_exchange_retain(1, 2);
+/// count.store_release(0);
+/// ```
+#[repr(transparent)]
+pub struct MoltRefCount(RefCountWord);
+
+impl MoltRefCount {
+    #[inline(always)]
+    pub const fn new(value: u32) -> Self {
+        Self(RefCountWord::new(value))
+    }
+
+    #[inline(always)]
+    pub fn snapshot_owned(&self) -> u32 {
+        self.0.load(core::sync::atomic::Ordering::Relaxed)
+    }
+
+    #[inline(always)]
+    pub fn snapshot_acquire(&self) -> u32 {
+        self.0.load(core::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Retain an already-owned live object. Retention does not publish payload.
+    #[inline(always)]
+    pub fn retain_owned<F>(&self, count: u32, is_deallocating: F) -> Result<u32, RetainError>
+    where
+        F: Fn() -> bool,
+    {
+        let mut current = self.snapshot_owned();
+        loop {
+            let next = retain_next(current, count, is_deallocating())?;
+            if next == current {
+                return Ok(current);
+            }
+            match self.0.compare_exchange_weak(
+                current,
+                next,
+                core::sync::atomic::Ordering::Relaxed,
+                core::sync::atomic::Ordering::Relaxed,
+            ) {
+                Ok(previous) => return Ok(previous),
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
+    /// Upgrade non-owning custody only after observing initialization.
+    #[inline(always)]
+    pub fn try_retain_live<F>(&self, is_deallocating: F) -> bool
+    where
+        F: Fn() -> bool,
+    {
+        let mut current = self.snapshot_acquire();
+        loop {
+            let Ok(next) = live_upgrade_next(current, is_deallocating()) else {
+                return false;
+            };
+            match self.0.compare_exchange_weak(
+                current,
+                next,
+                core::sync::atomic::Ordering::Acquire,
+                core::sync::atomic::Ordering::Relaxed,
+            ) {
+                Ok(_) => return true,
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
+    /// Standard release sequence: only the terminal edge pays the acquire fence.
+    #[inline(always)]
+    pub fn release_owned(&self) -> Result<RefCountRelease, u32> {
+        let mut current = self.snapshot_owned();
+        loop {
+            let Some(transition) = release_transition(current) else {
+                return Err(current);
+            };
+            match self.0.compare_exchange_weak(
+                current,
+                transition.next(),
+                core::sync::atomic::Ordering::Release,
+                core::sync::atomic::Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    if transition.reached_zero() {
+                        RefCountWord::acquire_fence();
+                    }
+                    return Ok(transition);
+                }
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
+    /// Open the sole finalizer/weakref revival window.
+    #[inline(always)]
+    pub fn open_revival_window(
+        &self,
+        has_stable_view_hold: bool,
+    ) -> Result<RefCountRevivalWindow<'_>, u32> {
+        let expected = u32::from(has_stable_view_hold);
+        let Some(baseline) = revival_window_baseline(expected, has_stable_view_hold) else {
+            unreachable!("constructed revival baseline must be legal");
+        };
+        loop {
+            match self.0.compare_exchange_weak(
+                expected,
+                baseline,
+                core::sync::atomic::Ordering::Relaxed,
+                core::sync::atomic::Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    return Ok(RefCountRevivalWindow {
+                        ref_count: self,
+                        baseline,
+                    });
+                }
+                Err(observed) if observed == expected => {}
+                Err(observed) => return Err(observed),
+            }
+        }
+    }
+
+    /// Close a previously opened window while preserving any owners created by
+    /// legitimate resurrection. The unforgeable token supplies the minimum
+    /// legal baseline; counts below it are rejected without mutation.
+    #[inline(always)]
+    fn close_revival_window(&self, baseline: u32) -> Result<u32, u32> {
+        let mut current = self.snapshot_owned();
+        loop {
+            if current < baseline || current == IMMORTAL_REFCOUNT {
+                return Err(current);
+            }
+            match self.0.compare_exchange_weak(
+                current,
+                current - 1,
+                core::sync::atomic::Ordering::AcqRel,
+                core::sync::atomic::Ordering::Relaxed,
+            ) {
+                Ok(_) => return Ok(current),
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
+    /// Set immortal custody while the caller has exclusive lifecycle authority.
+    ///
+    /// # Safety
+    /// No ordinary owner may concurrently retain or release this object.
+    #[inline(always)]
+    pub unsafe fn make_immortal_exclusive(&self) {
+        self.0
+            .store(IMMORTAL_REFCOUNT, core::sync::atomic::Ordering::Release);
+    }
+
+    /// Restore one shutdown owner while the caller has exclusive lifecycle authority.
+    ///
+    /// # Safety
+    /// This is valid only during runtime shutdown after all concurrent owners stop.
+    #[inline(always)]
+    pub unsafe fn make_mortal_for_shutdown_exclusive(&self) {
+        if self.snapshot_acquire() == IMMORTAL_REFCOUNT {
+            self.0.store(1, core::sync::atomic::Ordering::Release);
+        }
+    }
+
+    /// Restore the bridge's sole stable-view hold under exclusive bridge custody.
+    ///
+    /// # Safety
+    /// The bridge must prove the object has no ordinary owners or concurrent retainers.
+    #[inline(always)]
+    pub unsafe fn restore_stable_view_hold_exclusive(&self) {
+        self.0.store(1, core::sync::atomic::Ordering::Release);
+    }
+
+    /// Retire the bridge's sole stable-view hold under exclusive bridge custody.
+    ///
+    /// # Safety
+    /// The bridge must prove the stable hold is the only remaining owner.
+    #[inline(always)]
+    pub unsafe fn retire_stable_view_hold_exclusive(&self) {
+        self.0.store(0, core::sync::atomic::Ordering::Release);
+    }
+}
+
+const _: () = {
+    assert!(core::mem::size_of::<MoltRefCount>() == core::mem::size_of::<u32>());
+    assert!(core::mem::align_of::<MoltRefCount>() == core::mem::align_of::<u32>());
 };
 
 pub const CLASS_POLICY_WORD_OFFSET: i32 = 8 * 8;
@@ -815,11 +1220,13 @@ mod tests {
     fn header_fields_match_the_packed_header_contract() {
         assert_eq!(core::mem::size_of::<MoltFlags>(), 4);
         assert_eq!(core::mem::align_of::<MoltFlags>(), 4);
+        assert_eq!(core::mem::size_of::<MoltRefCount>(), 4);
+        assert_eq!(core::mem::align_of::<MoltRefCount>(), 4);
+        assert_eq!(MOLT_FLAGS_ATOMIC, cfg!(not(target_arch = "wasm32")));
         assert_eq!(
-            MOLT_FLAGS_ATOMIC,
+            MOLT_REFCOUNT_ATOMIC,
             cfg!(all(not(target_arch = "wasm32"), feature = "free-threaded"))
         );
-        assert_eq!(MOLT_REFCOUNT_ATOMIC, MOLT_FLAGS_ATOMIC);
         assert_eq!(HEADER_TYPE_ID_OFFSET, -HEADER_SIZE_BYTES);
         assert_eq!(HEADER_REFCOUNT_OFFSET, -(HEADER_SIZE_BYTES - 4));
         assert_eq!(HEADER_FLAGS_OFFSET, -(HEADER_SIZE_BYTES - 8));
@@ -843,14 +1250,14 @@ mod tests {
         let canonical = GENERATED_OBJECT_ABI_FACTS.words();
         assert_eq!(
             fingerprint_words(canonical),
-            GENERATED_OBJECT_ABI_FINGERPRINT_V1
+            GENERATED_OBJECT_ABI_FINGERPRINT_V2
         );
         for index in 0..canonical.len() {
             let mut changed = canonical;
             changed[index] ^= 1;
             assert_ne!(
                 fingerprint_words(changed),
-                GENERATED_OBJECT_ABI_FINGERPRINT_V1,
+                GENERATED_OBJECT_ABI_FINGERPRINT_V2,
                 "generated-object ABI word {index} is not fingerprinted"
             );
         }
@@ -858,14 +1265,86 @@ mod tests {
 
     #[test]
     fn generated_object_link_symbols_embed_fingerprint_and_revision() {
-        let fingerprint = std::format!("{:016x}", GENERATED_OBJECT_ABI_FINGERPRINT_V1);
+        let fingerprint = std::format!("{:016x}", GENERATED_OBJECT_ABI_FINGERPRINT_V2);
         for symbol in [
             GENERATED_OBJECT_ABI_GIL_SYMBOL,
             GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL,
         ] {
             assert!(symbol.contains(&fingerprint), "{symbol}");
-            assert!(symbol.ends_with("_v1"), "{symbol}");
+            assert!(symbol.ends_with("_v2"), "{symbol}");
         }
+    }
+
+    #[test]
+    fn refcount_authority_preserves_checked_roundtrips() {
+        let counter = MoltRefCount::new(7);
+        assert_eq!(counter.retain_owned(3, || false), Ok(7));
+        assert_eq!(
+            counter.release_owned().map(RefCountRelease::previous),
+            Ok(10)
+        );
+        assert_eq!(counter.snapshot_owned(), 9);
+        assert!(counter.try_retain_live(|| false));
+        assert_eq!(counter.snapshot_acquire(), 10);
+    }
+
+    #[test]
+    fn rejected_refcount_transitions_preserve_the_exact_state() {
+        for invalid in [0, IMMORTAL_REFCOUNT] {
+            let counter = MoltRefCount::new(invalid);
+            assert_eq!(counter.release_owned(), Err(invalid));
+            assert_eq!(counter.snapshot_owned(), invalid);
+        }
+
+        for (current, has_stable_view_hold) in [(1, false), (0, true), (7, false), (7, true)] {
+            let counter = MoltRefCount::new(current);
+            assert!(matches!(
+                counter.open_revival_window(has_stable_view_hold),
+                Err(actual) if actual == current
+            ));
+            assert_eq!(counter.snapshot_owned(), current);
+        }
+
+        let counter = MoltRefCount::new(1);
+        let window = counter
+            .open_revival_window(true)
+            .expect("stable-view baseline opens");
+        assert_eq!(
+            counter.release_owned().map(RefCountRelease::previous),
+            Ok(2)
+        );
+        assert_eq!(window.close(), Err(1));
+        assert_eq!(counter.snapshot_owned(), 1);
+    }
+
+    #[test]
+    fn revival_close_accepts_only_its_exact_open_baseline() {
+        let ordinary = MoltRefCount::new(0);
+        let ordinary_window = ordinary
+            .open_revival_window(false)
+            .expect("ordinary baseline opens");
+        assert_eq!(ordinary_window.baseline(), 1);
+        assert_eq!(ordinary.retain_owned(3, || false), Ok(1));
+        assert_eq!(ordinary_window.close(), Ok(4));
+        assert_eq!(ordinary.snapshot_owned(), 3);
+
+        let stable_view = MoltRefCount::new(1);
+        let stable_window = stable_view
+            .open_revival_window(true)
+            .expect("stable-view baseline opens");
+        assert_eq!(stable_window.baseline(), 2);
+        assert_eq!(stable_window.close(), Ok(2));
+        assert_eq!(stable_view.snapshot_owned(), 1);
+
+        let promoted = MoltRefCount::new(0);
+        let mut promoted_window = promoted
+            .open_revival_window(false)
+            .expect("ordinary baseline opens");
+        assert_eq!(promoted.retain_owned(1, || false), Ok(1));
+        assert_eq!(promoted_window.record_stable_view_hold(), Ok(2));
+        assert_eq!(promoted_window.record_stable_view_hold(), Err(2));
+        assert_eq!(promoted_window.close(), Ok(2));
+        assert_eq!(promoted.snapshot_owned(), 1);
     }
 
     #[test]

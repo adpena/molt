@@ -277,24 +277,6 @@ impl SimpleBackend {
                 "llvm/molt_llvm_output.o",
             )
             .expect("failed to prepare LLVM object path");
-            let i8_type = context.i8_type();
-            let witness = llvm.module.add_global(
-                i8_type,
-                None,
-                molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL,
-            );
-            witness.set_linkage(inkwell::module::Linkage::External);
-            let pointer_type = context.ptr_type(inkwell::AddressSpace::default());
-            let anchor =
-                llvm.module
-                    .add_global(pointer_type, None, GENERATED_OBJECT_ABI_ANCHOR_SYMBOL);
-            anchor.set_linkage(inkwell::module::Linkage::Internal);
-            anchor.set_initializer(&witness.as_pointer_value());
-            let used_type = pointer_type.array_type(1);
-            let used = llvm.module.add_global(used_type, None, "llvm.used");
-            used.set_linkage(inkwell::module::Linkage::Appending);
-            used.set_section(Some("llvm.metadata"));
-            used.set_initializer(&pointer_type.const_array(&[anchor.as_pointer_value()]));
             llvm.emit_object(&tmp_obj, MoltOptLevel::Aggressive)
                 .expect("LLVM object emission failed");
             let bytes = std::fs::read(&tmp_obj).unwrap_or_else(|err| {

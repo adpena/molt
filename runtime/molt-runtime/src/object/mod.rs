@@ -6,8 +6,9 @@ use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-pub(crate) use molt_codegen_abi::IMMORTAL_REFCOUNT;
-use molt_codegen_abi::MoltFlags;
+use molt_codegen_abi::{
+    MoltFlags, MoltRefCount, RefCountRelease, RefCountRevivalWindow, RetainError,
+};
 use molt_obj_model::{MoltObject, release_ptr, resolve_ptr};
 use num_bigint::BigInt;
 
@@ -66,7 +67,6 @@ pub(crate) mod ops_slice;
 pub(crate) mod ops_string;
 pub(crate) mod ops_sys;
 pub(crate) mod ops_vec;
-pub(crate) mod refcount;
 pub(crate) mod refcount_opt;
 pub(crate) mod seq_access;
 #[allow(dead_code)]
@@ -76,8 +76,6 @@ pub(crate) mod type_ids;
 pub(crate) mod utf8_cache;
 pub(crate) mod weak_container;
 pub(crate) mod weakref;
-
-use refcount::MoltRefCount;
 
 #[allow(unused_imports)]
 pub(crate) use type_ids::*;
@@ -278,7 +276,7 @@ fn debug_alloc_object_type() -> Option<u32> {
 #[repr(C)]
 pub struct MoltHeader {
     pub type_id: u32,        // 4 bytes
-    ref_count: MoltRefCount, // 4 bytes; transitions owned by `refcount`
+    ref_count: MoltRefCount, // 4 bytes; representation owned by `molt-codegen-abi`
     flags: MoltFlags,        // 4 bytes (semantic bits declared below)
     pub size_class: u16,     // 2 bytes — index into SIZE_CLASS_TABLE
     pub aux_kind: u16,       // 2 bytes — interpretation of aux
@@ -297,6 +295,173 @@ const _: () = {
             .is_multiple_of(molt_codegen_abi::HEADER_ALLOC_ALIGN_BYTES)
     );
 };
+
+impl MoltHeader {
+    /// Start the lifetime of the refcount field in freshly allocated storage.
+    /// Calling an atomic method on merely zero-filled bytes is not sufficient
+    /// to construct an `AtomicU32` under Rust's object-lifetime rules.
+    #[inline(always)]
+    pub(crate) unsafe fn initialize_refcount_before_publication(header: *mut Self, value: u32) {
+        unsafe {
+            std::ptr::write(
+                std::ptr::addr_of_mut!((*header).ref_count),
+                MoltRefCount::new(value),
+            );
+        }
+    }
+
+    /// Diagnostic/ABI snapshot under the active concurrency contract. This is
+    /// atomic in native free-threaded builds and GIL-confined otherwise. The
+    /// value is never an ownership token and cannot justify a later dereference.
+    #[inline(always)]
+    pub fn ref_count_snapshot(&self) -> u32 {
+        self.ref_count.snapshot_acquire()
+    }
+
+    /// Snapshot used only while the caller already owns the object or holds
+    /// mutation authority. It avoids an unnecessary acquire on ARM.
+    #[inline(always)]
+    pub(crate) fn owned_ref_count_snapshot(&self) -> u32 {
+        self.ref_count.snapshot_owned()
+    }
+
+    #[inline(always)]
+    pub(crate) fn is_uniquely_owned(&self) -> bool {
+        self.ref_count.snapshot_acquire() == 1
+    }
+
+    /// Retain an object through an existing owned reference.
+    #[inline(always)]
+    pub(crate) fn retain_owned(&self, count: usize, label: &str) -> u32 {
+        if self.has_flag(HEADER_FLAG_IMMORTAL) {
+            return self.ref_count.snapshot_owned();
+        }
+        let Ok(count) = u32::try_from(count) else {
+            fatal_refcount_overflow(label, self.ref_count.snapshot_owned(), count);
+        };
+        match self
+            .ref_count
+            .retain_owned(count, || self.has_flag(HEADER_FLAG_DEALLOCATING))
+        {
+            Ok(previous) => previous,
+            Err(RetainError::Overflow) => {
+                fatal_refcount_overflow(label, self.ref_count.snapshot_owned(), count as usize)
+            }
+            Err(RetainError::Zero | RetainError::Deallocating | RetainError::Immortal) => {
+                fatal_terminal_retain(label)
+            }
+        }
+    }
+
+    /// Upgrade registry custody to one ordinary owner only while the object is live.
+    #[inline(always)]
+    pub(crate) fn try_retain_live(&self) -> bool {
+        if self.has_flag(HEADER_FLAG_DEALLOCATING | HEADER_FLAG_IMMORTAL) {
+            return false;
+        }
+        self.ref_count
+            .try_retain_live(|| self.has_flag(HEADER_FLAG_DEALLOCATING))
+    }
+
+    /// Release one owned reference. A terminal result carries the acquire
+    /// fence required before payload destruction.
+    #[inline(always)]
+    pub(crate) fn release_owned(&self, label: &str) -> RefCountRelease {
+        match self.ref_count.release_owned() {
+            Ok(transition) => transition,
+            Err(previous) => {
+                eprintln!("molt fatal: invalid refcount release in {label} (previous={previous})");
+                std::process::abort();
+            }
+        }
+    }
+
+    /// Sole post-publication transition into immortal custody.
+    #[inline(always)]
+    pub(crate) fn make_immortal(&self) {
+        // SAFETY: this transition is called only by the runtime's exclusive
+        // immortalization path after publication and before further owners.
+        unsafe { self.ref_count.make_immortal_exclusive() };
+    }
+
+    /// Runtime-shutdown-only inverse of `make_immortal`.
+    #[inline(always)]
+    pub(crate) fn make_mortal_for_shutdown(&self) {
+        // SAFETY: runtime shutdown has stopped concurrent owner transitions.
+        unsafe { self.ref_count.make_mortal_for_shutdown_exclusive() };
+    }
+
+    /// Bridge-only restoration of the stable ABI-view hold.
+    #[inline(always)]
+    pub(crate) fn restore_stable_view_hold(&self) {
+        // SAFETY: the bridge owns the sole stable-view lifecycle transition.
+        unsafe { self.ref_count.restore_stable_view_hold_exclusive() };
+    }
+
+    /// Bridge-only retirement of the stable ABI-view hold.
+    #[inline(always)]
+    pub(crate) fn retire_stable_view_hold(&self) {
+        // SAFETY: the bridge proved the stable view is the final hold.
+        unsafe { self.ref_count.retire_stable_view_hold_exclusive() };
+    }
+
+    /// Add the collector's temporary strong pin and publish its flag.
+    #[inline(always)]
+    pub(crate) fn pin_for_gc(&self) {
+        if self.has_flag(HEADER_FLAG_GC_PINNED) {
+            eprintln!("molt fatal: object pinned twice by cycle collector");
+            std::process::abort();
+        }
+        self.retain_owned(1, "cycle collector pin");
+        self.fetch_or_flags(HEADER_FLAG_GC_PINNED);
+    }
+
+    /// Open the sole Python-visible finalizer/weakref revival window.
+    #[inline(always)]
+    pub(crate) fn open_revival_window(
+        &self,
+        has_stable_view_hold: bool,
+    ) -> RefCountRevivalWindow<'_> {
+        let expected = u32::from(has_stable_view_hold);
+        match self.ref_count.open_revival_window(has_stable_view_hold) {
+            Ok(baseline) => baseline,
+            Err(previous) => {
+                eprintln!(
+                    "molt fatal: invalid refcount opening revival window (expected={expected}, actual={previous})"
+                );
+                std::process::abort();
+            }
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn close_revival_window(&self, window: RefCountRevivalWindow<'_>) -> u32 {
+        let expected = window.baseline();
+        match window.close() {
+            Ok(previous) => previous,
+            Err(actual) => {
+                eprintln!(
+                    "molt fatal: invalid refcount closing revival window (expected={expected}, actual={actual})"
+                );
+                std::process::abort();
+            }
+        }
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn fatal_terminal_retain(label: &str) -> ! {
+    eprintln!("molt fatal: owned retain attempted after terminal death in {label}");
+    std::process::abort()
+}
+
+#[cold]
+#[inline(never)]
+fn fatal_refcount_overflow(label: &str, current: u32, count: usize) -> ! {
+    eprintln!("molt fatal: refcount overflow in {label} (count={current}, add={count})");
+    std::process::abort()
+}
 
 /// Flags in this class directly coordinate cross-thread state or object
 /// lifetime. Every other flag is metadata whose payload visibility is already
@@ -3232,7 +3397,8 @@ unsafe fn dec_ref_ptr_with_validated_type_id(
                 // IMMORTAL — already excluded above — and carries debug tracing);
                 // the matching closes below are the authoritative resurrection
                 // checks.
-                let mut window_baseline = (*header_ptr).open_revival_window(has_abi_view);
+                let mut revival_window = (*header_ptr).open_revival_window(has_abi_view);
+                let mut window_baseline = revival_window.baseline();
                 // `__del__` runs INLINE at this rc→0 point, exactly as CPython
                 // finalizes at Py_DECREF→0 (prompt timing: `del x; print()` runs
                 // `__del__` before `print`), under a synthetic exception-handler
@@ -3253,10 +3419,14 @@ unsafe fn dec_ref_ptr_with_validated_type_id(
                     molt_cpython_abi::bridge::GLOBAL_BRIDGE
                         .begin_finalization_for_new_view(view_bits);
                     has_abi_view = true;
-                    window_baseline = window_baseline.checked_add(1).unwrap_or_else(|| {
-                        eprintln!("molt fatal: finalizer ABI-view baseline overflow");
-                        std::process::abort();
-                    });
+                    window_baseline = revival_window.record_stable_view_hold().unwrap_or_else(
+                        |baseline| {
+                            eprintln!(
+                                "molt fatal: invalid finalizer ABI-view baseline promotion ({baseline})"
+                            );
+                            std::process::abort();
+                        },
+                    );
                 }
                 // After `__del__`, the only live reference should be this window's.
                 // If `__del__` RESURRECTED the object (stashed `self`), the count
@@ -3269,7 +3439,7 @@ unsafe fn dec_ref_ptr_with_validated_type_id(
                 // death). The mid-window dec/check runs NO Python code, so the
                 // object is never observable at rc=0.
                 if (*header_ptr).ref_count_snapshot() > window_baseline {
-                    (*header_ptr).close_revival_window();
+                    (*header_ptr).close_revival_window(revival_window);
                     if has_abi_view {
                         molt_cpython_abi::bridge::GLOBAL_BRIDGE
                             .finish_finalization(view_bits, true);
@@ -3279,7 +3449,7 @@ unsafe fn dec_ref_ptr_with_validated_type_id(
                 if has_abi_view
                     && molt_cpython_abi::bridge::GLOBAL_BRIDGE.has_direct_c_refs(view_bits)
                 {
-                    (*header_ptr).close_revival_window();
+                    (*header_ptr).close_revival_window(revival_window);
                     molt_cpython_abi::bridge::GLOBAL_BRIDGE.finish_finalization(view_bits, false);
                     return;
                 }
@@ -3299,10 +3469,10 @@ unsafe fn dec_ref_ptr_with_validated_type_id(
                         eprintln!("molt fatal: weakref callback reopened committed-dead object");
                         std::process::abort();
                     }
-                    (*header_ptr).close_revival_window();
+                    (*header_ptr).close_revival_window(revival_window);
                     molt_cpython_abi::bridge::GLOBAL_BRIDGE.finish_finalization(view_bits, false);
                 } else {
-                    let prev_window = (*header_ptr).close_revival_window();
+                    let prev_window = (*header_ptr).close_revival_window(revival_window);
                     if prev_window != 1 {
                         eprintln!("molt fatal: weakref callback reopened committed-dead object");
                         std::process::abort();
@@ -4112,5 +4282,93 @@ mod tests {
             assert!((*header).gc_is_published());
             assert!((*header).has_flag(super::HEADER_FLAG_CONTAINS_REFS));
         }
+    }
+
+    fn refcount_header(count: u32, flags: u32) -> super::MoltHeader {
+        super::MoltHeader {
+            type_id: 0,
+            ref_count: molt_codegen_abi::MoltRefCount::new(count),
+            flags: molt_codegen_abi::MoltFlags::new(flags),
+            size_class: 0,
+            aux_kind: 0,
+            aux: super::MoltAuxWord::new(0),
+        }
+    }
+
+    #[test]
+    fn typed_refcount_transitions_cover_owned_live_gc_immortal_and_revival_states() {
+        let owned = refcount_header(1, 0);
+        assert_eq!(owned.retain_owned(0, "empty batch"), 1);
+        assert_eq!(owned.retain_owned(3, "test batch"), 1);
+        assert_eq!(owned.ref_count_snapshot(), 4);
+        let release = owned.release_owned("test release");
+        assert_eq!(release.previous(), 4);
+        assert!(!release.reached_zero());
+        assert_eq!(owned.ref_count_snapshot(), 3);
+
+        let live = refcount_header(1, 0);
+        assert!(live.try_retain_live());
+        assert_eq!(live.ref_count_snapshot(), 2);
+        assert!(!refcount_header(0, 0).try_retain_live());
+        assert!(
+            !refcount_header(
+                molt_codegen_abi::IMMORTAL_REFCOUNT,
+                super::HEADER_FLAG_IMMORTAL,
+            )
+            .try_retain_live()
+        );
+        assert!(!refcount_header(1, super::HEADER_FLAG_DEALLOCATING).try_retain_live());
+
+        let gc = refcount_header(1, 0);
+        gc.pin_for_gc();
+        assert_eq!(gc.ref_count_snapshot(), 2);
+        assert!(gc.has_flag(super::HEADER_FLAG_GC_PINNED));
+
+        let ordinary_revival = refcount_header(0, 0);
+        let ordinary_window = ordinary_revival.open_revival_window(false);
+        assert_eq!(ordinary_window.baseline(), 1);
+        assert_eq!(ordinary_revival.close_revival_window(ordinary_window), 1);
+        assert_eq!(ordinary_revival.ref_count_snapshot(), 0);
+
+        let view_revival = refcount_header(1, 0);
+        let view_window = view_revival.open_revival_window(true);
+        assert_eq!(view_window.baseline(), 2);
+        assert_eq!(view_revival.close_revival_window(view_window), 2);
+        assert_eq!(view_revival.ref_count_snapshot(), 1);
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), feature = "free-threaded"))]
+    #[test]
+    fn concurrent_refcount_roundtrips_preserve_the_baseline_owner() {
+        use std::sync::{Arc, Barrier};
+
+        const THREADS: usize = 4;
+        const ITERATIONS: usize = 4_096;
+        let refcount = Arc::new(molt_codegen_abi::MoltRefCount::new(1));
+        let start = Arc::new(Barrier::new(THREADS));
+        let mut workers = Vec::with_capacity(THREADS);
+        for _ in 0..THREADS {
+            let refcount = Arc::clone(&refcount);
+            let start = Arc::clone(&start);
+            workers.push(std::thread::spawn(move || {
+                start.wait();
+                for _ in 0..ITERATIONS {
+                    refcount
+                        .retain_owned(1, || false)
+                        .expect("baseline owner keeps storage live");
+                    assert!(
+                        refcount
+                            .release_owned()
+                            .expect("worker release keeps storage live")
+                            .previous()
+                            > 1
+                    );
+                }
+            }));
+        }
+        for worker in workers {
+            worker.join().expect("refcount worker panicked");
+        }
+        assert_eq!(refcount.snapshot_acquire(), 1);
     }
 }

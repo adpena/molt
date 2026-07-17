@@ -401,9 +401,7 @@ fn parse_literal_ensure_runtime_calls(source: &str) -> Vec<(String, usize, Runti
             for ch in after_name[comma + 1..].chars() {
                 if ch.is_ascii_digit() {
                     digits.push(ch);
-                } else if !digits.is_empty() {
-                    break;
-                } else if !ch.is_whitespace() {
+                } else if !digits.is_empty() || !ch.is_whitespace() {
                     break;
                 }
             }
@@ -421,7 +419,7 @@ fn lowering_literal_runtime_imports_are_declared_or_classified() {
     let ctx = Context::create();
     let module = ctx.create_module("test_lowering_literal_runtime_imports");
     declare_runtime_functions(&ctx, &module);
-    let source = include_str!("lowering.rs");
+    let source = include_str!("../lowering.rs");
 
     let mut missing = Vec::new();
     for (name, param_count, return_abi) in parse_literal_ensure_runtime_calls(source) {

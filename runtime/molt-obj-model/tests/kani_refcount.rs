@@ -1,16 +1,17 @@
 //! Kani proofs for the canonical reference-count transition algebra.
 //!
-//! These harnesses call the same pure functions consumed by the native atomic
-//! and wasm `Cell` storage adapters.  They therefore cannot drift into a toy
-//! fetch-add model that permits zero resurrection, immortal mutation, wrapping,
-//! or an ambiguous finalizer revival baseline.
+//! These harnesses call the same pure functions consumed by `MoltHeader` over
+//! the mode-selected `molt-codegen-abi::MoltRefCount` storage authority. They
+//! therefore cannot drift into a toy fetch-add model that permits zero
+//! resurrection, immortal mutation, wrapping, or an ambiguous finalizer
+//! revival baseline.
 //!
 //! Run with: `cd runtime/molt-obj-model && cargo kani --tests`
 
 #[cfg(kani)]
 mod refcount_proofs {
     use molt_codegen_abi::IMMORTAL_REFCOUNT;
-    use molt_obj_model::refcount_semantics::{
+    use molt_codegen_abi::{
         RetainError, live_upgrade_next, release_transition, retain_next, revival_window_baseline,
     };
 

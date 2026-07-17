@@ -62,7 +62,7 @@ impl<'ctx> LlvmBackend<'ctx> {
         // Set target triple for the host
         let triple = inkwell::targets::TargetMachine::get_default_triple();
         module.set_triple(&triple);
-        Self {
+        let backend = Self {
             context,
             module,
             builder,
@@ -72,7 +72,43 @@ impl<'ctx> LlvmBackend<'ctx> {
             runtime_callable_symbols:
                 crate::runtime_callable_symbols::runtime_callable_symbols_from_env()
                     .unwrap_or_default(),
+        };
+        backend.ensure_generated_object_abi_anchor();
+        backend
+    }
+
+    /// Attach the mandatory, retained relocation to the runtime's exact
+    /// generated-object ABI. This belongs to module construction/emission so
+    /// every direct LLVM consumer receives the witness; compile drivers cannot
+    /// opt out accidentally. The operation is idempotent for all emit paths.
+    fn ensure_generated_object_abi_anchor(&self) {
+        if self
+            .module
+            .get_global(crate::GENERATED_OBJECT_ABI_ANCHOR_SYMBOL)
+            .is_some()
+        {
+            return;
         }
+        let witness = self.module.add_global(
+            self.context.i8_type(),
+            None,
+            molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL,
+        );
+        witness.set_linkage(inkwell::module::Linkage::External);
+        let pointer_type = self.context.ptr_type(inkwell::AddressSpace::default());
+        let anchor = self.module.add_global(
+            pointer_type,
+            None,
+            crate::GENERATED_OBJECT_ABI_ANCHOR_SYMBOL,
+        );
+        anchor.set_linkage(inkwell::module::Linkage::Internal);
+        anchor.set_initializer(&witness.as_pointer_value());
+        let used = self
+            .module
+            .add_global(pointer_type.array_type(1), None, "llvm.used");
+        used.set_linkage(inkwell::module::Linkage::Appending);
+        used.set_section(Some("llvm.metadata"));
+        used.set_initializer(&pointer_type.const_array(&[anchor.as_pointer_value()]));
     }
 
     /// Get the compiled LLVM IR as a string (for debugging).
@@ -263,6 +299,7 @@ impl<'ctx> LlvmBackend<'ctx> {
     /// Returns `true` on success. The emitted `.bc` file can be passed to
     /// `llvm-lto` or the linker's LTO plugin for cross-module optimization.
     pub fn emit_bitcode(&self, path: &std::path::Path) -> bool {
+        self.ensure_generated_object_abi_anchor();
         self.module.write_bitcode_to_path(path)
     }
 
@@ -274,6 +311,7 @@ impl<'ctx> LlvmBackend<'ctx> {
     ) -> Result<(), String> {
         use inkwell::targets::FileType;
 
+        self.ensure_generated_object_abi_anchor();
         let target_machine = self.create_target_machine(&opt_level);
         target_machine
             .write_to_file(&self.module, FileType::Object, path)
@@ -288,6 +326,7 @@ impl<'ctx> LlvmBackend<'ctx> {
     ) -> Result<(), String> {
         use inkwell::targets::FileType;
 
+        self.ensure_generated_object_abi_anchor();
         let target_machine = self.create_target_machine(&opt_level);
         target_machine
             .write_to_file(&self.module, FileType::Assembly, path)
@@ -300,6 +339,28 @@ impl<'ctx> LlvmBackend<'ctx> {
 mod tests {
     use super::*;
     use inkwell::context::Context;
+    use object::{Object, ObjectSymbol};
+
+    struct TempArtifact(std::path::PathBuf);
+
+    impl TempArtifact {
+        fn new(extension: &str) -> Self {
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos();
+            Self(std::env::temp_dir().join(format!(
+                "molt-llvm-abi-{}-{nonce}.{extension}",
+                std::process::id()
+            )))
+        }
+    }
+
+    impl Drop for TempArtifact {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
 
     #[test]
     fn test_backend_module_name() {
@@ -310,6 +371,58 @@ mod tests {
             ir.contains("test_module"),
             "IR should contain the module name, got: {ir}"
         );
+    }
+
+    #[test]
+    fn direct_bitcode_emitter_retains_generated_object_abi_witness() {
+        let ctx = Context::create();
+        let backend = LlvmBackend::new(&ctx, "direct_bitcode_abi");
+        let artifact = TempArtifact::new("bc");
+        assert!(backend.emit_bitcode(&artifact.0));
+        let bitcode = std::fs::read(&artifact.0).expect("read direct LLVM bitcode");
+        assert!(bitcode.starts_with(b"BC\xc0\xde"), "LLVM bitcode magic");
+        let ir = backend.dump_ir();
+        assert!(ir.contains(molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL));
+        let opposite = if molt_codegen_abi::MOLT_REFCOUNT_ATOMIC {
+            molt_codegen_abi::GENERATED_OBJECT_ABI_GIL_SYMBOL
+        } else {
+            molt_codegen_abi::GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL
+        };
+        assert!(!ir.contains(opposite));
+        assert!(ir.contains(crate::GENERATED_OBJECT_ABI_ANCHOR_SYMBOL));
+        assert!(ir.contains("llvm.used"));
+    }
+
+    #[test]
+    fn direct_object_emitter_imports_exact_generated_object_abi_witness() {
+        let ctx = Context::create();
+        let backend = LlvmBackend::new(&ctx, "direct_object_abi");
+        let artifact = TempArtifact::new(if cfg!(windows) { "obj" } else { "o" });
+        backend
+            .emit_object(&artifact.0, MoltOptLevel::None)
+            .expect("direct LLVM object emission");
+        let bytes = std::fs::read(&artifact.0).expect("read direct LLVM object");
+        let file = object::File::parse(bytes.as_slice()).expect("parse direct LLVM object");
+        let undefined: std::collections::BTreeSet<String> = file
+            .symbols()
+            .filter(|symbol| symbol.is_undefined())
+            .filter_map(|symbol| {
+                symbol
+                    .name()
+                    .ok()
+                    .map(|name| name.strip_prefix('_').unwrap_or(name).to_owned())
+            })
+            .collect();
+        assert!(
+            undefined.contains(molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL),
+            "direct LLVM object must import exact selected ABI witness: {undefined:?}"
+        );
+        let opposite = if molt_codegen_abi::MOLT_REFCOUNT_ATOMIC {
+            molt_codegen_abi::GENERATED_OBJECT_ABI_GIL_SYMBOL
+        } else {
+            molt_codegen_abi::GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL
+        };
+        assert!(!undefined.contains(opposite));
     }
 
     #[test]

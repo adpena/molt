@@ -346,8 +346,8 @@ pub(in crate::native_backend::function_compiler) fn handle_object_construct_op(
             //
             //   offset  0: type_id    (i32) = TYPE_ID_OBJECT (100)
             //   offset  4: ref_count  (i32) = 1
-            //              (`MoltRefCount` is `#[repr(transparent)]`
-            //              over the target-selected u32 storage)
+            //              (mode-selected u32 word — `MoltRefCount`
+            //              is `#[repr(transparent)]` over it)
             //   offset  8: flags      (i32) = HEADER_FLAG_IMMORTAL (0x8000).
             //              IMMORTAL prevents
             //              `dec_ref_ptr` from freeing the

@@ -43,10 +43,12 @@ The `emit_maybe_ref_adjust` helper in the backend unconditionally calls `local_i
 
 ### Heap Object RC Mechanics
 
-Every heap object has a `MoltHeader` with a `MoltRefCount` (AtomicU32 on native, Cell<u32> on wasm32). The key operations:
+Every heap object has a `MoltHeader` with one ABI-stable `MoltRefCount`: a
+`Cell<u32>` under deterministic GIL and wasm32, and `AtomicU32` only under
+explicit native free-threading. The key operations:
 
-- **`inc_ref_ptr`**: Skips null and immortal objects (`HEADER_FLAG_IMMORTAL`). Otherwise `fetch_add(1, Relaxed)`. Cost breakdown: GIL assertion, null check, header pointer arithmetic (ptr.sub(size_of::<MoltHeader>())), immortal flag check, atomic fetch_add.
-- **`dec_ref_ptr`**: Skips null, `TYPE_ID_NOT_IMPLEMENTED`, and immortal. Otherwise `fetch_sub(1, AcqRel)`. If count reaches zero: acquire fence, optional finalizer (`__del__`), weakref clearing, then type-dispatched destructor (which recursively dec-refs children). The `AcqRel` ordering on dec_ref (vs `Relaxed` on inc_ref) is required for the zero-check to synchronize with the last writer.
+- **`inc_ref_ptr`**: skips null and immortal objects, then uses the checked retain transition so zero/deallocating state and overflow fail closed.
+- **`dec_ref_ptr`**: skips null, `TYPE_ID_NOT_IMPLEMENTED`, and immortal, then performs one Release decrement. Only the terminal 1→0 edge pays the Acquire fence before finalization, weakref clearing, and recursive destruction.
 
 Both ABI entry points (`molt_inc_ref_obj`, `molt_dec_ref_obj`) go through `with_gil_entry!`, which acquires a `GilGuard` (real lock on native, no-op on wasm32). This per-call GIL acquisition is a meaningful cost when RC calls dominate -- on native targets, even an uncontended mutex still involves an atomic compare-exchange.
 
@@ -536,7 +538,7 @@ If a function raises an exception, all owned parameters and local variables must
 | File | Role |
 |------|------|
 | `runtime/molt-runtime/src/object/mod.rs` (lines 363-375, 875-990) | `inc_ref_bits`, `dec_ref_bits`, `inc_ref_ptr`, `dec_ref_ptr` |
-| `runtime/molt-runtime/src/object/refcount.rs` | `MoltRefCount` (AtomicU32/Cell<u32>) |
+| `runtime/molt-codegen-abi/src/lib.rs` | `MoltRefCount` (mode-selected AtomicU32/Cell<u32>) |
 | `runtime/molt-runtime/src/object/ops.rs` (lines 42906-42921) | `molt_inc_ref_obj`, `molt_dec_ref_obj` ABI exports |
 | `runtime/molt-runtime/src/call/bind.rs` | `CallArgs`, `callargs_dec_ref_all`, `protect_callargs_aliased_return`, `molt_call_bind`, `molt_call_bind_ic` |
 | `runtime/molt-backend/src/lib.rs` (lines 839-948) | `compute_last_use`, `drain_cleanup_tracked`, `collect_cleanup_tracked` |

@@ -26,15 +26,10 @@ use std::collections::BTreeSet;
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
-const GENERATED_OBJECT_ABI_ANCHOR_SYMBOL: &str = "__molt_generated_object_abi_anchor";
-
 const _: () = assert!(
-    cfg!(feature = "free-threaded") == molt_codegen_abi::MOLT_FLAGS_ATOMIC,
+    molt_codegen_abi::MOLT_FLAGS_ATOMIC == cfg!(not(target_arch = "wasm32"))
+        && cfg!(feature = "free-threaded") == molt_codegen_abi::MOLT_REFCOUNT_ATOMIC,
     "molt-backend-native/free-threaded must exactly match molt-codegen-abi/free-threaded",
-);
-const _: () = assert!(
-    cfg!(feature = "free-threaded") == molt_codegen_abi::MOLT_REFCOUNT_ATOMIC,
-    "molt-backend-native refcount storage must match the generated-object concurrency ABI",
 );
 
 /// Attach a retained, zero-runtime-cost relocation to the runtime's exact
@@ -137,9 +132,10 @@ mod header_flags_tests {
             ir.contains("load.i32") && !ir.contains("atomic_load"),
             "metadata flags must use the relaxed generated load class:\n{ir}"
         );
-        assert!(
-            !cfg!(feature = "free-threaded") || molt_codegen_abi::MOLT_FLAGS_ATOMIC,
-            "a backend free-threaded request must propagate to ABI storage"
+        assert_eq!(
+            molt_codegen_abi::MOLT_FLAGS_ATOMIC,
+            cfg!(not(target_arch = "wasm32")),
+            "native generated metadata flags must always be atomic",
         );
     }
 
@@ -206,7 +202,7 @@ mod header_flags_tests {
             .filter_map(|symbol| symbol.name().ok().map(str::to_owned))
             .collect();
         assert!(undefined.contains(molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL));
-        let opposite = if molt_codegen_abi::MOLT_FLAGS_ATOMIC {
+        let opposite = if molt_codegen_abi::MOLT_REFCOUNT_ATOMIC {
             molt_codegen_abi::GENERATED_OBJECT_ABI_GIL_SYMBOL
         } else {
             molt_codegen_abi::GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL
