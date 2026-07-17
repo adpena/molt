@@ -506,6 +506,7 @@ pub(crate) struct RuntimeState {
     pub(crate) exception_type_cache: Mutex<HashMap<String, u64>>,
     pub(crate) exceptions: ExceptionsRuntimeState,
     pub(crate) exception_str_cache: Mutex<HashMap<u64, (u64, bool)>>,
+    pub(crate) codec_error_handlers: Mutex<HashMap<String, u64>>,
     pub(crate) argv: Mutex<Vec<Vec<u8>>>,
     pub(crate) sys_version_info: Mutex<Option<PythonVersionInfo>>,
     pub(crate) sys_version: Mutex<Option<String>>,
@@ -604,6 +605,22 @@ impl RuntimeState {
             exception_type_cache: Mutex::new(HashMap::new()),
             exceptions: ExceptionsRuntimeState::new(),
             exception_str_cache: Mutex::new(HashMap::new()),
+            codec_error_handlers: Mutex::new({
+                let mut handlers = HashMap::new();
+                for name in [
+                    "strict",
+                    "ignore",
+                    "replace",
+                    "xmlcharrefreplace",
+                    "backslashreplace",
+                    "namereplace",
+                    "surrogateescape",
+                    "surrogatepass",
+                ] {
+                    handlers.insert(name.to_owned(), MoltObject::from_bool(true).bits());
+                }
+                handlers
+            }),
             argv: Mutex::new(Vec::new()),
             sys_version_info: Mutex::new(None),
             sys_version: Mutex::new(None),
@@ -1183,6 +1200,16 @@ pub extern "C" fn molt_runtime_shutdown() -> u64 {
         | RuntimeLifecyclePhase::Shutdown => return 0,
     };
     debug_assert_eq!(runtime_ready_ptr(), Some(ptr));
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let attachments = molt_cpython_abi::api::object::runtime_execution_attachment_count();
+        if attachments != 0 {
+            eprintln!(
+                "molt runtime shutdown refused: {attachments} runtime execution attachment(s) remain live"
+            );
+            return 0;
+        }
+    }
     RUNTIME_READY_PTR.store(std::ptr::null_mut(), AtomicOrdering::Release);
     *phase = RuntimeLifecyclePhase::Finalizing {
         owner,
@@ -1197,6 +1224,8 @@ pub extern "C" fn molt_runtime_shutdown() -> u64 {
     let state = unsafe { &*ptr };
     let py = gil.token();
     runtime_teardown(&py, state);
+    #[cfg(not(target_arch = "wasm32"))]
+    molt_cpython_abi::api::object::detach_runtime_execution_thread();
     // Clear the teardown owner's private cache before freeing the state. The
     // public ready projection was already unpublished at the Finalizing edge.
     clear_thread_runtime_state();
@@ -1213,8 +1242,6 @@ pub extern "C" fn molt_runtime_shutdown() -> u64 {
     );
     *phase = RuntimeLifecyclePhase::Shutdown;
     lifecycle.changed.notify_all();
-    #[cfg(not(target_arch = "wasm32"))]
-    molt_cpython_abi::api::object::detach_runtime_execution_thread();
     1
 }
 
@@ -1313,7 +1340,7 @@ pub(crate) fn molt_runtime_reset_for_testing() {
     // Clear the intrinsic registry's one-shot flags so the next init can
     // re-register intrinsics into a fresh builtins module.  Without this,
     // BUILTINS_MODULE_PTR holds a dangling pointer to the destroyed module
-    // and MANIFEST_SET prevents re-setting the manifest.
+    // and the manifest publication state prevents re-setting the manifest.
     crate::intrinsics::registry::reset_for_testing();
 }
 
@@ -1540,6 +1567,51 @@ mod tests {
             unsafe { molt_cpython_abi::api::object::Py_IsInitialized() },
             0
         );
+    }
+
+    #[test]
+    #[ignore = "mutates the process-global runtime lifecycle; run in isolation"]
+    fn shutdown_refuses_while_a_foreign_runtime_attachment_is_live() {
+        let _guard = crate::test_mutex_guard();
+        if runtime_ready_ptr().is_some() {
+            assert_eq!(molt_runtime_shutdown(), 1);
+        }
+        molt_runtime_reset_for_testing();
+        assert_eq!(molt_runtime_init(), 1);
+
+        let (attached_tx, attached_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let gil = GilGuard::new();
+            molt_cpython_abi::api::object::attach_runtime_execution_thread();
+            drop(gil);
+            attached_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            let _gil = GilGuard::new();
+            molt_cpython_abi::api::object::detach_runtime_execution_thread();
+        });
+        attached_rx.recv().unwrap();
+        assert_eq!(
+            molt_cpython_abi::api::object::runtime_execution_attachment_count(),
+            1
+        );
+        assert_eq!(
+            molt_runtime_shutdown(),
+            0,
+            "live attachment must refuse shutdown"
+        );
+        assert!(
+            runtime_ready_ptr().is_some(),
+            "refused shutdown must leave the runtime published and usable"
+        );
+
+        release_tx.send(()).unwrap();
+        worker.join().unwrap();
+        assert_eq!(
+            molt_cpython_abi::api::object::runtime_execution_attachment_count(),
+            0
+        );
+        assert_eq!(molt_runtime_shutdown(), 1);
     }
 
     #[cfg(feature = "l7-attestation-probe")]

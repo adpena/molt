@@ -8,7 +8,7 @@ pub(crate) mod tls;
 pub(crate) mod traceback;
 
 pub(crate) use lifecycle::{
-    clear_worker_thread_state, runtime_reset_for_init, runtime_teardown,
+    clear_worker_thread_state, run_runtime_worker, runtime_reset_for_init, runtime_teardown,
     runtime_teardown_for_process_exit, runtime_teardown_isolate, touch_tls_guard,
 };
 pub(crate) use metrics::{
