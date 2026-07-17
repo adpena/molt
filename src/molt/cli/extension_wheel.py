@@ -143,11 +143,29 @@ def _rewrite_staged_extension_wheel(
     embedded_manifest = dict(canonical_embedded_manifest)
     for field in _SIDECAR_ONLY_MANIFEST_FIELDS:
         embedded_manifest.pop(field, None)
-    embedded_manifest["extension"] = raw_extension
+    canonical_extension = embedded_manifest.get("extension")
+    if not isinstance(canonical_extension, str):
+        raise ExtensionWheelError(
+            "canonical extension manifest has no extension member"
+        )
+    canonical_extension = _canonical_wheel_path(canonical_extension)
+    raw_extension = _canonical_wheel_path(raw_extension)
+    if canonical_extension != raw_extension and any(
+        path == canonical_extension for path, _data in entries
+    ):
+        raise ExtensionWheelError(
+            "canonical extension member collides with an existing wheel member: "
+            f"{canonical_extension}"
+        )
+    entries = [
+        (canonical_extension if path == raw_extension else path, data)
+        for path, data in entries
+    ]
+    embedded_manifest["extension"] = canonical_extension
     embedded_manifest["wheel"] = destination_wheel.name
     expected_extension_sha256 = embedded_manifest.get("extension_sha256")
     extension_members = dict(entries)
-    extension_bytes = extension_members.get(_canonical_wheel_path(raw_extension))
+    extension_bytes = extension_members.get(canonical_extension)
     if extension_bytes is None:
         raise ExtensionWheelError(
             "source wheel extension manifest names a missing extension member"
