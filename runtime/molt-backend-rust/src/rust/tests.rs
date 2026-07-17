@@ -2,6 +2,75 @@ use super::*;
 use crate::{FunctionIR, OpIR, SimpleIR};
 
 #[test]
+fn emitted_stack_clear_preserves_the_nested_execution_baseline() {
+    let op = |kind: &str| OpIR {
+        kind: kind.to_string(),
+        ..OpIR::default()
+    };
+    let mut caller_depth = op("const_bool");
+    caller_depth.out = Some("caller_depth".to_string());
+    caller_depth.value = Some(1);
+    let mut set_caller_depth = op("exception_stack_set_depth");
+    set_caller_depth.args = Some(vec!["caller_depth".to_string()]);
+    let mut enter = op("exception_stack_enter");
+    enter.out = Some("previous_baseline".to_string());
+    let mut observed = op("exception_stack_depth");
+    observed.out = Some("observed_depth".to_string());
+    let mut print = op("print");
+    print.args = Some(vec!["observed_depth".to_string()]);
+    let mut exit = op("exception_stack_exit");
+    exit.args = Some(vec!["previous_baseline".to_string()]);
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_main".to_string(),
+            params: vec![],
+            ops: vec![
+                caller_depth,
+                set_caller_depth,
+                enter,
+                op("exception_stack_clear"),
+                observed,
+                print,
+                exit,
+                op("return_none"),
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        }],
+        profile: None,
+    };
+    // Production correctly rejects exception-state programs until the Rust
+    // target grows a complete exception runtime. This unit exercises the
+    // standalone prelude that preview/source emission already maintains.
+    let source = RustBackend::new().compile(&ir);
+    assert!(source.contains("*depth.borrow_mut() = baseline"));
+    assert!(!source.contains("*baseline.borrow_mut() = 0"));
+
+    let temp = std::env::temp_dir().join(format!(
+        "molt_rust_exception_stack_baseline_{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&temp).expect("create test directory");
+    let source_path = temp.join("main.rs");
+    let binary_path = temp.join(if cfg!(windows) { "main.exe" } else { "main" });
+    std::fs::write(&source_path, source).expect("write emitted Rust source");
+    let compile = std::process::Command::new("rustc")
+        .args(["--edition", "2024", "-A", "warnings", "-O", "-o"])
+        .arg(&binary_path)
+        .arg(&source_path)
+        .status()
+        .expect("rustc must compile emitted Rust backend source");
+    assert!(compile.success(), "emitted Rust source must compile");
+    let output = std::process::Command::new(&binary_path)
+        .output()
+        .expect("emitted Rust binary must execute");
+    assert!(output.status.success(), "emitted Rust binary must succeed");
+    assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), "1");
+    let _ = std::fs::remove_dir_all(temp);
+}
+
+#[test]
 fn compile_checked_keeps_ordinary_programs_available() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {

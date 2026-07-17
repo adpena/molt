@@ -375,11 +375,9 @@ try:
 except (RuntimeError, TypeError):
     _MOLT_OS_WRITE_FN = None
 
-# Runtime sys module finalization owns the real argv/executable values.
-# Keep import-time sys.py bootstrap side-effect-free and let
-# sys_populate_argv_executable overwrite these placeholders.
-argv: list[object] = []
-executable = ""
+# Runtime sys module publication is the sole argv/executable authority.  Python
+# placeholders would execute after publication and could overwrite the process
+# values, making behavior depend on module/link initialization order.
 
 
 def exit(code: object = None) -> None:

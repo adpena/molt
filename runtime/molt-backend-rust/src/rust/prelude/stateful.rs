@@ -152,8 +152,8 @@ impl RustBackend {
                 "    MoltValue::None\n",
                 "}\n\n",
                 "fn molt_exception_stack_clear() -> MoltValue {\n",
-                "    MOLT_EXCEPTION_STACK_DEPTH.with(|depth| *depth.borrow_mut() = 0);\n",
-                "    MOLT_EXCEPTION_STACK_BASELINE.with(|baseline| *baseline.borrow_mut() = 0);\n",
+                "    let baseline = MOLT_EXCEPTION_STACK_BASELINE.with(|baseline| *baseline.borrow());\n",
+                "    MOLT_EXCEPTION_STACK_DEPTH.with(|depth| *depth.borrow_mut() = baseline);\n",
                 "    MoltValue::None\n",
                 "}\n\n",
             ));

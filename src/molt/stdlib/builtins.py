@@ -85,6 +85,7 @@ if False:  # TYPE_CHECKING
     _molt_sys_stderr: Callable[[], object]
     _molt_sys_executable: Callable[[], str]
     _molt_exception_last: Callable[[], Optional[BaseException]]
+    _molt_exception_last_pending: Callable[[], Optional[BaseException]]
     _molt_exception_active: Callable[[], Optional[BaseException]]
     _molt_asyncgen_hooks_get: Callable[[], object]
     _molt_asyncgen_hooks_set: Callable[[object, object], object]
@@ -529,6 +530,7 @@ _molt_sys_stdin = _require_builtin_intrinsic("molt_sys_stdin")
 _molt_sys_stdout = _require_builtin_intrinsic("molt_sys_stdout")
 _molt_sys_stderr = _require_builtin_intrinsic("molt_sys_stderr")
 _molt_exception_last = _require_builtin_intrinsic("molt_exception_last")
+_molt_exception_last_pending = _require_builtin_intrinsic("molt_exception_last_pending")
 _molt_exception_active = _require_builtin_intrinsic("molt_exception_active")
 _molt_asyncgen_hooks_get = _require_builtin_intrinsic("molt_asyncgen_hooks_get")
 _molt_asyncgen_hooks_set = _require_builtin_intrinsic("molt_asyncgen_hooks_set")

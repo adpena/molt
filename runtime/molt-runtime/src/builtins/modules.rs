@@ -292,7 +292,7 @@ fn module_bits_are_module_like(bits: u64) -> bool {
     ty == TYPE_ID_MODULE || ty == TYPE_ID_DICT
 }
 
-const MODULES_OBJECT_SLOT_COUNT: usize = 15;
+const MODULES_OBJECT_SLOT_COUNT: usize = 14;
 
 pub(crate) struct ModulesRuntimeState {
     /// Serializes only user-visible process-state transitions made by
@@ -313,7 +313,6 @@ pub(crate) struct ModulesRuntimeState {
     module_spec_name: AtomicU64,
     module_doc_name: AtomicU64,
     module_loader_name: AtomicU64,
-    sys_argv_name: AtomicU64,
 }
 
 impl ModulesRuntimeState {
@@ -334,7 +333,6 @@ impl ModulesRuntimeState {
             module_spec_name: AtomicU64::new(0),
             module_doc_name: AtomicU64::new(0),
             module_loader_name: AtomicU64::new(0),
-            sys_argv_name: AtomicU64::new(0),
         }
     }
 
@@ -354,7 +352,6 @@ impl ModulesRuntimeState {
             &self.module_spec_name,
             &self.module_doc_name,
             &self.module_loader_name,
-            &self.sys_argv_name,
         ]
     }
 }
@@ -433,26 +430,30 @@ unsafe fn sys_populate_argv_executable(_py: &PyToken<'_>, sys_ptr: *mut u8) -> R
         let argv_key_bits = MoltObject::from_ptr(argv_key_ptr).bits();
         let exec_key_bits = MoltObject::from_ptr(exec_key_ptr).bits();
 
-        let args = runtime_state(_py).argv.lock().unwrap();
-        let exec_val = std::env::var("MOLT_SYS_EXECUTABLE")
-            .ok()
-            .filter(|v| !v.is_empty())
-            .map(String::into_bytes)
-            .unwrap_or_else(|| args.first().cloned().unwrap_or_default());
-        let mut elems = Vec::with_capacity(args.len());
-        for arg in args.iter() {
-            let ptr = alloc_string(_py, arg);
-            if ptr.is_null() {
-                for bits in elems {
-                    dec_ref_bits(_py, bits);
+        let projection = crate::object::ops_sys::with_process_argv(_py, |args| {
+            let exec_val = std::env::var("MOLT_SYS_EXECUTABLE")
+                .ok()
+                .filter(|v| !v.is_empty())
+                .map(String::into_bytes)
+                .unwrap_or_else(|| args.first().cloned().unwrap_or_default());
+            let mut elems = Vec::with_capacity(args.len());
+            for arg in args {
+                let ptr = alloc_string(_py, arg);
+                if ptr.is_null() {
+                    for bits in elems {
+                        dec_ref_bits(_py, bits);
+                    }
+                    return None;
                 }
-                dec_ref_bits(_py, argv_key_bits);
-                dec_ref_bits(_py, exec_key_bits);
-                return Err(());
+                elems.push(MoltObject::from_ptr(ptr).bits());
             }
-            elems.push(MoltObject::from_ptr(ptr).bits());
-        }
-        drop(args);
+            Some((exec_val, elems))
+        });
+        let Some((exec_val, elems)) = projection else {
+            dec_ref_bits(_py, argv_key_bits);
+            dec_ref_bits(_py, exec_key_bits);
+            return Err(());
+        };
 
         let argv_list_ptr = alloc_list(_py, &elems);
         if argv_list_ptr.is_null() {
@@ -484,6 +485,32 @@ unsafe fn sys_populate_argv_executable(_py: &PyToken<'_>, sys_ptr: *mut u8) -> R
         dec_ref_bits(_py, argv_key_bits);
         dec_ref_bits(_py, exec_key_bits);
         Ok(())
+    }
+}
+
+/// Reconcile an already-published `sys` module with the process arguments
+/// installed by the native entrypoint.  Runtime bootstrap can publish `sys`
+/// before `wmain`/`main` calls `molt_set_argv`; leaving the first empty
+/// snapshot in place makes `sys.argv` depend on module/link initialization
+/// order.  The process argument store and Python-visible attributes therefore
+/// move as one transaction regardless of when `sys` was materialized.
+pub(crate) unsafe fn refresh_sys_argv_executable(_py: &PyToken<'_>) -> Result<(), ()> {
+    unsafe {
+        let sys_bits = {
+            let cache = crate::builtins::exceptions::internals::module_cache(_py);
+            let guard = cache.lock().unwrap();
+            let Some(bits) = guard.get("sys").copied() else {
+                return Ok(());
+            };
+            inc_ref_bits(_py, bits);
+            bits
+        };
+        let result = obj_from_bits(sys_bits)
+            .as_ptr()
+            .filter(|ptr| object_type_id(*ptr) == TYPE_ID_MODULE)
+            .map_or(Ok(()), |sys_ptr| sys_populate_argv_executable(_py, sys_ptr));
+        dec_ref_bits(_py, sys_bits);
+        result
     }
 }
 
@@ -866,6 +893,8 @@ fn molt_module_import_inner(name_bits: u64) -> u64 {
             }
             MoltObject::from_ptr(ptr).bits()
         };
+        let sys_modules_policy = execution::python_sys_modules_sync_policy(_py, &name);
+        let suppress_sys_modules = sys_modules_policy != execution::PythonSysModulesSync::Normal;
         let result_bits = 'result: {
             // Normal imports prefer canonical handles already present in
             // sys.modules, so alias-backed names (for example `os.path`)
@@ -874,7 +903,7 @@ fn molt_module_import_inner(name_bits: u64) -> u64 {
             // one exception: Loader.exec_module and runpy deliberately execute
             // the admitted body again while preserving/restoring sys.modules.
             // Returning the visible module here would silently skip that body.
-            if !execution::suppress_python_sys_modules_sync(_py, &name) {
+            if !suppress_sys_modules {
                 let sys_bits = {
                     let cache = crate::builtins::exceptions::internals::module_cache(_py);
                     let guard = cache.lock().unwrap();
@@ -921,24 +950,27 @@ fn molt_module_import_inner(name_bits: u64) -> u64 {
                 break 'result MoltObject::none().bits();
             }
             let mut canonical_bits: Option<u64> = None;
-            let sys_bits = {
-                let cache = crate::builtins::exceptions::internals::module_cache(_py);
-                let guard = cache.lock().unwrap();
-                guard.get("sys").copied()
-            };
-            if let Some(sys_bits) = sys_bits
-                && let Some(modules_ptr) = sys_modules_dict_ptr(_py, sys_bits)
-            {
-                let from_sys_bits = unsafe { dict_get_in_place(_py, modules_ptr, name_key_bits) };
-                if exception_pending(_py) {
-                    break 'result MoltObject::none().bits();
-                }
-                if let Some(bits) = from_sys_bits
-                    && let Some(ptr) = obj_from_bits(bits).as_ptr()
+            if !suppress_sys_modules {
+                let sys_bits = {
+                    let cache = crate::builtins::exceptions::internals::module_cache(_py);
+                    let guard = cache.lock().unwrap();
+                    guard.get("sys").copied()
+                };
+                if let Some(sys_bits) = sys_bits
+                    && let Some(modules_ptr) = sys_modules_dict_ptr(_py, sys_bits)
                 {
-                    let ty = unsafe { object_type_id(ptr) };
-                    if ty == TYPE_ID_MODULE || ty == TYPE_ID_DICT {
-                        canonical_bits = Some(bits);
+                    let from_sys_bits =
+                        unsafe { dict_get_in_place(_py, modules_ptr, name_key_bits) };
+                    if exception_pending(_py) {
+                        break 'result MoltObject::none().bits();
+                    }
+                    if let Some(bits) = from_sys_bits
+                        && let Some(ptr) = obj_from_bits(bits).as_ptr()
+                    {
+                        let ty = unsafe { object_type_id(ptr) };
+                        if ty == TYPE_ID_MODULE || ty == TYPE_ID_DICT {
+                            canonical_bits = Some(bits);
+                        }
                     }
                 }
             }
@@ -955,23 +987,25 @@ fn molt_module_import_inner(name_bits: u64) -> u64 {
                 }
             }
             if let Some(bits) = canonical_bits {
-                let sys_bits = {
-                    let cache = crate::builtins::exceptions::internals::module_cache(_py);
-                    let guard = cache.lock().unwrap();
-                    guard.get("sys").copied()
-                };
-                if let Some(sys_bits) = sys_bits
-                    && let Some(modules_ptr) = sys_modules_dict_ptr(_py, sys_bits)
-                {
-                    unsafe {
-                        dict_set_in_place(_py, modules_ptr, name_key_bits, bits);
-                    }
-                    trace_stage("after_sys_modules_set_canonical");
-                    if exception_pending(_py) {
-                        if bits != module_bits && !obj_from_bits(module_bits).is_none() {
-                            dec_ref_bits(_py, module_bits);
+                if !suppress_sys_modules {
+                    let sys_bits = {
+                        let cache = crate::builtins::exceptions::internals::module_cache(_py);
+                        let guard = cache.lock().unwrap();
+                        guard.get("sys").copied()
+                    };
+                    if let Some(sys_bits) = sys_bits
+                        && let Some(modules_ptr) = sys_modules_dict_ptr(_py, sys_bits)
+                    {
+                        unsafe {
+                            dict_set_in_place(_py, modules_ptr, name_key_bits, bits);
                         }
-                        break 'result MoltObject::none().bits();
+                        trace_stage("after_sys_modules_set_canonical");
+                        if exception_pending(_py) {
+                            if bits != module_bits && !obj_from_bits(module_bits).is_none() {
+                                dec_ref_bits(_py, module_bits);
+                            }
+                            break 'result MoltObject::none().bits();
+                        }
                     }
                 }
                 if bits != module_bits {
@@ -1000,23 +1034,25 @@ fn molt_module_import_inner(name_bits: u64) -> u64 {
                     break 'result raise_exception::<_>(_py, "ModuleNotFoundError", &msg);
                 }
 
-                // Keep sys.modules synchronized with successful runtime imports so
-                // importlib.reload()/sys.modules round-trips remain consistent.
-                let sys_bits = {
-                    let cache = crate::builtins::exceptions::internals::module_cache(_py);
-                    let guard = cache.lock().unwrap();
-                    guard.get("sys").copied()
-                };
-                if let Some(sys_bits) = sys_bits
-                    && let Some(modules_ptr) = sys_modules_dict_ptr(_py, sys_bits)
-                {
-                    unsafe {
-                        dict_set_in_place(_py, modules_ptr, name_key_bits, module_bits);
-                    }
-                    trace_stage("after_sys_modules_set_module_bits");
-                    if exception_pending(_py) {
-                        dec_ref_bits(_py, module_bits);
-                        break 'result MoltObject::none().bits();
+                if !suppress_sys_modules {
+                    // Keep sys.modules synchronized with successful normal imports so
+                    // importlib.reload()/sys.modules round-trips remain consistent.
+                    let sys_bits = {
+                        let cache = crate::builtins::exceptions::internals::module_cache(_py);
+                        let guard = cache.lock().unwrap();
+                        guard.get("sys").copied()
+                    };
+                    if let Some(sys_bits) = sys_bits
+                        && let Some(modules_ptr) = sys_modules_dict_ptr(_py, sys_bits)
+                    {
+                        unsafe {
+                            dict_set_in_place(_py, modules_ptr, name_key_bits, module_bits);
+                        }
+                        trace_stage("after_sys_modules_set_module_bits");
+                        if exception_pending(_py) {
+                            dec_ref_bits(_py, module_bits);
+                            break 'result MoltObject::none().bits();
+                        }
                     }
                 }
             }
@@ -1963,11 +1999,15 @@ pub extern "C" fn molt_module_cache_set(name_bits: u64, module_bits: u64) -> u64
         };
         let is_sys = name == "sys";
         let trace_cache = trace_module_cache();
-        if trace_cache {
-            eprintln!("module cache set: {name} bits=0x{module_bits:x}");
-        }
         if let Err(bits) = execution::on_module_publish(_py, &name, module_bits) {
             return bits;
+        }
+        let sys_modules_policy = execution::python_sys_modules_sync_policy(_py, &name);
+        let suppress_sys_modules = sys_modules_policy != execution::PythonSysModulesSync::Normal;
+        if trace_cache {
+            eprintln!(
+                "module cache set: {name} bits=0x{module_bits:x} sys_modules_policy={sys_modules_policy:?}"
+            );
         }
         let (sys_bits, cached_modules) = {
             let cache = crate::builtins::exceptions::internals::module_cache(_py);
@@ -2002,7 +2042,7 @@ pub extern "C" fn molt_module_cache_set(name_bits: u64, module_bits: u64) -> u64
                 // (publish-before-exec, invariant I6).
                 #[cfg(not(target_arch = "wasm32"))]
                 crate::builtins::module_table::publish_from_cache_set(_py, &name, existing);
-                if execution::suppress_python_sys_modules_sync(_py, &name) {
+                if suppress_sys_modules {
                     return existing;
                 }
                 return if let Some(sys_bits) = sys_bits_out
@@ -2036,7 +2076,7 @@ pub extern "C" fn molt_module_cache_set(name_bits: u64, module_bits: u64) -> u64
         // while its ensure transaction is open (publish-before-exec, I6).
         #[cfg(not(target_arch = "wasm32"))]
         crate::builtins::module_table::publish_from_cache_set(_py, &name, module_bits);
-        if !execution::suppress_python_sys_modules_sync(_py, &name)
+        if !suppress_sys_modules
             && let Some(sys_bits) = sys_bits
             && let Some(modules_ptr) = sys_modules_dict_ptr(_py, sys_bits)
         {
@@ -2179,7 +2219,9 @@ pub extern "C" fn molt_module_cache_del(name_bits: u64) -> u64 {
         // slot while the ensure transaction is still open.
         #[cfg(not(target_arch = "wasm32"))]
         crate::builtins::module_table::unpublish_from_cache_del(_py, &name);
-        if execution::suppress_python_sys_modules_sync(_py, &name) {
+        if execution::python_sys_modules_sync_policy(_py, &name)
+            != execution::PythonSysModulesSync::Normal
+        {
             return MoltObject::none().bits();
         }
         if let Some(sys_bits) = sys_bits {

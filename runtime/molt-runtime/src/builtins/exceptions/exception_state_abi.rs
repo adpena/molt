@@ -465,7 +465,11 @@ pub extern "C" fn molt_exception_pop() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_stack_clear() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        exception_stack_set_depth(_py, 0);
+        // A callee may discard only handlers it installed above its execution
+        // baseline. Clearing the whole thread stack destroys caller-owned
+        // lexical handlers across any nested call or initializer. Entry
+        // functions retain baseline zero, so their behavior is unchanged.
+        exception_stack_set_depth(_py, exception_stack_baseline_get());
         MoltObject::none().bits()
     })
 }

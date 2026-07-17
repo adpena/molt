@@ -58,7 +58,13 @@ const SCRIPT_METADATA_PENDING: u8 =
 
 thread_local! {
     static EXECUTION_STACK: RefCell<Vec<ExecutionContext>> = const { RefCell::new(Vec::new()) };
-    static CACHE_SYNC_SUPPRESSIONS: RefCell<Vec<(usize, String)>> = const { RefCell::new(Vec::new()) };
+    static CACHE_SYNC_SUPPRESSIONS: RefCell<Vec<(usize, String, PythonSysModulesSync)>> = const { RefCell::new(Vec::new()) };
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum PythonSysModulesSync {
+    Normal,
+    Suppress,
 }
 
 /// The compiled initializer must publish into Molt's internal import cache so
@@ -71,9 +77,11 @@ struct CacheSyncSuppression {
 }
 
 impl CacheSyncSuppression {
-    fn enter(runtime_id: usize, name: &str) -> Self {
+    fn enter(runtime_id: usize, name: &str, policy: PythonSysModulesSync) -> Self {
         CACHE_SYNC_SUPPRESSIONS.with(|stack| {
-            stack.borrow_mut().push((runtime_id, name.to_string()));
+            stack
+                .borrow_mut()
+                .push((runtime_id, name.to_string(), policy));
         });
         Self {
             runtime_id,
@@ -86,20 +94,26 @@ impl Drop for CacheSyncSuppression {
     fn drop(&mut self) {
         CACHE_SYNC_SUPPRESSIONS.with(|stack| {
             let popped = stack.borrow_mut().pop();
-            debug_assert_eq!(popped.as_ref().map(|(id, _)| *id), Some(self.runtime_id));
-            debug_assert_eq!(popped.as_ref().map(|(_, name)| name), Some(&self.name));
+            debug_assert_eq!(popped.as_ref().map(|(id, _, _)| *id), Some(self.runtime_id));
+            debug_assert_eq!(popped.as_ref().map(|(_, name, _)| name), Some(&self.name));
         });
     }
 }
 
-pub(super) fn suppress_python_sys_modules_sync(_py: &PyToken<'_>, name: &str) -> bool {
+pub(super) fn python_sys_modules_sync_policy(
+    _py: &PyToken<'_>,
+    name: &str,
+) -> PythonSysModulesSync {
     let runtime_id = runtime_state(_py) as *const _ as usize;
     CACHE_SYNC_SUPPRESSIONS.with(|stack| {
         stack
             .borrow()
             .iter()
             .rev()
-            .any(|(id, suppressed)| *id == runtime_id && suppressed == name)
+            .find_map(|(id, suppressed, policy)| {
+                (*id == runtime_id && suppressed == name).then_some(*policy)
+            })
+            .unwrap_or(PythonSysModulesSync::Normal)
     })
 }
 
@@ -965,7 +979,9 @@ pub(crate) fn execute_compiled_module(
     };
     let execution_name = crate::builtins::module_table::module_execution_target_name(import_name)
         .unwrap_or(import_name);
-    let _cache_sync_suppression = CacheSyncSuppression::enter(runtime_id, execution_name);
+    let sync_policy = PythonSysModulesSync::Suppress;
+    let _cache_sync_suppression =
+        CacheSyncSuppression::enter(runtime_id, execution_name, sync_policy);
 
     let previous_bits = cached_module_owned_bits(_py, execution_name);
     let table_snapshot =

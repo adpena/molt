@@ -687,6 +687,7 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
     ),
     "_molt_sys_executable": BuiltinFuncSpec("molt_sys_executable", ()),
     "_molt_exception_last": BuiltinFuncSpec("molt_exception_last", ()),
+    "_molt_exception_last_pending": BuiltinFuncSpec("molt_exception_last_pending", ()),
     "_molt_exception_active": BuiltinFuncSpec("molt_exception_active", ()),
     "_molt_asyncgen_hooks_get": BuiltinFuncSpec("molt_asyncgen_hooks_get", ()),
     "_molt_asyncgen_hooks_set": BuiltinFuncSpec(
