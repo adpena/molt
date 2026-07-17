@@ -236,14 +236,14 @@ pub(crate) fn weakref_clear_for_ptr(_py: &PyToken<'_>, target_ptr: *mut u8) {
 /// unreachable set before running any surviving callback.
 pub(crate) fn weakref_handle_cycle_unreachable(
     _py: &PyToken<'_>,
-    unreachable: &[*mut u8],
+    unreachable: &[PtrSlot],
     is_collecting: impl Fn(*mut u8) -> bool,
 ) {
     let capacity = {
         let registry = runtime_state(_py).weakrefs.lock().unwrap();
         unreachable
             .iter()
-            .map(|ptr| registry.by_target.get(&PtrSlot(*ptr)).map_or(0, Vec::len))
+            .map(|ptr| registry.by_target.get(ptr).map_or(0, Vec::len))
             .sum()
     };
     let mut deaths: Vec<PendingWeakDeath> = Vec::new();
@@ -256,7 +256,7 @@ pub(crate) fn weakref_handle_cycle_unreachable(
     }
     {
         let mut registry = runtime_state(_py).weakrefs.lock().unwrap();
-        for &target_ptr in unreachable {
+        for &PtrSlot(target_ptr) in unreachable {
             if target_ptr.is_null() {
                 continue;
             }
@@ -320,14 +320,14 @@ pub(crate) fn weakref_handle_cycle_unreachable(
 
 fn weakref_handle_cycle_unreachable_noqueue(
     _py: &PyToken<'_>,
-    unreachable: &[*mut u8],
+    unreachable: &[PtrSlot],
     is_collecting: &impl Fn(*mut u8) -> bool,
 ) {
     // Pass 1 clears every target before any callback, preserving CPython's
     // whole-unreachable-set ordering without allocating a side queue.
     {
         let mut registry = runtime_state(_py).weakrefs.lock().unwrap();
-        for &target_ptr in unreachable {
+        for &PtrSlot(target_ptr) in unreachable {
             let target_slot = PtrSlot(target_ptr);
             let Some(list) = registry.by_target.remove(&target_slot) else {
                 continue;
@@ -342,7 +342,7 @@ fn weakref_handle_cycle_unreachable_noqueue(
     }
     // Pass 2 consumes the already-cleared registrations one at a time. The
     // removed target Vec is the worklist, so the OOM path stays allocation-free.
-    for &target_ptr in unreachable {
+    for &PtrSlot(target_ptr) in unreachable {
         let target_slot = PtrSlot(target_ptr);
         let list = runtime_state(_py)
             .weakrefs
