@@ -128,6 +128,25 @@ def test_explicit_development_session_overrides_outer_generated_provenance(
     )
 
 
+def test_repassed_outer_generated_session_keeps_shared_target_provenance(
+    tmp_path: Path,
+) -> None:
+    env = development_artifact_env(
+        tmp_path,
+        {
+            "PATH": "/usr/bin",
+            "MOLT_SESSION_ID": "guard-outer",
+            "MOLT_SESSION_ID_GENERATED": "1",
+        },
+        session_id="guard-outer",
+        create_dirs=False,
+    )
+
+    assert env["MOLT_SESSION_ID"] == "guard-outer"
+    assert env["MOLT_SESSION_ID_GENERATED"] == "1"
+    assert env["CARGO_TARGET_DIR"] == str(tmp_path.resolve() / "target")
+
+
 def test_live_dx_docs_do_not_reintroduce_session_scoped_default() -> None:
     repo = Path(__file__).resolve().parents[1]
     docs = [
