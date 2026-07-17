@@ -15,17 +15,15 @@ name: Perf Gate (canonical CPython-floor scoreboard)
 # through tools/perf_authority.py; the freshness gate in ci.yml keeps stale
 # markdown snapshots from masquerading as current.
 #
-# Triggers: push to main (the release-blocking gate, debounced by the
-# concurrency group below so only the latest main tip is gated) +
-# workflow_dispatch + a weekly schedule. Set branch protection to REQUIRE both
-# matrix jobs. tools/check_perf_gate_wiring.py (ci_gate tier-1) fails closed if
-# this gate is ever un-wired from main again — a gate that never fires certifies
-# nothing (meta-bug audit: proxy-measurement substitution, TIER-0).
+# Triggers: explicit dispatch plus a weekly controlled measurement. Per-push
+# allocation is forbidden: rapid main updates repeatedly cancelled expensive
+# jobs after compilation while publishing no authoritative result. Pending runs
+# debounce in GitHub's concurrency queue, but an active measurement is never
+# cancelled. tools/check_perf_gate_wiring.py fails closed on trigger/cancellation
+# drift and on any non-blocking scoreboard invocation.
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
   schedule:
     # Weekly canonical re-measure (Mondays 06:00 UTC) so the citable board stays
     # fresh even between perf-touching PRs.
@@ -35,8 +33,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: perf-gate-${{ github.ref }}
-  cancel-in-progress: true
+  group: perf-gate-controlled-measurement
+  cancel-in-progress: false
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
