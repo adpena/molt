@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 import functools
 import hashlib
 import json
@@ -22,6 +21,11 @@ from molt.cli.file_hashing import (
     _hash_source_tree_metadata,
     _sha256_file,
     _source_fingerprint_files,
+)
+from molt.cli.python_import_resolution import (
+    LocalPythonModuleResolver,
+    PythonImportPolicy,
+    local_import_dependencies,
 )
 from molt.cli.runtime_fingerprints import _runtime_source_paths
 
@@ -264,111 +268,12 @@ def _write_lowering_scope_source_files_cache(
                 tmp_path.unlink()
 
 
-def _module_level_molt_import_targets(path: Path, src_root: Path) -> set[str]:
-    """Fully-qualified ``molt`` modules imported at MODULE LEVEL from ``path``.
-
-    Only top-level ``import`` / ``from ... import`` statements are considered:
-    reachability models the closure that executes as a side effect of *importing*
-    the frontend drivers, which is exactly the set of files whose code runs to
-    produce a lowering. A dependency pulled in only inside a function body is
-    deferred work (post-lowering command dispatch, native linking, diagnostics)
-    that runs after the cached lowering is computed, so it is intentionally not
-    followed -- following it would drag the backend back onto the frontend path.
-
-    A ``from PKG import NAME`` statement is attributed to *where ``NAME`` is
-    defined* -- the submodule ``PKG.NAME`` when one exists, otherwise ``PKG``
-    itself (resolved via the owner-fallback in
-    ``_resolve_import_targets_to_files``) where the attribute lives. The package
-    aggregate ``PKG`` is deliberately NOT added for a sibling-submodule import:
-    importing ``PKG.NAME`` does execute ``PKG/__init__``'s module-level code at
-    runtime, but that ``__init__``'s *other* imports are the package's unrelated
-    surface -- e.g. importing ``molt.cli.frontend_execution`` would otherwise drag
-    ``cli/__init__``'s whole command / extension-seal / daemon / package-registry
-    layer onto the lowering scope even though none of it feeds the lowered TIR.
-    Attributing each import to the specific module it names keeps the closure to
-    files that actually define what the frontend imports; genuine lowering-facing
-    packages that must be kept wholesale (``frontend/``, ``compiler_analysis/``)
-    are seeded explicitly instead of via a package-``__init__`` re-export edge.
-    """
-    try:
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-    except (OSError, SyntaxError, ValueError):
-        return set()
-    try:
-        module_name = _module_name_for_source(path, src_root)
-    except ValueError:
-        module_name = None
-    package = (
-        module_name.rsplit(".", 1)[0]
-        if module_name and "." in module_name
-        else module_name
-    )
-    targets: set[str] = set()
-    for node in tree.body:  # module level only
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name.startswith("molt"):
-                    targets.add(alias.name)
-        elif isinstance(node, ast.ImportFrom):
-            if node.level == 0:
-                base = node.module or ""
-                if not base.startswith("molt"):
-                    continue
-            else:
-                if package is None:
-                    continue
-                base_parts = package.split(".")
-                if node.level > 1:
-                    trim = node.level - 1
-                    base_parts = base_parts[:-trim] if trim < len(base_parts) else []
-                base = ".".join(base_parts + ([node.module] if node.module else []))
-                if not base.startswith("molt"):
-                    continue
-            # Attribute the dependency to each imported name (submodule ``base.X``
-            # or, via the resolver's owner-fallback, the module ``base`` where an
-            # attribute / star import is defined). ``base`` itself is intentionally
-            # NOT added unconditionally -- see the docstring: doing so pulls the
-            # package ``__init__``'s unrelated siblings onto the lowering path.
-            for alias in node.names:
-                targets.add(f"{base}.{alias.name}")
-    return targets
-
-
-def _module_name_for_source(path: Path, src_root: Path) -> str:
-    rel = path.resolve().relative_to(src_root)
-    parts = list(rel.parts)
-    if parts[-1] == "__init__.py":
-        parts = parts[:-1]
-    elif parts[-1].endswith(".py"):
-        parts[-1] = parts[-1][: -len(".py")]
-    return ".".join(parts)
-
-
-def _molt_module_source_file(module: str, src_root: Path) -> Path | None:
-    rel = Path(*module.split("."))
-    candidate = src_root / f"{rel}.py"
-    if candidate.exists():
-        return candidate.resolve()
-    package_init = src_root / rel / "__init__.py"
-    if package_init.exists():
-        return package_init.resolve()
-    return None
-
-
-def _resolve_import_targets_to_files(targets: set[str], src_root: Path) -> set[Path]:
-    files: set[Path] = set()
-    for target in targets:
-        source = _molt_module_source_file(target, src_root)
-        if source is not None:
-            files.add(source)
-            continue
-        # ``from pkg.mod import name`` yields ``pkg.mod.name``; ``name`` may be an
-        # attribute rather than a submodule -- fall back to the owning module.
-        if "." in target:
-            owner = _molt_module_source_file(target.rsplit(".", 1)[0], src_root)
-            if owner is not None:
-                files.add(owner)
-    return files
+_FRONTEND_LOWERING_IMPORT_POLICY = PythonImportPolicy(
+    module_level_only=True,
+    include_parent_packages=False,
+    fail_on_nonliteral_dynamic_import=False,
+    allowed_prefix="molt",
+)
 
 
 def _lowering_scope_seed_paths(project_root: Path) -> tuple[Path, ...]:
@@ -431,6 +336,7 @@ def _lowering_scope_source_files_cached(project_root_str: str) -> tuple[str, ...
     """
     project_root = pathlib.Path(project_root_str)
     src_root = (project_root / "src").resolve()
+    resolver = LocalPythonModuleResolver((src_root,))
     molt_root = src_root / "molt"
     cli_root = molt_root / "cli"
     seed_clean_state = _compiler_clean_pathspec_source_state(
@@ -466,8 +372,15 @@ def _lowering_scope_source_files_cached(project_root_str: str) -> tuple[str, ...
         if current in reached:
             continue
         reached.add(current)
-        targets = _module_level_molt_import_targets(current, src_root)
-        for source in _resolve_import_targets_to_files(targets, src_root):
+        try:
+            dependencies = local_import_dependencies(
+                current,
+                resolver,
+                _FRONTEND_LOWERING_IMPORT_POLICY,
+            )
+        except ValueError:
+            dependencies = set()
+        for source in dependencies:
             if source not in reached:
                 pending.append(source)
     result = tuple(sorted(str(path) for path in reached))

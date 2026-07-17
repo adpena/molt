@@ -132,9 +132,11 @@ integrity metadata. Until that release lane exists, the honest path is:
 
 1. Build once on a machine allowed to run the Rust/WASM toolchain.
 2. Publish `output.wasm` and `molt_runtime.wasm` together.
-3. Keep `loader_bridge.js`, `browser_host.js`, `browser_target_features.js`,
-   `browser_gpu_dispatch.js`, and `browser_gpu_worker.js` version-matched with
-   the runtime.
+3. Publish the complete role-checked loader asset closure from
+   `molt.browser_asset_closure`; do not select dependencies by filename. The
+   generated graph follows transitive ES/CommonJS imports, dynamic imports,
+   workers, classic-worker imports, and statically rooted fetches. Dynamic URLs
+   stay explicit runtime/deployment inputs rather than guessed graph edges.
 
 `--split-runtime` remains the cache-friendly deployment mode for larger apps:
 
@@ -142,10 +144,10 @@ integrity metadata. Until that release lane exists, the honest path is:
 molt build kernel.py --target wasm --profile browser --split-runtime --out-dir dist
 ```
 
-That mode emits `app.wasm`, `molt_runtime.wasm`, `worker.js`,
-`browser_embed.js`, `browser_target_features.js`, `browser_gpu_dispatch.js`,
-`browser_gpu_worker.js`, `loader_bridge.js`, `target_feature_manifest.json`,
-and `manifest.json`. The runtime module is designed to stay CDN-cacheable
+That mode emits `app.wasm`, `molt_runtime.wasm`, `worker.js`, the canonical
+browser loader closure, `target_feature_manifest.json`, and `manifest.json`.
+The manifest records every closure member by size and SHA-256. The runtime
+module is designed to stay CDN-cacheable
 across apps when its export surface is unchanged. `manifest.json` records the
 generated
 `target_features` profile selected from the app's host imports; WebGPU imports

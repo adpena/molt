@@ -1,0 +1,11 @@
+schema_version = 1
+
+# The only dynamic ``molt.cli`` imports are the finite `_LAZY_REEXPORTS` registry
+# and `_LazyPostLoweringModule` instances. Derive their module targets from those
+# source authorities and ratchet the exact call count; arbitrary bare submodule
+# attributes are rejected by `molt.cli.__getattr__` rather than compatibility-
+# imported.
+[[source]]
+path = "src/molt/cli/__init__.py"
+nonliteral_calls = 3
+derive_molt_cli_lazy_targets = true

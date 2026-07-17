@@ -1,0 +1,325 @@
+{
+  "assets": {
+    "browser_embed.js": {
+      "authority": "browser-loader",
+      "external_references": [],
+      "reference_facts": [
+        {
+          "column": 1,
+          "kind": "module",
+          "line": 7,
+          "request": "./browser_gpu_dispatch.js",
+          "target": "browser_gpu_dispatch.js"
+        },
+        {
+          "column": 1,
+          "kind": "module",
+          "line": 2,
+          "request": "./browser_target_features.js",
+          "target": "browser_target_features.js"
+        },
+        {
+          "column": 1,
+          "kind": "module",
+          "line": 1,
+          "request": "./loader_bridge.js",
+          "target": "loader_bridge.js"
+        }
+      ],
+      "references": [
+        "browser_gpu_dispatch.js",
+        "browser_target_features.js",
+        "loader_bridge.js"
+      ],
+      "role": "browser",
+      "sha256": "d164c43158c33c5fd83dc4e5df152bd3e2764899ac50e09f40d14730d0b8140c",
+      "source_type": "module"
+    },
+    "browser_gpu_dispatch.js": {
+      "authority": "browser-gpu",
+      "external_references": [],
+      "reference_facts": [
+        {
+          "column": 14,
+          "kind": "worker",
+          "line": 75,
+          "request": "./browser_gpu_worker.js",
+          "target": "browser_gpu_worker.js"
+        }
+      ],
+      "references": [
+        "browser_gpu_worker.js"
+      ],
+      "role": "browser",
+      "sha256": "420a1c2117a5a488ac0994ccc7e82a13c0399edeed6b0f37a7d03c65ebcd86e3",
+      "source_type": "module"
+    },
+    "browser_gpu_worker.js": {
+      "authority": "browser-gpu",
+      "external_references": [],
+      "reference_facts": [],
+      "references": [],
+      "role": "browser",
+      "sha256": "99704396adca66220adedb37b9050e5a2609ea59ad68cb2767ad5da8d7d9fce2",
+      "source_type": "script"
+    },
+    "browser_host.js": {
+      "authority": "browser-loader",
+      "external_references": [],
+      "reference_facts": [
+        {
+          "column": 1,
+          "kind": "module",
+          "line": 7,
+          "request": "./browser_gpu_dispatch.js",
+          "target": "browser_gpu_dispatch.js"
+        },
+        {
+          "column": 1,
+          "kind": "module",
+          "line": 2,
+          "request": "./browser_target_features.js",
+          "target": "browser_target_features.js"
+        },
+        {
+          "column": 1,
+          "kind": "module",
+          "line": 1,
+          "request": "./loader_bridge.js",
+          "target": "loader_bridge.js"
+        },
+        {
+          "column": 31,
+          "kind": "dynamic-import",
+          "line": 95,
+          "request": "./molt_vfs_browser.js",
+          "target": "molt_vfs_browser.js"
+        }
+      ],
+      "references": [
+        "browser_gpu_dispatch.js",
+        "browser_target_features.js",
+        "loader_bridge.js",
+        "molt_vfs_browser.js"
+      ],
+      "role": "browser",
+      "sha256": "d3c4bcc08fb51d927719ee51422799791ba803ec63d499b1378a2d1cb4a77ae8",
+      "source_type": "module"
+    },
+    "browser_target_features.js": {
+      "authority": "target-feature-manifest",
+      "external_references": [],
+      "reference_facts": [
+        {
+          "column": 1,
+          "kind": "module",
+          "line": 1,
+          "request": "./target_feature_constants.generated.js",
+          "target": "target_feature_constants.generated.js"
+        }
+      ],
+      "references": [
+        "target_feature_constants.generated.js"
+      ],
+      "role": "browser",
+      "sha256": "3f7d780dfbcd8f42dd5fd0ce1e4ba2f4d64730360a24e684f05abb08d026bf6a",
+      "source_type": "module"
+    },
+    "loader_bridge.js": {
+      "authority": "wasm-loader-bridge",
+      "external_references": [],
+      "reference_facts": [],
+      "references": [],
+      "role": "shared",
+      "sha256": "abcd36b327800263e112b5f72b712f2ed6b229f806b2e7acb1fffacec92fa173",
+      "source_type": "script"
+    },
+    "molt_vfs_browser.js": {
+      "authority": "browser-vfs",
+      "external_references": [],
+      "reference_facts": [],
+      "references": [],
+      "role": "browser",
+      "sha256": "4a19c5bc287394a61c8bb4935842574536f5b5fc8db63aedc6b46cff6097b59a",
+      "source_type": "module"
+    },
+    "run_wasm.js": {
+      "authority": "node-runner",
+      "external_references": [
+        "child_process",
+        "dgram",
+        "dns",
+        "fs",
+        "net",
+        "node:wasi",
+        "os",
+        "path",
+        "undici",
+        "wasi",
+        "worker_threads"
+      ],
+      "reference_facts": [
+        {
+          "column": 5,
+          "kind": "require",
+          "line": 32,
+          "request": "./loader_bridge.js",
+          "target": "loader_bridge.js"
+        },
+        {
+          "column": 5,
+          "kind": "require",
+          "line": 11,
+          "request": "./target_feature_manifest.json",
+          "target": "target_feature_manifest.json"
+        },
+        {
+          "column": 26,
+          "kind": "require",
+          "line": 8,
+          "request": "./wasm_abi_generated.json",
+          "target": "wasm_abi_generated.json"
+        },
+        {
+          "column": 33,
+          "kind": "require",
+          "line": 7,
+          "request": "child_process",
+          "target": "child_process"
+        },
+        {
+          "column": 15,
+          "kind": "require",
+          "line": 3,
+          "request": "dgram",
+          "target": "dgram"
+        },
+        {
+          "column": 13,
+          "kind": "require",
+          "line": 4,
+          "request": "dns",
+          "target": "dns"
+        },
+        {
+          "column": 12,
+          "kind": "require",
+          "line": 1,
+          "request": "fs",
+          "target": "fs"
+        },
+        {
+          "column": 13,
+          "kind": "require",
+          "line": 2,
+          "request": "net",
+          "target": "net"
+        },
+        {
+          "column": 15,
+          "kind": "require",
+          "line": 47,
+          "request": "node:wasi",
+          "target": "node:wasi"
+        },
+        {
+          "column": 12,
+          "kind": "require",
+          "line": 5,
+          "request": "os",
+          "target": "os"
+        },
+        {
+          "column": 14,
+          "kind": "require",
+          "line": 6,
+          "request": "path",
+          "target": "path"
+        },
+        {
+          "column": 37,
+          "kind": "require",
+          "line": 41,
+          "request": "undici",
+          "target": "undici"
+        },
+        {
+          "column": 17,
+          "kind": "require",
+          "line": 50,
+          "request": "wasi",
+          "target": "wasi"
+        },
+        {
+          "column": 5,
+          "kind": "require",
+          "line": 67,
+          "request": "worker_threads",
+          "target": "worker_threads"
+        }
+      ],
+      "references": [
+        "loader_bridge.js",
+        "target_feature_manifest.json",
+        "wasm_abi_generated.json"
+      ],
+      "role": "node",
+      "sha256": "0cffd6e212793d548f1c3719daebb699ee2b9e7d9a5c6ee212466446f026c652",
+      "source_type": "script"
+    },
+    "target_feature_constants.generated.js": {
+      "authority": "target-feature-manifest",
+      "external_references": [],
+      "reference_facts": [],
+      "references": [],
+      "role": "browser",
+      "sha256": "f5eca55bc4a92a09da073cd3e591bc322a310e2b939ccfb9c39f4b343121c8df",
+      "source_type": "module"
+    },
+    "target_feature_manifest.json": {
+      "authority": "target-feature-manifest",
+      "external_references": [],
+      "reference_facts": [],
+      "references": [],
+      "role": "node",
+      "sha256": "49555fe30cc2a0750793e55916c54bdd31c92060e165f34d62ad066e093d0cde",
+      "source_type": "data"
+    },
+    "wasm_abi_generated.json": {
+      "authority": "wasm-abi",
+      "external_references": [],
+      "reference_facts": [],
+      "references": [],
+      "role": "node",
+      "sha256": "84b56d59c78b78112c2003ef748c000fcccc4d029316963d901857d2e2713c60",
+      "source_type": "data"
+    }
+  },
+  "entry_groups": {
+    "browser-host": {
+      "assets": [
+        "browser_host.js"
+      ],
+      "role": "browser"
+    },
+    "browser-wasm": {
+      "assets": [
+        "browser_embed.js",
+        "browser_host.js"
+      ],
+      "role": "browser"
+    },
+    "node-runner": {
+      "assets": [
+        "run_wasm.js"
+      ],
+      "role": "node"
+    }
+  },
+  "scanner": {
+    "package_lock_sha256": "48aa8d11316e983cc93be2cfe319503092bed17b4d311290bd8c60a6a70051bc",
+    "path": "tools/browser_asset_graph/scan.mjs",
+    "sha256": "ea7eeef271322224eb4dbd6200f0d8901e6776e66023d9646be03549e566fa0c"
+  },
+  "schema_version": 2
+}

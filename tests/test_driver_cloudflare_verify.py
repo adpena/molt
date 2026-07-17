@@ -1,8 +1,38 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import shutil
 import subprocess
 from pathlib import Path
+
+from molt.browser_asset_closure import (
+    BROWSER_HOST_ENTRY_ASSETS,
+    wasm_loader_asset_closure,
+)
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _write_browser_asset_closure(assets_root: Path) -> list[dict[str, object]]:
+    manifest: list[dict[str, object]] = []
+    for name in wasm_loader_asset_closure(
+        ROOT / "wasm",
+        BROWSER_HOST_ENTRY_ASSETS,
+    ):
+        source = ROOT / "wasm" / name
+        target = assets_root / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        manifest.append(
+            {
+                "url": f"/{name}",
+                "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                "size_bytes": source.stat().st_size,
+            }
+        )
+    return manifest
 
 
 def test_thin_adapter_run_wrangler_check_assembles_command(
@@ -98,12 +128,10 @@ def test_thin_adapter_validate_bundle_contract_accepts_materialized_layout(
         "app.wasm",
         "molt_runtime.wasm",
         "browser.js",
-        "browser_host.js",
-        "loader_bridge.js",
-        "molt_vfs_browser.js",
         "config.json",
     ]:
         (assets_root / name).write_text("x\n", encoding="utf-8")
+    browser_static_assets = _write_browser_asset_closure(assets_root)
     (assets_root / "driver-manifest.base.json").write_text(
         json.dumps(
             {
@@ -114,6 +142,7 @@ def test_thin_adapter_validate_bundle_contract_accepts_materialized_layout(
                     "config_json": {"url": "/config.json"},
                     "browser_loader": {"url": "/browser.js"},
                 },
+                "browser_static_assets": browser_static_assets,
             }
         )
         + "\n",
@@ -159,13 +188,11 @@ def test_thin_adapter_validate_bundle_contract_rejects_missing_manifest_route(
         "app.wasm",
         "molt_runtime.wasm",
         "browser.js",
-        "browser_host.js",
-        "loader_bridge.js",
-        "molt_vfs_browser.js",
         "config.json",
         "driver-manifest.base.json",
     ]:
         (assets_root / name).write_text("x\n", encoding="utf-8")
+    _write_browser_asset_closure(assets_root)
     worker_entrypoint = (
         bundle_root / "drivers" / "falcon" / "browser_webgpu" / "worker.ts"
     )
