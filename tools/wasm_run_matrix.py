@@ -80,6 +80,7 @@ if str(SRC_DIR) not in sys.path:
 import harness_memory_guard  # noqa: E402
 from molt.browser_asset_closure import (  # noqa: E402
     BROWSER_HOST_ENTRY_ASSETS,
+    canonical_wasm_loader_asset_bytes,
     wasm_loader_asset_closure,
 )
 from molt.wasm_artifact import read_wasm_imports  # noqa: E402
@@ -765,10 +766,7 @@ def _stage_browser_static_assets(site: Path) -> tuple[str, ...]:
         src = WASM_DIR.joinpath(*Path(src_name).parts)
         dst = site.joinpath(*Path(src_name).parts)
         dst.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            os.symlink(src, dst)
-        except OSError:
-            shutil.copyfile(src, dst)
+        dst.write_bytes(canonical_wasm_loader_asset_bytes(src))
     return assets
 
 

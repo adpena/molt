@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shutil
 import sys
@@ -25,6 +26,7 @@ from drivers._shared.cloudflare import (  # noqa: E402
 )
 from molt.browser_asset_closure import (  # noqa: E402
     BROWSER_HOST_ENTRY_ASSETS,
+    canonical_wasm_loader_asset_bytes,
     wasm_loader_asset_closure,
 )
 
@@ -62,6 +64,17 @@ def _copy_file(src: Path, dst: Path) -> None:
 def _write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+
+
+def _browser_asset_record(path: Path, root: Path) -> dict[str, Any]:
+    payload = canonical_wasm_loader_asset_bytes(path)
+    return {
+        "kind": "browser_static_asset",
+        "path": str(path.resolve()),
+        "relative_path": path.resolve().relative_to(root.resolve()).as_posix(),
+        "size_bytes": len(payload),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+    }
 
 
 def discover_falcon_config_json(target_root: Path, *, weights_root: Path) -> Path:
@@ -166,10 +179,8 @@ def build_deploy_surface(
             ),
         },
         "browser_static_assets": [
-            artifact_record(
-                kind="browser_static_asset",
-                path=wasm_asset_root.joinpath(*Path(name).parts),
-                root=wasm_asset_root,
+            _browser_asset_record(
+                wasm_asset_root.joinpath(*Path(name).parts), wasm_asset_root
             )
             for name in browser_static_assets
         ],
@@ -332,9 +343,12 @@ def materialize_deploy_bundle(
         )
     wasm_asset_root = REPO_ROOT / "wasm"
     for name in surface["artifacts"]["browser_static_assets"]:
-        _copy_file(
-            wasm_asset_root.joinpath(*Path(name).parts),
-            assets_root.joinpath(*Path(name).parts),
+        destination = assets_root.joinpath(*Path(name).parts)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(
+            canonical_wasm_loader_asset_bytes(
+                wasm_asset_root.joinpath(*Path(name).parts)
+            )
         )
     browser_loader_text = (
         (DRIVER_DIR / "browser.js")
