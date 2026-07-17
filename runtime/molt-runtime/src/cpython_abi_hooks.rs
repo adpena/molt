@@ -2655,11 +2655,20 @@ unsafe fn static_module_def_to_bits(def: *mut PyModuleDef) -> Result<Option<u64>
             "{module_name}: static-link PyModuleDef returned a non-module object"
         ));
     }
-    // Convert the new C reference into the owned runtime edge returned to the
-    // caller. The physical module view is released on every exit.
-    with_gil(|_py| crate::inc_ref_bits(&_py, module_bits));
-    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(module_obj) };
-    Ok(Some(module_bits))
+    // Transfer the constructor's owned C result back into exactly one runtime
+    // owner while deleting the temporary physical projection. The bridge
+    // lifecycle decides whether the view hold itself transfers or whether an
+    // already-added ordinary owner survives after that hold is released.
+    let Some(transferred_bits) = (unsafe {
+        molt_cpython_abi::bridge::GLOBAL_BRIDGE.transfer_owned_view_to_runtime(module_obj)
+    }) else {
+        unsafe { molt_cpython_abi::api::refcount::Py_DECREF(module_obj) };
+        return Err(format!(
+            "{module_name}: static-link module result could not transfer ABI ownership"
+        ));
+    };
+    debug_assert_eq!(transferred_bits, module_bits);
+    Ok(Some(transferred_bits))
 }
 
 unsafe fn cext_bytes_from_raw<'a>(data: *const u8, len: u64) -> Result<&'a [u8], &'static str> {

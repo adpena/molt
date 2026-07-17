@@ -527,13 +527,23 @@ pub extern "C" fn molt_issubclass(sub_bits: u64, class_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_object_new() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let obj_bits = molt_alloc(std::mem::size_of::<u64>() as u64);
+        let class_bits = builtin_classes(_py).object;
+        let obj_bits = crate::object::builders::alloc_class_instance(
+            _py,
+            std::mem::size_of::<u64>() as u64,
+            class_bits,
+        );
         let Some(obj_ptr) = obj_from_bits(obj_bits).as_ptr() else {
             return MoltObject::none().bits();
         };
-        let class_bits = builtin_classes(_py).object;
         unsafe {
-            let _ = molt_object_set_class(obj_ptr as usize as u64, class_bits);
+            // `OBJECT_NEW` is also the generic default-`object.__new__` seed:
+            // class construction may replace this edge before publishing the
+            // instance to user code. Select CLASS_INLINE at allocation instead
+            // of trying to mutate the immutable aux representation later.
+            (*crate::object::header_from_obj_ptr(obj_ptr))
+                .fetch_or_flags(crate::object::HEADER_FLAG_RAW_ALLOC);
+            crate::object::gc::gc_publish_initialized(_py, obj_ptr);
         }
         obj_bits
     })

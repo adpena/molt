@@ -3601,6 +3601,63 @@ impl ObjectBridge {
         }
     }
 
+    /// Consume a fresh owned C result and return its canonical runtime owner.
+    ///
+    /// A view-hold-only projection transfers that hold directly. If ordinary
+    /// runtime owners were added while C code initialized the object, retire
+    /// and release only the stable view hold. This is the sole conversion for
+    /// temporary `PyObject*` results that must not leave a physical ABI view.
+    pub unsafe fn transfer_owned_view_to_runtime(&self, ptr: *mut PyObject) -> Option<AbiHandle> {
+        if ptr.is_null() {
+            return None;
+        }
+        let addr = ptr.addr();
+        loop {
+            let mut address = self.address_shard(addr).lock();
+            let bits = address.from_py.get(&addr).copied()?;
+            let index = self.handle_shard_index(bits);
+            let mut handle = self.handle_shards[index].lock();
+            let entry = handle.to_py.get_mut(&bits)?;
+            match &entry.publication {
+                PublicationState::Ready => {}
+                PublicationState::Building { owner } if is_publication_owner(bits, owner) => {}
+                PublicationState::Building { .. } | PublicationState::Retiring => {
+                    drop(address);
+                    self.publication_ready[index].wait(&mut handle);
+                    continue;
+                }
+            }
+            if entry.view.py_obj() != ptr || entry.lifecycle == BridgeLifecycle::FinalizingPin {
+                return None;
+            }
+            let lifecycle = entry.lifecycle;
+            let expected_c_refs = match lifecycle {
+                BridgeLifecycle::ViewHoldOnly => 1,
+                BridgeLifecycle::RuntimeOwned => 2,
+                BridgeLifecycle::FinalizingPin => unreachable!(),
+            };
+            if unsafe { (*ptr).ob_refcnt } != expected_c_refs {
+                return None;
+            }
+            entry.publication = PublicationState::Retiring;
+            address.direct_molt_py.remove(&addr);
+            address.from_py.remove(&addr);
+            let entry = handle.to_py.remove(&bits)?;
+            self.publication_ready[index].notify_all();
+            drop(handle);
+            drop(address);
+            release_bridge_entry(*entry);
+            if unsafe { (crate::hooks::hooks_or_stubs().try_mark_abi_view)(bits, 0) } == 0 {
+                eprintln!("molt fatal: transferred ABI view lost runtime header custody");
+                std::process::abort();
+            }
+            if lifecycle == BridgeLifecycle::RuntimeOwned {
+                unsafe { (crate::hooks::hooks_or_stubs().dec_ref)(bits) };
+            }
+            return Some(bits);
+        }
+    }
+
     pub fn release_pyobj(&self, ptr: *mut PyObject) -> PyObjRelease {
         if ptr.is_null() {
             return PyObjRelease::Untracked;
