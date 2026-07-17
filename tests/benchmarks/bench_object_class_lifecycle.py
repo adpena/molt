@@ -1,11 +1,4 @@
-"""Bare-object and user-class allocation/refcount lifecycle benchmark.
-
-The two warmed epochs exercise the shared class-edge constructor authority.
-Every iteration allocates, validates the runtime class, and drops the only
-owning instance reference. Runtime epoch counters distinguish balanced
-allocation/deallocation from a fast leak; the guarded runner records wall time
-and process-tree peak RSS.
-"""
+"""Bare-object and user-class allocation/refcount lifecycle benchmark."""
 
 import sys
 
@@ -23,26 +16,43 @@ class Plain:
     __slots__ = ()
 
 
-def main() -> None:
+def allocate_bare_objects(iterations: int) -> int:
     hits = 0
+    for _ in range(iterations):
+        value = object()
+        hits += type(value) is object
+    # Make the final iteration's lifetime explicit before the epoch endpoint.
+    del value
+    return hits
+
+
+def allocate_plain_instances(iterations: int) -> int:
+    hits = 0
+    for _ in range(iterations):
+        value = Plain()
+        hits += type(value) is Plain
+    del value
+    return hits
+
+
+def main() -> None:
+    # Warm constructor dispatch and allocation classes outside measured epochs.
+    hits = allocate_bare_objects(10_000)
+    hits += allocate_plain_instances(10_000)
 
     if _profile_epoch_reset is not None:
         _profile_epoch_reset("bare_object_lifecycle")
-    for _ in range(1_000_000):
-        value = object()
-        hits += type(value) is object
+    hits += allocate_bare_objects(1_000_000)
     if _profile_epoch_dump is not None:
         _profile_epoch_dump()
 
     if _profile_epoch_reset is not None:
         _profile_epoch_reset("user_class_lifecycle")
-    for _ in range(1_000_000):
-        value = Plain()
-        hits += type(value) is Plain
+    hits += allocate_plain_instances(1_000_000)
     if _profile_epoch_dump is not None:
         _profile_epoch_dump()
 
-    print(hits)
+    print(hits - 20_000)
 
 
 if __name__ == "__main__":

@@ -1443,7 +1443,7 @@ def collect_samples(
     timings: list[float] = []
     profile_samples: list[dict[str, object]] = []
     first_failure: _SampleResult | None = None
-    for _ in range(samples):
+    for sample_index in range(samples):
         result = measure_wasm_run(
             wasm.run_env,
             runner_cmd,
@@ -1458,7 +1458,7 @@ def collect_samples(
         timings.append(result.elapsed_s)
         profile_samples.append(
             {
-                "sample_index": len(timings) - 1,
+                "sample_index": sample_index,
                 "profile": result.profile,
                 "epochs": result.profile_epochs or [],
             }

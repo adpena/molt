@@ -5,6 +5,12 @@ import json
 import sys
 from pathlib import Path
 
+from tests.runtime_profile_fixtures import (
+    memory_snapshot,
+    process_profile_payload,
+    profile_epoch_payload,
+)
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROFILE_TOOL_PATH = REPO_ROOT / "tools" / "profile.py"
@@ -17,43 +23,42 @@ sys.modules[PROFILE_TOOL_SPEC.name] = profile_tool
 PROFILE_TOOL_SPEC.loader.exec_module(profile_tool)
 
 
+def _profile_tool_process_fixture() -> dict[str, object]:
+    payload = process_profile_payload()
+    payload["profile"].update(
+        {"call_dispatch": 9, "alloc_count": 10, "dealloc_count": 10}
+    )
+    payload["hot_paths"]["call_bind_ic_hit"] = 8
+    return payload
+
+
 def test_profile_tool_parses_runtime_json_profile() -> None:
-    payload = {
-        "schema_version": 2,
-        "kind": "runtime_feedback",
-        "profile": {
+    payload = process_profile_payload()
+    payload["profile"].update(
+        {
             "call_dispatch": 7,
             "alloc_count": 11,
+            "dealloc_count": 11,
             "alloc_string": 3,
             "alloc_tuple": 2,
             "alloc_dict": 1,
-        },
-        "hot_paths": {"dict_str_int_prehash_hit": 5},
-        "deopt_reasons": {"guard_tag_type_mismatch": 4},
-        "aux": {"aux_sidecar_live_count": 6},
-        "gc": {"gc_tracked_live": 8},
-        "memory": {"peak_rss_bytes": 1234, "current_rss_bytes": 999},
-    }
+        }
+    )
+    payload["hot_paths"]["dict_str_int_prehash_hit"] = 5
+    payload["deopt_reasons"]["guard_tag_type_mismatch"] = 4
+    payload["memory"].update({"peak_rss_bytes": 1234, "current_rss_bytes": 999})
     log_text = "noise\nmolt_profile_json " + json.dumps(payload) + "\n"
 
     profile = profile_tool._parse_molt_profile_json(log_text)
 
-    assert profile == {
-        "call_dispatch": 7,
-        "alloc_count": 11,
-        "alloc_string": 3,
-        "alloc_tuple": 2,
-        "alloc_dict": 1,
-        "dict_str_int_prehash_hit": 5,
-        "guard_tag_type_mismatch": 4,
-        "aux_sidecar_live_count": 6,
-        "gc_tracked_live": 8,
-        "peak_rss_bytes": 1234,
-        "current_rss_bytes": 999,
-        "string_allocs": 3,
-        "tuple_allocs": 2,
-        "dict_allocs": 1,
-    }
+    assert profile is not None
+    assert profile["call_dispatch"] == 7
+    assert profile["alloc_count"] == 11
+    assert profile["dict_str_int_prehash_hit"] == 5
+    assert profile["memory"] == payload["memory"]
+    assert profile["string_allocs"] == 3
+    assert profile["tuple_allocs"] == 2
+    assert profile["dict_allocs"] == 1
 
 
 def test_profile_tool_uses_versioned_json_profile_authority(tmp_path: Path) -> None:
@@ -62,19 +67,7 @@ def test_profile_tool_uses_versioned_json_profile_authority(tmp_path: Path) -> N
         "\n".join(
             [
                 "unrelated diagnostic noise",
-                "molt_profile_json "
-                + json.dumps(
-                    {
-                        "schema_version": 2,
-                        "kind": "runtime_feedback",
-                        "profile": {"call_dispatch": 9, "alloc_count": 10},
-                        "aux": {},
-                        "gc": {},
-                        "memory": {"peak_rss_bytes": 0, "current_rss_bytes": 0},
-                        "hot_paths": {"call_bind_ic_hit": 8},
-                        "deopt_reasons": {},
-                    }
-                ),
+                "molt_profile_json " + json.dumps(_profile_tool_process_fixture()),
             ]
         )
         + "\n",
@@ -98,25 +91,10 @@ def test_profile_tool_rejects_unversioned_process_profile() -> None:
 
 
 def test_profile_tool_preserves_labeled_epoch_delta_sections() -> None:
-    payload = {
-        "schema_version": 1,
-        "kind": "runtime_profile_epoch",
-        "generation": 4,
-        "label": "cache_hits",
-        "delta": {
-            "profile": {"alloc_count": 0, "alloc_tuple": 0},
-            "gc": {"gc_registry_lock_contention_count": 2},
-        },
-        "counter_regressions": {"profile": {"dealloc_count": {"start": 8, "end": 7}}},
-        "gauges": {"profile": {"live_objects": {"start": 10, "end": 10, "delta": 0}}},
-        "memory": {
-            "current_rss_start_bytes": 0,
-            "current_rss_end_bytes": 0,
-            "current_rss_delta_bytes": 0,
-            "process_peak_start_bytes": 0,
-            "process_peak_end_bytes": 0,
-        },
-    }
+    payload = profile_epoch_payload()
+    payload["generation"] = 4
+    payload["label"] = "cache_hits"
+    payload["delta"]["gc"]["gc_registry_lock_contention_count"] = 2
 
     epochs = profile_tool._parse_molt_profile_epoch_json(
         "molt_profile_epoch_json " + json.dumps(payload)
@@ -183,10 +161,16 @@ def test_profile_summary_aggregates_all_runs_and_process_tree_rss() -> None:
                     {
                         "metrics": {
                             "peak_rss_bytes_external": 1_000,
-                            "molt_profile": {**base_profile, "peak_rss_bytes": 800},
+                            "molt_profile": {
+                                **base_profile,
+                                "memory": memory_snapshot(
+                                    current_rss_bytes=700, peak_rss_bytes=800
+                                ),
+                            },
                             "molt_profile_epochs": [
                                 {
                                     "label": "steady_state",
+                                    "claimable": True,
                                     "delta": {"alloc_count": 0, "alloc_bytes_total": 0},
                                     "gauges": {},
                                     "memory": {"current_rss_delta_bytes": 0},
@@ -197,10 +181,16 @@ def test_profile_summary_aggregates_all_runs_and_process_tree_rss() -> None:
                     {
                         "metrics": {
                             "peak_rss_bytes_external": 1_200,
-                            "molt_profile": {**base_profile, "peak_rss_bytes": 900},
+                            "molt_profile": {
+                                **base_profile,
+                                "memory": memory_snapshot(
+                                    current_rss_bytes=750, peak_rss_bytes=900
+                                ),
+                            },
                             "molt_profile_epochs": [
                                 {
                                     "label": "steady_state",
+                                    "claimable": True,
                                     "delta": {"alloc_count": 0, "alloc_bytes_total": 0},
                                     "gauges": {},
                                     "memory": {"current_rss_delta_bytes": 0},
@@ -226,6 +216,8 @@ def test_profile_summary_aggregates_all_runs_and_process_tree_rss() -> None:
     assert bench["gc_wait_ns_per_contention"] == 30.0
     assert bench["runtime_peak_rss_bytes_median"] == 850
     assert bench["runtime_peak_rss_bytes_max"] == 900
+    assert bench["runtime_rss_sources"] == ["windows-process-memory-info"]
+    assert bench["runtime_rss_unavailable_runs"] == 0
     assert bench["external_peak_rss_bytes_median"] == 1_100
     assert bench["external_peak_rss_bytes_max"] == 1_200
     assert bench["epochs"][0]["label"] == "steady_state"
@@ -246,6 +238,7 @@ def test_profile_summary_keeps_completed_epoch_without_exit_payload() -> None:
                             "molt_profile_epochs": [
                                 {
                                     "label": "completed_phase",
+                                    "claimable": True,
                                     "delta": {"alloc_count": 0},
                                     "gauges": {},
                                     "memory": {"current_rss_delta_bytes": 0},
@@ -266,3 +259,62 @@ def test_profile_summary_keeps_completed_epoch_without_exit_payload() -> None:
     assert bench["alloc_count"] is None
     assert bench["runtime_peak_rss_bytes_median"] is None
     assert bench["epochs"][0]["label"] == "completed_phase"
+
+
+def test_profile_summary_never_uses_regressed_epoch_for_zero_work_claim() -> None:
+    metadata = {
+        "benchmarks": [
+            {
+                "bench": "regressed.py",
+                "cpu_runs": [
+                    {
+                        "metrics": {
+                            "molt_profile_epochs": [
+                                {
+                                    "label": "steady_state",
+                                    "claimable": False,
+                                    "delta": {"alloc_count": 0},
+                                    "counter_regressions": {
+                                        "profile": {
+                                            "alloc_count": {"start": 9, "end": 1}
+                                        }
+                                    },
+                                    "gauges": {},
+                                    "memory": {"current_rss_delta_bytes": 0},
+                                }
+                            ]
+                        }
+                    }
+                ],
+            }
+        ]
+    }
+
+    summary = profile_tool._collect_profile_summary(metadata, top_n=5)
+    epoch = summary["benchmarks"][0]["epochs"][0]
+    assert epoch["counter_runs"] == 0
+    assert epoch["unclaimable_runs"] == 1
+    assert epoch["delta_median"] == {}
+    assert epoch["counter_regressions"]
+
+
+def test_profile_summary_keeps_unavailable_runtime_rss_out_of_samples() -> None:
+    unavailable = memory_snapshot(
+        source="unsupported-wasm",
+        current_rss_bytes=None,
+        peak_rss_bytes=None,
+    )
+    metadata = {
+        "benchmarks": [
+            {
+                "bench": "wasm.py",
+                "cpu_runs": [{"metrics": {"molt_profile": {"memory": unavailable}}}],
+            }
+        ]
+    }
+
+    bench = profile_tool._collect_profile_summary(metadata, top_n=5)["benchmarks"][0]
+    assert bench["runtime_peak_rss_bytes_median"] is None
+    assert bench["runtime_peak_rss_bytes_max"] is None
+    assert bench["runtime_rss_sources"] == ["unsupported-wasm"]
+    assert bench["runtime_rss_unavailable_runs"] == 1

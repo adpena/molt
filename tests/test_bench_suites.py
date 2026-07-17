@@ -107,3 +107,10 @@ def test_heap_lifecycle_benchmarks_use_canonical_profile_epochs() -> None:
         assert 'load_intrinsic("molt_profile_epoch_dump")' in source
         for label in labels:
             assert f'"{label}"' in source
+
+    lifecycle_source = (
+        ROOT / "tests" / "benchmarks" / "bench_object_class_lifecycle.py"
+    ).read_text(encoding="utf-8")
+    assert "allocate_bare_objects(10_000)" in lifecycle_source
+    assert "allocate_plain_instances(10_000)" in lifecycle_source
+    assert lifecycle_source.count("del value") == 2
