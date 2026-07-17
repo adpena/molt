@@ -45,6 +45,7 @@ from molt.cli.source_extensions import (
     _meson_linked_static_library_targets,
     _meson_target_filename_names,
     _meson_target_output_paths,
+    canonicalize_source_extension_manifest_required_capsules,
 )
 from molt.cli.source_build_environment import (
     LockedSourceBuildEnvironment,
@@ -1423,6 +1424,15 @@ def _stage_extension(
     if not isinstance(raw_manifest, dict):
         raise SourceExtensionProducerError(
             "audited extension manifest is not an object"
+        )
+    capsule_errors = canonicalize_source_extension_manifest_required_capsules(
+        raw_manifest,
+        manifest_path=produced.artifact_manifest_path,
+    )
+    if capsule_errors:
+        raise SourceExtensionProducerError(
+            "cannot canonicalize source-derived capsule custody: "
+            + "; ".join(capsule_errors)
         )
 
     raw_source_plan = raw_manifest.get("source_plan")

@@ -25,10 +25,10 @@ from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import fail as _fail
 from molt.cli.output import json_payload as _json_payload
 from molt.cli.source_extensions import (
+    canonicalize_source_extension_manifest_required_capsules,
     source_extension_manifest_errors_are_missing_sources,
     source_extension_manifest_runtime_python_imports,
     source_extension_manifest_source_path,
-    source_extension_manifest_required_capsule_imports_by_source,
 )
 from molt.wasm_artifact import read_wasm_function_exports
 
@@ -313,74 +313,6 @@ def _string_set(value: Any) -> set[str]:
     if not isinstance(value, list):
         return set()
     return {item.strip() for item in value if isinstance(item, str) and item.strip()}
-
-
-def _canonicalize_object_closure_source_capsule_requirements(
-    manifest: dict[str, Any],
-    *,
-    manifest_path: Path,
-) -> list[str]:
-    # A re-seal of an already-sealed root deliberately lacks its build-generated
-    # sources; scan the resolvable subset and preserve declared capsules rather
-    # than nullifying, mirroring the build-time admission authority in
-    # external_native._validate_manifest_source_capsule_requirements.
-    allow_missing_sources = _manifest_has_sealed_extension_custody(manifest)
-    by_source, errors = source_extension_manifest_required_capsule_imports_by_source(
-        manifest,
-        manifest_path=manifest_path,
-        allow_missing_sources=allow_missing_sources,
-    )
-    if errors and not (
-        allow_missing_sources
-        and source_extension_manifest_errors_are_missing_sources(errors)
-    ):
-        return errors
-    if by_source is None:
-        return errors
-    if not by_source:
-        return []
-    object_closure = manifest.get("object_closure")
-    if not isinstance(object_closure, dict):
-        return ["extension seal requires non-empty object_closure custody"]
-    required_capsules = _string_set(object_closure.get("required_capsules"))
-    for imports_by_capsule in by_source.values():
-        required_capsules.update(imports_by_capsule)
-    object_closure["required_capsules"] = sorted(required_capsules)
-
-    objects = object_closure.get("objects")
-    if not isinstance(objects, list):
-        return []
-    for item in objects:
-        if not isinstance(item, dict):
-            continue
-        source = item.get("source")
-        if not isinstance(source, str) or not source.strip():
-            continue
-        source_sha256 = item.get("source_sha256")
-        source_path, source_errors = source_extension_manifest_source_path(
-            source,
-            manifest=manifest,
-            manifest_path=manifest_path,
-            expected_sha256=(
-                source_sha256.strip()
-                if isinstance(source_sha256, str) and source_sha256.strip()
-                else None
-            ),
-        )
-        if source_errors and not (
-            allow_missing_sources
-            and source_extension_manifest_errors_are_missing_sources(source_errors)
-        ):
-            return source_errors
-        if source_path is None:
-            continue
-        imports_by_capsule = by_source.get(source_path)
-        if not imports_by_capsule:
-            continue
-        item_capsules = _string_set(item.get("required_capsules"))
-        item_capsules.update(imports_by_capsule)
-        item["required_capsules"] = sorted(item_capsules)
-    return []
 
 
 def _canonicalize_runtime_python_import_modules(
@@ -743,9 +675,10 @@ def extension_seal(
             command="extension-seal",
         )
     _canonicalize_object_closure_c_api_requirements(sealed_manifest)
-    source_capsule_errors = _canonicalize_object_closure_source_capsule_requirements(
+    source_capsule_errors = canonicalize_source_extension_manifest_required_capsules(
         sealed_manifest,
         manifest_path=manifest_path,
+        allow_missing_sources=_manifest_has_sealed_extension_custody(sealed_manifest),
     )
     if source_capsule_errors:
         return _fail(
