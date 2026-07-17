@@ -27,8 +27,12 @@ from molt.llvm_toolchain import (
     LlvmBackendPin,
     LlvmToolchainConfigError,
     default_llvm_release,
+    llvm_bootstrap_command,
     llvm_sys_prefix_env_var,
+    managed_llvm_prefix,
+    required_llvm_targets_for_host,
     required_llvm_backend_pin,
+    verify_llvm_toolchain_prefix,
 )
 
 
@@ -88,33 +92,42 @@ def _detect_llvm_backend_toolchain(root: Path) -> tuple[int | None, str | None]:
                 f"/usr/local/opt/llvm@{major}/bin/llvm-config",
             ]
         )
+    inspected: set[Path] = set()
     for candidate in candidates:
         path = Path(candidate)
         if path.is_absolute():
-            if path.exists() and _llvm_config_matches_major(path, major):
-                return major, str(path)
+            resolved = path.resolve()
+            if resolved in inspected:
+                continue
+            inspected.add(resolved)
+            if resolved.exists() and _llvm_config_is_complete(root, resolved, pin):
+                return major, str(resolved)
             continue
         resolved = shutil.which(candidate)
-        if resolved and _llvm_config_matches_major(Path(resolved), major):
-            return major, resolved
+        if resolved:
+            resolved_path = Path(resolved).resolve()
+            if resolved_path in inspected:
+                continue
+            inspected.add(resolved_path)
+            if _llvm_config_is_complete(root, resolved_path, pin):
+                return major, str(resolved_path)
     return major, None
 
 
-def _llvm_config_matches_major(path: Path, major: int) -> bool:
+def _llvm_config_is_complete(root: Path, path: Path, pin: LlvmBackendPin) -> bool:
     try:
-        result = subprocess.run(
-            [str(path), "--version"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=5,
+        prefix = path.parent.parent.resolve()
+        verify_llvm_toolchain_prefix(
+            root,
+            prefix,
+            version=pin.default_release,
+            expected_targets=required_llvm_targets_for_host(root),
+            llvm_config_override=path,
+            require_attestation=prefix == managed_llvm_prefix(root, pin).resolve(),
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except LlvmToolchainConfigError:
         return False
-    if result.returncode != 0:
-        return False
-    match = re.match(r"\s*(\d+)(?:\.|$)", result.stdout.strip())
-    return match is not None and int(match.group(1)) == major
+    return True
 
 
 def _clang_llvm_version_detail(major: int) -> str | None:
@@ -164,6 +177,15 @@ def _llvm_backend_unavailable_message(root: Path) -> str | None:
 
 
 def _llvm_backend_advice_for_pin(pin: LlvmBackendPin) -> list[str]:
+    if platform.system() == "Windows":
+        return [
+            llvm_bootstrap_command(pin),
+            f"Set {pin.env_var}=<canonical LLVM prefix containing the complete attested SDK>",
+            (
+                "Do not use winget/Chocolatey LLVM for the LLVM backend unless "
+                "that install includes the complete llvm-config/MLIR/TableGen surface"
+            ),
+        ]
     return _llvm_backend_advice(
         pin.major,
         env_var=pin.env_var,
@@ -188,10 +210,7 @@ def _llvm_backend_advice(
     if system == "Windows":
         release = release or _default_llvm_release_for_major(major)
         return [
-            (
-                f"python tools/bootstrap_llvm.py --version {release} "
-                f"--prefix target\\toolchains\\llvm-{release}"
-            ),
+            f"python tools/bootstrap_llvm.py --version {release}",
             f"Set {env_var}=<LLVM prefix containing bin\\llvm-config.exe>",
             (
                 "Do not use winget/Chocolatey LLVM for the LLVM backend unless "

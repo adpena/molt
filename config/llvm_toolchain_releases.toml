@@ -1,0 +1,9 @@
+schema_version = 1
+default_release = "22.1.8"
+canonical_build_type = "Release"
+
+[releases."22.1.8"]
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/llvm-project-22.1.8.src.tar.xz"
+size = 167061596
+source_sha256 = "922f1817a0df7b1489272d18134ee0087a8b068828f87ac63b9861b1a9965888"
+provenance_url = "https://api.github.com/repos/llvm/llvm-project/releases/tags/llvmorg-22.1.8"
