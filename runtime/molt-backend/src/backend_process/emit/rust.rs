@@ -1,9 +1,9 @@
 use molt_backend::SimpleIR;
 use molt_backend::rust::RustBackend;
 use std::io;
-use std::io::Write;
+use std::path::Path;
 
-use super::super::io_limits::create_backend_output_file;
+use crate::backend_process::write_text_atomically;
 
 pub(crate) fn rust_source_for_ir(ir: &SimpleIR) -> io::Result<String> {
     let mut ir = ir.clone();
@@ -18,14 +18,13 @@ pub(crate) fn rust_source_for_ir(ir: &SimpleIR) -> io::Result<String> {
 }
 
 pub(super) fn emit_rust_target(ir: &SimpleIR, output_file: &str) -> io::Result<()> {
-    let mut file = create_backend_output_file(output_file).map_err(|err| {
+    let source = rust_source_for_ir(ir)?;
+    write_text_atomically(Path::new(output_file), &source).map_err(|error| {
         io::Error::new(
-            err.kind(),
-            format!("failed to create backend output '{}': {}", output_file, err),
+            error.kind(),
+            format!("failed to publish backend output {output_file:?}: {error}"),
         )
     })?;
-    let source = rust_source_for_ir(ir)?;
-    file.write_all(source.as_bytes())?;
     println!("Successfully transpiled to {output_file}");
     Ok(())
 }

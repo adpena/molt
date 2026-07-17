@@ -4,9 +4,7 @@ mod object;
 mod paths;
 mod sidecars;
 
-pub(crate) use files::{
-    atomic_replace_file, sha256_file_hex, sync_published_file, write_atomic_text_file,
-};
+pub(crate) use files::sha256_file_hex;
 pub(crate) use lock::with_shared_stdlib_cache_publish_lock;
 pub(crate) use object::publish_shared_stdlib_cache_object;
 pub(crate) use paths::{

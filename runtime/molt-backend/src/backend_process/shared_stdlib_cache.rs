@@ -12,12 +12,11 @@ pub(crate) use partition::{
 };
 pub(crate) use prepare::{NativeStdlibCachePrepare, prepare_native_application_object};
 pub(crate) use publish::{
-    atomic_replace_file, publish_shared_stdlib_cache_object, read_stdlib_cache_key,
-    read_stdlib_cache_manifest, read_stdlib_cache_partition_manifest,
-    remove_shared_stdlib_cache_artifacts, sha256_file_hex, shared_stdlib_cache_matches,
-    stdlib_cache_count_sidecar_path, stdlib_cache_key_sidecar_path,
+    publish_shared_stdlib_cache_object, read_stdlib_cache_key, read_stdlib_cache_manifest,
+    read_stdlib_cache_partition_manifest, remove_shared_stdlib_cache_artifacts, sha256_file_hex,
+    shared_stdlib_cache_matches, stdlib_cache_count_sidecar_path, stdlib_cache_key_sidecar_path,
     stdlib_cache_manifest_sidecar_path, stdlib_cache_object_digest_sidecar_path,
     stdlib_cache_partition_manifest_sidecar_path, stdlib_cache_publish_lock_path,
-    stdlib_cache_temp_publish_path, sync_published_file, with_shared_stdlib_cache_publish_lock,
-    write_atomic_text_file, write_shared_stdlib_cache_sidecars,
+    stdlib_cache_temp_publish_path, with_shared_stdlib_cache_publish_lock,
+    write_shared_stdlib_cache_sidecars,
 };

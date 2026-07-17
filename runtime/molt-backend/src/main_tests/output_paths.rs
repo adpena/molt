@@ -31,7 +31,7 @@ fn ensure_output_parent_dir_creates_nested_directories() {
 }
 
 #[test]
-fn create_backend_output_file_recreates_missing_parent() {
+fn atomic_backend_output_recreates_missing_parent() {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock")
@@ -42,10 +42,7 @@ fn create_backend_output_file_recreates_missing_parent() {
     ensure_output_parent_dir(output.to_str().expect("utf8 path")).expect("prime parent");
     std::fs::remove_dir_all(root.join("nested")).expect("remove parent tree");
 
-    let mut file =
-        create_backend_output_file(output.to_str().expect("utf8 path")).expect("create file");
-    file.write_all(b"artifact").expect("write artifact");
-    drop(file);
+    write_bytes_atomically(&output, b"artifact").expect("publish artifact");
 
     assert_eq!(std::fs::read(&output).expect("read artifact"), b"artifact");
     let _ = std::fs::remove_dir_all(root);
