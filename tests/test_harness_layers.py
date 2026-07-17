@@ -55,9 +55,9 @@ def test_run_cmd_uses_harness_memory_guard(monkeypatch, tmp_path: Path):
     assert call["limits"].max_process_rss_gb == 2
     artifact_root = Path(call["env"]["MOLT_EXT_ROOT"])
     assert call["env"]["CARGO_TARGET_DIR"] == str(
-        molt_dx.cargo_target_dir_for_artifact_root(
+        molt_dx.cargo_target_dir_for_environment(
             artifact_root,
-            call["env"]["MOLT_SESSION_ID"],
+            call["env"],
         )
     )
     assert call["env"]["TMPDIR"] == str(artifact_root / "tmp")

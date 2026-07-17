@@ -72,9 +72,9 @@ def test_run_command_uses_memory_guard_and_preserves_log(monkeypatch) -> None:
     assert contexts[0]["env"]["X"] == "1"
     assert contexts[0]["env"]["MOLT_EXT_ROOT"] == str(module.REPO_ROOT)
     assert contexts[0]["env"]["CARGO_TARGET_DIR"] == str(
-        molt_dx.cargo_target_dir_for_artifact_root(
+        molt_dx.cargo_target_dir_for_environment(
             module.REPO_ROOT,
-            contexts[0]["env"]["MOLT_SESSION_ID"],
+            contexts[0]["env"],
         )
     )
     assert contexts[0]["env"]["TMPDIR"] == str(module.REPO_ROOT / "tmp")
@@ -145,9 +145,9 @@ def test_build_env_canonicalizes_repo_local_artifact_roots(
 
     assert env["MOLT_EXT_ROOT"] == str(tmp_path.resolve())
     assert env["CARGO_TARGET_DIR"] == str(
-        molt_dx.cargo_target_dir_for_artifact_root(
+        molt_dx.cargo_target_dir_for_environment(
             tmp_path.resolve(),
-            env["MOLT_SESSION_ID"],
+            env,
         )
     )
     assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == env["CARGO_TARGET_DIR"]
