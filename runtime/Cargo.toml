@@ -33,6 +33,7 @@ members = [
     "molt-backend-native",
     "molt-backend-luau",
     "molt-backend-rust",
+    "molt-wasm-facts",
     "molt-wasm-host",
     "molt-db",
     "molt-cpython-abi",
