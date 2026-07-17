@@ -447,29 +447,6 @@ pub(crate) fn thread_task_state(
         .cloned()
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn thread_task_drop(_py: &PyToken<'_>, future_ptr: *mut u8) {
-    crate::gil_assert();
-    if future_ptr.is_null() {
-        return;
-    }
-    let state = runtime_state(_py)
-        .thread_tasks
-        .lock()
-        .unwrap()
-        .remove(&PtrSlot(future_ptr));
-    if let Some(state) = state {
-        state.cancelled.store(true, AtomicOrdering::Release);
-        if let Some(bits) = state.result.lock().unwrap().take() {
-            crate::dec_ref_bits(_py, bits);
-        }
-        if let Some(bits) = state.exception.lock().unwrap().take() {
-            crate::dec_ref_bits(_py, bits);
-        }
-        state.condvar.notify_all();
-    }
-}
-
 pub(crate) fn process_task_state(
     _py: &PyToken<'_>,
     future_ptr: *mut u8,
@@ -483,21 +460,6 @@ pub(crate) fn process_task_state(
         .unwrap()
         .get(&PtrSlot(future_ptr))
         .cloned()
-}
-
-pub(crate) fn process_task_drop(_py: &PyToken<'_>, future_ptr: *mut u8) {
-    crate::gil_assert();
-    if future_ptr.is_null() {
-        return;
-    }
-    let state = runtime_state(_py)
-        .process_tasks
-        .lock()
-        .unwrap()
-        .remove(&PtrSlot(future_ptr));
-    if let Some(state) = state {
-        state.cancel_wait();
-    }
 }
 
 pub(crate) fn task_waiting_on_event(_py: &PyToken<'_>, task_ptr: *mut u8) -> bool {
@@ -566,11 +528,7 @@ mod tests {
     use crate::{MoltObject, dec_ref_bits, header_from_obj_ptr, molt_future_new, ptr_from_bits};
 
     fn ref_count(ptr: *mut u8) -> u32 {
-        unsafe {
-            (*header_from_obj_ptr(ptr))
-                .ref_count
-                .load(AtomicOrdering::Relaxed)
-        }
+        unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() }
     }
 
     #[test]

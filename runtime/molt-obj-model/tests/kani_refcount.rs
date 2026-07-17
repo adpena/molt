@@ -1,149 +1,105 @@
-//! Kani bounded-verification harnesses for refcount invariants.
+//! Kani proofs for the canonical reference-count transition algebra.
 //!
-//! Since `MoltRefCount` lives in `molt-runtime` (a large crate with many
-//! dependencies), we verify the core refcount logic here using a minimal
-//! standalone model that mirrors the `AtomicU32`-backed implementation.
-//! This avoids pulling in the entire runtime dependency graph.
+//! These harnesses call the same pure functions consumed by the native atomic
+//! and wasm `Cell` storage adapters.  They therefore cannot drift into a toy
+//! fetch-add model that permits zero resurrection, immortal mutation, wrapping,
+//! or an ambiguous finalizer revival baseline.
 //!
 //! Run with: `cd runtime/molt-obj-model && cargo kani --tests`
 
 #[cfg(kani)]
 mod refcount_proofs {
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use molt_codegen_abi::IMMORTAL_REFCOUNT;
+    use molt_obj_model::refcount_semantics::{
+        RetainError, live_upgrade_next, release_transition, retain_next, revival_window_baseline,
+    };
 
-    /// Minimal model of MoltRefCount's native (non-wasm) implementation.
-    struct RefCount {
-        inner: AtomicU32,
+    #[kani::proof]
+    fn successful_retain_is_exact_nonwrapping_addition() {
+        let current: u32 = kani::any();
+        let count: u32 = kani::any();
+        let deallocating: bool = kani::any();
+        if let Ok(next) = retain_next(current, count, deallocating) {
+            assert!(current > 0);
+            assert!(current < IMMORTAL_REFCOUNT);
+            assert!(!deallocating);
+            assert_eq!(next, current + count);
+            if count == 0 {
+                assert_eq!(next, current);
+            } else {
+                assert!(next > current);
+            }
+            assert!(next < IMMORTAL_REFCOUNT);
+        }
     }
 
-    impl RefCount {
-        fn new(val: u32) -> Self {
-            Self {
-                inner: AtomicU32::new(val),
+    #[kani::proof]
+    fn retain_rejects_zero_immortal_deallocating_and_overflow() {
+        let current: u32 = kani::any();
+        let count: u32 = kani::any();
+        let deallocating: bool = kani::any();
+        let result = retain_next(current, count, deallocating);
+        if current == 0 {
+            assert_eq!(result, Err(RetainError::Zero));
+        } else if current == IMMORTAL_REFCOUNT {
+            assert_eq!(result, Err(RetainError::Immortal));
+        } else if deallocating {
+            assert_eq!(result, Err(RetainError::Deallocating));
+        } else if !matches!(
+            current.checked_add(count),
+            Some(next) if next < IMMORTAL_REFCOUNT
+        ) {
+            assert_eq!(result, Err(RetainError::Overflow));
+        } else {
+            assert!(result.is_ok());
+        }
+    }
+
+    #[kani::proof]
+    fn live_upgrade_is_exactly_checked_single_retain() {
+        let current: u32 = kani::any();
+        let deallocating: bool = kani::any();
+        assert_eq!(
+            live_upgrade_next(current, deallocating),
+            retain_next(current, 1, deallocating)
+        );
+    }
+
+    #[kani::proof]
+    fn release_reaches_zero_exactly_from_one() {
+        let previous: u32 = kani::any();
+        match release_transition(previous) {
+            None => assert!(previous == 0 || previous == IMMORTAL_REFCOUNT),
+            Some(transition) => {
+                assert!(previous > 0);
+                assert!(previous < IMMORTAL_REFCOUNT);
+                assert_eq!(transition.previous(), previous);
+                assert_eq!(transition.next(), previous - 1);
+                assert_eq!(transition.reached_zero(), previous == 1);
             }
         }
+    }
 
-        fn load(&self) -> u32 {
-            self.inner.load(Ordering::Relaxed)
+    #[kani::proof]
+    fn retain_then_release_restores_every_legal_state() {
+        let current: u32 = kani::any();
+        let count: u32 = kani::any();
+        kani::assume(count == 1);
+        if let Ok(retained) = retain_next(current, count, false) {
+            let released = release_transition(retained).expect("retained state is non-zero");
+            assert_eq!(released.next(), current);
         }
+    }
 
-        fn fetch_add(&self, val: u32) -> u32 {
-            self.inner.fetch_add(val, Ordering::Relaxed)
+    #[kani::proof]
+    fn revival_window_accepts_only_the_two_owned_baselines() {
+        let previous: u32 = kani::any();
+        let has_stable_view_hold: bool = kani::any();
+        let result = revival_window_baseline(previous, has_stable_view_hold);
+        if has_stable_view_hold {
+            assert_eq!(result, if previous == 1 { Some(2) } else { None });
+        } else {
+            assert_eq!(result, if previous == 0 { Some(1) } else { None });
         }
-
-        fn fetch_sub(&self, val: u32) -> u32 {
-            self.inner.fetch_sub(val, Ordering::Relaxed)
-        }
-    }
-
-    // ---------------------------------------------------------------
-    // Increment then decrement returns to original
-    // ---------------------------------------------------------------
-
-    /// For any initial refcount, incrementing by 1 then decrementing by 1
-    /// restores the original value.
-    #[kani::proof]
-    #[kani::unwind(1)]
-    fn inc_dec_returns_to_original() {
-        let init: u32 = kani::any();
-        // Avoid overflow: initial value must leave room for +1.
-        kani::assume(init < u32::MAX);
-
-        let rc = RefCount::new(init);
-        rc.fetch_add(1);
-        assert_eq!(rc.load(), init + 1);
-
-        rc.fetch_sub(1);
-        assert_eq!(rc.load(), init);
-    }
-
-    /// Incrementing by n then decrementing by n restores the original value.
-    #[kani::proof]
-    #[kani::unwind(1)]
-    fn inc_n_dec_n_identity() {
-        let init: u32 = kani::any();
-        let n: u32 = kani::any();
-        // Avoid overflow.
-        kani::assume((init as u64) + (n as u64) <= u32::MAX as u64);
-
-        let rc = RefCount::new(init);
-        rc.fetch_add(n);
-        assert_eq!(rc.load(), init.wrapping_add(n));
-
-        rc.fetch_sub(n);
-        assert_eq!(rc.load(), init);
-    }
-
-    // ---------------------------------------------------------------
-    // Refcount starts at expected value
-    // ---------------------------------------------------------------
-
-    /// A freshly created refcount has the initial value.
-    #[kani::proof]
-    #[kani::unwind(1)]
-    fn new_has_initial_value() {
-        let init: u32 = kani::any();
-        let rc = RefCount::new(init);
-        assert_eq!(rc.load(), init);
-    }
-
-    // ---------------------------------------------------------------
-    // fetch_add / fetch_sub return the *previous* value
-    // ---------------------------------------------------------------
-
-    /// fetch_add returns the value before the add.
-    #[kani::proof]
-    #[kani::unwind(1)]
-    fn fetch_add_returns_previous() {
-        let init: u32 = kani::any();
-        let n: u32 = kani::any();
-        kani::assume((init as u64) + (n as u64) <= u32::MAX as u64);
-
-        let rc = RefCount::new(init);
-        let prev = rc.fetch_add(n);
-        assert_eq!(prev, init);
-        assert_eq!(rc.load(), init + n);
-    }
-
-    /// fetch_sub returns the value before the sub.
-    #[kani::proof]
-    #[kani::unwind(1)]
-    fn fetch_sub_returns_previous() {
-        let init: u32 = kani::any();
-        let n: u32 = kani::any();
-        kani::assume(init >= n);
-
-        let rc = RefCount::new(init);
-        let prev = rc.fetch_sub(n);
-        assert_eq!(prev, init);
-        assert_eq!(rc.load(), init - n);
-    }
-
-    // ---------------------------------------------------------------
-    // Monotonicity: inc always increases, dec always decreases
-    // ---------------------------------------------------------------
-
-    /// After fetch_add(1), the refcount is strictly greater than before.
-    #[kani::proof]
-    #[kani::unwind(1)]
-    fn inc_is_monotonically_increasing() {
-        let init: u32 = kani::any();
-        kani::assume(init < u32::MAX);
-
-        let rc = RefCount::new(init);
-        rc.fetch_add(1);
-        assert!(rc.load() > init);
-    }
-
-    /// After fetch_sub(1) on a non-zero refcount, the value is strictly less.
-    #[kani::proof]
-    #[kani::unwind(1)]
-    fn dec_is_monotonically_decreasing() {
-        let init: u32 = kani::any();
-        kani::assume(init > 0);
-
-        let rc = RefCount::new(init);
-        rc.fetch_sub(1);
-        assert!(rc.load() < init);
     }
 }

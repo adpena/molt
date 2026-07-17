@@ -127,6 +127,8 @@ pub(crate) const RUNTIME_HOST_EXPORTS: &[&str] = &[
     "molt_object_str",
     "molt_object_truthy",
     "molt_profile_dump",
+    "molt_profile_epoch_dump",
+    "molt_profile_epoch_reset",
     "molt_runtime_shutdown",
     "molt_scratch_alloc",
     "molt_scratch_free",
@@ -884,6 +886,16 @@ pub(crate) const RUNTIME_HOST_EXPORT_SIGNATURES: &[RuntimeHostExportSignature] =
         name: "molt_profile_dump",
         params: &[],
         results: &[],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_profile_epoch_dump",
+        params: &[],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_profile_epoch_reset",
+        params: &[ValType::I64],
+        results: &[ValType::I64],
     },
     RuntimeHostExportSignature {
         name: "molt_runtime_shutdown",

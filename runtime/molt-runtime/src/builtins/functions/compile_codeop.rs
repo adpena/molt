@@ -1120,14 +1120,9 @@ mod code_object_ownership_tests {
         function_set_code_bits, inc_ref_bits, obj_from_bits,
     };
     use molt_obj_model::MoltObject;
-    use std::sync::atomic::Ordering;
 
     unsafe fn ref_count(ptr: *mut u8) -> u32 {
-        unsafe {
-            (*header_from_obj_ptr(ptr))
-                .ref_count
-                .load(Ordering::Relaxed)
-        }
+        unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() }
     }
 
     #[test]
@@ -1267,8 +1262,10 @@ mod code_object_ownership_tests {
             let kwonly_name_bits = MoltObject::from_ptr(kwonly_name_ptr).bits();
             let arg_names_ptr = alloc_tuple(_py, &[arg_name_bits]);
             let kwonly_names_ptr = alloc_tuple(_py, &[kwonly_name_bits]);
-            let vararg_marker_ptr = alloc_string(_py, b"args");
-            let varkw_marker_ptr = alloc_string(_py, b"kwargs");
+            // Avoid the immortal short-string canonical cache: this test owns
+            // and measures ordinary mortal reference transitions.
+            let vararg_marker_ptr = alloc_string(_py, b"vararg-marker-unique-for-code-signature");
+            let varkw_marker_ptr = alloc_string(_py, b"varkw-marker-unique-for-code-signature");
             let arg_names_bits = MoltObject::from_ptr(arg_names_ptr).bits();
             let kwonly_names_bits = MoltObject::from_ptr(kwonly_names_ptr).bits();
             let vararg_marker_bits = MoltObject::from_ptr(vararg_marker_ptr).bits();

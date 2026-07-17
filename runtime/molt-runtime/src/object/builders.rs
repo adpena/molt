@@ -1,7 +1,5 @@
 use crate::PyToken;
-use crate::object::{
-    ClassEdgeOwnership, IMMORTAL_REFCOUNT, MoltAuxWord, object_init_class_edge_unpublished,
-};
+use crate::object::{ClassEdgeOwnership, MoltAuxWord, object_init_class_edge_unpublished};
 use crate::*;
 
 #[inline]
@@ -207,6 +205,7 @@ pub(crate) fn alloc_dict_with_pairs(_py: &PyToken<'_>, pairs: &[u64]) -> *mut u8
                 dict_set_in_place(_py, ptr, pair[0], pair[1]);
             }
         }
+        crate::object::ops::dict_commit_projection(_py, ptr);
     }
     ptr
 }
@@ -1146,9 +1145,7 @@ unsafe fn prepare_canonical_object(ptr: *mut u8, interned: bool) {
                 0
             };
         (*header).fetch_or_flags(flags);
-        (*header)
-            .ref_count
-            .store(IMMORTAL_REFCOUNT, std::sync::atomic::Ordering::Release);
+        (*header).make_immortal();
     }
 }
 
@@ -1238,13 +1235,15 @@ fn code_string_tuple_edge(bits: u64) -> bool {
     if unsafe { object_type_id(ptr) } != TYPE_ID_TUPLE {
         return false;
     }
-    unsafe { crate::object::seq_access::with_immutable_tuple_slice(ptr, |items| {
-        items.iter().copied().all(|item| {
-            obj_from_bits(item)
-                .as_ptr()
-                .is_some_and(|item_ptr| unsafe { object_type_id(item_ptr) == TYPE_ID_STRING })
+    unsafe {
+        crate::object::seq_access::with_immutable_tuple_slice(ptr, |items| {
+            items.iter().copied().all(|item| {
+                obj_from_bits(item)
+                    .as_ptr()
+                    .is_some_and(|item_ptr| object_type_id(item_ptr) == TYPE_ID_STRING)
+            })
         })
-    }) }
+    }
     .unwrap_or(false)
 }
 

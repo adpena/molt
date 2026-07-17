@@ -351,11 +351,7 @@ mod tests {
         let ptr = obj_from_bits(bits)
             .as_ptr()
             .expect("cached builtin must be an object");
-        unsafe {
-            (*crate::header_from_obj_ptr(ptr))
-                .ref_count
-                .load(AtomicOrdering::Acquire)
-        }
+        unsafe { (*crate::header_from_obj_ptr(ptr)).ref_count_snapshot() }
     }
 
     #[test]

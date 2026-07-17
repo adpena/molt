@@ -380,7 +380,7 @@ pub extern "C" fn molt_sys_getrefcount(obj_bits: u64) -> u64 {
         let obj = obj_from_bits(obj_bits);
         let count = if let Some(ptr) = obj.as_ptr() {
             let header = unsafe { header_from_obj_ptr(ptr) };
-            let rc = unsafe { (*header).ref_count.load(AtomicOrdering::Acquire) } as i64;
+            let rc = unsafe { (*header).ref_count_snapshot() } as i64;
             rc.saturating_add(1)
         } else {
             1
@@ -1206,14 +1206,9 @@ pub extern "C" fn molt_sys_path() -> u64 {
 mod tests {
     use super::*;
     use crate::object::builders::alloc_function_obj;
-    use std::sync::atomic::Ordering;
 
     fn ref_count(ptr: *mut u8) -> u32 {
-        unsafe {
-            (*header_from_obj_ptr(ptr))
-                .ref_count
-                .load(Ordering::Relaxed)
-        }
+        unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() }
     }
 
     #[test]

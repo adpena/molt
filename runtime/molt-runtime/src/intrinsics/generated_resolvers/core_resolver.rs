@@ -365,6 +365,14 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_tuple_getitem_borrowed",
             crate::molt_tuple_getitem_borrowed as *const (),
         )),
+        "molt_profile_epoch_reset" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_profile_epoch_reset",
+            crate::molt_profile_epoch_reset as *const (),
+        )),
+        "molt_profile_epoch_dump" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_profile_epoch_dump",
+            crate::molt_profile_epoch_dump as *const (),
+        )),
         _ => None,
     }
 }

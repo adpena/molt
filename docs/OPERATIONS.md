@@ -727,6 +727,15 @@ Benchmarks that cannot survive a disconnect are not acceptable.
   you need compiler-side hotspots.
 - Use `--molt-profile` to enable runtime counters (`MOLT_PROFILE=1`) and capture
   allocation/dispatch metrics in the manifest.
+- Runtime microbenchmarks that make steady-state allocation, GC, or contention
+  claims must bracket each measured phase with the profiling epoch intrinsics.
+  The emitted `molt_profile_epoch_json` records process-wide counter deltas and
+  signed gauge/RSS endpoints without resetting the lifetime leak authority;
+  impossible monotonic decreases are retained as `counter_regressions` rather
+  than hidden as zero. `tools/profile.py --summary` preserves every label and
+  reports cross-run drift. `molt debug perf` also retains every epoch, including
+  completed epochs from a log whose final process-exit profile is missing. All
+  consumers reject unversioned process payloads rather than guessing a schema.
 - Use `--molt-profile-alloc-sites` to record hot string allocation call sites
   (`MOLT_PROFILE_ALLOC_SITES=1`) and parse `molt_profile_string_site` entries
   into the manifest; tune with `--molt-profile-alloc-sites-limit` when you need

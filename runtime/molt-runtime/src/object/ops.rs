@@ -73,14 +73,14 @@ pub(super) use dict_set_tables::{
     concat_bytes_like, fill_repeated_bytes, set_rebuild, simd_bytes_eq,
 };
 pub(crate) use dict_set_tables::{
-    dict_clear_in_place, dict_clear_in_place_shutdown, dict_clear_method, dict_copy_method,
-    dict_del_in_place, dict_find_entry, dict_find_entry_fast, dict_find_entry_kv_in_place,
-    dict_fromkeys_method, dict_get_in_place, dict_get_method, dict_get_str_bytes_borrowed,
-    dict_inc_in_place, dict_inc_prehashed_string_key_in_place, dict_items_method, dict_keys_method,
-    dict_popitem_method, dict_rebuild, dict_set_in_place, dict_set_inline_int_in_place,
-    dict_setdefault_method, dict_table_capacity, dict_update_method, dict_update_set_via_store,
-    dict_values_method, set_add_in_place, set_del_in_place, set_find_entry, set_find_entry_fast,
-    set_replace_entries, set_table_capacity,
+    dict_clear_in_place, dict_clear_in_place_shutdown, dict_clear_method, dict_commit_projection,
+    dict_copy_method, dict_del_in_place, dict_find_entry, dict_find_entry_fast,
+    dict_find_entry_kv_in_place, dict_fromkeys_method, dict_get_in_place, dict_get_method,
+    dict_get_str_bytes_borrowed, dict_inc_in_place, dict_inc_prehashed_string_key_in_place,
+    dict_items_method, dict_keys_method, dict_popitem_method, dict_rebuild, dict_set_in_place,
+    dict_set_inline_int_in_place, dict_setdefault_method, dict_table_capacity, dict_update_method,
+    dict_update_set_via_store, dict_values_method, set_add_in_place, set_del_in_place,
+    set_find_entry, set_find_entry_fast, set_replace_entries, set_table_capacity,
 };
 pub use dict_set_tables::{
     molt_string_split_sep_dict_inc, molt_string_split_ws_dict_inc, molt_taq_ingest_line,
@@ -116,8 +116,8 @@ use num_bigint::BigInt;
 use num_integer::Integer;
 use num_traits::{Signed, ToPrimitive, Zero};
 use std::borrow::Cow;
-use std::sync::OnceLock;
 use std::sync::atomic::Ordering as AtomicOrdering;
+use std::sync::{Mutex, OnceLock};
 
 use super::ops_string::{push_wtf8_codepoint, utf8_char_to_byte_index_cached, wtf8_codepoint_at};
 use super::ops_sys::runtime_target_minor;
@@ -540,17 +540,10 @@ pub(crate) fn as_float_extended(obj: MoltObject) -> Option<f64> {
 
 // --- NaN-boxed ops ---
 
-pub(crate) fn profile_dump_with_gil(_py: &PyToken<'_>) {
-    if !profile_enabled(_py) {
-        return;
-    }
+fn runtime_profile_payload(_py: &PyToken<'_>, emit_leak_warning: bool) -> serde_json::Value {
     let call_dispatch = CALL_DISPATCH_COUNT.load(AtomicOrdering::Relaxed);
-    let cache_hit = runtime_state(_py)
-        .string_count_cache_hit
-        .load(AtomicOrdering::Relaxed);
-    let cache_miss = runtime_state(_py)
-        .string_count_cache_miss
-        .load(AtomicOrdering::Relaxed);
+    let cache_hit = STRING_COUNT_CACHE_HIT_COUNT.load(AtomicOrdering::Relaxed);
+    let cache_miss = STRING_COUNT_CACHE_MISS_COUNT.load(AtomicOrdering::Relaxed);
     let struct_stores = STRUCT_FIELD_STORE_COUNT.load(AtomicOrdering::Relaxed);
     let attr_lookups = ATTR_LOOKUP_COUNT.load(AtomicOrdering::Relaxed);
     let handle_resolves = HANDLE_RESOLVE_COUNT.load(AtomicOrdering::Relaxed);
@@ -648,7 +641,7 @@ pub(crate) fn profile_dump_with_gil(_py: &PyToken<'_>) {
     let aux_sidecar_live = aux_sidecar_alloc.saturating_sub(aux_sidecar_free);
     let aux_sidecar_live_bytes = aux_sidecar_alloc_bytes.saturating_sub(aux_sidecar_free_bytes);
     let gc_tracked_live = GC_TRACKED_LIVE.load(AtomicOrdering::Relaxed);
-    if live_objects > crate::EXPECTED_LIVE_OBJECTS {
+    if emit_leak_warning && live_objects > crate::EXPECTED_LIVE_OBJECTS {
         crate::diagnostics::emit_line(&format!(
             "[MOLT_PROFILE] LEAK WARNING: {} objects not freed at process exit (expected_live={})",
             live_objects.saturating_sub(crate::EXPECTED_LIVE_OBJECTS),
@@ -760,7 +753,7 @@ pub(crate) fn profile_dump_with_gil(_py: &PyToken<'_>) {
             "guard_dict_shape_layout_fail_expected_version_invalid": guard_dict_shape_layout_fail_expected_version_invalid,
             "guard_dict_shape_layout_fail_version_mismatch": guard_dict_shape_layout_fail_version_mismatch,
     };
-    let payload = serde_json::json!({
+    serde_json::json!({
         "schema_version": 2,
         "kind": "runtime_feedback",
         "profile": profile_payload,
@@ -769,7 +762,14 @@ pub(crate) fn profile_dump_with_gil(_py: &PyToken<'_>) {
         "memory": memory_payload,
         "hot_paths": hot_paths_payload,
         "deopt_reasons": deopt_reasons_payload,
-    });
+    })
+}
+
+pub(crate) fn profile_dump_with_gil(_py: &PyToken<'_>) {
+    if !profile_enabled(_py) {
+        return;
+    }
+    let payload = runtime_profile_payload(_py, true);
     crate::diagnostics::emit_line(&format!("molt_profile_json {}", payload));
     maybe_emit_runtime_feedback_file(&payload);
 }
@@ -779,6 +779,330 @@ pub extern "C" fn molt_profile_dump() {
     crate::with_gil_entry_nopanic!(_py, {
         profile_dump_with_gil(_py);
     })
+}
+
+struct RuntimeProfileEpochBaseline {
+    generation: u64,
+    label: String,
+    payload: serde_json::Value,
+}
+
+#[derive(Default)]
+struct RuntimeProfileEpochState {
+    generation: u64,
+    active: Option<RuntimeProfileEpochBaseline>,
+}
+
+static RUNTIME_PROFILE_EPOCH: OnceLock<Mutex<RuntimeProfileEpochState>> = OnceLock::new();
+
+/// State metrics need start/end/delta evidence instead of unsigned work-counter
+/// subtraction. This is the sole semantic classification authority for the
+/// epoch schema; every other numeric metric is a monotonic counter. The tracked
+/// high-water mark is intentionally a gauge even though its process-wide value
+/// is monotonic: its endpoints distinguish an unchanged prior peak from a new
+/// peak reached during this epoch.
+const RUNTIME_PROFILE_GAUGES: &[(&str, &str)] = &[
+    ("profile", "live_objects"),
+    ("profile", "live_bytes"),
+    ("profile", "live_exception"),
+    ("profile", "live_bytes_exception"),
+    ("profile", "expected_live"),
+    ("aux", "aux_sidecar_live_count"),
+    ("aux", "aux_sidecar_live_bytes"),
+    ("gc", "gc_tracked_live"),
+    ("gc", "gc_tracked_high_water"),
+];
+
+fn runtime_profile_epoch_state() -> &'static Mutex<RuntimeProfileEpochState> {
+    RUNTIME_PROFILE_EPOCH.get_or_init(|| Mutex::new(RuntimeProfileEpochState::default()))
+}
+
+pub(crate) fn profile_epoch_clear() {
+    if let Some(state) = RUNTIME_PROFILE_EPOCH.get() {
+        drop(
+            state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .active
+                .take(),
+        );
+    }
+}
+
+fn runtime_profile_is_gauge(section: &str, metric: &str) -> bool {
+    RUNTIME_PROFILE_GAUGES
+        .iter()
+        .any(|&(gauge_section, gauge_metric)| section == gauge_section && metric == gauge_metric)
+}
+
+fn runtime_profile_metric(payload: &serde_json::Value, section: &str, metric: &str) -> u64 {
+    payload
+        .get(section)
+        .and_then(|value| value.get(metric))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0)
+}
+
+fn runtime_profile_set_settled_memory_snapshot(payload: &mut serde_json::Value) {
+    sample_peak_rss();
+    let current_rss = current_rss_bytes();
+    let peak_rss = PEAK_RSS_BYTES.load(AtomicOrdering::Relaxed);
+    if let Some(value) = payload
+        .get_mut("memory")
+        .and_then(|memory| memory.get_mut("current_rss_bytes"))
+    {
+        *value = serde_json::Value::from(current_rss);
+    }
+    if let Some(value) = payload
+        .get_mut("memory")
+        .and_then(|memory| memory.get_mut("peak_rss_bytes"))
+    {
+        *value = serde_json::Value::from(peak_rss);
+    }
+}
+
+fn runtime_profile_signed_delta(end: u64, start: u64) -> i64 {
+    if end >= start {
+        i64::try_from(end - start).unwrap_or(i64::MAX)
+    } else {
+        -i64::try_from(start - end).unwrap_or(i64::MAX)
+    }
+}
+
+fn runtime_profile_epoch_delta_payload(
+    baseline: &RuntimeProfileEpochBaseline,
+    end: &serde_json::Value,
+) -> Result<serde_json::Value, &'static str> {
+    let mut counter_sections = serde_json::Map::new();
+    let mut counter_regression_sections = serde_json::Map::new();
+    let mut gauge_sections = serde_json::Map::new();
+    let Some(end_sections) = end.as_object() else {
+        return Err("runtime profile payload must be an object");
+    };
+    // Discover metric sections from the canonical process profile itself. New
+    // numeric counter families are therefore included automatically instead of
+    // requiring a second section allowlist to remain in sync.
+    for (section, end_section) in end_sections {
+        if section == "memory" {
+            continue;
+        }
+        let Some(end_metrics) = end_section.as_object() else {
+            continue;
+        };
+        let mut counters = serde_json::Map::new();
+        let mut counter_regressions = serde_json::Map::new();
+        let mut gauges = serde_json::Map::new();
+        for (metric, end_value) in end_metrics {
+            let Some(end_value) = end_value.as_u64() else {
+                continue;
+            };
+            let start_value = runtime_profile_metric(&baseline.payload, section, metric);
+            if runtime_profile_is_gauge(section, metric) {
+                gauges.insert(
+                    metric.clone(),
+                    serde_json::json!({
+                        "start": start_value,
+                        "end": end_value,
+                        "delta": runtime_profile_signed_delta(end_value, start_value),
+                    }),
+                );
+            } else {
+                if end_value < start_value {
+                    counter_regressions.insert(
+                        metric.clone(),
+                        serde_json::json!({
+                            "start": start_value,
+                            "end": end_value,
+                        }),
+                    );
+                }
+                counters.insert(
+                    metric.clone(),
+                    serde_json::Value::from(end_value.saturating_sub(start_value)),
+                );
+            }
+        }
+        if !counters.is_empty() {
+            counter_sections.insert(section.clone(), serde_json::Value::Object(counters));
+        }
+        if !counter_regressions.is_empty() {
+            counter_regression_sections.insert(
+                section.clone(),
+                serde_json::Value::Object(counter_regressions),
+            );
+        }
+        if !gauges.is_empty() {
+            gauge_sections.insert(section.clone(), serde_json::Value::Object(gauges));
+        }
+    }
+
+    let rss_start = runtime_profile_metric(&baseline.payload, "memory", "current_rss_bytes");
+    let rss_end = runtime_profile_metric(end, "memory", "current_rss_bytes");
+    let process_peak_start = runtime_profile_metric(&baseline.payload, "memory", "peak_rss_bytes");
+    let process_peak_end = runtime_profile_metric(end, "memory", "peak_rss_bytes");
+    Ok(serde_json::json!({
+        "schema_version": 1,
+        "kind": "runtime_profile_epoch",
+        "generation": baseline.generation,
+        "label": baseline.label.as_str(),
+        "delta": serde_json::Value::Object(counter_sections),
+        "counter_regressions": serde_json::Value::Object(counter_regression_sections),
+        "gauges": serde_json::Value::Object(gauge_sections),
+        "memory": {
+            "current_rss_start_bytes": rss_start,
+            "current_rss_end_bytes": rss_end,
+            "current_rss_delta_bytes": runtime_profile_signed_delta(rss_end, rss_start),
+            "process_peak_start_bytes": process_peak_start,
+            "process_peak_end_bytes": process_peak_end,
+        },
+    }))
+}
+
+/// Reset the process-wide measurement epoch to a fresh baseline without
+/// mutating the monotonic lifetime counters used by leak diagnostics.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_profile_epoch_reset(label_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        if !profile_enabled(_py) {
+            return MoltObject::from_bool(false).bits();
+        }
+        let Some(label) = string_obj_to_owned(obj_from_bits(label_bits)) else {
+            return raise_exception::<u64>(_py, "TypeError", "profile epoch label must be str");
+        };
+        // Serialize the full reset transaction, not just slot replacement.
+        // This makes the sole process-wide epoch deterministic under a future
+        // free-threaded caller: reset cannot race dump or publish an older
+        // snapshot after a newer reset.
+        let mut state = runtime_profile_epoch_state()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(generation) = state.generation.checked_add(1) else {
+            return raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "profile epoch generation exhausted",
+            );
+        };
+        // Drop any abandoned epoch before measuring the new baseline. This
+        // makes reset a real reset and prevents stale profiler storage from
+        // contaminating the new RSS floor.
+        drop(state.active.take());
+        state.generation = generation;
+        let mut payload = runtime_profile_payload(_py, false);
+        // The label and baseline map are measurement infrastructure. Settle
+        // them before recording the RSS floor so they do not appear as work.
+        runtime_profile_set_settled_memory_snapshot(&mut payload);
+        let baseline = RuntimeProfileEpochBaseline {
+            generation,
+            label,
+            payload,
+        };
+        state.active = Some(baseline);
+        MoltObject::from_bool(true).bits()
+    })
+}
+
+/// End and consume the active measurement epoch, emitting a delta schema on
+/// the diagnostics channel. Snapshotting precedes JSON construction, so the
+/// reporting path cannot contaminate the measured Molt allocation counters.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_profile_epoch_dump() -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        if !profile_enabled(_py) {
+            return MoltObject::from_bool(false).bits();
+        }
+        // Snapshot and consume are one transaction. In particular, a reset
+        // cannot replace the baseline between the end snapshot and the take.
+        let mut state = runtime_profile_epoch_state()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let end = runtime_profile_payload(_py, false);
+        let Some(baseline) = state.active.take() else {
+            return raise_exception::<u64>(_py, "RuntimeError", "profile epoch is not active");
+        };
+        drop(state);
+        let payload = match runtime_profile_epoch_delta_payload(&baseline, &end) {
+            Ok(payload) => payload,
+            Err(message) => return raise_exception::<u64>(_py, "RuntimeError", message),
+        };
+        crate::diagnostics::emit_line(&format!("molt_profile_epoch_json {payload}"));
+        MoltObject::from_bool(true).bits()
+    })
+}
+
+#[cfg(test)]
+mod profile_epoch_tests {
+    use super::*;
+
+    #[test]
+    fn epoch_delta_separates_monotonic_counters_from_signed_gauges() {
+        let baseline = RuntimeProfileEpochBaseline {
+            generation: 7,
+            label: "steady_state".to_owned(),
+            payload: serde_json::json!({
+                "profile": {
+                    "alloc_count": 10,
+                    "alloc_bytes_total": 320,
+                    "dealloc_count": 8,
+                    "live_objects": 5,
+                    "expected_live": 4,
+                },
+                "aux": {"aux_sidecar_live_count": 2},
+                "gc": {
+                    "gc_track_count": 9,
+                    "gc_tracked_live": 3,
+                    "gc_tracked_high_water": 6,
+                },
+                "hot_paths": {"call_bind_ic_hit": 1},
+                "deopt_reasons": {"guard_tag_type_mismatch": 0},
+                "future_counter_family": {"specialized_hit": 3},
+                "memory": {"peak_rss_bytes": 4096, "current_rss_bytes": 3072},
+            }),
+        };
+        let end = serde_json::json!({
+            "profile": {
+                "alloc_count": 12,
+                "alloc_bytes_total": 384,
+                "dealloc_count": 7,
+                "live_objects": 4,
+                "expected_live": 4,
+            },
+            "aux": {"aux_sidecar_live_count": 1},
+            "gc": {
+                "gc_track_count": 13,
+                "gc_tracked_live": 2,
+                "gc_tracked_high_water": 8,
+            },
+            "hot_paths": {"call_bind_ic_hit": 6},
+            "deopt_reasons": {"guard_tag_type_mismatch": 1},
+            "future_counter_family": {"specialized_hit": 10},
+            "memory": {"peak_rss_bytes": 8192, "current_rss_bytes": 2048},
+        });
+
+        let Ok(delta) = runtime_profile_epoch_delta_payload(&baseline, &end) else {
+            panic!("valid profile payload rejected");
+        };
+
+        assert_eq!(delta["generation"], 7);
+        assert_eq!(delta["label"], "steady_state");
+        assert_eq!(delta["delta"]["profile"]["alloc_count"], 2);
+        assert_eq!(delta["delta"]["profile"]["alloc_bytes_total"], 64);
+        assert_eq!(delta["delta"]["profile"]["dealloc_count"], 0);
+        assert_eq!(
+            delta["counter_regressions"]["profile"]["dealloc_count"],
+            serde_json::json!({"start": 8, "end": 7})
+        );
+        assert_eq!(delta["delta"]["gc"]["gc_track_count"], 4);
+        assert_eq!(delta["delta"]["hot_paths"]["call_bind_ic_hit"], 5);
+        assert_eq!(
+            delta["delta"]["future_counter_family"]["specialized_hit"],
+            7
+        );
+        assert_eq!(delta["gauges"]["profile"]["live_objects"]["delta"], -1);
+        assert_eq!(delta["gauges"]["gc"]["gc_tracked_high_water"]["delta"], 2);
+        assert_eq!(delta["memory"]["current_rss_delta_bytes"], -1024);
+        assert_eq!(delta["memory"]["process_peak_end_bytes"], 8192);
+    }
 }
 
 /// RC drop-insertion substrate (design 20): the `MOLT_ASSERT_NO_LEAK` gate.
@@ -1576,13 +1900,12 @@ pub(crate) unsafe fn frozenset_from_iter_bits(_py: &PyToken<'_>, other_bits: u64
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inc_ref_obj(bits: u64) {
     // Fast path: skip GIL for non-pointer values (ints, floats, bools, none).
-    if !obj_from_bits(bits).is_ptr() {
+    let obj = obj_from_bits(bits);
+    let Some(ptr) = obj.as_ptr() else {
         return;
-    }
+    };
     crate::with_gil_entry_nopanic!(_py, {
-        if let Some(ptr) = obj_from_bits(bits).as_ptr() {
-            unsafe { molt_inc_ref(ptr) };
-        }
+        unsafe { crate::object::inc_ref_ptr(_py, ptr) };
     })
 }
 
@@ -1619,33 +1942,51 @@ pub extern "C" fn molt_dec_ref_obj(bits: u64) {
                     }
                     std::process::abort();
                 }
-                molt_dec_ref(ptr);
+                crate::object::dec_ref_ptr_validated(_py, ptr, type_id);
             };
         }
     })
 }
 
-/// Batched `inc_ref`: increment the refcount by `count` in a single atomic
-/// operation. Returns the input bits unchanged (convenience for chaining).
+/// Batched `inc_ref`: apply one checked typed transition for `count` retained
+/// references. Returns the input bits unchanged (convenience for chaining).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inc_ref_n(bits: u64, count: u32) -> u64 {
+    let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+        return bits;
+    };
+    if count == 0 {
+        return bits;
+    }
     crate::with_gil_entry_nopanic!(_py, {
-        if let Some(ptr) = obj_from_bits(bits).as_ptr() {
-            unsafe { crate::object::inc_ref_n_ptr(_py, ptr, count) };
-        }
+        unsafe { crate::object::inc_ref_n_ptr(_py, ptr, count) };
     });
     bits
 }
 
-/// Batched `dec_ref`: decrement the refcount by calling `dec_ref` `count`
-/// times. (Cannot use a single atomic subtract because each decrement may
-/// trigger deallocation at zero.)
+/// Batched `dec_ref`: apply the typed release transition `count` times. Each
+/// release is separate because any one of them may cross the terminal edge.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dec_ref_n(bits: u64, count: u32) {
+    let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+        return;
+    };
+    if count == 0 {
+        return;
+    }
     crate::with_gil_entry_nopanic!(_py, {
-        if let Some(ptr) = obj_from_bits(bits).as_ptr() {
+        unsafe {
+            let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *const MoltHeader;
+            let type_id = (*header_ptr).type_id;
+            if !crate::object::is_valid_heap_type_id(type_id) {
+                eprintln!(
+                    "molt fatal: invalid object header before batched dec_ref ptr=0x{:x} bits=0x{:x} type_id={}",
+                    ptr as usize, bits, type_id
+                );
+                std::process::abort();
+            }
             for _ in 0..count {
-                unsafe { molt_dec_ref(ptr) };
+                crate::object::dec_ref_ptr_validated(_py, ptr, type_id);
             }
         }
     })

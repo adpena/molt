@@ -348,19 +348,13 @@ extern "C" fn c_api_test_finalizing_pin_probe(self_bits: u64) -> u64 {
             }
         }
 
-        let runtime_baseline = unsafe {
-            (*crate::object::header_from_obj_ptr(self_ptr))
-                .ref_count
-                .load(Ordering::Acquire)
-        };
+        let runtime_baseline =
+            unsafe { (*crate::object::header_from_obj_ptr(self_ptr)).ref_count_snapshot() };
         FINALIZER_PIN_PROBE_RUNTIME_BASELINE.store(runtime_baseline, Ordering::SeqCst);
         inc_ref_bits(_py, self_bits);
         dec_ref_bits(_py, self_bits);
-        let runtime_after = unsafe {
-            (*crate::object::header_from_obj_ptr(self_ptr))
-                .ref_count
-                .load(Ordering::Acquire)
-        };
+        let runtime_after =
+            unsafe { (*crate::object::header_from_obj_ptr(self_ptr)).ref_count_snapshot() };
         if runtime_after == runtime_baseline
             && molt_cpython_abi::bridge::GLOBAL_BRIDGE.has_finalizing_pin(self_bits)
         {
@@ -587,11 +581,7 @@ static WEAKREF_CB_REREGISTER_NEW_WEAK_OUT: AtomicU64 = AtomicU64::new(0);
 
 fn weakref_target_rc(bits: u64) -> u32 {
     match obj_from_bits(bits).as_ptr() {
-        Some(ptr) => unsafe {
-            (*crate::object::header_from_obj_ptr(ptr))
-                .ref_count
-                .load(Ordering::Acquire)
-        },
+        Some(ptr) => unsafe { (*crate::object::header_from_obj_ptr(ptr)).ref_count_snapshot() },
         None => 0,
     }
 }
@@ -806,11 +796,7 @@ fn create_guarded_test_class(
 
 fn heap_refcount(bits: u64) -> u32 {
     let ptr = obj_from_bits(bits).as_ptr().expect("expected heap object");
-    unsafe {
-        (*crate::object::header_from_obj_ptr(ptr))
-            .ref_count
-            .load(Ordering::Acquire)
-    }
+    unsafe { (*crate::object::header_from_obj_ptr(ptr)).ref_count_snapshot() }
 }
 
 #[test]

@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 
 use molt_obj_model::MoltObject;
 
@@ -45,7 +45,7 @@ pub use class_model::*;
 pub use concrete_types::*;
 pub(crate) use concrete_types::{
     capsule_class, cell_class, mappingproxy_class, mappingproxy_class_bits, method_class,
-    simplenamespace_class, types_drop_instance,
+    simplenamespace_class,
 };
 pub use dataclasses::*;
 pub use descriptor_objects::*;
@@ -557,7 +557,7 @@ mod tests {
     unsafe fn ref_count(bits: u64) -> u32 {
         let ptr = maybe_ptr_from_bits(bits).expect("expected heap object");
         let header = unsafe { ptr.sub(std::mem::size_of::<MoltHeader>()) as *const MoltHeader };
-        unsafe { (*header).ref_count.load(Ordering::Acquire) }
+        unsafe { (*header).ref_count_snapshot() }
     }
 
     #[test]

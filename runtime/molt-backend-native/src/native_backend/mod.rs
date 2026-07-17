@@ -11,8 +11,8 @@ use super::*;
 use cranelift_codegen::Context;
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::{
-    AbiParam, AtomicRmwOp, Block, BlockArg, FuncRef, Function, InstBuilder, MemFlagsData,
-    StackSlotData, StackSlotKind, Value, types,
+    AbiParam, Block, BlockArg, FuncRef, Function, InstBuilder, MemFlagsData, StackSlotData,
+    StackSlotKind, Value, types,
 };
 use cranelift_codegen::isa;
 use cranelift_codegen::settings;
@@ -31,6 +31,10 @@ const GENERATED_OBJECT_ABI_ANCHOR_SYMBOL: &str = "__molt_generated_object_abi_an
 const _: () = assert!(
     cfg!(feature = "free-threaded") == molt_codegen_abi::MOLT_FLAGS_ATOMIC,
     "molt-backend-native/free-threaded must exactly match molt-codegen-abi/free-threaded",
+);
+const _: () = assert!(
+    cfg!(feature = "free-threaded") == molt_codegen_abi::MOLT_REFCOUNT_ATOMIC,
+    "molt-backend-native refcount storage must match the generated-object concurrency ABI",
 );
 
 /// Attach a retained, zero-runtime-cost relocation to the runtime's exact

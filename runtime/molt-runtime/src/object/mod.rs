@@ -277,12 +277,12 @@ fn debug_alloc_object_type() -> Option<u32> {
 
 #[repr(C)]
 pub struct MoltHeader {
-    pub type_id: u32,            // 4 bytes
-    pub ref_count: MoltRefCount, // 4 bytes
-    flags: MoltFlags,            // 4 bytes (semantic bits declared below)
-    pub size_class: u16,         // 2 bytes — index into SIZE_CLASS_TABLE
-    pub aux_kind: u16,           // 2 bytes — interpretation of aux
-    pub aux: MoltAuxWord,        // 8 bytes — inline value or stable sidecar address
+    pub type_id: u32,        // 4 bytes
+    ref_count: MoltRefCount, // 4 bytes; transitions owned by `refcount`
+    flags: MoltFlags,        // 4 bytes (semantic bits declared below)
+    pub size_class: u16,     // 2 bytes — index into SIZE_CLASS_TABLE
+    pub aux_kind: u16,       // 2 bytes — interpretation of aux
+    pub aux: MoltAuxWord,    // 8 bytes — inline value or stable sidecar address
 }
 // Total: 24 bytes. The common class/state lanes stay inline; coexistence,
 // polling, and oversized allocations use one stable per-object sidecar.
@@ -324,15 +324,6 @@ const fn flag_transition_is_synchronized(changed: u32) -> bool {
 }
 
 impl MoltHeader {
-    /// Observe the reference count under the active concurrency contract.
-    ///
-    /// This diagnostic snapshot is atomic in the current native runtime. It is
-    /// not an ownership token and cannot justify a later dereference.
-    #[inline(always)]
-    pub fn ref_count_snapshot(&self) -> u32 {
-        self.ref_count.load(AtomicOrdering::Acquire)
-    }
-
     /// Construct the flag word before an object is published. This pointer API
     /// deliberately avoids creating a reference to uninitialized atomic state.
     #[inline(always)]
@@ -578,7 +569,7 @@ impl MoltAuxWord {
         &self,
         set_order: AtomicOrdering,
         fetch_order: AtomicOrdering,
-        mut f: F,
+        f: F,
     ) -> Result<u64, u64>
     where
         F: FnMut(u64) -> Option<u64>,
@@ -590,6 +581,7 @@ impl MoltAuxWord {
         #[cfg(target_arch = "wasm32")]
         {
             let _ = (set_order, fetch_order);
+            let mut f = f;
             let old = self.0.get();
             if let Some(new) = f(old) {
                 self.0.set(new);
@@ -1578,11 +1570,7 @@ pub extern "C" fn molt_object_init_stack(
         std::ptr::write_bytes(header_ptr, 0, total);
         let header = header_ptr as *mut MoltHeader;
         (*header).type_id = class_instance_type_id(cls_ptr);
-        // ref_count is wrapped in MoltRefCount; replace whole field.
-        std::ptr::write(
-            std::ptr::addr_of_mut!((*header).ref_count),
-            MoltRefCount::new(1),
-        );
+        MoltHeader::initialize_refcount_before_publication(header, 1);
         MoltHeader::initialize_flags_before_publication(header, HEADER_FLAG_IMMORTAL);
         (*header).size_class = 0;
         (*header).aux_kind = HEADER_AUX_KIND_CLASS_INLINE;
@@ -1623,9 +1611,7 @@ pub(crate) fn release_shutdown_owned_bits(_py: &PyToken<'_>, bits: u64) {
     };
     unsafe {
         let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
-        if (*header_ptr).ref_count.load(AtomicOrdering::Acquire) == IMMORTAL_REFCOUNT {
-            (*header_ptr).ref_count.store(1, AtomicOrdering::Release);
-        }
+        (*header_ptr).make_mortal_for_shutdown();
         (*header_ptr).fetch_and_flags(!(HEADER_FLAG_IMMORTAL | HEADER_FLAG_INTERNED));
     }
     dec_ref_bits(_py, bits);
@@ -1669,10 +1655,6 @@ pub(crate) fn init_atomic_bits(
 
 pub(crate) fn pending_bits_i64() -> i64 {
     MoltObject::pending().bits() as i64
-}
-
-pub(crate) fn alloc_object_zeroed(_py: &PyToken<'_>, total_size: usize, type_id: u32) -> *mut u8 {
-    alloc_object_zeroed_with_aux(_py, total_size, type_id, ObjectAuxPreselection::Default)
 }
 
 pub(crate) fn alloc_object_zeroed_with_aux(
@@ -1727,7 +1709,7 @@ fn alloc_object_zeroed_with_aux_policy(
         }
         let header = ptr as *mut MoltHeader;
         (*header).type_id = type_id;
-        (*header).ref_count.store(1, AtomicOrdering::Relaxed);
+        MoltHeader::initialize_refcount_before_publication(header, 1);
         if unpublished {
             MoltHeader::initialize_flags_gc_unpublished(header, 0);
         } else {
@@ -1814,7 +1796,7 @@ pub(crate) fn alloc_object_with_aux(
         std::ptr::write_bytes(header_ptr, 0, plan.alloc_size);
         let header = header_ptr as *mut MoltHeader;
         (*header).type_id = type_id;
-        (*header).ref_count.store(1, AtomicOrdering::Relaxed);
+        MoltHeader::initialize_refcount_before_publication(header, 1);
         MoltHeader::initialize_flags_before_publication(header, 0);
         // Payload and size_class are already 0 from write_bytes.
         (*header).size_class = plan.size_class;
@@ -2507,37 +2489,6 @@ pub unsafe extern "C" fn molt_dec_ref(ptr: *mut u8) {
     }
 }
 
-/// # Safety
-/// Dereferences raw pointer to increment ref count.
-#[inline(always)]
-unsafe fn checked_retain_count(header_ptr: *mut MoltHeader, count: u32, label: &str) -> u32 {
-    unsafe {
-        let counter = &(*header_ptr).ref_count;
-        let mut current = counter.load(AtomicOrdering::Acquire);
-        loop {
-            if current == 0 {
-                eprintln!("molt fatal: owned retain attempted after terminal refcount in {label}");
-                std::process::abort();
-            }
-            let Some(next) = current.checked_add(count) else {
-                eprintln!(
-                    "molt fatal: refcount overflow in {label} (count={current}, add={count})"
-                );
-                std::process::abort();
-            };
-            match counter.compare_exchange_weak(
-                current,
-                next,
-                AtomicOrdering::AcqRel,
-                AtomicOrdering::Acquire,
-            ) {
-                Ok(_) => return current,
-                Err(observed) => current = observed,
-            }
-        }
-    }
-}
-
 #[inline(always)]
 pub(crate) unsafe fn inc_ref_ptr(_py: &PyToken<'_>, ptr: *mut u8) {
     unsafe {
@@ -2572,7 +2523,7 @@ pub(crate) unsafe fn inc_ref_ptr(_py: &PyToken<'_>, ptr: *mut u8) {
         }
         // Debug: trace bigint refcount increments
         if type_id == TYPE_ID_BIGINT && debug_bigint_rc() {
-            let old = (*header_ptr).ref_count.load(AtomicOrdering::Relaxed);
+            let old = (*header_ptr).owned_ref_count_snapshot();
             eprintln!(
                 "BIGINT_RC_INC ptr=0x{:x} count={} → {}",
                 ptr as usize,
@@ -2581,10 +2532,10 @@ pub(crate) unsafe fn inc_ref_ptr(_py: &PyToken<'_>, ptr: *mut u8) {
             );
         }
         if type_id == TYPE_ID_EXCEPTION && trace_exception_rc() {
-            let old = (*header_ptr).ref_count.load(AtomicOrdering::Relaxed);
+            let old = (*header_ptr).owned_ref_count_snapshot();
             eprintln!("EXC_RC_INC ptr=0x{:x} {}→{}", ptr as usize, old, old + 1);
         }
-        let previous = checked_retain_count(header_ptr, 1, "inc_ref_ptr");
+        let previous = (*header_ptr).retain_owned(1, "inc_ref_ptr");
         let new_count = previous + 1;
         if previous == 1 && (*header_ptr).has_flag(HEADER_FLAG_HAS_ABI_VIEW) {
             let bits = MoltObject::from_ptr(ptr).bits();
@@ -2608,8 +2559,8 @@ pub(crate) unsafe fn inc_ref_ptr(_py: &PyToken<'_>, ptr: *mut u8) {
     }
 }
 
-/// Batched increment: add `count` to the refcount in a single atomic
-/// operation instead of `count` separate fetch_add(1) calls.
+/// Batched increment: apply one checked typed transition for `count` retained
+/// references instead of repeating the single-reference validation path.
 ///
 /// # Safety
 /// Dereferences raw pointer to increment ref count.
@@ -2638,7 +2589,7 @@ pub(crate) unsafe fn inc_ref_n_ptr(_py: &PyToken<'_>, ptr: *mut u8, count: u32) 
             eprintln!("molt fatal: owned batched INCREF attempted after terminal death");
             std::process::abort();
         }
-        let previous = checked_retain_count(header_ptr, count, "inc_ref_n_ptr");
+        let previous = (*header_ptr).retain_owned(count as usize, "inc_ref_n_ptr");
         let new_count = previous + count;
         if previous == 1 && (*header_ptr).has_flag(HEADER_FLAG_HAS_ABI_VIEW) {
             let bits = MoltObject::from_ptr(ptr).bits();
@@ -3019,13 +2970,32 @@ pub(crate) unsafe fn object_shape_clear_cycle_edges(
 /// Dereferences raw pointer to decrement ref count. Frees memory if count reaches 0.
 #[inline(always)]
 pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
+    unsafe { dec_ref_ptr_with_validated_type_id(py, ptr, None) }
+}
+
+/// Terminal release entry for a caller that already validated the header while
+/// holding the same GIL token. This preserves rich bits/frame diagnostics at
+/// the object ABI without paying a second header load and range branch on every
+/// generated `DecRef`.
+#[inline(always)]
+pub(crate) unsafe fn dec_ref_ptr_validated(py: &PyToken<'_>, ptr: *mut u8, type_id: u32) {
+    debug_assert!(is_valid_heap_type_id(type_id));
+    unsafe { dec_ref_ptr_with_validated_type_id(py, ptr, Some(type_id)) }
+}
+
+#[inline(always)]
+unsafe fn dec_ref_ptr_with_validated_type_id(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    validated_type_id: Option<u32>,
+) {
     unsafe {
         crate::gil_assert();
         if ptr.is_null() {
             return;
         }
         let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
-        let type_id = (*header_ptr).type_id;
+        let type_id = validated_type_id.unwrap_or_else(|| (*header_ptr).type_id);
         // Type-id validity is a MEMORY-SAFETY boundary (see `inc_ref_ptr`). This
         // `type_id` drives the dealloc switch below (reading type-specific inner
         // pointers and freeing the backing memory), so an out-of-range value —
@@ -3034,7 +3004,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
         // validator before reading any other header field. `molt_dec_ref_obj`
         // already guards the bits-based entry; this closes the ptr-based hot path
         // it short-circuits past, so both DecRef entry points share one authority.
-        if !is_valid_heap_type_id(type_id) {
+        if validated_type_id.is_none() && !is_valid_heap_type_id(type_id) {
             eprintln!(
                 "molt fatal: invalid object header in dec_ref ptr=0x{:x} type_id={} \
                  (use-after-free or corrupted header)",
@@ -3058,15 +3028,8 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
         // Do not make dec_ref idempotent: a stale post-free pointer may already
         // alias allocator metadata or a different object, so continuing would
         // corrupt unrelated runtime state.
-        let current = (*header_ptr).ref_count.load(AtomicOrdering::Acquire);
-        if current == 0 {
-            eprintln!(
-                "molt fatal: refcount underflow before dec_ref ptr=0x{:x} type_id={}",
-                ptr as usize, type_id
-            );
-            std::process::abort();
-        }
-        let prev = (*header_ptr).ref_count.fetch_sub(1, AtomicOrdering::AcqRel);
+        let release = (*header_ptr).release_owned("dec_ref_ptr");
+        let prev = release.previous();
         if type_id == TYPE_ID_EXCEPTION && trace_exception_rc() {
             eprintln!("EXC_RC_DEC ptr=0x{:x} {}→{}", ptr as usize, prev, prev - 1);
         }
@@ -3128,16 +3091,15 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             // Restore the stable view hold that this terminal decrement is
             // attempting to consume. Finalization owns a distinct pin above
             // it; direct C roots retain the restored hold without entering.
-            (*header_ptr).ref_count.store(1, AtomicOrdering::Release);
+            (*header_ptr).restore_stable_view_hold();
             if !may_finalize {
                 return;
             }
         }
-        if prev == 1 || view_hold_is_final {
+        if release.reached_zero() || view_hold_is_final {
             if type_id == TYPE_ID_EXCEPTION && trace_exception_rc() {
                 eprintln!("EXC_RC_FREE ptr=0x{:x} (rc hit 0, freeing)", ptr as usize);
             }
-            MoltRefCount::acquire_fence();
             // RC drop-insertion substrate (design 20): the rc=1→0 transition,
             // past the immortal and ABI-view early returns above. This is NOT yet a
             // confirmed deallocation: the finalize + weakref-clear revival window
@@ -3257,10 +3219,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                 // IMMORTAL — already excluded above — and carries debug tracing);
                 // the matching closes below are the authoritative resurrection
                 // checks.
-                (*header_ptr)
-                    .ref_count
-                    .fetch_add(1, AtomicOrdering::Relaxed);
-                let window_baseline = if has_abi_view { 2 } else { 1 };
+                let window_baseline = (*header_ptr).open_revival_window(has_abi_view);
                 // `__del__` runs INLINE at this rc→0 point, exactly as CPython
                 // finalizes at Py_DECREF→0 (prompt timing: `del x; print()` runs
                 // `__del__` before `print`), under a synthetic exception-handler
@@ -3280,8 +3239,8 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                 // `__del__` never re-runs; the weakrefs are cleared on that real
                 // death). The mid-window dec/check runs NO Python code, so the
                 // object is never observable at rc=0.
-                if (*header_ptr).ref_count.load(AtomicOrdering::Acquire) > window_baseline {
-                    (*header_ptr).ref_count.fetch_sub(1, AtomicOrdering::AcqRel);
+                if (*header_ptr).ref_count_snapshot() > window_baseline {
+                    (*header_ptr).close_revival_window();
                     if has_abi_view {
                         molt_cpython_abi::bridge::GLOBAL_BRIDGE
                             .finish_finalization(view_bits, true);
@@ -3291,7 +3250,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                 if has_abi_view
                     && molt_cpython_abi::bridge::GLOBAL_BRIDGE.has_direct_c_refs(view_bits)
                 {
-                    (*header_ptr).ref_count.fetch_sub(1, AtomicOrdering::AcqRel);
+                    (*header_ptr).close_revival_window();
                     molt_cpython_abi::bridge::GLOBAL_BRIDGE.finish_finalization(view_bits, false);
                     return;
                 }
@@ -3305,16 +3264,16 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                 // retain/view publication rejects every attempt to reopen it.
                 weakref_clear_for_ptr(py, ptr);
                 if has_abi_view {
-                    if (*header_ptr).ref_count.load(AtomicOrdering::Acquire) != window_baseline
+                    if (*header_ptr).ref_count_snapshot() != window_baseline
                         || molt_cpython_abi::bridge::GLOBAL_BRIDGE.has_direct_c_refs(view_bits)
                     {
                         eprintln!("molt fatal: weakref callback reopened committed-dead object");
                         std::process::abort();
                     }
-                    (*header_ptr).ref_count.fetch_sub(1, AtomicOrdering::AcqRel);
+                    (*header_ptr).close_revival_window();
                     molt_cpython_abi::bridge::GLOBAL_BRIDGE.finish_finalization(view_bits, false);
                 } else {
-                    let prev_window = (*header_ptr).ref_count.fetch_sub(1, AtomicOrdering::AcqRel);
+                    let prev_window = (*header_ptr).close_revival_window();
                     if prev_window != 1 {
                         eprintln!("molt fatal: weakref callback reopened committed-dead object");
                         std::process::abort();
@@ -3349,7 +3308,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             if (terminal_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0 {
                 // Consume the stable view hold only after every resurrection
                 // opportunity has closed.
-                (*header_ptr).ref_count.store(0, AtomicOrdering::Release);
+                (*header_ptr).retire_stable_view_hold();
             }
             // Past the resurrection check: the object is now actually being
             // destroyed. Commit the leak-gauge counters so DEALLOC_COUNT means
@@ -3674,11 +3633,7 @@ mod tests {
             dec_ref_bits(_py, name_bits);
             assert!(!class_ptr.is_null());
             let class_bits = crate::MoltObject::from_ptr(class_ptr).bits();
-            let initial = unsafe {
-                (*super::header_from_obj_ptr(class_ptr))
-                    .ref_count
-                    .load(std::sync::atomic::Ordering::Acquire)
-            };
+            let initial = unsafe { (*super::header_from_obj_ptr(class_ptr)).ref_count_snapshot() };
 
             let owned_ptr = alloc_object_with_aux(
                 _py,
@@ -3696,11 +3651,7 @@ mod tests {
                 )
             });
             assert_eq!(
-                unsafe {
-                    (*super::header_from_obj_ptr(class_ptr))
-                        .ref_count
-                        .load(std::sync::atomic::Ordering::Acquire)
-                },
+                unsafe { (*super::header_from_obj_ptr(class_ptr)).ref_count_snapshot() },
                 initial + 1
             );
             assert!(!unsafe {
@@ -3715,33 +3666,21 @@ mod tests {
                 object_replace_class_edge(_py, owned_ptr, class_bits, ClassEdgeOwnership::Borrowed)
             });
             assert_eq!(
-                unsafe {
-                    (*super::header_from_obj_ptr(class_ptr))
-                        .ref_count
-                        .load(std::sync::atomic::Ordering::Acquire)
-                },
+                unsafe { (*super::header_from_obj_ptr(class_ptr)).ref_count_snapshot() },
                 initial
             );
             assert!(unsafe {
                 object_replace_class_edge(_py, owned_ptr, class_bits, ClassEdgeOwnership::Owned)
             });
             assert_eq!(
-                unsafe {
-                    (*super::header_from_obj_ptr(class_ptr))
-                        .ref_count
-                        .load(std::sync::atomic::Ordering::Acquire)
-                },
+                unsafe { (*super::header_from_obj_ptr(class_ptr)).ref_count_snapshot() },
                 initial + 1
             );
             assert!(unsafe {
                 object_replace_class_edge(_py, owned_ptr, 0, ClassEdgeOwnership::Owned)
             });
             assert_eq!(
-                unsafe {
-                    (*super::header_from_obj_ptr(class_ptr))
-                        .ref_count
-                        .load(std::sync::atomic::Ordering::Acquire)
-                },
+                unsafe { (*super::header_from_obj_ptr(class_ptr)).ref_count_snapshot() },
                 initial
             );
             dec_ref_bits(_py, crate::MoltObject::from_ptr(owned_ptr).bits());
@@ -3762,11 +3701,7 @@ mod tests {
                 )
             });
             assert_eq!(
-                unsafe {
-                    (*super::header_from_obj_ptr(class_ptr))
-                        .ref_count
-                        .load(std::sync::atomic::Ordering::Acquire)
-                },
+                unsafe { (*super::header_from_obj_ptr(class_ptr)).ref_count_snapshot() },
                 initial
             );
             assert!(unsafe {

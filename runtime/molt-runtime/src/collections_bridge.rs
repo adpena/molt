@@ -412,7 +412,6 @@ mod tests {
     use crate::{TYPE_ID_FUNCTION, dec_ref_bits, obj_from_bits, object_type_id};
     use molt_obj_model::MoltObject;
     use std::sync::Once;
-    use std::sync::atomic::Ordering;
 
     static INIT: Once = Once::new();
 
@@ -450,11 +449,8 @@ mod tests {
                 obj_from_bits(func_bits).as_ptr().is_some(),
                 "defaultdict handle must keep the factory function live"
             );
-            let rc_after_caller_drop = unsafe {
-                (*crate::object::header_from_obj_ptr(func_ptr))
-                    .ref_count
-                    .load(Ordering::Relaxed)
-            };
+            let rc_after_caller_drop =
+                unsafe { (*crate::object::header_from_obj_ptr(func_ptr)).ref_count_snapshot() };
             assert_eq!(
                 rc_after_caller_drop, 1,
                 "the handle must be the remaining factory owner"

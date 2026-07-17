@@ -17,6 +17,8 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -25,7 +27,9 @@ ROOT = Path(__file__).resolve().parents[1]
 TABLE = ROOT / "runtime" / "heap_kinds.toml"
 OUT_CODEGEN = ROOT / "runtime" / "molt-codegen-abi" / "src" / "heap_kinds_generated.rs"
 OUT_CORE = ROOT / "runtime" / "molt-runtime-core" / "src" / "heap_kinds_generated.rs"
-OUT_RUNTIME = ROOT / "runtime" / "molt-runtime" / "src" / "object" / "heap_kinds_generated.rs"
+OUT_RUNTIME = (
+    ROOT / "runtime" / "molt-runtime" / "src" / "object" / "heap_kinds_generated.rs"
+)
 OUT_AUDIT = ROOT / "runtime" / "heap_kinds.generated.json"
 OUT_PYTHON = ROOT / "src" / "molt" / "heap_kinds_generated.py"
 OUTPUTS = (OUT_CODEGEN, OUT_CORE, OUT_RUNTIME, OUT_AUDIT, OUT_PYTHON)
@@ -56,28 +60,98 @@ ACYCLIC_SLOT_SCHEMAS = {
 }
 ALLOWED = {
     "layout": {
-        "async_generator", "boxed", "boxed_bits", "boxed_i64", "boxed_u8",
-        "code", "dict", "dynamic", "exception", "fixed_bits", "foreign",
-        "function", "inline", "inline_rust", "iterator", "memoryview", "module",
-        "object", "set", "tuple", "type", "vec_bits", "vec_u8", "generator",
+        "async_generator",
+        "boxed",
+        "boxed_bits",
+        "boxed_i64",
+        "boxed_u8",
+        "code",
+        "dict",
+        "dynamic",
+        "exception",
+        "fixed_bits",
+        "foreign",
+        "function",
+        "inline",
+        "inline_rust",
+        "iterator",
+        "memoryview",
+        "module",
+        "object",
+        "set",
+        "tuple",
+        "type",
+        "vec_bits",
+        "vec_u8",
+        "generator",
     },
     "edges": {"none", "fixed", "dynamic", "shape", "custom"},
     "cycle": {"never", "always", "dynamic"},
     "weakref": {"deny", "allow", "class"},
     "shape": {"fixed", "class", "sidecar"},
     "drop": {
-        "none", "object_shape", "string", "list", "list_builder", "dict",
-        "dict_builder", "tuple", "dict_view", "iter", "bytearray", "range",
-        "slice", "exception", "dataclass", "buffer2d", "context_manager",
-        "file_handle", "memoryview", "function", "bound_method",
-        "module", "type", "generator", "classmethod", "staticmethod", "property",
-        "super", "set", "set_builder", "frozenset", "bigint", "enumerate",
-        "callargs", "call_iter", "reversed", "zip", "map", "filter", "code",
-        "generic_alias", "async_generator", "union", "list_int", "list_bool",
-        "traceback_payload", "native_handle", "glob_iter", "foreign",
+        "none",
+        "object_shape",
+        "string",
+        "list",
+        "list_builder",
+        "dict",
+        "dict_builder",
+        "tuple",
+        "dict_view",
+        "iter",
+        "bytearray",
+        "range",
+        "slice",
+        "exception",
+        "dataclass",
+        "buffer2d",
+        "context_manager",
+        "file_handle",
+        "memoryview",
+        "function",
+        "bound_method",
+        "module",
+        "type",
+        "generator",
+        "classmethod",
+        "staticmethod",
+        "property",
+        "super",
+        "set",
+        "set_builder",
+        "frozenset",
+        "bigint",
+        "enumerate",
+        "callargs",
+        "call_iter",
+        "reversed",
+        "zip",
+        "map",
+        "filter",
+        "code",
+        "generic_alias",
+        "async_generator",
+        "union",
+        "list_int",
+        "list_bool",
+        "traceback_payload",
+        "native_handle",
+        "glob_iter",
+        "foreign",
         "weak_container",
     },
-    "metrics": {"none", "object", "string", "list", "dict", "tuple", "exception", "callargs", "bigint"},
+    "metrics": {
+        "none",
+        "object",
+        "string",
+        "list",
+        "dict",
+        "tuple",
+        "exception",
+        "callargs",
+        "bigint",
+    },
 }
 TRACK_PROJECTIONS = {
     "never",
@@ -133,12 +207,18 @@ def load_table(path: Path = TABLE) -> list[dict[str, object]]:
         if external_gc not in EXTERNAL_GC_POLICIES:
             raise ValueError(f"invalid external GC policy for {name}: {external_gc!r}")
         if external_gc != "none" and row["edges"] != "none":
-            raise ValueError(f"external-custody kind {name} cannot declare Molt-owned edges")
+            raise ValueError(
+                f"external-custody kind {name} cannot declare Molt-owned edges"
+            )
         row["external_gc"] = external_gc
         if row["cycle"] == "dynamic" and "track" not in row:
-            raise ValueError(f"dynamic heap kind {name} requires an explicit track projection")
+            raise ValueError(
+                f"dynamic heap kind {name} requires an explicit track projection"
+            )
         if row["cycle"] != "dynamic" and "track" in row:
-            raise ValueError(f"non-dynamic heap kind {name} must derive track from cycle")
+            raise ValueError(
+                f"non-dynamic heap kind {name} must derive track from cycle"
+            )
         projection = row.get("track", row["cycle"])
         if projection not in TRACK_PROJECTIONS:
             raise ValueError(f"invalid track projection for {name}: {projection!r}")
@@ -154,7 +234,9 @@ def load_table(path: Path = TABLE) -> list[dict[str, object]]:
         if requires_acyclic_capability and acyclic == "none":
             raise ValueError(f"GREEN ref-holder {name} requires an acyclic capability")
         if not requires_acyclic_capability and acyclic != "none":
-            raise ValueError(f"heap kind {name} cannot carry acyclic capability {acyclic!r}")
+            raise ValueError(
+                f"heap kind {name} cannot carry acyclic capability {acyclic!r}"
+            )
         expected_acyclic = {"RANGE": "int_triplet", "CODE": "code_metadata"}.get(
             str(name), "none"
         )
@@ -197,7 +279,9 @@ def load_table(path: Path = TABLE) -> list[dict[str, object]]:
         raise ValueError("OBJECT=100 must be the only sparse pre-200 heap kind")
     dense_ids = [int(row["id"]) for row in kinds if int(row["id"]) >= 200]
     if dense_ids != list(range(200, dense_ids[-1] + 1)):
-        raise ValueError("builtin heap IDs must remain dense from 200 through MAX_HEAP_TYPE_ID")
+        raise ValueError(
+            "builtin heap IDs must remain dense from 200 through MAX_HEAP_TYPE_ID"
+        )
     pins = {"OBJECT": 100, "FUNCTION": 221, "TYPE": 224, "LIST_BOOL": 250}
     by_name = {str(row["name"]): int(row["id"]) for row in kinds}
     for name, expected in pins.items():
@@ -250,7 +334,9 @@ def render_constants(kinds: list[dict[str, object]], visibility: str = "pub") ->
         lines.append(f"{visibility} const TYPE_ID_{row['name']}: u32 = {row['id']};\n")
     lines.append("\n")
     lines.append(f"{visibility} const MIN_HEAP_TYPE_ID: u32 = TYPE_ID_STRING;\n")
-    lines.append(f"{visibility} const MAX_HEAP_TYPE_ID: u32 = TYPE_ID_{kinds[-1]['name']};\n")
+    lines.append(
+        f"{visibility} const MAX_HEAP_TYPE_ID: u32 = TYPE_ID_{kinds[-1]['name']};\n"
+    )
     lines.append(
         f"{visibility} const ALL_HEAP_TYPE_IDS: [u32; {len(kinds)}] = ["
         + ", ".join(f"TYPE_ID_{row['name']}" for row in kinds)
@@ -267,13 +353,19 @@ def render_object_shapes(shapes: list[dict[str, object]]) -> str:
     ]
     for row in shapes:
         default = "    #[default]\n" if row["id"] == 0 else ""
-        lines.append(f"{default}    {_variant(str(row['name']).lower())} = {row['id']},\n")
+        lines.append(
+            f"{default}    {_variant(str(row['name']).lower())} = {row['id']},\n"
+        )
     lines.append("}\n\nimpl ObjectShapeId {\n")
     lines.append(f"    pub const MAX_ID: u16 = {shapes[-1]['id']};\n\n")
-    lines.append("    #[inline(always)]\n    pub const fn from_u16(value: u16) -> Option<Self> {\n")
+    lines.append(
+        "    #[inline(always)]\n    pub const fn from_u16(value: u16) -> Option<Self> {\n"
+    )
     lines.append("        Some(match value {\n")
     for row in shapes:
-        lines.append(f"            {row['id']} => Self::{_variant(str(row['name']).lower())},\n")
+        lines.append(
+            f"            {row['id']} => Self::{_variant(str(row['name']).lower())},\n"
+        )
     lines.append("            _ => return None,\n        })\n    }\n}\n\n")
     lines.append(
         "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n"
@@ -358,7 +450,9 @@ def render_runtime(kinds: list[dict[str, object]]) -> str:
         + "}\n\n"
     )
     lines.append(_enum("HeapTrackProjection", sorted(TRACK_PROJECTIONS)))
-    lines.append(_enum("HeapLifecycleHandler", [str(row["name"]).lower() for row in kinds]))
+    lines.append(
+        _enum("HeapLifecycleHandler", [str(row["name"]).lower() for row in kinds])
+    )
     lines.append(
         "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n"
         "pub(crate) struct HeapKindDescriptor {\n"
@@ -378,21 +472,28 @@ def render_runtime(kinds: list[dict[str, object]]) -> str:
         "    pub(crate) acyclic: HeapAcyclicCapability,\n"
         "}\n\n"
     )
-    lines.append(f"pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; {len(kinds)}] = [\n")
+    lines.append(
+        f"pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; {len(kinds)}] = [\n"
+    )
     for row in kinds:
         fields = ", ".join(
-            f"{field}: {enum_fields[field]}::{_variant(str(row[field]))}" for field in enum_fields
+            f"{field}: {enum_fields[field]}::{_variant(str(row[field]))}"
+            for field in enum_fields
         )
         fields += (
             f", track: HeapTrackProjection::{_variant(str(row['track']))}"
             f", handler: HeapLifecycleHandler::{_variant(str(row['name']).lower())}"
         )
-        fields += f", publication: HeapPublicationPolicy::{_variant(str(row['publication']))}"
-        fields += f", external_gc: HeapExternalGcPolicy::{_variant(str(row['external_gc']))}"
+        fields += (
+            f", publication: HeapPublicationPolicy::{_variant(str(row['publication']))}"
+        )
+        fields += (
+            f", external_gc: HeapExternalGcPolicy::{_variant(str(row['external_gc']))}"
+        )
         fields += f", acyclic: HeapAcyclicCapability::{_variant(str(row['acyclic_capability']))}"
         lines.append(
             "    HeapKindDescriptor { "
-            f"type_id: TYPE_ID_{row['name']}, name: \"{row['name']}\", {fields}"
+            f'type_id: TYPE_ID_{row["name"]}, name: "{row["name"]}", {fields}'
             " },\n"
         )
     lines.append("];\n\n")
@@ -479,7 +580,7 @@ def render_runtime(kinds: list[dict[str, object]]) -> str:
         "    match name {\n"
     )
     for row in kinds:
-        lines.append(f"        \"{row['name']}\" => Some(TYPE_ID_{row['name']}),\n")
+        lines.append(f'        "{row["name"]}" => Some(TYPE_ID_{row["name"]}),\n')
     lines.append("        _ => None,\n    }\n}\n")
     return "".join(lines)
 
@@ -488,31 +589,56 @@ def render_audit(
     kinds: list[dict[str, object]],
     shapes: list[dict[str, object]],
 ) -> str:
-    return json.dumps(
-        {
-            "schema_version": 1,
-            "source": "runtime/heap_kinds.toml",
-            "kinds": kinds,
-            "object_shapes": shapes,
-        },
-        indent=2,
-        sort_keys=True,
-    ) + "\n"
+    return (
+        json.dumps(
+            {
+                "schema_version": 1,
+                "source": "runtime/heap_kinds.toml",
+                "kinds": kinds,
+                "object_shapes": shapes,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
 
 
 def render_python(kinds: list[dict[str, object]]) -> str:
-    lines = ["# @generated by tools/gen_heap_kinds.py from runtime/heap_kinds.toml. DO NOT EDIT.\n\n"]
+    lines = [
+        "# @generated by tools/gen_heap_kinds.py from runtime/heap_kinds.toml. DO NOT EDIT.\n\n"
+    ]
     for row in kinds:
         lines.append(f"TYPE_ID_{row['name']} = {row['id']}\n")
     return "".join(lines)
 
 
+def _format_rust(source: str) -> str:
+    """Return the canonical repository rustfmt representation of generated Rust."""
+    rustfmt = shutil.which("rustfmt")
+    if rustfmt is None:
+        raise RuntimeError("rustfmt is required to generate heap-kind Rust authorities")
+    completed = subprocess.run(
+        [rustfmt, "--edition", "2024", "--emit", "stdout"],
+        cwd=ROOT,
+        input=source,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"rustfmt failed for generated heap-kind authority:\n{completed.stderr}"
+        )
+    return completed.stdout
+
+
 def render_all(kinds: list[dict[str, object]]) -> dict[Path, str]:
     shapes = load_object_shapes()
     return {
-        OUT_CODEGEN: render_constants(kinds),
-        OUT_CORE: render_constants(kinds) + render_object_shapes(shapes),
-        OUT_RUNTIME: render_runtime(kinds),
+        OUT_CODEGEN: _format_rust(render_constants(kinds)),
+        OUT_CORE: _format_rust(render_constants(kinds) + render_object_shapes(shapes)),
+        OUT_RUNTIME: _format_rust(render_runtime(kinds)),
         OUT_AUDIT: render_audit(kinds, shapes),
         OUT_PYTHON: render_python(kinds),
     }
@@ -520,7 +646,9 @@ def render_all(kinds: list[dict[str, object]]) -> dict[Path, str]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--check", action="store_true", help="fail if generated outputs are stale")
+    parser.add_argument(
+        "--check", action="store_true", help="fail if generated outputs are stale"
+    )
     args = parser.parse_args(argv)
     rendered = render_all(load_table())
     stale = False
@@ -528,7 +656,9 @@ def main(argv: list[str] | None = None) -> int:
         expected = source.encode("utf-8")
         if args.check:
             if not path.exists() or path.read_bytes() != expected:
-                print(f"STALE generated file: {path.relative_to(ROOT)}", file=sys.stderr)
+                print(
+                    f"STALE generated file: {path.relative_to(ROOT)}", file=sys.stderr
+                )
                 stale = True
         else:
             path.parent.mkdir(parents=True, exist_ok=True)

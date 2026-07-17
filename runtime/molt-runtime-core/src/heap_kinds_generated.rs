@@ -61,7 +61,66 @@ pub const TYPE_ID_WEAKREF: u32 = 256;
 
 pub const MIN_HEAP_TYPE_ID: u32 = TYPE_ID_STRING;
 pub const MAX_HEAP_TYPE_ID: u32 = TYPE_ID_WEAKREF;
-pub const ALL_HEAP_TYPE_IDS: [u32; 58] = [TYPE_ID_OBJECT, TYPE_ID_STRING, TYPE_ID_LIST, TYPE_ID_BYTES, TYPE_ID_LIST_BUILDER, TYPE_ID_DICT, TYPE_ID_DICT_BUILDER, TYPE_ID_TUPLE, TYPE_ID_DICT_KEYS_VIEW, TYPE_ID_DICT_VALUES_VIEW, TYPE_ID_DICT_ITEMS_VIEW, TYPE_ID_ITER, TYPE_ID_BYTEARRAY, TYPE_ID_RANGE, TYPE_ID_SLICE, TYPE_ID_EXCEPTION, TYPE_ID_DATACLASS, TYPE_ID_BUFFER2D, TYPE_ID_CONTEXT_MANAGER, TYPE_ID_FILE_HANDLE, TYPE_ID_MEMORYVIEW, TYPE_ID_INTARRAY, TYPE_ID_FUNCTION, TYPE_ID_BOUND_METHOD, TYPE_ID_MODULE, TYPE_ID_TYPE, TYPE_ID_GENERATOR, TYPE_ID_CLASSMETHOD, TYPE_ID_STATICMETHOD, TYPE_ID_PROPERTY, TYPE_ID_SUPER, TYPE_ID_SET, TYPE_ID_SET_BUILDER, TYPE_ID_FROZENSET, TYPE_ID_BIGINT, TYPE_ID_COMPLEX, TYPE_ID_ENUMERATE, TYPE_ID_CALLARGS, TYPE_ID_NOT_IMPLEMENTED, TYPE_ID_CALL_ITER, TYPE_ID_REVERSED, TYPE_ID_ZIP, TYPE_ID_MAP, TYPE_ID_FILTER, TYPE_ID_CODE, TYPE_ID_ELLIPSIS, TYPE_ID_GENERIC_ALIAS, TYPE_ID_ASYNC_GENERATOR, TYPE_ID_UNION, TYPE_ID_LIST_INT, TYPE_ID_FLOAT, TYPE_ID_LIST_BOOL, TYPE_ID_TRACEBACK_PAYLOAD, TYPE_ID_NATIVE_HANDLE, TYPE_ID_GLOB_ITER, TYPE_ID_FOREIGN, TYPE_ID_WEAK_CONTAINER_STATE, TYPE_ID_WEAKREF];
+pub const ALL_HEAP_TYPE_IDS: [u32; 58] = [
+    TYPE_ID_OBJECT,
+    TYPE_ID_STRING,
+    TYPE_ID_LIST,
+    TYPE_ID_BYTES,
+    TYPE_ID_LIST_BUILDER,
+    TYPE_ID_DICT,
+    TYPE_ID_DICT_BUILDER,
+    TYPE_ID_TUPLE,
+    TYPE_ID_DICT_KEYS_VIEW,
+    TYPE_ID_DICT_VALUES_VIEW,
+    TYPE_ID_DICT_ITEMS_VIEW,
+    TYPE_ID_ITER,
+    TYPE_ID_BYTEARRAY,
+    TYPE_ID_RANGE,
+    TYPE_ID_SLICE,
+    TYPE_ID_EXCEPTION,
+    TYPE_ID_DATACLASS,
+    TYPE_ID_BUFFER2D,
+    TYPE_ID_CONTEXT_MANAGER,
+    TYPE_ID_FILE_HANDLE,
+    TYPE_ID_MEMORYVIEW,
+    TYPE_ID_INTARRAY,
+    TYPE_ID_FUNCTION,
+    TYPE_ID_BOUND_METHOD,
+    TYPE_ID_MODULE,
+    TYPE_ID_TYPE,
+    TYPE_ID_GENERATOR,
+    TYPE_ID_CLASSMETHOD,
+    TYPE_ID_STATICMETHOD,
+    TYPE_ID_PROPERTY,
+    TYPE_ID_SUPER,
+    TYPE_ID_SET,
+    TYPE_ID_SET_BUILDER,
+    TYPE_ID_FROZENSET,
+    TYPE_ID_BIGINT,
+    TYPE_ID_COMPLEX,
+    TYPE_ID_ENUMERATE,
+    TYPE_ID_CALLARGS,
+    TYPE_ID_NOT_IMPLEMENTED,
+    TYPE_ID_CALL_ITER,
+    TYPE_ID_REVERSED,
+    TYPE_ID_ZIP,
+    TYPE_ID_MAP,
+    TYPE_ID_FILTER,
+    TYPE_ID_CODE,
+    TYPE_ID_ELLIPSIS,
+    TYPE_ID_GENERIC_ALIAS,
+    TYPE_ID_ASYNC_GENERATOR,
+    TYPE_ID_UNION,
+    TYPE_ID_LIST_INT,
+    TYPE_ID_FLOAT,
+    TYPE_ID_LIST_BOOL,
+    TYPE_ID_TRACEBACK_PAYLOAD,
+    TYPE_ID_NATIVE_HANDLE,
+    TYPE_ID_GLOB_ITER,
+    TYPE_ID_FOREIGN,
+    TYPE_ID_WEAK_CONTAINER_STATE,
+    TYPE_ID_WEAKREF,
+];
 
 #[repr(u16)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -283,7 +342,9 @@ pub const fn object_shape_lifecycle_family(shape: ObjectShapeId) -> ObjectShapeL
         ObjectShapeId::ItertoolsAccumulate => ObjectShapeLifecycleFamily::Itertools,
         ObjectShapeId::ItertoolsBatched => ObjectShapeLifecycleFamily::Itertools,
         ObjectShapeId::ItertoolsCombinations => ObjectShapeLifecycleFamily::Itertools,
-        ObjectShapeId::ItertoolsCombinationsWithReplacement => ObjectShapeLifecycleFamily::Itertools,
+        ObjectShapeId::ItertoolsCombinationsWithReplacement => {
+            ObjectShapeLifecycleFamily::Itertools
+        }
         ObjectShapeId::ItertoolsCompress => ObjectShapeLifecycleFamily::Itertools,
         ObjectShapeId::ItertoolsDropwhile => ObjectShapeLifecycleFamily::Itertools,
         ObjectShapeId::ItertoolsFilterfalse => ObjectShapeLifecycleFamily::Itertools,
@@ -372,5 +433,8 @@ pub const fn object_shape_resource_slot(shape: ObjectShapeId) -> ObjectShapeReso
 
 #[inline(always)]
 pub const fn object_shape_is_task(shape: ObjectShapeId) -> bool {
-    matches!(object_shape_lifecycle_family(shape), ObjectShapeLifecycleFamily::Task)
+    matches!(
+        object_shape_lifecycle_family(shape),
+        ObjectShapeLifecycleFamily::Task
+    )
 }

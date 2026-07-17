@@ -12,7 +12,6 @@ use crate::{
     header_from_obj_ptr, inc_ref_bits, int_bits_from_i64, is_truthy, obj_from_bits,
 };
 use std::ptr;
-use std::sync::atomic::Ordering as AtomicOrdering;
 
 /// Single fail-closed weakrefability authority for runtime registration.
 /// Internal/builders and unlisted builtins are rejected even when heap-backed.
@@ -79,27 +78,15 @@ fn try_pin_cookie_state(cookie: WeakContainerCookie) -> bool {
         {
             return false;
         }
-        let mut current = (*header).ref_count.load(AtomicOrdering::Acquire);
-        loop {
-            if current == 0 || current == super::IMMORTAL_REFCOUNT {
-                return false;
-            }
-            match (*header).ref_count.compare_exchange_weak(
-                current,
-                current + 1,
-                AtomicOrdering::AcqRel,
-                AtomicOrdering::Acquire,
-            ) {
-                Ok(_) => {
-                    debug_assert_eq!(
-                        (*header).load_synchronized_flags() & super::HEADER_FLAG_DEALLOCATING,
-                        0,
-                        "state entered terminal death after a successful live retain"
-                    );
-                    return true;
-                }
-                Err(observed) => current = observed,
-            }
+        if (*header).try_retain_live() {
+            debug_assert_eq!(
+                (*header).load_synchronized_flags() & super::HEADER_FLAG_DEALLOCATING,
+                0,
+                "state entered terminal death after a successful live retain"
+            );
+            true
+        } else {
+            false
         }
     }
 }
@@ -467,22 +454,6 @@ fn unregister_weakref(_py: &PyToken<'_>, weak_ptr: *mut u8) -> Option<WeakRefEnt
     entry
 }
 
-pub(crate) fn weakref_object_detach(_py: &PyToken<'_>, weak_ptr: *mut u8) -> Option<WeakRefEntry> {
-    unregister_weakref(_py, weak_ptr)
-}
-
-pub(crate) fn weakref_object_release(_py: &PyToken<'_>, entry: Option<WeakRefEntry>) {
-    if let Some(entry) = entry {
-        if let Some(cookie) = entry.container_cookie {
-            weakcontainer_target_dead(_py, cookie);
-            dec_ref_bits(_py, cookie.state_bits);
-        }
-        if !obj_from_bits(entry.callback_bits).is_none() {
-            dec_ref_bits(_py, entry.callback_bits);
-        }
-    }
-}
-
 pub(crate) fn weakref_object_visit_owned_edges(
     _py: &PyToken<'_>,
     weak_ptr: *mut u8,
@@ -526,29 +497,6 @@ pub(crate) fn weakref_object_terminal_extra_edge_count(
             0,
             super::weak_container::weakcontainer_target_dead_detach_edge_count,
         )
-}
-
-pub(crate) fn weakref_object_callback_bits(_py: &PyToken<'_>, weak_ptr: *mut u8) -> Option<u64> {
-    let weak_slot = PtrSlot(weak_ptr);
-    let registry = runtime_state(_py).weakrefs.lock().unwrap();
-    let bits = registry.by_ref.get(&weak_slot)?.callback_bits;
-    if obj_from_bits(bits).is_none() {
-        return None;
-    }
-    inc_ref_bits(_py, bits);
-    Some(bits)
-}
-
-/// Borrow the strong callback edge for side-effect-free GC traversal.
-/// The stop-the-world/GIL collection boundary keeps the registry entry stable;
-/// callers must not retain the returned bits beyond that boundary.
-pub(crate) fn weakref_object_borrowed_callback_bits(
-    _py: &PyToken<'_>,
-    weak_ptr: *mut u8,
-) -> Option<u64> {
-    let registry = runtime_state(_py).weakrefs.lock().unwrap();
-    let bits = registry.by_ref.get(&PtrSlot(weak_ptr))?.callback_bits;
-    (!obj_from_bits(bits).is_none()).then_some(bits)
 }
 
 fn weakref_resolve_target_ptr(registry: &WeakRefRegistry, weak_slot: PtrSlot) -> Option<*mut u8> {
@@ -1037,7 +985,6 @@ pub extern "C" fn molt_weakref_finalize_untrack(finalizer_bits: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{WeakContainerCookie, try_pin_cookie_state};
-    use std::sync::atomic::Ordering;
 
     #[test]
     fn builtin_weakrefability_table_is_explicit_and_fail_closed() {
@@ -1104,7 +1051,7 @@ mod tests {
                 },
             };
             assert!(try_pin_cookie_state(cookie));
-            assert_eq!(unsafe { (*header).ref_count.load(Ordering::Acquire) }, 2);
+            assert_eq!(unsafe { (*header).ref_count_snapshot() }, 2);
             crate::dec_ref_bits(_py, state_bits);
             unsafe {
                 (*header).fetch_or_flags(crate::object::HEADER_FLAG_DEALLOCATING);
@@ -1153,8 +1100,10 @@ mod tests {
                 );
 
                 if weakref_first {
-                    let entry = super::weakref_object_detach(_py, weak_ptr);
-                    super::weakref_object_release(_py, entry);
+                    let mut sink = super::DetachedEdgeSink::try_with_capacities(3, 0)
+                        .expect("weakref test sink allocation");
+                    super::weakref_object_detach_owned_edges(_py, weak_ptr, &mut sink);
+                    sink.release_all(_py);
                     assert_eq!(
                         crate::to_i64(crate::obj_from_bits(crate::molt_weakcontainer_len(
                             state_bits,
@@ -1164,8 +1113,10 @@ mod tests {
                     crate::molt_weakcontainer_clear(state_bits);
                 } else {
                     crate::molt_weakcontainer_clear(state_bits);
-                    let entry = super::weakref_object_detach(_py, weak_ptr);
-                    super::weakref_object_release(_py, entry);
+                    let mut sink = super::DetachedEdgeSink::try_with_capacities(3, 0)
+                        .expect("weakref test sink allocation");
+                    super::weakref_object_detach_owned_edges(_py, weak_ptr, &mut sink);
+                    sink.release_all(_py);
                 }
 
                 crate::dec_ref_bits(_py, weak_bits);
