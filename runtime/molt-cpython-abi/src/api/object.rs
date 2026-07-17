@@ -3584,10 +3584,38 @@ struct ThreadStateRegistration {
 static THREAD_STATE_REGISTRY: LazyLock<Mutex<HashMap<usize, ThreadStateRegistration>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+pub struct OwnedCError {
+    pub exc_type: *mut PyObject,
+    pub value: *mut PyObject,
+    pub traceback: *mut PyObject,
+}
+
+impl Drop for OwnedCError {
+    fn drop(&mut self) {
+        unsafe {
+            crate::api::refcount::Py_XDECREF(self.exc_type);
+            crate::api::refcount::Py_XDECREF(self.value);
+            crate::api::refcount::Py_XDECREF(self.traceback);
+        }
+    }
+}
+
+impl OwnedCError {
+    pub fn type_bits(&self) -> u64 {
+        GLOBAL_BRIDGE
+            .molt_handle_for_pyobj(self.exc_type)
+            .map(|value| value.bits())
+            .unwrap_or(0)
+    }
+}
+
 struct ThreadStateRecord {
     state: PyThreadState,
     id: u64,
     attached: bool,
+    state_dict: *mut PyObject,
+    current_error: Option<OwnedCError>,
+    context: HashMap<usize, usize>,
 }
 
 impl ThreadStateRecord {
@@ -3611,6 +3639,9 @@ impl ThreadStateRecord {
             },
             id,
             attached: false,
+            state_dict: ptr::null_mut(),
+            current_error: None,
+            context: HashMap::new(),
         });
         record.state.exc_info = &raw mut record.state.exc_state;
         let ptr = (&raw mut record.state) as usize;
@@ -3631,6 +3662,11 @@ impl ThreadStateRecord {
 
 impl Drop for ThreadStateRecord {
     fn drop(&mut self) {
+        assert!(!self.attached, "dropping an attached PyThreadState");
+        assert!(
+            self.state_dict.is_null() && self.current_error.is_none() && self.context.is_empty(),
+            "PyThreadState TLS drop reached ref-owning state; explicit live-custody teardown is required"
+        );
         let ptr = (&raw mut self.state) as usize;
         let removed = THREAD_STATE_REGISTRY.lock().unwrap().remove(&ptr);
         assert_eq!(
@@ -3645,8 +3681,86 @@ impl Drop for ThreadStateRecord {
 
 thread_local! {
     static MOLT_THREAD_STATE: RefCell<Option<Box<ThreadStateRecord>>> = const { RefCell::new(None) };
-    static GILSTATE_ATTACHMENT: Cell<(usize, bool)> = const { Cell::new((0, false)) };
+    static GILSTATE_ATTACHMENT: Cell<(usize, bool, bool)> = const { Cell::new((0, false, false)) };
     static RUNTIME_EXECUTION_ATTACHMENT: Cell<bool> = const { Cell::new(false) };
+    static RUNTIME_EXECUTION_CREATED_STATE: Cell<bool> = const { Cell::new(false) };
+}
+
+pub(crate) fn thread_state_dict_or_insert_with(
+    create: impl FnOnce() -> *mut PyObject,
+) -> *mut PyObject {
+    MOLT_THREAD_STATE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let record = slot.get_or_insert_with(ThreadStateRecord::new);
+        if record.state_dict.is_null() {
+            record.state_dict = create();
+        }
+        record.state_dict
+    })
+}
+
+pub(crate) fn replace_thread_state_error(state: Option<OwnedCError>) -> Option<OwnedCError> {
+    MOLT_THREAD_STATE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let record = slot.get_or_insert_with(ThreadStateRecord::new);
+        std::mem::replace(&mut record.current_error, state)
+    })
+}
+
+pub(crate) fn take_thread_state_error() -> Option<OwnedCError> {
+    MOLT_THREAD_STATE.with(|slot| {
+        slot.borrow_mut()
+            .as_deref_mut()
+            .and_then(|record| record.current_error.take())
+    })
+}
+
+pub(crate) fn thread_state_error_type() -> Option<*mut PyObject> {
+    MOLT_THREAD_STATE.with(|slot| {
+        slot.borrow()
+            .as_deref()
+            .and_then(|record| record.current_error.as_ref().map(|error| error.exc_type))
+    })
+}
+
+pub(crate) fn with_thread_state_context<R>(f: impl FnOnce(&mut HashMap<usize, usize>) -> R) -> R {
+    MOLT_THREAD_STATE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let record = slot.get_or_insert_with(ThreadStateRecord::new);
+        f(&mut record.context)
+    })
+}
+
+pub(crate) fn with_existing_thread_state_context<R>(
+    f: impl FnOnce(&mut HashMap<usize, usize>) -> R,
+) -> Option<R> {
+    MOLT_THREAD_STATE.with(|slot| {
+        slot.borrow_mut()
+            .as_deref_mut()
+            .map(|record| f(&mut record.context))
+    })
+}
+
+fn destroy_current_thread_state() {
+    let owned = MOLT_THREAD_STATE.with(|slot| {
+        let mut record = slot
+            .borrow_mut()
+            .take()
+            .expect("destroying a missing PyThreadState");
+        assert!(!record.attached, "destroying an attached PyThreadState");
+        let state_dict = std::mem::replace(&mut record.state_dict, ptr::null_mut());
+        let current_error = record.current_error.take();
+        let context = std::mem::take(&mut record.context);
+        drop(record);
+        (state_dict, current_error, context)
+    });
+    unsafe {
+        crate::api::refcount::Py_XDECREF(owned.0);
+    }
+    drop(owned.1);
+    for value in owned.2.into_values() {
+        unsafe { crate::api::refcount::Py_DECREF(value as *mut PyObject) };
+    }
 }
 
 fn ensure_current_thread_state() -> *mut PyThreadState {
@@ -3701,9 +3815,12 @@ pub fn attach_runtime_execution_thread() {
         if owned.get() || current_thread_state_attached() {
             return;
         }
+        let created_state = existing_current_thread_state().is_none();
         let _ = ensure_current_thread_state();
         set_current_thread_state_attached(true);
         owned.set(true);
+        RUNTIME_EXECUTION_CREATED_STATE.with(|created| created.set(created_state));
+        RUNTIME_EXECUTION_ATTACHMENT_COUNT.fetch_add(1, Ordering::AcqRel);
     });
 }
 
@@ -3722,7 +3839,21 @@ pub fn detach_runtime_execution_thread() {
             );
         });
         set_current_thread_state_attached(false);
+        RUNTIME_EXECUTION_ATTACHMENT_COUNT.fetch_sub(1, Ordering::AcqRel);
+        if RUNTIME_EXECUTION_CREATED_STATE.with(|created| created.replace(false)) {
+            destroy_current_thread_state();
+        }
     });
+}
+
+static RUNTIME_EXECUTION_ATTACHMENT_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+pub fn runtime_execution_attachment_count() -> usize {
+    RUNTIME_EXECUTION_ATTACHMENT_COUNT.load(Ordering::Acquire)
+}
+
+pub fn runtime_execution_thread_is_attached() -> bool {
+    RUNTIME_EXECUTION_ATTACHMENT.with(|owned| owned.get())
 }
 
 fn registered_thread_state(tstate: *mut PyThreadState, operation: &str) -> ThreadStateRegistration {
@@ -3754,11 +3885,12 @@ fn assert_current_thread_state(tstate: *mut PyThreadState, operation: &str) {
 
 fn begin_gilstate_attachment() {
     GILSTATE_ATTACHMENT.with(|state| {
-        let (depth, initially_attached) = state.get();
+        let (depth, initially_attached, created_state) = state.get();
         if depth == 0 {
             let was_attached = current_thread_state_attached();
+            let created_state = existing_current_thread_state().is_none();
             set_current_thread_state_attached(true);
-            state.set((1, was_attached));
+            state.set((1, was_attached, created_state));
         } else {
             assert!(
                 current_thread_state_attached(),
@@ -3767,6 +3899,7 @@ fn begin_gilstate_attachment() {
             state.set((
                 depth.checked_add(1).expect("PyGILState nesting overflow"),
                 initially_attached,
+                created_state,
             ));
         }
     });
@@ -3774,15 +3907,18 @@ fn begin_gilstate_attachment() {
 
 fn end_gilstate_attachment() {
     GILSTATE_ATTACHMENT.with(|state| {
-        let (depth, initially_attached) = state.get();
+        let (depth, initially_attached, created_state) = state.get();
         assert_ne!(depth, 0, "PyGILState_Release without matching attachment");
         if depth == 1 {
-            state.set((0, false));
+            state.set((0, false, false));
             if !initially_attached {
                 set_current_thread_state_attached(false);
             }
+            if created_state {
+                destroy_current_thread_state();
+            }
         } else {
-            state.set((depth - 1, initially_attached));
+            state.set((depth - 1, initially_attached, created_state));
         }
     });
 }
@@ -3837,8 +3973,8 @@ pub unsafe extern "C" fn PyGILState_Release(state: c_int) {
         current_thread_state_attached(),
         "PyGILState_Release requires an attached PyThreadState"
     );
-    unsafe { (hooks_or_stubs().gil_leave)(state) };
     end_gilstate_attachment();
+    unsafe { (hooks_or_stubs().gil_leave)(state) };
 }
 
 #[unsafe(no_mangle)]
@@ -4161,6 +4297,50 @@ mod thread_state_tests {
         );
         release.wait();
         worker.join().unwrap();
+    }
+
+    #[test]
+    fn explicit_thread_state_destruction_releases_every_owned_python_edge() {
+        let mut dict = Box::new(PyObject {
+            ob_refcnt: 2,
+            ob_type: ptr::null_mut(),
+        });
+        let mut error = Box::new(PyObject {
+            ob_refcnt: 4,
+            ob_type: ptr::null_mut(),
+        });
+        let mut context_value = Box::new(PyObject {
+            ob_refcnt: 2,
+            ob_type: ptr::null_mut(),
+        });
+        let dict_ptr = &raw mut *dict;
+        let error_ptr = &raw mut *error;
+        let context_ptr = &raw mut *context_value;
+
+        assert_eq!(thread_state_dict_or_insert_with(|| dict_ptr), dict_ptr);
+        assert!(
+            replace_thread_state_error(Some(OwnedCError {
+                exc_type: error_ptr,
+                value: error_ptr,
+                traceback: error_ptr,
+            }))
+            .is_none()
+        );
+        with_thread_state_context(|context| {
+            assert!(context.insert(0xC0FFEE, context_ptr as usize).is_none());
+        });
+
+        destroy_current_thread_state();
+        assert!(existing_current_thread_state().is_none());
+        assert_eq!(dict.ob_refcnt, 1, "state dict owner must be released once");
+        assert_eq!(
+            error.ob_refcnt, 1,
+            "the exact C error triple must release all three owned edges"
+        );
+        assert_eq!(
+            context_value.ob_refcnt, 1,
+            "current-context binding owner must be released once"
+        );
     }
 }
 

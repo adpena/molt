@@ -24,28 +24,14 @@ pub unsafe extern "C" fn Py_GetVersion() -> *const c_char {
     c"3.12.0 (Molt runtime)".as_ptr()
 }
 
-thread_local! {
-    /// The lazily-created per-thread state dict backing `PyThreadState_GetDict`.
-    /// Immortal for the thread's lifetime (a single owning reference is retained
-    /// here), so the borrowed reference the getter returns stays valid.
-    static THREAD_STATE_DICT: std::cell::Cell<*mut PyObject> =
-        const { std::cell::Cell::new(ptr::null_mut()) };
-}
-
 /// CPython `PyThreadState_GetDict` (Python/pystate.c): a per-thread dictionary in
 /// which extensions stash thread-local state (numpy caches its per-thread
-/// scratch here). Molt's ABI has no `PyThreadState` object, so this is backed by
-/// a real thread-local dict created on first use. The returned reference is
-/// BORROWED — the CPython contract — and never NULL once creation succeeds.
+/// scratch here). The canonical `ThreadStateRecord` retains the dict until that
+/// state is explicitly destroyed. The returned reference is BORROWED.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyThreadState_GetDict() -> *mut PyObject {
-    THREAD_STATE_DICT.with(|slot| {
-        let mut dict = slot.get();
-        if dict.is_null() {
-            dict = unsafe { crate::api::mapping::PyDict_New() };
-            slot.set(dict);
-        }
-        dict
+    crate::api::object::thread_state_dict_or_insert_with(|| unsafe {
+        crate::api::mapping::PyDict_New()
     })
 }
 
@@ -56,7 +42,9 @@ pub unsafe extern "C" fn PyThreadState_GetDict() -> *mut PyObject {
 #[cfg(not(target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyOS_setsig(sig: c_int, handler: *mut c_void) -> *mut c_void {
-    unsafe { libc::signal(sig, handler as usize as libc::sighandler_t) as usize as *mut c_void }
+    let handler_addr = handler.expose_provenance();
+    let previous = unsafe { libc::signal(sig, handler_addr as libc::sighandler_t) };
+    std::ptr::with_exposed_provenance_mut(previous as usize)
 }
 
 /// wasm has no signal machinery; echo the requested handler (no-op install).
