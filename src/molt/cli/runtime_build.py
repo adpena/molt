@@ -109,7 +109,7 @@ from molt.cli.runtime_wasm_validation import (
 )
 from molt.cli.wasm_link_args import (
     wasm_link_args_from_rustflags as _wasm_link_args_from_rustflags,
-    wasm_link_args_response_rustflags as _wasm_link_args_response_rustflags,
+    wasm_link_args_response_file as _wasm_link_args_response_file,
     write_wasm_link_args_response_file as _write_wasm_link_args_response_file,
 )
 from molt.cli import wasm_toolchain
@@ -2102,6 +2102,7 @@ class _RuntimeWasmBuildSpec(NamedTuple):
     env: dict[str, str]
     runtime_exports: str
     link_flags: str
+    cargo_link_response_path: Path | None
     cargo_rustflags: str
     fingerprint_rustflags: str
     no_default_features: bool
@@ -2165,11 +2166,7 @@ def _compute_runtime_wasm_build_spec(
             resolved_modules=resolved_modules,
         )
         link_flags = runtime_exports
-        cargo_link_flags = _wasm_link_args_response_rustflags(
-            root,
-            label=f"runtime.{_resolve_wasm_cargo_profile(cargo_profile)}.reloc",
-            link_flags=link_flags,
-        )
+        cargo_link_response_path = None
     else:
         runtime_exports = wasm_runtime_shared_export_link_args(required_exports)
         shared_import_flags = (
@@ -2177,14 +2174,14 @@ def _compute_runtime_wasm_build_spec(
             " -C link-arg=--growable-table"
         )
         link_flags = f"{shared_import_flags}{runtime_exports}"
-        cargo_link_flags = _wasm_link_args_response_rustflags(
+        cargo_link_response_path = _wasm_link_args_response_file(
             root,
             label=f"runtime.{_resolve_wasm_cargo_profile(cargo_profile)}.shared",
             link_flags=link_flags,
         )
     base_rustflags = env.get("RUSTFLAGS", "").strip()
     cargo_rustflags = _wasm_runtime_codegen_rustflags(
-        _append_rustflags_text(base_rustflags, cargo_link_flags),
+        base_rustflags,
         simd_enabled=simd_enabled,
         freestanding=freestanding,
     )
@@ -2259,6 +2256,7 @@ def _compute_runtime_wasm_build_spec(
         env=env,
         runtime_exports=runtime_exports,
         link_flags=link_flags,
+        cargo_link_response_path=cargo_link_response_path,
         cargo_rustflags=cargo_rustflags,
         fingerprint_rustflags=fingerprint_rustflags,
         no_default_features=no_default_features,
@@ -2338,6 +2336,7 @@ def _ensure_runtime_wasm(
         env,
         runtime_exports,
         link_flags,
+        cargo_link_response_path,
         cargo_rustflags,
         fingerprint_rustflags,
         no_default_features,
@@ -2776,6 +2775,8 @@ def _ensure_runtime_wasm(
             cmd.extend(["--", "--crate-type=staticlib"])
         else:
             cmd.extend(["--", "--crate-type=cdylib"])
+            if cargo_link_response_path is not None:
+                cmd.extend(["-C", f"link-arg=@{cargo_link_response_path}"])
         _cargo_compile_started = time.perf_counter()
         try:
             build, src = _run_runtime_wasm_cargo_build(

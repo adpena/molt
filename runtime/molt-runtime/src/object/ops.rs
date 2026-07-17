@@ -625,10 +625,7 @@ fn runtime_profile_payload(_py: &PyToken<'_>, emit_leak_warning: bool) -> serde_
     let dealloc_tuples = DEALLOC_TUPLE_COUNT.load(AtomicOrdering::Relaxed);
     let dealloc_exceptions = DEALLOC_EXCEPTION_COUNT.load(AtomicOrdering::Relaxed);
     let dealloc_bytes_exception = DEALLOC_BYTES_EXCEPTION.load(AtomicOrdering::Relaxed);
-    // Take a final RSS sample before dumping.
-    sample_peak_rss();
-    let peak_rss = PEAK_RSS_BYTES.load(AtomicOrdering::Relaxed);
-    let current_rss = current_rss_bytes();
+    let memory_snapshot = process_memory_snapshot();
     // RC drop-insertion substrate (design 20): the leak report. `live` is the
     // count of objects whose final dec-ref never fired by process exit — the
     // immortal bootstrap roots (module dict, builtin types) legitimately survive
@@ -723,10 +720,7 @@ fn runtime_profile_payload(_py: &PyToken<'_>, emit_leak_warning: bool) -> serde_
             "gc_registry_lock_wait_ns": gc_registry_lock_wait_ns,
             "gc_snapshot_alloc_failure_count": GC_SNAPSHOT_ALLOC_FAILURE_COUNT.load(AtomicOrdering::Relaxed),
     };
-    let memory_payload = json_counter_object! {
-            "peak_rss_bytes": peak_rss,
-            "current_rss_bytes": current_rss,
-    };
+    let memory_payload = runtime_profile_memory_payload(memory_snapshot);
     let hot_paths_payload = json_counter_object! {
             "call_bind_ic_hit": call_bind_ic_hit,
             "call_bind_ic_miss": call_bind_ic_miss,
@@ -754,7 +748,7 @@ fn runtime_profile_payload(_py: &PyToken<'_>, emit_leak_warning: bool) -> serde_
             "guard_dict_shape_layout_fail_version_mismatch": guard_dict_shape_layout_fail_version_mismatch,
     };
     serde_json::json!({
-        "schema_version": 2,
+        "schema_version": 3,
         "kind": "runtime_feedback",
         "profile": profile_payload,
         "aux": aux_payload,
@@ -762,6 +756,17 @@ fn runtime_profile_payload(_py: &PyToken<'_>, emit_leak_warning: bool) -> serde_
         "memory": memory_payload,
         "hot_paths": hot_paths_payload,
         "deopt_reasons": deopt_reasons_payload,
+    })
+}
+
+fn runtime_profile_memory_payload(
+    snapshot: crate::state::ProcessMemorySnapshot,
+) -> serde_json::Value {
+    serde_json::json!({
+        "source": snapshot.source,
+        "available": snapshot.available_flag(),
+        "current_rss_bytes": snapshot.current_rss_bytes,
+        "peak_rss_bytes": snapshot.peak_rss_bytes,
     })
 }
 
@@ -835,29 +840,16 @@ fn runtime_profile_is_gauge(section: &str, metric: &str) -> bool {
         .any(|&(gauge_section, gauge_metric)| section == gauge_section && metric == gauge_metric)
 }
 
-fn runtime_profile_metric(payload: &serde_json::Value, section: &str, metric: &str) -> u64 {
+fn runtime_profile_metric(payload: &serde_json::Value, section: &str, metric: &str) -> Option<u64> {
     payload
         .get(section)
         .and_then(|value| value.get(metric))
         .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0)
 }
 
 fn runtime_profile_set_settled_memory_snapshot(payload: &mut serde_json::Value) {
-    sample_peak_rss();
-    let current_rss = current_rss_bytes();
-    let peak_rss = PEAK_RSS_BYTES.load(AtomicOrdering::Relaxed);
-    if let Some(value) = payload
-        .get_mut("memory")
-        .and_then(|memory| memory.get_mut("current_rss_bytes"))
-    {
-        *value = serde_json::Value::from(current_rss);
-    }
-    if let Some(value) = payload
-        .get_mut("memory")
-        .and_then(|memory| memory.get_mut("peak_rss_bytes"))
-    {
-        *value = serde_json::Value::from(peak_rss);
+    if let Some(memory) = payload.get_mut("memory") {
+        *memory = runtime_profile_memory_payload(process_memory_snapshot());
     }
 }
 
@@ -896,7 +888,10 @@ fn runtime_profile_epoch_delta_payload(
             let Some(end_value) = end_value.as_u64() else {
                 continue;
             };
-            let start_value = runtime_profile_metric(&baseline.payload, section, metric);
+            let Some(start_value) = runtime_profile_metric(&baseline.payload, section, metric)
+            else {
+                return Err("runtime profile baseline is missing a canonical counter");
+            };
             if runtime_profile_is_gauge(section, metric) {
                 gauges.insert(
                     metric.clone(),
@@ -915,11 +910,13 @@ fn runtime_profile_epoch_delta_payload(
                             "end": end_value,
                         }),
                     );
+                    counters.insert(metric.clone(), serde_json::Value::Null);
+                } else {
+                    counters.insert(
+                        metric.clone(),
+                        serde_json::Value::from(end_value - start_value),
+                    );
                 }
-                counters.insert(
-                    metric.clone(),
-                    serde_json::Value::from(end_value.saturating_sub(start_value)),
-                );
             }
         }
         if !counters.is_empty() {
@@ -936,24 +933,33 @@ fn runtime_profile_epoch_delta_payload(
         }
     }
 
-    let rss_start = runtime_profile_metric(&baseline.payload, "memory", "current_rss_bytes");
-    let rss_end = runtime_profile_metric(end, "memory", "current_rss_bytes");
-    let process_peak_start = runtime_profile_metric(&baseline.payload, "memory", "peak_rss_bytes");
-    let process_peak_end = runtime_profile_metric(end, "memory", "peak_rss_bytes");
+    let Some(memory_start) = baseline.payload.get("memory").cloned() else {
+        return Err("runtime profile baseline is missing memory telemetry");
+    };
+    let Some(memory_end) = end.get("memory").cloned() else {
+        return Err("runtime profile end snapshot is missing memory telemetry");
+    };
+    let rss_delta = match (
+        runtime_profile_metric(&baseline.payload, "memory", "current_rss_bytes"),
+        runtime_profile_metric(end, "memory", "current_rss_bytes"),
+    ) {
+        (Some(start), Some(end)) => Some(runtime_profile_signed_delta(end, start)),
+        _ => None,
+    };
+    let claimable = counter_regression_sections.is_empty();
     Ok(serde_json::json!({
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "runtime_profile_epoch",
         "generation": baseline.generation,
         "label": baseline.label.as_str(),
+        "claimable": claimable,
         "delta": serde_json::Value::Object(counter_sections),
         "counter_regressions": serde_json::Value::Object(counter_regression_sections),
         "gauges": serde_json::Value::Object(gauge_sections),
         "memory": {
-            "current_rss_start_bytes": rss_start,
-            "current_rss_end_bytes": rss_end,
-            "current_rss_delta_bytes": runtime_profile_signed_delta(rss_end, rss_start),
-            "process_peak_start_bytes": process_peak_start,
-            "process_peak_end_bytes": process_peak_end,
+            "start": memory_start,
+            "end": memory_end,
+            "current_rss_delta_bytes": rss_delta,
         },
     }))
 }
@@ -1055,8 +1061,12 @@ mod profile_epoch_tests {
                 },
                 "hot_paths": {"call_bind_ic_hit": 1},
                 "deopt_reasons": {"guard_tag_type_mismatch": 0},
-                "future_counter_family": {"specialized_hit": 3},
-                "memory": {"peak_rss_bytes": 4096, "current_rss_bytes": 3072},
+                "memory": {
+                    "source": "proc-self-status",
+                    "available": true,
+                    "peak_rss_bytes": 4096,
+                    "current_rss_bytes": 3072,
+                },
             }),
         };
         let end = serde_json::json!({
@@ -1075,8 +1085,12 @@ mod profile_epoch_tests {
             },
             "hot_paths": {"call_bind_ic_hit": 6},
             "deopt_reasons": {"guard_tag_type_mismatch": 1},
-            "future_counter_family": {"specialized_hit": 10},
-            "memory": {"peak_rss_bytes": 8192, "current_rss_bytes": 2048},
+            "memory": {
+                "source": "proc-self-status",
+                "available": true,
+                "peak_rss_bytes": 8192,
+                "current_rss_bytes": 2048,
+            },
         });
 
         let Ok(delta) = runtime_profile_epoch_delta_payload(&baseline, &end) else {
@@ -1085,23 +1099,59 @@ mod profile_epoch_tests {
 
         assert_eq!(delta["generation"], 7);
         assert_eq!(delta["label"], "steady_state");
+        assert_eq!(delta["claimable"], false);
         assert_eq!(delta["delta"]["profile"]["alloc_count"], 2);
         assert_eq!(delta["delta"]["profile"]["alloc_bytes_total"], 64);
-        assert_eq!(delta["delta"]["profile"]["dealloc_count"], 0);
+        assert_eq!(
+            delta["delta"]["profile"]["dealloc_count"],
+            serde_json::Value::Null
+        );
         assert_eq!(
             delta["counter_regressions"]["profile"]["dealloc_count"],
             serde_json::json!({"start": 8, "end": 7})
         );
         assert_eq!(delta["delta"]["gc"]["gc_track_count"], 4);
         assert_eq!(delta["delta"]["hot_paths"]["call_bind_ic_hit"], 5);
-        assert_eq!(
-            delta["delta"]["future_counter_family"]["specialized_hit"],
-            7
-        );
         assert_eq!(delta["gauges"]["profile"]["live_objects"]["delta"], -1);
         assert_eq!(delta["gauges"]["gc"]["gc_tracked_high_water"]["delta"], 2);
         assert_eq!(delta["memory"]["current_rss_delta_bytes"], -1024);
-        assert_eq!(delta["memory"]["process_peak_end_bytes"], 8192);
+        assert_eq!(delta["memory"]["end"]["peak_rss_bytes"], 8192);
+    }
+
+    #[test]
+    fn epoch_delta_keeps_unavailable_rss_explicit() {
+        let baseline = RuntimeProfileEpochBaseline {
+            generation: 8,
+            label: "wasm".to_owned(),
+            payload: serde_json::json!({
+                "profile": {"alloc_count": 1},
+                "memory": {
+                    "source": "unsupported-wasm",
+                    "available": false,
+                    "peak_rss_bytes": null,
+                    "current_rss_bytes": null,
+                },
+            }),
+        };
+        let end = serde_json::json!({
+            "profile": {"alloc_count": 2},
+            "memory": {
+                "source": "unsupported-wasm",
+                "available": false,
+                "peak_rss_bytes": null,
+                "current_rss_bytes": null,
+            },
+        });
+
+        let delta = runtime_profile_epoch_delta_payload(&baseline, &end)
+            .expect("explicitly unavailable RSS must remain valid epoch evidence");
+        assert_eq!(delta["claimable"], true);
+        assert_eq!(
+            delta["memory"]["current_rss_delta_bytes"],
+            serde_json::Value::Null
+        );
+        assert_eq!(delta["memory"]["start"]["available"], false);
+        assert_eq!(delta["memory"]["end"]["source"], "unsupported-wasm");
     }
 }
 

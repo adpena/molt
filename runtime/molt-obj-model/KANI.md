@@ -90,7 +90,7 @@ cargo kani --tests --harness int_roundtrip
 | `flags_at_offset_8`                 | `flags` field sits at byte offset 8                                 |
 | `aux_fields_match_shared_abi_offsets` | Aux discriminator/word match generated negative offsets from payload |
 | `header_from_obj_ptr_roundtrip`     | `obj_ptr - HEADER_SIZE` recovers the original header pointer        |
-| `type_ids_are_unique`               | All 49 type IDs are distinct                                        |
+| `type_ids_are_unique`               | All 58 type IDs are distinct                                        |
 | `header_flags_are_independent`      | All 17 flags occupy distinct single-bit positions (no overlap)      |
 | `aux_kinds_and_class_word_tags_are_disjoint` | Aux and inline-class tag domains cannot alias                 |
 | `immortal_flag_preserves_other_bits`| Setting IMMORTAL does not disturb other flag bits                    |

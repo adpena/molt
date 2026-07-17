@@ -33,6 +33,9 @@ The durable north-star contracts are:
 - Performance includes latency, throughput, startup, code size, allocations,
   bytes moved, peak-live memory, process-tree RSS/commit, cache behavior,
   atomics, contention, energy when measurable, and failure atomicity.
+- Performance evidence is typed and fail-closed: exact versioned counter maps,
+  explicit measurement availability/source, null rather than invented zeros,
+  and non-claimable epochs for counter reset, wrap, or truncation.
 - Every owned heap value has a mechanically checked lifetime. RC, cycle GC,
   weakrefs, finalizers, ABI ownership, publication, and concurrency share one
   generated lifetime/type authority.

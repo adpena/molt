@@ -21,6 +21,7 @@ import molt.cli as cli
 from molt.cli import build_output_layout as cli_build_output_layout
 
 from tests.cli.process_guard import run_cli_test_process
+from tests.runtime_profile_fixtures import process_profile_payload
 
 DEFAULT_PATHS = importlib.import_module("molt.cli.default_paths")
 SETUP_READINESS = importlib.import_module("molt.cli.setup_readiness")
@@ -153,41 +154,7 @@ def _write_pgo_profile(tmp_path: Path, entrypoint: str = "script.py") -> Path:
 
 def _write_runtime_feedback(tmp_path: Path) -> Path:
     feedback_path = tmp_path / "molt_runtime_feedback.json"
-    payload = {
-        "schema_version": 2,
-        "kind": "runtime_feedback",
-        "profile": {
-            "call_dispatch": 0,
-            "attr_lookup": 0,
-            "layout_guard": 0,
-            "layout_guard_fail": 0,
-            "alloc_count": 0,
-            "async_polls": 0,
-        },
-        "aux": {},
-        "gc": {},
-        "memory": {"peak_rss_bytes": 0, "current_rss_bytes": 0},
-        "hot_paths": {
-            "call_bind_ic_hit": 0,
-            "call_bind_ic_miss": 0,
-            "split_ws_ascii": 0,
-            "split_ws_unicode": 0,
-            "dict_str_int_prehash_deopt": 0,
-            "taq_ingest_calls": 0,
-        },
-        "deopt_reasons": {
-            "call_indirect_noncallable": 0,
-            "invoke_ffi_bridge_capability_denied": 0,
-            "guard_tag_type_mismatch": 0,
-            "guard_dict_shape_layout_mismatch": 0,
-            "guard_dict_shape_layout_fail_null_obj": 0,
-            "guard_dict_shape_layout_fail_non_object": 0,
-            "guard_dict_shape_layout_fail_class_mismatch": 0,
-            "guard_dict_shape_layout_fail_non_type_class": 0,
-            "guard_dict_shape_layout_fail_expected_version_invalid": 0,
-            "guard_dict_shape_layout_fail_version_mismatch": 0,
-        },
-    }
+    payload = process_profile_payload()
     feedback_path.write_text(json.dumps(payload))
     return feedback_path
 
@@ -1589,7 +1556,7 @@ def test_cli_build_runtime_feedback_json(tmp_path: Path) -> None:
     assert payload["status"] == "ok"
     assert payload["data"]["sysroot"] == str(sysroot)
     assert payload["data"]["runtime_feedback"]["path"] == str(feedback_path)
-    assert payload["data"]["runtime_feedback"]["schema_version"] == 2
+    assert payload["data"]["runtime_feedback"]["schema_version"] == 3
     assert payload["data"]["runtime_feedback"]["hot_functions"] == []
     assert Path(payload["data"]["output"]).exists()
 

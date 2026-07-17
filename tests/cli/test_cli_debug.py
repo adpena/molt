@@ -15,6 +15,7 @@ from molt.dx import development_artifact_env
 from molt.debug import DebugSubcommand, allocate_debug_paths
 
 from tests.cli.process_guard import run_cli_test_process
+from tests.runtime_profile_fixtures import process_profile_payload
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -95,38 +96,19 @@ def _write_diff_inputs(tmp_path: Path) -> tuple[Path, Path]:
 
 
 def _write_perf_inputs(tmp_path: Path) -> tuple[Path, Path]:
+    profile_a = process_profile_payload()
+    profile_a["profile"].update({"alloc_count": 4, "dealloc_count": 4})
+    profile_a["hot_paths"].update({"call_bind_ic_hit": 10, "call_bind_ic_miss": 1})
     profile_json_path = tmp_path / "bench_a.json"
-    profile_json_path.write_text(
-        json.dumps(
-            {
-                "schema_version": 2,
-                "kind": "runtime_feedback",
-                "profile": {"alloc_count": 4},
-                "aux": {},
-                "gc": {},
-                "memory": {"peak_rss_bytes": 0, "current_rss_bytes": 0},
-                "hot_paths": {"call_bind_ic_hit": 10, "call_bind_ic_miss": 1},
-                "deopt_reasons": {},
-            }
-        ),
-        encoding="utf-8",
+    profile_json_path.write_text(json.dumps(profile_a), encoding="utf-8")
+    profile_b = process_profile_payload()
+    profile_b["profile"].update(
+        {"alloc_count": 6, "dealloc_count": 6, "alloc_callargs": 2}
     )
+    profile_b["hot_paths"].update({"call_bind_ic_hit": 3, "call_bind_ic_miss": 4})
     profile_log_path = tmp_path / "bench_b.log"
     profile_log_path.write_text(
-        "noise\nmolt_profile_json "
-        + json.dumps(
-            {
-                "schema_version": 2,
-                "kind": "runtime_feedback",
-                "profile": {"alloc_count": 6, "alloc_callargs": 2},
-                "aux": {},
-                "gc": {},
-                "memory": {"peak_rss_bytes": 0, "current_rss_bytes": 0},
-                "hot_paths": {"call_bind_ic_hit": 3, "call_bind_ic_miss": 4},
-                "deopt_reasons": {},
-            }
-        )
-        + "\n",
+        "noise\nmolt_profile_json " + json.dumps(profile_b) + "\n",
         encoding="utf-8",
     )
     return profile_json_path, profile_log_path

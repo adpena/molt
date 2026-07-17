@@ -5,7 +5,10 @@ import json
 from pathlib import Path
 from typing import Any
 
-from molt._runtime_profile_schema import is_process_profile
+from molt._runtime_profile_schema import (
+    PROCESS_PROFILE_SCHEMA_VERSION,
+    validate_process_profile,
+)
 from molt.cli.models import PgoProfileSummary, RuntimeFeedbackSummary
 from molt.cli.output import fail as _fail
 
@@ -284,25 +287,14 @@ def _load_runtime_feedback(
                 command=command,
             ),
         )
-    errors: list[str] = []
-    if not is_process_profile(payload):
-        errors.append(
-            "expected runtime_feedback process schema v2, got "
-            f"kind={payload.get('kind')!r} "
-            f"schema_version={payload.get('schema_version')!r}"
-        )
-    if not isinstance(payload.get("profile"), dict):
-        errors.append("missing profile")
-    if not isinstance(payload.get("hot_paths"), dict):
-        errors.append("missing hot_paths")
-    if not isinstance(payload.get("deopt_reasons"), dict):
-        errors.append("missing deopt_reasons")
-    if errors:
+    if error := validate_process_profile(payload):
         return (
             None,
             None,
             _fail(
-                f"Invalid runtime feedback artifact {path}: " + "; ".join(errors),
+                f"Invalid runtime feedback artifact {path}: expected "
+                f"runtime_feedback process schema v{PROCESS_PROFILE_SCHEMA_VERSION}: "
+                f"{error}",
                 json_output,
                 command=command,
             ),

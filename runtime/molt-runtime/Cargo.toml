@@ -283,6 +283,7 @@ getrandom_legacy = { package = "getrandom", version = "0.2", features = ["js"] }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",
+    "Win32_System_ProcessStatus",
     "Win32_System_Threading",
     "Win32_System_Time",
 ] }

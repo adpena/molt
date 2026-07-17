@@ -2607,6 +2607,13 @@ pub(crate) unsafe fn inc_ref_n_ptr(_py: &PyToken<'_>, ptr: *mut u8, count: u32) 
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static FINALIZER_WINDOW_TEST_HOOK: std::cell::Cell<Option<fn(u64)>> = const {
+        std::cell::Cell::new(None)
+    };
+}
+
 /// Run the object's `__del__` finalizer INSIDE an already-open revival window.
 ///
 /// CONTRACT: the caller (`dec_ref_ptr`) has already opened the revival window —
@@ -2627,6 +2634,12 @@ unsafe fn run_object_del_in_revival_window(py: &PyToken<'_>, ptr: *mut u8) {
     if (unsafe { (*header_ptr).load_synchronized_flags() } & HEADER_FLAG_FINALIZER_RAN) != 0 {
         return;
     }
+    #[cfg(test)]
+    FINALIZER_WINDOW_TEST_HOOK.with(|slot| {
+        if let Some(hook) = slot.replace(None) {
+            hook(MoltObject::from_ptr(ptr).bits());
+        }
+    });
     let class_bits = unsafe { object_class_bits(ptr) };
     if class_bits == 0 || obj_from_bits(class_bits).is_none() {
         return;
@@ -3208,7 +3221,7 @@ unsafe fn dec_ref_ptr_with_validated_type_id(
             let needs_revival_window =
                 (header_flags & HEADER_FLAG_HAS_WEAKREF) != 0 || object_class_has_finalizer(ptr);
             if needs_revival_window {
-                let has_abi_view = (header_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0;
+                let mut has_abi_view = (header_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0;
                 let view_bits = MoltObject::from_ptr(ptr).bits();
                 if has_abi_view {
                     molt_cpython_abi::bridge::GLOBAL_BRIDGE.begin_finalization(view_bits);
@@ -3219,7 +3232,7 @@ unsafe fn dec_ref_ptr_with_validated_type_id(
                 // IMMORTAL — already excluded above — and carries debug tracing);
                 // the matching closes below are the authoritative resurrection
                 // checks.
-                let window_baseline = (*header_ptr).open_revival_window(has_abi_view);
+                let mut window_baseline = (*header_ptr).open_revival_window(has_abi_view);
                 // `__del__` runs INLINE at this rc→0 point, exactly as CPython
                 // finalizes at Py_DECREF→0 (prompt timing: `del x; print()` runs
                 // `__del__` before `print`), under a synthetic exception-handler
@@ -3229,6 +3242,22 @@ unsafe fn dec_ref_ptr_with_validated_type_id(
                 // run-once (`FINALIZER_RAN`) semantics. Non-finalizer objects that
                 // only reach here for the weakref clear return immediately from it.
                 run_object_del_in_revival_window(py, ptr);
+                // Arbitrary finalizer code may be the first path to publish a
+                // canonical C view. That publication adds the stable runtime
+                // view hold and starts in RuntimeOwned bridge state. Reconcile
+                // it into this already-open finalization transaction before
+                // comparing against the revival baseline, otherwise the view
+                // hold itself is mistaken for Python resurrection and leaks the
+                // object in RuntimeOwned state.
+                if !has_abi_view && (*header_ptr).has_flag(HEADER_FLAG_HAS_ABI_VIEW) {
+                    molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                        .begin_finalization_for_new_view(view_bits);
+                    has_abi_view = true;
+                    window_baseline = window_baseline.checked_add(1).unwrap_or_else(|| {
+                        eprintln!("molt fatal: finalizer ABI-view baseline overflow");
+                        std::process::abort();
+                    });
+                }
                 // After `__del__`, the only live reference should be this window's.
                 // If `__del__` RESURRECTED the object (stashed `self`), the count
                 // is now > 1: CPython aborts dealloc here WITHOUT clearing weakrefs
@@ -3491,6 +3520,8 @@ unsafe fn dec_ref_ptr_with_validated_type_id(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use crate::object::{
         ClassEdgeOwnership, HEADER_AUX_KIND_CLASS_INLINE, HEADER_AUX_KIND_SIDECAR,
         HEADER_AUX_KIND_STATE_INLINE, ObjectAuxPreselection, TYPE_ID_GENERATOR, TYPE_ID_OBJECT,
@@ -3501,6 +3532,83 @@ mod tests {
         object_state, total_size_from_header,
     };
     use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+
+    static FINALIZER_VIEW_PTR: AtomicUsize = AtomicUsize::new(0);
+
+    fn publish_borrowed_abi_view(bits: u64) {
+        let ptr = unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_borrowed_pyobj(bits) };
+        assert!(!ptr.is_null());
+        FINALIZER_VIEW_PTR.store(ptr.addr(), Ordering::SeqCst);
+    }
+
+    fn publish_direct_abi_view(bits: u64) {
+        publish_borrowed_abi_view(bits);
+        let ptr = core::ptr::with_exposed_provenance_mut::<molt_cpython_abi::abi_types::PyObject>(
+            FINALIZER_VIEW_PTR.load(Ordering::SeqCst),
+        );
+        unsafe { molt_cpython_abi::api::refcount::Py_INCREF(ptr) };
+    }
+
+    fn with_builtin_object_finalizer_flag<R>(run: impl FnOnce(u64) -> R) -> R {
+        let object_bits = crate::molt_object_new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let class_ptr = crate::obj_from_bits(crate::builtin_classes(_py).object)
+                .as_ptr()
+                .expect("builtin object class");
+            let class_header = unsafe { super::header_from_obj_ptr(class_ptr) };
+            let old_flags = unsafe { (*class_header).load_metadata_flags() };
+            unsafe {
+                (*class_header).fetch_or_flags(super::HEADER_FLAG_CLASS_HAS_FINALIZER);
+            }
+            let result = run(object_bits);
+            unsafe { (*class_header).store_flags(old_flags) };
+            result
+        })
+    }
+
+    #[test]
+    fn finalizer_first_borrowed_abi_view_is_reconciled_and_retired() {
+        let _guard = crate::test_mutex_guard();
+        FINALIZER_VIEW_PTR.store(0, Ordering::SeqCst);
+        with_builtin_object_finalizer_flag(|object_bits| {
+            super::FINALIZER_WINDOW_TEST_HOOK
+                .with(|slot| slot.set(Some(publish_borrowed_abi_view)));
+            crate::with_gil_entry_nopanic!(_py, {
+                dec_ref_bits(_py, object_bits);
+            });
+            let ptr = core::ptr::with_exposed_provenance_mut::<molt_cpython_abi::abi_types::PyObject>(
+                FINALIZER_VIEW_PTR.load(Ordering::SeqCst),
+            );
+            assert!(matches!(
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE.release_pyobj(ptr),
+                molt_cpython_abi::bridge::PyObjRelease::Untracked
+            ));
+        });
+    }
+
+    #[test]
+    fn finalizer_first_direct_c_view_roots_until_c_decref() {
+        let _guard = crate::test_mutex_guard();
+        FINALIZER_VIEW_PTR.store(0, Ordering::SeqCst);
+        with_builtin_object_finalizer_flag(|object_bits| {
+            super::FINALIZER_WINDOW_TEST_HOOK.with(|slot| slot.set(Some(publish_direct_abi_view)));
+            crate::with_gil_entry_nopanic!(_py, {
+                dec_ref_bits(_py, object_bits);
+            });
+            assert!(
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE.has_direct_c_refs(object_bits),
+                "direct C reference created by finalizer must root the runtime object"
+            );
+            let ptr = core::ptr::with_exposed_provenance_mut::<molt_cpython_abi::abi_types::PyObject>(
+                FINALIZER_VIEW_PTR.load(Ordering::SeqCst),
+            );
+            unsafe { molt_cpython_abi::api::refcount::Py_DECREF(ptr) };
+            assert!(matches!(
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE.release_pyobj(ptr),
+                molt_cpython_abi::bridge::PyObjRelease::Untracked
+            ));
+        });
+    }
 
     #[test]
     fn object_allocator_rejects_impossible_layout_without_panicking() {

@@ -7,8 +7,14 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+import pytest
+
 import tools.bench_wasm as bench_wasm
 from molt.cli import atomic_io, wasm_link_args
+from tests.runtime_profile_fixtures import (
+    process_profile_payload,
+    profile_epoch_payload,
+)
 
 
 def _fake_runtime_build(cmd: list[str], env: dict[str, str]) -> None:
@@ -218,6 +224,21 @@ def test_wasm_link_response_is_content_addressed_stable_and_windows_safe(
     rustc_args = ["-C", f"link-arg=@{first}"]
     rendered = subprocess.list2cmdline(rustc_args)
     assert f'"link-arg=@{first}"' in rendered
+
+
+@pytest.mark.parametrize(
+    "argument",
+    ["--export=has space", "--export=has\nnewline", "--export=has\0nul", "@nested.rsp"],
+)
+def test_wasm_link_response_rejects_ambiguous_entries(
+    tmp_path: Path, argument: str
+) -> None:
+    with pytest.raises(ValueError):
+        wasm_link_args.write_wasm_link_args_response_file(
+            tmp_path,
+            label="unsafe",
+            link_args=[argument],
+        )
 
 
 def test_build_runtime_wasm_full_profile_uses_wasm_safe_full_feature_set(
@@ -471,8 +492,8 @@ def test_collect_samples_rejects_partial_sample_failure(monkeypatch) -> None:
     )
     results = iter(
         [
-            bench_wasm._SampleResult(0.01, 0, None, None),
             bench_wasm._SampleResult(None, 1, "failed", "runtime_error"),
+            bench_wasm._SampleResult(0.01, 0, None, None),
         ]
     )
     monkeypatch.setattr(
@@ -492,39 +513,19 @@ def test_collect_samples_rejects_partial_sample_failure(monkeypatch) -> None:
     assert ok is False
     assert failure is not None
     assert failure.error_class == "runtime_error"
-    assert profiles == [{"sample_index": 0, "profile": None, "epochs": []}]
+    assert profiles == [{"sample_index": 1, "profile": None, "epochs": []}]
 
 
 def test_wasm_profile_parsers_require_current_schemas_and_preserve_epochs() -> None:
-    process = {
-        "schema_version": 2,
-        "kind": "runtime_feedback",
-        "profile": {"alloc_count": 1},
-        "aux": {},
-        "gc": {},
-        "memory": {"peak_rss_bytes": 0, "current_rss_bytes": 0},
-        "hot_paths": {},
-        "deopt_reasons": {},
-    }
-    epochs = [
-        {
-            "schema_version": 1,
-            "kind": "runtime_profile_epoch",
-            "generation": generation,
-            "label": label,
-            "delta": {"profile": {"alloc_count": 0}},
-            "counter_regressions": {},
-            "gauges": {},
-            "memory": {
-                "current_rss_start_bytes": 0,
-                "current_rss_end_bytes": 0,
-                "current_rss_delta_bytes": 0,
-                "process_peak_start_bytes": 0,
-                "process_peak_end_bytes": 0,
-            },
-        }
-        for generation, label in ((1, "cache_hits"), (2, "weakref_calls"))
-    ]
+    process = process_profile_payload()
+    process["profile"]["alloc_count"] = 1
+    process["profile"]["dealloc_count"] = 1
+    epochs = []
+    for generation, label in ((1, "cache_hits"), (2, "weakref_calls")):
+        epoch = profile_epoch_payload()
+        epoch["generation"] = generation
+        epoch["label"] = label
+        epochs.append(epoch)
     log = "\n".join(
         [
             'molt_profile_json {"profile":{"alloc_count":99}}',
