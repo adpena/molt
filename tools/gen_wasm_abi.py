@@ -278,11 +278,12 @@ def _render_cache_key(rustfmt_version: str) -> str:
             ).encode()
         )
         digest.update(b"\n")
-    for name in generator_cpython_abi_link_import_names():
+    for name, symbol_kind in generator_cpython_abi_link_import_kinds():
         digest.update(
             json.dumps(
                 {
                     "cpython_abi_link_import": name,
+                    "symbol_kind": symbol_kind,
                 },
                 sort_keys=True,
                 separators=(",", ":"),

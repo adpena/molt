@@ -63,6 +63,9 @@ def test_wasm_abi_generator_cache_identity_uses_runtime_abi_surface() -> None:
     )
     cpython_abi_imports = manifest.generator_cpython_abi_link_import_names()
     assert cpython_abi_imports == tuple(sorted(cpython_abi_imports))
+    cpython_abi_import_kinds = manifest.generator_cpython_abi_link_import_kinds()
+    assert cpython_abi_import_kinds == tuple(sorted(cpython_abi_import_kinds))
+    assert all(kind in {"data", "function"} for _, kind in cpython_abi_import_kinds)
     assert {
         "PyArg_ParseTuple",
         "PyFloat_Check",
@@ -251,6 +254,38 @@ def test_wasm_abi_generated_files_are_in_sync() -> None:
     assert gen.OUT_ALLOWED_IMPORTS.read_text(
         encoding="utf-8"
     ) == gen.render_allowed_imports(data)
+
+
+def test_cpython_abi_link_import_discovery_covers_the_complete_crate() -> None:
+    data = manifest.load_manifest()
+    generated = dict(manifest.generator_cpython_abi_link_import_kinds())
+    bridge_and_hook_exports = {
+        "Py_DecRef",
+        "Py_IncRef",
+        "molt_capi_any_decref",
+        "molt_capi_any_incref",
+        "molt_capi_handle_to_borrowed_pyobj",
+        "molt_capi_handle_to_pyobj",
+        "molt_capi_pyobj_is_bridge_managed",
+        "molt_capi_pyobj_to_handle",
+        "molt_capi_result_to_pyobj",
+        "molt_capi_semantic_type",
+        "molt_capi_set_semantic_type",
+        "molt_cpython_abi_init",
+        "molt_cpython_abi_register_hooks",
+    }
+
+    assert bridge_and_hook_exports <= generated.keys()
+    assert {generated[name] for name in bridge_and_hook_exports} == {"function"}
+    link_imports = {
+        entry["name"]: entry
+        for entry in data["external_native_link_import"]
+        if entry["name"] in bridge_and_hook_exports
+    }
+    assert set(link_imports) == bridge_and_hook_exports
+    assert {
+        entry["primitive_class"] for entry in link_imports.values()
+    } == {"molt_cpython_abi_link_import"}
 
 
 def test_wasm_abi_manifest_owns_static_type_section() -> None:
