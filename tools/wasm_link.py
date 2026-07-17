@@ -2885,19 +2885,12 @@ def _publish_rust_wasm_link_facts(
 ) -> dict[str, object]:
     if not scanner.is_file():
         raise ValueError(f"WASM facts scanner is not a file: {scanner}")
-    with tempfile.NamedTemporaryFile(
-        prefix=f".{artifact.name}.facts-",
-        suffix=".wasm",
-        dir=artifact.parent,
-        delete=False,
-    ) as output_file:
-        output = Path(output_file.name)
     command = [
         str(scanner),
         "--publish-wasm-link-facts",
         str(artifact),
         "--output",
-        str(output),
+        str(artifact),
     ]
     if layout is not None:
         command.extend(
@@ -2919,26 +2912,21 @@ def _publish_rust_wasm_link_facts(
     if role != "monolithic" and layout is None:
         raise ValueError(f"callable-table {role} publication requires a layout")
     command.extend(["--callable-table-role", role])
-    try:
-        process = subprocess.run(
-            command,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            capture_output=True,
-            check=False,
-        )
-        facts = _decode_wasm_facts_response(
-            process,
-            operation=f"Rust WASM facts publication for {artifact}",
-        )
-        if facts.get("callable_table_attestation_present") is not True:
-            raise ValueError("Rust WASM facts publication omitted final attestation")
-        os.replace(output, artifact)
-        return facts
-    finally:
-        with contextlib.suppress(OSError):
-            output.unlink()
+    process = subprocess.run(
+        command,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=False,
+    )
+    facts = _decode_wasm_facts_response(
+        process,
+        operation=f"Rust WASM facts publication for {artifact}",
+    )
+    if facts.get("callable_table_attestation_present") is not True:
+        raise ValueError("Rust WASM facts publication omitted final attestation")
+    return facts
 
 
 def _callable_entries_from_wasm_facts(
