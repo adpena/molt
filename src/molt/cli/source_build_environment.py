@@ -24,7 +24,7 @@ from packaging.version import InvalidVersion, Version
 from molt.cli.atomic_io import _atomic_write_json, _remove_file_or_tree
 from molt.cli.build_locks import _acquire_file_lock, _release_file_lock
 from molt.cli.file_hashing import _sha256_file
-from molt.dx import canonical_molt_root
+from molt.dx import checkout_custody
 
 
 class SourceBuildEnvironmentError(ValueError):
@@ -230,7 +230,11 @@ def _environment_spec(
         "environment_id": environment_id,
         **address_payload,
     }
-    custody_root = canonical_molt_root(repo_root) / "build-environments" / "source-extension"
+    custody_root = (
+        checkout_custody(repo_root, os.environ).custody_root
+        / "build-environments"
+        / "source-extension"
+    )
     root = custody_root / environment_id
     python_executable = root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     return root, python_executable, root / SOURCE_BUILD_ENVIRONMENT_MANIFEST, custody, uv

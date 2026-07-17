@@ -21,7 +21,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from molt._host_exit import process_returncode_for_direct_os_exit  # noqa: E402
-from molt.dx import canonical_molt_root  # noqa: E402
+from molt.dx import checkout_custody  # noqa: E402
 from tools.process_spawn import (  # noqa: E402
     hidden_windows_process_group_kwargs,
     inherit_stdio_kwargs,
@@ -389,7 +389,9 @@ def _configured_windows_pytest_artifact_roots() -> tuple[Path, ...]:
 
 def _default_windows_pytest_artifact_roots() -> tuple[Path, ...]:
     roots: list[Path] = list(_configured_windows_pytest_artifact_roots())
-    roots.append(canonical_molt_root(ROOT, require_exists=False) / "tmp")
+    roots.append(
+        checkout_custody(ROOT, os.environ, require_exists=False).custody_root / "tmp"
+    )
     seen: set[str] = set()
     deduped: list[Path] = []
     for root in roots:

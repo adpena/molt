@@ -300,21 +300,28 @@ def test_proof_queue_portability_workflow_is_cross_os_and_path_filtered() -> Non
     assert "name: Proof Queue Portability" in workflow_text
     assert "os: [ubuntu-latest, macos-14, windows-2022]" in workflow_text
     assert "fail-fast: false" in workflow_text
+    assert "MOLT_CI_EPHEMERAL_CUSTODY_ROOT: ${{ runner.temp }}/" in workflow_text
+    assert "UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/" in workflow_text
     assert 'python-version-file: ".python-version"' in workflow_text
     assert "uv sync --frozen --group dev" in workflow_text
     assert "timeout-minutes: 10" in workflow_text
     assert (
         "uv run --active --project . --no-sync python -m pytest -q "
+        "tests/test_dx_run_context.py "
         "tests/test_molt_queue_cli.py "
-        "tests/tools/test_proof_queue.py"
+        "tests/tools/test_proof_queue.py "
+        "tests/tools/test_scientific_stack_versions.py "
+        "tests/cli/test_source_extension_producer.py"
     ) in workflow_text
     for path in (
         ".github/workflows/proof-queue-portability.yml",
+        "src/molt/dx.py",
         "src/molt/cli/queue_cli.py",
         "tools/process_spawn.py",
         "tools/proof_queue.py",
         "tools/proof_queue_pkg/**",
         "tests/test_molt_queue_cli.py",
+        "tests/test_dx_run_context.py",
         "tests/tools/test_proof_queue.py",
     ):
         assert path in workflow_text

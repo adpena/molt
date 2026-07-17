@@ -23,6 +23,60 @@ def _clear_run_context_env(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(key, raising=False)
 
 
+def _github_actions_custody_env(
+    repo_root: Path, runner_temp: Path, *, sha: str = "a" * 40
+) -> dict[str, str]:
+    repository = "adpena/molt"
+    workflow = repo_root / ".github" / "workflows" / "proof-queue-portability.yml"
+    workflow.parent.mkdir(parents=True, exist_ok=True)
+    workflow.write_text("name: test\n", encoding="utf-8")
+    runner_temp.mkdir(parents=True, exist_ok=True)
+    runner_tool_cache = runner_temp.parent / "runner-tool-cache"
+    runner_tool_cache.mkdir(parents=True, exist_ok=True)
+    event_path = runner_temp / "event.json"
+    event_path.write_text(
+        json.dumps({"repository": {"full_name": repository}}),
+        encoding="utf-8",
+    )
+    runner_arch = {
+        "amd64": "X64",
+        "x86_64": "X64",
+        "aarch64": "ARM64",
+        "arm64": "ARM64",
+        "x86": "X86",
+        "i386": "X86",
+        "i686": "X86",
+    }[dx.platform.machine().lower()]
+    return {
+        dx.GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV: str(runner_temp / "molt-custody"),
+        "GITHUB_ACTIONS": "true",
+        "CI": "true",
+        "GITHUB_REPOSITORY": repository,
+        "GITHUB_SERVER_URL": "https://github.com",
+        "GITHUB_API_URL": "https://api.github.com",
+        "GITHUB_WORKSPACE": str(repo_root.resolve()),
+        "GITHUB_WORKFLOW_REF": (
+            f"{repository}/.github/workflows/"
+            "proof-queue-portability.yml@refs/heads/main"
+        ),
+        "GITHUB_WORKFLOW_SHA": sha,
+        "GITHUB_EVENT_PATH": str(event_path),
+        "GITHUB_EVENT_NAME": "push",
+        "GITHUB_REF": "refs/heads/main",
+        "GITHUB_SHA": sha,
+        "GITHUB_RUN_ID": "12345",
+        "GITHUB_RUN_ATTEMPT": "2",
+        "GITHUB_JOB": "queue-portability",
+        "RUNNER_TEMP": str(runner_temp.resolve()),
+        "RUNNER_TOOL_CACHE": str(runner_tool_cache.resolve()),
+        "RUNNER_OS": "Windows"
+        if os.name == "nt"
+        else ("macOS" if dx.sys.platform == "darwin" else "Linux"),
+        "RUNNER_ARCH": runner_arch,
+        "PATH": os.environ.get("PATH", ""),
+    }
+
+
 def test_run_context_installs_repo_local_defaults(tmp_path: Path) -> None:
     env = RunContext(tmp_path, session_prefix="test").canonical_env(
         {"PATH": "/usr/bin"},
@@ -236,7 +290,9 @@ def test_run_context_prefers_windows_external_drive_artifact_root_by_default(
     repo_root.mkdir()
     monkeypatch.setattr(dx.os, "name", "nt")
     monkeypatch.setattr(
-        dx, "_default_windows_external_artifact_roots", lambda _root: (external_root,)
+        dx,
+        "_default_windows_external_artifact_roots",
+        lambda _root, _env=None: (external_root,),
     )
     monkeypatch.setattr(dx, "_is_windows_c_drive_path", lambda _path: False)
 
@@ -271,7 +327,7 @@ def test_run_context_skips_unhealthy_windows_external_candidate(
     monkeypatch.setattr(
         dx,
         "_default_windows_external_artifact_roots",
-        lambda _root: (unhealthy, healthy),
+        lambda _root, _env=None: (unhealthy, healthy),
     )
     monkeypatch.setattr(dx, "_is_windows_c_drive_path", lambda _path: False)
 
@@ -628,7 +684,9 @@ def test_dx_env_sets_uv_copy_link_mode_for_windows_exfat_root(
     repo_root.mkdir()
     monkeypatch.setattr(dx.os, "name", "nt")
     monkeypatch.setattr(
-        dx, "_default_windows_external_artifact_roots", lambda _root: (external_root,)
+        dx,
+        "_default_windows_external_artifact_roots",
+        lambda _root, _env=None: (external_root,),
     )
     monkeypatch.setattr(dx, "_is_windows_c_drive_path", lambda _path: False)
     monkeypatch.setattr(dx, "_artifact_root_is_windows_exfat", lambda _path: True)
@@ -657,7 +715,9 @@ def test_dx_env_preserves_explicit_uv_link_mode_on_exfat_root(
     repo_root.mkdir()
     monkeypatch.setattr(dx.os, "name", "nt")
     monkeypatch.setattr(
-        dx, "_default_windows_external_artifact_roots", lambda _root: (external_root,)
+        dx,
+        "_default_windows_external_artifact_roots",
+        lambda _root, _env=None: (external_root,),
     )
     monkeypatch.setattr(dx, "_is_windows_c_drive_path", lambda _path: False)
     monkeypatch.setattr(dx, "_artifact_root_is_windows_exfat", lambda _path: True)
@@ -776,9 +836,7 @@ def test_run_context_keeps_explicit_d_scratch_out_of_toolchain_custody(
     ).canonical_env({"MOLT_EXT_ROOT": r"D:\scratch"}, create_dirs=False)
 
     assert env["MOLT_EXT_ROOT"] == str(Path(r"D:\scratch").resolve())
-    assert env["MOLT_TARGET_ROOT"] == str(
-        dx.canonical_toolchain_root(Path(dx.__file__).resolve().parents[2])
-    )
+    assert env["MOLT_TARGET_ROOT"] == str(dx.canonical_toolchain_root(repo_root))
 
 
 def test_run_context_attests_selected_windows_c_artifact_root(
@@ -826,6 +884,146 @@ def test_canonical_custody_fails_closed_on_d_worktree_family(monkeypatch) -> Non
         )
 
 
+def test_verified_github_checkout_separates_source_from_execution_custody(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    repo_root = tmp_path / "runner-work" / "molt" / "molt"
+    repo_root.mkdir(parents=True)
+    runner_temp = tmp_path / "runner-temp"
+    sha = "b" * 40
+    env = _github_actions_custody_env(repo_root, runner_temp, sha=sha)
+    monkeypatch.setattr(dx, "_git_checkout_head", lambda _root: sha)
+
+    custody = dx.checkout_custody(repo_root, env)
+    resolved = RunContext(
+        repo_root, session_prefix="queue", prefer_external_artifacts=True
+    ).canonical_env(env, create_dirs=True)
+
+    assert custody.kind == "github-actions-ephemeral"
+    assert custody.source_root == repo_root.resolve()
+    assert custody.custody_root == (runner_temp / "molt-custody").resolve()
+    assert Path(resolved["MOLT_EXT_ROOT"]) == custody.custody_root
+    assert Path(resolved["MOLT_TARGET_ROOT"]) == custody.toolchain_root
+    assert not dx._forbidden_windows_canonical_path(custody.toolchain_root)
+    for key in dx.CANONICAL_ROOT_ENV_KEYS:
+        value = resolved.get(key)
+        if value:
+            assert not dx._path_is_within(Path(value), repo_root), key
+
+
+def test_github_actions_flag_alone_cannot_self_attest_custody(tmp_path: Path) -> None:
+    custody = dx.checkout_custody(
+        tmp_path,
+        {"GITHUB_ACTIONS": "true", "CI": "true"},
+    )
+
+    assert custody.kind == "durable"
+    assert custody.custody_root == tmp_path.resolve()
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "message"),
+    [
+        ("GITHUB_WORKSPACE", "wrong-workspace", "GITHUB_WORKSPACE"),
+        ("GITHUB_SHA", "c" * 40, "checkout HEAD mismatch"),
+        ("GITHUB_REPOSITORY", "attacker/fork", "checked-in workflow ref"),
+        ("RUNNER_OS", "wrong-os", "RUNNER_OS"),
+    ],
+)
+def test_github_checkout_custody_rejects_mismatched_reserved_facts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    key: str,
+    value: str,
+    message: str,
+) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    runner_temp = tmp_path / "runner-temp"
+    sha = "d" * 40
+    env = _github_actions_custody_env(repo_root, runner_temp, sha=sha)
+    env[key] = value
+    monkeypatch.setattr(dx, "_git_checkout_head", lambda _root: sha)
+
+    with pytest.raises(dx.DxConfigError, match=message):
+        dx.checkout_custody(repo_root, env)
+
+
+def test_github_checkout_custody_rejects_root_outside_runner_temp(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    runner_temp = tmp_path / "runner-temp"
+    sha = "e" * 40
+    env = _github_actions_custody_env(repo_root, runner_temp, sha=sha)
+    env[dx.GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV] = str(tmp_path / "outside")
+    monkeypatch.setattr(dx, "_git_checkout_head", lambda _root: sha)
+
+    with pytest.raises(dx.DxConfigError, match="child of RUNNER_TEMP"):
+        dx.checkout_custody(repo_root, env)
+
+
+def test_ephemeral_checkout_rejects_canonical_root_inside_source_tree(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    runner_temp = tmp_path / "runner-temp"
+    sha = "f" * 40
+    env = _github_actions_custody_env(repo_root, runner_temp, sha=sha)
+    env["MOLT_TARGET_ROOT"] = str(repo_root / "target-root")
+    monkeypatch.setattr(dx, "_git_checkout_head", lambda _root: sha)
+
+    with pytest.raises(dx.DxConfigError, match="cannot own MOLT_TARGET_ROOT"):
+        RunContext(repo_root).canonical_env(env, create_dirs=False)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="drive-letter semantics are Windows-only")
+def test_verified_github_checkout_on_d_is_source_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fixture_repo = tmp_path / "fixture-repo"
+    fixture_repo.mkdir()
+    sha = "1" * 40
+    env = _github_actions_custody_env(fixture_repo, tmp_path / "fixture-temp", sha=sha)
+    source_root = Path(r"D:\a\molt\molt")
+    runner_temp = Path(r"D:\a\_temp")
+    env["GITHUB_WORKSPACE"] = str(source_root)
+    env["RUNNER_TEMP"] = str(runner_temp)
+    env[dx.GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV] = str(
+        runner_temp / "molt-proof-queue-12345-2-windows-2022"
+    )
+    monkeypatch.setattr(dx, "_git_checkout_head", lambda _root: sha)
+
+    custody = dx._github_actions_checkout_custody(
+        source_root, env, require_exists=False
+    )
+
+    assert custody is not None
+    assert custody.kind == "github-actions-ephemeral"
+    assert custody.source_root == source_root.resolve()
+    assert custody.custody_root != custody.source_root
+    assert not dx._forbidden_windows_canonical_path(custody.toolchain_root)
+    with pytest.raises(dx.DxConfigError, match="forbidden drive D"):
+        dx.canonical_molt_root(source_root, require_exists=False)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="drive-letter semantics are Windows-only")
+def test_verified_windows_ci_rejects_d_toolchain_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    sha = "2" * 40
+    env = _github_actions_custody_env(repo_root, tmp_path / "runner-temp", sha=sha)
+    env["RUNNER_TOOL_CACHE"] = r"D:\hostedtoolcache\windows"
+    monkeypatch.setattr(dx, "_git_checkout_head", lambda _root: sha)
+
+    with pytest.raises(dx.DxConfigError, match="RUNNER_TOOL_CACHE.*forbidden drive D"):
+        dx.checkout_custody(repo_root, env)
+
+
 @pytest.mark.skipif(os.name != "nt", reason="drive-letter rehoming is Windows-only")
 def test_should_rehome_offvolume_toolchain_root(monkeypatch) -> None:
     monkeypatch.setattr(dx.os, "name", "nt")
@@ -866,11 +1064,18 @@ def test_canonical_env_rehomes_stale_target_root_and_adds_ruff_cache(
     monkeypatch.setattr(dx.os, "name", "nt")
     monkeypatch.setattr(
         dx,
-        "_maintainer_toolchain_root",
-        lambda _artifact_root: custody_root / dx.DEFAULT_TARGET_ROOT_DIRNAME,
+        "checkout_custody",
+        lambda _root, _env=None, require_exists=True: dx.CheckoutCustody(
+            source_root=repo_root.resolve(),
+            custody_root=custody_root.resolve(),
+            toolchain_root=custody_root.resolve() / dx.DEFAULT_TARGET_ROOT_DIRNAME,
+            kind="durable",
+        ),
     )
     monkeypatch.setattr(
-        dx, "_default_windows_external_artifact_roots", lambda _root: (external_root,)
+        dx,
+        "_default_windows_external_artifact_roots",
+        lambda _root, _env=None: (external_root,),
     )
     monkeypatch.setattr(dx, "_is_windows_c_drive_path", lambda _path: False)
 
