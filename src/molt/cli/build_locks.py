@@ -2,14 +2,52 @@ from __future__ import annotations
 
 import contextlib
 from contextlib import contextmanager
+from dataclasses import dataclass
 import errno
 import functools
+import _thread
 import os
 from pathlib import Path
+import threading
 import time
 from typing import BinaryIO
 
 from molt.cli.runtime_paths import _build_state_root
+
+
+@dataclass
+class _InProcessLockEntry:
+    mutex: _thread.LockType
+    users: int = 0
+
+
+@dataclass
+class _FileLockHandle:
+    file: BinaryIO
+    registry_key: str
+    entry: _InProcessLockEntry
+
+
+_IN_PROCESS_LOCK_REGISTRY: dict[str, _InProcessLockEntry] = {}
+_IN_PROCESS_LOCK_REGISTRY_GUARD = threading.Lock()
+
+
+def _in_process_lock_reserve(lock_path: Path) -> tuple[str, _InProcessLockEntry]:
+    key = os.path.normcase(os.path.abspath(os.fspath(lock_path)))
+    with _IN_PROCESS_LOCK_REGISTRY_GUARD:
+        entry = _IN_PROCESS_LOCK_REGISTRY.get(key)
+        if entry is None:
+            entry = _InProcessLockEntry(mutex=threading.Lock())
+            _IN_PROCESS_LOCK_REGISTRY[key] = entry
+        entry.users += 1
+    return key, entry
+
+
+def _in_process_lock_drop(key: str, entry: _InProcessLockEntry) -> None:
+    with _IN_PROCESS_LOCK_REGISTRY_GUARD:
+        entry.users -= 1
+        if entry.users == 0 and _IN_PROCESS_LOCK_REGISTRY.get(key) is entry:
+            del _IN_PROCESS_LOCK_REGISTRY[key]
 
 
 @functools.lru_cache(maxsize=256)
@@ -76,16 +114,33 @@ def _write_lock_holder_pid(handle: BinaryIO) -> None:
         handle.seek(0)
 
 
-def _try_acquire_file_lock(lock_path: Path) -> BinaryIO | None:
-    handle = _open_file_lock_handle(lock_path)
+def _try_acquire_file_lock(lock_path: Path) -> _FileLockHandle | None:
+    registry_key, entry = _in_process_lock_reserve(lock_path)
+    if not entry.mutex.acquire(blocking=False):
+        _in_process_lock_drop(registry_key, entry)
+        return None
     try:
-        if not _try_lock_file_handle(handle):
-            handle.close()
-            return None
-        _write_lock_holder_pid(handle)
-        return handle
+        file_handle = _open_file_lock_handle(lock_path)
     except BaseException:
-        handle.close()
+        entry.mutex.release()
+        _in_process_lock_drop(registry_key, entry)
+        raise
+    try:
+        if not _try_lock_file_handle(file_handle):
+            file_handle.close()
+            entry.mutex.release()
+            _in_process_lock_drop(registry_key, entry)
+            return None
+        _write_lock_holder_pid(file_handle)
+        return _FileLockHandle(
+            file=file_handle,
+            registry_key=registry_key,
+            entry=entry,
+        )
+    except BaseException:
+        file_handle.close()
+        entry.mutex.release()
+        _in_process_lock_drop(registry_key, entry)
         raise
 
 
@@ -95,7 +150,7 @@ def _acquire_file_lock(
     timeout_s: float | None,
     timeout_message: str,
     poll_s: float = 0.05,
-) -> BinaryIO:
+) -> _FileLockHandle:
     deadline = time.monotonic() + timeout_s if timeout_s is not None else None
     while True:
         handle = _try_acquire_file_lock(lock_path)
@@ -106,11 +161,15 @@ def _acquire_file_lock(
         time.sleep(poll_s)
 
 
-def _release_file_lock(handle: BinaryIO) -> None:
+def _release_file_lock(handle: _FileLockHandle) -> None:
     try:
-        _unlock_file_handle(handle)
+        _unlock_file_handle(handle.file)
     finally:
-        handle.close()
+        try:
+            handle.file.close()
+        finally:
+            handle.entry.mutex.release()
+            _in_process_lock_drop(handle.registry_key, handle.entry)
 
 
 def _parse_lock_timeout(raw: str, *, default_s: float | None) -> float | None:
