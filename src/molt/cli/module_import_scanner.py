@@ -348,7 +348,8 @@ def _collect_static_source_executions(
             ):
                 parts = [static_value(arg) for arg in expr.args]
                 if all(isinstance(part, (str, Path)) for part in parts):
-                    head, *tail = [Path(part) for part in parts]
+                    path_parts = [Path(part) for part in parts if part is not None]
+                    head, *tail = path_parts
                     return head.joinpath(*tail)
             if (
                 isinstance(expr.func, ast.Attribute)
@@ -458,7 +459,14 @@ def _static_import_request_modules(
         return _static_import_request_candidates(request_name, request.fromlist)
     if module_name is None and not explicit_package:
         return ()
-    context_name = request.package if explicit_package else cast(str, module_name)
+    if explicit_package:
+        if request.package is None:
+            return ()
+        context_name = request.package
+    else:
+        if module_name is None:
+            return ()
+        context_name = module_name
     resolved = _resolve_relative_import(
         context_name,
         is_package=True if explicit_package else is_package,
@@ -1179,11 +1187,11 @@ def _collect_imports(
         if node is None:
             return None
         if isinstance(node, ast.Constant) and type(node.value) is int:
-            return cast(int, node.value)
+            return node.value
         if isinstance(node, ast.Name):
             value = bindings.get(node.id)
             if type(value) is int:
-                return cast(int, value)
+                return value
         return None
 
     def _static_import_call_payload(

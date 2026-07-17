@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -11,8 +12,15 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 TOOLS_ROOT = REPO_ROOT / "tools"
 if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
+SRC_ROOT = REPO_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
 import harness_memory_guard  # noqa: E402
+from molt.browser_asset_closure import (  # noqa: E402
+    BROWSER_HOST_ENTRY_ASSETS,
+    wasm_loader_asset_closure,
+)
 
 
 def _logs_root(project_root: Path) -> Path:
@@ -69,16 +77,18 @@ def validate_bundle_contract(
     assets_root = bundle_root / "assets"
     manifest_asset = bundle_root / manifest_asset_path
     worker_entrypoint = bundle_root / worker_entrypoint_path
+    browser_assets = wasm_loader_asset_closure(
+        REPO_ROOT / "wasm",
+        BROWSER_HOST_ENTRY_ASSETS,
+    )
     required_assets = [
         assets_root / "app.wasm",
         assets_root / "molt_runtime.wasm",
         assets_root / "browser.js",
-        assets_root / "browser_host.js",
-        assets_root / "loader_bridge.js",
-        assets_root / "molt_vfs_browser.js",
         assets_root / "config.json",
         manifest_asset,
         worker_entrypoint,
+        *(assets_root.joinpath(*Path(name).parts) for name in browser_assets),
     ]
     missing = [
         str(path.relative_to(bundle_root))
@@ -127,6 +137,28 @@ def validate_bundle_contract(
         entry = artifacts.get(key)
         if not isinstance(entry, dict) or entry.get("url") != expected_url:
             raise RuntimeError(f"Cloudflare thin-adapter manifest {key} url drifted")
+    browser_manifest_assets = manifest.get("browser_static_assets")
+    if not isinstance(browser_manifest_assets, list):
+        raise RuntimeError(
+            "Cloudflare thin-adapter manifest is missing browser_static_assets"
+        )
+    browser_manifest_by_url = {
+        entry.get("url"): entry
+        for entry in browser_manifest_assets
+        if isinstance(entry, dict) and isinstance(entry.get("url"), str)
+    }
+    expected_browser_urls = {f"/{name}" for name in browser_assets}
+    if set(browser_manifest_by_url) != expected_browser_urls:
+        raise RuntimeError(
+            "Cloudflare thin-adapter browser static asset manifest drifted from closure"
+        )
+    for name in browser_assets:
+        path = assets_root.joinpath(*Path(name).parts)
+        entry = browser_manifest_by_url[f"/{name}"]
+        if entry.get("size_bytes") != path.stat().st_size:
+            raise RuntimeError(f"Cloudflare browser static asset size drifted: {name}")
+        if entry.get("sha256") != hashlib.sha256(path.read_bytes()).hexdigest():
+            raise RuntimeError(f"Cloudflare browser static asset hash drifted: {name}")
 
     return {
         "bundle_root": str(bundle_root),

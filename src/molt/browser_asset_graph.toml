@@ -1,0 +1,79 @@
+schema_version = 2
+
+[entry_groups.browser-wasm]
+role = "browser"
+assets = ["browser_embed.js", "browser_host.js"]
+
+[entry_groups.browser-host]
+role = "browser"
+assets = ["browser_host.js"]
+
+[entry_groups.node-runner]
+role = "node"
+assets = ["run_wasm.js"]
+
+[[asset]]
+path = "browser_embed.js"
+role = "browser"
+source_type = "module"
+authority = "browser-loader"
+
+[[asset]]
+path = "browser_host.js"
+role = "browser"
+source_type = "module"
+authority = "browser-loader"
+
+[[asset]]
+path = "browser_gpu_dispatch.js"
+role = "browser"
+source_type = "module"
+authority = "browser-gpu"
+
+[[asset]]
+path = "browser_gpu_worker.js"
+role = "browser"
+source_type = "script"
+authority = "browser-gpu"
+
+[[asset]]
+path = "browser_target_features.js"
+role = "browser"
+source_type = "module"
+authority = "target-feature-manifest"
+
+[[asset]]
+path = "loader_bridge.js"
+role = "shared"
+source_type = "script"
+authority = "wasm-loader-bridge"
+
+[[asset]]
+path = "molt_vfs_browser.js"
+role = "browser"
+source_type = "module"
+authority = "browser-vfs"
+
+[[asset]]
+path = "target_feature_constants.generated.js"
+role = "browser"
+source_type = "module"
+authority = "target-feature-manifest"
+
+[[asset]]
+path = "run_wasm.js"
+role = "node"
+source_type = "script"
+authority = "node-runner"
+
+[[asset]]
+path = "wasm_abi_generated.json"
+role = "node"
+source_type = "data"
+authority = "wasm-abi"
+
+[[asset]]
+path = "target_feature_manifest.json"
+role = "node"
+source_type = "data"
+authority = "target-feature-manifest"

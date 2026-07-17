@@ -1661,7 +1661,14 @@ export default {
     )
 
 
-def _generate_split_wrangler_jsonc(compatibility_date: str) -> str:
+def _generate_split_wrangler_jsonc(
+    compatibility_date: str,
+    browser_asset_names: Iterable[str],
+) -> str:
+    module_globs = json.dumps(
+        ["worker.js", *sorted(set(browser_asset_names))],
+        separators=(",", ":"),
+    )
     return (
         "{\n"
         '  "name": "molt-app",\n'
@@ -1672,7 +1679,7 @@ def _generate_split_wrangler_jsonc(compatibility_date: str) -> str:
         '  "rules": [\n'
         "    {\n"
         '      "type": "ESModule",\n'
-        '      "globs": ["worker.js", "molt_vfs_browser.js"],\n'
+        f'      "globs": {module_globs},\n'
         '      "fallthrough": false\n'
         "    },\n"
         "    {\n"
