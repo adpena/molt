@@ -2326,9 +2326,7 @@ mod tests {
 
     #[test]
     fn cached_pair_reuse_updates_contains_refs_flag() {
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             unsafe {
                 let mut cached = std::ptr::null_mut();

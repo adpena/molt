@@ -919,9 +919,7 @@ mod tests {
         ignore = "function pointer identity assertion via `as *const () as usize as u64` is not supported under Miri's pointer-provenance model: separate casts of the same fn-pointer expose distinct addresses, so the stored payload won't equal a freshly-cast comparator"
     )]
     fn register_intrinsics_module_exports_public_helpers() {
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::test_mutex_guard();
         // Pending exceptions from prior parallel tests cause
         // `molt_load_intrinsic_runtime`'s wrapper to early-return None via
         // the GIL macro's exception fast-path; explicitly clear before
@@ -1004,9 +1002,7 @@ mod tests {
 
     #[test]
     fn register_intrinsics_module_repairs_existing_cache_entry() {
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::test_mutex_guard();
         let _ = crate::molt_exception_clear();
         crate::with_gil_entry_nopanic!(_py, {
             let module_name_ptr = alloc_string(_py, b"_intrinsics");
@@ -1117,9 +1113,7 @@ mod tests {
         ignore = "fn-pointer-as-u64 sentinel address comparison is not modelled under Miri's strict provenance"
     )]
     fn app_resolver_used_when_registered() {
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::test_mutex_guard();
         // Reset globals so this test is self-contained and order-independent.
         test_app_resolver_set().store(false, Ordering::SeqCst);
         test_app_resolver_ptr().store(core::ptr::null_mut(), Ordering::SeqCst);
@@ -1152,9 +1146,7 @@ mod tests {
         ignore = "fn-pointer-as-u64 sentinel address comparison is not modelled under Miri's strict provenance"
     )]
     fn app_resolver_one_shot_guard() {
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::test_mutex_guard();
         test_app_resolver_set().store(false, Ordering::SeqCst);
         test_app_resolver_ptr().store(core::ptr::null_mut(), Ordering::SeqCst);
 

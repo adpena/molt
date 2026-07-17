@@ -100,7 +100,7 @@ mod tests {
 
     #[test]
     fn descriptor_cache_store_owns_released_heap_bits() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             clear_attr_tls_caches(_py);
 

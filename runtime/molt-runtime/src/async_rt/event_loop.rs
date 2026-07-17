@@ -999,7 +999,7 @@ mod tests {
 
     #[test]
     fn event_loop_close_releases_all_callback_roots() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let ptr = alloc_string(_py, b"event-loop-retained-callback");
             let bits = MoltObject::from_ptr(ptr).bits();

@@ -1053,7 +1053,7 @@ mod tests {
 
     #[test]
     fn asyncgen_registry_removes_on_drop() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             {
                 let mut guard = asyncgen_registry(_py).lock().unwrap();

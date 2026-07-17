@@ -1164,7 +1164,7 @@ mod tests {
 
     #[test]
     fn exception_landing_generic_sequence_transfers_each_item_once() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let first_ptr = alloc_exception(_py, "ValueError", "first");
             let second_ptr = alloc_exception(_py, "TypeError", "second");
@@ -1220,7 +1220,7 @@ mod tests {
 
     #[test]
     fn exception_landing_invalid_generic_sequence_releases_current_and_prior_items() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let exception_ptr = alloc_exception(_py, "ValueError", "valid first");
             let invalid_ptr = alloc_string(_py, b"not an exception");
@@ -1252,7 +1252,7 @@ mod tests {
 
     #[test]
     fn exception_landing_tuple_oom_releases_generic_owned_items() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let exception_ptr = alloc_exception(_py, "ValueError", "owned");
             assert!(!exception_ptr.is_null());

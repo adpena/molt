@@ -1151,7 +1151,7 @@ mod tests {
 
     #[test]
     fn frame_stack_push_borrowed_balances_refcount_on_pop() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let (code_ptr, code_bits) = alloc_test_code(_py);
             assert_eq!(unsafe { ref_count(code_ptr) }, 1);
@@ -1167,7 +1167,7 @@ mod tests {
 
     #[test]
     fn frame_stack_push_owned_takes_existing_reference() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let (code_ptr, code_bits) = alloc_test_code(_py);
             inc_ref_bits(_py, code_bits);
@@ -1184,7 +1184,7 @@ mod tests {
 
     #[test]
     fn frame_builtins_is_captured_once_not_reread_from_globals() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let globals_ptr = alloc_dict_with_pairs(_py, &[]);
             let first_ptr = alloc_dict_with_pairs(_py, &[]);

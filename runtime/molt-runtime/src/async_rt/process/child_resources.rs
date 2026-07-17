@@ -222,9 +222,7 @@ mod tests {
         // tests (resource.rs, ops_sys.rs). These suites mutate the SAME
         // MOLT_RESOURCE_MAX_* env vars; a private mutex here would let them race
         // and clobber each other's env across module boundaries.
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::test_mutex_guard();
         let saved = updates
             .iter()
             .map(|(key, _)| (*key, std::env::var(key).ok()))

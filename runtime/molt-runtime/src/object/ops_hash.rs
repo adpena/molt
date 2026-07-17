@@ -1524,7 +1524,7 @@ mod numeric_hash_tests {
 
     #[test]
     fn string_and_bytes_subclasses_cache_hash_in_sidecar_state_lane() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::test_mutex_guard();
         crate::with_gil_entry_nopanic!(_py, {
             let builtins = builtin_classes(_py);
             for (type_id, class_bits, bytes) in [
