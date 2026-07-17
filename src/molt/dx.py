@@ -144,6 +144,18 @@ def cargo_target_dir_for_artifact_root(
     return session_scoped_target_dir(artifact_root / "target", session_id)
 
 
+def cargo_target_dir_for_environment(
+    artifact_root: Path,
+    env: Mapping[str, str],
+) -> Path:
+    """Resolve Cargo custody from the canonical session provenance markers."""
+
+    session_id = env.get("MOLT_SESSION_ID", "").strip()
+    if not session_id or generated_session_id(env):
+        session_id = None
+    return cargo_target_dir_for_artifact_root(artifact_root, session_id)
+
+
 # Peak resident memory a single rustc codegen job for the heavy molt-runtime (and
 # source-recompiled numpy/scipy) build can reach. Cargo's default `-j<num_cpus>`
 # runs that many rustc processes in parallel, so on a small box (8GB) an unbounded
@@ -1268,6 +1280,10 @@ def development_artifact_env(
     env = dict(os.environ if base is None else base)
     if session_id:
         env["MOLT_SESSION_ID"] = session_id
+        # An explicit API argument supersedes provenance inherited from an outer
+        # guard.  Leaving the marker behind silently converts requested shard
+        # isolation into the shared warm target.
+        env.pop("MOLT_SESSION_ID_GENERATED", None)
     env = RunContext(
         repo_root,
         session_prefix=session_prefix,

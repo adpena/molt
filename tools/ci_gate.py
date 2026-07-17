@@ -1086,6 +1086,10 @@ def _apply_canonical_env_defaults(env: dict[str, str]) -> None:
         session_id=env.get("MOLT_SESSION_ID") or f"ci-gate-{os.getpid()}",
         create_dirs=False,
     )
+    # Replace the environment as one canonical value.  A dict overlay cannot
+    # express provenance deletion, so it would retain an inherited
+    # MOLT_SESSION_ID_GENERATED marker after the explicit CI-gate session wins.
+    env.clear()
     env.update(resolved)
     env.setdefault("CARGO_BUILD_JOBS", "2")
     for key in CANONICAL_ROOT_ENV_KEYS:

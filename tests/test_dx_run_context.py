@@ -107,6 +107,27 @@ def test_target_dir_stable_by_default_session_scoped_only_when_pinned(
     assert "MOLT_SESSION_ID_GENERATED" not in pinned
 
 
+def test_explicit_development_session_overrides_outer_generated_provenance(
+    tmp_path: Path,
+) -> None:
+    env = development_artifact_env(
+        tmp_path,
+        {
+            "PATH": "/usr/bin",
+            "MOLT_SESSION_ID": "guard-outer",
+            "MOLT_SESSION_ID_GENERATED": "1",
+        },
+        session_id="proof-shard",
+        create_dirs=False,
+    )
+
+    assert env["MOLT_SESSION_ID"] == "proof-shard"
+    assert "MOLT_SESSION_ID_GENERATED" not in env
+    assert env["CARGO_TARGET_DIR"] == str(
+        tmp_path.resolve() / "target" / "sessions" / "proof-shard"
+    )
+
+
 def test_live_dx_docs_do_not_reintroduce_session_scoped_default() -> None:
     repo = Path(__file__).resolve().parents[1]
     docs = [
