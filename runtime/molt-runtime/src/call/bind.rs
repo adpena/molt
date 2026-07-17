@@ -1,5 +1,6 @@
 use crate::builtins::frames::{frame_stack_pop, frame_stack_push_function};
 use crate::call::function::protect_borrowed_args_aliased_return;
+use crate::call::require_call_attr;
 use crate::call::type_policy::{
     InitArgPolicy, callable_matches_runtime_symbol, resolved_constructor_init_policy,
     resolved_new_is_default_object_new,
@@ -13,12 +14,11 @@ use crate::{
     CALL_BIND_IC_HIT_COUNT, CALL_BIND_IC_MISS_COUNT, GEN_CONTROL_SIZE,
     HEADER_FLAG_FUNC_REQUIRES_BINDER, INVOKE_FFI_BRIDGE_CAPABILITY_DENIED_COUNT, MoltHeader,
     MoltObject, PtrDropGuard, PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_CALLARGS, TYPE_ID_CODE,
-    TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_FOREIGN, TYPE_ID_FROZENSET, TYPE_ID_FUNCTION,
-    TYPE_ID_GENERIC_ALIAS, TYPE_ID_OBJECT, TYPE_ID_SET, TYPE_ID_STRING, TYPE_ID_TUPLE,
-    TYPE_ID_TYPE, alloc_class_obj, alloc_dict_with_pairs, alloc_instance_for_class,
-    alloc_instance_for_default_object_new, alloc_object, alloc_string, alloc_tuple,
-    apply_class_slots_layout, attr_lookup_ptr, attr_lookup_ptr_allow_missing,
-    attr_name_bits_from_bytes,
+    TYPE_ID_DICT, TYPE_ID_FOREIGN, TYPE_ID_FROZENSET, TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS,
+    TYPE_ID_SET, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE, alloc_class_obj,
+    alloc_dict_with_pairs, alloc_instance_for_class, alloc_instance_for_default_object_new,
+    alloc_object, alloc_string, alloc_tuple, apply_class_slots_layout, attr_lookup_ptr,
+    attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes,
     audit::{AuditArgs, audit_capability_decision},
     bits_from_ptr, bound_method_func_bits, bound_method_self_bits, builtin_classes, call_callable0,
     call_callable1, call_class_init_with_args, call_function_obj_bound_vec, class_attr_lookup,
@@ -30,14 +30,14 @@ use crate::{
     function_closure_bits, function_fn_ptr, function_name_bits, function_trampoline_ptr,
     generic_alias_origin_bits, has_capability, header_from_obj_ptr, inc_ref_bits, init_atomic_bits,
     intern_static_name, is_builtin_class_bits, is_trusted, is_truthy, isinstance_bits,
-    issubclass_bits, lookup_call_attr, maybe_ptr_from_bits, missing_bits,
-    molt_bytearray_count_slice, molt_bytearray_decode, molt_bytearray_endswith_slice,
-    molt_bytearray_find_slice, molt_bytearray_hex, molt_bytearray_index_slice, molt_bytearray_pop,
-    molt_bytearray_rfind_slice, molt_bytearray_rindex_slice, molt_bytearray_rsplit_max,
-    molt_bytearray_split_max, molt_bytearray_splitlines, molt_bytearray_startswith_slice,
-    molt_bytes_count_slice, molt_bytes_decode, molt_bytes_endswith_slice, molt_bytes_find_slice,
-    molt_bytes_hex, molt_bytes_index_slice, molt_bytes_maketrans, molt_bytes_rfind_slice,
-    molt_bytes_rindex_slice, molt_bytes_rsplit_max, molt_bytes_split_max, molt_bytes_splitlines,
+    issubclass_bits, maybe_ptr_from_bits, missing_bits, molt_bytearray_count_slice,
+    molt_bytearray_decode, molt_bytearray_endswith_slice, molt_bytearray_find_slice,
+    molt_bytearray_hex, molt_bytearray_index_slice, molt_bytearray_pop, molt_bytearray_rfind_slice,
+    molt_bytearray_rindex_slice, molt_bytearray_rsplit_max, molt_bytearray_split_max,
+    molt_bytearray_splitlines, molt_bytearray_startswith_slice, molt_bytes_count_slice,
+    molt_bytes_decode, molt_bytes_endswith_slice, molt_bytes_find_slice, molt_bytes_hex,
+    molt_bytes_index_slice, molt_bytes_maketrans, molt_bytes_rfind_slice, molt_bytes_rindex_slice,
+    molt_bytes_rsplit_max, molt_bytes_split_max, molt_bytes_splitlines,
     molt_bytes_startswith_slice, molt_class_set_base, molt_dict_from_obj, molt_dict_new,
     molt_dict_pop_method, molt_file_reconfigure, molt_frozenset_copy_method,
     molt_frozenset_difference_multi, molt_frozenset_intersection_multi, molt_frozenset_isdisjoint,
@@ -68,6 +68,11 @@ use inline_cache::{call_bind_ic_entry_for_call, try_call_bind_ic_fast};
 pub(crate) use inline_cache::{
     clear_call_bind_ic_cache, clear_method_ic_cache, clear_super_ic_cache,
 };
+
+#[cfg(test)]
+pub(crate) fn call_bind_ic_site_cached_for_test(site_id: u64) -> bool {
+    inline_cache::ic_tls_lookup(site_id).is_some()
+}
 #[allow(unused_imports)]
 pub use inline_cache::{
     molt_call_bind_ic, molt_call_indirect_ic, molt_call_method_ic0, molt_call_method_ic1,
@@ -2266,10 +2271,20 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                             meta_ptr,
                             Some(call_ptr),
                             call_name_bits,
-                        ) && !is_default_type_call(_py, call_attr_bits)
-                        {
-                            builder_guard.release();
-                            return molt_call_bind(call_attr_bits, builder_bits);
+                        ) {
+                            if exception_pending(_py) {
+                                dec_ref_bits(_py, call_attr_bits);
+                                return MoltObject::none().bits();
+                            }
+                            if !is_default_type_call(_py, call_attr_bits) {
+                                builder_guard.release();
+                                let result = molt_call_bind(call_attr_bits, builder_bits);
+                                dec_ref_bits(_py, call_attr_bits);
+                                return result;
+                            }
+                            dec_ref_bits(_py, call_attr_bits);
+                        } else if exception_pending(_py) {
+                            return MoltObject::none().bits();
                         }
                     }
                     return call_type_with_builder(
@@ -2285,32 +2300,39 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                     builder_guard.release();
                     return molt_call_bind(origin_bits, builder_bits);
                 }
-                TYPE_ID_OBJECT | TYPE_ID_DATACLASS => {
-                    let Some(call_attr_bits) = lookup_call_attr(_py, call_ptr) else {
-                        return raise_not_callable(_py, call_obj);
-                    };
-                    if !builder_ptr.is_null() {
-                        let args_ptr = match require_callargs_ptr(_py, builder_ptr) {
-                            Ok(ptr) => ptr,
-                            Err(err) => return err,
-                        };
-                        if let Some(entry) = call_bind_ic_entry_for_call(_py, call_attr_bits)
-                            && let Some(res) =
-                                try_call_bind_ic_fast(_py, entry, call_attr_bits, args_ptr)
-                        {
-                            return protect_callargs_aliased_return(_py, res, args_ptr);
-                        }
-                    }
-                    builder_guard.release();
-                    return molt_call_bind(call_attr_bits, builder_bits);
-                }
                 TYPE_ID_FOREIGN => {
                     // Foreign (C-extension) callable: route through the wrapped
                     // object's own `tp_call` via the ABI bridge. The builder
                     // guard drops the builder at scope exit (we copy its args).
                     return call_foreign_with_builder(_py, call_ptr, builder_ptr);
                 }
-                _ => return raise_not_callable(_py, call_obj),
+                _ => {
+                    let call_attr_bits = match require_call_attr(_py, call_ptr, call_obj) {
+                        Ok(bits) => bits,
+                        Err(result) => return result,
+                    };
+                    if !builder_ptr.is_null() {
+                        let args_ptr = match require_callargs_ptr(_py, builder_ptr) {
+                            Ok(ptr) => ptr,
+                            Err(err) => {
+                                dec_ref_bits(_py, call_attr_bits);
+                                return err;
+                            }
+                        };
+                        if let Some(entry) = call_bind_ic_entry_for_call(_py, call_attr_bits)
+                            && let Some(res) =
+                                try_call_bind_ic_fast(_py, entry, call_attr_bits, args_ptr)
+                        {
+                            let result = protect_callargs_aliased_return(_py, res, args_ptr);
+                            dec_ref_bits(_py, call_attr_bits);
+                            return result;
+                        }
+                    }
+                    builder_guard.release();
+                    let result = molt_call_bind(call_attr_bits, builder_bits);
+                    dec_ref_bits(_py, call_attr_bits);
+                    return result;
+                }
             }
             if let Some(bound_self_bits) = self_bits {
                 let target_obj = obj_from_bits(func_bits);
@@ -2871,9 +2893,10 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::inline_cache::{
-        CALL_BIND_IC_KIND_DIRECT_FUNC, CALL_BIND_IC_KIND_TYPE_CALL, CallBindIcEntry,
-        clear_call_bind_ic_cache, ic_tls_insert, ic_tls_lookup, method_ic_call_plan,
-        try_call_bind_ic_fast,
+        CALL_BIND_IC_KIND_DIRECT_FUNC, CALL_BIND_IC_KIND_HEAP_CALL_SIMPLE_BOUND_FUNC,
+        CALL_BIND_IC_KIND_TYPE_CALL, CallBindIcEntry, clear_call_bind_ic_cache, ic_tls_insert,
+        ic_tls_lookup, method_ic_call_plan, try_call_bind_ic_fast, type_epoch_matches,
+        type_resolution_epoch_is_stable,
     };
     use super::{protect_callargs_aliased_return_with_extra, trace_call_type_builder_enabled_raw};
     use crate::object::builders::{alloc_list, alloc_tuple};
@@ -3117,7 +3140,7 @@ mod tests {
     #[test]
     fn type_call_ic_returns_single_owned_constructor_result_after_borrowed_init() {
         crate::with_gil_entry_nopanic!(_py, {
-            clear_call_bind_ic_cache();
+            clear_call_bind_ic_cache(_py);
             let init_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
                 compiled_init_borrows_self_for_type_call_ic as *const () as usize as u64,
@@ -3155,6 +3178,7 @@ mod tests {
                 target_bits: init_bits,
                 class_bits,
                 class_version: unsafe { crate::class_layout_version_bits(class_ptr) },
+                type_version: crate::global_type_version(),
                 cached_alloc_size: (layout_size + std::mem::size_of::<crate::object::MoltHeader>())
                     as u32,
                 arity: 0,
@@ -3227,19 +3251,64 @@ mod tests {
 
     #[test]
     fn clear_call_bind_ic_cache_clears_thread_local_cache() {
-        let entry = CallBindIcEntry {
-            fn_ptr: 11,
-            target_bits: 22,
-            class_bits: 0,
-            class_version: 33,
-            cached_alloc_size: 44,
-            arity: 1,
-            kind: CALL_BIND_IC_KIND_DIRECT_FUNC,
-        };
-        ic_tls_insert(99, entry);
-        assert!(ic_tls_lookup(99).is_some());
-        clear_call_bind_ic_cache();
-        assert!(ic_tls_lookup(99).is_none());
+        crate::with_gil_entry_nopanic!(_py, {
+            let entry = CallBindIcEntry {
+                fn_ptr: 11,
+                target_bits: 22,
+                class_bits: 0,
+                class_version: 33,
+                type_version: 0,
+                cached_alloc_size: 44,
+                arity: 1,
+                kind: CALL_BIND_IC_KIND_DIRECT_FUNC,
+            };
+            ic_tls_insert(_py, 99, entry);
+            assert!(ic_tls_lookup(99).is_some());
+            clear_call_bind_ic_cache(_py);
+            assert!(ic_tls_lookup(99).is_none());
+        });
+    }
+
+    #[test]
+    fn mro_resolved_call_cache_owns_and_releases_target() {
+        crate::with_gil_entry_nopanic!(_py, {
+            clear_call_bind_ic_cache(_py);
+            let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+                _py,
+                compiled_init_borrows_self_for_type_call_ic as *const () as usize as u64,
+                1,
+            );
+            assert!(!func_ptr.is_null());
+            let target_bits = MoltObject::from_ptr(func_ptr).bits();
+            let before = unsafe { (*crate::header_from_obj_ptr(func_ptr)).ref_count_snapshot() };
+            let entry = CallBindIcEntry {
+                fn_ptr: compiled_init_borrows_self_for_type_call_ic as *const () as usize as u64,
+                target_bits,
+                class_bits: 0,
+                class_version: 0,
+                type_version: crate::global_type_version(),
+                cached_alloc_size: 0,
+                arity: 0,
+                kind: CALL_BIND_IC_KIND_HEAP_CALL_SIMPLE_BOUND_FUNC,
+            };
+            ic_tls_insert(_py, 101, entry);
+            let retained = unsafe { (*crate::header_from_obj_ptr(func_ptr)).ref_count_snapshot() };
+            assert_eq!(retained, before + 1);
+            clear_call_bind_ic_cache(_py);
+            let released = unsafe { (*crate::header_from_obj_ptr(func_ptr)).ref_count_snapshot() };
+            assert_eq!(released, before);
+            dec_ref_bits(_py, target_bits);
+        });
+    }
+
+    #[test]
+    fn type_epoch_invalidates_every_mro_resolved_call_cache_family() {
+        let recorded = crate::global_type_version();
+        assert!(type_epoch_matches(recorded));
+        assert!(type_resolution_epoch_is_stable(recorded));
+        crate::bump_type_version();
+        assert!(!type_epoch_matches(recorded));
+        assert!(!type_resolution_epoch_is_stable(recorded));
     }
 
     // ------------------------------------------------------------------

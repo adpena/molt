@@ -7,9 +7,42 @@ fn trace_call_bind_ic_enabled() -> bool {
     *ENABLED.get_or_init(|| std::env::var("MOLT_TRACE_CALL_BIND_IC").as_deref() == Ok("1"))
 }
 
+#[inline]
+fn trace_call_bind_ic_bypass(kind: &str, reason: &str) {
+    if trace_call_bind_ic_enabled() {
+        eprintln!("[molt call_bind_ic] bypass {kind} reason={reason}");
+    }
+}
+
+#[inline]
+fn trace_call_bind_ic_epoch_stage(recorded: u64, stage: &str) {
+    if trace_call_bind_ic_enabled() {
+        let current = crate::object::global_type_version();
+        if current != recorded {
+            eprintln!(
+                "[molt call_bind_ic] type epoch changed stage={stage} recorded={recorded} current={current}"
+            );
+        }
+    }
+}
+
 fn disable_call_bind_ic_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var("MOLT_DISABLE_CALL_BIND_IC").as_deref() == Ok("1"))
+}
+
+#[inline(always)]
+pub(super) fn type_epoch_matches(recorded: u64) -> bool {
+    crate::object::global_type_version() == recorded
+}
+
+/// Run an MRO-dependent cache classification against one stable publication
+/// epoch. Callers sample before touching type state and must reject the cache
+/// candidate if this check fails after resolution. This prevents a concurrent
+/// mutation from publishing a stale borrowed target under the new epoch.
+#[inline(always)]
+pub(super) fn type_resolution_epoch_is_stable(recorded: u64) -> bool {
+    type_epoch_matches(recorded)
 }
 
 #[derive(Clone, Copy)]
@@ -18,6 +51,9 @@ pub(super) struct CallBindIcEntry {
     pub(super) target_bits: u64,
     pub(super) class_bits: u64,
     pub(super) class_version: u64,
+    /// Global MRO dependency epoch for entries resolved through type lookup.
+    /// It is checked before dereferencing any borrowed cached target.
+    pub(super) type_version: u64,
     /// For `CALL_BIND_IC_KIND_TYPE_CALL`: cached total allocation size
     /// (header + payload) computed once at IC-population time.  Avoids
     /// re-running `class_layout_size` (MRO walks, dict probes, name
@@ -30,7 +66,7 @@ pub(super) struct CallBindIcEntry {
 pub(super) const CALL_BIND_IC_KIND_DIRECT_FUNC: u8 = 1;
 pub(super) const CALL_BIND_IC_KIND_LIST_APPEND: u8 = 2;
 pub(super) const CALL_BIND_IC_KIND_BOUND_DIRECT_FUNC: u8 = 3;
-pub(super) const CALL_BIND_IC_KIND_OBJECT_CALL_SIMPLE_BOUND_FUNC: u8 = 4;
+pub(super) const CALL_BIND_IC_KIND_HEAP_CALL_SIMPLE_BOUND_FUNC: u8 = 4;
 pub(super) const CALL_BIND_IC_KIND_TYPE_CALL: u8 = 5;
 
 // Thread-local direct-mapped inline cache for call_bind dispatch.
@@ -41,7 +77,7 @@ const IC_TLS_SIZE: usize = 256; // Must be power of 2
 
 thread_local! {
     static IC_TLS: std::cell::RefCell<[(u64, CallBindIcEntry); IC_TLS_SIZE]> =
-        const { std::cell::RefCell::new([(0u64, CallBindIcEntry { fn_ptr: 0, target_bits: 0, class_bits: 0, class_version: 0, cached_alloc_size: 0, arity: 0, kind: 0 }); IC_TLS_SIZE]) };
+        const { std::cell::RefCell::new([(0u64, CallBindIcEntry { fn_ptr: 0, target_bits: 0, class_bits: 0, class_version: 0, type_version: 0, cached_alloc_size: 0, arity: 0, kind: 0 }); IC_TLS_SIZE]) };
 }
 
 #[inline]
@@ -59,29 +95,54 @@ pub(super) fn ic_tls_lookup(site_id: u64) -> Option<CallBindIcEntry> {
 }
 
 #[inline]
-pub(super) fn ic_tls_insert(site_id: u64, entry: CallBindIcEntry) {
-    IC_TLS.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        let idx = (site_id as usize) & (IC_TLS_SIZE - 1);
-        cache[idx] = (site_id, entry);
-    });
+fn call_bind_ic_owns_target(entry: CallBindIcEntry) -> bool {
+    matches!(
+        entry.kind,
+        CALL_BIND_IC_KIND_HEAP_CALL_SIMPLE_BOUND_FUNC | CALL_BIND_IC_KIND_TYPE_CALL
+    ) && entry.target_bits != 0
 }
 
-pub(crate) fn clear_call_bind_ic_cache() {
-    IC_TLS.with(|cache| {
-        *cache.borrow_mut() = [(
-            0u64,
-            CallBindIcEntry {
-                fn_ptr: 0,
-                target_bits: 0,
-                class_bits: 0,
-                class_version: 0,
-                cached_alloc_size: 0,
-                arity: 0,
-                kind: 0,
-            },
-        ); IC_TLS_SIZE];
+#[inline]
+pub(super) fn ic_tls_insert(_py: &PyToken<'_>, site_id: u64, entry: CallBindIcEntry) {
+    if call_bind_ic_owns_target(entry) {
+        inc_ref_bits(_py, entry.target_bits);
+    }
+    let previous = IC_TLS.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let idx = (site_id as usize) & (IC_TLS_SIZE - 1);
+        let previous = cache[idx].1;
+        cache[idx] = (site_id, entry);
+        previous
     });
+    if call_bind_ic_owns_target(previous) {
+        dec_ref_bits(_py, previous.target_bits);
+    }
+}
+
+pub(crate) fn clear_call_bind_ic_cache(_py: &PyToken<'_>) {
+    let previous = IC_TLS.with(|cache| {
+        std::mem::replace(
+            &mut *cache.borrow_mut(),
+            [(
+                0u64,
+                CallBindIcEntry {
+                    fn_ptr: 0,
+                    target_bits: 0,
+                    class_bits: 0,
+                    class_version: 0,
+                    type_version: 0,
+                    cached_alloc_size: 0,
+                    arity: 0,
+                    kind: 0,
+                },
+            ); IC_TLS_SIZE],
+        )
+    });
+    for (_, entry) in previous {
+        if call_bind_ic_owns_target(entry) {
+            dec_ref_bits(_py, entry.target_bits);
+        }
+    }
 }
 
 /// Per-site inline cache for fused method / super-method dispatch.
@@ -96,6 +157,7 @@ pub(crate) fn clear_call_bind_ic_cache() {
 struct MethodIcEntry {
     pub(super) class_bits: u64,
     pub(super) class_version: u64,
+    type_version: u64,
     func_bits: u64,
     attr_bits: u64,
     can_shadow: bool,
@@ -189,6 +251,7 @@ thread_local! {
                     MethodIcEntry {
                         class_bits: 0,
                         class_version: 0,
+                        type_version: 0,
                         func_bits: 0,
                         attr_bits: 0,
                         can_shadow: true,
@@ -216,46 +279,60 @@ fn method_ic_lookup(site_id: u64) -> Option<MethodIcEntry> {
     })
 }
 
-/// Install a method-IC entry.  The IC OWNS a reference to `entry.attr_bits`
-/// (the interned method-name object): the caller must transfer an owned ref
-/// (i.e. NOT dec-ref the bits it stored).  Any previous entry's `attr_bits`
-/// ref is released here so names cannot leak when a slot is reused.
+/// Install a method-IC entry. The caller transfers its owned `attr_bits` ref;
+/// the cache additionally retains `func_bits`, so concurrent class mutation
+/// cannot free a target after the epoch check and before dispatch.
 #[inline]
 fn method_ic_insert(_py: &PyToken<'_>, site_id: u64, entry: MethodIcEntry) {
-    METHOD_IC_TLS.with(|cache| {
+    inc_ref_bits(_py, entry.func_bits);
+    let prev = METHOD_IC_TLS.with(|cache| {
         let mut cache = cache.borrow_mut();
         let idx = (site_id as usize) & (METHOD_IC_TLS_SIZE - 1);
         let (_, prev) = cache[idx];
-        if prev.valid && prev.attr_bits != 0 {
+        cache[idx] = (site_id, entry);
+        prev
+    });
+    if prev.valid {
+        if prev.attr_bits != 0 {
             dec_ref_bits(_py, prev.attr_bits);
         }
-        cache[idx] = (site_id, entry);
-    });
+        if prev.func_bits != 0 {
+            dec_ref_bits(_py, prev.func_bits);
+        }
+    }
 }
 
 pub(crate) fn clear_method_ic_cache(_py: &PyToken<'_>) {
-    METHOD_IC_TLS.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        for (_, entry) in cache.iter() {
-            if entry.valid && entry.attr_bits != 0 {
+    let previous = METHOD_IC_TLS.with(|cache| {
+        std::mem::replace(
+            &mut *cache.borrow_mut(),
+            [(
+                0u64,
+                MethodIcEntry {
+                    class_bits: 0,
+                    class_version: 0,
+                    type_version: 0,
+                    func_bits: 0,
+                    attr_bits: 0,
+                    can_shadow: true,
+                    fixed_arity: 0,
+                    n_pos_defaults: 0,
+                    needs_binder: true,
+                    valid: false,
+                },
+            ); METHOD_IC_TLS_SIZE],
+        )
+    });
+    for (_, entry) in previous {
+        if entry.valid {
+            if entry.attr_bits != 0 {
                 dec_ref_bits(_py, entry.attr_bits);
             }
+            if entry.func_bits != 0 {
+                dec_ref_bits(_py, entry.func_bits);
+            }
         }
-        *cache = [(
-            0u64,
-            MethodIcEntry {
-                class_bits: 0,
-                class_version: 0,
-                func_bits: 0,
-                attr_bits: 0,
-                can_shadow: true,
-                fixed_arity: 0,
-                n_pos_defaults: 0,
-                needs_binder: true,
-                valid: false,
-            },
-        ); METHOD_IC_TLS_SIZE];
-    });
+    }
 }
 
 /// Per-site inline cache for fused `super().method(args)` dispatch.  Keyed on
@@ -267,6 +344,7 @@ pub(crate) fn clear_method_ic_cache(_py: &PyToken<'_>) {
 struct SuperIcEntry {
     self_class_bits: u64,
     self_class_version: u64,
+    type_version: u64,
     func_bits: u64,
     attr_bits: u64,
     valid: bool,
@@ -281,6 +359,7 @@ thread_local! {
                     SuperIcEntry {
                         self_class_bits: 0,
                         self_class_version: 0,
+                        type_version: 0,
                         func_bits: 0,
                         attr_bits: 0,
                         valid: false,
@@ -306,36 +385,51 @@ fn super_ic_lookup(site_id: u64) -> Option<SuperIcEntry> {
 
 #[inline]
 fn super_ic_insert(_py: &PyToken<'_>, site_id: u64, entry: SuperIcEntry) {
-    SUPER_IC_TLS.with(|cache| {
+    inc_ref_bits(_py, entry.func_bits);
+    let prev = SUPER_IC_TLS.with(|cache| {
         let mut cache = cache.borrow_mut();
         let idx = (site_id as usize) & (METHOD_IC_TLS_SIZE - 1);
         let (_, prev) = cache[idx];
-        if prev.valid && prev.attr_bits != 0 {
+        cache[idx] = (site_id, entry);
+        prev
+    });
+    if prev.valid {
+        if prev.attr_bits != 0 {
             dec_ref_bits(_py, prev.attr_bits);
         }
-        cache[idx] = (site_id, entry);
-    });
+        if prev.func_bits != 0 {
+            dec_ref_bits(_py, prev.func_bits);
+        }
+    }
 }
 
 pub(crate) fn clear_super_ic_cache(_py: &PyToken<'_>) {
-    SUPER_IC_TLS.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        for (_, entry) in cache.iter() {
-            if entry.valid && entry.attr_bits != 0 {
+    let previous = SUPER_IC_TLS.with(|cache| {
+        std::mem::replace(
+            &mut *cache.borrow_mut(),
+            [(
+                0u64,
+                SuperIcEntry {
+                    self_class_bits: 0,
+                    self_class_version: 0,
+                    type_version: 0,
+                    func_bits: 0,
+                    attr_bits: 0,
+                    valid: false,
+                },
+            ); METHOD_IC_TLS_SIZE],
+        )
+    });
+    for (_, entry) in previous {
+        if entry.valid {
+            if entry.attr_bits != 0 {
                 dec_ref_bits(_py, entry.attr_bits);
             }
+            if entry.func_bits != 0 {
+                dec_ref_bits(_py, entry.func_bits);
+            }
         }
-        *cache = [(
-            0u64,
-            SuperIcEntry {
-                self_class_bits: 0,
-                self_class_version: 0,
-                func_bits: 0,
-                attr_bits: 0,
-                valid: false,
-            },
-        ); METHOD_IC_TLS_SIZE];
-    });
+    }
 }
 
 fn ic_site_from_bits(site_bits: u64) -> Option<u64> {
@@ -401,6 +495,7 @@ pub(super) unsafe fn call_bind_ic_entry_for_call(
                         target_bits: call_bits,
                         class_bits: 0,
                         class_version: 0,
+                        type_version: 0,
                         cached_alloc_size: 0,
                         arity: arity as u8,
                         kind: CALL_BIND_IC_KIND_DIRECT_FUNC,
@@ -435,6 +530,7 @@ pub(super) unsafe fn call_bind_ic_entry_for_call(
                         target_bits: func_bits,
                         class_bits: 0,
                         class_version: 0,
+                        type_version: 0,
                         cached_alloc_size: 0,
                         arity: 1,
                         kind: CALL_BIND_IC_KIND_LIST_APPEND,
@@ -447,6 +543,7 @@ pub(super) unsafe fn call_bind_ic_entry_for_call(
                             target_bits: func_bits,
                             class_bits: 0,
                             class_version: 0,
+                            type_version: 0,
                             cached_alloc_size: 0,
                             arity: (arity - 1) as u8,
                             kind: CALL_BIND_IC_KIND_BOUND_DIRECT_FUNC,
@@ -463,78 +560,128 @@ pub(super) unsafe fn call_bind_ic_entry_for_call(
                 // Builtin types have dedicated fast paths in call_type_with_builder;
                 // the IC is for user-defined classes only.
                 if is_builtin_class_bits(_py, class_bits) {
+                    trace_call_bind_ic_bypass("type_call", "builtin_class");
+                    return None;
+                }
+                // The first layout lookup may publish the class's lazy internal
+                // layout-size memo and therefore advance the global type epoch.
+                // Warm that memo before opening the optimistic MRO-resolution
+                // transaction, then read it again inside the sampled epoch. The
+                // second read is the cheap memoized path; any genuine concurrent
+                // mutation during it or the following descriptor lookups still
+                // makes the final epoch check reject publication.
+                let _ = crate::call::class_init::class_layout_size_cached(_py, call_ptr);
+                let type_version = crate::object::global_type_version();
+                let layout_size = crate::call::class_init::class_layout_size_cached(_py, call_ptr);
+                trace_call_bind_ic_epoch_stage(type_version, "layout_memo_read");
+                // Cache installation must use the same metaclass-call policy as
+                // the slow path. A custom metaclass __call__ owns construction
+                // semantics and must never be bypassed by TYPE_CALL after the
+                // first miss. Inspect the raw MRO descriptor without binding it:
+                // cache classification is observationally pure.
+                let metaclass_bits = object_class_bits(call_ptr);
+                let metaclass_ptr = obj_from_bits(metaclass_bits).as_ptr()?;
+                if object_type_id(metaclass_ptr) != TYPE_ID_TYPE {
+                    trace_call_bind_ic_bypass("type_call", "metaclass_not_type");
+                    return None;
+                }
+                let call_name_bits =
+                    intern_static_name(_py, &runtime_state(_py).interned.call_name, b"__call__");
+                let metaclass_call_bits =
+                    class_attr_lookup_raw_mro(_py, metaclass_ptr, call_name_bits)?;
+                trace_call_bind_ic_epoch_stage(type_version, "metaclass_call_lookup");
+                if !is_default_type_call(_py, metaclass_call_bits) {
+                    trace_call_bind_ic_bypass("type_call", "custom_metaclass_call");
                     return None;
                 }
                 // Only cacheable when __new__ is the default object.__new__.
                 let new_name_bits =
                     intern_static_name(_py, &runtime_state(_py).interned.new_name, b"__new__");
                 let new_bits = class_attr_lookup_raw_mro(_py, call_ptr, new_name_bits);
+                trace_call_bind_ic_epoch_stage(type_version, "new_lookup");
                 if !resolved_new_is_default_object_new(new_bits) {
+                    trace_call_bind_ic_bypass("type_call", "custom_new");
                     return None;
                 }
                 // Resolve __init__ and ensure it is a simple direct-callable function.
                 let init_name_bits =
                     intern_static_name(_py, &runtime_state(_py).interned.init_name, b"__init__");
                 let init_bits = class_attr_lookup_raw_mro(_py, call_ptr, init_name_bits)?;
+                trace_call_bind_ic_epoch_stage(type_version, "init_lookup");
                 let init_ptr = obj_from_bits(init_bits).as_ptr()?;
                 if object_type_id(init_ptr) != TYPE_ID_FUNCTION {
+                    trace_call_bind_ic_bypass("type_call", "init_not_function");
                     return None;
                 }
                 if function_requires_full_binding(_py, init_ptr) {
+                    trace_call_bind_ic_bypass("type_call", "init_requires_full_binding");
                     return None;
                 }
                 let init_arity = function_arity(init_ptr);
                 // __init__ arity includes `self`, so cacheable range is 1..=5
                 // (0 args up to 4 user args).
                 if !(1..=5).contains(&init_arity) {
+                    trace_call_bind_ic_bypass("type_call", "init_arity_out_of_range");
                     return None;
                 }
                 // Cache the allocation size so the IC fast path skips
                 // the entire class_layout_size computation (MRO walks,
                 // dict probes, name interning) on every instantiation.
-                let layout_size = crate::call::class_init::class_layout_size_cached(_py, call_ptr);
                 let total_alloc = layout_size + std::mem::size_of::<crate::object::MoltHeader>();
+                if !type_resolution_epoch_is_stable(type_version) {
+                    trace_call_bind_ic_bypass("type_call", "type_epoch_changed_during_resolution");
+                    return None;
+                }
                 Some(CallBindIcEntry {
                     fn_ptr: function_fn_ptr(init_ptr),
                     target_bits: init_bits,
                     class_bits,
                     class_version: class_layout_version_bits(call_ptr),
+                    type_version,
                     cached_alloc_size: total_alloc as u32,
                     arity: (init_arity - 1) as u8,
                     kind: CALL_BIND_IC_KIND_TYPE_CALL,
                 })
             }
-            TYPE_ID_OBJECT | TYPE_ID_DATACLASS => {
-                let call_attr_bits = lookup_call_attr(_py, call_ptr)?;
-                let call_attr_ptr = obj_from_bits(call_attr_bits).as_ptr()?;
-                if object_type_id(call_attr_ptr) != TYPE_ID_BOUND_METHOD {
+            _ => {
+                let type_version = crate::object::global_type_version();
+                // Eligibility is a raw type/MRO fact. Binding __call__ here
+                // would invoke arbitrary descriptor code a second time after
+                // the real slow call, potentially raising a spurious exception
+                // or caching a dynamic descriptor result. Only the canonical
+                // plain-function descriptor shape is safe for this fast path.
+                let class_bits = object_class_bits(call_ptr);
+                let class_ptr = obj_from_bits(class_bits).as_ptr()?;
+                if object_type_id(class_ptr) != TYPE_ID_TYPE {
                     return None;
                 }
-                let func_bits = bound_method_func_bits(call_attr_ptr);
+                let call_name_bits =
+                    intern_static_name(_py, &runtime_state(_py).interned.call_name, b"__call__");
+                let func_bits = class_attr_lookup_raw_mro(_py, class_ptr, call_name_bits)?;
                 let func_ptr = obj_from_bits(func_bits).as_ptr()?;
-                if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
-                    return None;
-                }
-                if function_requires_full_binding(_py, func_ptr) {
+                if object_type_id(func_ptr) != TYPE_ID_FUNCTION
+                    || function_requires_full_binding(_py, func_ptr)
+                {
                     return None;
                 }
                 let arity = function_arity(func_ptr);
                 if !(1..=5).contains(&arity) {
                     return None;
                 }
-                let class_bits = object_class_bits(call_ptr);
-                let class_ptr = obj_from_bits(class_bits).as_ptr()?;
+                if !type_resolution_epoch_is_stable(type_version) {
+                    return None;
+                }
                 Some(CallBindIcEntry {
                     fn_ptr: function_fn_ptr(func_ptr),
                     target_bits: func_bits,
                     class_bits,
                     class_version: class_layout_version_bits(class_ptr),
+                    type_version,
                     cached_alloc_size: 0,
                     arity: (arity - 1) as u8,
-                    kind: CALL_BIND_IC_KIND_OBJECT_CALL_SIMPLE_BOUND_FUNC,
+                    kind: CALL_BIND_IC_KIND_HEAP_CALL_SIMPLE_BOUND_FUNC,
                 })
             }
-            _ => None,
         }
     }
 }
@@ -619,8 +766,8 @@ pub(super) unsafe fn try_call_bind_ic_fast(
             ));
         }
 
-        if entry.kind == CALL_BIND_IC_KIND_OBJECT_CALL_SIMPLE_BOUND_FUNC {
-            if !matches!(object_type_id(call_ptr), TYPE_ID_OBJECT | TYPE_ID_DATACLASS) {
+        if entry.kind == CALL_BIND_IC_KIND_HEAP_CALL_SIMPLE_BOUND_FUNC {
+            if !type_epoch_matches(entry.type_version) {
                 return None;
             }
             let class_bits = object_class_bits(call_ptr);
@@ -662,6 +809,9 @@ pub(super) unsafe fn try_call_bind_ic_fast(
         // lookup, abstractmethod check, init-arg policy) and goes straight to
         // alloc + direct __init__ call.
         if entry.kind == CALL_BIND_IC_KIND_TYPE_CALL {
+            if !type_epoch_matches(entry.type_version) {
+                return None;
+            }
             if object_type_id(call_ptr) != TYPE_ID_TYPE {
                 return None;
             }
@@ -1018,7 +1168,8 @@ unsafe fn call_method_ic_dispatch(
                 && let Some(entry) = method_ic_lookup(site_id)
             {
                 let class_bits = object_class_bits(recv_ptr);
-                if class_bits == entry.class_bits
+                if type_epoch_matches(entry.type_version)
+                    && class_bits == entry.class_bits
                     && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
                     && class_layout_version_bits(class_ptr) == entry.class_version
                 {
@@ -1049,6 +1200,7 @@ unsafe fn call_method_ic_dispatch(
             // IC miss: resolve the method class-side, install the IC, dispatch.
             let slice = std::slice::from_raw_parts(name_ptr, name_len);
             if let Some(attr_bits) = attr_name_bits_from_bytes(_py, slice) {
+                let type_version = crate::object::global_type_version();
                 let info =
                     crate::builtins::attr::object_method_ic_resolve(_py, recv_ptr, attr_bits);
                 if let Some(info) = info {
@@ -1061,7 +1213,7 @@ unsafe fn call_method_ic_dispatch(
                                 .unwrap_or(std::ptr::null_mut()),
                             attr_bits,
                         );
-                    if !shadowed {
+                    if !shadowed && type_resolution_epoch_is_stable(type_version) {
                         // Compute the call plan once and record it in the IC so
                         // future hits decide the path with a couple of integer
                         // compares. A method needing the full binder (kw-only/
@@ -1084,6 +1236,7 @@ unsafe fn call_method_ic_dispatch(
                                 MethodIcEntry {
                                     class_bits: info.class_bits,
                                     class_version: info.class_version,
+                                    type_version,
                                     func_bits: info.func_bits,
                                     attr_bits,
                                     can_shadow: info.can_shadow,
@@ -1339,7 +1492,8 @@ unsafe fn call_super_method_ic_dispatch(
             && let Some(entry) = super_ic_lookup(site_id)
         {
             let self_class_bits = type_of_bits(_py, self_bits);
-            if self_class_bits == entry.self_class_bits
+            if type_epoch_matches(entry.type_version)
+                && self_class_bits == entry.self_class_bits
                 && let Some(self_class_ptr) = obj_from_bits(self_class_bits).as_ptr()
                 && class_layout_version_bits(self_class_ptr) == entry.self_class_version
             {
@@ -1350,13 +1504,16 @@ unsafe fn call_super_method_ic_dispatch(
 
         let slice = std::slice::from_raw_parts(name_ptr, name_len);
         if let Some(attr_bits) = attr_name_bits_from_bytes(_py, slice) {
+            let type_version = crate::object::global_type_version();
             let resolved = crate::builtins::attr::super_resolve_method_unbound(
                 _py,
                 start_class_bits,
                 self_bits,
                 attr_bits,
             );
-            if let Some(info) = resolved {
+            if let Some(info) = resolved
+                && type_resolution_epoch_is_stable(type_version)
+            {
                 if let Some(site_id) = ic_site_from_bits(site_bits) {
                     // Transfer the owned `attr_bits` ref into the IC.
                     super_ic_insert(
@@ -1365,6 +1522,7 @@ unsafe fn call_super_method_ic_dispatch(
                         SuperIcEntry {
                             self_class_bits: info.self_class_bits,
                             self_class_version: info.self_class_version,
+                            type_version,
                             func_bits: info.func_bits,
                             attr_bits,
                             valid: true,
@@ -1591,8 +1749,8 @@ unsafe fn call_bind_ic_dispatch(
                         CALL_BIND_IC_KIND_DIRECT_FUNC => "direct_func",
                         CALL_BIND_IC_KIND_LIST_APPEND => "list_append",
                         CALL_BIND_IC_KIND_BOUND_DIRECT_FUNC => "bound_direct_func",
-                        CALL_BIND_IC_KIND_OBJECT_CALL_SIMPLE_BOUND_FUNC => {
-                            "object_call_simple_bound_func"
+                        CALL_BIND_IC_KIND_HEAP_CALL_SIMPLE_BOUND_FUNC => {
+                            "heap_call_simple_bound_func"
                         }
                         CALL_BIND_IC_KIND_TYPE_CALL => "type_call",
                         _ => "unknown",
@@ -1638,7 +1796,7 @@ unsafe fn call_bind_ic_dispatch(
         if !exception_pending(_py)
             && let Some(entry) = call_bind_ic_entry_for_call(_py, call_bits)
         {
-            ic_tls_insert(site_id, entry);
+            ic_tls_insert(_py, site_id, entry);
         }
         res
     }

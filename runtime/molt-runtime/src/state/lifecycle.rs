@@ -319,7 +319,7 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     trace_shutdown("clear_python_builtin_function_cache");
     python_builtin_functions_clear_runtime_state(_py, state);
     trace_shutdown("clear_call_bind_ic_cache");
-    clear_call_bind_ic_cache();
+    clear_call_bind_ic_cache(_py);
     trace_shutdown("clear_method_ic_cache");
     clear_method_ic_cache(_py);
     trace_shutdown("clear_super_ic_cache");
@@ -918,6 +918,25 @@ mod tests {
     use super::{clear_interned_names, clear_special_cache, clear_worker_thread_state};
     use crate::{MoltObject, alloc_string, runtime_state};
     use std::sync::atomic::Ordering;
+
+    #[test]
+    fn panicking_worker_does_not_double_panic_during_tls_cleanup() {
+        let worker = std::thread::spawn(|| {
+            crate::with_gil_entry_nopanic!(_py, {
+                let _: u64 = crate::builtins::exceptions::raise_exception(
+                    _py,
+                    "RuntimeError",
+                    "intentional worker unwind",
+                );
+                panic!("intentional worker unwind");
+            });
+        });
+
+        assert!(
+            worker.join().is_err(),
+            "the primary worker panic must remain observable after TLS cleanup"
+        );
+    }
 
     #[test]
     fn clear_worker_thread_state_keeps_gil_for_tls_cleanup() {
