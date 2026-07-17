@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, cast
 
 _BUILD_SEQUENCE_FIELDS = (
     "compiler",
@@ -47,11 +47,12 @@ def _manifest_sequence(
     if inline is not None and reference is not None:
         raise ValueError(f"{field} has both inline and referenced authority")
     if inline is not None:
-        if not isinstance(inline, list) or not all(
-            isinstance(value, str) and value for value in inline
-        ):
+        if not isinstance(inline, list):
             raise ValueError(f"{field} inline authority is invalid")
-        return list(inline)
+        values = [value for value in inline if isinstance(value, str) and value]
+        if len(values) != len(inline):
+            raise ValueError(f"{field} inline authority is invalid")
+        return values
     if reference is None:
         return None
     authorities = manifest.get("build_authorities")
@@ -60,38 +61,47 @@ def _manifest_sequence(
     )
     strings = authorities.get("strings") if isinstance(authorities, Mapping) else None
     encoded = sequences.get(reference) if isinstance(sequences, Mapping) else None
-    if not (
-        isinstance(reference, str)
-        and isinstance(strings, list)
-        and isinstance(encoded, list)
-        and all(
-            isinstance(index, int) and 0 <= index < len(strings) for index in encoded
-        )
+    if not isinstance(reference, str) or not isinstance(strings, list) or not isinstance(
+        encoded, list
     ):
         raise ValueError(f"{field} references an invalid sequence authority")
-    result = [strings[index] for index in encoded]
-    if (
-        not all(isinstance(value, str) and value for value in result)
-        or _canonical_sequence_digest(result) != reference
-    ):
+    string_values = [value for value in strings if isinstance(value, str) and value]
+    indexes = [
+        index
+        for index in encoded
+        if isinstance(index, int)
+        and not isinstance(index, bool)
+        and 0 <= index < len(string_values)
+    ]
+    if len(string_values) != len(strings) or len(indexes) != len(encoded):
+        raise ValueError(f"{field} references an invalid sequence authority")
+    result = [string_values[index] for index in indexes]
+    if _canonical_sequence_digest(result) != reference:
         raise ValueError(f"{field} sequence authority digest is false")
     if field == "compile_command":
         operands = owner.get("compile_command_operands")
         if operands is not None:
-            if not isinstance(operands, list) or not all(
-                isinstance(item, Mapping)
-                and set(item) == {"index", "value"}
-                and isinstance(item.get("index"), int)
-                and isinstance(item.get("value"), str)
-                and 0 <= item["index"] < len(result)
-                for item in operands
-            ):
+            if not isinstance(operands, list):
                 raise ValueError("compile_command_operands is invalid")
-            indexes = [item["index"] for item in operands]
-            if indexes != sorted(set(indexes)):
-                raise ValueError("compile_command_operands indexes are not canonical")
+            replacements: list[tuple[int, str]] = []
             for item in operands:
-                result[item["index"]] = item["value"]
+                if not isinstance(item, Mapping) or set(item) != {"index", "value"}:
+                    raise ValueError("compile_command_operands is invalid")
+                index = item.get("index")
+                value = item.get("value")
+                if (
+                    not isinstance(index, int)
+                    or isinstance(index, bool)
+                    or not isinstance(value, str)
+                    or not 0 <= index < len(result)
+                ):
+                    raise ValueError("compile_command_operands is invalid")
+                replacements.append((index, value))
+            operand_indexes = [index for index, _value in replacements]
+            if operand_indexes != sorted(set(operand_indexes)):
+                raise ValueError("compile_command_operands indexes are not canonical")
+            for index, value in replacements:
+                result[index] = value
     return result
 
 
@@ -103,17 +113,18 @@ def _manifest_dependencies(
     if inline is not None and reference is not None:
         raise ValueError("dependencies has both inline and referenced authority")
     if inline is not None:
-        if not isinstance(inline, list) or not all(
-            isinstance(item, Mapping)
-            and set(item) == {"path", "sha256"}
-            and isinstance(item.get("path"), str)
-            and bool(item.get("path"))
-            and isinstance(item.get("sha256"), str)
-            and bool(item.get("sha256"))
-            for item in inline
-        ):
+        if not isinstance(inline, list):
             raise ValueError("inline dependencies authority is invalid")
-        return [dict(item) for item in inline]
+        dependencies: list[dict[str, str]] = []
+        for item in inline:
+            if not isinstance(item, Mapping) or set(item) != {"path", "sha256"}:
+                raise ValueError("inline dependencies authority is invalid")
+            path = item.get("path")
+            sha256 = item.get("sha256")
+            if not isinstance(path, str) or not path or not isinstance(sha256, str) or not sha256:
+                raise ValueError("inline dependencies authority is invalid")
+            dependencies.append({"path": path, "sha256": sha256})
+        return dependencies
     flattened = _manifest_sequence(manifest, owner, "dependencies")
     if flattened is None or len(flattened) % 2:
         raise ValueError("referenced dependencies authority is invalid")
@@ -176,14 +187,13 @@ def _object_unit_sha256(manifest: Mapping[str, Any], item: Mapping[str, Any]) ->
     ).hexdigest()
 
 
-def _compact_source_extension_manifest(manifest: Mapping[str, Any]) -> dict[str, Any]:
+def _compact_source_extension_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
     """Compact an owned manifest in place while preserving exact argv."""
 
-    if not isinstance(manifest, dict):
-        raise ValueError("source-extension manifest compaction requires owned dict")
     pool: dict[str, list[str]] = {}
     build = manifest.get("build")
     if isinstance(build, dict):
+        build = cast(dict[str, Any], build)
         for field in _BUILD_SEQUENCE_FIELDS:
             raw = build.pop(field, None)
             if raw is None:
@@ -192,7 +202,7 @@ def _compact_source_extension_manifest(manifest: Mapping[str, Any]) -> dict[str,
                 isinstance(value, str) and value for value in raw
             ):
                 raise ValueError(f"build.{field} must be a string array")
-            values = list(raw)
+            values = [value for value in raw if isinstance(value, str)]
             if values:
                 build[f"{field}_ref"] = _intern_sequence(pool, values)
     closure = manifest.get("object_closure")
@@ -202,27 +212,28 @@ def _compact_source_extension_manifest(manifest: Mapping[str, Any]) -> dict[str,
     for index, item in enumerate(objects):
         if not isinstance(item, dict):
             raise ValueError(f"object_closure.objects[{index}] must be an object")
+        item = cast(dict[str, Any], item)
         for field in ("compile_command", "symbol_command"):
             raw = item.pop(field, None)
             if not isinstance(raw, list):
                 raise ValueError(f"object_closure.objects[{index}].{field} is invalid")
-            values = raw
+            values = [value for value in raw if isinstance(value, str) and value]
+            if len(values) != len(raw):
+                raise ValueError(f"object_closure.objects[{index}].{field} is invalid")
             if field == "compile_command":
-                values, operands = _compile_command_template(raw)
+                values, operands = _compile_command_template(values)
                 if operands:
                     item["compile_command_operands"] = operands
             item[f"{field}_ref"] = _intern_sequence(pool, values)
-        dependencies = item.pop("dependencies", None)
-        if not isinstance(dependencies, list) or not all(
-            isinstance(dep, Mapping)
-            and set(dep) == {"path", "sha256"}
-            and isinstance(dep.get("path"), str)
-            and bool(dep.get("path"))
-            and isinstance(dep.get("sha256"), str)
-            and bool(dep.get("sha256"))
-            for dep in dependencies
-        ):
-            raise ValueError(f"object_closure.objects[{index}].dependencies is invalid")
+        raw_dependencies = item.pop("dependencies", None)
+        try:
+            dependencies = _manifest_dependencies(
+                {"object_closure": {}}, {"dependencies": raw_dependencies}
+            )
+        except ValueError as exc:
+            raise ValueError(
+                f"object_closure.objects[{index}].dependencies is invalid"
+            ) from exc
         flattened = [
             value
             for dependency in dependencies
@@ -239,7 +250,12 @@ def _compact_source_extension_manifest(manifest: Mapping[str, Any]) -> dict[str,
                     raise ValueError(
                         f"object_closure.objects[{index}].{field} is invalid"
                     )
-                item[f"{field}_ref"] = _intern_sequence(pool, raw)
+                values = [value for value in raw if isinstance(value, str) and value]
+                if len(values) != len(raw):
+                    raise ValueError(
+                        f"object_closure.objects[{index}].{field} is invalid"
+                    )
+                item[f"{field}_ref"] = _intern_sequence(pool, values)
     strings = sorted({value for values in pool.values() for value in values})
     string_indexes = {value: index for index, value in enumerate(strings)}
     manifest["build_authorities"] = {
@@ -250,7 +266,8 @@ def _compact_source_extension_manifest(manifest: Mapping[str, Any]) -> dict[str,
             for digest in sorted(pool)
         },
     }
-    for item in objects:
+    for raw_item in objects:
+        item = cast(dict[str, Any], raw_item)
         item["unit_sha256"] = _object_unit_sha256(manifest, item)
     return manifest
 
@@ -308,6 +325,7 @@ def _validate_compact_source_extension_manifest(manifest: Mapping[str, Any]) -> 
     for index, item in enumerate(objects):
         if not isinstance(item, Mapping):
             raise ValueError(f"object_closure.objects[{index}] is invalid")
+        item = cast(Mapping[str, Any], item)
         if require_sequence(item, "compile_command", required=True) is None:
             raise ValueError(
                 f"object_closure.objects[{index}] compile command is missing"

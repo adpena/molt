@@ -8,7 +8,7 @@ import keyword
 import re
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from molt.cli.source_extension_manifest_codec import (
     _manifest_dependencies,
@@ -67,6 +67,7 @@ def _extension_content_projection(manifest: Mapping[str, Any]) -> dict[str, Any]
     for index, item in enumerate(objects):
         if not isinstance(item, Mapping):
             raise ValueError(f"extension identity object[{index}] is invalid")
+        item = cast(Mapping[str, Any], item)
         projected = {
             key: item.get(key)
             for key in ("source", "object", "source_sha256", "object_sha256")
@@ -78,6 +79,7 @@ def _extension_content_projection(manifest: Mapping[str, Any]) -> dict[str, Any]
                 projected[field] = _manifest_sequence(manifest, item, field)
         projected_objects.append(projected)
     source_plan = manifest.get("source_plan")
+    closure = cast(Mapping[str, Any], closure)
     projection = {
         key: manifest.get(key)
         for key in (
