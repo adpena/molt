@@ -77,6 +77,17 @@ fn lower_preserved_passthrough_class_routes_to_runtime() {
     }
 }
 
+#[test]
+fn lower_special_get_attr_trusts_runtime_owned_result() {
+    let ctx = Context::create();
+    let backend = make_backend(&ctx);
+    let ir = lower_preserved_kind_ir(&backend, "get_attr_special_obj", 1, true, Some("__class__"))
+        .expect("special getattr must lower");
+    assert!(ir.contains("molt_get_attr_special"), "{ir}");
+    assert!(!ir.contains("get_attr_special_inc_ref"), "{ir}");
+    assert!(!ir.contains("call void @molt_inc_ref_obj"), "{ir}");
+}
+
 /// Repr-identity preserved ops (`cast`, `widen`, `store_var`, `copy_var`) are the
 /// explicit exception to the terminal preserved-op fail-loud rule: they
 /// carry no runtime semantics and must alias operand 0 exactly, matching

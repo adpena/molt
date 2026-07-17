@@ -1960,7 +1960,6 @@ impl SimpleBackend {
                         &vars,
                         representation_plan,
                         &nbc,
-                        local_inc_ref_obj,
                     );
                     match __flow {
                         fc::OpFlow::Continue => continue,
