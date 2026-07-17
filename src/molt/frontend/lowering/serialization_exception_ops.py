@@ -9,6 +9,7 @@ from molt.frontend._types import (
     MoltOp,
 )
 from molt.frontend.lowering.serialization_context import SerializationContext
+from molt.frontend.lowering.try_regions import try_region_id
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -191,12 +192,12 @@ class SerializationExceptionOpsMixin(_MixinBase):
             )
         elif op.kind == "TRY_START":
             payload: dict[str, Any] = {"kind": "try_start"}
-            if op.args:
+            if try_region_id(op) is not None:
                 payload["value"] = self._serialization_control_value(op)
             ctx.json_ops.append(payload)
         elif op.kind == "TRY_END":
             payload: dict[str, Any] = {"kind": "try_end"}
-            if op.args:
+            if try_region_id(op) is not None:
                 payload["value"] = self._serialization_control_value(op)
             ctx.json_ops.append(payload)
         elif op.kind == "LABEL":

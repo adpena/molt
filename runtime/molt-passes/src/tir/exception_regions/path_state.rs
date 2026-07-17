@@ -17,6 +17,8 @@ use crate::tir::values::ValueId;
 
 use super::{ExceptionOpPosition, ExceptionPopOwnerStates, ExceptionRegionToken};
 
+pub(super) type AnonymousHandlerDestinations = BTreeMap<ExceptionOpPosition, BTreeSet<i64>>;
+
 pub(super) fn iter_ops(func: &TirFunction) -> Vec<(ExceptionOpPosition, &TirOp)> {
     let mut blocks: Vec<_> = func.blocks.keys().copied().collect();
     blocks.sort_unstable_by_key(|block| block.0);
@@ -39,7 +41,7 @@ pub(super) fn original_kind(op: &TirOp) -> Option<&str> {
     }
 }
 
-fn label_value(op: &TirOp) -> Option<i64> {
+pub(super) fn label_value(op: &TirOp) -> Option<i64> {
     match op.attrs.get("value") {
         Some(AttrValue::Int(label)) => Some(*label),
         _ => None,
@@ -72,12 +74,13 @@ fn op_normal_fallthrough_reachable(state_before: &ExceptionPathState, op: &TirOp
 
 fn terminator_successor_state(
     label_to_block: &BTreeMap<i64, BlockId>,
+    anonymous_destinations: &AnonymousHandlerDestinations,
     target: BlockId,
     state: &ExceptionPathState,
 ) -> ExceptionPathState {
     if state.pending_must_transfer
         && let Some((&label, _)) = label_to_block.iter().find(|(_, block)| **block == target)
-        && let Some(handler_state) = state.enter_handler(label)
+        && let Some(handler_state) = state.enter_handler(label, anonymous_destinations)
     {
         return handler_state;
     }
@@ -86,6 +89,7 @@ fn terminator_successor_state(
 
 fn op_exception_successors_with_state(
     label_to_block: &BTreeMap<i64, BlockId>,
+    anonymous_destinations: &AnonymousHandlerDestinations,
     op: &TirOp,
     state: &ExceptionPathState,
 ) -> Vec<(BlockId, ExceptionPathState)> {
@@ -99,7 +103,7 @@ fn op_exception_successors_with_state(
         return Vec::new();
     };
     state
-        .enter_handler(label)
+        .enter_handler(label, anonymous_destinations)
         .into_iter()
         .map(|succ_state| (target, succ_state))
         .collect()
@@ -118,10 +122,21 @@ pub(super) struct ExceptionPathState {
 }
 
 impl ExceptionPathState {
-    fn enter_handler(&self, label: i64) -> Option<Self> {
-        let owner = ExceptionRegionToken::Labeled(label);
+    fn enter_handler(
+        &self,
+        label: i64,
+        anonymous_destinations: &AnonymousHandlerDestinations,
+    ) -> Option<Self> {
         let mut next = self.clone();
-        let index = next.frames.iter().rposition(|token| *token == owner)?;
+        let index = next.frames.iter().rposition(|token| match token {
+            ExceptionRegionToken::Labeled(candidate) => *candidate == label,
+            ExceptionRegionToken::Anonymous(owner) => anonymous_destinations
+                .get(owner)
+                .is_some_and(|destinations| {
+                    destinations.len() == 1 && destinations.contains(&label)
+                }),
+        })?;
+        let owner = next.frames[index];
         next.frames.truncate(index);
         if !next.owners.contains(&owner) {
             next.owners.push(owner);
@@ -143,7 +158,16 @@ impl ExceptionPathState {
             return next;
         }
         if op.opcode == OpCode::TryEnd {
-            if let Some(token) = label_value(op).map(ExceptionRegionToken::Labeled) {
+            let token = label_value(op)
+                .map(ExceptionRegionToken::Labeled)
+                .or_else(|| {
+                    next.frames
+                        .iter()
+                        .rev()
+                        .find(|token| matches!(token, ExceptionRegionToken::Anonymous(_)))
+                        .copied()
+                });
+            if let Some(token) = token {
                 if let Some(index) = next.frames.iter().rposition(|frame| *frame == token) {
                     next.frames.truncate(index);
                 }
@@ -231,6 +255,7 @@ fn state_id(op: &TirOp, const_int_values: &ConstIntValues) -> Option<i64> {
 fn terminator_successors_with_state(
     term: &Terminator,
     label_to_block: &BTreeMap<i64, BlockId>,
+    anonymous_destinations: &AnonymousHandlerDestinations,
     state: &ExceptionPathState,
     state_resume_stacks: &StateResumeStacks,
     unknown_state: Option<&ExceptionPathState>,
@@ -239,7 +264,7 @@ fn terminator_successors_with_state(
         Terminator::Branch { target, .. } => {
             vec![(
                 *target,
-                terminator_successor_state(label_to_block, *target, state),
+                terminator_successor_state(label_to_block, anonymous_destinations, *target, state),
             )]
         }
         Terminator::CondBranch {
@@ -249,11 +274,21 @@ fn terminator_successors_with_state(
         } => vec![
             (
                 *then_block,
-                terminator_successor_state(label_to_block, *then_block, state),
+                terminator_successor_state(
+                    label_to_block,
+                    anonymous_destinations,
+                    *then_block,
+                    state,
+                ),
             ),
             (
                 *else_block,
-                terminator_successor_state(label_to_block, *else_block, state),
+                terminator_successor_state(
+                    label_to_block,
+                    anonymous_destinations,
+                    *else_block,
+                    state,
+                ),
             ),
         ],
         Terminator::Switch { cases, default, .. } => {
@@ -261,12 +296,17 @@ fn terminator_successors_with_state(
             successors.extend(cases.iter().map(|(_, target, _)| {
                 (
                     *target,
-                    terminator_successor_state(label_to_block, *target, state),
+                    terminator_successor_state(
+                        label_to_block,
+                        anonymous_destinations,
+                        *target,
+                        state,
+                    ),
                 )
             }));
             successors.push((
                 *default,
-                terminator_successor_state(label_to_block, *default, state),
+                terminator_successor_state(label_to_block, anonymous_destinations, *default, state),
             ));
             successors
         }
@@ -274,20 +314,30 @@ fn terminator_successors_with_state(
             let mut successors = Vec::with_capacity(cases.len() + 1);
             successors.push((
                 *default,
-                terminator_successor_state(label_to_block, *default, state),
+                terminator_successor_state(label_to_block, anonymous_destinations, *default, state),
             ));
             for (state, target, _) in cases {
                 if let Some(stacks) = state_resume_stacks.get(state) {
                     successors.extend(stacks.iter().map(|resume_stack| {
                         (
                             *target,
-                            terminator_successor_state(label_to_block, *target, resume_stack),
+                            terminator_successor_state(
+                                label_to_block,
+                                anonymous_destinations,
+                                *target,
+                                resume_stack,
+                            ),
                         )
                     }));
                 } else if let Some(fallback_state) = unknown_state {
                     successors.push((
                         *target,
-                        terminator_successor_state(label_to_block, *target, fallback_state),
+                        terminator_successor_state(
+                            label_to_block,
+                            anonymous_destinations,
+                            *target,
+                            fallback_state,
+                        ),
                     ));
                 }
             }
@@ -300,6 +350,7 @@ fn terminator_successors_with_state(
 fn collect_state_resume_stacks_once(
     func: &TirFunction,
     label_to_block: &BTreeMap<i64, BlockId>,
+    anonymous_destinations: &AnonymousHandlerDestinations,
     state_resume_stacks: &StateResumeStacks,
     const_int_values: &ConstIntValues,
 ) -> StateResumeStacks {
@@ -318,6 +369,7 @@ fn collect_state_resume_stacks_once(
             for (succ, succ_state) in terminator_successors_with_state(
                 &tir_block.terminator,
                 label_to_block,
+                anonymous_destinations,
                 &state,
                 state_resume_stacks,
                 None,
@@ -335,9 +387,12 @@ fn collect_state_resume_stacks_once(
         }
         let pos = ExceptionOpPosition { block, op_index };
         let next_state = state.after_op(pos, op);
-        for (succ, succ_state) in
-            op_exception_successors_with_state(label_to_block, op, &next_state)
-        {
+        for (succ, succ_state) in op_exception_successors_with_state(
+            label_to_block,
+            anonymous_destinations,
+            op,
+            &next_state,
+        ) {
             queue.push_back((succ, 0, succ_state));
         }
         if op_normal_fallthrough_reachable(&state, op) {
@@ -350,12 +405,18 @@ fn collect_state_resume_stacks_once(
 pub(super) fn compute_state_resume_stacks(
     func: &TirFunction,
     label_to_block: &BTreeMap<i64, BlockId>,
+    anonymous_destinations: &AnonymousHandlerDestinations,
 ) -> StateResumeStacks {
     let const_int_values = collect_const_int_values(func);
     let mut stacks = StateResumeStacks::new();
     loop {
-        let observed =
-            collect_state_resume_stacks_once(func, label_to_block, &stacks, &const_int_values);
+        let observed = collect_state_resume_stacks_once(
+            func,
+            label_to_block,
+            anonymous_destinations,
+            &stacks,
+            &const_int_values,
+        );
         let mut changed = false;
         for (state, observed_stacks) in observed {
             let state_stacks = stacks.entry(state).or_default();
@@ -373,6 +434,7 @@ pub(super) fn reachable_region_pops(
     func: &TirFunction,
     label_to_block: &BTreeMap<i64, BlockId>,
     state_resume_stacks: &StateResumeStacks,
+    anonymous_destinations: &AnonymousHandlerDestinations,
     producer: ExceptionOpPosition,
     owner: ExceptionRegionToken,
     producer_states: &[ExceptionPathState],
@@ -402,6 +464,7 @@ pub(super) fn reachable_region_pops(
             for (succ, succ_state) in terminator_successors_with_state(
                 &tir_block.terminator,
                 label_to_block,
+                anonymous_destinations,
                 &state,
                 state_resume_stacks,
                 Some(&state),
@@ -426,9 +489,12 @@ pub(super) fn reachable_region_pops(
         }
         let pos = ExceptionOpPosition { block, op_index };
         let next_state = state.after_op(pos, op);
-        for (succ, succ_state) in
-            op_exception_successors_with_state(label_to_block, op, &next_state)
-        {
+        for (succ, succ_state) in op_exception_successors_with_state(
+            label_to_block,
+            anonymous_destinations,
+            op,
+            &next_state,
+        ) {
             queue.push_back((succ, 0, succ_state, None));
         }
         if op_normal_fallthrough_reachable(&state, op) {
@@ -442,6 +508,7 @@ pub(super) fn path_states_before(
     func: &TirFunction,
     label_to_block: &BTreeMap<i64, BlockId>,
     state_resume_stacks: &StateResumeStacks,
+    anonymous_destinations: &AnonymousHandlerDestinations,
     target: ExceptionOpPosition,
 ) -> BTreeSet<ExceptionPathState> {
     let mut queue = VecDeque::new();
@@ -463,6 +530,7 @@ pub(super) fn path_states_before(
             for (succ, succ_state) in terminator_successors_with_state(
                 &tir_block.terminator,
                 label_to_block,
+                anonymous_destinations,
                 &state,
                 state_resume_stacks,
                 Some(&state),
@@ -474,9 +542,12 @@ pub(super) fn path_states_before(
         let op = &tir_block.ops[op_index];
         let pos = ExceptionOpPosition { block, op_index };
         let next_state = state.after_op(pos, op);
-        for (succ, succ_state) in
-            op_exception_successors_with_state(label_to_block, op, &next_state)
-        {
+        for (succ, succ_state) in op_exception_successors_with_state(
+            label_to_block,
+            anonymous_destinations,
+            op,
+            &next_state,
+        ) {
             queue.push_back((succ, 0, succ_state));
         }
         if op_normal_fallthrough_reachable(&state, op) {
@@ -494,6 +565,7 @@ pub(super) fn lexical_handlers_before(
     func: &TirFunction,
     label_to_block: &BTreeMap<i64, BlockId>,
     state_resume_stacks: &StateResumeStacks,
+    anonymous_destinations: &AnonymousHandlerDestinations,
 ) -> BTreeMap<ExceptionOpPosition, BTreeSet<Option<ExceptionRegionToken>>> {
     let mut queue = VecDeque::new();
     queue.push_back((func.entry_block, 0usize, ExceptionPathState::default()));
@@ -514,6 +586,7 @@ pub(super) fn lexical_handlers_before(
             for (succ, succ_state) in terminator_successors_with_state(
                 &tir_block.terminator,
                 label_to_block,
+                anonymous_destinations,
                 &state,
                 state_resume_stacks,
                 Some(&state),
@@ -525,9 +598,12 @@ pub(super) fn lexical_handlers_before(
         let op = &tir_block.ops[op_index];
         let pos = ExceptionOpPosition { block, op_index };
         let next_state = state.after_op(pos, op);
-        for (succ, succ_state) in
-            op_exception_successors_with_state(label_to_block, op, &next_state)
-        {
+        for (succ, succ_state) in op_exception_successors_with_state(
+            label_to_block,
+            anonymous_destinations,
+            op,
+            &next_state,
+        ) {
             queue.push_back((succ, 0, succ_state));
         }
         if op_normal_fallthrough_reachable(&state, op) {
@@ -544,7 +620,8 @@ pub fn exception_pop_owner_states(
     let label_to_block: BTreeMap<_, _> = dominators::exception_label_to_block(func)
         .into_iter()
         .collect();
-    let state_resume_stacks = compute_state_resume_stacks(func, &label_to_block);
+    let (state_resume_stacks, _, anonymous_destinations) =
+        super::exception_region_path_authority(func, &label_to_block);
     let mut queue = VecDeque::new();
     queue.push_back((
         func.entry_block,
@@ -577,6 +654,7 @@ pub fn exception_pop_owner_states(
             for (succ, succ_state) in terminator_successors_with_state(
                 &tir_block.terminator,
                 &label_to_block,
+                &anonymous_destinations,
                 &state,
                 &state_resume_stacks,
                 Some(&state),
@@ -589,9 +667,12 @@ pub fn exception_pop_owner_states(
         let op = &tir_block.ops[op_index];
         let pos = ExceptionOpPosition { block, op_index };
         let next_state = state.after_op(pos, op);
-        for (succ, succ_state) in
-            op_exception_successors_with_state(&label_to_block, op, &next_state)
-        {
+        for (succ, succ_state) in op_exception_successors_with_state(
+            &label_to_block,
+            &anonymous_destinations,
+            op,
+            &next_state,
+        ) {
             let next_pred = (succ == target.block).then_some(block);
             queue.push_back((succ, 0, succ_state, next_pred));
         }
