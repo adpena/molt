@@ -248,7 +248,7 @@ def test_molt_diff_build_helper_pruning_preserves_codex_protected_group(
     )
 
     assert sent == []
-    assert custody_events == [(helper.pid, ["skipped_protected_group_member"])]
+    assert custody_events == [(helper.pid, ["skipped_host_control_lineage"])]
 
 
 def test_molt_diff_verified_missing_socket_daemon_terminates_through_custody(

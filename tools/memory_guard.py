@@ -143,12 +143,14 @@ from tools.memory_guard_core.cargo_quarantine import (  # noqa: E402
     _write_cargo_quarantine_receipt as _write_cargo_quarantine_receipt,
 )
 from tools.memory_guard_core.windows_snapshot import (  # noqa: E402
+    ProcessSnapshotError as ProcessSnapshotError,
     WINDOWS_FULL_COMMAND_LINE_EXECUTABLE_NAMES as WINDOWS_FULL_COMMAND_LINE_EXECUTABLE_NAMES,
     _filetime_to_unix_seconds as _filetime_to_unix_seconds,
     _windows_process_needs_full_command_line as _windows_process_needs_full_command_line,
     _windows_process_snapshot_rows_hard_timeout as _windows_process_snapshot_rows_hard_timeout,
     _windows_process_snapshot_rows as _windows_process_snapshot_rows,
     windows_process_handle_rss_kb as windows_process_handle_rss_kb,
+    windows_process_handle_started_at_ns as windows_process_handle_started_at_ns,
 )
 from tools.process_spawn import (  # noqa: E402
     detached_process_group_kwargs,
@@ -176,6 +178,7 @@ from tools.memory_guard_core.process_custody import (  # noqa: E402
     _current_protected_process_group_ids as _current_protected_process_group_ids,
     _elapsed_seconds_from_ps as _elapsed_seconds_from_ps,
     _filter_protected_watched_pids as _filter_protected_watched_pids,
+    _fully_completed_process_groups as _fully_completed_process_groups,
     _inject_guard_memory_contract_env as _inject_guard_memory_contract_env,
     _is_windows_process_model as _is_windows_process_model,
     _live_process_group_ids as _live_process_group_ids,
@@ -249,10 +252,15 @@ _INTERNAL_ENV_KEYS = (
 )
 HOST_CONTROL_PLANE_TOKENS = _process_model.HOST_CONTROL_PLANE_TOKENS
 HOST_CONTROL_PLANE_EXECUTABLE_NAMES = _process_model.HOST_CONTROL_PLANE_EXECUTABLE_NAMES
+sample_processes_linux_proc = _process_model.sample_processes_linux_proc
 
 
 def sample_processes_posix() -> dict[int, ProcessSample]:
     return _process_model.sample_processes_posix()
+
+
+def parse_process_table_with_start(text: str) -> dict[int, ProcessSample]:
+    return _process_model.parse_process_table_with_start(text)
 
 
 def sample_processes_windows() -> dict[int, ProcessSample]:
@@ -853,6 +861,7 @@ def run_guarded(
     guard_job: int | None = None
     launch: GuardedLaunch | None = None
     child_process: GuardedChildProcess | None = None
+    tracker: ProcessTreeTracker | None = None
     termination_reports: list[GuardTerminationReport] = []
     stdout_capture: Any = None
     stderr_capture: Any = None
@@ -946,6 +955,15 @@ def run_guarded(
             command=tuple(launch.command),
             started_at=_utc_timestamp(),
         )
+        tracker = ProcessTreeTracker(proc.pid)
+        root_started_at_ns = (
+            windows_process_handle_started_at_ns(getattr(proc, "_handle", None))
+            if _is_windows_process_model()
+            else _process_model.process_started_at_ns(proc.pid)
+        )
+        if root_started_at_ns is not None:
+            assert tracker.known_identities is not None
+            tracker.known_identities[proc.pid] = ProcessIdentity(root_started_at_ns)
         if running_summary_json is not None:
             try:
                 _write_running_summary_json(
@@ -994,6 +1012,8 @@ def run_guarded(
                         grace=grace,
                         reason=reason,
                         sampler=sampler,
+                        tracker=tracker,
+                        root_owned=True,
                     ),
                     caller="terminate_watched_processes",
                 )
@@ -1037,7 +1057,6 @@ def run_guarded(
                 scope="process_tree_handle",
             )
         timed_out = False
-        tracker = ProcessTreeTracker(proc.pid)
         child_exit_usage: ChildExitResourceUsage | None = None
         last_limits: ResolvedMemoryLimits | None = None
         termination_wait_expired = False
@@ -1051,6 +1070,113 @@ def run_guarded(
             else None
         )
 
+        def terminate_direct_child_handle(*, reason: str) -> None:
+            if proc.poll() is not None:
+                return
+            started_at = _utc_timestamp()
+            actions: list[GuardTerminationAction] = []
+            try:
+                proc.terminate()
+            except ProcessLookupError:
+                actions.append(
+                    GuardTerminationAction(
+                        target_kind="owned_child_handle",
+                        target_id=proc.pid,
+                        signal=signal.SIGTERM,
+                        signal_name="SIGTERM",
+                        result="completed_or_missing",
+                    )
+                )
+            except OSError as exc:
+                actions.append(
+                    GuardTerminationAction(
+                        target_kind="owned_child_handle",
+                        target_id=proc.pid,
+                        signal=signal.SIGTERM,
+                        signal_name="SIGTERM",
+                        result="failed",
+                        error=str(exc),
+                    )
+                )
+            else:
+                try:
+                    proc.wait(timeout=max(0.25, termination_wait_s))
+                except subprocess.TimeoutExpired:
+                    actions.append(
+                        GuardTerminationAction(
+                            target_kind="owned_child_handle",
+                            target_id=proc.pid,
+                            signal=signal.SIGTERM,
+                            signal_name="SIGTERM",
+                            result="still_live",
+                        )
+                    )
+                    try:
+                        proc.kill()
+                        proc.wait(timeout=max(0.25, termination_wait_s))
+                    except ProcessLookupError:
+                        actions.append(
+                            GuardTerminationAction(
+                                target_kind="owned_child_handle",
+                                target_id=proc.pid,
+                                signal=fallback_kill_signal(),
+                                signal_name=_signal_name(fallback_kill_signal()),
+                                result="completed_or_missing",
+                            )
+                        )
+                    except (OSError, subprocess.TimeoutExpired) as exc:
+                        actions.append(
+                            GuardTerminationAction(
+                                target_kind="owned_child_handle",
+                                target_id=proc.pid,
+                                signal=fallback_kill_signal(),
+                                signal_name=_signal_name(fallback_kill_signal()),
+                                result="failed",
+                                error=str(exc),
+                            )
+                        )
+                    else:
+                        actions.append(
+                            GuardTerminationAction(
+                                target_kind="owned_child_handle",
+                                target_id=proc.pid,
+                                signal=fallback_kill_signal(),
+                                signal_name=_signal_name(fallback_kill_signal()),
+                                result="completed_or_missing",
+                            )
+                        )
+                else:
+                    actions.append(
+                        GuardTerminationAction(
+                            target_kind="owned_child_handle",
+                            target_id=proc.pid,
+                            signal=signal.SIGTERM,
+                            signal_name="SIGTERM",
+                            result="completed_or_missing",
+                        )
+                    )
+            termination_reports.append(
+                GuardTerminationReport(
+                    reason=reason,
+                    started_at=started_at,
+                    completed_at=_utc_timestamp(),
+                    root_pid=proc.pid,
+                    root_pgid=child_process.pgid,
+                    root_sid=child_process.sid,
+                    grace_sec=termination_wait_s,
+                    watched_pids=(proc.pid,),
+                    protected_pgids=(),
+                    escaped_pids=(),
+                    remaining_pgids=(),
+                    remaining_pids=(
+                        (proc.pid,)
+                        if actions and actions[-1].result in {"failed", "still_live"}
+                        else ()
+                    ),
+                    actions=tuple(actions),
+                )
+            )
+
         def terminate_after_sampling_failure(*, reason: str) -> None:
             if remembered_samples is not None and remembered_watched is not None:
                 terminate_owned_tree(
@@ -1058,6 +1184,9 @@ def run_guarded(
                     samples=remembered_samples,
                     watched=remembered_watched,
                     grace=0.0,
+                )
+                terminate_direct_child_handle(
+                    reason=f"{reason}_direct_child_handle"
                 )
                 return
             termination_reports.append(
@@ -1067,11 +1196,13 @@ def run_guarded(
                         grace=0.0,
                         reason=reason,
                         sampler=sample_processes,
+                        tracker=tracker,
                         root_owned=True,
                     ),
                     caller="terminate_watched_processes",
                 )
             )
+            terminate_direct_child_handle(reason=f"{reason}_direct_child_handle")
 
         last_sample_cost_s = 0.0
 
@@ -1324,8 +1455,7 @@ def run_guarded(
                 try:
                     proc.wait(timeout=max(1.0, poll_interval * 4.0))
                 except subprocess.TimeoutExpired:
-                    samples = sampler()
-                    watched = tracker.update(samples)
+                    samples, watched = sample_tracked_tree()
                     terminate_owned_tree(
                         reason="post_loop_unreaped_child",
                         samples=samples,
@@ -1336,6 +1466,15 @@ def run_guarded(
                         proc.wait(timeout=termination_wait_s)
                     except subprocess.TimeoutExpired:
                         termination_wait_expired = True
+                        # The Popen handle is direct-child custody even when a
+                        # platform sampler cannot prove a stable PID identity.
+                        # Reap that one child without extending authority to
+                        # any unverified descendant.
+                        terminate_direct_child_handle(
+                            reason=(
+                                "post_loop_unreaped_child_direct_child_handle"
+                            )
+                        )
             if cleanup_orphans and not guard_interrupted:
                 tracked_orphans = cleanup_tracked_orphans(
                     proc.pid,
@@ -1535,12 +1674,19 @@ def run_guarded(
                             grace=0.0,
                             reason="run_guarded_finalizer",
                             sampler=sample_processes if guard_interrupted else sampler,
+                            tracker=tracker,
+                            root_owned=True,
                         ),
                         caller="terminate_watched_processes",
                     )
                 )
             with contextlib.suppress(Exception):
                 proc.wait(timeout=termination_wait_seconds(env))
+            with contextlib.suppress(Exception):
+                if proc.poll() is None:
+                    terminate_direct_child_handle(
+                        reason="run_guarded_finalizer_direct_child_handle"
+                    )
             _update_active_guard_marker(
                 guard_marker,
                 guard_token,
@@ -1820,6 +1966,69 @@ def _child_identity_text(child: GuardedChildProcess | None) -> str:
 
 
 def _incident_payload(result: GuardResult) -> dict[str, object] | None:
+    orphan_reasons = {
+        "tracked_orphan_cleanup",
+        "repo_scoped_orphan_cleanup",
+    }
+    final_orphan_actions: dict[
+        tuple[str, int], GuardTerminationAction
+    ] = {}
+    final_primary_actions: dict[tuple[str, int], GuardTerminationAction] = {}
+    for report in result.termination_reports:
+        for action in report.actions:
+            if (
+                report.reason == "tracked_orphan_cleanup"
+                and action.target_kind == "process"
+                and action.target_id == report.root_pid
+            ):
+                continue
+            # A successful Popen-handle reap is the terminal authority for the
+            # directly owned child PID.  Reconcile it with an earlier PID-level
+            # failure while leaving every descendant/group target independent.
+            target_kind = (
+                "process"
+                if action.target_kind == "owned_child_handle"
+                else action.target_kind
+            )
+            key = (target_kind, action.target_id)
+            if report.reason in orphan_reasons:
+                final_orphan_actions[key] = action
+            else:
+                final_primary_actions[key] = action
+    incomplete_orphan_actions = [
+        action
+        for action in final_orphan_actions.values()
+        if action.result not in {"completed_or_missing", "missing"}
+    ]
+    incomplete_primary_actions = [
+        action
+        for action in final_primary_actions.values()
+        if action.result not in {"completed_or_missing", "missing"}
+    ]
+    candidate_pids = sorted(
+        {
+            action.target_id
+            for action in incomplete_orphan_actions
+            if action.target_kind == "process"
+        }
+    )
+
+    primary_candidate_pids = sorted(
+        {
+            action.target_id
+            for action in incomplete_primary_actions
+            if action.target_kind == "process"
+        }
+    )
+
+    def cleanup_truth(default: str) -> str:
+        if not incomplete_orphan_actions and not incomplete_primary_actions:
+            return default
+        return (
+            "process cleanup incomplete; no unverified process was reported as "
+            "cleaned or used to trigger Cargo quarantine"
+        )
+
     def attach_guard_custody(payload: dict[str, object]) -> dict[str, object]:
         child_payload = guarded_child_process_payload(result.child_process)
         if child_payload is not None:
@@ -1828,6 +2037,12 @@ def _incident_payload(result: GuardResult) -> dict[str, object] | None:
             payload["termination_reports"] = termination_reports_payload(
                 result.termination_reports
             )
+        if incomplete_orphan_actions:
+            payload["orphan_cleanup_status"] = "incomplete"
+            payload["orphan_cleanup_candidate_pids"] = candidate_pids
+        if incomplete_primary_actions:
+            payload["process_tree_cleanup_status"] = "incomplete"
+            payload["process_tree_cleanup_candidate_pids"] = primary_candidate_pids
         return payload
 
     guard_signal_payload = (
@@ -1842,7 +2057,7 @@ def _incident_payload(result: GuardResult) -> dict[str, object] | None:
     ):
         payload: dict[str, object] = {
             "reason": "guard_interrupted",
-            "cleanup": (
+            "cleanup": cleanup_truth(
                 "terminated tracked process tree and post-baseline Molt process groups"
                 if result.orphaned_process_groups
                 else "terminated tracked process tree"
@@ -1860,7 +2075,7 @@ def _incident_payload(result: GuardResult) -> dict[str, object] | None:
             payload["process_groups"] = list(result.orphaned_process_groups)
         return attach_guard_custody(payload)
     if result.violation is not None:
-        cleanup = (
+        cleanup = cleanup_truth(
             "classified command as failed from child exit resource usage"
             if result.violation.scope == "process_rusage"
             else "terminated tracked process tree"
@@ -1882,7 +2097,7 @@ def _incident_payload(result: GuardResult) -> dict[str, object] | None:
     if result.timed_out:
         payload: dict[str, object] = {
             "reason": "timeout",
-            "cleanup": (
+            "cleanup": cleanup_truth(
                 "terminated tracked process tree and post-baseline Molt process groups"
                 if result.orphaned_process_groups
                 else "terminated tracked process tree"
@@ -1899,6 +2114,23 @@ def _incident_payload(result: GuardResult) -> dict[str, object] | None:
         if guard_signal_payload is not None:
             payload["guard_signal"] = guard_signal_payload
         return attach_guard_custody(payload)
+    if incomplete_orphan_actions:
+        return attach_guard_custody(
+            {
+                "reason": "orphan_cleanup_incomplete",
+                "cleanup": (
+                    "no unverified process was reported as cleaned or used to "
+                    "trigger Cargo quarantine"
+                ),
+                "recorded_at": _utc_timestamp(),
+                "elapsed_s": result.elapsed_s,
+                "candidate_pids": candidate_pids,
+                "next_action": (
+                    "Inspect custody identities and termination actions; repair "
+                    "the child lifecycle or sampler authority before retrying cleanup."
+                ),
+            }
+        )
     if result.orphaned_process_groups:
         return attach_guard_custody(
             {

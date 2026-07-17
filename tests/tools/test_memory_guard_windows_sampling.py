@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from tools.memory_guard_core import windows_snapshot
+from tools.memory_guard_core import process_model
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -70,7 +71,11 @@ def test_sample_processes_uses_windows_sampler_on_nt(monkeypatch) -> None:
     assert module.sample_processes() == {7: sample}
 
 
-def test_sample_processes_posix_missing_ps_returns_empty(monkeypatch) -> None:
+@pytest.mark.skipif(
+    sys.platform.startswith("linux"),
+    reason="Linux process sampling uses native /proc rather than ps",
+)
+def test_sample_processes_posix_missing_ps_is_typed_failure(monkeypatch) -> None:
     module = _load_memory_guard()
 
     def missing_ps(*args, **kwargs):  # noqa: ANN002, ANN003
@@ -78,7 +83,171 @@ def test_sample_processes_posix_missing_ps_returns_empty(monkeypatch) -> None:
 
     monkeypatch.setattr(module.subprocess, "run", missing_ps)
 
-    assert module.sample_processes_posix() == {}
+    with pytest.raises(module.ProcessSnapshotError, match="POSIX process snapshot"):
+        module.sample_processes_posix()
+
+
+def test_darwin_process_authority_binds_once_for_all_pid_reads(monkeypatch) -> None:
+    class FakeAuthority:
+        def metadata(self, pid: int) -> tuple[int, int, int, str]:
+            return (1, pid, 123_000, "node")
+
+        def command(self, pid: int) -> str:
+            return f"node codex-{pid}.js"
+
+    authority = FakeAuthority()
+    loads: list[None] = []
+    monkeypatch.setattr(process_model.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        process_model,
+        "_darwin_process_authority_cache",
+        process_model._DARWIN_PROCESS_AUTHORITY_UNSET,
+    )
+    monkeypatch.setattr(
+        process_model,
+        "_load_darwin_process_authority",
+        lambda: loads.append(None) or authority,
+    )
+
+    assert process_model._darwin_proc_metadata(7) == (1, 7, 123_000, "node")
+    assert process_model._darwin_proc_command(7) == "node codex-7.js"
+    assert process_model._darwin_proc_metadata(8) == (1, 8, 123_000, "node")
+    assert process_model._darwin_proc_command(8) == "node codex-8.js"
+    assert loads == [None]
+
+
+def test_darwin_process_authority_retains_one_library_binding_set(
+    monkeypatch,
+) -> None:
+    import ctypes
+
+    class FakeFunction:
+        argtypes = None
+        restype = None
+
+    libproc = SimpleNamespace(proc_pidinfo=FakeFunction())
+    libsystem = SimpleNamespace(sysctl=FakeFunction())
+    loads: list[str] = []
+
+    def fake_cdll(path: str, *, use_errno: bool) -> object:
+        assert use_errno
+        loads.append(path)
+        return libproc if path.endswith("libproc.dylib") else libsystem
+
+    monkeypatch.setattr(process_model.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        process_model,
+        "_darwin_process_authority_cache",
+        process_model._DARWIN_PROCESS_AUTHORITY_UNSET,
+    )
+    monkeypatch.setattr(ctypes, "CDLL", fake_cdll)
+
+    first = process_model._darwin_process_authority()
+    second = process_model._darwin_process_authority()
+
+    assert first is second
+    assert first is not None
+    assert first.libproc is libproc
+    assert first.libsystem is libsystem
+    assert loads == [
+        "/usr/lib/libproc.dylib",
+        "/usr/lib/libSystem.B.dylib",
+    ]
+
+
+def test_darwin_cached_authority_preserves_bound_command_and_identity(
+    monkeypatch,
+) -> None:
+    class FakeAuthority:
+        metadata_calls = 0
+        command_calls = 0
+
+        def metadata(self, pid: int) -> tuple[int, int, int, str]:
+            assert pid == 200
+            self.metadata_calls += 1
+            return (100, 200, 987_654_321_000, "node")
+
+        def command(self, pid: int) -> str:
+            assert pid == 200
+            self.command_calls += 1
+            return "node /usr/local/lib/node_modules/@openai/codex/bin/codex.js"
+
+    authority = FakeAuthority()
+    monkeypatch.setattr(process_model.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        process_model,
+        "_darwin_process_authority_cache",
+        process_model._DARWIN_PROCESS_AUTHORITY_UNSET,
+    )
+    monkeypatch.setattr(
+        process_model,
+        "_load_darwin_process_authority",
+        lambda: authority,
+    )
+    monkeypatch.setattr(
+        process_model.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=(
+                "200 1 200 64 Thu Jul 17 07:15:01 2026 "
+                "node placeholder.js\n"
+            ),
+        ),
+    )
+
+    sample = process_model.sample_processes_posix()[200]
+
+    assert sample.ppid == 100
+    assert sample.pgid == 200
+    assert sample.started_at_ns == 987_654_321_000
+    assert process_model.is_host_control_plane_process(sample)
+    assert authority.metadata_calls == 2
+    assert authority.command_calls == 1
+
+
+def test_darwin_cached_authority_keeps_reuse_fail_closed(monkeypatch) -> None:
+    class FakeAuthority:
+        def __init__(self) -> None:
+            self.metadata_rows = iter(
+                (
+                    (100, 200, 111_000, "node"),
+                    (4, 200, 222_000, "node"),
+                )
+            )
+
+        def metadata(self, pid: int) -> tuple[int, int, int, str]:
+            assert pid == 200
+            return next(self.metadata_rows)
+
+        def command(self, pid: int) -> str:
+            assert pid == 200
+            return "node /usr/local/lib/node_modules/@openai/codex/bin/codex.js"
+
+    monkeypatch.setattr(process_model.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        process_model,
+        "_darwin_process_authority_cache",
+        process_model._DARWIN_PROCESS_AUTHORITY_UNSET,
+    )
+    monkeypatch.setattr(
+        process_model,
+        "_load_darwin_process_authority",
+        FakeAuthority,
+    )
+    monkeypatch.setattr(
+        process_model.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout="200 1 200 64 Thu Jul 17 07:15:01 2026 node codex.js\n",
+        ),
+    )
+
+    sample = process_model.sample_processes_posix()[200]
+
+    assert sample.ppid == 0
+    assert sample.started_at_ns is None
 
 
 def test_sample_processes_windows_uses_injected_snapshot_authority(monkeypatch) -> None:
@@ -110,7 +279,8 @@ def test_sample_processes_windows_timeout_fails_closed(monkeypatch) -> None:
 
     monkeypatch.setattr(module, "_windows_process_snapshot_rows", timed_out)
 
-    assert module.sample_processes_windows() == {}
+    with pytest.raises(module.ProcessSnapshotError, match="Windows process snapshot"):
+        module.sample_processes_windows()
 
 
 def test_windows_process_snapshot_timeout_env_contract() -> None:
@@ -195,7 +365,68 @@ def test_windows_process_snapshot_hard_timeout_rejects_partial_payload(
         ),
     )
 
-    assert windows_snapshot._windows_process_snapshot_rows_hard_timeout() == []
+    with pytest.raises(windows_snapshot.ProcessSnapshotError, match="invalid payload"):
+        windows_snapshot._windows_process_snapshot_rows_hard_timeout()
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "stderr", "message"),
+    [
+        (7, "", "helper failed", "exit code 7"),
+        (0, "not-json", "", "invalid payload"),
+    ],
+)
+def test_windows_process_snapshot_hard_timeout_preserves_failure_authority(
+    monkeypatch,
+    returncode: int,
+    stdout: str,
+    stderr: str,
+    message: str,
+) -> None:
+    monkeypatch.setattr(windows_snapshot.os, "name", "nt", raising=False)
+    monkeypatch.setattr(
+        windows_snapshot.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(  # noqa: ARG005, ANN002, ANN003
+            returncode=returncode,
+            stdout=stdout,
+            stderr=stderr,
+        ),
+    )
+
+    with pytest.raises(windows_snapshot.ProcessSnapshotError, match=message):
+        windows_snapshot._windows_process_snapshot_rows_hard_timeout()
+
+
+@pytest.mark.parametrize(
+    ("bound_pid", "bound_ppid", "started_at_ns"),
+    [
+        (None, None, 123),
+        (8, 1, 123),
+        (7, None, 123),
+        (7, 1, None),
+    ],
+)
+def test_windows_snapshot_rejects_unbound_lineage_identity(
+    bound_pid: int | None,
+    bound_ppid: int | None,
+    started_at_ns: int | None,
+) -> None:
+    assert windows_snapshot._validated_windows_process_binding(
+        7,
+        bound_pid,
+        bound_ppid,
+        started_at_ns,
+    ) == (0, None)
+
+
+def test_windows_snapshot_accepts_parent_and_identity_from_same_handle() -> None:
+    assert windows_snapshot._validated_windows_process_binding(
+        7,
+        7,
+        3,
+        123,
+    ) == (3, 123)
 
 
 def test_windows_process_handle_rss_fails_closed_when_psapi_unavailable(
@@ -792,9 +1023,15 @@ def test_terminate_watched_processes_windows_kills_owned_descendants(
 ) -> None:
     module = _load_memory_guard()
     samples = {
-        100: module.ProcessSample(pid=100, ppid=50, rss_kb=1, command="uv.exe"),
-        101: module.ProcessSample(pid=101, ppid=100, rss_kb=1, command="python.exe"),
-        900: module.ProcessSample(pid=900, ppid=50, rss_kb=1, command="unrelated.exe"),
+        100: module.ProcessSample(
+            pid=100, ppid=50, rss_kb=1, command="uv.exe", started_at_ns=100
+        ),
+        101: module.ProcessSample(
+            pid=101, ppid=100, rss_kb=1, command="python.exe", started_at_ns=101
+        ),
+        900: module.ProcessSample(
+            pid=900, ppid=50, rss_kb=1, command="unrelated.exe", started_at_ns=900
+        ),
     }
     sent: list[tuple[int, int]] = []
 
@@ -813,6 +1050,7 @@ def test_terminate_watched_processes_windows_kills_owned_descendants(
         samples=samples,
         watched={100, 101},
         grace=0.0,
+        sampler=lambda: samples,
     )
 
     assert (101, module.signal.SIGTERM) in sent
@@ -820,6 +1058,90 @@ def test_terminate_watched_processes_windows_kills_owned_descendants(
     assert (900, module.signal.SIGTERM) not in sent
     assert (101, module.fallback_kill_signal()) in sent
     assert (100, module.fallback_kill_signal()) in sent
+
+
+def test_windows_termination_revalidates_identity_between_discovery_and_term(
+    monkeypatch,
+) -> None:
+    module = _load_memory_guard()
+    original = module.ProcessSample(
+        pid=200,
+        ppid=1,
+        rss_kb=1,
+        command="worker.exe",
+        started_at_ns=200,
+    )
+    reused = module.ProcessSample(
+        pid=200,
+        ppid=4,
+        rss_kb=1,
+        command="System",
+        started_at_ns=201,
+    )
+    sent: list[tuple[int, int]] = []
+    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(
+        module, "_current_protected_process_group_ids", lambda _s, **_kw: set()
+    )
+    monkeypatch.setattr(module.os, "getpid", lambda: 999)
+    monkeypatch.setattr(module.os, "kill", lambda pid, sig: sent.append((pid, sig)))
+
+    report = module.terminate_watched_processes(
+        100,
+        samples={200: original},
+        watched={200},
+        expected_identities={200: module.process_identity(original)},
+        sampler=lambda: {200: reused},
+        grace=0.0,
+    )
+
+    assert sent == []
+    assert any(
+        action.target_id == 200 and action.result == "skipped_identity_mismatch"
+        for action in report.actions
+    )
+
+
+def test_windows_termination_revalidates_identity_between_term_and_kill(
+    monkeypatch,
+) -> None:
+    module = _load_memory_guard()
+    original = module.ProcessSample(
+        pid=200,
+        ppid=1,
+        rss_kb=1,
+        command="worker.exe",
+        started_at_ns=200,
+    )
+    reused = module.ProcessSample(
+        pid=200,
+        ppid=4,
+        rss_kb=1,
+        command="System",
+        started_at_ns=201,
+    )
+    samples = iter(({200: original}, {200: reused}))
+    sent: list[tuple[int, int]] = []
+    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(
+        module, "_current_protected_process_group_ids", lambda _s, **_kw: set()
+    )
+    monkeypatch.setattr(module.os, "getpid", lambda: 999)
+    monkeypatch.setattr(module.os, "kill", lambda pid, sig: sent.append((pid, sig)))
+
+    report = module.terminate_watched_processes(
+        100,
+        samples={200: original},
+        watched={200},
+        expected_identities={200: module.process_identity(original)},
+        sampler=lambda: next(samples),
+        grace=0.0,
+    )
+
+    assert sent == [(200, module.signal.SIGTERM)], report.actions
+    assert [
+        action.result for action in report.actions if action.target_id == 200
+    ] == ["still_live", "skipped_identity_mismatch"]
 
 
 def test_terminate_watched_processes_windows_refuses_codex_root(
@@ -857,6 +1179,7 @@ def test_terminate_watched_processes_windows_refuses_codex_root(
         samples=samples,
         watched={100, 101},
         grace=0.0,
+        sampler=lambda: samples,
     )
 
     assert sent == []
@@ -899,6 +1222,7 @@ def test_terminate_watched_processes_windows_refuses_external_codex_descendant_r
             ppid=1,
             pgid=None,
             rss_kb=500_000,
+            started_at_ns=100,
             command=(
                 r"C:\Program Files\WindowsApps\OpenAI.Codex_26.609.4994.0_x64__2p2nqsd0c76g0"
                 r"\app\resources\codex.exe"
@@ -909,6 +1233,7 @@ def test_terminate_watched_processes_windows_refuses_external_codex_descendant_r
             ppid=100,
             pgid=None,
             rss_kb=10_000,
+            started_at_ns=101,
             command="powershell.exe",
         ),
         200: module.ProcessSample(
@@ -916,6 +1241,7 @@ def test_terminate_watched_processes_windows_refuses_external_codex_descendant_r
             ppid=101,
             pgid=None,
             rss_kb=250_000,
+            started_at_ns=200,
             command=(
                 r"C:\Users\adpen\OneDrive\Documents\molt"
                 r"\target\dev-fast\molt-backend.exe --daemon"
@@ -934,6 +1260,7 @@ def test_terminate_watched_processes_windows_refuses_external_codex_descendant_r
         watched={200},
         grace=0.0,
         root_owned=True,
+        sampler=lambda: samples,
     )
 
     assert sent == []
@@ -955,6 +1282,7 @@ def test_pid_signal_windows_refuses_external_codex_lineage_without_group_net(
             ppid=1,
             pgid=None,
             rss_kb=500_000,
+            started_at_ns=100,
             command=(
                 r"C:\Program Files\WindowsApps\OpenAI.Codex_26.609.4994.0_x64__2p2nqsd0c76g0"
                 r"\app\Codex.exe"
@@ -965,6 +1293,7 @@ def test_pid_signal_windows_refuses_external_codex_lineage_without_group_net(
             ppid=100,
             pgid=None,
             rss_kb=10_000,
+            started_at_ns=101,
             command="powershell.exe",
         ),
         200: module.ProcessSample(
@@ -972,6 +1301,7 @@ def test_pid_signal_windows_refuses_external_codex_lineage_without_group_net(
             ppid=101,
             pgid=None,
             rss_kb=250_000,
+            started_at_ns=200,
             command=(
                 r"C:\Users\adpen\OneDrive\Documents\molt"
                 r"\target\dev-fast\molt-backend.exe --daemon"
@@ -1099,6 +1429,7 @@ def test_pid_signal_windows_keeps_current_guard_child_killable(
             ppid=1,
             pgid=None,
             rss_kb=500_000,
+            started_at_ns=100,
             command=(
                 r"C:\Program Files\WindowsApps\OpenAI.Codex_26.609.4994.0_x64__2p2nqsd0c76g0"
                 r"\app\Codex.exe"
@@ -1109,6 +1440,7 @@ def test_pid_signal_windows_keeps_current_guard_child_killable(
             ppid=100,
             pgid=None,
             rss_kb=30_000,
+            started_at_ns=999,
             command=(
                 r"C:\Users\adpen\OneDrive\Documents\molt"
                 r"\tools\memory_guard.py --"
@@ -1119,6 +1451,7 @@ def test_pid_signal_windows_keeps_current_guard_child_killable(
             ppid=999,
             pgid=None,
             rss_kb=250_000,
+            started_at_ns=200,
             command=(
                 r"C:\Users\adpen\OneDrive\Documents\molt"
                 r"\target\dev-fast\molt-backend.exe --owned"
@@ -1155,6 +1488,7 @@ def test_pid_signal_windows_refuses_current_guard_shell_child(
             ppid=1,
             pgid=None,
             rss_kb=500_000,
+            started_at_ns=100,
             command=(
                 r"C:\Program Files\WindowsApps\OpenAI.Codex_26.609.4994.0_x64__2p2nqsd0c76g0"
                 r"\app\Codex.exe"
@@ -1165,6 +1499,7 @@ def test_pid_signal_windows_refuses_current_guard_shell_child(
             ppid=100,
             pgid=None,
             rss_kb=30_000,
+            started_at_ns=999,
             command=(
                 r"C:\Users\adpen\OneDrive\Documents\molt"
                 r"\tools\memory_guard.py --"
@@ -1175,6 +1510,7 @@ def test_pid_signal_windows_refuses_current_guard_shell_child(
             ppid=999,
             pgid=None,
             rss_kb=25_000,
+            started_at_ns=200,
             command="powershell.exe -NoProfile",
         ),
     }
@@ -1208,6 +1544,7 @@ def test_terminate_watched_processes_windows_keeps_current_guard_child_killable(
             ppid=1,
             pgid=None,
             rss_kb=500_000,
+            started_at_ns=100,
             command=(
                 r"C:\Program Files\WindowsApps\OpenAI.Codex_26.609.4994.0_x64__2p2nqsd0c76g0"
                 r"\app\resources\codex.exe"
@@ -1218,6 +1555,7 @@ def test_terminate_watched_processes_windows_keeps_current_guard_child_killable(
             ppid=100,
             pgid=None,
             rss_kb=30_000,
+            started_at_ns=999,
             command=(
                 r"C:\Users\adpen\OneDrive\Documents\molt"
                 r"\tools\memory_guard.py --"
@@ -1228,6 +1566,7 @@ def test_terminate_watched_processes_windows_keeps_current_guard_child_killable(
             ppid=999,
             pgid=None,
             rss_kb=250_000,
+            started_at_ns=200,
             command=(
                 r"C:\Users\adpen\OneDrive\Documents\molt"
                 r"\target\dev-fast\molt-backend.exe --owned"
@@ -1245,6 +1584,7 @@ def test_terminate_watched_processes_windows_keeps_current_guard_child_killable(
         samples=samples,
         watched={200},
         grace=0.0,
+        sampler=lambda: samples,
     )
 
     assert (200, module.signal.SIGTERM) in sent
@@ -1261,6 +1601,7 @@ def test_terminate_watched_processes_windows_refuses_current_guard_shell_child(
             ppid=1,
             pgid=None,
             rss_kb=500_000,
+            started_at_ns=100,
             command=(
                 r"C:\Program Files\WindowsApps\OpenAI.Codex_26.609.4994.0_x64__2p2nqsd0c76g0"
                 r"\app\resources\codex.exe"
@@ -1271,6 +1612,7 @@ def test_terminate_watched_processes_windows_refuses_current_guard_shell_child(
             ppid=100,
             pgid=None,
             rss_kb=30_000,
+            started_at_ns=999,
             command=(
                 r"C:\Users\adpen\OneDrive\Documents\molt"
                 r"\tools\memory_guard.py --"
@@ -1281,6 +1623,7 @@ def test_terminate_watched_processes_windows_refuses_current_guard_shell_child(
             ppid=999,
             pgid=None,
             rss_kb=25_000,
+            started_at_ns=200,
             command="cmd.exe /d /c cargo check",
         ),
     }
@@ -1296,6 +1639,7 @@ def test_terminate_watched_processes_windows_refuses_current_guard_shell_child(
         watched={200},
         grace=0.0,
         root_owned=True,
+        sampler=lambda: samples,
     )
 
     assert sent == []
@@ -1313,12 +1657,18 @@ def test_cleanup_tracked_orphans_windows_passes_live_descendants_to_terminator(
     module = _load_memory_guard()
     tracker = module.ProcessTreeTracker(root_pid=100)
     initial = {
-        100: module.ProcessSample(pid=100, ppid=50, rss_kb=1, command="uv.exe"),
-        101: module.ProcessSample(pid=101, ppid=100, rss_kb=1, command="python.exe"),
+        100: module.ProcessSample(
+            pid=100, ppid=50, rss_kb=1, command="uv.exe", started_at_ns=100
+        ),
+        101: module.ProcessSample(
+            pid=101, ppid=100, rss_kb=1, command="python.exe", started_at_ns=101
+        ),
     }
     tracker.update(initial)
     live = {
-        101: module.ProcessSample(pid=101, ppid=100, rss_kb=1, command="python.exe"),
+        101: module.ProcessSample(
+            pid=101, ppid=100, rss_kb=1, command="python.exe", started_at_ns=101
+        ),
     }
     terminated: dict[str, object] = {}
 
@@ -1328,6 +1678,7 @@ def test_cleanup_tracked_orphans_windows_passes_live_descendants_to_terminator(
         samples,
         watched,
         tracker,
+        expected_identities,
         grace,
         reason,
         sampler,
@@ -1337,6 +1688,7 @@ def test_cleanup_tracked_orphans_windows_passes_live_descendants_to_terminator(
         terminated["samples"] = samples
         terminated["watched"] = set(watched)
         terminated["tracker"] = tracker
+        terminated["expected_identities"] = dict(expected_identities)
         terminated["grace"] = grace
         terminated["reason"] = reason
         terminated["sampler"] = sampler
@@ -1354,7 +1706,15 @@ def test_cleanup_tracked_orphans_windows_passes_live_descendants_to_terminator(
             escaped_pids=(),
             remaining_pgids=(),
             remaining_pids=(),
-            actions=(),
+            actions=(
+                module.GuardTerminationAction(
+                    target_kind="process",
+                    target_id=101,
+                    signal=module.signal.SIGTERM,
+                    signal_name="SIGTERM",
+                    result="completed_or_missing",
+                ),
+            ),
         )
 
     monkeypatch.setattr(
@@ -1375,6 +1735,9 @@ def test_cleanup_tracked_orphans_windows_passes_live_descendants_to_terminator(
     assert terminated["samples"] == live
     assert terminated["watched"] == {101}
     assert terminated["tracker"] is tracker
+    assert terminated["expected_identities"] == {
+        101: module.process_identity(live[101])
+    }
     assert terminated["grace"] == 0.5
     assert terminated["reason"] == "tracked_orphan_cleanup"
     assert terminated["sampler"] is not None
