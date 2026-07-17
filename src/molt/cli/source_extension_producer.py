@@ -14,7 +14,7 @@ import tomllib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from packaging.requirements import Requirement
 from packaging.version import InvalidVersion
@@ -768,7 +768,7 @@ def _source_ninja_driver(source_root: Path) -> _SourceNinjaDriver:
         path.resolve()
         for item in (distribution.files or ())
         if Path(str(item)).name.lower() == "ninja.exe"
-        and (path := Path(distribution.locate_file(item))).is_file()
+        and (path := Path(str(distribution.locate_file(item)))).is_file()
     )
     if len(binaries) != 1:
         raise SourceExtensionProducerError(
@@ -966,6 +966,7 @@ def _object_closure_digest(
             raise SourceExtensionProducerError(
                 f"extension object_closure.objects[{index}] is not an object"
             )
+        item = cast(Mapping[str, Any], item)
         source = item.get("source")
         object_path = item.get("object")
         source_sha256 = item.get("source_sha256")
@@ -1868,13 +1869,15 @@ def _producer_location_roots(
             roots.append((builtins_path.parent, "@rust-target-libdir"))
         tools = toolchain.get("tools")
         if isinstance(tools, Mapping):
-            tool_paths = {
-                str(role): Path(str(tool["path"])).expanduser().resolve().parent
-                for role, tool in sorted(tools.items())
-                if isinstance(tool, Mapping)
-                and isinstance(tool.get("path"), str)
-                and tool.get("path")
-            }
+            tool_paths: dict[str, Path] = {}
+            for role, tool in sorted(tools.items()):
+                if not isinstance(tool, Mapping):
+                    continue
+                raw_path = tool.get("path")
+                if isinstance(raw_path, str) and raw_path:
+                    tool_paths[str(role)] = (
+                        Path(raw_path).expanduser().resolve().parent
+                    )
             tool_parents = set(tool_paths.values())
             if len(tool_parents) == 1:
                 parent = next(iter(tool_parents))
@@ -2171,6 +2174,7 @@ def _validate_complete_publish_root(
                 raise SourceExtensionProducerError(
                     f"extension sidecar object[{object_index}] is invalid"
                 )
+            closure_object = cast(Mapping[str, Any], closure_object)
             source = closure_object.get("source")
             try:
                 compile_command = _manifest_sequence(
