@@ -279,8 +279,28 @@ enum ModuleState {
     Tombstone,       // `del sys.modules[name]` on a registry name
     Replaced,        // user assigned an arbitrary object (incl. None) over a
                      // registry name via sys.modules[name] = obj
+    ExecutionReserved, // transient internal custody while runpy/importlib
+                       // displaces a row for fresh compiled-body execution;
+                       // never observable through sys.modules
 }
 ```
+
+`ExecutionReserved` is not a sixth user-visible cache condition. It is the
+free-threaded reservation between snapshotting a stable row and entering the
+ordinary `Initializing` transaction. The reserving thread alone may perform
+`ExecutionReserved -> Initializing`; foreign importers wait through the same
+owner/wait graph as ordinary initialization. This prevents re-execution from
+publishing `Tombstone` and racing an unrelated importer for the row. After body
+execution, runpy/importlib restores the exact displaced state and slot under
+the per-runtime execution lock.
+
+Fresh execution still publishes to the internal table/cache so self-imports
+and circular imports reach the executing module, but it suppresses the normal
+canonical-name synchronization into Python-visible `sys.modules`. `runpy`
+owns only its optional temporary `run_name` entry; `Loader.exec_module` leaves
+the caller's `sys.modules` state untouched. The suppression spans dispatch,
+failure cleanup, and restoration, so no transient canonical entry leaks into
+user code and a displaced entry remains visible exactly as it was.
 
 ### 4.2 Name resolution (string → id), at most once per dynamic site
 
@@ -314,6 +334,9 @@ ensure(id):
         else                   -> park on per-slot lock; on detected cross-thread
                                   deadlock, accept the partial module (CPython
                                   _lock_unlock_module semantics, §5.10)
+    ExecutionReserved:
+        if owners[id] == self  -> CAS to Initializing; run normal init transaction
+        else                   -> wait through the ordinary owner/wait graph
     Tombstone:
         per row.flags.reinit_policy:
           Source     -> fall through to Uninit path (full re-exec, NEW module

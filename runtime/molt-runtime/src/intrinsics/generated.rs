@@ -6545,12 +6545,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_runpy_resolve_path",
-        symbol: "molt_runpy_resolve_path",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_uuid_getnode",
         symbol: "molt_uuid_getnode",
         arity: 0,
@@ -6599,14 +6593,8 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_importlib_source_exec_payload",
-        symbol: "molt_importlib_source_exec_payload",
-        arity: 3,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_zip_source_exec_payload",
-        symbol: "molt_importlib_zip_source_exec_payload",
+        name: "molt_importlib_zip_source_payload",
+        symbol: "molt_importlib_zip_source_payload",
         arity: 4,
         defaults: &[],
     },
@@ -6620,24 +6608,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_importlib_read_file",
         symbol: "molt_importlib_read_file",
         arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_exec_restricted_source",
-        symbol: "molt_importlib_exec_restricted_source",
-        arity: 3,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_exec_extension",
-        symbol: "molt_importlib_exec_extension",
-        arity: 3,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_importlib_exec_sourceless",
-        symbol: "molt_importlib_exec_sourceless",
-        arity: 3,
         defaults: &[],
     },
     IntrinsicSpec {

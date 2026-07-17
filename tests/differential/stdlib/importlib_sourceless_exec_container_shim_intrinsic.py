@@ -1,4 +1,4 @@
-"""Purpose: validate sourceless shim lane with container/bytes restricted literals."""
+"""Purpose: validate sourceless shim lane with compiled container/bytes literals."""
 
 import importlib.machinery
 import importlib.util

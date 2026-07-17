@@ -264,40 +264,16 @@ pub extern "C" fn molt_importlib_sourceless_loader_payload(
     })
 }
 
-pub(super) fn importlib_source_exec_payload_checked(
-    _py: &PyToken<'_>,
-    module_name: &str,
-    path: &str,
-    spec_is_package: bool,
-) -> Result<ImportlibSourceExecPayload, u64> {
-    let allowed = has_capability(_py, "fs.read");
-    audit_capability_decision(
-        "importlib.source_exec_payload",
-        "fs.read",
-        AuditArgs::None,
-        allowed,
-    );
-    if !allowed {
-        return Err(raise_exception::<_>(
-            _py,
-            "PermissionError",
-            "missing fs.read capability",
-        ));
-    }
-    importlib_source_exec_payload(module_name, path, spec_is_package)
-        .map_err(|err| raise_importlib_io_error(_py, err))
-}
-
-pub(super) fn importlib_zip_source_exec_payload_checked(
+pub(super) fn importlib_zip_source_payload_checked(
     _py: &PyToken<'_>,
     module_name: &str,
     archive_path: &str,
     inner_path: &str,
     spec_is_package: bool,
-) -> Result<ImportlibZipSourceExecPayload, u64> {
+) -> Result<ImportlibZipSourcePayload, u64> {
     let allowed = has_capability(_py, "fs.read");
     audit_capability_decision(
-        "importlib.zip.source_exec_payload",
+        "importlib.zip.get_source",
         "fs.read",
         AuditArgs::None,
         allowed,
@@ -309,7 +285,7 @@ pub(super) fn importlib_zip_source_exec_payload_checked(
             "missing fs.read capability",
         ));
     }
-    importlib_zip_source_exec_payload(module_name, archive_path, inner_path, spec_is_package)
+    importlib_zip_source_payload(module_name, archive_path, inner_path, spec_is_package)
         .map_err(|err| raise_importlib_io_error(_py, err))
 }
 
@@ -353,92 +329,7 @@ pub(super) fn importlib_extension_loader_resolution_checked(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_source_exec_payload(
-    module_name_bits: u64,
-    path_bits: u64,
-    spec_is_package_bits: u64,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let module_name = match string_arg_from_bits(_py, module_name_bits, "module name") {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let path = match string_arg_from_bits(_py, path_bits, "path") {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let spec_is_package = is_truthy(_py, obj_from_bits(spec_is_package_bits));
-        let payload = match importlib_source_exec_payload_checked(
-            _py,
-            &module_name,
-            &path,
-            spec_is_package,
-        ) {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-
-        let source_ptr = alloc_string(_py, &payload.source);
-        if source_ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "out of memory");
-        }
-        let source_bits = MoltObject::from_ptr(source_ptr).bits();
-        let module_package_bits = match alloc_str_bits(_py, &payload.module_package) {
-            Ok(bits) => bits,
-            Err(err) => {
-                dec_ref_bits(_py, source_bits);
-                return err;
-            }
-        };
-        let package_root_bits = match payload.package_root.as_deref() {
-            Some(root) => match alloc_str_bits(_py, root) {
-                Ok(bits) => bits,
-                Err(err) => {
-                    dec_ref_bits(_py, source_bits);
-                    dec_ref_bits(_py, module_package_bits);
-                    return err;
-                }
-            },
-            None => MoltObject::none().bits(),
-        };
-        let is_package_bits = MoltObject::from_bool(payload.is_package).bits();
-
-        let keys_and_values: [(&[u8], u64); 4] = [
-            (b"source", source_bits),
-            (b"is_package", is_package_bits),
-            (b"module_package", module_package_bits),
-            (b"package_root", package_root_bits),
-        ];
-        let mut pairs: Vec<u64> = Vec::with_capacity(keys_and_values.len() * 2);
-        let mut owned: Vec<u64> = Vec::with_capacity(keys_and_values.len() * 2);
-        for (key, value_bits) in keys_and_values {
-            let key_ptr = alloc_string(_py, key);
-            if key_ptr.is_null() {
-                for bits in owned {
-                    dec_ref_bits(_py, bits);
-                }
-                return MoltObject::none().bits();
-            }
-            let key_bits = MoltObject::from_ptr(key_ptr).bits();
-            pairs.push(key_bits);
-            pairs.push(value_bits);
-            owned.push(key_bits);
-            owned.push(value_bits);
-        }
-        let dict_ptr = alloc_dict_with_pairs(_py, &pairs);
-        for bits in owned {
-            dec_ref_bits(_py, bits);
-        }
-        if dict_ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(dict_ptr).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_zip_source_exec_payload(
+pub extern "C" fn molt_importlib_zip_source_payload(
     module_name_bits: u64,
     archive_path_bits: u64,
     inner_path_bits: u64,
@@ -458,7 +349,7 @@ pub extern "C" fn molt_importlib_zip_source_exec_payload(
             Err(bits) => return bits,
         };
         let spec_is_package = is_truthy(_py, obj_from_bits(spec_is_package_bits));
-        let payload = match importlib_zip_source_exec_payload_checked(
+        let payload = match importlib_zip_source_payload_checked(
             _py,
             &module_name,
             &archive_path,
@@ -538,12 +429,21 @@ pub extern "C" fn molt_importlib_zip_source_exec_payload(
     })
 }
 
-pub(super) fn importlib_exec_extension_impl(
+pub(in crate::builtins::platform) fn importlib_exec_extension_impl(
     _py: &PyToken<'_>,
+    module_bits: u64,
     namespace_ptr: *mut u8,
     module_name: &str,
     path: &str,
 ) -> Result<(), u64> {
+    let _ = namespace_ptr;
+    // Compiler-admitted application modules are independent of their source
+    // or extension-shaped origin.  The immutable build catalog is the sole
+    // body authority; only a catalog miss enters the genuine dynamic-loader
+    // lane below.
+    if importlib_try_exec_compiled_module(_py, module_bits, module_name)? {
+        return Ok(());
+    }
     let allowed = has_capability(_py, "fs.read");
     audit_capability_decision(
         "importlib.exec.extension",
@@ -619,36 +519,6 @@ pub(super) fn importlib_exec_extension_impl(
             ));
         }
     }
-    let shim_candidates = importlib_extension_shim_candidates(module_name, path);
-    let mut restricted_error: Option<String> = None;
-    for candidate in &shim_candidates {
-        match importlib_path_is_file(_py, candidate) {
-            Ok(true) => {
-                if let Err(err) =
-                    importlib_exec_restricted_source_path(_py, namespace_ptr, candidate)
-                {
-                    if let Some(message) = importlib_restricted_exec_error_message(
-                        _py,
-                        "extension",
-                        module_name,
-                        candidate,
-                    ) {
-                        if restricted_error.is_none() {
-                            restricted_error = Some(message);
-                        }
-                        continue;
-                    }
-                    return Err(err);
-                }
-                return Ok(());
-            }
-            Ok(false) => continue,
-            Err(bits) => return Err(bits),
-        }
-    }
-    if let Some(message) = restricted_error {
-        return Err(raise_exception::<_>(_py, "ImportError", &message));
-    }
     // -- Native C extension loading via dlopen --
     #[cfg(all(feature = "cext_loader", not(target_arch = "wasm32")))]
     {
@@ -669,145 +539,18 @@ pub(super) fn importlib_exec_extension_impl(
         module_name,
         path,
         "extension",
-        &shim_candidates,
     ))
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_exec_extension(
-    namespace_bits: u64,
-    module_name_bits: u64,
-    path_bits: u64,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let namespace_ptr = match obj_from_bits(namespace_bits).as_ptr() {
-            Some(ptr) if unsafe { object_type_id(ptr) == TYPE_ID_DICT } => ptr,
-            _ => return raise_exception::<_>(_py, "TypeError", "namespace must be dict"),
-        };
-        let module_name = match string_arg_from_bits(_py, module_name_bits, "module name") {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let path = match string_arg_from_bits(_py, path_bits, "path") {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        match importlib_exec_extension_impl(_py, namespace_ptr, &module_name, &path) {
-            Ok(()) => MoltObject::none().bits(),
-            Err(bits) => bits,
-        }
-    })
 }
 
 pub(super) fn importlib_exec_sourceless_impl(
     _py: &PyToken<'_>,
-    namespace_ptr: *mut u8,
+    module_bits: u64,
+    _namespace_ptr: *mut u8,
     module_name: &str,
     path: &str,
 ) -> Result<(), u64> {
-    let allowed = has_capability(_py, "fs.read");
-    audit_capability_decision(
-        "importlib.exec.sourceless",
-        "fs.read",
-        AuditArgs::None,
-        allowed,
-    );
-    if !allowed {
-        return Err(raise_exception::<_>(
-            _py,
-            "PermissionError",
-            "missing fs.read capability",
-        ));
-    }
-    match importlib_path_is_file(_py, path) {
-        Ok(true) => {}
-        Ok(false) => {
-            return Err(raise_exception::<_>(
-                _py,
-                "ImportError",
-                "sourceless module path must point to a file",
-            ));
-        }
-        Err(bits) => return Err(bits),
-    }
-    let bc_allowed =
-        has_capability(_py, "module.bytecode.exec") || has_capability(_py, "module.exec");
-    audit_capability_decision(
-        "importlib.exec.sourceless.module",
-        "module.bytecode.exec",
-        AuditArgs::None,
-        bc_allowed,
-    );
-    if !bc_allowed {
-        return Err(raise_exception::<_>(
-            _py,
-            "PermissionError",
-            "missing module.bytecode.exec capability",
-        ));
-    }
-    let source_candidates = importlib_sourceless_source_candidates(module_name, path);
-    let mut restricted_error: Option<String> = None;
-    for candidate in &source_candidates {
-        match importlib_path_is_file(_py, candidate) {
-            Ok(true) => {
-                if let Err(err) =
-                    importlib_exec_restricted_source_path(_py, namespace_ptr, candidate)
-                {
-                    if let Some(message) = importlib_restricted_exec_error_message(
-                        _py,
-                        "sourceless",
-                        module_name,
-                        candidate,
-                    ) {
-                        if restricted_error.is_none() {
-                            restricted_error = Some(message);
-                        }
-                        continue;
-                    }
-                    return Err(err);
-                }
-                return Ok(());
-            }
-            Ok(false) => continue,
-            Err(bits) => return Err(bits),
-        }
-    }
-    if let Some(message) = restricted_error {
-        return Err(raise_exception::<_>(_py, "ImportError", &message));
-    }
-    Err(importlib_extension_exec_unavailable(
-        _py,
-        module_name,
-        path,
-        "sourceless",
-        &source_candidates,
-    ))
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_exec_sourceless(
-    namespace_bits: u64,
-    module_name_bits: u64,
-    path_bits: u64,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let namespace_ptr = match obj_from_bits(namespace_bits).as_ptr() {
-            Some(ptr) if unsafe { object_type_id(ptr) == TYPE_ID_DICT } => ptr,
-            _ => return raise_exception::<_>(_py, "TypeError", "namespace must be dict"),
-        };
-        let module_name = match string_arg_from_bits(_py, module_name_bits, "module name") {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let path = match string_arg_from_bits(_py, path_bits, "path") {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        match importlib_exec_sourceless_impl(_py, namespace_ptr, &module_name, &path) {
-            Ok(()) => MoltObject::none().bits(),
-            Err(bits) => bits,
-        }
-    })
+    let _ = path;
+    importlib_exec_compiled_module(_py, module_bits, module_name)
 }
 
 pub(super) struct ImportlibLoaderExecContext {
@@ -817,7 +560,7 @@ pub(super) struct ImportlibLoaderExecContext {
 }
 
 pub(super) enum ImportlibLoaderExecBody {
-    RestrictedSource(Vec<u8>),
+    CompiledSource,
     Extension,
     Sourceless,
 }
@@ -910,23 +653,22 @@ pub(super) fn importlib_loader_exec_module_apply(
 
         let namespace_ptr = importlib_module_dict_ptr_for_state(_py, module_bits)?;
         match &state.body {
-            ImportlibLoaderExecBody::RestrictedSource(source_bytes) => {
-                let source = importlib_decode_source_text(source_bytes);
-                unsafe {
-                    crate::builtins::modules::runpy_exec_restricted_source(
-                        _py,
-                        namespace_ptr,
-                        &source,
-                        &state.origin,
-                    )?;
-                }
+            ImportlibLoaderExecBody::CompiledSource => {
+                importlib_exec_compiled_module(_py, module_bits, &ctx.module_name)?;
             }
             ImportlibLoaderExecBody::Extension => {
-                importlib_exec_extension_impl(_py, namespace_ptr, &ctx.module_name, &state.origin)?;
+                importlib_exec_extension_impl(
+                    _py,
+                    module_bits,
+                    namespace_ptr,
+                    &ctx.module_name,
+                    &state.origin,
+                )?;
             }
             ImportlibLoaderExecBody::Sourceless => {
                 importlib_exec_sourceless_impl(
                     _py,
+                    module_bits,
                     namespace_ptr,
                     &ctx.module_name,
                     &state.origin,
@@ -966,12 +708,7 @@ pub extern "C" fn molt_importlib_sourcefileloader_exec_module(
             Err(bits) => return bits,
         };
         let out = (|| -> Result<(), u64> {
-            let payload = importlib_source_exec_payload_checked(
-                _py,
-                &ctx.module_name,
-                &path,
-                ctx.spec_is_package,
-            )?;
+            let resolution = source_loader_resolution(&ctx.module_name, &path, ctx.spec_is_package);
             importlib_loader_exec_module_apply(
                 _py,
                 loader_bits,
@@ -980,10 +717,10 @@ pub extern "C" fn molt_importlib_sourcefileloader_exec_module(
                 &ctx,
                 ImportlibLoaderExecState {
                     origin: path,
-                    is_package: payload.is_package,
-                    module_package: payload.module_package,
-                    package_root: payload.package_root,
-                    body: ImportlibLoaderExecBody::RestrictedSource(payload.source),
+                    is_package: resolution.is_package,
+                    module_package: resolution.module_package,
+                    package_root: resolution.package_root,
+                    body: ImportlibLoaderExecBody::CompiledSource,
                 },
             )
         })();
@@ -1017,13 +754,12 @@ pub extern "C" fn molt_importlib_zip_source_loader_exec_module(
             Err(bits) => return bits,
         };
         let out = (|| -> Result<(), u64> {
-            let payload = importlib_zip_source_exec_payload_checked(
-                _py,
+            let resolution = zip_source_loader_resolution(
                 &ctx.module_name,
                 &archive_path,
                 &inner_path,
                 ctx.spec_is_package,
-            )?;
+            );
             importlib_loader_exec_module_apply(
                 _py,
                 loader_bits,
@@ -1031,11 +767,11 @@ pub extern "C" fn molt_importlib_zip_source_loader_exec_module(
                 module_spec_cls_bits,
                 &ctx,
                 ImportlibLoaderExecState {
-                    origin: payload.origin,
-                    is_package: payload.is_package,
-                    module_package: payload.module_package,
-                    package_root: payload.package_root,
-                    body: ImportlibLoaderExecBody::RestrictedSource(payload.source),
+                    origin: resolution.origin,
+                    is_package: resolution.is_package,
+                    module_package: resolution.module_package,
+                    package_root: resolution.package_root,
+                    body: ImportlibLoaderExecBody::CompiledSource,
                 },
             )
         })();
@@ -1064,12 +800,8 @@ pub extern "C" fn molt_importlib_extension_loader_exec_module(
             Err(bits) => return bits,
         };
         let out = (|| -> Result<(), u64> {
-            let resolution = importlib_extension_loader_resolution_checked(
-                _py,
-                &ctx.module_name,
-                &path,
-                ctx.spec_is_package,
-            )?;
+            let resolution =
+                extension_loader_resolution(&ctx.module_name, &path, ctx.spec_is_package);
             importlib_loader_exec_module_apply(
                 _py,
                 loader_bits,

@@ -19,16 +19,10 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_importlib_coerce_module_name",
             crate::molt_importlib_coerce_module_name as *const (),
         )),
-        "molt_importlib_source_exec_payload" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_importlib_source_exec_payload",
-            crate::molt_importlib_source_exec_payload as *const (),
+        "molt_importlib_zip_source_payload" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_importlib_zip_source_payload",
+            crate::molt_importlib_zip_source_payload as *const (),
         )),
-        "molt_importlib_zip_source_exec_payload" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_zip_source_exec_payload",
-                crate::molt_importlib_zip_source_exec_payload as *const (),
-            ))
-        }
         "molt_importlib_zip_read_entry" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_importlib_zip_read_entry",
             crate::molt_importlib_zip_read_entry as *const (),
@@ -36,20 +30,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_importlib_read_file" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_importlib_read_file",
             crate::molt_importlib_read_file as *const (),
-        )),
-        "molt_importlib_exec_restricted_source" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_exec_restricted_source",
-                crate::molt_importlib_exec_restricted_source as *const (),
-            ))
-        }
-        "molt_importlib_exec_extension" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_importlib_exec_extension",
-            crate::molt_importlib_exec_extension as *const (),
-        )),
-        "molt_importlib_exec_sourceless" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_importlib_exec_sourceless",
-            crate::molt_importlib_exec_sourceless as *const (),
         )),
         "molt_importlib_sourcefileloader_exec_module" => {
             Some(crate::builtins::functions::runtime_fn_addr(

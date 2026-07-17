@@ -265,6 +265,16 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 3,
     },
     RuntimeImportSpec {
+        import: WasmRuntimeImport::ModuleRegistryInstall,
+        name: "module_registry_install",
+        type_idx: 14,
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ModuleEnsure,
+        name: "module_ensure",
+        type_idx: 2,
+    },
+    RuntimeImportSpec {
         import: WasmRuntimeImport::ModuleDelGlobal,
         name: "module_del_global",
         type_idx: 3,
@@ -2910,21 +2920,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 2,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::ImportlibExecExtension,
-        name: "importlib_exec_extension",
-        type_idx: 5,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::ImportlibExecRestrictedSource,
-        name: "importlib_exec_restricted_source",
-        type_idx: 5,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::ImportlibExecSourceless,
-        name: "importlib_exec_sourceless",
-        type_idx: 5,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibExtensionLoaderPayload,
         name: "importlib_extension_loader_payload",
         type_idx: 5,
@@ -3265,11 +3260,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 28,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::ImportlibSourceExecPayload,
-        name: "importlib_source_exec_payload",
-        type_idx: 5,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibSourceFromCache,
         name: "importlib_source_from_cache",
         type_idx: 2,
@@ -3310,8 +3300,8 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 3,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::ImportlibZipSourceExecPayload,
-        name: "importlib_zip_source_exec_payload",
+        import: WasmRuntimeImport::ImportlibZipSourcePayload,
+        name: "importlib_zip_source_payload",
         type_idx: 7,
     },
     RuntimeImportSpec {
@@ -8743,11 +8733,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         import: WasmRuntimeImport::RunpyRunPath,
         name: "runpy_run_path",
         type_idx: 5,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::RunpyResolvePath,
-        name: "runpy_resolve_path",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::UuidGetnode,
@@ -14856,6 +14841,10 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "module_cache_del" => Some(WasmRuntimeImport::ModuleCacheDel),
         "module_cache_set" => Some(WasmRuntimeImport::ModuleCacheSet),
         "molt_module_cache_set" => Some(WasmRuntimeImport::ModuleCacheSet),
+        "module_registry_install" => Some(WasmRuntimeImport::ModuleRegistryInstall),
+        "molt_module_registry_install" => Some(WasmRuntimeImport::ModuleRegistryInstall),
+        "module_ensure" => Some(WasmRuntimeImport::ModuleEnsure),
+        "molt_module_ensure" => Some(WasmRuntimeImport::ModuleEnsure),
         "module_del_global" => Some(WasmRuntimeImport::ModuleDelGlobal),
         "module_del_global_if_present" => Some(WasmRuntimeImport::ModuleDelGlobalIfPresent),
         "module_get_attr" => Some(WasmRuntimeImport::ModuleGetAttr),
@@ -15567,16 +15556,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_importlib_ensure_default_meta_path" => {
             Some(WasmRuntimeImport::ImportlibEnsureDefaultMetaPath)
         }
-        "importlib_exec_extension" => Some(WasmRuntimeImport::ImportlibExecExtension),
-        "molt_importlib_exec_extension" => Some(WasmRuntimeImport::ImportlibExecExtension),
-        "importlib_exec_restricted_source" => {
-            Some(WasmRuntimeImport::ImportlibExecRestrictedSource)
-        }
-        "molt_importlib_exec_restricted_source" => {
-            Some(WasmRuntimeImport::ImportlibExecRestrictedSource)
-        }
-        "importlib_exec_sourceless" => Some(WasmRuntimeImport::ImportlibExecSourceless),
-        "molt_importlib_exec_sourceless" => Some(WasmRuntimeImport::ImportlibExecSourceless),
         "importlib_extension_loader_payload" => {
             Some(WasmRuntimeImport::ImportlibExtensionLoaderPayload)
         }
@@ -15893,8 +15872,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_importlib_runtime_modules" => Some(WasmRuntimeImport::ImportlibRuntimeModules),
         "importlib_set_module_state" => Some(WasmRuntimeImport::ImportlibSetModuleState),
         "molt_importlib_set_module_state" => Some(WasmRuntimeImport::ImportlibSetModuleState),
-        "importlib_source_exec_payload" => Some(WasmRuntimeImport::ImportlibSourceExecPayload),
-        "molt_importlib_source_exec_payload" => Some(WasmRuntimeImport::ImportlibSourceExecPayload),
         "importlib_source_from_cache" => Some(WasmRuntimeImport::ImportlibSourceFromCache),
         "molt_importlib_source_from_cache" => Some(WasmRuntimeImport::ImportlibSourceFromCache),
         "importlib_source_hash" => Some(WasmRuntimeImport::ImportlibSourceHash),
@@ -15927,12 +15904,8 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         }
         "importlib_zip_read_entry" => Some(WasmRuntimeImport::ImportlibZipReadEntry),
         "molt_importlib_zip_read_entry" => Some(WasmRuntimeImport::ImportlibZipReadEntry),
-        "importlib_zip_source_exec_payload" => {
-            Some(WasmRuntimeImport::ImportlibZipSourceExecPayload)
-        }
-        "molt_importlib_zip_source_exec_payload" => {
-            Some(WasmRuntimeImport::ImportlibZipSourceExecPayload)
-        }
+        "importlib_zip_source_payload" => Some(WasmRuntimeImport::ImportlibZipSourcePayload),
+        "molt_importlib_zip_source_payload" => Some(WasmRuntimeImport::ImportlibZipSourcePayload),
         "file_close" => Some(WasmRuntimeImport::FileClose),
         "molt_file_close" => Some(WasmRuntimeImport::FileClose),
         "file_detach" => Some(WasmRuntimeImport::FileDetach),
@@ -18370,8 +18343,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_runpy_run_module" => Some(WasmRuntimeImport::RunpyRunModule),
         "runpy_run_path" => Some(WasmRuntimeImport::RunpyRunPath),
         "molt_runpy_run_path" => Some(WasmRuntimeImport::RunpyRunPath),
-        "runpy_resolve_path" => Some(WasmRuntimeImport::RunpyResolvePath),
-        "molt_runpy_resolve_path" => Some(WasmRuntimeImport::RunpyResolvePath),
         "uuid_getnode" => Some(WasmRuntimeImport::UuidGetnode),
         "molt_uuid_getnode" => Some(WasmRuntimeImport::UuidGetnode),
         "uuid_uuid4_bytes" => Some(WasmRuntimeImport::UuidUuid4Bytes),

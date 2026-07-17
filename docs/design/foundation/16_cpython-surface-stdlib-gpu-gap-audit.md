@@ -203,7 +203,7 @@
 - **Logging:** molt_logging_percent_style_format
 - **Zipfile:** molt_zipfile_crc32
 - **Socket:** molt_socket_*, molt_socket_constants
-- **Importlib:** molt_module_import, molt_importlib_find_spec_orchestrate, molt_importlib_metadata_*, molt_importlib_resources_*, molt_importlib_exec_restricted_source
+- **Importlib:** molt_module_import, transactional compiled-module execution, molt_importlib_find_spec_orchestrate, molt_importlib_metadata_*, molt_importlib_resources_*
 - **Sys metadata:** molt_sys_hexversion, molt_sys_api_version, molt_sys_abiflags, molt_sys_implementation_payload, molt_sys_flags_payload
 - **Weakref:** molt_weakref_callback
 - **Traceback:** molt_traceback_format_exception, molt_traceback_extract_tb, molt_traceback_exception_chain_payload, molt_traceback_exception_suppress_context

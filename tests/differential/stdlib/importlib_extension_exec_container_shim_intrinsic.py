@@ -1,4 +1,4 @@
-"""Purpose: validate extension shim lane with container/bytes restricted literals."""
+"""Purpose: validate extension shim lane with compiled container/bytes literals."""
 
 import importlib.machinery
 import importlib.util

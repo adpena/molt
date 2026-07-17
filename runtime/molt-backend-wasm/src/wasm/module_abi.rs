@@ -8,7 +8,7 @@ use runtime_surface::WasmRuntimeSurfacePlan;
 use crate::SimpleIR;
 use crate::wasm_abi::emit_static_type_section;
 
-mod callable_table;
+pub(in crate::wasm) mod callable_table;
 mod finalize;
 mod host_surface;
 mod imports;
@@ -41,6 +41,7 @@ impl WasmBackend {
         emit_static_type_section(&mut self.types);
 
         let reloc_enabled = self.options.reloc_enabled;
+        self.prepare_module_registry_segment(reloc_enabled);
         let WasmRuntimeImportEmission {
             runtime_surface,
             next_type_idx: next_type_idx_after_runtime,
@@ -127,6 +128,7 @@ impl WasmBackend {
             host_surface.manifest_segment,
             host_surface.manifest_len,
         );
+        self.emit_module_registry_dispatch(&callable_table, reloc_enabled);
 
         self.finalize_wasm_module(WasmModuleFinalizationInput {
             functions: &ir.functions,

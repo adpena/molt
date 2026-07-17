@@ -1,32 +1,42 @@
-# MOLT_ENV: MOLT_CAPABILITIES=fs.read,fs.write,env.read
-"""Purpose: runpy.run_module(alter_sys=True) uses intrinsic-backed sys.modules swap+restore."""
+"""Purpose: run_module alter_sys is transactional on success and exception."""
 
-import os
 import runpy
 import sys
-import tempfile
 import types
 
 
-with tempfile.TemporaryDirectory() as tmp:
-    mod_path = os.path.join(tmp, "modalter.py")
-    with open(mod_path, "w", encoding="utf-8") as handle:
-        handle.write("import sys\nvalue = 17\nargv0_seen = sys.argv[0]\n")
+def _admit_compiled_runpy_module() -> None:
+    import runpy_compiled_fixture
 
-    original_path = list(sys.path)
-    prior_argv0 = sys.argv[0]
-    sentinel = types.SimpleNamespace(name="sentinel")
-    sys.modules["alias.runner"] = sentinel
+
+prior_argv0 = sys.argv[0]
+sentinel = types.SimpleNamespace(name="sentinel")
+sys.modules["alias.runner"] = sentinel
+try:
+    ns = runpy.run_module(
+        "runpy_compiled_fixture",
+        run_name="alias.runner",
+        alter_sys=True,
+    )
+    print(ns["value"])
+    print(ns["name_seen"])
+    print(ns["sys_modules_seen"])
+    print(str(ns["argv0_seen"]).endswith("runpy_compiled_fixture.py"))
+    print(sys.modules.get("alias.runner") is sentinel)
+    print(sys.argv[0] == prior_argv0)
+    print("runpy_compiled_fixture" not in sys.modules)
+
     try:
-        sys.path.insert(0, tmp)
-        ns = runpy.run_module("modalter", run_name="alias.runner", alter_sys=True)
-        print(ns.get("value"))
-        print(ns.get("__name__"))
-        print(str(ns.get("argv0_seen", "")).endswith("modalter.py"))
-        print("alias.runner" in sys.modules)
-        print(sys.modules.get("alias.runner") is sentinel)
-        print(sys.argv[0] == prior_argv0)
-    finally:
-        sys.path[:] = original_path
-        sys.modules.pop("modalter", None)
-        sys.modules.pop("alias.runner", None)
+        runpy.run_module(
+            "runpy_compiled_fixture",
+            init_globals={"raise_from_runpy": True},
+            run_name="alias.runner",
+            alter_sys=True,
+        )
+    except RuntimeError as exc:
+        print(str(exc))
+    print(sys.modules.get("alias.runner") is sentinel)
+    print(sys.argv[0] == prior_argv0)
+finally:
+    sys.modules.pop("alias.runner", None)
+    sys.modules.pop("runpy_compiled_fixture", None)

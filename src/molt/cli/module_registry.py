@@ -21,13 +21,13 @@ same arc for any layout change.
 Blob layout (little-endian, 8-byte aligned):
 
     header (HEADER_BYTES = 48):
-        0..8    magic       u64  = b"MOLTMOD1"
+        0..8    magic       u64  = b"MOLTMOD2"
         8..12   schema      u32
         12..16  count       u32
         16..32  digest      [u8; 16]  (first 16 bytes of the registry sha256)
         32..40  names_len   u64
-        40..48  reserved    u64 = 0
-    rows (count * ROW_BYTES = 32 each):
+        40..48  origins_len u64
+    rows (count * ROW_BYTES = 40 each):
         0..4    name_off    u32   (byte offset into the names blob)
         4..8    name_len    u32
         8..16   init_ptr    u64   (function-address relocation; 0 = no init lane)
@@ -36,8 +36,11 @@ Blob layout (little-endian, 8-byte aligned):
         24      kind        u8
         25      flags       u8
         26..28  reserved    u16 = 0
-        28..32  reserved    u32 = 0
+        28..32  origin_off  u32   (byte offset into the origins blob)
+        32..36  origin_len  u32
+        36..40  reserved    u32 = 0
     names: concatenated UTF-8 module names in id (sorted-name) order
+    origins: concatenated UTF-8 canonical source origins in id order
 
 Row ``id`` assignment is the sorted order of canonical dotted names, so the
 names blob is itself sorted and the runtime resolves name→id with a plain
@@ -53,11 +56,11 @@ import struct
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 
-MODULE_REGISTRY_SCHEMA_VERSION = 1
+MODULE_REGISTRY_SCHEMA_VERSION = 2
 MODULE_REGISTRY_BLOB_SYMBOL = "molt_module_registry_blob"
-MODULE_REGISTRY_MAGIC = int.from_bytes(b"MOLTMOD1", "little")
+MODULE_REGISTRY_MAGIC = int.from_bytes(b"MOLTMOD2", "little")
 MODULE_REGISTRY_HEADER_BYTES = 48
-MODULE_REGISTRY_ROW_BYTES = 32
+MODULE_REGISTRY_ROW_BYTES = 40
 MODULE_REGISTRY_ROW_INIT_PTR_OFFSET = 8
 NO_MODULE_ID = 0xFFFF_FFFF
 
@@ -106,6 +109,8 @@ def _optional_row_index(
 
 
 MODULE_FLAG_REINIT_RESURRECT = 0x01
+MODULE_FLAG_PACKAGE = 0x02
+MODULE_FLAG_HAS_BODY = 0x04
 
 # Modules whose registry kind is RuntimeBuiltin: the runtime itself
 # participates in their construction (sys populates argv/stdio during
@@ -122,6 +127,8 @@ class ModuleRegistryEntry:
     init_symbol: str = ""
     alias_of: str = ""
     deps: tuple[str, ...] = ()
+    is_package: bool = False
+    origin: str = ""
 
     def __post_init__(self) -> None:
         if self.kind not in _KIND_CODES:
@@ -156,6 +163,7 @@ class ModuleRegistryRow:
     init_symbol: str
     flags: int
     deps: tuple[str, ...] = ()
+    origin: str = ""
 
     @property
     def leaf_attr(self) -> str:
@@ -214,6 +222,7 @@ class ModuleRegistry:
                     "init_symbol": row.init_symbol,
                     "flags": row.flags,
                     "deps": list(row.deps),
+                    "origin": row.origin,
                 }
                 for row in self.rows
             ],
@@ -234,15 +243,23 @@ class ModuleRegistry:
             "blob": list(blob),
             "relocs": [[offset, symbol] for offset, symbol in relocs],
             "init_symbols": list(self.init_symbols()),
+            "init_rows": [
+                [row.id, row.init_symbol] for row in self.rows if row.init_symbol
+            ],
         }
 
     def _blob_and_relocs(self) -> tuple[bytes, tuple[tuple[int, str], ...]]:
         names_blob = bytearray()
+        origins_blob = bytearray()
         name_spans: list[tuple[int, int]] = []
+        origin_spans: list[tuple[int, int]] = []
         for row in self.rows:
             encoded = row.name.encode("utf-8")
             name_spans.append((len(names_blob), len(encoded)))
             names_blob.extend(encoded)
+            encoded_origin = row.origin.encode("utf-8")
+            origin_spans.append((len(origins_blob), len(encoded_origin)))
+            origins_blob.extend(encoded_origin)
         header = struct.pack(
             "<QII16sQQ",
             MODULE_REGISTRY_MAGIC,
@@ -250,19 +267,21 @@ class ModuleRegistry:
             len(self.rows),
             bytes.fromhex(self.digest16_hex),
             len(names_blob),
-            0,
+            len(origins_blob),
         )
         assert len(header) == MODULE_REGISTRY_HEADER_BYTES
         rows_blob = bytearray()
         relocs: list[tuple[int, str]] = []
-        for row, (name_off, name_len) in zip(self.rows, name_spans):
+        for row, (name_off, name_len), (origin_off, origin_len) in zip(
+            self.rows, name_spans, origin_spans
+        ):
             row_base = MODULE_REGISTRY_HEADER_BYTES + len(rows_blob)
             if row.init_symbol:
                 relocs.append(
                     (row_base + MODULE_REGISTRY_ROW_INIT_PTR_OFFSET, row.init_symbol)
                 )
             packed = struct.pack(
-                "<IIQIIBBHI",
+                "<IIQIIBBHIII",
                 name_off,
                 name_len,
                 0,  # init_ptr: relocation-filled
@@ -271,11 +290,13 @@ class ModuleRegistry:
                 row.kind_code,
                 row.flags,
                 0,
+                origin_off,
+                origin_len,
                 0,
             )
             assert len(packed) == MODULE_REGISTRY_ROW_BYTES
             rows_blob.extend(packed)
-        blob = bytes(header) + bytes(rows_blob) + bytes(names_blob)
+        blob = bytes(header) + bytes(rows_blob) + bytes(names_blob) + bytes(origins_blob)
         return blob, tuple(relocs)
 
 
@@ -297,6 +318,7 @@ def registry_digest_for_rows(
             "init_symbol": row["init_symbol"],
             "flags": row["flags"],
             "deps": list(_row_deps(row.get("deps", ()))),
+            "origin": row.get("origin", ""),
         }
         for row in rows
     ]
@@ -367,6 +389,10 @@ def build_module_registry(
         flags = 0
         if entry.kind == "extension":
             flags |= MODULE_FLAG_REINIT_RESURRECT
+        if entry.is_package:
+            flags |= MODULE_FLAG_PACKAGE
+        if entry.init_symbol:
+            flags |= MODULE_FLAG_HAS_BODY
         rows.append(
             ModuleRegistryRow(
                 id=idx,
@@ -378,6 +404,7 @@ def build_module_registry(
                 init_symbol=entry.init_symbol,
                 flags=flags,
                 deps=tuple(sorted(set(entry.deps))),
+                origin=entry.origin,
             )
         )
     digest = registry_digest_for_rows(
@@ -392,6 +419,7 @@ def build_module_registry(
                 "init_symbol": row.init_symbol,
                 "flags": row.flags,
                 "deps": row.deps,
+                "origin": row.origin,
             }
             for row in rows
         ),
@@ -466,6 +494,7 @@ def check_registry_json_payload(payload: Mapping[str, object]) -> list[str]:
                 "init_symbol": row.get("init_symbol", ""),
                 "flags": row.get("flags", 0),
                 "deps": _row_deps(row.get("deps", ())),
+                "origin": row.get("origin", ""),
             }
         )
         expected_parent = (

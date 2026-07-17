@@ -3,6 +3,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 #[cfg(feature = "wasm-backend")]
+use crate::backend_process::emit::validate_wasm_module_catalog;
+#[cfg(feature = "wasm-backend")]
 use molt_backend::{WasmBackend, WasmCompileOptions};
 
 #[cfg(feature = "native-backend")]
@@ -31,6 +33,9 @@ pub(crate) fn compile_daemon_job_output(
     if job.is_wasm {
         #[cfg(feature = "wasm-backend")]
         {
+            if let Some(registry) = module_registry.as_ref() {
+                validate_wasm_module_catalog(&ir, registry).map_err(|err| err.to_string())?;
+            }
             let mut options = WasmCompileOptions {
                 reloc_enabled: job.wasm_link,
                 ..WasmCompileOptions::default()
@@ -45,7 +50,7 @@ pub(crate) fn compile_daemon_job_output(
             {
                 options.split_runtime_runtime_table_min = Some(split_runtime_runtime_table_min);
             }
-            let backend = WasmBackend::with_options(options);
+            let backend = WasmBackend::with_options(options).with_module_registry(module_registry);
             Ok(DaemonCompiledOutput::Bytes(Arc::from(backend.compile(ir))))
         }
         #[cfg(not(feature = "wasm-backend"))]

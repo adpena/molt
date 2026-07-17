@@ -25,6 +25,8 @@ use rust::emit_rust_target;
 pub(crate) use rust::rust_source_for_ir;
 #[cfg(feature = "wasm-backend")]
 use wasm::emit_wasm_target;
+#[cfg(feature = "wasm-backend")]
+pub(crate) use wasm::validate_wasm_module_catalog;
 
 pub(crate) struct BackendTargetEmitRequest<'a> {
     pub(crate) ir: SimpleIR,
@@ -83,7 +85,12 @@ pub(crate) fn emit_backend_target(request: BackendTargetEmitRequest<'_>) -> io::
         BackendOutputKind::Wasm => {
             #[cfg(feature = "wasm-backend")]
             {
-                emit_wasm_target(request.ir, output_file, request.wasm_options)?;
+                emit_wasm_target(
+                    request.ir,
+                    request.module_registry,
+                    output_file,
+                    request.wasm_options,
+                )?;
             }
             #[cfg(not(feature = "wasm-backend"))]
             {

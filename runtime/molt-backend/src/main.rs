@@ -70,12 +70,12 @@ fn main() -> io::Result<()> {
         mut ir,
         module_registry,
     } = document;
-    // The registry projection belongs to the native application-object lane;
-    // other lanes must not silently drop it.
-    if module_registry.is_some() && (is_wasm || is_luau || is_rust) {
+    // Native and WASM consume the catalog. Textual source emitters do not ship
+    // the Molt runtime/catalog ABI and must not silently drop it.
+    if module_registry.is_some() && (is_luau || is_rust) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "module_registry is a native-lane IR section; wasm/luau/rust lanes do not consume it",
+            "module_registry requires a native or WASM runtime-backed target",
         ));
     }
 

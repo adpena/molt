@@ -249,11 +249,11 @@ def test_generate_split_worker_js_lifecycle_contract() -> None:
 
 
 def test_build_isolate_import_ops_initializes_code_slots() -> None:
-    from molt.cli import _build_isolate_import_ops
+    from molt.cli.backend_ir import _build_isolate_import_ops
 
     ops = _build_isolate_import_ops(
         code_slot_count=17,
-        module_order=["sys"],
+        module_init_symbols=[("sys", "molt_init_sys")],
         register_global_code_id=lambda _symbol: 123,
     )
 
