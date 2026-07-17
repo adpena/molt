@@ -12,6 +12,8 @@ genuinely-callable function read as non-callable across an ABI boundary.
 Output must be byte-identical under CPython and molt-native.
 """
 
+import weakref
+
 
 def plain(a, b):
     return a + b
@@ -61,12 +63,10 @@ def main():
     closure = make_closure([1, 2, 3])
     inst = WithCall()
     no_call = NoCall()
-
-    # NOTE: an instance whose `__call__` lives only in the instance `__dict__`
-    # is deliberately NOT exercised here — molt currently honors instance-dict
-    # `__call__` in BOTH `callable()` and the call dispatch (a self-consistent
-    # but CPython-divergent behavior tracked by a separate parity baton). This
-    # matrix pins only shapes where molt and CPython already agree.
+    instance_only_call = NoCall()
+    instance_only_call.__call__ = lambda: "instance-only"
+    weak_target = NoCall()
+    weak_target_ref = weakref.ref(weak_target)
 
     # Callables.
     _label("plain_function", plain)
@@ -84,6 +84,7 @@ def main():
     _label("staticmethod", inst.smethod)
     _label("type_itself", type)
     _label("super_builtin", super)
+    _label("weakref_reference", weak_target_ref)
 
     # Non-callables.
     _label("int", 5)
@@ -95,6 +96,7 @@ def main():
     _label("none", None)
     _label("bool_true", True)
     _label("instance_no_call", no_call)
+    _label("instance_dict_call_is_not_slot", instance_only_call)
 
     # Mirror the call (not just `callable`) for the callable cases so that a
     # divergence in callability cannot silently pass by a wrong oracle that is
@@ -104,6 +106,12 @@ def main():
     print("lambda_call", lam(21))
     print("instance_call", inst("z"))
     print("bound_call", inst.method())
+    print("weakref_call", weak_target_ref() is weak_target)
+
+    try:
+        instance_only_call()
+    except TypeError as exc:
+        print("instance_dict_call", type(exc).__name__)
 
 
 if __name__ == "__main__":
