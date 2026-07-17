@@ -1282,12 +1282,17 @@ pub extern "C" fn molt_taq_ingest_line(
     })
 }
 
-pub(crate) fn dict_table_capacity(entries: usize) -> usize {
-    let mut cap = entries.saturating_mul(2).next_power_of_two();
+pub(crate) fn checked_dict_table_capacity(entries: usize) -> Option<usize> {
+    let mut cap = entries.checked_mul(2)?.checked_next_power_of_two()?;
     if cap < 8 {
         cap = 8;
     }
-    cap
+    Some(cap)
+}
+
+pub(crate) fn dict_table_capacity(entries: usize) -> usize {
+    checked_dict_table_capacity(entries)
+        .expect("live dict entry count must fit the addressable table capacity")
 }
 
 const TABLE_TOMBSTONE: usize = usize::MAX;

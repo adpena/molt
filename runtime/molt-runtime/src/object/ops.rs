@@ -69,18 +69,18 @@ pub(crate) use ascii_bytes::{
     simd_is_all_ascii_whitespace,
 };
 pub(in crate::object) use dict_set_tables::simd_contains_u64;
-pub(super) use dict_set_tables::{
-    concat_bytes_like, fill_repeated_bytes, set_rebuild, simd_bytes_eq,
-};
 pub(crate) use dict_set_tables::{
-    dict_clear_in_place, dict_clear_in_place_shutdown, dict_clear_method, dict_commit_projection,
-    dict_copy_method, dict_del_in_place, dict_find_entry, dict_find_entry_fast,
+    checked_dict_table_capacity, dict_clear_in_place, dict_clear_in_place_shutdown,
+    dict_clear_method, dict_copy_method, dict_del_in_place, dict_find_entry, dict_find_entry_fast,
     dict_find_entry_kv_in_place, dict_fromkeys_method, dict_get_in_place, dict_get_method,
     dict_get_str_bytes_borrowed, dict_inc_in_place, dict_inc_prehashed_string_key_in_place,
     dict_items_method, dict_keys_method, dict_popitem_method, dict_rebuild, dict_set_in_place,
     dict_set_inline_int_in_place, dict_setdefault_method, dict_table_capacity, dict_update_method,
     dict_update_set_via_store, dict_values_method, set_add_in_place, set_del_in_place,
     set_find_entry, set_find_entry_fast, set_replace_entries, set_table_capacity,
+};
+pub(super) use dict_set_tables::{
+    concat_bytes_like, fill_repeated_bytes, set_rebuild, simd_bytes_eq,
 };
 pub use dict_set_tables::{
     molt_string_split_sep_dict_inc, molt_string_split_ws_dict_inc, molt_taq_ingest_line,

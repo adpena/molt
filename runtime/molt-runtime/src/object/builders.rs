@@ -167,29 +167,56 @@ pub(crate) fn alloc_class_instance(_py: &PyToken<'_>, size_bits: u64, class_bits
     MoltObject::from_ptr(obj_ptr).bits()
 }
 
-pub(crate) fn alloc_dict_with_pairs(_py: &PyToken<'_>, pairs: &[u64]) -> *mut u8 {
+/// Canonical exact-dict construction transaction.
+///
+/// Storage and initial edges remain unpublished until they are complete. The
+/// single publication step applies the generated dynamic GC projection, so an
+/// atomic/empty dict never leaks through the always-tracked allocation state.
+pub(crate) fn alloc_dict_with_capacity_and_pairs(
+    _py: &PyToken<'_>,
+    capacity_hint: usize,
+    pairs: &[u64],
+) -> *mut u8 {
+    let Some(order_capacity) = capacity_hint.checked_mul(2) else {
+        return std::ptr::null_mut();
+    };
+    let table_capacity = if capacity_hint == 0 {
+        0
+    } else {
+        let Some(capacity) = crate::object::ops::checked_dict_table_capacity(capacity_hint) else {
+            return std::ptr::null_mut();
+        };
+        capacity
+    };
     let total = std::mem::size_of::<MoltHeader>()
         + std::mem::size_of::<*mut Vec<u64>>()
         + std::mem::size_of::<*mut Vec<usize>>()
         + std::mem::size_of::<*mut Vec<u64>>();
-    let ptr = alloc_object(_py, total, TYPE_ID_DICT);
+    let ptr = crate::object::alloc_object_zeroed_unpublished_with_aux(
+        _py,
+        total,
+        TYPE_ID_DICT,
+        ObjectAuxPreselection::Default,
+    );
     if ptr.is_null() {
         return ptr;
     }
     unsafe {
         let Some(order_ptr) =
-            crate::object::backing::tracked_vec_box_with_capacity::<u64>(pairs.len())
+            crate::object::backing::tracked_vec_box_with_capacity::<u64>(order_capacity)
         else {
             dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
             return std::ptr::null_mut();
         };
-        let Some(table_ptr) = crate::object::backing::tracked_vec_box_with_capacity::<usize>(0)
+        let Some(table_ptr) =
+            crate::object::backing::tracked_vec_box_zeroed::<usize>(table_capacity)
         else {
             drop(crate::object::backing::tracked_vec_box_from_raw(order_ptr));
             dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
             return std::ptr::null_mut();
         };
-        let Some(hashes_ptr) = crate::object::backing::tracked_vec_box_with_capacity::<u64>(0)
+        let Some(hashes_ptr) =
+            crate::object::backing::tracked_vec_box_with_capacity::<u64>(capacity_hint)
         else {
             drop(crate::object::backing::tracked_vec_box_from_raw(table_ptr));
             drop(crate::object::backing::tracked_vec_box_from_raw(order_ptr));
@@ -205,9 +232,13 @@ pub(crate) fn alloc_dict_with_pairs(_py: &PyToken<'_>, pairs: &[u64]) -> *mut u8
                 dict_set_in_place(_py, ptr, pair[0], pair[1]);
             }
         }
-        crate::object::ops::dict_commit_projection(_py, ptr);
+        crate::object::gc::gc_publish_initialized(_py, ptr);
     }
     ptr
+}
+
+pub(crate) fn alloc_dict_with_pairs(_py: &PyToken<'_>, pairs: &[u64]) -> *mut u8 {
+    alloc_dict_with_capacity_and_pairs(_py, pairs.len() / 2, pairs)
 }
 
 pub(crate) fn alloc_set_like_with_entries(
