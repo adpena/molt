@@ -166,8 +166,12 @@ pass; each cell is graded on its own captured evidence.
 
 ## Evidence sources
 
-- Loaders / node lane: `wasm/run_wasm.js`, `wasm/loader_bridge.js`,
-  `wasm/browser_host.js`, `wasm/browser_embed.js`, `tests/wasm_linked_runner.py`.
+- Loaders / node lane: `wasm/run_wasm.js`, the browser entry modules, and their
+  role-checked recursive loader closure from
+  `src/molt/browser_asset_closure.py`; `tests/wasm_linked_runner.py` covers the
+  node execution path. Split packaging, Falcon/Cloudflare deployment, browser
+  matrix execution, verification, and Pact proof scopes consume this same
+  generated closure rather than parallel asset lists.
 - WASM-CPU tests: `tests/test_wasm_browser_embed.py`, `tests/test_wasm_pipeline_e2e.py`.
 - GPU host plumbing (mock-dispatched): `tests/test_wasm_browser_gpu_host.py`,
   `wasm/browser_gpu_worker.js`, `wasm/browser_gpu_dispatch.js`.

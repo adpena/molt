@@ -78,6 +78,10 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 import harness_memory_guard  # noqa: E402
+from molt.browser_asset_closure import (  # noqa: E402
+    BROWSER_HOST_ENTRY_ASSETS,
+    wasm_loader_asset_closure,
+)
 from molt.wasm_artifact import read_wasm_imports  # noqa: E402
 
 WASM_DIR = REPO_ROOT / "wasm"
@@ -753,6 +757,21 @@ _BROWSER_HARNESS_HTML = r"""<!doctype html>
 """
 
 
+def _stage_browser_static_assets(site: Path) -> tuple[str, ...]:
+    """Stage the canonical browser-host dependency closure into ``site``."""
+
+    assets = wasm_loader_asset_closure(WASM_DIR, BROWSER_HOST_ENTRY_ASSETS)
+    for src_name in assets:
+        src = WASM_DIR.joinpath(*Path(src_name).parts)
+        dst = site.joinpath(*Path(src_name).parts)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.symlink(src, dst)
+        except OSError:
+            shutil.copyfile(src, dst)
+    return assets
+
+
 def _run_browser(
     case: SmokeCase,
     wasm: Path,
@@ -789,20 +808,7 @@ def _run_browser(
     kind, _pkg = driver
     with tempfile.TemporaryDirectory(prefix="molt-wasm-matrix-") as tmp:
         site = Path(tmp)
-        # Required browser harness assets — symlink/copy to keep relative
-        # imports intact.
-        for src_name in (
-            "browser_host.js",
-            "browser_gpu_worker.js",
-            "loader_bridge.js",
-            "molt_vfs_browser.js",
-        ):
-            src = WASM_DIR / src_name
-            if src.exists():
-                try:
-                    os.symlink(src, site / src_name)
-                except OSError:
-                    shutil.copyfile(src, site / src_name)
+        _stage_browser_static_assets(site)
         try:
             os.symlink(RUNTIME_WASM, site / "molt_runtime.wasm")
         except OSError:

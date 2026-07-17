@@ -14,8 +14,19 @@ if __package__ in {None, ""}:
 else:
     REPO_ROOT = Path(__file__).resolve().parents[3]
 
-from drivers._shared.artifacts import artifact_record, directory_records
-from drivers._shared.cloudflare import extract_r2_bucket_names, load_jsonc
+SRC_ROOT = REPO_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from drivers._shared.artifacts import artifact_record, directory_records  # noqa: E402
+from drivers._shared.cloudflare import (  # noqa: E402
+    extract_r2_bucket_names,
+    load_jsonc,
+)
+from molt.browser_asset_closure import (  # noqa: E402
+    BROWSER_HOST_ENTRY_ASSETS,
+    wasm_loader_asset_closure,
+)
 
 
 DRIVER_DIR = Path(__file__).resolve().parent
@@ -100,6 +111,11 @@ def build_deploy_surface(
     browser_loader = (DRIVER_DIR / "browser.js").resolve()
     if not browser_loader.exists():
         raise FileNotFoundError(f"browser loader not found: {browser_loader}")
+    wasm_asset_root = REPO_ROOT / "wasm"
+    browser_static_assets = wasm_loader_asset_closure(
+        wasm_asset_root,
+        BROWSER_HOST_ENTRY_ASSETS,
+    )
 
     config_root = target_root.resolve()
     if not config_json.is_relative_to(config_root):
@@ -149,6 +165,14 @@ def build_deploy_surface(
                 root=DRIVER_DIR,
             ),
         },
+        "browser_static_assets": [
+            artifact_record(
+                kind="browser_static_asset",
+                path=wasm_asset_root.joinpath(*Path(name).parts),
+                root=wasm_asset_root,
+            )
+            for name in browser_static_assets
+        ],
         "weights": directory_records(kind="weights_blob", root=weights_dir),
     }
 
@@ -173,6 +197,7 @@ def build_deploy_surface(
             "config_json": str(config_json),
             "tokenizer_json": str(tokenizer_json) if tokenizer_json.exists() else None,
             "weights_dir": str(weights_dir),
+            "browser_static_assets": list(browser_static_assets),
         },
         "artifact_manifest": artifact_manifest,
     }
@@ -236,6 +261,14 @@ def _base_runtime_manifest(
             "init": "main_molt__init",
             "ocrTokens": "main_molt__ocr_tokens",
         },
+        "browser_static_assets": [
+            {
+                "url": f"/{record['relative_path']}",
+                "sha256": record["sha256"],
+                "size_bytes": record["size_bytes"],
+            }
+            for record in surface["artifact_manifest"]["browser_static_assets"]
+        ],
     }
 
 
@@ -297,13 +330,12 @@ def materialize_deploy_bundle(
         _copy_file(
             Path(surface["artifacts"]["tokenizer_json"]), assets_root / "tokenizer.json"
         )
-    _copy_file(REPO_ROOT / "wasm" / "browser_host.js", assets_root / "browser_host.js")
-    _copy_file(
-        REPO_ROOT / "wasm" / "loader_bridge.js", assets_root / "loader_bridge.js"
-    )
-    _copy_file(
-        REPO_ROOT / "wasm" / "molt_vfs_browser.js", assets_root / "molt_vfs_browser.js"
-    )
+    wasm_asset_root = REPO_ROOT / "wasm"
+    for name in surface["artifacts"]["browser_static_assets"]:
+        _copy_file(
+            wasm_asset_root.joinpath(*Path(name).parts),
+            assets_root.joinpath(*Path(name).parts),
+        )
     browser_loader_text = (
         (DRIVER_DIR / "browser.js")
         .read_text(encoding="utf-8")

@@ -8,6 +8,10 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from molt.browser_asset_closure import (
+    BROWSER_HOST_ENTRY_ASSETS,
+    wasm_loader_asset_closure,
+)
 from tests.process_guard_common import run_guarded_test_process
 
 
@@ -237,9 +241,12 @@ def test_falcon_driver_materialize_bundle_emits_manifest_and_assets(
     assert (bundle_root / "assets" / "app.wasm").exists()
     assert (bundle_root / "assets" / "molt_runtime.wasm").exists()
     assert (bundle_root / "assets" / "browser.js").exists()
-    assert (bundle_root / "assets" / "browser_host.js").exists()
-    assert (bundle_root / "assets" / "loader_bridge.js").exists()
-    assert (bundle_root / "assets" / "molt_vfs_browser.js").exists()
+    browser_assets = wasm_loader_asset_closure(
+        ROOT / "wasm",
+        BROWSER_HOST_ENTRY_ASSETS,
+    )
+    for asset in browser_assets:
+        assert bundle_root.joinpath("assets", *Path(asset).parts).exists()
     assert (bundle_root / "assets" / "config.json").exists()
     assert (bundle_root / "assets" / "tokenizer.json").exists()
     materialized_browser_js = (bundle_root / "assets" / "browser.js").read_text(
@@ -258,6 +265,9 @@ def test_falcon_driver_materialize_bundle_emits_manifest_and_assets(
     assert manifest["artifacts"]["runtime_wasm"]["url"] == "/molt_runtime.wasm"
     assert manifest["artifacts"]["config_json"]["url"] == "/config.json"
     assert manifest["artifacts"]["tokenizer_json"]["url"] == "/tokenizer.json"
+    assert {entry["url"] for entry in manifest["browser_static_assets"]} == {
+        f"/{asset}" for asset in browser_assets
+    }
     assert manifest["weights"]["base_url"] == "https://weights.example.invalid/falcon"
     assert manifest["weights"]["files"][0]["path"] == "layer0.safetensors"
     wrangler = json.loads((bundle_root / "wrangler.jsonc").read_text(encoding="utf-8"))

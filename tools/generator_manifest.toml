@@ -178,6 +178,17 @@ closed_domains = []
 discovery_only = false
 
 [[generator]]
+tool = "tools/gen_browser_asset_graph.py"
+outputs = ["wasm/browser_asset_graph.generated.json"]
+source = "src/molt/browser_asset_graph.toml + declared wasm assets + tools/browser_asset_graph/{scan.mjs,package-lock.json}"
+check_mode = true
+check_command = "tools/gen_browser_asset_graph.py --check"
+idempotent = true
+sync_test = "tests/test_browser_asset_closure.py"
+closed_domains = []
+discovery_only = false
+
+[[generator]]
 tool = "tools/gen_target_feature_manifest.py"
 outputs = [
   "src/molt/_target_feature_manifest.py",

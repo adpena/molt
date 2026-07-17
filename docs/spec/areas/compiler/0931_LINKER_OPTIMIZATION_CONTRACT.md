@@ -70,6 +70,22 @@ WASM link commands must:
   optimizers may not infer GC/reference support from Cargo profile names,
   browser-family assumptions, or `wasm-opt` availability.
 
+### Linker Source and Loader Closure
+
+The link fingerprint covers the complete local Python source closure rooted at
+`tools/wasm_link.py`, not a hand-maintained tool list. Static `import`/`from`
+syntax, package initializers, namespace portions, and statically provable
+`importlib.import_module`/`__import__` calls resolve through
+`molt.cli.python_import_resolution`; `molt.cli.python_source_closure` owns the
+transitive walk and an atomic performance cache. A non-literal dynamic edge is
+either declared in its checked manifest or fails closed.
+
+Browser and Node loader assets are a separate generated graph rooted in
+`src/molt/browser_asset_graph.toml`. Every JavaScript asset has an explicit
+browser/node/shared role, source type, and content hash. Packaging, deployment,
+proof scopes, and link fingerprints consume `wasm_loader_asset_closure`; a new
+loader edge therefore changes one generated authority and every consumer.
+
 ### Post-Link Optimization
 
 Binaryen/`wasm-opt` and future post-link optimizers may be used only behind

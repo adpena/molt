@@ -1,0 +1,9 @@
+{
+  "name": "@molt/browser-asset-graph-tooling",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "dependencies": {
+    "acorn": "8.15.0"
+  }
+}

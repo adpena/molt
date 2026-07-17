@@ -4,6 +4,10 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from molt.browser_asset_closure import (
+    BROWSER_WASM_ENTRY_ASSETS,
+    wasm_loader_asset_closure,
+)
 from molt._wasm_abi_generated import (
     WASM_RESERVED_RUNTIME_CALLABLES,
     WASM_RESERVED_RUNTIME_CALLABLE_TRAMPOLINE_ABI_BY_RUNTIME,
@@ -288,11 +292,17 @@ def test_generate_split_worker_replaces_path_stubs_with_vfs_backed_wasi_ops() ->
 def test_generate_split_wrangler_jsonc_limits_modules_to_deploy_surface() -> None:
     from molt.cli import _generate_split_wrangler_jsonc
 
-    content = _generate_split_wrangler_jsonc("2026-04-11")
+    root = Path(__file__).resolve().parents[1]
+    browser_assets = wasm_loader_asset_closure(
+        root / "wasm",
+        BROWSER_WASM_ENTRY_ASSETS,
+    )
+    content = _generate_split_wrangler_jsonc("2026-04-11", browser_assets)
+    payload = json.loads(content)
 
     assert '"main": "worker.js"' in content
     assert '"find_additional_modules": true' in content
-    assert '"globs": ["worker.js", "molt_vfs_browser.js"]' in content
+    assert payload["rules"][0]["globs"] == ["worker.js", *sorted(browser_assets)]
     assert '"globs": ["app.wasm", "molt_runtime.wasm"]' in content
     assert '"**/*.js"' not in content
     assert '"**/*.wasm"' not in content
@@ -463,12 +473,12 @@ def test_static_browser_runners_reserved_runtime_callable_tables_track_generated
         {
             "index": index,
             "runtime_export": runtime_name,
-                "arity": arity,
-                "dispatch": dispatch,
-                "trampoline_abi": WASM_RESERVED_RUNTIME_CALLABLE_TRAMPOLINE_ABI_BY_RUNTIME[
-                    runtime_name
-                ],
-            }
+            "arity": arity,
+            "dispatch": dispatch,
+            "trampoline_abi": WASM_RESERVED_RUNTIME_CALLABLE_TRAMPOLINE_ABI_BY_RUNTIME[
+                runtime_name
+            ],
+        }
         for (
             index,
             runtime_name,
@@ -825,12 +835,24 @@ def test_static_wasm_loader_bridge_owns_binary_parser_authority() -> None:
     assert "parseWasmMetadata," in bridge
     assert "parseWasmExportFunctionSignatures," in bridge
     assert "reservedRuntimeCallablesFromManifest," in bridge
-    assert "const parseWasmImports = (buffer, options = {}) =>\n    parseWasmMetadata(buffer, options).imports;" in bridge
-    assert "const parseWasmExportFunctionSignatures = (buffer) =>\n    parseWasmMetadata(buffer).exportFunctionSignatures;" in bridge
+    assert (
+        "const parseWasmImports = (buffer, options = {}) =>\n    parseWasmMetadata(buffer, options).imports;"
+        in bridge
+    )
+    assert (
+        "const parseWasmExportFunctionSignatures = (buffer) =>\n    parseWasmMetadata(buffer).exportFunctionSignatures;"
+        in bridge
+    )
     assert "const outputMetadata = parseWasmMetadata(wasmBuffer, {" in run_wasm
-    assert "exportFunctionSignatures: directLinkRequested || (!linkedBuffer && Boolean(runtimeBuffer))," in run_wasm
+    assert (
+        "exportFunctionSignatures: directLinkRequested || (!linkedBuffer && Boolean(runtimeBuffer)),"
+        in run_wasm
+    )
     assert "const runtimeMetadata = parseWasmMetadata(runtimeBuffer);" in run_wasm
-    assert "const includeExportFunctionSignatures = options.exportFunctionSignatures !== false;" in bridge
+    assert (
+        "const includeExportFunctionSignatures = options.exportFunctionSignatures !== false;"
+        in bridge
+    )
 
     consumers = {
         "wasm/browser_host.js": (
@@ -1233,12 +1255,12 @@ def test_cpython_abi_runtime_imports_use_runtime_export_signatures() -> None:
             "result": "i32",
         }
     }
-    assert _runtime_import_export_names_from_manifest(
-        {"molt_PyArg_ParseTuple"}
-    ) == {"molt_PyArg_ParseTuple": "molt_PyArg_ParseTuple"}
-    assert _runtime_import_canonical_names_from_manifest(
-        {"molt_PyArg_ParseTuple"}
-    ) == {"molt_PyArg_ParseTuple": "PyArg_ParseTuple"}
+    assert _runtime_import_export_names_from_manifest({"molt_PyArg_ParseTuple"}) == {
+        "molt_PyArg_ParseTuple": "molt_PyArg_ParseTuple"
+    }
+    assert _runtime_import_canonical_names_from_manifest({"molt_PyArg_ParseTuple"}) == {
+        "molt_PyArg_ParseTuple": "PyArg_ParseTuple"
+    }
 
     worker_js = _generate_split_worker_js(
         shared_memory_initial_pages=1,

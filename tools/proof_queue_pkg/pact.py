@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 from typing import Mapping, Sequence
 
+from molt.browser_asset_closure import wasm_loader_asset_scope_paths
 from molt.cli.extension_manifest import _default_molt_c_api_version
 from molt.cli.source_extension_toolchain import (
     MOLT_PKGCONF_REQUIREMENT,
@@ -1115,11 +1116,10 @@ def _pact_witness_acceptance_spec(
             "collab/pact/pact_witness_kernel/make_fixture.py",
             "collab/pact/pact_witness_kernel/field_solve.py",
             "collab/pact/pact_witness_kernel/check_parity.py",
-            "wasm/browser_embed.js",
-            "wasm/browser_host.js",
             "wasm/run_wasm.js",
             "tools/pact_witness_acceptance.py",
             "config/scientific_stack_versions.toml",
+            *wasm_loader_asset_scope_paths(repo_root),
         ],
         "env_overrides": env_overrides,
         "locked_env": _PACT_WITNESS_ACCEPTANCE_LOCKED_ENV,

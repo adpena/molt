@@ -28,8 +28,17 @@ jobs:
 
       - uses: astral-sh/setup-uv@v8.2.0
 
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: tools/browser_asset_graph/package-lock.json
+
       - name: Sync Python environment
         run: uv sync --frozen --group dev
+
+      - name: Provision browser asset parser
+        run: uv run python3 tools/bootstrap_browser_asset_graph.py
 
       - name: Type-check frontend Python (ty, zero-diagnostic ratchet)
         run: uv run ty check src
@@ -104,6 +113,8 @@ jobs:
         run: uv run python3 tools/gen_diff_lanes.py --check
       - name: Check target feature manifest generated files are in sync
         run: uv run python3 tools/gen_target_feature_manifest.py --check
+      - name: Check browser and Node loader asset graph is in sync
+        run: uv run python3 tools/gen_browser_asset_graph.py --check
 
       # The semantic-fact-plane meta-gate (doc 59 Phases 1-3): every generated
       # authority is registered + --check-gated, no orphan generated files, and no
