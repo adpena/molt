@@ -87,8 +87,6 @@ pub fn compile_via_mlir(
     options: &MlirCompileOptions,
 ) -> Result<MlirCompileResult, String> {
     let ctx = crate::create_mlir_context();
-    // Allow unregistered dialects for opaque molt.* runtime-call boundary ops.
-    ctx.set_allow_unregistered_dialects(true);
 
     // Step 1: Build MLIR module from TIR.
     let mut module = tir_to_mlir::build_mlir_module(tir_func, &ctx)?;
@@ -117,13 +115,11 @@ pub fn compile_via_mlir(
 ///
 /// Useful when the caller wants to inspect or further process the module
 /// before lowering.
-pub fn create_optimized_module<'c>(
+pub fn create_optimized_module(
     tir_func: &TirFunction,
-    ctx: &'c MlirContext,
+    ctx: &MlirContext,
     options: &MlirCompileOptions,
 ) -> Result<MlirCompileResult, String> {
-    ctx.set_allow_unregistered_dialects(true);
-
     let mut module = tir_to_mlir::build_mlir_module(tir_func, ctx)?;
     let standard_mlir_text = module.as_operation().to_string();
 
@@ -159,7 +155,6 @@ pub fn jit_execute_i64(
     args: &[i64],
 ) -> Result<i64, String> {
     let ctx = crate::create_mlir_context();
-    ctx.set_allow_unregistered_dialects(true);
 
     // Build, optimize, and lower to LLVM dialect.
     let mut module = tir_to_mlir::build_mlir_module(tir_func, &ctx)?;

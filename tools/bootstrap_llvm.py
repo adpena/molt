@@ -21,6 +21,7 @@ from molt.llvm_toolchain import (  # noqa: E402
     LlvmToolchainConfigError,
     default_llvm_release,
     llvm_sys_prefix_env_var_for_version,
+    mlir_toolchain_environment,
     required_llvm_backend_pin,
 )
 
@@ -233,6 +234,11 @@ def main(argv: list[str] | None = None) -> int:
         help="CMake build directory.",
     )
     parser.add_argument("--targets", default="X86;WebAssembly")
+    parser.add_argument(
+        "--projects",
+        default="clang;mlir",
+        help="LLVM subprojects required by Molt's native and MLIR backends.",
+    )
     parser.add_argument("--build-type", default="Release")
     parser.add_argument("--jobs", type=int, default=os.cpu_count() or 1)
     parser.add_argument("--configure-only", action="store_true")
@@ -247,7 +253,18 @@ def main(argv: list[str] | None = None) -> int:
     env_var = _llvm_sys_prefix_env_var(args.version)
     if args.check:
         llvm_config = _verify_llvm_config(prefix, args.version)
-        print(f"{env_var}={prefix}")
+        projected = mlir_toolchain_environment(
+            ROOT,
+            environ=os.environ | {"MOLT_LLVM_PREFIX": str(prefix)},
+        )
+        for name in (
+            "MOLT_LLVM_PREFIX",
+            env_var,
+            f"MLIR_SYS_{major * 10}_PREFIX",
+            f"TABLEGEN_{major * 10}_PREFIX",
+            "LLVM_CONFIG_PATH",
+        ):
+            print(f"{name}={projected[name]}")
         print(f"llvm-config={llvm_config}")
         return 0
 
@@ -295,6 +312,7 @@ def main(argv: list[str] | None = None) -> int:
         f"-DCMAKE_BUILD_TYPE={args.build_type}",
         f"-DCMAKE_INSTALL_PREFIX={prefix}",
         f"-DLLVM_TARGETS_TO_BUILD={args.targets}",
+        f"-DLLVM_ENABLE_PROJECTS={args.projects}",
         "-DLLVM_ENABLE_ASSERTIONS=ON",
         "-DLLVM_INCLUDE_BENCHMARKS=OFF",
         "-DLLVM_INCLUDE_DOCS=OFF",
@@ -322,7 +340,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     llvm_config = _verify_llvm_config(prefix, args.version)
     print(f"[bootstrap-llvm] installed {llvm_config}")
-    print(f"{env_var}={prefix}")
+    projected = mlir_toolchain_environment(
+        ROOT,
+        environ=env | {"MOLT_LLVM_PREFIX": str(prefix)},
+    )
+    for name in (
+        "MOLT_LLVM_PREFIX",
+        env_var,
+        f"MLIR_SYS_{major * 10}_PREFIX",
+        f"TABLEGEN_{major * 10}_PREFIX",
+        "LLVM_CONFIG_PATH",
+    ):
+        print(f"{name}={projected[name]}")
     return 0
 
 

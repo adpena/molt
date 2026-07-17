@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use melior::{
     Context as MlirContext,
-    ir::{Type, Value},
+    ir::{Type, Value, ValueLike},
 };
 use molt_backend::tir::{types::TirType, values::ValueId};
 

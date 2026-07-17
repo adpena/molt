@@ -1,19 +1,19 @@
 use melior::{
     Context as MlirContext,
-    ir::{
-        Block, Location, Type, Value,
-        operation::{OperationBuilder, OperationLike},
-    },
+    ir::{Block, BlockLike, Location, Type, Value, operation::OperationBuilder},
 };
 use molt_backend::tir::{
     op_kinds_generated::opcode_canonical_kind_table,
-    ops::{Dialect as TirDialect, TirOp},
+    ops::{AttrValue, Dialect as TirDialect, TirOp},
 };
 
-use super::values::{ValueMap, resolve_value};
+use super::{
+    attrs::mlir_attributes,
+    values::{ValueMap, resolve_value},
+};
 
 pub(super) fn emit_opaque_molt_op<'c, 'a>(
-    _ctx: &'c MlirContext,
+    ctx: &'c MlirContext,
     block: &'a Block<'c>,
     op: &TirOp,
     value_map: &mut ValueMap<'c, 'a>,
@@ -27,7 +27,10 @@ pub(super) fn emit_opaque_molt_op<'c, 'a>(
         TirDialect::Par => "molt_par",
         TirDialect::Simd => "molt_simd",
     };
-    let op_name = opcode_canonical_kind_table(op.opcode);
+    let op_name = match op.attrs.get("_original_kind") {
+        Some(AttrValue::Str(kind)) => kind.as_str(),
+        _ => opcode_canonical_kind_table(op.opcode),
+    };
     let full_name = format!("{dialect_name}.{op_name}");
 
     let operands: Result<Vec<Value<'c, '_>>, String> = op
@@ -37,11 +40,13 @@ pub(super) fn emit_opaque_molt_op<'c, 'a>(
         .collect();
     let operands = operands?;
     let result_types: Vec<Type<'c>> = op.results.iter().map(|_| i64_type).collect();
+    let attributes = mlir_attributes(ctx, &op.attrs);
 
     let mlir_op = block.append_operation(
         OperationBuilder::new(&full_name, location)
             .add_operands(&operands)
             .add_results(&result_types)
+            .add_attributes(&attributes)
             .build()
             .map_err(|e| format!("Failed to build {full_name}: {e}"))?,
     );
