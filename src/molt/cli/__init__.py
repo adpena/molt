@@ -279,6 +279,8 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
     'show_config': ('maintenance', 'show_config'),
     # molt.cli.mlir_backend
     '_find_mlir_backend_binary': ('mlir_backend', '_find_mlir_backend_binary'),
+    '_ensure_mlir_backend_binary': ('mlir_backend', '_ensure_mlir_backend_binary'),
+    '_mlir_backend_executable_name': ('mlir_backend', '_mlir_backend_executable_name'),
     '_run_mlir_backend_pipeline': ('mlir_backend', '_run_mlir_backend_pipeline'),
     # molt.cli.native_binary
     '_NativeBinaryInvalid': ('native_binary', '_NativeBinaryInvalid'),

@@ -115,11 +115,13 @@ grow monoliths for convenience, and do not repin
 and a metric-correction or retirement plan.
 
 ## Cross-Platform Notes
-- **macOS**: install Xcode CLT (`xcode-select --install`) and LLVM via Homebrew.
-- **Linux**: install LLVM/Clang, CMake, and Ninja via your package manager.
+- **macOS**: install Xcode CLT (`xcode-select --install`) and a complete
+  LLVM/MLIR developer distribution via Homebrew.
+- **Linux**: install LLVM/Clang/MLIR, CMake, and Ninja via your package manager.
 - **Windows**: install Visual Studio Build Tools (MSVC), CMake, Ninja, and
   LLVM/Clang (see [spec/areas/tooling/0001-toolchains.md](spec/areas/tooling/0001-toolchains.md)).
-  The LLVM backend requires a matching `llvm-config`, not just `clang`; use
+  The LLVM and MLIR backends require one matching prefix with `llvm-config`,
+  MLIR libraries, and TableGen, not just `clang`; use
   `python tools/bootstrap_llvm.py --version 22.1.8 --prefix target\toolchains\llvm-22.1.8`
   when package-manager LLVM omits it.
 - **WASM**: linked builds require `wasm-ld` + `wasm-tools` across platforms; packaging/demo flows also use `wasm-pack`.
@@ -144,11 +146,18 @@ molt update --check
 ```
 
 - `molt setup` is the canonical bootstrap/readiness command. It reports exact
-  toolchain actions plus the canonical Molt env layout, including the exact
-  `LLVM_SYS_<ver>_PREFIX` expected by the Rust LLVM binding.
+  toolchain actions plus the canonical Molt env layout. A single resolved
+  prefix is projected to `LLVM_SYS_<ver>_PREFIX`, `MLIR_SYS_<ver>_PREFIX`, and
+  `TABLEGEN_<ver>_PREFIX`; disagreement fails closed instead of mixing ABIs.
 - `tools/bootstrap_llvm.py` is the source-build escape hatch for platforms whose
-  LLVM packages omit `llvm-config`. It builds into `target/toolchains/`, verifies
-  `bin/llvm-config`, and prints the exact `LLVM_SYS_<ver>_PREFIX` assignment.
+  LLVM packages omit a complete developer surface. It builds LLVM, Clang, and
+  MLIR into `target/toolchains/`, verifies the manifest-pinned `llvm-config`
+  version, and prints the complete environment projection.
+- Developers and source-install users need this toolchain to build the optional
+  MLIR backend. End users of a shipped Molt distribution do not: release
+  packaging owns the backend executable and its redistributable runtime
+  libraries. Molt never asks a binary-only installation to fetch a compiler
+  toolchain at runtime.
 - `molt doctor` reports missing tools and version-pinned backend prerequisites such as the LLVM lane resolved by `molt.llvm_toolchain`.
 - `molt validate --check --suite smoke` prints the canonical local validation
   matrix without executing it.

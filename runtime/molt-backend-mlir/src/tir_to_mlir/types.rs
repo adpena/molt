@@ -22,6 +22,8 @@ pub(super) fn mlir_type_for_tir<'c>(ctx: &'c MlirContext, ty: &TirType) -> Type<
         | TirType::Tuple(_)
         | TirType::Box(_)
         | TirType::Func(_)
-        | TirType::Union(_) => IntegerType::new(ctx, 64).into(),
+        | TirType::Union(_)
+        | TirType::Iterator(_)
+        | TirType::UserClass(_) => IntegerType::new(ctx, 64).into(),
     }
 }

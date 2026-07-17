@@ -73,7 +73,7 @@ mod tests {
         function::TirFunction,
         ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp},
         types::TirType,
-        values::ValueId,
+        values::{TirValue, ValueId},
     };
 
     fn make_add_func() -> TirFunction {
@@ -111,6 +111,126 @@ mod tests {
         func
     }
 
+    fn make_state_dispatch_func() -> TirFunction {
+        let mut func = TirFunction::new("generator_poll".into(), vec![TirType::I64], TirType::I64);
+        func.param_names = vec!["self".into()];
+        let initial = func.fresh_block();
+        let resumed = func.fresh_block();
+        let initial_value = func.fresh_value();
+        let resumed_value = func.fresh_value();
+        func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::StateDispatch {
+            cases: vec![(1, resumed, vec![])],
+            default: initial,
+            default_args: vec![],
+        };
+        for (block_id, value, constant) in
+            [(initial, initial_value, 10), (resumed, resumed_value, 20)]
+        {
+            let mut attrs = AttrDict::new();
+            attrs.insert("value".into(), AttrValue::Int(constant));
+            func.blocks.insert(
+                block_id,
+                TirBlock {
+                    id: block_id,
+                    args: vec![],
+                    ops: vec![TirOp {
+                        dialect: Dialect::Molt,
+                        opcode: OpCode::ConstInt,
+                        operands: vec![],
+                        results: vec![value],
+                        attrs,
+                        source_span: None,
+                    }],
+                    terminator: Terminator::Return {
+                        values: vec![value],
+                    },
+                },
+            );
+        }
+        func
+    }
+
+    fn make_dynamic_not_func() -> TirFunction {
+        let mut func = TirFunction::new("dynamic_not".into(), vec![TirType::DynBox], TirType::Bool);
+        let result = func.fresh_value();
+        func.value_types.insert(result, TirType::Bool);
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Not,
+            operands: vec![ValueId(0)],
+            results: vec![result],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+        func
+    }
+
+    fn make_original_kind_func() -> TirFunction {
+        let mut func = TirFunction::new("original_kind".into(), vec![], TirType::I64);
+        let result = func.fresh_value();
+        func.value_types.insert(result, TirType::DynBox);
+        let mut attrs = AttrDict::new();
+        attrs.insert(
+            "_original_kind".into(),
+            AttrValue::Str("runtime_probe".into()),
+        );
+        attrs.insert("semantic_id".into(), AttrValue::Int(7));
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            operands: vec![],
+            results: vec![result],
+            attrs,
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+        func
+    }
+
+    fn make_typed_edge_func() -> TirFunction {
+        let mut func = TirFunction::new("typed_edge".into(), vec![], TirType::DynBox);
+        let truth = func.fresh_value();
+        let target_arg = func.fresh_value();
+        let target = func.fresh_block();
+        func.value_types.insert(truth, TirType::Bool);
+        func.value_types.insert(target_arg, TirType::DynBox);
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstBool,
+            operands: vec![],
+            results: vec![truth],
+            attrs: AttrDict::from([("value".into(), AttrValue::Bool(true))]),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Branch {
+            target,
+            args: vec![truth],
+        };
+        func.blocks.insert(
+            target,
+            TirBlock {
+                id: target,
+                args: vec![TirValue {
+                    id: target_arg,
+                    ty: TirType::DynBox,
+                }],
+                ops: vec![],
+                terminator: Terminator::Return {
+                    values: vec![target_arg],
+                },
+            },
+        );
+        func
+    }
+
     #[test]
     fn test_rejects_async_work_poll_without_runtime_boundary() {
         let mut func = TirFunction::new("async_work_poll".into(), vec![], TirType::None);
@@ -138,6 +258,47 @@ mod tests {
             err.contains("canonical pending-call/eval-breaker runtime boundary is unavailable"),
             "diagnostic must name the missing target capability: {err}"
         );
+    }
+
+    #[test]
+    fn test_state_dispatch_uses_runtime_state_and_shared_switch_lowering() {
+        let ctx = create_mlir_context();
+        let module = tir_to_mlir(&make_state_dispatch_func(), &ctx).unwrap();
+        let text = module_to_string(&module);
+        assert!(text.contains("func.func private @molt_obj_get_state"));
+        assert_eq!(text.matches("@molt_obj_get_state").count(), 2);
+        assert!(text.contains("cf.switch"));
+        verify_module(&module).unwrap();
+    }
+
+    #[test]
+    fn test_dynamic_not_normalizes_truthiness_before_inversion() {
+        let ctx = create_mlir_context();
+        let module = tir_to_mlir(&make_dynamic_not_func(), &ctx).unwrap();
+        let text = module_to_string(&module);
+        assert!(text.contains("arith.cmpi"));
+        assert!(text.contains("arith.xori"));
+        verify_module(&module).unwrap();
+    }
+
+    #[test]
+    fn test_original_kind_and_attributes_survive_progressive_lowering() {
+        let ctx = create_mlir_context();
+        let module = tir_to_mlir(&make_original_kind_func(), &ctx).unwrap();
+        let text = module_to_string(&module);
+        assert!(text.contains("molt.runtime_probe"));
+        assert!(text.contains("semantic_id = 7 : i64"));
+        verify_module(&module).unwrap();
+    }
+
+    #[test]
+    fn test_edge_values_are_coerced_to_block_argument_types() {
+        let ctx = create_mlir_context();
+        let module = tir_to_mlir(&make_typed_edge_func(), &ctx).unwrap();
+        let text = module_to_string(&module);
+        assert!(text.contains("molt.box"));
+        assert!(text.contains("cf.br"));
+        verify_module(&module).unwrap();
     }
 
     fn make_cond_func() -> TirFunction {
@@ -374,18 +535,20 @@ mod tests {
     }
 
     #[test]
-    fn test_pow_fails_closed_instead_of_multiplying() {
+    fn test_pow_preserves_checked_boxed_semantics_in_molt_dialect() {
         let ctx = create_mlir_context();
-        let err = tir_to_mlir(&make_pow_func(), &ctx).unwrap_err();
-        assert!(err.contains("MLIR lowering refuses OpCode::Pow"));
-        assert!(err.contains("checked boxed-runtime MLIR ABI"));
+        let module = tir_to_mlir(&make_pow_func(), &ctx).unwrap();
+        let text = module_to_string(&module);
+        assert!(text.contains("molt.pow"));
+        assert!(!text.contains("arith.muli"));
+        verify_module(&module).unwrap();
     }
 
     #[test]
     fn test_malformed_pow_fails_closed_without_result_slot() {
         let ctx = create_mlir_context();
         let err = tir_to_mlir(&make_malformed_pow_func(), &ctx).unwrap_err();
-        assert!(err.contains("malformed OpCode::Pow with no result slot"));
+        assert!(err.contains("malformed OpCode::Pow requires one result slot"));
     }
 
     #[test]
@@ -463,6 +626,20 @@ mod tests {
         )
         .unwrap();
         assert!(result.llvm_dialect_text.contains("llvm."));
+    }
+
+    #[test]
+    fn test_full_pipeline_state_dispatch_preserves_runtime_call() {
+        let result = compile_via_mlir(
+            &make_state_dispatch_func(),
+            &MlirCompileOptions {
+                opt_level: MlirOptLevel::O2,
+                emit_llvm_dialect: true,
+            },
+        )
+        .unwrap();
+        assert!(result.llvm_dialect_text.contains("molt_obj_get_state"));
+        assert!(result.llvm_dialect_text.contains("llvm.switch"));
     }
 
     #[test]

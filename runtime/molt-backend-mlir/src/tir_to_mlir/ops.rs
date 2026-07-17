@@ -1,20 +1,19 @@
 use melior::{
     Context as MlirContext,
-    dialect::{arith, func},
+    dialect::arith,
     ir::{
-        Block, Location, Type, Value,
-        attribute::{FlatSymbolRefAttribute, FloatAttribute, IntegerAttribute},
-        operation::{OperationBuilder, OperationLike, OperationRef},
+        Block, BlockLike, Location, Type, Value, ValueLike,
+        attribute::{FloatAttribute, IntegerAttribute},
+        operation::{OperationBuilder, OperationRef},
     },
 };
 use molt_backend::tir::{
     function::TirFunction,
     ops::{AttrValue, Dialect as TirDialect, OpCode, TirOp},
-    values::ValueId,
 };
 
 use super::{
-    attrs::{extract_bool_attr, extract_float_attr, extract_int_attr, extract_str_attr},
+    attrs::{extract_bool_attr, extract_float_attr, extract_int_attr},
     opaque_ops::emit_opaque_molt_op,
     values::{ValueMap, resolve_value},
 };
@@ -251,11 +250,13 @@ pub(super) fn emit_tir_op<'c, 'a>(
         }
 
         // ---- Boolean ops ----
-        // `and`/`or` on i1 lower to bitwise and/or on i1 (which is correct
-        // since i1 {0,1} has and=logical_and, or=logical_or).
+        // TIR And/Or are logical operations. Normalize dynamic operands to i1
+        // before using the integer bitwise primitives.
         (_, OpCode::And) => {
             let lhs = resolve_value(value_map, op.operands[0])?;
             let rhs = resolve_value(value_map, op.operands[1])?;
+            let lhs = emit_truthy(ctx, block, lhs, location);
+            let rhs = emit_truthy(ctx, block, rhs, location);
             let mlir_op = block.append_operation(arith::andi(lhs, rhs, location));
             if let Some(&result_id) = op.results.first() {
                 value_map.insert(result_id, mlir_op.result(0).unwrap().into());
@@ -264,14 +265,16 @@ pub(super) fn emit_tir_op<'c, 'a>(
         (_, OpCode::Or) => {
             let lhs = resolve_value(value_map, op.operands[0])?;
             let rhs = resolve_value(value_map, op.operands[1])?;
+            let lhs = emit_truthy(ctx, block, lhs, location);
+            let rhs = emit_truthy(ctx, block, rhs, location);
             let mlir_op = block.append_operation(arith::ori(lhs, rhs, location));
             if let Some(&result_id) = op.results.first() {
                 value_map.insert(result_id, mlir_op.result(0).unwrap().into());
             }
         }
         (_, OpCode::Not) => {
-            // Logical not on i1: x ^ 1
             let operand = resolve_value(value_map, op.operands[0])?;
+            let operand = emit_truthy(ctx, block, operand, location);
             let one_attr = IntegerAttribute::new(i1_type, 1).into();
             let one_op = block.append_operation(arith::constant(ctx, one_attr, location));
             let one_val: Value<'c, '_> = one_op.result(0).unwrap().into();
@@ -281,53 +284,33 @@ pub(super) fn emit_tir_op<'c, 'a>(
             }
         }
         (_, OpCode::Bool) => {
-            // Truthiness test: compare operand != 0.
             let operand = resolve_value(value_map, op.operands[0])?;
-            if value_map.is_float_value(op.operands[0], operand, ctx) {
-                let zero_attr = FloatAttribute::new(ctx, f64_type, 0.0).into();
-                let zero_op = block.append_operation(arith::constant(ctx, zero_attr, location));
-                let zero_val: Value<'c, '_> = zero_op.result(0).unwrap().into();
-                let mlir_op = block.append_operation(arith::cmpf(
-                    ctx,
-                    arith::CmpfPredicate::One,
-                    operand,
-                    zero_val,
-                    location,
-                ));
-                if let Some(&result_id) = op.results.first() {
-                    value_map.insert(result_id, mlir_op.result(0).unwrap().into());
-                }
-            } else {
-                let zero_attr = IntegerAttribute::new(i64_type, 0).into();
-                let zero_op = block.append_operation(arith::constant(ctx, zero_attr, location));
-                let zero_val: Value<'c, '_> = zero_op.result(0).unwrap().into();
-                let mlir_op = block.append_operation(arith::cmpi(
-                    ctx,
-                    arith::CmpiPredicate::Ne,
-                    operand,
-                    zero_val,
-                    location,
-                ));
-                if let Some(&result_id) = op.results.first() {
-                    value_map.insert(result_id, mlir_op.result(0).unwrap().into());
-                }
+            let truthy = emit_truthy(ctx, block, operand, location);
+            if let Some(&result_id) = op.results.first() {
+                value_map.insert(result_id, truthy);
             }
         }
 
         // ---- Copy (SSA forwarding) ----
         (_, OpCode::Copy) => {
-            // Copy the MLIR Value directly without holding a borrow across the insert.
-            if !op.operands.is_empty() && !op.results.is_empty() {
-                let val = *value_map.get(&op.operands[0]).ok_or_else(|| {
-                    format!(
-                        "TIR ValueId %{} not found in MLIR value map",
-                        op.operands[0].0
-                    )
-                })?;
-                if matches!(
-                    op.attrs.get("_original_kind"),
-                    Some(AttrValue::Str(kind)) if kind == "binding_alias"
-                ) {
+            let original_kind = match op.attrs.get("_original_kind") {
+                Some(AttrValue::Str(kind)) => Some(kind.as_str()),
+                _ => None,
+            };
+            if matches!(original_kind, Some(kind) if kind != "binding_alias") {
+                // The TIR mapper preserves not-yet-enumerated SimpleIR kinds as
+                // Copy plus _original_kind. They are semantic operations, not
+                // SSA copies, and must retain their operands/results and name.
+                emit_opaque_molt_op(ctx, block, op, value_map, i64_type, location)?;
+            } else {
+                if op.operands.len() != 1 || op.results.len() != 1 {
+                    return Err(format!(
+                        "malformed {:?} copy requires one operand and one result",
+                        original_kind.unwrap_or("SSA")
+                    ));
+                }
+                let val = resolve_value(value_map, op.operands[0])?;
+                if original_kind == Some("binding_alias") {
                     block.append_operation(
                         OperationBuilder::new("molt.inc_ref", location)
                             .add_operands(&[val])
@@ -371,37 +354,18 @@ pub(super) fn emit_tir_op<'c, 'a>(
         }
 
         (_, OpCode::Pow) => {
-            let result_id = op.results.first().copied().ok_or_else(|| {
-                "MLIR lowering refuses malformed OpCode::Pow with no result slot".to_string()
-            })?;
-            let result = emit_pow(op, value_map, result_id)?;
-            value_map.insert(result_id, result);
+            // Python power is a checked, potentially boxed semantic operation.
+            // Preserve it in the Molt dialect until the runtime ABI lowering
+            // proves a scalar specialization; never substitute multiplication.
+            emit_opaque_molt_op(ctx, block, op, value_map, i64_type, location)?;
         }
 
         // ---- Call ----
         (_, OpCode::Call | OpCode::CallBuiltin | OpCode::CallMethod) => {
-            let callee_name = extract_str_attr(&op.attrs, "callee")
-                .or_else(|| extract_str_attr(&op.attrs, "name"))
-                .unwrap_or_else(|| "__unknown_call".to_string());
-            let args: Result<Vec<Value<'c, '_>>, String> = op
-                .operands
-                .iter()
-                .map(|&vid| resolve_value(value_map, vid))
-                .collect();
-            let args = args?;
-            let result_types: Vec<Type<'c>> = op.results.iter().map(|_| i64_type).collect();
-
-            let mlir_op = block.append_operation(func::call(
-                ctx,
-                FlatSymbolRefAttribute::new(ctx, &callee_name),
-                &args,
-                &result_types,
-                location,
-            ));
-
-            for (i, &result_id) in op.results.iter().enumerate() {
-                value_map.insert(result_id, mlir_op.result(i).unwrap().into());
-            }
+            // Python calls are dynamic until a later Molt dialect pass proves a
+            // concrete symbol/signature. A func.call with an invented symbol is
+            // invalid MLIR and loses method/call-site metadata.
+            emit_opaque_molt_op(ctx, block, op, value_map, i64_type, location)?;
         }
 
         // ---- Runtime ops (box/unbox/refcount/type_guard) ----
@@ -511,34 +475,45 @@ pub(super) fn emit_tir_op<'c, 'a>(
     Ok(())
 }
 
-fn emit_pow<'c, 'a>(
-    op: &TirOp,
-    value_map: &ValueMap<'c, 'a>,
-    result_id: ValueId,
-) -> Result<Value<'c, 'a>, String> {
-    let lhs_ty = op
-        .operands
-        .first()
-        .and_then(|&id| value_map.type_of(id))
-        .map(|ty| format!("{ty:?}"))
-        .unwrap_or_else(|| "unknown".to_string());
-    let rhs_ty = op
-        .operands
-        .get(1)
-        .and_then(|&id| value_map.type_of(id))
-        .map(|ty| format!("{ty:?}"))
-        .unwrap_or_else(|| "unknown".to_string());
-    let result_ty = value_map
-        .type_of(result_id)
-        .map(|ty| format!("{ty:?}"))
-        .unwrap_or_else(|| "unknown".to_string());
-    Err(format!(
-        "MLIR lowering refuses OpCode::Pow for result %{} ({result_ty}) from \
-         operand types ({lhs_ty}, {rhs_ty}): Python power may raise or leave \
-         the scalar result domain. Add a checked boxed-runtime MLIR ABI before \
-         enabling this opcode.",
-        result_id.0
-    ))
+fn emit_truthy<'c, 'a>(
+    ctx: &'c MlirContext,
+    block: &'a Block<'c>,
+    value: Value<'c, 'a>,
+    location: Location<'c>,
+) -> Value<'c, 'a> {
+    let i1_type: Type<'c> = melior::ir::r#type::IntegerType::new(ctx, 1).into();
+    if value.r#type() == i1_type {
+        return value;
+    }
+    let comparison = if value.r#type() == Type::float64(ctx) {
+        let zero = block.append_operation(arith::constant(
+            ctx,
+            FloatAttribute::new(ctx, Type::float64(ctx), 0.0).into(),
+            location,
+        ));
+        arith::cmpf(
+            ctx,
+            arith::CmpfPredicate::One,
+            value,
+            zero.result(0).unwrap().into(),
+            location,
+        )
+    } else {
+        let i64_type: Type<'c> = melior::ir::r#type::IntegerType::new(ctx, 64).into();
+        let zero = block.append_operation(arith::constant(
+            ctx,
+            IntegerAttribute::new(i64_type, 0).into(),
+            location,
+        ));
+        arith::cmpi(
+            ctx,
+            arith::CmpiPredicate::Ne,
+            value,
+            zero.result(0).unwrap().into(),
+            location,
+        )
+    };
+    block.append_operation(comparison).result(0).unwrap().into()
 }
 
 fn emit_math_unary_float<'c, 'a>(

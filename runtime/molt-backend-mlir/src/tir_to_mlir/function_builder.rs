@@ -7,11 +7,10 @@ use melior::{
         Block, Identifier, Location, Region, RegionLike, Type,
         attribute::{StringAttribute, TypeAttribute},
         block::BlockLike,
-        operation::Operation,
         r#type::{FunctionType, IntegerType},
     },
 };
-use molt_backend::tir::{blocks::BlockId, function::TirFunction, types::TirType, values::ValueId};
+use molt_backend::tir::{blocks::BlockId, function::TirFunction, types::TirType};
 
 use super::{
     ops::emit_tir_op, terminators::emit_terminator, types::mlir_type_for_tir, values::ValueMap,
@@ -71,31 +70,27 @@ pub(super) fn build_func_op<'c>(
         mlir_blocks.push(Block::new(&arg_types));
     }
 
-    // Phase 2: Emit ops and terminators into each block.
-    // We need to track SSA values by their TIR ValueId.
-    // Since we cannot hold mutable references to multiple blocks simultaneously,
-    // we process blocks sequentially. Block references for terminators are resolved
-    // at the end when we assemble the region.
+    // Phase 2: establish one function-wide SSA value authority before emitting
+    // operations. TIR ValueIds are function-scoped and values defined in a
+    // dominating block remain visible to successor blocks; rebuilding this map
+    // per block silently discarded those definitions.
+    let mut value_map = ValueMap::new(&tir_func.value_types);
+    for (block_idx, &bid) in block_ids.iter().enumerate() {
+        let tir_block = &tir_func.blocks[&bid];
+        let block = &mlir_blocks[block_idx];
+        for (index, arg) in tir_block.args.iter().enumerate() {
+            value_map.insert(arg.id, block.argument(index).unwrap().into());
+        }
+    }
+
+    // Phase 3: emit operations and terminators. Block references already exist,
+    // while the shared map accumulates definitions in deterministic block order.
     for (blk_idx, &bid) in block_ids.iter().enumerate() {
         let tir_block = &tir_func.blocks[&bid];
         let block = &mlir_blocks[blk_idx];
 
-        // Build a value map for this block's scope.
-        // Start with block arguments.
-        let mut value_map = ValueMap::new(&tir_func.value_types);
-
-        if bid == tir_func.entry_block {
-            for i in 0..tir_func.param_types.len() {
-                value_map.insert(ValueId(i as u32), block.argument(i).unwrap().into());
-            }
-        } else {
-            for (i, arg) in tir_block.args.iter().enumerate() {
-                value_map.insert(arg.id, block.argument(i).unwrap().into());
-            }
-        }
-
         // Emit each op.
-        for op in &tir_block.ops {
+        for (op_index, op) in tir_block.ops.iter().enumerate() {
             emit_tir_op(
                 ctx,
                 block,
@@ -106,7 +101,23 @@ pub(super) fn build_func_op<'c>(
                 f64_type,
                 i1_type,
                 location,
-            )?;
+            )
+            .map_err(|error| {
+                let prior = tir_block.ops[op_index.saturating_sub(5)..op_index]
+                    .iter()
+                    .map(|candidate| {
+                        format!(
+                            "{:?}(operands={:?}, results={:?})",
+                            candidate.opcode, candidate.operands, candidate.results
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "{} ^bb{} op #{op_index} {:?}(operands={:?}, results={:?}): {error}; preceding=[{prior}]",
+                    tir_func.name, bid.0, op.opcode, op.operands, op.results
+                )
+            })?;
         }
 
         // Emit terminator.
@@ -120,10 +131,16 @@ pub(super) fn build_func_op<'c>(
             tir_func,
             i64_type,
             location,
-        )?;
+        )
+        .map_err(|error| {
+            format!(
+                "{} ^bb{} terminator {:?}: {error}",
+                tir_func.name, bid.0, tir_block.terminator
+            )
+        })?;
     }
 
-    // Phase 3: Assemble region and create func.func.
+    // Phase 4: Assemble region and create func.func.
     let region = Region::new();
     for block in mlir_blocks {
         region.append_block(block);
@@ -144,4 +161,24 @@ pub(super) fn build_func_op<'c>(
         &[emit_c_interface],
         location,
     ))
+}
+
+pub(super) fn build_state_dispatch_runtime_declaration<'c>(
+    ctx: &'c MlirContext,
+    location: Location<'c>,
+) -> melior::ir::Operation<'c> {
+    let i64_type: Type<'c> = IntegerType::new(ctx, 64).into();
+    let function_type = FunctionType::new(ctx, &[i64_type], &[i64_type]);
+    let visibility = (
+        Identifier::new(ctx, "sym_visibility"),
+        StringAttribute::new(ctx, "private").into(),
+    );
+    func::func(
+        ctx,
+        StringAttribute::new(ctx, "molt_obj_get_state"),
+        TypeAttribute::new(function_type.into()),
+        Region::new(),
+        &[visibility],
+        location,
+    )
 }

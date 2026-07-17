@@ -93,6 +93,19 @@ fn main() -> ExitCode {
         i += 1;
     }
 
+    if let Ok(level) = std::env::var("MOLT_MLIR_OPT_LEVEL") {
+        opt_level = match level.as_str() {
+            "O0" | "0" => MlirOptLevel::O0,
+            "O1" | "1" => MlirOptLevel::O1,
+            "O2" | "2" => MlirOptLevel::O2,
+            "O3" | "3" => MlirOptLevel::O3,
+            _ => {
+                eprintln!("Error: invalid MOLT_MLIR_OPT_LEVEL '{level}'");
+                return ExitCode::from(2);
+            }
+        };
+    }
+
     // Read SimpleIR JSON from stdin.
     let mut input = String::new();
     if let Err(e) = io::stdin().read_to_string(&mut input) {
@@ -126,13 +139,24 @@ fn main() -> ExitCode {
 
     let mut output_text = String::new();
     let mut error_count = 0;
+    let trace_functions = std::env::var_os("MOLT_MLIR_TRACE_FUNCTIONS").is_some();
+    let only_function = std::env::var("MOLT_MLIR_ONLY_FUNCTION").ok();
 
     for func_ir in &ir.functions {
         // Skip extern declarations (no body to lower).
         if func_ir.is_extern {
             continue;
         }
+        if only_function
+            .as_deref()
+            .is_some_and(|name| name != func_ir.name)
+        {
+            continue;
+        }
 
+        if trace_functions {
+            eprintln!("[molt-mlir] lowering {}", func_ir.name);
+        }
         let tir_func = lower_to_tir(func_ir);
         match compile_via_mlir(&tir_func, &options) {
             Ok(result) => {
@@ -155,11 +179,8 @@ fn main() -> ExitCode {
 
     if error_count > 0 {
         eprintln!("{error_count} function(s) failed MLIR lowering");
-        if output_text.is_empty() {
-            return ExitCode::FAILURE;
-        }
-        // Partial output: still write what we got.
-        eprintln!("Writing partial MLIR output for successfully lowered functions.");
+        eprintln!("Refusing to publish a partial MLIR artifact.");
+        return ExitCode::FAILURE;
     }
 
     // Write output.
@@ -176,11 +197,7 @@ fn main() -> ExitCode {
         }
     }
 
-    if error_count > 0 {
-        ExitCode::FAILURE
-    } else {
-        ExitCode::SUCCESS
-    }
+    ExitCode::SUCCESS
 }
 
 fn run_jit(functions: &[FunctionIR], func_name: &str) -> ExitCode {
