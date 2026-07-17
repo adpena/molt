@@ -423,13 +423,13 @@ increase** of BRC over naive atomic RC — i.e., naive atomic-everywhere RC is
 
 ### 3.2 Biased reference counting for molt (the RC substrate change)
 
-molt's `MoltRefCount` today (`object/refcount.rs:17-22`, verified) is a single
-`AtomicU32` on native (`Relaxed` inc, `Release` dec, `Acquire` fence at zero —
-`refcount.rs:70,85,102`) and `Cell<u32>` on WASM. Under the GIL this single atomic
-is correct (the doc-29 §27 note: it is for signal-handler/cpython-abi safety, not
-multi-thread, because the GIL serializes). **For free-threading, a single atomic is
-both insufficient (no owner-bias = full atomic tax) and the wrong shape.** The
-end-state mirrors PEP 703's two-field BRC (PEP 703 "Reference Counting"):
+molt's current `MoltRefCount` is one four-byte, mode-selected word owned by
+`molt-codegen-abi`: `Cell<u32>` under the deterministic GIL and wasm32,
+`AtomicU32` under explicit native free-threading. Retain is a checked CAS;
+release uses Release plus an Acquire fence only at zero. **For sustained
+cross-thread sharing, the atomic free-threaded representation remains a rung,
+not the end state:** owner bias can remove its full atomic tax. The measured
+need should drive an unleashed-only PEP 703-style two-field BRC:
 
 ```
 MoltHeader (unleashed layout):
@@ -951,10 +951,10 @@ fact, never re-derives it.
 6. **Deopt-counter atomicization** (§3.6): the runtime-mutable deopt counter
    becomes atomic-or-per-thread (the static AOT caches are already race-free).
 
-**Deletes:** the single-`AtomicU32` `MoltRefCount` native path is *replaced* by BRC
-(the WASM `Cell<u32>` path is kept for single-thread WASM). The default (GIL) build
-keeps the simpler single-atomic RC — **the BRC layout is unleashed-build-only**
-(a per-build choice, not a runtime flag — no dual-source-of-truth at runtime).
+**Replaces only when justified:** the explicit free-threaded single-atomic word
+may be replaced by BRC. Default GIL and wasm32 keep the direct `Cell<u32>` word.
+The BRC layout is an unleashed-build-only compile-time choice, never a runtime
+flag or second storage authority.
 
 **Gate:** `bench_ft_singlethread_tax` shows molt's unleashed tax **< CPython
 3.13t's 5–8%** (the §3.3 thesis); `bench_par_scaling` (full-generality bodies) >
@@ -1051,9 +1051,10 @@ shared-mutable-thread-parallel.
 - **GIL (stub to DELETE):** `runtime/molt-runtime/src/object/gil.rs` (`ObjectLock`
   :10; `GIL_RELEASED` :30; `is_gil_released` :34; `release_gil`/`acquire_gil`
   :39/:44; `gil_check` :51).
-- **Refcount (BRC target):** `runtime/molt-runtime/src/object/refcount.rs`
-  (`MoltRefCount` :17, `AtomicU32` native / `Cell<u32>` wasm :18-21; inc `Relaxed`
-  :70; dec :85; `acquire_fence` :102).
+- **Refcount representation and ordering:** `runtime/molt-codegen-abi/src/lib.rs`
+  (`MoltRefCount`, `MOLT_REFCOUNT_ATOMIC`, typed retain/live-upgrade/release/pin
+  primitives); lifecycle transitions remain on `MoltHeader` in
+  `runtime/molt-runtime/src/object/mod.rs`.
 - **Isolates / threading intrinsics:** `runtime/molt-runtime/src/concurrency/
   isolates.rs` (`MoltThreadHandle` :50; `ThreadRegistry` :118-135, `daemon` field
   :121; `THREAD_REGISTRY` :134; `thread_main` isolate-state :422-453;

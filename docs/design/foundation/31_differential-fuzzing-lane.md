@@ -230,7 +230,7 @@ The `xfail=molt` annotation means the file is a known-failing regression until t
 - `bigint_boundary_not_inline_int`: proves that `MoltObject::from_int(1i64 << 46)` is NOT inline-int-tagged (it is a heap bigint). This is the 2^46 boundary that the S6/ValueRange substrate handles.
 - `inline_int_range_exhaustive`: proves `from_int(i).as_int() == Some(i)` for all i in the complete 47-bit signed range via Kani's unbounded integer symbolic execution.
 
-`runtime/molt-obj-model/tests/kani_refcount.rs` is the canonical refcount proof lane. New proofs must call `molt_obj_model::refcount_semantics` directly; a second runtime-local arithmetic model is forbidden because it can drift from native/wasm storage behavior. Full `dec_ref_ptr` orchestration requires a separately isolated integration harness rather than another toy counter.
+`runtime/molt-obj-model/tests/kani_refcount.rs` is the canonical refcount proof lane. New proofs must call the transition algebra exported by `molt-codegen-abi` directly: that crate owns both the mode-selected storage and the checked lifecycle state machine, so a second object-model or runtime-local arithmetic authority is forbidden. Full `dec_ref_ptr` orchestration requires a separately isolated integration harness rather than another toy counter.
 
 ### 3.6 CI jobs: `.github/workflows/fuzzer.yml` (new)
 
@@ -285,7 +285,7 @@ Two tiers:
 | `/Users/adpena/Projects/molt/fuzz/src/lib.rs` (new) | `pub mod ir_gen;` — shared TirFunction generator | Shared code extraction |
 | `/Users/adpena/Projects/molt/runtime/molt-backend/fuzz/fuzz_targets/fuzz_tir_passes.rs` | Expand `OPCODES` palette with exception-edge opcodes; add a comment on the catch_unwind invariant | Close the exception-CFG coverage gap |
 | `/Users/adpena/Projects/molt/runtime/molt-obj-model/tests/kani_nanbox.rs` | Add `bigint_boundary_not_inline_int` and `inline_int_range_exhaustive` harnesses | Close 2^46 boundary gap in formal verification |
-| `runtime/molt-obj-model/src/refcount_semantics.rs` and `tests/kani_refcount.rs` | Extend the runtime-consumed transition kernel and prove it directly | Prevent formal/runtime refcount authority drift |
+| `runtime/molt-codegen-abi/src/lib.rs` and `runtime/molt-obj-model/tests/kani_refcount.rs` | Extend the single storage/transition authority and prove it directly | Prevent formal/runtime refcount authority drift |
 | `/Users/adpena/Projects/molt/runtime/molt-obj-model/KANI.md` | Update "What is NOT yet verified" section with new harnesses; update total count | Documentation accuracy |
 | `/Users/adpena/Projects/molt/.github/workflows/nightly.yml` | Add reference to `fuzzer.yml` ratchet check in the nightly job matrix | Connect ratchet to nightly gate |
 | `/Users/adpena/Projects/molt/tools/check_fuzz_ratchet.py` (new) | Read `tests/differential/fuzzing/ratchet.jsonl`; assert current failure count <= last committed count | Ratchet enforcement |

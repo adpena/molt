@@ -34,7 +34,7 @@ This is a two-part verdict because the runtime is genuinely well-engineered *wit
 
 **Evidence AGAINST (the ceiling — this is the decisive part):**
 1. **One process-global GIL serializes everything.** `static PREINIT_GIL: Mutex<()>` at `concurrency/gil.rs:177` — verified. Every refcount op, every container mutation, every allocation, every task poll runs under it. **True multicore Python parallelism is impossible today.** This is CPython's exact ceiling.
-2. **Unconditional atomic-RC tax on native, paid for nothing.** `MoltRefCount` is `AtomicU32` on native (`object/refcount.rs:16-19`) — and the doc-comment (verified, `refcount.rs:3-5`) explicitly says this is for *signal-handler/C-ABI safety*, **not** parallelism. So every `inc_ref`/`dec_ref` is an atomic RMW *while the GIL already serializes* — pure overhead. (5-15 ns/op per Report C's cost model vs ~2 ns for CPython's inlined non-atomic.)
+2. **RESOLVED: the unconditional native atomic-RC tax.** `molt-codegen-abi` now selects refcount representation by compile-time mode: `Cell<u32>` under the deterministic GIL and wasm32, `AtomicU32` only for explicit native free-threading. Native flags remain independently atomic because scheduler workers access them before the GIL. On this Windows x86-64 host, the release probe's nine-sample median for ten million checked retain+release roundtrips was 0.805 ns in default mode versus 8.790 ns for its atomic baseline (10.91x); explicit free-threaded mode measured 8.919 ns. The field remained four bytes/alignment four and the link-time mode witness remained intact.
 3. **The `RuntimeState` mutex farm is a latent contention cliff.** Verified: `runtime_state.rs:274-376` is ~50+ fields, nearly every one its own `Mutex<HashMap>` (`asyncio_*`, `task_*`, `weakrefs`, `thread_tasks`…). Uncontended under the default single-thread loop, but every task transition takes several lock-acquire + HashMap lookups — a constant-factor tax and a contention cliff the instant `MOLT_ASYNC_THREADS>0` or multiple `threading` threads run.
 4. **Three overlapping threading mechanisms, no shared back-pressure:** the `isolates.rs` `threading` path, the *separate* `async_rt/threads.rs` pool, and the (default-off) work-stealing executor (`scheduler.rs:2551`). Duplicated state.
 
@@ -216,8 +216,10 @@ Named files from the audit, ordered as foundation-first. These are the *structur
 - `runtime/molt-runtime/src/object/gil.rs` (entire file) — **DELETE.** It is dead-code scaffolding (`ObjectLock`, `GIL_RELEASED`, `is_gil_released`, `gil_check`; verified `:1-59`). Its per-object-lock intent is replaced by the header-field `ob_mutex` (PEP 703 model). Dual GIL sources are a bug class.
 
 **B. Refcount — fact-gate atomicity, fix the racy RMWs.**
-- `runtime/molt-runtime/src/object/refcount.rs:16-19` — `MoltRefCount` is unconditionally `AtomicU32` on native for signal/ABI-hook safety. **Refactor to fact-gated atomicity:** non-atomic under `GilSerial` (the default, eliminating Q1's pointless atomic tax), atomic/biased only under `FreeThreaded`/cpython-abi/`@par`. Route signal-handler/ABI-hook safety through a narrower mechanism than "atomic on every op."
-- `runtime/molt-runtime/src/object/mod.rs:2030-2038, 2235-2253` — the `dec_ref` free path (non-atomic `load(Acquire)` underflow check + separate `fetch_sub`) and the resurrection window (`load`-then-conditional-`fetch_sub`) are **not single RMWs and would race under free-threading.** Rewrite as single atomic RMWs (or biased-RC equivalents) on the `FreeThreaded` lowering.
+- **COMPLETE:** `runtime/molt-codegen-abi/src/lib.rs` owns fact-gated `MoltRefCount` and `MoltFlags` storage through one generated implementation with different custody policies. Refcounts are cell-backed in `GilSerial`/wasm32 and atomic in explicit native `FreeThreaded`; flags remain atomic in every native mode. CPython-ABI calls are covered by the runtime's real GIL custody rather than taxing every default-mode refcount.
+- **COMPLETE:** release, live-upgrade, GC-pin, and revival-window transitions use
+  typed single-RMW primitives. The free-threaded terminal edge is a Release
+  decrement with an Acquire fence only on 1→0; invalid baselines fail closed.
 
 **C. Container mutation — independent synchronization (remove sole-GIL reliance).**
 - `runtime/molt-runtime/src/object/ops/dict_set_tables.rs:2146,2352` and `runtime/molt-runtime/src/object/ops/specialized_list.rs:245-251` — both rely solely on `gil_assert()`. **Under `Shared`, guard with the per-object header `ob_mutex` + optimistic-read path; under `GilSerial`/`ThreadConfined`, emit no lock at all.** Clarify that `_nogil` means "no refcount work," and introduce a genuinely free-threaded path distinct from it.
@@ -243,7 +245,7 @@ Named files from the audit, ordered as foundation-first. These are the *structur
 ### Appendix — verification ledger (what I confirmed in-source, 2026-06-27)
 
 - `object/gil.rs:1-59` — **dead free-threading scaffolding confirmed verbatim** (`ObjectLock`, `GIL_RELEASED`/`is_gil_released`/`release_gil`/`acquire_gil`, `gil_check`). → DELETE.
-- `object/refcount.rs:1-22` — **atomic-for-signal-safety-not-parallelism rationale confirmed verbatim.** → fact-gate.
+- `molt-codegen-abi/src/lib.rs` — **fact-gated header-word authority landed and benchmarked**; the duplicate runtime-local refcount wrapper was deleted.
 - `concurrency/gil.rs:160-230` — **`PREINIT_GIL` process-global static + single-thread fast path confirmed**; the Miri-data-race rationale for one static is real (informs how carefully A must be done).
 - `state/runtime_state.rs:274-376` — **~50+ `Mutex<HashMap>` farm confirmed; `gil` is NOT a field; `scheduler: OnceLock<MoltScheduler>` IS a field (:297)** → GIL relocation has a home.
 - `molt-passes/.../escape_analysis.rs:1-70` — **`EscapeState` lattice live, drives stack-promotion + RC elision, shares `op_kinds.toml` with `alias_analysis.rs`; `ArgEscape` is "future refinement."**

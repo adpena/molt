@@ -19,44 +19,9 @@ mod object_proofs {
         HEADER_AUX_KIND_STATE_INLINE, HEADER_AUX_OFFSET, HEADER_CLASS_WORD_BITS_MASK,
         HEADER_CLASS_WORD_BORROWED, HEADER_CLASS_WORD_TAG_MASK, HEADER_FLAG_CONTAINS_REFS,
         HEADER_FLAG_GC_UNPUBLISHED, HEADER_FLAG_HAS_PTRS, HEADER_FLAG_IMMORTAL, HEADER_SIZE_BYTES,
-        TYPE_ID_FUNCTION,
+        MoltFlags, MoltRefCount, TYPE_ID_FUNCTION,
     };
-    use std::sync::atomic::{AtomicU32, Ordering};
-
-    #[repr(transparent)]
-    struct MoltFlags {
-        inner: AtomicU32,
-    }
-
-    impl MoltFlags {
-        const fn new(value: u32) -> Self {
-            Self {
-                inner: AtomicU32::new(value),
-            }
-        }
-
-        fn load(&self, order: Ordering) -> u32 {
-            self.inner.load(order)
-        }
-
-        fn fetch_or(&self, value: u32, order: Ordering) -> u32 {
-            self.inner.fetch_or(value, order)
-        }
-
-        fn fetch_and(&self, value: u32, order: Ordering) -> u32 {
-            self.inner.fetch_and(value, order)
-        }
-
-        fn compare_exchange(
-            &self,
-            current: u32,
-            new: u32,
-            success: Ordering,
-            failure: Ordering,
-        ) -> Result<u32, u32> {
-            self.inner.compare_exchange(current, new, success, failure)
-        }
-    }
+    use std::sync::atomic::Ordering;
 
     // ---------------------------------------------------------------
     // Mirror of MoltHeader — must match the real #[repr(C)] layout.
@@ -64,7 +29,7 @@ mod object_proofs {
     #[repr(C)]
     struct MoltHeader {
         type_id: u32,
-        ref_count: AtomicU32,
+        ref_count: MoltRefCount,
         flags: MoltFlags,
         size_class: u16,
         aux_kind: u16,
@@ -196,7 +161,7 @@ mod object_proofs {
     fn type_id_at_offset_zero() {
         let header = MoltHeader {
             type_id: 0xDEAD_BEEF,
-            ref_count: AtomicU32::new(0),
+            ref_count: MoltRefCount::new(0),
             flags: MoltFlags::new(0),
             size_class: 0,
             aux_kind: HEADER_AUX_KIND_NONE,
@@ -214,14 +179,14 @@ mod object_proofs {
     fn refcount_at_offset_4() {
         let header = MoltHeader {
             type_id: 0,
-            ref_count: AtomicU32::new(0x1234_5678),
+            ref_count: MoltRefCount::new(0x1234_5678),
             flags: MoltFlags::new(0),
             size_class: 0,
             aux_kind: HEADER_AUX_KIND_NONE,
             aux: 0,
         };
         let base = &header as *const MoltHeader as *const u8;
-        let rc_ptr = &header.ref_count as *const AtomicU32 as *const u8;
+        let rc_ptr = &header.ref_count as *const MoltRefCount as *const u8;
         let offset = rc_ptr as usize - base as usize;
         assert_eq!(offset, 4);
     }
@@ -232,7 +197,7 @@ mod object_proofs {
     fn flags_at_offset_8() {
         let header = MoltHeader {
             type_id: 0,
-            ref_count: AtomicU32::new(0),
+            ref_count: MoltRefCount::new(0),
             flags: MoltFlags::new(0),
             size_class: 0,
             aux_kind: HEADER_AUX_KIND_NONE,
@@ -250,7 +215,7 @@ mod object_proofs {
     fn aux_fields_match_shared_abi_offsets() {
         let header = MoltHeader {
             type_id: 0,
-            ref_count: AtomicU32::new(0),
+            ref_count: MoltRefCount::new(0),
             flags: MoltFlags::new(0),
             size_class: 0,
             aux_kind: HEADER_AUX_KIND_CLASS_INLINE,
@@ -276,7 +241,7 @@ mod object_proofs {
     fn header_from_obj_ptr_roundtrip() {
         let header = MoltHeader {
             type_id: 42,
-            ref_count: AtomicU32::new(1),
+            ref_count: MoltRefCount::new(1),
             flags: MoltFlags::new(0),
             size_class: 0,
             aux_kind: HEADER_AUX_KIND_NONE,

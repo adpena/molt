@@ -19,10 +19,16 @@ cranelift-object = { version = "0.133.1", optional = true }
 cranelift-native = { version = "0.133.1", optional = true }
 rayon = "1.12"
 serde = { version = "1.0", features = ["derive"] }
-inkwell = { version = "0.9", features = ["llvm22-1"], optional = true }
+inkwell = { version = "0.9", default-features = false, features = [
+    "llvm22-1",
+    "target-x86",
+    "target-aarch64",
+    "target-webassembly",
+], optional = true }
 
 [dev-dependencies]
 molt-tir = { path = "../molt-tir", features = ["test-util"] }
+object = { version = "0.39", default-features = false, features = ["read", "std"] }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 cranelift-codegen = { version = "0.133.1", optional = true, default-features = false, features = ["x86"] }

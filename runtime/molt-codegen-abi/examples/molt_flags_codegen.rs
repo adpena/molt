@@ -1,4 +1,4 @@
-use molt_codegen_abi::{HEADER_FLAG_GC_UNPUBLISHED, MoltFlags};
+use molt_codegen_abi::{HEADER_FLAG_GC_UNPUBLISHED, MOLT_FLAGS_ATOMIC, MoltFlags};
 use std::cell::Cell;
 use std::hint::black_box;
 use std::sync::atomic::Ordering;
@@ -143,7 +143,10 @@ pub extern "C" fn molt_flags_synchronized_changed_probe(initial: u32, iterations
     witness ^ flags.load(Ordering::Acquire)
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "free-threaded"))]
+// This cfg is the compile-time form of MOLT_FLAGS_ATOMIC. It is needed because
+// only the native representation is Send + Sync; availability must not follow
+// the independent refcount/free-threaded mode.
+#[cfg(not(target_arch = "wasm32"))]
 fn measure_contended(iterations: u32, synchronized: bool) -> Option<f64> {
     use std::sync::{Arc, Barrier};
 
@@ -182,7 +185,7 @@ fn measure_contended(iterations: u32, synchronized: bool) -> Option<f64> {
     Some(started.elapsed().as_nanos() as f64 / f64::from(thread_count * iterations * 2))
 }
 
-#[cfg(any(target_arch = "wasm32", not(feature = "free-threaded")))]
+#[cfg(target_arch = "wasm32")]
 fn measure_contended(_iterations: u32, _synchronized: bool) -> Option<f64> {
     None
 }
@@ -202,6 +205,8 @@ fn main() {
     let synchronized_changed = measure(rmw_iterations, molt_flags_synchronized_changed_probe);
     let contended_relaxed = measure_contended(250_000, false);
     let contended_synchronized = measure_contended(250_000, true);
+    assert_eq!(contended_relaxed.is_some(), MOLT_FLAGS_ATOMIC);
+    assert_eq!(contended_synchronized.is_some(), MOLT_FLAGS_ATOMIC);
     let contended_ratio = contended_relaxed
         .zip(contended_synchronized)
         .map(|(relaxed, synchronized)| synchronized / relaxed);
@@ -212,7 +217,7 @@ fn main() {
     };
     println!(
         "{{\"atomic_mode\":{},\"size_bytes\":{},\"alignment_bytes\":{},\"heap_allocations_per_instance\":0,\"relaxed_load_ns_per_op\":{:.6},\"cell_load_ns_per_op\":{:.6},\"load_ratio\":{:.6},\"sticky_ns_per_op\":{:.6},\"cell_sticky_ns_per_op\":{:.6},\"sticky_ratio\":{:.6},\"transition_roundtrip_ns_per_op\":{:.6},\"cell_transition_roundtrip_ns_per_op\":{:.6},\"transition_roundtrip_ratio\":{:.6},\"relaxed_changed_roundtrip_ns_per_op\":{:.6},\"synchronized_changed_roundtrip_ns_per_op\":{:.6},\"synchronization_changed_ratio\":{:.6},\"contended_available\":{},\"contended_relaxed_ns_per_op\":{},\"contended_synchronized_ns_per_op\":{},\"contended_synchronization_ratio\":{}}}",
-        molt_codegen_abi::MOLT_FLAGS_ATOMIC,
+        MOLT_FLAGS_ATOMIC,
         std::mem::size_of::<MoltFlags>(),
         std::mem::align_of::<MoltFlags>(),
         mode_load,
