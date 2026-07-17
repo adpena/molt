@@ -383,6 +383,10 @@ simpleir_object_model_semantics_kinds = [
     "module_cache_del", "module_import", "module_get_attr", "module_import_from",
     "module_get_name", "module_get_global", "module_set_attr",
     "class_new", "object_new", "builtin_type", "bound_method_new",
+    "func_new", "func_new_closure", "code_new", "code_slot_set", "code_slots_init",
+    "set_new", "frozenset_new", "set_add", "set_add_probe", "frozenset_add",
+    "set_clear", "set_discard", "set_remove", "set_pop", "set_update",
+    "dict_keys", "dict_values", "dict_items",
     "alloc_class_static", "alloc_class_trusted", "alloc_class", "alloc_instance",
     "init_instance", "instance_set_field", "instance_get_field", "instance_has_field",
     "object_set_class", "class_set_base", "class_set_layout_version",
@@ -623,6 +627,14 @@ classifier_fresh_value = [
     "frozenset_new",
     "func_new",
     "func_new_closure",
+    # `getattr(obj, name, default)` returns one owned result on both branches.
+    # The miss branch may preserve the default's identity, but the runtime has
+    # minted an independent +1 root that must be dropped separately.
+    "get_attr_name_default",
+    # Special-method lookup likewise returns an independent owned result. The
+    # descriptor path may bind a fresh callable while the plain-value path
+    # retains the resolved attribute, but both paths transfer one +1 root.
+    "get_attr_special_obj",
     # The augassign in-place family. Every molt_inplace_* runtime symbol
     # returns an OWNED +1 reference regardless of object identity (a mutating
     # __iadd__-style fast path inc_refs and returns operand 0; the dunder /
@@ -1012,6 +1024,7 @@ tir_verify_attr_rules = [
     { opcode = "CallMethodIc", rule = "call_method" },
     { opcode = "CallSuperMethodIc", rule = "call_method" },
     { opcode = "ObjectNewBoundStack", rule = "positive_payload_bytes" },
+    { opcode = "UnpackSequence", rule = "unpack_sequence_shape" },
 ]
 
 sroa_const_immediate_rules = [
@@ -3187,6 +3200,15 @@ operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
+name = "UnpackSequence"
+may_throw = true
+side_effecting = true
+purity = "impure"
+result_arity = "variable"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
 name = "ForIter"
 may_throw = true
 side_effecting = false
@@ -3949,6 +3971,11 @@ mapper_opcode = "IterNext"
 canonical = "iter_next_unboxed"
 aliases = []
 mapper_opcode = "IterNextUnboxed"
+
+[[kind]]
+canonical = "unpack_sequence"
+aliases = []
+mapper_opcode = "UnpackSequence"
 
 [[kind]]
 canonical = "checked_add"

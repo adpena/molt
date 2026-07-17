@@ -665,6 +665,59 @@ mod tests {
     }
 
     #[test]
+    fn unpack_sequence_lowers_to_first_class_variable_result_op() {
+        let ops = vec![
+            op_args_out("tuple_new", &[], "seq"),
+            OpIR {
+                kind: "unpack_sequence".to_string(),
+                args: Some(vec!["seq".into(), "left".into(), "right".into()]),
+                value: Some(2),
+                ..OpIR::default()
+            },
+            op("ret_void"),
+        ];
+        let cfg = CFG::build(&ops);
+        let output = convert_to_ssa(&cfg, &ops);
+        let unpack = output
+            .blocks
+            .iter()
+            .flat_map(|block| &block.ops)
+            .find(|op| op.opcode == OpCode::UnpackSequence)
+            .expect("unpack_sequence must have first-class TIR authority");
+
+        assert_eq!(unpack.operands.len(), 1);
+        assert_eq!(unpack.results.len(), 2);
+        assert_eq!(unpack.attrs.get("value"), Some(&AttrValue::Int(2)));
+        assert!(!unpack.attrs.contains_key("_original_kind"));
+    }
+
+    #[test]
+    fn empty_unpack_sequence_has_zero_first_class_results() {
+        let ops = vec![
+            op_args_out("tuple_new", &[], "seq"),
+            OpIR {
+                kind: "unpack_sequence".to_string(),
+                args: Some(vec!["seq".into()]),
+                value: Some(0),
+                ..OpIR::default()
+            },
+            op("ret_void"),
+        ];
+        let cfg = CFG::build(&ops);
+        let output = convert_to_ssa(&cfg, &ops);
+        let unpack = output
+            .blocks
+            .iter()
+            .flat_map(|block| &block.ops)
+            .find(|op| op.opcode == OpCode::UnpackSequence)
+            .expect("empty unpack_sequence must retain first-class TIR authority");
+
+        assert_eq!(unpack.operands.len(), 1);
+        assert!(unpack.results.is_empty());
+        assert_eq!(unpack.attrs.get("value"), Some(&AttrValue::Int(0)));
+    }
+
+    #[test]
     fn module_get_attr_does_not_lower_as_fallback_copy() {
         let ops = vec![
             op_args_out("module_cache_get", &["mod_name"], "module"),

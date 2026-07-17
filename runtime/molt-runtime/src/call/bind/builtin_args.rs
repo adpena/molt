@@ -361,7 +361,14 @@ pub(super) unsafe fn bind_builtin_call(
         }
 
         let mut out = args.pos.clone();
-        let arity = function_arity(func_ptr) as usize;
+        let Some(arity) = function_arity_usize(func_ptr) else {
+            let _ = raise_exception::<u64>(
+                _py,
+                "OverflowError",
+                "builtin arity exceeds the active address space",
+            );
+            return None;
+        };
         if fn_ptr == fn_addr!(molt_bytes_maketrans) && out.len() != 2 {
             let msg = format!("maketrans expected 2 arguments, got {}", out.len());
             return raise_exception::<_>(_py, "TypeError", &msg);

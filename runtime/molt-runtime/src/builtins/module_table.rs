@@ -112,7 +112,7 @@ pub(crate) struct RegistryRow {
 
 #[derive(Debug)]
 pub(crate) struct ModuleRegistry {
-    base: usize,
+    base: *const u8,
     count: u32,
     names_off: usize,
     origins_off: usize,
@@ -133,28 +133,27 @@ impl ModuleRegistry {
         &self.digest
     }
 
-    fn row_base(&self, id: u32) -> usize {
-        self.base + MODULE_REGISTRY_HEADER_BYTES + (id as usize) * MODULE_REGISTRY_ROW_BYTES
+    fn row_base(&self, id: u32) -> *const u8 {
+        debug_assert!(id < self.count);
+        let row_offset = MODULE_REGISTRY_HEADER_BYTES + (id as usize) * MODULE_REGISTRY_ROW_BYTES;
+        unsafe { self.base.add(row_offset) }
     }
 
-    fn read_u32(addr: usize) -> u32 {
-        unsafe { (addr as *const u32).read_unaligned() }
+    fn read_u32(addr: *const u8) -> u32 {
+        unsafe { addr.cast::<u32>().read_unaligned() }
     }
 
-    fn read_u64(addr: usize) -> u64 {
-        unsafe { (addr as *const u64).read_unaligned() }
+    fn read_u64(addr: *const u8) -> u64 {
+        unsafe { addr.cast::<u64>().read_unaligned() }
     }
 
     pub(crate) fn name_of(&self, id: u32) -> &'static str {
         debug_assert!(id < self.count);
         let row = self.row_base(id);
         let name_off = Self::read_u32(row) as usize;
-        let name_len = Self::read_u32(row + 4) as usize;
+        let name_len = Self::read_u32(unsafe { row.add(4) }) as usize;
         let bytes = unsafe {
-            std::slice::from_raw_parts(
-                (self.base + self.names_off + name_off) as *const u8,
-                name_len,
-            )
+            std::slice::from_raw_parts(self.base.add(self.names_off + name_off), name_len)
         };
         // UTF-8 validity is checked once at install; fail closed on decode.
         std::str::from_utf8(bytes).expect("module registry names validated at install")
@@ -163,13 +162,10 @@ impl ModuleRegistry {
     pub(crate) fn origin_of(&self, id: u32) -> &'static str {
         debug_assert!(id < self.count);
         let row = self.row_base(id);
-        let origin_off = Self::read_u32(row + 28) as usize;
-        let origin_len = Self::read_u32(row + 32) as usize;
+        let origin_off = Self::read_u32(unsafe { row.add(28) }) as usize;
+        let origin_len = Self::read_u32(unsafe { row.add(32) }) as usize;
         let bytes = unsafe {
-            std::slice::from_raw_parts(
-                (self.base + self.origins_off + origin_off) as *const u8,
-                origin_len,
-            )
+            std::slice::from_raw_parts(self.base.add(self.origins_off + origin_off), origin_len)
         };
         std::str::from_utf8(bytes).expect("module registry origins validated at install")
     }
@@ -177,14 +173,14 @@ impl ModuleRegistry {
     pub(crate) fn row(&self, id: u32) -> RegistryRow {
         debug_assert!(id < self.count);
         let row = self.row_base(id);
-        let parent = Self::read_u32(row + 16);
-        let alias_target = Self::read_u32(row + 20);
+        let parent = Self::read_u32(unsafe { row.add(16) });
+        let alias_target = Self::read_u32(unsafe { row.add(20) });
         RegistryRow {
-            init_ptr: Self::read_u64(row + 8),
+            init_ptr: Self::read_u64(unsafe { row.add(8) }),
             parent: (parent != NO_MODULE_ID).then_some(parent),
             alias_target: (alias_target != NO_MODULE_ID).then_some(alias_target),
-            kind: unsafe { ((row + 24) as *const u8).read() },
-            flags: unsafe { ((row + 25) as *const u8).read() },
+            kind: unsafe { row.add(24).read() },
+            flags: unsafe { row.add(25).read() },
         }
     }
 
@@ -209,14 +205,14 @@ impl ModuleRegistry {
         if blob.is_null() {
             return Err("module registry blob pointer is null".to_string());
         }
-        let base = blob as usize;
+        let base = blob;
         let magic = Self::read_u64(base);
         if magic != MODULE_REGISTRY_MAGIC {
             return Err(format!(
                 "module registry blob magic mismatch: 0x{magic:016x} (artifact mixing?)"
             ));
         }
-        let schema = Self::read_u32(base + 8);
+        let schema = Self::read_u32(unsafe { base.add(8) });
         if schema != MODULE_REGISTRY_SCHEMA_VERSION {
             return Err(format!(
                 "module registry schema {schema} does not match runtime schema \
@@ -224,13 +220,27 @@ impl ModuleRegistry {
                  different molt builds"
             ));
         }
-        let count = Self::read_u32(base + 12);
+        let count = Self::read_u32(unsafe { base.add(12) });
         let mut digest = [0u8; 16];
-        digest.copy_from_slice(unsafe { std::slice::from_raw_parts((base + 16) as *const u8, 16) });
-        let names_len = Self::read_u64(base + 32) as usize;
-        let origins_len = Self::read_u64(base + 40) as usize;
-        let names_off = MODULE_REGISTRY_HEADER_BYTES + (count as usize) * MODULE_REGISTRY_ROW_BYTES;
-        let origins_off = names_off + names_len;
+        digest.copy_from_slice(unsafe { std::slice::from_raw_parts(base.add(16), 16) });
+        let names_len = usize::try_from(Self::read_u64(unsafe { base.add(32) }))
+            .map_err(|_| "module registry name table exceeds the target address space")?;
+        let origins_len = usize::try_from(Self::read_u64(unsafe { base.add(40) }))
+            .map_err(|_| "module registry origin table exceeds the target address space")?;
+        let names_off = usize::try_from(count)
+            .ok()
+            .and_then(|count| count.checked_mul(MODULE_REGISTRY_ROW_BYTES))
+            .and_then(|rows_len| MODULE_REGISTRY_HEADER_BYTES.checked_add(rows_len))
+            .ok_or("module registry row table exceeds the target address space")?;
+        let origins_off = names_off
+            .checked_add(names_len)
+            .ok_or("module registry name table offset overflow")?;
+        let total_len = origins_off
+            .checked_add(origins_len)
+            .ok_or("module registry origin table offset overflow")?;
+        base.addr()
+            .checked_add(total_len)
+            .ok_or("module registry address range overflow")?;
         let registry = Self {
             base,
             count,
@@ -244,30 +254,36 @@ impl ModuleRegistry {
         for id in 0..count {
             let row_base = registry.row_base(id);
             let name_off = Self::read_u32(row_base) as usize;
-            let name_len = Self::read_u32(row_base + 4) as usize;
-            if name_off + name_len > names_len {
+            let name_len = Self::read_u32(unsafe { row_base.add(4) }) as usize;
+            if name_off
+                .checked_add(name_len)
+                .is_none_or(|end| end > names_len)
+            {
                 return Err(format!(
                     "module registry row {id} name span exceeds the name table"
                 ));
             }
             let bytes = unsafe {
                 std::slice::from_raw_parts(
-                    (registry.base + registry.names_off + name_off) as *const u8,
+                    registry.base.add(registry.names_off + name_off),
                     name_len,
                 )
             };
             let name = std::str::from_utf8(bytes)
                 .map_err(|_| format!("module registry row {id} name is not UTF-8"))?;
-            let origin_off = Self::read_u32(row_base + 28) as usize;
-            let origin_len = Self::read_u32(row_base + 32) as usize;
-            if origin_off + origin_len > registry.origins_len {
+            let origin_off = Self::read_u32(unsafe { row_base.add(28) }) as usize;
+            let origin_len = Self::read_u32(unsafe { row_base.add(32) }) as usize;
+            if origin_off
+                .checked_add(origin_len)
+                .is_none_or(|end| end > registry.origins_len)
+            {
                 return Err(format!(
                     "module registry row {id} origin span exceeds the origin table"
                 ));
             }
             let origin_bytes = unsafe {
                 std::slice::from_raw_parts(
-                    (registry.base + registry.origins_off + origin_off) as *const u8,
+                    registry.base.add(registry.origins_off + origin_off),
                     origin_len,
                 )
             };
@@ -1018,7 +1034,23 @@ fn run_init_transaction(
     // executes the module body.
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let init: unsafe extern "C" fn() -> u64 = unsafe { std::mem::transmute(init_ptr as usize) };
+        let Some(init_target) = crate::provenance::abi::function_ptr(init_ptr) else {
+            unwind(_py);
+            return raise_exception::<_>(
+                _py,
+                "ImportError",
+                &format!("module '{name}' initializer exceeds the active address space"),
+            );
+        };
+        if init_target.is_null() {
+            unwind(_py);
+            return raise_exception::<_>(
+                _py,
+                "ImportError",
+                &format!("module '{name}' has a null initializer"),
+            );
+        }
+        let init: unsafe extern "C" fn() -> u64 = unsafe { std::mem::transmute(init_target) };
         let _ = unsafe { init() };
     }
     #[cfg(target_arch = "wasm32")]

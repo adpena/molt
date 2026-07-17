@@ -647,6 +647,9 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "class_set_layout_version"
         | "closure_load"
         | "closure_store"
+        | "code_new"
+        | "code_slot_set"
+        | "code_slots_init"
         | "const_bytes"
         | "const_none"
         | "del_attr_generic_obj"
@@ -654,12 +657,19 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "del_attr_name"
         | "del_index"
         | "dict_get"
+        | "dict_items"
+        | "dict_keys"
         | "dict_new"
         | "dict_popitem"
         | "dict_set"
         | "dict_update"
         | "dict_update_kwstar"
         | "dict_update_missing"
+        | "dict_values"
+        | "frozenset_add"
+        | "frozenset_new"
+        | "func_new"
+        | "func_new_closure"
         | "get_attr"
         | "get_attr_generic_obj"
         | "get_attr_generic_ptr"
@@ -704,11 +714,19 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "object_new"
         | "object_set_class"
         | "reversed"
+        | "set_add"
+        | "set_add_probe"
         | "set_attr"
         | "set_attr_generic_obj"
         | "set_attr_generic_ptr"
         | "set_attr_name"
+        | "set_clear"
+        | "set_discard"
         | "set_item"
+        | "set_new"
+        | "set_pop"
+        | "set_remove"
+        | "set_update"
         | "sorted"
         | "store_attr"
         | "store_index"
@@ -841,6 +859,7 @@ pub fn kind_to_opcode_table(kind: &str) -> Option<OpCode> {
         "get_iter" => Some(OpCode::GetIter),
         "iter_next" => Some(OpCode::IterNext),
         "iter_next_unboxed" => Some(OpCode::IterNextUnboxed),
+        "unpack_sequence" => Some(OpCode::UnpackSequence),
         "checked_add" => Some(OpCode::CheckedAdd),
         "checked_mul" => Some(OpCode::CheckedMul),
         "for_iter" => Some(OpCode::ForIter),
@@ -962,6 +981,7 @@ pub fn opcode_canonical_kind_table(opcode: OpCode) -> &'static str {
         OpCode::GetIter => "get_iter",
         OpCode::IterNext => "iter_next",
         OpCode::IterNextUnboxed => "iter_next_unboxed",
+        OpCode::UnpackSequence => "unpack_sequence",
         OpCode::ForIter => "for_iter",
         OpCode::AllocTask => "alloc_task",
         OpCode::StateSwitch => "state_switch",
@@ -1081,6 +1101,7 @@ pub fn opcode_ssa_s_value_attr_key_table(opcode: OpCode) -> Option<&'static str>
         OpCode::GetIter => None,
         OpCode::IterNext => None,
         OpCode::IterNextUnboxed => None,
+        OpCode::UnpackSequence => None,
         OpCode::ForIter => None,
         OpCode::AllocTask => None,
         OpCode::StateSwitch => None,
@@ -1204,6 +1225,8 @@ pub fn copy_kind_mints_fresh_owned_ref_table(kind: &str) -> bool {
             | "frozenset_new"
             | "func_new"
             | "func_new_closure"
+            | "get_attr_name_default"
+            | "get_attr_special_obj"
             | "inplace_bit_and"
             | "inplace_bit_or"
             | "inplace_bit_xor"
@@ -1596,6 +1619,7 @@ pub const ALL_OPCODES: &[OpCode] = &[
     OpCode::GetIter,
     OpCode::IterNext,
     OpCode::IterNextUnboxed,
+    OpCode::UnpackSequence,
     OpCode::ForIter,
     OpCode::AllocTask,
     OpCode::StateSwitch,
@@ -1714,6 +1738,7 @@ pub fn opcode_may_throw_table(opcode: OpCode) -> bool {
         OpCode::GetIter => true,
         OpCode::IterNext => true,
         OpCode::IterNextUnboxed => true,
+        OpCode::UnpackSequence => true,
         OpCode::ForIter => true,
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
@@ -1832,6 +1857,7 @@ pub fn opcode_is_side_effecting_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::UnpackSequence => true,
         OpCode::ForIter => false,
         OpCode::AllocTask => false,
         OpCode::StateSwitch => true,
@@ -1976,6 +2002,7 @@ pub fn opcode_effects_table(opcode: OpCode) -> OpcodeEffects {
         OpCode::GetIter => OPCODE_EFFECTS_IMPURE,
         OpCode::IterNext => OPCODE_EFFECTS_IMPURE,
         OpCode::IterNextUnboxed => OPCODE_EFFECTS_IMPURE,
+        OpCode::UnpackSequence => OPCODE_EFFECTS_IMPURE,
         OpCode::ForIter => OPCODE_EFFECTS_IMPURE,
         OpCode::AllocTask => OPCODE_EFFECTS_IMPURE,
         OpCode::StateSwitch => OPCODE_EFFECTS_IMPURE,
@@ -2103,6 +2130,7 @@ pub fn opcode_call_role_table(opcode: OpCode) -> CallOpcodeRole {
         OpCode::GetIter => CallOpcodeRole::NotCall,
         OpCode::IterNext => CallOpcodeRole::NotCall,
         OpCode::IterNextUnboxed => CallOpcodeRole::NotCall,
+        OpCode::UnpackSequence => CallOpcodeRole::NotCall,
         OpCode::ForIter => CallOpcodeRole::NotCall,
         OpCode::AllocTask => CallOpcodeRole::NotCall,
         OpCode::StateSwitch => CallOpcodeRole::NotCall,
@@ -2248,6 +2276,7 @@ pub fn opcode_requires_async_work_poll_after_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
@@ -2368,6 +2397,7 @@ pub fn opcode_fixed_result_count_table(opcode: OpCode) -> Option<usize> {
         OpCode::GetIter => Some(1),
         OpCode::IterNext => Some(1),
         OpCode::IterNextUnboxed => Some(2),
+        OpCode::UnpackSequence => None,
         OpCode::ForIter => Some(1),
         OpCode::AllocTask => Some(1),
         OpCode::StateSwitch => Some(0),
@@ -2598,6 +2628,7 @@ pub fn opcode_fuzz_tir_operand_count_table(opcode: OpCode) -> Option<usize> {
         OpCode::GetIter => None,
         OpCode::IterNext => None,
         OpCode::IterNextUnboxed => None,
+        OpCode::UnpackSequence => None,
         OpCode::ForIter => None,
         OpCode::AllocTask => None,
         OpCode::StateSwitch => None,
@@ -2716,6 +2747,7 @@ pub fn opcode_fuzz_tir_attr_payload_rule_table(opcode: OpCode) -> FuzzTirAttrPay
         OpCode::GetIter => FuzzTirAttrPayloadRule::None,
         OpCode::IterNext => FuzzTirAttrPayloadRule::None,
         OpCode::IterNextUnboxed => FuzzTirAttrPayloadRule::None,
+        OpCode::UnpackSequence => FuzzTirAttrPayloadRule::None,
         OpCode::ForIter => FuzzTirAttrPayloadRule::None,
         OpCode::AllocTask => FuzzTirAttrPayloadRule::None,
         OpCode::StateSwitch => FuzzTirAttrPayloadRule::None,
@@ -2873,6 +2905,7 @@ pub fn opcode_operand_independent_result_type_table(
         OpCode::GetIter => None,
         OpCode::IterNext => None,
         OpCode::IterNextUnboxed => None,
+        OpCode::UnpackSequence => None,
         OpCode::ForIter => None,
         OpCode::AllocTask => None,
         OpCode::StateSwitch => None,
@@ -3012,6 +3045,7 @@ pub fn opcode_type_refine_attr_result_type_rule_table(
         OpCode::GetIter => TypeRefineAttrResultTypeRule::None,
         OpCode::IterNext => TypeRefineAttrResultTypeRule::None,
         OpCode::IterNextUnboxed => TypeRefineAttrResultTypeRule::None,
+        OpCode::UnpackSequence => TypeRefineAttrResultTypeRule::None,
         OpCode::ForIter => TypeRefineAttrResultTypeRule::None,
         OpCode::AllocTask => TypeRefineAttrResultTypeRule::None,
         OpCode::StateSwitch => TypeRefineAttrResultTypeRule::None,
@@ -3153,6 +3187,7 @@ pub fn opcode_type_refine_operand_type_rule_table(opcode: OpCode) -> TypeRefineO
         OpCode::GetIter => TypeRefineOperandTypeRule::GetIter,
         OpCode::IterNext => TypeRefineOperandTypeRule::IterNext,
         OpCode::IterNextUnboxed => TypeRefineOperandTypeRule::None,
+        OpCode::UnpackSequence => TypeRefineOperandTypeRule::None,
         OpCode::ForIter => TypeRefineOperandTypeRule::IterNext,
         OpCode::AllocTask => TypeRefineOperandTypeRule::None,
         OpCode::StateSwitch => TypeRefineOperandTypeRule::None,
@@ -3284,6 +3319,7 @@ pub fn opcode_sccp_constant_seed_rule_table(opcode: OpCode) -> SccpConstantSeedR
         OpCode::GetIter => SccpConstantSeedRule::None,
         OpCode::IterNext => SccpConstantSeedRule::None,
         OpCode::IterNextUnboxed => SccpConstantSeedRule::None,
+        OpCode::UnpackSequence => SccpConstantSeedRule::None,
         OpCode::ForIter => SccpConstantSeedRule::None,
         OpCode::AllocTask => SccpConstantSeedRule::None,
         OpCode::StateSwitch => SccpConstantSeedRule::None,
@@ -3428,6 +3464,7 @@ pub fn opcode_sccp_constant_eval_rule_table(opcode: OpCode) -> SccpConstantEvalR
         OpCode::GetIter => SccpConstantEvalRule::None,
         OpCode::IterNext => SccpConstantEvalRule::None,
         OpCode::IterNextUnboxed => SccpConstantEvalRule::None,
+        OpCode::UnpackSequence => SccpConstantEvalRule::None,
         OpCode::ForIter => SccpConstantEvalRule::None,
         OpCode::AllocTask => SccpConstantEvalRule::None,
         OpCode::StateSwitch => SccpConstantEvalRule::None,
@@ -3565,6 +3602,7 @@ pub fn opcode_value_range_transfer_rule_table(opcode: OpCode) -> ValueRangeTrans
         OpCode::GetIter => ValueRangeTransferRule::None,
         OpCode::IterNext => ValueRangeTransferRule::None,
         OpCode::IterNextUnboxed => ValueRangeTransferRule::None,
+        OpCode::UnpackSequence => ValueRangeTransferRule::None,
         OpCode::ForIter => ValueRangeTransferRule::None,
         OpCode::AllocTask => ValueRangeTransferRule::None,
         OpCode::StateSwitch => ValueRangeTransferRule::None,
@@ -3699,6 +3737,7 @@ pub fn opcode_value_range_const_fold_rule_table(opcode: OpCode) -> ValueRangeCon
         OpCode::GetIter => ValueRangeConstFoldRule::None,
         OpCode::IterNext => ValueRangeConstFoldRule::None,
         OpCode::IterNextUnboxed => ValueRangeConstFoldRule::None,
+        OpCode::UnpackSequence => ValueRangeConstFoldRule::None,
         OpCode::ForIter => ValueRangeConstFoldRule::None,
         OpCode::AllocTask => ValueRangeConstFoldRule::None,
         OpCode::StateSwitch => ValueRangeConstFoldRule::None,
@@ -3827,6 +3866,7 @@ pub fn opcode_value_range_cond_narrow_rule_table(opcode: OpCode) -> ValueRangeCo
         OpCode::GetIter => ValueRangeCondNarrowRule::None,
         OpCode::IterNext => ValueRangeCondNarrowRule::None,
         OpCode::IterNextUnboxed => ValueRangeCondNarrowRule::None,
+        OpCode::UnpackSequence => ValueRangeCondNarrowRule::None,
         OpCode::ForIter => ValueRangeCondNarrowRule::None,
         OpCode::AllocTask => ValueRangeCondNarrowRule::None,
         OpCode::StateSwitch => ValueRangeCondNarrowRule::None,
@@ -3959,6 +3999,7 @@ pub fn opcode_value_range_container_length_rule_table(
         OpCode::GetIter => ValueRangeContainerLengthRule::None,
         OpCode::IterNext => ValueRangeContainerLengthRule::None,
         OpCode::IterNextUnboxed => ValueRangeContainerLengthRule::None,
+        OpCode::UnpackSequence => ValueRangeContainerLengthRule::None,
         OpCode::ForIter => ValueRangeContainerLengthRule::None,
         OpCode::AllocTask => ValueRangeContainerLengthRule::None,
         OpCode::StateSwitch => ValueRangeContainerLengthRule::None,
@@ -4088,6 +4129,7 @@ pub fn opcode_range_devirt_role_table(opcode: OpCode) -> RangeDevirtRole {
         OpCode::GetIter => RangeDevirtRole::IteratorCandidate,
         OpCode::IterNext => RangeDevirtRole::None,
         OpCode::IterNextUnboxed => RangeDevirtRole::NextUnboxedCandidate,
+        OpCode::UnpackSequence => RangeDevirtRole::None,
         OpCode::ForIter => RangeDevirtRole::None,
         OpCode::AllocTask => RangeDevirtRole::None,
         OpCode::StateSwitch => RangeDevirtRole::None,
@@ -4505,6 +4547,11 @@ pub fn opcode_vectorize_facts_table(opcode: OpCode) -> VectorizeOpcodeFacts {
             reduction_rule: VectorReductionRule::None,
             annotation_target: false,
         },
+        OpCode::UnpackSequence => VectorizeOpcodeFacts {
+            body_action: VectorizeBodyAction::Reject,
+            reduction_rule: VectorReductionRule::None,
+            annotation_target: false,
+        },
         OpCode::ForIter => VectorizeOpcodeFacts {
             body_action: VectorizeBodyAction::IterationControl,
             reduction_rule: VectorReductionRule::None,
@@ -4811,6 +4858,7 @@ pub fn opcode_lir_verify_rule_table(opcode: OpCode) -> LirVerifyRule {
         OpCode::GetIter => LirVerifyRule::None,
         OpCode::IterNext => LirVerifyRule::None,
         OpCode::IterNextUnboxed => LirVerifyRule::None,
+        OpCode::UnpackSequence => LirVerifyRule::None,
         OpCode::ForIter => LirVerifyRule::None,
         OpCode::AllocTask => LirVerifyRule::None,
         OpCode::StateSwitch => LirVerifyRule::None,
@@ -4942,6 +4990,7 @@ pub fn opcode_repr_raw_i64_full_deopt_seed_rule_table(
         OpCode::GetIter => ReprRawI64FullDeoptSeedRule::None,
         OpCode::IterNext => ReprRawI64FullDeoptSeedRule::None,
         OpCode::IterNextUnboxed => ReprRawI64FullDeoptSeedRule::None,
+        OpCode::UnpackSequence => ReprRawI64FullDeoptSeedRule::None,
         OpCode::ForIter => ReprRawI64FullDeoptSeedRule::None,
         OpCode::AllocTask => ReprRawI64FullDeoptSeedRule::None,
         OpCode::StateSwitch => ReprRawI64FullDeoptSeedRule::None,
@@ -5076,6 +5125,7 @@ pub fn opcode_repr_projectable_bool_result_rule_table(
         OpCode::GetIter => ReprProjectableBoolResultRule::None,
         OpCode::IterNext => ReprProjectableBoolResultRule::None,
         OpCode::IterNextUnboxed => ReprProjectableBoolResultRule::ResultOne,
+        OpCode::UnpackSequence => ReprProjectableBoolResultRule::None,
         OpCode::ForIter => ReprProjectableBoolResultRule::None,
         OpCode::AllocTask => ReprProjectableBoolResultRule::None,
         OpCode::StateSwitch => ReprProjectableBoolResultRule::None,
@@ -5209,6 +5259,7 @@ pub fn opcode_repr_projectable_float_result_rule_table(
         OpCode::GetIter => ReprProjectableFloatResultRule::None,
         OpCode::IterNext => ReprProjectableFloatResultRule::None,
         OpCode::IterNextUnboxed => ReprProjectableFloatResultRule::None,
+        OpCode::UnpackSequence => ReprProjectableFloatResultRule::None,
         OpCode::ForIter => ReprProjectableFloatResultRule::None,
         OpCode::AllocTask => ReprProjectableFloatResultRule::None,
         OpCode::StateSwitch => ReprProjectableFloatResultRule::None,
@@ -5365,6 +5416,7 @@ pub fn opcode_counted_loop_comparison_role_table(opcode: OpCode) -> CountedLoopC
         OpCode::GetIter => CountedLoopComparisonRole::None,
         OpCode::IterNext => CountedLoopComparisonRole::None,
         OpCode::IterNextUnboxed => CountedLoopComparisonRole::None,
+        OpCode::UnpackSequence => CountedLoopComparisonRole::None,
         OpCode::ForIter => CountedLoopComparisonRole::None,
         OpCode::AllocTask => CountedLoopComparisonRole::None,
         OpCode::StateSwitch => CountedLoopComparisonRole::None,
@@ -5483,6 +5535,7 @@ pub fn opcode_counted_loop_inverted_comparison_table(opcode: OpCode) -> Option<O
         OpCode::GetIter => None,
         OpCode::IterNext => None,
         OpCode::IterNextUnboxed => None,
+        OpCode::UnpackSequence => None,
         OpCode::ForIter => None,
         OpCode::AllocTask => None,
         OpCode::StateSwitch => None,
@@ -5621,6 +5674,7 @@ pub fn opcode_gvn_numbering_role_table(opcode: OpCode) -> GvnNumberingRole {
         OpCode::GetIter => GvnNumberingRole::Never,
         OpCode::IterNext => GvnNumberingRole::Never,
         OpCode::IterNextUnboxed => GvnNumberingRole::Never,
+        OpCode::UnpackSequence => GvnNumberingRole::Never,
         OpCode::ForIter => GvnNumberingRole::Never,
         OpCode::AllocTask => GvnNumberingRole::Never,
         OpCode::StateSwitch => GvnNumberingRole::Never,
@@ -5772,6 +5826,7 @@ pub fn opcode_gvn_value_key_spec_table(opcode: OpCode) -> Option<GvnValueKeySpec
         OpCode::GetIter => None,
         OpCode::IterNext => None,
         OpCode::IterNextUnboxed => None,
+        OpCode::UnpackSequence => None,
         OpCode::ForIter => None,
         OpCode::AllocTask => None,
         OpCode::StateSwitch => None,
@@ -5913,6 +5968,7 @@ pub fn opcode_is_proven_result_type_seed_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
@@ -6031,6 +6087,7 @@ pub fn opcode_is_alias_rc_barrier_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => false,
         OpCode::StateSwitch => true,
@@ -6150,6 +6207,7 @@ pub fn opcode_is_escape_alloc_site_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => true,
         OpCode::StateSwitch => false,
@@ -6269,6 +6327,7 @@ pub fn opcode_is_polyhedral_loop_header_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::UnpackSequence => false,
         OpCode::ForIter => true,
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
@@ -6388,6 +6447,7 @@ pub fn opcode_is_polyhedral_affine_body_table(opcode: OpCode) -> bool {
         OpCode::GetIter => true,
         OpCode::IterNext => true,
         OpCode::IterNextUnboxed => false,
+        OpCode::UnpackSequence => false,
         OpCode::ForIter => true,
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
@@ -6507,6 +6567,7 @@ pub fn opcode_is_refcount_heap_exposure_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => true,
         OpCode::StateSwitch => false,
@@ -6660,6 +6721,7 @@ pub fn opcode_refcount_balance_role_table(opcode: OpCode) -> RefcountBalanceRole
         OpCode::GetIter => RefcountBalanceRole::NotRefcountBalance,
         OpCode::IterNext => RefcountBalanceRole::NotRefcountBalance,
         OpCode::IterNextUnboxed => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::UnpackSequence => RefcountBalanceRole::NotRefcountBalance,
         OpCode::ForIter => RefcountBalanceRole::NotRefcountBalance,
         OpCode::AllocTask => RefcountBalanceRole::NotRefcountBalance,
         OpCode::StateSwitch => RefcountBalanceRole::NotRefcountBalance,
@@ -6780,6 +6842,7 @@ pub fn opcode_is_lowered_state_machine_body_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => true,
         OpCode::StateSwitch => true,
@@ -6899,6 +6962,7 @@ pub fn opcode_is_drop_insertion_suspension_point_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
@@ -7018,6 +7082,7 @@ pub fn opcode_is_drop_insertion_return_deferral_barrier_table(opcode: OpCode) ->
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
@@ -7142,6 +7207,7 @@ pub fn opcode_is_fusion_barrier_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => false,
         OpCode::StateSwitch => true,
@@ -7283,6 +7349,7 @@ pub fn opcode_generator_fusion_poll_role_table(opcode: OpCode) -> GeneratorFusio
         OpCode::GetIter => GeneratorFusionPollRole::Neutral,
         OpCode::IterNext => GeneratorFusionPollRole::Neutral,
         OpCode::IterNextUnboxed => GeneratorFusionPollRole::Neutral,
+        OpCode::UnpackSequence => GeneratorFusionPollRole::Neutral,
         OpCode::ForIter => GeneratorFusionPollRole::Neutral,
         OpCode::AllocTask => GeneratorFusionPollRole::Reject,
         OpCode::StateSwitch => GeneratorFusionPollRole::Neutral,
@@ -7412,6 +7479,7 @@ pub fn opcode_generator_fusion_iter_use_role_table(opcode: OpCode) -> GeneratorF
         OpCode::GetIter => GeneratorFusionIterUseRole::None,
         OpCode::IterNext => GeneratorFusionIterUseRole::NextUse,
         OpCode::IterNextUnboxed => GeneratorFusionIterUseRole::None,
+        OpCode::UnpackSequence => GeneratorFusionIterUseRole::None,
         OpCode::ForIter => GeneratorFusionIterUseRole::None,
         OpCode::AllocTask => GeneratorFusionIterUseRole::None,
         OpCode::StateSwitch => GeneratorFusionIterUseRole::None,
@@ -7533,6 +7601,7 @@ pub fn opcode_is_state_machine_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => true,
         OpCode::StateSwitch => true,
@@ -7686,6 +7755,7 @@ pub fn opcode_module_concurrency_marker_source_facts_table(
         OpCode::GetIter => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::IterNext => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::IterNextUnboxed => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
+        OpCode::UnpackSequence => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::ForIter => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::AllocTask => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::StateSwitch => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
@@ -7821,6 +7891,7 @@ pub fn opcode_module_slot_access_role_table(opcode: OpCode) -> ModuleSlotAccessR
         OpCode::GetIter => ModuleSlotAccessRole::None,
         OpCode::IterNext => ModuleSlotAccessRole::None,
         OpCode::IterNextUnboxed => ModuleSlotAccessRole::None,
+        OpCode::UnpackSequence => ModuleSlotAccessRole::None,
         OpCode::ForIter => ModuleSlotAccessRole::None,
         OpCode::AllocTask => ModuleSlotAccessRole::None,
         OpCode::StateSwitch => ModuleSlotAccessRole::None,
@@ -7877,6 +7948,7 @@ pub enum TirVerifyAttrRule {
     CallCallee,
     CallMethod,
     PositivePayloadBytes,
+    UnpackSequenceShape,
 }
 
 /// TirVerifyAttrRule by opcode. EXHAUSTIVE over OpCode so a new opcode
@@ -7951,6 +8023,7 @@ pub fn opcode_tir_verify_attr_rule_table(opcode: OpCode) -> TirVerifyAttrRule {
         OpCode::GetIter => TirVerifyAttrRule::None,
         OpCode::IterNext => TirVerifyAttrRule::None,
         OpCode::IterNextUnboxed => TirVerifyAttrRule::None,
+        OpCode::UnpackSequence => TirVerifyAttrRule::UnpackSequenceShape,
         OpCode::ForIter => TirVerifyAttrRule::None,
         OpCode::AllocTask => TirVerifyAttrRule::None,
         OpCode::StateSwitch => TirVerifyAttrRule::None,
@@ -8080,6 +8153,7 @@ pub fn opcode_sroa_const_immediate_rule_table(opcode: OpCode) -> SroaConstImmedi
         OpCode::GetIter => SroaConstImmediateRule::None,
         OpCode::IterNext => SroaConstImmediateRule::None,
         OpCode::IterNextUnboxed => SroaConstImmediateRule::None,
+        OpCode::UnpackSequence => SroaConstImmediateRule::None,
         OpCode::ForIter => SroaConstImmediateRule::None,
         OpCode::AllocTask => SroaConstImmediateRule::None,
         OpCode::StateSwitch => SroaConstImmediateRule::None,
@@ -8211,6 +8285,7 @@ pub fn opcode_strength_reduction_rule_table(opcode: OpCode) -> StrengthReduction
         OpCode::GetIter => StrengthReductionRule::None,
         OpCode::IterNext => StrengthReductionRule::None,
         OpCode::IterNextUnboxed => StrengthReductionRule::None,
+        OpCode::UnpackSequence => StrengthReductionRule::None,
         OpCode::ForIter => StrengthReductionRule::None,
         OpCode::AllocTask => StrengthReductionRule::None,
         OpCode::StateSwitch => StrengthReductionRule::None,
@@ -8341,6 +8416,7 @@ pub fn opcode_scev_expr_rule_table(opcode: OpCode) -> ScevExprRule {
         OpCode::GetIter => ScevExprRule::None,
         OpCode::IterNext => ScevExprRule::None,
         OpCode::IterNextUnboxed => ScevExprRule::None,
+        OpCode::UnpackSequence => ScevExprRule::None,
         OpCode::ForIter => ScevExprRule::None,
         OpCode::AllocTask => ScevExprRule::None,
         OpCode::StateSwitch => ScevExprRule::None,
@@ -8463,6 +8539,7 @@ pub fn opcode_is_inliner_numeric_raw_lane_consumer_table(opcode: OpCode) -> bool
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
@@ -8584,6 +8661,7 @@ pub fn opcode_is_overflow_peel_guard_compare_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
@@ -8706,6 +8784,7 @@ pub fn opcode_is_overflow_peel_body_pure_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
@@ -8826,6 +8905,7 @@ pub fn opcode_sets_exception_handling_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
@@ -8945,6 +9025,7 @@ pub fn opcode_is_exception_handler_region_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
@@ -9064,6 +9145,7 @@ pub fn opcode_is_structured_scf_marker_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
@@ -9185,6 +9267,7 @@ pub fn opcode_requires_i64_overflow_box_dispatch_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
@@ -9304,6 +9387,7 @@ pub fn opcode_supports_i64_checked_overflow_triple_table(opcode: OpCode) -> bool
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
@@ -9426,6 +9510,7 @@ pub fn opcode_uses_boxed_runtime_inplace_dispatch_table(opcode: OpCode) -> bool 
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
@@ -9547,6 +9632,7 @@ pub fn opcode_requires_i64_zero_divisor_guard_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
@@ -9666,6 +9752,7 @@ pub fn opcode_requires_i64_shift_count_guard_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
@@ -9785,6 +9872,7 @@ pub fn opcode_has_exception_label_attr_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
@@ -9904,6 +9992,7 @@ pub fn opcode_is_exception_transfer_edge_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
@@ -10030,6 +10119,7 @@ pub fn opcode_exception_region_nesting_role_table(opcode: OpCode) -> ExceptionRe
         OpCode::GetIter => ExceptionRegionNestingRole::None,
         OpCode::IterNext => ExceptionRegionNestingRole::None,
         OpCode::IterNextUnboxed => ExceptionRegionNestingRole::None,
+        OpCode::UnpackSequence => ExceptionRegionNestingRole::None,
         OpCode::ForIter => ExceptionRegionNestingRole::None,
         OpCode::AllocTask => ExceptionRegionNestingRole::None,
         OpCode::StateSwitch => ExceptionRegionNestingRole::None,
@@ -10156,6 +10246,7 @@ pub fn opcode_alias_typed_slot_role_table(opcode: OpCode) -> AliasTypedSlotRole 
         OpCode::GetIter => AliasTypedSlotRole::NotTypedSlot,
         OpCode::IterNext => AliasTypedSlotRole::NotTypedSlot,
         OpCode::IterNextUnboxed => AliasTypedSlotRole::NotTypedSlot,
+        OpCode::UnpackSequence => AliasTypedSlotRole::NotTypedSlot,
         OpCode::ForIter => AliasTypedSlotRole::NotTypedSlot,
         OpCode::AllocTask => AliasTypedSlotRole::NotTypedSlot,
         OpCode::StateSwitch => AliasTypedSlotRole::NotTypedSlot,
@@ -10282,6 +10373,7 @@ pub fn opcode_alias_transparent_alias_role_table(opcode: OpCode) -> AliasTranspa
         OpCode::GetIter => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::IterNext => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::IterNextUnboxed => AliasTransparentAliasRole::NotTransparentAlias,
+        OpCode::UnpackSequence => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::ForIter => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::AllocTask => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::StateSwitch => AliasTransparentAliasRole::NotTransparentAlias,
@@ -10413,6 +10505,7 @@ pub fn opcode_alias_memory_region_table(opcode: OpCode) -> AliasMemoryRegionClas
         OpCode::GetIter => AliasMemoryRegionClass::GenericHeap,
         OpCode::IterNext => AliasMemoryRegionClass::GenericHeap,
         OpCode::IterNextUnboxed => AliasMemoryRegionClass::GenericHeap,
+        OpCode::UnpackSequence => AliasMemoryRegionClass::GenericHeap,
         OpCode::ForIter => AliasMemoryRegionClass::GenericHeap,
         OpCode::AllocTask => AliasMemoryRegionClass::GenericHeap,
         OpCode::StateSwitch => AliasMemoryRegionClass::GenericHeap,
@@ -10543,6 +10636,7 @@ pub fn opcode_alias_slot_observation_table(opcode: OpCode) -> AliasSlotObservati
         OpCode::GetIter => AliasSlotObservation::ConservativeObserver,
         OpCode::IterNext => AliasSlotObservation::ConservativeObserver,
         OpCode::IterNextUnboxed => AliasSlotObservation::ConservativeObserver,
+        OpCode::UnpackSequence => AliasSlotObservation::ConservativeObserver,
         OpCode::ForIter => AliasSlotObservation::ConservativeObserver,
         OpCode::AllocTask => AliasSlotObservation::DirectObserver,
         OpCode::StateSwitch => AliasSlotObservation::ConservativeObserver,
@@ -10747,6 +10841,7 @@ pub fn opcode_pass_delta_facts_table(opcode: OpCode) -> PassDeltaOpcodeFacts {
         OpCode::GetIter => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::IterNext => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::IterNextUnboxed => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::UnpackSequence => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::ForIter => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::AllocTask => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::StateSwitch => PASS_DELTA_OPCODE_FACTS_NONE,
@@ -10893,6 +10988,7 @@ pub fn opcode_literal_payload_kind_table(opcode: OpCode) -> Option<LiteralPayloa
         OpCode::GetIter => None,
         OpCode::IterNext => None,
         OpCode::IterNextUnboxed => None,
+        OpCode::UnpackSequence => None,
         OpCode::ForIter => None,
         OpCode::AllocTask => None,
         OpCode::StateSwitch => None,
@@ -11023,6 +11119,7 @@ pub fn opcode_canonicalize_commutative_domain_table(
         OpCode::GetIter => None,
         OpCode::IterNext => None,
         OpCode::IterNextUnboxed => None,
+        OpCode::UnpackSequence => None,
         OpCode::ForIter => None,
         OpCode::AllocTask => None,
         OpCode::StateSwitch => None,
@@ -11141,6 +11238,7 @@ pub fn opcode_swapped_comparison_for_canonicalize_table(opcode: OpCode) -> Optio
         OpCode::GetIter => None,
         OpCode::IterNext => None,
         OpCode::IterNextUnboxed => None,
+        OpCode::UnpackSequence => None,
         OpCode::ForIter => None,
         OpCode::AllocTask => None,
         OpCode::StateSwitch => None,
@@ -11551,6 +11649,7 @@ pub fn opcode_canonicalize_binary_rules_table(opcode: OpCode) -> &'static [Canon
         OpCode::GetIter => &[],
         OpCode::IterNext => &[],
         OpCode::IterNextUnboxed => &[],
+        OpCode::UnpackSequence => &[],
         OpCode::ForIter => &[],
         OpCode::AllocTask => &[],
         OpCode::StateSwitch => &[],
@@ -11794,6 +11893,7 @@ pub fn opcode_operand_ownership_table(opcode: OpCode, operand_idx: usize) -> Ope
         OpCode::GetIter => OperandOwnership::Borrowed,
         OpCode::IterNext => OperandOwnership::Borrowed,
         OpCode::IterNextUnboxed => OperandOwnership::Borrowed,
+        OpCode::UnpackSequence => OperandOwnership::Borrowed,
         OpCode::ForIter => OperandOwnership::Borrowed,
         OpCode::AllocTask => OperandOwnership::Borrowed,
         OpCode::StateSwitch => OperandOwnership::Borrowed,
@@ -11986,6 +12086,7 @@ pub fn opcode_result_absorbs_operand_ownership_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => false,
         OpCode::StateSwitch => false,
@@ -12159,6 +12260,7 @@ pub fn opcode_result_validity_table(opcode: OpCode, result_idx: usize) -> Result
             0 => ResultValidity::ConditionalValidOnlyOnEdge,
             _ => ResultValidity::AlwaysValid,
         },
+        OpCode::UnpackSequence => ResultValidity::AlwaysValid,
         OpCode::ForIter => ResultValidity::AlwaysValid,
         OpCode::AllocTask => ResultValidity::AlwaysValid,
         OpCode::StateSwitch => ResultValidity::AlwaysValid,
@@ -12302,6 +12404,7 @@ pub fn opcode_explicit_release_operands_table(
         OpCode::GetIter => ExplicitReleaseOperands::None,
         OpCode::IterNext => ExplicitReleaseOperands::None,
         OpCode::IterNextUnboxed => ExplicitReleaseOperands::None,
+        OpCode::UnpackSequence => ExplicitReleaseOperands::None,
         OpCode::ForIter => ExplicitReleaseOperands::None,
         OpCode::AllocTask => ExplicitReleaseOperands::None,
         OpCode::StateSwitch => ExplicitReleaseOperands::None,

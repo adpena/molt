@@ -147,7 +147,8 @@ fn read_dat_value(dat_file: &str, offset: u64, size: u64) -> Result<Vec<u8>, &'s
     let mut file = fs::File::open(dat_file).map_err(|_| "cannot open .dat file")?;
     file.seek(SeekFrom::Start(offset))
         .map_err(|_| "seek failed on .dat file")?;
-    let mut buf = vec![0u8; size as usize];
+    let size = usize::try_from(size).map_err(|_| "value size exceeds the active address space")?;
+    let mut buf = vec![0u8; size];
     file.read_exact(&mut buf)
         .map_err(|_| "read failed on .dat file")?;
     Ok(buf)

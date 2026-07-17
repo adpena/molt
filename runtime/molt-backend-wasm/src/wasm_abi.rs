@@ -113,8 +113,8 @@ pub(crate) fn static_func_type_idx(params: &[ValType], results: &[ValType]) -> O
 mod tests {
     use super::{IMPORT_REGISTRY, STATIC_TYPE_COUNT, WasmRuntimeImport, emit_static_type_section};
     use crate::wasm_abi_generated::{
-        LirRuntimeCall, RUNTIME_CALLABLE_IMPORTS, WasmObjectNewBoundPayload, op_loop_runtime_call,
-        runtime_callable_import, wasm_object_new_bound_selection, wasm_runtime_import,
+        RUNTIME_CALLABLE_IMPORTS, op_loop_runtime_call, runtime_callable_import,
+        wasm_runtime_import,
     };
     use wasm_encoder::{Module, TypeSection};
     use wasmparser::{CompositeInnerType, Parser, Payload};
@@ -191,24 +191,10 @@ mod tests {
             "object_new_bound must use the unary i64 -> i64 host import ABI"
         );
 
-        let sized_type = IMPORT_REGISTRY.iter().find_map(|spec| {
-            (spec.import == WasmRuntimeImport::ObjectNewBoundSized).then_some(spec.type_idx)
-        });
-        assert_eq!(
-            sized_type,
-            Some(3),
-            "object_new_bound_sized must use the binary i64,i64 -> i64 host import ABI"
+        assert!(
+            wasm_runtime_import("object_new_bound_sized").is_none(),
+            "heap instance sizing must have one class-owned runtime authority"
         );
-
-        let unsized_selection = wasm_object_new_bound_selection(WasmObjectNewBoundPayload::Unsized);
-        assert_eq!(unsized_selection.import, WasmRuntimeImport::ObjectNewBound);
-        assert_eq!(
-            unsized_selection.lir_runtime_call,
-            LirRuntimeCall::ObjectNewBound
-        );
-        let sized = wasm_object_new_bound_selection(WasmObjectNewBoundPayload::Sized);
-        assert_eq!(sized.import, WasmRuntimeImport::ObjectNewBoundSized);
-        assert_eq!(sized.lir_runtime_call, LirRuntimeCall::ObjectNewBoundSized);
     }
 
     #[test]

@@ -1415,7 +1415,9 @@ pub unsafe extern "C" fn PyLong_AsSsize_t(op: *mut PyObject) -> isize {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyLong_AsSize_t(op: *mut PyObject) -> usize {
     match checked_unsigned_value(op, usize::MAX as u64) {
-        Ok(value) => value as usize,
+        Ok(value) => {
+            usize::try_from(value).expect("checked_unsigned_value enforced the active size_t width")
+        }
         Err(CheckedLongError::Negative) => {
             set_long_overflow_msg(c"can't convert negative value to size_t");
             usize::MAX
@@ -1573,7 +1575,9 @@ pub unsafe extern "C" fn _PyLong_Size_t_Converter(op: *mut PyObject, out: *mut c
     ) else {
         return 0;
     };
-    unsafe { out.cast::<usize>().write(value as usize) };
+    let value =
+        usize::try_from(value).expect("unsigned_converter_value enforced the active size_t width");
+    unsafe { out.cast::<usize>().write(value) };
     1
 }
 

@@ -289,13 +289,19 @@ fn module_registry_emits_valid_dense_module_id_dispatch() {
         if let Payload::CodeSectionEntry(body) = payload.expect("valid wasm payload") {
             let mut reader = body.get_operators_reader().expect("operators reader");
             while !reader.eof() {
-                if matches!(reader.read().expect("valid operator"), Operator::BrTable { .. }) {
+                if matches!(
+                    reader.read().expect("valid operator"),
+                    Operator::BrTable { .. }
+                ) {
                     br_tables += 1;
                 }
             }
         }
     }
-    assert_eq!(br_tables, 1, "one dense ModuleId dispatch table owns all rows");
+    assert_eq!(
+        br_tables, 1,
+        "one dense ModuleId dispatch table owns all rows"
+    );
 }
 
 #[test]

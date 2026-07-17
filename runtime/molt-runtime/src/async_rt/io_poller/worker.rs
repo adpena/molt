@@ -1,6 +1,10 @@
 use super::*;
 
 pub(super) fn io_worker(poller: Arc<IoPoller>) {
+    crate::state::run_runtime_worker(|| io_worker_inner(poller));
+}
+
+fn io_worker_inner(poller: Arc<IoPoller>) {
     loop {
         if !poller.running.load(AtomicOrdering::Acquire) {
             break;

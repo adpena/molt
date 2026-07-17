@@ -19,6 +19,10 @@ print("tuple", a, b)
 a, b = iter([5, 6])
 print("iter", a, b)
 
+[] = []
+() = iter(())
+print("empty-targets")
+
 pairs = [(1, 2), (3, 4)]
 loop_out = []
 for x, y in pairs:
@@ -65,6 +69,24 @@ def unpack_star_too_few() -> None:
     print(a, b, c)
 
 
+def unpack_empty_too_many() -> None:
+    [] = [1]
+
+
 capture("too_few", unpack_too_few)
 capture("too_many", unpack_too_many)
 capture("star_too_few", unpack_star_too_few)
+capture("empty_too_many", unpack_empty_too_many)
+
+
+class RaisingIter:
+    def __iter__(self):
+        raise LookupError("iter sentinel")
+
+
+def unpack_raising_iter() -> None:
+    left, right = RaisingIter()
+    print(left, right)
+
+
+capture("raising_iter", unpack_raising_iter)

@@ -230,7 +230,10 @@ macro_rules! required_native_call_target {
             let _ = $py;
             let _ = $func_ptr;
             let _ = $context;
-            $fn_ptr as usize as *const ()
+            let Some(call_target) = crate::provenance::abi::function_ptr($fn_ptr) else {
+                return missing_function_call_target($py, $context, $fn_ptr);
+            };
+            call_target
         }
     }};
 }
@@ -2747,7 +2750,13 @@ pub(crate) unsafe fn call_function_obj_trampoline(
             // positional args — the previous code raised immediately without
             // consulting __defaults__.
             let n = args.len();
-            let a = arity as usize;
+            let Some(a) = usize::try_from(arity).ok() else {
+                return raise_exception::<_>(
+                    _py,
+                    "OverflowError",
+                    "function arity exceeds the active address space",
+                );
+            };
             if n < a {
                 // Try to pad missing args from __defaults__ tuple.
                 let defaults_bits = function_attr_bits(
@@ -2851,8 +2860,18 @@ pub(crate) unsafe fn call_function_obj_trampoline(
                 // native (`normalize_runtime_trampoline_ptr` is identity here);
                 // resolve it through the runtime-callable registry for
                 // canonicalization and fall back to the raw address.
-                let call_target = runtime_callable_target_ptr(tramp_ptr)
-                    .unwrap_or(tramp_ptr as usize as *const ());
+                let call_target = if let Some(target) = runtime_callable_target_ptr(tramp_ptr) {
+                    target
+                } else {
+                    let Some(target) = crate::provenance::abi::function_ptr(tramp_ptr) else {
+                        return missing_function_call_target(
+                            _py,
+                            "variadic trampoline call",
+                            tramp_ptr,
+                        );
+                    };
+                    target
+                };
                 let func: extern "C" fn(u64, u64, u64) -> i64 = std::mem::transmute(call_target);
                 func(closure_bits, args.as_ptr() as u64, args.len() as u64) as u64
             }

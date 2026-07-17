@@ -3,12 +3,12 @@
 //! Eliminates intermediate tuples that are built and immediately unpacked
 //! (`a, b = b, a + b`). See the module-level docs on [`super`].
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::super::PassStats;
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
-use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
+use crate::tir::ops::{AttrDict, Dialect, OpCode, TirOp};
 use crate::tir::values::ValueId;
 
 // ---------------------------------------------------------------------------
@@ -23,7 +23,7 @@ use crate::tir::values::ValueId;
 //
 // Before scalarization:
 //   %tuple = BuildTuple(%b, %a_plus_b)
-//   (%new_a, %new_b) = Copy[_original_kind="unpack_sequence"](%tuple)
+//   (%new_a, %new_b) = UnpackSequence(%tuple)
 //
 // After scalarization:
 //   %new_a = Copy(%b)
@@ -45,7 +45,7 @@ struct TupleScalarizeCandidate {
     block_id: BlockId,
     /// Index of the BuildTuple op within the block.
     build_idx: usize,
-    /// Index of the unpack_sequence (Copy with _original_kind) op within the block.
+    /// Index of the first-class UnpackSequence op within the block.
     unpack_idx: usize,
     /// Operands of the BuildTuple (the element values being packed).
     tuple_elements: Vec<ValueId>,
@@ -56,10 +56,9 @@ struct TupleScalarizeCandidate {
 /// Eliminate intermediate tuples that are built and immediately unpacked.
 ///
 /// Scans every block for `BuildTuple` ops whose result is used exactly once
-/// by an `unpack_sequence` (represented as `Copy` with `_original_kind`
-/// attribute) in the same block.  When the element counts match, both ops
-/// are replaced with direct `Copy` ops connecting tuple elements to unpack
-/// targets.
+/// by a first-class `UnpackSequence` in the same block. When the element counts
+/// match, both ops are replaced with direct `Copy` ops connecting tuple elements
+/// to unpack targets.
 pub fn run_tuple_scalarize(func: &mut TirFunction) -> PassStats {
     let mut stats = PassStats {
         name: "tuple_scalarize",
@@ -161,20 +160,12 @@ pub fn run_tuple_scalarize(func: &mut TirFunction) -> PassStats {
 
         // Scan for unpack_sequence ops that consume a locally-built tuple.
         for (i, op) in block.ops.iter().enumerate() {
-            // unpack_sequence is stored as Copy with _original_kind = "unpack_sequence"
-            if op.opcode != OpCode::Copy {
-                continue;
-            }
-            let is_unpack = op
-                .attrs
-                .get("_original_kind")
-                .is_some_and(|v| matches!(v, AttrValue::Str(s) if s == "unpack_sequence"));
-            if !is_unpack {
+            if op.opcode != OpCode::UnpackSequence {
                 continue;
             }
 
             // unpack_sequence has exactly one operand (the tuple) and N results.
-            if op.operands.len() != 1 || op.results.is_empty() {
+            if op.operands.len() != 1 {
                 continue;
             }
 
@@ -217,23 +208,21 @@ pub fn run_tuple_scalarize(func: &mut TirFunction) -> PassStats {
         return stats;
     }
 
-    // Phase 3: Apply scalarization.
-    // Process candidates per-block, sorted by descending op index so that
-    // removals don't invalidate earlier indices.
-    //
-    // Group candidates by block.
-    let mut by_block: HashMap<BlockId, Vec<&TupleScalarizeCandidate>> = HashMap::new();
-    for c in &candidates {
+    // Phase 3: Apply scalarization. Reconstruct each block from its original
+    // indices in one pass. Mutating in place candidate-by-candidate is not
+    // index-stable when pairs interleave (Build A, Build B, Unpack A, Unpack B):
+    // replacing one pair shifts both absolute indices of the other pair.
+    let mut by_block: HashMap<BlockId, Vec<TupleScalarizeCandidate>> = HashMap::new();
+    for c in candidates {
         by_block.entry(c.block_id).or_default().push(c);
     }
 
-    for (bid, mut block_candidates) in by_block {
-        // Sort by descending unpack_idx so we can remove from the end first.
-        block_candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.unpack_idx));
-
+    for (bid, block_candidates) in by_block {
         let block = func.blocks.get_mut(&bid).unwrap();
+        let mut replacements: HashMap<usize, Vec<TirOp>> = HashMap::new();
+        let mut removed_unpacks: HashSet<usize> = HashSet::new();
 
-        for candidate in &block_candidates {
+        for candidate in block_candidates {
             // Build replacement Copy ops for each element.
             let copy_ops: Vec<TirOp> = candidate
                 .tuple_elements
@@ -250,26 +239,34 @@ pub fn run_tuple_scalarize(func: &mut TirFunction) -> PassStats {
                 .collect();
 
             let n_copies = copy_ops.len();
-
-            // Remove the unpack_sequence op (higher index first).
-            block.ops.remove(candidate.unpack_idx);
-            stats.ops_removed += 1;
-
-            // Remove the BuildTuple op.
-            block.ops.remove(candidate.build_idx);
-            stats.ops_removed += 1;
-
-            // Insert the Copy ops at the BuildTuple's former position.
-            // After removing both ops, the insertion point is build_idx
-            // (the unpack was after the build, and removing build shifted
-            // everything down by 1, but we already removed the unpack which
-            // was at a higher index, so build_idx is still correct).
-            for (j, copy_op) in copy_ops.into_iter().enumerate() {
-                block.ops.insert(candidate.build_idx + j, copy_op);
-            }
+            assert!(
+                replacements.insert(candidate.build_idx, copy_ops).is_none(),
+                "a BuildTuple cannot back multiple scalarization candidates"
+            );
+            assert!(
+                removed_unpacks.insert(candidate.unpack_idx),
+                "an UnpackSequence cannot belong to multiple candidates"
+            );
+            stats.ops_removed += 2;
             stats.ops_added += n_copies;
             stats.values_changed += 1;
         }
+
+        let replacement_op_count: usize = replacements.values().map(Vec::len).sum();
+        let original_ops = std::mem::take(&mut block.ops);
+        let removed_op_count = replacements.len() + removed_unpacks.len();
+        debug_assert!(removed_op_count <= original_ops.len());
+        block
+            .ops
+            .reserve(original_ops.len() - removed_op_count + replacement_op_count);
+        for (idx, op) in original_ops.into_iter().enumerate() {
+            if let Some(copy_ops) = replacements.remove(&idx) {
+                block.ops.extend(copy_ops);
+            } else if !removed_unpacks.contains(&idx) {
+                block.ops.push(op);
+            }
+        }
+        debug_assert!(replacements.is_empty());
     }
 
     stats

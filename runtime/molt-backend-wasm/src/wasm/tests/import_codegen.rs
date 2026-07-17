@@ -1,7 +1,7 @@
 use super::support::*;
 
 #[test]
-fn object_new_bound_import_demand_and_codegen_follow_payload_selector() {
+fn object_new_bound_import_demand_uses_class_owned_layout_size() {
     let cases = [
         (
             "object_new_bound_unsized_selector",
@@ -10,10 +10,10 @@ fn object_new_bound_import_demand_and_codegen_follow_payload_selector() {
             "object_new_bound_sized",
         ),
         (
-            "object_new_bound_sized_selector",
+            "object_new_bound_with_static_stack_hint",
             Some(24),
-            "object_new_bound_sized",
             "object_new_bound",
+            "object_new_bound_sized",
         ),
     ];
     for (name, payload_size, expected_import, rejected_import) in cases {
@@ -50,12 +50,6 @@ fn object_new_bound_import_demand_and_codegen_follow_payload_selector() {
             assert!(
                 !call_indices.contains(rejected_index),
                 "{name} must not directly call {rejected_import} from molt_main; calls={call_indices:?}"
-            );
-        }
-        if let Some(size) = payload_size {
-            assert!(
-                wasm_i64_consts(&direct_wasm).contains(&size),
-                "{name} must emit payload byte size {size}"
             );
         }
     }

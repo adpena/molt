@@ -27,7 +27,7 @@ fn runtime_callable_name_suffix(symbol_path: &str) -> &str {
 
 pub(crate) fn runtime_fn_addr(symbol_path: &str, raw_ptr: *const ()) -> u64 {
     let key = runtime_callable_key_from_symbol_name(runtime_callable_name_suffix(symbol_path))
-        .unwrap_or(raw_ptr as usize as u64);
+        .unwrap_or_else(|| crate::provenance::abi::expose_function_address(raw_ptr));
     if !raw_ptr.is_null() {
         let mut guard = native_callable_targets().lock().unwrap();
         guard.entry(key).or_insert(NativeCallableTarget(raw_ptr));
@@ -242,10 +242,13 @@ unsafe fn init_runtime_callable_function_obj(
     #[cfg(target_arch = "wasm32")]
     let _ = native_direct_target;
     #[cfg(not(target_arch = "wasm32"))]
-    if native_direct_target && unsafe { function_call_target_ptr(ptr) }.is_null() && raw_fn_ptr != 0
+    if native_direct_target
+        && unsafe { function_call_target_ptr(ptr) }.is_null()
+        && raw_fn_ptr != 0
+        && let Some(raw_target) = crate::provenance::abi::function_ptr(raw_fn_ptr)
     {
         unsafe {
-            function_set_call_target_ptr(ptr, raw_fn_ptr as usize as *const ());
+            function_set_call_target_ptr(ptr, raw_target);
         }
     }
     let normalized_trampoline_ptr = normalize_runtime_trampoline_ptr(raw_fn_ptr, trampoline_ptr);
@@ -263,8 +266,10 @@ pub(crate) fn alloc_runtime_function_obj(
 ) -> *mut u8 {
     let fn_key = canonicalize_runtime_callable_key(fn_ptr);
     #[cfg(not(miri))]
-    if fn_key == fn_ptr && fn_ptr != 0 {
-        let raw_target = fn_ptr as usize as *const ();
+    if fn_key == fn_ptr
+        && fn_ptr != 0
+        && let Some(raw_target) = crate::provenance::abi::function_ptr(fn_ptr)
+    {
         let mut guard = native_callable_targets().lock().unwrap();
         guard
             .entry(fn_key)
@@ -320,8 +325,10 @@ fn molt_func_new_builtin_raw_impl(
 ) -> u64 {
     let fn_key = canonicalize_runtime_callable_key(fn_ptr);
     #[cfg(not(miri))]
-    if fn_key == fn_ptr && fn_ptr != 0 {
-        let raw_target = fn_ptr as usize as *const ();
+    if fn_key == fn_ptr
+        && fn_ptr != 0
+        && let Some(raw_target) = crate::provenance::abi::function_ptr(fn_ptr)
+    {
         let mut guard = native_callable_targets().lock().unwrap();
         guard
             .entry(fn_key)
@@ -1520,11 +1527,16 @@ pub extern "C" fn molt_bound_method_new(func_bits: u64, self_bits: u64) -> u64 {
 pub unsafe extern "C" fn molt_closure_load(self_ptr_bits: u64, offset: u64) -> u64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
-            let self_ptr = self_ptr_bits as usize as *mut u8;
+            let Some(self_ptr) = crate::provenance::abi::mut_ptr::<u8>(self_ptr_bits) else {
+                return MoltObject::none().bits();
+            };
             if self_ptr.is_null() {
                 return MoltObject::none().bits();
             }
-            let slot = self_ptr.add(offset as usize) as *mut u64;
+            let Some(offset) = usize::try_from(offset).ok() else {
+                return MoltObject::none().bits();
+            };
+            let slot = self_ptr.add(offset) as *mut u64;
             let bits = *slot;
             inc_ref_bits(_py, bits);
             bits
@@ -1539,11 +1551,16 @@ pub unsafe extern "C" fn molt_closure_load(self_ptr_bits: u64, offset: u64) -> u
 pub unsafe extern "C" fn molt_closure_store(self_ptr_bits: u64, offset: u64, bits: u64) -> u64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
-            let self_ptr = self_ptr_bits as usize as *mut u8;
+            let Some(self_ptr) = crate::provenance::abi::mut_ptr::<u8>(self_ptr_bits) else {
+                return MoltObject::none().bits();
+            };
             if self_ptr.is_null() {
                 return MoltObject::none().bits();
             }
-            let slot = self_ptr.add(offset as usize) as *mut u64;
+            let Some(offset) = usize::try_from(offset).ok() else {
+                return MoltObject::none().bits();
+            };
+            let slot = self_ptr.add(offset) as *mut u64;
             let old_bits = *slot;
             dec_ref_bits(_py, old_bits);
             inc_ref_bits(_py, bits);

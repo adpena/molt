@@ -1164,9 +1164,18 @@ fn file_readinto_impl(_py: &PyToken<'_>, handle_bits: u64, buffer_bits: u64, nam
             let msg = format!("{name}() argument must be a writable bytes-like object");
             return raise_exception::<_>(_py, "TypeError", &msg);
         }
-        let len = export.len as usize;
+        let Ok(len) = usize::try_from(export.len) else {
+            return raise_exception::<_>(
+                _py,
+                "OverflowError",
+                "buffer length exceeds the active address space",
+            );
+        };
         if len == 0 {
             return MoltObject::from_int(0).bits();
+        }
+        if export.data.is_null() {
+            return raise_exception::<_>(_py, "BufferError", "buffer data pointer is null");
         }
         let buf = std::slice::from_raw_parts_mut(export.data, len);
         let backend_state = Arc::clone(&handle.state);

@@ -1882,7 +1882,9 @@ pub unsafe extern "C" fn molt_string_from_bytes(
 ) -> i32 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
-            let len = usize_from_bits(len_bits);
+            let Some(len) = usize_from_bits(len_bits) else {
+                return 1;
+            };
             if trace_string_from_bytes() {
                 eprintln!(
                     "[molt string_from_bytes] enter ptr=0x{:x} len={} out=0x{:x}",
@@ -1981,7 +1983,9 @@ pub unsafe extern "C" fn molt_bytes_from_bytes(
                 std::env::var("MOLT_TRACE_BYTES_FROM_BYTES").ok().as_deref(),
                 Some("1")
             );
-            let len = usize_from_bits(len_bits);
+            let Some(len) = usize_from_bits(len_bits) else {
+                return 1;
+            };
             if out.is_null() {
                 return 2;
             }

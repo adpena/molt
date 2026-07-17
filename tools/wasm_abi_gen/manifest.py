@@ -113,7 +113,6 @@ WASM_BULK_MEMORY_INSTRUCTIONS = {
     "memory_copy": "Copy",
     "memory_fill": "Fill",
 }
-OBJECT_NEW_BOUND_SELECTOR_PAYLOADS = ("unsized", "sized")
 METHOD_IC_SELECTOR_FAMILIES = ("method", "super_method")
 METHOD_IC_MAX_EXTRA_ARGS = 4
 NUMERIC_OP_LOOP_VARIANTS = (
@@ -1746,64 +1745,6 @@ def validate_loaded_manifest(
                 f"{import_name!r} does not match lir_variant {lir_variant!r} "
                 f"import {lir_import_by_variant[lir_variant]!r}"
             )
-
-    object_new_bound_selectors = data.get("object_new_bound_selector", [])
-    if not isinstance(object_new_bound_selectors, list):
-        raise WasmAbiManifestError("object_new_bound_selector must be a list of tables")
-    expected_object_new_bound_payloads = set(OBJECT_NEW_BOUND_SELECTOR_PAYLOADS)
-    seen_object_new_bound_payloads: set[str] = set()
-    for idx, entry in enumerate(object_new_bound_selectors):
-        if not isinstance(entry, dict):
-            raise WasmAbiManifestError(
-                f"object_new_bound_selector entry {idx} must be a table"
-            )
-        payload = entry.get("payload")
-        if (
-            not isinstance(payload, str)
-            or payload not in expected_object_new_bound_payloads
-        ):
-            raise WasmAbiManifestError(
-                f"object_new_bound_selector entry {idx} has invalid payload {payload!r}"
-            )
-        if payload in seen_object_new_bound_payloads:
-            raise WasmAbiManifestError(
-                f"duplicate object_new_bound_selector payload {payload!r}"
-            )
-        seen_object_new_bound_payloads.add(payload)
-        import_name = entry.get("import_name")
-        if not isinstance(import_name, str) or not import_name:
-            raise WasmAbiManifestError(
-                f"object_new_bound_selector {payload!r} has invalid import_name"
-            )
-        if import_name not in seen_imports:
-            raise WasmAbiManifestError(
-                f"object_new_bound_selector {payload!r} references unknown import "
-                f"{import_name!r}"
-            )
-        lir_variant = entry.get("lir_variant")
-        if not isinstance(lir_variant, str) or lir_variant not in lir_import_by_variant:
-            raise WasmAbiManifestError(
-                f"object_new_bound_selector {payload!r} has invalid lir_variant "
-                f"{lir_variant!r}"
-            )
-        if lir_import_by_variant[lir_variant] != import_name:
-            raise WasmAbiManifestError(
-                f"object_new_bound_selector {payload!r} import {import_name!r} "
-                f"does not match lir_variant {lir_variant!r} import "
-                f"{lir_import_by_variant[lir_variant]!r}"
-            )
-    if seen_object_new_bound_payloads != expected_object_new_bound_payloads:
-        missing = sorted(
-            expected_object_new_bound_payloads - seen_object_new_bound_payloads
-        )
-        extra = sorted(
-            seen_object_new_bound_payloads - expected_object_new_bound_payloads
-        )
-        raise WasmAbiManifestError(
-            "object_new_bound_selector must declare exactly payloads "
-            f"{sorted(expected_object_new_bound_payloads)}; missing={missing}, "
-            f"extra={extra}"
-        )
 
     method_ic_selectors = data.get("method_ic_selector", [])
     if not isinstance(method_ic_selectors, list):

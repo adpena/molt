@@ -1036,39 +1036,25 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
             }
             OpCode::IterNextUnboxed => self.emit_iter_next_unboxed(op),
+            OpCode::UnpackSequence => {
+                assert!(
+                    self.lower_preserved_container_op(op, "unpack_sequence"),
+                    "verified UnpackSequence must lower through the canonical runtime ABI"
+                );
+            }
             OpCode::ObjectNewBound | OpCode::ObjectNewBoundStack => {
                 let Some(&class_id) = op.operands.first() else {
                     panic!("{:?} requires class operand", op.opcode);
                 };
                 let class_bits = self.materialize_dynbox_operand(class_id);
-                let result = if let Some(AttrValue::Int(payload_size)) = op.attrs.get("value")
-                    && *payload_size > 0
-                {
-                    let new_fn = self.ensure_runtime_i64_fn("molt_object_new_bound_sized", 2);
-                    let size_bits = self
-                        .backend
-                        .context
-                        .i64_type()
-                        .const_int(*payload_size as u64, false);
-                    self.backend
-                        .builder
-                        .build_call(
-                            new_fn,
-                            &[class_bits.into(), size_bits.into()],
-                            "object_new_bound_sized",
-                        )
-                        .unwrap()
-                        .try_as_basic_value()
-                        .unwrap_basic()
-                } else {
-                    let new_fn = self.ensure_runtime_i64_fn("molt_object_new_bound", 1);
-                    self.backend
-                        .builder
-                        .build_call(new_fn, &[class_bits.into()], "object_new_bound")
-                        .unwrap()
-                        .try_as_basic_value()
-                        .unwrap_basic()
-                };
+                let new_fn = self.ensure_runtime_i64_fn("molt_object_new_bound", 1);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(new_fn, &[class_bits.into()], "object_new_bound")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
                 if let Some(&result_id) = op.results.first() {
                     self.values.insert(result_id, result);
                     self.value_types.insert(result_id, TirType::DynBox);

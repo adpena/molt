@@ -2,6 +2,54 @@ use super::rust_ident;
 use crate::{FunctionIR, OpIR};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Return every Python binding defined by one SimpleIR operation.
+///
+/// Most operations define their optional `out` binding. `unpack_sequence` is
+/// the variable-result exception: `args[0]` is the sole operand and every
+/// remaining argument is an independently-defined output binding. Keeping
+/// this shape in one Rust-backend authority prevents scope analysis, alias
+/// invalidation, and source emission from independently guessing which names
+/// are definitions.
+pub(super) fn op_definition_vars(op: &OpIR) -> Vec<String> {
+    if op.kind == "unpack_sequence" {
+        return op
+            .args
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .skip(1)
+            .filter(|name| !name.is_empty() && name.as_str() != "none")
+            .map(|name| rust_ident(name))
+            .collect();
+    }
+
+    op.out
+        .as_deref()
+        .filter(|name| !name.is_empty() && *name != "none" && !op.kind.starts_with("nop"))
+        .map(rust_ident)
+        .into_iter()
+        .collect()
+}
+
+/// Return the variable operands read by one operation.
+///
+/// Multi-result transport names are definitions, not reads. Treating unpack
+/// outputs as operands creates false scope dependencies and masks missing
+/// declarations in generated Rust.
+fn op_operand_vars(op: &OpIR) -> Vec<String> {
+    let args = op.args.as_deref().unwrap_or(&[]);
+    let args = if op.kind == "unpack_sequence" {
+        &args[..args.len().min(1)]
+    } else {
+        args
+    };
+    let mut refs: Vec<String> = args.iter().map(|name| rust_ident(name)).collect();
+    if let Some(value) = op.var.as_deref() {
+        refs.push(rust_ident(value));
+    }
+    refs
+}
+
 // ── IR lowering passes (shared logic, simpler than Luau variants) ─────────────
 
 /// Mark unreachable ops after return as nop so they don't emit dead code.
@@ -194,24 +242,20 @@ pub(super) fn collect_scope_escapes(
             "end_if" | "loop_end" | "while_end" | "end_for" => depth -= 1,
             _ => {}
         }
-        if let Some(ref out_name) = op.out
-            && out_name != "none"
-            && !op.kind.starts_with("nop")
-        {
-            let var = rust_ident(out_name);
-            decl_depth.entry(var).or_insert(depth);
+        let definitions = op_definition_vars(op);
+        for var in &definitions {
+            decl_depth.entry(var.clone()).or_insert(depth);
         }
-        let mut refs: Vec<String> = op
-            .args
-            .as_deref()
-            .unwrap_or(&[])
-            .iter()
-            .map(|s| rust_ident(s))
-            .collect();
-        if let Some(v) = op.var.as_deref() {
-            refs.push(rust_ident(v));
+
+        // The Rust emitter deliberately contains the temporary unpack iterator
+        // in a lexical block. Its output bindings must therefore already exist
+        // in the enclosing function scope, even when their first use is at the
+        // same SimpleIR depth.
+        if op.kind == "unpack_sequence" {
+            hoisted_vars.extend(definitions);
         }
-        for r in refs {
+
+        for r in op_operand_vars(op) {
             if param_set.contains(&r) {
                 continue;
             }

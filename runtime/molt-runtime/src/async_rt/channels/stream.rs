@@ -463,7 +463,9 @@ pub unsafe extern "C" fn molt_stream_reader_readline(reader_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_stream_new(capacity_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let capacity = usize_from_bits(capacity_bits);
+        let Some(capacity) = usize_from_bits(capacity_bits) else {
+            return raise_exception::<u64>(_py, "MemoryError", "stream capacity is too large");
+        };
         stream_new_with_byte_budget(capacity, default_stream_max_queued_bytes())
     })
 }
@@ -552,7 +554,9 @@ pub unsafe extern "C" fn molt_stream_send(
 ) -> i64 {
     crate::with_gil_entry_nopanic!(_py, {
         let stream_ptr = ptr_from_bits(stream_bits);
-        let len = usize_from_bits(len_bits);
+        let Some(len) = usize_from_bits(len_bits) else {
+            return pending_bits_i64();
+        };
         if stream_ptr.is_null() || (data_ptr.is_null() && len != 0) {
             return pending_bits_i64();
         }

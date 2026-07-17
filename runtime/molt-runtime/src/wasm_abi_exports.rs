@@ -278,20 +278,33 @@ pub extern "C" fn molt_gpu_prim_numel(handle: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_scratch_alloc(size: u64) -> u64 {
     let Ok(size) = usize::try_from(size) else {
-        return 0;
+        return crate::with_gil_entry_nopanic!(_py, {
+            crate::raise_exception::<u64>(
+                _py,
+                "MemoryError",
+                "scratch allocation exceeds the active address space",
+            )
+        });
     };
     let alloc_size = size.max(1);
     let Ok(layout) = Layout::from_size_align(alloc_size, 8) else {
-        return 0;
+        return crate::with_gil_entry_nopanic!(_py, {
+            crate::raise_exception::<u64>(_py, "MemoryError", "scratch allocation layout overflow")
+        });
     };
     if crate::resource::with_tracker(|tracker| tracker.on_allocate(alloc_size)).is_err() {
-        return 0;
+        return crate::with_gil_entry_nopanic!(_py, {
+            crate::raise_exception::<u64>(_py, "MemoryError", "scratch allocation denied")
+        });
     }
     let ptr = unsafe { alloc(layout) };
     if ptr.is_null() {
         crate::resource::with_tracker(|tracker| tracker.on_free(alloc_size));
+        return crate::with_gil_entry_nopanic!(_py, {
+            crate::raise_exception::<u64>(_py, "MemoryError", "scratch allocation failed")
+        });
     }
-    ptr as usize as u64
+    crate::provenance::abi::expose_address(ptr)
 }
 
 #[unsafe(no_mangle)]
@@ -306,9 +319,12 @@ pub extern "C" fn molt_scratch_free(ptr: u64, size: u64) {
     let Ok(layout) = Layout::from_size_align(alloc_size, 8) else {
         return;
     };
+    let Some(ptr) = crate::provenance::abi::mut_ptr::<u8>(ptr) else {
+        return;
+    };
     crate::resource::with_tracker(|tracker| tracker.on_free(alloc_size));
     unsafe {
-        dealloc(ptr as usize as *mut u8, layout);
+        dealloc(ptr, layout);
     }
 }
 
@@ -334,6 +350,8 @@ mod tests {
 
         let denied = super::molt_scratch_alloc(16);
         assert_eq!(denied, 0);
+        assert_eq!(crate::molt_exception_pending(), 1);
+        let _ = crate::molt_exception_clear();
 
         let allowed = super::molt_scratch_alloc(8);
         assert_ne!(
@@ -347,5 +365,7 @@ mod tests {
     fn scratch_alloc_rejects_impossible_layout_without_panicking() {
         let ptr = super::molt_scratch_alloc(u64::MAX);
         assert_eq!(ptr, 0);
+        assert_eq!(crate::molt_exception_pending(), 1);
+        let _ = crate::molt_exception_clear();
     }
 }

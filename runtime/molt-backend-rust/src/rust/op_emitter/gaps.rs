@@ -77,10 +77,39 @@ impl RustBackend {
     }
 
     pub(super) fn emit_op_unpack_sequence(&mut self, op: &OpIR) {
-        self.emit_unsupported_op(
-            op,
-            "unpacking requires the Python iterable protocol and exact arity errors",
-        );
+        let args = op.args.as_deref().unwrap_or(&[]);
+        let Some(source) = args.first() else {
+            self.emit_unsupported_op(op, "unpacking requires one source operand");
+            return;
+        };
+        let outputs = &args[1..];
+        let expected = op.value.and_then(|value| usize::try_from(value).ok());
+        if expected != Some(outputs.len()) {
+            self.emit_unsupported_op(
+                op,
+                "unpacking expected count must equal the output-variable count",
+            );
+            return;
+        }
+
+        self.emit_line("{");
+        self.push_indent();
+        self.emit_line(&format!(
+            "let mut __molt_unpack_values = molt_unpack_sequence(&{}, {}).into_iter();",
+            rust_value(source),
+            outputs.len(),
+        ));
+        for output in outputs {
+            let output = rust_ident(output);
+            let assignment = declare_molt_value(
+                &output,
+                "__molt_unpack_values.next().expect(\"verified unpack arity\")",
+                &self.hoisted_vars,
+            );
+            self.emit_line(&assignment);
+        }
+        self.pop_indent();
+        self.emit_line("}");
     }
 
     pub(super) fn emit_op_string_join(&mut self, op: &OpIR) {

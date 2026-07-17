@@ -1481,7 +1481,7 @@ pub(crate) fn exception_stack_push() {
             .unwrap_or((0, 0));
         eprintln!(
             "molt exc stack push task=0x{:x} depth={} baseline={} frame=0x{:x} line={}",
-            task, depth, baseline, code_bits as usize, line
+            task, depth, baseline, code_bits, line
         );
     }
 }
@@ -1524,7 +1524,7 @@ pub(crate) fn exception_stack_pop(_py: &PyToken<'_>) {
                 .unwrap_or((0, 0));
             eprintln!(
                 "molt exc stack pop noop task=0x{:x} depth={} baseline={} frame=0x{:x} line={}",
-                task, before_depth, baseline, code_bits as usize, line
+                task, before_depth, baseline, code_bits, line
             );
         }
         return;
@@ -1552,7 +1552,7 @@ pub(crate) fn exception_stack_pop(_py: &PyToken<'_>) {
             .unwrap_or((0, 0));
         eprintln!(
             "molt exc stack pop task=0x{:x} depth={}=>{} baseline={} frame=0x{:x} line={}",
-            task, before_depth, after_depth, baseline, code_bits as usize, line
+            task, before_depth, after_depth, baseline, code_bits, line
         );
     }
 }

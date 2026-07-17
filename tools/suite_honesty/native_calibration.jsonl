@@ -274,7 +274,6 @@
 {"expect_molt_fail": false, "file": "tests/differential/basic/class_field_alias_regions.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/class_getattr_basic.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/class_inheritance.py", "raw_status": "pass"}
-{"expect_molt_fail": false, "file": "tests/differential/basic/class_layout_size_fallback.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/class_mro_entries.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/class_mro_entries_init_subclass.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/class_mro_entries_multiple.py", "raw_status": "pass"}

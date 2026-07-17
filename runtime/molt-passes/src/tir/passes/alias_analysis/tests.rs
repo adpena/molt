@@ -94,6 +94,7 @@ fn all_opcodes() -> Vec<OpCode> {
         GetIter,
         IterNext,
         IterNextUnboxed,
+        UnpackSequence,
         ForIter,
         AllocTask,
         StateSwitch,
@@ -210,6 +211,7 @@ fn assert_opcode_listed(opcode: OpCode) {
         | GetIter
         | IterNext
         | IterNextUnboxed
+        | UnpackSequence
         | ForIter
         | AllocTask
         | StateSwitch
@@ -663,6 +665,7 @@ fn copy_lowering_classes_are_total_and_disjoint() {
         Some("enumerate"),
         Some("func_new"),
         Some("func_new_closure"),
+        Some("get_attr_name_default"),
         Some("dict_keys"),
         Some("dict_values"),
         Some("dict_items"),
@@ -770,6 +773,31 @@ fn slice_subscript_copy_is_a_fresh_value_not_an_alias() {
         res.root(sliced),
         res.root(src),
         "slice result must be an independent alias root, not an alias of its source"
+    );
+}
+
+#[test]
+fn unpack_sequence_results_are_independent_owned_roots() {
+    let mut func = TirFunction::new("unpack".into(), vec![TirType::DynBox], TirType::None);
+    let sequence = ValueId(0);
+    let first = func.fresh_value();
+    let second = func.fresh_value();
+    for value in [first, second] {
+        func.value_types.insert(value, TirType::DynBox);
+    }
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    let mut unpack = op(OpCode::UnpackSequence, vec![sequence], vec![first, second]);
+    unpack.attrs.insert("value".into(), AttrValue::Int(2));
+    entry.ops.push(unpack);
+    entry.terminator = Terminator::Return { values: vec![] };
+
+    let res = AliasAnalysisResult::compute(&func);
+    assert_ne!(res.root(first), res.root(sequence));
+    assert_ne!(res.root(second), res.root(sequence));
+    assert_ne!(
+        res.root(first),
+        res.root(second),
+        "each unpack output carries an independent runtime +1 reference"
     );
 }
 

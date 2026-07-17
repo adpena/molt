@@ -247,7 +247,22 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
             // Outlined sequence unpacking: args[0] is the sequence,
             // args[1..] are the output variable names.
             // op.value holds the expected element count.
-            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+            let args = op
+                .args
+                .as_ref()
+                .expect("unpack_sequence must carry source and result bindings");
+            let raw_expected = op
+                .value
+                .expect("unpack_sequence must carry an exact result count");
+            let expected_count = usize::try_from(raw_expected)
+                .expect("unpack_sequence result count must fit the active target");
+            assert_eq!(
+                args.len(),
+                expected_count
+                    .checked_add(1)
+                    .expect("unpack_sequence shape overflow"),
+                "unpack_sequence source/result bindings must match its exact count"
+            );
             let seq_val = var_get_boxed_overflow_safe(
                 &mut *module,
                 &mut *import_ids,
@@ -259,18 +274,23 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 representation_plan,
             )
             .expect("Unpack sequence source not found");
-            let expected_count = op.value.unwrap_or(0) as usize;
-
             // Allocate a stack slot for the output array.
-            let slot_size = std::cmp::max(expected_count, 1) * 8;
+            let slot_size = std::cmp::max(expected_count, 1)
+                .checked_mul(std::mem::size_of::<u64>())
+                .and_then(|size| u32::try_from(size).ok())
+                .expect("unpack_sequence stack slot exceeds Cranelift's u32 limit");
             let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
                 StackSlotKind::ExplicitSlot,
-                slot_size as u32,
+                slot_size,
                 3, // align_shift: 2^3 = 8-byte alignment
             ));
             let out_ptr = builder.ins().stack_addr(types::I64, out_slot, 0);
 
-            let expected_val = builder.ins().iconst(types::I64, expected_count as i64);
+            let expected_val = builder.ins().iconst(
+                types::I64,
+                i64::try_from(expected_count)
+                    .expect("unpack_sequence count must fit the runtime ABI"),
+            );
 
             // Call molt_unpack_sequence(seq_bits, expected_count, output_ptr) -> u64
             let unpack_local = import_func_ref(
@@ -288,9 +308,12 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
 
             // Load each element from the output array into its named variable.
             for i in 0..expected_count {
-                let elem = builder
-                    .ins()
-                    .stack_load(types::I64, out_slot, (i * 8) as i32);
+                let elem = builder.ins().stack_load(
+                    types::I64,
+                    out_slot,
+                    i32::try_from(i.checked_mul(8).expect("unpack offset overflow"))
+                        .expect("unpack offset exceeds Cranelift's i32 limit"),
+                );
                 def_var_named(&mut *builder, vars, &args[1 + i], elem);
             }
         }

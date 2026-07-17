@@ -308,12 +308,17 @@ impl MoltObject {
             // profile-independent while retaining the registry's checking value.
             #[cfg(not(debug_assertions))]
             {
-                Some(std::ptr::with_exposed_provenance_mut(addr as usize))
+                usize::try_from(addr)
+                    .ok()
+                    .map(std::ptr::with_exposed_provenance_mut)
             }
             #[cfg(debug_assertions)]
             {
-                resolve_ptr(addr)
-                    .or_else(|| Some(std::ptr::with_exposed_provenance_mut(addr as usize)))
+                resolve_ptr(addr).or_else(|| {
+                    usize::try_from(addr)
+                        .ok()
+                        .map(std::ptr::with_exposed_provenance_mut)
+                })
             }
         } else {
             None
@@ -576,6 +581,16 @@ mod tests {
             drop(Box::from_raw(ptr));
         }
         reset_ptr_registry();
+    }
+
+    #[test]
+    #[cfg(target_pointer_width = "32")]
+    fn as_ptr_rejects_tagged_addresses_outside_the_target_width() {
+        reset_ptr_registry();
+        let malformed = u64::from(u32::MAX) + 1;
+        let obj = MoltObject(box_ptr_bits(malformed) as u64);
+        assert!(obj.is_ptr());
+        assert_eq!(obj.as_ptr(), None);
     }
 
     #[test]

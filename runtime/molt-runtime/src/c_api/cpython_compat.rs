@@ -1848,7 +1848,15 @@ pub extern "C" fn PyUnicode_CompareWithASCIIString(
             }
             return -1;
         }
-        let lhs = unsafe { std::slice::from_raw_parts(lhs_ptr, out_len as usize) };
+        let Ok(out_len) = usize::try_from(out_len) else {
+            let _ = raise_exception::<u64>(
+                _py,
+                "OverflowError",
+                "unicode length exceeds the active address space",
+            );
+            return -1;
+        };
+        let lhs = unsafe { std::slice::from_raw_parts(lhs_ptr, out_len) };
         lhs.cmp(rhs_bytes) as i32
     })
 }

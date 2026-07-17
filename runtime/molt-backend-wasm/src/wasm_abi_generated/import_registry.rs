@@ -575,11 +575,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 2,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::ObjectNewBoundSized,
-        name: "object_new_bound_sized",
-        type_idx: 3,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::ObjectSetClass,
         name: "object_set_class",
         type_idx: 3,
@@ -1663,6 +1658,11 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         import: WasmRuntimeImport::Index,
         name: "index",
         type_idx: 3,
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::UnpackSequence,
+        name: "unpack_sequence",
+        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IntarrayFromSeq,
@@ -14938,7 +14938,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "object_field_set_ptr" => Some(WasmRuntimeImport::ObjectFieldSetPtr),
         "object_new" => Some(WasmRuntimeImport::ObjectNew),
         "object_new_bound" => Some(WasmRuntimeImport::ObjectNewBound),
-        "object_new_bound_sized" => Some(WasmRuntimeImport::ObjectNewBoundSized),
         "object_set_class" => Some(WasmRuntimeImport::ObjectSetClass),
         "property_new" => Some(WasmRuntimeImport::PropertyNew),
         "molt_property_new" => Some(WasmRuntimeImport::PropertyNew),
@@ -15205,6 +15204,7 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "frozenset_add" => Some(WasmRuntimeImport::FrozensetAdd),
         "frozenset_new" => Some(WasmRuntimeImport::FrozensetNew),
         "index" => Some(WasmRuntimeImport::Index),
+        "unpack_sequence" => Some(WasmRuntimeImport::UnpackSequence),
         "intarray_from_seq" => Some(WasmRuntimeImport::IntarrayFromSeq),
         "iter" => Some(WasmRuntimeImport::Iter),
         "molt_iter_checked" => Some(WasmRuntimeImport::Iter),
