@@ -21,8 +21,6 @@ rayon = "1.12"
 serde = { version = "1.0", features = ["derive"] }
 inkwell = { version = "0.9", default-features = false, features = [
     "llvm22-1",
-    "target-x86",
-    "target-aarch64",
     "target-webassembly",
 ], optional = true }
 
@@ -31,10 +29,41 @@ molt-tir = { path = "../molt-tir", features = ["test-util"] }
 object = { version = "0.39", default-features = false, features = ["read", "std"] }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
-cranelift-codegen = { version = "0.133.1", optional = true, default-features = false, features = ["x86"] }
+cranelift-codegen = { version = "0.133.1", optional = true, default-features = false, features = ["arm64"] }
+inkwell = { version = "0.9", default-features = false, features = ["target-aarch64"], optional = true }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
-cranelift-codegen = { version = "0.133.1", optional = true, default-features = false, features = ["arm64"] }
+cranelift-codegen = { version = "0.133.1", optional = true, default-features = false, features = ["x86"] }
+inkwell = { version = "0.9", default-features = false, features = ["target-x86"], optional = true }
+
+[target.'cfg(target_arch = "x86")'.dependencies]
+inkwell = { version = "0.9", default-features = false, features = ["target-x86"], optional = true }
+
+[target.'cfg(target_arch = "arm")'.dependencies]
+inkwell = { version = "0.9", default-features = false, features = ["target-arm"], optional = true }
+
+[target.'cfg(target_arch = "riscv32")'.dependencies]
+inkwell = { version = "0.9", default-features = false, features = ["target-riscv"], optional = true }
+
+[target.'cfg(target_arch = "riscv64")'.dependencies]
+cranelift-codegen = { version = "0.133.1", optional = true, default-features = false, features = ["riscv64"] }
+inkwell = { version = "0.9", default-features = false, features = ["target-riscv"], optional = true }
+
+[target.'cfg(any(target_arch = "powerpc", target_arch = "powerpc64"))'.dependencies]
+inkwell = { version = "0.9", default-features = false, features = ["target-powerpc"], optional = true }
+
+[target.'cfg(target_arch = "s390x")'.dependencies]
+cranelift-codegen = { version = "0.133.1", optional = true, default-features = false, features = ["s390x"] }
+inkwell = { version = "0.9", default-features = false, features = ["target-systemz"], optional = true }
+
+[target.'cfg(target_arch = "loongarch64")'.dependencies]
+inkwell = { version = "0.9", default-features = false, features = ["target-loongarch"], optional = true }
+
+[target.'cfg(any(target_arch = "mips", target_arch = "mips64"))'.dependencies]
+inkwell = { version = "0.9", default-features = false, features = ["target-mips"], optional = true }
+
+[target.'cfg(any(target_arch = "sparc", target_arch = "sparc64"))'.dependencies]
+inkwell = { version = "0.9", default-features = false, features = ["target-sparc"], optional = true }
 
 [features]
 default = ["native-backend"]

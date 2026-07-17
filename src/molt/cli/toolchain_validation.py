@@ -29,6 +29,7 @@ from molt.cli.setup_readiness import (
     _detect_llvm_backend_toolchain,
     _required_llvm_backend_pin,
 )
+from molt.llvm_toolchain import llvm_bootstrap_command
 
 _VALIDATE_PROOF_BYPASS_ENV = frozenset(
     {
@@ -103,11 +104,14 @@ def _planned_update_steps(
                     if llvm_pin is not None
                     else f"LLVM_SYS_{llvm_major * 10 + 1}_PREFIX"
                 )
+                bootstrap_command = (
+                    llvm_bootstrap_command(llvm_pin)
+                    if llvm_pin is not None
+                    else f"python tools/bootstrap_llvm.py --version {release}"
+                )
                 warnings.append(
                     "LLVM backend toolchain is missing; run "
-                    f"python tools/bootstrap_llvm.py --version {release} "
-                    f"--prefix target/toolchains/llvm-{release} and set "
-                    f"{env_var} to that prefix"
+                    f"{bootstrap_command} and set {env_var} to that prefix"
                 )
         else:
             warnings.append(

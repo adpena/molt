@@ -2,6 +2,19 @@
 #![allow(clippy::too_many_arguments)] // refactoring signatures risks breaking callers
 #![allow(clippy::type_complexity)] // complex return types in TIR CFG helpers
 
+#[cfg(all(
+    feature = "native-backend",
+    not(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "riscv64",
+        target_arch = "s390x"
+    ))
+))]
+compile_error!(
+    "Molt's Cranelift native backend supports x86_64, aarch64, riscv64, and s390x"
+);
+
 // Native and LLVM codegen authority lives here so Cranelift/LLVM edits do not
 // rebuild the backend composition crate.
 pub use molt_ir::{
