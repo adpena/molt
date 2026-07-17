@@ -32,10 +32,33 @@ Rust via rustup:
   installers include `clang`/`wasm-ld` but omit `llvm-config`. Those installs
   are useful for native/WASM linking but are not a complete Rust LLVM backend
   toolchain. Build a matching MSVC LLVM/Clang/MLIR developer prefix with:
-  `python tools/bootstrap_llvm.py --version 22.1.8 --prefix target\toolchains\llvm-22.1.8`.
+  `python tools/bootstrap_llvm.py` (the exact patch release, URL, size, checksum,
+  and provenance come from `config/llvm_toolchain_releases.toml`).
   The bootstrap command prints `MOLT_LLVM_PREFIX`, `LLVM_SYS_<ver>_PREFIX`,
   `MLIR_SYS_<ver>_PREFIX`, `TABLEGEN_<ver>_PREFIX`, and `LLVM_CONFIG_PATH`; all
   name the same verified prefix.
+  Release source archives are accepted only when their SHA-256 matches
+  `config/llvm_toolchain_releases.toml`; that manifest also owns the exact
+  canonical build type. Extraction is archive-bound and rehashes the extracted
+  tree before reuse. Extracted sources and installed prefixes share one
+  transactional publisher: exclusive process lock, unique staging prefix,
+  durable phase journal, and deterministic rollback or completion on startup.
+  Canonical path identity is never deletion authority: every nonempty source or
+  build tree must carry a valid self-consistent tool-owned marker, otherwise the
+  bootstrap fails closed without modifying it. There is no legacy reset lane.
+  The CMake cache is keyed by the release record, extracted-source digest, and
+  a digest of the architecture/target/project/build configuration. Canonical
+  project, target, and build-type sets are exact (no extras) and are bound into
+  the published attestation with the release-manifest digest. Publication
+  occurs only after the host linker,
+  LLVM-C, Clang, LLD, Clang resource headers, LLVM/MLIR libraries, and a real
+  C++ compile-link probe all pass. Cached validation projects that attested
+  proof and forces full hashing whenever NTFS ChangeTime is unavailable.
+  `D:\` is retired and rejected for every source, build, download, prefix, and
+  environment authority. Unlisted development releases require an explicit
+  noncanonical prefix, source URL, and SHA-256; their source/download/build
+  custody is derived beside that prefix and cannot overlap canonical managed
+  custody.
 - Install CMake + Ninja: `winget install Kitware.CMake` and `winget install Ninja-build.Ninja`
 - Ensure `clang`, `llvm-config`, `cmake`, and `ninja` are on PATH.
 - Run source LLVM builds from an x64 Visual Studio developer shell, or let

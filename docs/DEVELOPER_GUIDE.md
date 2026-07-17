@@ -122,7 +122,7 @@ and a metric-correction or retirement plan.
   LLVM/Clang (see [spec/areas/tooling/0001-toolchains.md](spec/areas/tooling/0001-toolchains.md)).
   The LLVM and MLIR backends require one matching prefix with `llvm-config`,
   MLIR libraries, and TableGen, not just `clang`; use
-  `python tools/bootstrap_llvm.py --version 22.1.8 --prefix target\toolchains\llvm-22.1.8`
+  `python tools/bootstrap_llvm.py`
   when package-manager LLVM omits it.
 - **WASM**: linked builds require `wasm-ld` + `wasm-tools` across platforms; packaging/demo flows also use `wasm-pack`.
 
@@ -150,9 +150,14 @@ molt update --check
   prefix is projected to `LLVM_SYS_<ver>_PREFIX`, `MLIR_SYS_<ver>_PREFIX`, and
   `TABLEGEN_<ver>_PREFIX`; disagreement fails closed instead of mixing ABIs.
 - `tools/bootstrap_llvm.py` is the source-build escape hatch for platforms whose
-  LLVM packages omit a complete developer surface. It builds LLVM, Clang, and
-  MLIR into `target/toolchains/`, verifies the manifest-pinned `llvm-config`
-  version, and prints the complete environment projection.
+  LLVM packages omit a complete developer surface. It builds LLVM, Clang, LLD,
+  and MLIR into the checkout-family canonical toolchain root, verifies the
+  manifest-pinned source checksum, exact canonical build configuration,
+  version, targets, tools, all installed project/resource headers, and
+  libraries. Source extraction and prefix installation use the same journaled,
+  crash-recoverable publisher; nonempty source/build trees without a valid
+  tool-owned marker fail closed even at the canonical path. The command then
+  prints the complete environment projection.
 - Developers and source-install users need this toolchain to build the optional
   MLIR backend. End users of a shipped Molt distribution do not: release
   packaging owns the backend executable and its redistributable runtime

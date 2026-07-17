@@ -1,0 +1,97 @@
+schema_version = 1
+required_projects = ["clang", "lld", "mlir"]
+required_targets = ["WebAssembly"]
+
+[[architectures]]
+id = "x86_64"
+aliases = ["x86-64", "amd64", "x64"]
+llvm_target = "X86"
+rust_cfg = 'target_arch = "x86_64"'
+inkwell_feature = "target-x86"
+cranelift_feature = "x86"
+cranelift_architecture = "X86_64"
+windows_component = "Microsoft.VisualStudio.Component.VC.Tools.x86.x64"
+windows_target_arch = "x64"
+windows_host_arch = "x64"
+
+[[architectures]]
+id = "x86"
+aliases = ["x86", "i386", "i486", "i586", "i686"]
+llvm_target = "X86"
+rust_cfg = 'target_arch = "x86"'
+inkwell_feature = "target-x86"
+windows_component = "Microsoft.VisualStudio.Component.VC.Tools.x86.x64"
+windows_target_arch = "x86"
+windows_host_arch = "x64"
+
+[[architectures]]
+id = "aarch64"
+aliases = ["aarch64", "arm64"]
+llvm_target = "AArch64"
+rust_cfg = 'target_arch = "aarch64"'
+inkwell_feature = "target-aarch64"
+cranelift_feature = "arm64"
+cranelift_architecture = "Aarch64"
+windows_component = "Microsoft.VisualStudio.Component.VC.Tools.ARM64"
+windows_target_arch = "arm64"
+windows_host_arch = "arm64"
+
+[[architectures]]
+id = "arm"
+aliases = ["arm", "armhf", "armv6l", "armv7", "armv7l", "armv8l"]
+llvm_target = "ARM"
+rust_cfg = 'target_arch = "arm"'
+inkwell_feature = "target-arm"
+
+[[architectures]]
+id = "riscv32"
+aliases = ["riscv32"]
+llvm_target = "RISCV"
+rust_cfg = 'target_arch = "riscv32"'
+inkwell_feature = "target-riscv"
+
+[[architectures]]
+id = "riscv64"
+aliases = ["riscv64"]
+llvm_target = "RISCV"
+rust_cfg = 'target_arch = "riscv64"'
+inkwell_feature = "target-riscv"
+cranelift_feature = "riscv64"
+cranelift_architecture = "Riscv64"
+
+[[architectures]]
+id = "powerpc"
+aliases = ["ppc", "ppc64", "ppc64le", "powerpc", "powerpc64", "powerpc64le"]
+llvm_target = "PowerPC"
+rust_cfg = 'any(target_arch = "powerpc", target_arch = "powerpc64")'
+inkwell_feature = "target-powerpc"
+
+[[architectures]]
+id = "systemz"
+aliases = ["s390x"]
+llvm_target = "SystemZ"
+rust_cfg = 'target_arch = "s390x"'
+inkwell_feature = "target-systemz"
+cranelift_feature = "s390x"
+cranelift_architecture = "S390x"
+
+[[architectures]]
+id = "loongarch"
+aliases = ["loongarch64"]
+llvm_target = "LoongArch"
+rust_cfg = 'target_arch = "loongarch64"'
+inkwell_feature = "target-loongarch"
+
+[[architectures]]
+id = "mips"
+aliases = ["mips", "mipsel", "mips64", "mips64el"]
+llvm_target = "Mips"
+rust_cfg = 'any(target_arch = "mips", target_arch = "mips64")'
+inkwell_feature = "target-mips"
+
+[[architectures]]
+id = "sparc"
+aliases = ["sparc", "sparc64"]
+llvm_target = "Sparc"
+rust_cfg = 'any(target_arch = "sparc", target_arch = "sparc64")'
+inkwell_feature = "target-sparc"

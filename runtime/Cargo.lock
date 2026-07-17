@@ -2459,6 +2459,7 @@ dependencies = [
  "molt-codegen-abi",
  "molt-ir",
  "molt-tir",
+ "object",
  "rayon",
  "serde",
 ]
