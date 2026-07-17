@@ -338,7 +338,11 @@ def test_meson_installed_directory_is_recursively_materialized(
             {
                 str(package_dir): (
                     "C:/prefix/Lib/site-packages/numpy/_utils"
-                )
+                ),
+                str(build / "numpy/_core/unmanaged.cp312-win_amd64.pyd"): (
+                    "C:/prefix/Lib/site-packages/numpy/_core/"
+                    "unmanaged.cp312-win_amd64.pyd"
+                ),
             }
         ),
         encoding="utf-8",

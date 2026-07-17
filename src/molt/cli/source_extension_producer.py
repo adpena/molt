@@ -871,6 +871,13 @@ def _stage_installed_package_files(
         source = _installed_source_path(
             raw_source, source_root=source_root, build_root=build_root
         )
+        # Meson introspection covers the whole package build, including native
+        # outputs outside this selected extension set. Preserve the established
+        # support-file projection for leaf rows before requiring their source;
+        # directory rows still expand recursively because Meson's install_subdir
+        # entries are the authority for Python package structure.
+        if not is_installed_package_support(relative) and not source.is_dir():
+            continue
         for leaf_source, leaf_relative in installed_leaves(source, relative):
             if not is_installed_package_support(leaf_relative):
                 continue
