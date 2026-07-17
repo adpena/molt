@@ -1119,7 +1119,7 @@ def _pact_witness_acceptance_spec(
             "wasm/run_wasm.js",
             "tools/pact_witness_acceptance.py",
             "config/scientific_stack_versions.toml",
-            *wasm_loader_asset_scope_paths(repo_root),
+            *wasm_loader_asset_scope_paths(),
         ],
         "env_overrides": env_overrides,
         "locked_env": _PACT_WITNESS_ACCEPTANCE_LOCKED_ENV,

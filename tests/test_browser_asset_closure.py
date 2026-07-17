@@ -13,10 +13,11 @@ from molt.browser_asset_closure import (
     NODE_RUNNER_ENTRY_ASSETS,
     browser_asset_manifest_key,
     browser_asset_manifest_keys,
+    canonical_wasm_loader_asset_bytes,
     wasm_loader_asset_closure,
     wasm_loader_asset_scope_paths,
 )
-from tools.gen_browser_asset_graph import AssetSource, scan_sources
+from tools.gen_browser_asset_graph import AssetSource, generate, scan_sources
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -178,11 +179,40 @@ def test_generated_graph_hash_and_role_drift_fail_closed(tmp_path: Path) -> None
         wasm_loader_asset_closure(tmp_path)
 
 
+def test_asset_hash_and_generator_are_line_ending_invariant(tmp_path: Path) -> None:
+    wasm_root = tmp_path / "wasm"
+    wasm_root.mkdir()
+    manifest = tmp_path / "browser_asset_graph.toml"
+    manifest.write_text(
+        """schema_version = 2
+[entry_groups.browser-wasm]
+role = "browser"
+assets = ["entry.js"]
+[[asset]]
+path = "entry.js"
+role = "browser"
+source_type = "module"
+authority = "test"
+""",
+        encoding="utf-8",
+    )
+    source = wasm_root / "entry.js"
+    source.write_bytes(b"export const value = 1;\nexport default value;\n")
+    lf_graph = generate(manifest, wasm_root)
+
+    source.write_bytes(b"export const value = 1;\r\nexport default value;\r\n")
+    crlf_graph = generate(manifest, wasm_root)
+
+    assert crlf_graph == lf_graph
+    assert canonical_wasm_loader_asset_bytes(source) == (
+        b"export const value = 1;\nexport default value;\n"
+    )
+
 def test_browser_asset_manifest_keys_and_proof_scopes_share_authority() -> None:
     assert browser_asset_manifest_key("target_feature_constants.generated.js") == (
         "target_feature_constants"
     )
-    scopes = wasm_loader_asset_scope_paths(ROOT, BROWSER_HOST_ENTRY_ASSETS)
+    scopes = wasm_loader_asset_scope_paths(BROWSER_HOST_ENTRY_ASSETS)
     assert "wasm/browser_gpu_worker.js" in scopes
     assert scopes == tuple(sorted(scopes))
 
@@ -202,4 +232,8 @@ def test_wasm_run_matrix_stages_the_canonical_browser_host_closure(
         BROWSER_HOST_ENTRY_ASSETS,
     )
     for name in staged:
-        assert tmp_path.joinpath(*Path(name).parts).is_file()
+        staged_path = tmp_path.joinpath(*Path(name).parts)
+        assert staged_path.is_file()
+        assert staged_path.read_bytes() == canonical_wasm_loader_asset_bytes(
+            ROOT.joinpath("wasm", *Path(name).parts)
+        )
