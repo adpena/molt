@@ -46,6 +46,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Protocol
 
+from molt.llvm_toolchain import (
+    LlvmToolchainConfigError,
+    verify_available_llvm_toolchain,
+)
+
 # molt_diff is imported by the harness before adapters are used; we import the
 # already-bootstrapped module here for its capability/CLI-python helpers so the
 # wasm/llvm/luau build commands match the native lane's environment exactly.
@@ -429,22 +434,15 @@ class LlvmAdapter:
     name: str = "llvm"
 
     def availability(self) -> BackendAvailability:
-        # The LLVM backend links a native binary via llvm-config + the system
-        # toolchain. Probe for llvm-config (or an LLVM_SYS prefix) the way the
-        # CLI's readiness check does; a missing toolchain is a LOUD uncalibrated.
-        if shutil.which("llvm-config"):
+        try:
+            verification = verify_available_llvm_toolchain(_REPO_ROOT)
+        except LlvmToolchainConfigError as exc:
+            return BackendAvailability(available=False, reason=str(exc))
+        if verification is not None:
             return BackendAvailability(available=True)
-        for key, val in os.environ.items():
-            if key.startswith("LLVM_SYS_") and key.endswith("_PREFIX") and val.strip():
-                prefix = Path(val.strip())
-                if (prefix / "bin" / "llvm-config").exists() or (
-                    prefix / "bin" / "llvm-config.exe"
-                ).exists():
-                    return BackendAvailability(available=True)
         return BackendAvailability(
             available=False,
-            reason="llvm-config not on PATH and no LLVM_SYS_*_PREFIX with "
-            "llvm-config found (LLVM backend requires the LLVM toolchain)",
+            reason="complete manifest-compatible LLVM/MLIR/LLD/Polly SDK not found",
         )
 
     def build_and_run(

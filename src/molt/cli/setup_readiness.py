@@ -27,12 +27,11 @@ from molt.llvm_toolchain import (
     LlvmBackendPin,
     LlvmToolchainConfigError,
     default_llvm_release,
+    llvm_debian_dev_packages,
     llvm_bootstrap_command,
     llvm_sys_prefix_env_var,
-    managed_llvm_prefix,
-    required_llvm_targets_for_host,
     required_llvm_backend_pin,
-    verify_llvm_toolchain_prefix,
+    verify_available_llvm_toolchain,
 )
 
 
@@ -56,78 +55,15 @@ def _default_llvm_release_for_major(major: int) -> str:
     return default_llvm_release(major)
 
 
-def _llvm_config_names(major: int) -> list[str]:
-    if platform.system() == "Windows":
-        return [
-            f"llvm-config-{major}.exe",
-            f"llvm-config{major}.exe",
-            "llvm-config.exe",
-            f"llvm-config-{major}",
-            f"llvm-config{major}",
-            "llvm-config",
-        ]
-    return [
-        f"llvm-config-{major}",
-        f"llvm-config{major}",
-        "llvm-config",
-    ]
-
-
 def _detect_llvm_backend_toolchain(root: Path) -> tuple[int | None, str | None]:
     pin = _required_llvm_backend_pin(root)
     if pin is None:
         return None, None
-    major = pin.major
-    candidates = _llvm_config_names(major)
-    prefix_env = os.environ.get(pin.env_var, "").strip()
-    if prefix_env:
-        prefix = Path(prefix_env).expanduser()
-        candidates = [
-            str(prefix / "bin" / name) for name in _llvm_config_names(major)
-        ] + candidates
-    if platform.system() == "Darwin":
-        candidates.extend(
-            [
-                f"/opt/homebrew/opt/llvm@{major}/bin/llvm-config",
-                f"/usr/local/opt/llvm@{major}/bin/llvm-config",
-            ]
-        )
-    inspected: set[Path] = set()
-    for candidate in candidates:
-        path = Path(candidate)
-        if path.is_absolute():
-            resolved = path.resolve()
-            if resolved in inspected:
-                continue
-            inspected.add(resolved)
-            if resolved.exists() and _llvm_config_is_complete(root, resolved, pin):
-                return major, str(resolved)
-            continue
-        resolved = shutil.which(candidate)
-        if resolved:
-            resolved_path = Path(resolved).resolve()
-            if resolved_path in inspected:
-                continue
-            inspected.add(resolved_path)
-            if _llvm_config_is_complete(root, resolved_path, pin):
-                return major, str(resolved_path)
-    return major, None
-
-
-def _llvm_config_is_complete(root: Path, path: Path, pin: LlvmBackendPin) -> bool:
     try:
-        prefix = path.parent.parent.resolve()
-        verify_llvm_toolchain_prefix(
-            root,
-            prefix,
-            version=pin.default_release,
-            expected_targets=required_llvm_targets_for_host(root),
-            llvm_config_override=path,
-            require_attestation=prefix == managed_llvm_prefix(root, pin).resolve(),
-        )
+        verification = verify_available_llvm_toolchain(root)
     except LlvmToolchainConfigError:
-        return False
-    return True
+        verification = None
+    return pin.major, (None if verification is None else str(verification.llvm_config))
 
 
 def _clang_llvm_version_detail(major: int) -> str | None:
@@ -162,16 +98,28 @@ def _llvm_backend_unavailable_message(root: Path) -> str | None:
     pin = _required_llvm_backend_pin(root)
     if pin is None:
         return None
-    major, llvm_toolchain = _detect_llvm_backend_toolchain(root)
-    if major is None or llvm_toolchain is not None:
+    try:
+        verification = verify_available_llvm_toolchain(root)
+        failure_detail = None
+    except LlvmToolchainConfigError as exc:
+        verification = None
+        failure_detail = str(exc)
+    if verification is not None:
         return None
+    major = pin.major
     env_var = pin.env_var
     advice = "\n".join(f"  - {item}" for item in _llvm_backend_advice_for_pin(pin))
-    detail = _clang_llvm_version_detail(major) or "No matching llvm-config was found."
+    detail = (
+        failure_detail
+        or _clang_llvm_version_detail(major)
+        or "No matching llvm-config was found."
+    )
     return (
         f"LLVM backend requires LLVM {pin.major}.{pin.minor} with llvm-config. "
         f"{detail}\n"
-        f"Set {env_var} to a complete LLVM prefix or put matching llvm-config on PATH.\n"
+        "Set MOLT_LLVM_PREFIX to the SDK prefix, LLVM_CONFIG_PATH to its matching "
+        f"executable, and {env_var} to the root containing that executable's bin "
+        "directory.\n"
         f"Recommended actions:\n{advice}"
     )
 
@@ -183,7 +131,7 @@ def _llvm_backend_advice_for_pin(pin: LlvmBackendPin) -> list[str]:
             f"Set {pin.env_var}=<canonical LLVM prefix containing the complete attested SDK>",
             (
                 "Do not use winget/Chocolatey LLVM for the LLVM backend unless "
-                "that install includes the complete llvm-config/MLIR/TableGen surface"
+                "that install includes the complete llvm-config/LLD/MLIR/Polly/TableGen surface"
             ),
         ]
     return _llvm_backend_advice(
@@ -214,12 +162,19 @@ def _llvm_backend_advice(
             f"Set {env_var}=<LLVM prefix containing bin\\llvm-config.exe>",
             (
                 "Do not use winget/Chocolatey LLVM for the LLVM backend unless "
-                "that install includes bin\\llvm-config.exe"
+                "that install includes the complete LLVM/LLD/MLIR/Polly SDK"
             ),
         ]
     return [
-        f"Install llvm-{major}, llvm-{major}-dev, clang-{major}, and lld-{major}",
-        f"export {env_var}=<LLVM prefix containing bin/llvm-config>",
+        "Install the complete SDK: "
+        + " ".join(
+            llvm_debian_dev_packages(
+                Path(__file__).resolve().parents[3],
+                major,
+            )
+        ),
+        f"export {env_var}=<root containing bin/llvm-config-{major}>",
+        f"export LLVM_CONFIG_PATH=<matching llvm-config-{major} executable>",
     ]
 
 

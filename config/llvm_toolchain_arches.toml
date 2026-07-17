@@ -1,5 +1,5 @@
 schema_version = 1
-required_projects = ["clang", "lld", "mlir"]
+required_projects = ["clang", "lld", "mlir", "polly"]
 required_targets = ["WebAssembly"]
 
 [[architectures]]
