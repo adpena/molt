@@ -104,12 +104,13 @@ unsafe fn class_layout_size(_py: &PyToken<'_>, class_ptr: *mut u8) -> usize {
         );
         let class_dict_ptr = obj_from_bits(class_dict_bits(class_ptr)).as_ptr();
 
-        // Hot path: when the class dict already carries
-        // `__molt_layout_size__` AND `__molt_field_offsets__`, the
+        // Hot path: when the class dict already carries its own
+        // `__molt_layout_size__`, the
         // cached size is the recomputation target the slow path
-        // below would converge on (`size = max_end + reserved_tail`)
-        // — both terms are determined by the same `__molt_field_offsets__`
-        // dict that own_has_offsets verifies.  Subsequent calls in
+        // below already converged on (`size = max_end + reserved_tail`). The
+        // memo lives in the class's own dict, so it is not an inherited guess;
+        // empty classes and subclasses without own field offsets are valid memo
+        // owners too. Subsequent calls in
         // tight allocation loops (`while …: Point(0,0)`) hit this
         // path and skip two MRO walks (`class_attr_lookup_raw_mro`
         // for `size_name_bits`, `max_slot_end_from_mro_offsets`
@@ -117,8 +118,8 @@ unsafe fn class_layout_size(_py: &PyToken<'_>, class_ptr: *mut u8) -> usize {
         // walks for the int/dict min-size guards.
         //
         // Soundness rests on the cache invalidation contract:
-        // anything that mutates `__molt_field_offsets__` MUST clear
-        // or update `__molt_layout_size__` in the same atomic
+        // anything that mutates layout offsets MUST clear or update the owning
+        // class's `__molt_layout_size__` in the same atomic
         // operation, so a stale size never coexists with a fresh
         // offsets dict.  Class definition / inheritance assembly
         // already obey this (the slow path below writes
@@ -130,10 +131,6 @@ unsafe fn class_layout_size(_py: &PyToken<'_>, class_ptr: *mut u8) -> usize {
             && let Some(size_bits) = dict_get_in_place(_py, class_dict_ptr, size_name_bits)
             && let Some(cached_size) = obj_from_bits(size_bits).as_int()
             && cached_size > 0
-            && let Some(offsets_bits) = dict_get_in_place(_py, class_dict_ptr, fields_name_bits)
-            && obj_from_bits(offsets_bits)
-                .as_ptr()
-                .is_some_and(|ptr| object_type_id(ptr) == TYPE_ID_DICT)
         {
             return cached_size as usize;
         }
