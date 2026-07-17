@@ -30,6 +30,7 @@ _MACHINERY_INTRINSICS = [
     "molt_importlib_load_module_from_spec",
     "molt_exception_clear",
     "molt_exception_last",
+    "molt_exception_last_pending",
     "molt_exception_pending",
     "molt_module_import",
     "molt_sys_platform",

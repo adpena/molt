@@ -3300,8 +3300,8 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 3,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::ImportlibZipSourcePayload,
-        name: "importlib_zip_source_payload",
+        import: WasmRuntimeImport::ImportlibZipSourceExecPayload,
+        name: "importlib_zip_source_exec_payload",
         type_idx: 7,
     },
     RuntimeImportSpec {
@@ -15904,8 +15904,12 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         }
         "importlib_zip_read_entry" => Some(WasmRuntimeImport::ImportlibZipReadEntry),
         "molt_importlib_zip_read_entry" => Some(WasmRuntimeImport::ImportlibZipReadEntry),
-        "importlib_zip_source_payload" => Some(WasmRuntimeImport::ImportlibZipSourcePayload),
-        "molt_importlib_zip_source_payload" => Some(WasmRuntimeImport::ImportlibZipSourcePayload),
+        "importlib_zip_source_exec_payload" => {
+            Some(WasmRuntimeImport::ImportlibZipSourceExecPayload)
+        }
+        "molt_importlib_zip_source_exec_payload" => {
+            Some(WasmRuntimeImport::ImportlibZipSourceExecPayload)
+        }
         "file_close" => Some(WasmRuntimeImport::FileClose),
         "molt_file_close" => Some(WasmRuntimeImport::FileClose),
         "file_detach" => Some(WasmRuntimeImport::FileDetach),

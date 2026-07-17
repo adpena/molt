@@ -230,6 +230,10 @@ def _discover_module_graph_from_paths(
     stdlib_static_import_helper_modules: set[str] | None = None,
     resolver_cache: _module_resolution._ModuleResolutionCache | None = None,
     precomputed_imports_by_path: Mapping[Path, Collection[str]] | None = None,
+    precomputed_source_executions_by_path: Mapping[
+        Path, Collection[_module_import_scanner._StaticSourceExecution]
+    ]
+    | None = None,
     import_admission_policy: _ImportAdmissionPolicy | None = None,
     allow_entry_external_imports: bool = True,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
@@ -328,9 +332,17 @@ def _discover_module_graph_from_paths(
             if precomputed_imports_by_path is not None
             else None
         )
+        precomputed_source_executions = (
+            precomputed_source_executions_by_path.get(path)
+            if precomputed_source_executions_by_path is not None
+            else None
+        )
         source_executions: tuple[
             _module_import_scanner._StaticSourceExecution, ...
         ] = ()
+        source_executions_known = precomputed_source_executions is not None
+        if precomputed_source_executions is not None:
+            source_executions = tuple(precomputed_source_executions)
         source: str | None = None
         tree: ast.AST | None = None
         if import_admission_policy.owns_source_closure_with_native_artifact_plan(
@@ -349,6 +361,10 @@ def _discover_module_graph_from_paths(
                         is_package=is_package,
                         import_scan_mode=import_scan_mode,
                         imports=imports,
+                        source_executions=(
+                            (execution.module_name, execution.source_path)
+                            for execution in source_executions
+                        ),
                         target_python=target_python,
                         capability_config_digest=capability_config_digest,
                     )
@@ -394,12 +410,36 @@ def _discover_module_graph_from_paths(
                 )
             else:
                 imports = persisted_imports
+                if project_root is not None:
+                    persisted_source_executions = (
+                        _module_graph_cache._read_persisted_source_executions(
+                            project_root,
+                            path,
+                            module_name=module_name,
+                            is_package=is_package,
+                            import_scan_mode=import_scan_mode,
+                            target_python=target_python,
+                            capability_config_digest=capability_config_digest,
+                        )
+                    )
+                    if persisted_source_executions is not None:
+                        source_executions = tuple(
+                            _module_import_scanner._StaticSourceExecution(
+                                execution_module,
+                                execution_path,
+                            )
+                            for execution_module, execution_path in persisted_source_executions
+                        )
+                        source_executions_known = True
         # Source-execution roots are part of the module graph, not ordinary
         # import-name rows.  Import-scan cache hits therefore cannot authorize
         # skipping this projection.  The marker guard keeps the common path to
         # one cached source read and no AST walk.
-        if not import_admission_policy.owns_source_closure_with_native_artifact_plan(
-            module_name, path
+        if (
+            not source_executions_known
+            and not import_admission_policy.owns_source_closure_with_native_artifact_plan(
+                module_name, path
+            )
         ):
             if source is None:
                 try:
@@ -431,6 +471,23 @@ def _discover_module_graph_from_paths(
                             module_name=module_name,
                         )
                     )
+            source_executions_known = True
+        if project_root is not None and source_executions_known:
+            with contextlib.suppress(OSError):
+                _module_graph_cache._write_persisted_import_scan(
+                    project_root,
+                    path,
+                    module_name=module_name,
+                    is_package=is_package,
+                    import_scan_mode=import_scan_mode,
+                    imports=imports,
+                    source_executions=(
+                        (execution.module_name, execution.source_path)
+                        for execution in source_executions
+                    ),
+                    target_python=target_python,
+                    capability_config_digest=capability_config_digest,
+                )
         for execution in source_executions:
             execution_name = (
                 execution.module_name
@@ -542,12 +599,21 @@ def _discover_module_graph(
     stdlib_static_import_helper_modules: set[str] | None = None,
     resolver_cache: _module_resolution._ModuleResolutionCache | None = None,
     precomputed_imports: Collection[str] | None = None,
+    precomputed_source_executions: Collection[
+        _module_import_scanner._StaticSourceExecution
+    ]
+    | None = None,
     import_admission_policy: _ImportAdmissionPolicy | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     capability_config_digest: str = "",
 ) -> tuple[dict[str, Path], set[str]]:
     precomputed_imports_by_path = (
         {entry_path: precomputed_imports} if precomputed_imports is not None else None
+    )
+    precomputed_source_executions_by_path = (
+        {entry_path: precomputed_source_executions}
+        if precomputed_source_executions is not None
+        else None
     )
     return _discover_module_graph_from_paths(
         (entry_path,),
@@ -561,6 +627,7 @@ def _discover_module_graph(
         stdlib_static_import_helper_modules=stdlib_static_import_helper_modules,
         resolver_cache=resolver_cache,
         precomputed_imports_by_path=precomputed_imports_by_path,
+        precomputed_source_executions_by_path=precomputed_source_executions_by_path,
         import_admission_policy=import_admission_policy,
         target_python=target_python,
         capability_config_digest=capability_config_digest,

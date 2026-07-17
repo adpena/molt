@@ -1798,7 +1798,7 @@ def molt_importlib_sourceless_loader_payload(
 def molt_importlib_coerce_module_name(
     module: Any, loader: Any, spec: Any = ...
 ) -> str: ...
-def molt_importlib_zip_source_payload(
+def molt_importlib_zip_source_exec_payload(
     module_name: str,
     archive_path: str,
     inner_path: str,

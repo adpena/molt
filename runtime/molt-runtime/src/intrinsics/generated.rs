@@ -6593,8 +6593,8 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_importlib_zip_source_payload",
-        symbol: "molt_importlib_zip_source_payload",
+        name: "molt_importlib_zip_source_exec_payload",
+        symbol: "molt_importlib_zip_source_exec_payload",
         arity: 4,
         defaults: &[],
     },

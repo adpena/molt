@@ -1853,8 +1853,8 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         result: RuntimeCallableResult::I64,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_importlib_zip_source_payload",
-        import: WasmRuntimeImport::ImportlibZipSourcePayload,
+        runtime_name: "molt_importlib_zip_source_exec_payload",
+        import: WasmRuntimeImport::ImportlibZipSourceExecPayload,
         arity: 4,
         result: RuntimeCallableResult::I64,
     },
@@ -15991,7 +15991,9 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
             Some(WasmRuntimeImport::ImportlibValidateResourceName)
         }
         "molt_importlib_zip_read_entry" => Some(WasmRuntimeImport::ImportlibZipReadEntry),
-        "molt_importlib_zip_source_payload" => Some(WasmRuntimeImport::ImportlibZipSourcePayload),
+        "molt_importlib_zip_source_exec_payload" => {
+            Some(WasmRuntimeImport::ImportlibZipSourceExecPayload)
+        }
         "molt_file_close" => Some(WasmRuntimeImport::FileClose),
         "molt_file_detach" => Some(WasmRuntimeImport::FileDetach),
         "molt_file_fileno" => Some(WasmRuntimeImport::FileFileno),
@@ -18843,7 +18845,7 @@ pub(crate) fn runtime_callable_arity(runtime_name: &str) -> Option<usize> {
         "molt_importlib_stabilize_module_state" => Some(6),
         "molt_importlib_validate_resource_name" => Some(1),
         "molt_importlib_zip_read_entry" => Some(2),
-        "molt_importlib_zip_source_payload" => Some(4),
+        "molt_importlib_zip_source_exec_payload" => Some(4),
         "molt_file_close" => Some(1),
         "molt_file_detach" => Some(1),
         "molt_file_fileno" => Some(1),

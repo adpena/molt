@@ -3322,7 +3322,7 @@ name = "importlib_zip_read_entry"
 type = 3
 
 [[import]]
-name = "importlib_zip_source_payload"
+name = "importlib_zip_source_exec_payload"
 type = 7
 
 [[import]]
