@@ -70,6 +70,41 @@ def test_reloc_and_shared_specs_share_compile_but_differ_in_fingerprint() -> Non
         assert flag in shared.link_flags
 
 
+def test_final_required_export_abi_closes_the_cargo_feature_plan() -> None:
+    root = _compiler_root()
+    required_exports = {
+        "molt_ast_parse",
+        "molt_ctypes_sizeof",
+        "molt_math_sqrt",
+        "molt_re_compile",
+    }
+    shared = rb._compute_runtime_wasm_build_spec(
+        root,
+        root / "wasm" / "molt_runtime.wasm",
+        reloc=False,
+        **{
+            **_COMMON,
+            "stdlib_profile": "micro",
+            "required_exports": required_exports,
+        },
+    )
+    reloc = rb._compute_runtime_wasm_build_spec(
+        root,
+        root / "wasm" / "molt_runtime_reloc.wasm",
+        reloc=True,
+        **{
+            **_COMMON,
+            "stdlib_profile": "micro",
+            "required_exports": required_exports,
+        },
+    )
+
+    expected = {"stdlib_ast", "stdlib_http", "stdlib_math", "stdlib_regex"}
+    assert expected <= set(shared.wasm_cargo_features)
+    assert shared.wasm_cargo_features == reloc.wasm_cargo_features
+    assert expected <= set(shared.fingerprint_features)
+
+
 def test_combined_cargo_cmd_has_no_crate_type_override_and_uses_response_file(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
